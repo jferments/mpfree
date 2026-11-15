@@ -515,6 +515,19 @@ class BootHookTests(unittest.TestCase):
         self.assertEqual(self.read("run/mpfree-hook/soft-reboot"), "6.05\n", "tells the stick's system how it started")
         self.assertEqual(self.calls("sleep: "), [])
 
+    def test_jump_does_not_wait_for_the_usb_sata_fixer_that_always_runs(self):
+        # First power-on, 2026-11-15: Akai's az01-usbsata-fixer runs all the time (still running at 7799 s), so
+        # waiting for it stopped every jump after 20 s. Without a JMicron bridge attached it is not waited for.
+        self.install(ok=False)
+        self.plug_in()
+        write(os.path.join(self.root, "sys/bus/usb/devices/2-1/idVendor"), "0781\n")  # the stick itself
+        open(self.log, "w").close()
+        res = self.jump(FAKE_PIDOF_HIT="az01-usbsata-fixer")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertNotIn("waiting for", self.read("run/mpfree-hook.txt"))
+        self.assertEqual(self.calls("sleep: "), [])
+        self.assertEqual(self.calls("systemctl: --no-block"), [SOFT_REBOOT])
+
     def expect_stop(self, message, asked=False, **env):
         open(self.log, "w").close()
         write(os.path.join(self.root, "run/mpfree-hook.txt"), "")
@@ -613,6 +626,11 @@ class BootHookTests(unittest.TestCase):
                           self.read("run/mpfree-hook.txt"))
         with self.subTest("a flasher program runs"):
             self.expect_stop("dfu-util is still running after 20 s", FAKE_PIDOF_HIT="dfu-util")
+        with self.subTest("the USB-SATA fixer with a JMicron bridge attached"):
+            write(os.path.join(self.root, "sys/bus/usb/devices/1-1/idVendor"), "152d\n")
+            self.expect_stop("az01-usbsata-fixer (a JMicron USB-SATA bridge is attached) is still running after 20 s",
+                             FAKE_PIDOF_HIT="az01-usbsata-fixer")
+            shutil.rmtree(os.path.join(self.root, "sys/bus/usb/devices/1-1"))
         with self.subTest("Akai's controller update"):
             write(os.path.join(self.root, "proc/321/cmdline"), "sh\0/usr/share/Akai/SME0/Firmware/update.sh\0")
             self.expect_stop("Akai's controller update.sh is still running after 20 s")

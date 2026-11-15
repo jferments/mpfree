@@ -124,7 +124,7 @@ The owner chose this route on 2026-11-15, after the preflight named LoadPin. A s
    - `/boot/mpfree-softreboot/PROTOCOL` is `mpfree-softreboot-1`, and `release` is the running kernel's release (`6.18.44-az01-2026-08-10-rt6`), so the stick's userspace was built for this kernel;
    - every file in `/boot/mpfree-softreboot/SHA256SUMS` matches, and the list includes the three files of the switch-off service (below), which must be enabled in `sysinit.target.wants`;
    - `/usr/lib/systemd/systemd` is there and executable, and the stick has an `os-release` file. systemd 255 switches to `/run/nextroot` only if it holds one (`path_is_os_tree()` in `src/core/main.c`); without it the soft-reboot would restart Akai's own system.
-4. Waits up to 20 s while a firmware updater runs, as step 3 does.
+4. Waits up to 20 s while a firmware updater runs, as step 3 does, except for `az01-usbsata-fixer`: it runs all the time, so it counts only while a JMicron USB-SATA bridge (USB vendor `152d`) is attached, the only device it writes to (an assumption from its name, its log line "USB-SATA bridge fixer" and its unit; its code was not read). See the first power-on below.
 5. Loads the kernel modules the stick lists in `preload-modules.txt`, if any, **from Akai's own system** (`modprobe` from the eMMC's trusted root). After the soft-reboot nothing can load a module or firmware at all (see below), so this is the only way to add one.
 6. Writes `/run/mpfree-hook/soft-reboot` (which the stick's system reads) and starts `soft-reboot.target` (`systemctl --no-block --job-mode=replace-irreversibly start soft-reboot.target`, what `systemctl soft-reboot` does, without asking logind).
 
@@ -177,6 +177,12 @@ LoadPin stays on across the soft-reboot. It is pinned to the superblock of Akai'
 - Whether Akai's detached `/data` is released within 10 s. If not, the MPC switches itself off and `internal-off.txt` on the stick says so.
 - What the screen shows between the MPC logo and MPFree's startup screen, and how long the soft-reboot takes.
 
+### First power-on (2026-11-15, zip 090837Z): back to Akai's system
+
+The install and its check passed (`CHECK-OK`, stick read at `/media/<UUID>`), but at the power-on with the stick in Akai's system started as usual. MPFree's system never ran: the stick's log partition holds no boot and no `internal-off.txt`. The notes of that boot were lost, because the report was taken after a power-off without the stick (`/run` and Akai's journal are in RAM).
+
+The likely cause is in the install's own output: `note: az01-usbsata-fixer is running now`, 7,800 s after power-on. That program runs all the time on 3.10.1 (the [M7 record](../milestones/m07-validation-record.md) also lists its service as active). The jump counted any running `az01-usbsata-fixer` as a firmware writer, so it waited 20 s, stopped (`... is still running after 20 s`) and left Akai's app to start about 20 s late. The fixer is now waited for only while a JMicron bridge is attached; a test reproduces the old stop and checks the new behaviour. Step 3 had the same wait but never reached a power-on jump. Block 4.4 now takes the report while that boot is still running, so a second fall-through keeps its notes.
+
 ### Blocks for the owner
 
 Each block was rehearsed in the simulator at these paths as far as a simulator can: the wrapper modes, the installer, the check, the jump, the undo and the report through the fake SSH; the builder against a fake image. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable.
@@ -206,6 +212,12 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 It must end with `RESULT: the hook is installed, and the stick checks out.` If it stops instead, take the stick out before the next power-on and send the results.
 
 **Step 4.4: the power-on** (**state-changing**: Akai's programs are stopped at about 6 s and MPFree runs from the stick; the eMMC is switched off in software, nothing is written to it). Switch the MPC off, wait 10 s, and switch it on with the stick in. Expected: the MPC logo, then MPFree's startup screen and the pad player, with Akai's app never drawing. Play a few pads.
+- **If Akai's app comes up instead, leave the stick in and the MPC on**, and run this read-only block first. The hook's notes are in RAM and only last until the power-off:
+
+  ```bash
+  cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-report-stick-in -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --hook-report
+  ```
+
 - If the MPC switches itself off, the switch-off service refused to go on.
 - If the screen stays on the logo for more than a minute, hold the power button to switch off.
 - Undo, always: switch off, take the stick out, wait 10 s, switch on. Akai's system starts as before. Don't touch the MPC's power while it shows an update screen.
@@ -227,7 +239,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 ## Next steps
 
 1. The runtime-kexec route is closed on 3.10.1: LoadPin, enforcing and pinned to the dm-verity root, refuses the stick's `kexec_load` (`kexec-image old-api-denied`; preflight zip 082152Z). IPE is absent and lockdown is off.
-2. The owner chose soft-reboot. Step 4 is built and rehearsed in the simulator. Next is its first power-on with blocks 4.1 to 4.5, once the owner gives the go. Until then the kexec hook stays installed and inert: take the stick out before switching on.
+2. The owner chose soft-reboot. Step 4 is built and rehearsed in the simulator. Its first power-on fell back to Akai's system, most likely on the `az01-usbsata-fixer` wait (fixed). Next: the second power-on, with the updated hook installed again (block 4.3; the stick needs no rebuild). The first version stays installed meanwhile; with the stick in it falls back to Akai's system about 20 s late, and with the stick out it does nothing.
 3. The **bootloader-level** route (U-Boot booting MPFree directly, or a kernel command-line word that lifts LoadPin) stays behind the [safety rule](../../agents/README.md): proven MaskROM recovery and the owner's go. Not started.
 4. The hook needs installing once on each MPC. Whether a one-time tap at install is acceptable is the owner's decision; the owner rejected a tap at every power-on.
 5. After any Akai update, rebuild the stick from a fresh `--kexec-preflight`. Its `release` must match the running kernel, or the hook refuses the stick and Akai's system starts.
