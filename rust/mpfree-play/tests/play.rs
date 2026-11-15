@@ -352,6 +352,52 @@ fn notes_follow_tempo_changes() {
 }
 
 #[test]
+fn anchored_dice_roll_the_same_each_time_the_range_plays() {
+    // Sixteen 1/16s at 50 %, played twice from bar 1: once from frame 0,
+    // again from frame 5 bars on (an export's first pass, then a replay).
+    let mut c = clip(
+        3840,
+        &(0..16).map(|i| note(i * 240, 100, 0)).collect::<Vec<_>>(),
+    );
+    c.notes.iter_mut().for_each(|n| n.chance = 50);
+    let v = view(vec![c]);
+    let bar = 88_200u64;
+    let twice = |anchored: bool| {
+        let mut t = t120();
+        for (at, cmd) in [
+            (0, Command::Play),
+            (2 * bar, Command::Stop),
+            (3 * bar, Command::Locate(0)),
+            (5 * bar, Command::Play),
+            (7 * bar, Command::Stop),
+        ] {
+            assert!(t.command(at, cmd));
+        }
+        let mut player = Player::new();
+        player.anchor_dice(anchored);
+        let mut block = Block::new();
+        let mut log = Log::default();
+        while t.frame() < 8 * bar {
+            t.process(128, &mut block);
+            player.process(&v, &block, &mut log);
+        }
+        let on = ons(&log.0);
+        let first: Vec<u64> = on.iter().copied().filter(|&f| f < 2 * bar).collect();
+        let again: Vec<u64> = on
+            .iter()
+            .filter(|&&f| f >= 5 * bar)
+            .map(|f| f - 5 * bar)
+            .collect();
+        (first, again)
+    };
+    let (first, again) = twice(true);
+    assert!((8..=24).contains(&first.len()), "about half: {first:?}");
+    assert_eq!(first, again, "anchored: the same notes each time");
+    let (first, again) = twice(false);
+    assert_ne!(first, again, "unanchored: each play rolls again");
+}
+
+#[test]
 fn chance_leaves_notes_out_differently_on_every_pass() {
     // Sixteen 1/16s at 50 %, over a transport loop of one bar: every pass
     // of the loop rolls again.

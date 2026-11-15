@@ -168,7 +168,8 @@ cargo run --release --manifest-path rust/mpfree-gpu/Cargo.toml --bin mpfree-gpu-
   1280 panel turned 270 degrees): its first frame with every upload, the
   whole page again (what a page change costs), the redraw a tick later, and
   reading the frame back; then the same lists in software, the software
-  copy to the panel, and how far the GPU's picture is from the software one.
+  path's turn into the panel's layout, and how far the GPU's picture is
+  from the software one.
 - `compute [--iterations N]` runs an FIR filter over a stereo block on the
   GPU (upload, run, read back; OpenGL ES 3.1 compute shader) and on one CPU
   core, for one period with 64 and 1024 taps and for 32 periods.
@@ -179,8 +180,8 @@ cargo run --release --manifest-path rust/mpfree-gpu/Cargo.toml --bin mpfree-gpu-
   software's; then it prints `SCREEN CHANGES NOW`, shows each page for N ms
   (1500), and times the whole page and a tick's redraw N times (60) the
   GPU's way (into the next buffer, then a flip) and software's (draw, turn
-  and copy into a screen buffer that is never shown), with the CPU each
-  takes. It puts the screen back and says `the screen is back as it was`,
+  into the panel's layout, copy into a screen buffer that is never shown,
+  each timed on its own), with the CPU each takes. It puts the screen back and says `the screen is back as it was`,
   also on Ctrl-C, SIGTERM, SIGHUP or a failure.
 - `panel DIR [--hold-ms N] [--frames N]` puts the GPU's pictures on the
   panel: each page is drawn on the GPU, read back and written to
@@ -189,7 +190,7 @@ cargo run --release --manifest-path rust/mpfree-gpu/Cargo.toml --bin mpfree-gpu-
   display setting changed) and held for N ms (1500). It reads the
   framebuffer back once to check it holds what was written. Then the
   busiest page is drawn and copied to the panel N times (60) the GPU's way
-  (draw, read back, copy) and software's (draw, turn and copy), timed.
+  (draw, read back, copy) and software's (draw, turn, copy), timed.
   `--fb PATH --sysfs DIR` name another framebuffer, for tests: with a
   plain 4,096,000-byte file and a folder holding `modes`
   (`U:800x1280p-0`), `stride` (3200), `bits_per_pixel` (32) and an empty
