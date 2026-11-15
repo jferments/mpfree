@@ -500,6 +500,13 @@ fn set(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
     }
 }
 
+/// Sets `addr` as a knob turn would and lets it go at once (UNDO and
+/// REDO of a mixer turn, `mixturns.rs`).
+pub fn set_param_now(h: &mut MixHost, addr: ParamAddr, value: f32) {
+    set(h, addr, value, false);
+    h.modu.release(addr);
+}
+
 /// A knob's map when it goes on a macro: the one it has if it is on
 /// another, else from where it is now to the far end of its travel.
 fn mapping(h: &MixHost, target: ParamAddr) -> MacroMap {
