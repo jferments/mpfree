@@ -51,6 +51,60 @@ fn insert_param(mix: &MixHost, strip: StripId, uid: u16, id: u16) -> f32 {
         .map_or(f32::NAN, |n| n.param(id))
 }
 
+/// A turn a screen action is about to make on the mixer's page (`on_mix`:
+/// the Mix tab shows): a strip control, a dot dragged on the EQ look, or a
+/// Q-Link turning the EQ picked there (the chain editor's own turns are
+/// not the mixer's). Read before the desk takes the action.
+pub fn before_ui(
+    a: &crate::gui::FromUi,
+    mix: &MixHost,
+    on_mix: bool,
+) -> Option<(MixKey, [f32; 2], [f32; 2])> {
+    match a {
+        crate::gui::FromUi::Mixer(m) => before(m, mix),
+        crate::gui::FromUi::Chain(mpfree_chain_ui::ChainAction::Set { addr, value }) if on_mix => {
+            let Owner::Insert(s, uid) = addr.owner else {
+                return None;
+            };
+            let strip = crate::modmix::strip_id(s);
+            let c = mix.mixer.chain(strip)?;
+            let n = c.node(c.slot_of(uid)?)?;
+            (n.info().id == mpfree_chain_ui::state::EQ_ID)
+                .then(|| insert_turn(mix, strip, uid, addr.param, *value))
+        }
+        _ => None,
+    }
+}
+
+/// Insert parameter `id` of strip `strip`'s insert `uid` set to `value`:
+/// the turn, keyed by what it moves with.
+fn insert_turn(
+    mix: &MixHost,
+    strip: StripId,
+    uid: u16,
+    id: u16,
+    value: f32,
+) -> (MixKey, [f32; 2], [f32; 2]) {
+    let ids = moved_with(id);
+    let from = ids.map(|i| {
+        if i == NONE {
+            0.0
+        } else {
+            insert_param(mix, strip, uid, i)
+        }
+    });
+    let to = ids.map(|i| {
+        if i == id {
+            value
+        } else if i == NONE {
+            0.0
+        } else {
+            f32::NAN
+        }
+    });
+    (MixKey::Insert { strip, uid, ids }, from, to)
+}
+
 /// A turn an action is about to make: its key, the value before, and the
 /// value it sets (a NaN part: not moved by it). Read before the desk
 /// takes the action.
@@ -68,24 +122,7 @@ pub fn before(a: &MixAction, mix: &MixHost) -> Option<(MixKey, [f32; 2], [f32; 2
             value,
         } => {
             let uid = mix.mixer.chain(strip)?.uid(slot)?;
-            let ids = moved_with(id);
-            let from = ids.map(|i| {
-                if i == NONE {
-                    0.0
-                } else {
-                    insert_param(mix, strip, uid, i)
-                }
-            });
-            let to = ids.map(|i| {
-                if i == id {
-                    value
-                } else if i == NONE {
-                    0.0
-                } else {
-                    f32::NAN
-                }
-            });
-            Some((MixKey::Insert { strip, uid, ids }, from, to))
+            Some(insert_turn(mix, strip, uid, id, value))
         }
         _ => None,
     }
@@ -158,7 +195,9 @@ fn insert_name(strip: StripId, ids: [u16; 2]) -> String {
     let what = match ids[0] {
         eq::LOW_CUT => "Low cut".to_string(),
         eq::HIGH_CUT => "High cut".to_string(),
+        eq::OUTPUT => "Output".to_string(),
         id => match eq::band_of(id) {
+            Some((b, 3)) => format!("Band {} Q", b + 1),
             Some((b, _)) => format!("Band {}", b + 1),
             None => "a control".to_string(),
         },
@@ -181,10 +220,15 @@ pub fn row(t: &MixTurn) -> String {
         },
         MixKey::Insert { strip, ids, .. } => {
             let hz = mpfree_mixer_ui::eq_look::hz_text(t.to[0]);
-            if ids[1] == NONE {
-                format!("{} to {hz}", insert_name(strip, ids))
+            let what = insert_name(strip, ids);
+            if ids[0] == eq::OUTPUT {
+                format!("{what} to {:+.1} dB", t.to[0])
+            } else if matches!(eq::band_of(ids[0]), Some((_, 3))) {
+                format!("{what} to {:.2}", t.to[0])
+            } else if ids[1] == NONE {
+                format!("{what} to {hz}")
             } else {
-                format!("{} to {hz}, {:+.1} dB", insert_name(strip, ids), t.to[1])
+                format!("{what} to {hz}, {:+.1} dB", t.to[1])
             }
         }
     }

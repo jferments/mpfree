@@ -952,15 +952,35 @@ impl Eq {
         {
             return;
         }
+        // The bands that shape the sound, found once a block: the rest
+        // rest, and nothing changes while still.
+        // Filters in series commute, so the notches (which crossfade) run
+        // after the rest, each list without a branch per sample.
+        let (mut plain, mut notch) = ([0usize; ids::BANDS], [0usize; ids::BANDS]);
+        let (mut np, mut nn) = (0, 0);
+        for (k, b) in self.bands.iter().enumerate() {
+            if b.flat {
+                continue;
+            }
+            if b.kind == NOTCH {
+                notch[nn] = k;
+                nn += 1;
+            } else {
+                plain[np] = k;
+                np += 1;
+            }
+        }
+        let (plain, notch) = (&plain[..np], &notch[..nn]);
         for i in 0..l.len() {
             let mut y = [l[i], r[i]];
             for (ch, x) in y.iter_mut().enumerate() {
                 let mut s = self.low.run(ch, *x, lo12, lo24);
                 s = self.high.run(ch, s, hi12, hi24);
-                for b in &mut self.bands {
-                    if !b.flat {
-                        s = b.run(ch, s);
-                    }
+                for &k in plain {
+                    s = self.bands[k].svf.run(ch, s);
+                }
+                for &k in notch {
+                    s = self.bands[k].run(ch, s);
                 }
                 *x = g * s;
             }
@@ -1008,8 +1028,14 @@ impl Eq {
                 let dry = *x;
                 let mut s = self.low.run(ch, dry, lo12, lo24);
                 s = self.high.run(ch, s, hi12, hi24);
+                // As the still loop: the notches after the rest.
                 for b in &mut self.bands {
-                    if !b.flat {
+                    if !b.flat && b.kind != NOTCH {
+                        s = b.run(ch, s);
+                    }
+                }
+                for b in &mut self.bands {
+                    if !b.flat && b.kind == NOTCH {
                         s = b.run(ch, s);
                     }
                 }

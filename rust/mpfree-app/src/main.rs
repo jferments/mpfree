@@ -3956,10 +3956,7 @@ fn player_session(
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
             let (t_item, item) = (Instant::now(), parts::Name::of(&a));
-            let mix_turn = match &a {
-                gui::FromUi::Mixer(m) => mixturns::before(m, &mix),
-                _ => None,
-            };
+            let mix_turn = mixturns::before_ui(&a, &mix, app.view() == app::View::Mixer);
             // The app, the mixer, the time engine, the looper and the chain
             // editor take theirs (desk.rs); the rest is this loop's.
             let mut desk = desk::Desk {

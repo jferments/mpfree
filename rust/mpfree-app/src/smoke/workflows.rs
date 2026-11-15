@@ -317,12 +317,22 @@ mod tests {
             assert_eq!(node_param_id(&s, drums, 1, q::gain(1)), db2);
 
             // The Q-Links are band 2's: Q-Link 1 its frequency.
+            s.run_for(2.0);
             let hz = node_param_id(&s, drums, 1, q::freq(1));
             s.qlink(0, 4);
+            s.run_for(0.2);
             assert!(
                 node_param_id(&s, drums, 1, q::freq(1)) > hz,
                 "Q-Link 1: band 2's Freq"
             );
+            // That turn is the mixer's too: UNDO takes it back.
+            s.button("UNDO").run_for(0.2);
+            assert!(
+                s.said().iter().any(|l| l == "Undid Drums EQ Band 2"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(node_param_id(&s, drums, 1, q::freq(1)), hz);
 
             // A tap on the picked EQ again: it opens in the chain editor.
             s.press("mixer", "eq", "Drums EQ");
