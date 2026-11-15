@@ -165,6 +165,10 @@ pub struct Session {
     pub sent: Vec<String>,
     /// The buttons' lights as last sent (by button number).
     pub lights: [u8; 128],
+    /// The lights that reach the controller, as main.rs sends them: only
+    /// those Akai's app was seen lighting (`akai::app_lights`), so a light
+    /// for a made-up button number never shows here.
+    pub sent_lights: [u8; 128],
     /// The notes the time engine played.
     pub hits: Hits,
     /// A kit that sounds, when a test asks for one ([`Session::make_sounds`]):
@@ -213,8 +217,8 @@ pub struct Session {
 }
 
 /// Every hardware button with a job, on a number of its own: the measured
-/// ones as measured, the rest made up (on the MPC the control mapper finds
-/// them).
+/// ones as measured (REC, OVERDUB, UNDO and PLAY START among them, as on a
+/// fresh MPC), the rest made up (on the MPC the control mapper finds them).
 fn map_every_button(app: &mut App) {
     let mut next = 90u8;
     for c in app::mapper::CONTROLS.iter() {
@@ -272,6 +276,7 @@ impl Session {
             lines: Vec::new(),
             sent: Vec::new(),
             lights: [0; 128],
+            sent_lights: [0; 128],
             hits: Hits::default(),
             sounds: None,
             export: crate::export::Host::new(),
@@ -1257,7 +1262,12 @@ impl Session {
                 };
                 let Some(e) = rest else { continue };
                 match e {
-                    Effect::Light(note, value) => self.lights[usize::from(note & 0x7F)] = value,
+                    Effect::Light(note, value) => {
+                        self.lights[usize::from(note & 0x7F)] = value;
+                        if crate::akai::app_lights(note) {
+                            self.sent_lights[usize::from(note & 0x7F)] = value;
+                        }
+                    }
                     Effect::Octave(d) if self.synth_on => {
                         if self.synth.shift_octave(d) {
                             self.app.set_pad_layout(Some(self.synth.pad_layout()));
