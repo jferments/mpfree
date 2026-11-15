@@ -166,16 +166,19 @@ trigger() {   # no call to systemd here but the service start: systemd may itsel
 # --- jump, check ------------------------------------------------------------------------------------------
 say() { if [ "$kind" = check ]; then echo "$1"; else kmsg "$1"; fi; }
 M=''; ours=''; W=''; loaded=''; jump=soft-reboot; kcmd=''; ksum=''
-unload() {   # takes out again a kernel this hook loaded (with the file syscall: LoadPin denies the old one)
-  [ "$loaded" = yes ] || return 0
-  loaded=''
-  [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] && return 0
+STUCK="the kernel this hook loaded for kexec_file could not be unloaded; no restart while it is in RAM"
+unload() {   # takes out again a kernel this hook loaded (with the file syscall: LoadPin denies the old one).
+             # Returns 1 while it stays loaded: then nothing is started, and it is not tried a second time.
+  case "$loaded" in yes) ;; stuck) return 1 ;; *) return 0 ;; esac
+  if [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ]; then loaded=''; return 0; fi
   if "$R/usr/sbin/kexec" --unload --kexec-file-syscall > /dev/null 2>&1 &&
       [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ]; then
+    loaded=''
     say "Akai's kernel unloaded again (kexec --unload)"
     return 0
   fi
-  say "could not unload the kernel this hook loaded (it stays in RAM until power-off; nothing of ours starts it)"
+  loaded=stuck
+  say "could not unload the kernel this hook loaded (it stays in RAM until the MPC is switched off)"
   return 1
 }
 cleanup() {
@@ -359,11 +362,11 @@ kexec_file() {   # $1 = what happens instead. Loads Akai's own kernel with the s
   # device tree in file mode, so the kernel keeps the running one. The command line points root= at the stick.
   if ! out=$("$R/usr/sbin/kexec" --load --kexec-file-syscall --command-line="$kcmd" "$K" 2>&1); then
     say "kexec_file: the kernel refused the load ($(printf '%s' "$out" | tr -c 'A-Za-z0-9 ._:/()=-' ' ' | cut -c1-200)); $1"
-    unload
+    unload || fail "$STUCK"
     return 1
   fi
   [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 1 ] ||
-    { say "kexec_file: kexec_loaded is not 1 after the load; $1"; unload; return 1; }
+    { say "kexec_file: kexec_loaded is not 1 after the load; $1"; unload || fail "$STUCK"; return 1; }
   say "Akai's kernel loaded with the stick's command line (kexec_file) at $(cut -d' ' -f1 "$R/proc/uptime") s"
 }
 
@@ -384,7 +387,7 @@ case "$kind" in
       say "restart into MPFree on Akai's own kernel (kexec.target) at $(cut -d' ' -f1 "$R/proc/uptime") s"
       systemctl --no-block --job-mode=replace-irreversibly start kexec.target && exit 0
       say "kexec_file: systemctl could not start kexec.target; soft-reboot instead"
-      unload || fail "the kernel loaded for kexec_file could not be unloaded"
+      unload || fail "$STUCK"
     fi
     modules load
     what=$(busy) && fail "$what started; no restart while firmware may be written"
@@ -403,7 +406,7 @@ case "$kind" in
     done
     if [ "$jump" = kexec-file ]; then
       if kexec_file "at power-on this stick would soft-reboot instead"; then
-        unload || { cleanup; say "STOP: the test load could not be unloaded"; exit 1; }
+        unload || fail "$STUCK"
         cleanup
         say "CHECK-OK: at power-on with this stick in, the MPC would restart into it on Akai's own kernel (kexec_file; the test load and unload passed), and soft-reboot into it if that load fails then"
         exit 0

@@ -104,7 +104,7 @@ A stick built with `offline-kexec-stick.py --kexec-file` carries three more file
 For such a stick, the jump's step 3 also checks every word of `cmdline` against a short list, and step 5 is replaced:
 - If the MPC's own `/boot/zImage-<release>` has that hash, the hook loads it with `kexec --load --kexec-file-syscall` and the stick's command line. That file is on the pinned root, the only place LoadPin accepts a kernel from.
 - It then starts `kexec.target`.
-- If the kernel is another, kexec is off or already loaded, the load is refused, or systemd won't start `kexec.target`, it unloads and soft-reboots as above, in the same power-on.
+- If the kernel is another, kexec is off or already loaded, the load is refused, or systemd won't start `kexec.target`, it unloads and soft-reboots as above, in the same power-on. If the kernel it loaded will not unload, it stops instead (Akai's app starts; switching off clears it).
 
 The check loads and unloads the kernel (RAM only), so the install shows whether the kernel accepts the load. A stick without `--kexec-file` never reaches any of this; the hook never runs `kexec` for it. Its record and runbook are [step 6](stick-autoboot.md#the-kexec-file-route-step-6-opt-in).
 

@@ -785,6 +785,30 @@ class KexecStickTests(unittest.TestCase):
         self.assertNotIn("storage", sums)
         self.assertNotIn("passwd", sums)
 
+    def test_app_user_and_kexec_file_together(self):
+        """The round of step 6 builds both opt-ins into one stick; each does what it does alone."""
+        self.app_user_image()
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        res = self.build("--app", app, "--kits", kits, "--app-user", "--kexec-file", "--loadpin-off")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("pad player user: mpfree (--app-user)", res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        with open(os.path.join(out, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()
+        self.assertIn(f"  its command line: {cmdline} loadpin.enforce=0\n", res.stdout)
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(out, "stick.img"), 1, root_img)
+        self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
+        self.check_softreboot_files(root_img, NEW, kexec_file=cmdline + " loadpin.enforce=0")
+        self.assertIn("mpfree:x:960:960:", self.dfs(root_img, "cat /etc/passwd"))
+        self.assertIn("User=mpfree\n", self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service"))
+        sums = self.dfs(root_img, "cat /boot/mpfree-softreboot/SHA256SUMS")
+        self.assertNotIn("storage", sums)
+        self.assertNotIn("passwd", sums)
+
     def test_app_user_without_the_journal_group_and_its_stops(self):
         self.app_user_image(group="root:x:0:\naudio:x:29:\nvideo:x:44:\ninput:x:101:\n")
         app = os.path.join(self.tmp, "mpfree")

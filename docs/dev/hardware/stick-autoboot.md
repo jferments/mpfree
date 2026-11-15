@@ -354,6 +354,8 @@ It falls back to the soft-reboot of step 4, in the same power-on, when:
 - the kernel refuses the load;
 - systemd will not start `kexec.target` (the hook unloads the kernel first).
 
+If a kernel the hook loaded will not unload again, at any of these points or at a firmware updater, the hook stops instead: no soft-reboot while that kernel is in RAM, because a later restart could start it. It tries the unload once. Akai's app starts, and switching the MPC off clears the kernel. A load that reports a failure but leaves the kernel loaded counts as loaded.
+
 At the install check (`hook.sh check`), a kexec-file stick also gets the load and an unload again (RAM only, never started), so `--hook-install` shows whether the kernel accepts the load with this command line. The check passes either way, and says which route a power-on would take. Only a failed unload stops it.
 
 ### What cannot change for the soft-reboot

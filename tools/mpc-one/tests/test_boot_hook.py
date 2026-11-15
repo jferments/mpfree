@@ -95,6 +95,8 @@ case "$1" in
     case "$*" in *--dtb*) echo "DTB file cannot be specified in file mode" >&2; exit 1 ;; esac
     [ -n "${FAKE_KEXEC_REFUSE:-}" ] && { echo "kexec_file_load failed: Operation not permitted" >&2; exit 1; }
     echo 1 > "$FAKE_ROOT/sys/kernel/kexec_loaded"
+    # A load that reports a failure but leaves the kernel loaded (kexec-tools exits 1 on a late error).
+    [ -n "${FAKE_KEXEC_FAIL_LOADED:-}" ] && { echo "kexec: late error" >&2; exit 1; }
     [ -n "${FAKE_KEXEC_UPDATE:-}" ] && { mkdir -p "$FAKE_ROOT/proc/999"; printf 'sh\0/usr/share/Akai/SME0/Firmware/update.sh\0' > "$FAKE_ROOT/proc/999/cmdline"; }
     exit 0 ;;
   --unload)
@@ -773,6 +775,9 @@ class BootHookTests(unittest.TestCase):
                      "instead", 1, FAKE_KEXEC_REFUSE="1")
         with self.subTest("systemd will not start kexec.target"):
             fallback("systemctl could not start kexec.target; soft-reboot instead", 1, 1, FAKE_KEXEC_START_RC="1")
+        with self.subTest("the load reports a failure but leaves the kernel loaded"):
+            fallback("the kernel refused the load (kexec: late error); soft-reboot instead", 1, 1,
+                     FAKE_KEXEC_FAIL_LOADED="1")
         with self.subTest("a kexec kernel is loaded already"):
             write(os.path.join(self.root, "sys/kernel/kexec_loaded"), "1\n")
             open(self.log, "w").close()
@@ -807,6 +812,35 @@ class BootHookTests(unittest.TestCase):
                          FAKE_KEXEC_UPDATE="1")
         self.assertEqual(self.calls("kexec: "), [self.kexec_load_call(), "kexec: --unload --kexec-file-syscall"])
         self.assertEqual(self.read("sys/kernel/kexec_loaded"), "0\n")
+
+    def test_kexec_file_stops_when_its_kernel_stays_loaded(self):
+        """A kernel this hook loaded and could not unload again stops everything: no soft-reboot with it in RAM."""
+        self.install(ok=False)
+        self.plug_in()
+        self.make_stick(kexec_file=KCMD)
+        stuck = "the kernel this hook loaded for kexec_file could not be unloaded; no restart while it is in RAM"
+        update = "Akai's controller update.sh started; no restart while firmware may be written"
+        for name, stop, env in (("the load fails late", stuck, {"FAKE_KEXEC_FAIL_LOADED": "1"}),
+                                ("systemd will not start kexec.target", stuck, {"FAKE_KEXEC_START_RC": "1"}),
+                                ("an updater starts after the load", update, {"FAKE_KEXEC_UPDATE": "1"})):
+            with self.subTest(name):
+                shutil.rmtree(os.path.join(self.root, "proc/999"), ignore_errors=True)
+                write(os.path.join(self.root, "sys/kernel/kexec_loaded"), "0\n")
+                open(self.log, "w").close()
+                write(os.path.join(self.root, "run/mpfree-hook.txt"), "")
+                res = self.jump(FAKE_UNLOAD_FAIL="1", **env)
+                self.assertEqual(res.returncode, 1, res.stdout)
+                kmsg = self.read("run/mpfree-hook.txt")
+                self.assertIn("mpfree-hook: could not unload the kernel this hook loaded (it stays in RAM until the "
+                              "MPC is switched off)\n", kmsg)
+                self.assertIn("mpfree-hook: STOP: " + stop + "\n", kmsg)
+                self.assertIn("mpfree-hook: nothing was started: Akai's system starts as usual\n", kmsg)
+                self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-file-syscall"],
+                                 "tried once, not again in the cleanup")
+                self.assertNotIn(SOFT_REBOOT, self.calls("systemctl: --no-block"))
+                self.assertEqual(self.run_files(), ["run/mpfree-hook", "run/mpfree-hook.txt"])
+        shutil.rmtree(os.path.join(self.root, "proc/999"), ignore_errors=True)
+        write(os.path.join(self.root, "sys/kernel/kexec_loaded"), "0\n")
 
     def test_kexec_file_stick_that_does_not_check_out_stops(self):
         self.install(ok=False)
@@ -871,7 +905,9 @@ class BootHookTests(unittest.TestCase):
         self.assertEqual(self.run_files(), [])
         res = self.hook("check", FAKE_UNLOAD_FAIL="1")
         self.assertEqual(res.returncode, 1, res.stdout)
-        self.assertIn("STOP: the test load could not be unloaded", res.stdout)
+        self.assertIn("STOP: the kernel this hook loaded for kexec_file could not be unloaded; no restart while it "
+                      "is in RAM", res.stdout)
+        self.assertNotIn("CHECK-OK", res.stdout)
         write(os.path.join(self.root, "sys/kernel/kexec_loaded"), "0\n")
         # A soft-reboot stick: the check never touches kexec.
         self.make_stick()
