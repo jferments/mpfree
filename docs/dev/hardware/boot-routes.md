@@ -1,6 +1,6 @@
 # Boot routes on MPC OS 3.10.1: soft-reboot, kexec_file, our own kernel
 
-**Status:** 2026-11-15. The soft-reboot works and is the default. The kexec-file route is opt-in; its first round on the MPC restarted on Akai's kernel with LoadPin off, but Ethernet did not come up. The chain's first step (Akai's kernel restarted again with the stick's own device tree, `--chain`) is built and opt-in, not yet tried; our own kernel comes after it. The U-Boot route is not built. **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed (kernel `6.18.44-az01-2026-08-10-rt6`).
+**Status:** 2026-11-15. The soft-reboot works and is the default. The kexec-file route is opt-in; its first round on the MPC restarted on Akai's kernel with LoadPin off, but Ethernet did not come up. The chain's first step (Akai's kernel restarted again with the stick's own device tree, `--chain`) is opt-in and passed its first round: Ethernet up, and the eMMC and SD card never probed by the kernel MPFree runs on. Our own kernel comes next. The U-Boot route is not built. **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed (kernel `6.18.44-az01-2026-08-10-rt6`).
 
 This page compares the ways MPFree can take over the MPC after power-on. It explains the kernel policy that decides between them (LoadPin), and what each way means for running our own kernel and for external hardware that needs its own drivers. How the soft-reboot works in detail is in [How MPFree boots from the stick](soft-reboot-boot.md). The history and the owner's runbooks are in [the stick auto-boot record](stick-autoboot.md).
 
@@ -9,7 +9,7 @@ This page compares the ways MPFree can take over the MPC after power-on. It expl
 - Every route starts the same way. Akai's U-Boot boots Akai's kernel, a [hook](soft-reboot-boot.md#the-hook-on-akais-data-partition) on Akai's data partition sees the stick about 6 s in, checks it and hands over. The routes differ only in what the handover does.
 - **Soft-reboot** (works): keeps Akai's kernel and replaces everything above it. It is the only route proven on the MPC. Its limit is that no module or firmware can be loaded after the switch.
 - **kexec_file** (opt-in, first round passed without Ethernet): restarts Akai's own kernel with a command line we choose. It starts fresh, LoadPin included, and a module loaded from the stick. It is the only way found to put a word such as `loadpin.enforce=0` on a kernel command line without touching U-Boot.
-- **Our own kernel** (first step built): a chain of kexec_file into Akai's kernel with LoadPin relaxed, then an ordinary kexec into MPFree's kernel and device tree. Akai's kernel honours `loadpin.enforce=0`, so LoadPin allows it. The built first step (`--chain`) restarts into the stick's own device tree on Akai's kernel; our own kernel is a later step.
+- **Our own kernel** (first step works): a chain of kexec_file into Akai's kernel with LoadPin relaxed, then an ordinary kexec into MPFree's kernel and device tree. Akai's kernel honours `loadpin.enforce=0`, so LoadPin allows it. The first step (`--chain`) restarts into the stick's own device tree on Akai's kernel, and works (zip 201107Z); our own kernel is the next step.
 - **U-Boot** (blocked): booting our kernel straight from the bootloader. It is the cleanest route, but it writes boot-critical storage, which the [safety rule](../../agents/README.md) keeps behind proven MaskROM recovery.
 
 ## LoadPin: the policy that decides
@@ -52,7 +52,7 @@ Building on route 2:
 1. The hook kexec_file-loads Akai's kernel with `loadpin.enforce=0` (or `loadpin.exclude=kexec-image`) and **without** `sysctl.kernel.kexec_load_disabled=1`, and a small first stage on the stick as root.
 2. That stage loads MPFree's own kernel and device tree with the ordinary `kexec_load`, which LoadPin then no longer refuses, and jumps.
 
-**Built, opt-in, untried:** `offline-kexec-stick.py --kexec-file --loadpin-off --chain`. The first step uses the stick's own device tree (`/boot/mpfree-kexec/kexec.dtb`: the Ethernet PHY's ID, the eMMC and SD controllers disabled) with Akai's kernel, a byte-for-byte copy on the stick. That fixes Ethernet and moves the eMMC and SD switch-off into the tree. Our own kernel is the later step: a different `zImage` in the same place. How it works, its risks and its runbook are in [step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in).
+**Built, opt-in, first round passed (2026-11-15, zip 201107Z):** `offline-kexec-stick.py --kexec-file --loadpin-off --chain`. The first step uses the stick's own device tree (`/boot/mpfree-kexec/kexec.dtb`: the Ethernet PHY's ID, the eMMC and SD controllers disabled) with Akai's kernel, a byte-for-byte copy on the stick. That fixes Ethernet and moves the eMMC and SD switch-off into the tree. Our own kernel is the later step: a different `zImage` in the same place. How it works, its risks and its runbook are in [step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in).
 
 What it gives:
 - any kernel configuration, any driver, and a newer kernel;
@@ -77,7 +77,7 @@ Running MPFree under Akai's own systemd (chroot or namespace) keeps Akai's kerne
 
 | | Soft-reboot | kexec_file | Chain to our kernel | U-Boot |
 |---|---|---|---|---|
-| Status | **Works, default** | Opt-in; restarts, no Ethernet | Our device tree: built, untried; our kernel: not built | Blocked |
+| Status | **Works, default** | Opt-in; restarts, no Ethernet | Our device tree: opt-in, works, Ethernet up; our kernel: not built | Blocked |
 | Kernel | Akai's, running | Akai's, restarted | **Ours** | **Ours** |
 | Device tree | Akai's | Akai's | **Ours** | **Ours** |
 | Command line | Akai's | **Ours** (checked list) | Ours | Ours |
@@ -114,6 +114,9 @@ So the soft-reboot covers the class-compliant devices most musicians use. kexec_
 | Does `loadpin.enforce=0` take? | That power-on's `LoadPin: ready to pin (currently ...)` line in the stick's `dmesg.txt` | Yes: `currently not enforcing` |
 | Do modules and firmware load from the stick? | The same `dmesg.txt`: no LoadPin refusals | A module did (`cfg80211`), with no refusal; no firmware was asked for |
 | Does Ethernet find its PHY? | The same log, and whether SSH on port 2222 answers | No: `MDIO device at address 1 is missing` |
+| Does the chain's second jump come up on the stick's device tree? | The first `--chain` power-on (step 7) | Yes, on both power-ons (zip 201107Z): no `mmcblk` line on the second kernel |
+| Does Ethernet find its PHY there? | The same power-on's logs and SSH on port 2222 | Yes (zip 201107Z); one retry on the first power-on |
+| Do modules load with LoadPin enforcing on the second kernel? | Its `dmesg.txt` | Yes (zip 201107Z): the stick's root is pinned and `cfg80211` loaded |
 | Does Akai's kernel require signed modules? | A read-only grep of `/proc/config.gz` for `CONFIG_MODULE_SIG_FORCE` | Not run yet |
 
-`loadpin.enforce=0` takes, so LoadPin no longer blocks the chain to our own kernel. The owner chose it as the next step, starting with the stick's own device tree on Akai's kernel: that gives the Ethernet PHY its ID and disables the eMMC and SD controllers in the tree.
+`loadpin.enforce=0` takes, so LoadPin no longer blocks the chain to our own kernel. The owner chose it as the next step, starting with the stick's own device tree on Akai's kernel, which gives the Ethernet PHY its ID and disables the eMMC and SD controllers in the tree. That step works (zip 201107Z). The next one is MPFree's own kernel.
