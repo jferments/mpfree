@@ -16,6 +16,7 @@ MPC_KEY="${MPC_KEY:-/home/jesse/.ssh/mpc_one_autorun_ed25519}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 # Only reviewed, repository-local survey scripts and a bounded host-side benchmark are allowed.
 # No arbitrary user-supplied script path or remote command is accepted.
+REMOTE_ARGS=""   # a fixed word (check|try) some streamed scripts take as $1; never user-supplied
 case "${1:-}" in
   "") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-inventory.sh"; REPORT_KIND="mpc-one" ;;
   "--detail") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-detail.sh"; REPORT_KIND="mpc-one-detail" ;;
@@ -40,6 +41,9 @@ case "${1:-}" in
   "--hook-install") REMOTE_SCRIPT="$SCRIPT_DIR/hook-install.sh"; REPORT_KIND="mpc-one-hook-install" ;;
   "--hook-remove") REMOTE_SCRIPT="$SCRIPT_DIR/hook-remove.sh"; REPORT_KIND="mpc-one-hook-remove" ;;
   "--hook-report") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-hook-report.sh"; REPORT_KIND="mpc-one-hook-report" ;;
+  "--softreboot-check") REMOTE_SCRIPT="$SCRIPT_DIR/softreboot-try.sh"; REMOTE_ARGS="check"; REPORT_KIND="mpc-one-softreboot-check" ;;
+  "--softreboot-try") REMOTE_SCRIPT="$SCRIPT_DIR/softreboot-try.sh"; REMOTE_ARGS="try"; REPORT_KIND="mpc-one-softreboot-try" ;;
+  "--softreboot-report") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-softreboot-report.sh"; REPORT_KIND="mpc-one-softreboot-report" ;;
   "--kexec-boot") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-kexec-boot" ;;
   "--app") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-app" ;;
   "--devmode-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-check" ;;
@@ -57,7 +61,7 @@ case "${1:-}" in
   "--touch-capture-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture-preflight" ;;
   "--touch-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --hook-canary (STATE-CHANGING, data partition only, port 22 only: three small files, a udev rule and a modprobe line in Akai'"'"'s writable /etc layer and the script they run, which only log at power-on and start a short service that logs too; needs MPFREE_ACCEPT_HOOK_CANARY=YES), --hook-canary-remove (its undo: deletes them), --hook-canary-report (read-only: did the canary run at power-on, and when), --hook-install (STATE-CHANGING, data partition only, port 22 only: MPFree'"'"'s boot hook, three small files in the same places as the canary'"'"'s, which it replaces; from the next power-on, with MPFree'"'"'s stick in, the MPC starts MPFree from the stick before Akai'"'"'s app; then a check with the stick that loads its kernel into RAM and unloads it; needs MPFREE_ACCEPT_HOOK=YES), --hook-remove (its undo: deletes them), --hook-report (read-only: what the hook did at this power-on), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --devmode-check (read-only on the 3.10.1 test build made with --akai-app: what Akai'"'"'s developer mode opens on port 22; only after you type LOCK, Akai'"'"'s own lock-down to your key, RAM only), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --hook-canary (STATE-CHANGING, data partition only, port 22 only: three small files, a udev rule and a modprobe line in Akai'"'"'s writable /etc layer and the script they run, which only log at power-on and start a short service that logs too; needs MPFREE_ACCEPT_HOOK_CANARY=YES), --hook-canary-remove (its undo: deletes them), --hook-canary-report (read-only: did the canary run at power-on, and when), --hook-install (STATE-CHANGING, data partition only, port 22 only: MPFree'"'"'s boot hook, three small files in the same places as the canary'"'"'s, which it replaces; from the next power-on, with MPFree'"'"'s stick in, the MPC starts MPFree from the stick before Akai'"'"'s app; then a check with the stick that loads its kernel into RAM and unloads it; needs MPFREE_ACCEPT_HOOK=YES), --hook-remove (its undo: deletes them), --hook-report (read-only: what the hook did at this power-on), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --devmode-check (read-only on the 3.10.1 test build made with --akai-app: what Akai'"'"'s developer mode opens on port 22; only after you type LOCK, Akai'"'"'s own lock-down to your key, RAM only), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --softreboot-check (RAM only, reversible, port 22 only: set up /run/nextroot from MPFree'"'"'s stick and validate it, then tear it down; no restart), --softreboot-try (STATE-CHANGING, port 22 only: restart userspace into the stick now; writes no storage; a power cycle undoes it; needs MPFREE_ACCEPT_SOFTREBOOT=YES), --softreboot-report (read-only: which system is running, soft-reboot readiness, the stick'"'"'s root), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -221,7 +225,7 @@ fi
 # clone, on first contact (behind the MAC check below) and must match on every later run.
 DEVMODE=0
 case "${1:-}" in
-  --hook-*) [[ "$MPC_PORT" == 22 ]] ||
+  --hook-*|--softreboot-*) [[ "$MPC_PORT" == 22 ]] ||
     die "${1:-} is for Akai's developer mode on an installed 3.10.1: run it with MPC_PORT=22" ;;
 esac
 if [[ "${1:-}" == "--hook-canary" && "${MPFREE_ACCEPT_HOOK_CANARY:-}" != 'YES' ]]; then
@@ -229,6 +233,9 @@ if [[ "${1:-}" == "--hook-canary" && "${MPFREE_ACCEPT_HOOK_CANARY:-}" != 'YES' ]
 fi
 if [[ "${1:-}" == "--hook-install" && "${MPFREE_ACCEPT_HOOK:-}" != 'YES' ]]; then
   die "Opt-in required (writes MPFree's boot hook, three small files, to the MPC's data partition; undo: --hook-remove): MPC_PORT=22 MPFREE_ACCEPT_HOOK=YES bash tools/mpc-one/collect-over-ssh.sh --hook-install"
+fi
+if [[ "${1:-}" == "--softreboot-try" && "${MPFREE_ACCEPT_SOFTREBOOT:-}" != 'YES' ]]; then
+  die "Opt-in required (restarts the MPC's userspace into the stick now; writes no storage; undo: power-cycle with the stick out). Run the safe --softreboot-check first, then: MPC_PORT=22 MPFREE_ACCEPT_SOFTREBOOT=YES bash tools/mpc-one/collect-over-ssh.sh --softreboot-try"
 fi
 if [[ "$MPC_PORT" == 22 ]]; then
   DEVMODE=1
@@ -358,6 +365,12 @@ elif [[ "${1:-}" == "--hook-install" ]]; then
   echo "OWNER OPT-IN, STATE-CHANGING on the data partition only: MPFree's boot hook (three small files), then a check with the stick (RAM only). Log: $REPORT"
 elif [[ "${1:-}" == "--hook-remove" ]]; then
   echo "STATE-CHANGING on the data partition only: removing MPFree's boot hook. Log: $REPORT"
+elif [[ "${1:-}" == "--softreboot-check" ]]; then
+  echo "RAM ONLY, REVERSIBLE: set up /run/nextroot from the stick and validate it, then tear it down (no restart). Log: $REPORT"
+elif [[ "${1:-}" == "--softreboot-try" ]]; then
+  echo "OWNER OPT-IN, STATE-CHANGING: restart userspace into the stick now (writes no storage; power-cycle undoes it). Log: $REPORT"
+elif [[ "${1:-}" == "--softreboot-report" ]]; then
+  echo "READ-ONLY: which system is running, soft-reboot readiness, the stick's root, recent log lines. Log: $REPORT"
 elif [[ "${1:-}" == "--devmode-check" ]]; then
   echo "Developer mode check on the test build (read-only; RAM only after a typed LOCK). Log: $REPORT"
 elif [[ "${1:-}" == "--app-start-capture" ]]; then
@@ -512,11 +525,20 @@ elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}"
   fi
   sed -n '1,45p' "$REPORT"
 else
-if ! timeout 180 ssh "${ssh_opts[@]}" "$MPC_USER@$MPC_IP" 'sh -s' < "$REMOTE_SCRIPT" > "$REPORT" 2>&1; then
+REMOTE_CMD="sh -s"
+[[ -n "$REMOTE_ARGS" ]] && REMOTE_CMD="sh -s $REMOTE_ARGS"
+if ! timeout 180 ssh "${ssh_opts[@]}" "$MPC_USER@$MPC_IP" "$REMOTE_CMD" < "$REMOTE_SCRIPT" > "$REPORT" 2>&1; then
   if [[ "${1:-}" == --hook-* ]] && grep -q '^RESULT: ' "$REPORT"; then
     sed -n '1,80p' "$REPORT" >&2
     echo "The step stopped; see its RESULT line above. Log: $REPORT" >&2
     exit 1
+  fi
+  # --softreboot-try cuts its own SSH session when systemd restarts userspace: a dropped connection AFTER
+  # the "starting MPFree now" line is the expected success, not a failure.
+  if [[ "${1:-}" == "--softreboot-try" ]] && grep -q '^starting MPFree now' "$REPORT"; then
+    sed -n '1,80p' "$REPORT"
+    echo "The restart was started and the session dropped (expected). Watch the MPC's screen. Log: $REPORT"
+    exit 0
   fi
   echo "SSH or remote inventory failed; report retained for diagnosis: $REPORT" >&2
   sed -n '1,30p' "$REPORT" >&2
