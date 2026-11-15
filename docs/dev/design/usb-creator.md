@@ -18,16 +18,16 @@ Out of scope: updating the MPC to 3.10.1. The musician does that first with Akai
 6. **MPC One (Gen 1) only** for the first release. The app and the manual say plainly that it has only been tested on the MPC One (Gen 1). The setup script and the hook still refuse other boards, because the switch-off service names the MPC One's controller addresses.
 7. Legal review of Akai's terms is the owner's to handle; this plan doesn't track it.
 8. **Developer SSH stays available**, off by default, behind one checkbox in the app's Preferences under Developer options ([below](#developer-ssh)). The user manual gets clear step-by-step instructions for setting it up.
-9. **The setup makes a full eMMC backup automatically, and the musician gets the MPC's own drum kits with no effort** (owner, 2026-11-15 19:39Z). See [the backup and the MPC's own kits](#the-emmc-backup-and-the-mpcs-own-drum-kits).
+9. **A full eMMC backup is made automatically, and the musician gets Akai's drum kits and samples with no effort** (owner, 2026-11-15 19:39Z). **Both happen in MPFree's own first-start setup wizard**, not in Akai's script runner (owner, 19:44Z), so Akai's app never has to run a long process. Akai's script only installs the hook. See [the first-start wizard](#the-first-start-wizard-backup-kits-and-samples). The owner approved the read-only eMMC window this needs (19:46Z), on condition that it is tested on the reference MPC first.
 
 ## What the musician does (recommended flow)
 
 | Where | Step | Typing |
 |---|---|---|
 | Computer | Install and open **MPFree USB Creator**. Drop in Akai's 3.10.1 update file (the same one they updated the MPC with). The app checks it is exactly a supported file and says so in plain words. | none |
-| Computer | Plug in a USB stick (16 GB or larger; the backup needs about 7.3 GiB of it). The app lists only removable USB disks, with their name and size. Pick it, click **Create**, approve the system's password prompt. The app builds the stick, writes it and reads it back. | none |
-| MPC, once | Switch on developer mode (Menu > Preferences > Enhancements, then SHIFT + MENU > Developer). Plug the stick in. The MPC asks whether to run the stick's setup script: tap **Yes**. The setup backs up the whole eMMC onto the stick, then sets the MPC up. That takes roughly 5 to 25 minutes, depending on the stick. When it's done, the MPC restarts by itself into MPFree. | none |
-| MPC, first start | MPFree says the setup worked and the backup checked out, and makes drum kits from the MPC's own factory sounds, read from the backup on the stick. Its first screen reminds the musician to switch developer mode off the next time they use Akai's MPC (the stick out, then the same menu). | none |
+| Computer | Plug in a USB stick (32 GB or larger: the backup takes about 7.3 GiB and Akai's samples up to 4 GiB). The app lists only removable USB disks, with their name and size. Pick it, click **Create**, approve the system's password prompt. The app builds the stick, writes it and reads it back. | none |
+| MPC, once | Switch on developer mode (Menu > Preferences > Enhancements, then SHIFT + MENU > Developer). Plug the stick in. The MPC asks whether to run the stick's setup script: tap **Yes**. A few seconds later the MPC restarts by itself into MPFree. | none |
+| MPC, first start | MPFree's **setup wizard** opens: "Backing up your MPC", then "Extracting Akai drum kits and samples", with a progress bar, for several minutes. Then the pad player opens with the MPC's own kits and samples (and MPFree's own kits). The last page of the wizard reminds the musician to switch developer mode off the next time they use Akai's MPC (the stick out, then the same menu). | none |
 | Computer, next time | When the stick is next plugged in with the app open, the app copies the backup to the computer, checks it, and frees the space on the stick. | none |
 | From then on | Stick in at power-on: MPFree. Stick out: Akai's MPC, exactly as before. | none |
 
@@ -42,15 +42,15 @@ Today's owner sequence is blocks 4.1 to 4.5 of [the stick auto-boot record](../h
 | Unpack the update (`offline-update-extract.py`) | No | Yes: the user's update file | The app does it on the computer, from the user's file |
 | Copy `/boot` from the image (`offline-rootfs-survey.sh`) | No | Yes: from the same file | The app does it |
 | `collect-over-ssh.sh --kexec-preflight` for `live.dtb` | **Yes** | No | **Not needed.** `offline-kexec-stick.py` stops without it, but it only feeds `kexec.dtb`, which the soft-reboot route never uses. The soft-reboot check needs only the kernel release, and on an installed 3.10.1 that is the image's own. Needs a soft-reboot-only build mode |
-| eMMC backup (`collect-over-ssh.sh --backup`, `host_emmc_backup.py`) | **Yes** | No | **Moved into the setup script**: it streams the eMMC to the stick instead of over SSH, with the same checks ([below](#the-emmc-backup-and-the-mpcs-own-drum-kits)) |
-| Drum kits (`offline-factory-kit.py`) | Only through the backup | Yes: Akai's factory sounds, from the owner's own MPC | **Made for the musician** from the backup on their own stick, by MPFree at first start. Akai's sounds never ship; MPFree's own kits are there as well ([below](#what-ships-in-the-app)) |
+| eMMC backup (`collect-over-ssh.sh --backup`, `host_emmc_backup.py`) | **Yes** | No | **Moved into MPFree's first-start wizard**: it copies the eMMC to the stick through a short read-only window, with the same checks and stricter ones ([below](#the-first-start-wizard-backup-kits-and-samples)) |
+| Drum kits (`offline-factory-kit.py`) | Only through the backup | Yes: Akai's factory sounds, from the owner's own MPC | **Made for the musician** by the same wizard, from the backup on their own stick, together with Akai's samples. Akai's sounds never ship; MPFree's own kits are there as well ([below](#what-ships-in-the-app)) |
 | Your SSH key for port 2222 (`MPC_KEY`) | Only to use it | No | Off by default; one checkbox in Preferences > Developer options adds it ([below](#developer-ssh)) |
 | Build tools: `debugfs`, `mke2fs`, `e2fsck`, `sfdisk`, `ssh-keygen` | No | No | Linux tools today; the app must bring them or replace them on all three systems |
 | `write-test-stick.py` (Linux, `lsblk`, sudo) | No | No | A writer per operating system, inside the app |
 | `--devmode-trust` (host key, [Block Q1](../hardware/firmware-3.10.1-qualification.md)) and `--hook-install` over port 22 | **Yes** | No | **Replaced** by the setup script on the stick, run by Akai's script runner. No SSH at all, so no host key to trust |
 | `--hook-report` over SSH | **Yes** | No | The setup script and the stick's log partition keep the notes; MPFree's first screen and the app show them |
 
-So the stick build already depends only on the user's own update file, apart from the preflight (not needed). The backup, the factory kits and the hook install are the steps that need the MPC, and the setup script on the stick does all three.
+So the stick build already depends only on the user's own update file, apart from the preflight (not needed). The hook install is the only step that needs Akai's system; the setup script on the stick does it in seconds. The backup and the factory sounds are done by MPFree itself, once it is running.
 
 ## Installing the hook without a terminal
 
@@ -58,43 +58,56 @@ So the stick build already depends only on the user's own update file, apart fro
 
 ### The setup script
 
-The creator adds an exFAT partition, `MPFREE-SETUP`, after the stick's four partitions (partition 1 must stay `mpfree-test-root`, as the hook requires). It is about 8 GiB, so the backup fits (exFAT, because FAT32 can't hold a file over 4 GiB; Linux, macOS, Windows and Akai's system all read it). It holds:
+The creator adds a small FAT32 partition, `MPFREE-SETUP`, after the stick's four partitions (partition 1 must stay `mpfree-test-root`, as the hook requires). It holds:
 
 - `autorun.sh`: a thin wrapper that runs the steps below with `sh` and writes everything it prints to `MPFREE-SETUP/setup-log.txt`;
-- the backup step's script, read-only on the MPC ([below](#the-emmc-backup-and-the-mpcs-own-drum-kits));
 - `hook-install.sh`, byte for byte as on main, so the files it writes and its undo stay exactly the ones already tested;
 - `mode.txt`: `install` or `remove`, set by the app (so the same stick can uninstall; see below).
 
 The wrapper runs, in this order, and stops at the first failure, writing why:
 
-1. **Checks** (read-only): the board is an MPC One (`/proc/device-tree/model` and `compatible`), the kernel release equals the stick's `/boot/mpfree-softreboot/release`, no firmware updater is running, and the setup partition has room for the backup.
-2. **The eMMC backup** (read-only on the MPC; writes only the stick). A setup whose backup fails or doesn't verify changes nothing on the MPC.
-3. **The hook install**: `hook-install.sh` writes its three files on `/data` and runs the hook's own read-only check of the stick, ending in a `RESULT:` line. This is the only change to the MPC.
-4. **The restart**: once no firmware updater is running and nothing is left at `/run/nextroot` (where a plain reboot would turn into a soft-reboot), `systemctl reboot`. The MPC restarting by itself is the musician's sign that the setup has finished; with the stick in, MPFree starts.
+1. **Checks** (read-only): the board is an MPC One (`/proc/device-tree/model` and `compatible`), the kernel release equals the stick's `/boot/mpfree-softreboot/release`, and no firmware updater is running.
+2. **The hook install**: `hook-install.sh` writes its three files on `/data` and runs the hook's own read-only check of the stick, ending in a `RESULT:` line. This is the only change to the MPC.
+3. **The restart**: once no firmware updater is running and nothing is left at `/run/nextroot` (where a plain reboot would turn into a soft-reboot), `systemctl reboot`. With the stick in, MPFree starts, and its setup wizard takes over.
+
+The whole script takes seconds, so nothing depends on how Akai's app treats a long script.
 
 The script never writes the root filesystem, the boot partitions or the U-Boot environment.
 
-**Showing the result.** Akai's app owns the screen while the script runs, and whether it shows anything while a script runs or when it ends is not known, so the musician is told before tapping Yes that it takes a while and that the MPC restarts by itself when done. The result is shown in two places that don't depend on Akai: MPFree's first screen after the restart reads `setup-log.txt` from the stick and says "MPFree is set up" or what went wrong, and the app shows the same log when the stick is next plugged into the computer. If the setup stops early, the MPC doesn't restart and stays in Akai's app; the log says why.
+**Showing the result.** The MPC restarting into MPFree is the sign the hook went in. If the script stops early, the MPC doesn't restart and stays in Akai's app; `setup-log.txt` says why, and the app shows it when the stick is next plugged into the computer.
 
 **Uninstall.** Taking the stick out is always enough to get Akai's MPC back. To remove the hook's files too, the app's **Remove MPFree from my MPC** button sets `mode.txt` to `remove`; the next run of the setup script (developer mode on, tap Yes) runs `hook-remove.sh`, which deletes only files carrying the hook's marker line.
 
-### The eMMC backup and the MPC's own drum kits
+### The first-start wizard: backup, kits and samples
 
-**The backup.** The setup script does on the MPC what `host_emmc_backup.py` does over SSH today, with the stick as the destination instead of the SSH stream:
+On its first start (no `setup-done` marker on partition 4), MPFree opens a setup wizard instead of the pad player. It runs three steps with a progress bar, then marks setup as done. A rewritten stick keeps partition 4, so the wizard doesn't run again.
 
-- `dd` reads `/dev/mmcblk0` (the 7.28 GiB user area), `mmcblk0boot0` and `mmcblk0boot1` (4 MiB each) into `MPFREE-SETUP/backup-<date>/`, with `SHA256SUMS` and a `MANIFEST.txt`. On the MPC devices are only ever `dd`'s input; nothing on the eMMC is mounted, written, synced or restarted.
-- The same checks as today: before copying, the disk layout and eMMC model match what MPFree expects; the MPC hashes p1 to p6, boot0, boot1 and the GPT head itself, and the copies on the stick, read back, must match; the write and discard counters of p1 to p6, boot0 and boot1 must not move during the copy; the MPC must not restart in between (`boot_id`).
-- p7 (content) and p8 (data) are mounted read-write by Akai's system, so, as today, they are captured like a power-loss snapshot. Akai's app is sitting at its prompt during the copy, so little is written.
-- Time: today's backup over Ethernet takes about 4 minutes. To a stick on the MPC One's USB 2.0 port it is roughly 5 to 25 minutes, depending on the stick's write speed. The app can test the stick's write speed while creating it and tell the musician how long to expect.
-- **The backup belongs on the computer**, not only on the stick. When the stick is next plugged in, the app copies it to a folder the musician can see (Documents/MPFree backups), checks every hash, and only then deletes it from the stick to free the space. A musician who never returns to the computer still has it on the stick.
-- What it is for, said plainly in the app: a full copy of the MPC as it was, including the musician's own projects and settings on p8. It is the starting point for any future recovery, but restoring the boot parts of the eMMC is not possible yet: MaskROM recovery is unproven ([recovery tiers](../research/recovery-and-os-strategy.md)). The backup holds the musician's data and the unit's identifiers, so it stays on their own computer and is never uploaded.
+**1. "Backing up your MPC": a read-only eMMC window.** Every start of MPFree switches the eMMC and SD card off before udev or any mount ([the switch-off](../hardware/soft-reboot-boot.md#switching-off-the-internal-storage)); that stays exactly as it is. The wizard then asks a small root service, `mpfree-setup-backup.service`, to open a short window. The pad player never does it itself: with `--app-user` it isn't root, and anything that needs root goes in its own unit ([safety rules](../../agents/README.md)). The service:
 
-**The MPC's own drum kits.** `offline-factory-kit.py` already makes kits from a backup: it finds the content partition (p7) in `mmcblk0.img`, reads it read-only, picks drum programs (`.xpm` files of type Drum) and converts their samples to the pad player's kit format. The plan ports that to Rust as one library used in two places:
+1. checks that no `mmcblk*` device exists, that every Akai unit that can touch a disk is still masked, and that partition 4 has room;
+2. binds **only the eMMC controller** (`ff0f0000`) again; the SD card stays off. The stick's udev rule for `mmcblk*` devices already sets `SYSTEMD_READY=0` and `UDISKS_IGNORE=1`, and also runs `blockdev --setro` on each one as it appears;
+3. checks that the whole disk and every partition read as read-only (`ro` 1), and `boot0` and `boot1` too (`force_ro` 1), or switches it off and stops;
+4. reads every write and discard counter of the disk and its partitions;
+5. copies the user area (7.28 GiB), `boot0` and `boot1` (4 MiB each) with `dd` to `backup/<date>/` on partition 4, hashing while it streams, after checking the disk layout and eMMC model as `host_emmc_backup.py` does;
+6. reads the counters again: **no write or discard on any partition**, p7 and p8 included. This is stricter than today's backup, where Akai's system has p7 and p8 mounted read-write; here nothing has them mounted, so the backup is a clean, quiet copy;
+7. unbinds the controller, checks that no `mmcblk*` device is left and removes stale links. If the controller can't be switched off again, the MPC powers off, as the startup switch-off does;
+8. reads the backup back from the stick and checks every hash.
 
-- **MPFree, at its first start on the MPC**, finds the backup on the stick's setup partition, reads the factory drum kits out of it and saves them on partition 4 (MPFree's own data partition), showing progress on the screen. The eMMC is switched off by then; MPFree reads only the copy on the stick. So the musician has the MPC's own sounds from the very first start, with no step of their own.
-- **The app on the computer** runs the same library on the copied backup if the MPC didn't (for example when the stick was rewritten), and puts the kits on the stick's partition 4.
+The eMMC is reachable only during step 5's copy, which is limited by the stick's write speed on the MPC One's USB 2.0 port: roughly 5 to 25 minutes. Any failure leaves the eMMC switched off; the wizard says what happened, and the pad player still works.
 
-The kits stay on the musician's stick and computer; nothing is uploaded or shared. MPFree's own kits (rendered from the Drums synth, plus CC0 samples) are always there too, so the pad player works even before or without the import.
+**2. "Extracting Akai drum kits and samples".** From the backup on the stick, never from the eMMC: the wizard reads the content partition (p7) inside `mmcblk0.img` read-only and
+- makes drum kits from the factory drum programs, as `offline-factory-kit.py` does today (`.xpm` files of type Drum, their samples converted to the pad player's kit format), saved on partition 4;
+- copies Akai's factory samples into an "Akai factory" folder in MPFree's library on partition 4, so they show up in BROWSE.
+
+This is a Rust port of `offline-factory-kit.py`, kept as one library that the app on the computer can also run on a copied backup. The Python tool stays the reference: the same backup must give the same kits.
+
+**3. Done.** The pad player opens with the MPC's own kits and samples, plus MPFree's own kits. The last page reminds the musician to switch developer mode off.
+
+**The backup belongs on the computer**, not only on the stick. When the stick is next plugged in, the app copies `backup/<date>/` off partition 4 (it reads ext4 itself, with the bundled e2fsprogs) to a folder the musician can see (Documents/MPFree backups), checks every hash, and only then frees the space on the stick. A musician who never returns to the computer still has it on the stick.
+
+What the backup is for, said plainly in the app: a full copy of the MPC as it was, including the musician's own projects and settings on p8. It is the starting point for any future recovery, but restoring the boot parts of the eMMC is not possible yet: MaskROM recovery is unproven ([recovery tiers](../research/recovery-and-os-strategy.md)). It holds the musician's data and the unit's identifiers, so it stays on their own stick and computer and is never uploaded. The same goes for the kits and samples.
+
+**Why this order.** It was the owner's call (2026-11-15). Akai's app runs only a seconds-long script, so it doesn't matter whether it would put up with a long one or time it out. MPFree shows real progress on its own screen. And the backup is cleaner, because Akai's system isn't running. The price is the read window: the first moment the eMMC is reachable while MPFree runs. It is read-only and checked by the counters, but it is a change to the boot's safety design. The owner approved it on 2026-11-15, on condition that it is tested on the reference MPC first ([below](#safety-work-before-anyone-else-runs-it)).
 
 ### Options considered for the hook install
 
@@ -153,7 +166,7 @@ Raspberry Pi Imager (Apache-2.0) has solved these on all three systems and is th
   - **Rendered from MPFree's Drums synth.** CI plays each pad of a few Drums kits once and writes the hits into `kits.bin` (the format in `rust/mpfree-app/src/kit.rs` is plain 44.1 kHz audio, so nothing in the pad player changes). Entirely MPFree's own, nothing to license, but synthetic in character (808/909-style).
   - **CC0 samples.** Public-domain recordings of real drums. More realistic, but each file needs its source and licence recorded, and someone has to choose them.
   - **Both** (chosen): synthetic kits as the default, plus a few CC0 kits.
-  - On top of these, **the MPC's own factory kits**, made automatically from the musician's eMMC backup ([above](#the-emmc-backup-and-the-mpcs-own-drum-kits)). They never ship with the app.
+  - On top of these, **the MPC's own factory kits and samples**, made automatically from the musician's eMMC backup by MPFree's first-start wizard ([above](#the-first-start-wizard-backup-kits-and-samples)). They never ship with the app.
 
 ### Developer SSH
 
@@ -189,10 +202,9 @@ The owner handles the legal review; this section only records the technical fact
 |---|---|---|
 | A board check in the hook and the setup script: MPC One only | **Hook change: needs the owner's go** | Akai's Gen1 image covers eight boards, and the switch-off service names the MPC One's controller addresses. Today the hook checks only the kernel release |
 | Does the hook survive switching developer mode off? | Read-only check on the device (`--hook-report` after the restart) | The flow depends on it |
-| Does the script runner offer `autorun.sh` from an exFAT partition that is partition 5 of a GPT stick with ext4 partitions, and can the script write 8 GiB to it? | Test with a harmless script | The one-stick design and the backup depend on it |
-| Can MPFree read the setup partition after the soft-reboot? LoadPin then refuses every module load, so the exFAT driver must be built into Akai's kernel or already loaded | Read-only: Akai's kernel config, from the update file on the workstation (`offline-kernel-config.py`) | The first-start kit import and the setup result screen depend on it. If not: the hook preloads the module (`preload-modules.txt`), or the app on the computer does the import |
-| Does Akai's app stay usable, or hang, while a script runs for 5 to 25 minutes? Does it time the script out? | Test with a harmless long script | The backup runs inside the script runner's session |
-| A backup to the stick from the MPC: the same checks as `host_emmc_backup.py`, rehearsed on a fake MPC like the hook's tests | Workstation tests, then one read-only run on the reference MPC | The backup is the first thing a musician's MPC runs |
+| Does the script runner offer `autorun.sh` from a FAT32 partition that is partition 5 of a GPT stick with ext4 partitions? | Test with a harmless script | The one-stick design depends on it |
+| **The read-only eMMC window**: does the eMMC controller bind again after the startup switch-off on this kernel, come up read-only before anything opens it, and unbind cleanly? Do the write counters stay still? Are any Akai units started by the new device events (the build report's udev list)? | Approved by the owner (2026-11-15); first a test on the reference MPC under MPFree's stick (RAM-only driver binding, no writes; the counters prove it), before any musician runs it | The backup and the kits depend on it. If the window can't be made safe: the backup goes back into Akai's script runner |
+| The window's service, rehearsed against a fake kernel like `internal-off.sh`'s tests, through every way it can stop | Workstation tests | It is the only code that reaches the eMMC while MPFree runs |
 | What Akai's system does with the stick's partitions while it sits in during setup (mounts, `no-reserved-blocks@` tune2fs, writes to partition 4) | Read-only, from a stock-boot journal | During setup the stick stays in under Akai's app for a minute or more |
 | Does `/data/system/etc/overlay` survive an Akai update? | Watch on the next Akai update | Either way the hook refuses the stick (release check) and Akai's MPC starts; the app then needs a new supported image |
 | A soft-reboot-only build mode (no `live.dtb`), SSH only when asked for, MPFree's own kits, the setup partition | Builder changes, workstation only | The creator's build |
@@ -200,8 +212,8 @@ The owner handles the legal review; this section only records the technical fact
 
 ## Plan in stages
 
-1. **Prove the flow by hand on the reference MPC, no app yet.** Builder changes (soft-reboot-only mode, SSH only when asked for, own kits, setup partition and script with the backup step), the board check (on the owner's go), then: build, write, developer mode on, tap Yes, wait for the restart, check the backup against the owner's last SSH backup, developer mode off.
-2. **The factory-kit import in Rust**, in MPFree's first start and as a library for the app.
+1. **Prove the flow by hand on the reference MPC, no app yet.** Builder changes (soft-reboot-only mode, SSH only when asked for, own kits, setup partition and script), the board check (on the owner's go) and the read window (approved; its test on the reference MPC comes first), then: build, write, developer mode on, tap Yes, MPFree starts, the backup runs; check it against the owner's last SSH backup; developer mode off.
+2. **The first-start wizard**: the factory-kit and sample import in Rust, with its screens.
 3. **The Rust core and command line**, checked against the Python builder.
 4. **The GUI and the writers**, with the backup copy to the computer: Linux first, then Windows and macOS.
 5. **Signing, the manual pages, and a small beta** with a few musicians.
