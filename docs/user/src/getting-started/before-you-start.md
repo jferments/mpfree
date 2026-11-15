@@ -16,9 +16,14 @@ MPFree is a new operating system for making music on the Akai MPC One. It replac
 
 ## How MPFree runs
 
-MPFree starts from a **USB stick**. While it runs, the MPC's own storage is hidden from it and never written to, so when you switch off and take the stick out, your MPC starts its factory software again exactly as before. Your projects, samples and settings in the factory software are untouched.
+MPFree starts from a **USB stick**. While it runs, the MPC's own storage, and any memory card in its SD slot, is switched off and never written to, so when you switch off and take the stick out, your MPC starts its factory software again exactly as before. Your projects, samples and settings in the factory software are untouched. What you save in MPFree is kept on the stick.
 
-Once a small start-up helper is on the MPC, switching on with the stick in starts MPFree by itself: the MPC logo shows for a few seconds, then MPFree's startup screen, without the factory software loading first. Switch on without the stick and the factory software starts as usual.
+Once a small start-up helper is on the MPC, switching on with the stick in starts MPFree by itself, with nothing to tap: the MPC logo shows for a few seconds, then MPFree's startup screen, and the pads are ready about 16 seconds after you switch on. The factory software never appears first. Switch on without the stick and the factory software starts as usual.
+
+- **To go back to the factory software,** switch off, take the stick out, and switch on again.
+- **If the factory software starts even though the stick is in,** the MPC didn't accept the stick. That happens after an update of the MPC's own software, until the stick is made again for the new version. Nothing has been changed; the factory software works as normal.
+- **If the MPC switches itself off while starting MPFree,** it is a safety stop: MPFree refuses to run unless the MPC's own storage is safely switched off first. Take the stick out and switch on to use the factory software.
+- **Never switch the MPC off while it shows an update screen,** with or without the stick. MPFree never interrupts an update: if one is running when you switch on, the factory software starts instead.
 
 > [!WARNING]
 > MPFree is early test software, and there is no installer or download for musicians yet. Today the test stick is made by MPFree's developers. When there is a way for anyone to try it, this page will say how.
