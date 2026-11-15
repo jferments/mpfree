@@ -105,6 +105,8 @@ R=''
 # with the file-based kexec and the stick's command line (root= the stick). That is the only kexec load
 # LoadPin accepts on 3.10.1. If this system's kernel is not the one the stick was built with, or the kernel
 # refuses the load, or systemd will not start kexec.target, the hook soft-reboots as for any other stick.
+# A --chain stick's command line has mpfree.chain=1 and loadpin.enforce=0 in place of "no further kexec":
+# on that kernel the stick's own system loads the stick's kernel and device tree and restarts into them.
 # It is run:
 #   modprobe  by the module loader, when the Wi-Fi module cfg80211 loads (about 6 s after power-on);
 #   udev      by udev, for a device event (the backup, if cfg80211 does not load);
@@ -128,9 +130,15 @@ UPDATERS='touch-fw-update.service xmos-update.service az01-usbsata-fixer.service
 FLASHERS='dfu-util touch-fw-upd xmosdfu midifirmup az01-update'
 LATE=15   # seconds after power-on; later than this it never starts the jump
 # The only words a kexec-file stick's command line may hold (root= must name the stick's own partition 1),
-# and the ones it must hold: read-only root, a wait for the stick, a restart on panic, no further kexec.
-KWORDS='ro rootwait=60 panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1 loadpin.enforce=0'
-KNEED='ro rootwait=60 panic=10 sysctl.kernel.kexec_load_disabled=1'
+# and the ones it must hold: read-only root, a wait for the stick, a restart on panic. It must also hold
+# either sysctl.kernel.kexec_load_disabled=1 (no further kexec) or, for a --chain stick, mpfree.chain=1 with
+# loadpin.enforce=0: the stick's system then restarts once more, into its own kernel and device tree, with
+# the service and files in CHAIN_NEED (listed in SHA256SUMS, so checked) and a command line that turns
+# kexec off (chain.sh checks that before it loads).
+KWORDS='ro rootwait=60 panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1 loadpin.enforce=0 mpfree.chain=1'
+KNEED='ro rootwait=60 panic=10'
+CHAIN_NEED='/etc/mpfree-test/chain.sh /etc/systemd/system/mpfree-test-chain.service /boot/mpfree-kexec/kexec.dtb /boot/mpfree-kexec/cmdline.txt /boot/mpfree-kexec/SHA256SUMS'
+CHAIN_WANTS=etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service
 kind=${1:-}
 up=$(cut -d' ' -f1 "$R/proc/uptime" 2>/dev/null)
 log() { echo "mpfree-hook: $1" >> "$R/run/mpfree-hook.txt" 2>/dev/null; }
@@ -165,7 +173,7 @@ trigger() {   # no call to systemd here but the service start: systemd may itsel
 
 # --- jump, check ------------------------------------------------------------------------------------------
 say() { if [ "$kind" = check ]; then echo "$1"; else kmsg "$1"; fi; }
-M=''; ours=''; W=''; loaded=''; jump=soft-reboot; kcmd=''; ksum=''
+M=''; ours=''; W=''; loaded=''; jump=soft-reboot; kcmd=''; ksum=''; chain=''
 STUCK="the kernel this hook loaded for kexec_file could not be unloaded; no restart while it is in RAM"
 unload() {   # takes out again a kernel this hook loaded (with the file syscall: LoadPin denies the old one).
              # Returns 1 while it stays loaded: then nothing is started, and it is not tried a second time.
@@ -338,6 +346,21 @@ prepare() {   # Finds the stick, mounts its partition 1 read-only and checks it 
   for w in "root=PARTUUID=$uuid" $KNEED; do
     case "$seen" in *" $w "*) ;; *) fail "/$SDIR/cmdline lacks ${w%%=$uuid}" ;; esac
   done
+  chain=''
+  case "$seen" in
+    *" mpfree.chain=1 "*)
+      case "$seen" in *" sysctl.kernel.kexec_load_disabled=1 "*)
+        fail "/$SDIR/cmdline has both mpfree.chain=1 and sysctl.kernel.kexec_load_disabled=1" ;; esac
+      case "$seen" in *" loadpin.enforce=0 "*) ;; *) fail "/$SDIR/cmdline has mpfree.chain=1 without loadpin.enforce=0" ;; esac
+      for f in $CHAIN_NEED; do
+        case "$listed" in *" $f "*) ;; *) fail "the stick asks for the chain (mpfree.chain=1) but does not carry $f" ;; esac
+      done
+      [ "$(readlink "$M/$CHAIN_WANTS")" = /etc/systemd/system/mpfree-test-chain.service ] ||
+        fail "the stick asks for the chain (mpfree.chain=1) but does not start mpfree-test-chain.service (/$CHAIN_WANTS)"
+      chain=yes ;;
+    *" sysctl.kernel.kexec_load_disabled=1 "*) ;;
+    *) fail "/$SDIR/cmdline lacks sysctl.kernel.kexec_load_disabled=1" ;;
+  esac
   [ "$(wc -l < "$B/kernel.sha256" | tr -cd 0-9)" = 1 ] || fail "/$SDIR/kernel.sha256 is not one line"
   read -r ksum kfile krest < "$B/kernel.sha256"
   [ -z "$krest" ] && [ "$kfile" = "/boot/zImage-$rel" ] || fail "/$SDIR/kernel.sha256 does not name /boot/zImage-$rel"
@@ -345,6 +368,7 @@ prepare() {   # Finds the stick, mounts its partition 1 read-only and checks it 
   [ "${#ksum}" = 64 ] || fail "/$SDIR/kernel.sha256 has an unusual hash"
   jump=kexec-file
   say "this stick asks to start on Akai's own kernel (kexec_file), command line: $(printf '%s' "$kcmd" | sed 's/PARTUUID=[^ ]*/PARTUUID=(this stick)/')"
+  [ -z "$chain" ] || say "on that kernel its system restarts once more, into the stick's own kernel and device tree (mpfree.chain=1; its files check out against SHA256SUMS)"
 }
 kexec_file() {   # $1 = what happens instead. Loads Akai's own kernel with the stick's command line (RAM only).
                  # Returns 1, with a note, where it did not: the MPC then soft-reboots instead.
