@@ -8,7 +8,7 @@
 # hand its state to a second copy (see rust/mpfree-plughost/examples/rack_check.rs).
 #
 # Builds and runs on the workstation or in CI only. Copies nothing to an MPC.
-# Needs curl, unzip, qemu-arm, the armhf cross compiler and its libc, and the
+# Needs curl, python3 (to unzip), qemu-arm, the armhf cross compiler and its libc, and the
 # armv7-unknown-linux-gnueabihf Rust target. Downloads are kept in
 # $MPFREE_CATALOG_CACHE (default ~/.cache/mpfree-catalog) by their SHA-256;
 # if that folder can't be made, in this run's own temporary folder.
@@ -40,7 +40,8 @@ while read -r id kind sha url; do
     mv "$zip.part" "$zip"
   fi
   mkdir -p "$work/unpack/$id"
-  unzip -q "$zip" -d "$work/unpack/$id"
+  # Python's zipfile, not unzip: the self-hosted runner has no unzip.
+  python3 -m zipfile -e "$zip" "$work/unpack/$id"
   # The release folder (holding portable/), moved in whole, as a person
   # would copy it.
   for rel in "$work/unpack/$id"/*/; do mv "$rel" "$work/plugins/"; done
