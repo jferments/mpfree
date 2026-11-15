@@ -892,12 +892,14 @@ mod tests {
     }
 
     /// Night Market's whole arrangement exported in fast mode: a mixdown,
-    /// a stem for each mixer strip that sounded (every track here plays
-    /// the pads, so the Drums strip, and the return its reverb sends to)
-    /// and a MIDI file, in a new folder in Recordings. The mixdown runs the
-    /// song's 44 bars (and a short tail); in the MIDI file each track has
-    /// its notes as they played, only in the sections it is placed in; and
-    /// afterwards the transport is back as it was, song mode off.
+    /// a stem for each track (every track here plays the pads, so each
+    /// stem is a replay of the range with only that track playing), one
+    /// for the return its reverb sends to, and a MIDI file, in a new folder
+    /// in Recordings. The mixdown runs the song's 44 bars (and a short
+    /// tail); each track's stem is as long, and silent where the track
+    /// isn't placed; in the MIDI file each track has its notes as they
+    /// played, only in the sections it is placed in; and afterwards the
+    /// transport is back as it was, song mode off.
     #[test]
     fn night_market_exports_its_arrangement_as_mixdown_stems_and_midi() {
         on_big_stack(|| {
@@ -908,7 +910,8 @@ mod tests {
             open(s, song.name);
             assert!(!s.time.song_on());
             let played_from = s.hits.played.len();
-            let (line, dir) = export(s, &[], 400.0);
+            // The first pass and a replay for each of the five tracks.
+            let (line, dir) = export(s, &[], 900.0);
             assert!(
                 line.starts_with("export: Exported ") && line.contains("a MIDI file"),
                 "{line}"
@@ -920,6 +923,10 @@ mod tests {
             let want: BTreeSet<String> = [
                 "Mixdown.wav",
                 "Drums.wav",
+                "Perc.wav",
+                "Bass.wav",
+                "Keys.wav",
+                "Chops.wav",
                 "Return A.wav",
                 "Night Market.mid",
             ]
@@ -943,19 +950,44 @@ mod tests {
                     k + 1.0
                 );
             }
-            let (drums, _) = wav(&dir.join("Drums.wav"));
-            assert_eq!(
-                drums.len(),
-                mix.len(),
-                "the stems are as long as the mixdown"
-            );
-            assert!(
-                peak(&drums, rate, 0.0, 44.0 * b) > 0.02,
-                "the Drums stem sounds"
-            );
+            // Each track's stem: as long as the mixdown, sounding, and
+            // silent in a bar its track isn't placed in (nor in the bar
+            // before, for its tail).
+            let arr = &song.clips.arrangement;
+            for name in ["Drums", "Perc", "Bass", "Keys", "Chops"] {
+                let t = song.track(name);
+                let (stem, _) = wav(&dir.join(format!("{name}.wav")));
+                assert_eq!(
+                    stem.len(),
+                    mix.len(),
+                    "{name}'s stem is as long as the mixdown"
+                );
+                assert!(
+                    peak(&stem, rate, 0.0, 44.0 * b) > 0.02,
+                    "{name}'s stem sounds"
+                );
+                let placed = |k: i64| {
+                    arr.placements.iter().any(|p| {
+                        p.track == t
+                            && p.start < (k + 1) * songs::BAR
+                            && p.start + p.length > k * songs::BAR
+                    })
+                };
+                for k in 0..44i64 {
+                    if !placed(k) && !placed(k - 1) {
+                        let (x, y) = (k as f64 * b, (k + 1) as f64 * b);
+                        assert!(
+                            peak(&stem, rate, x, y) < 1e-3,
+                            "{name}'s stem is silent in bar {}",
+                            k + 1
+                        );
+                    }
+                }
+            }
 
             // The MIDI file: a track per track, each with as many notes as
-            // played in the pass, only in the sections it is placed in.
+            // played in the first pass (each track played again in its
+            // replay), only in the sections it is placed in.
             let tracks = midi(&dir.join("Night Market.mid"));
             let in_file: BTreeSet<&str> = tracks.iter().map(|(n, _)| n.as_str()).collect();
             assert_eq!(in_file, set(&["Drums", "Perc", "Bass", "Keys", "Chops"]));
@@ -966,7 +998,7 @@ mod tests {
                     .iter()
                     .filter(|p| p.track == t)
                     .count();
-                assert_eq!(ons.len(), played, "{name}'s notes");
+                assert_eq!(2 * ons.len(), played, "{name}'s notes");
                 for &k in ons {
                     let k = k as i64;
                     assert!(

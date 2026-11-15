@@ -29,7 +29,10 @@
 //! **Chance.** A note with a chance below 100 % rolls each time it comes
 //! round. The roll is a hash of the note and the absolute frame it would
 //! play on, so it is the same for any period size, yet differs on every
-//! pass, transport loops included.
+//! pass, transport loops included. While the dice are anchored
+//! ([`Player::anchor_dice`], an export's replays) the frame counts from
+//! the one the transport last started on, so playing the same range again
+//! rolls the same.
 //!
 //! **Trig conditions** (`mpfree_seq::Cond`, the Elektron way). A note's
 //! condition is decided first, and its chance rolls only if it holds.
@@ -467,6 +470,10 @@ pub struct Player {
     /// The clip each track played in the last span: its slot and start.
     seen: [Option<(usize, Tick)>; MAX_TRACKS],
     fill: bool,
+    /// [`Player::anchor_dice`]: chance rolls count frames from `dice_from`,
+    /// the frame the transport last started on.
+    anchored: bool,
+    dice_from: u64,
     /// FILL changes due in the coming period: (offset, on), in offset order.
     fill_changes: [(u32, bool); MAX_FILL_CHANGES],
     n_fill_changes: usize,
@@ -552,6 +559,8 @@ impl Player {
             last: [false; MAX_TRACKS],
             seen: [None; MAX_TRACKS],
             fill: false,
+            anchored: false,
+            dice_from: 0,
             fill_changes: [(0, false); MAX_FILL_CHANGES],
             n_fill_changes: 0,
             left_out: false,
@@ -560,6 +569,16 @@ impl Player {
             touching: [NO_TOUCHING; MAX_TOUCHING],
             n_touching: 0,
         }
+    }
+
+    /// Anchor the chance rolls (on) to the frame the transport next starts
+    /// on, and each start after it, or let them follow the absolute frame
+    /// again (off, as it starts). Anchored, every play of the same range
+    /// from the same start rolls the same: an export's replays play each
+    /// track alone with the notes the first pass played. Real-time safe.
+    pub fn anchor_dice(&mut self, on: bool) {
+        self.anchored = on;
+        self.dice_from = 0;
     }
 
     /// Turn FILL on or off from frame `offset` of the coming period (the
@@ -680,6 +699,9 @@ impl Player {
     }
 
     fn marker(&mut self, m: &Marker, out: &mut impl Sink) {
+        if let (Mark::Started { .. }, true) = (m.mark, self.anchored) {
+            self.dice_from = m.frame;
+        }
         match m.mark {
             Mark::RecordOn { .. } => {
                 self.replacing = None;
@@ -1014,7 +1036,8 @@ impl Player {
             let met = s.cond.holds(i64::from(s.pass), fill, pre, nei);
             let plays = met
                 && (s.chance >= 100
-                    || mix(s.key ^ place(span, s.tick).1) % 100 < u64::from(s.chance));
+                    || mix(s.key ^ place(span, s.tick).1.wrapping_sub(self.dice_from)) % 100
+                        < u64::from(s.chance));
             if !met {
                 self.stats.unmet += 1;
             } else if !plays {
