@@ -62,6 +62,9 @@ mpfree-plughost = { path = "../mpfree-plughost" }
 mpfree-browser-ui = { path = "../mpfree-browser-ui" }
 # Export: the mixdown, the stems and the MIDI file (export.rs).
 mpfree-export = { path = "../mpfree-export" }
+# The first start on a creator stick (setup.rs): the MPC's own kits and
+# samples, read from its eMMC backup on the stick.
+mpfree-factory = { path = "../mpfree-factory" }
 
 [dev-dependencies]
 # The test plugins as a real .clap file, for the plugin tests

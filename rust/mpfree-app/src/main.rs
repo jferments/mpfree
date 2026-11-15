@@ -124,6 +124,7 @@ mod rt_safety;
 mod sample_page;
 mod sampler;
 mod screen_cost;
+mod setup;
 mod shed;
 #[cfg(test)]
 mod smoke;
@@ -2253,6 +2254,61 @@ fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
 /// The loading steps, for the progress bar.
 const STEPS: usize = 6;
 
+/// The first start on a stick the USB creator made ([`setup`]): only with
+/// `--data`, never in `play`, and only where the stick has the backup
+/// service. Returns the settings to save (when it ran) and the MPC's own
+/// kits file (when there is one, from this start or an earlier one).
+fn first_start(
+    o: &Options,
+    out: &mut Out,
+    timed: bool,
+) -> (Option<mpfree_store::Settings>, Option<PathBuf>) {
+    let Some(data) = o.data.as_deref().filter(|_| !timed) else {
+        return (None, None);
+    };
+    let paths = setup::Paths::on_the_stick(data, Path::new(REPORT_DIR));
+    // The store opens later (step 6); its setup.conf is only read here.
+    let conf = data.join("settings").join(format!("{}.conf", setup::OWNER));
+    let saved = mpfree_store::Settings::parse(&fs::read_to_string(conf).unwrap_or_default());
+    let (mut to_save, mut made) = (None, None);
+    if setup::needed(&paths, &saved) {
+        let mut lines = Vec::new();
+        let outcome = setup::run(
+            &paths,
+            &saved,
+            &setup::Timing::on_the_mpc(),
+            &mut |s| {
+                out.show(gui::ToUi::Progress {
+                    message: s.message,
+                    detail: s.detail,
+                    value: s.value,
+                })
+            },
+            &mut |line| lines.push(line),
+        );
+        for line in lines {
+            out.say(&line);
+        }
+        if let Some(why) = &outcome.failed {
+            out.show(gui::ToUi::Progress {
+                message: "The first-start setup did not finish".into(),
+                detail: format!("{why}   ·   it tries again at the next start"),
+                value: 0.0,
+            });
+            thread::sleep(Duration::from_secs(5));
+        }
+        to_save = Some(outcome.saved);
+        made = outcome.kits;
+    }
+    let kits = made.or_else(|| {
+        let lib = mpfree_library::Library::at(data).ok()?;
+        let loc =
+            mpfree_library::Loc::new(mpfree_library::Place::Kits, &[setup::KITS_FILE]).ok()?;
+        lib.file_path(&loc).ok()
+    });
+    (to_save, kits)
+}
+
 /// One loading step on the screen (and in the log).
 fn progress(out: &mut Out, step: usize, message: &str, detail: &str, value: f32) {
     out.show(gui::ToUi::Progress {
@@ -3424,9 +3480,13 @@ fn player_session(
     timed: bool,
     from_ui: &Receiver<gui::FromUi>,
 ) -> Result<(), String> {
-    // 1. Kits.
+    // 0. The first start on a stick the USB creator made: the eMMC backup,
+    // then the MPC's own kits and samples from it (setup.rs). What it did is
+    // saved once the store is open (step 6).
+    let (setup_saved, akai_kits) = first_start(o, out, timed);
+    // 1. Kits: the MPC's own (from the first start), then MPFree's.
     progress(out, 1, "Loading drum kits", "Reading the kits file", 0.02);
-    let mut kits = load_kits(&o.kits, &mut |done, total| {
+    let own = load_kits(&o.kits, &mut |done, total| {
         let value = 0.02 + 0.38 * done as f32 / total.max(1) as f32;
         progress(
             out,
@@ -3436,6 +3496,24 @@ fn player_session(
             value,
         );
     })?;
+    let mut kits = match &akai_kits {
+        Some(path) => match load_kits(path, &mut |_, _| {}) {
+            Ok(akai) => {
+                out.say(&format!(
+                    "kits: {} of the MPC's own, from {}, before MPFree's {}",
+                    akai.len(),
+                    path.display(),
+                    own.len()
+                ));
+                setup::combine(akai, own, kit::MAX_KITS)
+            }
+            Err(e) => {
+                out.say(&format!("kits: the MPC's own kits not loaded ({e})"));
+                own
+            }
+        },
+        None => own,
+    };
     // The sampler engine plays them (and adds the Grains kit when there is room).
     progress(
         out,
@@ -3592,6 +3670,13 @@ fn player_session(
         }
         None => mpfree_store::Store::none(),
     };
+    if let Some(saved) = setup_saved {
+        if let Err(e) = store.save_settings(setup::OWNER, &saved) {
+            out.say(&format!(
+                "first start: not saved ({e}); it runs again at the next start"
+            ));
+        }
+    }
     // The themes folder: theme files the user put in files/themes/ (read
     // only), offered in Prefs > Appearance after the built-in themes. Listed
     // before restore so a saved theme file comes back.
