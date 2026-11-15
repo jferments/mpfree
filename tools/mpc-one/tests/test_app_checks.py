@@ -41,9 +41,10 @@ class CatalogueTests(unittest.TestCase):
                 self.assertTrue(c.ask.endswith("?") and len(c.ask) <= 120, f"{c.name}: one short question")
 
     def test_every_named_test_is_in_the_rust_sources(self):
-        """A test renamed or removed in the app shows up here, not as a silent hole in a round."""
+        """A test renamed or removed in the app shows up here, not as a silent hole in a round. Only the app's
+        crate counts: `smoke` runs `cargo test -p mpfree-app`, so a test in another crate would never run."""
         names = checks.all_test_names()
-        self.assertGreater(len(names), 1000)
+        self.assertGreater(len(names), 500)
         missing = [(c.name, t) for c in checks.CHECKS for t in c.smoke if t not in names]
         missing += [(title, t) for title, tests in checks.AREAS for t in tests if t not in names]
         self.assertEqual(missing, [])

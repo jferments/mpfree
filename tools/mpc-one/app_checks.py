@@ -484,7 +484,6 @@ AREAS = (
      ["the_mix_tab_holds_the_mixer_and_its_chains_and_track_mix_goes_back",
       "the_mixer_strip_controls_set_the_mixer",
       "the_effects_look_adds_picks_turns_and_moves_an_effect",
-      "an_effect_drags_along_its_chain",
       "learn_puts_a_knob_on_the_next_qlink_turned",
       "a_learned_q_link_follows_its_control_to_a_new_engine",
       "a_mode_across_engines_swaps_in_place_and_switching_back_restores",
@@ -575,10 +574,11 @@ def mark(ok):
     return {True: "seen    ", False: "NOT SEEN", None: "unclear "}[ok]
 
 
-def all_test_names():
-    """Every #[test] function name under rust/ (to keep the lists here true)."""
+def all_test_names(top=None):
+    """Every #[test] function name under `top` (default: the app's crate, the one `smoke` runs), to keep the
+    lists here true: a test named here must be one that `smoke` runs."""
     names = set()
-    for root, dirs, files in os.walk(RUST_DIR):
+    for root, dirs, files in os.walk(top or os.path.join(RUST_DIR, "mpfree-app")):
         dirs[:] = [d for d in dirs if d != "target" and not d.startswith(".")]
         for f in files:
             if not f.endswith(".rs"):
