@@ -22,7 +22,8 @@ R=''
 #      Then MANIFEST.txt is written and the folder renamed to backup/mpc-one-emmc-<UTC>/, owned by root
 #      and readable by the pad player's group (it reads the factory kits and samples from it).
 # Nothing is ever written to the eMMC: no mount, no fsck, no write. The only writes are partition 4's
-# backup folder, /run (RAM), the kernel log and the controller's sysfs bind and unbind files.
+# backup folder, /run (RAM: the status, the udev rule, and the request, removed), the kernel log and the
+# controller's sysfs bind and unbind files.
 # Progress and the result: /run/mpfree-setup/status (key=value lines), read by the pad player.
 # Any failure before step 4 closes the window first; a failed backup is deleted and the status says why.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -51,6 +52,8 @@ dir=''
 devdir=''
 
 mkdir -p "$S"
+# The request has done its job: taken away so the path unit does not start this again when it ends.
+rm -f "$R/run/mpfree-app/setup-backup.request"
 status() {   # state step done total message
   { echo "state=$1"; echo "step=$2"; echo "done=$3"; echo "total=$4"; echo "message=$5"
     if [ -n "$dir" ]; then echo "folder=${dir#$R}"; fi; } > "$S/status.new" && mv "$S/status.new" "$S/status"

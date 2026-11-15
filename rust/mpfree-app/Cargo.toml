@@ -65,6 +65,7 @@ mpfree-export = { path = "../mpfree-export" }
 # The first start on a creator stick (setup.rs): the MPC's own kits and
 # samples, read from its eMMC backup on the stick.
 mpfree-factory = { path = "../mpfree-factory" }
+mpfree-diskimage = { path = "../mpfree-diskimage" }
 
 [dev-dependencies]
 # The test plugins as a real .clap file, for the plugin tests

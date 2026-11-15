@@ -1,7 +1,7 @@
 [workspace]
-members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network", "mpfree-sampler", "mpfree-handoff-model", "mpfree-display", "mpfree-touch", "mpfree-touch-evdev", "mpfree-device-smoke", "mpfree-headless", "mpfree-session", "mpfree-controller", "mpfree-arp", "mpfree-screen-log", "mpfree-analysis", "mpfree-transport", "mpfree-seq", "mpfree-play", "mpfree-grain", "mpfree-ui", "mpfree-app", "mpfree-arp-ui", "mpfree-node", "mpfree-synth", "mpfree-synth-ui", "mpfree-fx", "mpfree-splash", "mpfree-time-ui", "mpfree-looper", "mpfree-prof", "mpfree-bench", "mpfree-sampler-ui", "mpfree-capture", "mpfree-midi-clock", "mpfree-store", "mpfree-scale", "mpfree-mixer-ui", "mpfree-fx-ui", "mpfree-moves", "mpfree-track", "mpfree-param", "mpfree-mod", "mpfree-chain-ui", "mpfree-clap", "mpfree-clap-testplug", "mpfree-plughost", "mpfree-startup", "mpfree-stretch", "mpfree-lanes", "mpfree-tuning", "mpfree-library", "mpfree-flac", "mpfree-browser-ui", "mpfree-instruments", "mpfree-offload", "mpfree-perform", "mpfree-audiotracks", "mpfree-midi", "mpfree-midi-ui", "mpfree-export", "mpfree-mpcplug", "mpfree-fxlab", "mpfree-diskimage", "mpfree-factory"]
+members = ["mpfree-core", "mpfree-render", "mpfree-groove", "mpfree-network", "mpfree-sampler", "mpfree-handoff-model", "mpfree-display", "mpfree-touch", "mpfree-touch-evdev", "mpfree-device-smoke", "mpfree-headless", "mpfree-session", "mpfree-controller", "mpfree-arp", "mpfree-screen-log", "mpfree-analysis", "mpfree-transport", "mpfree-seq", "mpfree-play", "mpfree-grain", "mpfree-ui", "mpfree-app", "mpfree-arp-ui", "mpfree-node", "mpfree-synth", "mpfree-synth-ui", "mpfree-fx", "mpfree-splash", "mpfree-time-ui", "mpfree-looper", "mpfree-prof", "mpfree-bench", "mpfree-sampler-ui", "mpfree-capture", "mpfree-midi-clock", "mpfree-store", "mpfree-scale", "mpfree-mixer-ui", "mpfree-fx-ui", "mpfree-moves", "mpfree-track", "mpfree-param", "mpfree-mod", "mpfree-chain-ui", "mpfree-clap", "mpfree-clap-testplug", "mpfree-plughost", "mpfree-startup", "mpfree-stretch", "mpfree-lanes", "mpfree-tuning", "mpfree-library", "mpfree-flac", "mpfree-browser-ui", "mpfree-instruments", "mpfree-offload", "mpfree-perform", "mpfree-audiotracks", "mpfree-midi", "mpfree-midi-ui", "mpfree-export", "mpfree-mpcplug", "mpfree-fxlab", "mpfree-diskimage", "mpfree-factory", "mpfree-stick"]
 resolver = "2"
-exclude = ["mpfree-splash-gl"]
+exclude = ["mpfree-splash-gl", "mpfree-creator"]
 
 # A few crates are built optimised in debug and test builds too: the screen
 # drawing and its font rasteriser, and the looper, analysis and audio track
@@ -33,6 +33,20 @@ opt-level = 2
 
 # The factory import tests convert audio and render every Drums kit.
 [profile.dev.package.mpfree-factory]
+opt-level = 2
+
+# The USB creator's tests make, write and read back whole sticks (hashing
+# and FAT32 formatting hundreds of megabytes).
+[profile.dev.package.mpfree-stick]
+opt-level = 2
+
+[profile.dev.package.sha2]
+opt-level = 2
+
+[profile.dev.package.fatfs]
+opt-level = 2
+
+[profile.dev.package.lzma-rs]
 opt-level = 2
 
 [profile.release]

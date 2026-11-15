@@ -306,9 +306,18 @@ class BackupTests(unittest.TestCase):
         for call in self.calls("dd: "):
             self.assertRegex(call, rf"^if={re.escape(self.root)}/dev/mmcblk0(boot[01])? bs=1048576$")
 
+    def request(self):
+        path = os.path.join(self.root, "run/mpfree-app/setup-backup.request")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w"):
+            pass
+        return path
+
     def test_copies_the_emmc_through_a_read_only_window(self):
         self.kernel = FakeEmmc(self.root)
+        request = self.request()
         res = self.run_backup()
+        self.assertFalse(os.path.exists(request), "the request is taken away, so the path unit stays quiet")
         self.assertEqual(res.returncode, 0, res.stdout + self.notes())
         self.assert_closed()
         self.assert_only_reads()
@@ -353,8 +362,10 @@ class BackupTests(unittest.TestCase):
             self.assertEqual(fh.read(), "3\n", "the read-back comes from the stick, not the page cache")
         with open(os.path.join(self.root, "run/mpfree-setup/verify.txt")) as fh:
             self.assertEqual(fh.read().count(": OK"), 3)
-        # Once per boot: a second request does nothing.
+        # Once per boot: a second request does nothing, and is taken away too.
+        request = self.request()
         res = self.run_backup()
+        self.assertFalse(os.path.exists(request))
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertEqual(self.kernel.bound, [EMMC])
         self.assertIn("already run this boot", self.notes())
