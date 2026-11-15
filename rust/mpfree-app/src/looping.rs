@@ -1984,6 +1984,12 @@ impl LoopHost {
         (rec, dub)
     }
 
+    /// What the picked loop is doing (armed, recording, overdubbing...).
+    #[cfg(test)]
+    pub fn phase(&self) -> Phase {
+        self.looper.status().phase
+    }
+
     /// The `status: looper: ...` line.
     pub fn describe(&self) -> String {
         let s = self.looper.status();
