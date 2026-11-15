@@ -30,6 +30,41 @@ fn programs_dir(dir: &Path) -> String {
     d.display().to_string()
 }
 
+/// Puts a log on the stick's log partition, as the MPC's systems would.
+fn write_log(disk: &Path) {
+    use mpfree_diskimage::ext2w::{self, Body, Data, Meta, Options, Size, Tree};
+    use mpfree_diskimage::{gpt, Offset};
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(disk)
+        .unwrap();
+    let table = gpt::read(&f).unwrap();
+    let (_, p) = table.by_name(mpfree_stick::stick::LOG_NAME).unwrap();
+    let mut tree = Tree::new(Meta::new(0o755, 0, 0, 0));
+    tree.mkdir_all("/boot", Meta::new(0o755, 0, 0, 0)).unwrap();
+    tree.put(
+        "/boot/hook.log",
+        Body::File(Data::Bytes(
+            b"eth0 address 0a:1b:2c:3d:4e:5f up\nusb 1-1: SerialNumber: AA0011\n".to_vec(),
+        )),
+        Meta::new(0o644, 0, 0, 0),
+    )
+    .unwrap();
+    let opts = Options {
+        label: "MPFREE-LOG".into(),
+        uuid: [7; 16],
+        time: 0,
+        size: Size::Bytes(p.len_bytes()),
+    };
+    let w = Offset {
+        inner: &f,
+        start: p.start_bytes(),
+        len: p.len_bytes(),
+    };
+    ext2w::write(&tree, &opts, &w).unwrap();
+}
+
 #[test]
 fn makes_and_looks_after_a_stick() {
     let t = tmp("cli");
@@ -48,6 +83,13 @@ fn makes_and_looks_after_a_stick() {
     let o = stick(&["check", &upd, "--any-update", "--work", &work]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(text(&o).contains(&format!("done the update is good: Akai build TEST-BUILD, kernel {RELEASE}, panel turned 270 degrees")));
+    assert!(text(&o).contains("update file SHA-256: "), "{}", text(&o));
+    // A folder: the MPC One update in it is found.
+    let o = stick(&["check", &work, "--any-update", "--work", &work]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("akai-update.img"), "{}", text(&o));
+    let o = stick(&["check", &work, "--work", &work]);
+    assert!(!o.status.success(), "{}", text(&o));
     // write: the disk must be named twice.
     let disk = t.0.join("stick.img");
     std::fs::File::create(&disk)
@@ -68,6 +110,20 @@ fn makes_and_looks_after_a_stick() {
     ]);
     assert!(!o.status.success());
     assert!(text(&o).contains("--yes-erase must name the same disk as --device"));
+    // write never takes "the MPFree stick that is in": the disk must be named.
+    let o = stick(&[
+        "write",
+        &upd,
+        "--device",
+        "mpfree",
+        "--yes-erase",
+        "mpfree",
+        "--programs",
+        &progs,
+        "--any-update",
+    ]);
+    assert!(!o.status.success());
+    assert!(text(&o).contains("not mpfree"), "{}", text(&o));
     // A disk that is neither a file nor a USB disk is never opened.
     let o = stick(&[
         "write",
@@ -133,10 +189,35 @@ fn makes_and_looks_after_a_stick() {
     );
     let o = stick(&["setup-mode", "--device", &d, "remove"]);
     assert!(o.status.success(), "{}", text(&o));
-    assert!(text(&stick(&["inspect", "--device", &d])).contains("setup mode: remove"));
+    let out = text(&stick(&["inspect", "--device", &d]));
+    assert!(out.contains("setup mode: remove"), "{out}");
+    assert!(out.contains("partition 1: mpfree-test-root-off"), "{out}");
+    assert!(out.contains("made: MPFree stick"), "{out}");
     assert!(text(&stick(&["setup-log", "--device", &d])).contains("no setup log yet"));
+    let o = stick(&["setup-mode", "--device", &d, "install"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let out = text(&stick(&["inspect", "--device", &d]));
+    assert!(
+        out.contains("setup mode: install") && out.contains("partition 1: mpfree-test-root "),
+        "{out}"
+    );
     let o = stick(&["copy-backup", "--device", &d, "--to", &work]);
     assert!(!o.status.success());
+    // logs: an empty log partition, then one with a log the MPC wrote.
+    let o = stick(&["logs", "--device", &d]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!text(&o).contains("====="), "{}", text(&o));
+    write_log(&disk);
+    let o = stick(&["logs", "--device", &d]);
+    let out = text(&o);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("===== /boot/hook.log ("), "{out}");
+    assert!(out.contains("eth0 address <MAC> up"), "{out}");
+    assert!(out.contains("SerialNumber: <SERIAL>"), "{out}");
+    assert!(
+        !out.contains("0a:1b:2c:3d:4e:5f") && !out.contains("AA0011"),
+        "{out}"
+    );
     // build: an image file.
     let img = t.0.join("small.img").display().to_string();
     let o = stick(&[

@@ -106,7 +106,7 @@ def recipe():
         b.OUT.lines = []
         _, stubbed, absent, links, written = b.build_rootfs(
             img, scratch, PUBKEY, host_key, LOG_UUID, SCREEN_LOG, ROTATION, app=APP, kits_uuid=KITS_UUID,
-            data_uuid=DATA_UUID, softreboot=(RELEASE, ()), app_user=True)
+            data_uuid=DATA_UUID, softreboot=(RELEASE, (), None), app_user=True)
         if absent:
             raise SystemExit(f"the fake root lacks stub programs: {absent}")
         from_image = {"/etc/shadow", "/etc/passwd", "/etc/group", *stubbed}

@@ -2,10 +2,10 @@
 //! The `mpfree-stick` program is this, and the creator's window runs itself
 //! as this (`mpfree-creator --cli ...`) with the rights to write a disk.
 
-use mpfree_diskimage::ext4::Ext4;
-use mpfree_diskimage::{gpt, Offset, ReadAt, WriteAt};
 use crate::stick::{self, Build, Disk, Programs};
 use crate::{disks, recipe, ssh, update, Msg, CREATOR};
+use mpfree_diskimage::ext4::Ext4;
+use mpfree_diskimage::{gpt, Offset, ReadAt, WriteAt};
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -33,8 +33,14 @@ MPFree has only been tested on the MPC One (Gen 1). Nothing here reads or writes
       Sets what the setup partition's autorun.sh does on the MPC: install the startup hook, or remove it.
   mpfree-stick setup-log --device DISK
       Prints what autorun.sh did on the MPC (read-only).
+  mpfree-stick logs --device DISK
+      Prints what the stick's systems saved on its log partition, MAC addresses and USB serial
+      numbers hidden (read-only).
   mpfree-stick make-ssh-key FOLDER [--name NAME]
       Makes an SSH key pair for developer SSH (NAME defaults to mpfree_ed25519).
+
+UPDATE may be a folder: the supported update in it is used. DISK may be mpfree for the one MPFree
+stick that is in (not for write). Reading or writing a disk needs root or an administrator.
 
 Options for write and build:
   --programs FOLDER  mpfree and mpfree-screen-log built for the MPC (default: $MPFREE_STICK_PROGRAMS,
@@ -129,6 +135,14 @@ enum Target {
 
 impl Target {
     fn open(dev: &str, write: bool) -> io::Result<Target> {
+        // `mpfree`: the one MPFree stick that is in (never for `write`, which needs the disk named).
+        let found;
+        let dev = if dev == "mpfree" {
+            found = disks::find_mpfree()?;
+            found.as_str()
+        } else {
+            dev
+        };
         let p = Path::new(dev);
         if p.is_file() {
             let f = std::fs::OpenOptions::new()
@@ -218,8 +232,23 @@ struct Inputs {
     work: PathBuf,
 }
 
+/// The update file: the path given, or the update to use in a folder.
+fn update_path(given: &str, any_update: bool, out: &mut Out) -> io::Result<PathBuf> {
+    let p = PathBuf::from(given);
+    if !p.is_dir() {
+        return Ok(p);
+    }
+    let found = update::find_in_dir(&p, any_update)?;
+    out.say(Msg::Note(format!(
+        "in {}: {}",
+        p.display(),
+        found.display()
+    )));
+    Ok(found)
+}
+
 fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
-    let update_path = PathBuf::from(a.positional("the update file")?);
+    let given = a.positional("the update file")?;
     let programs_dir = match a.value("--programs")? {
         Some(p) => PathBuf::from(p),
         None => default_programs().ok_or_else(|| {
@@ -232,6 +261,7 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
     };
     let ssh_key = a.value("--ssh-key")?;
     let any_update = a.flag("--any-update");
+    let update_path = update_path(&given, any_update, out)?;
     let work = a
         .value("--work")?
         .map(PathBuf::from)
@@ -299,7 +329,7 @@ fn inspect(disk: &Target, out: &mut Out) -> io::Result<()> {
             ));
         }
     }
-    let Some((_, root)) = table.by_name(stick::ROOT_NAME) else {
+    let Some((_, root)) = stick::root_part(&table) else {
         out.line("not an MPFree stick (no mpfree-test-root partition)");
         return Ok(());
     };
@@ -375,6 +405,147 @@ fn inspect(disk: &Target, out: &mut Out) -> io::Result<()> {
     Ok(())
 }
 
+/// Who owns the folder a backup is copied into, so that the copy belongs to
+/// them and not to root: the copy runs with administrator rights (pkexec,
+/// sudo, or the macOS password prompt), and the musician must be able to
+/// move or delete it. Folders made on the way get the same owner.
+struct Owner {
+    #[cfg(unix)]
+    ids: Option<(u32, u32)>,
+    made: Vec<PathBuf>,
+}
+
+impl Owner {
+    fn of(to: &Path) -> Owner {
+        let mut made = Vec::new();
+        let mut at = Some(to);
+        while let Some(p) = at {
+            if p.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    let ids = std::fs::metadata(p).ok().map(|m| (m.uid(), m.gid()));
+                    return Owner { ids, made };
+                }
+                #[cfg(not(unix))]
+                return Owner { made };
+            }
+            made.push(p.to_path_buf());
+            at = p.parent();
+        }
+        Owner {
+            #[cfg(unix)]
+            ids: None,
+            made,
+        }
+    }
+
+    /// Gives the folders made on the way, the backup folder and its files to
+    /// the owner, where they belong to someone else (only root can).
+    fn give(&self, dest: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        if let Some((uid, gid)) = self.ids {
+            use std::os::unix::fs::MetadataExt;
+            let mut paths: Vec<PathBuf> = self.made.clone();
+            paths.push(dest.to_path_buf());
+            for e in std::fs::read_dir(dest)? {
+                paths.push(e?.path());
+            }
+            for p in paths {
+                let m = std::fs::symlink_metadata(&p)?;
+                if (m.uid(), m.gid()) != (uid, gid) {
+                    std::os::unix::fs::lchown(&p, Some(uid), Some(gid))?;
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = (dest, &self.made);
+        Ok(())
+    }
+}
+
+/// Every file the stick's systems saved on partition 2 (the log
+/// partition), printed with MAC addresses and USB serial numbers hidden.
+fn logs(disk: &Target, out: &mut Out) -> io::Result<()> {
+    let table = gpt::read(disk)?;
+    let (_, p) = table.by_name(stick::LOG_NAME).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "this is not an MPFree stick (no log partition)",
+        )
+    })?;
+    let fs = Ext4::open(Offset {
+        inner: disk,
+        start: p.start_bytes(),
+        len: p.len_bytes(),
+    })?;
+    let mut stack = vec![("".to_string(), fs.inode(mpfree_diskimage::ext4::ROOT)?)];
+    let mut shown = 0u64;
+    while let Some((path, dir)) = stack.pop() {
+        let mut entries = fs.read_dir(&dir)?;
+        entries.sort_by(|a, b| b.name.cmp(&a.name));
+        for e in entries {
+            let name = String::from_utf8_lossy(&e.name).into_owned();
+            if name == "lost+found" && path.is_empty() {
+                continue;
+            }
+            let ino = fs.inode(e.ino)?;
+            let full = format!("{path}/{name}");
+            match ino.kind() {
+                Some(mpfree_diskimage::ext4::Kind::Dir) => stack.push((full, ino)),
+                Some(mpfree_diskimage::ext4::Kind::File) => {
+                    out.line(&format!("===== {full} ({} bytes)", ino.size));
+                    if ino.size > 4 << 20 || shown > 64 << 20 {
+                        out.line("(left out: too big to print)");
+                        continue;
+                    }
+                    shown += ino.size;
+                    let text = String::from_utf8_lossy(&fs.read_file(&ino)?).into_owned();
+                    for l in text.lines() {
+                        out.line(&redact(l));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A log line with MAC addresses and USB serial numbers replaced.
+pub fn redact(line: &str) -> String {
+    let mut s = line.to_string();
+    for key in ["SerialNumber: ", "ID_SERIAL_SHORT=", "ID_SERIAL="] {
+        if let Some(i) = s.find(key) {
+            let start = i + key.len();
+            let end = s[start..]
+                .find(char::is_whitespace)
+                .map_or(s.len(), |n| start + n);
+            s.replace_range(start..end, "<SERIAL>");
+        }
+    }
+    let b = s.as_bytes();
+    let hex = |c: u8| c.is_ascii_hexdigit();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        let mac = i + 17 <= b.len()
+            && (0..6).all(|k| hex(b[i + 3 * k]) && hex(b[i + 3 * k + 1]))
+            && (0..5).all(|k| b[i + 3 * k + 2] == b':')
+            && (i == 0 || !hex(b[i - 1]))
+            && (i + 17 == b.len() || !hex(b[i + 17]));
+        if mac {
+            out.push_str("<MAC>");
+            i += 17;
+        } else {
+            let c = s[i..].chars().next().unwrap_or(' ');
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
 fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
     let mut a = Args { words };
     if let Some(p) = a.value("--status")? {
@@ -398,8 +569,12 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
         }
         "--version" | "version" => Ok(CREATOR.to_string()),
         "check" => {
-            let path = PathBuf::from(a.positional("the update file")?);
             let any = a.flag("--any-update");
+            let path = update_path(&a.positional("the update file")?, any, out)?;
+            out.say(Msg::Note(format!(
+                "update file SHA-256: {}",
+                update::hex(&update::file_sha256(&path)?)
+            )));
             let work = a
                 .value("--work")?
                 .map(PathBuf::from)
@@ -446,6 +621,11 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
         }
         "write" => {
             let dev = a.need("--device")?;
+            if dev == "mpfree" {
+                return Err(usage(
+                    "write needs the disk named (see mpfree-stick disks), not mpfree",
+                ));
+            }
             let yes = a.need("--yes-erase")?;
             if yes != dev {
                 return Err(usage("--yes-erase must name the same disk as --device"));
@@ -484,7 +664,13 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
             let to = PathBuf::from(a.need("--to")?);
             a.done()?;
             let t = Target::open(&dev, false)?;
+            let owner = Owner::of(&to);
             let dest = stick::copy_backup(&t, &to, &mut |m| out.say(m))?;
+            if let Err(e) = owner.give(&dest) {
+                out.say(Msg::Note(format!(
+                    "the copy could not be given to the folder's owner ({e})"
+                )));
+            }
             Ok(format!("the backup is in {}", dest.display()))
         }
         "setup-mode" => {
@@ -492,7 +678,7 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
             let mode = a.positional("install or remove")?;
             a.done()?;
             let t = Target::open(&dev, true)?;
-            stick::set_mode(&t, &mode)?;
+            stick::set_mode(&t, t.bytes(), &mode)?;
             t.finish()?;
             Ok(format!("the setup partition now says {mode}"))
         }
@@ -508,6 +694,13 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
                 }
                 None => Ok("no setup log yet: autorun.sh has not run on the MPC".into()),
             }
+        }
+        "logs" => {
+            let dev = a.need("--device")?;
+            a.done()?;
+            let t = Target::open(&dev, false)?;
+            logs(&t, out)?;
+            Ok(String::new())
         }
         "make-ssh-key" => {
             let dir = PathBuf::from(a.positional("the folder")?);
@@ -536,5 +729,63 @@ pub fn main(args: Vec<String>) -> i32 {
             out.line(&format!("error {e}"));
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact;
+
+    /// As root (pkexec or sudo), a backup copied into someone's folder is
+    /// theirs, with the folders made on the way. Needs root to try.
+    #[cfg(unix)]
+    #[test]
+    fn the_copy_belongs_to_the_folders_owner() {
+        use std::os::unix::fs::MetadataExt;
+        let base = std::env::temp_dir().join(format!("mpfree-owner-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        if std::os::unix::fs::chown(&base, Some(4321), Some(4321)).is_err() {
+            std::fs::remove_dir_all(&base).unwrap();
+            eprintln!("skipped: needs root");
+            return;
+        }
+        let to = base.join("MPFree backups").join("more");
+        let owner = super::Owner::of(&to);
+        let dest = to.join("mpc-one-emmc-20261115T120000Z");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("SHA256SUMS"), b"x").unwrap();
+        owner.give(&dest).unwrap();
+        for p in [
+            base.join("MPFree backups"),
+            to.clone(),
+            dest.clone(),
+            dest.join("SHA256SUMS"),
+        ] {
+            let m = std::fs::metadata(&p).unwrap();
+            assert_eq!((m.uid(), m.gid()), (4321, 4321), "{}", p.display());
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn redact_hides_mac_addresses_and_usb_serial_numbers() {
+        assert_eq!(
+            redact("eth0: link up, address 0a:1B:2c:3d:4e:5f, 100 Mbps"),
+            "eth0: link up, address <MAC>, 100 Mbps"
+        );
+        assert_eq!(redact("0a:1b:2c:3d:4e:5f"), "<MAC>");
+        assert_eq!(
+            redact("usb 1-1: SerialNumber: 4C530001230915117325 more"),
+            "usb 1-1: SerialNumber: <SERIAL> more"
+        );
+        assert_eq!(redact("ID_SERIAL=SanDisk_Ultra_1234"), "ID_SERIAL=<SERIAL>");
+        // Times and longer hex runs are not addresses.
+        assert_eq!(redact("at 12:34:56.789"), "at 12:34:56.789");
+        assert_eq!(
+            redact("x0a:1b:2c:3d:4e:5f0"),
+            "x0a:1b:2c:3d:4e:5f0",
+            "an address only stands alone"
+        );
+        assert_eq!(redact("päd 1 – ok"), "päd 1 – ok");
     }
 }

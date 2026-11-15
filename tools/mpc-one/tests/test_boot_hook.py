@@ -624,6 +624,12 @@ class BootHookTests(HookFixture):
         self.install(ok=False)
         with self.subTest("no stick"):
             self.expect_stop("MPFree's stick is not in")
+        with self.subTest("a stick the USB creator set to remove MPFree (partition 1 renamed)"):
+            links = os.path.join(self.root, "dev/disk/by-partlabel")
+            os.makedirs(links, exist_ok=True)
+            os.symlink("../../sda1", os.path.join(links, "mpfree-test-root-off"))
+            self.expect_stop("MPFree's stick is not in")
+            os.unlink(os.path.join(links, "mpfree-test-root-off"))
         self.plug_in()
         sr = os.path.join(self.stick, "boot/mpfree-softreboot")
         with self.subTest("a damaged switch-off script"):

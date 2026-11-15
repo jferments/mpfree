@@ -418,14 +418,31 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
         assert!(stick::copy_backup(&disk, &to2, &mut |_| {}).is_err());
         assert!(!to2.join("mpc-one-emmc-20261115T120000Z").exists());
     }
-    // Remove mode, and back.
-    stick::set_mode(&disk, "remove").unwrap();
+    // Remove mode: mode.txt says remove, and partition 1 has another name, so
+    // the hook passes over the stick at power-on. Install mode undoes both.
+    let before_table = gpt::read(&disk).unwrap();
+    stick::set_mode(&disk, bytes, "remove").unwrap();
     let (_, mut setup) = stick::read_setup(&disk).unwrap();
     assert_eq!(
         stick::setup_read(&mut setup, "mode.txt").unwrap().unwrap(),
         b"remove\n"
     );
-    assert!(stick::set_mode(&disk, "anything").is_err());
+    let off = gpt::read(&disk).unwrap();
+    assert!(off.by_name(stick::ROOT_NAME).is_none());
+    assert_eq!(off.part(1).unwrap().name, stick::ROOT_OFF_NAME);
+    assert_eq!(stick::root_part(&off).unwrap().0, 1);
+    stick::set_mode(&disk, bytes, "install").unwrap();
+    assert_eq!(
+        gpt::read(&disk).unwrap(),
+        before_table,
+        "install undoes remove"
+    );
+    let (_, mut setup) = stick::read_setup(&disk).unwrap();
+    assert_eq!(
+        stick::setup_read(&mut setup, "mode.txt").unwrap().unwrap(),
+        b"install\n"
+    );
+    assert!(stick::set_mode(&disk, bytes, "anything").is_err());
     // A fresh partition 4, when asked: marked again.
     stick::write_disk(&b, &disk, bytes, &t.0, true, &mut |_| {}).unwrap();
     assert!(stick::existing_data(&disk).is_none());

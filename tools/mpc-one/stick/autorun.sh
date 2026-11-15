@@ -7,7 +7,10 @@
 #            in, then runs hook-install.sh (MPFree's startup hook: three small files on the MPC's data
 #            partition, nothing else), then restarts the MPC. With the stick in at power-on, the MPC then
 #            starts MPFree from the stick; without it, Akai's system starts as before.
-#   remove   runs hook-remove.sh (deletes those three files and the folders made for them), then restarts.
+#   remove   runs hook-remove.sh (deletes those three files and the folders made for them), writes "removed"
+#            in mode.txt, then restarts.
+#   removed  does nothing and does not restart: the hook was already removed with this stick (so tapping Yes
+#            again after the restart is harmless). The creator's "Set it back to install" undoes it.
 # Everything it prints goes to setup-log.txt next to this file (or /run/mpfree-setup-log.txt if the drive
 # cannot be written). It never writes the MPC's root filesystem, boot partitions or U-Boot environment.
 # Undo of install: put "remove" in mode.txt and run it again, or simply leave the stick out at power-on.
@@ -51,18 +54,23 @@ main() {
       return 0 ;;
     remove)
       sh -c "$(sed "1s|^R=''\$|R='$R'|" "$here/hook-remove.sh")" || { echo "STOP: the hook was not removed (see above)."; return 1; }
+      echo removed > "$here/mode.txt" 2>/dev/null || echo "(mode.txt could not be set to removed: tap No if the MPC asks again)"
       echo "RESULT: MPFree's startup hook is removed. Restarting the MPC in 5 s."
       return 0 ;;
+    removed)
+      echo "DONE: nothing to do. MPFree's startup hook was already removed with this stick; the MPC is not restarted."
+      echo "To install it again, choose Set it back to install in the MPFree USB creator."
+      return 3 ;;
     *)
       echo "STOP: mode.txt must say install or remove."
       return 1 ;;
   esac
 }
-if main >> "$log" 2>&1; then
-  sync
-  sleep 5
-  systemctl reboot
-else
-  sync
-  exit 1
-fi
+main >> "$log" 2>&1
+rc=$?
+sync
+case $rc in
+  0) sleep 5; systemctl reboot ;;
+  3) exit 0 ;;
+  *) exit 1 ;;
+esac

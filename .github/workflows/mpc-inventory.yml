@@ -105,6 +105,7 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_creator_recipe.py
+          python3 tools/mpc-one/tests/test_compare_emmc_backups.py
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py

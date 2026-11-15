@@ -80,6 +80,17 @@ fn check_update(path: &Path) -> UpdateCheck {
     c
 }
 
+/// Of the update files found (newest first), the newest supported one, else
+/// the newest at all.
+fn best_update(found: &[PathBuf]) -> Option<UpdateCheck> {
+    let checks: Vec<UpdateCheck> = found.iter().map(|p| check_update(p)).collect();
+    let pick = checks
+        .iter()
+        .position(|c| c.supported.is_some() && c.problem.is_none())
+        .or(if checks.is_empty() { None } else { Some(0) })?;
+    checks.into_iter().nth(pick)
+}
+
 /// Akai update files in the usual places (newest first): a quick look at
 /// the first bytes of each likely file.
 fn find_updates() -> Vec<PathBuf> {
@@ -320,21 +331,32 @@ impl Creator {
         if let Some((p, _)) = ssh::default_public_key(&home()) {
             c.prefs.ssh_key = p.display().to_string();
         }
-        // The newest supported update found, else the newest at all.
-        let checks: Vec<UpdateCheck> = found.iter().map(|p| check_update(p)).collect();
-        let pick = checks
-            .iter()
-            .position(|c| c.supported.is_some() && c.problem.is_none())
-            .or(if checks.is_empty() { None } else { Some(0) });
-        if let Some(i) = pick {
-            c.update_text = checks[i].path.display().to_string();
-            c.update = Some(checks.into_iter().nth(i).unwrap());
+        if let Some(u) = best_update(&found) {
+            c.update_text = u.path.display().to_string();
+            c.update = Some(u);
         }
         c.others = found;
         c
     }
 
+    /// The update file to use: a file, or a folder holding it (typed or
+    /// dropped), where the supported MPC One update is picked.
     fn set_update(&mut self, p: PathBuf) {
+        if p.is_dir() {
+            match mpfree_stick::update::find_in_dir(&p, self.prefs.any_update) {
+                Ok(found) => return self.set_update(found),
+                Err(e) => {
+                    self.update_text = p.display().to_string();
+                    self.update = Some(UpdateCheck {
+                        path: p,
+                        build: String::new(),
+                        supported: None,
+                        problem: Some(format!("{e}.")),
+                    });
+                    return;
+                }
+            }
+        }
         self.update_text = p.display().to_string();
         self.update = Some(check_update(&p));
     }
@@ -552,8 +574,9 @@ impl Creator {
             }
             if ui.button("Look again").clicked() {
                 self.others = find_updates();
-                if let Some(p) = self.others.first().cloned() {
-                    self.set_update(p);
+                if let Some(u) = best_update(&self.others) {
+                    self.update_text = u.path.display().to_string();
+                    self.update = Some(u);
                 }
             }
         });
@@ -713,7 +736,8 @@ impl Creator {
 
     fn remove_page(&mut self, ui: &mut egui::Ui) {
         ui.strong("Remove MPFree from my MPC");
-        ui.label("MPFree's only change to the MPC is a small startup hook. To take it off: prepare the stick here, put it in the MPC, turn on developer mode, and tap Yes when the MPC offers to run the stick's script. The MPC then starts Akai's system as before. Without the stick in, Akai's system starts anyway.");
+        ui.label("MPFree's only change to the MPC is a small startup hook. To take it off: prepare the stick here, then switch on the MPC with the stick in. The factory software starts (a prepared stick doesn't start MPFree). Turn on developer mode, and tap Yes when the MPC offers to run the stick's script. The MPC restarts into the factory software, and the hook is gone. If it asks again after that, tapping Yes does nothing. Without the stick in, the factory software starts anyway.");
+        ui.label(RichText::new("To use the stick for MPFree again afterwards, click Set it back to install, and put it in the MPC with developer mode on as when you first installed it.").weak());
         ui.add_space(6.0);
         self.disk_picker(ui);
         let ready = self.chosen.is_some() && self.job.is_none();
