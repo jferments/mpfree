@@ -718,6 +718,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-mpcstore"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-mpcskin",
+]
+
+[[package]]
 name = "mpfree-network"
 version = "0.1.0"
 
