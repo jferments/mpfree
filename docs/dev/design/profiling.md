@@ -299,8 +299,8 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   on the GPU and in software at the panel's size (800 × 1280, turned 270
   degrees): the first frame with its uploads, the whole page again (what a
   page change costs), the redraw a tick later, reading the frame back, the
-  software path's times for the same lists and its copy to the panel, and how
-  far the GPU's picture is from the software one. A summary line gives the
+  software path's times for the same lists and its turn into the panel's
+  layout, and how far the GPU's picture is from the software one. A summary line gives the
   draw calls per page, how often the glyph atlas was cleared or a mask
   was too big for it (both fallbacks, so both are counted), the vector
   shapes the GPU worked out and how often their atlas was cleared.
@@ -310,6 +310,13 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   page is drawn and copied to the panel 60 times each way, GPU and software,
   timed. It answers what a whole frame costs to reach the panel from the
   GPU with a read back (live test 3: 63 ms a frame, against software's 32).
+  Software's time is split into the draw, the turn into the panel's layout
+  and the write to `/dev/fb0` (since 15 Nov; `flip` splits it the same
+  way). In live test 3 software took 32 ms a frame to reach the panel and
+  a page's draw about 11 ms, so the turn and the write may cost more than
+  the draw. Drawing software in the panel's own layout
+  would save the turn but not the write, so these say whether that is
+  worth doing.
 - `flip`: the GPU drawing straight into buffers the panel shows (DRM/KMS
   page flips; no read back, no copy). With the screen untouched it checks
   the first page in a screen buffer's own memory and against software;

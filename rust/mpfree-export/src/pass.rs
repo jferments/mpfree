@@ -11,6 +11,7 @@ use mpfree_midi::msg::Msg;
 use mpfree_midi::smf::NoteLog;
 
 use crate::mode::Mode;
+use crate::plan::Only;
 
 /// After the range ends, the export stops once every stream has been
 /// silent (below about -90 dBFS) this long: long enough for a slow delay's
@@ -31,6 +32,8 @@ pub(crate) struct Shared {
     pub ended_at: AtomicU64,
     /// Frames every file has so far.
     pub written: AtomicU64,
+    /// The tail was cut at [`TAIL_MAX_S`] with something still sounding.
+    pub capped: AtomicBool,
 }
 
 impl Shared {
@@ -40,6 +43,7 @@ impl Shared {
             played: AtomicU64::new(0),
             ended_at: AtomicU64::new(NOT_ENDED),
             written: AtomicU64::new(0),
+            capped: AtomicBool::new(false),
         }
     }
 }
@@ -70,6 +74,16 @@ pub enum Step {
     Failed(Failure),
 }
 
+/// Where a pass's capture points go, how it plays, and which pass it is.
+pub(crate) struct How {
+    pub first_slot: usize,
+    pub mode: Mode,
+    pub rate: u32,
+    pub only: Option<Only>,
+    pub index: usize,
+    pub passes: usize,
+}
+
 /// The sound thread's half (see the module docs). Made by
 /// [`crate::start`] off the sound thread; nothing in it allocates.
 pub struct Pass {
@@ -87,6 +101,11 @@ pub struct Pass {
     pub(crate) notes: Option<NoteLog>,
     pub(crate) shared: Arc<Shared>,
     mode: Mode,
+    /// A replay's track: what the app lets play into its strip.
+    only: Option<Only>,
+    /// Which pass this is: 0 the first, then each replay's; of how many.
+    index: usize,
+    passes: usize,
     pub(crate) over: Option<Step>,
 }
 
@@ -94,12 +113,18 @@ impl Pass {
     pub(crate) fn new(
         bin: BounceIn,
         points: Vec<(StripId, CapturePoint)>,
-        first_slot: usize,
         notes: Option<NoteLog>,
         shared: Arc<Shared>,
-        mode: Mode,
-        rate: u32,
+        how: How,
     ) -> Pass {
+        let How {
+            first_slot,
+            mode,
+            rate,
+            only,
+            index,
+            passes,
+        } = how;
         let n = points.len();
         Pass {
             bin,
@@ -115,8 +140,31 @@ impl Pass {
             notes,
             shared,
             mode,
+            only,
+            index,
+            passes,
             over: None,
         }
+    }
+
+    /// A replay's track (None in the first pass): the sound loop keeps
+    /// quiet everything else that plays into the replay's strip while it
+    /// plays (and lets the rest play, as in the first pass).
+    pub fn only(&self) -> Option<Only> {
+        self.only
+    }
+
+    /// Which pass this is: 0 the first, 1 the first replay's, and so on.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// How many passes the export has: the first, and one per replay.
+    /// With more than one, every pass must start from the same state, so
+    /// the sound loop clears the mixer's effects and anchors the chance
+    /// rolls and the arps' random notes as each starts.
+    pub fn passes(&self) -> usize {
+        self.passes
     }
 
     /// How this export plays: Fast (the sound loop runs it as fast as it
@@ -193,6 +241,9 @@ impl Pass {
             // The streams hear the range's last frames `most` late.
             let tail = self.played - at;
             if tail >= self.most && (quiet >= self.quiet_frames || tail >= self.max_tail) {
+                if quiet < self.quiet_frames {
+                    self.shared.capped.store(true, Ordering::Relaxed);
+                }
                 return self.end(Step::Done);
             }
         }
