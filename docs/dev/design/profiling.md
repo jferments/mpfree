@@ -263,8 +263,9 @@ for synth-like work and 9 to 13× for memory-heavy engines (reverb, sampler,
 grains), so one desktop factor is not a safe estimate. The device's
 calibration file is [docs/dev/perf/mpc-one-calibration.txt](../perf/mpc-one-calibration.txt).
 
-`tools/mpc-one/host_bench_mpc.py` runs the benchmark on the kexec test build
-(the 3.10 build on the USB stick, which cannot see the eMMC). **RAM only:**
+`tools/mpc-one/host_bench_mpc.py` runs the benchmark on the test build
+(the 3.10 system on the USB stick, which cannot see the eMMC; on the installed
+3.10.1 the boot hook starts it at power-on with the stick in). **RAM only:**
 it copies the two builds to `/run/mpfree-bench`, runs each with fixed
 arguments (`--calibrate`, `--json <build>.json`, `--afford`, then `--lanes --lane-cores 3,2`), and prints the output
 and the JSON into the results log. The benchmark opens no device and runs as an ordinary process. For a clean

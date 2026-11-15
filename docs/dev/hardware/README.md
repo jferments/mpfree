@@ -10,11 +10,11 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[Firmware 3.10.1 compatibility and developer access](firmware-3.10.1-compatibility.md)** describes the official developer mode (terminal, SSH and USB script runner), the plugin SDK and the results and limits of the offline firmware comparison.
 
-**[Trying firmware 3.10.1 from the USB stick](firmware-3.10.1-stick-test.md)** is the runbook for testing 3.10.1, and its developer mode, by kexec from the USB stick before installing it.
+**[Trying firmware 3.10.1 from the USB stick](firmware-3.10.1-stick-test.md)** is the runbook for testing 3.10.1, and its developer mode, by kexec from the USB stick before installing it (superseded by the install on 2026-11-15).
 
 **[Starting MPFree from the stick at power-on](stick-autoboot.md)** tracks the goal of switching on with the stick in and getting MPFree with no computer and no tap: what can start the jump on an installed 3.10.1, what is ruled out, and the udev-rule canary test.
 
-**[Qualifying main on the installed MPC OS 3.10.1](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, the kexec test boot from the installed system, the pad player on it, and the way back.
+**[Qualifying main on the installed MPC OS 3.10.1](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, main's boot hook and the power-on into MPFree from the stick, the pad player on it, and the way back.
 
 **[Installer and recovery contract](installer-recovery-contract.md)** specifies the minimum evidence required for temporary kernel boots, persistent MPFree application installation, direct boot and boot-critical storage changes.
 
