@@ -133,7 +133,8 @@ Developer mode is switched on from inside Akai's app (Akai's [release notes](htt
 **You need:**
 
 - The MPC on the direct Ethernet cable only: while developer mode is on, anyone on its network can get a root shell with no password.
-- For the autorun test (optional), a spare USB drive that your desktop mounts as FAT32 or exFAT, and the MPC's second USB-A port. A blank drive has nothing the desktop can mount, so format it as FAT first; block 3.2 says how when it finds no usable drive.
+- For the autorun test (optional), a spare USB drive that your desktop mounts as FAT32 or exFAT, and a USB hub (a powered one is best). A blank drive has nothing the desktop can mount, so format it as FAT first; block 3.2 says how when it finds no usable drive.
+- **The test stick stays in the MPC until you switch off.** The test build runs entirely from it: its system and its logs are on the stick. The MPC has one USB-A port (the USB-B port is for a computer), so for the autorun test plug the hub into the USB-A port and the test stick into the hub **before you switch on**, and plug the spare drive into the hub's free port later (step 4 below). Without a hub, skip the autorun test.
 - 3.6.0 has its own script runner, and whether it would run this script has not been checked. So the spare drive goes into the MPC only while the test build runs.
 
 **Block 3.1: update, check, build** (workstation only):
@@ -160,7 +161,7 @@ Eject the drive afterwards and keep it out of the MPC for now.
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run write-stick -- python3 tools/mpc-one/write-test-stick.py
 ```
 
-Put the stick into the MPC and switch it on as usual. 3.6.0 starts as in every round.
+Put the stick into the MPC (into the hub, if you use one for the autorun test) and switch it on as usual. 3.6.0 starts as in every round.
 
 **Block 3.4: boot map before** (read-only):
 
@@ -181,7 +182,7 @@ It says the build runs Akai's app, and its checks on the test build print `Akai'
 1. Wait for Akai's app. It starts with empty settings, as on a new MPC, because `/data` is RAM. **Answer No or Cancel to anything that offers to update, format or erase**, and note what it asked.
 2. Menu > Preferences > Enhancements: switch on the developer panel.
 3. Hold SHIFT and press MENU, then choose Developer. Note what the screen shows.
-4. Optional: plug the spare drive into the MPC's free USB-A port. If the MPC asks whether to run the drive's autorun script, answer yes. Note its exact words, and whether it asked at all.
+4. Optional, with the hub: plug the spare drive into the hub's free port, next to the test stick. Never take the test stick out. If the MPC asks whether to run the drive's autorun script, answer yes. Note its exact words, and whether it asked at all.
 
 **Block 3.6: the developer mode check** (read-only, unless you type `LOCK`: then **state-changing, RAM only**). Typing `LOCK` is recommended, since it checks that Akai's lock-down works. **Run it while the test build is still running**, with Akai's app on the screen and developer mode on: everything it reads lives in the test build's RAM, and switching off loses it.
 

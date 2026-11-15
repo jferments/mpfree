@@ -29,7 +29,9 @@ Use: plug in one spare FAT32 or exFAT USB drive and let the desktop mount it,
 then
   python3 tools/mpc-one/write-autorun-drive.py
 Eject the drive, and plug it into the MPC only while the 3.10.1 test build
-runs with developer mode on (phase 3 of
+runs with developer mode on. The MPC has one USB-A port and the test stick
+must stay in it (the test build runs from it), so this needs a USB hub that
+holds the test stick from power-on (phase 3 of
 docs/dev/hardware/firmware-3.10.1-stick-test.md).
 """
 import os
@@ -267,7 +269,9 @@ def main():
             raise Stop(f"{SCRIPT} on the drive does not read back as written; delete it and run this again")
     print(f"wrote {info['mount']}/{SCRIPT} ({len(AUTORUN)} bytes) and read it back: it matches")
     print("\nNEXT: eject the drive (in the file manager). Plug it into the MPC only while the 3.10.1 test build")
-    print("runs with developer mode on, and answer the MPC's question about the autorun script.")
+    print("runs with developer mode on, and answer the MPC's question about the autorun script. The MPC has one")
+    print("USB-A port and the test stick must stay in it, so the drive goes into a USB hub that holds the test")
+    print("stick from power-on.")
     print(f"Undo: delete {SCRIPT} (and {RESULT}) from the drive.")
     return 0
 
