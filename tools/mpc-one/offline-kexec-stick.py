@@ -653,10 +653,10 @@ if grep -q ' /run/mpfree-data ' /proc/mounts ||
     ( {grow} "$data" > /run/mpfree-data-grow.txt 2>&1 ||
         echo "mpfree-test-app: partition 4's filesystem did not grow; see /run/mpfree-data-grow.txt" > /dev/kmsg ) &
   fi
-  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
+  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data{power}
 fi
 echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg
-exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}
+exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}{power}
 """
 # A crash (a panic, a crash outside Rust, the out-of-memory killer) restarts the app after 2 s; it then
 # makes a safe start (the app's crash.rs): a new project even if Prefs > At start says Last project, and
@@ -760,10 +760,10 @@ APP_USER_SCRIPT = """#!/bin/sh
 # mounted its drum kits (partition 3, read-only) and its saved settings and files (partition 4) as root.
 # This script changes nothing.
 if grep -q ' /run/mpfree-data ' /proc/mounts; then
-  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
+  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data{power}
 fi
 echo "mpfree-test-app: the data partition is not mounted, so nothing is saved"
-exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}
+exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}{power}
 """
 # As APP_UNIT, plus the user and its limits. LimitRTPRIO and LimitMEMLOCK let it take real-time priority
 # (SCHED_FIFO up to 70, as the audio thread and lanes ask) and lock its memory without root or a capability.
@@ -800,6 +800,73 @@ RuntimeDirectoryPreserve=yes
 WantedBy=sysinit.target
 """
 APP_USER_MARK = "pad player user: mpfree (--app-user)"
+
+# With the pad player: a clean shut down or restart from its power card (a short press of the power button;
+# holding the button is still the hard power-off). The pad player runs without root (with --app-user), so it
+# never shuts down itself: it writes one word, `poweroff` or `restart`, to POWER_REQUEST (start-app.sh passes
+# `--power-request`), synced, by a rename. This root path unit sees the file, and power.sh takes the word,
+# removes the file and asks systemd for poweroff.target or reboot.target, as `systemctl poweroff` or
+# `systemctl reboot` would, without asking logind. Any other content is ignored. systemd then stops the pad
+# player and every other service and unmounts partition 4 cleanly before the MPC goes off or restarts.
+# A restart is a full one, through Akai's boot as at power-on: with the stick in, the soft-reboot hook starts
+# this system again; without it, Akai's system starts.
+POWER_REQUEST = "/run/mpfree-app/power-request"
+POWER_FILES = ("/etc/mpfree-test/power.sh", "/etc/systemd/system/mpfree-test-power.path",
+               "/etc/systemd/system/mpfree-test-power.service")
+POWER_WANTS = "/etc/systemd/system/sysinit.target.wants/mpfree-test-power.path"
+POWER_SCRIPT = """#!/bin/sh
+# MPFree test boot: shut down or restart, as the pad player's power card asked (one word in {request}).
+# Only `poweroff` and `restart` are acted on. The file is in the pad player's own folder, so it is never
+# followed if it is a link, and its content is never printed.
+f={request}
+[ -e "$f" ] || [ -L "$f" ] || exit 0
+word=
+if [ -f "$f" ] && [ ! -L "$f" ]; then
+  IFS= read -r word < "$f" || :
+fi
+rm -f "$f"
+case "$word" in
+  poweroff) target=poweroff.target ;;
+  restart) target=reboot.target ;;
+  *)
+    echo "mpfree-test-power: ignored a request that was not poweroff or restart" > /dev/kmsg
+    exit 0
+    ;;
+esac
+echo "mpfree-test-power: the pad player asked for $word" > /dev/kmsg
+# A note on the stick's log partition, where the log service keeps this boot's logs, so the next boot can
+# show how this one ended. Nothing else is written.
+d=/run/mpfree-log/boot-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+if [ -d "$d" ]; then
+  {{ echo "asked: $word"; cat /proc/uptime; }} > "$d/power.txt" 2>&1
+  journalctl -b --no-pager -o short-monotonic > "$d/journal.txt" 2>&1
+fi
+sync
+exec systemctl --no-block --job-mode=replace-irreversibly start "$target"
+"""
+POWER_PATH_UNIT = """[Unit]
+Description=MPFree test boot: watch for the pad player's shut down or restart
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Path]
+PathExists={request}
+Unit=mpfree-test-power.service
+
+[Install]
+WantedBy=sysinit.target
+"""
+POWER_UNIT = """[Unit]
+Description=MPFree test boot: shut down or restart, as the pad player asked
+DefaultDependencies=no
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /etc/mpfree-test/power.sh
+"""
 KITS_MAX = 48 << 20
 KITS_MAGIC = b"MPFKITS1"
 # Started early and kept through a switch to emergency mode, so a boot that goes wrong still leaves logs.
@@ -1435,6 +1502,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                  ([SOFTREBOOT_DIR, *INTERNAL_OFF_FILES,
                    "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] if softreboot else []) +
                  (["/etc/systemd/system/mpfree-test-storage.service"] if app_user else []) +
+                 ([*POWER_FILES[1:], POWER_WANTS] if app is not None else []) +
                  ([*CHAIN_FILES, CHAIN_WANTS] if chain else []))
     for path in new_paths:
         if img.kind(path) is not None:
@@ -1474,7 +1542,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
             STORAGE_SCRIPT.format(user=APP_USER, uid=APP_UID, kits_uuid=kits_uuid, data_uuid=data_uuid,
                                   grow=GROW_PROGRAM), 0o755)
         add("/etc/systemd/system/mpfree-test-storage.service", STORAGE_UNIT, 0o644)
-        add("/etc/mpfree-test/start-app.sh", APP_USER_SCRIPT.format(user=APP_USER, keep=keep), 0o755)
+        add("/etc/mpfree-test/start-app.sh",
+            APP_USER_SCRIPT.format(user=APP_USER, keep=keep, power=f" --power-request {POWER_REQUEST}"), 0o755)
         add("/etc/systemd/system/mpfree-test-app.service", APP_USER_UNIT.format(user=APP_USER, after=after), 0o644)
         for path, (data, mode) in user_edits.items():
             add(path, data, mode)
@@ -1482,9 +1551,14 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         add("/etc/mpfree-test/mpfree", app, 0o755)
         add("/etc/mpfree-test/start-app.sh",
             APP_SCRIPT.format(kits_uuid=kits_uuid, data_uuid=data_uuid, grow=GROW_PROGRAM,
-                              keep=" --keep-screen" if splash_program else ""), 0o755)
+                              keep=" --keep-screen" if splash_program else "",
+                              power=f" --power-request {POWER_REQUEST}"), 0o755)
         add("/etc/systemd/system/mpfree-test-app.service",
             APP_UNIT.format(after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
+    if app is not None:
+        add(POWER_FILES[0], POWER_SCRIPT.format(request=POWER_REQUEST), 0o755)
+        add(POWER_FILES[1], POWER_PATH_UNIT.format(request=POWER_REQUEST), 0o644)
+        add(POWER_FILES[2], POWER_UNIT, 0o644)
     with open(ETHERNET_DETAILS, "rb") as fh:
         add("/etc/mpfree-test/ethernet-details.sh", fh.read(), 0o755)
     add("/etc/mpfree-test/ethernet-retry.sh", ETHERNET_SCRIPT, 0o755)
@@ -1563,6 +1637,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     else:
         links["/etc/systemd/system/sysinit.target.wants/mpfree-test-app.service"] = \
             "/etc/systemd/system/mpfree-test-app.service"
+        links[POWER_WANTS] = POWER_FILES[1]
     links["/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service"] = \
         "/etc/systemd/system/mpfree-test-ethernet.service"
     if splash_program:
@@ -1868,6 +1943,9 @@ def main(argv):
                         f"{APP_USER}. A build without --app-user runs it as root again; partition 4 works with both")
             else:
                 OUT.say("pad player user: root (no --app-user)")
+            OUT.say(f"power button: a short press opens the pad player's power card; its Shut down or Restart "
+                    f"writes {POWER_REQUEST}, and mpfree-test-power.path (root) asks systemd for a clean power-off "
+                    "or a full restart. Holding the button is still the hard power-off")
         else:
             OUT.say("pad player: none (no --app); the log display starts at power-on")
         OUT.say(f"for MPFree's boot hook: {KEXEC_DIR} on partition 1, with a link to the kernel, kexec.dtb, "

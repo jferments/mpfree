@@ -22,6 +22,8 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[The targeted app run on the soft-boot stick](app-targeted-run.md)** is the runbook for the app check's phases that have a reason to run: the ones live test 3 skipped, and the features merged since (the Mix tab, drag and drop, effects with modes). Switching on with the stick in starts MPFree; there is no kexec step.
 
+**[The power button: clean shut down and restart](power-button.md)** explains how a short press opens MPFree's power card, how the pad player hands a shut down or restart to a root path unit on the stick, and what a restart starts with and without the stick.
+
 **[Installer and recovery contract](installer-recovery-contract.md)** specifies the minimum evidence required for temporary kernel boots, persistent MPFree application installation, direct boot and boot-critical storage changes.
 
 ## Hardware interfaces

@@ -18,6 +18,8 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 
 | Control | What it does | When |
 |---|---|---|
+| **Power button**, a short press | Opens the power card: **Shut down**, **Restart** or **Cancel**, and over unsaved changes, whether to save first. Another short press closes it. See [Switching off and restarting](../getting-started/before-you-start.md#switching-off-and-restarting). | Works |
+| **Power button**, held | Switches the MPC off at once, without asking or saving. | Works |
 | **MENU** | Opens the options for the page you are on. In Prefs' System info or Touch screen rows, goes back to the main Prefs rows. | Works |
 | **SHIFT + MENU** | Opens Prefs. | Works |
 | **STOP** | Stops playback; sounds ring out and latched pads keep going. Press again to silence everything and go back to bar 1. | Works |
