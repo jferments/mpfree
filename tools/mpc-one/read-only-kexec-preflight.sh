@@ -126,8 +126,16 @@ if [ -d /sys/kernel/security/ipe ]; then
   if [ -d /sys/kernel/security/ipe/policies ]; then
     for p in /sys/kernel/security/ipe/policies/*; do
       [ -d "$p" ] || continue
-      printf 'policy %s: active=%s enforce=%s version=%s\n' "${p##*/}" \
-        "$(cat "$p/active" 2>/dev/null)" "$(cat "$p/enforce" 2>/dev/null)" "$(cat "$p/version" 2>/dev/null)"
+      act=$(cat "$p/active" 2>/dev/null)
+      printf 'policy %s: active=%s version=%s\n' "${p##*/}" "$act" "$(cat "$p/version" 2>/dev/null)"
+      # The active policy's rules say which sources (dm-verity, fs-verity, a signed boot kernel) each
+      # kernel operation trusts. Reading it says whether a signed kexec from a file could be accepted where
+      # the raw-buffer load is refused. Rules only; no values that identify the unit. Bounded read.
+      if [ "$act" = 1 ] && [ -r "$p/policy" ]; then
+        printf -- '--- active IPE policy (first 8 KiB; KEXEC lines matter) ---\n'
+        dd if="$p/policy" bs=8192 count=1 2>/dev/null | tr -cd '\11\12\15\40-\176'
+        printf -- '\n--- end policy ---\n'
+      fi
     done
   fi
 else
