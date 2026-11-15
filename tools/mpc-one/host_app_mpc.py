@@ -23,12 +23,16 @@ started by you pressing Enter:
      hash there. Nothing else is written; a power-cycle clears it. Skipped
      when the only steps are app and line, which need no copy.
   app: READ-ONLY. The pad player that a stick built with --app starts at
-     power-on: one phase at a time, each started by Enter and ended by Enter
-     when you are done, it shows what the app wrote to the system log in
-     that time (buttons, velocities, Note Repeat and Latch, menus, its
-     30-second status lines with underruns and the note engine's dropped
-     events) and asks what you saw. It only reads the log and the service's
-     state; it copies, starts and stops nothing.
+     power-on. First, with no question, how it started (from its log and
+     the services' state), partition 4 and its privileges. Then only the
+     checks MPFREE_APP_CHECKS names (app_checks.py: `list` shows them all),
+     "Check 1 of N" and so on: a hands check shows its steps, waits while
+     you do them, says line by line what the app's log showed in that time,
+     and asks at most one question, about what only you can see or hear; an
+     auto check only reads. With no checks named it asks nothing. Last, the
+     whole session from the log (status lines with underruns, the engines'
+     counters). It only reads the log, the stick's settings and the
+     services' state; it copies, starts and stops nothing.
   line: STATE-CHANGING (RAM only), and never in the default steps. The
      MPC's line input, with the same pad player: first a read-only look at
      the ACVA card's capture device in /proc/asound, then, only after you
@@ -60,10 +64,8 @@ started by you pressing Enter:
      within 20 s it plays without Akai's setup. Turn the volume knob down first.
  12. click: plays a 120 BPM click on the ACVA output for 10 s, quietly, and
      counts underruns and late periods. Turn the volume knob down first.
-  MPFREE_APP_PHASES picks the app step's phases by number, comma-separated,
-  with ranges (for example 9-11,16-19): the others are skipped without a
-  prompt, so a run can redo only what needs it. The start-up check and the
-  summary at the end still read the whole session. Default: every phase.
+  MPFREE_APP_CHECKS names the app step's checks, comma-separated, in the
+  order they run (for example transport,basics,load). Nothing else is asked.
   MPFREE_APP_STEPS picks the steps after the copy, by name, comma-separated
   (default: inventory,screen,touch,pads,click). They always run in the order
   app, line, then the numbered ones above. After lights, drums, setup and play it
@@ -98,6 +100,10 @@ REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 _spec = importlib.util.spec_from_file_location("host_kexec_boot", os.path.join(HERE, "host_kexec_boot.py"))
 kexec = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(kexec)
+# The device checks a round names (python3 -I leaves this folder off sys.path, so it is loaded by path).
+_spec = importlib.util.spec_from_file_location("app_checks", os.path.join(HERE, "app_checks.py"))
+checks = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(checks)
 
 PROGRAM_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release", "mpfree")
 PROGRAM_MAX = 16 << 20
@@ -250,6 +256,23 @@ echo "pad player: $(systemctl is-active mpfree-test-app.service)"
 # Read-only: the pad player's state, the test build's clock since boot, and the pad player's log.
 APP_STATE = r"""R=''
 echo "pad player (mpfree-test-app.service): $(systemctl is-active mpfree-test-app.service 2>/dev/null)"
+"""
+# Read-only: the startup screen's unit (only on a stick built with --splash), which plays once per power-on.
+SPLASH_STATE = r"""R=''
+u=mpfree-test-splash.service
+if [ "$(systemctl show -p LoadState --value $u 2>/dev/null)" = loaded ]; then
+  echo "startup screen ($u): $(systemctl show -p ActiveState --value $u 2>/dev/null), result $(systemctl show -p Result --value $u 2>/dev/null)"
+else
+  echo "startup screen ($u): not on this stick"
+fi
+"""
+# Read-only: what partition 4 keeps for the app (its Prefs and the buttons Map controls found).
+SETTINGS = r"""R=''
+echo "--- app"
+cat "$R/run/mpfree-data/settings/app.conf" 2>/dev/null
+echo "--- map"
+cat "$R/run/mpfree-data/settings/map.conf" 2>/dev/null
+true
 """
 # Read-only: the stick's partition 4 (saved settings and files): its size and free space, and what the
 # online grow at power-on said (it fills the stick since #169; whether 3.10's resize2fs grows it is checked here).
@@ -447,6 +470,7 @@ def note(out, question):
     except EOFError:
         answer = ""
     out.say(f"  your answer: {answer or '(none)'}")
+    return answer
 
 
 def ready(out, prompt):
@@ -530,216 +554,6 @@ def check_controller(mpc, out):
         raise Stop("the controller's USB id changed")
 
 
-# The app step's phases: (title, what to do, the question afterwards). Each is started by Enter and
-# ended by Enter; the app's log lines from that time are shown. A skipped phase loses nothing: the
-# summary at the end reads the whole session.
-APP_PHASES = (
-    ("Developer tools and Map controls",
-     ["Press SHIFT + MENU for Prefs, turn the wheel to \"Map controls\" and press +. This turns on the developer tools",
-      "and opens the list of the MPC's buttons: found (green), skipped (grey) or still to find.",
-      "Tap a control in the list (or pick it with the wheel and press +), then press that button on the MPC:",
-      "its number appears. Find these first, because later phases use them: REC, OVERDUB, PLAY, PLAY START, UNDO,",
-      "ERASE, TAP TEMPO, the four PAD BANK buttons, TRACK MIX, TRACK MUTE, Q-LINK, DATA DIAL PUSH (the wheel's push),",
-      "and the mode buttons MAIN, STEP SEQ, NEXT SEQ, SAMPLER, SAMPLE EDIT and PROG EDIT. The ones you found last",
-      "round should already be green. Then as many others as you like. - skips one that is not on your MPC;",
-      "Other 1-10 take buttons that are not listed. STOP stops listening."],
-     "Which controls could you not find, and did any name in the list not match your MPC's panel?"),
-    ("Developer pages: Performance, CPU by engine, Processes",
-     ["SHIFT + wheel steps through the Dev tab's pages. Performance shows CPU per thread, memory,",
-      "temperature, and the audio loop's render time against its 2.9 ms period, with the last minute drawn.",
-      "CPU by engine shows each audio stage (sampler, synth, looper, time, mix) against its budget, and",
-      "Processes every process on the MPC with its CPU and memory. Play some",
-      "pads and the Grains kit for about 30 s on each page and watch the numbers move."],
-     "Did the three pages fill in? What did the render time, the engines and the busiest processes show?"),
-    ("Kits, pad banks, Full Level and Half Level",
-     ["Tap the Play tab. Hit pad 1 softly, medium and hard. Press FULL LEVEL (it lights) and hit pad 1 softly",
-      "twice: both loud. SHIFT + FULL LEVEL is Half Level: soft hits come out medium. Press FULL LEVEL until its",
-      "light goes out. Press PAD BANK A to D: the kit chip shows the bank. Press the same bank button again (or",
-      "SHIFT + it) for E-H. Go back to bank A. Hold a long sound, hold SHIFT and turn the wheel to the next kit: the",
-      "sound finishes rather than cutting off. Hit a few pads and press STOP while they ring: a quick fade, no click."],
-     "Did the banks, Full and Half Level work? Did the bank buttons light? Did kit switching and STOP sound clean?"),
-    ("Play page: the three views and the mode buttons",
-     ["On Play, tap All, Beats and Loop at the right of the transport bar. There are no pads on the screen and",
-      "no Drum view now: All has the loop strip, the pattern across the page and the throws beside the XY pad;",
-      "Beats the whole pattern, the Your timing strip (how early or late your hits land) and all eight throws;",
-      "Loop the loop with its buttons (Record a red dot, Overdub a ring, Play a green triangle, Stop a square)",
-      "and the throws. MENU on Play, Timing strip Off: Beats shows more lanes; turn it back On. Touch and turn",
-      "each Q-Link: its card should light steadily, with no flicker. MAIN (pressed on Play) steps to the next view;",
-      "STEP SEQ opens Beats. In Beats, tap a few steps on the pattern to make a beat, press PLAY to hear it, tap a",
-      "lane's name (its whole name is the mute button) to mute that pad, and tap it again. Drag the master bar's",
-      "handle down and up. Then the other mode buttons: NEXT SEQ (Arrange), SAMPLER (Sample; SHIFT + SAMPLER:",
-      "Looper), SAMPLE EDIT (Sample's Wave) and PROG EDIT (the Pads tab's Pad view). Go back to Play, All view.",
-      "STOP. PLAY lights while playing; REC and OVERDUB blink while armed and recording, as on Akai's app."],
-     "Did each view show and play, with no flicker on the Q-Link cards? Did every mode button do what it says? Did PLAY, REC and OVERDUB light?"),
-    ("Throws, the XY pad (Perform FX) and FILL",
-     ["On Play, press PLAY so the beat from the last phase runs (or play the pads). Hold each throw for a",
-      "moment: Delay throw, Reverb wash, Stutter, Tape stop, Filter dip, Beat repeat (the Beats view also",
-      "shows Vinyl brake and Drop drums). Each starts on the next 1/16 and stops when you let go. Drag a",
-      "finger on the XY pad: left is a low-pass, right a high-pass, up adds echo; its label reads the filter and",
-      "the echo. Lift the finger: it glides back to the middle. Then FILL: while it plays, hold PLAY for a fill",
-      "and let go. Press PLAY twice",
-      "quickly: the fill stays on; press PLAY again to end it. STOP.",
-      "The wheel (new): on All, tap a lane's name and turn the data wheel: an outline moves from control to",
-      "control, through the pattern and on into the next part of the screen. Push the wheel on a lane's name: it",
-      "mutes, as a tap does. Turn to a throw and push: it holds until you push again. Tap a Q-Link card, push",
-      "the wheel (the outline gets thicker) and turn: the card changes; push again to let go. - and + step it too."],
-     "Did every throw and the XY pad sound right, start in time and stop cleanly? Did FILL hold and latch? Did the "
-     "wheel's outline move, press, hold and turn as described?"),
-    ("Arrange: clips, takes, Capture, the song and the morph",
-     ["Uses the buttons found in phase 1. Tap the Arrange tab: the Q-Link column is at its right edge, as on Play.",
-      "Press PLAY, then REC, play a short beat for a bar or two, and REC again: the take loops. OVERDUB switches",
-      "Overdub and Replace; REC adds on the next pass. UNDO takes the last take back, SHIFT + UNDO puts it back. + in",
-      "an empty slot records a 2-bar clip on that track; make clips on two or three tracks. A tap on a clip launches",
-      "or stops it on the next bar (when you lift your finger), and a row's number plays the whole row. New, drag and",
-      "drop: drag a clip to an empty slot (it moves there) and onto another clip (the two swap); hold SHIFT as you",
-      "lift to drop a copy in an empty slot. Drag a row's number between two rows: the whole row moves. UNDO takes",
-      "each drop back, SHIFT + UNDO puts it back. Capture: with REC off, play a phrase, then SHIFT + REC (or the Takes",
-      "panel's Capture). Tap Edit > above the clip grid for the note editor: pick notes, drag one, slide along the",
-      "velocity lane, tap the view button through Grid, List and Tracker, try TC (Timing Correct), and set the Euclid",
-      "rows at the end of the Edit options (Hits, Steps, Rotate): the wheel picks a row, - / + change it, and a push",
-      "on the wheel lets the wheel change it until you push again. UNDO the edits and tap < Clips. Then tap Song in",
-      "the clips heading: Scenes -> song makes a song from the rows, Song on plays it, a tap picks a block. New: drag",
-      "a block along its lane (it snaps to the bar) and onto another track's lane; drag the picked block's end grip to",
-      "make it longer or shorter; drag a section's name on the ruler to move the whole section; with a block picked,",
-      "push the wheel, turn it and push again. UNDO takes each back. Clips goes back. The morph bar under the grid:",
-      "tap Save A; press TRACK MIX, move a fader or two, TRACK MIX again; drag the crossfader to B and tap Save B;",
-      "drag it slowly between A and B (the levels glide) and tap Snap back. STOP. Last, Rec song: tap Rec song (it",
-      "goes red), press PLAY, launch a row, stop a track, launch another row, move the crossfader, and press STOP.",
-      "Song on and PLAY plays it back."],
-     "Did recording, undo, the clips, dragging clips, rows, blocks and sections, Capture, the note editor, the Song view, the morph and Rec song work in time?"),
-    ("TRACK MUTE and SHIFT + TRACK MUTE",
-     ["Launch the clips from the last phase and press PLAY. Press TRACK MUTE: it lights and the hint line says what",
-      "the pads do. Pads 1-16 are tracks 1-16: green plays a clip, dim green has nothing launched, red is muted, dark",
-      "has no track. Hit pads 1 and 2 to mute and unmute those tracks: the clips keep their place. With more than 16",
-      "tracks, PAD BANK B shows tracks 17-32 (up to H: 113-128). Go to another tab: the pads stay mute keys. Press",
-      "SHIFT + TRACK MUTE: now each pad mutes itself in the kit (lit in the kit's colour while it plays, red while",
-      "muted). Press SHIFT + TRACK MUTE again: the pads play notes. STOP."],
-     "Did the pads mute and unmute the tracks and the kit's pads at once, with the right colours?"),
-    ("Grains",
-     ["Hold SHIFT and turn the wheel to the kit called \"Grains: ...\". Hold a pad: a cloud of grains. Press harder:",
-      "pads 1-4 get denser, 5-8 longer grains, 9-12 move where they read, 13-16 rise up to an octave.",
-      "Let go: it fades out. Then hold NOTE REPEAT and 8 pads together for about 10 s, and let go."],
-     "Did the grains respond to pressure and fade out? Any crackles or dropouts in the 8-pad test?"),
-    ("Synth: the five engines",
-     ["Hold SHIFT and turn the wheel to the last entry, \"Synth: Poly\", then tap the Synth tab. Q-Links 1-4 turn",
-      "the marked knobs. New: the wheel picks a tile and - / + change it; push the wheel and the wheel changes the tile (it",
-      "looks raised) until you push again. SHIFT + wheel changes pages; a preset in the list loads it. MENU opens",
-      "the engine and scale options: try each engine (Poly, FM, Drums, Pluck, Wavetable) and a preset or two",
-      "of each. The pads heading switches Chromatic and In key. In the options, set Tuning to 24-TET quarter",
-      "tones and play up a few pads (half-semitone steps), set A4 to 432 Hz, then put both back to 12-TET and",
-      "440 Hz. Drive: pick Poly's Grit Bass, go to the Filter page and turn Q-Link 3 (Drive) from 0 up to 24 dB",
-      "while you hold a pad: it should get grittier, not quieter. Pick Poly's Supersaw preset, hold 8 pads for",
-      "about 10 s (the hardest case for the CPU), let go, and press STOP. Then go back to kit 1 on Play."],
-     "Did each engine load and play, did the wheel pick and change tiles, did Drive keep the level, any crackles in the 8-pad test?"),
-    ("Note Repeat and the arp",
-     ["Hold NOTE REPEAT: the strip shows the rates and Latch. While holding it, - / + switch Repeat, Arp and",
-      "Pattern, the wheel changes the rate, order or pattern, and Q-Links 1-4 set rate, gate, swing and",
-      "octaves. Hold a few pads to hear each mode. SHIFT + NOTE REPEAT is Latch, and so is pressing NOTE",
-      "REPEAT twice quickly; press it again to unlatch. NOTE REPEAT + MENU opens the Arp panel: - / + walk",
-      "Direct, Repeat, Arp and Pattern, and the pads play through it. NOTE REPEAT + MENU again closes it."],
-     "Did the strip and the Arp panel show up and change what the pads played?"),
-    ("Looper tab: record, layers, tools, undo history, trim",
-     ["Tap the Looper tab. Press PLAY, then REC: recording starts on the next bar line and lasts 2 bars, so play a",
-      "beat on the pads. The wave should draw as you play, not after. OVERDUB (or REC) adds a layer from the next",
-      "pass, REC ends it; add two layers. Press STOP while the loop plays: the loop and its playhead stop at once",
-      "(last round it kept playing for minutes); PLAY starts it again. On a layer row: the speaker mutes, S solos,",
-      "drag the level bar, tap the row to put it on Q-Links 1-2. Q3 is Fade old, Q4 the seam fade. With the loop",
-      "playing, tap each tool: half length, double, Reverse, the two nudges, seam fade, Merge layers. Open Undo",
-      "history: tap an older step, then the newest again. Drag the trim handle at one end of the wave in a few steps",
-      "and let go. Tap After recording once. Tap + New loop and record a second loop of 2 bars. New, drag and drop:",
-      "pick the first loop and drag a layer's lane onto the second loop in the list (the loops that can take it light",
-      "up): it moves there in time. Drag another with SHIFT held as you let go: a copy. Drag one onto + New loop: a",
-      "loop of its own. UNDO takes a move back. Then Use the loop > Resample, and REC to end it. Tap Play's Loop view:",
-      "its Play and Stop buttons start and stop the loop. UNDO / SHIFT + UNDO on the Looper tab. New: tap the speaker",
-      "on a loop's card in the list: that loop goes silent but stays (press STOP, then PLAY: it stays out); tap it",
-      "again to bring it back. Pick the second loop and tap Clear loop (red, under + New loop): the whole loop goes,",
-      "first pass too. Delete layers with x down to the last one, and x on that clears the loop as well. The gauge at",
-      "the bottom reads \"... of 5 min\". STOP."],
-     "Did recording, STOP, the layers, every tool, the undo history, trim, dragging layers between loops, Resample, the loop speakers and Clear loop work?"),
-    ("Mixer, effect chains, macros and the I/O view",
-     ["Tap the Mix tab (or press TRACK MIX): the mixer fills the page; TRACK MIX again goes back to the page you were",
-      "on. Move a few faders and pans, mute and solo a strip: UNDO takes back the last strip change, SHIFT + UNDO puts",
-      "it back. SHIFT + TRACK MIX opens it on the pads. Tap Effects at the top right: each strip's chain is a row. Tap",
-      "+ FX on the Drums row and pick Reverb (in Delay and reverb): the chain editor opens on a Room reverb, its page",
-      "in coloured sections. Turn a few knobs. Touch Damping, tap Learn in the Modulate row and turn Q-Link 2: it now",
-      "turns Damping. Do the same with Early on Q-Link 3. Tap Plate in the mode chooser beside the effect's name:",
-      "Decay, Size and Mix stay where they were, Q-Link 2 still turns Damping, and Early's Q-Link comes off (a Plate",
-      "has no Early). Tap Room: it is as you left it. + Add effect, add a Delay, and drag it up above the Reverb (a",
-      "line shows where it lands). The < at the top left goes back to the Mix tab; on Effects drag an effect along its",
-      "row, then tap Faders. Tap I/O among the mixer's views: Audio, MIDI, Sync and CV are on the left. Tap each; the",
-      "wheel moves down a section's rows. MIDI's track rows say they send nothing, because MIDI out is off in this",
-      "build; that is expected. Change nothing there. Tap the Play tab and press Q-LINK: the cards step to Macros 1-4,",
-      "Macros 5-8, and back. Turn a macro while the pads play. Hold a finger on a macro card for half a second: the",
-      "macros panel opens; Back closes it."],
-     "Did the Mix tab, strip UNDO, the Effects look, the chain editor and its drag, the Reverb's modes with the learned Q-Links, the I/O view and the macros work?"),
-    ("Pads tab: the pads, Browse and Pad",
-     ["Tap the Pads tab, between Play and Arrange: the bank's 16 pads on the left, pad 1 at the bottom left. Tap a",
-      "pad to pick it and again to hear it; pads you hit on the MPC light up. The switch at the top right shows",
-      "Browse or Pad. Browse: the places on the left (Samples, Recordings, Recent, Favourites). They are new on",
-      "the stick and may be empty; say what you see. The wheel, its push, - and + move through them. Pad: the",
-      "picked pad's settings; Q-Links 1-4 turn level, pan, tune and voices; the wheel picks a row and - / + change",
-      "it (a push lets the wheel change it). Under the pads: Copy a pad, pick an",
-      "empty one and Paste, then Clear it; UNDO after each. From another tab, PROG EDIT opens the Pads tab at Pad.",
-      "Last, Map to keys (a kit of pitched sounds works best) and open the Sample tab's Play page: a keyboard with",
-      "a bar per pad. Press the keys, then UNDO the mapping. Everything stays in memory."],
-     "Did the pads, Browse, Pad, Copy, Paste, Clear and Map to keys work? What did Browse show?"),
-    ("Sample tab: Wave, Chop, live chop, Stops, Also plays, Latch and Send to pad",
-     ["Hit pad 5 on bank A, then tap the Sample tab. Wave shows the pad hit last: Q-Links 1-4 move Start, End and",
-      "the loop; drag a marker by its tab; SHIFT + - / + zoom (new); the wheel picks a row of the settings on the",
-      "right and - / + change it, and a push lets the wheel change it until you push again. The crash retest: hit",
-      "the shortest sound in the kit (a closed hi-hat), tap Warp, turn the wheel through every row, push it on one",
-      "and turn, push again, and zoom in and out with SHIFT + - / +. Then pad 5 again. UNDO takes an edit back, SHIFT",
-      "+ UNDO puts it back. Tap Chop, pick slices, then Chop to: the slices go on the pads. Play them, then UNDO.",
-      "Live chop: set Method to Live, tap Start, and hit any pad in time with the sound to drop a cut; then Chop to,",
-      "play, and UNDO. Open the Play page: in its Pad list, tap Stops and hit a pad (now it stops when pad 5 plays),",
-      "tap Also plays and hit two pads (a hit on pad 5 plays all three), set Latch to On (a hit starts pad 5, the",
-      "next stops it); UNDO each. Last, Send to pad at the top right, then hit an empty pad: pad 5's sound and",
-      "edits are copied there; UNDO. Everything stays in memory."],
-     "Did the wheel and the Warp retest work without a crash? Did Wave, Chop, live chop, Stops, Also plays, Latch and Send to pad work?"),
-    ("Sample tab: scenes, the crossfader and FX",
-     ["Still on the Sample tab's Play page, with pad 5 picked: under the pads, tap Store A. Change a few pads",
-      "(tune one down, close another's filter with Q-Link 3), then tap Store B. Hit pads while you slide the",
-      "crossfader from A to B and back: the kit morphs between the two. Tap Return to A: every pad is as A stored",
-      "it, and UNDO takes the return back. Then tap FX in the Sample tab's row: the chain editor opens on pad 5's",
-      "own channel. + Add effect, pick Perform FX and hit pad 5 (its stutters play on that pad alone). The switch",
-      "at the top goes to Drums, the whole kit. Back returns to the Sample tab. Everything stays in memory."],
-     "Did the scenes store, morph with the crossfader and return? Did FX open on the pad and on Drums?"),
-    ("Prefs, System info and saving",
-     ["Press SHIFT + MENU for Prefs. Step through every row with the wheel and read its value. Push the wheel on",
-      "a row: its value box is outlined and the wheel changes the value; push again to set it. Turn the wheel to",
-      "System info and press +: the version, the system and the hardware. MENU goes back. Change \"Pad velocity",
-      "curve\" once. New: Loop memory (5 min) - set it to 10 min; it says \"(next start)\", and the second boot",
-      "uses it. The Prefs rows and the buttons you found are kept on the stick's partition 4; the summary",
-      "at the end shows the saving line. They should come back after the second boot. Line input is never kept."],
-     "Did the wheel's push work, and did System info fill in? Which pad velocity curve and loop memory did you leave?"),
-    ("MIDI keyboard on MIDI IN (only with a keyboard and a 5-pin MIDI cable; s skips)",
-     ["Plug the keyboard's MIDI OUT into the MPC's MIDI IN. On Play with kit 1, play the keys from C2 up: the keys",
-      "that match the MPC's pad notes hit the pads (C#2 is pad 1, C2 is pad 2), other keys play nothing. Then turn",
-      "the wheel to \"Synth: Poly\" and play single keys and a chord: each key plays its own note, softly and",
-      "loudly as you play it, and holding NOTE REPEAT arpeggiates them. Move a knob or the pitch bend: nothing",
-      "changes yet (MIDI Learn is coming), but the log shows it. Leave USB keyboards for a later round: never",
-      "take the stick out while the test build runs, because it runs from the stick. Go back to kit 1. STOP."],
-     "Did the keys play the pads and the synth in time, at the right loudness, with nothing stuck?"),
-    ("Touch: Touch lab, Calibrate touch and the Dev Touch page",
-     ["Press SHIFT + MENU for Prefs, turn the wheel to the last row, Touch screen, and press +. Turn the wheel",
-      "to Touch lab and press +. Follow the screen through all 9 steps (about 3 minutes), then Exit at the top",
-      "right. Turn the wheel up one row to Calibrate touch, press +, and tap each corner's target as it asks;",
-      "it only reports. Then the Dev tab's Touch page (SHIFT + wheel): Targets, tap each target; Swipes, swipe",
-      "as it asks; it suggests a correction. Use suggested tries it now, Defaults takes it back. Save keeps it",
-      "on the stick's partition 4 for the next start (the MPC itself is not written); leave Save out if unsure.",
-      "Last, two fingers at once: press MAIN for Play, press PLAY, and hold Delay throw with one finger and",
-      "Reverb wash with another. Both should light and both play; lift one and the other keeps playing. STOP."],
-     "Did the Touch lab see your touches (step 9 holds two)? What did Calibrate touch say? What did the Dev Touch page suggest, and did you save it? Did two throws light and play at once?"),
-    ("Menus, console and STOP",
-     ["Press MENU (the page's options) and MENU again to close. Hold SHIFT, hold ERASE, then press TAP TEMPO:",
-      "the Console opens with the system log; the same again closes it. TAP TEMPO alone, four times, sets the",
-      "tempo. SHIFT + STOP goes back to bar 1. Last: SHIFT + NOTE REPEAT, hold pads 1 and 2, let go so they",
-      "repeat, then press STOP twice."],
-     "Did the menus, the console chord, TAP TEMPO and STOP work, and did STOP silence everything?"),
-)
-# After these phases (the app has played for a while), the read-only CPU_PROBE runs.
-PROBE_AFTER = ("Developer pages: Performance, CPU by engine, Processes",
-               "Looper tab: record, layers, tools, undo history, trim")
 # The session summary at the end of the app step: every line that starts with one of these, from
 # power-on to the end (the last three status lines only).
 SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "touch: doorbell", "touch: no doorbell",
@@ -832,68 +646,143 @@ def summarize(out, lines):
             f"session pings and replies: {other['session']}; other MIDI: {other['other']}")
 
 
-def app_check(mpc, out, n, total):
-    """The app step: read-only, paced phases against the pad player started at power-on."""
-    out.say(f"\n[{n}/{total}] The pad player that started at power-on (read-only: this reads its log and nothing else)")
-    rc, text = mpc.run(APP_STATE, test=True)
-    out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
+def state_reads(mpc, out):
+    """Read-only: partition 4, the pad player's privileges and the GPU. The short lines are shown, the rest reported."""
     rc, data = mpc.run(DATA_STATE, test=True)
     for line in (data.strip() or f"partition 4: no answer, exit code {rc}").splitlines():
         out.say(f"  {line}")
     rc, data = mpc.run(PRIVS_STATE, test=True)
-    for line in (data.strip() or f"privileges: no answer, exit code {rc}").splitlines():
-        out.say(f"  {line}")
+    lines = (data.strip() or f"privileges: no answer, exit code {rc}").splitlines()
+    for line in lines:
+        if re.search(r"Uid:|CapEff:|NoNewPrivs:|no mpfree process|no answer", line):
+            out.say(f"  {line}")
+        else:
+            log_only(out, f"  {line}")
     rc, data = mpc.run(GPU_STATE, test=True)
     lines = (data.strip() or f"gpu: no answer, exit code {rc}").splitlines()
-    shown = [line for line in lines if not line.startswith("gpu:   ")][:24]
-    for line in shown:
-        out.say(f"  {line}")
-    if len(shown) < len(lines):
-        out.say(f"  (the GPU read's other {len(lines) - len(shown)} lines are in the report)")
-        for line in lines:
-            log_only(out, f"  | {line}")
-    answer = ready(out, "First, what the screen did from power-on.")
-    if answer == "quit":
-        raise Stop("stopped by you")
-    if answer == "skip":
-        return
-    touch_interrupts(mpc, out, "at the start")
-    out.say("  (s skips a phase. You can also play freely: the summary at the end reads the whole session.)")
-    out.say("\n  Start-up: everything the app wrote since power-on")
-    start_lines = app_lines(mpc, 0.0)
-    summarize(out, start_lines)
-    ready_at = next((t for t, m in start_lines if m.startswith("playing ")), None)
-    out.say(f"  start-up: {f'the app was playing {ready_at:.1f} s after power-on' if ready_at is not None else 'no playing line yet'}")
-    note(out, "Did the synthwave startup screen play, then the loading screen over it with a progress bar and messages, then the pad player, "
-              "filling the whole screen with no log at the edges?")
-    if not text.strip().endswith(": active"):
-        out.say("  The pad player is not running, so the other phases are left out. Its log is above; if it")
-        out.say("  stopped with an error, the log display started in its place.")
-        return
-    phases = chosen_phases(os.environ.get("MPFREE_APP_PHASES", ""), len(APP_PHASES))
-    if len(phases) < len(APP_PHASES):
-        out.say(f"  MPFREE_APP_PHASES: only phases {', '.join(str(k) for k in sorted(phases))}")
-    for k, (title, todo, question) in enumerate(APP_PHASES, start=1):
-        if k not in phases:
-            log_only(out, f"\n  Phase {k} of {len(APP_PHASES)}: {title}: not chosen (MPFREE_APP_PHASES)")
-            continue
-        out.say(f"\n  Phase {k} of {len(APP_PHASES)}: {title}")
-        for line in todo:
+    out.say(f"  (the GPU read: {len(lines)} lines, in the report)")
+    for line in lines:
+        log_only(out, f"  | {line}")
+
+
+def start_report(out, lines, splash):
+    """Read-only, from the log: how the start went. No question: the app's own lines say it."""
+    for line in lines:
+        log_only(out, f"      | [{line[0]:10.3f}] {line[1]}")
+    ready_at = next((t for t, m in lines if m.startswith("playing ")), None)
+    out.say(f"  start-up: {f'playing {ready_at:.1f} s after power-on' if ready_at is not None else 'no playing line yet'}; "
+            f"startup screen: {splash}")
+    for _, m in lines:
+        if m.startswith(("saved settings: ", "saved buttons: ", "sound cores: ", "PANIC: ", "safe start: ",
+                         "not saved: ", "power button: ")):
+            out.say(f"    {m}")
+    bad = sum(1 for _, m in lines if m.startswith(("PANIC: ", "safe start: ")))
+    out.say(f"  {'no PANIC or safe start lines' if not bad else f'{bad} PANIC or safe start lines (above)'}; "
+            f"the whole log since power-on is in the report")
+
+
+def touch_count(mpc):
+    """The touchscreen's interrupts so far (all cores added up), or None."""
+    rc, text = mpc.run(TOUCH_IRQ, test=True)
+    m = re.match(r"^\s*\d+:((?:\s+\d+)+)", text)
+    return sum(int(x) for x in m.group(1).split()) if m else None
+
+
+def settings_text(mpc):
+    """Partition 4's settings/app.conf and settings/map.conf (read-only), or (None, None)."""
+    rc, text = mpc.run(SETTINGS, test=True)
+    if rc != 0 or "--- app" not in text:
+        return None, None
+    app, _, rest = text.partition("--- app\n")[2].partition("--- map\n")
+    return app, rest
+
+
+def wait_status(mpc, out, after, seconds=40):
+    """Waits (up to `seconds`) for the app's next status line after `after`, so the check is judged on it."""
+    out.say(f"    waiting up to {seconds} s for the app's next status line (one comes every 30 s)...")
+    deadline = time.monotonic() + (0 if TESTING else seconds)
+    while True:
+        lines = app_lines(mpc, after)
+        if any(checks.STATUS.match(m) for _, m in lines) or time.monotonic() >= deadline:
+            return
+        time.sleep(3)
+
+
+def run_check(mpc, out, k, total, check, settings):
+    """One check: its steps (hands) or none (auto), then what the log showed, then its one question."""
+    out.say(f"\n  Check {k} of {total}: {check.title} ({check.name})")
+    out.say(f"    for: {check.why}")
+    before, after = {}, {}
+    if check.kind == "hands":
+        for line in check.steps:
             out.say(f"    {line}")
         answer = ready(out, "Ready?")
         if answer == "quit":
             raise Stop("stopped by you")
         if answer == "skip":
-            continue
-        since = uptime(mpc)
+            return (check.name, "skipped", "")
+        before["touch"] = touch_count(mpc)
+        start = uptime(mpc)
         while (done := ask("  Go ahead. Press Enter when you are done (q stops here): ")) in ("again", "skip"):
             print("  Please press just Enter when you are done, or q.")
-        summarize(out, app_lines(mpc, since))
-        if title in PROBE_AFTER:
-            cpu_probe(mpc, out)
+        end = uptime(mpc)
+        after["touch"] = touch_count(mpc)
+        if check.wait_status and done != "quit":
+            wait_status(mpc, out, end)
+        session = app_lines(mpc, 0.0)
+        window = [(t, m) for t, m in session if t >= start]
+        summarize(out, window)
         if done == "quit":
             raise Stop("stopped by you")
-        note(out, question)
+    else:
+        session = app_lines(mpc, 0.0)
+        start = end = session[-1][0] if session else 0.0
+        window = []
+    verdicts = checks.judge(check, checks.Window(window, session, start, end, before, after, settings))
+    out.say("    what the log showed:")
+    for ok, what, detail in verdicts:
+        out.say(f"      {checks.mark(ok)}  {what}{f' ({detail})' if detail else ''}")
+    if check.probe:
+        cpu_probe(mpc, out)
+    seen = sum(ok is True for ok, _, _ in verdicts)
+    result = f"{seen} of {len(verdicts)} seen in the log"
+    answer = note(out, check.ask) if check.ask else ""
+    return (check.name, result, answer)
+
+
+def app_check(mpc, out, n, total):
+    """The app step: reads the pad player started at power-on, then runs the checks MPFREE_APP_CHECKS names."""
+    out.say(f"\n[{n}/{total}] The pad player that started at power-on (read-only: this reads its log and nothing else)")
+    rc, text = mpc.run(APP_STATE, test=True)
+    state = text.strip() or f"(no answer, exit code {rc})"
+    out.say(f"  {state}")
+    rc, text = mpc.run(SPLASH_STATE, test=True)
+    splash = text.strip().partition("): ")[2] or f"not read (exit code {rc})"
+    state_reads(mpc, out)
+    start_report(out, app_lines(mpc, 0.0), splash)
+    chosen = checks.chosen(os.environ.get("MPFREE_APP_CHECKS", ""))
+    if not state.endswith(": active"):
+        out.say("  The pad player is not running, so no check runs. The end of its log (all of it is in the report);")
+        out.say("  if it stopped with an error, the log display started in its place:")
+        for _, m in app_lines(mpc, 0.0)[-15:]:
+            out.say(f"    {m}")
+        return
+    if not chosen:
+        out.say("  No checks named (MPFREE_APP_CHECKS), so nothing is asked: the session summary follows.")
+    else:
+        out.say(f"  Checks: {', '.join(c.name for c in chosen)}")
+    app_text, map_text = settings_text(mpc)
+    missing = checks.not_found(chosen, map_text)
+    if missing:
+        out.say("  Map controls has not found these buttons yet, so the steps that use them will show NOT SEEN:")
+        for name, control in missing:
+            out.say(f"    {control} (check {name})")
+        out.say("  Add map-controls before those checks to find them first.")
+    results = [run_check(mpc, out, k, len(chosen), c, app_text) for k, c in enumerate(chosen, start=1)]
+    if results:
+        out.say("\n  The checks:")
+        for name, result, answer in results:
+            out.say(f"    {name}: {result}{f'; your answer: {answer}' if answer else ''}")
     session_summary(mpc, out)
 
 
@@ -1048,24 +937,6 @@ def copy_program(mpc, out, total, program, digest, kit, kit_digest):
         out.say("  drum kits copied; their hash on the MPC matches")
 
 
-def chosen_phases(text, count):
-    """The app step's phases MPFREE_APP_PHASES names (1-based), as a set; every phase when it is empty."""
-    text = (text or "").strip()
-    if not text:
-        return set(range(1, count + 1))
-    chosen = set()
-    for part in text.split(","):
-        part = part.strip()
-        m = re.fullmatch(r"(\d{1,2})(?:-(\d{1,2}))?", part)
-        if not m:
-            raise Stop(f"MPFREE_APP_PHASES: {part!r} is not a phase number or a range like 9-11")
-        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
-        if not 1 <= lo <= hi <= count:
-            raise Stop(f"MPFREE_APP_PHASES: {part!r} is outside phases 1 to {count}")
-        chosen.update(range(lo, hi + 1))
-    return chosen
-
-
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--ip", required=True)
@@ -1080,7 +951,15 @@ def main(argv):
     out.say("mpfree on the test build (changes RAM on the MPC only)")
     steps = chosen_steps(os.environ.get("MPFREE_APP_STEPS", DEFAULT_STEPS))
     # Checked before anything else, so a typo stops the run at once.
-    chosen_phases(os.environ.get("MPFREE_APP_PHASES", ""), len(APP_PHASES))
+    if os.environ.get("MPFREE_APP_PHASES"):
+        raise Stop("MPFREE_APP_PHASES is gone: name the checks with MPFREE_APP_CHECKS instead "
+                   "(python3 tools/mpc-one/app_checks.py list)")
+    try:
+        names = checks.chosen(os.environ.get("MPFREE_APP_CHECKS", ""))
+    except checks.Unknown as err:
+        raise Stop(f"MPFREE_APP_CHECKS: {err}")
+    if names and "app" not in steps:
+        raise Stop("MPFREE_APP_CHECKS goes with the app step (MPFREE_APP_STEPS=app)")
     # The app and line steps use the pad player started at power-on; the program is copied only for the others.
     copy = any(n not in APP_STEPS for n in steps)
     total = (3 if copy else 2) + len(steps)
