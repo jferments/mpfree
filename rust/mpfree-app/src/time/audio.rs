@@ -249,6 +249,12 @@ impl TimeAudio {
         self.transport.command(at, cmd)
     }
 
+    /// Anchors the clips' chance rolls to the frame the transport next
+    /// starts on (`mpfree_play::Player::anchor_dice`), or not.
+    pub fn anchor_dice(&mut self, on: bool) {
+        self.player.anchor_dice(on);
+    }
+
     /// A transport command on frame `at` of the transport's clock, or at
     /// the next period's start if that is later. False if the queue is
     /// full.
