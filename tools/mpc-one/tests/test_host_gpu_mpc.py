@@ -221,6 +221,36 @@ class GpuBenchTests(unittest.TestCase):
         self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-gpu"))
         self.assertEqual([c for c in self.lines("systemctl: ") if not c.startswith("is-active ")], [])
 
+    def test_without_the_render_node_it_stops_and_after_a_soft_reboot_says_how_to_load_the_driver(self):
+        os.remove(f"{self.root}/dev/dri/renderD128")
+        hint = "build the stick with --preload-module panfrost"
+        # Started by kexec: the stick's own kernel loads its modules, so no hint.
+        res = self.run_helper()
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("PROBLEM: no /dev/dri/renderD* (the GPU's render node)", res.stdout)
+        self.assertIn("GPU-STOP", res.stdout)
+        self.assertNotIn(hint, res.stdout)
+        # Started by the boot hook's soft-reboot (its marker in /run): LoadPin refuses module loads now.
+        th.write(f"{self.root}/run/mpfree-hook/soft-reboot", "6.59\n")
+        res = self.run_helper()
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("after a soft-reboot no module can load", res.stdout)
+        self.assertIn(hint, res.stdout)
+        self.assertIn("the GPU or its libraries are not there", res.stdout)
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-gpu"))
+        self.assertEqual([c for c in self.lines("systemctl: ") if not c.startswith("is-active ")], [])
+        self.assertEqual(self.lines("bench: "), [])
+
+    def test_after_a_soft_reboot_it_runs_as_after_kexec(self):
+        th.write(f"{self.root}/run/mpfree-hook/soft-reboot", "6.59\n")
+        res = self.run_helper()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in ("CHECKS-OK", "render node: /dev/dri/renderD128", "GPU-OK",
+                     "copied the benchmark and 3 pages; every hash on the MPC matches",
+                     "pad player: active (started again)", "RESULT: the GPU benchmark ran"):
+            self.assertIn(text, res.stdout)
+        self.assertNotIn("--preload-module", res.stdout)
+
     def test_stops_on_a_bad_program_or_pages_before_any_ssh(self):
         th.write(self.program, dynamic_elf(static=True), 0o755)
         res = self.run_helper()
