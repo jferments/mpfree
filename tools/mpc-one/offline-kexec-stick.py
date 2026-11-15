@@ -103,6 +103,16 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     the MPC's kernel is not this one, or the load is refused, the hook
     soft-reboots instead. Without --kexec-file none of these three files is
     made and the stick is the soft-reboot stick as before
+  - only with --chain (with --kexec-file --loadpin-off; opt-in): that command
+    line has mpfree.chain=1 in place of sysctl.kernel.kexec_load_disabled=1,
+    and the stick gets mpfree-test-chain.service (/etc/mpfree-test/chain.sh).
+    On that kernel, right after the switch-off service, it loads
+    /boot/mpfree-kexec's kernel and device tree (below) with the ordinary
+    kexec, which LoadPin allows when not enforcing, and restarts into them
+    once: Ethernet's PHY ID, the eMMC and SD controllers disabled in the
+    tree, kexec off. If that fails, MPFree starts on the first kernel. Akai's
+    /usr/sbin/kexec stays (systemd-shutdown runs it) instead of the stub.
+    Without --chain none of this is made
   - only with --akai-app (phase 3 of the 3.10.1 stick test, for developer
     mode): Akai's app is NOT masked and its launcher is NOT stubbed, so it
     starts at power-on and draws the screen; the log display is installed but
@@ -149,6 +159,11 @@ Optional inputs:
                       root (see above)
   --akai-app          start Akai's app at power-on instead (see above); not
                       with --app, --splash or --splash-font
+  --kexec-file        ask the hook for its opt-in route (see above)
+  --loadpin-off       with --kexec-file: add loadpin.enforce=0 to its command
+                      line
+  --chain             with --kexec-file --loadpin-off: restart once more into
+                      the stick's own kernel and device tree (see above)
   --preload-module M  a kernel module the stick's system needs that Akai's
                       boot may not have loaded by 6 s (repeatable). After a
                       soft-reboot LoadPin refuses every module load, so the
@@ -263,6 +278,19 @@ SOFTREBOOT_PROTOCOL = "mpfree-softreboot-1"
 KEXEC_FILE_JUMP = "kexec-file"
 KEXEC_FILE_FILES = ("jump", "cmdline", "kernel.sha256")
 LOADPIN_OFF = "loadpin.enforce=0"
+# --chain (with --kexec-file and --loadpin-off): that kernel's command line gets CHAIN_WORD in place of
+# KEXEC_OFF_WORD, and the stick's system, started on it, restarts once more (mpfree-test-chain.service) into
+# KEXEC_DIR's kernel and device tree: the stick's own tree, which gives the Ethernet PHY its ID and disables
+# the eMMC and SD controllers. KEXEC_DIR's command line keeps KEXEC_OFF_WORD and has no CHAIN_WORD, so the
+# second restart happens once. Akai's own kexec stays in place (not stubbed): systemd-shutdown runs it.
+CHAIN_WORD = "mpfree.chain=1"
+KEXEC_OFF_WORD = "sysctl.kernel.kexec_load_disabled=1"
+CHAIN_FILES = ("/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service")
+CHAIN_WANTS = "/etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service"
+KEXEC_PROGRAM = "/usr/sbin/kexec"
+SHUTDOWN_PROGRAM = "/usr/lib/systemd/systemd-shutdown"
+# The paths systemd-shutdown may name for kexec: /sbin is a link into /usr (checked in build_rootfs).
+KEXEC_PATHS = (b"/usr/sbin/kexec", b"/sbin/kexec")
 MODULE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 INTERNAL_OFF_SCRIPT = """R=''
 # MPFree: switch the MPC's internal eMMC and SD card off, before anything can touch them.
@@ -383,6 +411,102 @@ SUBSYSTEM=="block", KERNEL=="mmcblk*", ENV{SYSTEMD_READY}="0", ENV{UDISKS_IGNORE
 """
 INTERNAL_OFF_FILES = ("/etc/mpfree-test/internal-off.sh", "/etc/systemd/system/mpfree-test-internal-off.service",
                       "/etc/udev/rules.d/00-mpfree-internal-off.rules")
+CHAIN_SCRIPT = """R=''
+# MPFree: the chain's second restart (offline-kexec-stick.py --kexec-file --loadpin-off --chain).
+# (The R='' line is an empty root prefix; only tests change it.)
+# Started by mpfree-test-chain.service right after the eMMC and SD card are switched off, and only when the
+# kernel command line has mpfree.chain=1: on the kernel MPFree's boot hook started with the file-based kexec,
+# which runs on Akai's device tree with LoadPin not enforcing. It loads the stick's own kernel and device
+# tree from /boot/mpfree-kexec with the ordinary kexec, which LoadPin refuses only when enforcing, and has
+# systemd restart into them (kexec.target). That device tree gives the Ethernet PHY its ID and disables the
+# eMMC and SD controllers. Its command line (cmdline.txt) keeps kexec off and has no mpfree.chain=1, so this
+# runs once per power-on.
+# First it checks the three files against /boot/mpfree-kexec/SHA256SUMS, and that the command line starts
+# the same partition, turns kexec off and does not ask for the chain again. If a check, the load or the
+# restart fails, it says why and exits 0: MPFree then starts on this kernel, as on the kexec-file route.
+# It writes only the kernel log, /run (RAM), and its notes with the kernel log to the stick's own log
+# partition (partition 2, "mpfree-test-log", MPFree's; never anything of the MPC's). It loads a kernel into
+# RAM.
+[ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
+D="$R/boot/mpfree-kexec"
+K="$R/usr/sbin/kexec"
+say() { echo "mpfree-chain: $*" > "$R/dev/kmsg" 2>/dev/null; echo "mpfree-chain: $*" >> "$R/run/mpfree-chain.txt"; }
+keep() {   # the notes and the kernel log onto the stick's log partition, as internal-off.sh's stop does
+  log=''
+  for u in "$R"/sys/class/block/sd*/uevent; do
+    grep -qx 'PARTNAME=mpfree-test-log' "$u" 2>/dev/null || continue
+    p=${u%/uevent}
+    case "$(readlink -f "$p")" in */usb*) log=${p##*/} ;; esac
+  done
+  m="$R/run/mpfree-chain-log"
+  if [ -n "$log" ] && [ -b "$R/dev/$log" ] && mkdir -p "$m" &&
+      mount -t ext4 -o rw,nosuid,nodev,noexec,sync "$R/dev/$log" "$m"; then
+    d="$m/boot-$(cat "$R/proc/sys/kernel/random/boot_id")"
+    mkdir -p "$d" && { cat "$R/run/mpfree-chain.txt"; dmesg; } > "$d/chain.txt" 2>&1
+    umount "$m"
+  fi
+}
+skip() { say "$1; MPFree starts on this kernel, with Akai's device tree"; keep; exit 0; }
+unload() {
+  [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] && return 0
+  "$K" --unload --kexec-syscall > /dev/null 2>&1 && [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] &&
+    return 0
+  say "could not unload the kernel loaded here (it stays in RAM until the MPC is switched off)"
+}
+now=" $(cat "$R/proc/cmdline" 2>/dev/null) "
+case "$now" in *" mpfree.chain=1 "*) ;; *) exit 0 ;; esac
+say "started at $(cut -d' ' -f1 "$R/proc/uptime") s"
+[ -f "$D/SHA256SUMS" ] || skip "the stick has no /boot/mpfree-kexec/SHA256SUMS"
+for f in zImage kexec.dtb cmdline.txt; do
+  want=$(sed -n "s/^\\([0-9a-f]\\{64\\}\\)  $f\\$/\\1/p" "$D/SHA256SUMS")
+  [ -f "$D/$f" ] && [ -n "$want" ] && [ "$(sha256sum < "$D/$f" | cut -d' ' -f1)" = "$want" ] ||
+    skip "/boot/mpfree-kexec/$f does not match its SHA256SUMS"
+done
+[ "$(wc -l < "$D/cmdline.txt" | tr -cd 0-9)" = 1 ] || skip "/boot/mpfree-kexec/cmdline.txt is not one line"
+cmd=$(cat "$D/cmdline.txt")
+root=''
+for w in $now; do case "$w" in root=*) root=$w ;; esac; done
+[ -n "$root" ] || skip "this kernel's command line has no root="
+for w in $cmd; do
+  case "$w" in root=*) [ "$w" = "$root" ] || skip "cmdline.txt does not start the system on this partition" ;; esac
+done
+case " $cmd " in *" $root "*) ;; *) skip "cmdline.txt does not start the system on this partition" ;; esac
+case " $cmd " in *" sysctl.kernel.kexec_load_disabled=1 "*) ;; *) skip "cmdline.txt does not turn kexec off" ;; esac
+case " $cmd " in *" mpfree.chain=1 "*) skip "cmdline.txt asks for the chain again" ;; esac
+[ -x "$K" ] || skip "this system has no /usr/sbin/kexec"
+[ "$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)" = 0 ] || skip "kexec is turned off on this kernel"
+[ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] || skip "a kexec kernel is loaded already"
+# The ordinary kexec, with a device tree (the file-based one takes none on 32-bit ARM).
+if ! out=$("$K" --load --kexec-syscall --dtb="$D/kexec.dtb" --command-line="$cmd" "$D/zImage" 2>&1); then
+  unload
+  skip "the kernel refused the load ($(printf '%s' "$out" | tr -c 'A-Za-z0-9 ._:/()=-' ' ' | cut -c1-200))"
+fi
+[ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 1 ] || skip "kexec_loaded is not 1 after the load"
+say "the stick's kernel and device tree are loaded at $(cut -d' ' -f1 "$R/proc/uptime") s; restart into them (kexec.target)"
+keep
+systemctl --no-block --job-mode=replace-irreversibly start kexec.target && exit 0
+unload
+skip "systemctl could not start kexec.target"
+"""
+CHAIN_UNIT = """[Unit]
+Description=MPFree: restart once more, into the stick's own kernel and device tree (mpfree.chain=1)
+DefaultDependencies=no
+ConditionKernelCommandLine=mpfree.chain=1
+Requires=mpfree-test-internal-off.service
+After=mpfree-test-internal-off.service
+Before=sysinit.target systemd-sysctl.service systemd-udevd.service systemd-udev-trigger.service local-fs.target
+Before=data.mount mpfree-test-logs.service mpfree-test-storage.service mpfree-test-app.service
+Before=mpfree-test-sshd.service mpfree-test-ethernet.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /etc/mpfree-test/chain.sh
+TimeoutStartSec=60
+
+[Install]
+WantedBy=sysinit.target
+"""
 
 STUB = """#!/bin/sh
 # MPFree kexec test boot: this program is disabled on the test stick.
@@ -1228,9 +1352,26 @@ def app_user_groups(img, scratch):
     return [g for g in APP_GROUPS + APP_OPTIONAL_GROUPS if g in names]
 
 
+def chain_kexec_check(img, scratch):
+    """--chain: the image's own kexec must stay, and be the one systemd-shutdown runs for kexec.target."""
+    if img.kind(KEXEC_PROGRAM) != "regular":
+        raise Stop(f"--chain: the image has no regular {KEXEC_PROGRAM} (Akai's kexec, which the chain loads with)")
+    if img.kind(SHUTDOWN_PROGRAM) != "regular":
+        raise Stop(f"--chain: the image has no {SHUTDOWN_PROGRAM}, so it is unknown how systemd starts a loaded kernel")
+    named = set(re.findall(rb"/[A-Za-z0-9_./-]*/kexec(?![A-Za-z0-9_.-])", img.read(SHUTDOWN_PROGRAM, scratch)))
+    other = sorted(p.decode("ascii", "replace") for p in named if p not in KEXEC_PATHS)
+    if other:
+        raise Stop(f"--chain: {SHUTDOWN_PROGRAM} names {', '.join(other)} for kexec, which this tool does not keep; "
+                   "systemd would not start the loaded kernel")
+    named = sorted(p.decode() for p in named)
+    OUT.say(f"  --chain: {SHUTDOWN_PROGRAM} runs " + (" or ".join(named) if named else
+            "no kexec program (it starts the loaded kernel itself)") + f" for kexec.target; {KEXEC_PROGRAM} stays Akai's")
+    return named
+
+
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
                  app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None,
-                 app_user=False):
+                 app_user=False, chain=False):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
@@ -1243,16 +1384,22 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     also the three files that ask the hook for its kexec-file route.
     With `app_user` (only with `app`), the pad player runs as APP_USER: the user and its group are added, it
     joins APP_GROUPS (and APP_OPTIONAL_GROUPS where the image has them), and mpfree-test-storage.service
-    mounts its partitions as root first. Without it, nothing here differs from a build before --app-user."""
+    mounts its partitions as root first. Without it, nothing here differs from a build before --app-user.
+    With `chain` (only with `kexec_files` and a kexec-file command line in `softreboot`), mpfree-test-chain.service
+    is installed, listed in SOFTREBOOT_DIR's SHA256SUMS with KEXEC_DIR's files, and Akai's KEXEC_PROGRAM is
+    left in place (not stubbed). Without it, nothing here differs from a build before --chain."""
     if app_user and app is None:
         raise Stop("--app-user needs --app: it changes who the pad player runs as")
+    if chain and not (kexec_files and softreboot and softreboot[2]):
+        raise Stop("--chain needs the kexec-file route and the stick's own kernel and device tree")
     if akai_app:
         if app is not None or splash[0] is not None or kits_uuid is None or data_uuid is None:
             raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
     elif not ((app is None) == (kits_uuid is None) == (data_uuid is None)):
         raise Stop("the pad player needs its kits and data partitions, and the other way round")
     mask_units = tuple(u for u in MASK_UNITS if not (akai_app and u == AKAI_APP_UNIT))
-    stub_programs = tuple(p for p in STUB_PROGRAMS if not (akai_app and p == AKAI_APP_LAUNCHER))
+    stub_programs = tuple(p for p in STUB_PROGRAMS if not (akai_app and p == AKAI_APP_LAUNCHER) and
+                          not (chain and p == KEXEC_PROGRAM))
     for top in ("/bin", "/sbin", "/lib"):
         kind = img.kind(top)
         if kind not in ("symlink", None) or (kind == "symlink" and img.link(top) not in (f"usr{top}", f"/usr{top}")):
@@ -1262,6 +1409,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         if found is None or (kind and found != kind):
             raise Stop(f"the image has no {kind or 'file'} {path}; this tool does not know this layout")
     user_edits = app_user_edits(img, scratch) if app_user else {}
+    if chain:
+        chain_kexec_check(img, scratch)
     splash_program, font_name, font = splash
     extra = len(splash_program or b"") + len(font or b"") + len(app or b"")
     free_bytes, free_inodes = img.free()
@@ -1285,7 +1434,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                  ([KEXEC_DIR] if kexec_files else []) +
                  ([SOFTREBOOT_DIR, *INTERNAL_OFF_FILES,
                    "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] if softreboot else []) +
-                 (["/etc/systemd/system/mpfree-test-storage.service"] if app_user else []))
+                 (["/etc/systemd/system/mpfree-test-storage.service"] if app_user else []) +
+                 ([*CHAIN_FILES, CHAIN_WANTS] if chain else []))
     for path in new_paths:
         if img.kind(path) is not None:
             raise Stop(f"{path} already exists in the image; refusing to guess what it is")
@@ -1363,6 +1513,12 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
             for name, data in zip(KEXEC_FILE_FILES, (KEXEC_FILE_JUMP, kexec_file, f"{kernel_sum}  /boot/zImage-{release}")):
                 add(f"{SOFTREBOOT_DIR}/{name}", data + "\n", 0o644)
                 listed.append(f"{SOFTREBOOT_DIR}/{name}")
+        if chain:
+            add(CHAIN_FILES[0], CHAIN_SCRIPT, 0o755)
+            add(CHAIN_FILES[1], CHAIN_UNIT, 0o644)
+            # The hook checks these against the list before it starts the first kernel; chain.sh checks the
+            # kernel (a link, which the hook does not hash) against KEXEC_DIR's own list.
+            listed += [*CHAIN_FILES, KEXEC_DIR + "/kexec.dtb", KEXEC_DIR + "/cmdline.txt", KEXEC_DIR + "/SHA256SUMS"]
         add(SOFTREBOOT_DIR + "/SHA256SUMS",
             "".join(f"{hashlib.sha256(files[p][0]).hexdigest()}  {p}\n" for p in listed), 0o644)
     stubbed, absent = [], []
@@ -1417,6 +1573,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
 
     if softreboot:
         links["/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] = INTERNAL_OFF_FILES[1]
+    if chain:
+        links[CHAIN_WANTS] = CHAIN_FILES[1]
 
     commands = (["mkdir /etc/mpfree-test"] + ([f"mkdir {KEXEC_DIR}"] if kexec_files else []) +
                 ([f"mkdir {SOFTREBOOT_DIR}"] if softreboot else []))
@@ -1548,9 +1706,16 @@ def main(argv):
     ap.add_argument("--loadpin-off", action="store_true",
                     help=f"with --kexec-file: add {LOADPIN_OFF} to that kernel's command line (an experiment: "
                          "whether Akai's kernel takes it, so modules and firmware can load from the stick)")
+    ap.add_argument("--chain", action="store_true",
+                    help=f"with --kexec-file --loadpin-off: on that kernel, the stick's system restarts once more "
+                         f"into the stick's own kernel and device tree ({KEXEC_DIR}): Ethernet's PHY ID, and the "
+                         "eMMC and SD controllers disabled in the tree")
     args = ap.parse_args(argv)
     if args.loadpin_off and not args.kexec_file:
         raise Stop("--loadpin-off goes with --kexec-file (it changes only that route's command line)")
+    if args.chain and not (args.kexec_file and args.loadpin_off):
+        raise Stop("--chain goes with --kexec-file and --loadpin-off: only a kernel with LoadPin not enforcing "
+                   "lets the stick's system load its own kernel and device tree")
     if args.app_user and not args.app:
         raise Stop("--app-user needs --app: it changes who the pad player runs as")
     for name in args.preload_module:
@@ -1673,6 +1838,8 @@ def main(argv):
         with open(dtb_out, "rb") as fh:
             kexec_files = (release, fh.read(), (cmdline + "\n").encode())
         kexec_file_cmdline = (cmdline + (" " + LOADPIN_OFF if args.loadpin_off else "")) if args.kexec_file else None
+        if args.chain:
+            kexec_file_cmdline = " ".join(w for w in kexec_file_cmdline.split() if w != KEXEC_OFF_WORD) + " " + CHAIN_WORD
         if args.akai_app:
             OUT.say(AKAI_APP_MARK)
             OUT.say(f"  {AKAI_APP_UNIT} and {AKAI_APP_LAUNCHER} are left as Akai ships them: Akai's app starts at "
@@ -1720,13 +1887,19 @@ def main(argv):
                     f"(/boot/zImage-{release} on the MPC, loaded with the file-based kexec) instead of the soft-reboot, "
                     "and to soft-reboot if that load is refused or the MPC's kernel is not this one")
             OUT.say(f"  its command line: {kexec_file_cmdline}")
+            if args.chain:
+                OUT.say(f"  --chain: on that kernel ({CHAIN_WORD}, kexec left on), mpfree-test-chain.service loads "
+                        f"{KEXEC_DIR}'s kernel and device tree with the ordinary kexec and restarts into them, once: "
+                        f"there the Ethernet PHY has its ID, the eMMC and SD controllers are disabled in the tree, "
+                        f"and the command line is cmdline.txt's ({KEXEC_OFF_WORD}). If that fails, MPFree starts "
+                        f"on the first kernel. {KEXEC_PROGRAM} is Akai's, not a stub")
         else:
             OUT.say("  route: soft-reboot only (no --kexec-file)")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
                                                                   screen_log, rotation, splash, app, kits_uuid,
                                                                   data_uuid, args.akai_app, kexec_files,
                                                                   (release, args.preload_module, kexec_file_cmdline),
-                                                                  args.app_user)
+                                                                  args.app_user, args.chain)
         if args.app_user:
             OUT.say(f"  {APP_USER} is in the groups: {' '.join(app_user_groups(img, scratch))}"
                     + ("" if "systemd-journal" in app_user_groups(img, scratch) else

@@ -55,6 +55,8 @@ STICK_UUID = "0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9"
 KERNEL = b"FAKE AKAI ZIMAGE " * 64
 KCMD = (f"root=PARTUUID={STICK_UUID} rootwait=60 ro panic=10 rfkill.default_state=0 "
         "sysctl.kernel.kexec_load_disabled=1")
+# A --chain stick's: kexec left on for the stick's system, LoadPin not enforcing, and the chain asked for.
+CHAIN_KCMD = f"root=PARTUUID={STICK_UUID} rootwait=60 ro panic=10 rfkill.default_state=0 loadpin.enforce=0 mpfree.chain=1"
 
 
 def stick_module():
@@ -204,9 +206,10 @@ class BootHookTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def make_stick(self, modules=(), kexec_file=None, kernel=KERNEL):
+    def make_stick(self, modules=(), kexec_file=None, kernel=KERNEL, chain=False):
         """MPFree's stick, partition 1: the parts of the system the hook looks at, as offline-kexec-stick.py
-        writes them. With `kexec_file` (a command line), the three files of --kexec-file too."""
+        writes them. With `kexec_file` (a command line), the three files of --kexec-file too; with `chain`,
+        the chain's service and the stick's own kernel files (--chain)."""
         shutil.rmtree(self.stick, ignore_errors=True)
         sr = STICK.SOFTREBOOT_DIR.lstrip("/")
         files = {STICK.INTERNAL_OFF_FILES[0]: STICK.INTERNAL_OFF_SCRIPT,
@@ -220,6 +223,12 @@ class BootHookTests(unittest.TestCase):
             for name, text in zip(STICK.KEXEC_FILE_FILES, (STICK.KEXEC_FILE_JUMP, kexec_file,
                                                            f"{sha(kernel)}  /boot/zImage-{RELEASE}")):
                 files[f"{STICK.SOFTREBOOT_DIR}/{name}"] = text + "\n"
+        if chain:
+            files[STICK.CHAIN_FILES[0]] = STICK.CHAIN_SCRIPT
+            files[STICK.CHAIN_FILES[1]] = STICK.CHAIN_UNIT
+            files[STICK.KEXEC_DIR + "/kexec.dtb"] = "FAKE STICK DEVICE TREE\n"
+            files[STICK.KEXEC_DIR + "/cmdline.txt"] = KCMD + "\n"
+            files[STICK.KEXEC_DIR + "/SHA256SUMS"] = "0" * 64 + "  zImage\n"
         for path, text in files.items():
             write(os.path.join(self.stick, path.lstrip("/")), text, 0o755 if path.endswith(".sh") else 0o644)
         self.write_sums()
@@ -228,6 +237,8 @@ class BootHookTests(unittest.TestCase):
         os.makedirs(os.path.join(self.stick, "etc/systemd/system/sysinit.target.wants"))
         os.symlink(STICK.INTERNAL_OFF_FILES[1],
                    os.path.join(self.stick, "etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"))
+        if chain:
+            os.symlink(STICK.CHAIN_FILES[1], os.path.join(self.stick, STICK.CHAIN_WANTS.lstrip("/")))
         self.assertTrue(os.path.isdir(os.path.join(self.stick, sr)))
 
     def write_sums(self, **override):
@@ -238,6 +249,9 @@ class BootHookTests(unittest.TestCase):
         for name in STICK.KEXEC_FILE_FILES:
             if os.path.exists(os.path.join(sr, name)):
                 listed.append(f"{STICK.SOFTREBOOT_DIR}/{name}")
+        if os.path.exists(os.path.join(self.stick, STICK.CHAIN_FILES[0].lstrip("/"))):
+            listed += [*STICK.CHAIN_FILES, STICK.KEXEC_DIR + "/kexec.dtb", STICK.KEXEC_DIR + "/cmdline.txt",
+                       STICK.KEXEC_DIR + "/SHA256SUMS"]
         sums = {}
         for p in listed:
             with open(os.path.join(self.stick, p.lstrip("/")), "rb") as fh:
@@ -747,6 +761,60 @@ class BootHookTests(unittest.TestCase):
         self.assertEqual(self.calls("systemctl: --no-block"), [KEXEC_TARGET], "no soft-reboot as well")
         self.assertEqual(self.calls("modprobe: "), [], "modules matter only for the soft-reboot")
         self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-hook/soft-reboot")))
+
+    def test_chain_stick_restarts_on_akais_kernel_with_kexec_left_on(self):
+        """--chain: the hook starts Akai's kernel as for any kexec-file stick, with the chain's command line."""
+        self.install(ok=False)
+        self.plug_in()
+        self.make_stick(kexec_file=CHAIN_KCMD, chain=True)
+        open(self.log, "w").close()
+        res = self.jump()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        kmsg = self.read("run/mpfree-hook.txt")
+        for line in ("this stick asks to start on Akai's own kernel (kexec_file), command line: root=PARTUUID=(this "
+                     "stick) rootwait=60 ro panic=10 rfkill.default_state=0 loadpin.enforce=0 mpfree.chain=1",
+                     "on that kernel its system restarts once more, into the stick's own kernel and device tree "
+                     "(mpfree.chain=1; its files check out against SHA256SUMS)",
+                     "restart into MPFree on Akai's own kernel (kexec.target) at 6.05 s"):
+            self.assertIn("mpfree-hook: " + line + "\n", kmsg)
+        self.assertNotIn("STOP", kmsg)
+        self.assertEqual(self.calls("kexec: "), [self.kexec_load_call(CHAIN_KCMD)])
+        self.assertEqual(self.calls("systemctl: --no-block"), [KEXEC_TARGET])
+
+    def test_chain_stick_that_does_not_check_out_stops(self):
+        self.install(ok=False)
+        self.plug_in()
+        base = CHAIN_KCMD
+        for cmdline, message in (
+                (base + " sysctl.kernel.kexec_load_disabled=1",
+                 "/boot/mpfree-softreboot/cmdline has both mpfree.chain=1 and sysctl.kernel.kexec_load_disabled=1"),
+                (base.replace(" loadpin.enforce=0", ""),
+                 "/boot/mpfree-softreboot/cmdline has mpfree.chain=1 without loadpin.enforce=0"),
+                (base.replace(" mpfree.chain=1", ""), "/boot/mpfree-softreboot/cmdline lacks "
+                                                      "sysctl.kernel.kexec_load_disabled=1"),
+                (base + " mpfree.chain=2", "/boot/mpfree-softreboot/cmdline has mpfree.chain=2, which the hook does "
+                                           "not allow")):
+            with self.subTest(cmdline):
+                self.make_stick(kexec_file=cmdline, chain=True)
+                self.expect_stop(message)
+                self.assertEqual(self.calls("kexec: "), [])
+        with self.subTest("the chain's command line without its service"):
+            self.make_stick(kexec_file=base)
+            self.expect_stop("the stick asks for the chain (mpfree.chain=1) but does not carry /etc/mpfree-test/chain.sh")
+        with self.subTest("the chain's service not started"):
+            self.make_stick(kexec_file=base, chain=True)
+            os.unlink(os.path.join(self.stick, STICK.CHAIN_WANTS.lstrip("/")))
+            self.expect_stop("the stick asks for the chain (mpfree.chain=1) but does not start "
+                             "mpfree-test-chain.service")
+        with self.subTest("the stick's own device tree not listed"):
+            self.make_stick(kexec_file=base, chain=True)
+            self.write_sums(**{STICK.KEXEC_DIR + "/kexec.dtb": "-"})
+            self.expect_stop("the stick asks for the chain (mpfree.chain=1) but does not carry "
+                             "/boot/mpfree-kexec/kexec.dtb")
+        with self.subTest("the stick's own device tree damaged"):
+            self.make_stick(kexec_file=base, chain=True)
+            write(os.path.join(self.stick, "boot/mpfree-kexec/kexec.dtb"), "DAMAGED\n")
+            self.expect_stop("/boot/mpfree-kexec/kexec.dtb on the stick does not match its SHA256SUMS")
 
     def test_kexec_file_falls_back_to_the_soft_reboot(self):
         self.install(ok=False)
