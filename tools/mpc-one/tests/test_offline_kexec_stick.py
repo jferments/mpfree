@@ -30,6 +30,13 @@ SBIN_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 UNITS = "usr/lib/systemd/system"
 
 
+def stick_module():
+    spec = importlib.util.spec_from_file_location("offline_kexec_stick", TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def tools_present():
     return all(shutil.which(t, path=SBIN_PATH) for t in ("debugfs", "e2fsck", "mke2fs", "sfdisk", "ssh-keygen"))
 
@@ -330,6 +337,67 @@ class KexecStickTests(unittest.TestCase):
             self.assertRegex(self.dfs(root_img, f"stat /boot/mpfree-kexec/{name}"), r"Type: regular\s+Mode:\s+0644")
         sums = self.dfs(root_img, "cat /boot/mpfree-kexec/SHA256SUMS")
         self.assertEqual(sums, "".join(f"{sha(os.path.join(out, n))}  {n}\n" for n in ("zImage", "kexec.dtb", "cmdline.txt")))
+        self.check_softreboot_files(root_img, NEW)
+
+    def check_softreboot_files(self, root_img, release, modules=()):
+        """/boot/mpfree-softreboot and the service that switches the eMMC and SD card off, as the hook checks them."""
+        mod = stick_module()
+        self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/PROTOCOL"), "mpfree-softreboot-1\n")
+        self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/release"), release + "\n")
+        listed = ["/etc/mpfree-test/internal-off.sh", "/etc/systemd/system/mpfree-test-internal-off.service",
+                  "/etc/udev/rules.d/00-mpfree-internal-off.rules", "/boot/mpfree-softreboot/PROTOCOL",
+                  "/boot/mpfree-softreboot/release"]
+        if modules:
+            self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/preload-modules.txt"),
+                             "".join(m + "\n" for m in modules))
+            listed.append("/boot/mpfree-softreboot/preload-modules.txt")
+        else:
+            self.assertIn("File not found", self.dfs(root_img, "stat /boot/mpfree-softreboot/preload-modules.txt"))
+        want = ""
+        for path in listed:
+            copy = os.path.join(self.tmp, "softreboot-copy")
+            run(["debugfs", "-R", f"dump {path} {copy}", root_img])
+            want += f"{sha(copy)}  {path}\n"
+        self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/SHA256SUMS"), want)
+        self.assertEqual(self.dfs(root_img, "cat /etc/mpfree-test/internal-off.sh"), mod.INTERNAL_OFF_SCRIPT)
+        self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/internal-off.sh"), r"Type: regular\s+Mode:\s+0755")
+        unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-internal-off.service")
+        for line in ("DefaultDependencies=no", "FailureAction=poweroff", "Type=oneshot", "WantedBy=sysinit.target",
+                     "ExecStart=/bin/sh /etc/mpfree-test/internal-off.sh"):
+            self.assertIn(line + "\n", unit)
+        before = " ".join(l[len("Before="):] for l in unit.splitlines() if l.startswith("Before=")).split()
+        for u in ("sysinit.target", "local-fs-pre.target", "systemd-udevd.service", "systemd-udev-trigger.service",
+                  "data.mount", "mpfree-test-app.service"):
+            self.assertIn(u, before)
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-internal-off.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"))
+        rule = self.dfs(root_img, "cat /etc/udev/rules.d/00-mpfree-internal-off.rules")
+        self.assertIn('KERNEL=="mmcblk*", ENV{SYSTEMD_READY}="0", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"', rule)
+        if shutil.which("udevadm"):
+            path = os.path.join(self.tmp, "00-mpfree-internal-off.rules")
+            write(path, rule)
+            check = subprocess.run(["udevadm", "verify", path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True)
+            self.assertEqual(check.returncode, 0, check.stdout)
+
+    def test_preload_modules_for_the_soft_reboot(self):
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new())
+        res = self.build("--preload-module", "snd_usb_audio", "--preload-module", "hid-multitouch")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("modules the hook loads from Akai's system before the soft-reboot: snd_usb_audio hid-multitouch",
+                      res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.check_softreboot_files(root_img, NEW, ("snd_usb_audio", "hid-multitouch"))
+        shutil.rmtree(os.path.join(self.work, folder))
+        for bad in (["--preload-module", "../evil"], ["--preload-module", "a b"],
+                    ["--preload-module", "x", "--preload-module", "x"]):
+            res = self.build(*bad)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn("STOP: --preload-module", res.stdout)
+            self.assertEqual(self.outputs(), [])
 
     def test_same_release_installed(self):
         """An installed 3.10.1 starting the 3.10.1 stick: the running tree is U-Boot's for the same release."""
@@ -771,6 +839,191 @@ class StaticTests(unittest.TestCase):
         self.assertIn('path = os.path.join(scratch, "kits.img")', code)
         self.assertIn('"debugfs", "-w", "-f", script, path', code)
         self.assertEqual(code.count('"-w"'), 2)
+
+
+class FakeKernel:
+    """A fake sysfs and /dev for internal-off.sh, with the eMMC and SD controllers bound to their driver. Each
+    unbind file is a FIFO: writing a device name to it makes this "kernel" do what Linux does, remove the
+    driver link and the controller's block devices (unless told to ignore it)."""
+
+    def __init__(self, root, ignore=()):
+        self.root, self.ignore, self.unbound = root, set(ignore), []
+        drv = os.path.join(root, "sys/bus/platform/drivers/dwmmc_rockchip")
+        os.makedirs(drv)
+        for name, disks in (("ff0f0000.dwmmc", ("mmcblk0", "mmcblk0boot0", "mmcblk0boot1")),
+                            ("ff0c0000.dwmmc", ("mmcblk1",)), ("ff0d0000.dwmmc", ())):
+            dev = os.path.join(root, "sys/bus/platform/devices", name)
+            os.makedirs(dev)
+            os.symlink(os.path.relpath(drv, dev), os.path.join(dev, "driver"))
+            for disk in disks:
+                os.makedirs(os.path.join(root, "sys/block", disk))
+                write(os.path.join(root, "sys/block", disk, "owner"), name)
+        os.mkfifo(os.path.join(drv, "unbind"))
+        os.makedirs(os.path.join(root, "dev/disk/by-partlabel"))
+        os.symlink("../../mmcblk0p8", os.path.join(root, "dev/disk/by-partlabel/data"))
+        os.symlink("../../sda1", os.path.join(root, "dev/disk/by-partlabel/mpfree-test-root"))
+        for rel, text in (("proc/uptime", "7.40 2.00\n"), ("dev/kmsg", "")):
+            write(os.path.join(root, rel), text)
+        os.makedirs(os.path.join(root, "run"), exist_ok=True)
+        import threading
+        self.stop = False
+        self.thread = threading.Thread(target=self.serve, args=(os.path.join(drv, "unbind"),), daemon=True)
+        self.thread.start()
+
+    def serve(self, fifo):
+        # Held open for writing too, so the FIFO never reports an end and no write between two reads is lost.
+        with os.fdopen(os.open(fifo, os.O_RDWR), "r") as fh:
+            for line in fh:
+                if self.stop:
+                    return
+                for name in line.split():
+                    self.unbound.append(name)
+                    if name in self.ignore:
+                        continue
+                    os.unlink(os.path.join(self.root, "sys/bus/platform/devices", name, "driver"))
+                    for disk in os.listdir(os.path.join(self.root, "sys/block")):
+                        with open(os.path.join(self.root, "sys/block", disk, "owner")) as o:
+                            if o.read() == name:
+                                shutil.rmtree(os.path.join(self.root, "sys/block", disk))
+
+    def close(self):
+        self.stop = True
+        with open(os.path.join(self.root, "sys/bus/platform/drivers/dwmmc_rockchip/unbind"), "w") as fh:
+            fh.write("\n")
+        self.thread.join(5)
+
+
+class InternalOffTests(unittest.TestCase):
+    """internal-off.sh, the first thing the stick's system runs after the soft-reboot, against a fake kernel."""
+
+    def setUp(self):
+        self.dash = shutil.which("dash")
+        if not self.dash:
+            self.skipTest("dash not installed")
+        self.tmp = tempfile.mkdtemp(prefix="mpfree-internal-off-test-")
+        self.root = os.path.join(self.tmp, "root")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        write(os.path.join(self.bin, "sleep"), "#!/bin/sh\necho sleep >> \"$FAKE_LOG\"\nexec /bin/sleep 0.1\n", 0o755)
+        write(os.path.join(self.bin, "sync"), "#!/bin/sh\necho sync >> \"$FAKE_LOG\"\n", 0o755)
+        for tool in ("cat", "cut", "readlink", "rm"):
+            os.symlink(shutil.which(tool), os.path.join(self.bin, tool))
+        self.log = os.path.join(self.tmp, "log")
+        self.kernel = None
+
+    def tearDown(self):
+        if self.kernel:
+            self.kernel.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_script(self):
+        script = stick_module().INTERNAL_OFF_SCRIPT.replace("R=''", f"R='{self.root}'", 1)
+        return subprocess.run([self.dash, "-c", script], env={"PATH": self.bin, "FAKE_LOG": self.log},
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+
+    def notes(self):
+        with open(os.path.join(self.root, "run/mpfree-internal-off.txt")) as fh:
+            return fh.read()
+
+    def test_switches_off_the_emmc_and_sd_card_after_a_soft_reboot(self):
+        self.kernel = FakeKernel(self.root)
+        write(os.path.join(self.root, "run/mpfree-hook/soft-reboot"), "6.10\n")
+        # Akai's read-only dm-verity root, still known to the kernel: not waited for.
+        os.makedirs(os.path.join(self.root, "sys/fs/ext4/dm-0"))
+        os.makedirs(os.path.join(self.root, "sys/block/dm-0/slaves/mmcblk0p5"))
+        write(os.path.join(self.root, "sys/block/dm-0/ro"), "1\n")
+        write(os.path.join(self.root, "sys/block/dm-0/owner"), "dm")
+        res = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.kernel.unbound, ["ff0f0000.dwmmc", "ff0c0000.dwmmc"], "the SDIO controller is left")
+        notes = self.notes()
+        self.assertIn("mpfree-internal-off: started at 7.40 s (after soft-reboot)\n", notes)
+        self.assertIn("mpfree-internal-off: switched off ff0f0000.dwmmc\n", notes)
+        self.assertIn("mpfree-internal-off: switched off ff0c0000.dwmmc\n", notes)
+        self.assertIn("no eMMC or SD card block device is left", notes)
+        self.assertFalse(os.path.lexists(os.path.join(self.root, "dev/disk/by-partlabel/data")))
+        self.assertTrue(os.path.lexists(os.path.join(self.root, "dev/disk/by-partlabel/mpfree-test-root")))
+        self.assertTrue(os.path.lexists(os.path.join(self.root, "sys/bus/platform/devices/ff0d0000.dwmmc/driver")))
+        if os.path.exists(self.log):
+            with open(self.log) as fh:
+                self.assertNotIn("sync", fh.read(), "nothing to wait for")
+
+    def test_waits_for_akai_data_to_be_let_go_then_powers_off_if_it_is_not(self):
+        self.kernel = FakeKernel(self.root)
+        os.makedirs(os.path.join(self.root, "sys/fs/ext4/mmcblk0p8"))
+        res = self.run_script()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("STOP: mmcblk0p8 is still mounted after 10 s; powering off", self.notes())
+        with open(self.log) as fh:
+            self.assertEqual(fh.read().split(), ["sleep"] * 10 + ["sync"])
+        self.assertEqual(self.kernel.unbound, [], "nothing is unbound under a live filesystem")
+
+    def test_a_stop_keeps_its_notes_on_the_sticks_log_partition(self):
+        self.kernel = FakeKernel(self.root, ignore=("ff0f0000.dwmmc",))
+        part = os.path.join(self.root, "sys/devices/platform/ff540000.usb/usb2/2-1/host0/block/sda/sda2")
+        write(os.path.join(part, "uevent"), "MAJOR=8\nMINOR=2\nDEVNAME=sda2\nDEVTYPE=partition\nPARTN=2\n"
+                                            "PARTNAME=mpfree-test-log\n")
+        os.makedirs(os.path.join(self.root, "sys/class/block"))
+        os.symlink(os.path.relpath(part, os.path.join(self.root, "sys/class/block")),
+                   os.path.join(self.root, "sys/class/block/sda2"))
+        write(os.path.join(self.root, "proc/sys/kernel/random/boot_id"), "0123abcd-0000-4000-8000-00000000beef\n")
+        dev = os.path.join(self.root, "dev/sda2")
+        self.disk = os.path.join(self.tmp, "log-partition")
+        os.makedirs(self.disk)
+        if os.geteuid() == 0:
+            subprocess.run(["mknod", dev, "b", "7", "250"], check=True)
+        else:
+            self.skipTest("needs root to make a block device node")
+        write(os.path.join(self.bin, "mount"), '#!/bin/sh\necho "mount: $*" >> "$FAKE_LOG"\n'
+                                               'for d; do :; done\nrmdir "$d" && ln -s "$FAKE_DISK" "$d"\n', 0o755)
+        write(os.path.join(self.bin, "umount"), '#!/bin/sh\necho "umount: $*" >> "$FAKE_LOG"\n', 0o755)
+        write(os.path.join(self.bin, "dmesg"), '#!/bin/sh\necho "[ 7.5] fake kernel log"\n', 0o755)
+        for tool in ("grep", "mkdir", "rmdir", "ln"):
+            os.symlink(shutil.which(tool), os.path.join(self.bin, tool))
+        script = stick_module().INTERNAL_OFF_SCRIPT.replace("R=''", f"R='{self.root}'", 1)
+        res = subprocess.run([self.dash, "-c", script], env={"PATH": self.bin, "FAKE_LOG": self.log,
+                                                             "FAKE_DISK": self.disk},
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        with open(self.log) as fh:
+            calls = [l for l in fh.read().splitlines() if l.startswith(("mount", "umount"))]
+        mnt = os.path.join(self.root, "run/mpfree-internal-off-log")
+        self.assertEqual(calls, [f"mount: -t ext4 -o rw,nosuid,nodev,noexec,sync {dev} {mnt}", f"umount: {mnt}"])
+        with open(os.path.join(self.disk, "boot-0123abcd-0000-4000-8000-00000000beef/internal-off.txt")) as fh:
+            saved = fh.read()
+        self.assertIn("STOP: ff0f0000.dwmmc still has its driver; powering off", saved)
+        self.assertIn("fake kernel log", saved)
+
+    def test_powers_off_if_a_controller_stays(self):
+        self.kernel = FakeKernel(self.root, ignore=("ff0c0000.dwmmc",))
+        res = self.run_script()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("STOP: ff0c0000.dwmmc still has its driver; powering off", self.notes())
+        self.assertIn("(after kexec)", self.notes())
+
+    def test_nothing_to_do_after_a_kexec_jump(self):
+        os.makedirs(os.path.join(self.root, "sys/block/sda"))
+        for rel, text in (("proc/uptime", "3.00 1.00\n"), ("dev/kmsg", "")):
+            write(os.path.join(self.root, rel), text)
+        os.makedirs(os.path.join(self.root, "run"))
+        res = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("(after kexec)", self.notes())
+        self.assertNotIn("switched off", self.notes())
+
+    def test_script_writes_only_ram_sysfs_unbind_and_dev_links(self):
+        code = "\n".join(l for l in stick_module().INTERNAL_OFF_SCRIPT.splitlines() if not l.lstrip().startswith("#"))
+        for forbidden in ("mkfs", "dd ", "fw_setenv", "/data", "> /dev/mmc", "wipefs", "mmcblk*p", "blockdev --setrw"):
+            self.assertNotIn(forbidden, code)
+        # One mount only: the stick's own log partition, found by its GPT name on USB, to keep the notes of a stop.
+        self.assertEqual(code.count("mount -t"), 1)
+        self.assertIn('mount -t ext4 -o rw,nosuid,nodev,noexec,sync "$R/dev/$log" "$m"', code)
+        self.assertIn("grep -qx 'PARTNAME=mpfree-test-log'", code)
+        self.assertIn("*/usb*) log=", code)
+        writes = [l.strip() for l in code.splitlines() if " > " in l or ">>" in l]
+        for line in writes:
+            self.assertRegex(line, r'(> /dev/null|> "\$R/dev/kmsg"|>> "\$R/run/mpfree-internal-off.txt"|'
+                                   r'> "\$dev/driver/unbind"|> "\$d/internal-off.txt")', line)
 
 
 if __name__ == "__main__":

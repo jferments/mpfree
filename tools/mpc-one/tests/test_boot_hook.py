@@ -6,13 +6,17 @@ The wrapper runs against the same stand-ins as test_hook_canary.py: a fake ssh t
 scripts under BusyBox applets against a fake root folder (their first line R='' becomes that folder).
 BusyBox's shell runs its own applets before anything in PATH, so the hook's steps that mount, sleep or look
 for processes (the jump and the check) run under dash here, with the same BusyBox applets for everything
-but the stand-ins for mount, umount, sleep, pidof, systemctl, systemd-run and kexec. The installer runs
+but the stand-ins for mount, umount, sleep, pidof, systemctl, systemd-run and modprobe. The installer runs
 the check with $R/bin/sh, which is dash in the fake root and /bin/sh on the MPC.
+
+The fake stick's soft-reboot files are made from offline-kexec-stick.py's own constants, so the hook and the
+stick builder are tested to agree.
 
 Set MPFREE_REQUIRE_BUSYBOX=1 (CI does) to fail instead of skip without BusyBox or dash.
 """
 import glob
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -41,15 +45,29 @@ MARK = "# MPFree boot hook, written by tools/mpc-one/hook-install.sh."
 CANARY_MARK = "# MPFree boot-hook canary (test only), written by tools/mpc-one/hook-canary-install.sh."
 CANARY = ("data/system/etc/overlay/udev/rules.d/99-mpfree-canary.rules",
           "data/system/etc/overlay/modprobe.d/99-mpfree-canary.conf", "data/mpfree-hook/canary.sh")
-STICK_UUID = "1b2c3d4e-0000-4000-8000-00000000abcd"
-KERNEL = b"FAKE-ZIMAGE-" * 4000
-DTB = b"\xd0\x0d\xfe\xed" + b"FAKE-DTB" * 500
-CMDLINE = (f"root=PARTUUID={STICK_UUID} rootwait=60 ro panic=10 rfkill.default_state=0 "
-           "sysctl.kernel.kexec_load_disabled=1\n")
 HOLD = ("acvs.service", "touch-fw-update.service", "xmos-update.service", "az01-usbsata-fixer.service")
 JUMP_START = ("systemd-run: --no-block --collect --quiet --unit=mpfree-jump --description=MPFree: start from the "
               "stick --property=Type=oneshot --property=TimeoutStartSec=45 "
               + " ".join(f"--property=Before={u}" for u in HOLD) + " /bin/sh /data/mpfree-hook/hook.sh jump")
+SOFT_REBOOT = "systemctl: --no-block --job-mode=replace-irreversibly start soft-reboot.target"
+
+
+def stick_module():
+    spec = importlib.util.spec_from_file_location("offline_kexec_stick", os.path.join(TOOLS, "offline-kexec-stick.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+STICK = stick_module()
+# kmod's modprobe as the MPC has it: --version as kmod, every call logged, a module named in
+# $FAKE_MODPROBE_FAIL fails (with --dry-run too: it is not there).
+FAKE_MODPROBE = r'''#!/bin/sh
+if [ "$1" = --version ]; then echo "kmod version 31"; echo "+ZSTD +XZ"; exit 0; fi
+echo "modprobe: $*" >> "$FAKE_LOG"
+for a; do [ -n "${FAKE_MODPROBE_FAIL:-}" ] && [ "$a" = "$FAKE_MODPROBE_FAIL" ] && exit 1; done
+exit 0
+'''
 
 FAKE_SYSTEMCTL = r'''#!/bin/sh
 echo "systemctl: $*" >> "$FAKE_LOG"
@@ -77,13 +95,6 @@ FAKE_UMOUNT = r'''#!/bin/sh
 echo "umount: $*" >> "$FAKE_LOG"
 case "$1" in "$FAKE_ROOT"/run/*) ;; *) echo "fake umount: outside the fake root's /run" >&2; exit 99 ;; esac
 rm -rf "$1"/*
-'''
-FAKE_KEXEC = r'''#!/bin/sh
-echo "kexec: $*" >> "$FAKE_LOG"
-case "$1" in
-  --load) [ -n "${FAKE_KEXEC_FAIL:-}" ] && exit 1; echo 1 > "$FAKE_ROOT/sys/kernel/kexec_loaded" ;;
-  --unload) echo 0 > "$FAKE_ROOT/sys/kernel/kexec_loaded" ;;
-esac
 '''
 
 
@@ -128,7 +139,7 @@ class BootHookTests(unittest.TestCase):
         for applet in APPLETS:
             os.symlink(self.busybox, os.path.join(remote, applet))
         for name, text in (("systemctl", FAKE_SYSTEMCTL), ("systemd-run", FAKE_SYSTEMD_RUN), ("pidof", FAKE_PIDOF),
-                           ("journalctl", FAKE_JOURNALCTL), ("modprobe", FAKE_KMOD), ("sleep", FAKE_SLEEP),
+                           ("journalctl", FAKE_JOURNALCTL), ("modprobe", FAKE_MODPROBE), ("sleep", FAKE_SLEEP),
                            ("mount", FAKE_MOUNT), ("umount", FAKE_UMOUNT)):
             write(os.path.join(remote, name), text, 0o755)
         self.remote = remote
@@ -137,25 +148,17 @@ class BootHookTests(unittest.TestCase):
         write(os.path.join(r, "proc/mounts"), MOUNTS)
         write(os.path.join(r, "proc/uptime"), "6.05 9.10\n")
         write(os.path.join(r, "proc/sys/kernel/modprobe"), "/sbin/modprobe\n")
-        write(os.path.join(r, "proc/sys/kernel/kexec_load_disabled"), "0\n")
-        write(os.path.join(r, "sys/kernel/kexec_loaded"), "0\n")
-        write(os.path.join(r, "sbin/modprobe"), FAKE_KMOD, 0o755)
-        write(os.path.join(r, "usr/sbin/kexec"), FAKE_KEXEC, 0o755)
+        write(os.path.join(r, "proc/cmdline"), "console=ttyS2 root=/dev/dm-0 ro rootwait\n")
+        write(os.path.join(r, "sbin/modprobe"), FAKE_MODPROBE, 0o755)
+        for unit in ("soft-reboot.target", "systemd-soft-reboot.service"):
+            write(os.path.join(r, "usr/lib/systemd/system", unit), "[Unit]\n")
         os.makedirs(os.path.join(r, "bin"))
         os.symlink(self.dash, os.path.join(r, "bin/sh"))
         write(os.path.join(r, "data/system/etc/overlay/hostname"), "mpc-one\n")
         write(os.path.join(r, "dev/kmsg"), "")
         os.makedirs(os.path.join(r, "run"))
         self.before = self.tree()
-        # MPFree's stick: partition 1 of a USB disk, and what is on it.
-        files = {"boot/zImage-" + RELEASE: KERNEL, "boot/mpfree-kexec/kexec.dtb": DTB,
-                 "boot/mpfree-kexec/cmdline.txt": CMDLINE.encode()}
-        for rel, data in files.items():
-            os.makedirs(os.path.dirname(os.path.join(self.stick, rel)), exist_ok=True)
-            with open(os.path.join(self.stick, rel), "wb") as fh:
-                fh.write(data)
-        os.symlink("../zImage-" + RELEASE, os.path.join(self.stick, "boot/mpfree-kexec/zImage"))
-        self.write_sums()
+        self.make_stick()
         self.key = os.path.join(self.tmp, "key")
         write(self.key, "not a real key\n", 0o600)
         self.env = {
@@ -169,10 +172,39 @@ class BootHookTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def make_stick(self, modules=()):
+        """MPFree's stick, partition 1: the parts of the system the hook looks at, as offline-kexec-stick.py
+        writes them."""
+        shutil.rmtree(self.stick, ignore_errors=True)
+        sr = STICK.SOFTREBOOT_DIR.lstrip("/")
+        files = {STICK.INTERNAL_OFF_FILES[0]: STICK.INTERNAL_OFF_SCRIPT,
+                 STICK.INTERNAL_OFF_FILES[1]: STICK.INTERNAL_OFF_UNIT,
+                 STICK.INTERNAL_OFF_FILES[2]: STICK.INTERNAL_OFF_RULE,
+                 STICK.SOFTREBOOT_DIR + "/PROTOCOL": STICK.SOFTREBOOT_PROTOCOL + "\n",
+                 STICK.SOFTREBOOT_DIR + "/release": RELEASE + "\n"}
+        if modules:
+            files[STICK.SOFTREBOOT_DIR + "/preload-modules.txt"] = "".join(m + "\n" for m in modules)
+        for path, text in files.items():
+            write(os.path.join(self.stick, path.lstrip("/")), text, 0o755 if path.endswith(".sh") else 0o644)
+        self.write_sums()
+        write(os.path.join(self.stick, "usr/lib/systemd/systemd"), "#!/bin/sh\n# FAKE-SYSTEMD\n", 0o755)
+        write(os.path.join(self.stick, "usr/lib/os-release"), "ID=mpfree-test\n")
+        os.makedirs(os.path.join(self.stick, "etc/systemd/system/sysinit.target.wants"))
+        os.symlink(STICK.INTERNAL_OFF_FILES[1],
+                   os.path.join(self.stick, "etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"))
+        self.assertTrue(os.path.isdir(os.path.join(self.stick, sr)))
+
     def write_sums(self, **override):
-        sums = {"zImage": sha(KERNEL), "kexec.dtb": sha(DTB), "cmdline.txt": sha(CMDLINE.encode()), **override}
-        with open(os.path.join(self.stick, "boot/mpfree-kexec/SHA256SUMS"), "w") as fh:
-            fh.write("".join(f"{v}  {k}\n" for k, v in sums.items()))
+        sr = os.path.join(self.stick, STICK.SOFTREBOOT_DIR.lstrip("/"))
+        listed = list(STICK.INTERNAL_OFF_FILES) + [STICK.SOFTREBOOT_DIR + "/PROTOCOL", STICK.SOFTREBOOT_DIR + "/release"]
+        if os.path.exists(os.path.join(sr, "preload-modules.txt")):
+            listed.append(STICK.SOFTREBOOT_DIR + "/preload-modules.txt")
+        sums = {}
+        for p in listed:
+            with open(os.path.join(self.stick, p.lstrip("/")), "rb") as fh:
+                sums[p] = override.get(p) or sha(fh.read())
+        with open(os.path.join(sr, "SHA256SUMS"), "w") as fh:
+            fh.write("".join(f"{v}  {k}\n" for k, v in sums.items() if v != "-"))
 
     def plug_in(self):
         r = self.root
@@ -182,9 +214,8 @@ class BootHookTests(unittest.TestCase):
         os.makedirs(os.path.join(r, "sys/class/block"), exist_ok=True)
         os.symlink(os.path.relpath(block, os.path.join(r, "sys/class/block")), os.path.join(r, "sys/class/block/sda1"))
         write(os.path.join(r, "dev/sda1"), "")
-        for folder, name in (("by-partlabel", "mpfree-test-root"), ("by-partuuid", STICK_UUID)):
-            os.makedirs(os.path.join(r, "dev/disk", folder), exist_ok=True)
-            os.symlink("../../sda1", os.path.join(r, "dev/disk", folder, name))
+        os.makedirs(os.path.join(r, "dev/disk/by-partlabel"), exist_ok=True)
+        os.symlink("../../sda1", os.path.join(r, "dev/disk/by-partlabel/mpfree-test-root"))
 
     def tree(self):
         found = {}
@@ -252,24 +283,21 @@ class BootHookTests(unittest.TestCase):
             self.assertIn(f"deleted the canary's /{rel}", out)
             self.assertFalse(os.path.exists(os.path.join(self.root, rel)))
         self.assertIn("stick: /dev/sda1 (partition 1 of a USB disk), at 6.05 s", out)
-        self.assertIn("kexec files: kernel " + RELEASE + ", checked against SHA256SUMS", out)
-        self.assertIn("command line: root=PARTUUID=(this stick) rootwait=60 ro panic=10", out)
-        self.assertIn("kernel loaded (kexec --load)", out)
-        self.assertIn("kernel unloaded (kexec --unload)", out)
-        self.assertIn("CHECK-OK: at power-on with this stick in, the MPC would restart into it", out)
+        self.assertIn("the stick's system switches the MPC's eMMC and SD card off first: its files check out against "
+                      "SHA256SUMS", out)
+        self.assertIn(f"kernel {RELEASE}; the stick's system is for it", out)
+        self.assertIn("modules to load first: none listed", out)
+        self.assertIn("CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it", out)
         self.assertIn("RESULT: the hook is installed, and the stick checks out. NEXT: switch the MPC off, then on "
                       "with the stick in.", out)
+        self.assertNotIn("note: the kernel command line", out)
         work = os.path.join(self.root, "run/mpfree-hook-check")
-        self.assertEqual(self.calls("kexec: "), [
-            f"kexec: --load --kexec-syscall --dtb={work}/kexec/kexec.dtb --command-line={CMDLINE.strip()} "
-            f"{work}/kexec/zImage",
-            "kexec: --unload --kexec-syscall"])
         self.assertEqual(self.calls("mount: "), [f"mount: -t ext4 -o ro,noload,nodev,nosuid,noexec "
                                                  f"{self.root}/dev/sda1 {work}/stick"])
         self.assertEqual(self.calls("umount: "), [f"umount: {work}/stick"])
-        self.assertEqual(self.read("sys/kernel/kexec_loaded"), "0\n")
-        self.assertEqual(self.run_files(), [], "the check leaves nothing in /run")
-        self.assertEqual(self.calls("systemd-run: ") + self.calls("systemctl: --no-block"), [])
+        self.assertEqual(self.run_files(), [], "the check leaves nothing in /run, and no /run/nextroot")
+        self.assertEqual(self.calls("systemd-run: ") + self.calls("systemctl: --no-block") + self.calls("modprobe: "),
+                         [])
         # Exactly the three files; the canary's folder list is kept for the undo.
         after = self.tree()
         self.assertEqual(sorted(set(after) - set(self.before)), [
@@ -290,6 +318,21 @@ class BootHookTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("RESULT: the hook is gone", res.stdout)
         self.assertEqual(self.tree(), self.before)
+
+    def test_install_replaces_the_kexec_hook_on_the_mpc_now(self):
+        # The hook installed on the MPC today is the kexec version: same three files, same marker line.
+        for rel in (SCRIPT, RULE, CONF):
+            write(os.path.join(self.root, rel), f"{'R=' + chr(39) * 2 + chr(10) if rel == SCRIPT else ''}{MARK}\n"
+                                                "# the kexec version\n", 0o755 if rel == SCRIPT else 0o644)
+        write(os.path.join(self.root, "data/mpfree-hook/created-folders.txt"), "/data/mpfree-hook\n")
+        self.before = self.tree()
+        self.plug_in()
+        res = self.install()
+        self.assertIn("an earlier version of the hook is in place; it is replaced", res.stdout)
+        self.assertIn("soft-reboot.target", self.read(SCRIPT))
+        self.assertNotIn("kexec --load", self.read(SCRIPT))
+        self.assertIn("CHECK-OK", res.stdout)
+        self.assertEqual(sorted(set(self.tree()) - set(self.before)), [])
 
     def test_install_without_the_stick_then_again_with_it(self):
         res = self.install(ok=False)
@@ -312,18 +355,37 @@ class BootHookTests(unittest.TestCase):
 
     def test_install_reports_a_stick_that_does_not_check_out(self):
         self.plug_in()
-        self.write_sums(**{"kexec.dtb": "0" * 64})
+        self.write_sums(**{"/etc/mpfree-test/internal-off.sh": "0" * 64})
         res = self.install(ok=False)
-        self.assertIn("STOP: kexec.dtb on the stick does not match its SHA256SUMS", res.stdout)
+        self.assertIn("STOP: /etc/mpfree-test/internal-off.sh on the stick does not match its SHA256SUMS", res.stdout)
         self.assertIn("RESULT: the hook is installed, but the check stopped (above). Take the stick out before you "
                       "next switch the MPC on (without it the hook does nothing), and send the results.", res.stdout)
-        self.assertEqual(self.calls("kexec: "), [])
+        self.assertEqual(self.run_files(), [])
+
+    def test_check_looks_up_the_modules_and_notes_the_command_line(self):
+        self.install(ok=False)
+        self.plug_in()
+        self.make_stick(modules=("snd_usb_audio", "hid_multitouch"))
+        write(os.path.join(self.root, "proc/cmdline"), "root=/dev/dm-0 systemd.show_status=0 quiet\n")
+        open(self.log, "w").close()
+        res = self.hook("check")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("modules to load first, all found in Akai's system: snd_usb_audio hid_multitouch", res.stdout)
+        self.assertIn("note: the kernel command line has systemd.show_status=0, which the stick's system also reads",
+                      res.stdout)
+        self.assertEqual(self.calls("modprobe: "), ["modprobe: --dry-run --quiet snd_usb_audio",
+                                                    "modprobe: --dry-run --quiet hid_multitouch"])
+        open(self.log, "w").close()
+        res = self.hook("check", FAKE_MODPROBE_FAIL="hid_multitouch")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("STOP: Akai's system has no module hid_multitouch (the stick needs it)", res.stdout)
         self.assertEqual(self.run_files(), [])
 
     def test_check_reads_the_stick_where_akai_mounted_it_without_links(self):
         # Akai's edisksd mounts every partition of a USB disk at /media/..., with nosymfollow (seen on the MPC
-        # on 2026-11-15), so /boot/mpfree-kexec/zImage cannot be followed there. The same mount is made here in
-        # a private mount namespace, so the kernel enforces it as on the MPC.
+        # on 2026-11-15). The check reads the stick there; the one link it needs (the internal-off service in
+        # sysinit.target.wants) is read with readlink, never followed. The same mount is made here in a
+        # private mount namespace, so the kernel enforces it as on the MPC.
         unshare, mount = shutil.which("unshare"), shutil.which("mount")
         if not unshare or not mount:
             self.skipTest("needs unshare and mount (util-linux)")
@@ -333,8 +395,9 @@ class BootHookTests(unittest.TestCase):
         os.makedirs(self.root + media)
         with open(os.path.join(self.root, "proc/mounts"), "a") as fh:
             fh.write(f"/dev/sda1 {media} ext4 rw,nosuid,nodev,noexec,relatime,nosymfollow 0 0\n")
+        wants = "etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"
         akai_mount = (f'{mount} --bind "$1" "$2" && {mount} -o remount,bind,nosymfollow "$2" || exit 77; '
-                      '[ -f "$2/boot/mpfree-kexec/zImage" ] && exit 78; shift 2; exec "$@"')
+                      f'cat "$2/{wants}" > /dev/null 2>&1 && exit 78; shift 2; exec "$@"')
         ns = ["-m"] if os.geteuid() == 0 else ["-r", "-m"]
         wrap = (unshare, *ns, "--propagation", "private", "/bin/sh", "-c", akai_mount, "sh", self.stick,
                 self.root + media)
@@ -346,9 +409,7 @@ class BootHookTests(unittest.TestCase):
         self.assertIn(f"partition 1 is mounted already at {media}; read from there", res.stdout)
         self.assertIn("CHECK-OK", res.stdout)
         self.assertEqual(self.calls("mount: ") + self.calls("umount: "), [], "Akai's mount is used and left alone")
-        self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-syscall"])
-        self.assertEqual(self.read("sys/kernel/kexec_loaded"), "0\n")
-        self.assertEqual(self.run_files(), [], "the copies in /run are removed again")
+        self.assertEqual(self.run_files(), [])
 
     def test_install_stops_on_files_it_did_not_write(self):
         for rel in (RULE, CONF, CANARY[0]):
@@ -359,11 +420,12 @@ class BootHookTests(unittest.TestCase):
             self.assertEqual(self.tree(), self.before)
             os.unlink(os.path.join(self.root, rel))
 
-    def test_install_stops_without_kexec_or_kmod(self):
-        write(os.path.join(self.root, "proc/sys/kernel/kexec_load_disabled"), "1\n")
+    def test_install_stops_without_soft_reboot_or_kmod(self):
+        os.unlink(os.path.join(self.root, "usr/lib/systemd/system/soft-reboot.target"))
         res = self.install(ok=False)
-        self.assertIn("STOP: kexec is turned off on this system", res.stdout)
-        write(os.path.join(self.root, "proc/sys/kernel/kexec_load_disabled"), "0\n")
+        self.assertIn("STOP: this system's systemd has no soft-reboot.target (soft-reboot needs systemd 254 or later)",
+                      res.stdout)
+        write(os.path.join(self.root, "usr/lib/systemd/system/soft-reboot.target"), "[Unit]\n")
         write(os.path.join(self.root, "sbin/modprobe"), "#!/bin/sh\nexit 1\n", 0o755)
         res = self.install(ok=False)
         self.assertIn("is not kmod's modprobe", res.stdout)
@@ -427,32 +489,33 @@ class BootHookTests(unittest.TestCase):
         os.makedirs(os.path.join(self.root, "run/mpfree-hook"), exist_ok=True)
         return self.hook("jump", **env)
 
-    def test_jump_loads_the_stick_and_restarts_into_it(self):
+    def test_jump_mounts_the_stick_at_nextroot_and_soft_reboots(self):
         self.install(ok=False)
         self.plug_in()
+        self.make_stick(modules=("snd_usb_audio",))
         open(self.log, "w").close()
         res = self.jump()
         self.assertEqual(res.returncode, 0, res.stdout)
         kmsg = self.read("run/mpfree-hook.txt")  # every kernel log line also goes there
         for line in ("jump service started at 6.05 s; Akai's app: inactive",
                      "stick: /dev/sda1 (partition 1 of a USB disk), at 6.05 s",
-                     f"kexec files: kernel {RELEASE}, checked against SHA256SUMS",
-                     "kernel loaded (kexec --load) at 6.05 s", "restarting into MPFree (kexec.target) at 6.05 s"):
+                     "the stick's system switches the MPC's eMMC and SD card off first: its files check out against "
+                     "SHA256SUMS", f"kernel {RELEASE}; the stick's system is for it",
+                     "modules loaded from Akai's system: snd_usb_audio",
+                     "soft-reboot into MPFree (soft-reboot.target) at 6.05 s"):
             self.assertIn("mpfree-hook: " + line + "\n", kmsg)
         self.assertNotIn("STOP", kmsg)
-        work = os.path.join(self.root, "run/mpfree-hook")
-        self.assertEqual(self.calls("kexec: "), [
-            f"kexec: --load --kexec-syscall --dtb={work}/kexec/kexec.dtb --command-line={CMDLINE.strip()} "
-            f"{work}/kexec/zImage"])
-        self.assertEqual(self.calls("systemctl: --no-block"),
-                         ["systemctl: --no-block --job-mode=replace-irreversibly start kexec.target"])
-        self.assertEqual(self.calls("umount: "), [f"umount: {work}/stick"])
-        self.assertEqual(self.read("sys/kernel/kexec_loaded"), "1\n", "left loaded for the restart")
-        with open(os.path.join(work, "kexec/zImage"), "rb") as fh:
-            self.assertEqual(fh.read(), KERNEL)
+        nextroot = os.path.join(self.root, "run/nextroot")
+        # Read-only and without journal replay (nothing written to the stick), but its programs may run.
+        self.assertEqual(self.calls("mount: "), [f"mount: -t ext4 -o ro,noload {self.root}/dev/sda1 {nextroot}"])
+        self.assertEqual(self.calls("umount: "), [], "left mounted for the soft-reboot")
+        self.assertEqual(self.calls("modprobe: "), ["modprobe: --quiet snd_usb_audio"])
+        self.assertEqual(self.calls("systemctl: --no-block"), [SOFT_REBOOT])
+        self.assertTrue(os.path.isfile(os.path.join(nextroot, "usr/lib/systemd/systemd")))
+        self.assertEqual(self.read("run/mpfree-hook/soft-reboot"), "6.05\n", "tells the stick's system how it started")
         self.assertEqual(self.calls("sleep: "), [])
 
-    def expect_stop(self, message, loaded=False, asked=False, **env):
+    def expect_stop(self, message, asked=False, **env):
         open(self.log, "w").close()
         write(os.path.join(self.root, "run/mpfree-hook.txt"), "")
         res = self.jump(**env)
@@ -460,10 +523,11 @@ class BootHookTests(unittest.TestCase):
         kmsg = self.read("run/mpfree-hook.txt")  # every kernel log line also goes there
         self.assertIn("mpfree-hook: STOP: " + message, kmsg)
         self.assertIn("mpfree-hook: nothing was started: Akai's system starts as usual\n", kmsg)
-        self.assertEqual(self.calls("systemctl: --no-block"),
-                         ["systemctl: --no-block --job-mode=replace-irreversibly start kexec.target"] if asked else [])
-        self.assertEqual(self.read("sys/kernel/kexec_loaded"), "0\n")
-        self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-syscall"] if loaded else [])
+        self.assertEqual(self.calls("systemctl: --no-block"), [SOFT_REBOOT] if asked else [])
+        mounts = [c for c in self.calls("mount: ") if "run/nextroot" in c]
+        self.assertEqual(self.calls("umount: "), [f"umount: {self.root}/run/nextroot"] if mounts and
+                         not env.get("FAKE_MOUNT_FAIL") else [], "what it mounted, it unmounts")
+        # Nothing staged: with /run/nextroot left behind, a later `reboot` of Akai's system would soft-reboot.
         self.assertEqual(self.run_files(), ["run/mpfree-hook", "run/mpfree-hook.txt"], "only the marker and the log")
         return res
 
@@ -472,37 +536,78 @@ class BootHookTests(unittest.TestCase):
         with self.subTest("no stick"):
             self.expect_stop("MPFree's stick is not in")
         self.plug_in()
-        with self.subTest("damaged file"):
-            self.write_sums(zImage="1" * 64)
-            self.expect_stop("zImage on the stick does not match its SHA256SUMS")
+        sr = os.path.join(self.stick, "boot/mpfree-softreboot")
+        with self.subTest("a damaged switch-off script"):
+            with open(os.path.join(self.stick, "etc/mpfree-test/internal-off.sh"), "a") as fh:
+                fh.write("exit 0\n")
+            self.expect_stop("/etc/mpfree-test/internal-off.sh on the stick does not match its SHA256SUMS")
+            self.make_stick()
+        with self.subTest("a stick without the switch-off service"):
+            self.write_sums(**{"/etc/mpfree-test/internal-off.sh": "-"})
+            self.expect_stop("the stick's system does not carry /etc/mpfree-test/internal-off.sh (it must switch the "
+                             "MPC's eMMC and SD card off)")
+            self.make_stick()
+        with self.subTest("the switch-off service not started first"):
+            os.unlink(os.path.join(self.stick, "etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"))
+            self.expect_stop("the stick's system does not start mpfree-test-internal-off.service first")
+            self.make_stick()
+        with self.subTest("a stick for another firmware"):
+            write(os.path.join(sr, "release"), "6.1.0-other\n")
             self.write_sums()
-        with self.subTest("another stick's command line"):
-            other = CMDLINE.replace(STICK_UUID, "99999999-0000-4000-8000-000000000000").encode()
-            with open(os.path.join(self.stick, "boot/mpfree-kexec/cmdline.txt"), "wb") as fh:
-                fh.write(other)
-            self.write_sums(**{"cmdline.txt": sha(other)})
-            self.expect_stop("cmdline.txt does not start the system on this stick's partition 1")
-            with open(os.path.join(self.stick, "boot/mpfree-kexec/cmdline.txt"), "wb") as fh:
-                fh.write(CMDLINE.encode())
-            self.write_sums()
-        with self.subTest("an older stick without the kexec files"):
-            os.rename(os.path.join(self.stick, "boot/mpfree-kexec"), os.path.join(self.tmp, "kexec-aside"))
-            self.expect_stop("the stick has no /boot/mpfree-kexec")
-            os.rename(os.path.join(self.tmp, "kexec-aside"), os.path.join(self.stick, "boot/mpfree-kexec"))
-        with self.subTest("a kernel link out of the stick"):
-            link = os.path.join(self.stick, "boot/mpfree-kexec/zImage")
-            os.unlink(link)
-            os.symlink("/etc/shadow", link)
-            self.expect_stop("/boot/mpfree-kexec/zImage is not a link to ../zImage-<release>")
-            os.unlink(link)
-            os.symlink("../zImage-" + RELEASE, link)
+            self.expect_stop(f"the stick's system is not for the running kernel {RELEASE} (rebuild it for this firmware)")
+            self.make_stick()
+        with self.subTest("another protocol"):
+            write(os.path.join(sr, "PROTOCOL"), "mpfree-softreboot-2\n")
+            self.expect_stop("/boot/mpfree-softreboot/PROTOCOL is not mpfree-softreboot-1")
+            self.make_stick()
+        with self.subTest("an older stick without the soft-reboot files"):
+            shutil.rmtree(sr)
+            self.expect_stop("the stick has no /boot/mpfree-softreboot")
+            self.make_stick()
+        with self.subTest("a path out of the stick in SHA256SUMS"):
+            with open(os.path.join(sr, "SHA256SUMS"), "a") as fh:
+                fh.write(f"{'0' * 64}  /etc/../../data/x\n")
+            self.expect_stop("/boot/mpfree-softreboot/SHA256SUMS names an unusual path")
+            self.make_stick()
+        with self.subTest("no systemd on the stick"):
+            os.unlink(os.path.join(self.stick, "usr/lib/systemd/systemd"))
+            self.expect_stop("the stick has no /usr/lib/systemd/systemd to start")
+            self.make_stick()
+        with self.subTest("systemd on the stick not executable"):
+            os.chmod(os.path.join(self.stick, "usr/lib/systemd/systemd"), 0o644)
+            self.expect_stop("the stick has no /usr/lib/systemd/systemd to start")
+            self.make_stick()
+        with self.subTest("no os-release (systemd would restart Akai's system instead)"):
+            os.unlink(os.path.join(self.stick, "usr/lib/os-release"))
+            self.expect_stop("the stick has no os-release file")
+            self.make_stick()
+        with self.subTest("a module the stick needs is missing"):
+            self.make_stick(modules=("snd_usb_audio",))
+            self.expect_stop("could not load the module snd_usb_audio from Akai's system",
+                             FAKE_MODPROBE_FAIL="snd_usb_audio")
+            self.make_stick(modules=("bad/name",))
+            self.expect_stop("/boot/mpfree-softreboot/preload-modules.txt names an unusual module")
+            self.make_stick()
         with self.subTest("partition not mountable"):
             self.expect_stop("could not mount /dev/sda1 read-only", FAKE_MOUNT_FAIL="1")
-        with self.subTest("kexec refuses"):
-            self.expect_stop("kexec --load refused the stick's kernel", loaded=False, FAKE_KEXEC_FAIL="1")
+        with self.subTest("already mounted by Akai's system"):
+            with open(os.path.join(self.root, "proc/mounts"), "a") as fh:
+                fh.write("/dev/sda1 /media/abc ext4 rw,nosuid,nodev,noexec 0 0\n")
+            self.expect_stop("/dev/sda1 is mounted already (at /media/abc); not this boot")
+            write(os.path.join(self.root, "proc/mounts"), MOUNTS)
+        with self.subTest("something staged at /run/nextroot already"):
+            write(os.path.join(self.root, "run/nextroot/etc/os-release"), "ID=other\n")
+            open(self.log, "w").close()
+            write(os.path.join(self.root, "run/mpfree-hook.txt"), "")
+            res = self.jump()
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn("STOP: /run/nextroot exists and is not an empty folder", self.read("run/mpfree-hook.txt"))
+            self.assertEqual(self.calls("mount: ") + self.calls("umount: ") + self.calls("systemctl: --no-block"), [])
+            self.assertTrue(os.path.exists(os.path.join(self.root, "run/nextroot/etc/os-release")), "left alone")
+            shutil.rmtree(os.path.join(self.root, "run/nextroot"))
         with self.subTest("a firmware updater keeps running"):
-            res = self.expect_stop("touch-fw-update.service is still running after 20 s",
-                                   FAKE_BUSY_UNIT="touch-fw-update.service")
+            self.expect_stop("touch-fw-update.service is still running after 20 s",
+                             FAKE_BUSY_UNIT="touch-fw-update.service")
             self.assertEqual(len(self.calls("sleep: ")), 20)
             self.assertIn("mpfree-hook: waiting for touch-fw-update.service to finish\n",
                           self.read("run/mpfree-hook.txt"))
@@ -512,14 +617,15 @@ class BootHookTests(unittest.TestCase):
             write(os.path.join(self.root, "proc/321/cmdline"), "sh\0/usr/share/Akai/SME0/Firmware/update.sh\0")
             self.expect_stop("Akai's controller update.sh is still running after 20 s")
             shutil.rmtree(os.path.join(self.root, "proc/321"))
-        with self.subTest("systemd refuses the restart"):
-            self.expect_stop("systemctl could not start kexec.target", loaded=True, asked=True, FAKE_START_RC="1")
+        with self.subTest("systemd refuses the soft-reboot"):
+            self.expect_stop("systemctl could not start soft-reboot.target", asked=True, FAKE_START_RC="1")
+            self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-hook/soft-reboot")))
         with self.subTest("not started by a trigger"):
             shutil.rmtree(os.path.join(self.root, "run/mpfree-hook"))
             open(self.log, "w").close()
             res = self.hook("jump")
             self.assertEqual(res.returncode, 0, res.stdout)
-            self.assertEqual(self.calls("mount: ") + self.calls("kexec: "), [])
+            self.assertEqual(self.calls("mount: ") + self.calls("systemctl: --no-block"), [])
 
     def test_report_reads_only(self):
         self.install(ok=False)
@@ -569,18 +675,24 @@ class StaticTests(unittest.TestCase):
         code = self.code(INSTALL)
         start, end = code.index("SCRIPT_TEXT=$(cat <<'MPFREE_EOF'"), code.index("MPFREE_EOF\n)\nRULE_TEXT")
         installer, hook = code[:start] + code[end:], code[start:end]
-        for forbidden in ("mount ", "kexec --", "kexec\" --", "systemctl", "systemd-run", "fw_setenv", "dd ", "rm -r",
-                          "/usr/lib/systemd", "/etc/systemd"):
+        for forbidden in ("mount ", "kexec", "systemctl", "systemd-run", "fw_setenv", "dd ", "rm -r",
+                          "/etc/systemd", "> \"$R/usr", "> $R/usr"):
             self.assertNotIn(forbidden, installer)
-        # The hook itself: the stick read-only, kexec by its full path, nothing written but /run and the log.
-        self.assertIn("mount -t ext4 -o ro,noload,nodev,nosuid,noexec ", hook)
-        self.assertEqual(hook.count("mount -t"), 1)
-        for forbidden in ("fw_setenv", "dd ", "mkfs", "mmcblk", "rw,", "rm -r", "/etc/systemd", " > /data",
-                          ">> /data", "systemctl kexec", "reboot"):
+        # The hook itself: the stick read-only (no journal replay) in both its mounts, no kernel loaded, the
+        # soft-reboot asked for one way only, nothing written but /run and the log.
+        self.assertIn('mount -t ext4 -o ro,noload "$dev" "$M"', hook)
+        self.assertIn('mount -t ext4 -o ro,noload,nodev,nosuid,noexec "$dev" "$M"', hook)
+        self.assertEqual(hook.count("mount -t"), 2)
+        self.assertEqual(hook.count("systemctl --no-block"), 1)
+        self.assertIn("systemctl --no-block --job-mode=replace-irreversibly start soft-reboot.target", hook)
+        for forbidden in ("fw_setenv", "dd ", "mkfs", "mmcblk", "rw,", "rm -r", " > /data",
+                          ">> /data", "/usr/sbin/kexec", "kexec --", "kexec.target", "systemctl reboot", "systemctl soft-reboot",
+                          "insmod", "--force"):
             self.assertNotIn(forbidden, hook)
         writes = [line.strip() for line in hook.splitlines() if " > " in line or ">>" in line]
         for line in writes:
-            self.assertRegex(line, r'(> /dev/null|> "\$R/dev/kmsg"|>> "\$R/run/mpfree-hook.txt")', line)
+            self.assertRegex(line, r'(> /dev/null|> "\$R/dev/kmsg"|>> "\$R/run/mpfree-hook.txt"|'
+                                   r'> "\$R/run/mpfree-hook/soft-reboot")', line)
 
 
 if __name__ == "__main__":
