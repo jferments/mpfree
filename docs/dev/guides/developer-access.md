@@ -1,6 +1,19 @@
 # MPC One developer access: reproducible SSH and safety runbook
 
-**Scope:** owner-authorized research on one Akai MPC One running reported factory firmware 3.6.0. The commands in the **reference lab** section are exact for this already-established setup; the same addresses, SSH key and firmware assumptions will **not** apply to another device.
+**Scope:** owner-authorized research on one Akai MPC One. It ran factory firmware 3.6.0 until 2026-11-15, when the owner installed MPC OS 3.10.1. The commands in the **reference lab** section are exact for this already-established setup; the same addresses, SSH key and firmware assumptions will **not** apply to another device.
+
+## Current access: Akai's developer mode on MPC OS 3.10.1 (2026-11-15)
+
+Since the update, the way in is Akai's own developer mode. Switch on the developer panel under Menu > Preferences > Enhancements, then hold SHIFT, press MENU and choose Developer. That starts Akai's SSH server on **port 22** for root.
+
+- **As Akai ships it, the server asks for no key and no password** (`AuthenticationMethods none`). Anyone on any network the MPC is on can get a root shell while developer mode is on. Keep the MPC on the direct cable and lock it to your key at once.
+- **The tools do both steps.** `collect-over-ssh.sh --devmode-trust` records the host key after a typed `TRUST`. `--devmode-lock` does Akai's own lock-down after a typed `LOCK`: it empties `/data/ssh/sshd_config.d/allow-access.conf` and adds your key to `/data/ssh/authorized_keys`. `--devmode-status` shows the state, and `--devmode-unlock` is the undo. See [survey tools](survey-tools.md#modes) and the [qualification runbook](../hardware/firmware-3.10.1-qualification.md), which also gives the undo by hand from the developer panel's terminal.
+- **Our own SSH is gone.** The update rewrote the root filesystem, which removed MOD-001 below. MOD-002's `/data/mpfree/ssh` is left on `/data`, unused.
+- **Not yet seen on this unit:** whether developer mode, the lock and the host key survive a restart. The qualification runbook checks it.
+
+The kexec test build on the USB stick keeps its own key-only SSH on port 2222 (`MPC_TEST_PORT`), as before.
+
+The sections below record how access worked on 3.6.0.
 
 ## Established access (2026-11-08)
 
@@ -27,7 +40,7 @@ This bootstrap temporarily launched the MPC's **existing** OpenSSH 9.6 server wi
 
 It may write diagnostic status/fingerprint files on the removable USB. The authenticated shell itself may cause routine logging by the factory OS.
 
-### Persistent SSH (current primary access, 2026-11-09)
+### Persistent SSH (primary access on 3.6.0, 2026-11-09 to 2026-11-15)
 
 USB autorun is no longer needed after each reboot. An early-boot `mpfree-sshd.service` in the rootfs starts key-only root SSH on port `2222` (secondary `2223`), with configuration and keys under `/data/mpfree/ssh/`. Installing it required a temporary read-write remount of `/`, so **the reference unit is no longer stock**. The exact paths, risk, the effect of an Akai update, and the undo steps are in [device-modifications.md](../hardware/archive/2026-11/device-modifications.md). USB autorun remains the fallback if an update removes the unit.
 
@@ -41,7 +54,7 @@ USB autorun is no longer needed after each reboot. An early-boot `mpfree-sshd.se
 | Workstation IPv4 | `10.42.0.1/24` |
 | MPC IPv4 | `10.42.0.141/24` |
 | MPC NIC | `end0` |
-| SSH port | `2222` |
+| SSH port | `22` on the installed 3.10.1 (developer mode); `2222` on 3.6.0 with MOD-001 and on the kexec test build |
 | SSH login | `root` |
 | Workstation private key | `/home/jesse/.ssh/mpc_one_autorun_ed25519` |
 
@@ -59,8 +72,10 @@ ip neigh show 10.42.0.141 dev eno1np0
 
 ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
   -i /home/jesse/.ssh/mpc_one_autorun_ed25519 \
-  -p 2222 root@10.42.0.141
+  root@10.42.0.141
 ~~~
+
+That is port 22, Akai's developer mode on the installed 3.10.1, after `--devmode-trust` has recorded its host key. On 3.6.0 with MOD-001 it was `-p 2222`. The next paragraph is about 3.6.0's USB autorun key.
 
 The host-key fingerprint recorded on the initial session was verified as a **new** key, not as a permanently provisioned vendor key. On reboot, the temporary key is regenerated. When SSH warns that the known host key changed, **do not disable host-key checking**. Validate the USB-side `mpc_ssh_host_fingerprint.txt` first, and only then remove the stale specific `[10.42.0.141]:2222` known-host entry if justified.
 

@@ -86,7 +86,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run devmode-status -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run system-survey -- bash tools/mpc-one/collect-over-ssh.sh --system-survey
 ```
 
-- **The status** shows where `/` and `/data` come from and the `/etc` overlay. It shows the SSH server's settings as the server reads them, the lock, the kind of root's password field (never its value) and the open TCP ports. It also prints the host key's fingerprint and date, and how long the MPC has been on: Q7a prints them again after a restart. It ends `LOCKED: only your key gets in`.
+- **The status** shows where `/` and `/data` come from and the `/etc` overlay. It shows the SSH server's settings as the server reads them, the lock, the kind of root's password field (never its value) and the open TCP ports. It also prints the host key's fingerprint and date, and how long the MPC has been on: Q7a prints them again after a restart. It ends `LOCKED: only your key gets in`. Root's password field still shows `empty`, because that comes from Akai's overlay. The server refuses it after the lock: its settings show `permitemptypasswords no` and `authenticationmethods any`.
 - **The system survey** covers:
     - versions, CPU clocks and idle states, memory;
     - kexec and kernel security (`/usr/sbin/kexec`, `kexec_load_disabled`, lockdown, LoadPin);
@@ -230,6 +230,27 @@ When the backup folder holds a file named `absent` instead of `authorized_keys`,
 
 - Whether developer mode, the lock and the host key survive a long power-off or Akai's next update.
 - Anything about installing MPFree to start at power-on: that is a lasting change to Akai's files with its own gate ([stick test, after the test](firmware-3.10.1-stick-test.md#after-the-test)).
+
+## Rehearsal (2026-11-15, commit 8c5e2ab4)
+
+Every block was run word for word from a clone at `/home/jesse/code/mpfree-hardware-survey`, with `HOME=/home/jesse`. Stand-ins played the cable and the MPC: `ip`, `ping`, `ssh` and `ssh-keyscan` answered as a fake installed 3.10.1 with developer mode on. Its remote scripts ran under BusyBox against fake system files. The answers were typed in a terminal only after each question appeared.
+
+- **Q0 ran for real.** It fetched main and printed `LOCAL-CHECKS-OK`. The three ARM programs built (`Finished`, three hashes).
+- **Q1** recorded the key, then printed `no key, no password: logged in`.
+- **Q2** printed `LOCKED: the login with no key is refused and your key gets in.`
+- **Q3:** the status ended `LOCKED: only your key gets in.` The survey reached `END of read-only system survey` under BusyBox.
+- **Q5** copied the fake running tree and compared it with the 6.18.44 board files.
+- **Q6** built a stick from a fake 3.10.1 image with Q0's real ARM programs. It printed `running release: 6.18.44-az01-2026-08-10-rt6 (recorded by the preflight; the same kernel as the test build's)`.
+- **Q7a** printed the same as Q3. Then the fake MPC got a new host key:
+    - Q7a stopped with `did not show the host key recorded`, and nothing changed.
+    - Q1 stopped with `already holds a different key` and printed `ssh-keygen -R '10.42.0.141' -f /home/jesse/.ssh/known_hosts`.
+    - After that line, Q1 recorded the new key, and Q7a passed.
+- **Q10's first block** printed the same as Q7a.
+- **Q2-undo** printed `UNLOCKED: Akai's files are back; a login with no key gets in again, as before the lock.`
+- **Not run here,** because they need the MPC or a real stick: Q4, Q6-write, Q7b, Q8 and the stick logs. Q0 runs their tools' own tests against fakes under BusyBox:
+    - The backup test includes a mismatch on p6 only, with the lines Q4 quotes.
+    - The kexec boot test includes a jump from a fake installed 3.10.1 on stock port 22 and test port 2222.
+- Later commits in the same pull request change only documentation.
 
 ## After the round
 
