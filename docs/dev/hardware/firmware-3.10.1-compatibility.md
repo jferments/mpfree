@@ -14,7 +14,11 @@ The 3.10.1 image itself answers most of that (offline survey, 2026-11-13; detail
 
 On the 3.10.1 test stick (2026-11-14, [phase 3's first run](firmware-3.10.1-stick-test.md#phase-3-first-run-2026-11-14-clone-dcce005)), developer mode came on from Akai's app as the files say. Akai's SSH server was not running before it: `enable.sh`'s reload failed, and `sshd.service` then started and listened on port 22. Turning it on also tried to start Akai's web server (`az0x-webserver.service`, masked on the stick). 3.10.1's firewall rules files are empty, so its firewall units load no rules from the image.
 
-The developer mode means an owner need not use the earlier USB `autorun.sh` technique or a rootfs change (MOD-001) solely to obtain a shell. Because it opens without authentication, it should run only on a controlled network and be locked to a key at once. Whether it stays on across reboots, and how it behaves on this physical MPC, have not been established: the overlay on `/etc` lives only in RAM, so that depends on the app (an inference from the files).
+The developer mode means an owner need not use the earlier USB `autorun.sh` technique or a rootfs change (MOD-001) solely to obtain a shell. Because it opens without authentication, it should run only on a controlled network and be locked to a key at once. The overlay on `/etc` lives only in RAM, but on the installed 3.10.1 developer mode stays on after a restart (below).
+
+### On the installed 3.10.1 (2026-11-15)
+
+The owner installed 3.10.1 on the reference MPC with Akai's updater on 2026-11-15 and switched developer mode on; it stays on after a restart. With a FAT32 stick in at power-on, the script runner asked only once the app was fully up, then ran `autorun.sh` as root through `systemd-run` (a transient `autorun-sh.service`, not inside the app), 26 s after power-on. kexec is allowed (`kexec_load_disabled` 0, `/usr/sbin/kexec` present). Details, and the work towards starting MPFree from the stick at power-on, are in [starting MPFree from the stick](stick-autoboot.md).
 
 ## Offline comparison findings
 
