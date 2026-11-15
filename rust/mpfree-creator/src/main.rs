@@ -17,7 +17,7 @@ use mpfree_stick::update::{Supported, Update};
 use mpfree_stick::{ssh, Msg, CREATOR};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MANUAL: &str =
@@ -155,6 +155,67 @@ struct Job {
     progress: f32,
     line: String,
     log: Vec<String>,
+    /// What the command printed (where it can be read: Linux), for the
+    /// reason when the status file says nothing.
+    printed: Arc<Mutex<Vec<String>>>,
+}
+
+/// Keeps the last lines a command prints, read on threads so that a full
+/// pipe never stops it.
+fn collect_output(child: &mut Child) -> Arc<Mutex<Vec<String>>> {
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let readers: Vec<Box<dyn std::io::Read + Send>> = [
+        child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn std::io::Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|e| Box::new(e) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    for r in readers {
+        let lines = Arc::clone(&lines);
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for l in std::io::BufReader::new(r).lines().map_while(Result::ok) {
+                let mut v = lines.lock().unwrap_or_else(|p| p.into_inner());
+                v.push(l);
+                if v.len() > 200 {
+                    v.remove(0);
+                }
+            }
+        });
+    }
+    lines
+}
+
+/// Why a command that left no `done` or `error` line ended: from what it
+/// printed, else from its exit code (pkexec: 126 when the password prompt
+/// was cancelled or failed, 127 when it is not allowed).
+fn why_it_ended(code: Option<i32>, printed: &[String]) -> String {
+    if let Some(l) = printed.iter().rev().find(|l| l.starts_with("error ")) {
+        return l[6..].to_string();
+    }
+    match code {
+        Some(126) => "The administrator password was not accepted, or the prompt was closed. Try again.".into(),
+        Some(127) => "This computer did not allow the creator to use the stick (pkexec refused). Check that you are an administrator on this computer.".into(),
+        _ => {
+            let last = printed
+                .iter()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| format!(": {l}"))
+                .unwrap_or_default();
+            format!(
+                "It stopped without saying why (exit code {}){last}.",
+                code.map_or("none".into(), |c| c.to_string())
+            )
+        }
+    }
 }
 
 impl Job {
@@ -174,9 +235,13 @@ impl Job {
                 self.read += complete;
             }
         }
-        match self.child.try_wait() {
+        let ended = self.child.try_wait();
+        match ended {
             Ok(None) => None,
             Ok(Some(_)) | Err(_) => {
+                let code = ended.ok().flatten().and_then(|s| s.code());
+                // Let the readers take the last lines.
+                std::thread::sleep(Duration::from_millis(100));
                 let _ = std::fs::read_to_string(&self.status).map(|t| {
                     for l in t[self.read.min(t.len())..].lines() {
                         self.log.push(l.to_string());
@@ -191,7 +256,10 @@ impl Job {
                 Some(match last {
                     Some(l) if l.starts_with("done ") => Ok(l[5..].to_string()),
                     Some(l) => Err(l[6..].to_string()),
-                    None => Err("It did not start: the creator needs your permission (an administrator password) to use the stick. Try again, and allow it when asked.".into()),
+                    None => {
+                        let printed = self.printed.lock().unwrap_or_else(|p| p.into_inner());
+                        Err(why_it_ended(code, &printed))
+                    }
                 })
             }
         }
@@ -215,11 +283,17 @@ fn privileged(exe: &Path, args: &[String]) -> std::io::Result<Child> {
         })
         .unwrap_or(false);
     if root {
-        Command::new(exe).args(args).spawn()
+        Command::new(exe)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
     } else {
         Command::new("pkexec")
             .arg(exe)
             .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
                 std::io::Error::new(
@@ -408,7 +482,8 @@ impl Creator {
         let mut full = vec!["--status".to_string(), status.display().to_string()];
         full.append(&mut args);
         match run_privileged(&full) {
-            Ok(child) => {
+            Ok(mut child) => {
+                let printed = collect_output(&mut child);
                 self.outcome = None;
                 self.job = Some(Job {
                     kind,
@@ -418,6 +493,7 @@ impl Creator {
                     progress: 0.0,
                     line: "Waiting for permission to use the stick".into(),
                     log: Vec::new(),
+                    printed,
                 });
             }
             Err(e) => self.outcome = Some((kind, Err(e.to_string()))),
@@ -898,5 +974,34 @@ impl eframe::App for Creator {
         self.prefs_window(&ctx);
         self.confirm_window(&ctx);
         ctx.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::why_it_ended;
+
+    #[test]
+    fn says_why_a_step_ended_without_a_result() {
+        let printed = vec![
+            "note writing".to_string(),
+            "error the status file /tmp/x.status: Permission denied (os error 13)".to_string(),
+        ];
+        assert_eq!(
+            why_it_ended(Some(1), &printed),
+            "the status file /tmp/x.status: Permission denied (os error 13)"
+        );
+        assert!(
+            why_it_ended(Some(126), &[]).starts_with("The administrator password was not accepted")
+        );
+        assert!(why_it_ended(Some(127), &[]).contains("pkexec refused"));
+        assert_eq!(
+            why_it_ended(Some(3), &["Segmentation fault".to_string()]),
+            "It stopped without saying why (exit code 3): Segmentation fault."
+        );
+        assert_eq!(
+            why_it_ended(None, &[]),
+            "It stopped without saying why (exit code none)."
+        );
     }
 }

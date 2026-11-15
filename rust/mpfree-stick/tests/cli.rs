@@ -292,3 +292,38 @@ fn makes_and_looks_after_a_stick() {
     assert!(text(&stick(&["help"])).contains("only been tested on the MPC One (Gen 1)"));
     assert!(!stick(&["frobnicate"]).status.success());
 }
+
+/// The window makes the status file, as the person using the computer, in
+/// the temporary folder, and runs this as root (pkexec). Where
+/// fs.protected_regular is on (Fedora's default), root may not open someone
+/// else's file there with O_CREAT. Needs root and protected_regular on to
+/// try; skipped otherwise.
+#[cfg(unix)]
+#[test]
+fn writes_a_status_file_the_window_made_in_the_temporary_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let on = std::fs::read_to_string("/proc/sys/fs/protected_regular")
+        .map(|v| v.trim() != "0")
+        .unwrap_or(false);
+    let t = tmp("status-owner");
+    // A folder like /tmp: world-writable and sticky, owned by root.
+    let shared = t.0.join("shared-tmp");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+    let status = shared.join("mpfree-creator-1-1.status");
+    std::fs::write(&status, b"").unwrap();
+    if !on || std::os::unix::fs::chown(&status, Some(4321), Some(4321)).is_err() {
+        eprintln!("skipped: needs root and fs.protected_regular on");
+        return;
+    }
+    let s = status.display().to_string();
+    let o = stick(&[
+        "--status",
+        &s,
+        "make-ssh-key",
+        &t.0.join("keys").display().to_string(),
+    ]);
+    assert!(o.status.success(), "{}", text(&o));
+    let lines = std::fs::read_to_string(&status).unwrap();
+    assert!(lines.starts_with("done made "), "{lines}");
+}

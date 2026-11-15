@@ -546,15 +546,28 @@ pub fn redact(line: &str) -> String {
     out
 }
 
+/// The status file the window reads. The window makes it, as the person
+/// using the computer, in the temporary folder, and this runs as root
+/// (pkexec): opening it with O_CREAT there is refused, even to root, where
+/// `fs.protected_regular` is on (the default on Fedora and other systemd
+/// systems), because root doesn't own it. So an existing file is opened
+/// without O_CREAT, and only a missing one is made.
+fn open_status(p: &Path) -> io::Result<File> {
+    match std::fs::OpenOptions::new().append(true).open(p) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p),
+        r => r,
+    }
+}
+
 fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
     let mut a = Args { words };
     if let Some(p) = a.value("--status")? {
         out.status = Some(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&p)
-                .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))?,
+            open_status(Path::new(&p))
+                .map_err(|e| io::Error::new(e.kind(), format!("the status file {p}: {e}")))?,
         );
     }
     let cmd = if a.words.is_empty() {
