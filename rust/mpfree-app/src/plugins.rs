@@ -1,4 +1,5 @@
-//! CLAP plugins in the app ([plugins design](../../../docs/dev/design/plugins.md)).
+//! Plugins in the app ([plugins design](../../../docs/dev/design/plugins.md)):
+//! CLAP plugins and MPC plugins (the Open MPC catalog's format).
 //!
 //! Every plugin runs in a plugin process of its own (the sandbox,
 //! `mpfree-plughost`), never in the app's: a plugin that crashes, hangs or
@@ -16,6 +17,8 @@
 //!   partition and nowhere else. Without a data folder, a fresh folder in
 //!   the system's temp folder, never the real home.
 //! - **Finding them.** At start, `files/plugins/*.clap` in the data folder
+//!   and the MPC plugin folders there (straight in it, in a copied
+//!   `VST2 Plugins/` or `Synths/` folder, or in a catalog release folder)
 //!   ([`scan`]). Effects go in the chain editor's picker after the built-in
 //!   ones ([`picks`]); instruments wait for the track host.
 //! - **Adding one.** The chain editor asks the builder thread (`control.rs`)

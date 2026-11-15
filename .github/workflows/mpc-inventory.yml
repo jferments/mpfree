@@ -1182,6 +1182,14 @@ jobs:
         # libc/libm/loader only, glibc <= 2.39). The host-contract tests run
         # natively with the workspace tests above.
         run: bash tools/mpc-plugins/build.sh arm32
+      - name: Run five Open MPC catalog plugins in the plugin sandbox as 32-bit ARM under qemu (do not deploy)
+        # rust/mpfree-mpchost: MPC-format (VST 2.4 interface) plugins in
+        # mpfree-plughost. Downloads the five MIT releases pinned by SHA-256 in
+        # tools/mpc-plugins/catalog-check.txt (never committed or shipped), and
+        # runs each in its own plugin process with rack_check. About a minute.
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends unzip qemu-user
+          bash tools/mpc-plugins/catalog-check.sh
       - name: Build and check the static mpfree program for the kexec test boot (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
