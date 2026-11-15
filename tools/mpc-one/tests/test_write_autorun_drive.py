@@ -11,6 +11,37 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(os.path.dirname(HERE), "write-autorun-drive.py")
 
 
+# A stand-in for udisksctl in the fake root: it logs each call and mounts or unmounts the way udisks
+# does, under /run/media/<user>/<label>, by editing the fake mountinfo. udisks-fail makes it refuse.
+FAKE_UDISKSCTL = r'''#!/usr/bin/env python3
+import os, sys
+root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+verb, args = sys.argv[1], sys.argv[2:]
+assert args[:2] == ["--no-user-interaction", "-b"] and len(args) == 3, sys.argv
+node = args[2][len("/dev/"):]
+with open(root + "/udisks.log", "a") as fh:
+    fh.write(f"{verb} {node}\n")
+if os.path.exists(root + "/udisks-fail"):
+    print(f"Error mounting /dev/{node}: GDBus.Error:org.freedesktop.UDisks2.Error.NotAuthorizedCanObtain")
+    sys.exit(1)
+info = root + "/proc/self/mountinfo"
+lines = open(info).read().splitlines(True)
+if verb == "mount":
+    label = node
+    for line in open(root + "/udisks-labels").read().split():
+        if line.startswith(node + "="):
+            label = line.split("=", 1)[1]
+    where = "/run/media/jesse/" + label
+    os.makedirs(root + where, exist_ok=True)
+    lines.append(f"90 1 8:90 / {where} rw,nosuid,nodev,relatime shared:9 - vfat /dev/{node} rw\n")
+    print(f"Mounted /dev/{node} at {where}")
+else:
+    lines = [line for line in lines if f" /dev/{node} " not in line]
+    print(f"Unmounted /dev/{node}.")
+open(info, "w").write("".join(lines))
+'''
+
+
 def write(path, data, mode=0o644):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
@@ -65,6 +96,17 @@ class WriteAutorunDriveTests(unittest.TestCase):
         return subprocess.run([sys.executable, "-I", TOOL], input=answer, env=env, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
 
+    def fake_udisks(self, labels=""):
+        write(f"{self.root}/usr/bin/udisksctl", FAKE_UDISKSCTL, 0o755)
+        write(f"{self.root}/udisks-labels", labels + "\n")
+
+    def udisks_calls(self):
+        try:
+            with open(f"{self.root}/udisks.log") as fh:
+                return fh.read().splitlines()
+        except FileNotFoundError:
+            return []
+
     def drive(self, name="autorun.sh"):
         return os.path.join(self.root, "media/jesse/SPARE DRIVE", name)
 
@@ -77,6 +119,7 @@ class WriteAutorunDriveTests(unittest.TestCase):
         self.assertIn("/dev/sdc1 on /media/jesse/SPARE DRIVE: Generic Flash Disk, vfat, 30.7 GB\n      CAN be used", out)
         self.assertIn("It adds autorun.sh to /media/jesse/SPARE DRIVE (/dev/sdc1).", out)
         self.assertIn("and read it back: it matches", out)
+        self.assertIn("could not unmount /dev/sdc1 (udisksctl is not installed): eject it in the file manager", out)
         with open(self.drive()) as fh:
             script = fh.read()
         self.assertTrue(script.startswith("#!/bin/sh\n# MPFree autorun test (write-autorun-drive.py)\n"))
@@ -150,7 +193,10 @@ class WriteAutorunDriveTests(unittest.TestCase):
         self.assertIn("USB disks with nothing mounted (what udev says is on them):\n"
                       "  /dev/sdc: Generic Flash Disk, 30.7 GB\n      /dev/sdc1: vfat, label SPARE\n", res.stdout)
         self.assertNotIn("/dev/sdd", res.stdout)
-        self.assertIn("plugged in but not mounted: open it in the file manager", res.stdout)
+        self.assertIn("Mounting /dev/sdc1 the way the file manager does when you click it (udisksctl mount, "
+                      "as you):\n  udisksctl is not installed\n", res.stdout)
+        self.assertIn("plugged in but not mounted, and this could not mount it: open it in the file manager",
+                      res.stdout)
         self.assertNotIn("Format", res.stdout)
         self.assertEqual(os.listdir(os.path.dirname(self.drive())), [])
 
@@ -204,6 +250,94 @@ class WriteAutorunDriveTests(unittest.TestCase):
         self.assertIn("/dev/sdd on /run/media/jesse/WHOLE: Generic Flash Disk, vfat, 30.7 GB\n      CAN be used",
                       res.stdout)
         self.assertTrue(os.path.isfile(os.path.join(self.root, "run/media/jesse/WHOLE/autorun.sh")))
+
+    def spare_not_mounted(self):
+        self.unmount_spare()
+        write(f"{self.root}/run/udev/data/b8:33", "E:ID_FS_TYPE=vfat\nE:ID_FS_LABEL=SPARE\n")
+        self.fake_udisks("sdc1=SPARE")
+        return os.path.join(self.root, "run/media/jesse/SPARE")
+
+    def test_mounts_the_spare_stick_itself_and_unmounts_it_after(self):
+        folder = self.spare_not_mounted()
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("Mounting /dev/sdc1 the way the file manager does when you click it (udisksctl mount, as you):"
+                      "\n  Mounted /dev/sdc1 at /run/media/jesse/SPARE\n"
+                      "  /dev/sdc1 on /run/media/jesse/SPARE: Generic Flash Disk, vfat, 30.7 GB\n      CAN be used\n",
+                      res.stdout)
+        self.assertIn("It adds autorun.sh to /run/media/jesse/SPARE (/dev/sdc1).", res.stdout)
+        self.assertIn("unmounted /dev/sdc1: you can pull the drive out now", res.stdout)
+        self.assertEqual(self.udisks_calls(), ["mount sdc1", "unmount sdc1"])
+        self.assertTrue(os.path.isfile(os.path.join(folder, "autorun.sh")))
+        with open(f"{self.root}/proc/self/mountinfo") as fh:
+            self.assertNotIn("sdc1", fh.read())
+
+    def test_a_drive_it_mounted_is_unmounted_again_when_nothing_is_written(self):
+        folder = self.spare_not_mounted()
+        res = self.run_tool("no\n")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("not confirmed; nothing was written", res.stdout)
+        self.assertEqual(self.udisks_calls(), ["mount sdc1", "unmount sdc1"])
+        self.assertEqual(os.listdir(folder), [])
+        # Someone else's autorun.sh on it: nothing is written, and it is unmounted again.
+        os.unlink(f"{self.root}/udisks.log")
+        write(os.path.join(folder, "autorun.sh"), "#!/bin/sh\necho someone else's\n")
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("already holds autorun.sh, which this tool did not write", res.stdout)
+        self.assertEqual(self.udisks_calls(), ["mount sdc1", "unmount sdc1"])
+
+    def test_a_drive_the_desktop_mounted_is_unmounted_after_writing(self):
+        self.fake_udisks()
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertNotIn("Mounting", res.stdout)
+        self.assertEqual(self.udisks_calls(), ["unmount sdc1"])
+        self.assertIn("unmounted /dev/sdc1: you can pull the drive out now", res.stdout)
+
+    def test_mounts_nothing_when_it_would_be_a_guess(self):
+        self.spare_not_mounted()
+        self.disk("sdd", fs={"sdd1": ("exfat", "OTHER")})
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("more than one FAT32 or exFAT drive is plugged in and not mounted", res.stdout)
+        self.assertEqual(self.udisks_calls(), [])
+
+    def test_never_mounts_the_test_stick(self):
+        # The test stick with a FAT partition on it, and no spare drive: nothing is mounted.
+        self.unmount_spare()
+        shutil.rmtree(os.path.realpath(f"{self.root}/sys/block/sdc"))
+        os.unlink(f"{self.root}/sys/block/sdc")
+        self.fake_udisks()
+        self.disk("sdb", partnames=("mpfree-test-root", "mpfree-test-log", "mpfree-test-kits", "mpfree-test-data"),
+                  fs={"sdb1": ("ext4", ""), "sdb4": ("vfat", "MPFREE-DATA")})
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("(the MPFree test stick: never used)", res.stdout)
+        self.assertIn("no spare drive to use", res.stdout)
+        self.assertEqual(self.udisks_calls(), [])
+
+    def test_a_refused_mount_says_what_to_do(self):
+        folder = self.spare_not_mounted()
+        write(f"{self.root}/udisks-fail", "")
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("  Error mounting /dev/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.NotAuthorizedCanObtain\n"
+                      "STOP: a USB drive with FAT32 or exFAT is plugged in but not mounted, and this could not mount "
+                      "it: open it in the file manager", res.stdout)
+        self.assertEqual(self.udisks_calls(), ["mount sdc1"])
+        self.assertFalse(os.path.exists(folder))
+
+    def test_the_script_runs_under_busybox(self):
+        # Akai's MPC has BusyBox: its head has no -c, so the script must not use it.
+        self.assertNotIn("head -c", self.tool_script())
+        self.assertIn("| cut -c1-300)", self.tool_script())
+
+    def tool_script(self):
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        with open(self.drive()) as fh:
+            return fh.read()
 
 
 if __name__ == "__main__":
