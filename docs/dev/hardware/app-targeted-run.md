@@ -1,6 +1,6 @@
 # The targeted app run on the soft-boot stick
 
-**Status:** runbook, 2026-11-15. Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One with Akai's MPC OS 3.10.1 installed and developer mode on. **Boots by:** the soft-boot stick ([how it works](stick-autoboot.md#the-soft-reboot-hook-step-4)): switch on with the stick in and the boot hook starts MPFree. There is no kexec block; on the installed 3.10.1 the kernel refuses a kexec.
+**Status:** runbook, 2026-11-15. Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One with Akai's MPC OS 3.10.1 installed and developer mode on. **Boots by:** the soft-boot stick, the default route ([how it works](soft-reboot-boot.md)): switch on with the stick in and the boot hook starts MPFree. There is no kexec block run over SSH; on the installed 3.10.1 the kernel refuses it. The opt-in routes on `main` up to #374 (the pad player without root, `--app-user`; Akai's own kernel by kexec_file, `--kexec-file`; and the chain to the stick's own device tree, `--chain`) are covered in [On the opt-in routes](#on-the-opt-in-routes); see [boot routes](boot-routes.md) for what each one is.
 
 After live test 3 the owner asked for targeted runs: only the phases of the app check that have a reason to run, not every step every time. This run redoes the phases live test 3 skipped by accident and tries what has merged since, on a stick built from `main`.
 
@@ -40,7 +40,7 @@ Every block runs in a terminal on the workstation, from the clone at `/home/jess
 cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C app-targeted origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py status && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app' && python3 tools/mpc-one/results.py run build-stick -- python3 tools/mpc-one/offline-kexec-stick.py --splash rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-startup --app rust/target/armv7-unknown-linux-gnueabihf/release/mpfree
 ```
 
-This is block 4.1 of [the boot record](stick-autoboot.md#blocks-for-the-owner) with the app check's own tests added. `results.py status` lists what is already in the results folder: if an earlier round left files there, run `python3 tools/mpc-one/results.py zip` first, so this run gets its own zip. The checks end with `LOCAL-CHECKS-OK`. The build report says `for MPFree's soft-reboot hook: /boot/mpfree-softreboot on partition 1 (protocol mpfree-softreboot-1, kernel release 6.18.44-az01-2026-08-10-rt6)`, and its list of the units Akai's udev rules start shows none that is NOT masked and could touch a disk.
+This is block 4.1 of [the boot record](stick-autoboot.md#blocks-for-the-owner) with the app check's own tests added. `results.py status` lists what is already in the results folder: if an earlier round left files there, run `python3 tools/mpc-one/results.py zip` first, so this run gets its own zip. The checks end with `LOCAL-CHECKS-OK`. The build report says `for MPFree's soft-reboot hook: /boot/mpfree-softreboot on partition 1 (protocol mpfree-softreboot-1, kernel release 6.18.44-az01-2026-08-10-rt6)`, and its list of the units Akai's udev rules start shows none that is NOT masked and could touch a disk. This is the default stick: the soft-reboot, with the pad player as root. To run the phases with the pad player as `mpfree` instead (`--app-user`, #372, opt-in), add ` --app-user` at the end of the command, as [block 5.2](stick-autoboot.md#the-pad-player-without-root---app-user-opt-in) does; the report then also says `pad player user: mpfree (--app-user)`, and R2 to R6 stay as they are.
 
 **Block R2: write the stick** (**state-changing, the stick only**: erases its partitions 1 to 3, keeps partition 4 with the pad player's settings; asks for `WRITE`; the stick in the workstation). Undo: write an older build to the stick the same way.
 
@@ -82,7 +82,7 @@ This is step 4.4.
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-targeted -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_PHASES=6,7,9-12,16-19 bash tools/mpc-one/collect-over-ssh.sh --app
 ```
 
-Step 2 of the check must end with `CHECKS-OK` (it reads `kexec_load_disabled: 1`, `no MMC block device` and `/: read-only` on the stick's system). Then each phase prints what to try, waits for Enter, and asks what you saw. `s` skips a phase. If the terminal closes, run the same block again under another name (`app-targeted-resume` in place of `app-targeted`) and skip the phases already done with `s`: the check only reads, and its summary reads the app's whole log since power-on.
+Step 2 of the check must end with `CHECKS-OK` (it reads `kexec_load_disabled: 1`, `no MMC block device` and `/: read-only` on the stick's system). Its `privileges:` lines say who the pad player runs as: `Uid: 0` on the default stick, `Uid: 960` with `--app-user`. Then each phase prints what to try, waits for Enter, and asks what you saw. `s` skips a phase. If the terminal closes, run the same block again under another name (`app-targeted-resume` in place of `app-targeted`) and skip the phases already done with `s`: the check only reads, and its summary reads the app's whole log since power-on.
 
 **Block R6: back to Akai's system, and what happened** (read-only). Switch the MPC off, take the stick out, wait 10 s and switch it on. With the hook installed, switching on with the stick still in starts MPFree again, so the stick must come out first. Wait for Akai's app, and switch developer mode on again if it is off. Then:
 
@@ -98,15 +98,27 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 This is block 4.5. Upload the zip, with your notes from the MPC's screen. The reports quote Akai's files: upload them to this project only.
 
-### In the same boot as the qualification round
+### On the opt-in routes
 
-If the [qualification round](firmware-3.10.1-qualification.md) is run in the same sitting, R5 can run in its MPFree boot, after its Q8 (and Q9) and before its Q10, instead of R1 to R4. The round's Q8 already covers phases 9, 16 and 19, so the list is shorter:
+R5 does not depend on how MPFree was started: it needs the stick's system answering SSH on port 2222, and its read-only checks passing. So it also runs on a stick from the opt-in blocks of [the boot record](stick-autoboot.md), built from `main`, in place of R1 to R4:
+
+| Stick | Built and started by | R5 |
+|---|---|---|
+| `--app-user` | Blocks 5.2 to 5.4 | Runs; its `privileges:` lines show `Uid: 960` |
+| `--app-user --kexec-file --chain` | Blocks 7.1 to 7.4 | Runs, once the second restart is done (about half a minute after power-on) |
+| `--kexec-file` without `--chain` | Blocks 6.1 to 6.5 | Doesn't: on that route Ethernet doesn't come up (zip 192320Z), so the check can't reach the stick |
+
+After R5, finish with R6 on every route: switch off, take the stick out, switch on into Akai's system, then the reports and the zip. On the chain route block 7.5 is the same as R6, so run one of them, not both.
+
+### In the same boot as another round
+
+If another round already runs the app check in this MPFree boot, R5 can follow it, before that round's last power-off. The [qualification round](firmware-3.10.1-qualification.md)'s Q8 covers phases 9, 16 and 19, so after its Q8 (and Q9), and before its Q10, the list is shorter:
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-targeted -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_PHASES=6,7,10-12,17,18 bash tools/mpc-one/collect-over-ssh.sh --app
 ```
 
-Then carry on with the round's Q10, which packs this block's log into the round's zip.
+Then carry on with that round's last block (the qualification round's Q10), which packs this block's log into the round's zip.
 
 ## Passes when
 
@@ -128,5 +140,5 @@ Then carry on with the round's Q10, which packs this block's log into the round'
 ## Rehearsal
 
 - The app check's own tests (`test_app_mpc.py`, run by R1) include this run's phase list on the stick's system as a soft-reboot leaves it: the stick's partition as a read-only root mounted `ro,noload`, Akai's `/run` carried over, `kexec_load_disabled` set by the stick's `sysctl.d`. The checks pass, only the chosen phases ask, and nothing is copied, started or stopped.
-- R2, R3, R4 and R6 are blocks 4.2 to 4.5 of [the boot record](stick-autoboot.md#blocks-for-the-owner), word for word; the owner ran them for the power-on of 2026-11-15 that started MPFree (zip 092220Z). R1 is block 4.1 with the results-folder check and the app check's tests added.
-- On that power-on the wrapper's identity check passed against the stick's system at the MPC's address (the hook report then found port 22 closed, as expected while MPFree runs), so R5's way in is the one the kexec test build had: port 2222 and the stick's own host key.
+- R2, R3, R4 and R6 are blocks 4.2 to 4.5 of [the boot record](stick-autoboot.md#blocks-for-the-owner), word for word as they are on `main` after #374. The owner ran them for the power-on of 2026-11-15 that started MPFree (zip 092220Z). R1 is block 4.1 with the results-folder check and the app check's tests added.
+- R5's command is block 5.1's (`MPFREE_APP_STEPS=app` with `--app`) with this run's phases. On the MPC that command passed its checks and read the pad player's state after a soft-reboot with `--app-user` (zip 183259Z, `privileges-after`) and on the chain route (zip 201107Z, `privileges-chain`), so the way in, port 2222 with the stick's own host key, works on both.
