@@ -67,6 +67,7 @@ jobs:
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
           sh -n tools/mpc-one/read-only-audio-midi.sh
           sh -n tools/mpc-one/read-only-midi-counters.sh
+          sh -n tools/mpc-one/read-only-system-310.sh
           sh -n tools/mpc-one/passive-usbmon-capture.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
@@ -97,6 +98,7 @@ jobs:
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_check.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_login.py
           python3 tools/mpc-one/tests/test_write_autorun_drive.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_bench_mpc.py
@@ -135,6 +137,7 @@ jobs:
               Path("tools/mpc-one/read-only-audio-midi.sh"),
               Path("tools/mpc-one/read-only-midi-counters.sh"),
               Path("tools/mpc-one/passive-usbmon-capture.sh"),
+              Path("tools/mpc-one/read-only-system-310.sh"),
           ]
           prohibited = (
               r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",

@@ -26,7 +26,8 @@ Checks:
      the MPC must not reboot (boot_id) in between.
   4. Each image is re-read from the workstation disk (page cache dropped
      for that file) and must hash to the value computed while streaming.
-  5. Boot-critical hashes are also compared with the 2026-11-09 boot map.
+  5. Boot-critical hashes are also compared with the baseline file's (the
+     owner's boot map for the firmware the MPC runs: --baseline).
      A mismatch keeps the (device-verified) backup but exits with status 3,
      because it means boot storage changed since the boot map.
 
@@ -362,10 +363,10 @@ def main():
             else "not available (debugfs is not mounted; left as is)"))
         drift = baseline_differences(pre, base)
         if drift:
-            note("BASELINE MISMATCH (boot storage changed since the 2026-11-09 boot map): "
+            note(f"BASELINE MISMATCH (boot storage differs from the baseline, state {base['state']}): "
                  + ", ".join(drift))
         else:
-            note("baseline: p1, p3-p6, boot0, boot1 match the 2026-11-09 boot map")
+            note(f"baseline: p1, p3-p6, boot0, boot1 match the baseline (state {base['state']})")
 
         disk_bytes = base["disk"]["sectors"] * SECTOR
         hw_bytes = sum(h["sectors"] for h in base["hw"]) * SECTOR
@@ -456,9 +457,10 @@ def main():
         log("Make a second copy on another disk, then check it with: "
             "sha256sum -c SHA256SUMS")
         if drift:
-            log("STOP: boot-critical storage differs from the 2026-11-09 boot map "
-                f"({', '.join(drift)}). Keep this backup and report it before doing "
-                "anything else on the MPC.")
+            log(f"STOP: boot-critical storage differs from the baseline (state {base['state']}): "
+                f"{', '.join(drift)}. Keep this backup and report it before doing "
+                "anything else on the MPC. Right after a firmware update this is expected: "
+                "the update rewrites the root filesystem.")
             return EXIT_BASELINE_CHANGED
         return EXIT_OK
     except (BackupError, OSError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
