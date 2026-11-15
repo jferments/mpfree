@@ -140,9 +140,9 @@ class AkaiScanTests(unittest.TestCase):
         os.chmod(image, 0o400)
         return image
 
-    def run_tool(self):
+    def run_tool(self, *args):
         env = dict(os.environ, MPFREE_BACKUPS_DIR=self.backups, MPFREE_WORK_DIR=self.work)
-        res = subprocess.run([sys.executable, TOOL], capture_output=True, text=True, env=env, timeout=300)
+        res = subprocess.run([sys.executable, TOOL, *args], capture_output=True, text=True, env=env, timeout=300)
         runs = sorted(d for d in os.listdir(self.work) if d.startswith("akai-scan-"))
         self.assertEqual(len(runs), 1, res.stdout + res.stderr)
         out = os.path.join(self.work, runs[0])
@@ -214,6 +214,32 @@ class AkaiScanTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, report)
         self.assertIn("/usr/bin/MPC is a link to /usr/bin/MPC-3.6.0", report)
         self.assertIn("Hype: 2 strings, 1 symbols", report)
+
+    def test_rootfs_image_without_a_backup(self):
+        rootfs = dict(ROOTFS, **{"etc/version": "3.10.1.7\n"})
+        img = os.path.join(self.tmp, "updated-rootfs.img")
+        with open(img, "wb") as fh:
+            fh.write(self.ext4(rootfs, "rootfs-new"))
+        res, _, report = self.run_tool("--rootfs-image", img)
+        self.assertEqual(res.returncode, 0, report)
+        self.assertIn(f"rootfs image: {img}", report)
+        self.assertIn("no backup: content and data are not scanned", report)
+        self.assertIn("/etc/version: 3.10.1.7", report)
+        self.assertIn("Hype: 2 strings, 1 symbols", report)
+        self.assertNotIn("content:", report)
+
+    def test_newest_unpacked_rootfs_replaces_the_backups(self):
+        self.backup()
+        unpacked = os.path.join(self.work, "akai-unpacked-20261115T050000Z-xyz")
+        os.makedirs(unpacked)
+        with open(os.path.join(unpacked, "az01-rootfs.img"), "wb") as fh:
+            fh.write(self.ext4(dict(ROOTFS, **{"etc/version": "3.10.1.7\n"}), "rootfs-new"))
+        res, _, report = self.run_tool("--rootfs-image", "newest")
+        self.assertEqual(res.returncode, 0, report)
+        self.assertIn("/etc/version: 3.10.1.7", report)
+        self.assertIn("rootfs: from ", report)
+        self.assertIn("content:/Synths/Vendor - VST - Thing/x.so", report)
+        self.assertIn("data:/Settings/registration.dat", report)
 
     def test_no_backup_stops_cleanly(self):
         env = dict(os.environ, MPFREE_BACKUPS_DIR=self.backups, MPFREE_WORK_DIR=self.work)

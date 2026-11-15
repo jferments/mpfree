@@ -2,7 +2,11 @@
 """WORKSTATION ONLY: scan the owner's eMMC backup, read-only, for three questions
 about Akai's own instruments. It never contacts the MPC.
 
-  python3 tools/mpc-one/offline-akai-scan.py [--backup FOLDER]
+  python3 tools/mpc-one/offline-akai-scan.py [--backup FOLDER] [--rootfs-image FILE|newest]
+
+--rootfs-image reads that rootfs instead of the backup's, for example the MPC OS
+3.10.1 rootfs that offline-update-extract.py unpacks from Akai's update, when the
+MPC has been updated since the backup was made.
 
 1. Are Akai's instruments (Hype, TubeSynth, Mellotron, Solina ...) separate
    plugin files, or built into Akai's app (/usr/bin/MPC)?
@@ -29,6 +33,7 @@ whose names suggest accounts, keys or serials. Read it before you upload it.
 MPFREE_BACKUPS_DIR and MPFREE_WORK_DIR change the folders (tests use them).
 """
 import argparse
+import glob
 import hashlib
 import importlib.util
 import os
@@ -231,25 +236,52 @@ class Part:
         return path, None
 
 
-def open_parts(image, debugfs, say):
-    parts = {n: (a, b) for n, a, b in fk.gpt_partitions(image)}
+def open_part(name, debugfs, image, offset, where, say):
+    img = fk.Image(debugfs, image, offset)
+    try:
+        img.stats()
+    except Stop as err:
+        say(f"{name}: could not be read ({err})")
+        return None
+    tree, skipped = fk.walk(img)
+    say(f"{name}: {where}, {len(tree) - 1} entries"
+        + (f" ({skipped} folders skipped for odd characters)" if skipped else ""))
+    return Part(name, img, tree)
+
+
+def open_parts(image, debugfs, say, rootfs_image=None):
+    """The rootfs, content and data partitions of the backup image (any may be None).
+    rootfs_image, if given, is an ext4 rootfs image read instead of the backup's rootfs."""
     out = {}
+    if rootfs_image:
+        part = open_part("rootfs", debugfs, rootfs_image, 0, f"from {rootfs_image}", say)
+        if part:
+            out["rootfs"] = part
+    if not image:
+        return out
+    parts = {n: (a, b) for n, a, b in fk.gpt_partitions(image)}
     for name in PARTS:
+        if name in out:
+            continue
         if name not in parts:
             say(f"{name}: not in the GPT ({', '.join(parts)})")
             continue
         first, last = parts[name]
-        img = fk.Image(debugfs, image, first * SECTOR)
-        try:
-            img.stats()
-        except Stop as err:
-            say(f"{name}: could not be read ({err})")
-            continue
-        tree, skipped = fk.walk(img)
-        say(f"{name}: sectors {first} to {last}, {len(tree) - 1} entries"
-            + (f" ({skipped} folders skipped for odd characters)" if skipped else ""))
-        out[name] = Part(name, img, tree)
+        part = open_part(name, debugfs, image, first * SECTOR, f"backup sectors {first} to {last}", say)
+        if part:
+            out[name] = part
     return out
+
+
+def newest_unpacked_rootfs(work):
+    """The single *rootfs*.img in the newest ~/mpfree-work/akai-unpacked-<UTC>-*/ (offline-update-extract.py)."""
+    folders = sorted(d for d in glob.glob(os.path.join(work, "akai-unpacked-[0-9]*")) if os.path.isdir(d))
+    if not folders:
+        raise Stop(f"no unpacked Akai update under {work} (run offline-update-extract.py on the update first)")
+    found = sorted(glob.glob(os.path.join(folders[-1], "*rootfs*.img")))
+    if len(found) != 1:
+        raise Stop(f"expected one *rootfs*.img in {folders[-1]}, found {len(found)}; pass its path")
+    return found[0]
 
 
 # ------------------------------------------------------------------ the sections
@@ -471,16 +503,33 @@ def section_settings(parts, tmp, say):
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--backup", help="backup folder (default: the newest one)")
+    p.add_argument("--rootfs-image", metavar="FILE",
+                   help="an ext4 rootfs image to read instead of the backup's rootfs, such as the one "
+                        "offline-update-extract.py unpacks from an Akai update; 'newest' takes the newest "
+                        "~/mpfree-work/akai-unpacked-*/*rootfs*.img. Content and data still come from the "
+                        "backup, if there is one")
     args = p.parse_args(argv)
     backups = os.path.realpath(os.environ.get("MPFREE_BACKUPS_DIR", os.path.expanduser("~/mpfree-backups")))
     work = os.path.realpath(os.environ.get("MPFREE_WORK_DIR", os.path.expanduser("~/mpfree-work")))
     repo = os.path.dirname(os.path.dirname(HERE))
     if work == repo or work.startswith(repo + os.sep):
         raise Stop("the work folder must be outside this clone")
-    folder = os.path.realpath(args.backup) if args.backup else fk.newest_backup(backups)
-    image = os.path.join(folder, "mmcblk0.img")
-    if not os.path.isfile(image):
-        raise Stop(f"{image} does not exist")
+    rootfs_image = None
+    if args.rootfs_image:
+        rootfs_image = newest_unpacked_rootfs(work) if args.rootfs_image == "newest" \
+            else os.path.realpath(args.rootfs_image)
+        if not os.path.isfile(rootfs_image):
+            raise Stop(f"{rootfs_image} does not exist")
+    folder = image = None
+    try:
+        folder = os.path.realpath(args.backup) if args.backup else fk.newest_backup(backups)
+        image = os.path.join(folder, "mmcblk0.img")
+        if not os.path.isfile(image):
+            raise Stop(f"{image} does not exist")
+    except Stop:
+        if not rootfs_image or args.backup:
+            raise
+        folder = image = None
     debugfs = fk.find_debugfs()
     os.makedirs(work, exist_ok=True)
     out_dir = tempfile.mkdtemp(prefix=f"akai-scan-{fk.utc()}-", dir=work)
@@ -491,10 +540,15 @@ def main(argv):
         lines.append(text)
 
     try:
-        say("MPFree: read-only scan of the eMMC backup for Akai's instruments and guest mode (no MPC contact)")
-        say(f"backup: {folder}")
-        say(f"image: {image} ({os.path.getsize(image)} bytes, opened read-only)")
-        parts = open_parts(image, debugfs, say)
+        say("MPFree: read-only scan for Akai's instruments and guest mode (no MPC contact)")
+        if rootfs_image:
+            say(f"rootfs image: {rootfs_image} ({os.path.getsize(rootfs_image)} bytes, opened read-only)")
+        if image:
+            say(f"backup: {folder}")
+            say(f"image: {image} ({os.path.getsize(image)} bytes, opened read-only)")
+        else:
+            say("no backup: content and data are not scanned")
+        parts = open_parts(image, debugfs, say, rootfs_image)
         if not parts:
             raise Stop("no readable rootfs, content or data partition")
         root = parts.get("rootfs")
