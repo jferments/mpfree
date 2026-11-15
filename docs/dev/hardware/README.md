@@ -10,7 +10,7 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[Firmware 3.10.1 compatibility and developer access](firmware-3.10.1-compatibility.md)** describes the official developer mode (terminal, SSH and USB script runner), the plugin SDK and the results and limits of the offline firmware comparison.
 
-**[Trying firmware 3.10.1 from the USB stick](firmware-3.10.1-stick-test.md)** is the runbook for testing 3.10.1, and its developer mode, by kexec from the USB stick before installing it.
+**[Trying firmware 3.10.1 from the USB stick](firmware-3.10.1-stick-test.md)** is the runbook for testing 3.10.1, and its developer mode, by kexec from the USB stick before installing it (superseded by the install on 2026-11-15).
 
 **[How MPFree boots from the stick on MPC OS 3.10.1](soft-reboot-boot.md)** explains the boot system that works today: with the stick in at power-on, a hook on Akai's data partition hands over to the stick's system by a systemd soft-reboot on Akai's running kernel, and the stick switches the eMMC and SD card off before anything can touch them. Start here to understand or change the boot.
 
@@ -18,7 +18,7 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[Starting MPFree from the stick at power-on](stick-autoboot.md)** is the record of how that boot was found and proven: what can start the jump on an installed 3.10.1, what is ruled out, the canary, the kexec hook that LoadPin refused, both soft-reboot power-ons, the pad player without root (`--app-user`), the opt-in kexec_file route and its chain to the stick's own device tree, and the owner's blocks.
 
-**[Qualifying main on the installed MPC OS 3.10.1](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, the kexec test boot from the installed system, the pad player on it, and the way back.
+**[Qualifying main on the installed MPC OS 3.10.1](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, main's boot hook and the power-on into MPFree from the stick, the pad player on it, and the way back.
 
 **[The targeted app run on the soft-boot stick](app-targeted-run.md)** is the runbook for the app check's phases that have a reason to run: the ones live test 3 skipped, and the features merged since (the Mix tab, drag and drop, effects with modes). Switching on with the stick in starts MPFree; there is no kexec step.
 

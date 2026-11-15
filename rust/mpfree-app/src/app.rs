@@ -18,10 +18,11 @@
 //! from the panel's print and not yet tried.
 //!
 //! The time engine: PLAY plays and STOP stops the transport (a second STOP
-//! also silences everything, as before); REC, OVERDUB, UNDO (SHIFT + UNDO
-//! redoes) and PLAY START are found with the control mapper (or the button
-//! guide in Prefs). They become `Effect::Time`, which the audio loop hands to
-//! its `TimeHost`.
+//! also silences everything, as before); REC 73, OVERDUB 80, UNDO 67
+//! (with SHIFT it redoes) and PLAY START 83 are known from the start, from
+//! Akai's own transport lights (the control mapper or the button guide in
+//! Prefs can still change them). They become `Effect::Time`, which the
+//! audio loop hands to its `TimeHost`.
 //!
 //! "Show developer tools" (Prefs) adds the Dev tab: the MIDI log, the
 //! Performance page, the control mapper (the `mapper` submodule) and the
@@ -390,7 +391,8 @@ pub struct ButtonMap {
     pub tap_tempo: Option<u8>,
     pub minus: Option<u8>,
     pub plus: Option<u8>,
-    /// For the time engine (transport and recording); nothing uses them yet.
+    /// The transport buttons: known from the start ([`ButtonMap::measured`]),
+    /// and Map controls or the guide can give them another number.
     pub rec: Option<u8>,
     pub overdub: Option<u8>,
     pub undo: Option<u8>,
@@ -426,6 +428,14 @@ impl ButtonMap {
             tap_tempo: Some(button::TAP_TEMPO),
             minus: Some(button::MINUS),
             plus: Some(button::PLUS),
+            // The transport buttons from Akai's own lights: without them a
+            // fresh MPFree (a new stick, no saved map) had REC, OVERDUB,
+            // UNDO and PLAY START dead and dark until Map controls found
+            // them, which a musician never does.
+            rec: Some(button::REC),
+            overdub: Some(button::OVERDUB),
+            undo: Some(button::UNDO),
+            play_start: Some(button::PLAY_START),
             ..ButtonMap::default()
         }
     }
@@ -1447,7 +1457,7 @@ impl App {
     ///   has no LED; harmless).
     ///
     /// Only the lights that changed, as [`Effect::Light`]. REC, OVERDUB and
-    /// UNDO only once Map controls (or the defaults) know their buttons.
+    /// UNDO are lit on their known buttons (unless Map controls cleared one).
     /// The screen says whether the page showing has something to undo;
     /// the UNDO light follows at the next [`Self::transport_lights`].
     pub fn set_undo_ready(&mut self, ready: bool) {
@@ -5261,9 +5271,16 @@ mod tests {
         assert!(fx
             .iter()
             .any(|e| matches!(e, Effect::Map(m) if !m.listening)));
+        // REC is known from the start (button 73): pressed again it is
+        // found again and nothing changes.
+        assert_eq!(app.map.rec, Some(73));
         app.map_row(0);
         let fx = press(&mut app, 73);
-        assert!(fx.contains(&Effect::Note("map: REC = button 73".into())));
+        assert!(
+            !fx.iter()
+                .any(|e| matches!(e, Effect::Note(n) if n.starts_with("map: REC"))),
+            "{fx:?}"
+        );
         assert_eq!(app.map.rec, Some(73));
         // The wheel picks PAD BANK A/E, + listens, and it works at once.
         let at = mapper::CONTROLS
@@ -6510,6 +6527,84 @@ mod tests {
         assert!(fx
             .iter()
             .any(|e| matches!(e, Effect::Note(n) if n.contains("bank F"))));
+    }
+
+    /// The device as it starts on a fresh stick: no saved map, no Map
+    /// controls. REC, OVERDUB, UNDO and PLAY START must work and light on
+    /// their real numbers (the bug Jay hit three times: the tests gave them
+    /// made-up numbers, the MPC had none). Every light sent for them is one
+    /// main.rs lets through to the controller (`akai::app_lights`).
+    #[test]
+    fn a_fresh_mpfree_knows_rec_overdub_undo_and_play_start() {
+        let mut app = App::new(44_100, false);
+        assert!(app.start().contains(&Effect::Show(View::Play)));
+        let time = |a: TimeAction| Effect::Time(a);
+        // On Play: REC and OVERDUB go to the loop (All, Loop) or the takes (Beats).
+        assert_eq!(
+            press(&mut app, button::REC),
+            vec![Effect::PlayRec { overdub: false }]
+        );
+        assert_eq!(
+            press(&mut app, button::OVERDUB),
+            vec![Effect::PlayRec { overdub: true }]
+        );
+        assert_eq!(
+            press(&mut app, button::PLAY_START),
+            vec![time(TimeAction::Transport(Command::PlayStart))]
+        );
+        assert_eq!(
+            press(&mut app, button::UNDO),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
+        // On the Looper tab they work the loop.
+        app.open_tab(View::Looper);
+        let rec = press(&mut app, button::REC);
+        assert!(
+            rec.iter().any(|e| matches!(e, Effect::Looper(_))),
+            "REC records the loop: {rec:?}"
+        );
+        let dub = press(&mut app, button::OVERDUB);
+        assert!(
+            dub.iter().any(|e| matches!(e, Effect::Looper(_))),
+            "OVERDUB overdubs the loop: {dub:?}"
+        );
+        // Elsewhere, the transport records.
+        app.open_tab(View::Arrange);
+        assert_eq!(
+            press(&mut app, button::REC),
+            vec![time(TimeAction::Transport(Command::Record))]
+        );
+        // Their lights: REC blinks while armed and recording, OVERDUB while
+        // overdubbing, PLAY while they wait, and every one is sent.
+        let lights = |rolling, recording, overdub| TransportLights {
+            rolling,
+            recording,
+            overdub,
+        };
+        let fx = app.transport_lights(lights(false, true, false), 0.0);
+        assert!(fx.contains(&Effect::Light(button::REC, LIGHT_ON)), "{fx:?}");
+        assert!(
+            fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
+            "{fx:?}"
+        );
+        let fx = app.transport_lights(lights(true, false, true), 2.5 * BLINK_HALF_SECONDS);
+        assert!(
+            fx.contains(&Effect::Light(button::OVERDUB, LIGHT_ON)),
+            "{fx:?}"
+        );
+        assert!(
+            fx.contains(&Effect::Light(button::UNDO, LIGHT_ON)),
+            "{fx:?}"
+        );
+        for n in [
+            button::REC,
+            button::OVERDUB,
+            button::UNDO,
+            button::PLAY,
+            button::PLAY_START,
+        ] {
+            assert!(crate::akai::app_lights(n), "button {n}'s light is sent");
+        }
     }
 
     #[test]
