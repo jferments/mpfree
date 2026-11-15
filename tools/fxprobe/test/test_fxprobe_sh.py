@@ -155,7 +155,7 @@ class FxprobeShTests(unittest.TestCase):
         self.built = built
         self.fxlab = os.path.join(t, "fxlab")
         write(self.fxlab, FAKE_FXLAB, 0o755)
-        self.kit = f"{r}/media/MPFREE-KITS/fxprobe"
+        self.kit = f"{r}/media/MPFREE-KITS/mpfree-dev/fxprobe"   # as the stick build lays it out
         os.makedirs(os.path.dirname(self.kit))
         res = self.stage(self.kit)
         self.assertEqual(res.returncode, 0, res.stdout)
