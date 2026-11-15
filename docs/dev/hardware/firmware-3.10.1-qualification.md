@@ -1,6 +1,6 @@
 # Qualifying main on the installed MPC OS 3.10.1
 
-**Status:** runbook, 2026-11-15, revised the same day for MPFree's boot hook (#370, [how MPFree boots from the stick](soft-reboot-boot.md)). Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One (Gen 1). The owner installed MPC OS 3.10.1 on it with Akai's updater on 2026-11-15 and switched developer mode on. Before that it ran 3.6.0 with [MOD-001 and MOD-002](archive/2026-11/device-modifications.md).
+**Status:** runbook, 2026-11-15, revised the same day for MPFree's boot hook (#370, [how MPFree boots from the stick](soft-reboot-boot.md)), and again for the pad player without root (#372) and the opt-in boot routes (#374, [boot routes](boot-routes.md)). This round keeps to the default: a soft-reboot stick, the pad player as root. Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One (Gen 1). The owner installed MPC OS 3.10.1 on it with Akai's updater on 2026-11-15 and switched developer mode on. Before that it ran 3.6.0 with [MOD-001 and MOD-002](archive/2026-11/device-modifications.md).
 
 The owner wants to know that main still does everything MPFree needs on the installed 3.10.1: log in, survey, back up, start MPFree from the USB stick at power-on with the boot hook (the soft-boot USB), run the pad player on it, and come back. The [stick test](firmware-3.10.1-stick-test.md) answered most of it before the install, with 3.6.0 doing a kexec jump, and the [boot hook's runs](stick-autoboot.md#second-power-on-2026-11-15-zip-092220z-mpfree-started) showed the power-on start once. This round does all of it from main on the installed 3.10.1, in one sitting, with every step's undo below.
 
@@ -16,7 +16,8 @@ The owner wants to know that main still does everything MPFree needs on the inst
 - **MPFree starts from the stick by the boot hook, not by kexec.**
     - 3.10.1's LoadPin refuses the kexec jump (`kexec-image old-api-denied`, [the preflight of 2026-11-15](stick-autoboot.md#the-hook-step-3-the-kexec-version-replaced)), so `--kexec-boot` stops at its checks there and loads nothing.
     - Instead, `--hook-install` writes MPFree's boot hook to `/data`: three small files. At each power-on with the stick in, the hook checks the stick and soft-reboots into the stick's own system on Akai's running kernel, at about 6 s, before Akai's app starts. The stick's system switches the eMMC and SD card off before anything mounts. Without the stick, Akai's system starts as usual. How it works is in [how MPFree boots from the stick](soft-reboot-boot.md); how it was found and proven is in [the record](stick-autoboot.md).
-    - The hook was installed on this MPC in the boot-hook runs of 2026-11-15, and Q3 shows whether it still is. Q7b installs main's version either way.
+    - **This round uses the default stick.** Q6 builds it without `--kexec-file`, `--chain` or `--app-user`, so the hook soft-reboots into it at every power-on and never runs `kexec` for it, and the pad player runs as root, as before #372. The opt-in routes are a restart into Akai's own kernel by `kexec_file`, and a chain from there to the stick's own kernel and device tree, which brings Ethernet up. They are compared in [boot routes](boot-routes.md). They and the pad player without root have their own owner blocks in [the record](stick-autoboot.md#the-kexec-file-route-step-6-opt-in) (steps 6 and 7) and are not part of this round.
+    - The hook was installed on this MPC in the boot-hook runs of 2026-11-15, last by the opt-in rounds of #374, and Q3 shows whether it still is. Q7b installs main's version either way: it soft-reboots any stick without `--kexec-file`.
     - **So a power-on with the stick in starts MPFree, not Akai's system.** Every block that needs Akai's system runs with the stick out of the MPC, until Q7b.
     - The stick's system is built for the running kernel, `6.18.44-az01-2026-08-10-rt6`: the builder takes the release Q5 records, and the hook refuses a stick built for another release.
 - **The backup's baseline is still 3.6.0's**, the only one recorded. The update rewrote `mmcblk0p6` (the root filesystem), so the backup is expected to end with a `BASELINE MISMATCH` for p6 and exit code 3. Any other partition in that list means stop. After this round, a 3.10.1 baseline is made from its boot map and backup.
@@ -130,7 +131,8 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 It takes the newest unpacked image (3.10.1) and the device tree from Q5. Its report must say:
 - `running release: 6.18.44-az01-2026-08-10-rt6 (recorded by the preflight; the same kernel as the test build's)`;
-- `for MPFree's soft-reboot hook: /boot/mpfree-softreboot on partition 1 (protocol mpfree-softreboot-1, kernel release 6.18.44-az01-2026-08-10-rt6)`, then `modules the hook loads first: none`;
+- `pad player user: root (no --app-user)`;
+- `for MPFree's soft-reboot hook: /boot/mpfree-softreboot on partition 1 (protocol mpfree-softreboot-1, kernel release 6.18.44-az01-2026-08-10-rt6)`, then `modules the hook loads first: none` and `route: soft-reboot only (no --kexec-file)`. A `--kexec-file:` or `--chain:` line there, or `pad player user: mpfree`, means the command was not the one above: stop and build again with it;
 - under `units Akai's udev rules start when a device appears`, `no-reserved-blocks@…` marked `masked on the stick` (the unit that read the SD card on 2026-11-15). If it is not masked, or another unit of Akai's (a name starting `az0`) is marked `NOT masked`, stop after Q6 and send the results: every Akai unit that can touch a disk must be masked on the stick ([the boot's limits](soft-reboot-boot.md#limits-and-what-to-watch)). systemd's own units in that list may show `NOT masked`; the stick logs show whether any of them touched the eMMC or SD card (below, under "Passes when").
 
 **Block Q6-write: write the stick** (**erases the stick's partitions 1 to 3**, keeps partition 4; you type `WRITE`; the stick in the workstation):
@@ -138,6 +140,8 @@ It takes the newest unpacked image (3.10.1) and the device tree from Q5. Its rep
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run write-stick -- python3 tools/mpc-one/write-test-stick.py
 ```
+
+If the stick last held an opt-in build (steps 6 and 7 of the record), this replaces it with the default one. Partition 4 is kept, and its files may belong to the `mpfree` user from `--app-user`; the pad player, root on this stick, still reads and writes them.
 
 **Block Q7a: restart without the stick** (read-only). Leave the stick out of the MPC. Switch the MPC off, wait 10 s, and switch it on. Wait for Akai's app. If developer mode is not on any more, note that, and switch it on again (SHIFT + MENU, Developer). Then:
 
@@ -155,8 +159,8 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-install -- env MPFREE_ACCEPT_HOOK=YES bash tools/mpc-one/collect-over-ssh.sh --hook-install
 ```
 
-- **What it changes:** it writes `/data/mpfree-hook/hook.sh`, the udev rule `/data/system/etc/overlay/udev/rules.d/99-mpfree-hook.rules` and the modprobe line `/data/system/etc/overlay/modprobe.d/99-mpfree-hook.conf`, in Akai's writable `/etc` layer. It writes nothing else. With the 2026-11-15 version still there, it says `an earlier version of the hook is in place; it is replaced`; if main's version is there already, it says `already in place, unchanged` and writes nothing.
-- **Then it checks the stick, read-only:** it reads partition 1 where Akai's system mounted it (or mounts it read-only itself, and unmounts it after), and checks it as the hook will at power-on. It ends `CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it`.
+- **What it changes:** it writes `/data/mpfree-hook/hook.sh`, the udev rule `/data/system/etc/overlay/udev/rules.d/99-mpfree-hook.rules` and the modprobe line `/data/system/etc/overlay/modprobe.d/99-mpfree-hook.conf`, in Akai's writable `/etc` layer. It writes nothing else. With an earlier version there, it says `an earlier version of the hook is in place; it is replaced`; if main's version is there already (the last opt-in round may have installed it), it says `already in place, unchanged` and writes nothing.
+- **Then it checks the stick, read-only:** it reads partition 1 where Akai's system mounted it (or mounts it read-only itself, and unmounts it after), and checks it as the hook will at power-on. This stick asks for no `kexec_file`, so the check loads no kernel. It ends `CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it`, with nothing after `into it`. A line `this stick asks to start on Akai's own kernel (kexec_file)` means the stick is an opt-in build: take it out before the next power-on, and go back to Q6.
 - **Passes when** it ends `RESULT: the hook is installed, and the stick checks out.`
 - **If it says `MPFree's stick is not in the MPC`,** put the stick in, wait for Akai's app to settle, and run Q7b again. It writes nothing more.
 - **If the check stops,** it ends `RESULT: the hook is installed, but the check stopped (above).` Take the stick out before you next switch the MPC on (without it the hook does nothing), skip to Q10 and send the zip.
@@ -198,6 +202,7 @@ Six of the app check's nineteen phases ([the app guide](../guides/mpfree-app.md#
 They show the screen, touch, pads, buttons, sound and partition 4 working after the soft-reboot from the installed 3.10.1. The check also prints when the pad player started playing, and the GPU facts it always reads.
 
 - **This is the first login on port 2222 after a soft-reboot.** Before it reads anything, the check prints `started by: the boot hook's soft-reboot (asked at … s after power-on)`, `no MMC block device`, `kexec_load_disabled: 1` and `/: read-only`, and ends `CHECKS-OK`. The release is Akai's own kernel now, so the stick's host key and the missing MMC devices are what tell the stick's system from Akai's.
+- **It also prints `privileges:` lines** (#372): on this stick, built without `--app-user`, the pad player runs as root (`Uid: 0`), as before. That is expected here.
 - **Our reading, which the check shows:** after the soft-reboot `/` stays the stick's read-only partition 1, `/run` is Akai's tmpfs carried over and allows programs, and the stick's own sysctl file turns kexec off. If any of these is wrong, the check prints a `PROBLEM` line and stops before it reads anything else.
 - **If it says `the test build did not answer on port 2222`,** note what the screen shows. The pad player can still be played by hand. Go to Q10: the stick logs show the network state.
 
@@ -293,7 +298,7 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 
 - Q1 records the host key; Q2 ends `LOCKED`; Q3, Q7a and Q10 end `LOCKED: only your key gets in`.
 - Q4's backup is verified, and its baseline mismatch names only `mmcblk0p6`.
-- Q6's report has the soft-reboot line, `no-reserved-blocks@…` is `masked on the stick`, and no unit starting `az0` is `NOT masked`.
+- Q6's report has the soft-reboot line, `route: soft-reboot only (no --kexec-file)` and `pad player user: root (no --app-user)`, `no-reserved-blocks@…` is `masked on the stick`, and no unit starting `az0` is `NOT masked`.
 - Q7b ends `RESULT: the hook is installed, and the stick checks out.`
 - In Q7c the MPC went from the logo to MPFree's pad player with no tap, and Akai's app never drew.
 - Q8 ends its checks with `started by: the boot hook's soft-reboot` and `CHECKS-OK`, and its phases work as in the stick test's phase 2.
@@ -311,7 +316,7 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 | Q4 | A new folder under `~/mpfree-backups` | Keep it: it is the return point for 3.10.1 |
 | Q5 | A private folder under `~/mpfree-work` (it holds the serial number and MAC) | Delete it |
 | Q6-write | The stick's partitions 1 to 3 | Rebuild and write an earlier stick; partition 4 stays |
-| Q7b | The boot hook's three files on `/data`, in place of the 2026-11-15 version | The hook stays installed after the round: it is how MPFree starts. To take it off the MPC, block Q7b-undo |
+| Q7b | The boot hook's three files on `/data`, in place of an earlier version | The hook stays installed after the round: it is how MPFree starts. To take it off the MPC, block Q7b-undo |
 | Q7c, Q8, Q9 | RAM on the MPC; the stick's log partition and partition 4 | Switch off, take out the stick, wait 10 s, switch on |
 
 **Block Q2-undo: unlock** (**state-changing, on `/data`**; you type `UNLOCK`). It logs in with your key, puts both files back from `/data/ssh/mpfree-lock-backup`, removes that folder, reloads the server, and checks that the login with no key works again, as Akai ships it:

@@ -65,7 +65,7 @@ cargo build --manifest-path rust/Cargo.toml --release --locked \
   --target armv7-unknown-linux-gnueabihf -p mpfree-app
 ```
 
-Then start the test build. On the installed 3.10.1, build and write the stick and install the boot hook once (blocks 4.1 to 4.3 of [starting MPFree from the stick](../hardware/stick-autoboot.md#blocks-for-the-owner), or Q0 to Q7b of the [qualification round](../hardware/firmware-3.10.1-qualification.md)). Then switch the MPC off, wait 10 s, and switch it on with the stick in: MPFree's pad player comes up instead of Akai's app. (On a unit still on 3.6.0, `--kexec-boot` from [the kexec test boot](../hardware/archive/2026-11/kexec-test-boot.md) starts it.) With the test build running:
+Then start the test build. On the installed 3.10.1, build and write the stick and install the boot hook once (blocks 4.1 to 4.3 of [starting MPFree from the stick](../hardware/stick-autoboot.md#blocks-for-the-owner), or Q0 to Q7b of the [qualification round](../hardware/firmware-3.10.1-qualification.md)). Then switch the MPC off, wait 10 s, and switch it on with the stick in: MPFree's pad player comes up instead of Akai's app. That is the default soft-reboot stick; the opt-in routes (`--kexec-file`, `--chain`) are in [boot routes](../hardware/boot-routes.md); of those two, only the chain brings Ethernet up for this tool. (On a unit still on 3.6.0, `--kexec-boot` from [the kexec test boot](../hardware/archive/2026-11/kexec-test-boot.md) starts it.) With the test build running:
 
 ```bash
 MPFREE_ACCEPT_APP=YES bash tools/mpc-one/collect-over-ssh.sh --app

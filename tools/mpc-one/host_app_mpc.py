@@ -165,7 +165,7 @@ say "release: $rel"
 if [ -e "$R/run/mpfree-hook/soft-reboot" ]; then
   say "started by: the boot hook's soft-reboot (asked at $(cat "$R/run/mpfree-hook/soft-reboot") s after power-on)"
 else
-  say "started by: no boot hook marker (kexec, or a direct boot)"
+  say "started by: no soft-reboot marker: a kexec (the boot hook's opt-in kexec_file route or its chain, or --kexec-boot on 3.6.0), or a direct boot"
 fi
 if ls "$R/sys/block" | grep -q '^mmcblk'; then bad "an MMC block device exists"; else say "no MMC block device"; fi
 v=$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)
