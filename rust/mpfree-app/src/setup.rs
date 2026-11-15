@@ -16,13 +16,17 @@
 //!    before MPFree's own; the samples to `library/Samples/Akai factory/`,
 //!    in Akai's folders, where BROWSE finds them. Both are written only
 //!    through `mpfree-library`.
-//! 3. **Done** is kept in the store (`settings/setup.conf`), so it runs
-//!    once. A failed attempt is tried again at the next start, at most
-//!    [`MAX_TRIES`] times; the pad player works either way.
+//! 3. **Done** is kept in the store (`settings/setup.conf`), step by step
+//!    ([`STEPS`]), so each step runs once. A failed attempt is tried again
+//!    at the next start, at most [`MAX_TRIES`] times; the pad player works
+//!    either way. A later version can add a step (the MPC's instruments,
+//!    say): a stick set up before runs only that step, from the backup it
+//!    already has.
 //!
 //! It runs only where the stick has the backup service (the creator's
 //! sticks), only with `--data`, and never in `play`.
 
+use mpfree_diskimage::Offset;
 use mpfree_factory::import::{Content, DEFAULT_KITS};
 use mpfree_library::{clean_name, Library, Loc, Place};
 use mpfree_store::Settings;
@@ -47,6 +51,8 @@ pub const STATUS: &str = "/run/mpfree-setup/status";
 pub const REQUEST: &str = "setup-backup.request";
 /// Starts that try the setup before it gives up until the stick is made again.
 pub const MAX_TRIES: i64 = 3;
+/// The setup's steps, in order, as the store records them (`done`).
+pub const STEPS: &[&str] = &["backup", "kits", "samples"];
 /// The largest sample copied (the library's own limit is higher).
 const MAX_SAMPLE: u64 = 512 << 20;
 
@@ -87,11 +93,23 @@ impl Timing {
     }
 }
 
-/// Whether the setup still has to run: the stick has the service, and the
-/// store doesn't say it is done or given up.
+/// The steps the store records as done.
+pub fn done_steps(saved: &Settings) -> Vec<String> {
+    saved
+        .get_str("done")
+        .unwrap_or("")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether the setup still has to run: the stick has the service, a step
+/// is not done, and the setup has not given up.
 pub fn needed(paths: &Paths, saved: &Settings) -> bool {
+    let done = done_steps(saved);
     paths.service.is_file()
-        && saved.get_str("state") != Some("done")
+        && STEPS.iter().any(|s| !done.iter().any(|d| d == s))
         && saved.get_i64("tries").unwrap_or(0) < MAX_TRIES
 }
 
@@ -147,8 +165,9 @@ fn show(f: &mut dyn FnMut(Show), message: &str, detail: String, value: f32) {
     });
 }
 
-/// What the setup did: the settings to keep (state, tries, the backup's
-/// folder, how many kits and samples) and the kits file, if one was made.
+/// What the setup did: the settings to keep (the steps done, tries, the
+/// backup's folder, how many kits and samples) and the kits file, if one
+/// was made.
 pub struct Outcome {
     pub saved: Settings,
     pub kits: Option<PathBuf>,
@@ -162,7 +181,18 @@ fn gb(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / 1e9)
 }
 
-/// Runs the whole setup. `saved` is what the store holds now.
+/// The backup an earlier start made, if the store names one that is still
+/// on partition 4.
+fn earlier_backup(paths: &Paths, saved: &Settings) -> Option<PathBuf> {
+    if !done_steps(saved).iter().any(|d| d == "backup") {
+        return None;
+    }
+    let folder = PathBuf::from(saved.get_str("backup")?);
+    (folder.parent() == Some(&paths.data.join("backup")) && folder.join("mmcblk0.img").is_file())
+        .then_some(folder)
+}
+
+/// Runs the steps not done yet. `saved` is what the store holds now.
 pub fn run(
     paths: &Paths,
     saved: &Settings,
@@ -174,6 +204,13 @@ pub fn run(
     let tries = saved.get_i64("tries").unwrap_or(0) + 1;
     out.set_i64("tries", tries);
     say(format!("first start: setup, try {tries} of {MAX_TRIES}"));
+    let mut done = done_steps(saved);
+    let mark = |out: &mut Settings, done: &mut Vec<String>, step: &str| {
+        if !done.iter().any(|d| d == step) {
+            done.push(step.to_string());
+        }
+        out.set_str("done", &done.join(","));
+    };
     let fail = |mut out: Settings, why: String, say: &mut dyn FnMut(String)| {
         say(format!("first start: {why}"));
         out.set_str("state", "failed");
@@ -184,29 +221,77 @@ pub fn run(
             failed: Some(why),
         }
     };
-    let folder = match backup(paths, timing, show_f, say) {
-        Ok(f) => f,
-        Err(why) => return fail(out, why, say),
+    let folder = match earlier_backup(paths, saved) {
+        Some(f) => {
+            say(format!(
+                "first start: using the backup made before: {}",
+                f.display()
+            ));
+            f
+        }
+        None => match backup(paths, timing, show_f, say) {
+            Ok(f) => f,
+            Err(why) => return fail(out, why, say),
+        },
     };
     out.set_str("backup", &folder.display().to_string());
-    match extract(paths, &folder, show_f, say) {
-        Ok((kits, made, samples)) => {
-            out.set_str("state", "done");
-            out.remove("why");
+    mark(&mut out, &mut done, "backup");
+    show(show_f, EXTRACTING, "Reading the backup".into(), 0.7);
+    // The backup's copy of the eMMC's user area: a file on partition 4, read only.
+    let image = folder.join("mmcblk0.img");
+    let content = match File::open(&image)
+        .map_err(|e| format!("{}: {e}", image.display()))
+        .and_then(|f| {
+            Content::from_disk(f).map_err(|e| format!("the backup's content partition: {e}"))
+        }) {
+        Ok(c) => c,
+        Err(why) => return fail(out, why, say),
+    };
+    let lib = match Library::at(&paths.data) {
+        Ok(l) => l,
+        Err(e) => return fail(out, format!("the library: {e}"), say),
+    };
+    let mut failed = Vec::new();
+    // Each step is tried even when one before it failed; a later start
+    // tries only what failed.
+    let kits = match extract_kits(&content, &lib, show_f, say) {
+        Ok((kits, made)) => {
             out.set_i64("akai-kits", made as i64);
-            out.set_i64("akai-samples", samples as i64);
-            show(show_f, "Setup done", "Starting the pad player".into(), 1.0);
-            say(format!(
-                "first start: done: {made} Akai kits, {samples} samples; the backup is in {}",
-                folder.display()
-            ));
-            Outcome {
-                saved: out,
-                kits,
-                failed: None,
-            }
+            mark(&mut out, &mut done, "kits");
+            kits
         }
-        Err(why) => fail(out, why, say),
+        Err(why) => {
+            failed.push(why);
+            None
+        }
+    };
+    match extract_samples(&content, &lib, show_f, say) {
+        Ok(samples) => {
+            out.set_i64("akai-samples", samples as i64);
+            mark(&mut out, &mut done, "samples");
+        }
+        Err(why) => failed.push(why),
+    }
+    if !failed.is_empty() {
+        let mut o = fail(out, failed.join("; "), say);
+        o.kits = kits;
+        return o;
+    }
+    out.set_str("state", "done");
+    out.remove("why");
+    // A step added later gets its own tries.
+    out.set_i64("tries", 0);
+    show(show_f, "Setup done", "Starting the pad player".into(), 1.0);
+    say(format!(
+        "first start: done: {} Akai kits, {} samples; the backup is in {}",
+        out.get_i64("akai-kits").unwrap_or(0),
+        out.get_i64("akai-samples").unwrap_or(0),
+        folder.display()
+    ));
+    Outcome {
+        saved: out,
+        kits,
+        failed: None,
     }
 }
 
@@ -303,21 +388,13 @@ fn folder_in(lib: &Library, parent: &Loc, name: &str) -> std::io::Result<Loc> {
     lib.new_folder(parent, name)
 }
 
-/// Kits and samples from the backup: (the kits file, kits made, samples copied).
-fn extract(
-    paths: &Paths,
-    folder: &Path,
+/// The Akai kits from the backup: (the kits file, kits made).
+fn extract_kits(
+    content: &Content<Offset<File>>,
+    lib: &Library,
     show_f: &mut dyn FnMut(Show),
     say: &mut dyn FnMut(String),
-) -> Result<(Option<PathBuf>, usize, usize), String> {
-    show(show_f, EXTRACTING, "Reading the backup".into(), 0.7);
-    // The backup's copy of the eMMC's user area: a file on partition 4, read only.
-    let image = folder.join("mmcblk0.img");
-    let file = File::open(&image).map_err(|e| format!("{}: {e}", image.display()))?;
-    let content =
-        Content::from_disk(file).map_err(|e| format!("the backup's content partition: {e}"))?;
-    let lib = Library::at(&paths.data).map_err(|e| format!("the library: {e}"))?;
-    // Kits.
+) -> Result<(Option<PathBuf>, usize), String> {
     let kits_loc = Loc::new(Place::Kits, &[KITS_FILE]).map_err(|e| e.to_string())?;
     let mut made = 0;
     let kits = match lib.file_path(&kits_loc) {
@@ -357,9 +434,18 @@ fn extract(
             }
         }
     };
-    // Samples, in Akai's folders.
+    Ok((kits, made))
+}
+
+/// Akai's samples from the backup, in Akai's folders: how many are in the library.
+fn extract_samples(
+    content: &Content<Offset<File>>,
+    lib: &Library,
+    show_f: &mut dyn FnMut(Show),
+    say: &mut dyn FnMut(String),
+) -> Result<usize, String> {
     let samples = content.samples();
-    let top = folder_in(&lib, &Loc::top(Place::Samples), SAMPLES_FOLDER)
+    let top = folder_in(lib, &Loc::top(Place::Samples), SAMPLES_FOLDER)
         .map_err(|e| format!("the samples folder: {e}"))?;
     let mut copied = 0;
     let total = samples.len();
@@ -385,7 +471,7 @@ fn extract(
         let mut at = top.clone();
         let mut ok = true;
         for p in &parts {
-            match folder_in(&lib, &at, p) {
+            match folder_in(lib, &at, p) {
                 Ok(l) => at = l,
                 Err(e) => {
                     say(format!("first start: {path}: folder {p}: {e}"));
@@ -410,7 +496,7 @@ fn extract(
             Err(e) => say(format!("first start: {path}: {e}")),
         }
     }
-    Ok((kits, made, copied))
+    Ok(copied)
 }
 
 /// The kits to play: the Akai kits first, then MPFree's own, at most
@@ -488,8 +574,10 @@ mod tests {
         s.set_i64("tries", MAX_TRIES);
         assert!(!needed(&p, &s), "gives up after {MAX_TRIES} tries");
         let mut s = Settings::default();
-        s.set_str("state", "done");
+        s.set_str("done", "backup,kits,samples");
         assert!(!needed(&p, &s));
+        s.set_str("done", "backup,kits");
+        assert!(needed(&p, &s), "a step not done yet");
         std::fs::remove_file(&p.service).unwrap();
         assert!(
             !needed(&p, &Settings::default()),
@@ -517,7 +605,13 @@ mod tests {
         assert_eq!(o.failed, None, "{said:?}");
         assert!(p.request.exists(), "the backup was asked for");
         assert_eq!(o.saved.get_str("state"), Some("done"));
-        assert_eq!(o.saved.get_i64("tries"), Some(1));
+        assert_eq!(o.saved.get_str("done"), Some("backup,kits,samples"));
+        assert_eq!(
+            o.saved.get_i64("tries"),
+            Some(0),
+            "a later step gets its own tries"
+        );
+        assert!(!needed(&p, &o.saved));
         let kits = o.kits.expect("a kits file");
         assert_eq!(kits, p.data.join("library/Kits").join(KITS_FILE));
         let n = o.saved.get_i64("akai-kits").unwrap();
@@ -549,6 +643,38 @@ mod tests {
             .data
             .join("library/Kits/Akai factory kits 2.mpfkits")
             .exists());
+        // A stick set up by an older version, before a step was added: only
+        // that step runs, from the backup it has (none is asked for).
+        let mut older = o.saved.clone();
+        older.set_str("done", "backup,kits");
+        assert!(needed(&p, &older));
+        std::fs::remove_file(&p.request).unwrap();
+        std::fs::remove_file(&p.status).unwrap();
+        let (o, _, said) = run_it(&p, &older);
+        assert_eq!(o.failed, None, "{said:?}");
+        assert!(!p.request.exists(), "no new backup");
+        assert!(said
+            .iter()
+            .any(|l| l.contains("using the backup made before")));
+        assert_eq!(o.saved.get_str("done"), Some("backup,kits,samples"));
+    }
+
+    #[test]
+    fn a_backup_that_is_gone_is_made_again() {
+        let t = tmp("gone");
+        let p = paths(&t);
+        let mut s = Settings::default();
+        s.set_str("done", "backup");
+        s.set_str(
+            "backup",
+            &p.data.join("backup/mpc-one-emmc-x").display().to_string(),
+        );
+        let (o, _, _) = run_it(&p, &s);
+        assert!(p.request.exists(), "asked for a new backup");
+        assert_eq!(
+            o.failed.as_deref(),
+            Some("the backup service did not answer")
+        );
     }
 
     #[test]
