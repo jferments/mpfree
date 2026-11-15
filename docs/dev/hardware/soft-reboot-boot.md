@@ -32,9 +32,12 @@ A systemd 255 soft-reboot loads no kernel. It stops all units, pivots into a new
 | A systemd unit in the root filesystem | Blocked | Root filesystem write; an Akai update would remove it. |
 | U-Boot booting USB first | Blocked | U-Boot environment write, behind proven MaskROM recovery. |
 | Raw `kexec_load` from the hook | Refused by the kernel | LoadPin. |
-| `kexec_file_load` of Akai's own signed kernel | Parked | `--dtb` is refused in file mode, so it gives Akai's kernel and device tree with our root: what a soft-reboot gives, plus a full kernel restart. Never tried as a jump. |
+| `kexec_file_load` of Akai's own signed kernel | Opt-in; first round passed 2026-11-15, without Ethernet | `--dtb` is refused in file mode, so it gives Akai's kernel and device tree with our root, plus a full kernel restart. Its gains: an empty `/run` and udev database, LoadPin starting afresh, and a command line of our own. A `--kexec-file` stick asks for it and falls back to the soft-reboot ([below](#the-opt-in-kexec-file-route)). Its first round restarted on Akai's kernel on both power-ons, with `loadpin.enforce=0` taken; Ethernet found no PHY on Akai's device tree ([record](stick-autoboot.md#first-round-2026-11-15-zip-192320z-the-jump-worked-loadpin-off-no-ethernet)). |
+| A chain: kexec_file, then the ordinary kexec from the stick's system | Opt-in; first round passed 2026-11-15, Ethernet up | With `loadpin.enforce=0` on the first kernel's command line, the stick's system may load the stick's own kernel and device tree (`--chain`). The first step keeps Akai's kernel with the stick's device tree: Ethernet's PHY ID, the eMMC and SD controllers disabled ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in)). |
 | MPFree under Akai's init (chroot or namespace) | Fallback | Akai's systemd stays PID 1 and its units can still write `/data`. |
 | **systemd soft-reboot** | **Chosen, works** | No kernel load, Akai's userspace fully stopped, MPFree's systemd as PID 1. |
+
+These routes were reviewed again on 2026-11-15 against two outside proposals: `kexec_file` of Akai's kernel (or MPFree's programs under Akai's kernel with no kexec at all), and keeping Akai's systemd as PID 1 with MPFree sandboxed under it, the design in [the reversible handoff](../research/reversible-handoff.md). Neither changed which route is chosen; the first is the opt-in `kexec_file` row above. The second added one piece: the pad player running without root (`--app-user`, [below](#the-stick)). How the routes compare, including a chain to our own kernel and what each means for external hardware drivers, is in [Boot routes](boot-routes.md).
 
 The price is that the internal storage is no longer hidden by a device tree, so the stick must switch it off itself, and that LoadPin refuses every module and firmware load after the switch ([below](#what-survives-the-soft-reboot)).
 
@@ -92,6 +95,22 @@ MPFree's system, from the stick (read-only root), same kernel
 
 On any problem the jump logs `STOP: <reason>` to the kernel log and `/run/mpfree-hook.txt`, unmounts and removes `/run/nextroot`, and exits; Akai's app then starts as usual, a little late. Leaving nothing at `/run/nextroot` matters, because systemd turns a later plain `reboot` into a soft-reboot when that folder holds a system.
 
+### The opt-in kexec-file route
+
+A stick built with `offline-kexec-stick.py --kexec-file` carries three more files in `/boot/mpfree-softreboot/`, all in its `SHA256SUMS`:
+- `jump`: `kexec-file`;
+- `cmdline`: the kernel command line, with `root=` this stick's partition 1; `--loadpin-off` adds `loadpin.enforce=0`;
+- `kernel.sha256`: the hash of Akai's `/boot/zImage-<release>`.
+
+For such a stick, the jump's step 3 also checks every word of `cmdline` against a short list, and step 5 is replaced:
+- If the MPC's own `/boot/zImage-<release>` has that hash, the hook loads it with `kexec --load --kexec-file-syscall` and the stick's command line. That file is on the pinned root, the only place LoadPin accepts a kernel from.
+- It then starts `kexec.target`.
+- If the kernel is another, kexec is off or already loaded, the load is refused, or systemd won't start `kexec.target`, it unloads and soft-reboots as above, in the same power-on. If the kernel it loaded will not unload, it stops instead (Akai's app starts; switching off clears it).
+
+The check loads and unloads the kernel (RAM only), so the install shows whether the kernel accepts the load. A stick without `--kexec-file` never reaches any of this; the hook never runs `kexec` for it. Its record and runbook are [step 6](stick-autoboot.md#the-kexec-file-route-step-6-opt-in).
+
+A `--chain` stick's `cmdline` has `mpfree.chain=1` and `loadpin.enforce=0` in place of `sysctl.kernel.kexec_load_disabled=1`. The hook allows that only when the stick carries the chain's service and the stick's own kernel files, all in `SHA256SUMS`, and starts that service. On the kernel the hook starts, the stick's system then loads its own kernel and device tree and restarts once more ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in)).
+
 ## The stick
 
 [`offline-kexec-stick.py`](../../../tools/mpc-one/offline-kexec-stick.py) builds the image on the workstation and [`write-test-stick.py`](../../../tools/mpc-one/write-test-stick.py) writes it. The stick's system is a **modified copy of Akai's own root filesystem** for the same release, so its userspace matches the kernel it runs on; MPFree's programs run on top of it. The builder never contacts the MPC and never writes a device.
@@ -106,9 +125,10 @@ On any problem the jump logs `STOP: <reason>` to the kernel log and `/run/mpfree
 What the builder changes in the copy, for this route:
 
 - **masks** every Akai unit that could write, flash or format: Akai's app (`acvs.service`), the touch, XMOS and USB-SATA firmware updaters, the network update server, the USB script runner, the `/data` and content formatters, the firewall, the eMMC content generator, and `no-reserved-blocks@.service` (tune2fs; masking the template masks every instance);
-- **stubs** Akai's update, flashing, U-Boot-environment and kexec programs with a program that refuses and logs;
+- **stubs** Akai's update, flashing, U-Boot-environment and kexec programs with a program that refuses and logs (a `--chain` stick keeps Akai's `kexec`, which its chain needs; kexec is turned off again right after);
 - makes `/data` a RAM disk, so Akai's `/etc` and `/var` overlays live in RAM;
 - adds key-only SSH on port 2222, the log service, the startup screen and the pad player;
+- only with `--app-user` (opt-in, merged in #372; passed its first power-on on 2026-11-15): runs the pad player as the `mpfree` user with no capabilities instead of root, after a root `mpfree-test-storage.service` mounts its partitions ([details](stick-autoboot.md#the-pad-player-without-root---app-user-opt-in)). Without the flag it runs as root, as before;
 - adds the switch-off service and its udev rule (next section);
 - writes `/boot/mpfree-softreboot/`: `PROTOCOL`, `release` (the kernel release the system was built for), optional `preload-modules.txt` (`--preload-module NAME`) and `SHA256SUMS` over those and the switch-off service's three files;
 - prints a build report that lists every unit Akai's udev rules start when a device appears, each marked masked or **NOT masked**.
@@ -152,8 +172,8 @@ The owner's sequence is blocks 4.1 to 4.5 of [the record](stick-autoboot.md#bloc
 
 ## Tests
 
-- [`test_boot_hook.py`](../../../tools/mpc-one/tests/test_boot_hook.py) runs the wrapper, the installer, the jump, the check, the undo and the report against a fake MPC, the triggers under BusyBox's shell and the jump under dash, through every way the jump can stop.
-- [`test_offline_kexec_stick.py`](../../../tools/mpc-one/tests/test_offline_kexec_stick.py) checks the builder's output (the rule passes `udevadm verify`), the masks, the udev audit in the report, and runs `internal-off.sh` against a fake kernel whose unbind file behaves like Linux's.
+- [`test_boot_hook.py`](../../../tools/mpc-one/tests/test_boot_hook.py) runs the wrapper, the installer, the jump, the check, the undo and the report against a fake MPC, the triggers under BusyBox's shell and the jump under dash, through every way the jump can stop. For the kexec-file route, a fake `kexec` behaves like LoadPin on 3.10.1. The tests cover each fallback to the soft-reboot, and that a stick without `--kexec-file` never calls `kexec`.
+- [`test_offline_kexec_stick.py`](../../../tools/mpc-one/tests/test_offline_kexec_stick.py) checks the builder's output (the rule passes `udevadm verify`), the masks, the udev audit in the report, and runs `internal-off.sh` against a fake kernel whose unbind file behaves like Linux's. It runs `chain.sh` (`--chain`) under dash and BusyBox through each way it falls back.
 - [`test_hook_canary.py`](../../../tools/mpc-one/tests/test_hook_canary.py) covers the canary and the wrapper's host-key check.
 - CI's shell syntax and static no-write checks cover these scripts.
 
@@ -163,7 +183,7 @@ The owner's sequence is blocks 4.1 to 4.5 of [the record](stick-autoboot.md#bloc
 - **No module or firmware loads after the switch.** Anything MPFree needs must be loaded in Akai's first 6 s or listed in `preload-modules.txt`.
 - **Inherited udev state.** Any Akai unit that a udev rule starts for a disk must be masked on the stick. Read the build report's udev list after every Akai update.
 - **The trigger depends on `cfg80211` loading early.** If a later firmware stops loading the Wi-Fi module at boot, only the udev backup is left; the canary can re-measure.
-- **Switched off, not hidden.** The internal storage's safety rests on the switch-off service running first and powering off on failure.
+- **Switched off, not hidden.** The internal storage's safety rests on the switch-off service running first and powering off on failure. A root program could bind the controllers again; with `--app-user` the pad player is not root and cannot.
 - **Installing needs developer mode and SSH once per MPC.** A musician cannot install the hook alone yet.
 - Not recorded yet: what the screen shows between the MPC logo and MPFree's startup screen.
 
