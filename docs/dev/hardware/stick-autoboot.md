@@ -531,6 +531,8 @@ At power-on:
 
 If any check, the load or `kexec.target` fails, `chain.sh` notes `…; MPFree starts on this kernel, with Akai's device tree` and exits. The first kernel then carries on exactly as step 6's round did, without Ethernet. A kernel it loaded is unloaded again first.
 
+The startup screen waits for the chain (`Before=mpfree-test-splash.service` in the chain's unit, added after step 7b): on the first kernel it starts only if `chain.sh` exits without restarting, and when `kexec.target` is started its waiting start is cancelled. So it plays once per power-on, on the kernel MPFree runs on. The screen stays dark on the first kernel. See [the startup screen played twice](#the-startup-screen-played-twice-fixed-after-step-7b).
+
 ### One try per failed power-on (added after the first round)
 
 A second kernel that panics would otherwise loop: `panic=10` restarts the MPC, the hook starts Akai's kernel again, and the chain jumps into the same kernel again, until the stick is pulled. That matters most once the second kernel is our own. So a `--chain` stick allows one try per failed power-on:
@@ -542,7 +544,7 @@ So a broken second kernel costs one failed boot, then a working one without Ethe
 - **Switch off only after the pad player has run about 30 s.** If you switch off sooner, the mark stays and the next power-on starts without the chain once.
 - If the log partition cannot be mounted on the first kernel, there is no mark, and the guard does nothing (the chain runs as before).
 
-The files are listed in `/boot/mpfree-softreboot/SHA256SUMS` like the chain's others. The hook is unchanged, so no `--hook-install` is needed for it. Rehearsed in the simulator (`ChainTests`, `ChainDoneTests`); not yet seen on the MPC. [Step 7b](#blocks-for-the-owner-step-7b-the-one-try-guard) tests it with four power-ons.
+The files are listed in `/boot/mpfree-softreboot/SHA256SUMS` like the chain's others. The hook is unchanged, so no `--hook-install` is needed for it. Rehearsed in the simulator (`ChainTests`, `ChainDoneTests`), and passed on the MPC in [step 7b](#step-7b-round-2026-11-15-zip-215433z-the-guard-passed) (four power-ons).
 
 ### What cannot change
 
@@ -635,7 +637,7 @@ Go on to 7.4 only with these three lines:
 On `STOP: …`, or a `CHECK-OK` that says it would soft-reboot, take the stick out and send the zip (`python3 tools/mpc-one/results.py zip`).
 
 **Block 7.4: power on with the stick in** (**state-changing**: Akai's programs are stopped at about 6 s, and the MPC restarts twice: into Akai's kernel, then into the stick's device tree. Nothing is written to the eMMC or SD card).
-1. Switch the MPC off, wait 10 s, and switch it on with the stick in. Expect the MPC logo, then dark screens and possibly MPFree's startup screen twice, then the pad player, about half a minute after power-on. Play a few pads.
+1. Switch the MPC off, wait 10 s, and switch it on with the stick in. Expect the MPC logo, then dark screens and MPFree's startup screen (once with a build from after step 7b; twice before, once on each kernel), then the pad player, about half a minute after power-on. Play a few pads.
 2. Read the privileges (**read-only**, over SSH on port 2222). Ethernet should answer now. Press `q` at the first phase.
 
    ```bash
@@ -721,6 +723,31 @@ If the MPC restarts by itself more than twice in one power-on, or stays dark or 
 
 **Undo, always:** switch off, take the stick out, switch on: Akai's system starts as before.
 
+### Step 7b round (2026-11-15, zip 215433Z): the guard passed
+
+The owner ran blocks 7b.1 to 7b.4 at f56b4779, with a stick built with `--splash … --app … --app-user --kexec-file --loadpin-off --chain`. The hook installed in block 7.3 took the stick with no reinstall. The stick's log partition holds seven boots, in order:
+
+| Power-on | Boots | What happened |
+| --- | --- | --- |
+| 1, normal | first kernel, then second | chain at 7.77 s; on the second kernel `mpfree-chain: up for 30 s on the stick's kernel; chain-pending taken away` at 32.0 s; Ethernet up first time |
+| 2, cut short | first kernel, then second | chain at 5.28 s; the second kernel was switched off before 30 s, so no `taken away` line (its `units.txt` is empty: it ended within the log service's first copy) |
+| 3, guard | first kernel only | `the last restart into the stick's kernel did not stay up for 30 s (chain-pending is still on the stick's log partition), so not again on this power-on; MPFree starts on this kernel, with Akai's device tree` at 7.37 s; full logs beside it, `cmdline.txt` with `mpfree.chain=1`; the eMMC and SD card switched off at 3.9 and 6.9 s; no Ethernet (Akai's tree has no PHY ID, as in step 6) |
+| 4, back to normal | first kernel, then second | chain at 7.89 s; `taken away` in the second kernel's `dmesg.txt` (its `journal.txt` copy ends earlier); Ethernet up after the 20 s retry (`Failed to reset the dma` first, as on step 7's first power-on) |
+
+Against the pass rules: all passed. The `privileges:` lines (power-on 4, pid 525) show `Uid 960`, `CapEff` and `CapBnd` zero, `NoNewPrivs 1`, `Max realtime priority 70` and `Max locked memory unlimited`. The boot-area hashes (p1 to p6, boot0, boot1) are the same before and after, with 0 sectors written to them. No failed units on any boot with full logs. Sound: pad to sound 8.67 ms (power-on 1, 34 hits) and 8.66 ms (power-on 3, 22 hits); each had 1 underrun in its first 30 s after the start (step 7 had none; not looked into yet).
+
+### The startup screen played twice (fixed after step 7b)
+
+The owner saw the startup screen play twice on every power-on of step 7b, the guard's included. The logs show two causes:
+- **Power-ons 1, 2 and 4 (the chain):** it played on the first kernel from about 3.9 s until the restart at about 7.8 s, then again on the second kernel.
+- **Power-on 3 (one kernel):** it played twice in the same boot: started at 3.83 s, finished at 11.15 s, and started again at 11.97 s. Its unit was a `Type=oneshot` service without `RemainAfterExit=`, so once finished it was inactive again, and a later start job that pulled in `sysinit.target` again (in that boot just after the udev coldplug finished) started it once more. The units with `RemainAfterExit=yes` (the switch-off, the chain, the storage service) did not run again; units skipped by a condition (`Huge Pages File System`) were evaluated a second time at the same moment. The pad player waits for the startup screen, so it started at 18.5 s instead of at 13.7 s, when its storage step had finished. On the other boots the second start came while the screen was still playing, so it did not show.
+
+The fix:
+- `mpfree-test-splash.service` has `RemainAfterExit=yes`: once played, it stays active and is not started again in that boot. This applies to every stick built with `--splash`, the soft-reboot route's included.
+- With `--chain`, the chain's unit is ordered before the startup screen (above), so it plays on the kernel MPFree runs on. On the guard's power-on it plays after `chain.sh` exits (about 10 s on the first kernel).
+
+The build report says `shown for 6 s before the log, once per boot`, and with `--splash` and `--chain`, `--chain: the startup screen waits for the chain, so it plays once`. The hook is unchanged. To check it on the MPC, run step 7b again (blocks 7b.1 to 7b.4, unchanged). It passes as before, and also when the startup screen plays once on each of the four power-ons.
+
 ## Next steps
 
 1. The runtime-kexec route is closed on 3.10.1: LoadPin, enforcing and pinned to the dm-verity root, refuses the stick's `kexec_load` (`kexec-image old-api-denied`; preflight zip 082152Z). IPE is absent and lockdown is off.
@@ -728,5 +755,5 @@ If the MPC restarts by itself more than twice in one power-on, or stays dark or 
 3. The **bootloader-level** route (U-Boot booting MPFree directly, or a kernel command-line word that lifts LoadPin) stays behind the [safety rule](../../agents/README.md): proven MaskROM recovery and the owner's go. Not started.
 4. The hook needs installing once on each MPC. Whether a one-time tap at install is acceptable is the owner's decision; the owner rejected a tap at every power-on.
 5. The pad player without root (`--app-user`, opt-in) passed its first power-on (zip 183259Z: uid 960, no capabilities, real-time 70, no underruns) and was merged into `main` on 2026-11-15 (#372). Saved settings came back on the second power-on of step 6's round (zip 192320Z, an `--app-user` stick on the kexec-file route: the Timing strip stayed Off, and that boot's report shows `saved settings: …` loaded from partition 4). Its `privileges:` lines could not be read there, without Ethernet; step 7's round read them on both power-ons, the same as the first run's (zip 201107Z). Whether `--app-user` becomes the default is the owner's decision.
-6. Step 6, the opt-in kexec-file route: its first round (zip 192320Z) restarted on Akai's kernel on both power-ons, `loadpin.enforce=0` took, the eMMC stayed untouched and the saved setting came back; Ethernet did not come up. Next, by the owner's choice: the chain to the stick's own device tree (step 7). Its first round (zip 201107Z) passed: the second kernel came up on the stick's tree on both power-ons, with Ethernet, without root and with the boot areas unchanged. Merged into `main` on 2026-11-15 (#374), opt-in. Next on this route: the one-try guard (step 7b), more power-ons before the owner decides whether the chain becomes the default (a small change to the builder's defaults), then our own kernel in place of `zImage`. The soft-reboot stays the default; a stick without `--kexec-file` is unchanged.
+6. Step 6, the opt-in kexec-file route: its first round (zip 192320Z) restarted on Akai's kernel on both power-ons, `loadpin.enforce=0` took, the eMMC stayed untouched and the saved setting came back; Ethernet did not come up. Next, by the owner's choice: the chain to the stick's own device tree (step 7). Its first round (zip 201107Z) passed: the second kernel came up on the stick's tree on both power-ons, with Ethernet, without root and with the boot areas unchanged. Merged into `main` on 2026-11-15 (#374), opt-in. The one-try guard passed step 7b (zip 215433Z); the startup screen now plays once (fixed after that round). Next on this route: more power-ons before the owner decides whether the chain becomes the default (a small change to the builder's defaults), then our own kernel in place of `zImage`. The soft-reboot stays the default; a stick without `--kexec-file` is unchanged.
 7. After any Akai update, rebuild the stick from a fresh `--kexec-preflight`. Its `release` must match the running kernel, or the hook refuses the stick and Akai's system starts.
