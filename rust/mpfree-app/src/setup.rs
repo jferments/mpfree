@@ -181,6 +181,12 @@ fn gb(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / 1e9)
 }
 
+/// The backup's copy of the eMMC's user area: a FILE in the backup folder on
+/// partition 4 (made by the stick's root service), only ever read here.
+fn image_in(folder: &Path) -> PathBuf {
+    folder.join("mmcblk0.img")
+}
+
 /// The backup an earlier start made, if the store names one that is still
 /// on partition 4.
 fn earlier_backup(paths: &Paths, saved: &Settings) -> Option<PathBuf> {
@@ -188,7 +194,7 @@ fn earlier_backup(paths: &Paths, saved: &Settings) -> Option<PathBuf> {
         return None;
     }
     let folder = PathBuf::from(saved.get_str("backup")?);
-    (folder.parent() == Some(&paths.data.join("backup")) && folder.join("mmcblk0.img").is_file())
+    (folder.parent() == Some(&paths.data.join("backup")) && image_in(&folder).is_file())
         .then_some(folder)
 }
 
@@ -238,7 +244,7 @@ pub fn run(
     mark(&mut out, &mut done, "backup");
     show(show_f, EXTRACTING, "Reading the backup".into(), 0.7);
     // The backup's copy of the eMMC's user area: a file on partition 4, read only.
-    let image = folder.join("mmcblk0.img");
+    let image = image_in(&folder);
     let content = match File::open(&image)
         .map_err(|e| format!("{}: {e}", image.display()))
         .and_then(|f| {
