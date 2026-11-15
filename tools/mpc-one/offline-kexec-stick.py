@@ -43,7 +43,8 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     from the device tree; it writes only the framebuffer
   - only with --splash: a startup screen first. Our program mpfree-startup
     (rust/mpfree-startup, built for ARM beforehand) plays the default theme's
-    startup screen (synthwave) on /dev/fb0 for 6 seconds, and the log display
+    startup screen (synthwave) on /dev/fb0 for 6 seconds, once per boot (with
+    --chain, on the kernel MPFree runs on), and the log display
     starts when it ends; it writes only the framebuffer and the framebuffer's
     sysfs `pan` file (a mode set; nothing is stored). The older mpfree-splash
     (the galaxy, with an optional --splash-font) takes the same place
@@ -112,6 +113,11 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     once: Ethernet's PHY ID, the eMMC and SD controllers disabled in the
     tree, kexec off. If that fails, MPFree starts on the first kernel. Akai's
     /usr/sbin/kexec stays (systemd-shutdown runs it) instead of the stub.
+    One try per failed power-on: chain.sh leaves chain-pending on the log
+    partition before the restart, and mpfree-test-chain-done.service
+    (/etc/mpfree-test/chain-done.sh) takes it away after 30 s on the second
+    kernel; if the mark is still there at the next power-on, MPFree starts
+    on the first kernel instead of trying again (no restart loop).
     Without --chain none of this is made
   - only with --akai-app (phase 3 of the 3.10.1 stick test, for developer
     mode): Akai's app is NOT masked and its launcher is NOT stubbed, so it
@@ -285,8 +291,12 @@ LOADPIN_OFF = "loadpin.enforce=0"
 # second restart happens once. Akai's own kexec stays in place (not stubbed): systemd-shutdown runs it.
 CHAIN_WORD = "mpfree.chain=1"
 KEXEC_OFF_WORD = "sysctl.kernel.kexec_load_disabled=1"
-CHAIN_FILES = ("/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service")
+CHAIN_FILES = ("/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service",
+               "/etc/mpfree-test/chain-done.sh", "/etc/systemd/system/mpfree-test-chain-done.service")
 CHAIN_WANTS = "/etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service"
+CHAIN_DONE_WANTS = "/etc/systemd/system/multi-user.target.wants/mpfree-test-chain-done.service"
+CHAIN_MARK = "chain-pending"   # on the stick's log partition, from the jump until the second kernel has run 30 s
+CHAIN_UP_SECONDS = 30
 KEXEC_PROGRAM = "/usr/sbin/kexec"
 SHUTDOWN_PROGRAM = "/usr/lib/systemd/systemd-shutdown"
 # The paths systemd-shutdown may name for kexec: /sbin is a link into /usr (checked in build_rootfs).
@@ -424,27 +434,42 @@ CHAIN_SCRIPT = """R=''
 # First it checks the three files against /boot/mpfree-kexec/SHA256SUMS, and that the command line starts
 # the same partition, turns kexec off and does not ask for the chain again. If a check, the load or the
 # restart fails, it says why and exits 0: MPFree then starts on this kernel, as on the kexec-file route.
-# It writes only the kernel log, /run (RAM), and its notes with the kernel log to the stick's own log
-# partition (partition 2, "mpfree-test-log", MPFree's; never anything of the MPC's). It loads a kernel into
-# RAM.
+# One try per power-on that failed: just before the restart it leaves a mark (chain-pending) on the stick's
+# log partition, which chain-done.sh takes away once the stick's kernel has run 30 s. If that kernel dies
+# first (a panic restarts the MPC, and the hook starts this kernel again), the mark is still there: this
+# takes it away and lets MPFree start on this kernel instead of trying again, so there is no restart loop.
+# The next power-on tries the chain again.
+# It writes only the kernel log, /run (RAM), and its notes, the kernel log and the mark to the stick's own
+# log partition (partition 2, "mpfree-test-log", MPFree's; never anything of the MPC's). It loads a kernel
+# into RAM.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
 D="$R/boot/mpfree-kexec"
 K="$R/usr/sbin/kexec"
 say() { echo "mpfree-chain: $*" > "$R/dev/kmsg" 2>/dev/null; echo "mpfree-chain: $*" >> "$R/run/mpfree-chain.txt"; }
-keep() {   # the notes and the kernel log onto the stick's log partition, as internal-off.sh's stop does
+m="$R/run/mpfree-chain-log"
+logon() {   # mount the stick's log partition (on USB, by its name) at $m, as internal-off.sh's stop does
   log=''
   for u in "$R"/sys/class/block/sd*/uevent; do
     grep -qx 'PARTNAME=mpfree-test-log' "$u" 2>/dev/null || continue
     p=${u%/uevent}
     case "$(readlink -f "$p")" in */usb*) log=${p##*/} ;; esac
   done
-  m="$R/run/mpfree-chain-log"
-  if [ -n "$log" ] && [ -b "$R/dev/$log" ] && mkdir -p "$m" &&
-      mount -t ext4 -o rw,nosuid,nodev,noexec,sync "$R/dev/$log" "$m"; then
-    d="$m/boot-$(cat "$R/proc/sys/kernel/random/boot_id")"
-    mkdir -p "$d" && { cat "$R/run/mpfree-chain.txt"; dmesg; } > "$d/chain.txt" 2>&1
-    umount "$m"
-  fi
+  [ -n "$log" ] && [ -b "$R/dev/$log" ] && mkdir -p "$m" &&
+    mount -t ext4 -o rw,nosuid,nodev,noexec,sync "$R/dev/$log" "$m"
+}
+keep() {   # the notes and the kernel log onto the log partition; the mark only with "pending"
+  logon || return 0
+  d="$m/boot-$(cat "$R/proc/sys/kernel/random/boot_id")"
+  mkdir -p "$d" && { cat "$R/run/mpfree-chain.txt"; dmesg; } > "$d/chain.txt" 2>&1
+  if [ "$1" = pending ]; then cat "$R/proc/sys/kernel/random/boot_id" > "$m/chain-pending"; else rm -f "$m/chain-pending"; fi
+  umount "$m"
+}
+pending() {   # is the mark there? (no log partition: no)
+  logon || return 1
+  r=1
+  [ -e "$m/chain-pending" ] && r=0
+  umount "$m"
+  return "$r"
 }
 skip() { say "$1; MPFree starts on this kernel, with Akai's device tree"; keep; exit 0; }
 unload() {
@@ -456,6 +481,7 @@ unload() {
 now=" $(cat "$R/proc/cmdline" 2>/dev/null) "
 case "$now" in *" mpfree.chain=1 "*) ;; *) exit 0 ;; esac
 say "started at $(cut -d' ' -f1 "$R/proc/uptime") s"
+pending && skip "the last restart into the stick's kernel did not stay up for 30 s (chain-pending is still on the stick's log partition), so not again on this power-on"
 [ -f "$D/SHA256SUMS" ] || skip "the stick has no /boot/mpfree-kexec/SHA256SUMS"
 for f in zImage kexec.dtb cmdline.txt; do
   want=$(sed -n "s/^\\([0-9a-f]\\{64\\}\\)  $f\\$/\\1/p" "$D/SHA256SUMS")
@@ -483,7 +509,7 @@ if ! out=$("$K" --load --kexec-syscall --dtb="$D/kexec.dtb" --command-line="$cmd
 fi
 [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 1 ] || skip "kexec_loaded is not 1 after the load"
 say "the stick's kernel and device tree are loaded at $(cut -d' ' -f1 "$R/proc/uptime") s; restart into them (kexec.target)"
-keep
+keep pending
 systemctl --no-block --job-mode=replace-irreversibly start kexec.target && exit 0
 unload
 skip "systemctl could not start kexec.target"
@@ -496,7 +522,7 @@ Requires=mpfree-test-internal-off.service
 After=mpfree-test-internal-off.service
 Before=sysinit.target systemd-sysctl.service systemd-udevd.service systemd-udev-trigger.service local-fs.target
 Before=data.mount mpfree-test-logs.service mpfree-test-storage.service mpfree-test-app.service
-Before=mpfree-test-sshd.service mpfree-test-ethernet.service
+Before=mpfree-test-sshd.service mpfree-test-ethernet.service mpfree-test-splash.service
 
 [Service]
 Type=oneshot
@@ -506,6 +532,38 @@ TimeoutStartSec=60
 
 [Install]
 WantedBy=sysinit.target
+"""
+
+# --chain only. On the kernel the chain started (no mpfree.chain=1 on its command line): once it has run 30 s,
+# take chain.sh's mark off the stick's log partition (the log service has it mounted), so the next power-on
+# restarts into the stick's kernel again. Until then, a restart (a panic, or switching off) leaves the mark,
+# and the next power-on stays on Akai's kernel once.
+CHAIN_DONE_SCRIPT = f"""R=''
+# MPFree: this kernel came up by the chain. After {CHAIN_UP_SECONDS} s, take away chain.sh's mark, so the next
+# power-on restarts into this kernel again. It writes only that one file on the stick's log partition.
+[ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
+while [ "$(cut -d. -f1 "$R/proc/uptime")" -lt {CHAIN_UP_SECONDS} ]; do sleep 2; done
+i=0
+while ! grep -q ' /run/mpfree-log ' "$R/proc/mounts" && [ "$i" -lt 60 ]; do sleep 1; i=$((i + 1)); done
+if ! grep -q ' /run/mpfree-log ' "$R/proc/mounts"; then
+  echo "mpfree-chain: the log partition is not mounted, so {CHAIN_MARK} stays: the next power-on starts without the chain" > "$R/dev/kmsg"
+  exit 1
+fi
+[ -e "$R/run/mpfree-log/{CHAIN_MARK}" ] || exit 0
+rm -f "$R/run/mpfree-log/{CHAIN_MARK}" && sync &&
+  echo "mpfree-chain: up for {CHAIN_UP_SECONDS} s on the stick's kernel; {CHAIN_MARK} taken away, so the next power-on restarts into it again" > "$R/dev/kmsg"
+"""
+CHAIN_DONE_UNIT = """[Unit]
+Description=MPFree: after 30 s on the stick's own kernel, let the next power-on chain to it again
+ConditionKernelCommandLine=!mpfree.chain=1
+After=mpfree-test-logs.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /etc/mpfree-test/chain-done.sh
+
+[Install]
+WantedBy=multi-user.target
 """
 
 STUB = """#!/bin/sh
@@ -611,6 +669,11 @@ Nice=10
 WantedBy=sysinit.target
 """
 # Only with --splash. The log display waits for it (After= in its unit); if it fails, the log simply starts.
+# RemainAfterExit: once it has played, the unit stays active, so it plays once per boot. Without it a finished
+# oneshot is inactive again, and any later start job that pulls in sysinit.target again starts it a second time.
+# That happened in step 7b's third power-on (zip 215433Z): played at 3.8 s, finished at 11.1 s, played again at
+# 12.0 s (just after the udev coldplug finished), and the pad player waited for the second one. With --chain, CHAIN_UNIT also orders it after the chain, so it plays on
+# the kernel MPFree runs on, not on the one the chain leaves.
 SPLASH_SECONDS = 6
 SPLASH_UNIT = """[Unit]
 Description=MPFree test boot: startup screen before the live log
@@ -621,6 +684,7 @@ IgnoreOnIsolate=yes
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 ExecStart=/etc/mpfree-test/mpfree-splash --framebuffer --rotation {rotation} --seconds {seconds}{font}
 TimeoutStartSec={timeout}
 
@@ -1435,7 +1499,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                  ([SOFTREBOOT_DIR, *INTERNAL_OFF_FILES,
                    "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] if softreboot else []) +
                  (["/etc/systemd/system/mpfree-test-storage.service"] if app_user else []) +
-                 ([*CHAIN_FILES, CHAIN_WANTS] if chain else []))
+                 ([*CHAIN_FILES, CHAIN_WANTS, CHAIN_DONE_WANTS] if chain else []))
     for path in new_paths:
         if img.kind(path) is not None:
             raise Stop(f"{path} already exists in the image; refusing to guess what it is")
@@ -1516,6 +1580,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         if chain:
             add(CHAIN_FILES[0], CHAIN_SCRIPT, 0o755)
             add(CHAIN_FILES[1], CHAIN_UNIT, 0o644)
+            add(CHAIN_FILES[2], CHAIN_DONE_SCRIPT, 0o755)
+            add(CHAIN_FILES[3], CHAIN_DONE_UNIT, 0o644)
             # The hook checks these against the list before it starts the first kernel; chain.sh checks the
             # kernel (a link, which the hook does not hash) against KEXEC_DIR's own list.
             listed += [*CHAIN_FILES, KEXEC_DIR + "/kexec.dtb", KEXEC_DIR + "/cmdline.txt", KEXEC_DIR + "/SHA256SUMS"]
@@ -1575,6 +1641,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         links["/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] = INTERNAL_OFF_FILES[1]
     if chain:
         links[CHAIN_WANTS] = CHAIN_FILES[1]
+        links[CHAIN_DONE_WANTS] = CHAIN_FILES[3]
 
     commands = (["mkdir /etc/mpfree-test"] + ([f"mkdir {KEXEC_DIR}"] if kexec_files else []) +
                 ([f"mkdir {SOFTREBOOT_DIR}"] if softreboot else []))
@@ -1822,7 +1889,7 @@ def main(argv):
         if splash[0]:
             OUT.say(f"startup screen program: {os.path.realpath(args.splash)} ({len(splash[0])} bytes, "
                     f"sha256 {hashlib.sha256(splash[0]).hexdigest()}, static ARM EABI5 hard-float), "
-                    f"shown for {SPLASH_SECONDS} s before the log")
+                    f"shown for {SPLASH_SECONDS} s before the log, once per boot")
             if splash[2]:
                 OUT.say(f"startup screen font: {os.path.realpath(args.splash_font)} ({len(splash[2])} bytes, "
                         f"sha256 {hashlib.sha256(splash[2]).hexdigest()})")
@@ -1893,6 +1960,13 @@ def main(argv):
                         f"there the Ethernet PHY has its ID, the eMMC and SD controllers are disabled in the tree, "
                         f"and the command line is cmdline.txt's ({KEXEC_OFF_WORD}). If that fails, MPFree starts "
                         f"on the first kernel. {KEXEC_PROGRAM} is Akai's, not a stub")
+                OUT.say(f"  --chain: one try per failed power-on: {CHAIN_MARK} on the log partition until the "
+                        f"stick's kernel has run {CHAIN_UP_SECONDS} s; if it is still there at the next power-on, "
+                        f"MPFree starts on the first kernel instead (switch off only after {CHAIN_UP_SECONDS} s, or "
+                        f"the next power-on skips the chain once)")
+                if splash[0]:
+                    OUT.say("  --chain: the startup screen waits for the chain, so it plays once: on the stick's "
+                            "kernel, or on the first kernel only when the chain does not restart")
         else:
             OUT.say("  route: soft-reboot only (no --kexec-file)")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,

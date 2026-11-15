@@ -9,7 +9,9 @@ MPC's network identity. It uses the newest ~/mpfree-work/kexec-stick-* folder
   1. Workstation, read-only: checks that folder's files against SHA256SUMS,
      that its kexec.dtb hides the eMMC and SD controllers, and its command line.
   2. MPC, read-only: checks the running release, that no kexec kernel is loaded,
-     the kernel lockdown state, that this build's stick is plugged into the MPC,
+     the kernel lockdown state, that LoadPin does not enforce (on the installed
+     MPC OS 3.10.1 it does, and the boot hook starts the test build instead),
+     that this build's stick is plugged into the MPC,
      and that no shutdown hook or unit on the MPC reacts to kexec. Records the
      eMMC write counters.
   3. MPC RAM: copies zImage and kexec.dtb to /run/mpfree-kexec and checks their
@@ -107,6 +109,13 @@ if [ -r "$R/sys/kernel/security/lockdown" ]; then
   case "$v" in *"[none]"*) ;; *) bad "kernel lockdown is on, so kexec --load would be refused" ;; esac
 else
   say "lockdown: not readable here (no lockdown file; a refused load would only print an error)"
+fi
+if [ -r "$R/proc/sys/kernel/loadpin/enforce" ]; then
+  v=$(cat "$R/proc/sys/kernel/loadpin/enforce")
+  say "LoadPin enforce: $v"
+  [ "$v" = 0 ] || bad "LoadPin enforces, so the kernel refuses kexec --load (as on the installed MPC OS 3.10.1). There the boot hook starts the test build: docs/dev/hardware/stick-autoboot.md"
+else
+  say "LoadPin: no enforce file (not active here)"
 fi
 link="$R/dev/disk/by-partuuid/@@P1@@"
 if [ -e "$link" ]; then

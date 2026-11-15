@@ -25,6 +25,11 @@ Phase sets (--phases, or MPFREE_CAPTURE_PHASES in collect-over-ssh.sh):
   been heard playing from a MIDI track (Akai's MIDI Out routing set): which
   cable carries MIDI Out, and how notes, a held note, pad velocities and
   (optionally) clock leave on it (MIDI_OUT_SETUP).
+- cv-ports: CV ports 5 to 8. A CV track's CV Port and Gate Port are set to
+  5 and 6, then 7 and 8, and one note played each time, so the capture shows
+  which control changes carry them (CC 8 to 15 by the pattern of ports 1 to
+  4, never seen). MPFree sends ports 5 to 8 only once this has shown them
+  (CV_PORTS_SETUP).
 - transport: which light messages Akai's app sends for REC, OVERDUB, PLAY,
   PLAY START and STOP as the transport plays, records and overdubs. Their
   lights were never in Akai's startup lights, so mpfree does not send them
@@ -132,6 +137,30 @@ MIDI_OUT_SETUP = (
     "  3. Do not save the project or change Preferences.",
 )
 
+# CV ports 5 to 8 (missing MPC features thread, 2026-11-14). Ports 1 to 4
+# were seen as CC 0 to 7 on cable 1, channel 16 (cv-scale's cv_out2 phase
+# set the CV track to ports 3 and 4). These phases do the same for 5 to 8,
+# then go back to 1 and 2 to check nothing else moved. The owner sets the
+# ports before pressing Enter, so each phase only holds the note.
+CV_PORTS_PHASES = (
+    ("idle", "Touch NOTHING (baseline). Akai's app shows the CV track."),
+    ("cv_ports_5_6", "First set the CV track's CV Port to 5 and its Gate Port to 6. Then press "
+                     "Enter and play one C on the keyboard (or hit pad 1 once)."),
+    ("cv_ports_7_8", "First set the CV Port to 7 and the Gate Port to 8. Then press Enter and play "
+                     "one C on the keyboard (or hit pad 1 once)."),
+    ("cv_ports_1_2", "First set the CV Port back to 1 and the Gate Port to 2. Then press Enter and "
+                     "play one C on the keyboard (or hit pad 1 once)."),
+)
+
+CV_PORTS_SETUP = (
+    "Before you press Enter, in Akai's app (3.6 or 3.10.1, normal use, nothing saved):",
+    "  1. Make (or keep) a CV track, and select it. Nothing needs to be plugged into the CV jacks.",
+    "  2. Find its CV Port and Gate Port fields (as in the second round, when you set them to 3 and 4).",
+    "  3. Optional: the keyboard on the 5-pin MIDI In jack, so the note is a known C. Pad 1 works too.",
+    "  4. Do not save the project or change Preferences.",
+    "The capture runs for at most 240 s in all, so set each phase's ports promptly.",
+)
+
 # Fourth set (owner, 2026-11-13): the transport buttons' lights under Akai's
 # app. Each phase fits its 8 s: count, don't rush.
 TRANSPORT_PHASES = (
@@ -150,9 +179,10 @@ TRANSPORT_SETUP = (
 )
 
 PHASE_SETS = {"controller": PHASES, "midi-cv": MIDI_CV_PHASES, "cv-scale": CV_SCALE_PHASES,
-              "midi-out": MIDI_OUT_PHASES, "transport": TRANSPORT_PHASES}
+              "midi-out": MIDI_OUT_PHASES, "cv-ports": CV_PORTS_PHASES,
+              "transport": TRANSPORT_PHASES}
 SETUPS = {"midi-cv": MIDI_CV_SETUP, "cv-scale": CV_SCALE_SETUP, "midi-out": MIDI_OUT_SETUP,
-          "transport": TRANSPORT_SETUP}
+          "cv-ports": CV_PORTS_SETUP, "transport": TRANSPORT_SETUP}
 
 CIN_LEN = {0x0: 3, 0x1: 3, 0x2: 2, 0x3: 3, 0x4: 3, 0x5: 1, 0x6: 2, 0x7: 3,
            0x8: 3, 0x9: 3, 0xA: 3, 0xB: 3, 0xC: 2, 0xD: 2, 0xE: 3, 0xF: 1}
@@ -362,6 +392,16 @@ def main(argv=None):
     return 0
 
 
+def cv_ports(msgs):
+    """How many CV values each port got: control changes OUT on cable 1,
+    channel 16, the high half of each pair (an even CC) counted once."""
+    ports = collections.Counter()
+    for d, cable, m in msgs:
+        if d == "OUT" and cable == 1 and len(m) == 3 and m[0] == 0xBF and m[1] < 32 and m[1] % 2 == 0:
+            ports[m[1] // 2 + 1] += 1
+    return ports
+
+
 def analyze(lines, bus, dev):
     dec = MidiDecoder()
     per_phase = collections.OrderedDict()
@@ -384,6 +424,13 @@ def analyze(lines, bus, dev):
         cells = [f"{d} cable{c} {n[(d, c)]} ({n[(d, c)] - base[(d, c)]:+d})"
                  for d, c in sorted(set(n) | set(base))]
         res.append(f"  {phase}: " + ", ".join(cells))
+    res.append("")
+    res.append("CV PORTS BY PHASE (control changes on cable 1, channel 16: port = CC // 2 + 1)")
+    for phase, msgs in per_phase.items():
+        ports = cv_ports(msgs)
+        if ports:
+            res.append(f"  {phase}: " + ", ".join(f"port {p} (CC {2 * p - 2}, {2 * p - 1}) {n}x"
+                                                  for p, n in sorted(ports.items())))
     res.append("")
     res.append("DECODED USB-MIDI BY PHASE")
     for phase, msgs in per_phase.items():

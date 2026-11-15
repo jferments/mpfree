@@ -109,7 +109,7 @@ For such a stick, the jump's step 3 also checks every word of `cmdline` against 
 
 The check loads and unloads the kernel (RAM only), so the install shows whether the kernel accepts the load. A stick without `--kexec-file` never reaches any of this; the hook never runs `kexec` for it. Its record and runbook are [step 6](stick-autoboot.md#the-kexec-file-route-step-6-opt-in).
 
-A `--chain` stick's `cmdline` has `mpfree.chain=1` and `loadpin.enforce=0` in place of `sysctl.kernel.kexec_load_disabled=1`. The hook allows that only when the stick carries the chain's service and the stick's own kernel files, all in `SHA256SUMS`, and starts that service. On the kernel the hook starts, the stick's system then loads its own kernel and device tree and restarts once more ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in)).
+A `--chain` stick's `cmdline` has `mpfree.chain=1` and `loadpin.enforce=0` in place of `sysctl.kernel.kexec_load_disabled=1`. The hook allows that only when the stick carries the chain's service and the stick's own kernel files, all in `SHA256SUMS`, and starts that service. On the kernel the hook starts, the stick's system then loads its own kernel and device tree and restarts once more ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in)). A second kernel that does not stay up 30 s leaves a mark on the stick's log partition, and the next power-on stays on the first kernel instead of trying again ([one try per failed power-on](stick-autoboot.md#one-try-per-failed-power-on-added-after-the-first-round); passed step 7b). The startup screen waits for the chain, so it plays only on the kernel MPFree runs on.
 
 ## The stick
 
@@ -127,7 +127,7 @@ What the builder changes in the copy, for this route:
 - **masks** every Akai unit that could write, flash or format: Akai's app (`acvs.service`), the touch, XMOS and USB-SATA firmware updaters, the network update server, the USB script runner, the `/data` and content formatters, the firewall, the eMMC content generator, and `no-reserved-blocks@.service` (tune2fs; masking the template masks every instance);
 - **stubs** Akai's update, flashing, U-Boot-environment and kexec programs with a program that refuses and logs (a `--chain` stick keeps Akai's `kexec`, which its chain needs; kexec is turned off again right after);
 - makes `/data` a RAM disk, so Akai's `/etc` and `/var` overlays live in RAM;
-- adds key-only SSH on port 2222, the log service, the startup screen and the pad player;
+- adds key-only SSH on port 2222, the log service, the startup screen and the pad player (the startup screen's unit keeps `RemainAfterExit=yes`, so it plays once per boot; without it, a later job that pulls in `sysinit.target` again can start it a second time, as on step 7b's third power-on: [details](stick-autoboot.md#the-startup-screen-played-twice-fixed-after-step-7b));
 - only with `--app-user` (opt-in, merged in #372; passed its first power-on on 2026-11-15): runs the pad player as the `mpfree` user with no capabilities instead of root, after a root `mpfree-test-storage.service` mounts its partitions ([details](stick-autoboot.md#the-pad-player-without-root---app-user-opt-in)). Without the flag it runs as root, as before;
 - adds the switch-off service and its udev rule (next section);
 - writes `/boot/mpfree-softreboot/`: `PROTOCOL`, `release` (the kernel release the system was built for), optional `preload-modules.txt` (`--preload-module NAME`) and `SHA256SUMS` over those and the switch-off service's three files;
@@ -173,7 +173,7 @@ The owner's sequence is blocks 4.1 to 4.5 of [the record](stick-autoboot.md#bloc
 ## Tests
 
 - [`test_boot_hook.py`](../../../tools/mpc-one/tests/test_boot_hook.py) runs the wrapper, the installer, the jump, the check, the undo and the report against a fake MPC, the triggers under BusyBox's shell and the jump under dash, through every way the jump can stop. For the kexec-file route, a fake `kexec` behaves like LoadPin on 3.10.1. The tests cover each fallback to the soft-reboot, and that a stick without `--kexec-file` never calls `kexec`.
-- [`test_offline_kexec_stick.py`](../../../tools/mpc-one/tests/test_offline_kexec_stick.py) checks the builder's output (the rule passes `udevadm verify`), the masks, the udev audit in the report, and runs `internal-off.sh` against a fake kernel whose unbind file behaves like Linux's. It runs `chain.sh` (`--chain`) under dash and BusyBox through each way it falls back.
+- [`test_offline_kexec_stick.py`](../../../tools/mpc-one/tests/test_offline_kexec_stick.py) checks the builder's output (the rule passes `udevadm verify`), the masks, the udev audit in the report, and runs `internal-off.sh` against a fake kernel whose unbind file behaves like Linux's. It runs `chain.sh` (`--chain`) under dash and BusyBox through each way it falls back, including the mark of a second kernel that did not stay up, and `chain-done.sh`, which takes the mark away.
 - [`test_hook_canary.py`](../../../tools/mpc-one/tests/test_hook_canary.py) covers the canary and the wrapper's host-key check.
 - CI's shell syntax and static no-write checks cover these scripts.
 
