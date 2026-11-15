@@ -1039,10 +1039,7 @@ impl Session {
         self.sent.push(super::short(&a));
         let t = self.t();
         let now = self.now();
-        let mix_turn = match &a {
-            FromUi::Mixer(m) => crate::mixturns::before(m, &self.mix),
-            _ => None,
-        };
+        let mix_turn = crate::mixturns::before_ui(&a, &self.mix, self.app.view() == View::Mixer);
         let mut fx = std::mem::take(&mut self.fx);
         let rest = {
             let (mut d, out) = self.desk();

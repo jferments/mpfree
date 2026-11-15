@@ -43,7 +43,7 @@
 272347	Drive (HQ 4x)
 572112	Drums Boom Kit, a hit every block
 417001	Drums Init Kit, a hit every 4 blocks
-102872	EQ (4 bands and both cuts)
+108120	EQ (4 bands and both cuts)
 55126	Flanger
 434564	Grains FX (dense)
 188538	Keys Dusty Keys, 16 voices
