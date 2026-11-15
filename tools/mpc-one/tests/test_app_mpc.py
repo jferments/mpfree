@@ -642,14 +642,34 @@ class AppTests(unittest.TestCase):
     def test_a_check_says_which_buttons_map_controls_has_not_found(self):
         write(self.app, "active\n")
         write(f"{self.root}/run/mpfree-data/settings/map.conf", "pad-bank-a-e = button 35\ntrack-mute = skipped\n")
-        res = self.run_helper("s\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
+        res = self.run_helper("s\ns\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
-        for text in ("Map controls has not found these buttons yet", "    TRACK MUTE (check track-mute)",
-                     "    PAD BANK B/F (check track-mute)", "Add map-controls before those checks",
-                     "track-mute: skipped"):
+        for text in ("Map controls has not found these buttons yet, and a step uses them",
+                     "    TRACK MUTE (check track-mute)", "    PAD BANK B/F (check track-mute)",
+                     "So map-controls runs first, to find them.", "Checks: map-controls, track-mute",
+                     "Check 1 of 2: Map controls", "map-controls: skipped", "track-mute: skipped"):
             self.assertIn(text, out)
         self.assertNotIn("PAD BANK A/E (check", out)
+        # Named already: it stays where the round put it, and nothing is added.
+        res = self.run_helper("s\ns\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute,map-controls")
+        self.assertIn("Checks: track-mute, map-controls", res.stdout)
+        self.assertNotIn("So map-controls runs first", res.stdout)
+        # Every button found: nothing is said and nothing added.
+        write(f"{self.root}/run/mpfree-data/settings/map.conf",
+              "pad-bank-a-e = button 35\npad-bank-b-f = button 36\ntrack-mute = button 43\n")
+        res = self.run_helper("s\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
+        self.assertNotIn("Map controls has not found", res.stdout)
+        self.assertIn("Checks: track-mute\n", res.stdout)
+
+    def test_a_check_stops_when_the_input_ends(self):
+        """No more input (the terminal closed) stops at the next question, as q does, and does not go on."""
+        write(self.app, "active\n")
+        res = self.run_helper("", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="load")
+        self.assertIn("Check 1 of 1:", res.stdout)
+        self.assertIn("answer: quit", res.stdout)
+        self.assertNotIn("Go ahead.", res.stdout)
+        self.assertIn("stopped by you", res.stdout)
 
     def test_the_load_check_waits_for_a_status_line_and_reads_the_cores(self):
         """load: no underrun between the status line before it and the one after; then the cores, once."""
@@ -714,6 +734,9 @@ class AppTests(unittest.TestCase):
                      "tmpfs /run tmpfs rw,nosuid,nodev,size=404268k,nr_inodes=819200,mode=755 0 0\n"
                      "tmpfs /data tmpfs rw,size=262144k,mode=755 0 0\n")
         write(self.app, "active\n")
+        write(f"{self.root}/run/mpfree-data/settings/map.conf",
+              "".join(f"{k} = button {n}\n" for n, k in enumerate(
+                  ("track-mute", "pad-bank-a-e", "pad-bank-b-f", "data-dial-push", "main", "sampler", "erase"), 40)))
         chosen = "track-mute,wheel,touch,note-repeat,looper,console"
         answers = "\n\nfine\n" * 6
         res = self.run_helper(answers, MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS=chosen)

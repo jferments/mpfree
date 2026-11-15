@@ -18,9 +18,11 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[Starting MPFree from the stick at power-on](stick-autoboot.md)** is the record of how that boot was found and proven: what can start the jump on an installed 3.10.1, what is ruled out, the canary, the kexec hook that LoadPin refused, both soft-reboot power-ons, the pad player without root (`--app-user`), the opt-in kexec_file route and its chain to the stick's own device tree, and the owner's blocks.
 
-**[The 3.10.1 device round](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, main's boot hook and the power-on into MPFree from the stick, the pad player on it, the benchmark, GPU page flips, a second boot with an hour-long song, FXProbe under Akai's system from the same stick, and the way back.
+**[The 3.10.1 device round](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, main's boot hook and the power-on into MPFree from the stick, the pad player on it, the benchmark, GPU page flips, a second boot with an hour-long song, FXProbe under Akai's system from the same stick, and the way back. Its app step runs only this round's device checks.
 
-**[The targeted app run on the soft-boot stick](app-targeted-run.md)** is the runbook for the app check's phases that have a reason to run: the ones live test 3 skipped, and the features merged since (the Mix tab, drag and drop, effects with modes). Switching on with the stick in starts MPFree; there is no kexec step.
+**[Device checks: targeted rounds on the MPC](device-checks.md)** is how a device round asks only about what it tests. A round names its checks (`tools/mpc-one/app_checks.py`); each shows a few steps, judges them from the app's log, and asks at most one question about what only a person can see or hear. Everything the software can check is left to the app's own tests and UI smoke workflows, which a round runs once on the workstation.
+
+**[The targeted app run on the soft-boot stick](app-targeted-run.md)** is the runbook for the device checks that have a reason to run: what merged since live test 3 (TRACK MUTE's banks, the wheel, drag and drop, the transport buttons) and what it never reached, with the app's own tests for the rest. Switching on with the stick in starts MPFree; there is no kexec step.
 
 **[Installer and recovery contract](installer-recovery-contract.md)** specifies the minimum evidence required for temporary kernel boots, persistent MPFree application installation, direct boot and boot-critical storage changes.
 
