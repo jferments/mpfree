@@ -745,7 +745,7 @@ class AppTests(unittest.TestCase):
         for text in ("/: read-only", "kexec_load_disabled: 1", "no MMC block device", "CHECKS-OK",
                      "Checks: track-mute, wheel, touch, note-repeat, looper, console",
                      "Check 6 of 6: The console chord, TAP TEMPO and STOP (console)",
-                     "Press TRACK MUTE: it lights", "drag a clip to an empty slot", "push the wheel, turn it"):
+                     "Press TRACK MUTE: it lights", "drag the kick's clip to", "Tap a block, push the wheel, turn it"):
             self.assertIn(text, out)
         self.assertEqual(out.count("Enter:   your answer: fine"), 6)
         self.assertEqual(out.count("; your answer: fine"), 6, "and once each in the checks' list")
