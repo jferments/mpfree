@@ -61,6 +61,17 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     saved. If the program stops with an error, the log display starts
     instead. Besides the screen, the controller, the sound card and
     partition 4, it writes only /run/mpfree-app (RAM)
+  - only with --app-user (with --app; opt-in): the pad player runs as the
+    mpfree user (uid and gid 960, no password, no shell) instead of root,
+    with no capabilities and NoNewPrivileges, and LimitRTPRIO=70 and
+    LimitMEMLOCK=infinity for its real-time sound. mpfree and its group are
+    added to /etc/passwd and /etc/group, and mpfree joins audio, video and
+    input (and systemd-journal, where the image has it). start-app.sh only
+    starts it; mpfree-test-storage.service (/etc/mpfree-test/storage.sh)
+    first mounts partitions 3 and 4 as root as start-app.sh did, gives
+    partition 4's files to mpfree, and opens the framebuffer's sysfs `pan`
+    file to the mpfree group (RAM only). Without --app-user nothing here
+    changes: the pad player runs as root, as before
   - a service that records the Ethernet details (read-only-ethernet.sh, the
     same script collect-over-ssh.sh --ethernet runs on 3.6) before the network
     starts and after, and if eth0 failed to start, starts it again at 20, 45
@@ -134,6 +145,8 @@ Optional inputs:
   --kits FILE         its drum kits (only with --app or --akai-app); default:
                       kits.bin in the newest ~/mpfree-work/factory-kit-*/
                       folder. They are Akai's sounds: the stick stays private
+  --app-user          with --app: run the pad player as the mpfree user, not
+                      root (see above)
   --akai-app          start Akai's app at power-on instead (see above); not
                       with --app, --splash or --splash-font
   --preload-module M  a kernel module the stick's system needs that Akai's
@@ -545,6 +558,124 @@ RestartSec=2
 [Install]
 WantedBy=sysinit.target
 """
+
+# Only with --app-user (opt-in; without it the stick is built exactly as above): the pad player runs as
+# the `mpfree` user, with no capabilities, instead of as root. A root program could undo the eMMC and SD
+# card switch-off (one write to the driver's sysfs `bind` file); the mpfree user cannot. The root work that
+# start-app.sh did first (mounting partitions 3 and 4, growing 4) moves to mpfree-test-storage.service,
+# which runs once, as root, before the pad player. The uid and gid are fixed, so the files on partition 4
+# keep their owner from build to build (write-test-stick.py carries partition 4 over).
+APP_USER = "mpfree"
+APP_UID = 960
+# The groups the standard udev rules give the device nodes the pad player opens: /dev/fb0 (video), the
+# touchscreen's /dev/input/event* (input), the sound card's PCM and the controller's MIDI ports in /dev/snd
+# (audio). The image must have all three. systemd-journal, where the image has it, lets the Console page's
+# `journalctl -f` read the whole log; without it, it shows only the user's own messages.
+APP_GROUPS = ("audio", "video", "input")
+APP_OPTIONAL_GROUPS = ("systemd-journal",)
+# Programs storage.sh needs as root (the image's /bin and /sbin are links into /usr, checked in build_rootfs).
+APP_USER_PROGRAMS = ("find", "chown", "chgrp", "chmod")
+STORAGE_SCRIPT = """#!/bin/sh
+# MPFree test boot (--app-user): get the pad player's storage ready, as root, before it starts as the
+# {user} user (uid {uid}). Its drum kits are on the stick's partition 3, mounted read-only. Partition 4 holds
+# its saved settings and files, mounted read-write; files there that are not yet the {user} user's are given
+# to it (find -xdev stays on partition 4). This runs before the pad player starts and not again when it
+# restarts, so no process of the {user} user can change those folders while they are walked.
+# The framebuffer's sysfs `pan` file is opened to the {user} group (in RAM, until power-off), so the pad
+# player can ask the kernel to show the screen.
+# It writes nothing else and never fails the boot: a step that does not work is noted in the kernel log,
+# and the pad player starts without it, as it did when start-app.sh did this.
+dev=/dev/disk/by-partuuid/{kits_uuid}
+i=0
+while [ ! -e "$dev" ] && [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done
+mkdir -p /run/mpfree-kits
+if ! grep -q ' /run/mpfree-kits ' /proc/mounts; then
+  mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits ||
+    echo "mpfree-test-storage: the kit partition did not mount" > /dev/kmsg
+fi
+data=/dev/disk/by-partuuid/{data_uuid}
+i=0
+while [ ! -e "$data" ] && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
+mkdir -p /run/mpfree-data
+if grep -q ' /run/mpfree-data ' /proc/mounts ||
+    mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then
+  find /run/mpfree-data -xdev ! -user {uid} -exec chown -h {uid}:{uid} {{}} \\; ||
+    echo "mpfree-test-storage: some files on partition 4 could not be given to {user}" > /dev/kmsg
+  # Partition 4 fills the stick but its filesystem may be smaller: grow it to fill the partition, online
+  # (the kernel does it while mounted, and writes only partition 4). When it already fills it, nothing changes.
+  if [ -x {grow} ]; then
+    ( {grow} "$data" > /run/mpfree-data-grow.txt 2>&1 ||
+        echo "mpfree-test-storage: partition 4's filesystem did not grow; see /run/mpfree-data-grow.txt" > /dev/kmsg ) &
+  fi
+else
+  echo "mpfree-test-storage: the data partition did not mount, so nothing is saved" > /dev/kmsg
+fi
+for p in /sys/class/graphics/fb*/pan; do
+  [ -e "$p" ] || continue
+  chgrp {uid} "$p" && chmod g+w "$p" ||
+    echo "mpfree-test-storage: could not open $p to {user}" > /dev/kmsg
+done
+exit 0
+"""
+STORAGE_UNIT = """[Unit]
+Description=MPFree test boot: mount the pad player's kits and saved files, as root, before it starts
+DefaultDependencies=no
+After=systemd-journald.service systemd-udevd.service mpfree-test-internal-off.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /etc/mpfree-test/storage.sh
+TimeoutStartSec=90
+"""
+APP_USER_SCRIPT = """#!/bin/sh
+# MPFree test boot (--app-user): start the pad player, as the {user} user. mpfree-test-storage.service
+# mounted its drum kits (partition 3, read-only) and its saved settings and files (partition 4) as root.
+# This script changes nothing.
+if grep -q ' /run/mpfree-data ' /proc/mounts; then
+  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
+fi
+echo "mpfree-test-app: the data partition is not mounted, so nothing is saved"
+exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}
+"""
+# As APP_UNIT, plus the user and its limits. LimitRTPRIO and LimitMEMLOCK let it take real-time priority
+# (SCHED_FIFO up to 70, as the audio thread and lanes ask) and lock its memory without root or a capability.
+# No capabilities at all, and NoNewPrivileges, so nothing it starts can gain any. /run/mpfree-app (its report
+# and crash mark) is made for it and kept after it stops, so the log service can still copy the report.
+APP_USER_UNIT = """[Unit]
+Description=MPFree test boot: the pad player, from power-on, as the {user} user
+DefaultDependencies=no
+Wants=mpfree-test-storage.service
+After=systemd-journald.service systemd-udevd.service mpfree-test-storage.service{after}
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+OnFailure=mpfree-test-screen.service
+StartLimitIntervalSec=60
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User={user}
+Group={user}
+ExecStart=/bin/sh /etc/mpfree-test/start-app.sh
+Restart=on-failure
+RestartSec=2
+LimitRTPRIO=70
+LimitMEMLOCK=infinity
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RuntimeDirectory=mpfree-app
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=sysinit.target
+"""
+APP_USER_MARK = "pad player user: mpfree (--app-user)"
 KITS_MAX = 48 << 20
 KITS_MAGIC = b"MPFKITS1"
 # Started early and kept through a switch to emergency mode, so a boot that goes wrong still leaves logs.
@@ -1054,8 +1185,52 @@ def udev_wants_lines(img, scratch, masked):
     return lines or ["  none"]
 
 
+def app_user_edits(img, scratch):
+    """For --app-user: the image's /etc/passwd and /etc/group with APP_USER added, as {path: (bytes, mode)}.
+
+    The user gets APP_UID as uid and gid, no password (there is no shadow entry, so no login works), no shell,
+    and joins APP_GROUPS and those of APP_OPTIONAL_GROUPS the image has. Stops if the name, uid or gid is
+    taken, a needed group or program is missing, or a file is not plain text lines."""
+    for prog in APP_USER_PROGRAMS:
+        if not any(img.kind(f"{d}/{prog}") in ("regular", "symlink") for d in ("/usr/bin", "/usr/sbin")):
+            raise Stop(f"--app-user: the image has no {prog} in /usr/bin or /usr/sbin (mpfree-test-storage needs it)")
+    edits = {}
+    for path in ("/etc/passwd", "/etc/group"):
+        if img.kind(path) != "regular":
+            raise Stop(f"--app-user: the image has no regular file {path}")
+        text = img.read(path, scratch).decode("utf-8", "strict")
+        if not text.endswith("\n") or any(len(ln.split(":")) < (7 if path == "/etc/passwd" else 4)
+                                          for ln in text.splitlines()):
+            raise Stop(f"--app-user: {path} is not lines of colon-separated fields")
+        rows = [ln.split(":") for ln in text.splitlines()]
+        if any(r[0] == APP_USER or r[2] == str(APP_UID) for r in rows):
+            raise Stop(f"--app-user: {path} already has the name {APP_USER} or the id {APP_UID}")
+        if path == "/etc/passwd":
+            rows.append([APP_USER, "x", str(APP_UID), str(APP_UID), "MPFree pad player", "/run/mpfree-app",
+                         "/sbin/nologin"])
+        else:
+            names = [r[0] for r in rows]
+            missing = [g for g in APP_GROUPS if g not in names]
+            if missing:
+                raise Stop(f"--app-user: the image's /etc/group has no {', '.join(missing)} group; the pad player "
+                           "could not open the screen, touchscreen, sound card or controller")
+            for r in rows:
+                if r[0] in APP_GROUPS + APP_OPTIONAL_GROUPS:
+                    r[3] = ",".join([m for m in r[3].split(",") if m] + [APP_USER])
+            rows.append([APP_USER, "x", str(APP_UID), ""])
+        edits[path] = ("".join(":".join(r) + "\n" for r in rows).encode(), img.stat(path)[0] & 0o7777)
+    return edits
+
+
+def app_user_groups(img, scratch):
+    """The groups --app-user puts APP_USER in, for the report."""
+    names = [ln.split(":")[0] for ln in img.read("/etc/group", scratch).decode("utf-8", "strict").splitlines()]
+    return [g for g in APP_GROUPS + APP_OPTIONAL_GROUPS if g in names]
+
+
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
-                 app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None):
+                 app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None,
+                 app_user=False):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
@@ -1065,7 +1240,12 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     With `kexec_files` (release, kexec.dtb bytes, cmdline.txt bytes), KEXEC_DIR gets the boot hook's files.
     With `softreboot` (release, module names, kexec-file command line or None), the service that switches the
     eMMC and SD card off is installed and SOFTREBOOT_DIR gets the soft-reboot hook's files; with a command line,
-    also the three files that ask the hook for its kexec-file route."""
+    also the three files that ask the hook for its kexec-file route.
+    With `app_user` (only with `app`), the pad player runs as APP_USER: the user and its group are added, it
+    joins APP_GROUPS (and APP_OPTIONAL_GROUPS where the image has them), and mpfree-test-storage.service
+    mounts its partitions as root first. Without it, nothing here differs from a build before --app-user."""
+    if app_user and app is None:
+        raise Stop("--app-user needs --app: it changes who the pad player runs as")
     if akai_app:
         if app is not None or splash[0] is not None or kits_uuid is None or data_uuid is None:
             raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
@@ -1081,6 +1261,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         found = img.kind(path)
         if found is None or (kind and found != kind):
             raise Stop(f"the image has no {kind or 'file'} {path}; this tool does not know this layout")
+    user_edits = app_user_edits(img, scratch) if app_user else {}
     splash_program, font_name, font = splash
     extra = len(splash_program or b"") + len(font or b"") + len(app or b"")
     free_bytes, free_inodes = img.free()
@@ -1103,7 +1284,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                    "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] if splash_program else []) +
                  ([KEXEC_DIR] if kexec_files else []) +
                  ([SOFTREBOOT_DIR, *INTERNAL_OFF_FILES,
-                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] if softreboot else []))
+                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] if softreboot else []) +
+                 (["/etc/systemd/system/mpfree-test-storage.service"] if app_user else []))
     for path in new_paths:
         if img.kind(path) is not None:
             raise Stop(f"{path} already exists in the image; refusing to guess what it is")
@@ -1134,7 +1316,19 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         add("/etc/systemd/system/mpfree-test-splash.service",
             SPLASH_UNIT.format(rotation=rotation, seconds=SPLASH_SECONDS, font=font_args,
                                timeout=SPLASH_SECONDS + 14), 0o644)
-    if app is not None:
+    if app is not None and app_user:
+        keep = " --keep-screen" if splash_program else ""
+        after = " mpfree-test-splash.service" if splash_program else ""
+        add("/etc/mpfree-test/mpfree", app, 0o755)
+        add("/etc/mpfree-test/storage.sh",
+            STORAGE_SCRIPT.format(user=APP_USER, uid=APP_UID, kits_uuid=kits_uuid, data_uuid=data_uuid,
+                                  grow=GROW_PROGRAM), 0o755)
+        add("/etc/systemd/system/mpfree-test-storage.service", STORAGE_UNIT, 0o644)
+        add("/etc/mpfree-test/start-app.sh", APP_USER_SCRIPT.format(user=APP_USER, keep=keep), 0o755)
+        add("/etc/systemd/system/mpfree-test-app.service", APP_USER_UNIT.format(user=APP_USER, after=after), 0o644)
+        for path, (data, mode) in user_edits.items():
+            add(path, data, mode)
+    elif app is not None:
         add("/etc/mpfree-test/mpfree", app, 0o755)
         add("/etc/mpfree-test/start-app.sh",
             APP_SCRIPT.format(kits_uuid=kits_uuid, data_uuid=data_uuid, grow=GROW_PROGRAM,
@@ -1344,6 +1538,8 @@ def main(argv):
     ap.add_argument("--kits", help="its drum kits (kits.bin; default: the newest factory-kit-* folder's)")
     ap.add_argument("--akai-app", action="store_true",
                     help="start Akai's app at power-on (for developer mode); every flasher stays a stub")
+    ap.add_argument("--app-user", action="store_true",
+                    help="with --app: run the pad player as the mpfree user, without root (opt-in)")
     ap.add_argument("--preload-module", action="append", default=[], metavar="NAME",
                     help="a kernel module the soft-reboot hook loads from Akai's system first (repeatable)")
     ap.add_argument("--kexec-file", action="store_true",
@@ -1355,6 +1551,8 @@ def main(argv):
     args = ap.parse_args(argv)
     if args.loadpin_off and not args.kexec_file:
         raise Stop("--loadpin-off goes with --kexec-file (it changes only that route's command line)")
+    if args.app_user and not args.app:
+        raise Stop("--app-user needs --app: it changes who the pad player runs as")
     for name in args.preload_module:
         if not MODULE_NAME.match(name):
             raise Stop(f"--preload-module {name!r} is not a plain module name")
@@ -1495,6 +1693,14 @@ def main(argv):
             OUT.say(f"saved settings and files: partition 4 (at {DATA_START * SECTOR >> 20} MiB, {DATA_SIZE >> 20} MiB "
                     "and empty here), mounted read-write at /run/mpfree-data; write-test-stick.py leaves the old "
                     "stick's in place or carries it over, and makes the partition fill the stick")
+            if args.app_user:
+                OUT.say(APP_USER_MARK)
+                OUT.say(f"  the pad player runs as {APP_USER} (uid and gid {APP_UID}) with no capabilities, "
+                        "NoNewPrivileges, LimitRTPRIO=70 and LimitMEMLOCK=infinity; mpfree-test-storage.service "
+                        "mounts partitions 3 and 4 as root first and gives partition 4's files to "
+                        f"{APP_USER}. A build without --app-user runs it as root again; partition 4 works with both")
+            else:
+                OUT.say("pad player user: root (no --app-user)")
         else:
             OUT.say("pad player: none (no --app); the log display starts at power-on")
         OUT.say(f"for MPFree's boot hook: {KEXEC_DIR} on partition 1, with a link to the kernel, kexec.dtb, "
@@ -1519,7 +1725,13 @@ def main(argv):
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
                                                                   screen_log, rotation, splash, app, kits_uuid,
                                                                   data_uuid, args.akai_app, kexec_files,
-                                                                  (release, args.preload_module, kexec_file_cmdline))
+                                                                  (release, args.preload_module, kexec_file_cmdline),
+                                                                  args.app_user)
+        if args.app_user:
+            OUT.say(f"  {APP_USER} is in the groups: {' '.join(app_user_groups(img, scratch))}"
+                    + ("" if "systemd-journal" in app_user_groups(img, scratch) else
+                       " (the image has no systemd-journal group: the Console page shows only the pad player's "
+                       "own log lines)"))
         if app:
             if img.kind(GROW_PROGRAM) in ("regular", "symlink"):
                 OUT.say(f"partition 4: {GROW_PROGRAM} is in this version, so its filesystem grows at boot to fill "

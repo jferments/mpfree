@@ -37,7 +37,7 @@ systemd stops Akai's programs and starts the stick's systemd as PID 1 on the ker
 
 ### 2. kexec_file of Akai's own kernel (opt-in, untried)
 
-A stick built with `offline-kexec-stick.py --kexec-file` asks the hook to load Akai's `/boot/zImage-<release>` with the file-based kexec and the stick's command line, then start `kexec.target`. If that is not possible it soft-reboots instead ([how](soft-reboot-boot.md#the-opt-in-kexec-file-route), [runbook](stick-autoboot.md#the-kexec-file-route-step-5-opt-in)).
+A stick built with `offline-kexec-stick.py --kexec-file` asks the hook to load Akai's `/boot/zImage-<release>` with the file-based kexec and the stick's command line, then start `kexec.target`. If that is not possible it soft-reboots instead ([how](soft-reboot-boot.md#the-opt-in-kexec-file-route), [runbook](stick-autoboot.md#the-kexec-file-route-step-6-opt-in)).
 - **Kernel:** Akai's, started again. The hook first checks that its hash is the one the stick was built with.
 - **Device tree:** Akai's, reused. kexec-tools refuses a device tree in file mode on 32-bit ARM (`DTB file cannot be specified in file mode`), so the eMMC and SD card stay visible and the same switch-off service does the same job.
 - **Command line:** ours. `root=` points at the stick, and the hook allows only a short list of words. `--loadpin-off` adds `loadpin.enforce=0`.

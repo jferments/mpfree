@@ -688,6 +688,134 @@ class KexecStickTests(unittest.TestCase):
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn(problem, res.stdout)
 
+    def test_the_pad_player_runs_as_root_without_app_user(self):
+        """Without --app-user the stick is as before: no mpfree user, no storage service, the app unit as it was."""
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        res = self.build("--app", app, "--kits", kits)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("pad player user: root (no --app-user)", res.stdout)
+        self.assertNotIn("mpfree-test-storage", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        spec = importlib.util.spec_from_file_location("kexec_stick", TOOL)
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        self.assertEqual(self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service"),
+                         tool.APP_UNIT.format(after=""))
+        for path in ("/etc/systemd/system/mpfree-test-storage.service", "/etc/mpfree-test/storage.sh"):
+            self.assertIn("File not found", self.dfs(root_img, f"stat {path}"))
+        self.assertEqual(self.dfs(root_img, "cat /etc/passwd"), "root:x:0:0:root:/home/root:/bin/sh\n")
+        self.assertIn("File not found", self.dfs(root_img, "stat /etc/group"))
+
+    def app_user_image(self, group=None, programs=("find", "chown", "chgrp", "chmod"), passwd=None):
+        unpacked = os.path.join(self.work, "akai-unpacked-20260101T000000Z-abc")
+        extra = {f"usr/bin/{p}": "#!/bin/sh\n" for p in programs}
+        extra["etc/group"] = group if group is not None else (
+            "root:x:0:\naudio:x:29:\nvideo:x:44:pulse\ninput:x:101:\nsystemd-journal:x:190:\n")
+        if passwd is not None:
+            extra["etc/passwd"] = passwd
+        build_rootfs(unpacked, extra=extra)
+
+    def test_app_user_runs_the_pad_player_as_mpfree(self):
+        """--app-user: the mpfree user and its groups, a root storage step first, and an app unit without root."""
+        self.app_user_image()
+        splash = os.path.join(self.tmp, "mpfree-splash")
+        write(splash, fake_elf(), 0o755)
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        res = self.build("--splash", splash, "--app", app, "--kits", kits, "--app-user")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("pad player user: mpfree (--app-user)", res.stdout)
+        self.assertIn("  mpfree is in the groups: audio video input systemd-journal\n", res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        with open(os.path.join(out, "report.txt")) as fh:
+            report = fh.read()
+        kits_uuid = re.search(r"partition 3 kits PARTUUID ([0-9a-f-]{36}) ", report).group(1)
+        data_uuid = re.search(r"partition 4 data PARTUUID ([0-9a-f-]{36}) ", report).group(1)
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(out, "stick.img"), 1, root_img)
+        self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
+        self.assertEqual(self.dfs(root_img, "cat /etc/passwd"),
+                         "root:x:0:0:root:/home/root:/bin/sh\n"
+                         "mpfree:x:960:960:MPFree pad player:/run/mpfree-app:/sbin/nologin\n")
+        self.assertEqual(self.dfs(root_img, "cat /etc/group"),
+                         "root:x:0:\naudio:x:29:mpfree\nvideo:x:44:pulse,mpfree\ninput:x:101:mpfree\n"
+                         "systemd-journal:x:190:mpfree\nmpfree:x:960:\n")
+        # No password for mpfree: no shadow line, so no login works.
+        self.assertNotIn("mpfree", self.dfs(root_img, "cat /etc/shadow"))
+        unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service")
+        for line in ("User=mpfree", "Group=mpfree", "NoNewPrivileges=yes", "CapabilityBoundingSet=",
+                     "AmbientCapabilities=", "LimitRTPRIO=70", "LimitMEMLOCK=infinity",
+                     "RuntimeDirectory=mpfree-app", "RuntimeDirectoryPreserve=yes",
+                     "Wants=mpfree-test-storage.service",
+                     "After=systemd-journald.service systemd-udevd.service mpfree-test-storage.service "
+                     "mpfree-test-splash.service",
+                     # As without --app-user: crash restarts, then the log display.
+                     "DefaultDependencies=no", "IgnoreOnIsolate=yes", "WantedBy=sysinit.target",
+                     "OnFailure=mpfree-test-screen.service", "ExecStart=/bin/sh /etc/mpfree-test/start-app.sh",
+                     "Restart=on-failure", "RestartSec=2", "StartLimitIntervalSec=60", "StartLimitBurst=4"):
+            self.assertIn(line + "\n", unit)
+        self.assertNotRegex(unit, r"(?m)^(User|Group)=root")
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-app.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-app.service"))
+        storage = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-storage.service")
+        for line in ("Type=oneshot", "RemainAfterExit=yes", "ExecStart=/bin/sh /etc/mpfree-test/storage.sh",
+                     "After=systemd-journald.service systemd-udevd.service mpfree-test-internal-off.service",
+                     "DefaultDependencies=no"):
+            self.assertIn(line + "\n", storage)
+        self.assertNotIn("User=", storage)
+        script = self.dfs(root_img, "cat /etc/mpfree-test/storage.sh")
+        self.assertIn(f"dev=/dev/disk/by-partuuid/{kits_uuid}\n", script)
+        self.assertIn(f"data=/dev/disk/by-partuuid/{data_uuid}\n", script)
+        self.assertIn("find /run/mpfree-data -xdev ! -user 960 -exec chown -h 960:960 {} \\; ||", script)
+        start = self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh")
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen "
+                      "--data /run/mpfree-data\n", start)
+        self.assertNotRegex(start, r"(?m)^\s*(mount|mkdir|chown|chgrp|chmod)\b")
+        for path in ("/etc/mpfree-test/storage.sh", "/etc/mpfree-test/start-app.sh", "/etc/passwd", "/etc/group",
+                     "/etc/systemd/system/mpfree-test-storage.service"):
+            self.assertRegex(self.dfs(root_img, f"stat {path}"), r"User:\s+0\s+Group:\s+0", path)
+        # The soft-reboot hook's files are the same as without --app-user: the hook checks them.
+        sums = self.dfs(root_img, "cat /boot/mpfree-softreboot/SHA256SUMS")
+        self.assertNotIn("storage", sums)
+        self.assertNotIn("passwd", sums)
+
+    def test_app_user_without_the_journal_group_and_its_stops(self):
+        self.app_user_image(group="root:x:0:\naudio:x:29:\nvideo:x:44:\ninput:x:101:\n")
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        res = self.build("--app", app, "--kits", kits, "--app-user")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("mpfree is in the groups: audio video input (the image has no systemd-journal group", res.stdout)
+        for args, image, problem in (
+                (("--app-user",), {}, "--app-user needs --app"),
+                (("--akai-app", "--app-user"), {}, "--app-user needs --app"),
+                (("--app", app, "--kits", kits, "--app-user"), {"group": "root:x:0:\naudio:x:29:\nvideo:x:44:\n"},
+                 "has no input group"),
+                (("--app", app, "--kits", kits, "--app-user"), {"group": "root:x:0:\naudio:x:29:\nvideo:x:44:\n"
+                                                                         "input:x:101:\nmpfree:x:500:\n"},
+                 "already has the name mpfree or the id 960"),
+                (("--app", app, "--kits", kits, "--app-user"), {"passwd": "root:x:0:0:root:/root:/bin/sh\n"
+                                                                          "web:x:960:960::/:/bin/false\n"},
+                 "already has the name mpfree or the id 960"),
+                (("--app", app, "--kits", kits, "--app-user"), {"programs": ("chown", "chgrp", "chmod")},
+                 "the image has no find"),
+                (("--app", app, "--kits", kits, "--app-user"), {"group": "root:x:0\n"},
+                 "/etc/group is not lines of colon-separated fields")):
+            for d in self.outputs():
+                shutil.rmtree(os.path.join(self.work, d))
+            self.app_user_image(**image)
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+            self.assertFalse(any(os.path.exists(os.path.join(self.work, d, "stick.img")) for d in self.outputs()))
+
     def test_akai_app_for_developer_mode(self):
         kits = self.kits_file("factory-kit-20260102T000000Z-new")
         res = self.build("--akai-app")
@@ -928,6 +1056,78 @@ class StaticTests(unittest.TestCase):
                 self.assertIn(target, ("/dev/kmsg", "/run/mpfree-data-grow.txt"), line)
         for forbidden in ("/dev/mmc", "/dev/sd", "remount"):
             self.assertNotIn(forbidden, tool.APP_SCRIPT)
+
+    def test_app_user_scripts_and_unit(self):
+        """--app-user: storage.sh changes only what start-app.sh did, plus partition 4's owners and the pan
+        file's group; the new start-app.sh changes nothing; the app unit gives no privileges."""
+        spec = importlib.util.spec_from_file_location("kexec_stick", TOOL)
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        storage = tool.STORAGE_SCRIPT.format(user="mpfree", uid=960, kits_uuid="00000000-0000-0000-0000-000000000000",
+                                             data_uuid="00000000-0000-0000-0000-000000000001", grow=tool.GROW_PROGRAM)
+        start = tool.APP_USER_SCRIPT.format(user="mpfree", keep="")
+        busybox = shutil.which("busybox")
+        for script in (storage, start):
+            for shell in ([busybox, "sh"] if busybox else [], ["sh"]):
+                if shell:
+                    res = subprocess.run([*shell, "-n"], input=script, text=True, capture_output=True)
+                    self.assertEqual(res.returncode, 0, res.stderr)
+        lines = [line.strip() for line in storage.splitlines() if not line.lstrip().startswith("#")]
+        changing = [line for line in lines
+                    if re.search(r"\b(mount|mkdir|rm|mv|cp|dd|systemctl|kill|chown|chgrp|chmod)\b", line)]
+        self.assertEqual(changing, [
+            "mkdir -p /run/mpfree-kits",
+            'mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits ||',
+            'echo "mpfree-test-storage: the kit partition did not mount" > /dev/kmsg',
+            "mkdir -p /run/mpfree-data",
+            'mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then',
+            # Only on partition 4, only files not yet mpfree's; -h never follows a link.
+            "find /run/mpfree-data -xdev ! -user 960 -exec chown -h 960:960 {} \\; ||",
+            'echo "mpfree-test-storage: the data partition did not mount, so nothing is saved" > /dev/kmsg',
+            'chgrp 960 "$p" && chmod g+w "$p" ||',
+        ])
+        self.assertIn("for p in /sys/class/graphics/fb*/pan; do", storage)
+        self.assertEqual(storage.count("rw"), 1)
+        self.assertIn([line for line in lines if "{grow}" in line or tool.GROW_PROGRAM in line],
+                      [["if [ -x /usr/sbin/resize2fs ]; then",
+                        '( /usr/sbin/resize2fs "$data" > /run/mpfree-data-grow.txt 2>&1 ||']])
+        self.assertLess(storage.index("/run/mpfree-data; then"), storage.index("find /run/mpfree-data"))
+        for line in lines:
+            for target in re.findall(r">\s*(\S+)", line.replace("2>&1", "")):
+                self.assertIn(target, ("/dev/kmsg", "/run/mpfree-data-grow.txt"), line)
+        for forbidden in ("/dev/mmc", "/dev/sd", "remount", "/bind", "/unbind", "chown -R", "-L "):
+            self.assertNotIn(forbidden, storage)
+        self.assertTrue(storage.rstrip().endswith("exit 0"), "storage.sh never fails the boot")
+        # The new start-app.sh only starts the program.
+        start_lines = [line.strip() for line in start.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertIsNone(re.search(r"\b(mount|mkdir|rm|mv|cp|dd|systemctl|kill|chown|chgrp|chmod)\b",
+                                    "\n".join(start_lines)))
+        self.assertNotIn(">", "\n".join(start_lines))
+        unit = tool.APP_USER_UNIT.format(user="mpfree", after="")
+        self.assertRegex(unit, r"(?m)^CapabilityBoundingSet=$")
+        self.assertRegex(unit, r"(?m)^AmbientCapabilities=$")
+        for word in ("PermissionsStartOnly", "+/", "!/", "SupplementaryGroups=root", "User=root"):
+            self.assertNotIn(word, unit)
+        self.assertEqual(re.findall(r"(?m)^ExecStart\S*=.*$", unit), ["ExecStart=/bin/sh /etc/mpfree-test/start-app.sh"])
+        self.assertEqual(tool.APP_UID, 960)
+
+    def test_busybox_find_takes_the_storage_scripts_expression(self):
+        """The MPC's shell tools may be BusyBox: its find must understand -xdev, ! -user and -exec ... (semicolon)."""
+        busybox = shutil.which("busybox")
+        if not busybox:
+            self.skipTest("no busybox")
+        d = tempfile.mkdtemp(prefix="mpfree-find-test-")
+        try:
+            os.makedirs(os.path.join(d, "settings"))
+            write(os.path.join(d, "settings", "prefs"), "x")
+            os.symlink("/etc/passwd", os.path.join(d, "link"))
+            res = subprocess.run([busybox, "find", d, "-xdev", "!", "-user", "960", "-exec", "echo", "X", "{}", ";"],
+                                 capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(sorted(res.stdout.splitlines()),
+                             sorted(f"X {p}" for p in (d, f"{d}/settings", f"{d}/settings/prefs", f"{d}/link")))
+        finally:
+            shutil.rmtree(d)
 
     def test_never_contacts_the_mpc_or_writes_devices(self):
         with open(TOOL) as fh:
