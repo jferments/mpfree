@@ -512,6 +512,13 @@ impl TimeHost {
         sent && self.audio.counts().refused == refused
     }
 
+    /// While on, a chance roll counts frames from the one the transport
+    /// last started on, so the same range played again from its start
+    /// rolls the same: an export with replays turns it on for each pass.
+    pub fn anchor_dice(&mut self, on: bool) {
+        self.audio.anchor_dice(on);
+    }
+
     /// A transport command on frame `at` of the transport's clock (see
     /// [`TimeHost::next_frame`]), from the coming period on: exact to the
     /// frame, where [`TimeHost::command`] waits for the next period. The
