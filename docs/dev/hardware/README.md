@@ -20,6 +20,8 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[Qualifying main on the installed MPC OS 3.10.1](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, the kexec test boot from the installed system, the pad player on it, and the way back.
 
+**[The targeted app run on the soft-boot stick](app-targeted-run.md)** is the runbook for the app check's phases that have a reason to run: the ones live test 3 skipped, and the features merged since (the Mix tab, drag and drop, effects with modes). Switching on with the stick in starts MPFree; there is no kexec step.
+
 **[Installer and recovery contract](installer-recovery-contract.md)** specifies the minimum evidence required for temporary kernel boots, persistent MPFree application installation, direct boot and boot-critical storage changes.
 
 ## Hardware interfaces

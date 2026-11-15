@@ -330,13 +330,19 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   answers whether GPU work can come back inside a period (2.902 ms) at all,
   and from what size the GPU beats a core.
 
-`tools/mpc-one/host_gpu_mpc.py` runs it on the kexec test build. **RAM only,
+`tools/mpc-one/host_gpu_mpc.py` runs it on the test build, MPFree's system on
+the USB stick. On MPC OS 3.10.1 the boot hook starts that system at power-on,
+by default by a soft-reboot on Akai's kernel, or by an opt-in kexec_file
+restart ([boot routes](../hardware/boot-routes.md)); from 3.6.0 it was started
+by kexec. **RAM only,
 offscreen:** like host_bench_mpc.py it talks only to the test build's own host
 key. It checks the ARM build on the workstation (loader
 `/lib/ld-linux-armhf.so.3`, only `libc.so.6` and `libgcc_s.so.1` linked,
 nothing newer than glibc 2.34), makes the pages with the workstation's build
 of the app, checks on the MPC (read-only) that the GPU's render node and
-`libEGL.so.1` and `libGLESv2.so.2` are there and who holds `/dev/dri`, copies
+`libEGL.so.1` and `libGLESv2.so.2` are there and who holds `/dev/dri` (after a
+soft-reboot no module can load, so without the render node it says to build
+the stick with `--preload-module panfrost`), copies
 the program and the pages to `/run/mpfree-gpu`, stops our pad player and log
 display for a clean run (started again at the end, whatever happens), and
 runs `describe`, `compute --iterations 500`, `screens pages --frames 30` and

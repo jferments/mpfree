@@ -74,6 +74,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 ### Installing
 
 - [USB installer architecture](design/usb-installer.md): design for a future one-USB, owner-consented installer with rollback.
+- [The MPFree USB creator](design/usb-creator.md): plan for a desktop app (Linux, macOS, Windows) that builds the boot stick from the musician's own Akai 3.10.1 update file, and a one-tap, terminal-free hook install through Akai's script runner (proposal, 2026-11-15).
 
 ## Decisions
 
@@ -151,6 +152,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 - [Boot routes on MPC OS 3.10.1](hardware/boot-routes.md): soft-reboot, the opt-in kexec_file route, a chain to our own kernel and the U-Boot route compared; what LoadPin allows on each, and what each means for external hardware that needs its own drivers or firmware (2026-11-15).
 - [Starting MPFree from the stick at power-on](hardware/stick-autoboot.md): the record of how that boot was found and proven: what can start the jump on an installed 3.10.1, what is ruled out, the canary, the kexec hook LoadPin refused, both soft-reboot power-ons, the pad player without root (`--app-user`), the opt-in kexec_file route and its chain to the stick's own device tree, and the owner's blocks (2026-11-15).
 - [Qualifying main on the installed MPC OS 3.10.1](hardware/firmware-3.10.1-qualification.md): the runbook since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, the kexec test boot from the installed system, the pad player and the way back.
+- [The targeted app run on the soft-boot stick](hardware/app-targeted-run.md): the runbook for the app check's phases that have a reason to run (live test 3's skipped ones and what merged since), on a stick that the boot hook starts at power-on (2026-11-15).
 - [Test-booting another firmware version by kexec](hardware/archive/2026-11/kexec-test-boot.md): booting 3.10.0 from a USB stick with the eMMC hidden from it; booted three times, storage unchanged, Ethernet and SSH work after one retry (2026-11-10).
 - [MaskROM over USB](hardware/archive/2026-11/maskrom-usb.md): how the RK3288 boot ROM's USB recovery mode could be reached on the MPC One, what it can do RAM-only, secure-boot risk, and the first checks (research, 2026-11-10).
 - [Owner-controlled BootROM bring-up](hardware/archive/2026-11/owner-rom-recovery-plan.md): a plan for owner-controlled boot through the RK3288 boot ROM, even if Akai changes its own boot chain (offline analysis only).
