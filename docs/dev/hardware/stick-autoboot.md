@@ -412,7 +412,7 @@ It ends with one of these:
 - `CHECK-OK: … would soft-reboot into it (the kexec_file route it asks for is not available, above)`: the `kexec_file:` line above it says why. Stop and send the zip (`python3 tools/mpc-one/results.py zip`). A power-on would only soft-reboot.
 - `STOP: …`: take the stick out before the next power-on and send the zip.
 
-**Step 6.4: first power-on, then change one setting** (**state-changing**: Akai's programs are stopped at about 6 s and the MPC restarts into Akai's kernel with the stick as root; the eMMC and SD card are switched off in software, and nothing is written to them).
+**Block 6.4: first power-on, then change one setting** (**state-changing**: Akai's programs are stopped at about 6 s and the MPC restarts into Akai's kernel with the stick as root; the eMMC and SD card are switched off in software, and nothing is written to them).
 1. Switch the MPC off, wait 10 s, and switch it on with the stick in. Expected: the MPC logo, possibly a few seconds of dark screen while the kernel starts again, then MPFree's startup screen and the pad player. Akai's app never draws. Play a few pads.
 2. Change one setting that is kept: on the **Play** page, tap **Beats**, press **MENU**, and set **Timing strip** to **Off**. The strip under the pattern goes away. Wait 10 s, so the store has written it to partition 4.
 3. Read the privileges (**read-only**, over SSH on port 2222). It reads the state and waits at the first phase: press `q` there.
@@ -434,7 +434,7 @@ What else can happen:
 - **The MPC switches itself off:** the switch-off service refused to go on, and its notes are on the stick.
 - Don't touch the MPC's power while it shows an update screen.
 
-**Step 6.5: second power-on with the stick in** (**state-changing**, the same as 6.4).
+**Block 6.5: second power-on with the stick in** (**state-changing**, the same as 6.4).
 1. Switch off, wait 10 s, switch on with the stick in.
 2. On **Play**, tap **Beats**: **Timing strip** must still be **Off** (no strip under the pattern, and **MENU** shows it Off). Set it back to **On** if you like.
 3. Read the privileges again, as `privileges-boot2`:
