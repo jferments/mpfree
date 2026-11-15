@@ -93,6 +93,7 @@ fn the_pass_never_allocates_on_the_sound_thread() {
         },
         length: None,
         first_slot: 0,
+        replays: Vec::new(),
     };
     let (mut pass, job) = start(plan).unwrap();
     let mut frame = 0u64;

@@ -357,7 +357,7 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
     )?;
     shot(
         "18-export-ready",
-        "Export (Projects place, beside Save): the mixdown, the stems and the MIDI file ticked, the arrangement as the range, how it plays and where the files go",
+        "Export (Projects place, beside Save): the mixdown, the stems (one per track, so the range plays again for each track that shares the drum kit) and the MIDI file ticked, the arrangement as the range, how it plays and where the files go",
         Theme::dark(),
         &|b| {
             b.go_source(source("Projects"));
@@ -373,7 +373,7 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
         &|b| {
             b.go_source(source("Projects"));
             b.open_export(ExportSetup {
-                mode: "Listen: it plays once in real time and you hear it, because track 3 plays Juno over MIDI, which can only be recorded as it plays".into(),
+                mode: "Listen: it plays in real time and you hear it, because track 3 plays Juno over MIDI, which can only be recorded as it plays".into(),
                 ..export_setup(false)
             });
             b.input(Input::Export(ExportInput::Start));
@@ -404,6 +404,8 @@ fn export_setup(arrangement: bool) -> ExportSetup {
         from_bar: 9,
         mode: "Fast, quiet: faster than real time, the speakers quiet (Prefs > Export)".into(),
         stems: 8,
+        tracks_arrangement: (9, 5),
+        tracks_bars: (7, 5),
         folder: "Recordings / Night drive 2026-11-14 01.32".into(),
         format: crate::export::ExportFormat {
             bits: crate::export::ExportBits::I24,

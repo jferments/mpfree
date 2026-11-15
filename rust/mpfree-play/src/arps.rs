@@ -46,6 +46,9 @@ use crate::player::{Event, Out, Sink, ALL};
 /// counted in [`TrackArps::dropped`].
 pub const MAX_OUT: usize = 1024;
 
+/// The seed [`TrackArps::reseed`] gives every arp.
+pub const RESEED: u32 = 0x2545_f491;
+
 pub struct TrackArps {
     arps: Vec<ArpHost>,
     through: [bool; MAX_TRACKS],
@@ -133,6 +136,15 @@ impl TrackArps {
         let t = track.min(MAX_TRACKS - 1);
         self.ask(t);
         &mut self.arps[t].engine
+    }
+
+    /// Every arp's random orders start again from the same seed, so a
+    /// range played again from its start (an export's replay) plays the
+    /// same random notes as before. Real-time safe.
+    pub fn reseed(&mut self) {
+        for a in &mut self.arps {
+            a.engine.set_seed(RESEED);
+        }
     }
 
     /// Notes no engine could queue, over every track, since the start.
