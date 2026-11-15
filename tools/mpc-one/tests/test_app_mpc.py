@@ -143,6 +143,13 @@ case "$1" in
       mpfree-test-screen.service) echo active > "$FAKE_SCREEN" ;;
       mpfree-test-app.service) echo active > "$FAKE_APP" ;;
     esac ;;
+  show)
+    case "$3" in
+      LoadState) if [ -n "$FAKE_SPLASH" ]; then echo loaded; else echo not-found; fi ;;
+      ActiveState) echo inactive ;;
+      Result) echo success ;;
+      *) exit 99 ;;
+    esac ;;
   *) echo "systemctl stand-in: refusing $*" >&2; exit 99 ;;
 esac
 '''
@@ -502,147 +509,224 @@ class AppTests(unittest.TestCase):
             for t, message in lines:
                 fh.write(f"[{t:12.6f}] {message}\n")
 
-    def test_app_step_only_reads_and_follows_each_phase(self):
+    def test_app_step_with_no_checks_asks_nothing(self):
+        """Jay, 15 Nov: no leftover questions. With no checks named the app step only reports, from the log."""
         write(self.app, "active\n")
         write(self.screen, "inactive\n")
         self.add_journal([(5.1, "systemd[1]: Started MPFree test boot: the pad player, from power-on."),
-                      (6.0, "mpfree[211]: pad player: 6 kits, 81 sounds"),
-                      (9.5, "mpfree[211]: playing until the power goes off: ...")])
-        # The start-up read moves the fake clock to 110; phase k starts at 100 + 10 k and its lines are due
-        # at 110 + 10 k.
-        self.add_journal([(111.0, "mpfree[211]: +40.100 s Private: 90 0B 7F = button 11 pressed"),
-                      (111.1, "mpfree[211]: button guide: MENU is button 11")], at=120)
-        self.add_journal([(121.0, "mpfree[211]: +50.000 s Private: 99 25 12 = pad 1 down, velocity 18"),
-                      (121.1, "mpfree[211]: +50.100 s Private: 89 25 00 = pad 1 up"),
-                      (121.5, "mpfree[211]: +50.500 s Private: 99 25 7C = pad 1 down, velocity 124"),
-                      (122.0, "mpfree[211]: +51.000 s Private: 90 27 7F = button 39 pressed"),
-                      (122.1, "mpfree[211]: pad level: Full Level (every hit 127)"),
-                      (123.0, "mpfree[211]: +52.000 s Private: B0 64 01 = data wheel +1"),
-                      (123.5, "mpfree[211]: +52.500 s -> Public: F0 47 00 46 52 00 04 15 21 6D 43 F7 = session ping")],
-                     at=130)
-        self.add_journal([(141.0, "mpfree[211]: Latch on"),
-                      (143.0, "mpfree[211]: repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
-                              "engine dropped 0 events, overflow 0"),
-                      (150.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns in "
-                              "20000 periods, ...")], at=150)
-        # Start-up: Enter + note; phases 1 to 3: Enter, Enter when done, note; phase 4: Enter, then q.
-        answers = "\nloading ok\n" + "\n\nguide ok\n" + "\n\nsoft and hard differ\n" + "\n\nrepeat ok\n" + "\nq\n"
-        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
-        self.assertEqual(res.returncode, 1, res.stdout)
+                          (6.0, "mpfree[211]: pad player: 6 kits, 81 sounds"),
+                          (6.5, "mpfree[211]: saved settings: pad curve Hard, sound cores shared, loop memory 5 min, x"),
+                          (9.5, "mpfree[211]: playing until the power goes off: ..."),
+                          (40.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns in "
+                                 "20000 periods, ...")])
+        res = self.run_helper("", MPFREE_APP_STEPS="app")
+        self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
-                     "pad player (mpfree-test-app.service): active", "(systemd[1]) Started MPFree test boot",
-                     "pad player: 6 kits, 81 sounds", "start-up: the app was playing 9.5 s after power-on",
-                     "your answer: loading ok", "Phase 1 of 19: Developer tools and Map controls",
-                     "button guide: MENU is button 11", "buttons pressed (note numbers): 11",
-                     "Phase 2 of 19: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
-                     "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
-                     "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
-                     "Phase 4 of 19: Play page: the three views and the mode buttons", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
-                     "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
+                     "pad player (mpfree-test-app.service): active",
+                     "start-up: playing 9.5 s after power-on; startup screen: not on this stick",
+                     "    saved settings: pad curve Hard, sound cores shared, loop memory 5 min, x",
+                     "no PANIC or safe start lines",
+                     "No checks named (MPFREE_APP_CHECKS), so nothing is asked",
+                     "Session summary (the whole run since power-on",
+                     "    status: 60 hits (0 from the screen), 40 repeats, 0 underruns in 20000 periods",
+                     "RESULT: all steps ran"):
             self.assertIn(text, out)
-        # Phase 1's lines are not shown again in phase 2.
-        self.assertEqual(out.count("button guide: MENU is button 11"), 1)
-        self.assertNotIn("[3/", out.split("steps: app")[0])
-        self.assertNotIn("Copy the program", out)
+        for text in ("Ready?", "your answer", "Phase ", "Check 1", "startup screen play"):
+            self.assertNotIn(text, out)
+        self.assertNotIn("pad player: 6 kits", out, "the start-up's whole log goes to the report only")
         with open(self.report) as fh:
-            report = fh.read()
-        self.assertIn("| [   121.500] +50.500 s Private: 99 25 7C = pad 1 down, velocity 124", report)
+            self.assertIn("| [     6.000] pad player: 6 kits, 81 sounds", fh.read())
         # Nothing was copied, started or stopped; only reads.
         self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app"))
         self.assertEqual(self.log_lines("program: "), [])
-        self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")], [])
+        self.assertEqual([l for l in self.log_lines("systemctl: ")
+                          if not l.startswith(("is-active ", "show -p "))], [])
         self.assertTrue(all(l.startswith("-b -u mpfree-test-app.service -o short-monotonic")
                             for l in self.log_lines("journalctl: ")))
-        with open(self.app) as fh:
-            self.assertEqual(fh.read().strip(), "active")
 
-    def test_app_step_all_phases_and_the_status(self):
-        write(self.app, "active\n")
-        self.add_journal([(100.0, "mpfree[211]: status: 30 hits (0 from the screen), 20 repeats, 0 underruns"),
-                          (100.1, "mpfree[211]: status: looper: Empty, 0 layers"),
-                          (130.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns"),
-                          (130.1, "mpfree[211]: status: synth: Poly (Brass)"),
-                          (130.2, "mpfree[211]: status: looper: Playing, 2 layers"),
-                          (130.3, "mpfree[211]: status: cpu by engine (mean/p99/worst of a period): period 9.3"),
-                          (130.4, "mpfree[211]: status: Q-Link touch: 3 touches, 1 bounces held")])
-        answers = "\n\n" + "\n\n\n" * 19
-        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
-        self.assertEqual(res.returncode, 0, res.stdout)
-        for title in ("Phase 5 of 19: Throws, the XY pad (Perform FX) and FILL",
-                      "Phase 6 of 19: Arrange: clips, takes, Capture, the song and the morph",
-                      "Phase 7 of 19: TRACK MUTE and SHIFT + TRACK MUTE",
-                      "Phase 11 of 19: Looper tab: record, layers, tools, undo history, trim",
-                      "Phase 12 of 19: Mixer, effect chains, macros and the I/O view",
-                      "Phase 13 of 19: Pads tab: the pads, Browse and Pad",
-                      "Phase 14 of 19: Sample tab: Wave, Chop, live chop, Stops, Also plays, Latch and Send to pad",
-                      "Phase 15 of 19: Sample tab: scenes, the crossfader and FX",
-                      "Phase 16 of 19: Prefs, System info and saving",
-                      "Phase 17 of 19: MIDI keyboard on MIDI IN (only with a keyboard and a 5-pin MIDI cable; s skips)",
-                      "Phase 18 of 19: Touch: Touch lab, Calibrate touch and the Dev Touch page",
-                      "Phase 19 of 19: Menus, console and STOP"):
-            self.assertIn(title, res.stdout)
-        self.assertIn("start-up: no playing line yet", res.stdout)
-        self.assertIn("The app's latest status", res.stdout)
-        self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
-        # The latest whole set of status lines, not only the last three.
-        summary = res.stdout.split("The app's latest status")[1].split("The developer tools'")[0]
-        for line in ("status: 60 hits", "status: synth: Poly (Brass)", "status: looper: Playing, 2 layers",
-                     "status: Q-Link touch: 3 touches, 1 bounces held"):
-            self.assertIn(f"    {line}", summary)
-        self.assertNotIn("status: 30 hits", summary)
-        self.assertNotIn("status: looper: Empty", summary)
-        self.assertIn("RESULT: all steps ran", res.stdout)
+    def transport_lines(self, t):
+        """What the app logs for the transport check's steps, from uptime t on."""
+        lines = [(0.0, "button 73 pressed"), (0.1, "looper: Record: armed, the first pass starts on the next bar "
+                                                   "line (2 bars)"),
+                 (1.0, "button 82 pressed"), (5.0, "button 80 pressed"), (5.1, "looper: overdub on (layer 2)"),
+                 (7.0, "button 80 pressed"), (7.1, "looper: overdub off"), (8.0, "button 67 pressed"),
+                 (8.1, "looper: Undo: layer 2 fades out"), (9.0, "button 81 pressed")]
+        return [(t + dt, "mpfree[211]: " + (f"+{t + dt:.3f} s Private: 90 00 7F = {m}" if m.startswith("button")
+                                             else m)) for dt, m in lines]
 
-    def test_app_step_runs_only_the_chosen_phases(self):
-        """Live test 3: MPFREE_APP_PHASES redoes only the phases asked for, with no prompt for the rest."""
+    def test_app_step_runs_only_the_named_checks_and_reads_the_log(self):
+        """MPFREE_APP_CHECKS: only those checks, numbered of their own count; the log says what was seen and
+        each check asks its one question."""
         write(self.app, "active\n")
-        # Start-up: Enter + note; then phases 9, 10, 11 and 16 to 19: Enter, Enter when done, note.
-        answers = "\nok\n" + "\n\nfine\n" * 7
-        res = self.run_helper(answers, MPFREE_APP_STEPS="app", MPFREE_APP_PHASES="9-11, 16-19")
+        r = self.root
+        write(f"{r}/proc/interrupts", " 61:        42          0  rockchip_gpio_irq   6 Edge      ili2117\n")
+        write(f"{r}/run/mpfree-data/settings/map.conf", "pad-bank-a-e = button 35\npad-bank-b-f = button 36\n"
+              "track-mix-pad-mix = button 115\nmain = button 52\nsampler = button 51\n")
+        # The start-up read moves the fake clock to 110; check 1 starts there and its lines are due at 120;
+        # check 2 starts at 120 and its lines are due at 130.
+        self.add_journal(self.transport_lines(111.0), at=120)
+        self.add_journal([(121.0, "mpfree[211]: +1.000 s Private: 99 25 12 = pad 1 down, velocity 18"),
+                          (121.5, "mpfree[211]: +1.500 s Private: 99 26 7C = pad 2 down, velocity 124"),
+                          (122.0, "mpfree[211]: bank: B (kit 2: Lo-fi)"),
+                          (122.1, "mpfree[211]: pad level: Full Level (every hit 127)"),
+                          (122.2, "mpfree[211]: pad level: as played"),
+                          (123.0, "mpfree[211]: +3.000 s Private: B0 64 01 = data wheel +1"),
+                          (124.0, "mpfree[211]: +4.000 s Private: B0 10 05 = Q-Link 1 turned +5")], at=130)
+        answers = "\n\nlights right\n" + "\n\npads fine\n"
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="transport, basics")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
-        self.assertIn("MPFREE_APP_PHASES: only phases 9, 10, 11, 16, 17, 18, 19", out)
-        for k in (9, 10, 11, 16, 17, 18, 19):
-            self.assertIn(f"Phase {k} of 19:", out)
-        for k in (1, 2, 3, 8, 12, 15):
-            self.assertNotIn(f"Phase {k} of 19:", out)
-        self.assertEqual(out.count("your answer: fine"), 7)
-        self.assertIn("RESULT: all steps ran", out)
-        with open(self.report) as fh:
-            self.assertIn("Phase 1 of 19: Developer tools and Map controls: not chosen", fh.read())
+        for text in ("Checks: transport, basics",
+                     "Check 1 of 2: REC, OVERDUB, UNDO and PLAY on a fresh start (transport)",
+                     "for: #387", "1. Press REC once: REC and PLAY blink.",
+                     "seen      REC (73) armed the loop (button 73 x1)",
+                     "seen      OVERDUB (80) turned overdub on (button 80 x2)",
+                     "seen      UNDO (67) took the layer back", "seen      STOP (81) reached the app",
+                     "Did the lights do what each step says?", "your answer: lights right",
+                     "Check 2 of 2: Pads, banks, Full Level, the wheel, Q-Links and touch reach the app (basics)",
+                     "NOT SEEN  pad hits, soft and hard (2 hits on 2 pads, velocities 18 to 124)",
+                     "seen      PAD BANK changed the bank", "seen      FULL LEVEL on and off",
+                     "seen      the data wheel (1 wheel steps, net +1)", "seen      the Q-Links (1 Q-Link messages)",
+                     "NOT SEEN  the touchscreen (touch interrupts 42 -> 42)",
+                     "The checks:", "transport: 6 of 6 seen in the log; your answer: lights right",
+                     "basics: 4 of 6 seen in the log; your answer: pads fine", "RESULT: all steps ran"):
+            self.assertIn(text, out)
+        for text in ("Phase ", "of 19", "startup screen play", "Map controls has not found"):
+            self.assertNotIn(text, out)
+        self.assertEqual(out.count("Enter:   your answer:"), 2)
+        self.assertEqual(self.log_lines("program: "), [])
 
-    def test_app_step_refuses_phases_it_does_not_have(self):
-        for bad in ("0", "20", "9-30", "nine", "3-1"):
-            res = self.run_helper("", MPFREE_APP_STEPS="app", MPFREE_APP_PHASES=bad)
+    def test_auto_checks_read_the_stick_and_ask_nothing(self):
+        """kept and hour: no steps and no question; partition 4's settings and the status lines decide."""
+        write(self.app, "active\n")
+        r = self.root
+        write(f"{r}/run/mpfree-data/settings/app.conf", "curve = hard\nsound-cores = two\nloop-memory = 10\n")
+        self.add_journal([(6.5, "mpfree[211]: saved settings: pad curve Hard, screen velocity 100, developer tools "
+                                "off, theme Synthwave, sound cores two, loop memory 10 min, metronome off at -12 dB"),
+                          (6.6, "mpfree[211]: sound cores: two: the audio thread on core 3, lanes on core 2"),
+                          (3600.0, "mpfree[211]: status: 900 hits (0 from the screen), 0 repeats, 0 underruns in "
+                                   "1240100 periods, ..."),
+                          (3630.0, "mpfree[211]: status: 900 hits (0 from the screen), 0 repeats, 0 underruns in "
+                                   "1250440 periods, ...")])
+        res = self.run_helper("", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="kept,hour")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("Check 1 of 2: The settings partition 4 kept came back at this start (kept)",
+                     "seen      the start's settings agree with settings/app.conf (sound cores two, loop memory 10 min; "
+                     "the same in settings/app.conf)",
+                     "Check 2 of 2: An hour of play with no underrun (hour)",
+                     "seen      an hour, no underrun, no restart (0 underruns in 1,250,440 periods (60 min))",
+                     "kept: 1 of 1 seen in the log", "hour: 1 of 1 seen in the log"):
+            self.assertIn(text, out)
+        for text in ("Ready?", "your answer"):
+            self.assertNotIn(text, out)
+        # Not an hour yet, a restart, and a file that disagrees.
+        write(self.journal, "")
+        write(f"{r}/run/mpfree-data/settings/app.conf", "sound-cores = shared\n")
+        self.add_journal([(6.5, "mpfree[211]: saved settings: pad curve Hard, sound cores two, loop memory 10 min, x"),
+                          (600.0, "mpfree[211]: status: 9 hits (0 from the screen), 0 repeats, 0 underruns in "
+                                  "200000 periods, ...")])
+        res = self.run_helper("", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="kept,hour")
+        out = res.stdout
+        self.assertIn("NOT SEEN  the start's settings agree with settings/app.conf (sound cores two, loop memory "
+                      "10 min; the file says sound cores shared)", out)
+        self.assertRegex(out, r"unclear   an hour, no underrun, no restart \(0 underruns in 200,000 periods "
+                              r"\(10 min\); NOT YET an hour: run this check again in \d+ min\)")
+        self.add_journal([(630.0, "mpfree[211]: status: 1 hits (0 from the screen), 0 repeats, 0 underruns in "
+                                  "3000 periods, ...")])
+        res = self.run_helper("", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="hour")
+        self.assertIn("NOT SEEN  an hour, no underrun, no restart (0 underruns in 3,000 periods (0 min); the period "
+                      "count went back, so the pad player restarted)", res.stdout)
+
+    def test_a_check_says_which_buttons_map_controls_has_not_found(self):
+        write(self.app, "active\n")
+        write(f"{self.root}/run/mpfree-data/settings/map.conf", "pad-bank-a-e = button 35\ntrack-mute = skipped\n")
+        res = self.run_helper("s\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("Map controls has not found these buttons yet", "    TRACK MUTE (check track-mute)",
+                     "    PAD BANK B/F (check track-mute)", "Add map-controls before those checks",
+                     "track-mute: skipped"):
+            self.assertIn(text, out)
+        self.assertNotIn("PAD BANK A/E (check", out)
+
+    def test_the_load_check_waits_for_a_status_line_and_reads_the_cores(self):
+        """load: no underrun between the status line before it and the one after; then the cores, once."""
+        write(self.app, "active\n")
+        r = self.root
+        write(f"{r}/sys/devices/system/cpu/online", "0-3\n")
+        write(f"{r}/sys/devices/system/cpu/isolated", "2-3\n")
+        write(f"{r}/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "interactive\n")
+        write(f"{r}/sys/devices/system/clocksource/clocksource0/current_clocksource", "arch_sys_counter\n")
+        write(f"{r}/proc/900/comm", "mpfree\n")
+        fields = " ".join(["S"] + ["0"] * 35 + ["1", "70", "1"] + ["0"] * 10)
+        for tid, name, cpus in (("900", "mpfree", "0-1"), ("903", "mpfree-screen", "0-1")):
+            write(f"{r}/proc/900/task/{tid}/comm", name + "\n")
+            write(f"{r}/proc/900/task/{tid}/stat", f"{tid} ({name}) {fields}\n")
+            write(f"{r}/proc/900/task/{tid}/status", f"Name:\t{name}\nCpus_allowed_list:\t{cpus}\n")
+        write(f"{r}/proc/stat", "cpu  10 0 10 100 0 0 0 0 0 0\ncpu0 5 0 5 50 0 0 0 0 0 0\n")
+        write(f"{r}/proc/interrupts", "           CPU0       CPU1\n 61:         42          0  ili2117\n")
+        self.add_journal([(100.0, "mpfree[211]: status: 10 hits (0 from the screen), 0 repeats, 2 underruns in "
+                                  "30000 periods, ...")])
+        # The start-up read moves the clock to 110; the check starts there; the wait for a status line reads
+        # at 120, the check's own read at 130.
+        self.add_journal([(111.0 + k / 10, f"mpfree[211]: +1.000 s Private: 99 25 7F = pad {k} down, velocity 127")
+                          for k in range(1, 9)], at=120)
+        self.add_journal([(125.0, "mpfree[211]: status: 400 hits (0 from the screen), 300 repeats, 2 underruns in "
+                                  "40000 periods, ...")], at=120)
+        res = self.run_helper("\n\nno crackles\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="load")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("Check 1 of 1: The heaviest sounds on the MPC's own cores (load)",
+                     "waiting up to 40 s for the app's next status line",
+                     "seen      pads held (8 hits on 8 pads, velocities 127 to 127)",
+                     "seen      no underrun while it played (0 underruns in 10,000 periods (29 s around the check))",
+                     "cores, clock and threads now (read-only):", "/sys/devices/system/cpu/isolated: 2-3",
+                     "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: interactive",
+                     "current_clocksource: arch_sys_counter", "app pid 900",
+                     "900 mpfree: allowed \t0-1 last_cpu=1 rt_priority=70 policy=1",
+                     "903 mpfree-screen: allowed \t0-1 last_cpu=1", "app processes: 1",
+                     "/sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_cur_freq: not there",
+                     "your answer: no crackles", "load: 2 of 2 seen in the log"):
+            self.assertIn(text, out)
+        self.assertEqual(out.count("cores, clock and threads now"), 1)
+        with open(self.report) as fh:
+            self.assertIn("|  61:         42          0  ili2117", fh.read())
+
+    def test_app_step_refuses_unknown_checks_and_the_old_phases(self):
+        for env, said in (({"MPFREE_APP_CHECKS": "transport,nope"}, "unknown check(s) nope"),
+                          ({"MPFREE_APP_PHASES": "1-3"}, "MPFREE_APP_PHASES is gone"),
+                          ({"MPFREE_APP_STEPS": "inventory", "MPFREE_APP_CHECKS": "transport"},
+                           "MPFREE_APP_CHECKS goes with the app step")):
+            res = self.run_helper("", **dict({"MPFREE_APP_STEPS": "app"}, **env))
             self.assertNotEqual(res.returncode, 0, res.stdout)
-            self.assertIn("MPFREE_APP_PHASES:", res.stdout)
-            self.assertNotIn("Phase 1 of 19", res.stdout)
+            self.assertIn(said, res.stdout)
+            self.assertNotIn("[2/", res.stdout, "nothing reached the MPC")
 
     def test_targeted_run_on_a_soft_booted_stick(self):
         """The targeted app run's block (app-targeted-run.md) on the stick's system after the boot hook's
         soft-reboot: / is the stick's partition mounted ro,noload, /run is Akai's tmpfs carried over, and
-        kexec_load_disabled comes from the stick's sysctl.d. The checks pass and only the run's phases ask."""
+        kexec_load_disabled comes from the stick's sysctl.d. The checks pass and only the run's checks ask."""
         self.make_root(run_opts="rw,nosuid,nodev,size=404268k,nr_inodes=819200,mode=755")
         with open(os.path.join(self.root, "proc/mounts"), "w") as fh:
             fh.write("/dev/sda1 / ext4 ro,relatime,noload 0 0\n"
                      "tmpfs /run tmpfs rw,nosuid,nodev,size=404268k,nr_inodes=819200,mode=755 0 0\n"
                      "tmpfs /data tmpfs rw,size=262144k,mode=755 0 0\n")
         write(self.app, "active\n")
-        chosen = (6, 7, 9, 10, 11, 12, 16, 17, 18, 19)
-        answers = "\nok\n" + "\n\nfine\n" * len(chosen)
-        res = self.run_helper(answers, MPFREE_APP_STEPS="app", MPFREE_APP_PHASES="6,7,9-12,16-19")
+        chosen = "track-mute,wheel,touch,note-repeat,looper,console"
+        answers = "\n\nfine\n" * 6
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS=chosen)
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         for text in ("/: read-only", "kexec_load_disabled: 1", "no MMC block device", "CHECKS-OK",
-                     "MPFREE_APP_PHASES: only phases 6, 7, 9, 10, 11, 12, 16, 17, 18, 19"):
+                     "Checks: track-mute, wheel, touch, note-repeat, looper, console",
+                     "Check 6 of 6: The console chord, TAP TEMPO and STOP (console)",
+                     "Press TRACK MUTE: it lights", "drag a clip to an empty slot", "push the wheel, turn it"):
             self.assertIn(text, out)
-        for k in range(1, 20):
-            (self.assertIn if k in chosen else self.assertNotIn)(f"Phase {k} of 19:", out)
-        for text in ("drag a clip to an empty slot", "Pads 1-16 are tracks 1-16",
-                     "drag a layer's lane onto the second loop", "Tap Plate in the mode chooser"):
-            self.assertIn(text, out)
-        self.assertEqual(out.count("your answer: fine"), len(chosen))
+        self.assertEqual(out.count("Enter:   your answer: fine"), 6)
+        self.assertEqual(out.count("; your answer: fine"), 6, "and once each in the checks' list")
+        self.assertNotIn("of 19", out)
         self.assertIn("RESULT: all steps ran", out)
         # The app step copies, starts and stops nothing.
         self.assertEqual(self.log_lines("program: "), [])
@@ -689,7 +773,12 @@ class AppTests(unittest.TestCase):
         write(f"{r}/sys/bus/platform/drivers/dwmmc_rockchip/bind", "")
         write(f"{r}/etc/group", "root:x:0:\naudio:x:29:mpfree\nvideo:x:44:mpfree\ndisk:x:6:\nmpfree:x:960:\n")
         res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
-        out = res.stdout
+        for text in ("privileges: pid 733 Uid:\t960\t960\t960\t960", "privileges: pid 733 CapEff:\t0000000000000000",
+                     "privileges: pid 733 NoNewPrivs:\t1"):
+            self.assertIn(text, res.stdout)
+        self.assertNotIn("privileges: group", res.stdout, "the rest goes to the report")
+        with open(self.report) as fh:
+            out = fh.read()
         for text in ("privileges: pid 733 Uid:\t960\t960\t960\t960", "privileges: pid 733 Groups:\t29 44 101 960",
                      "privileges: pid 733 CapEff:\t0000000000000000", "privileges: pid 733 NoNewPrivs:\t1",
                      "privileges: pid 733 Max realtime priority     70",
@@ -709,12 +798,16 @@ class AppTests(unittest.TestCase):
         write(self.app, "active\n")
         r = self.root
         res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        self.assertRegex(res.stdout, r"\(the GPU read: \d+ lines, in the report\)")
+        self.assertNotIn("gpu: ", res.stdout, "the GPU read goes to the report only")
+        with open(self.report) as fh:
+            first = fh.read()
         for text in ("gpu: no libEGL, libGLESv2, libgbm, libdrm or /usr/lib/dri",
                      "gpu: /etc/os-release not there", "gpu: /dev/dri not there",
                      "gpu: no /sys/class/drm/card*-* connectors", "gpu: nothing has /dev/dri open",
                      "gpu: panfrost driver not there",
                      "gpu: debugfs dri/0 not there (it is not mounted for this)"):
-            self.assertIn(text, res.stdout)
+            self.assertIn(text, first)
         write(f"{r}/usr/lib/libEGL.so.1.0.0", "")
         os.symlink("libEGL.so.1.0.0", f"{r}/usr/lib/libEGL.so.1")
         write(f"{r}/usr/lib/dri/rockchip_dri.so", "")
@@ -729,53 +822,22 @@ class AppTests(unittest.TestCase):
             write(f"{r}/sys/bus/platform/drivers/panfrost/{name}", "")
         write(f"{r}/sys/kernel/debug/dri/0/state", "".join(f"plane[{i}]: x\n" for i in range(100)))
         res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
-        out = res.stdout
+        self.assertNotIn("plane[0]", res.stdout)
+        with open(self.report) as fh:
+            out = fh.read()
         for text in ("gpu: /usr/lib/libEGL.so.1 -> libEGL.so.1.0.0", "gpu: /usr/lib/libEGL.so.1.0.0",
                      "gpu: /usr/lib/dri/rockchip_dri.so", 'gpu: os-release NAME="Akai"',
                      "gpu: os-release VERSION_ID=3.10.0", "gpu: /dev/dri/card0",
                      "gpu: /sys/class/drm/card0-DSI-1: connected, modes: 800x1280",
                      "gpu: /dev/dri is open in pid 412 (weston)",
                      "gpu: panfrost driver bound to: ff9a0000.gpu",
-                     "gpu: debugfs dri/0 state (first 80 lines):",
-                     "(the GPU read's other 80 lines are in the report)"):
+                     "gpu: debugfs dri/0 state (first 80 lines):", "gpu:   plane[0]: x", "gpu:   plane[79]: x"):
             self.assertIn(text, out)
         self.assertNotIn("HOME_URL", out)
-        self.assertNotIn("plane[0]", out, "debugfs lines go to the report only")
-
-    def test_app_step_reads_the_cores_after_the_dev_pages(self):
-        """Read-only, during play: the governor, the clock source, each app thread's cores and priority."""
-        write(self.app, "active\n")
-        r = self.root
-        write(f"{r}/sys/devices/system/cpu/online", "0-3\n")
-        write(f"{r}/sys/devices/system/cpu/isolated", "2-3\n")
-        write(f"{r}/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "interactive\n")
-        write(f"{r}/sys/devices/system/clocksource/clocksource0/current_clocksource", "arch_sys_counter\n")
-        write(f"{r}/proc/900/comm", "mpfree\n")
-        fields = " ".join(["S"] + ["0"] * 35 + ["1", "70", "1"] + ["0"] * 10)
-        for tid, name, cpus in (("900", "mpfree", "0-1"), ("903", "mpfree-screen", "0-1")):
-            write(f"{r}/proc/900/task/{tid}/comm", name + "\n")
-            write(f"{r}/proc/900/task/{tid}/stat", f"{tid} ({name}) {fields}\n")
-            write(f"{r}/proc/900/task/{tid}/status", f"Name:\t{name}\nCpus_allowed_list:\t{cpus}\n")
-        write(f"{r}/proc/stat", "cpu  10 0 10 100 0 0 0 0 0 0\ncpu0 5 0 5 50 0 0 0 0 0 0\n")
-        write(f"{r}/proc/interrupts", "           CPU0       CPU1\n 61:         42          0  ili2117\n")
-        answers = "\n\n" + "\n\n\n" * 2 + "q\n"
-        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
-        out = res.stdout
-        for text in ("cores, clock and threads now (read-only):", "/sys/devices/system/cpu/isolated: 2-3",
-                     "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: interactive",
-                     "current_clocksource: arch_sys_counter", "app pid 900",
-                     "900 mpfree: allowed \t0-1 last_cpu=1 rt_priority=70 policy=1",
-                     "903 mpfree-screen: allowed \t0-1 last_cpu=1", "app processes: 1",
-                     "cpu0 5 0 5 50 0 0 0 0 0 0",
-                     "/sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_cur_freq: not there"):
-            self.assertIn(text, out)
-        self.assertEqual(out.count("cores, clock and threads now"), 1, "only after phase 2 so far")
-        self.assertNotIn(" 61:         42", out.split("cores, clock and threads now")[1].split("Phase 3")[0])
-        with open(self.report) as fh:
-            self.assertIn("|  61:         42          0  ili2117", fh.read())
+        self.assertNotIn("plane[80]", out, "80 debugfs lines at most")
 
     def test_app_step_summary_reads_the_whole_session(self):
-        """Every phase skipped: the summary still shows the whole run, the touch interrupts and the status."""
+        """No checks: the start-up and the summary still show the whole run, the touch interrupts and the status."""
         write(self.app, "active\n")
         write(f"{self.root}/proc/interrupts", " 61:        42          0  rockchip_gpio_irq   6 Edge      ili2117\n")
         self.add_journal([(10.5, "mpfree[211]: touchscreen: /dev/input/event0 (ILI2117 Touchscreen); read-only, not grabbed"),
@@ -795,11 +857,10 @@ class AppTests(unittest.TestCase):
                           (40.0, "mpfree[211]: touch-lab: step=taps result=pass downs=5 note=ok"),
                           (45.0, "mpfree[211]: touch-calibrate: result=match"),
                           (60.0, "mpfree[211]: status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us")])
-        answers = "\n\n" + "s\n" * 12
-        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
+        res = self.run_helper("", MPFREE_APP_STEPS="app", FAKE_SPLASH="1")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
-        for text in ("touch interrupts at the start: 61: 42 0 rockchip_gpio_irq 6 Edge ili2117",
+        for text in ("startup screen: inactive, result success",
                      "    saved settings: pad curve Hard, screen velocity 100, latch replace, audio buffer 3 periods, "
                      "developer tools on",
                      "    saving: settings and found buttons are kept in /run/mpfree-data",
@@ -815,7 +876,8 @@ class AppTests(unittest.TestCase):
                      "touch interrupts now: 61: 42 0 rockchip_gpio_irq 6 Edge ili2117",
                      "    status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us"):
             self.assertIn(text, out)
-        self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")], [])
+        self.assertEqual([l for l in self.log_lines("systemctl: ")
+                          if not l.startswith(("is-active ", "show -p "))], [])
 
     def make_acva(self):
         """The ACVA card's procfs files as the MPC shows them while nothing records, and a card before it."""
@@ -888,12 +950,12 @@ class AppTests(unittest.TestCase):
 
     def test_app_step_when_the_app_is_not_running(self):
         self.add_journal([(7.0, "mpfree[211]: STOP: no sound card called ACVA after 30 s")])
-        res = self.run_helper("\nit showed an error\n", MPFREE_APP_STEPS="app")
+        res = self.run_helper("", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="transport")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("pad player (mpfree-test-app.service): inactive", res.stdout)
-        self.assertIn("STOP: no sound card called ACVA after 30 s", res.stdout)
-        self.assertIn("The pad player is not running, so the other phases are left out.", res.stdout)
-        self.assertNotIn("Phase 1", res.stdout)
+        self.assertIn("    STOP: no sound card called ACVA after 30 s", res.stdout)
+        self.assertIn("The pad player is not running, so no check runs.", res.stdout)
+        self.assertNotIn("Check 1", res.stdout)
 
     def test_other_steps_stop_the_app_and_start_it_again(self):
         write(self.app, "active\n")
