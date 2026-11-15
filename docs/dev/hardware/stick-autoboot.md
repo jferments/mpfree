@@ -1,6 +1,6 @@
 # Starting MPFree from the stick at power-on
 
-**As of 2026-11-15 (soft-reboot hook)** · **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed on the eMMC (kernel `6.18.44-az01-2026-08-10-rt6`), developer mode on.
+**As of 2026-11-15 (soft-reboot hook; `--app-user` added, not yet tried on the MPC)** · **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed on the eMMC (kernel `6.18.44-az01-2026-08-10-rt6`), developer mode on.
 
 ## The goal
 
@@ -265,10 +265,49 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 **Passes when** the MPC went from the logo to MPFree with no tap and Akai's app never drew, and the stick's `dmesg.txt` shows `mpfree-internal-off: switched off ff0f0000...` before any `sd`/`mmc` mount. Nothing else may read the eMMC or SD card before `mpfree-internal-off: done`: no `no-reserved-blocks` unit and no `Buffer I/O error` on `mmcblk`. The boot maps before and after must have the same boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1.
 
+## The pad player without root (`--app-user`, opt-in)
+
+Until now the stick ran the pad player as root, with every capability. That matters after a soft-reboot, because the switch-off service unbinds the eMMC and SD controllers but cannot stop a root program from binding them again (one write to the driver's `bind` file), and the pad player runs code and files from elsewhere: CLAP plugins (`mpfree-clap`) and the samples, kits and projects musicians share. `offline-kexec-stick.py --app-user` (with `--app`) runs it as an ordinary user instead. **It is opt-in: a build without it is the same stick as before**, and going back is a rebuild without the flag.
+
+What `--app-user` changes on the stick, and nothing else:
+- `mpfree` (uid and gid 960, fixed so partition 4's files keep their owner from build to build) is added to `/etc/passwd` and `/etc/group`. It has no password (no shadow line) and no shell. It joins `audio`, `video` and `input`, the groups the standard udev rules give `/dev/snd/*`, `/dev/fb0` and `/dev/input/event*`, and `systemd-journal` where the image has it, for the Console page. The build stops if the image lacks any of the first three, or already uses the name or the id.
+- `mpfree-test-storage.service` runs `/etc/mpfree-test/storage.sh` once, as root, before the pad player: the mounts `start-app.sh` used to make (partition 3 read-only, partition 4 read-write, the online grow), then `find /run/mpfree-data -xdev ! -user 960 -exec chown -h 960:960 {} \;` so partition 4's files become `mpfree`'s, and `chgrp`/`chmod g+w` on the framebuffer's sysfs `pan` file (RAM only), which the pad player writes to show the screen. It runs before the pad player and not on its restarts, so no `mpfree` process can change those folders while they are walked. A step that fails is noted in the kernel log and the pad player starts without it, as before; it never fails the boot.
+- `mpfree-test-app.service` keeps its name, its crash restarts and its fall-back to the log display. It now has `User=mpfree`, an empty `CapabilityBoundingSet=` and `AmbientCapabilities=`, `NoNewPrivileges=yes`, `LimitRTPRIO=70` and `LimitMEMLOCK=infinity` (the pad player's only privileged calls are `SCHED_FIFO` up to 70 and `mlockall`, which these limits allow without root), and `RuntimeDirectory=mpfree-app` kept after it stops, so the log service still copies its report. `start-app.sh` only starts the program.
+
+Not changed: the switch-off service and its files (so `/boot/mpfree-softreboot/SHA256SUMS`, which the hook checks, lists the same files), the hook on the MPC, every mask and stub, SSH on port 2222 (still root, for recovery), the startup screen and log display (still root). Partition 4 works with both builds: root reads and writes `mpfree`'s files, and the next `--app-user` boot hands back anything root made.
+
+The `--app` step's read-only check (`MPFREE_APP_STEPS=app`) now prints `privileges:` lines for either build: the pad player's `Uid`, `Groups`, `CapEff`, `CapBnd`, `NoNewPrivs` and its real-time and locked-memory limits; the owner and mode of `/dev/fb0`, `/dev/snd/*`, `/dev/input/event*`, the `pan` file and the eMMC driver's `bind` file; and the `audio`, `video`, `input`, `systemd-journal` and `mpfree` lines of `/etc/group`.
+
+Not tried on the MPC yet. The groups the device nodes get come from the udev rules in Akai's image; block 5.1 reads them first. Sandbox options that need kernel features (`ProtectSystem=`, `PrivateDevices=`, `DevicePolicy=`) are left for a later round, each checked against Akai's kernel configuration first.
+
+### Blocks for the owner
+
+**Block 5.1: who owns the devices today** (**read-only**; on the MPC running MPFree from the current stick, built without `--app-user`). It reads the state at power-on and then waits at the first phase: press `q` there.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin claude/project-thread-ggg3tr:refs/remotes/origin/claude/project-thread-ggg3tr && git switch --no-track -C app-user origin/claude/project-thread-ggg3tr && git log --oneline -1 && python3 tools/mpc-one/results.py run privileges-before -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app bash tools/mpc-one/collect-over-ssh.sh --app ; python3 tools/mpc-one/results.py zip
+```
+
+Expected: `privileges: pid … Uid:	0 …` (root, as built today), and `/dev/fb0`, `/dev/snd/*` and `/dev/input/event*` with the gids of `video`, `audio` and `input` in the `privileges: group …` lines. If a node belongs to another group, or to root alone, stop here and send the zip: the pad player as `mpfree` could not open it.
+
+**Block 5.2: build the `--app-user` stick** (workstation only; nothing contacts the MPC). The same as block 4.1 with `--app-user` added. The report must say `pad player user: mpfree (--app-user)` and `mpfree is in the groups: audio video input systemd-journal`.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app' && python3 tools/mpc-one/results.py run build-stick-app-user -- python3 tools/mpc-one/offline-kexec-stick.py --splash rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-startup --app rust/target/armv7-unknown-linux-gnueabihf/release/mpfree --app-user
+```
+
+**Block 5.3: write the stick** (**state-changing, the stick only**): block 4.2 as it is; it writes the newest build, this one. Partition 4 stays.
+
+**Step 5.4: the power-on** (**state-changing**, as step 4.4; the hook on the MPC is the same and is not reinstalled). Expected: the same as step 4.4, the logo, the startup screen, the pad player, and pads that play. Then run block 5.1's command again, as `privileges-after` instead of `privileges-before`. **Passes when** the pad player plays and the lines say `Uid:	960`, `CapEff:	0000000000000000`, `NoNewPrivs:	1`, `Max realtime priority 70` and `Max locked memory unlimited`. The pad player's own report (`/run/mpfree-app/report.txt`, which the stick's logs copy) must say `SCHED_FIFO priority 70` and `memory locked (mlockall)`, not `failed`. Saved settings must come back after a second power-on. Then the pad-to-sound latency and underrun counts should match the round before (8.7 ms average, no underruns).
+- If the screen shows the log display instead of the pad player, it could not start as `mpfree`: the log display shows why. SSH on port 2222 works as before.
+
+**Undo, always** (the stick only): build without `--app-user` (block 4.1's command) and write the stick (block 4.2). Partition 4 stays and works as before. The MPC itself is never changed by this round.
+
 ## Next steps
 
 1. The runtime-kexec route is closed on 3.10.1: LoadPin, enforcing and pinned to the dm-verity root, refuses the stick's `kexec_load` (`kexec-image old-api-denied`; preflight zip 082152Z). IPE is absent and lockdown is off.
 2. The owner chose soft-reboot. Step 4 works: the second power-on went from the MPC logo to MPFree with no tap (zip 092220Z). Next: rebuild and rewrite the stick with the `no-reserved-blocks@` mask (blocks 4.1 and 4.2), install the hook again (block 4.3, for the corrected check), and power on with the SD card in (4.4 and 4.5). That run passes when nothing reads the card before the switch-off is done, and the build report lists no other unit that is NOT masked and could touch a disk.
 3. The **bootloader-level** route (U-Boot booting MPFree directly, or a kernel command-line word that lifts LoadPin) stays behind the [safety rule](../../agents/README.md): proven MaskROM recovery and the owner's go. Not started.
 4. The hook needs installing once on each MPC. Whether a one-time tap at install is acceptable is the owner's decision; the owner rejected a tap at every power-on.
-5. After any Akai update, rebuild the stick from a fresh `--kexec-preflight`. Its `release` must match the running kernel, or the hook refuses the stick and Akai's system starts.
+5. The pad player without root (`--app-user`, opt-in) is built and tested offline; blocks 5.1 to 5.4 try it on the MPC.
+6. After any Akai update, rebuild the stick from a fresh `--kexec-preflight`. Its `release` must match the running kernel, or the hook refuses the stick and Akai's system starts.
