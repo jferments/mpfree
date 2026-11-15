@@ -37,7 +37,7 @@ A systemd 255 soft-reboot loads no kernel. It stops all units, pivots into a new
 | MPFree under Akai's init (chroot or namespace) | Fallback | Akai's systemd stays PID 1 and its units can still write `/data`. |
 | **systemd soft-reboot** | **Chosen, works** | No kernel load, Akai's userspace fully stopped, MPFree's systemd as PID 1. |
 
-How the routes compare, including a chain to our own kernel and what each means for external hardware drivers, is in [Boot routes](boot-routes.md).
+These routes were reviewed again on 2026-11-15 against two outside proposals: `kexec_file` of Akai's kernel (or MPFree's programs under Akai's kernel with no kexec at all), and keeping Akai's systemd as PID 1 with MPFree sandboxed under it, the design in [the reversible handoff](../research/reversible-handoff.md). Neither changed which route is chosen; the first is the opt-in `kexec_file` row above. The second added one piece: the pad player running without root (`--app-user`, [below](#the-stick)). How the routes compare, including a chain to our own kernel and what each means for external hardware drivers, is in [Boot routes](boot-routes.md).
 
 The price is that the internal storage is no longer hidden by a device tree, so the stick must switch it off itself, and that LoadPin refuses every module and firmware load after the switch ([below](#what-survives-the-soft-reboot)).
 
@@ -128,7 +128,7 @@ What the builder changes in the copy, for this route:
 - **stubs** Akai's update, flashing, U-Boot-environment and kexec programs with a program that refuses and logs (a `--chain` stick keeps Akai's `kexec`, which its chain needs; kexec is turned off again right after);
 - makes `/data` a RAM disk, so Akai's `/etc` and `/var` overlays live in RAM;
 - adds key-only SSH on port 2222, the log service, the startup screen and the pad player;
-- only with `--app-user` (opt-in; passed its first power-on on 2026-11-15): runs the pad player as the `mpfree` user with no capabilities instead of root, after a root `mpfree-test-storage.service` mounts its partitions ([details](stick-autoboot.md#the-pad-player-without-root---app-user-opt-in)). Without the flag it runs as root, as before;
+- only with `--app-user` (opt-in, merged in #372; passed its first power-on on 2026-11-15): runs the pad player as the `mpfree` user with no capabilities instead of root, after a root `mpfree-test-storage.service` mounts its partitions ([details](stick-autoboot.md#the-pad-player-without-root---app-user-opt-in)). Without the flag it runs as root, as before;
 - adds the switch-off service and its udev rule (next section);
 - writes `/boot/mpfree-softreboot/`: `PROTOCOL`, `release` (the kernel release the system was built for), optional `preload-modules.txt` (`--preload-module NAME`) and `SHA256SUMS` over those and the switch-off service's three files;
 - prints a build report that lists every unit Akai's udev rules start when a device appears, each marked masked or **NOT masked**.
@@ -183,7 +183,7 @@ The owner's sequence is blocks 4.1 to 4.5 of [the record](stick-autoboot.md#bloc
 - **No module or firmware loads after the switch.** Anything MPFree needs must be loaded in Akai's first 6 s or listed in `preload-modules.txt`.
 - **Inherited udev state.** Any Akai unit that a udev rule starts for a disk must be masked on the stick. Read the build report's udev list after every Akai update.
 - **The trigger depends on `cfg80211` loading early.** If a later firmware stops loading the Wi-Fi module at boot, only the udev backup is left; the canary can re-measure.
-- **Switched off, not hidden.** The internal storage's safety rests on the switch-off service running first and powering off on failure.
+- **Switched off, not hidden.** The internal storage's safety rests on the switch-off service running first and powering off on failure. A root program could bind the controllers again; with `--app-user` the pad player is not root and cannot.
 - **Installing needs developer mode and SSH once per MPC.** A musician cannot install the hook alone yet.
 - Not recorded yet: what the screen shows between the MPC logo and MPFree's startup screen.
 
