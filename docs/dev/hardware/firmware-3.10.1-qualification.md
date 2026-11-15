@@ -356,6 +356,12 @@ rm -r /data/mpfree-hook
 
 Every block was run word for word from a clone at `/home/jesse/code/mpfree-hardware-survey`, with `HOME=/home/jesse`. Stand-ins played the cable and the MPC: `ip`, `ping`, `ssh` and `ssh-keyscan` answered as a fake installed 3.10.1 with developer mode on. Its remote scripts ran under BusyBox against fake system files, and the boot hook's check and jump under dash, with stand-ins for `mount`, `umount`, `systemctl`, `systemd-run` and `modprobe`. The answers were typed in a terminal only after each question appeared.
 
+**Again after #372 and #374, at commit `7a3984ef`** (main `d58eb513` merged in), Q0 to Q10 word for word, this time as an ordinary user, as on the owner's workstation (earlier rounds ran as root):
+- **Q0** printed `LOCAL-CHECKS-OK` and built the three ARM programs (`Finished`, three hashes). Four tests that need root to make a device node or a loop mount said `skipped`, as they will on the workstation.
+- **Q6** printed `pad player user: root (no --app-user)`, the soft-reboot line, `modules the hook loads first: none` and `route: soft-reboot only (no --kexec-file)`, and no `--kexec-file:` or `--chain:` line.
+- **Q7b** replaced the earlier hook, stopped once with `MPFree's stick is not in the MPC`, then, with the stick in, said `already in place, unchanged`, `CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it` and `RESULT: the hook is installed, and the stick checks out.`
+- The power-on that falls through, **Q7c-report**, **Q10**, **Q7b-undo** and **Q2-undo** printed the same lines as the boot-hook round below. Q1, Q2, Q3, Q5 and Q7a too.
+
 **The boot-hook round, at commit `6bf62081`.** The fake MPC started with an earlier version of the hook installed an hour before.
 
 - **Q0 ran for real.** It fetched main and printed `LOCAL-CHECKS-OK`, with the boot hook's tests. The three ARM programs built (`Finished`, three hashes).
@@ -394,7 +400,7 @@ Every block was run word for word from a clone at `/home/jesse/code/mpfree-hardw
 - The app check's tests include a test build started by the boot hook (`started by: the boot hook's soft-reboot`).
 - The soft-reboot itself started MPFree on this MPC on 2026-11-15 ([second power-on](stick-autoboot.md#second-power-on-2026-11-15-zip-092220z-mpfree-started)).
 
-Later commits in the same pull request change only documentation.
+Later commits in the same pull request change only documentation, or merge `main`.
 
 ## After the round
 
