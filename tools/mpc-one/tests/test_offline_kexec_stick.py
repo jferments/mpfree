@@ -1956,7 +1956,10 @@ class PowerTests(unittest.TestCase):
                 self.assertFalse(os.path.exists(self.request), "the request is taken")
                 calls = self.calls()
                 self.assertEqual(calls[-1], f"systemctl: --no-block --job-mode=replace-irreversibly start {target}")
-                self.assertLess(calls.index("sync: "), len(calls) - 1, "synced first")
+                if not isinstance(shell, list):
+                    # BusyBox's sh runs its own sync applet, not the fake one, so only dash shows the call;
+                    # test_script_and_units checks the order in the script itself.
+                    self.assertLess(calls.index("sync: "), len(calls) - 1, "synced first")
                 with open(self.kmsg) as fh:
                     self.assertEqual(fh.read(), f"mpfree-test-power: the pad player asked for {word}\n")
                 with open(os.path.join(boot, "power.txt")) as fh:
@@ -2001,6 +2004,7 @@ class PowerTests(unittest.TestCase):
                           "echo \"$word\"", "logind"):
             self.assertNotIn(forbidden, code)
         self.assertEqual(code.count("systemctl"), 1)
+        self.assertLess(code.index("\nsync\n"), code.index("systemctl"), "synced before the shut down")
         unit = mod.POWER_UNIT
         self.assertIn("Type=oneshot\n", unit)
         self.assertNotIn("User=", unit)
