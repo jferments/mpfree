@@ -201,7 +201,7 @@ They show the screen, touch, pads, buttons, sound and partition 4 working after 
 - **Our reading, which the check shows:** after the soft-reboot `/` stays the stick's read-only partition 1, `/run` is Akai's tmpfs carried over and allows programs, and the stick's own sysctl file turns kexec off. If any of these is wrong, the check prints a `PROBLEM` line and stops before it reads anything else.
 - **If it says `the test build did not answer on port 2222`,** note what the screen shows. The pad player can still be played by hand. Go to Q10: the stick logs show the network state.
 
-**Q9 (optional): GPU page flips in the same boot.** The test build is running from Q7c, and Q8 is done. Nothing else in this round depends on Q9, so skip to Q10 if you'd rather not. These are the GPU thread's page-flip blocks, rehearsed by that thread word for word at this round's commit. Inside the round, G0 fetches nothing, so the GPU blocks use Q0's commit even if main moves during the round.
+**Q9 (optional): GPU page flips in the same boot.** The test build is running from Q7c, started at power-on by the boot hook's soft-reboot, and Q8 is done. Nothing else in this round depends on Q9, so skip to Q10 if you'd rather not. These are the GPU thread's page-flip blocks, rehearsed by that thread word for word at this round's commit. Inside the round, G0 fetches nothing, so the GPU blocks use Q0's commit even if main moves during the round.
 
 **Block G0: check the clone** (workstation only, read-only):
 
@@ -225,17 +225,17 @@ Expect `Finished` twice. The ARM benchmark and the workstation's `mpfree`, which
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run gpu-flip -- env MPFREE_ACCEPT_GPU_BENCH=YES python3 -I tools/mpc-one/host_gpu_mpc.py --flip
 ```
 
-It talks only to the test build: port 2222, with the stick's own host key.
+It talks only to the test build that the boot hook started at Q7c: port 2222, with the stick's own host key.
 
 What it changes, step by step:
-- **1:** workstation only. It checks the benchmark (ARM, the MPC's C library) and writes the sample pages (80 at `f2e36b7b`) into a new folder under `~/mpfree-work`.
-- **2:** read-only on the MPC. The test build's checks, then the GPU's render node and libraries, and who holds `/dev/dri`.
+- **1:** workstation only. It checks the benchmark (ARM, the MPC's C library) and writes the sample pages (80 at `b6160175`) into a new folder under `~/mpfree-work`.
+- **2:** read-only on the MPC. The test build's checks (they include `started by: the boot hook's soft-reboot …`), then the GPU's render node and libraries, and who holds `/dev/dri`. After the soft-reboot no driver can be loaded, so the GPU's must already be. If step 2 stops on `no /dev/dri/renderD*`, nothing was changed: go on to Q10 and tell the GPU thread (the likely fix is a stick built with `--preload-module panfrost`).
 - **3:** RAM. It copies the benchmark and the pages into `/run/mpfree-gpu` and checks their hashes. It stops the pad player (it prints `pad player: was active, now inactive`), and starts it again at the end, even on a failure or Ctrl-C.
 - **4 and 5:** these only read and compute; the screen keeps what it shows. Step 4 stops if Mesa answers with anything but the Mali (Panfrost).
 - **6:** writes each page to `/dev/fb0` as the app does, 1.5 s each. No display setting changes.
 - **7:** first a read-only check that no program has `/dev/dri/card*` open; if one does, it stops and the screen is not changed. Then the program draws the first page into a screen buffer and reads it back. If that isn't the expected picture, it stops before any change. Only then does it print `SCREEN CHANGES NOW`, take the display (DRM master) and point the lit CRTC at its own buffers, in the mode the screen already runs. No mode, timing, panel or stored setting changes.
 
-**Undo:** automatic. Before it exits, the program puts the CRTC back as it found it, showing the framebuffer's picture, and prints `flip: the screen is back as it was`. It does this on a normal end, on Ctrl-C, on a closed SSH session and on a failure. If the program is killed outright, the kernel gives the screen back to the framebuffer when the display's last file closes. Anything left after that is cleared by Q10's power-off (nothing is stored).
+**Undo:** automatic. Before it exits, the program puts the CRTC back as it found it, showing the framebuffer's picture, and prints `flip: the screen is back as it was`. It does this on a normal end, on Ctrl-C, on a closed SSH session and on a failure. If the program is killed outright, the kernel gives the screen back to the framebuffer when the display's last file closes. Anything left after that is cleared by Q10: switch off, take the stick out, wait 10 s, switch on (nothing is stored). With the hook installed, a power-cycle with the stick still in starts MPFree again.
 
 **If it fails partway:**
 - **Stopped before `SCREEN CHANGES NOW`:** the tool says "the screen was not changed" or "(before the screen changed)". Nothing on the display was touched. Go on to Q10.
@@ -245,7 +245,7 @@ What it changes, step by step:
 **Expected output (the lines that matter):**
 
 ```
-[2/7] ... CHECKS-OK ... GPU-OK
+[2/7] ... started by: the boot hook's soft-reboot (asked at N s after power-on) ... CHECKS-OK ... GPU-OK
 [3/7] ... copied the benchmark and 80 pages; every hash on the MPC matches
       pad player: was active, now inactive
 [4/7] gpu: Mali-T760 (Panfrost) ...
@@ -265,6 +265,8 @@ What it changes, step by step:
       pad player: active (started again)
 RESULT: the GPU benchmark ran (numbers above).
 ```
+
+If PR #368 has merged before Q0, two software lines are split further: step 6's `panel software` line (not listed above) reads `draw p50 ..., turn p50 ..., copy p50 ...; whole p50 ...`, and step 7's `flip software` line reads `draw p50 ..., turn p50 ..., copy into the screen buffer p50 ... (whole frame); whole p50 ...; CPU ... % of one core`. The GPU thread rehearses again at that commit.
 
 **What to watch, and to note in the zip's notes:**
 - In steps 6 and 7, is each page the right way up and not garbled?
@@ -381,7 +383,7 @@ Every block was run word for word from a clone at `/home/jesse/code/mpfree-hardw
 - Q1 stopped with `already holds a different key` and printed `ssh-keygen -R '10.42.0.141' -f /home/jesse/.ssh/known_hosts`.
 - After that line, Q1 recorded the new key, and Q7a passed.
 
-**Q9** was rehearsed by the GPU thread at `f2e36b7b` (and earlier at `209f5a15`) against the fake test build from `tools/mpc-one/tests/test_host_gpu_mpc.py`, with the pad player running as after Q8. G0 printed `## qual-3101`, the commit and `1`; G1 printed `Finished` twice. G2 ended both ways: with "the screen is back as it was" and exit code 0, and, for a flip that fails without saying so, with "The program did not say the screen is back. …" and exit code 1. Both times the pad player started again.
+**Q9** was rehearsed by the GPU thread at `b6160175` (earlier at `f2e36b7b` and `209f5a15`) against the fake test build from `tools/mpc-one/tests/test_host_gpu_mpc.py`, as after Q7c and Q8: the boot hook's marker `/run/mpfree-hook/soft-reboot` in place and the pad player running. G0 printed `## qual-3101`, the commit and `1`; G1 printed `Finished` twice. G2 step 2 printed `started by: the boot hook's soft-reboot (asked at 6.59 s after power-on)`, then `CHECKS-OK` and `GPU-OK`. G2 ended both ways: with "the screen is back as it was" and exit code 0, and, for a flip that fails without saying so, with "The program did not say the screen is back. …" and exit code 1. Both times the pad player started again.
 
 **Not run here,** because they need the MPC or a real stick: Q4, Q6-write, the power-on in Q7c that soft-reboots into MPFree, Q8 and the stick logs. Q0 runs their tools' own tests against fakes under BusyBox:
 - The backup test includes a mismatch on p6 only, with the lines Q4 quotes.
