@@ -84,7 +84,9 @@ Inputs, found automatically:
                     folder, or --image FILE
   boot-files        ~/mpfree-work/boot-files/<release>/ (from
                     offline-rootfs-survey.sh) for the image's kernel release
-                    and for the release running on the MPC
+                    and for the release running on the MPC (one folder
+                    when the MPC runs an installed 3.10.1, whose kernel
+                    is the one the test build boots)
   the running tree  live.dtb in the newest kexec-preflight-*/ folder (from
                     collect-over-ssh.sh --kexec-preflight)
   your public key   $MPC_KEY.pub (default /home/jesse/.ssh/mpc_one_autorun_ed25519.pub)
@@ -796,8 +798,11 @@ def running_release(pre, work, target_release):
             raise Stop("cannot tell which release the MPC runs: rerun collect-over-ssh.sh --kexec-preflight "
                        "(it records the release now)")
         release, how = others[0], "the only other boot-files release; the preflight predates release.txt"
-    if not SAFE.match(release) or release == target_release:
+    if not SAFE.match(release):
         raise Stop(f"unusable running release {release!r}")
+    if release == target_release:
+        # An installed 3.10.1 runs the same kernel the test build boots: its board file is the reference too.
+        how += "; the same kernel as the test build's"
     return release, how
 
 

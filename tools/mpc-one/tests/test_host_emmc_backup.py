@@ -302,6 +302,17 @@ class BackupTests(unittest.TestCase):
         self.assertIn("STOP: boot-critical storage differs", out)
         self.assertEqual(len(self.images(run_dir)), 3)
 
+    def test_after_a_firmware_update_only_the_rootfs_differs(self):
+        # The 3.10.1 qualification runbook (block Q4) quotes these lines: Akai's update rewrites p6 only.
+        baseline = self.mpc.baseline({"mmcblk0p6": "0" * 64})
+        rc, out, run_dir, _ = self.run_backup(baseline=baseline)
+        self.assertEqual(rc, 3, out)
+        self.assertIn("BACKUP VERIFIED", out)
+        self.assertIn("BASELINE MISMATCH (boot storage differs from the baseline, state TEST): mmcblk0p6\n", out)
+        self.assertIn("STOP: boot-critical storage differs from the baseline (state TEST): mmcblk0p6.", out)
+        self.assertIn("Right after a firmware update this is expected", out)
+        self.assertEqual(len(self.images(run_dir)), 3)
+
     def test_preflight_runs_under_busybox_and_reads_geometry(self):
         env = dict(os.environ, MPFREE_TEST_ROOT=self.mpc.root, PATH=self.bb)
         with open(PREFLIGHT, "rb") as fh:
