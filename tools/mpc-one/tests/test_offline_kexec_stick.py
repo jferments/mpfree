@@ -249,6 +249,7 @@ class KexecStickTests(unittest.TestCase):
         self.assertNotIn("acva-c.dtb", res.stdout, "the -c board file must not be picked")
         self.assertNotIn(SERIAL, res.stdout)
         self.assertNotIn("FAKE-EMMC-UUID", res.stdout)
+        self.assertIn("  route: soft-reboot only (no --kexec-file)", res.stdout)
 
         tree = dtb.load(os.path.join(out, "kexec.dtb"))
         self.assertEqual(tree.find("/dwmmc@ff0f0000").prop("status"), dt_strings("disabled"))
@@ -374,8 +375,9 @@ class KexecStickTests(unittest.TestCase):
         self.assertEqual(sums, "".join(f"{sha(os.path.join(out, n))}  {n}\n" for n in ("zImage", "kexec.dtb", "cmdline.txt")))
         self.check_softreboot_files(root_img, NEW)
 
-    def check_softreboot_files(self, root_img, release, modules=()):
-        """/boot/mpfree-softreboot and the service that switches the eMMC and SD card off, as the hook checks them."""
+    def check_softreboot_files(self, root_img, release, modules=(), kexec_file=None):
+        """/boot/mpfree-softreboot and the service that switches the eMMC and SD card off, as the hook checks them.
+        With `kexec_file` (the command line), the three files of --kexec-file too; without, none of them."""
         mod = stick_module()
         self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/PROTOCOL"), "mpfree-softreboot-1\n")
         self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/release"), release + "\n")
@@ -388,6 +390,15 @@ class KexecStickTests(unittest.TestCase):
             listed.append("/boot/mpfree-softreboot/preload-modules.txt")
         else:
             self.assertIn("File not found", self.dfs(root_img, "stat /boot/mpfree-softreboot/preload-modules.txt"))
+        if kexec_file:
+            self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/jump"), "kexec-file\n")
+            self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/cmdline"), kexec_file + "\n")
+            self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/kernel.sha256"),
+                             f"{hashlib.sha256(ZIMAGE).hexdigest()}  /boot/zImage-{release}\n")
+            listed += [f"/boot/mpfree-softreboot/{n}" for n in ("jump", "cmdline", "kernel.sha256")]
+        else:
+            for name in ("jump", "cmdline", "kernel.sha256"):
+                self.assertIn("File not found", self.dfs(root_img, f"stat /boot/mpfree-softreboot/{name}"))
         want = ""
         for path in listed:
             copy = os.path.join(self.tmp, "softreboot-copy")
@@ -433,6 +444,37 @@ class KexecStickTests(unittest.TestCase):
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn("STOP: --preload-module", res.stdout)
             self.assertEqual(self.outputs(), [])
+
+    def test_kexec_file_route_is_opt_in(self):
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new())
+        res = self.build("--kexec-file", "--loadpin-off")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        with open(os.path.join(out, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()
+        self.assertNotIn("loadpin", cmdline, "the kexec test boot's own command line is unchanged")
+        self.assertIn(f"  its command line: {cmdline} loadpin.enforce=0", res.stdout)
+        self.assertIn("--kexec-file: /boot/mpfree-softreboot/jump asks the hook to restart into Akai's own kernel",
+                      res.stdout)
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(out, "stick.img"), 1, root_img)
+        self.check_softreboot_files(root_img, NEW, kexec_file=cmdline + " loadpin.enforce=0")
+        shutil.rmtree(out)
+        res = self.build("--kexec-file")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [folder] = self.outputs()
+        with open(os.path.join(self.work, folder, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()   # a new stick: a new partition UUID
+        self.assertIn(f"  its command line: {cmdline}\n", res.stdout)
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.check_softreboot_files(root_img, NEW, kexec_file=cmdline)
+        shutil.rmtree(os.path.join(self.work, folder))
+        res = self.build("--loadpin-off")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("STOP: --loadpin-off goes with --kexec-file", res.stdout)
+        self.assertEqual(self.outputs(), [])
 
     def test_same_release_installed(self):
         """An installed 3.10.1 starting the 3.10.1 stick: the running tree is U-Boot's for the same release."""
