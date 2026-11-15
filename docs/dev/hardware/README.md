@@ -8,7 +8,9 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[MPC One bootloader](bootloader.md)** is the dedicated, detailed guide to the **RK3288 BootROM, Rockchip ID block, SRAM first stage, U-Boot, persistent environment, boot scripts and USB Fastboot**. It explains how the stages execute, where their images are stored, how U-Boot finds a kernel, which pre-Linux launch mechanisms appear usable for MPFree, and which recovery functions still need physical verification. This is the recommended reference for anyone implementing the installer or boot selector.
 
-**[Firmware 3.10.1 compatibility and developer access](firmware-3.10.1-compatibility.md)** describes the official Developer Panel, terminal/SSH, plugin SDK and the results and limits of the offline firmware comparison.
+**[Firmware 3.10.1 compatibility and developer access](firmware-3.10.1-compatibility.md)** describes the official developer mode (terminal, SSH and USB script runner), the plugin SDK and the results and limits of the offline firmware comparison.
+
+**[Trying firmware 3.10.1 from the USB stick](firmware-3.10.1-stick-test.md)** is the runbook for testing 3.10.1, and its developer mode, by kexec from the USB stick before installing it.
 
 **[Installer and recovery contract](installer-recovery-contract.md)** specifies the minimum evidence required for temporary kernel boots, persistent MPFree application installation, direct boot and boot-critical storage changes.
 

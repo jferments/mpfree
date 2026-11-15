@@ -12,6 +12,10 @@ on:
         description: Also run the control sweep and song workflows as ARM under qemu (about 30 minutes more)
         type: boolean
         default: false
+      soak:
+        description: Also run the soak (about 15 minutes of a runner)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -83,6 +87,7 @@ jobs:
           python3 tools/mpc-one/tests/test_offline_update_extract.py
           python3 tools/mpc-one/tests/test_offline_rk3288_rom.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_rootfs_survey.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_firmware_compare.py
           MPFREE_REQUIRE_DTC=1 python3 tools/mpc-one/tests/test_offline_dtb.py
           python3 tools/mpc-one/tests/test_offline_kexec_details.py
           MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
@@ -92,6 +97,8 @@ jobs:
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_check.py
+          python3 tools/mpc-one/tests/test_write_autorun_drive.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_bench_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_gpu_mpc.py
@@ -669,6 +676,53 @@ jobs:
           name: rust-lcov
           path: ${{ runner.temp }}/lcov.info
           retention-days: 7
+
+  soak:
+    name: The song for 2^21 periods without allocating (soak)
+    # About 101 minutes of sound through mpfree-bench's whole-song case, the
+    # counting allocator watching every block (performance review, 14 Nov,
+    # item 6; docs/dev/design/profiling.md, "The soak"). Only by hand, with
+    # the run's Soak box ticked: a quarter of an hour of a runner is too
+    # much for every PR or every merge, and the runners' job guard admits
+    # push, pull_request and workflow_dispatch, not a schedule. The times it
+    # prints are for reading: a shared VM is noisy.
+    if: github.event_name == 'workflow_dispatch' && inputs.soak
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      MPFREE_CARGO_TARGET_BUDGET_GIB: 15
+    steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
+      - uses: actions/checkout@v4
+      - name: Keep the Cargo target between runs (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          all="$RUNNER_WORKSPACE/cargo-target"
+          t="$all/soak"
+          mkdir -p "$t"
+          used=$(du -s -BG "$all" | cut -f1 | tr -d G)
+          if [ "$used" -gt "$MPFREE_CARGO_TARGET_BUDGET_GIB" ]; then
+            echo "Cargo targets hold ${used} GiB, over ${MPFREE_CARGO_TARGET_BUDGET_GIB}: starting soak afresh"
+            rm -rf "$t" && mkdir -p "$t"
+          fi
+          echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustc --version
+      - name: The song for 2^21 periods; fails on any allocation
+        shell: bash
+        run: |
+          set -o pipefail
+          { status=0; echo '```'
+            cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-bench -- --soak || status=$?
+            echo '```'; exit $status; } | tee -a "$GITHUB_STEP_SUMMARY"
 
   rust:
     name: Rust host parity and ARMv7 hard-float cross-build

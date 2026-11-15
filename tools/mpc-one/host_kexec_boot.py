@@ -21,6 +21,9 @@ MPC's network identity. It uses the newest ~/mpfree-work/kexec-stick-* folder
   7. Waits for SSH from the test build (only the build's own host key is
      accepted), then runs read-only checks there: the release, that no MMC
      device exists, that kexec is off, that / is the stick, that /data is RAM.
+     A build made with --akai-app (its report says "akai app: on") runs Akai's
+     app, so acvs.service is expected there and its state is printed; every
+     other masked unit must still be inactive.
 
 Nothing here writes to the eMMC, the U-Boot environment or the SD card, and
 the test build cannot see either controller. To go back: switch the MPC off
@@ -46,6 +49,9 @@ UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 RELEASE = re.compile(r"^[A-Za-z0-9._+-]+$")
 CMDLINE_CHARS = re.compile(r"^[A-Za-z0-9=._,:/ -]+$")
 NEEDED_ARGS = ("ro", "rootwait=60", "panic=10", "sysctl.kernel.kexec_load_disabled=1")
+AKAI_APP_MARK = "akai app: on (--akai-app)"   # offline-kexec-stick.py's line for a build that runs Akai's app
+MASKED = ("acvs", "touch-fw-update", "xmos-update", "az0x-webserver", "az01-script-runner", "az0x-data-mkfs",
+          "acvs-content-resize", "az01-usbsata-fixer")
 # Tests set this so the prompt can be answered without a terminal. The typed answer is still required.
 TESTING = os.environ.get("MPFREE_KEXEC_BOOT_TEST") == "1"
 
@@ -230,9 +236,9 @@ case "$line" in *" - tmpfs "*) ;; *) bad "/data is not a tmpfs" ;; esac
 say "system state: $(systemctl is-system-running 2>&1)"
 say "failed units:"
 systemctl --failed --no-legend --plain 2>&1 | sed 's/^/  /'
+@@AKAI@@
 say "masked Akai units that are active (there should be none):"
-for u in acvs touch-fw-update xmos-update az0x-webserver az01-script-runner az0x-data-mkfs \
-         acvs-content-resize az01-usbsata-fixer; do
+for u in @@MASKED@@; do
   s=$(systemctl is-active "$u.service" 2>/dev/null)
   if [ "$s" = active ]; then bad "$u.service is active"; fi
 done
@@ -312,7 +318,19 @@ def check_build(folder, out):
     if reasons:
         raise Stop("kexec.dtb must not be used: " + "; ".join(reasons))
     out.say("  kexec.dtb: for inmusic,acva, eMMC and SD card controllers disabled")
-    return {"new": new.group(1), "running": running.group(1), "cmdline": cmdline, "p1": roots[0]}
+    akai = AKAI_APP_MARK in report.splitlines()
+    if akai:
+        out.say("  this build runs Akai's app (made with --akai-app); every flashing program in it is a stub")
+    return {"new": new.group(1), "running": running.group(1), "cmdline": cmdline, "p1": roots[0], "akai": akai}
+
+
+def check_310(build):
+    """The test build's read-only check, for a build with or without Akai's app."""
+    akai = build.get("akai", False)
+    masked = [u for u in MASKED if not (akai and u == "acvs")]
+    line = ('say "Akai\'s app (acvs.service, expected in this build): $(systemctl is-active acvs.service 2>&1)"'
+            if akai else ":")
+    return fill(CHECK_310, NEW=build["new"], P1=build["p1"], MASKED=" ".join(masked), AKAI=line)
 
 
 class Mpc:
@@ -466,7 +484,10 @@ def main(argv):
 
         out.say("\n[5/7] Your go")
         out.say("  Typing BOOT 3.10 shuts 3.6 down and starts the test build from the stick.")
-        out.say("  The screen should show the test build's log within about 10 s of the jump (it has no MPC app).")
+        if build.get("akai"):
+            out.say("  The screen should show Akai's app starting within about a minute of the jump (this build runs it).")
+        else:
+            out.say("  The screen should show the test build's log within about 10 s of the jump (it has no MPC app).")
         out.say("  If it stays dark or frozen, keep waiting here: the stick still keeps the logs.")
         out.say(f"  Wait up to {int(args.wait)} s for it here. To go back at any time: switch the MPC off,")
         out.say("  take out the stick, wait 10 s, switch it on.")
@@ -515,7 +536,7 @@ def jump_and_check(mpc, out, args, build):
     mac = arp_mac(args.arp, args.ip, args.iface)
     note = "" if mac == args.expect_mac.lower() else " (not 3.6's; the host key still proves it is the test build)"
     out.say(f"  network identity: {mac or 'not in the ARP table'}{note}")
-    rc, text = mpc.run(fill(CHECK_310, NEW=build["new"], P1=build["p1"]), test=True)
+    rc, text = mpc.run(check_310(build), test=True)
     for line in text.splitlines():
         out.say(f"  {line}")
     ok = rc == 0 and text.strip().splitlines()[-1:] == ["CHECKS-OK"]

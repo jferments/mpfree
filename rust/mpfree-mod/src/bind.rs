@@ -31,6 +31,10 @@
 //! leaves Play's and Synth's knobs alone; [`Scope::EveryPage`] makes it
 //! global, as the macro banks are.
 //!
+//! **Parameters that move:** an insert switched to another engine with
+//! its mode has other parameter ids; [`Bindings::retarget`] moves every
+//! knob bound to one onto the control it went to, or unbinds it.
+//!
 //! Bindings save as `key = value` lines ([`Bindings::save`]) for
 //! `mpfree-store`'s "mod" settings.
 
@@ -112,6 +116,18 @@ impl QLinkCard {
     pub fn enabled(&self) -> bool {
         self.target.is_some()
     }
+}
+
+/// Where a parameter went when its owner changed engine
+/// ([`Bindings::retarget`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Moved {
+    /// Not one that moved: it stays as it is.
+    Stays,
+    /// To this parameter, described as its new owner has it.
+    To(ParamAddr, ParamInfo),
+    /// Nowhere: its owner has nothing like it now.
+    Gone,
 }
 
 /// Where a learned knob applies.
@@ -399,6 +415,53 @@ impl Bindings {
     }
     pub fn learning(&self) -> Option<ParamAddr> {
         self.learning.as_ref().map(|l| l.0)
+    }
+
+    /// Parameters moved to others (an insert switched to another engine
+    /// with its mode: `families::carried_id` says where each control
+    /// went). Every knob bound to one, in any bank, on any page or in any
+    /// set, follows it, keeping its range, colour and name; a knob whose
+    /// parameter went nowhere is unbound. An armed learn follows too, and
+    /// the values known follow their parameters.
+    pub fn retarget(&mut self, mut to: impl FnMut(ParamAddr) -> Moved) {
+        // A knob follows its parameter; false: unbind it.
+        let mut follow = |b: &mut Binding| match to(b.target) {
+            Moved::Stays => true,
+            Moved::To(addr, info) => {
+                b.target = addr;
+                b.info = info;
+                true
+            }
+            Moved::Gone => false,
+        };
+        for knob in self
+            .banks
+            .iter_mut()
+            .chain(self.sets.iter_mut())
+            .flat_map(|bank| bank.knobs.iter_mut())
+        {
+            if knob.as_mut().is_some_and(|b| !follow(b)) {
+                *knob = None;
+            }
+        }
+        self.scoped.retain(|_, b| follow(b));
+        if let Some((addr, info, ..)) = self.learning.as_mut() {
+            match to(*addr) {
+                Moved::Stays => {}
+                Moved::To(a, i) => (*addr, *info) = (a, i),
+                Moved::Gone => self.learning = None,
+            }
+        }
+        // Built afresh: one parameter may move to where another was.
+        self.values = self
+            .values
+            .drain()
+            .filter_map(|(addr, v)| match to(addr) {
+                Moved::Stays => Some((addr, v)),
+                Moved::To(a, info) => Some((a, info.clamp(v))),
+                Moved::Gone => None,
+            })
+            .collect();
     }
 
     /// Knob `k` turned by `detents` (clockwise positive); `fine` while
@@ -879,6 +942,69 @@ mod tests {
         assert_eq!(b.binding(3).map(|x| x.target), Some(addr(3)));
         assert!(b.learning().is_none());
         assert!(b.turn(3, 1, false).is_some());
+    }
+
+    #[test]
+    fn knobs_follow_their_parameters_to_a_new_engine() {
+        let names: Vec<String> = ["Wash"].map(String::from).to_vec();
+        let mut b = Bindings::with_macros(&names);
+        let mix = ParamInfo {
+            id: 3,
+            name: "Mix",
+            unit: Unit::Percent,
+            curve: Curve::Linear,
+            min: 0.0,
+            max: 100.0,
+            default: 30.0,
+            ..CUT
+        };
+        // Learned on the chain editor (this page only) and for every page,
+        // and a knob on a parameter the new engine has nothing like.
+        b.set_page("chain", "Room", Default::default());
+        b.bind_page(
+            "chain",
+            0,
+            1,
+            Binding {
+                from: 0.2,
+                to: 0.8,
+                ..Binding::new(addr(3), mix, "Mix")
+            },
+        );
+        b.bind(3, 0, Binding::new(addr(3), mix, "Mix"));
+        b.bind(3, 2, Binding::new(addr(4), MODE, "Mode"));
+        b.observe(addr(3), 40.0);
+        b.observe(addr(4), 2.0);
+        b.learn(addr(4), MODE, "Mode");
+        // Plate: Mix is its parameter 5 and goes to 120 %, Mode is gone,
+        // and its parameter 3 is something else.
+        let plate_mix = ParamInfo {
+            id: 5,
+            max: 120.0,
+            ..mix
+        };
+        b.retarget(|a| match a {
+            a if a == addr(3) => Moved::To(addr(5), plate_mix),
+            a if a == addr(4) => Moved::Gone,
+            _ => Moved::Stays,
+        });
+        let k = b.binding(1).unwrap();
+        assert_eq!(
+            (k.target, k.info.max, k.from, k.to),
+            (addr(5), 120.0, 0.2, 0.8)
+        );
+        assert_eq!(k.label, "Mix", "it keeps its name and range");
+        let every = b.banks()[3].knobs[0].as_ref().unwrap();
+        assert_eq!(every.target, addr(5));
+        assert!(b.banks()[3].knobs[2].is_none(), "Mode went nowhere");
+        assert_eq!(b.learning(), None, "nor does its learn");
+        assert_eq!((b.value(addr(5)), b.value(addr(3))), (Some(40.0), None));
+        assert_eq!(b.value(addr(4)), None);
+        let macro_knob = b.banks()[1].knobs[0].as_ref().unwrap();
+        assert_eq!(macro_knob.label, "Wash", "the macros stay");
+        // A turn moves the new parameter.
+        assert_eq!(b.turn(1, 1, false).map(|w| w.addr), Some(addr(5)));
+        assert!(b.save().contains(&format!("page.chain.0.1 = {} ", addr(5))));
     }
 
     #[test]

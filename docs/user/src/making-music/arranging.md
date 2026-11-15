@@ -39,10 +39,21 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song �
 - **Scenes → song** adds every row that has clips to the end of the song, one after another, with each scene's name above the bars where it starts.
 - **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song.
 - **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips.
-- Hold **SHIFT** and turn the wheel to scroll through the bars. Tap a block to select it.
+- Hold **SHIFT** and turn the wheel to scroll through the bars. Tap a block to select it. It is picked when you lift your finger, because you can also drag it.
 - Under each track's name is what it plays: **Kit**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).
 
-A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block.
+A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back.
+
+### Moving blocks and sections
+
+You can move the song around with your finger:
+
+- **Drag a block** to move it. Once your finger moves, it lifts and follows you, and its new place is outlined, with a tag saying the bar it starts on. It snaps to the bar. Drag it up or down to put it on another track's lane. There it plays that track's sound, and it gets its own copy of the clip (like **Make unique**), because the clip belongs to the first track. Hold **SHIFT** as you lift to drop a copy instead, linked to the same clip. Lift it where it started to leave it be. A block can't land on top of another one.
+- **Drag a picked block's end** to make it longer or shorter, a bar at a time. The picked block has a grip (two short bars) at its right end. Past the clip's end, the clip plays again from its top.
+- **Drag a section's name** on the ruler to move the whole section, every track, from its marker to the next one. A line shows where it will go. The sections close up behind it and make room for it, so nothing is written over. Hold **SHIFT** as you lift to put a copy there instead, such as a second verse. A block that runs across a section's edge is cut there, and each part still plays as it did. A section can't move while the song has morph moves recorded in it, because they would stay behind.
+- Hold a dragged block or section at the left or right edge and the bars scroll.
+- With the wheel: pick a block, push the wheel to grab it, turn to move it a beat at a time, and push again to let go. Tap a section's name to pick it, then push and turn to move it a section at a time.
+- **UNDO** takes back any of these, one at a time, and **SHIFT + UNDO** puts them back again.
 
 > [!MPC]
 > On the MPC, a song is a list of sequences played one after another. In MPFree, the song is a timeline of clips, and each track can leave the song to play a launched clip and come back.
