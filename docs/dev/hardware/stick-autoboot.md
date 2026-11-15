@@ -1,6 +1,6 @@
 # Starting MPFree from the stick at power-on
 
-**As of 2026-11-15 (soft-reboot hook, merged in #370; `--app-user` added, not yet tried on the MPC)** · **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed on the eMMC (kernel `6.18.44-az01-2026-08-10-rt6`), developer mode on.
+**As of 2026-11-15 (soft-reboot hook, merged in #370; `--app-user` passed its first power-on)** · **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed on the eMMC (kernel `6.18.44-az01-2026-08-10-rt6`), developer mode on.
 
 This page is the record: what was tried, in order, and what each run showed. For how the boot system works today, read [How MPFree boots from the stick on MPC OS 3.10.1](soft-reboot-boot.md) first.
 
@@ -280,7 +280,17 @@ Not changed: the switch-off service and its files (so `/boot/mpfree-softreboot/S
 
 The `--app` step's read-only check (`MPFREE_APP_STEPS=app`) now prints `privileges:` lines for either build: the pad player's `Uid`, `Groups`, `CapEff`, `CapBnd`, `NoNewPrivs` and its real-time and locked-memory limits; the owner and mode of `/dev/fb0`, `/dev/snd/*`, `/dev/input/event*`, the `pan` file and the eMMC driver's `bind` file; and the `audio`, `video`, `input`, `systemd-journal` and `mpfree` lines of `/etc/group`.
 
-Not tried on the MPC yet. The groups the device nodes get come from the udev rules in Akai's image; block 5.1 reads them first. Sandbox options that need kernel features (`ProtectSystem=`, `PrivateDevices=`, `DevicePolicy=`) are left for a later round, each checked against Akai's kernel configuration first.
+The groups the device nodes get come from the udev rules in Akai's image; block 5.1 reads them first. Sandbox options that need kernel features (`ProtectSystem=`, `PrivateDevices=`, `DevicePolicy=`) are left for a later round, each checked against Akai's kernel configuration first.
+
+### First power-on with `--app-user` (2026-11-15, zip 183259Z): passed
+
+The owner built the stick at 5ed11d59 with `--app-user` (report: `pad player user: mpfree (--app-user)`, `mpfree is in the groups: audio video input systemd-journal`), wrote it (partition 4 kept) and powered on with the hook unchanged. Block 5.1 was skipped; the after-check below shows what it would have.
+
+- The soft-reboot ran as before: the hook at 7.05 s, the eMMC off at 10.27 s and the SD card at 13.50 s, `done` at 14.02 s. The only failed unit is Akai's `az0x-loadpin-trustpoints`, as on every soft-reboot. `mpfree-test-storage.service` ended `active (exited)` with no `mpfree-test-storage:` warning in the kernel log, and `mpfree-test-app.service` ran.
+- **Privileges** (`privileges-after`): `Uid 960`, `Gid 960`, `Groups 19 29 44 960 996` (input, audio, video, mpfree, systemd-journal), `CapEff` and `CapBnd` all zero, `NoNewPrivs 1`, `Max realtime priority 70`, `Max locked memory unlimited`.
+- **Device nodes**: `/dev/fb0` `crw-rw----` gid 44 (video), every `/dev/snd/*` node gid 29 (audio), `/dev/input/event0` and `event1` gid 19 (input), all as the standard udev rules give. The `pan` file is `-rw-rw-r--` gid 960 (storage.sh's change). `dwmmc_rockchip/bind` stays `--w-------` root, which `mpfree` cannot write.
+- **The pad player's own report**: `memory locked (mlockall)`, `SCHED_FIFO priority 70`, `saving: settings and found buttons are kept in /run/mpfree-data`. **0 underruns in 82,683 periods**, and pad to sound 8.68 ms (9 hits, 8.67 to 8.68 ms), the same as the 8.7 ms of the root runs.
+- Not yet shown: that saved settings come back on a second power-on with `--app-user`. Writing the stick erased the log partition, so this zip holds one boot.
 
 ### Blocks for the owner
 
@@ -311,5 +321,5 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 2. The owner chose soft-reboot. Step 4 works: the second power-on went from the MPC logo to MPFree with no tap (zip 092220Z), and the hook, the stick builder and the owner tooling were merged into `main` on 2026-11-15 (#370). #364 and #369, the earlier stack, are superseded. Next: rebuild and rewrite the stick with the `no-reserved-blocks@` mask (blocks 4.1 and 4.2), install the hook again (block 4.3, for the corrected check), and power on with the SD card in (4.4 and 4.5). That run passes when nothing reads the card before the switch-off is done, and the build report lists no other unit that is NOT masked and could touch a disk.
 3. The **bootloader-level** route (U-Boot booting MPFree directly, or a kernel command-line word that lifts LoadPin) stays behind the [safety rule](../../agents/README.md): proven MaskROM recovery and the owner's go. Not started.
 4. The hook needs installing once on each MPC. Whether a one-time tap at install is acceptable is the owner's decision; the owner rejected a tap at every power-on.
-5. The pad player without root (`--app-user`, opt-in) is built and tested offline; blocks 5.1 to 5.4 try it on the MPC.
+5. The pad player without root (`--app-user`, opt-in) passed its first power-on (zip 183259Z): uid 960, no capabilities, real-time 70, no underruns. Left: a second power-on to show saved settings come back.
 6. After any Akai update, rebuild the stick from a fresh `--kexec-preflight`. Its `release` must match the running kernel, or the hook refuses the stick and Akai's system starts.
