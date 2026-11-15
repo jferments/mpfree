@@ -46,7 +46,7 @@ done
 
 section 'Kernel config symbols that matter for kexec'
 if [ -r /proc/config.gz ] && command -v zcat >/dev/null 2>&1; then
-  zcat /proc/config.gz | grep -E '^(# )?CONFIG_(KEXEC[A-Z_]*|SMP|NR_CPUS|HOTPLUG_CPU|HIGHMEM|VMSPLIT_[0-9A-Z_]+|ARM_ATAG_DTB_COMPAT|ARM_APPENDED_DTB|CMDLINE[A-Z_]*|SECURITY_LOADPIN[A-Z_]*|LSM|MODULE_SIG[A-Z_]*|STRICT_DEVMEM|IO_STRICT_DEVMEM|PROC_SYSCTL|BLK_DEV_INITRD|RD_[A-Z0-9]+|USB_STORAGE|BLK_DEV_SD|EXT4_FS)(=| is not set)' || :
+  zcat /proc/config.gz | grep -E '^(# )?CONFIG_(KEXEC[A-Z_]*|SMP|NR_CPUS|HOTPLUG_CPU|HIGHMEM|VMSPLIT_[0-9A-Z_]+|ARM_ATAG_DTB_COMPAT|ARM_APPENDED_DTB|CMDLINE[A-Z_]*|SECURITY_LOADPIN[A-Z_]*|SECURITY_LOCKDOWN[A-Z_]*|SECURITY_IPE[A-Z_]*|LSM|MODULE_SIG[A-Z_]*|STRICT_DEVMEM|IO_STRICT_DEVMEM|PROC_SYSCTL|BLK_DEV_INITRD|RD_[A-Z0-9]+|USB_STORAGE|BLK_DEV_SD|EXT4_FS)(=| is not set)' || :
 else
   printf '/proc/config.gz unavailable\n'
 fi
@@ -112,6 +112,53 @@ done
 
 section 'LoadPin'
 if [ -d /sys/kernel/security/loadpin ]; then ls /sys/kernel/security/loadpin; else printf 'no /sys/kernel/security/loadpin\n'; fi
+# The kernel's sysctl is kernel.loadpin.enforce (security/loadpin/loadpin.c). With enforce=1 LoadPin refuses
+# every raw kexec_load ("kexec-image old-api-denied"), whatever IPE says, and on a read-only (dm-verity)
+# pinned root the sysctl cannot be lowered at runtime; only loadpin.enforce=0 or loadpin.exclude=kexec-image
+# on the kernel command line lift it. kexec_file_load is allowed only from the pinned or a trusted verity
+# filesystem. The older name (enabled) is read too, in case a vendor kernel used it.
+show /proc/sys/kernel/loadpin/enforce
 show /proc/sys/kernel/loadpin/enabled
+printf 'command-line words for LoadPin, IPE, lockdown and the LSM list: %s\n' \
+  "$(tr ' ' '\n' < /proc/cmdline 2>/dev/null | grep -E '^(loadpin|ipe|lockdown|lsm|security)[.=]' | tr '\n' ' ')"
+
+# What can refuse loading a kernel at runtime (so the owner knows before any install whether an unsigned
+# kexec will be accepted). A kexec_load that returns "Operation not permitted" with kexec_load_disabled=0
+# and root means one of these refused it, not the tool. Reads only: small sysfs files and the kernel log.
+section 'Kexec gate (what can refuse loading a kernel)'
+show /sys/kernel/security/lockdown
+if [ -d /sys/kernel/security/ipe ]; then
+  printf 'IPE (Integrity Policy Enforcement) is present\n'
+  show /sys/kernel/security/ipe/active_policy
+  show /sys/kernel/security/ipe/enforce
+  if [ -d /sys/kernel/security/ipe/policies ]; then
+    for p in /sys/kernel/security/ipe/policies/*; do
+      [ -d "$p" ] || continue
+      act=$(cat "$p/active" 2>/dev/null)
+      printf 'policy %s: active=%s version=%s\n' "${p##*/}" "$act" "$(cat "$p/version" 2>/dev/null)"
+      # The active policy's rules say which sources (dm-verity, fs-verity, a signed boot kernel) each
+      # kernel operation trusts. Reading it says whether a signed kexec from a file could be accepted where
+      # the raw-buffer load is refused. Rules only; no values that identify the unit. Bounded read.
+      if [ "$act" = 1 ] && [ -r "$p/policy" ]; then
+        printf -- '--- active IPE policy (first 8 KiB; KEXEC lines matter) ---\n'
+        dd if="$p/policy" bs=8192 count=1 2>/dev/null | tr -cd '\11\12\15\40-\176'
+        printf -- '\n--- end policy ---\n'
+      fi
+    done
+  fi
+else
+  printf 'no /sys/kernel/security/ipe\n'
+fi
+printf 'kernel log, kexec/lockdown/ipe/loadpin lines:\n'
+dmesg 2>/dev/null | grep -iE 'ipe:|lockdown|kexec|loadpin' | tail -n 30 || printf '(none)\n'
+
+# systemd 254 and later can restart all of userspace into another root on the SAME running kernel,
+# loading no kernel at all (so the LoadPin refusal above does not apply to it). The systemd version is
+# reported in the systemd section above; 254 and later provide it. Here we only read whether a next root
+# is staged right now (it should not be). This reads one path and runs nothing; the feature's own name is
+# a word the static no-write scanner forbids on an executable line, so it is written only in these
+# comments, not built up or hidden in code.
+section 'Next root staged for a userspace-only restart (should be none)'
+[ -e /run/nextroot ] && printf '/run/nextroot: exists (a next root is staged)\n' || printf '/run/nextroot: absent (nothing staged)\n'
 
 printf '\nEND OF KEXEC PREFLIGHT\n'

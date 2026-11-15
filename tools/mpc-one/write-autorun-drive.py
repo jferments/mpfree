@@ -9,26 +9,28 @@ script itself (AUTORUN below) only writes one line to the MPC's kernel log
 and one file, mpfree-autorun-result.txt, next to itself on the drive (or in
 /run, the MPC's RAM, if the drive is read-only). It changes nothing else.
 
-It never contacts the MPC, never formats or mounts anything and never asks you
-to type a device name: it looks for the one filesystem that is
-  - on a USB disk (/dev/sd*, a partition or the whole disk), mounted on this
-    workstation, FAT32 or exFAT,
+It never contacts the MPC, never formats anything and never asks you to type
+a device name: it looks for the one filesystem that is
+  - on a USB disk (/dev/sd*, a partition or the whole disk), FAT32 or exFAT,
   - not on the MPFree test stick (no partition named mpfree-test-*),
-and it stops if there is none or more than one. When there is none, it lists
-the USB disks it sees with nothing mounted and what is on them (from udev's
-records), and says what to do: open a FAT32 stick in the file manager so it
-is mounted, or format a blank stick as FAT first. It shows the drive and adds
+and it stops if there is none or more than one. It uses one that this
+workstation has mounted; if none is mounted, it mounts the one FAT32 or exFAT
+filesystem on a USB disk that nothing of is mounted, the way the file manager
+does when you click the drive (udisksctl mount, as you, no password), and
+says so. When there is nothing it can use, it lists the USB disks it sees
+with nothing mounted and what is on them (from udev's records), and says what
+to do, such as format a blank stick as FAT first. It shows the drive and adds
 the files only after you type WRITE. It writes autorun.sh (and removes an
 mpfree-autorun-result.txt from an earlier run of this script); it stops
 without writing if the drive holds an autorun.sh or result file that this
-tool did not write. It then reads autorun.sh back and compares it.
+tool did not write. It then reads autorun.sh back and compares it, and
+unmounts the drive (udisksctl unmount) so that it can be pulled out.
 
 Undo: delete autorun.sh (and mpfree-autorun-result.txt) from the drive.
 
-Use: plug in one spare FAT32 or exFAT USB drive and let the desktop mount it,
-then
+Use: plug in one spare FAT32 or exFAT USB drive, then
   python3 tools/mpc-one/write-autorun-drive.py
-Eject the drive, and plug it into the MPC only while the 3.10.1 test build
+Pull the drive out once it says it is unmounted, and plug it into the MPC only while the 3.10.1 test build
 runs with developer mode on. The MPC has one USB-A port and the test stick
 must stay in it (the test build runs from it), so this needs a USB hub that
 holds the test stick from power-on (phase 3 of
@@ -36,6 +38,8 @@ docs/dev/hardware/firmware-3.10.1-stick-test.md).
 """
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 TEST_ROOT = os.environ.get("MPFREE_TEST_ROOT", "")
@@ -46,6 +50,9 @@ RESULT = "mpfree-autorun-result.txt"
 MARK = "# MPFree autorun test (write-autorun-drive.py)"
 RESULT_MARK = "mpfree-autorun result"
 CONFIRM = "WRITE"
+# udisksctl mounts and unmounts a removable drive as the logged-in user, like the file manager.
+# Tests use the one in the fake root only, never the workstation's.
+UDISKSCTL = (TEST_ROOT + "/usr/bin/udisksctl") if TEST_ROOT else shutil.which("udisksctl")
 
 AUTORUN = f"""#!/bin/sh
 {MARK}
@@ -64,7 +71,7 @@ out="$here/{RESULT}"
   echo "script: $0"
   echo "arguments: $*"
   echo "working folder: $(pwd)"
-  echo "parent: $(tr '\\0' ' ' < /proc/$PPID/cmdline | head -c 300)"
+  echo "parent: $(tr '\\0\\n' '  ' < /proc/$PPID/cmdline | cut -c1-300)"
   echo "cgroup: $(cat /proc/self/cgroup)"
   echo "PATH: $PATH"
   echo "drives:"
@@ -187,8 +194,9 @@ def no_drive_hint(disks):
     fat = [d for d in disks if any(fs in FILESYSTEMS for _, fs, _ in d[2])]
     blank = [d for d in disks if not any(fs for _, fs, _ in d[2])]
     if fat:
-        return ("a USB drive with FAT32 or exFAT is plugged in but not mounted: open it in the file manager "
-                "(click it in the side bar) so the desktop mounts it, then run this again")
+        return ("a USB drive with FAT32 or exFAT is plugged in but not mounted, and this could not mount it: "
+                "open it in the file manager (click it in the side bar) so the desktop mounts it, then run this "
+                "again")
     if blank:
         return ("the USB drive has no filesystem yet, so the desktop cannot mount it. Format it as "
                 "FAT first (this erases it): in the Disks app, pick that drive on the left, then the drive "
@@ -215,34 +223,62 @@ def ask(prompt):
         return ""
 
 
-def main():
-    print("Harmless autorun.sh for the 3.10.1 developer mode test (workstation only, no MPC contact)")
-    print("Mounted drives seen (/dev/sd*):")
-    candidates = []
-    found = drives()
-    for info, reasons in found:
-        print(f"  /dev/{info['name']} on {info['mount']}: {info['vendor']} {info['model']}, {info['fs']}, "
-              f"{info['size'] / 1e9:.1f} GB")
-        print("      " + ("CAN be used" if not reasons else "not used: " + "; ".join(reasons)))
-        if not reasons:
-            candidates.append(info)
-    if not found:
+def udisks(verb, node):
+    """udisksctl mount or unmount of /dev/<node>, as this user and without a password prompt: (worked, message)."""
+    if not UDISKSCTL or not os.access(UDISKSCTL, os.X_OK):
+        return False, "udisksctl is not installed"
+    try:
+        res = subprocess.run([UDISKSCTL, verb, "--no-user-interaction", "-b", f"/dev/{node}"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as err:
+        return False, str(err)
+    return res.returncode == 0, res.stdout.strip()
+
+
+def show(info, reasons):
+    print(f"  /dev/{info['name']} on {info['mount']}: {info['vendor']} {info['model']}, {info['fs']}, "
+          f"{info['size'] / 1e9:.1f} GB")
+    print("      " + ("CAN be used" if not reasons else "not used: " + "; ".join(reasons)))
+
+
+def mount_spare():
+    """No usable drive is mounted: mount the one FAT32 or exFAT filesystem on a USB disk with nothing mounted
+    (never the test stick), the way the file manager does, and return the mounted drive's facts."""
+    disks = unmounted_usb_disks(drives())
+    print("USB disks with nothing mounted (what udev says is on them):")
+    for disk, desc, held in disks:
+        print(f"  /dev/{disk}: {desc}")
+        for node, fs, label in held or ():
+            print(f"      /dev/{node}: {fs or 'no filesystem'}" + (f", label {label}" if label else ""))
+        if held == []:
+            print("      no partitions and no filesystem (blank)")
+    if not disks:
         print("  (none)")
-    if not candidates:
-        disks = unmounted_usb_disks(found)
-        print("USB disks with nothing mounted (what udev says is on them):")
-        for disk, desc, held in disks:
-            print(f"  /dev/{disk}: {desc}")
-            for node, fs, label in held or ():
-                print(f"      /dev/{node}: {fs or 'no filesystem'}" + (f", label {label}" if label else ""))
-            if held == []:
-                print("      no partitions and no filesystem (blank)")
-        if not disks:
-            print("  (none)")
+    spare = [node for _, _, held in disks for node, fs, _ in held or () if fs in FILESYSTEMS]
+    if len(spare) > 1:
+        raise Stop("more than one FAT32 or exFAT drive is plugged in and not mounted: unplug all but the spare "
+                   "one, then run this again")
+    if not spare:
         raise Stop(no_drive_hint(disks))
-    if len(candidates) > 1:
-        raise Stop("more than one drive could be used: unplug all but the spare one, then run this again")
-    info = candidates[0]
+    node = spare[0]
+    print(f"\nMounting /dev/{node} the way the file manager does when you click it (udisksctl mount, as you):")
+    worked, message = udisks("mount", node)
+    print("  " + (message or ("mounted" if worked else "no answer")))
+    if not worked:
+        raise Stop(no_drive_hint(disks))
+    for info, reasons in drives():
+        if info["name"] == node:
+            show(info, reasons)
+            if reasons:
+                udisks("unmount", node)
+                raise Stop(f"/dev/{node} cannot be used after all; it is unmounted again")
+            return info
+    raise Stop(f"udisksctl answered, but /dev/{node} does not show as mounted; open it in the file manager, "
+               "then run this again")
+
+
+def write_script(info):
     folder = p(info["mount"])
     script, result = os.path.join(folder, SCRIPT), os.path.join(folder, RESULT)
     for path, mark, what in ((script, MARK, SCRIPT), (result, RESULT_MARK, RESULT)):
@@ -268,13 +304,38 @@ def main():
         if fh.read() != AUTORUN:
             raise Stop(f"{SCRIPT} on the drive does not read back as written; delete it and run this again")
     print(f"wrote {info['mount']}/{SCRIPT} ({len(AUTORUN)} bytes) and read it back: it matches")
-    print("\nNEXT: eject the drive (in the file manager). Plug it into the MPC only while the 3.10.1 test build")
-    print("runs with developer mode on, and answer the MPC's question about the autorun script. The MPC has one")
-    print("USB-A port and the test stick must stay in it, so the drive goes into a USB hub that holds the test")
-    print("stick from power-on.")
+
+
+def main():
+    print("Harmless autorun.sh for the 3.10.1 developer mode test (workstation only, no MPC contact)")
+    print("Mounted drives seen (/dev/sd*):")
+    found = drives()
+    for info, reasons in found:
+        show(info, reasons)
+    if not found:
+        print("  (none)")
+    candidates = [info for info, reasons in found if not reasons]
+    if len(candidates) > 1:
+        raise Stop("more than one drive could be used: unplug all but the spare one, then run this again")
+    mounted_here = not candidates
+    info = mount_spare() if mounted_here else candidates[0]
+    try:
+        write_script(info)
+    except BaseException:
+        if mounted_here:  # leave the drive as it was found
+            udisks("unmount", info["name"])
+        raise
+    worked, message = udisks("unmount", info["name"])
+    if worked:
+        print(f"unmounted /dev/{info['name']}: you can pull the drive out now")
+    else:
+        print(f"could not unmount /dev/{info['name']} ({message}): eject it in the file manager before you "
+              "pull it out")
+    print("\nNEXT: plug the drive into the MPC while developer mode is on, and answer the MPC's question about")
+    print("the autorun script. The MPC has one USB-A port: with the 3.10.1 test build, which runs from the test")
+    print("stick, the drive goes into a USB hub that holds the test stick from power-on.")
     print(f"Undo: delete {SCRIPT} (and {RESULT}) from the drive.")
     return 0
-
 
 if __name__ == "__main__":
     try:
