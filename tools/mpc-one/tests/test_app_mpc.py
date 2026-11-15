@@ -639,6 +639,41 @@ class AppTests(unittest.TestCase):
         self.assertIn("partition 4: not mounted", res.stdout)
         self.assertIn("partition 4 grow: no /run/mpfree-data-grow.txt", res.stdout)
 
+    def test_app_step_reads_the_pad_players_privileges(self):
+        """Read-only: the pad player's user, groups, capabilities and limits, the device nodes' owners, the pan
+        and eMMC bind files, and the groups it needs (for a build with and without --app-user)."""
+        write(self.app, "active\n")
+        r = self.root
+        res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        self.assertIn("privileges: no mpfree process", res.stdout)
+        write(f"{r}/proc/733/comm", "mpfree\n")
+        write(f"{r}/proc/733/status", "Name:\tmpfree\nUid:\t960\t960\t960\t960\nGid:\t960\t960\t960\t960\n"
+              "Groups:\t29 44 101 960\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t1\n"
+              "VmRSS:\t100 kB\n")
+        write(f"{r}/proc/733/limits", "Limit                     Soft Limit           Hard Limit           Units\n"
+              "Max locked memory         unlimited            unlimited            bytes\n"
+              "Max realtime priority     70                   70\n"
+              "Max open files            1024                 4096                 files\n")
+        write(f"{r}/dev/fb0", "")
+        write(f"{r}/dev/snd/pcmC0D0p", "")
+        write(f"{r}/sys/class/graphics/fb0/pan", "0,0\n")
+        write(f"{r}/sys/bus/platform/drivers/dwmmc_rockchip/bind", "")
+        write(f"{r}/etc/group", "root:x:0:\naudio:x:29:mpfree\nvideo:x:44:mpfree\ndisk:x:6:\nmpfree:x:960:\n")
+        res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        out = res.stdout
+        for text in ("privileges: pid 733 Uid:\t960\t960\t960\t960", "privileges: pid 733 Groups:\t29 44 101 960",
+                     "privileges: pid 733 CapEff:\t0000000000000000", "privileges: pid 733 NoNewPrivs:\t1",
+                     "privileges: pid 733 Max realtime priority     70",
+                     "privileges: pid 733 Max locked memory         unlimited",
+                     "privileges: group audio:x:29:mpfree", "privileges: group mpfree:x:960:"):
+            self.assertIn(text, out)
+        for path in ("/dev/fb0", "/dev/snd/pcmC0D0p", "/sys/class/graphics/fb0/pan",
+                     "/sys/bus/platform/drivers/dwmmc_rockchip/bind"):
+            self.assertRegex(out, rf"privileges: {re.escape(path)} -rw\S* uid \d+ gid \d+")
+        self.assertNotIn("VmRSS", out)
+        self.assertNotIn("Max open files", out)
+        self.assertNotIn("disk:x:6", out)
+
     def test_app_step_reads_the_gpu_and_display_read_only(self):
         """Read-only: the GPU's libraries, the release, /dev/dri, the panel's mode, who holds /dev/dri,
         Panfrost, and debugfs only where it is already there; a missing path says so."""
@@ -917,7 +952,8 @@ class StaticTests(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         names = ("CHECK", "PREPARE", "RECEIVE", "RECEIVE_KIT", "HASH", "HASH_KIT", "RUN", "SCREEN_STOP", "SCREEN_START",
-                 "APP_START", "APP_STATE", "UPTIME", "APP_LOG", "TOUCH_IRQ", "REPORT", "CONTROLLER", "LINE_PROBE")
+                 "APP_START", "APP_STATE", "UPTIME", "APP_LOG", "TOUCH_IRQ", "REPORT", "CONTROLLER", "LINE_PROBE",
+                 "PRIVS_STATE")
         scripts = {name: getattr(mod, name) for name in names}
         for name, text in scripts.items():
             self.assertTrue(text.startswith("R=''"), name)
@@ -936,7 +972,7 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(sorted(services), [("start", "mpfree-test-app.service"), ("start", "mpfree-test-screen.service"),
                                             ("stop", "mpfree-test-app.service"), ("stop", "mpfree-test-screen.service")])
         # The app step's scripts only read.
-        for name in ("APP_STATE", "UPTIME", "APP_LOG", "TOUCH_IRQ"):
+        for name in ("APP_STATE", "UPTIME", "APP_LOG", "TOUCH_IRQ", "PRIVS_STATE"):
             self.assertIsNone(re.search(r"systemctl (?!is-active)", scripts[name]), name)
         self.assertIn("journalctl -b -u mpfree-test-app.service -o short-monotonic --no-pager", mod.APP_LOG)
         # The program's arguments are fixed in the tool; nothing from the command line reaches the MPC.
@@ -1073,7 +1109,8 @@ class StaticTests(unittest.TestCase):
         self.assertIn("store.write(app::saved::ARP, app::saved::ARP_PATTERNS, text.into_bytes())", main)
         with open(os.path.join(os.path.dirname(HERE), "offline-kexec-stick.py")) as fh:
             starts = [ln for ln in fh.read().splitlines() if "mpfree app" in ln]
-        self.assertEqual(len(starts), 2, starts)   # with the data partition mounted, and without
+        # With the data partition mounted, and without; in start-app.sh as root and as --app-user's mpfree.
+        self.assertEqual(len(starts), 4, starts)
         for start in starts:
             self.assertNotIn("--save-patterns", start)
 
