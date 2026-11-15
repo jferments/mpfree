@@ -5271,9 +5271,16 @@ mod tests {
         assert!(fx
             .iter()
             .any(|e| matches!(e, Effect::Map(m) if !m.listening)));
+        // REC is known from the start (button 73): pressed again it is
+        // found again and nothing changes.
+        assert_eq!(app.map.rec, Some(73));
         app.map_row(0);
         let fx = press(&mut app, 73);
-        assert!(fx.contains(&Effect::Note("map: REC = button 73".into())));
+        assert!(
+            !fx.iter()
+                .any(|e| matches!(e, Effect::Note(n) if n.starts_with("map: REC"))),
+            "{fx:?}"
+        );
         assert_eq!(app.map.rec, Some(73));
         // The wheel picks PAD BANK A/E, + listens, and it works at once.
         let at = mapper::CONTROLS
