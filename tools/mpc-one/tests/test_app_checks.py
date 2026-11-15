@@ -80,6 +80,14 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertIn("unknown check(s) nope", res.stdout)
 
+    def test_smoke_without_cargo_says_so(self):
+        tool = os.path.join(TOOLS, "app_checks.py")
+        env = dict(os.environ, PATH="/nonexistent")
+        res = subprocess.run([sys.executable, "-I", tool, "smoke"], capture_output=True, text=True, env=env)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("RESULT: the tests did not run: cargo is not on PATH", res.stdout)
+        self.assertNotIn("Traceback", res.stderr)
+
 
 class JudgeTests(unittest.TestCase):
     def judge(self, name, window):

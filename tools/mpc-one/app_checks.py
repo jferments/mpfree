@@ -38,6 +38,7 @@ How to add a check: docs/dev/hardware/device-checks.md. Keep this file ASCII.
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -617,11 +618,17 @@ TEST_LINE = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)")
 def cmd_smoke():
     """Runs the app's whole test suite on the workstation and reports it by check and by area."""
     print("The app's tests on this workstation (read-only: it builds into rust/target)")
-    head = subprocess.run(["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], capture_output=True, text=True)
-    print(f"commit: {head.stdout.strip() or '(not a git checkout)'}")
+    try:
+        head = subprocess.run(["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    except OSError:
+        head = ""
+    print(f"commit: {head.strip() or '(not a git checkout)'}")
     # Release: it builds for longer but runs the smoke workflows several times faster (about 6 minutes in all).
     cmd = ["cargo", "test", "-p", "mpfree-app", "--release", "--locked"]
     print(f"running: (cd rust && {' '.join(cmd)})", flush=True)
+    if not shutil.which("cargo"):
+        print("RESULT: the tests did not run: cargo is not on PATH (the Rust toolchain that builds the stick's programs)")
+        return 1
     env = dict(os.environ, CARGO_INCREMENTAL="0")
     proc = subprocess.run(cmd, cwd=RUST_DIR, env=env, capture_output=True, text=True)
     results = {}
