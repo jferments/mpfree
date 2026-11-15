@@ -1047,7 +1047,13 @@ class StaticTests(unittest.TestCase):
                     # while the app runs and says "ended" when the run ends well; a stop's handler unlinks it
                     # (sys.rs, below).
                     ("mpfree-app/crash.rs", "fs::write(path, format!(\"pid {}\\n\", std::process::id()))?;"),
-                    ("mpfree-app/crash.rs", "let _ = fs::write(&self.path, ENDED);")} | set(LIBRARY_NEEDLES)
+                    ("mpfree-app/crash.rs", "let _ = fs::write(&self.path, ENDED);"),
+                    # The power card's request (power.rs): one word, `poweroff` or `restart`, written to
+                    # power-request.new beside the file given with --power-request (start-app.sh gives
+                    # /run/mpfree-app/power-request, in RAM), synced, then renamed over it for the stick's root
+                    # path unit to read.
+                    ("mpfree-app/power.rs", "let mut f = fs::File::create(&tmp)?;"),
+                    ("mpfree-app/power.rs", "fs::rename(&tmp, path)")} | set(LIBRARY_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
@@ -1133,7 +1139,7 @@ class StaticTests(unittest.TestCase):
             self.assertNotIn("--save-patterns", start)
 
     def test_unsafe_code_only_in_sys(self):
-        """The C calls (ioctl, fcntl, sched_setscheduler, mlockall, and signal, raise and unlink for the safe
+        """The C calls (ioctl, fcntl, sched_setscheduler, mlockall, sync for the power card, and signal, raise and unlink for the safe
         start's stop handler) are the only unsafe code in MPFree's own source."""
         for name, code in self.program_sources():
             if name == "mpfree-app/main.rs":
@@ -1147,7 +1153,7 @@ class StaticTests(unittest.TestCase):
         with open(os.path.join(APP_SRC, "sys.rs")) as fh:
             sys_rs = fh.read()
         self.assertEqual(sorted(set(re.findall(r"\bfn (\w+)\(", sys_rs.split("extern \"C\" {")[1].split("}")[0]))),
-                         ["fcntl", "ioctl", "mlockall", "raise", "sched_setscheduler", "signal", "unlink"])
+                         ["fcntl", "ioctl", "mlockall", "raise", "sched_setscheduler", "signal", "sync", "unlink"])
         # The stop handler unlinks only the file crash.rs gives it: /run/mpfree-app/running.
         main = dict(self.program_sources())["mpfree-app/main.rs"]
         crash = dict(self.program_sources())["mpfree-app/crash.rs"]
