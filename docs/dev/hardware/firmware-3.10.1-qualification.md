@@ -221,7 +221,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 It shows what the hook decided at this power-on and why it stopped.
 
-**Step Q7d: REC, OVERDUB and PLAY, first thing** (on the MPC only, about 2 minutes, no SSH; read-only on the MPC: you only press buttons and pads, the loop stays in RAM, and anything MPFree saves goes to the stick's partition 4, as in Q8). This checks the transport fix (#387): REC, OVERDUB, UNDO and PLAY work and light as soon as MPFree starts, without Map controls, so it comes before Q8's phase 1 maps anything. Stay on the **Play** page, **All** view, where MPFree starts. Turn the volume down a little.
+**Step Q7d: REC, OVERDUB and PLAY, first thing** (on the MPC only, about 2 minutes, no SSH; read-only on the MPC: you only press buttons and pads, the loop stays in RAM, and anything MPFree saves goes to the stick's partition 4, as in Q8). This checks the transport fix (#387): REC, OVERDUB, UNDO and PLAY work and light as soon as MPFree starts, without Map controls, so it comes before Q8's phase 1 maps anything. A mapping saved on the stick in an earlier round still applies, and wins over the built-in button numbers. Stay on the **Play** page, **All** view, where MPFree starts. Turn the volume down a little.
 
 1. Press **REC** once. Expect **REC and PLAY both blink**, about three times a second, and the loop strip shows the loop armed.
 2. Press **PLAY**. Expect **PLAY to stay lit** and **REC to keep blinking** while the first pass records. Play a few pads.
@@ -234,6 +234,7 @@ It shows what the hook decided at this power-on and why it stopped.
 
 - **If a step goes wrong,** write down its number and what the lights did, and go on.
 - **If REC does nothing at all,** open Prefs > Map controls and read the REC row. It should say `button 73`. Another number means Map controls saved that one on the stick in an earlier round, and the saved number wins. Tap the row and press REC to set it again, and say so in your notes.
+- **If OVERDUB, UNDO or PLAY START does nothing while REC works,** read that button's row in Map controls and write down the number it shows. OVERDUB 80, UNDO 67 and PLAY START 83 are inferred from Akai's light messages, so the number you see corrects the default.
 - Q8's session summary, which reads everything since power-on, carries the app's `looper: …` lines from these steps.
 - **Undo:** none needed. The loop is in RAM, and the power-off in Q10 clears it.
 
