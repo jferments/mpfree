@@ -20,7 +20,8 @@ use std::process::{Child, Command};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const MANUAL: &str = "https://github.com/jferments/mpfree/blob/main/docs/user/src/installing.md";
+const MANUAL: &str =
+    "https://github.com/jferments/mpfree/blob/main/docs/user/src/getting-started/installing.md";
 const MIN_STICK: u64 = mpfree_stick::stick::MIN_STICK;
 
 fn main() -> eframe::Result {
@@ -282,6 +283,7 @@ struct Creator {
     understood: bool,
     job: Option<Job>,
     outcome: Option<(JobKind, Result<String, String>)>,
+    last_log: Vec<String>,
     prefs_open: bool,
     prefs: Prefs,
     key_note: Option<String>,
@@ -307,6 +309,7 @@ impl Creator {
             understood: false,
             job: None,
             outcome: None,
+            last_log: Vec::new(),
             prefs_open: false,
             prefs: Prefs::default(),
             key_note: None,
@@ -638,10 +641,10 @@ impl Creator {
         for (n, step) in [
             "Take the stick out of this computer (eject it first) and put it into the MPC's USB port.",
             "Turn the MPC on. Akai's system starts as usual.",
-            "Turn on Akai's developer mode (Menu > Preferences), as the user manual shows. It is needed once.",
-            "When the MPC offers to run the stick's script, tap Yes. It installs MPFree's startup hook and restarts the MPC.",
+            "Switch on the developer panel (MENU > Preferences > Enhancements), then hold SHIFT, press MENU, choose Developer and switch developer mode on. It is needed once.",
+            "When the MPC asks whether to run the script on the stick (autorun.sh), tap Yes. It adds MPFree's start-up helper and restarts the MPC.",
             "The MPC starts MPFree from the stick. At this first start MPFree backs up your MPC and extracts its drum kits and samples (about 15 minutes). Keep the stick in and the MPC on.",
-            "Turn developer mode off again when you like. MPFree starts whenever the stick is in at power-on; without it, Akai's system starts.",
+            "Then switch developer mode off again (stick out, in the factory software: SHIFT + MENU > Developer). MPFree starts whenever the stick is in at power-on; without it, the factory software starts.",
         ]
         .iter()
         .enumerate()
@@ -650,6 +653,15 @@ impl Creator {
                 ui.strong(format!("{}.", n + 1));
                 ui.label(*step);
             });
+        }
+        if let Some(l) = self
+            .last_log
+            .iter()
+            .find(|l| l.contains("developer SSH on"))
+        {
+            ui.add_space(8.0);
+            ui.label(RichText::new(l.trim_start_matches("note ")).strong());
+            ui.label("Connect with: ssh -i (your key) -p 2222 root@(the MPC's address), and check the host key matches.");
         }
         ui.add_space(8.0);
         ui.label("Afterwards, copy the backup of your MPC from the stick to this computer, and keep it safe (More > Copy my MPC's backup).");
@@ -825,6 +837,7 @@ impl eframe::App for Creator {
                     self.page = Page::Done;
                 }
                 self.outcome = Some((kind, result));
+                self.last_log = std::mem::take(&mut job.log);
                 self.job = None;
                 self.disks_at = Instant::now() - Duration::from_secs(60);
             } else {
