@@ -118,7 +118,7 @@ If another round already runs the app check in this MPFree boot, R5 can follow i
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-targeted -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_PHASES=6,7,10-12,17,18 bash tools/mpc-one/collect-over-ssh.sh --app
 ```
 
-Then carry on with that round's last block (the qualification round's Q10), which packs this block's log into the round's zip.
+In the [3.10.1 device round](firmware-3.10.1-qualification.md) this is block Q9b. That round then goes on with its second boot (the S blocks) or with Q10, and its last block, Q11, packs this block's log into the round's zip.
 
 ## Passes when
 
