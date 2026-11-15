@@ -521,6 +521,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-diskimage"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-display"
 version = "0.1.0"
 
@@ -530,6 +534,15 @@ version = "0.1.0"
 dependencies = [
  "mpfree-fx",
  "mpfree-midi",
+]
+
+[[package]]
+name = "mpfree-factory"
+version = "0.1.0"
+dependencies = [
+ "mpfree-diskimage",
+ "mpfree-node",
+ "mpfree-synth",
 ]
 
 [[package]]

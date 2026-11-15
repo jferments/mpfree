@@ -1,0 +1,11 @@
+[package]
+name = "mpfree-factory"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Drum kits and samples for the pad player: MPFree's own kits rendered from the Drums synth, and the owner's Akai factory kits and samples read from their own eMMC backup, on their own device"
+
+[dependencies]
+mpfree-diskimage = { path = "../mpfree-diskimage" }
+mpfree-node = { path = "../mpfree-node" }
+mpfree-synth = { path = "../mpfree-synth" }
