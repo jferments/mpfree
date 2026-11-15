@@ -53,6 +53,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [The plugin pack](guides/plugin-pack.md): free plugins built for the MPC as CLAP files (Airwindows, Dexed, Surge XT): the recipe in `tools/plugin-pack`, what each file may need from the MPC, the licenses and sources that go with them, and the checks that play them under qemu (2026-11-14).
 - [MPFree engines as MPC plugins](guides/mpc-plugins.md): `rust/mpfree-mpcplug` wraps an MPFree effect or instrument as an MPC OS 3.10.1 plugin (VST 2.4 binary interface), the ARM build and its checks, and the SDK's host simulator (2026-11-15).
 - [FX and the mixer](design/fx.md): the effects and their registry, the insert chain and its picker, Perform FX, the mixer, its routing and the I/O view (`rust/mpfree-fx`, `rust/mpfree-fx-ui`, `rust/mpfree-mixer-ui`, `rust/mpfree-chain-ui`).
+- [fxlab and FXProbe](design/fxlab.md): measuring our effects against the MPC's AIR effects: report cards, quality gates, the capture programme, sweep plans, and the two SDK plugins and script that record the factory MPC unattended (`rust/mpfree-fxlab`, `tools/fxprobe`, 2026-11-15).
 - [Export](design/export.md): the mixdown, stems and MIDI file from one pass over the song, Fast (quiet, the default) or Listen (real time), when an export has to listen, and the app's part (`rust/mpfree-export`).
 - [Modulation](design/modulation.md): parameter addresses, macros, the mod matrix, morph and Q-Link bindings (`rust/mpfree-param`, `rust/mpfree-mod`).
 

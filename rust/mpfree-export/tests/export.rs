@@ -178,6 +178,7 @@ fn plan(folder: &Path, mode: Mode, song: Song, format: WavFormat) -> Plan {
         format,
         length: Some(song.range as u64),
         first_slot: 3,
+        replays: Vec::new(),
     }
 }
 
@@ -664,9 +665,248 @@ fn progress_reads_as_time() {
         tail: false,
         rate: 48_000,
         mode: Mode::Fast,
+        pass: 0,
+        passes: 1,
     };
     assert_eq!(p.words(), "1:12 of 3:50");
     assert_eq!(Progress { length: None, ..p }.words(), "1:12");
     assert_eq!(Progress { tail: true, ..p }.words(), "1:12 · the tail");
     assert_eq!(clock(59 * 48_000 + 47_999, 48_000), "0:59");
+    assert!((p.part().unwrap() - 72.0 / 230.0).abs() < 1e-6);
+    assert_eq!(Progress { tail: true, ..p }.part(), Some(1.0));
+    assert_eq!(Progress { length: None, ..p }.part(), None);
+    // With replays: the pass, and each pass an equal share of the bar.
+    let r = Progress {
+        pass: 2,
+        passes: 4,
+        ..p
+    };
+    assert_eq!(r.words(), "1:12 of 3:50 · pass 3 of 4");
+    assert!((r.part().unwrap() - (2.0 + 72.0 / 230.0) / 4.0).abs() < 1e-6);
+    assert_eq!(Progress { tail: true, ..r }.part(), Some(0.75));
+}
+
+/// Replays: sequencer tracks 0 and 1 play into the same strip (a drum
+/// kit's tracks, Track(0) here); track 2 has its own (Track(1), behind
+/// 300 frames of look-ahead). Track 1 never stops unless `quiet_b`, when
+/// it never plays.
+fn shared(t: usize, i: usize, quiet_b: bool) -> f32 {
+    let w = |hz: f32| (std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin();
+    match t {
+        0 if i < 6_000 => 0.3 * w(220.0),
+        1 if !quiet_b => 0.2 * w(330.0),
+        2 if i < 3_000 => 0.1 * w(440.0),
+        _ => 0.0,
+    }
+}
+
+const SHARED_RANGE: usize = 24_000;
+
+fn replay_plan(folder: &Path) -> Plan {
+    Plan {
+        folder: folder.to_path_buf(),
+        song: "Night market".into(),
+        streams: vec![
+            Stream::mixdown(),
+            Stream::stem("Keys", StripId::Track(1)),
+            // The kit's strip as one channel, to check the replays by.
+            Stream::stem("Kit", StripId::Track(0)),
+        ],
+        replays: vec![
+            Replay {
+                stream: Stream::stem("Kick", StripId::Track(0)),
+                only: Only::Track(0),
+            },
+            Replay {
+                stream: Stream::stem("Hats", StripId::Track(0)),
+                only: Only::Track(1),
+            },
+        ],
+        midi: None,
+        mode: Mode::Fast,
+        rate: RATE,
+        format: WavFormat::i24(RATE),
+        length: Some(SHARED_RANGE as u64),
+        first_slot: 3,
+    }
+}
+
+/// Plays every pass of `plan` as the sound loop does: in each, only the
+/// replay's track plays into the shared strip (the rest as in the first
+/// pass); `cancel` cancels from the screen in that pass. The outcome, and
+/// the progress at the start of each pass.
+fn run_passes(
+    plan: Plan,
+    sizes: &[usize],
+    quiet_b: bool,
+    cancel: Option<usize>,
+) -> (Outcome, Vec<Progress>) {
+    let cfg = MixerConfig {
+        inputs: 0,
+        pads: 0,
+        tracks: 2,
+        slots: 2,
+        max_latency_ms: 50.0,
+    };
+    let mut m = Mixer::new(cfg, RATE, 512);
+    m.chain_mut(StripId::Track(1)).unwrap().push(Box::new(Lag {
+        n: 300,
+        buf: [vec![0.0; 301], vec![0.0; 301]],
+        w: 0,
+    }));
+    let mut z = (vec![0.0f32; 64], vec![0.0f32; 64]);
+    m.process(&Ctx::new(RATE, 0), &mut z.0, &mut z.1);
+    let (mut pass, mut job) = start(plan).unwrap();
+    let mut seen = Vec::new();
+    loop {
+        seen.push(job.progress());
+        assert!(pass.attach(&mut m));
+        let only = pass.only();
+        let plays = |t: usize| match only {
+            None => true,
+            Some(Only::Track(k)) => t == 2 || t == usize::from(k),
+            Some(Only::AudioTrack(_)) => unreachable!(),
+        };
+        let (mut at, mut k) = (0usize, 0usize);
+        let step = loop {
+            let len = sizes[k % sizes.len()];
+            k += 1;
+            if cancel == Some(pass.index()) && at >= 2_000 {
+                job.cancel();
+            }
+            assert!(pass.wait_for_room(len, Duration::from_secs(5)));
+            let mut kit = vec![0.0f32; len];
+            let mut keys = vec![0.0f32; len];
+            for i in 0..len {
+                kit[i] = (0..2)
+                    .filter(|&t| plays(t))
+                    .map(|t| shared(t, at + i, quiet_b))
+                    .sum();
+                keys[i] = shared(2, at + i, quiet_b);
+            }
+            for (t, src) in [(0, &kit), (1, &keys)] {
+                let (il, ir) = m.strip_input(StripId::Track(t)).unwrap();
+                il[..len].copy_from_slice(src);
+                ir[..len].copy_from_slice(src);
+            }
+            let mut l = vec![0.0f32; len];
+            let mut r = vec![0.0f32; len];
+            m.process(&Ctx::new(RATE, at as u64), &mut l, &mut r);
+            at += len;
+            match pass.period(&m, len, at >= SHARED_RANGE) {
+                Step::Go => assert!(at < 30 * RATE as usize, "runs away"),
+                s => break s,
+            }
+        };
+        pass.detach(&mut m);
+        if step != Step::Done {
+            return (job.finish(pass), seen);
+        }
+        match job.next(pass) {
+            Next::Play(p) => pass = p,
+            Next::Finish(p) => return (job.finish(p), seen),
+        }
+    }
+}
+
+#[test]
+fn replays_make_a_stem_per_track_lined_up_with_the_mix() {
+    let folder = scratch("replays");
+    let (o, seen) = run_passes(replay_plan(&folder), &[64, 200, 37], false, None);
+    let d = match &o {
+        Outcome::Done(d) => d.clone(),
+        o => panic!("{o:?}"),
+    };
+    let names: Vec<_> = d
+        .wavs
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        ["Mixdown.wav", "Keys.wav", "Kit.wav", "Kick.wav", "Hats.wav"]
+    );
+    // Three passes, each telling the panel which it is.
+    assert_eq!(seen.len(), 3);
+    for (k, p) in seen.iter().enumerate() {
+        assert_eq!((p.pass, p.passes), (k, 3));
+    }
+    let file = |n: &str| read24(&std::fs::read(folder.join(n)).unwrap());
+    let (kit, kick, hats) = (file("Kit.wav"), file("Kick.wav"), file("Hats.wav"));
+    let mix = file("Mixdown.wav");
+    // Every file as long as the mix, which ran its tail to the most (the
+    // hats never stop): the hats' replay, with no look-ahead to wait for,
+    // wrote a few frames more, cut off.
+    assert_eq!(mix.len() as u64, d.frames);
+    for f in [&kit, &kick, &hats, &file("Keys.wav")] {
+        assert_eq!(f.len(), mix.len());
+    }
+    assert!(d.frames >= SHARED_RANGE as u64 + (pass::TAIL_MAX_S * f64::from(RATE)) as u64 - 400);
+    // The replays are the strip's sound with only their track: together,
+    // the kit as the first pass heard it, sample for sample, from the
+    // song's first frame.
+    for i in 0..mix.len() {
+        assert!(
+            (kick[i] + hats[i] - kit[i]).abs() <= 2.0 * LSB,
+            "frame {i}: {} + {} != {}",
+            kick[i],
+            hats[i],
+            kit[i]
+        );
+    }
+    assert!(kick[100].abs() > 0.01 && hats[100].abs() > 0.01);
+    // The kick's replay ended two seconds after the range, so the rest of
+    // its file is silence added to match the mix.
+    assert!(kick[SHARED_RANGE..].iter().all(|&x| x == 0.0));
+    std::fs::remove_dir_all(&folder).unwrap();
+}
+
+#[test]
+fn a_silent_replay_is_left_out_and_a_cancel_in_a_replay_leaves_nothing() {
+    let folder = scratch("replay-silent");
+    let (o, _) = run_passes(replay_plan(&folder), &[128], true, None);
+    let d = match &o {
+        Outcome::Done(d) => d.clone(),
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(d.silent, ["Hats"]);
+    assert!(!folder.join("Hats.wav").exists());
+    assert_eq!(d.wavs.len(), 4);
+    assert!(
+        o.words().contains("(Hats was silent, so left out)"),
+        "{}",
+        o.words()
+    );
+    std::fs::remove_dir_all(&folder).unwrap();
+    // Cancelled in the second replay: the first pass's files go too.
+    let folder = scratch("replay-cancel");
+    let (o, seen) = run_passes(replay_plan(&folder), &[128], false, Some(2));
+    assert_eq!(o, Outcome::Cancelled);
+    assert_eq!(seen.len(), 3);
+    assert!(!folder.exists());
+}
+
+#[test]
+fn replays_alone_make_their_stems() {
+    // No mixdown or channel stems: the first pass has no files, and the
+    // replays set the length.
+    let folder = scratch("replays-alone");
+    let plan = Plan {
+        streams: Vec::new(),
+        ..replay_plan(&folder)
+    };
+    let (o, _) = run_passes(plan, &[256], true, None);
+    let d = match &o {
+        Outcome::Done(d) => d.clone(),
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(d.wavs.len(), 1, "{d:?}");
+    assert_eq!(d.silent, ["Hats"]);
+    let kick = read24(&std::fs::read(folder.join("Kick.wav")).unwrap());
+    // The range, never cut short (to the block it ended in, here), and
+    // the kick's sound inside it.
+    assert_eq!(kick.len() as u64, d.frames);
+    assert!((SHARED_RANGE as u64..SHARED_RANGE as u64 + 256).contains(&d.frames));
+    assert!(kick[100].abs() > 0.01);
+    std::fs::remove_dir_all(&folder).unwrap();
 }
