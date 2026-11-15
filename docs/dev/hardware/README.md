@@ -16,7 +16,7 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[Boot routes on MPC OS 3.10.1](boot-routes.md)** compares the ways to take over after power-on: the soft-reboot, the opt-in kexec_file restart into Akai's own kernel, a chain to MPFree's own kernel and the U-Boot route. It explains LoadPin, the kernel policy that decides between them, and which external USB devices each route can drive.
 
-**[Starting MPFree from the stick at power-on](stick-autoboot.md)** is the record of how that boot was found and proven: what can start the jump on an installed 3.10.1, what is ruled out, the canary, the kexec hook that LoadPin refused, both soft-reboot power-ons, and the owner's blocks.
+**[Starting MPFree from the stick at power-on](stick-autoboot.md)** is the record of how that boot was found and proven: what can start the jump on an installed 3.10.1, what is ruled out, the canary, the kexec hook that LoadPin refused, both soft-reboot power-ons, the pad player without root (`--app-user`), the opt-in kexec_file route and its chain to the stick's own device tree, and the owner's blocks.
 
 **[Qualifying main on the installed MPC OS 3.10.1](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, the kexec test boot from the installed system, the pad player on it, and the way back.
 
