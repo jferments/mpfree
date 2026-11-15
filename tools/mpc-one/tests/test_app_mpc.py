@@ -34,7 +34,10 @@ UI_SRC = os.path.join(REPO, "rust", "mpfree-ui", "src")
 # Library code from the other crates the program links (their own programs, main.rs and bin/, are not part of it).
 LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(REPO, "rust", "mpfree-screen-log", "src"),
               os.path.join(REPO, "rust", "mpfree-prof", "src"), os.path.join(REPO, "rust", "mpfree-store", "src"),
-              os.path.join(REPO, "rust", "mpfree-library", "src"), os.path.join(REPO, "rust", "mpfree-browser-ui", "src"))
+              os.path.join(REPO, "rust", "mpfree-library", "src"), os.path.join(REPO, "rust", "mpfree-browser-ui", "src"),
+              # The first start on a creator stick (mpfree-app/setup.rs) reads the eMMC backup's copy on the stick with
+              # these; they only read (the disk image writer, ext2w, writes only through a WriteAt it is handed).
+              os.path.join(REPO, "rust", "mpfree-factory", "src"), os.path.join(REPO, "rust", "mpfree-diskimage", "src"))
 # The two writers the storage spec allows (approved by Jay 12 Nov 00:56Z): mpfree-store under the folder it is
 # given (settings/ and files/), and mpfree-library under the library/ folder in it. The library is linked since
 # the Pads tab's browser (12 Nov 2026); its write sites are reviewed line by line below.
@@ -1047,7 +1050,11 @@ class StaticTests(unittest.TestCase):
                     # while the app runs and says "ended" when the run ends well; a stop's handler unlinks it
                     # (sys.rs, below).
                     ("mpfree-app/crash.rs", "fs::write(path, format!(\"pid {}\\n\", std::process::id()))?;"),
-                    ("mpfree-app/crash.rs", "let _ = fs::write(&self.path, ENDED);")} | set(LIBRARY_NEEDLES)
+                    ("mpfree-app/crash.rs", "let _ = fs::write(&self.path, ENDED);"),
+                    # The first start on a creator stick (setup.rs): the backup's copy of the eMMC's user area is a
+                    # FILE on partition 4 (backup/<folder>/mmcblk0.img, made by the stick's root service), opened
+                    # read-only with File::open; the pad player never names an eMMC device.
+                    ("mpfree-app/setup.rs", 'let image = folder.join("mmcblk0.img");')} | set(LIBRARY_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
@@ -1089,12 +1096,15 @@ class StaticTests(unittest.TestCase):
             "Direction::Output => opts.write(true),",
             # mpfree-store's NAME.part, made new (never through a link) under the --data folder
             "let mut f = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&part)?;",
+            # setup.rs: the first start's request for the eMMC backup, an empty file made new in /run/mpfree-app
+            # (RAM), which the stick's mpfree-setup-backup.path watches (Paths::on_the_stick, with REPORT_DIR)
+            "match OpenOptions::new().write(true).create_new(true).mode(0o644).open(&paths.request) {",
         )
         expected += LIBRARY_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
         self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/crash.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs",
-                                 "mpfree-store/lib.rs",
+                                 "mpfree-app/setup.rs", "mpfree-store/lib.rs",
                                  "mpfree-library/lib.rs", "mpfree-library/project.rs"}, files)
         # Folders are made only by the store and the library, and only start-app.sh names the folder they are given.
         for name, code in self.program_sources():

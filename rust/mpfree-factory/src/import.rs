@@ -56,8 +56,8 @@ pub struct Content<F: ReadAt> {
 }
 
 impl<R: ReadAt> Content<Offset<R>> {
-    /// The content partition inside a whole-disk image (the backup's
-    /// mmcblk0.img).
+    /// The content partition inside a whole-disk image (the backup's copy
+    /// of the eMMC's user area).
     pub fn from_disk(disk: R) -> io::Result<Self> {
         let table = gpt::read(&disk)?;
         let (_, part) = table

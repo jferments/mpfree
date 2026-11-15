@@ -376,6 +376,7 @@ dependencies = [
  "mpfree-controller",
  "mpfree-core",
  "mpfree-export",
+ "mpfree-factory",
  "mpfree-fx",
  "mpfree-fx-ui",
  "mpfree-instruments",
