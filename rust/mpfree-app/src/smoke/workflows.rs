@@ -268,6 +268,14 @@ mod tests {
                 .eq_dot_at(r, drums, mpfree_mixer_ui::eq_look::Dot::Band(1))
                 .expect("band 2's dot");
             let hz = node_param_id(&s, drums, 1, q::freq(1));
+            let db = node_param_id(&s, drums, 1, q::gain(1));
+            // A fader moved first, so UNDO must take back the drag, not it.
+            s.route(crate::gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Set {
+                strip: drums,
+                id: mpfree_fx::ids::mixer::VOLUME,
+                value: -4.0,
+            }));
+            s.run_for(2.0);
             let mut acts: Vec<crate::gui::FromUi> =
                 s.screen.touch(9, Touch::Down, x, y).into_iter().collect();
             acts.extend(s.screen.touch(9, Touch::Move, x + 20, y - 10));
@@ -284,6 +292,29 @@ mod tests {
             );
             assert!(node_param_id(&s, drums, 1, q::freq(1)) > hz, "and moved up");
             assert_eq!(s.view(), View::Mixer);
+            let (hz2, db2) = (
+                node_param_id(&s, drums, 1, q::freq(1)),
+                node_param_id(&s, drums, 1, q::gain(1)),
+            );
+
+            // UNDO takes the whole drag back (frequency and gain), not the
+            // fader; SHIFT + UNDO puts it back.
+            s.button("UNDO").run_for(0.2);
+            assert!(
+                s.said().iter().any(|l| l == "Undid Drums EQ Band 2"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(node_param_id(&s, drums, 1, q::freq(1)), hz);
+            assert_eq!(node_param_id(&s, drums, 1, q::gain(1)), db);
+            assert_eq!(
+                s.mix.mixer.param(drums, mpfree_fx::ids::mixer::VOLUME),
+                -4.0,
+                "the fader stays"
+            );
+            s.button_with("SHIFT", "UNDO").run_for(0.2);
+            assert_eq!(node_param_id(&s, drums, 1, q::freq(1)), hz2);
+            assert_eq!(node_param_id(&s, drums, 1, q::gain(1)), db2);
 
             // The Q-Links are band 2's: Q-Link 1 its frequency.
             let hz = node_param_id(&s, drums, 1, q::freq(1));
