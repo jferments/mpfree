@@ -200,7 +200,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 It talks only to the test build: port 2222, with the stick's own host key.
 
 What it changes, step by step:
-- **1:** workstation only. It checks the benchmark (ARM, the MPC's C library) and writes the sample pages (80 at `209f5a15`) into a new folder under `~/mpfree-work`.
+- **1:** workstation only. It checks the benchmark (ARM, the MPC's C library) and writes the sample pages (80 at `f2e36b7b`) into a new folder under `~/mpfree-work`.
 - **2:** read-only on the MPC. The test build's checks, then the GPU's render node and libraries, and who holds `/dev/dri`.
 - **3:** RAM. It copies the benchmark and the pages into `/run/mpfree-gpu` and checks their hashes. It stops the pad player (it prints `pad player: was active, now inactive`), and starts it again at the end, even on a failure or Ctrl-C.
 - **4 and 5:** these only read and compute; the screen keeps what it shows. Step 4 stops if Mesa answers with anything but the Mali (Panfrost).
@@ -223,7 +223,7 @@ What it changes, step by step:
 [4/7] gpu: Mali-T760 (Panfrost) ...
       gpu: draws into screen buffers (dma-buf import): yes
 [5/7] summary: pages 80; gpu whole page median ... ; gpu tick median ...
-      summary: gpu draw calls per whole page median N worst N; atlas cleared N times, N masks drawn alone; N shapes worked out on the GPU
+      summary: gpu draw calls per whole page median N worst N; atlas cleared N times, N masks drawn alone; N shapes worked out on the GPU, their atlas cleared N times
       summary: gpu against software: at most N levels apart in any channel; ... s in all
 [6/7] summary: panel gpu: draw p50 ..., read back p50 ..., copy p50 ...; whole p50 ...
       summary: panel showed 80 pages from the GPU; atlas cleared N times, N masks drawn alone
@@ -237,8 +237,6 @@ What it changes, step by step:
       pad player: active (started again)
 RESULT: the GPU benchmark ran (numbers above).
 ```
-
-If PR #351 has merged before the round, step 5's second summary line ends `…; N shapes worked out on the GPU, their atlas cleared N times`.
 
 **What to watch, and to note in the zip's notes:**
 - In steps 6 and 7, is each page the right way up and not garbled?
@@ -319,7 +317,7 @@ Every block was run word for word from a clone at `/home/jesse/code/mpfree-hardw
     - After that line, Q1 recorded the new key, and Q7a passed.
 - **Q10's first block** printed the same as Q7a.
 - **Q2-undo** printed `UNLOCKED: Akai's files are back; a login with no key gets in again, as before the lock.`
-- **Q9** was rehearsed by the GPU thread at `209f5a15` against the fake test build from `tools/mpc-one/tests/test_host_gpu_mpc.py`, with the pad player running as after Q8. G0 printed `## qual-3101`, the commit and `1`; G1 printed `Finished` twice. G2 ended both ways: with "the screen is back as it was" and exit code 0, and, for a flip that fails without saying so, with "The program did not say the screen is back. …" and exit code 1. Both times the pad player started again.
+- **Q9** was rehearsed by the GPU thread at `f2e36b7b` (and earlier at `209f5a15`) against the fake test build from `tools/mpc-one/tests/test_host_gpu_mpc.py`, with the pad player running as after Q8. G0 printed `## qual-3101`, the commit and `1`; G1 printed `Finished` twice. G2 ended both ways: with "the screen is back as it was" and exit code 0, and, for a flip that fails without saying so, with "The program did not say the screen is back. …" and exit code 1. Both times the pad player started again.
 - **Not run here,** because they need the MPC or a real stick: Q4, Q6-write, Q7b, Q8 and the stick logs. Q0 runs their tools' own tests against fakes under BusyBox:
     - The backup test includes a mismatch on p6 only, with the lines Q4 quotes.
     - The kexec boot test includes a jump from a fake installed 3.10.1 on stock port 22 and test port 2222.
