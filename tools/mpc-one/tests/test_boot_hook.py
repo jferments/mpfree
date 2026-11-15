@@ -277,8 +277,13 @@ class BootHookTests(unittest.TestCase):
               "/data/mpfree-hook\n/data/system/etc/overlay/udev\n/data/system/etc/overlay/udev/rules.d\n"
               "/data/system/etc/overlay/modprobe.d\n")
         self.plug_in()
+        # The check runs as `sh -c "<the hook>"`, so the hook's own text is in a process's command line. The second
+        # power-on's install (2026-11-15) took that for Akai's controller update.
+        with open(INSTALL) as fh:
+            write(os.path.join(self.root, "proc/4242/cmdline"), "sh\0-c\0" + fh.read() + "\0")
         res = self.install()
         out = res.stdout
+        self.assertNotIn("is running now", out)
         for rel in CANARY:
             self.assertIn(f"deleted the canary's /{rel}", out)
             self.assertFalse(os.path.exists(os.path.join(self.root, rel)))

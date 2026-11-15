@@ -113,6 +113,13 @@ def live_tree_new(emmc="okay"):
     return dtb.build(tree)
 
 
+UDEV_RULES = ('# ENV{SYSTEMD_WANTS}+="commented-out.service"\n'
+              'SUBSYSTEM=="block", ENV{ID_FS_TYPE}=="?*", ENV{SYSTEMD_WANTS}+="no-reserved-blocks@%k.service"\n'
+              'SUBSYSTEM=="net", KERNEL=="eth0", ENV{SYSTEMD_WANTS}+="fake-net.service"\n'
+              'SUBSYSTEM=="block", PROGRAM="/usr/bin/fake-namer", ENV{SYSTEMD_WANTS}+="%c"\n'
+              'KERNEL=="sd*", ENV{SYSTEMD_WANTS}="systemd-fsck@dev-sda1.service acvs.service"\n')
+
+
 def build_rootfs(base, shadow_root="!", extra=None, merged=True):
     root = os.path.join(base, "root")
     shutil.rmtree(root, ignore_errors=True)
@@ -133,6 +140,10 @@ def build_rootfs(base, shadow_root="!", extra=None, merged=True):
         f"{UNITS}/iptables.service": "[Service]\nType=oneshot\nExecStart=/usr/sbin/iptables-restore "
                                      "/etc/iptables/iptables.rules\n",
         "etc/iptables/iptables.rules": "*filter\n:INPUT DROP [0:0]\n-A INPUT -p tcp --dport 2222 -j ACCEPT\nCOMMIT\n",
+        # As on 3.10.1: tune2fs on each partition as it appears (started for the SD card after the soft-reboot).
+        f"{UNITS}/no-reserved-blocks@.service": "[Unit]\nDefaultDependencies=no\n[Service]\nType=oneshot\n"
+                                                "ExecStart=/usr/sbin/set-no-ext4-reserved-blocks %I\n",
+        "usr/lib/udev/rules.d/60-fake-block.rules": UDEV_RULES,
     }
     files.update(extra or {})
     for path, data in files.items():
@@ -260,8 +271,24 @@ class KexecStickTests(unittest.TestCase):
         self.assertIn(p2["uuid"].lower(), self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
         self.check_hook_files(root_img, out)
 
-        for unit in ("acvs.service", "touch-fw-update.service", "az0x-data-mkfs.service", "iptables.service"):
+        for unit in ("acvs.service", "touch-fw-update.service", "az0x-data-mkfs.service", "iptables.service",
+                     "no-reserved-blocks@.service"):
             self.assertIn('Fast link dest: "/dev/null"', self.dfs(root_img, f"stat /etc/systemd/system/{unit}"))
+        rules = "/usr/lib/udev/rules.d/60-fake-block.rules"
+        self.assertIn(
+            "\nunits Akai's udev rules start when a device appears (after the soft-reboot these can start before the "
+            "eMMC and SD card are off, so any that can touch a disk must be masked):\n"
+            f'  {rules}: SUBSYSTEM=="block", ENV{{ID_FS_TYPE}}=="?*", '
+            'ENV{SYSTEMD_WANTS}+="no-reserved-blocks@%k.service"\n'
+            "    no-reserved-blocks@%k.service: masked on the stick\n"
+            f'  {rules}: SUBSYSTEM=="net", KERNEL=="eth0", ENV{{SYSTEMD_WANTS}}+="fake-net.service"\n'
+            "    fake-net.service: NOT masked\n"
+            f'  {rules}: SUBSYSTEM=="block", PROGRAM="/usr/bin/fake-namer", ENV{{SYSTEMD_WANTS}}+="%c"\n'
+            "    %c: named only when the device appears; this tool cannot tell which unit\n"
+            f'  {rules}: KERNEL=="sd*", ENV{{SYSTEMD_WANTS}}="systemd-fsck@dev-sda1.service acvs.service"\n'
+            "    systemd-fsck@dev-sda1.service: NOT masked\n"
+            "    acvs.service: masked on the stick\n", res.stdout)
+        self.assertNotIn("commented-out", res.stdout)
         self.assertIn('Fast link dest: "/dev/null"',
                       self.dfs(root_img, "stat /etc/systemd/system-generators/acva-emmc-content-generator"))
         self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-sshd.service"',
@@ -639,9 +666,11 @@ class KexecStickTests(unittest.TestCase):
         self.assertEqual(self.dfs(root_img, "cat /usr/bin/az01-launch-MPC"), "#!/bin/sh\n# FAKE-LAUNCHER\n")
         self.assertIn("written  /usr/bin/dfu-util  (stub)", res.stdout)
         self.assertNotIn("az01-launch-MPC  (stub)", res.stdout)
+        self.assertIn("\n    acvs.service: NOT masked\n", res.stdout)
         # Every other mask and stub stays.
         for unit in ("touch-fw-update.service", "xmos-update.service", "az01-script-runner.service",
-                     "az0x-webserver.service", "az0x-data-mkfs.service", "acvs-content-resize.service"):
+                     "az0x-webserver.service", "az0x-data-mkfs.service", "acvs-content-resize.service",
+                     "no-reserved-blocks@.service"):
             self.assertIn('Fast link dest: "/dev/null"', self.dfs(root_img, f"stat /etc/systemd/system/{unit}"), unit)
         self.assertIn("mpfree-test: blocked", self.dfs(root_img, "cat /usr/bin/dfu-util"))
         self.assertIn("mpfree-test: blocked", self.dfs(root_img, "cat /usr/sbin/az01-update"))
