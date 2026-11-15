@@ -1,6 +1,6 @@
 # MPC One operating-system architecture: from power-on to a free Linux system
 
-**MPFree engineering reference · Original MPC One (Gen 1, Rockchip RK3288) · 13 November 2026**
+**MPFree engineering reference · Original MPC One (Gen 1, Rockchip RK3288) · 13 November 2026, updated 15 November 2026 (the power-on start on an installed 3.10.1, section 10.4)**
 
 The purpose of this document is to explain how the MPC One actually works as a computer, and how that knowledge can be used to build an independent, free and open-source operating system for it. The intended reader understands Linux and software development but may never have seen the internals of an MPC. The emphasis is on *causality*: which component loads the next component, where it finds its files, which parts of the hardware it controls, what happens when a component fails, and how we can gradually substitute MPFree without losing the factory system.
 
@@ -16,7 +16,7 @@ It is useful to stop thinking of the MPC One as a special-purpose music applianc
 
 Akai’s music-production environment is a complex application layered on that system. It needs a suitable kernel, a set of drivers, a collection of userspace libraries, firmware for certain peripherals and services to initialize the board. But it is not itself the kernel, the first-stage loader or the filesystem. This is why our Rust applications can already communicate with MPC hardware and why a different Linux system can start on the same processor.
 
-For MPFree there are **three distinct levels of independence**. We can run our own program on the factory kernel, after stopping or separating it from the MPC application. We can start our own kernel and userspace using the factory Linux kernel’s `kexec` facility, at which point the factory application and its kernel are no longer running. Finally, we can arrange for a bootloader to select our kernel *before* factory Linux runs. The first two levels are practical now; the third is the subject of the current bootloader work.
+For MPFree there are **three distinct levels of independence**. We can run our own program on the factory kernel, after stopping or separating it from the MPC application. We can start our own kernel and userspace using the factory Linux kernel’s `kexec` facility, at which point the factory application and its kernel are no longer running. Finally, we can arrange for a bootloader to select our kernel *before* factory Linux runs. The first two levels are practical now; the third is the subject of the current bootloader work. On an installed MPC OS 3.10.1 the second level is closed at runtime (the kernel's LoadPin policy refuses `kexec`), and MPFree starts at power-on by a variant of the first: a systemd soft-reboot that stops all of factory userspace and starts MPFree's own system on the factory kernel ([section 10.4](#104-the-installed-3101-refuses-kexec-mpfree-starts-by-soft-reboot)).
 
 ### 1.1 What has been observed on the actual hardware
 
@@ -473,6 +473,14 @@ The fact that the official firmware now supports development is encouraging, but
 
 The focused [3.10.1 compatibility page](firmware-3.10.1-compatibility.md) summarizes the comparison and the remaining upgrade gate. The [stick test runbook](firmware-3.10.1-stick-test.md) tries 3.10.1 by kexec from the USB stick, as 3.10.0 was, before any install. Official information is available from [Akai’s firmware download page](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/), [Akai release notes](https://www.akaipro.com/mpc-release-notes/) and [the inMusic SDK](https://github.com/inmusic-software/mpc-plugin-builder-sdk). The November 12, 2026 [Sonic State report](https://sonicstate.com/news/2026/11/12/adc26-akais-new-mpc-os-opens-up-all-models/) also describes the developer-access features and the manufacturer's broader direction.
 
+### 10.4 The installed 3.10.1 refuses kexec; MPFree starts by soft-reboot
+
+The owner installed 3.10.1 on the reference unit on 15 November 2026, and the runtime measurement section 10.2 asked for came back with one decisive difference. The kernel's **LoadPin** security module runs in enforcing mode, pinned to the dm-verity root filesystem, and refuses every raw `kexec_load` (`LoadPin: kexec-image old-api-denied`). Only a kernel command-line word in U-Boot could lift it, which the safety rule does not allow. The kexec bridge of section 7, started from the running factory system, is therefore closed on an installed 3.10.1.
+
+MPFree now starts at power-on another way. A hook on the writable data partition (a modprobe `install` line and a udev rule in the `/etc` overlay's upper layer, and a script) notices the MPFree stick about 6 s into the factory boot, verifies it, and asks the factory systemd for a **soft-reboot**: systemd stops every unit, the MPC application among them, before it has drawn anything, pivots into the stick's root filesystem and starts the stick's systemd as PID 1, on the kernel that is already running. No kernel is loaded, so LoadPin does not object. Because the factory kernel and device tree stay, the internal eMMC and SD controllers are live after the switch; the stick's first service unbinds both drivers before udev or any mount, and powers the MPC off if it cannot. LoadPin also refuses every module and firmware load once the factory root is detached, so the stick runs on the drivers the factory boot loaded in its first seconds.
+
+The first working power-on (15 November 2026) went from the MPC logo to MPFree's pad player in 16.3 s, with no tap, and the boot-area hashes were unchanged. With the stick out, the factory system starts as before. This is stage A of section 12, made into a power-on route; stages B to E are unchanged. The full design is [How MPFree boots from the stick on MPC OS 3.10.1](soft-reboot-boot.md), and the record of the runs is [Starting MPFree from the stick at power-on](stick-autoboot.md).
+
 ## 11. The lowest-level access we reliably have today
 
 This question has a surprisingly subtle answer because “access” can mean the ability to observe a component, invoke a service that component exposes, or independently execute owner-provided code **at that stage**.
@@ -483,7 +491,7 @@ The **earliest pre-Linux facility known to exist** is U-Boot itself. It has a re
 
 The **earliest potentially factory-independent stage** is the RK3288 silicon BootROM. It is architecturally below the installed first-stage loader, but we have not yet established a reliable software entry into genuine ROM service or an owner-built SRAM loader running through it. It should therefore be treated as a recovery-development objective rather than an already available installer backend.
 
-For MPFree’s requirement that the original system remain recoverable, the present operational answer is: **use the verified `kexec` approach with internal storage disabled for kernel development; use U-Boot only for read-only characterization until a nonpersistent kernel boot has been demonstrated; and leave early eMMC boot partitions unchanged until independent recovery is established**.
+For MPFree’s requirement that the original system remain recoverable, the present operational answer is: **use the verified `kexec` approach with internal storage disabled for kernel development; use U-Boot only for read-only characterization until a nonpersistent kernel boot has been demonstrated; and leave early eMMC boot partitions unchanged until independent recovery is established**. On an installed 3.10.1, where LoadPin refuses `kexec`, the power-on route is the soft-reboot of section 10.4, with the internal storage unbound in software instead of hidden by a device tree.
 
 
 ## 12. Paths from today's system to a truly independent MPFree OS
@@ -497,6 +505,8 @@ The simplest useful environment keeps the installed kernel and its proven hardwa
 The latter requires careful state management. `acvs.service` has restart behavior; a direct process kill may immediately start another MPC instance and reacquire ALSA or DRM devices. A proper handoff stops the service through systemd, checks that the relevant process and device descriptors have gone away, starts MPFree and confirms its UI/audio health. If MPFree exits or fails to initialize, the supervisor brings back the normal factory service. None of this needs changes to U-Boot.
 
 This stage is valuable for hardware development and DSP performance tuning. It does not satisfy the goal of a complete independent Linux OS, because MPFree still depends on the factory kernel, shared libraries and service layout.
+
+Since 15 November 2026 this stage is how MPFree starts at power-on on an installed 3.10.1, in its first form: an isolated system where `acvs.service` never starts, reached by a systemd soft-reboot from the factory boot rather than by `kexec` ([section 10.4](#104-the-installed-3101-refuses-kexec-mpfree-starts-by-soft-reboot)).
 
 ### 12.2 Stage B: an MPFree kernel and rootfs started by `kexec`
 

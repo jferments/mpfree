@@ -1,5 +1,8 @@
 //! Export in the app (docs/dev/design/export.md): the mixdown, the stems
 //! and the MIDI file from one pass over the song, on `mpfree-export`.
+//! Stems by track (the default) need a replay of the range for each track
+//! that shares its strip with others ([`track_stems`]): the drum kit's
+//! tracks, the synth's, the audio tracks.
 //!
 //! The screen asks the sound loop for the song's facts ([`Facts`]: the
 //! arrangement, the tempo, the tracks, the strips, what plays outside),
@@ -18,7 +21,8 @@ use std::time::Duration;
 
 use mpfree_export::mpfree_midi::msg::Msg;
 use mpfree_export::{
-    choose, folder_name, safe_name, MidiPlan, Mode, Pass, Plan, Rig, Step, Stream, Why,
+    choose, folder_name, safe_name, MidiPlan, Mode, Only, Pass, Plan, Replay, Rig, Step, Stream,
+    Why,
 };
 use mpfree_fx::{Mixer, StripId};
 use mpfree_play::{Event, Out};
@@ -64,9 +68,129 @@ pub struct Facts {
     pub tempos: Vec<(Tick, f64)>,
     /// The sequencer's tracks' names, by index.
     pub tracks: Vec<String>,
-    /// The mixer strips that can have a stem, with their names.
+    /// The mixer strips that can have a stem, with their names (Stems
+    /// by Channel).
     pub stems: Vec<(String, StripId)>,
+    /// Stems by Track: where each sounding track's stem comes from.
+    pub by_track: Vec<TrackStem>,
+    /// Song mode is on now (the audio tracks play only in song mode).
+    pub song_on: bool,
     pub rig: Rig,
+}
+
+/// What a sequencer track plays into, for its stem by track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plays {
+    /// Its own instrument, on its own strip.
+    Own,
+    /// The pads: the drum kit or the synth, whichever has them, on a strip
+    /// other tracks share.
+    Pads,
+    /// Outside gear over MIDI: nothing here to record.
+    Outside,
+    /// Nothing: muted, or no notes in any clip.
+    Nothing,
+}
+
+/// Where a stem by track comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackStem {
+    pub name: String,
+    pub strip: StripId,
+    /// Some: the range plays again with only this track playing into
+    /// `strip`, which it shares. None: the first pass hears it alone
+    /// there.
+    pub only: Option<Only>,
+    /// An audio track's (heard only when the song mode plays).
+    pub audio: bool,
+}
+
+/// Stems by Track: one per track that sounds, in track order, then one
+/// per audio track, then the other channels (the looper, the returns:
+/// `rest`).
+/// - A track with its own instrument has its own strip: the first pass
+///   hears it alone.
+/// - Tracks on the pads share the kit's (or the synth's) strip `pads`:
+///   each gets a replay, unless it is the only one there (then the first
+///   pass hears it alone) or the strip is frozen (it plays its take
+///   whatever the tracks do: one stem for the strip, named after it).
+/// - The audio tracks that sound share the Audio strip the same way.
+/// - A track on outside gear, a muted one and one with no notes get none.
+pub fn track_stems(
+    tracks: &[(String, Plays)],
+    pads: (StripId, bool),
+    audio: &[(u8, String)],
+    audio_frozen: bool,
+    rest: &[(String, StripId)],
+) -> Vec<TrackStem> {
+    let stem = |name: &str, strip, only, audio| TrackStem {
+        name: name.to_string(),
+        strip,
+        only,
+        audio,
+    };
+    let mut out = Vec::new();
+    let on_pads = tracks.iter().filter(|t| t.1 == Plays::Pads).count();
+    let (pad_strip, pads_frozen) = pads;
+    for (k, (name, plays)) in tracks.iter().enumerate() {
+        match plays {
+            Plays::Own => out.push(stem(name, StripId::Track(TRACKS + k), None, false)),
+            Plays::Pads if pads_frozen => {}
+            Plays::Pads if on_pads == 1 => out.push(stem(name, pad_strip, None, false)),
+            Plays::Pads => out.push(stem(name, pad_strip, Some(Only::Track(k as u16)), false)),
+            Plays::Outside | Plays::Nothing => {}
+        }
+    }
+    if pads_frozen && on_pads > 0 {
+        out.push(stem(&mixing::name(pad_strip), pad_strip, None, false));
+    }
+    let a = StripId::Track(mixing::AUDIO);
+    match audio {
+        [] => {}
+        _ if audio_frozen => out.push(stem(&mixing::name(a), a, None, true)),
+        [(_, name)] => out.push(stem(name, a, None, true)),
+        many => {
+            for (t, name) in many {
+                out.push(stem(name, a, Some(Only::AudioTrack(*t)), true));
+            }
+        }
+    }
+    for (name, strip) in rest {
+        out.push(stem(name, *strip, None, false));
+    }
+    out
+}
+
+/// The audio tracks that sound, as their mutes and solos say, with
+/// something on them: their number and name ("Audio 3").
+pub fn audio_heard(audio: &mpfree_audiotracks::AudioTracks) -> Vec<(u8, String)> {
+    let settings: Vec<_> = (0..mpfree_audiotracks::MAX_TRACKS)
+        .filter_map(|t| audio.settings(t).map(|s| (t, s)))
+        .collect();
+    let any_solo = settings.iter().any(|(_, s)| s.solo);
+    settings
+        .iter()
+        .filter(|(t, s)| !s.mute && (!any_solo || s.solo) && !audio.regions(*t).is_empty())
+        .map(|(t, _)| (*t as u8, format!("Audio {}", t + 1)))
+        .collect()
+}
+
+/// While a replay plays (`only`, [`Host::only`]): whether track `track`'s
+/// note (a note-on, note-off or pressure; never a panic or a lock, which
+/// play as in the first pass) is kept quiet. Only the other tracks on the
+/// pads are: the replay's strip is theirs, and everything else plays as
+/// before, so an effect keyed from another strip hears what it heard.
+/// `on_pads`: the track plays the pads (not its own instrument, not
+/// outside gear).
+pub fn quiets(only: Option<Only>, track: u16, on_pads: bool, event: Event) -> bool {
+    let note = matches!(
+        event,
+        Event::NoteOn { .. } | Event::NoteOff { .. } | Event::Pressure { .. }
+    );
+    match only {
+        Some(Only::Track(k)) => note && on_pads && track != k,
+        Some(Only::AudioTrack(_)) | None => false,
+    }
 }
 
 /// The range an export plays, in song ticks, and whether it plays the
@@ -101,10 +225,54 @@ impl Facts {
     /// outside (`rig`, which the sound loop fills in from MIDI out, CV out,
     /// the line input and the plugins; `Rig::default()` where none of
     /// those exist, as in the smoke tests' session).
-    pub fn gather(time: &crate::time::TimeHost, mix: &mixing::MixHost, rig: Rig) -> Facts {
+    ///
+    /// For stems by track: `outside`, the tracks on outside gear (MIDI
+    /// Out); `pads`, the strip the pads play into now (the drum kit's or
+    /// the synth's); `audio`, the audio tracks that sound (their number
+    /// and name).
+    pub fn gather(
+        time: &crate::time::TimeHost,
+        mix: &mixing::MixHost,
+        rig: Rig,
+        outside: &dyn Fn(usize) -> bool,
+        pads: StripId,
+        audio: &[(u8, String)],
+    ) -> Facts {
         let info = time.info();
         let project = time.project();
         let tracks = track_names(time);
+        let stems = stem_strips(&mix.mixer, mix.instruments.in_use(), &tracks);
+        let plays: Vec<(String, Plays)> = project
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(k, t)| {
+                let sounds = !t.mute && t.slots.iter().flatten().any(|c| !c.notes.is_empty());
+                let plays = if outside(k) {
+                    Plays::Outside
+                } else if !sounds {
+                    Plays::Nothing
+                } else if mix.instruments.holds(k) {
+                    Plays::Own
+                } else {
+                    Plays::Pads
+                };
+                (tracks[k].clone(), plays)
+            })
+            .collect();
+        let rest: Vec<(String, StripId)> = stems
+            .iter()
+            .filter(|(_, s)| matches!(s, StripId::Track(mixing::LOOP) | StripId::Return(_)))
+            .cloned()
+            .collect();
+        let frozen = |s: StripId| mix.mixer.frozen(s).is_some();
+        let by_track = track_stems(
+            &plays,
+            (pads, frozen(pads)),
+            audio,
+            frozen(StripId::Track(mixing::AUDIO)),
+            &rest,
+        );
         let arrangement_end = if project.arrangement.is_empty() {
             0
         } else {
@@ -122,10 +290,22 @@ impl Facts {
                 .iter()
                 .map(|s| (s.start, s.bpm))
                 .collect(),
-            stems: stem_strips(&mix.mixer, mix.instruments.in_use(), &tracks),
+            stems,
+            by_track,
+            song_on: time.song_on(),
             tracks,
             rig,
         }
+    }
+
+    /// Stems by track for a range: how many, and how many of them need a
+    /// replay (the audio tracks only when the song mode plays).
+    pub fn track_count(&self, range: Range) -> (usize, usize) {
+        let song = range.song.unwrap_or(self.song_on);
+        let heard = || self.by_track.iter().filter(|t| song || !t.audio);
+        let first = heard().filter(|t| t.only.is_none()).count();
+        let replays = heard().filter(|t| t.only.is_some()).count();
+        (first.min(MAX_STREAMS - 1) + replays, replays)
     }
 
     /// The panel's setup, and how the export would play now.
@@ -150,6 +330,9 @@ impl Facts {
             from_bar: (self.bar_start() / self.bar_ticks.max(1)) as u32 + 1,
             mode: mode_words(mode, &why),
             stems: self.stems.len().min(MAX_STREAMS - 1),
+            tracks_arrangement: self
+                .track_count(self.range(mpfree_browser_ui::ExportRange::Arrangement)),
+            tracks_bars: self.track_count(self.range(mpfree_browser_ui::ExportRange::Bars(1))),
             folder: format!("Recordings / {folder}"),
             format,
         };
@@ -226,13 +409,28 @@ impl Facts {
     ) -> (Plan, Range) {
         let range = self.range(choice.range);
         let mut streams = Vec::new();
+        let mut replays = Vec::new();
         if choice.mixdown {
             streams.push(Stream::mixdown());
         }
-        if choice.stems {
-            for (name, strip) in &self.stems {
-                if streams.len() < MAX_STREAMS {
-                    streams.push(Stream::stem(name, *strip));
+        match (choice.stems, choice.by) {
+            (false, _) => {}
+            (true, mpfree_browser_ui::StemsBy::Channel) => {
+                for (name, strip) in &self.stems {
+                    if streams.len() < MAX_STREAMS {
+                        streams.push(Stream::stem(name, *strip));
+                    }
+                }
+            }
+            (true, mpfree_browser_ui::StemsBy::Track) => {
+                let song = range.song.unwrap_or(self.song_on);
+                for t in self.by_track.iter().filter(|t| song || !t.audio) {
+                    let stream = Stream::stem(&t.name, t.strip);
+                    match t.only {
+                        Some(only) => replays.push(Replay { stream, only }),
+                        None if streams.len() < MAX_STREAMS => streams.push(stream),
+                        None => {}
+                    }
                 }
             }
         }
@@ -247,6 +445,7 @@ impl Facts {
             folder: folder.to_path_buf(),
             song: song.to_string(),
             streams,
+            replays,
             midi,
             mode,
             rate: self.rate,
@@ -292,10 +491,10 @@ pub fn mode_words(mode: Mode, why: &Why) -> String {
             "Fast, quiet: faster than real time, the speakers quiet (Prefs > Export)".into()
         }
         (Mode::Listen, Why::Chosen) => {
-            "Listen: it plays once in real time and you hear it (Prefs > Export)".into()
+            "Listen: it plays in real time and you hear it (Prefs > Export)".into()
         }
         (Mode::Listen, w) => format!(
-            "Listen: it plays once in real time and you hear it. {}",
+            "Listen: it plays in real time and you hear it. {}",
             w.words(mode)
                 .trim_start_matches("Listening: ")
                 .chars()
@@ -452,6 +651,20 @@ impl Host {
         self.now.is_some()
     }
 
+    /// A replay's track while one plays: the sound loop keeps the other
+    /// tracks on its strip quiet ([`quiets`], and the audio tracks'
+    /// `set_only`).
+    pub fn only(&self) -> Option<Only> {
+        self.now.as_ref().and_then(|r| r.run.pass.only())
+    }
+
+    /// The pass that just began has others before or after it (replays):
+    /// the arps' random notes start again from their seed (main.rs, which
+    /// holds them).
+    pub fn replays(&self) -> bool {
+        self.now.as_ref().is_some_and(|r| r.run.pass.passes() > 1)
+    }
+
     /// Fast mode runs now: the loop runs periods back to back with the
     /// speakers quiet (main.rs).
     pub fn fast(&self) -> bool {
@@ -476,8 +689,10 @@ impl Host {
 
     /// The pass arrives: its capture points go on the mixer, and the
     /// transport goes to the range's start (no loop; song mode on for the
-    /// arrangement) and plays. The pass comes back at once if the mixer
-    /// refused (or one already runs).
+    /// arrangement) and plays. With replays, every pass starts the same:
+    /// the mixer's effects cleared (delay lines, free-running LFOs) and
+    /// the chance rolls anchored to the start. The pass comes back at once
+    /// if the mixer refused (or one already runs).
     pub fn begin(
         &mut self,
         mut run: Box<Run>,
@@ -489,9 +704,14 @@ impl Host {
             run.said = Some("another export is running".into());
             return Err(run);
         }
+        let replays = run.pass.passes() > 1;
+        if replays {
+            mixer.reset();
+        }
         if !run.pass.attach(mixer) {
             return Err(run);
         }
+        time.anchor_dice(replays);
         let info = time.info();
         let before = Before {
             song: time.song_on(),
@@ -606,6 +826,7 @@ impl Host {
         } = self.now.take()?;
         run.pass.detach(mixer);
         self.tap.stop();
+        time.anchor_dice(false);
         if time.info().state.rolling() {
             time.command(Command::Stop);
         }
@@ -683,7 +904,7 @@ pub fn plugins_in(mixer: &Mixer, instruments: &crate::instruments::Instruments) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_browser_ui::{ExportChoice, ExportRange};
+    use mpfree_browser_ui::{ExportChoice, ExportRange, StemsBy};
 
     fn facts() -> Facts {
         Facts {
@@ -699,6 +920,18 @@ mod tests {
                 ("Bass".into(), StripId::Track(4)),
                 ("Return A".into(), StripId::Return(0)),
             ],
+            by_track: track_stems(
+                &[
+                    ("Kick".into(), Plays::Pads),
+                    ("Bass".into(), Plays::Own),
+                    ("Hats".into(), Plays::Pads),
+                ],
+                (StripId::Track(mixing::DRUMS), false),
+                &[(0, "Audio 1".into()), (2, "Audio 3".into())],
+                false,
+                &[("Return A".into(), StripId::Return(0))],
+            ),
+            song_on: false,
             rig: Rig::default(),
         }
     }
@@ -726,6 +959,11 @@ mod tests {
         assert_eq!(setup.arrangement.as_deref(), Some("4:48, 96 bars"));
         assert_eq!(setup.from_bar, 6);
         assert_eq!(setup.stems, 3);
+        // By track: Kick, Bass, Hats, two audio tracks and the return; the
+        // kick, the hats and the audio tracks each need a replay. Bars of
+        // the clips (song mode off) leave the audio tracks out.
+        assert_eq!(setup.tracks_arrangement, (6, 4));
+        assert_eq!(setup.tracks_bars, (4, 2));
         assert_eq!((mode, why), (Mode::Fast, Why::Chosen));
         assert!(setup.mode.starts_with("Fast, quiet"));
         assert_eq!(setup.folder, "Recordings / Song 2026-11-14 01.32");
@@ -745,6 +983,7 @@ mod tests {
             mixdown: true,
             stems: true,
             midi: true,
+            by: StemsBy::Channel,
             range: ExportRange::Bars(50),
             format: panel_format(mpfree_fx::Bits::I16, 48_000),
         };
@@ -787,7 +1026,7 @@ mod tests {
         assert_eq!(mode, Mode::Listen);
         assert_eq!(
             mode_words(mode, &why),
-            "Listen: it plays once in real time and you hear it. Juno plays outside gear over MIDI, which only plays in real time"
+            "Listen: it plays in real time and you hear it. Juno plays outside gear over MIDI, which only plays in real time"
         );
     }
 
@@ -858,6 +1097,11 @@ mod tests {
         /// Events the player "sends" (period, offset, event), as SeqPads
         /// hands them to the tap.
         inject: Vec<(u64, u32, Event)>,
+        /// Two tracks play the synth (a kick's tone and a hat's), each
+        /// kept quiet as SeqPads keeps it in a replay; else one tone.
+        two: bool,
+        /// Frames rolled in this pass: the tones start with the range.
+        rolled: usize,
     }
 
     impl Loop {
@@ -868,6 +1112,8 @@ mod tests {
                 host: Host::new(),
                 i: 0,
                 inject: Vec::new(),
+                two: false,
+                rolled: 0,
             };
             // The app's mixer has always played before an export starts.
             l.period(false);
@@ -885,6 +1131,8 @@ mod tests {
                 tempos: vec![(0, 120.0)],
                 tracks: vec!["Track 1".into()],
                 stems: stem_strips(&self.mix.mixer, self.mix.instruments.in_use(), &[]),
+                by_track: Vec::new(),
+                song_on: false,
                 rig: Rig::default(),
             }
         }
@@ -909,13 +1157,31 @@ mod tests {
             }
             let rolling = self.time.block().spans().iter().any(|s| s.state.rolling());
             let at = self.i as usize * PERIOD;
-            let synth: [f32; PERIOD] = std::array::from_fn(|k| {
-                if tone && rolling {
-                    0.25 * (std::f32::consts::TAU * 440.0 * (at + k) as f32 / 44_100.0).sin()
-                } else {
-                    0.0
+            let only = self.host.only();
+            let plays = |t: u16| {
+                !quiets(
+                    only,
+                    t,
+                    true,
+                    Event::NoteOn {
+                        note: 60,
+                        velocity: 100,
+                    },
+                )
+            };
+            let w = |hz: f32, n: usize| (std::f32::consts::TAU * hz * n as f32 / 44_100.0).sin();
+            let rolled = self.rolled;
+            let synth: [f32; PERIOD] = std::array::from_fn(|k| match (tone && rolling, self.two) {
+                (false, _) => 0.0,
+                (true, false) => 0.25 * w(440.0, at + k),
+                (true, true) => {
+                    let n = rolled + k;
+                    let kick = if plays(0) { 0.3 * w(55.0, n) } else { 0.0 };
+                    let hats = if plays(1) { 0.1 * w(6000.0, n) } else { 0.0 };
+                    kick + hats
                 }
             });
+            self.rolled = if rolling { self.rolled + PERIOD } else { 0 };
             let z = [0.0f32; PERIOD];
             let ctx = crate::mixing::ctx(
                 crate::RATE,
@@ -967,6 +1233,7 @@ mod tests {
             mixdown: true,
             stems: true,
             midi: true,
+            by: StemsBy::Channel,
             range: ExportRange::Bars(1),
             format: panel_format(mpfree_fx::Bits::I24, crate::RATE),
         };
@@ -1080,6 +1347,7 @@ mod tests {
             mixdown: true,
             stems: false,
             midi: false,
+            by: StemsBy::Track,
             range: ExportRange::Bars(4),
             format: panel_format(mpfree_fx::Bits::I24, crate::RATE),
         };
@@ -1106,6 +1374,228 @@ mod tests {
         assert!(!l.host.running());
         assert_eq!(job.finish(run.pass), mpfree_export::Outcome::Cancelled);
         assert!(!folder.exists());
+    }
+
+    #[test]
+    fn stems_by_track_come_from_the_track_s_strip_or_a_replay() {
+        let rest = [("Return A".to_string(), StripId::Return(0))];
+        let drums = StripId::Track(mixing::DRUMS);
+        let tracks = [
+            ("Kick".to_string(), Plays::Pads),
+            ("Keys".to_string(), Plays::Own),
+            ("Juno".to_string(), Plays::Outside),
+            ("Empty".to_string(), Plays::Nothing),
+            ("Hats".to_string(), Plays::Pads),
+        ];
+        let audio = [(1, "Audio 2".to_string()), (4, "Audio 5".to_string())];
+        let got = track_stems(&tracks, (drums, false), &audio, false, &rest);
+        let short: Vec<(&str, StripId, Option<Only>)> = got
+            .iter()
+            .map(|t| (t.name.as_str(), t.strip, t.only))
+            .collect();
+        let a = StripId::Track(mixing::AUDIO);
+        assert_eq!(
+            short,
+            [
+                ("Kick", drums, Some(Only::Track(0))),
+                ("Keys", StripId::Track(TRACKS + 1), None),
+                ("Hats", drums, Some(Only::Track(4))),
+                ("Audio 2", a, Some(Only::AudioTrack(1))),
+                ("Audio 5", a, Some(Only::AudioTrack(4))),
+                ("Return A", StripId::Return(0), None),
+            ]
+        );
+        assert!(got[3].audio && !got[0].audio);
+        // One track on the pads, one audio track: the first pass hears
+        // each alone.
+        let got = track_stems(&tracks[..4], (drums, false), &audio[..1], false, &[]);
+        assert_eq!(got[0].only, None);
+        assert_eq!((got[0].name.as_str(), got[0].strip), ("Kick", drums));
+        assert_eq!((got[2].name.as_str(), got[2].only), ("Audio 2", None));
+        // A frozen kit plays its take whatever the tracks do: one stem,
+        // the kit's.
+        let got = track_stems(&tracks, (drums, true), &audio, true, &[]);
+        let names: Vec<&str> = got.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Keys", "Drums", "Audio"]);
+        assert!(got.iter().all(|t| t.only.is_none()));
+    }
+
+    #[test]
+    fn a_replay_keeps_only_the_other_tracks_on_the_pads_quiet() {
+        let on = Event::NoteOn {
+            note: 36,
+            velocity: 100,
+        };
+        let one = Some(Only::Track(2));
+        assert!(quiets(one, 0, true, on));
+        assert!(quiets(one, 0, true, Event::NoteOff { note: 36 }));
+        assert!(quiets(one, 0, true, Event::Pressure { note: 36, value: 9 }));
+        assert!(!quiets(one, 2, true, on), "the replay's own track");
+        assert!(!quiets(one, 0, false, on), "its own instrument, or outside");
+        assert!(!quiets(one, 0, true, Event::AllOff), "a panic as before");
+        assert!(!quiets(None, 0, true, on));
+        assert!(!quiets(Some(Only::AudioTrack(0)), 0, true, on));
+    }
+
+    #[test]
+    fn the_plan_by_track_puts_shared_tracks_in_replays() {
+        let f = facts();
+        let c = ExportChoice {
+            mixdown: true,
+            stems: true,
+            midi: false,
+            by: StemsBy::Track,
+            range: ExportRange::Arrangement,
+            format: panel_format(mpfree_fx::Bits::I24, 48_000),
+        };
+        let (p, _) = f.plan(&c, Path::new("/x/y"), "Night market", Mode::Fast);
+        let first: Vec<&str> = p.streams.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(first, ["Mixdown", "Bass", "Return A"]);
+        let replays: Vec<(&str, Only)> = p
+            .replays
+            .iter()
+            .map(|r| (r.stream.name.as_str(), r.only))
+            .collect();
+        assert_eq!(
+            replays,
+            [
+                ("Kick", Only::Track(0)),
+                ("Hats", Only::Track(2)),
+                ("Audio 1", Only::AudioTrack(0)),
+                ("Audio 3", Only::AudioTrack(2)),
+            ]
+        );
+        assert_eq!(p.passes(), 5);
+        // Bars of the clips with song mode off: the audio tracks don't
+        // play, so they get no replay.
+        let bars = ExportChoice {
+            range: ExportRange::Bars(4),
+            ..c
+        };
+        let (p, _) = f.plan(&bars, Path::new("/x/y"), "Night market", Mode::Fast);
+        assert_eq!(p.passes(), 3);
+        let on = Facts {
+            song_on: true,
+            ..facts()
+        };
+        assert_eq!(
+            on.plan(&bars, Path::new("/x"), "N", Mode::Fast).0.passes(),
+            5
+        );
+        // By channel: one pass.
+        let ch = ExportChoice {
+            by: StemsBy::Channel,
+            ..c
+        };
+        let (p, _) = f.plan(&ch, Path::new("/x/y"), "Night market", Mode::Fast);
+        assert_eq!(p.passes(), 1);
+        assert_eq!(p.streams.len(), 4);
+    }
+
+    #[test]
+    fn stems_by_track_replay_the_range_with_each_track_alone() {
+        let mut l = Loop::new();
+        l.two = true;
+        l.time.command(Command::Locate(2 * 3840 + 500));
+        l.period(false);
+        let before = l.time.info();
+        let synth = StripId::Track(mixing::SYNTH);
+        let stem = |name: &str, k: u16| TrackStem {
+            name: name.into(),
+            strip: synth,
+            only: Some(Only::Track(k)),
+            audio: false,
+        };
+        let f = Facts {
+            by_track: vec![stem("Kick", 0), stem("Hats", 1)],
+            ..l.facts()
+        };
+        let c = mpfree_browser_ui::ExportChoice {
+            mixdown: true,
+            stems: true,
+            midi: false,
+            by: StemsBy::Track,
+            range: ExportRange::Bars(1),
+            format: panel_format(mpfree_fx::Bits::I24, crate::RATE),
+        };
+        let folder = scratch("by-track");
+        let (mut plan, range) = f.plan(&c, &folder, "Night market", Mode::Fast);
+        // The synth's strip as the first pass hears it, to check by.
+        plan.streams.push(Stream::stem("Synth", synth));
+        let (pass, mut job) = mpfree_export::start(plan).unwrap();
+        let mut run = Box::new(Run {
+            pass,
+            range,
+            said: None,
+        });
+        let mut onlys = Vec::new();
+        let o = loop {
+            l.host.begin(run, &mut l.mix.mixer, &mut l.time).unwrap();
+            assert!(l.host.replays());
+            onlys.push(l.host.only());
+            let mut n = 0;
+            let back = loop {
+                n += 1;
+                assert!(n < 3000, "the pass ends");
+                let in_range = l.time.info().position < range.end;
+                if let Some(b) = l.period(in_range) {
+                    break b;
+                }
+            };
+            assert_eq!(back.said, None);
+            // Between passes the transport is back where it was.
+            l.period(false);
+            assert_eq!(l.time.info().position, before.position);
+            assert!(!l.time.info().state.rolling());
+            match job.next(back.pass) {
+                mpfree_export::Next::Play(next) => {
+                    assert_eq!(job.progress().pass, onlys.len());
+                    run = Box::new(Run {
+                        pass: next,
+                        range,
+                        said: None,
+                    });
+                }
+                mpfree_export::Next::Finish(p) => break job.finish(p),
+            }
+        };
+        assert_eq!(onlys, [None, Some(Only::Track(0)), Some(Only::Track(1))]);
+        let mpfree_export::Outcome::Done(d) = &o else {
+            panic!("{o:?}");
+        };
+        let names: Vec<String> = d
+            .wavs
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["Mixdown.wav", "Synth.wav", "Kick.wav", "Hats.wav"]);
+        let read = |n: &str| {
+            let b = std::fs::read(folder.join(n)).unwrap();
+            (44..b.len())
+                .step_by(6)
+                .map(|i| (i32::from_le_bytes([0, b[i], b[i + 1], b[i + 2]]) >> 8) as f32)
+                .collect::<Vec<f32>>()
+        };
+        let (all, kick, hats) = (read("Synth.wav"), read("Kick.wav"), read("Hats.wav"));
+        assert_eq!(all.len(), kick.len());
+        assert_eq!(all.len(), hats.len());
+        assert_eq!(all.len() as u64, d.frames);
+        // Each replay is its track alone, sample for sample what the
+        // first pass heard of it (in 24-bit steps).
+        for i in 0..all.len() {
+            assert!(
+                (kick[i] + hats[i] - all[i]).abs() <= 2.0,
+                "frame {i}: {} + {} != {}",
+                kick[i],
+                hats[i],
+                all[i]
+            );
+        }
+        let loud = |v: &[f32]| v.iter().map(|x| x.abs()).fold(0.0, f32::max);
+        assert!(loud(&kick) > 1e5 && loud(&hats) > 1e5);
+        let after = l.time.info();
+        assert_eq!(after.position, before.position);
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

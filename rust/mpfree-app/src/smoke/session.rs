@@ -51,6 +51,10 @@ pub struct Hits {
     /// sounding kit when the session has one ([`Session::make_sounds`]).
     queued: Vec<(usize, u8, u32)>,
     released: Vec<(usize, u32)>,
+    /// While an export's replay plays one track alone: the other tracks'
+    /// notes are kept quiet, as main.rs's pads keep them (`export::quiets`;
+    /// every track plays the pads here).
+    pub only: Option<mpfree_export::Only>,
 }
 
 /// A note the time engine started, with its track: what a test of a whole
@@ -66,6 +70,11 @@ pub struct Played {
 }
 
 impl Hits {
+    /// Kept quiet by an export's replay of another track.
+    fn quiet(&self, o: &mpfree_play::Out) -> bool {
+        crate::export::quiets(self.only, o.track, true, o.event)
+    }
+
     fn note(&mut self, o: &mpfree_play::Out) {
         if let mpfree_play::Event::NoteOn { note, velocity } = o.event {
             self.played.push(Played {
@@ -92,6 +101,9 @@ impl time::Pads for Hits {
     // Every event goes on as usual; the notes are written down first.
     fn out(&mut self, o: &mpfree_play::Out) -> bool {
         use mpfree_play::Event;
+        if self.quiet(o) {
+            return true;
+        }
         self.note(o);
         let pad = match o.event {
             Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
@@ -108,6 +120,9 @@ impl time::Pads for Hits {
     fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
         use crate::midi_out::{kit_notes, NoteIs};
         use mpfree_play::Event;
+        if self.quiet(o) {
+            return None;
+        }
         self.note(o);
         // As main.rs's pads: the MIDI file gets what MIDI Out would.
         let is = match o.event {
@@ -721,6 +736,7 @@ impl Session {
             self.out.show(ToUi::Arp(Box::new(v)));
         }
         self.hits.base = t;
+        self.hits.only = self.export.only();
         self.time
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
         for (o, is) in std::mem::take(&mut self.hits.tapped) {
@@ -791,6 +807,11 @@ impl Session {
         let z = [0f32; PERIOD];
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
         let (mut al, mut ar) = ([0f32; PERIOD], [0f32; PERIOD]);
+        // An export's replay of one audio track: only it plays (export.rs).
+        self.tracks.host.tracks.set_only(match self.export.only() {
+            Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
+            _ => None,
+        });
         self.tracks.period(
             self.time.block(),
             self.time.tempo_map(),
@@ -1112,16 +1133,30 @@ impl Session {
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
             FromUi::ExportAsk => {
+                // Nothing plays outside here, and every track plays the
+                // pads: the drum kit's strip or the synth's.
+                let pads = mpfree_fx::StripId::Track(if self.synth_on {
+                    mixing::SYNTH
+                } else {
+                    mixing::DRUMS
+                });
                 let f = crate::export::Facts::gather(
                     &self.time,
                     &self.mix,
                     mpfree_export::Rig::default(),
+                    &|_| false,
+                    pads,
+                    &crate::export::audio_heard(&self.tracks.host.tracks),
                 );
                 self.out.show(ToUi::ExportFacts(Box::new(f)));
             }
             FromUi::Export(run) => {
-                if let Err(run) = self.export.begin(run, &mut self.mix.mixer, &mut self.time) {
-                    self.out.show(ToUi::ExportOver(run));
+                match self.export.begin(run, &mut self.mix.mixer, &mut self.time) {
+                    // With replays, the arps' random notes start the same
+                    // in every pass, as in main.rs.
+                    Ok(()) if self.export.replays() => self.app.arps.reseed(),
+                    Ok(()) => {}
+                    Err(run) => self.out.show(ToUi::ExportOver(run)),
                 }
             }
             // The sampler's and the store's: nothing to check here.
