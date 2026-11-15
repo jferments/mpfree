@@ -2112,8 +2112,14 @@ mod tests {
         page.moved(1, x + 60, y - 60, r, &mut out);
         page.up(1, x + 60, y - 60, r, false, &mut out);
         let set = sets(&out);
-        assert!(set.iter().any(|&(id, v)| id == freq(0) && v > 100.0), "{set:?}");
-        assert!(set.iter().any(|&(id, v)| id == gain(0) && v > 1.0), "{set:?}");
+        assert!(
+            set.iter().any(|&(id, v)| id == freq(0) && v > 100.0),
+            "{set:?}"
+        );
+        assert!(
+            set.iter().any(|&(id, v)| id == gain(0) && v > 1.0),
+            "{set:?}"
+        );
         assert!(matches!(out.last(), Some(ChainAction::Release(_))));
         assert_eq!(page.picked(), Some(Band::Band(0)));
     }
@@ -2155,7 +2161,11 @@ mod tests {
         page.press(Button::Chip(Band::Band(0)), &mut out);
         page.press(Button::Listen, &mut out);
         assert_eq!(
-            sets(&out).iter().filter(|s| s.0 == LISTEN).copied().collect::<Vec<_>>(),
+            sets(&out)
+                .iter()
+                .filter(|s| s.0 == LISTEN)
+                .copied()
+                .collect::<Vec<_>>(),
             [(LISTEN, 2.0), (LISTEN, 3.0), (LISTEN, 0.0), (LISTEN, 1.0)]
         );
         let stop = page.stop_listening();

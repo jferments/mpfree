@@ -57,6 +57,9 @@ pub struct InsertView {
     pub key: Option<String>,
     /// Its share of a period while profiling, per cent.
     pub cost_pct: Option<f32>,
+    /// The parametric EQ's values, by parameter id, when this insert is
+    /// one (the EQ look draws its curve from them).
+    pub eq: Option<Vec<f32>>,
 }
 
 /// One send: its level and whether it is taken before the fader.
@@ -132,7 +135,16 @@ pub struct StripView {
     pub take: Option<TakeView>,
 }
 
+/// The parametric EQ's engine id.
+pub const EQ_ID: &str = "mpfree.fx.eq";
+
 impl StripView {
+    /// The slot of the strip's first parametric EQ: the one the EQ look
+    /// shows (the Channel strip's EQ stage is not one).
+    pub fn eq_slot(&self) -> Option<usize> {
+        self.inserts.iter().position(|i| i.eq.is_some())
+    }
+
     /// A strip at its defaults, for building a state by hand.
     pub fn new(id: StripId, name: impl Into<String>) -> StripView {
         let has_sends = matches!(
@@ -384,6 +396,10 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
                     .map_or_else(|| "?".to_string(), mpfree_fx::families::insert_name),
                 on: c.is_on(slot),
                 key: keys[slot].map(name),
+                eq: c
+                    .node(slot)
+                    .filter(|n| n.info().id == EQ_ID)
+                    .map(|n| n.params().iter().map(|p| n.param(p.id)).collect()),
                 cost_pct: if profiling {
                     c.probe_mut(slot)
                         .map(|p| p.take_window().realtime_pct(rate) as f32)
