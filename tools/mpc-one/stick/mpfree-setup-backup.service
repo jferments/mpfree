@@ -1,0 +1,13 @@
+[Unit]
+Description=MPFree first-start setup: back up the MPC's eMMC to the stick, read-only
+DefaultDependencies=no
+After=mpfree-test-internal-off.service mpfree-test-storage.service
+Requires=mpfree-test-internal-off.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /etc/mpfree-test/setup-backup.sh
+TimeoutStartSec=3600

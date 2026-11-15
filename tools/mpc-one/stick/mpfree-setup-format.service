@@ -1,0 +1,18 @@
+[Unit]
+Description=MPFree stick, first boot: make partition 4's empty filesystem (only once, only with the creator's mark)
+DefaultDependencies=no
+After=systemd-udevd.service mpfree-test-internal-off.service
+Requires=mpfree-test-internal-off.service
+Before=mpfree-test-storage.service mpfree-test-app.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /etc/mpfree-test/setup-format.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=sysinit.target
