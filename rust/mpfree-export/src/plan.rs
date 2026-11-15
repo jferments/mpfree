@@ -1,5 +1,7 @@
 //! What an export makes and where: the streams (a capture point and a file
-//! each), the MIDI file, the folder, and names a USB stick takes.
+//! each), the replays (a stem whose track shares its mixer strip, made by
+//! playing the range again with only that track), the MIDI file, the
+//! folder, and names a USB stick takes.
 
 use std::path::PathBuf;
 
@@ -36,6 +38,29 @@ impl Stream {
     }
 }
 
+/// What plays alone in a [`Replay`]: the app keeps quiet everything else
+/// that plays into the replay's strip (and only that, so a sidechain from
+/// another strip still hears what it heard in the first pass).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Only {
+    /// The sequencer's track `k` (from 0): the other tracks that play
+    /// into the same engine (the drum kit, the synth) are quiet.
+    Track(u16),
+    /// Audio track `k` (from 0): the other audio tracks are quiet.
+    AudioTrack(u8),
+}
+
+/// A stem made by playing the range again with only its track (`only`)
+/// playing: for a track that shares its mixer strip with other tracks
+/// (the drum kit's, the synth's, the audio tracks' sum), where the first
+/// pass can't tell them apart. Its file is the strip's sound, lined up
+/// with the first pass's files and as long as them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replay {
+    pub stream: Stream,
+    pub only: Only,
+}
+
 /// The MIDI file: the notes each track played, with the song's tempo map
 /// and meter (see `mpfree_midi::smf`).
 #[derive(Clone, Debug, PartialEq)]
@@ -65,8 +90,10 @@ pub struct Plan {
     pub folder: PathBuf,
     /// The project's name: the MIDI file's name and its song name.
     pub song: String,
-    /// The WAV files, in order.
+    /// The first pass's WAV files, in order.
     pub streams: Vec<Stream>,
+    /// One more pass each, after the first, in order: a stem each.
+    pub replays: Vec<Replay>,
     pub midi: Option<MidiPlan>,
     pub mode: Mode,
     /// The mixer's rate.
@@ -76,8 +103,24 @@ pub struct Plan {
     /// The range's length in frames, when known: for the time left.
     pub length: Option<u64>,
     /// The first of the mixer's capture slots the export may use; it uses
-    /// one per stream from there.
+    /// one per stream from there (a replay uses one).
     pub first_slot: usize,
+}
+
+impl Plan {
+    /// The passes over the range: the first, and one per replay.
+    pub fn passes(&self) -> usize {
+        1 + self.replays.len()
+    }
+
+    /// Every WAV file's stream: the first pass's, then each replay's.
+    pub fn all_streams(&self) -> Vec<Stream> {
+        self.streams
+            .iter()
+            .cloned()
+            .chain(self.replays.iter().map(|r| r.stream.clone()))
+            .collect()
+    }
 }
 
 /// Characters a FAT or exFAT stick (and Windows) refuses in a name.

@@ -2618,11 +2618,14 @@ struct SeqPads<'a> {
     /// While an export runs, every event goes to its MIDI file too, as
     /// MIDI Out would send it (export.rs).
     tap: &'a mut export::Tap,
+    /// While an export's replay plays one track alone: the other tracks
+    /// on the pads are kept quiet (`export::quiets`).
+    only: Option<mpfree_export::Only>,
 }
 
-/// What the Export panel and plan need to know about the song (export.rs),
-/// gathered when Export is pressed.
-fn export_facts(
+/// What plays outside the MPC, for the Export panel's Fast or Listen
+/// (export.rs), gathered when Export is pressed.
+fn export_rig(
     time: &time::TimeHost,
     mix: &mixing::MixHost,
     midi_out: &midi_out::MidiOut,
@@ -2630,9 +2633,9 @@ fn export_facts(
     cv_out: &cv_out::CvOut,
     app: &app::App,
     looper: &looping::LoopHost,
-) -> export::Facts {
+) -> mpfree_export::Rig {
     let tracks = export::track_names(time);
-    let rig = mpfree_export::Rig {
+    mpfree_export::Rig {
         external_midi: (0..tracks.len())
             .filter(|&t| midi_out.takes(t as u16))
             .map(|t| tracks[t].clone())
@@ -2643,8 +2646,7 @@ fn export_facts(
         clock_in: music.leader_name().map(str::to_string),
         offload: false,
         plugins: export::plugins_in(&mix.mixer, &mix.instruments),
-    };
-    export::Facts::gather(time, mix, rig)
+    }
 }
 
 /// A learned MIDI control's value (0 to 1 over the parameter's range) set
@@ -2830,6 +2832,9 @@ impl time::Pads for SeqPads<'_> {
     /// Returns what the armed track records as heard.
     fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
         use mpfree_play::Event;
+        if self.quiet(o) {
+            return None;
+        }
         let notes = self.synth.is_some() && self.live.plays_notes();
         self.cv_live(o, notes);
         if self.midi.takes(o.track) {
@@ -2908,6 +2913,9 @@ impl time::Pads for SeqPads<'_> {
     /// Out's notes and goes on to the pads.
     fn out(&mut self, o: &mpfree_play::Out) -> bool {
         use mpfree_play::Event;
+        if self.quiet(o) {
+            return true;
+        }
         let pad = match o.event {
             Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
                 usize::from(note)
@@ -2928,6 +2936,15 @@ impl time::Pads for SeqPads<'_> {
 }
 
 impl SeqPads<'_> {
+    /// An export's replay plays one track alone: another track's note on
+    /// the pads is kept quiet (taken, so nothing plays or records it).
+    fn quiet(&self, o: &mpfree_play::Out) -> bool {
+        self.only.is_some() && {
+            let on_pads = !self.midi.takes(o.track) && !self.own.holds(usize::from(o.track));
+            export::quiets(self.only, o.track, on_pads, o.event)
+        }
+    }
+
     /// A clip's event on a track with its own instrument: played there,
     /// not on the pads. A panic or a lock goes on as usual.
     fn clip_own(&mut self, o: &mpfree_play::Out) -> bool {
@@ -4207,11 +4224,33 @@ fn player_session(
                 }
                 gui::FromUi::SaveProject => save_asked = true,
                 gui::FromUi::ExportAsk => {
-                    let f = export_facts(&time, &mix, &midi_out, &music, &cv_out, &app, &looper);
+                    let rig = export_rig(&time, &mix, &midi_out, &music, &cv_out, &app, &looper);
+                    // Stems by track: the pads play the synth or the drum
+                    // kit; the audio tracks that sound.
+                    let pads = mpfree_fx::StripId::Track(if synth_on {
+                        mixing::SYNTH
+                    } else {
+                        mixing::DRUMS
+                    });
+                    let f = export::Facts::gather(
+                        &time,
+                        &mix,
+                        rig,
+                        &|t| midi_out.takes(t as u16),
+                        pads,
+                        &export::audio_heard(&tracks.host.tracks),
+                    );
                     out.show(gui::ToUi::ExportFacts(Box::new(f)));
                 }
                 gui::FromUi::Export(run) => match export.begin(run, &mut mix.mixer, &mut time) {
-                    Ok(()) => out.note("export: the pass started"),
+                    Ok(()) => {
+                        // With replays, the arps' random notes start the
+                        // same in every pass.
+                        if export.replays() {
+                            app.arps.reseed();
+                        }
+                        out.note("export: the pass started");
+                    }
                     Err(run) => out.show(gui::ToUi::ExportOver(run)),
                 },
                 // The loops go in once the old ones have faded out.
@@ -5316,6 +5355,7 @@ fn player_session(
             midi: &mut midi_out,
             cv: &mut cv_out,
             own: &mut mix.instruments,
+            only: export.only(),
             tap: &mut export.tap,
         };
         time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
@@ -5524,6 +5564,11 @@ fn player_session(
         // The audio tracks record the same line input onto the Song view's
         // lanes, and play into the mixer's Audio track (song mode only).
         tracks.follow_latency(app.settings.loop_latency);
+        // An export's replay of one audio track: only it plays (export.rs).
+        tracks.host.tracks.set_only(match export.only() {
+            Some(mpfree_export::Only::AudioTrack(t)) => Some(usize::from(t)),
+            _ => None,
+        });
         tracks.period(
             time.block(),
             time.tempo_map(),

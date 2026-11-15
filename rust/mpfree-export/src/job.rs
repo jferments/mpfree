@@ -1,7 +1,8 @@
 //! The screen's half of an export: [`start`] makes the folder, the files
-//! and the writer thread, [`Job`] says how far it has got, and
-//! [`Job::finish`] closes it once the pass comes back from the sound
-//! thread.
+//! and the first pass's writer thread, [`Job`] says how far it has got,
+//! [`Job::next`] gives the next replay's pass when one comes back from
+//! the sound thread, and [`Job::finish`] closes the export after the
+//! last.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -15,8 +16,8 @@ use mpfree_fx::{bounce, BounceOut, Pumped, StripId, WavFormat};
 use mpfree_midi::smf::NoteLog;
 
 use crate::mode::Mode;
-use crate::pass::{Failure, Pass, Shared, Step, NOT_ENDED};
-use crate::plan::{file_names, safe_name, MidiPlan, Plan};
+use crate::pass::{Failure, How, Pass, Shared, Step, NOT_ENDED};
+use crate::plan::{file_names, safe_name, MidiPlan, Plan, Replay};
 
 /// Seconds of sound each file's ring holds: room for a stick that stalls
 /// now and then (about 0.75 MB a file at 48 kHz).
@@ -28,23 +29,73 @@ pub const PUMP_EVERY: Duration = Duration::from_millis(20);
 /// sounded; or why it stopped.
 type Written = Result<(u64, u64, Vec<bool>), String>;
 
+/// What [`Job::next`] says.
+pub enum Next {
+    /// The next replay's pass: send it to the sound thread.
+    Play(Pass),
+    /// No other pass: give this one to [`Job::finish`].
+    Finish(Pass),
+}
+
+/// What a pass that played to its end gave.
+struct Closed {
+    /// Its files (indices into the job's).
+    files: std::ops::Range<usize>,
+    /// Their frames at the mixer's rate, where their sound ends, and the
+    /// frame the range ended on ([`NOT_ENDED`] if it never did).
+    frames: u64,
+    loud: u64,
+    ended: u64,
+    /// Its tail was cut at the most with something still sounding: its
+    /// files can't be made longer with silence.
+    capped: bool,
+}
+
+impl Closed {
+    /// Where its files should end: the range, and the tail as long as it
+    /// sounds (never past what was written).
+    fn keep(&self) -> u64 {
+        if self.ended == NOT_ENDED {
+            self.frames
+        } else {
+            self.ended.max(self.loud).min(self.frames)
+        }
+    }
+}
+
 /// The screen's half (see the module docs).
 pub struct Job {
+    /// The pass playing now: its flags, and its writer thread.
     shared: Arc<Shared>,
     writer: Option<JoinHandle<Written>>,
     folder: PathBuf,
     /// Whether [`start`] made the folder (so a cancel takes it away).
     made: bool,
+    /// Every file: the first pass's, then one per replay.
     wavs: Vec<PathBuf>,
     /// Which files are stems (left out if they never sounded); the
     /// mixdown always stays.
     stems: Vec<bool>,
+    /// Whether each file sounded, as its pass ends.
+    heard: Vec<bool>,
+    /// The first pass's files.
+    first: usize,
+    replays: Vec<Replay>,
+    /// The replays' files, opened by [`start`], taken as each plays.
+    later: Vec<Option<BufWriter<File>>>,
+    /// The passes that played to their end.
+    closed: Vec<Closed>,
+    /// Why the export can't finish, once a pass's files failed.
+    broken: Option<String>,
+    /// The first pass's notes, once it is back.
+    notes: Option<NoteLog>,
     song: String,
     midi: Option<MidiPlan>,
     rate: u32,
     format: WavFormat,
     length: Option<u64>,
     mode: Mode,
+    first_slot: usize,
 }
 
 /// How far an export has got, for the panel.
@@ -60,17 +111,40 @@ pub struct Progress {
     pub tail: bool,
     pub rate: u32,
     pub mode: Mode,
+    /// The pass playing (from 0) and how many there are: the first, then
+    /// a replay per stem that needs one.
+    pub pass: usize,
+    pub passes: usize,
 }
 
 impl Progress {
-    /// "1:12 of 3:50", "1:12" with no known length, "3:52 · the tail".
+    /// "1:12 of 3:50", "1:12" with no known length, "3:52 · the tail";
+    /// with replays, the pass too: "1:12 of 3:50 · pass 2 of 6".
     pub fn words(&self) -> String {
         let at = clock(self.played, self.rate);
-        match (self.tail, self.length) {
+        let now = match (self.tail, self.length) {
             (true, _) => format!("{at} · the tail"),
             (false, Some(n)) => format!("{at} of {}", clock(n, self.rate)),
             (false, None) => at,
+        };
+        if self.passes > 1 {
+            format!("{now} · pass {} of {}", self.pass + 1, self.passes)
+        } else {
+            now
         }
+    }
+
+    /// The part of the whole export done, 0 to 1, for the panel's bar:
+    /// each pass an equal share, its tail the end of its share. None when
+    /// the length isn't known (until the tail).
+    pub fn part(&self) -> Option<f32> {
+        let this = if self.tail {
+            1.0
+        } else {
+            let n = self.length.filter(|&n| n > 0)?;
+            (self.played as f32 / n as f32).min(1.0)
+        };
+        Some((self.pass as f32 + this) / self.passes.max(1) as f32)
     }
 }
 
@@ -153,7 +227,7 @@ impl Outcome {
 /// thread, and gives back the pass for the sound thread and the job for
 /// the screen. Off the sound thread (it allocates and opens files).
 pub fn start(plan: Plan) -> io::Result<(Pass, Job)> {
-    if plan.streams.is_empty() && plan.midi.is_none() {
+    if plan.streams.is_empty() && plan.replays.is_empty() && plan.midi.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "nothing to export: no files picked",
@@ -175,7 +249,8 @@ pub fn start(plan: Plan) -> io::Result<(Pass, Job)> {
         }
         Err(e) => return Err(e),
     };
-    let wavs: Vec<PathBuf> = file_names(&plan.streams)
+    let all = plan.all_streams();
+    let wavs: Vec<PathBuf> = file_names(&all)
         .iter()
         .map(|n| plan.folder.join(n))
         .collect();
@@ -189,15 +264,10 @@ pub fn start(plan: Plan) -> io::Result<(Pass, Job)> {
             }
         }
     }
-    let ring = (RING_S * f64::from(plan.rate)) as usize;
-    let (bin, bout) = bounce(plan.streams.len(), ring, plan.rate);
-    let bout = bout.with_format(plan.format);
+    let first = plan.streams.len();
+    let later = files.split_off(first).into_iter().map(Some).collect();
     let shared = Arc::new(Shared::new());
-    let theirs = shared.clone();
-    let writer = std::thread::Builder::new()
-        .name("mpfree-export".into())
-        .spawn(move || write(bout, files, &theirs));
-    let writer = match writer {
+    let (bin, writer) = match writer(first, files, plan.rate, plan.format, &shared) {
         Ok(w) => w,
         Err(e) => {
             remove(&plan.folder, made, &wavs, None);
@@ -205,36 +275,64 @@ pub fn start(plan: Plan) -> io::Result<(Pass, Job)> {
         }
     };
     let notes = plan.midi.as_ref().map(|m| NoteLog::with_capacity(m.room));
-    let stems = plan
-        .streams
-        .iter()
-        .map(|s| s.strip != StripId::Master)
-        .collect();
+    let stems = all.iter().map(|s| s.strip != StripId::Master).collect();
     let points = plan.streams.iter().map(|s| (s.strip, s.point)).collect();
     let pass = Pass::new(
         bin,
         points,
-        plan.first_slot,
         notes,
         shared.clone(),
-        plan.mode,
-        plan.rate,
+        How {
+            first_slot: plan.first_slot,
+            mode: plan.mode,
+            rate: plan.rate,
+            only: None,
+            index: 0,
+            passes: plan.passes(),
+        },
     );
     let job = Job {
         shared,
         writer: Some(writer),
         folder: plan.folder,
         made,
+        heard: vec![false; wavs.len()],
         wavs,
         stems,
+        first,
+        replays: plan.replays,
+        later,
+        closed: Vec::new(),
+        broken: None,
+        notes: None,
         song: plan.song,
         midi: plan.midi,
         rate: plan.rate,
         format: plan.format,
         length: plan.length,
         mode: plan.mode,
+        first_slot: plan.first_slot,
     };
     Ok((pass, job))
+}
+
+/// A pass's bounce for `streams` streams into `files`, and its writer
+/// thread.
+fn writer(
+    streams: usize,
+    files: Vec<BufWriter<File>>,
+    rate: u32,
+    format: WavFormat,
+    shared: &Arc<Shared>,
+) -> io::Result<(mpfree_fx::BounceIn, JoinHandle<Written>)> {
+    let ring = (RING_S * f64::from(rate)) as usize;
+    let (bin, bout) = bounce(streams, ring, rate);
+    let bout = bout.with_format(format);
+    let theirs = shared.clone();
+    let w = std::thread::Builder::new()
+        .name("mpfree-export".into())
+        .spawn(move || write(bout, files, &theirs))?;
+    Ok((bin, w))
 }
 
 /// The writer thread: empties the rings into the files until the pass is
@@ -280,17 +378,15 @@ fn remove(folder: &Path, made: bool, wavs: &[PathBuf], midi: Option<&Path>) {
     }
 }
 
-/// Cuts each file to `frames` (at the file's rate) and writes its header
-/// again.
-fn trim(wavs: &[PathBuf], format: WavFormat, frames: u64) -> io::Result<()> {
-    for p in wavs {
-        let mut f = OpenOptions::new().write(true).open(p)?;
-        f.set_len(format.header_len() as u64 + frames * format.bits.frame_bytes())?;
-        f.seek(SeekFrom::Start(0))?;
-        f.write_all(&format.header(frames))?;
-        f.sync_all()?;
-    }
-    Ok(())
+/// Makes a file `frames` long (at the file's rate), cutting it or adding
+/// silence (zero bytes are silence in every format), and writes its
+/// header again.
+fn trim(p: &Path, format: WavFormat, frames: u64) -> io::Result<()> {
+    let mut f = OpenOptions::new().write(true).open(p)?;
+    f.set_len(format.header_len() as u64 + frames * format.bits.frame_bytes())?;
+    f.seek(SeekFrom::Start(0))?;
+    f.write_all(&format.header(frames))?;
+    f.sync_all()
 }
 
 impl Job {
@@ -304,6 +400,8 @@ impl Job {
             tail: ended != NOT_ENDED,
             rate: self.rate,
             mode: self.mode,
+            pass: self.closed.len(),
+            passes: self.passes(),
         }
     }
 
@@ -311,20 +409,103 @@ impl Job {
         self.mode
     }
 
+    /// The passes over the range: the first, and one per replay.
+    pub fn passes(&self) -> usize {
+        1 + self.replays.len()
+    }
+
     pub fn folder(&self) -> &Path {
         &self.folder
     }
 
-    /// Stops the export: the pass says Cancelled at its next period, and
-    /// [`Job::finish`] removes the files.
+    /// Stops the export: the pass playing says Cancelled at its next
+    /// period, and [`Job::finish`] removes every file.
     pub fn cancel(&self) {
         self.shared.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// Closes the export once the pass is back from the sound thread (its
-    /// [`Pass::period`] said it is over, and it was detached): waits for
-    /// the writer, cuts the tail's silence, writes the MIDI file. A pass
-    /// that isn't over is cancelled.
+    /// Waits for the pass's writer and keeps what its files gave (and the
+    /// first pass's notes). Err: why its files failed.
+    fn close(&mut self, pass: &mut Pass) -> Result<(), String> {
+        let written = match self.writer.take().map(JoinHandle::join) {
+            Some(Ok(w)) => w,
+            Some(Err(_)) => Err("the writer thread stopped".into()),
+            None => Err("no writer thread".into()),
+        };
+        if pass.index() == 0 {
+            self.notes = pass.notes.take();
+        }
+        let (frames, loud, heard) = written?;
+        let at = match pass.index() {
+            0 => 0,
+            k => self.first + k - 1,
+        };
+        let files = at..at + heard.len();
+        for (i, h) in files.clone().zip(heard) {
+            self.heard[i] = h;
+        }
+        self.closed.push(Closed {
+            files,
+            frames,
+            loud,
+            ended: self.shared.ended_at.load(Ordering::Relaxed),
+            capped: self.shared.capped.load(Ordering::Relaxed),
+        });
+        Ok(())
+    }
+
+    /// A pass is back from the sound thread (over, and detached): the
+    /// next replay's pass, for the sound thread to play as it played the
+    /// first; or the pass back when there is none (it was the last, or it
+    /// didn't play to its end, or its files failed), for [`Job::finish`].
+    pub fn next(&mut self, mut pass: Pass) -> Next {
+        let k = pass.index();
+        if pass.over != Some(Step::Done) || k >= self.replays.len() || k != self.closed.len() {
+            return Next::Finish(pass);
+        }
+        if let Err(why) = self.close(&mut pass) {
+            self.broken = Some(why);
+            return Next::Finish(pass);
+        }
+        let Some(file) = self.later.get_mut(k).and_then(Option::take) else {
+            self.broken = Some("a replay's file went missing".into());
+            return Next::Finish(pass);
+        };
+        let shared = Arc::new(Shared::new());
+        let (bin, writer) = match writer(1, vec![file], self.rate, self.format, &shared) {
+            Ok(w) => w,
+            Err(e) => {
+                self.broken = Some(format!("starting the next pass: {e}"));
+                return Next::Finish(pass);
+            }
+        };
+        self.shared = shared.clone();
+        self.writer = Some(writer);
+        let r = &self.replays[k];
+        Next::Play(Pass::new(
+            bin,
+            vec![(r.stream.strip, r.stream.point)],
+            None,
+            shared,
+            How {
+                first_slot: self.first_slot,
+                mode: self.mode,
+                rate: self.rate,
+                only: Some(r.only),
+                index: k + 1,
+                passes: self.passes(),
+            },
+        ))
+    }
+
+    /// Closes the export once its last pass is back from the sound thread
+    /// (its [`Pass::period`] said it is over, it was detached, and
+    /// [`Job::next`] gave no other): waits for the writer, makes every
+    /// file as long as the longest pass's sound (cutting the tail's
+    /// silence, never into the range, and adding silence to a shorter
+    /// replay), writes the MIDI file. A pass that isn't over is
+    /// cancelled; a pass that failed, or a replay not played, ends it with
+    /// no files.
     pub fn finish(mut self, mut pass: Pass) -> Outcome {
         let over = match pass.over {
             Some(s) => s,
@@ -334,96 +515,121 @@ impl Job {
                 Step::Cancelled
             }
         };
-        let written = match self.writer.take().map(JoinHandle::join) {
-            Some(Ok(w)) => w,
-            Some(Err(_)) => Err("the writer thread stopped".into()),
-            None => Err("no writer thread".into()),
+        let closed = if self.writer.is_some() {
+            self.close(&mut pass)
+        } else {
+            Ok(())
         };
         let (folder, made) = (self.folder.clone(), self.made);
         let failed = |wavs: &[PathBuf], why: String| {
             remove(&folder, made, wavs, None);
             Outcome::Failed(why)
         };
-        match (over, written) {
-            (Step::Done, Ok((frames, loud, heard))) => {
-                // A stem whose track never sounded is left out.
-                let mut wavs = Vec::with_capacity(self.wavs.len());
-                let mut silent = Vec::new();
-                for (i, p) in self.wavs.iter().enumerate() {
-                    if self.stems[i] && !heard.get(i).copied().unwrap_or(true) {
-                        let _ = fs::remove_file(p);
-                        silent.push(
-                            p.file_stem()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                        );
-                    } else {
-                        wavs.push(p.clone());
-                    }
-                }
-                let ended = self.shared.ended_at.load(Ordering::Relaxed);
-                let keep = if ended == NOT_ENDED {
-                    frames
-                } else {
-                    ended.max(loud).min(frames)
-                };
-                if keep < frames {
-                    let at = self.format.frames_for(keep, self.rate);
-                    if let Err(e) = trim(&wavs, self.format, at) {
-                        return failed(&wavs, format!("ending the files: {e}"));
-                    }
-                }
-                let mut midi = None;
-                let mut notes_dropped = 0;
-                if let (Some(m), Some(notes)) = (&self.midi, &pass.notes) {
-                    notes_dropped = notes.dropped;
-                    if !notes.is_empty() {
-                        let smf = notes.smf(&self.song, &m.tracks, &m.tempos, &m.meters, m.end);
-                        let p = self.folder.join(format!("{}.mid", safe_name(&self.song)));
-                        let wrote = File::create(&p).and_then(|mut f| {
-                            f.write_all(&smf.bytes())?;
-                            f.sync_all()
-                        });
-                        if let Err(e) = wrote {
-                            remove(&self.folder, self.made, &wavs, Some(&p));
-                            return Outcome::Failed(format!("writing the MIDI file: {e}"));
-                        }
-                        midi = Some(p);
-                    }
-                }
-                Outcome::Done(Done {
-                    folder: self.folder.clone(),
-                    wavs,
-                    silent,
-                    midi,
-                    frames: keep,
-                    rate: self.rate,
-                    format: self.format,
-                    notes_dropped,
-                })
-            }
-            (Step::Done, Err(why)) => failed(&self.wavs, why),
+        match over {
+            Step::Done => {}
             // A pass is never over on Go; taken as a cancel all the same.
-            (Step::Cancelled | Step::Go, _) => {
+            Step::Cancelled | Step::Go => {
                 remove(&self.folder, self.made, &self.wavs, None);
-                Outcome::Cancelled
+                return Outcome::Cancelled;
             }
-            (Step::Failed(Failure::Overrun(_)), Err(why)) => failed(&self.wavs, why),
-            (Step::Failed(Failure::Overrun(k)), Ok(_)) => failed(
-                &self.wavs,
-                format!("the stick couldn't keep up, and {k} blocks of sound were lost"),
-            ),
-            (Step::Failed(Failure::Capture), _) => failed(
-                &self.wavs,
-                "the mixer had no free capture point for every file".into(),
-            ),
-            (Step::Failed(Failure::Latency), _) => failed(
-                &self.wavs,
-                "an effect that delays the sound (look-ahead) was put in or taken out, \
-                 so the files would no longer line up"
-                    .into(),
-            ),
+            Step::Failed(Failure::Overrun(k)) => {
+                return failed(
+                    &self.wavs,
+                    closed.err().unwrap_or_else(|| {
+                        format!("the stick couldn't keep up, and {k} blocks of sound were lost")
+                    }),
+                )
+            }
+            Step::Failed(Failure::Capture) => {
+                return failed(
+                    &self.wavs,
+                    "the mixer had no free capture point for every file".into(),
+                )
+            }
+            Step::Failed(Failure::Latency) => {
+                return failed(
+                    &self.wavs,
+                    "an effect that delays the sound (look-ahead) was put in or taken out, \
+                     so the files would no longer line up"
+                        .into(),
+                )
+            }
         }
+        if let Some(why) = self.broken.take().or(closed.err()) {
+            return failed(&self.wavs, why);
+        }
+        if self.closed.len() < self.passes() {
+            // The last pass came back before every replay had played.
+            remove(&self.folder, self.made, &self.wavs, None);
+            return Outcome::Cancelled;
+        }
+        // A stem whose track never sounded is left out.
+        let mut silent = Vec::new();
+        let mut kept = vec![true; self.wavs.len()];
+        for (i, p) in self.wavs.iter().enumerate() {
+            if self.stems[i] && !self.heard[i] {
+                let _ = fs::remove_file(p);
+                kept[i] = false;
+                silent.push(
+                    p.file_stem()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                );
+            }
+        }
+        // Every file as long as the longest pass's sound: a pass whose
+        // sound died earlier gets silence added, but never one cut off
+        // still sounding (each pass's latency differs, so a tail cut at
+        // the most ends a few frames apart in each).
+        let with_files = || self.closed.iter().filter(|c| !c.files.is_empty());
+        let longest = with_files().map(Closed::keep).max().unwrap_or(0);
+        let keep = with_files()
+            .filter(|c| c.capped)
+            .map(|c| c.frames)
+            .fold(longest, u64::min);
+        for c in &self.closed {
+            if c.frames == keep {
+                continue;
+            }
+            let at = self.format.frames_for(keep, self.rate);
+            for i in c.files.clone().filter(|&i| kept[i]) {
+                if let Err(e) = trim(&self.wavs[i], self.format, at) {
+                    return failed(&self.wavs, format!("ending the files: {e}"));
+                }
+            }
+        }
+        let wavs: Vec<PathBuf> = (0..self.wavs.len())
+            .filter(|&i| kept[i])
+            .map(|i| self.wavs[i].clone())
+            .collect();
+        let mut midi = None;
+        let mut notes_dropped = 0;
+        if let (Some(m), Some(notes)) = (&self.midi, &self.notes) {
+            notes_dropped = notes.dropped;
+            if !notes.is_empty() {
+                let smf = notes.smf(&self.song, &m.tracks, &m.tempos, &m.meters, m.end);
+                let p = self.folder.join(format!("{}.mid", safe_name(&self.song)));
+                let wrote = File::create(&p).and_then(|mut f| {
+                    f.write_all(&smf.bytes())?;
+                    f.sync_all()
+                });
+                if let Err(e) = wrote {
+                    remove(&self.folder, self.made, &wavs, Some(&p));
+                    return Outcome::Failed(format!("writing the MIDI file: {e}"));
+                }
+                midi = Some(p);
+            }
+        }
+        Outcome::Done(Done {
+            folder: self.folder.clone(),
+            wavs,
+            silent,
+            midi,
+            frames: keep,
+            rate: self.rate,
+            format: self.format,
+            notes_dropped,
+        })
     }
 }
 
