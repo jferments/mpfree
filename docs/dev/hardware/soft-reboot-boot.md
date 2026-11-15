@@ -109,6 +109,7 @@ What the builder changes in the copy, for this route:
 - **stubs** Akai's update, flashing, U-Boot-environment and kexec programs with a program that refuses and logs;
 - makes `/data` a RAM disk, so Akai's `/etc` and `/var` overlays live in RAM;
 - adds key-only SSH on port 2222, the log service, the startup screen and the pad player;
+- only with `--app-user` (opt-in; passed its first power-on on 2026-11-15): runs the pad player as the `mpfree` user with no capabilities instead of root, after a root `mpfree-test-storage.service` mounts its partitions ([details](stick-autoboot.md#the-pad-player-without-root---app-user-opt-in)). Without the flag it runs as root, as before;
 - adds the switch-off service and its udev rule (next section);
 - writes `/boot/mpfree-softreboot/`: `PROTOCOL`, `release` (the kernel release the system was built for), optional `preload-modules.txt` (`--preload-module NAME`) and `SHA256SUMS` over those and the switch-off service's three files;
 - prints a build report that lists every unit Akai's udev rules start when a device appears, each marked masked or **NOT masked**.
