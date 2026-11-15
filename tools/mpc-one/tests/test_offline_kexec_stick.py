@@ -64,6 +64,15 @@ def fake_elf(machine=40, flags=0x05000400, etype=2, interp=False):
 
 def new_board(variant=False, phy=True):
     tree = board_tree()
+    new_parts(tree, phy)
+    if variant:
+        tree.root.set_prop("compatible", dt_strings("inmusic,acva", "inmusic,az01", "rockchip,rk3288-c",
+                                                    "rockchip,rk3288"))
+    return dtb.build(tree)
+
+
+def new_parts(tree, phy=True):
+    """What the new release's board file has that the old one lacks."""
     if phy:
         gmac = tree.find("/ethernet@ff290000")
         gmac.set_prop("phy-handle", cells(0x4B))
@@ -73,10 +82,6 @@ def new_board(variant=False, phy=True):
         tree.root.children.append(node("mipi@ff960000", [], [node("panel@0", [("rotation", cells(270))])]))
     tree.find("/chosen").set_prop("inmusic,acvs-emmc-content", b"")
     tree.find("/dwmmc@ff0f0000").set_prop("new-in-9.9", dt_strings("yes"))
-    if variant:
-        tree.root.set_prop("compatible", dt_strings("inmusic,acva", "inmusic,az01", "rockchip,rk3288-c",
-                                                    "rockchip,rk3288"))
-    return dtb.build(tree)
 
 
 def old_board(variant=False):
@@ -88,8 +93,11 @@ def old_board(variant=False):
     return dtb.build(tree)
 
 
-def live_tree():
+def live_tree(new=False):
+    """The tree U-Boot hands the running kernel: the old release's board file, or the new one's (new=True)."""
     tree = board_tree(serial=SERIAL, mac=MAC)
+    if new:
+        new_parts(tree)
     tree.find("/chosen").set_prop("inmusic,acvs-emmc-content", b"")
     tree.find("/chosen").set_prop("bootargs", dt_strings("root=PARTUUID=FAKE-EMMC-UUID rootwait ro"))
     return dtb.build(tree)
@@ -645,6 +653,26 @@ class KexecStickTests(unittest.TestCase):
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn("inside the git clone and not git-ignored", res.stdout)
             self.assertFalse(os.path.exists(os.path.join(os.path.dirname(TOOLS), "not-ignored-work")))
+
+    def test_the_mpc_runs_the_test_builds_own_kernel(self):
+        # An installed 3.10.1 runs the kernel the test build boots: one boot-files folder serves both.
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree(new=True))
+        shutil.rmtree(os.path.join(self.work, "boot-files", OLD))
+        res = self.build()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"running release: {NEW} (recorded by the preflight; the same kernel as the test build's)",
+                      res.stdout)
+        self.assertIn(f"board file of the running release: {self.work}/boot-files/{NEW}/rk3288-az01-acva.dtb",
+                      res.stdout)
+        [folder] = self.outputs()
+        tree = dtb.load(os.path.join(self.work, folder, "kexec.dtb"))
+        self.assertEqual(tree.find("/dwmmc@ff0f0000").prop("status"), dt_strings("disabled"))
+        self.assertEqual(tree.find("/dwmmc@ff0c0000").prop("status"), dt_strings("disabled"))
+        self.assertEqual(tree.root.prop("serial-number"), dt_strings(SERIAL))
+        self.assertEqual(tree.find("/ethernet@ff290000").prop("local-mac-address"), MAC)
+        self.assertIsNone(tree.find("/chosen").prop("inmusic,acvs-emmc-content"))
+        self.assertIsNone(tree.find("/chosen").prop("bootargs"))
 
     def test_running_release_without_release_txt(self):
         os.unlink(os.path.join(self.pre, "release.txt"))

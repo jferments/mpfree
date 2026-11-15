@@ -9,7 +9,10 @@ MPC_IP="${MPC_IP:-10.42.0.141}"
 MPC_IFACE="${MPC_IFACE:-eno1np0}"
 MPC_HOST_IP_CIDR="${MPC_HOST_IP_CIDR:-10.42.0.1/24}"
 MPC_EXPECT_MAC="${MPC_EXPECT_MAC:-00:05:95:02:d4:d2}"
-MPC_PORT="${MPC_PORT:-2222}"
+# Akai's system: an installed MPC OS 3.10.1 answers through developer mode on port 22 (3.6.0 with
+# MOD-001 answered on 2222: MPC_PORT=2222). The test build on the USB stick answers on its own port.
+MPC_PORT="${MPC_PORT:-22}"
+MPC_TEST_PORT="${MPC_TEST_PORT:-2222}"
 MPC_USER="${MPC_USER:-root}"
 MPC_KEY="${MPC_KEY:-/home/jesse/.ssh/mpc_one_autorun_ed25519}"
 
@@ -26,6 +29,7 @@ case "${1:-}" in
   "--process-map") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-process-map.sh"; REPORT_KIND="mpc-one-process-map" ;;
   "--touchscreen") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-touchscreen.sh"; REPORT_KIND="mpc-one-touchscreen" ;;
   "--rtthreads") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-rtthreads.sh"; REPORT_KIND="mpc-one-rtthreads" ;;
+  "--plugin-host") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-plugin-host.sh"; REPORT_KIND="mpc-one-plugin-host" ;;
   "--capacity") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-capacity.sh"; REPORT_KIND="mpc-one-capacity" ;;
   "--audio-midi") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-audio-midi.sh"; REPORT_KIND="mpc-one-audio-midi" ;;
   "--midi-activity") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-midi-activity" ;;
@@ -51,7 +55,12 @@ case "${1:-}" in
   "--touch-capture-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture-preflight" ;;
   "--touch-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --devmode-check (read-only on the 3.10.1 test build made with --akai-app: what Akai'"'"'s developer mode opens on port 22; only after you type LOCK, Akai'"'"'s own lock-down to your key, RAM only), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
+  "--devmode-trust") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-trust" ;;
+  "--devmode-status") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-status" ;;
+  "--devmode-lock") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-lock" ;;
+  "--devmode-unlock") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-unlock" ;;
+  "--system-survey") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-system-310.sh"; REPORT_KIND="mpc-one-system-survey" ;;
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --plugin-host (read-only 3.10.1 developer SSH, Akai app limits/threads and external plugin setup), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --devmode-check (read-only on the 3.10.1 test build made with --akai-app: what Akai'"'"'s developer mode opens on port 22; only after you type LOCK, Akai'"'"'s own lock-down to your key, RAM only), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load), --devmode-trust (read-only on the MPC: records developer mode'"'"'s SSH host key in ~/.ssh/known_hosts after you type TRUST), --devmode-status (read-only: developer mode'"'"'s SSH settings and who can log in), --devmode-lock (STATE-CHANGING on /data: Akai'"'"'s own lock-down of developer mode'"'"'s SSH to your key, after you type LOCK; undoes itself if the new logins fail), --devmode-unlock (STATE-CHANGING on /data: the undo of --devmode-lock, after you type UNLOCK), --system-survey (read-only 3.10.1 facts: version, CPU, kexec, network, sound and MIDI, input, drives, screen, controller scripts).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -60,7 +69,10 @@ MPC_REPORT_DIR="${MPC_REPORT_DIR:-$REPO_ROOT/research}"
 # Backups default to OUTSIDE the git clone: they hold keys, serial/MAC and user data,
 # and `git clean -fdx` must not be able to delete them.
 MPC_BACKUP_DIR="${MPC_BACKUP_DIR:-$HOME/mpfree-backups}"
-BACKUP_BASELINE="$SCRIPT_DIR/baselines/mpc-one-3.6.0-reference.txt"
+# The owner's boot map for the firmware the MPC runs. The 3.10.1 one is written from the first
+# --boot-map run on 3.10.1; until then the 3.6.0 one checks the layout (unchanged by the update)
+# and reports p6 (and anything else the updater rewrote) as changed.
+BACKUP_BASELINE="${MPC_BACKUP_BASELINE:-$SCRIPT_DIR/baselines/mpc-one-3.6.0-reference.txt}"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 command -v ip >/dev/null 2>&1 || die 'iproute2 not installed on workstation'
@@ -83,6 +95,12 @@ if [[ "${1:-}" == "--touch-axes-check" || "${1:-}" == "--touch-axes" ]]; then
         "${MPFREE_ACCEPT_VOLATILE_EXEC:-}" != 'YES' ||
         "${MPFREE_ACCEPT_TOUCH_AXES:-}" != 'YES' ) ]]; then
     die 'M10 dual opt-in required: MPFREE_ACCEPT_VOLATILE_EXEC=YES MPFREE_ACCEPT_TOUCH_AXES=YES bash tools/mpc-one/collect-over-ssh.sh --touch-axes'
+  fi
+elif [[ "${1:-}" =~ ^--devmode-(trust|status|lock|unlock)$ ]]; then
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for ${1:-} on workstation"
+  [[ -r "$SCRIPT_DIR/host_devmode_login.py" ]] || die 'missing helper: host_devmode_login.py'
+  if [[ "${1:-}" != "--devmode-status" ]]; then
+    [[ -t 0 ]] || die "${1:-} asks you to confirm: run it from a terminal"
   fi
 elif [[ "${1:-}" == "--backup" ]]; then
   command -v python3 >/dev/null 2>&1 || die 'python3 is required for --backup on workstation'
@@ -284,6 +302,14 @@ elif [[ "${1:-}" == "--midi-activity" ]]; then
   echo "Guided READ-ONLY MIDI counter map (procfs reads only) to $REPORT"
 elif [[ "${1:-}" == "--netbench" ]]; then
   echo "Saving ACTIVE NETWORK BENCHMARK measurements to $REPORT"
+elif [[ "${1:-}" == "--devmode-trust" ]]; then
+  echo "READ-ONLY on the MPC: developer mode's SSH host key (one line in ~/.ssh/known_hosts after a typed TRUST). Log: $REPORT"
+elif [[ "${1:-}" == "--devmode-status" ]]; then
+  echo "READ-ONLY: developer mode's SSH settings and who can log in. Log: $REPORT"
+elif [[ "${1:-}" == "--devmode-lock" ]]; then
+  echo "OWNER OPT-IN: lock developer mode's SSH to your key (STATE-CHANGING on /data after a typed LOCK). Log: $REPORT"
+elif [[ "${1:-}" == "--devmode-unlock" ]]; then
+  echo "OWNER OPT-IN: undo the lock (STATE-CHANGING on /data after a typed UNLOCK). Log: $REPORT"
 elif [[ "${1:-}" == "--backup" ]]; then
   echo "READ-ONLY on the MPC: full eMMC backup. Log: $REPORT"
 elif [[ "${1:-}" == "--kexec-boot" ]]; then
@@ -369,10 +395,19 @@ elif [[ "${1:-}" == "--touch-capture-check" || "${1:-}" == "--touch-capture" ]];
   if [[ -f "$events_log" ]]; then
     sha256sum "$events_log" > "$events_log.sha256"
   fi
+elif [[ "${1:-}" =~ ^--devmode-(trust|status|lock|unlock)$ ]]; then
+  # Not redirected: the TRUST, LOCK and UNLOCK questions must reach the terminal. The helper writes the
+  # same lines to $REPORT.
+  if ! timeout --foreground 600 python3 -I "$SCRIPT_DIR/host_devmode_login.py" "${1#--devmode-}" \
+      --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" --report "$REPORT"; then
+    echo "The developer mode login step stopped; log: $REPORT" >&2
+    exit 1
+  fi
 elif [[ "${1:-}" == "--kexec-boot" ]]; then
   # Not redirected: the confirmation must reach the terminal. The helper writes the same lines to $REPORT.
+  # Akai's system answers on MPC_PORT, the test build on MPC_TEST_PORT.
   if ! timeout --foreground 1800 python3 -I "$SCRIPT_DIR/host_kexec_boot.py" \
-      --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
+      --ip "$MPC_IP" --port "$MPC_TEST_PORT" --stock-port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
       --iface "$MPC_IFACE" --expect-mac "$MPC_EXPECT_MAC" --work "$work_abs" --report "$REPORT"; then
     echo "The kexec test boot stopped or did not pass its checks; log: $REPORT" >&2
     exit 1
@@ -382,7 +417,7 @@ elif [[ "${1:-}" == "--app" ]]; then
   # Up to three hours: the app step's phases each wait for you, and all nineteen took longer than one
   # hour in live test 3. MPFREE_APP_PHASES picks fewer.
   if ! timeout --foreground 10800 python3 -I "$SCRIPT_DIR/host_app_mpc.py" \
-      --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
+      --ip "$MPC_IP" --port "$MPC_TEST_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
       --work "$work_abs" --report "$REPORT"; then
     echo "mpfree stopped early or a step failed; log: $REPORT" >&2
     exit 1
@@ -390,7 +425,7 @@ elif [[ "${1:-}" == "--app" ]]; then
 elif [[ "${1:-}" == "--devmode-check" ]]; then
   # Not redirected: the LOCK question must reach the terminal. The helper writes the same lines to $REPORT.
   if ! timeout --foreground 600 python3 -I "$SCRIPT_DIR/host_devmode_check.py" \
-      --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
+      --ip "$MPC_IP" --port "$MPC_TEST_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
       --work "$work_abs" --report "$REPORT"; then
     echo "The developer mode check stopped; log: $REPORT" >&2
     exit 1
@@ -457,6 +492,9 @@ if ! timeout 180 ssh -T \
   echo "SSH or remote inventory failed; report retained for diagnosis: $REPORT" >&2
   sed -n '1,30p' "$REPORT" >&2
   echo "For a passphrase-protected key, first run: ssh-add $MPC_KEY" >&2
+  if grep -q -e 'Host key verification failed' -e 'IDENTIFICATION HAS CHANGED' "$REPORT"; then
+    echo "The MPC's host key is not the one recorded: on 3.10.1 run the --devmode-trust block first." >&2
+  fi
   exit 1
 fi
 fi

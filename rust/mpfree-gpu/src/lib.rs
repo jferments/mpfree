@@ -639,26 +639,37 @@ struct Atlas {
 impl Atlas {
     /// Room for a `w` x `h` mask, or None when the atlas is full (or the
     /// mask is bigger than the atlas). Shelf heights go up in steps of 8,
-    /// so text of about the same size shares shelves.
+    /// so text of about the same size shares shelves. When no shelf of
+    /// about its height has room and there is no room left for a new
+    /// shelf, it goes on the lowest taller shelf that has room, before the
+    /// atlas counts as full (a small knob beside a big graph's layers).
     fn place(&mut self, w: i32, h: i32) -> Option<(i32, i32)> {
-        let step = (h + 7) & !7;
-        let mut best: Option<usize> = None;
-        for (i, &(_, sh, x)) in self.shelves.iter().enumerate() {
-            let fits = sh >= h && sh <= step + 8 && x + w <= self.size.0;
-            if fits && best.is_none_or(|b| sh < self.shelves[b].1) {
-                best = Some(i);
-            }
+        if w > self.size.0 {
+            return None;
         }
-        let i = match best {
+        let step = (h + 7) & !7;
+        // The lowest shelf with room, of about this height when `snug`.
+        let lowest = |shelves: &[(i32, i32, i32)], snug: bool| {
+            shelves
+                .iter()
+                .enumerate()
+                .filter(|&(_, &(_, sh, x))| {
+                    sh >= h && (!snug || sh <= step + 8) && x + w <= self.size.0
+                })
+                .min_by_key(|&(_, &(_, sh, _))| sh)
+                .map(|(i, _)| i)
+        };
+        let i = match lowest(&self.shelves, true) {
             Some(i) => i,
             None => {
                 let top = self.shelves.last().map_or(0, |&(y, sh, _)| y + sh);
                 let sh = step.min(self.size.1 - top);
-                if w > self.size.0 || sh < h {
-                    return None;
+                if sh >= h {
+                    self.shelves.push((top, sh, 0));
+                    self.shelves.len() - 1
+                } else {
+                    lowest(&self.shelves, false)?
                 }
-                self.shelves.push((top, sh, 0));
-                self.shelves.len() - 1
             }
         };
         let shelf = &mut self.shelves[i];
