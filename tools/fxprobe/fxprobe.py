@@ -24,7 +24,8 @@ installed on (its "VST2 Plugins" folder sits beside FXProbe). The MPC's
 shell is BusyBox: only mkdir, cat, ls, mv and rm are used there.
 
 Status: written for MPC OS 3.10.1 with developer-mode SSH; tested against the
-desktop chain test (test/run_chain_test.py), not yet on a device.
+desktop chain test (test/run_chain_test.py), not yet on a device. On the MPC
+with the kit on the test stick, fxprobe.sh does the same from the stick.
 """
 
 import argparse
@@ -225,7 +226,9 @@ def cmd_capture(dev, args):
         while True:
             time.sleep(0.5)
             st = statuses(dev)
-            done = [t for t in taps if st.get(t, {}).get("capture") == name and st[t].get("state") in ("done", "stopped")]
+            # The seq too: a Tap's done status from an earlier capture of the same name is not this one.
+            done = [t for t in taps if st.get(t, {}).get("capture") == name and st[t].get("seq") == str(seq)
+                    and st[t].get("state") in ("done", "stopped")]
             errs = ["%s: %s" % (k, st[k]["error"]) for k in taps + sources if "error" in st.get(k, {})]
             if errs:
                 sys.exit("fxprobe: " + "; ".join(errs))
