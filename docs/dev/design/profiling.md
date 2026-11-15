@@ -331,9 +331,10 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   and from what size the GPU beats a core.
 
 `tools/mpc-one/host_gpu_mpc.py` runs it on the test build, MPFree's system on
-the USB stick. On MPC OS 3.10.1 the boot hook starts that system at power-on
-by a soft-reboot on Akai's kernel ([stick-autoboot.md](../hardware/stick-autoboot.md));
-from 3.6.0 it was started by kexec. **RAM only,
+the USB stick. On MPC OS 3.10.1 the boot hook starts that system at power-on,
+by default by a soft-reboot on Akai's kernel, or by an opt-in kexec_file
+restart ([boot routes](../hardware/boot-routes.md)); from 3.6.0 it was started
+by kexec. **RAM only,
 offscreen:** like host_bench_mpc.py it talks only to the test build's own host
 key. It checks the ARM build on the workstation (loader
 `/lib/ld-linux-armhf.so.3`, only `libc.so.6` and `libgcc_s.so.1` linked,

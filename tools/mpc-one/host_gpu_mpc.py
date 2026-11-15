@@ -4,8 +4,9 @@
 
 The performance plan's step G2 ("GPU drawing and compute"). Run it while
 MPFree's system runs from the USB stick. On MPC OS 3.10.1 the boot hook
-starts it at power-on with the stick in, by a soft-reboot on Akai's kernel
-(docs/dev/hardware/stick-autoboot.md, step 4); from 3.6.0 it was
+starts it at power-on with the stick in: by default by a soft-reboot on
+Akai's kernel, or, on a stick built for it, by restarting Akai's kernel with
+kexec_file (docs/dev/hardware/boot-routes.md); from 3.6.0 it was
 `collect-over-ssh.sh --kexec-boot`. Like host_bench_mpc.py it talks only to
 the test build: it uses the newest ~/mpfree-work/kexec-stick-* folder's
 known_hosts, so Akai's system (a different host key) is refused before
