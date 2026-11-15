@@ -75,6 +75,6 @@ Some steps use buttons that only Map controls gives a number, such as PAD BANK, 
 
 1. Add a `Check` to `CHECKS` in `app_checks.py`: a short name, a title, why it exists (the PR or fault), the kind, a few numbered steps that each say what to expect, what the log must show, at most one question, the tests that check its software side, and the buttons it needs from Map controls. Keep the file ASCII.
 2. **Prefer the log to a question.** If a step's result isn't in the app's log, add the log line in the app, with a test, rather than asking. The judges in `app_checks.py` (`seen`, `pressed`, `pad_hits`, `no_underruns_while`, …) cover most cases.
-3. **Name the tests.** `test_app_checks.py` fails if a test named in a check, or in `AREAS`, isn't in the Rust sources, so a renamed test can't leave a silent gap.
+3. **Name the tests.** `test_app_checks.py` fails if a test named in a check, or in `AREAS`, isn't one of the app crate's tests (`rust/mpfree-app`, the crate `smoke` runs), so a renamed or moved test can't leave a silent gap.
 4. If a check's steps end the boot (a power-off or a restart), the tool can't see the end. Put the part before it in the check, and the rest in a runbook block that the stick logs judge.
 5. When the app gains something that only tests need to check, add its tests to an area in `AREAS`, not a check.
