@@ -5,7 +5,10 @@
 use std::time::Duration;
 
 use mpfree_midi::cv::{CvAssign, Priority, Scale};
+use mpfree_midi::monitor::{Dir, Feed};
+use mpfree_midi::port::Ports;
 use mpfree_midi::setup::{ClockOut, MidiSetup, PortInput, TempoSource, TrackOut, DIN_NAME};
+use mpfree_midi::DIN;
 
 use crate::{IoModel, Live, PortLive};
 
@@ -57,5 +60,38 @@ pub fn rig() -> IoModel {
         live,
         warnings: Vec::new(),
         gen: 0,
+        monitor: Default::default(),
     }
+}
+
+/// `m` with its Monitor fed, as though the app had run for a second: a
+/// chord and the mod wheel from the USB keyboard, the Bass track playing
+/// out of the 5-pin jacks on channel 2 (program 5 first), clock arriving
+/// on the 5-pin jacks at 120 BPM and an Akai SysEx.
+pub fn monitored(mut m: IoModel) -> IoModel {
+    let mut ports = Ports::new();
+    ports.set_din(true);
+    let keys = ports
+        .plugged("Keystep 37", true, true)
+        .expect("room for a port");
+    m.monitor.set_ports(ports.all());
+    m.live.built.monitor = true;
+    let mut f = Feed::new();
+    for i in 0..48 {
+        // 120 BPM: a tick every 1/48 s.
+        f.bytes(DIN, Dir::In, 0.02 + i as f64 / 48.0, &[0xF8]);
+    }
+    f.bytes(DIN, Dir::Out, 0.10, &[0xC1, 4]);
+    f.bytes(DIN, Dir::In, 0.25, &[0xF0, 0x47, 0x7F, 0x00, 0x01, 0xF7]);
+    f.bytes(keys, Dir::In, 0.40, &[0x90, 60, 96]);
+    f.bytes(keys, Dir::In, 0.41, &[0x90, 64, 88, 67, 90]);
+    for (i, v) in [12u8, 30, 47, 63].iter().enumerate() {
+        f.bytes(keys, Dir::In, 0.55 + i as f64 * 0.04, &[0xB0, 1, *v]);
+    }
+    f.bytes(DIN, Dir::Out, 0.78, &[0x91, 36, 110]);
+    f.bytes(keys, Dir::In, 0.82, &[0xE0, 0x00, 0x50]);
+    f.bytes(DIN, Dir::Out, 0.90, &[0x81, 36, 0]);
+    f.bytes(keys, Dir::In, 0.95, &[0x80, 60, 40]);
+    f.drain_into(&mut m.monitor, 1.0);
+    m
 }

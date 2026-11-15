@@ -119,8 +119,8 @@ pub enum View {
     /// Prefs > System info: the program's version, the system and the
     /// hardware (on the Prefs tab).
     System,
-    /// The mixer (mpfree-mixer-ui), over the page under the top bar: TRACK
-    /// MIX or the bar's mixer icon (Jay, 09:17Z). Not a tab.
+    /// The mixer (mpfree-mixer-ui): the Mix tab, or TRACK MIX (layout
+    /// spec 3a; Jay's card, 14 Nov 07:15Z).
     Mixer,
     /// The FX chain editor (mpfree-chain-ui) in the mixer's place: a strip's
     /// insert row or its "+" opens it, and its Back goes back to the mixer
@@ -130,6 +130,11 @@ pub enum View {
     /// press on a macro card in the Q-Link column (layout spec 4b). Not a
     /// tab; its Back goes back to the page it opened over.
     Macros,
+    /// The browser (mpfree-browser-ui) over the page under the top bar:
+    /// BROWSE opens and closes it (controls decision 13; Jay's ask after
+    /// live test 3). Projects (New, Open, Save), samples and the rest. Not
+    /// a tab.
+    Browser,
 }
 
 /// The header's tabs, in the order of the approved layout spec
@@ -144,6 +149,7 @@ pub fn tabs(dev: bool) -> Vec<View> {
         View::Synth,
         View::Looper,
         View::Sample,
+        View::Mixer,
     ];
     if dev {
         t.push(View::Debug);
@@ -160,6 +166,27 @@ pub fn bank_target(current: usize, button: u8, shift: bool) -> usize {
         b + 4
     } else {
         b
+    }
+}
+
+/// What TRACK MUTE's pads are in bank `bank` (A = 0) of a project of
+/// `tracks` tracks: "bank B: pads 1-8 mute tracks 17-24".
+pub fn mute_bank_words(bank: usize, tracks: usize) -> String {
+    let first = bank * 16;
+    let n = tracks.saturating_sub(first).min(16);
+    let letter = bank_letter(bank);
+    match n {
+        0 => format!(
+            "bank {letter}: no tracks here (it is tracks {}-{})",
+            first + 1,
+            first + 16
+        ),
+        1 => format!("bank {letter}: pad 1 mutes track {}", first + 1),
+        n => format!(
+            "bank {letter}: pads 1-{n} mute tracks {}-{}",
+            first + 1,
+            first + n
+        ),
     }
 }
 
@@ -188,13 +215,14 @@ impl View {
             View::Perf | View::Engines | View::Procs | View::Map | View::Touch | View::Console => {
                 Some(View::Debug)
             }
+            // The chain editor is the Mix tab's (Jay's card, 14 Nov 07:15Z).
+            View::Chain => Some(View::Mixer),
             View::Options
             | View::Guide
             | View::Prefs
             | View::System
-            | View::Mixer
-            | View::Chain
-            | View::Macros => None,
+            | View::Macros
+            | View::Browser => None,
             v => Some(v),
         }
     }
@@ -232,9 +260,10 @@ impl View {
             View::Map => "Map controls",
             View::Touch => "Touch",
             View::System => "System info",
-            View::Mixer => "Mixer",
+            View::Mixer => "Mix",
             View::Chain => "FX chain",
             View::Macros => "Macros",
+            View::Browser => "Browser",
         }
     }
 }
@@ -288,7 +317,8 @@ pub enum MuteKeys {
     /// The pads play.
     #[default]
     Off,
-    /// TRACK MUTE: pads 1-8 mute and unmute tracks 1-8.
+    /// TRACK MUTE: the pads mute and unmute 16 tracks, the bank's
+    /// ([`App::mute_bank`]: A is tracks 1-16, B 17-32, up to H, 113-128).
     Tracks,
     /// SHIFT + TRACK MUTE: each pad mutes and unmutes itself in the
     /// playing kit (the speakers on Play).
@@ -383,6 +413,8 @@ pub struct ButtonMap {
     pub track_mute: Option<u8>,
     /// The data dial's push, found with the control mapper.
     pub data_push: Option<u8>,
+    /// BROWSE (SHIFT: save the project), found with the control mapper.
+    pub browse: Option<u8>,
 }
 
 impl ButtonMap {
@@ -497,6 +529,7 @@ impl ButtonMap {
             Job::QLink => self.q_link,
             Job::TrackMute => self.track_mute,
             Job::DataPush => self.data_push,
+            Job::Browse => self.browse,
         }
     }
 
@@ -527,6 +560,7 @@ impl ButtonMap {
             Job::QLink => &mut self.q_link,
             Job::TrackMute => &mut self.track_mute,
             Job::DataPush => &mut self.data_push,
+            Job::Browse => &mut self.browse,
         };
         *slot = code;
     }
@@ -584,10 +618,23 @@ pub struct Settings {
     /// Prefs "Loop memory": the looper's size from the next start.
     pub loop_memory: LoopMemory,
     /// The metronome (click while counting in and recording): off by
-    /// default (live test 3), Play's options or SHIFT + PLAY START.
+    /// default (live test 3), Play's options or SHIFT + PLAY START. How
+    /// you like to work, so kept in Prefs, not the project.
     pub metronome: bool,
     /// The click's level, dBFS: [`METRONOME_DBS`].
     pub metronome_db: i8,
+    /// Play's options "Timing strip": the Beats view shows Your timing
+    /// under the pattern (Jay 13 Nov folded the Drum view into Beats).
+    pub timing_strip: bool,
+    /// Prefs "Audio track memory": the audio tracks' size from the next
+    /// start.
+    pub audio_memory: crate::audiotracks::AudioMemory,
+    /// Prefs "At start": open the last project (true) or start with a new
+    /// one (the default). The screen opens it once the sound is going.
+    pub open_last: bool,
+    /// Prefs "Export": Fast, quiet (the default) or Listen (Jay, 14 Nov
+    /// 01:32Z). An export that needs outside gear listens anyway.
+    pub export_mode: mpfree_export::Mode,
 }
 
 /// The click levels Play's options step through, dBFS. -24 by default;
@@ -630,6 +677,10 @@ impl Default for Settings {
             loop_memory: LoopMemory::default(),
             metronome: false,
             metronome_db: crate::time::CLICK_DB as i8,
+            timing_strip: true,
+            audio_memory: crate::audiotracks::AudioMemory::default(),
+            open_last: false,
+            export_mode: mpfree_export::Mode::Fast,
         }
     }
 }
@@ -698,9 +749,17 @@ pub enum Item {
     /// Prefs and the looper's options: the looper's size from the next
     /// start.
     LoopMemory,
+    /// Prefs: what opens at start, a new project or the last one.
+    AtStart,
+    /// Prefs: how Export plays the song, Fast, quiet or Listen.
+    Export,
     /// Play's options: the metronome on or off, and its level.
     Metronome,
     MetronomeLevel,
+    /// Play's options: the Beats view's Your timing strip on or off.
+    TimingStrip,
+    /// Prefs: the audio tracks' size from the next start.
+    AudioMemory,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
     /// The synth's engine and pad layouts (the Synth tab's options).
@@ -756,6 +815,11 @@ pub struct Status {
     pub bpm: f64,
     /// TRACK MUTE: what the pads are, the hint line says.
     pub mute_keys: MuteKeys,
+    /// TRACK MUTE's bank (A = 0: tracks 1-16).
+    pub mute_bank: usize,
+    /// ERASE held: the next tap on the screen deletes what it lands on
+    /// (Jay after live test 3).
+    pub erase: bool,
 }
 
 /// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
@@ -774,6 +838,34 @@ pub enum RowKey {
     Editing(bool),
 }
 
+/// Jay's wheel navigation on every page (13 Nov, after live test 3): a
+/// tap puts an outline on a control, the wheel moves it from control to
+/// control in reading order, through the panel and on into the next, and
+/// the wheel's push does what a tap does. On a value (a fader, a knob card)
+/// the push grabs it: the wheel then turns it until the next push. - and +
+/// step an outlined value, or move the outline. The screen keeps the
+/// outline (it knows the controls); [`outlined`] says on which pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Nav {
+    /// The wheel turned: move the outline, or turn the grabbed value.
+    Turn(i32),
+    /// The wheel's push: press the outlined control, or grab or let go a
+    /// value.
+    Push,
+    /// - or +: step the outlined value, or move the outline.
+    Step(i32),
+}
+
+/// The pages where the wheel moves an outline between controls ([`Nav`]).
+/// The pages with rows (Arrange, Synth, Sample, Pads), the menus, the Arp
+/// panel, the workspace and the Dev tab keep the wheel's own jobs there.
+pub fn outlined(v: View) -> bool {
+    matches!(
+        v,
+        View::Play | View::Looper | View::Mixer | View::Chain | View::Macros
+    )
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Show(View),
@@ -785,24 +877,41 @@ pub enum Effect {
     Light(u8, u8),
     /// Stop every sound now.
     StopSounds,
-    /// Move the kit by this many places.
-    Kit(i32),
+    /// The wheel, its push, - or + for the outline ([`Nav`]).
+    Nav(Nav),
     /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
     /// before, when a drum kit is playing).
     Octave(i32),
+    /// 16 LEVEL: 16 Levels on for the pad hit last, with its panel on
+    /// Play, or off if they are on (the screen holds the kit and says back
+    /// with [`App::levels_shown`]).
+    SixteenLevels,
+    /// The wheel while the 16 Levels panel shows: the next or previous kind.
+    LevelsWheel(i32),
     /// The Synth tab's options changed: the engine, the scale or the pad
     /// layouts, for the synth on the audio thread.
     SynthPads(crate::synth::PadSettings),
+    /// The Synth tab's Instrument row: track `track` plays its own instrument
+    /// `id` (an engine's node id, or a plugin synth's), or the kit again
+    /// (None).
+    TrackSound {
+        track: usize,
+        id: Option<&'static str>,
+    },
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
+    /// The Mix tab tapped: the mixer opens on the view it showed last.
+    MixerLast,
+    /// TRACK MIX opened the Mix tab: on Faders, whichever look it showed
+    /// last (the screen's to do).
+    MixerFaders,
     /// While the mixer is open: the data wheel turned by `delta`. On a
     /// strips view it is Q-Link 1, the selected strip's volume; on the I/O
     /// view it moves the section's selection.
     MixerWheel(i32),
     /// While the mixer is open: - (-1) or + (1). On the I/O view it steps
-    /// the section's selected row; on a strips view it steps the kit, as
-    /// [`Effect::Kit`].
+    /// the section's selected row; on a strips view it is [`Nav::Step`].
     MixerStep(i32),
     /// While the chain editor or the macros panel is open: Q-Link `knob`
     /// (or the wheel, as Q-Link 1) turned by `delta`, for the knobs the
@@ -811,6 +920,12 @@ pub enum Effect {
         knob: usize,
         delta: i32,
     },
+    /// The wheel on the chain editor: the effect picker's tiles (SHIFT:
+    /// its sections) while it is open, else Q-Link 1 as [`Effect::ChainTurn`].
+    ChainWheel(i32),
+    /// The wheel's push on the chain editor: the picker's presets, then an
+    /// add.
+    ChainPush,
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
     /// SHIFT + wheel, or SHIFT + - / +, on the Synth page: the next or
@@ -840,6 +955,21 @@ pub enum Effect {
     /// to read ([`crate::gui::TELL_SECONDS`]): why something did nothing,
     /// or was refused (Jay, 12 Nov: say in place when it would do nothing).
     Tell(String),
+    /// UNDO (or SHIFT + UNDO, `redo`) on a page without its own in the
+    /// app: the screen knows what the page shows, so it picks the history
+    /// (Jay, 13 Nov 13:53Z: UNDO follows the page you're on).
+    Undo {
+        redo: bool,
+    },
+    /// The UNDO button went down (true) or up, on every page: held, the
+    /// screen opens the page's undo history (Jay after live test 3).
+    UndoButton(bool),
+    /// REC (or OVERDUB) on the Play page: the screen knows the view, so it
+    /// picks (Jay, 13 Nov 14:37Z): the looper on All and Loop, the takes
+    /// on Beats.
+    PlayRec {
+        overdub: bool,
+    },
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -875,6 +1005,9 @@ pub enum Effect {
     Time(TimeAction),
     /// What the Map controls page shows.
     Map(MapView),
+    /// TRACK MUTE came or went, or picked another bank: the PAD BANK
+    /// buttons' lights again.
+    BankLights,
     /// A PAD BANK button pressed: 0 = A/E to 3 = D/H, and whether SHIFT
     /// was held (E-H). The audio loop knows the bank playing, so it picks.
     Bank {
@@ -891,8 +1024,12 @@ pub enum Effect {
     /// has them, otherwise the Pads tab's Pad view (the audio loop knows
     /// which).
     ProgEdit,
-    /// A control for the Pads tab's browser while it shows (Browse).
+    /// A control for the browser while it shows (BROWSE, or the Pads
+    /// tab's Browse view).
     Browse(BrowseKey),
+    /// SHIFT + BROWSE: save the project (the audio loop gathers its
+    /// engines' parts and the screen saves them).
+    SaveProject,
     /// The metronome on or off, and its level in dBFS (SHIFT + PLAY
     /// START, Play's options, and at the start from the saved settings).
     Metronome {
@@ -919,6 +1056,9 @@ pub enum BrowseKey {
     Enter,
     /// PLAY: hear the sound picked.
     Play,
+    /// ERASE: the item picked to the Trash (asks first). The full browser
+    /// only.
+    Erase,
 }
 
 pub struct App {
@@ -935,6 +1075,9 @@ pub struct App {
     /// Each track's arp panel state while another track is armed
     /// ([`App::set_track`] swaps it in and out).
     track_ui: [arp::TrackUi; mpfree_seq::MAX_TRACKS],
+    /// A track's arp as New leaves it (on the first built-in pattern), to
+    /// tell which tracks the project's arp part needs to list.
+    arp_fresh: arp::TrackUi,
     /// The `play` step: STOP ends it. The app: STOP stops the sounds.
     timed: bool,
     shift: bool,
@@ -956,6 +1099,12 @@ pub struct App {
     play_pressed_at: Option<f64>,
     /// TRACK MUTE: the pads play, or mute tracks or the kit's pads.
     mute_keys: MuteKeys,
+    /// TRACK MUTE's bank: pads 1-16 are tracks 16 * bank + 1 on.
+    mute_bank: usize,
+    /// The project's tracks (the audio loop tells it).
+    track_count: usize,
+    /// The 16 Levels panel shows on Play: the wheel picks its kind.
+    levels_open: bool,
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
@@ -963,6 +1112,8 @@ pub struct App {
     /// it opened on), and the macros panel's.
     chain_back: View,
     macros_back: View,
+    /// The page before the Mix tab, where TRACK MIX goes back to.
+    mix_back: View,
     selected: usize,
     /// The buttons the guide asks for this time, and which one it is on.
     guide_steps: Vec<GuideStep>,
@@ -1007,6 +1158,13 @@ pub struct App {
     /// The synth pads' engine, scale and bank layouts (the Synth tab's
     /// options), as handed to the synth.
     synth_pads: crate::synth::PadSettings,
+    /// What each track plays as its own instrument (None: the kit), as
+    /// the audio loop last said ([`App::set_track_sound`]); the Synth tab's
+    /// Instrument row shows and sets the armed track's.
+    track_sounds: [Option<crate::instruments::Held>; mpfree_seq::MAX_TRACKS],
+    /// The plugin synths found (node id, name), offered on the Instrument row
+    /// after the built-in engines.
+    pub plugin_synths: Vec<(&'static str, &'static str)>,
     /// The pads' Scale row's choice and root, as `scale_pick` and
     /// `scale_root` are for the arp.
     pad_scale_pick: usize,
@@ -1041,6 +1199,14 @@ pub struct App {
     /// What the transport buttons' lights last showed, by note
     /// ([`App::transport_lights`]); `None` until first sent.
     lights_shown: [Option<u8>; 128],
+    /// The page showing has something to undo (the screen says): UNDO's
+    /// light is bright while idle.
+    undo_ready: bool,
+    /// A list or pad over the page is open (the number pad, the undo
+    /// history): the wheel, its push and - / + go to it.
+    overlay: bool,
+    /// The screen shows the wheel's outline on a control ([`Nav`]).
+    outline: bool,
     /// The synth's pad layout while the synth is on the pads
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
@@ -1064,12 +1230,20 @@ pub struct App {
     /// The looper's size in this start, and the rate it is counted at;
     /// Prefs' "Loop memory" says "(next start)" while the setting differs.
     loop_memory_now: LoopMemory,
+    /// The audio tracks' size in this start.
+    audio_memory_now: crate::audiotracks::AudioMemory,
     sample_rate: u32,
-    /// Prefs, a button or a Synth tab option changed since the last look
-    /// (`saved.rs`), and the text last handed to the store for "app",
-    /// "map" and "synth".
+    /// Prefs or a button changed since the last look (`saved.rs`), and
+    /// the text last handed to the store for "app" and "map".
     save_dirty: bool,
-    saved: [String; 3],
+    saved: [String; 2],
+    /// Something the project keeps (a Synth tab option, the arp) changed
+    /// with the controls since the audio loop last looked: the screen
+    /// counts the work as unsaved ([`App::take_project_edit`]).
+    project_edit: bool,
+    /// The arps as the project last saw them (`arp/part.rs`): any change
+    /// from the panel, its options, the workspace or a Q-Link is an edit.
+    arp_seen: u64,
 }
 
 /// Prefs' main rows. The touch screen settings sit in their own section,
@@ -1083,10 +1257,16 @@ const PREFS_ROWS: &[Item] = &[
     Item::DebugMode,
     Item::SoundCores,
     Item::LoopMemory,
+    Item::AudioMemory,
     Item::MapControls,
     Item::LineInput,
+    // Layout spec 4c: the line input's latency, shared by the looper and
+    // the audio tracks.
+    Item::LoopLatency,
     Item::SystemInfo,
     Item::Appearance,
+    Item::AtStart,
+    Item::Export,
     Item::TouchSection,
 ];
 /// Prefs' touch screen section.
@@ -1110,6 +1290,7 @@ impl App {
             arps,
             track: 0,
             track_ui: [arp::TrackUi::default(); mpfree_seq::MAX_TRACKS],
+            arp_fresh: arp::TrackUi::fresh(pattern),
             timed,
             shift: false,
             repeat_held: false,
@@ -1121,10 +1302,14 @@ impl App {
             fill: Fill::Off,
             play_pressed_at: None,
             mute_keys: MuteKeys::Off,
+            mute_bank: 0,
+            track_count: 0,
+            levels_open: false,
             view: View::Play,
             back: View::Play,
             chain_back: View::Mixer,
             macros_back: View::Play,
+            mix_back: View::Play,
             selected: 0,
             guide_steps: Vec::new(),
             guide: 0,
@@ -1138,6 +1323,8 @@ impl App {
             custom_scales: Vec::new(),
             scale_pick: 0,
             synth_pads: Default::default(),
+            track_sounds: [None; mpfree_seq::MAX_TRACKS],
+            plugin_synths: Vec::new(),
             pad_scale_pick: 0,
             pad_scale_root: 0,
             clock: None,
@@ -1155,6 +1342,9 @@ impl App {
             arp_dirty: true,
             rolling: false,
             lights_shown: Self::startup_transport_lights(),
+            undo_ready: false,
+            overlay: false,
+            outline: false,
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -1168,19 +1358,22 @@ impl App {
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
             loop_memory_now: LoopMemory::default(),
+            audio_memory_now: crate::audiotracks::AudioMemory::default(),
             sample_rate,
             save_dirty: false,
             saved: Default::default(),
+            project_edit: false,
+            arp_seen: 0,
         };
         // Every track's arp starts on the first pattern, as the panel does.
-        for t in 0..mpfree_seq::MAX_TRACKS {
-            app.arps.engine_at_mut(t).set_pattern(pattern);
-            app.track_ui[t].pattern = pattern;
+        // Settings alone don't start an engine, so this needn't mark all
+        // 128 in use.
+        for (e, u) in app.arps.engines_mut().zip(app.track_ui.iter_mut()) {
+            e.set_pattern(pattern);
+            u.pattern = pattern;
         }
         app.update_engine();
-        // The Synth tab's options start at their defaults: nothing to save
-        // until one changes.
-        app.saved[saved::SYNTH_SLOT] = app.synth_settings().to_text();
+        app.arp_seen = app.arp_fingerprint();
         app
     }
 
@@ -1192,6 +1385,26 @@ impl App {
     /// tells it each period).
     pub fn set_rolling(&mut self, rolling: bool) {
         self.rolling = rolling;
+    }
+
+    /// The project's tracks, for TRACK MUTE's hint line (the audio loop
+    /// tells it each period).
+    pub fn set_track_count(&mut self, n: usize) {
+        self.track_count = n;
+    }
+
+    /// TRACK MUTE's bank: pads 1-16 are tracks `16 * bank + 1` to
+    /// `16 * bank + 16`.
+    pub fn mute_bank(&self) -> usize {
+        self.mute_bank
+    }
+
+    /// What TRACK MUTE's pads are in the bank picked, for the log.
+    fn mute_bank_line(&self) -> String {
+        format!(
+            "TRACK MUTE · {}",
+            mute_bank_words(self.mute_bank, self.track_count)
+        )
     }
 
     /// The transport lights as Akai's startup leaves them: STOP bright,
@@ -1210,12 +1423,34 @@ impl App {
     ///   OVERDUB waits for PLAY it blinks bright/dark with them.
     /// - REC blinks bright/dark while armed and while recording; OVERDUB
     ///   the same while armed and overdubbing. Dark otherwise.
-    /// - UNDO blinks bright/dim while recording or overdubbing.
+    /// - UNDO blinks bright/dim while recording or overdubbing; otherwise
+    ///   bright while the page has something to undo, dim when not. (That
+    ///   idle light is inferred: an earlier capture saw Akai's app take
+    ///   UNDO from dim to bright during Q-Link edits. Not confirmed.)
     /// - STOP dim while rolling, bright when stopped (the MPC One's STOP
     ///   has no LED; harmless).
     ///
     /// Only the lights that changed, as [`Effect::Light`]. REC, OVERDUB and
     /// UNDO only once Map controls (or the defaults) know their buttons.
+    /// The screen says whether the page showing has something to undo;
+    /// the UNDO light follows at the next [`Self::transport_lights`].
+    pub fn set_undo_ready(&mut self, ready: bool) {
+        self.undo_ready = ready;
+    }
+
+    /// The screen opened (true) or closed a list or pad over the page
+    /// ([`crate::gui::FromUi::Overlay`]).
+    pub fn set_overlay(&mut self, on: bool) {
+        self.overlay = on;
+    }
+
+    /// The screen says whether the wheel's outline is on a control: on the
+    /// mixer, the chain editor and the macros panel the wheel then moves it
+    /// (and turns their Q-Link 1 when there is none).
+    pub fn set_outline(&mut self, shown: bool) {
+        self.outline = shown;
+    }
+
     pub fn transport_lights(&mut self, now: TransportLights, t: f64) -> Vec<Effect> {
         let blink_on = (t / BLINK_HALF_SECONDS).floor().rem_euclid(2.0) < 1.0;
         let blink = |on: bool, low: u8| match (on, blink_on) {
@@ -1247,8 +1482,9 @@ impl App {
         }
         if let Some(undo) = self.map.undo {
             let on = now.rolling && (now.recording || now.overdub);
-            if on || self.lights_shown[undo as usize & 0x7F].is_some() {
-                want.push((undo, blink(on, LIGHT_OFF)));
+            let idle = if self.undo_ready { LIGHT_ON } else { LIGHT_OFF };
+            if on || self.undo_ready || self.lights_shown[undo as usize & 0x7F].is_some() {
+                want.push((undo, blink(on, idle)));
             }
         }
         let mut fx = Vec::new();
@@ -1298,6 +1534,9 @@ impl App {
         fx.push(Effect::Looper(LoopAction::Command(
             LoopCommand::SetLatency(s.loop_latency_now()),
         )));
+        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(
+            10f32.powf(s.loop_level_db / 20.0),
+        ))));
         // Buttons not known yet are found with the control mapper (Debug
         // mode), at the owner's pace: nothing asks for them at power-on.
         fx.push(Effect::Show(self.view));
@@ -1441,8 +1680,8 @@ impl App {
             .engine_at_mut(self.track)
             .set_own_swing(!self.swing_from_transport);
         // Every track's arp free-runs at the app's tempo while stopped.
-        for t in 0..mpfree_seq::MAX_TRACKS {
-            self.arps.engine_at_mut(t).set_tempo(self.settings.bpm);
+        for e in self.arps.engines_mut() {
+            e.set_tempo(self.settings.bpm);
         }
         self.arp_dirty = true;
     }
@@ -1455,6 +1694,28 @@ impl App {
         }
     }
 
+    /// FULL LEVEL (or SHIFT + FULL LEVEL) and the header's level chip: the
+    /// level the pads play at, its light, and a line saying it.
+    fn set_pad_level(&mut self, level: PadLevel) -> Vec<Effect> {
+        self.pad_level = level;
+        let on = level != PadLevel::Off;
+        vec![
+            Effect::Light(button::FULL_LEVEL, if on { LIGHT_ON } else { LIGHT_OFF }),
+            self.status(),
+            Effect::Note(match level {
+                PadLevel::Off => "pad level: as played".to_string(),
+                PadLevel::Full => "pad level: Full Level (every hit 127)".to_string(),
+                PadLevel::Half => "pad level: Half Level (every hit 64)".to_string(),
+            }),
+        ]
+    }
+
+    /// A tap on the header's Full level or Half level chip: the pads play
+    /// as hit again (Jay's card, 13 Nov 14:57Z).
+    pub fn pad_level_off(&mut self) -> Vec<Effect> {
+        self.set_pad_level(PadLevel::Off)
+    }
+
     fn status(&self) -> Effect {
         Effect::Status(Status {
             shift: self.shift,
@@ -1464,6 +1725,8 @@ impl App {
             rate: self.settings.rate.label(),
             bpm: self.settings.bpm,
             mute_keys: self.mute_keys,
+            mute_bank: self.mute_bank,
+            erase: self.erase_held,
         })
     }
 
@@ -1510,8 +1773,12 @@ impl App {
             return fx;
         }
         if !pressed {
-            if Some(note) == self.map.erase {
+            if Some(note) == self.map.undo {
+                fx.push(Effect::UndoButton(false));
+            }
+            if Some(note) == self.map.erase && self.erase_held {
                 self.erase_held = false;
+                fx.push(self.status());
             }
             if Some(note) == self.map.note_repeat && self.repeat_held {
                 self.repeat_held = false;
@@ -1533,22 +1800,12 @@ impl App {
             } else {
                 PadLevel::Full
             };
-            self.pad_level = if self.pad_level == want {
+            let level = if self.pad_level == want {
                 PadLevel::Off
             } else {
                 want
             };
-            let on = self.pad_level != PadLevel::Off;
-            fx.push(Effect::Light(
-                button::FULL_LEVEL,
-                if on { LIGHT_ON } else { LIGHT_OFF },
-            ));
-            fx.push(self.status());
-            fx.push(Effect::Note(match self.pad_level {
-                PadLevel::Off => "pad level: as played".to_string(),
-                PadLevel::Full => "pad level: Full Level (every hit 127)".to_string(),
-                PadLevel::Half => "pad level: Half Level (every hit 64)".to_string(),
-            }));
+            fx.extend(self.set_pad_level(level));
         } else if note == button::STOP {
             fx.extend(self.fill_off());
             if self.timed {
@@ -1608,6 +1865,11 @@ impl App {
         } else if Some(note) == self.map.play_start {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
+        } else if Some(note) == self.map.browse && shift {
+            // SHIFT + BROWSE: save the project, from any page.
+            fx.push(Effect::SaveProject);
+        } else if Some(note) == self.map.browse {
+            fx.extend(self.toggle(View::Browser));
         } else if Some(note) == self.map.track_mix {
             fx.extend(self.toggle_mixer(shift));
         } else if let Some(e) = self.mode_button(note, shift) {
@@ -1625,18 +1887,24 @@ impl App {
             } else {
                 crate::looper_page::B_UNDO
             }));
+            fx.push(Effect::UndoButton(true));
+        } else if self.view == View::Play
+            && (Some(note) == self.map.rec || Some(note) == self.map.overdub)
+        {
+            fx.push(Effect::PlayRec {
+                overdub: Some(note) == self.map.overdub,
+            });
         } else if Some(note) == self.map.rec {
             fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
         } else if Some(note) == self.map.overdub {
             fx.push(Effect::Time(TimeAction::Transport(Command::ToggleOverdub)));
         } else if Some(note) == self.map.undo && self.view.sampler() {
             fx.push(Effect::SampleUndo { redo: shift });
+            fx.push(Effect::UndoButton(true));
         } else if Some(note) == self.map.undo {
-            fx.push(Effect::Time(if shift {
-                TimeAction::Redo
-            } else {
-                TimeAction::Undo
-            }));
+            // The Play page's view, Arrange and the rest: the screen picks.
+            fx.push(Effect::Undo { redo: shift });
+            fx.push(Effect::UndoButton(true));
         } else if Some(note) == self.map.note_repeat {
             let double = self
                 .repeat_pressed_at
@@ -1675,6 +1943,17 @@ impl App {
             fx.extend(self.toggle(View::Console));
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
+        } else if let Some(k) = self
+            .map
+            .bank_of(note)
+            .filter(|_| self.mute_keys == MuteKeys::Tracks)
+        {
+            // TRACK MUTE: PAD BANK picks which 16 tracks the pads mute (as
+            // it picks kits: SHIFT or a second press for E-H); the kit
+            // playing stays.
+            self.mute_bank = bank_target(self.mute_bank, k, shift);
+            fx.push(Effect::Note(self.mute_bank_line()));
+            fx.push(Effect::BankLights);
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
         } else if Some(note) == self.map.data_push && self.browsing() {
@@ -1683,7 +1962,10 @@ impl App {
             fx.extend(self.wheel_push());
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
-            if self.in_menu() {
+            if self.overlay {
+                // A list or pad over the page: - / + step in it.
+                fx.push(Effect::Rows(RowKey::Step(d)));
+            } else if self.in_menu() {
                 fx.extend(self.step_item(self.selected, d));
             } else if self.view == View::Touch && !shift {
                 // The value picked on the Touch page, one step.
@@ -1722,10 +2004,12 @@ impl App {
             } else if self.has_rows() {
                 // - / + step the highlighted row, as in the menus.
                 fx.push(Effect::Rows(RowKey::Step(d)));
-            } else if self.view == View::Mixer {
+            } else if self.view == View::Mixer && !self.outline {
+                // The I/O view's row; on the strips the outline.
                 fx.push(Effect::MixerStep(d));
-            } else {
-                fx.push(Effect::Kit(d));
+            } else if outlined(self.view) {
+                // The outlined value, or the outline (no longer the kit).
+                fx.push(Effect::Nav(Nav::Step(d)));
             }
         }
         fx
@@ -1739,13 +2023,19 @@ impl App {
         let m = self.map;
         let is = |b: Option<u8>| b == Some(note);
         let fx = if is(m.erase) {
-            // ERASE and SHIFT + ERASE wait for live erase and the FX lock
-            // mode (with a step held); alone they do nothing. Held with
-            // SHIFT, TAP TEMPO opens the Console.
+            // Held, ERASE makes the next tap on the screen delete what it
+            // lands on (Jay after live test 3); the screen knows from the
+            // status. In the browser, ERASE moves the item picked to the
+            // Trash (asking first). Live erase (ERASE + a pad while
+            // recording) and the FX lock mode come later. Held with SHIFT,
+            // TAP TEMPO opens the Console.
             self.erase_held = true;
-            return Some(Vec::new());
+            if self.view == View::Browser && !shift {
+                return Some(vec![Effect::Browse(BrowseKey::Erase)]);
+            }
+            return Some(vec![self.status()]);
         } else if is(m.main) {
-            // MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
+            // MAIN: Play; on Play, the next view (All, Beats, Loop).
             if self.view == View::Play {
                 vec![Effect::PlayView(None)]
             } else {
@@ -1794,20 +2084,23 @@ impl App {
             vec![
                 Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF }),
                 self.status(),
-                Effect::Note(
-                    match self.mute_keys {
-                        MuteKeys::Off => "TRACK MUTE: the pads play again",
-                        MuteKeys::Tracks => "TRACK MUTE: pads 1-8 mute tracks 1-8",
-                        MuteKeys::Pads => "SHIFT + TRACK MUTE: each pad mutes itself in the kit",
+                Effect::Note(match self.mute_keys {
+                    MuteKeys::Off => "TRACK MUTE: the pads play again".to_string(),
+                    MuteKeys::Tracks => self.mute_bank_line(),
+                    MuteKeys::Pads => {
+                        "SHIFT + TRACK MUTE: each pad mutes itself in the kit".to_string()
                     }
-                    .to_string(),
-                ),
+                }),
+                // The PAD BANK lights show the mute bank, or the kit's again.
+                Effect::BankLights,
             ]
         } else if is(m.sixteen_level) {
             // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
-            // 16 LEVEL itself comes with 16 Levels for kits.
+            // 16 LEVEL: 16 Levels on (with its panel on Play) or off.
             if !shift {
-                return Some(Vec::new());
+                let mut fx = self.go(View::Play);
+                fx.push(Effect::SixteenLevels);
+                return Some(fx);
             }
             let in_key = self.synth_pads.layout() != mpfree_arp::scale::pads::PadLayout::InKey;
             let mut fx = self.synth_pick_layout(in_key);
@@ -1822,6 +2115,17 @@ impl App {
             return None;
         };
         Some(fx)
+    }
+
+    /// The screen turned 16 Levels on or off (`on`) and shows its panel or
+    /// not (`open`): 16 LEVEL lights while they are on, and the wheel
+    /// turns the panel's kind while it shows.
+    pub fn levels_shown(&mut self, on: bool, open: bool) -> Vec<Effect> {
+        self.levels_open = open;
+        match self.map.sixteen_level {
+            Some(note) => vec![Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF })],
+            None => Vec::new(),
+        }
     }
 
     /// A page from a mode button: shown, unless it shows already.
@@ -1934,10 +2238,13 @@ impl App {
         Some(Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF }))
     }
 
-    /// The data wheel: values in a menu, kits elsewhere.
+    /// The data wheel: rows in a menu or on a page with rows, the outline
+    /// on the pages [`outlined`] names ([`Nav`]), each other page's own job.
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
         match self.view {
             View::Guide | View::System => Vec::new(),
+            // A list or pad over the page: the wheel moves in it.
+            _ if self.overlay => vec![Effect::Rows(RowKey::Pick(delta))],
             // In a menu the wheel moves between rows and - / + change the
             // value, so menus work without touch; SHIFT + wheel also changes
             // the value, in case - and + are not known yet.
@@ -1948,12 +2255,28 @@ impl App {
                 let last = (self.items().len() as i32 - 1).max(0);
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
+            // The outline (Jay, 13 Nov): on Play and the Looper tab the
+            // wheel always moves it (it no longer steps the kit: the PAD
+            // BANK buttons do); on the mixer, the chain editor and the
+            // macros panel once a tap or a push has put it on a control.
+            // SHIFT + wheel and NOTE REPEAT keep their jobs.
+            // (The 16 Levels panel keeps the wheel for its kinds.)
+            View::Play if !self.shift && !self.repeat_held && !self.levels_open => {
+                vec![Effect::Nav(Nav::Turn(delta))]
+            }
+            View::Looper if !self.shift && !self.repeat_held => {
+                vec![Effect::Nav(Nav::Turn(delta))]
+            }
+            v if outlined(v) && self.outline && !self.shift && !self.repeat_held => {
+                vec![Effect::Nav(Nav::Turn(delta))]
+            }
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
             // The mixer: the wheel is the selected strip's volume (Q-Link 1),
             // or on the I/O view the section's selection.
             View::Mixer => vec![Effect::MixerWheel(delta)],
             // The chain editor and the macros panel: the wheel is Q-Link 1.
-            View::Chain | View::Macros => vec![Effect::ChainTurn { knob: 0, delta }],
+            View::Chain => vec![Effect::ChainWheel(delta)],
+            View::Macros => vec![Effect::ChainTurn { knob: 0, delta }],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
             View::Debug
@@ -1975,6 +2298,8 @@ impl App {
             View::Touch => vec![Effect::TouchWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
+            // The 16 Levels panel: what the levels change.
+            View::Play if self.levels_open => vec![Effect::LevelsWheel(delta)],
             // SHIFT + wheel keeps each page's second job: scroll Arrange,
             // the Synth tab's pages, the pads with a sound.
             View::Arrange if self.shift => vec![Effect::ClipsWheel {
@@ -1982,6 +2307,8 @@ impl App {
                 scroll: true,
             }],
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
+            View::Browser if self.shift => vec![Effect::Browse(BrowseKey::Places(delta.signum()))],
+            View::Browser => vec![Effect::Browse(BrowseKey::Wheel(delta))],
             View::Pads if self.pads_browse && self.shift => {
                 vec![Effect::Browse(BrowseKey::Places(delta.signum()))]
             }
@@ -1997,7 +2324,7 @@ impl App {
                 })]
             }
             View::Play if self.shift => vec![Effect::Octave(delta.signum())],
-            _ => vec![Effect::Kit(delta)],
+            _ => Vec::new(),
         }
     }
 
@@ -2011,6 +2338,9 @@ impl App {
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
         self.menu_editing = false;
+        // The screen closes a list or pad over the page when the page
+        // changes.
+        self.overlay = false;
         let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v
             && matches!(
@@ -2032,6 +2362,17 @@ impl App {
             )
         {
             self.back = self.view;
+        }
+        if v.tab_view() == Some(View::Mixer) && self.view.tab_view() != Some(View::Mixer) {
+            self.mix_back = match self.view {
+                View::Guide
+                | View::Options
+                | View::Prefs
+                | View::System
+                | View::Macros
+                | View::Browser => self.back,
+                w => w,
+            };
         }
         let mut fx = Vec::new();
         if was_editing {
@@ -2063,31 +2404,34 @@ impl App {
         fx
     }
 
-    /// Open `v`, or go back if it is open already.
-    /// TRACK MIX, SHIFT + TRACK MIX (PAD MIX) or the bar's mixer icon: the
-    /// mixer opens over the page on Track Mix (or Pad Mix); again, it closes
-    /// back to the page. A tab closes it too.
+    /// TRACK MIX or SHIFT + TRACK MIX (PAD MIX): the Mix tab opens on
+    /// Track Mix (or Pad Mix); pressed on the Mix tab (the mixer or an
+    /// effect chain), back to the page before it (Jay's card, 14 Nov
+    /// 07:15Z).
     pub fn toggle_mixer(&mut self, pads: bool) -> Vec<Effect> {
         use mpfree_mixer_ui::MixView;
         if self.view == View::Guide {
             return Vec::new();
         }
-        if self.view == View::Mixer {
-            let mut fx = vec![Effect::Mixer(None)];
-            fx.extend(self.toggle(View::Mixer));
-            return fx;
+        if self.view.tab_view() == Some(View::Mixer) {
+            let back = match self.mix_back {
+                v if v.tab_view() == Some(View::Mixer) => View::Play,
+                v => v,
+            };
+            return self.show(back);
         }
         let mut fx = self.show(View::Mixer);
         fx.insert(
             0,
             Effect::Mixer(Some(if pads { MixView::Pads } else { MixView::Tracks })),
         );
+        fx.insert(1, Effect::MixerFaders);
         fx
     }
 
     /// The bar's I/O icon (layout spec, section 2): the mixer opens on its
     /// I/O view; on a strips view the mixer turns to I/O; on the I/O view
-    /// (`io_showing`) it closes back to the page, as the mixer icon does.
+    /// (`io_showing`) it closes back to the page, as TRACK MIX does.
     pub fn toggle_io(&mut self, io_showing: bool) -> Vec<Effect> {
         if self.view == View::Mixer && io_showing {
             return self.toggle_mixer(false);
@@ -2209,7 +2553,7 @@ impl App {
 
     /// The wheel, its push, - / + and PLAY go to the Pads tab's browser.
     fn browsing(&self) -> bool {
-        self.view == View::Pads && self.pads_browse
+        (self.view == View::Pads && self.pads_browse) || self.view == View::Browser
     }
 
     /// A page whose rows the wheel, - / + and the wheel's push work
@@ -2227,6 +2571,16 @@ impl App {
     pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
         if self.view == View::Guide {
             return Vec::new();
+        }
+        if v == View::Mixer {
+            // The Mix tab: the mixer as it was left (an open chain's
+            // editor goes back to it too).
+            if self.view == View::Mixer {
+                return Vec::new();
+            }
+            let mut fx = self.show(View::Mixer);
+            fx.insert(0, Effect::MixerLast);
+            return fx;
         }
         self.show(v)
     }
@@ -2289,6 +2643,11 @@ impl App {
     /// The looper's size in this start (main, once the looper is made).
     pub fn set_loop_memory_now(&mut self, size: LoopMemory) {
         self.loop_memory_now = size;
+    }
+
+    /// The audio tracks' size in this start (main, once they are made).
+    pub fn set_audio_memory_now(&mut self, size: crate::audiotracks::AudioMemory) {
+        self.audio_memory_now = size;
     }
 
     /// The mapper's list starts from what the app knows (measured buttons,
@@ -2487,6 +2846,7 @@ impl App {
                 Item::Tempo,
                 Item::Metronome,
                 Item::MetronomeLevel,
+                Item::TimingStrip,
                 Item::PadLevel,
                 Item::Latch,
             ],
@@ -2564,6 +2924,10 @@ impl App {
                 if s.metronome { "On" } else { "Off" }.to_string(),
             ),
             Item::MetronomeLevel => ("Metronome level", format!("{} dB", s.metronome_db)),
+            Item::TimingStrip => (
+                "Timing strip",
+                if s.timing_strip { "On" } else { "Off" }.to_string(),
+            ),
             Item::PadLevel => (
                 "Pad level",
                 match self.pad_level {
@@ -2603,7 +2967,11 @@ impl App {
             ),
             Item::LoopBars => ("First pass length", crate::looping::bars_text(s.loop_bars)),
             Item::LoopLatency => (
-                "Latency to make up for",
+                if self.view == View::Prefs {
+                    "Line input latency"
+                } else {
+                    "Latency to make up for"
+                },
                 format!(
                     "{} frames, {:.1} ms{}",
                     s.loop_latency,
@@ -2624,6 +2992,24 @@ impl App {
                     format!("{} (next start)", s.loop_memory.row(self.sample_rate))
                 },
             ),
+            Item::AudioMemory => (
+                "Audio track memory",
+                if s.audio_memory == self.audio_memory_now {
+                    s.audio_memory.row(self.sample_rate)
+                } else {
+                    format!("{} (next start)", s.audio_memory.row(self.sample_rate))
+                },
+            ),
+            Item::AtStart => (
+                "At start",
+                if s.open_last {
+                    "Last project"
+                } else {
+                    "New project"
+                }
+                .to_string(),
+            ),
+            Item::Export => ("Export", s.export_mode.name().to_string()),
             Item::Arp(a) => self.arp_item_text(a),
             Item::Synth(a) => self.synth_item_text(a),
         }
@@ -2728,6 +3114,12 @@ impl App {
                 "SHIFT + PLAY START turns it on or off too.",
             ],
             Item::MetronomeLevel => vec!["How loud the click is, -36 to -6 dB."],
+            Item::TimingStrip => vec![
+                "Your timing under the pattern in Beats:",
+                "how early or late your hits land, the",
+                "spread and the velocity. Off gives the",
+                "pattern more lanes.",
+            ],
             Item::PadLevel => vec![
                 "FULL LEVEL plays every hit at 127,",
                 "SHIFT + FULL LEVEL (Half Level) at 64.",
@@ -2772,11 +3164,11 @@ impl App {
                 "until the bar line after Record again.",
             ],
             Item::LoopLatency => vec![
-                "How late your playing reaches the looper:",
-                "the output buffer, the input buffer and the",
-                "converters. Estimated from the audio buffer",
-                "until you set it. Measure it with a cable",
-                "from an output to the input.",
+                "How late your playing reaches the looper and",
+                "the audio tracks: the output buffer, the input",
+                "buffer and the converters. Estimated from the",
+                "audio buffer until you set it. Measure it with",
+                "a cable from an output to the input.",
             ],
             Item::LoopLevel => vec![
                 "The loop's playback level, -24 to +6 dB.",
@@ -2788,6 +3180,28 @@ impl App {
                 "of stereo. It is kept in memory from the",
                 "start, so a new size applies from the next",
                 "start. The Looper tab shows what is left.",
+            ],
+            Item::AudioMemory => vec![
+                "How much sound the audio tracks on the",
+                "Song view can hold, every take together:",
+                "30 seconds to 10 minutes of stereo. It is",
+                "kept in memory from the start, so a new",
+                "size applies from the next start.",
+            ],
+            Item::AtStart => vec![
+                "What MPFree opens when it starts.",
+                "New project: an empty song (the default).",
+                "Last project: the project you last saved",
+                "or opened, once the sound is going.",
+            ],
+            Item::Export => vec![
+                "How Export (BROWSE, Projects) plays the song.",
+                "Fast, quiet: faster than real time, the",
+                "speakers quiet (the default).",
+                "Listen: once in real time, heard as it",
+                "records. A song that plays outside gear",
+                "(MIDI, CV, the line input, plugins) listens",
+                "anyway.",
             ],
             Item::Arp(a) => Self::arp_item_help(a),
             Item::Synth(a) => Self::synth_item_help(a),
@@ -2866,12 +3280,23 @@ impl App {
     /// 12 Nov 08:11Z). On a page with rows, the same for the row
     /// highlighted ([`RowKey`]). Elsewhere it does nothing yet.
     pub fn wheel_push(&mut self) -> Vec<Effect> {
+        if self.overlay {
+            // A list or pad over the page: the push is its Enter.
+            return vec![Effect::Rows(RowKey::Editing(true))];
+        }
+        if !self.in_menu() && self.view == View::Chain {
+            return vec![Effect::ChainPush];
+        }
         if !self.in_menu() {
             // A page with rows: open the highlighted row for the wheel, or
             // close it again (RowKey).
             if self.has_rows() {
                 self.page_editing = !self.page_editing;
                 return vec![Effect::Rows(RowKey::Editing(self.page_editing))];
+            }
+            // The outlined control: pressed, or grabbed (a value).
+            if outlined(self.view) && !self.repeat_held {
+                return vec![Effect::Nav(Nav::Push)];
             }
             return Vec::new();
         }
@@ -2991,6 +3416,14 @@ impl App {
                     )));
                 }
             }
+            Item::AtStart => s.open_last = d > 0,
+            Item::Export => {
+                s.export_mode = if d > 0 {
+                    mpfree_export::Mode::Listen
+                } else {
+                    mpfree_export::Mode::Fast
+                }
+            }
             Item::LoopMemory => {
                 let next = cycle(&LoopMemory::ALL, s.loop_memory, d);
                 if next != s.loop_memory {
@@ -2999,6 +3432,17 @@ impl App {
                         "loop memory: {} min from the next start (now {} min)",
                         next.minutes(),
                         self.loop_memory_now.minutes()
+                    )));
+                }
+            }
+            Item::AudioMemory => {
+                let next = cycle(&crate::audiotracks::AudioMemory::ALL, s.audio_memory, d);
+                if next != s.audio_memory {
+                    s.audio_memory = next;
+                    fx.push(Effect::Note(format!(
+                        "audio track memory: {} from the next start (now {})",
+                        next.time(),
+                        self.audio_memory_now.time()
                     )));
                 }
             }
@@ -3025,6 +3469,7 @@ impl App {
                 s.metronome_db = cycle(&METRONOME_DBS, s.metronome_db, d);
                 fx.push(self.metronome());
             }
+            Item::TimingStrip => s.timing_strip = !s.timing_strip,
             Item::PadLevel => {
                 self.pad_level = cycle(
                     &[PadLevel::Off, PadLevel::Full, PadLevel::Half],
@@ -3525,7 +3970,11 @@ mod tests {
         app.map.learn(mapper::Job::Erase, Some(ERASE));
         let tap = app.map.tap_tempo.unwrap();
         app.button(button::SHIFT, true, 0.0);
-        assert!(app.button(ERASE, true, 0.0).is_empty());
+        // ERASE held tells the screen (ERASE + a tap deletes), nothing more.
+        assert!(matches!(
+            app.button(ERASE, true, 0.0).as_slice(),
+            [Effect::Status(s)] if s.erase
+        ));
         assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Console)]);
         assert!(app.taps.is_empty(), "no tempo tap");
         assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Play)]);
@@ -3534,7 +3983,10 @@ mod tests {
         press(&mut app, tap);
         assert_eq!(app.taps.len(), 1);
         app.button(button::SHIFT, true, 0.0);
-        app.button(ERASE, false, 0.0);
+        assert!(matches!(
+            app.button(ERASE, false, 0.0).as_slice(),
+            [Effect::Status(s)] if !s.erase
+        ));
         assert!(!press(&mut app, tap)
             .iter()
             .any(|e| matches!(e, Effect::Show(View::Console))));
@@ -3636,10 +4088,10 @@ mod tests {
         app.select(row(&app, Item::SystemInfo));
         let fx = press(&mut app, PUSH);
         assert!(fx.contains(&Effect::Show(View::System)), "{fx:?}");
-        // Off the menus the push does nothing yet.
+        // Off the menus, on Play, the push presses the outlined control.
         press(&mut app, MENU);
         app.show(View::Play);
-        assert!(press(&mut app, PUSH).is_empty());
+        assert_eq!(press(&mut app, PUSH), vec![Effect::Nav(Nav::Push)]);
     }
 
     #[test]
@@ -3797,6 +4249,83 @@ mod tests {
         assert_eq!(l.items().last(), Some(&Item::LoopMemory));
     }
 
+    /// Layout spec 4c: Prefs "Line input latency", after Line input and
+    /// before System info, is the looper's "Latency to make up for": one
+    /// setting, which the audio tracks follow too.
+    #[test]
+    fn prefs_line_input_latency_is_the_loopers_latency() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::LoopLatency);
+        assert_eq!(at, row(&app, Item::LineInput) + 1);
+        assert_eq!(at + 1, row(&app, Item::SystemInfo));
+        assert_eq!(app.item_text(Item::LoopLatency).0, "Line input latency");
+        let before = app.settings.loop_latency;
+        let fx = app.step_item(at, 1);
+        assert_eq!(app.settings.loop_latency, before + 16);
+        assert!(app.settings.loop_latency_set);
+        assert!(fx.iter().any(|e| matches!(
+            e,
+            Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(_)))
+        )));
+        assert!(!app.item_text(Item::LoopLatency).1.contains("estimated"));
+    }
+
+    /// Layout spec 4c: Prefs "Audio track memory", right after Loop
+    /// memory, picks 30 s to 10 min of stereo, kept, from the next start.
+    #[test]
+    fn audio_track_memory_is_kept_and_used_from_the_next_start() {
+        use crate::audiotracks::AudioMemory;
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::AudioMemory);
+        assert_eq!(at, row(&app, Item::LoopMemory) + 1);
+        assert!(at < row(&app, Item::SystemInfo), "before System info");
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].1.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        assert_eq!(app.item_text(Item::AudioMemory).0, "Audio track memory");
+        assert_eq!(app.item_text(Item::AudioMemory).1, "1:00 stereo, 22 MB");
+        let fx = app.step_item(at, 1);
+        assert_eq!(value(&fx), "2:00 stereo, 43 MB (next start)");
+        assert!(fx.contains(&Effect::Note(
+            "audio track memory: 2:00 from the next start (now 1:00)".into()
+        )));
+        for _ in 0..6 {
+            app.step_item(at, 1);
+        }
+        assert_eq!(app.settings.audio_memory, AudioMemory::Min10);
+        for _ in 0..6 {
+            app.step_item(at, -1);
+        }
+        assert_eq!(app.settings.audio_memory, AudioMemory::Sec30);
+        // Kept as seconds; the next start makes it and says no more.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_i64("audio-memory"), Some(30));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.audio_memory, AudioMemory::Sec30);
+        next.set_audio_memory_now(AudioMemory::Sec30);
+        assert_eq!(next.item_text(Item::AudioMemory).1, "0:30 stereo, 11 MB");
+        // A size it doesn't offer is left out, and the default stays.
+        let mut odd = mpfree_store::Settings::default();
+        odd.set_i64("audio-memory", 45);
+        let mut other = App::new(44_100, false);
+        let notes = other.restore(&odd, &mpfree_store::Settings::default());
+        assert_eq!(other.settings.audio_memory, AudioMemory::Min1);
+        assert!(
+            notes.iter().any(|n| n.contains("audio-memory = 45")),
+            "{notes:?}"
+        );
+    }
+
     #[test]
     fn appearance_offers_every_built_in_theme() {
         let names: Vec<&str> = THEMES.iter().map(|t| t.0).collect();
@@ -3900,12 +4429,23 @@ mod tests {
         press(&mut app, 42);
         let fx = app.open_tab(View::Play);
         assert!(fx.contains(&Effect::Rows(RowKey::Editing(false))), "{fx:?}");
-        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        assert_eq!(app.wheel(1), vec![Effect::Nav(Nav::Turn(1))]);
         app.open_tab(View::Sample);
         assert_eq!(app.wheel(1), pick(1));
         // A menu's own rows are as before.
         press(&mut app, MENU);
         assert!(matches!(app.wheel(1).last(), Some(Effect::Menu(_))));
+    }
+
+    #[test]
+    fn the_chain_editor_hands_the_wheel_and_its_push_to_the_gui() {
+        let mut app = ready();
+        app.open_chain();
+        assert_eq!(app.view(), View::Chain);
+        // The screen gives them to the picker while it is open, else the
+        // wheel is Q-Link 1 (gui.rs).
+        assert_eq!(app.wheel(2), vec![Effect::ChainWheel(2)]);
+        assert_eq!(app.wheel_push(), vec![Effect::ChainPush]);
     }
 
     #[test]
@@ -3915,7 +4455,7 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         assert_eq!(app.wheel(3), vec![Effect::Octave(1)]);
         app.button(button::SHIFT, false, 0.0);
-        assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
+        assert_eq!(app.wheel(-2), vec![Effect::Nav(Nav::Turn(-2))]);
         assert_eq!(app.open_tab(View::Synth), vec![Effect::Show(View::Synth)]);
         assert_eq!(app.view(), View::Synth);
         // The wheel picks tiles (RowKey; see the wheel navigation test).
@@ -4057,8 +4597,8 @@ mod tests {
     }
 
     #[test]
-    fn the_synth_options_are_kept_between_starts() {
-        use crate::synth::{Builtin, Engine};
+    fn the_synth_options_go_in_the_project_not_in_prefs() {
+        use crate::synth::{Builtin, Engine, PadSettings};
         use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
         use mpfree_arp::scale::SCALES;
         use mpfree_store::Settings;
@@ -4073,19 +4613,18 @@ mod tests {
                 .position(|&i| i == Item::Synth(a))
                 .unwrap()
         };
-        // No restore here, so "app" and "map" are handed out once; the
-        // Synth tab's options at their defaults are not.
+        // No restore here, so "app" and "map" are handed out once.
         app.save_dirty = true;
-        assert!(
-            !app.take_saves().iter().any(|(o, _)| *o == saved::SYNTH),
-            "nothing changed yet"
-        );
+        app.take_saves();
+        assert!(!app.take_project_edit(), "nothing changed yet");
+        // The Instrument row now picks the selected track's own sound; the
+        // shared synth's engine is still kept and restored.
+        app.synth_pads.engine = Engine::Fm;
         let mut step = |a: SynthItem, d: i32, times: usize| {
             for _ in 0..times {
                 app.step_item(row(a), d);
             }
         };
-        step(SynthItem::Engine, 1, 1);
         step(SynthItem::Scale, 1, 2);
         step(SynthItem::Root, 1, 9);
         step(SynthItem::Layout, 1, 2);
@@ -4093,12 +4632,10 @@ mod tests {
         step(SynthItem::Tuning, 1, Builtin::ALL.len());
         step(SynthItem::TuningRoot, 1, 2);
         step(SynthItem::A4, -1, 8);
-        let saves = app.take_saves();
-        assert_eq!(
-            saves.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
-            vec![saved::SYNTH]
-        );
-        let kept = saves[0].1.clone();
+        assert!(app.take_saves().is_empty(), "they aren't Prefs");
+        assert!(app.take_project_edit(), "they are the project's");
+        assert!(!app.take_project_edit(), "said once");
+        let kept = app.synth_settings();
         for (k, v) in [
             ("engine", "fm"),
             ("scale", SCALES[2].name),
@@ -4112,14 +4649,14 @@ mod tests {
         ] {
             assert_eq!(kept.get_str(k), Some(v), "{k}");
         }
-        // The bank playing isn't kept, so switching banks saves nothing.
+        // The bank playing isn't kept, so switching banks is no edit.
         app.synth_bank(2);
-        assert!(app.take_saves().is_empty());
+        assert!(!app.take_project_edit());
 
-        // The next start: every option comes back, on bank A.
+        // Opening the project: every option comes back, on the bank playing.
         let mut next = ready();
         next.tuning_files = files.clone();
-        let (notes, fx) = next.restore_synth(&kept);
+        let (notes, fx) = next.open_synth(&kept);
         let mut want = app.synth_pads;
         want.bank = 0;
         assert_eq!(next.synth_pads, want);
@@ -4133,28 +4670,23 @@ mod tests {
         assert_eq!(fx, vec![Effect::SynthPads(want)]);
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(
-            notes[0].starts_with("saved synth options: FM, scale ")
+            notes[0].starts_with("synth options: FM, scale ")
                 && notes[0].ends_with("tuning werckmeister3 (root D, A4 432 Hz)"),
             "{notes:?}"
         );
-        let synth_saves = |a: &mut App| {
-            a.save_dirty = true;
-            a.take_saves()
-                .into_iter()
-                .filter(|(o, _)| *o == saved::SYNTH)
-                .count()
-        };
-        assert_eq!(synth_saves(&mut next), 0, "what was read is what's kept");
+        assert!(!next.take_project_edit(), "an open is no edit");
+        assert!(next.take_saves().is_empty(), "nor a Prefs change");
 
-        // A tuning file or scale that's gone, and words not understood, are
-        // left out and said; the rest comes back.
-        let mut gone = ready();
+        // Another project whose tuning file or scale is gone, or with words
+        // not understood: those are said and left at the defaults, never
+        // the last project's.
+        next.tuning_files.clear();
         let mut odd = kept.clone();
         odd.set_str("engine", "banjo");
         odd.set_str("scale", "No such scale");
         odd.set_i64("a4", 900);
         odd.set_str("bank-c", "sideways");
-        let (notes, _) = gone.restore_synth(&odd);
+        let (notes, _) = next.open_synth(&odd);
         let left = notes.last().unwrap();
         for k in [
             "engine = banjo",
@@ -4165,34 +4697,66 @@ mod tests {
         ] {
             assert!(left.contains(k), "{k}: {notes:?}");
         }
-        let p = gone.synth_pads;
+        let p = next.synth_pads;
+        let fresh = PadSettings::default();
         assert_eq!(
-            (p.engine, p.scale, p.tuning.file),
-            (Engine::Poly, None, None)
+            (p.engine, p.scale, p.tuning.file, p.tuning.builtin),
+            (Engine::Poly, None, None, fresh.tuning.builtin)
         );
         assert_eq!(
             (p.tuning.a4_hz, p.tuning.root, p.rows),
             (440, 2, InKeyRows::Fourths)
         );
-        assert_eq!(
-            synth_saves(&mut gone),
-            1,
-            "the next save writes what is in use"
-        );
+        assert_eq!(p.banks[2].0, fresh.banks[2].0);
+        assert_eq!(next.pad_scale_pick, 0);
 
-        // The owner's own scales come back by name; nothing kept, nothing done.
+        // A project with no options at all (New): the defaults.
+        let (_, fx) = next.open_synth(&Settings::default());
+        assert_eq!(fx, vec![Effect::SynthPads(fresh)]);
+        assert_eq!((next.pad_scale_pick, next.pad_scale_root), (0, 0));
+
+        // The owner's own scales come back by name; nothing given, nothing
+        // done.
         let mut own = ready();
         own.custom_scales
             .push(("Mine".to_string(), SCALES[3].mask, SCALES[3].down));
         let mut mine = Settings::default();
         mine.set_str("scale", "Mine");
-        own.restore_synth(&mine);
+        own.open_synth(&mine);
         assert_eq!(own.pad_scale_pick, SCALES.len());
         assert!(own.synth_pads.scale.is_some());
         assert_eq!(
             ready().restore_synth(&Settings::default()),
             (vec![], vec![])
         );
+    }
+
+    /// A tap on track 3's sound line on Arrange: the Synth tab's MENU
+    /// opens on the Instrument row, named for track 3, and MENU goes back
+    /// to the Synth tab.
+    #[test]
+    fn a_tracks_sound_line_opens_its_instrument_row_on_the_synth_tab() {
+        let mut app = ready();
+        app.open_tab(View::Arrange);
+        let fx = app.open_track_instrument(2);
+        assert_eq!(app.track(), 2);
+        assert_eq!(app.view(), View::Options);
+        let m = fx
+            .iter()
+            .find_map(|e| match e {
+                Effect::Menu(m) => Some(m),
+                _ => None,
+            })
+            .expect("the menu");
+        assert_eq!(m.title, "Synth options");
+        assert_eq!(m.selected, 0);
+        assert_eq!(
+            m.rows[0],
+            ("Track 3 instrument".to_string(), "Kit".to_string())
+        );
+        assert!(fx.contains(&Effect::Show(View::Synth)), "{fx:?}");
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Synth);
     }
 
     #[test]
@@ -4209,7 +4773,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "Engine",
+                "Track 1 instrument",
                 "Scale",
                 "Scale root",
                 "Pad layout",
@@ -4223,7 +4787,7 @@ mod tests {
                 "Latch"
             ]
         );
-        assert_eq!(m.rows[0].1, "Poly");
+        assert_eq!(m.rows[0].1, "Kit");
         assert_eq!(m.rows[5].1, "12-TET");
         assert_eq!(m.rows[6].1, "C (not used)");
         assert_eq!(m.rows[7].1, "440 Hz");
@@ -4241,19 +4805,45 @@ mod tests {
                 _ => None,
             })
         };
-        // Engine: FM, Drums, Pluck, Wavetable, and no further; then back to Poly.
-        for want in [Engine::Fm, Engine::Drums, Engine::Pluck, Engine::Wavetable] {
-            let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
-            assert_eq!(p.engine, want);
+        // Instrument: the selected track's own sound. Kit, then Poly, FM,
+        // Drums, Pluck, Wavetable, Keys, Drawbar, Squelch, Analog and the
+        // plugin synths; then back to Kit.
+        let sound = |fx: &[Effect]| {
+            fx.iter().find_map(|e| match e {
+                Effect::TrackSound { track, id } => Some((*track, *id)),
+                _ => None,
+            })
+        };
+        let _ = app.take_project_edit();
+        for want in Engine::ALL {
+            let fx = app.step_item(row(SynthItem::Engine), 1);
+            assert_eq!(sound(&fx), Some((0, Some(want.node_id()))));
+            assert_eq!(pads(&fx), None, "the shared synth is left alone");
+            assert!(app.take_project_edit(), "the project keeps it");
         }
         assert_eq!(
-            pads(&app.step_item(row(SynthItem::Engine), 1)),
+            sound(&app.step_item(row(SynthItem::Engine), 1)),
             None,
-            "Wavetable is the last"
+            "Analog is the last with no plugin synths"
         );
-        for _ in 0..4 {
+        app.plugin_synths = vec![("clap:org.example.synth", "Example Synth")];
+        assert_eq!(
+            sound(&app.step_item(row(SynthItem::Engine), 1)),
+            Some((0, Some("clap:org.example.synth")))
+        );
+        assert_eq!(app.synth_item_text(SynthItem::Engine).1, "Example Synth");
+        // Each track keeps its own: track 2 still plays the kit, and the
+        // row names the track it sets.
+        app.set_track(1);
+        assert_eq!(
+            app.synth_item_text(SynthItem::Engine),
+            ("Track 2 instrument", "Kit".to_string())
+        );
+        app.set_track(0);
+        for _ in 0..Engine::ALL.len() + 1 {
             app.step_item(row(SynthItem::Engine), -1);
         }
+        assert_eq!(app.track_sound(0), None, "back to the kit");
         assert_eq!(app.synth_pads.engine, Engine::Poly);
         // Chromatic is already on: a tap says so.
         assert!(matches!(
@@ -4326,6 +4916,79 @@ mod tests {
         assert_eq!(p.scale, None);
     }
 
+    /// A list or pad over the page (the number pad, the undo history)
+    /// takes the wheel, its push and - / + on every page, Play's too;
+    /// UNDO says when it goes down and up, so the screen can tell it is
+    /// held (Jay after live test 3: hold UNDO for the page's history).
+    #[test]
+    fn an_overlay_takes_the_wheel_and_undo_says_when_it_goes_down_and_up() {
+        let mut app = ready();
+        app.open_tab(View::Play);
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        assert_eq!(app.wheel(1), vec![Effect::Nav(Nav::Turn(1))]);
+        app.set_overlay(true);
+        assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
+        assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
+        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(press(&mut app, 40), vec![Effect::Rows(RowKey::Step(-1))]);
+        // Another page: the screen closes it, so the wheel is the page's.
+        app.open_tab(View::Arrange);
+        app.open_tab(View::Play);
+        assert_eq!(app.wheel(1), vec![Effect::Nav(Nav::Turn(1))]);
+        // UNDO down and up, here and on the Looper tab.
+        assert_eq!(
+            app.button(92, true, 0.0),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
+        assert_eq!(app.button(92, false, 0.7), vec![Effect::UndoButton(false)]);
+        app.open_tab(View::Looper);
+        let fx = app.button(92, true, 1.0);
+        assert_eq!(fx.last(), Some(&Effect::UndoButton(true)));
+        assert_eq!(fx.len(), 2, "the loop's undo, then the button: {fx:?}");
+    }
+
+    /// The Mix tab (Jay's card, 14 Nov 07:15Z): its tab opens the mixer as
+    /// it was left, TRACK MIX opens it on Track Mix, and TRACK MIX on the
+    /// tab (the mixer or an effect chain) goes back to the page before it.
+    #[test]
+    fn the_mix_tab_holds_the_mixer_and_its_chains_and_track_mix_goes_back() {
+        use mpfree_mixer_ui::MixView;
+        let mut app = ready();
+        app.map.learn(crate::app::mapper::Job::TrackMix, Some(70));
+        app.open_tab(View::Arrange);
+        assert_eq!(View::Mixer.tab_index(false), Some(6));
+        assert_eq!(View::Chain.tab_view(), Some(View::Mixer));
+        assert_eq!(
+            app.tab(6),
+            vec![Effect::MixerLast, Effect::Show(View::Mixer)]
+        );
+        assert_eq!(app.tab(6), vec![], "a second tap changes nothing");
+        // An effect's chain opened from the mixer is still the Mix tab.
+        app.open_chain();
+        assert_eq!(app.view(), View::Chain);
+        let fx = app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert!(fx.contains(&Effect::Show(View::Arrange)), "{fx:?}");
+        assert_eq!(app.view(), View::Arrange);
+        // From there TRACK MIX opens it on Track Mix; again, back.
+        let fx = app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert_eq!(fx.first(), Some(&Effect::Mixer(Some(MixView::Tracks))));
+        let fx = app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert_eq!(fx.first(), Some(&Effect::Mixer(None)), "{fx:?}");
+        assert_eq!(app.view(), View::Arrange);
+        // From a menu over a page, back goes to the page under it.
+        app.open_tab(View::Synth);
+        app.open_tab(View::Prefs);
+        app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert_eq!(app.view(), View::Synth);
+    }
+
     #[test]
     fn the_sample_tab_comes_after_looper_and_takes_the_wheel_the_pads_and_undo() {
         let mut app = ready();
@@ -4337,7 +5000,8 @@ mod tests {
                 View::Arrange,
                 View::Synth,
                 View::Looper,
-                View::Sample
+                View::Sample,
+                View::Mixer
             ]
         );
         assert_eq!(View::Sample.tab_index(true), Some(5));
@@ -4349,11 +5013,14 @@ mod tests {
         assert_eq!(app.wheel(-3), vec![Effect::SamplePad(-1)]);
         // UNDO undoes the Sample page's edits there (SHIFT: redo), and the
         // time engine's takes elsewhere.
-        assert_eq!(press(&mut app, 92), vec![Effect::SampleUndo { redo: true }]);
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::SampleUndo { redo: true }, Effect::UndoButton(true)]
+        );
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(
             press(&mut app, 92),
-            vec![Effect::SampleUndo { redo: false }]
+            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
         );
         // - / + step the row picked.
         app.map.minus = Some(40);
@@ -4366,7 +5033,11 @@ mod tests {
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Sample);
         app.tab(0);
-        assert_eq!(press(&mut app, 92), vec![Effect::Time(TimeAction::Undo)]);
+        // Back on Play, the screen picks the history (the Play view's).
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
     }
 
     #[test]
@@ -4393,7 +5064,7 @@ mod tests {
         // UNDO undoes the pads' edits, as on Sample.
         assert_eq!(
             press(&mut app, 92),
-            vec![Effect::SampleUndo { redo: false }]
+            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
         );
         // The Pad view: the Sample tab's controls.
         app.set_pads_browse(false);
@@ -4405,6 +5076,38 @@ mod tests {
         app.set_pads_browse(true);
         app.tab(0);
         assert!(!press(&mut app, button::PLAY).contains(&Effect::Browse(BrowseKey::Play)));
+    }
+
+    #[test]
+    fn browse_opens_the_browser_over_the_page_and_shift_browse_saves() {
+        let mut app = ready();
+        // Not found yet: BROWSE does nothing.
+        assert!(press(&mut app, 120).is_empty());
+        app.map.browse = Some(120);
+        app.map.erase = Some(121);
+        app.map.data_push = Some(111);
+        app.tab(2);
+        assert_eq!(app.view(), View::Arrange);
+        assert_eq!(press(&mut app, 120), vec![Effect::Show(View::Browser)]);
+        assert_eq!(View::Browser.tab_index(false), None);
+        // The wheel, its push, SHIFT + wheel and ERASE are the browser's.
+        assert_eq!(app.wheel(1), vec![Effect::Browse(BrowseKey::Wheel(1))]);
+        assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
+        assert_eq!(press(&mut app, 121), vec![Effect::Browse(BrowseKey::Erase)]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(-2), vec![Effect::Browse(BrowseKey::Places(-1))]);
+        // SHIFT + BROWSE saves, from here or any page, and stays.
+        assert_eq!(press(&mut app, 120), vec![Effect::SaveProject]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.view(), View::Browser);
+        // BROWSE again: back to the page it opened over.
+        assert_eq!(press(&mut app, 120)[0], Effect::Show(View::Arrange));
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(press(&mut app, 120), vec![Effect::SaveProject]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.view(), View::Arrange);
+        // ERASE elsewhere is still ERASE.
+        assert!(!press(&mut app, 121).contains(&Effect::Browse(BrowseKey::Erase)));
     }
 
     #[test]
@@ -4450,9 +5153,10 @@ mod tests {
         app.open_tab(View::Debug);
         press(&mut app, MENU);
         assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "MIDI log options"));
-        // The wheel picks kits outside menus.
+        // Outside the menu the Debug page's wheel has no job (it no
+        // longer steps the kit: the PAD BANK buttons do).
         press(&mut app, MENU);
-        assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
+        assert_eq!(app.wheel(-2), Vec::<Effect>::new());
     }
 
     #[test]
@@ -4481,14 +5185,15 @@ mod tests {
                 View::Arrange,
                 View::Synth,
                 View::Looper,
-                View::Sample
+                View::Sample,
+                View::Mixer
             ]
         );
         // The same names, in the same order, as the bar every preview draws.
         let names: Vec<&str> = tabs(true).iter().map(|v| v.name()).collect();
-        assert_eq!(names[..6], mpfree_ui::widgets::APP_TABS[..]);
-        assert_eq!(names[6], mpfree_ui::widgets::DEV_TAB);
-        assert_eq!(app.tab(6), vec![]);
+        assert_eq!(names[..7], mpfree_ui::widgets::APP_TABS[..]);
+        assert_eq!(names[7], mpfree_ui::widgets::DEV_TAB);
+        assert_eq!(app.tab(7), vec![]);
         app.open_tab(View::Prefs);
         let row = app
             .items()
@@ -4536,9 +5241,10 @@ mod tests {
         let fx = app.open_tab(View::Play);
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.starts_with("map summary: ")
                                              && n.contains("REC button 73") && n.contains("PAD BANK A/E button 35"))));
+        // On Play, the screen picks what REC records (the Play view's).
         assert_eq!(
             press(&mut app, 73),
-            vec![Effect::Time(TimeAction::Transport(Command::Record))]
+            vec![Effect::PlayRec { overdub: false }]
         );
         assert_eq!(
             press(&mut app, 35),
@@ -4557,8 +5263,8 @@ mod tests {
         );
         app.button(button::SHIFT, false, 0.0);
         // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
-        assert_eq!(tabs(true)[6], View::Debug);
-        app.tab(6);
+        assert_eq!(tabs(true)[7], View::Debug);
+        app.tab(7);
         assert_eq!(app.view(), View::Debug);
         app.button(button::SHIFT, true, 0.0);
         app.wheel(1);
@@ -4768,8 +5474,8 @@ mod tests {
         assert_eq!(app.eng().settings().mode, Mode::Direct);
         assert_eq!(
             app.wheel(1),
-            vec![Effect::Kit(1)],
-            "the wheel is the kit again"
+            vec![Effect::Nav(Nav::Turn(1))],
+            "the wheel moves the outline again"
         );
         // Held again, a while later: the arp, not Repeat.
         app.pad_down(0, 100);
@@ -5035,7 +5741,7 @@ mod tests {
         app.toggle_panel();
         press(&mut app, MENU);
         assert!(
-            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 6)
+            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 7)
         );
     }
 
@@ -5099,6 +5805,98 @@ mod tests {
         assert_eq!(gaps(false, Some((240, 75)), true), straight);
         let free = gaps(true, Some((240, 75)), false);
         assert!(free.iter().all(|&g| g.abs_diff(5512) <= 1), "{free:?}");
+    }
+
+    #[test]
+    fn the_arps_go_in_the_project_and_an_open_puts_them_back() {
+        let mut app = ready();
+        assert!(!app.take_project_edit(), "nothing changed yet");
+        // Track 1: Arp mode at 1/8, Down. Then track 3: D Dorian (or the
+        // second scale), its own swing, latched.
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        app.arp_action(ArpAction::Rate(Rate::Eighth));
+        app.arp_action(ArpAction::Order(Order::Down));
+        assert!(app.take_project_edit(), "an arp change is an edit");
+        app.set_track(2);
+        assert!(!app.take_project_edit(), "arming a track isn't");
+        app.step_arp_item(ArpItem::Scale, 1);
+        app.step_arp_item(ArpItem::Root, 1);
+        app.step_arp_item(ArpItem::Root, 1);
+        app.step_arp_item(ArpItem::SwingFrom, -1);
+        app.arp_action(ArpAction::Rate(Rate::SixteenthTriplet));
+        app.arp_action(ArpAction::Latch);
+        assert!(app.take_project_edit());
+        let part = app.arp_part();
+        assert!(
+            part.starts_with("mpfree-arp 1\ntrack 1\nmode = arp\n"),
+            "{part}"
+        );
+        for line in [
+            "rate = 1/8",
+            "order = down",
+            "root = D",
+            "swing-from = arp",
+            "rate = 1/16T",
+            "track 3",
+        ] {
+            assert!(part.lines().any(|l| l == line), "{line}: {part}");
+        }
+        // Tracks left at the default aren't listed (a project can have
+        // 128); an open gives them the default.
+        for line in ["track 2", "track 16", "track 128"] {
+            assert!(!part.lines().any(|l| l == line), "{line}: {part}");
+        }
+
+        // Another start opens it: every track's arp as it was, Latch off.
+        let mut next = ready();
+        let (notes, fx) = next.open_arp(Some(&part));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(fx.iter().any(|e| matches!(e, Effect::Arp(_))));
+        assert_eq!(next.arp_fingerprint(), app.arp_fingerprint());
+        assert!(!next.take_project_edit(), "an open isn't an edit");
+        assert!(!next.latched);
+        // Track 3 isn't armed there: its arp plays as it did, at 1/16T.
+        let (a, b) = (
+            app.arps.engine_at(2).settings(),
+            next.arps.engine_at(2).settings(),
+        );
+        assert_eq!(
+            (b.mode, b.rate, b.scale),
+            (a.mode, Rate::SixteenthTriplet, a.scale)
+        );
+        assert!(b.scale.is_some_and(|s| s.root == 2));
+        assert_eq!(next.arps.engine_at(2).latch(), LatchMode::Off);
+        // The armed track (1) takes its own back.
+        assert_eq!(
+            (next.arp_mode, next.settings.rate, next.arp.order),
+            (Mode::Arp, Rate::Eighth, Order::Down)
+        );
+        next.set_track(2);
+        assert_eq!(next.scale_root, 2);
+        assert!(!next.swing_from_transport);
+
+        // New: every arp at its default, not the last project's.
+        next.open_arp(None);
+        assert_eq!(next.arp_fingerprint(), ready().arp_fingerprint());
+
+        // Words not understood are said and left at their defaults; a part
+        // that isn't one is refused whole.
+        let (notes, _) = next.open_arp(Some(
+            "mpfree-arp 1\ntrack 2\ngate = 300\nscale = Nope\nmode = arp\n",
+        ));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("track 2 gate = 300") && notes[0].contains("track 2 scale = Nope"),
+            "{notes:?}"
+        );
+        next.set_track(1);
+        assert_eq!((next.arp_mode, next.arp.gate), (Mode::Arp, 50));
+        let (notes, _) = next.open_arp(Some("junk"));
+        assert!(
+            notes[0].starts_with("project: the arps weren't opened"),
+            "{notes:?}"
+        );
     }
 
     #[test]
@@ -5568,6 +6366,19 @@ mod tests {
             fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
             "{fx:?}"
         );
+        // Idle, UNDO is bright while the page has something to undo
+        // (inferred from Akai's), and dim again when it has not.
+        app.transport_lights(lights(false, false, false), 10.0);
+        app.set_undo_ready(true);
+        assert_eq!(
+            app.transport_lights(lights(false, false, false), 10.1),
+            vec![Effect::Light(UNDO, LIGHT_ON)]
+        );
+        app.set_undo_ready(false);
+        assert_eq!(
+            app.transport_lights(lights(false, false, false), 10.2),
+            vec![Effect::Light(UNDO, LIGHT_OFF)]
+        );
     }
 
     /// TRACK MUTE (control map decision 5), once Map controls has found
@@ -5601,6 +6412,59 @@ mod tests {
         assert_eq!(app.mute_keys(), MuteKeys::Off);
     }
 
+    /// TRACK MUTE with more than 16 tracks (up to 128, Jay 14 Nov): PAD
+    /// BANK picks which 16 tracks the pads mute, as it picks kits (SHIFT or
+    /// a second press for E-H), and the kit playing stays. Out of TRACK
+    /// MUTE the buttons pick kits again.
+    #[test]
+    fn track_mute_banks_pick_which_16_tracks_the_pads_mute() {
+        const TRACK_MUTE: u8 = 68;
+        const BANK_B: u8 = 36;
+        let mut app = ready();
+        app.map.learn(mapper::Job::TrackMute, Some(TRACK_MUTE));
+        app.map.learn(mapper::Job::Bank(1), Some(BANK_B));
+        app.set_track_count(24);
+        let fx = press(&mut app, TRACK_MUTE);
+        assert!(
+            fx.contains(&Effect::Note(
+                "TRACK MUTE · bank A: pads 1-16 mute tracks 1-16".into()
+            )),
+            "{fx:?}"
+        );
+        assert!(fx.contains(&Effect::BankLights));
+        let fx = press(&mut app, BANK_B);
+        assert_eq!(app.mute_bank(), 1);
+        assert_eq!(app.status_now().mute_bank, 1);
+        assert_eq!(
+            fx,
+            vec![
+                Effect::Note("TRACK MUTE · bank B: pads 1-8 mute tracks 17-24".into()),
+                Effect::BankLights
+            ],
+            "no kit change"
+        );
+        // A second press: bank F, tracks 81-96, none in this project.
+        let fx = press(&mut app, BANK_B);
+        assert_eq!(app.mute_bank(), 5);
+        assert!(fx.contains(&Effect::Note(
+            "TRACK MUTE · bank F: no tracks here (it is tracks 81-96)".into()
+        )));
+        press(&mut app, TRACK_MUTE);
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        assert_eq!(
+            press(&mut app, BANK_B),
+            vec![Effect::Bank {
+                button: 1,
+                shift: false
+            }]
+        );
+        // The bank is kept for the next TRACK MUTE.
+        let fx = press(&mut app, TRACK_MUTE);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.contains("bank F"))));
+    }
+
     #[test]
     fn the_transport_buttons_drive_the_time_engine() {
         let mut app = ready();
@@ -5613,6 +6477,14 @@ mod tests {
             press(&mut app, 93),
             vec![time(TimeAction::Transport(Command::PlayStart))]
         );
+        // REC and OVERDUB on Play: the screen picks by the view (the loop
+        // on All and Loop, takes on Beats); on Arrange, the takes.
+        assert_eq!(
+            press(&mut app, 90),
+            vec![Effect::PlayRec { overdub: false }]
+        );
+        assert_eq!(press(&mut app, 91), vec![Effect::PlayRec { overdub: true }]);
+        app.open_tab(View::Arrange);
         assert_eq!(
             press(&mut app, 90),
             vec![time(TimeAction::Transport(Command::Record))]
@@ -5621,10 +6493,15 @@ mod tests {
             press(&mut app, 91),
             vec![time(TimeAction::Transport(Command::ToggleOverdub))]
         );
-        assert_eq!(press(&mut app, 92), vec![time(TimeAction::Undo)]);
+        app.open_tab(View::Play);
+        // UNDO follows the page: the screen knows the Play view, so it picks.
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
         assert_eq!(
             held(&mut app, button::SHIFT, |a| press(a, 92)),
-            vec![time(TimeAction::Redo)]
+            vec![Effect::Undo { redo: true }, Effect::UndoButton(true)]
         );
         // Rolling, STOP stops the transport and leaves the sounds alone.
         app.set_rolling(true);
@@ -5667,9 +6544,59 @@ mod tests {
         app.open_tab(View::Play);
         assert_eq!(
             app.wheel(1),
-            vec![Effect::Kit(1)],
-            "the wheel picks kits on Play"
+            vec![Effect::Nav(Nav::Turn(1))],
+            "the wheel moves the outline on Play"
         );
+    }
+
+    /// Jay's wheel navigation (13 Nov): on Play and the Looper tab the
+    /// wheel, its push and - / + go to the outline, never to the kit; on
+    /// the mixer and the chain editor once the outline is on a control.
+    #[test]
+    fn the_wheel_moves_the_outline_and_kits_stay_on_the_pad_bank_buttons() {
+        let mut app = ready();
+        let nav = |n| vec![Effect::Nav(n)];
+        for v in [View::Play, View::Looper] {
+            app.open_tab(v);
+            assert_eq!(app.wheel(2), nav(Nav::Turn(2)), "{v:?}");
+            assert_eq!(app.wheel_push(), nav(Nav::Push), "{v:?}");
+            assert_eq!(press(&mut app, button::PLUS), nav(Nav::Step(1)), "{v:?}");
+            assert_eq!(press(&mut app, button::MINUS), nav(Nav::Step(-1)), "{v:?}");
+        }
+        // SHIFT + wheel and NOTE REPEAT keep their jobs on Play.
+        app.open_tab(View::Play);
+        assert_eq!(
+            held(&mut app, button::SHIFT, |a| a.wheel(1)),
+            vec![Effect::Octave(1)]
+        );
+        app.button(REPEAT, true, 0.0);
+        assert!(!app.wheel(1).iter().any(|e| matches!(e, Effect::Nav(_))));
+        assert_eq!(app.wheel_push(), Vec::<Effect>::new());
+        app.button(REPEAT, false, 0.0);
+        // The mixer: the selected strip's volume and the I/O rows until a
+        // tap puts the outline on a control.
+        app.toggle_mixer(false);
+        assert_eq!(app.view(), View::Mixer);
+        assert_eq!(app.wheel(1), vec![Effect::MixerWheel(1)]);
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::MixerStep(1)]);
+        app.set_outline(true);
+        assert_eq!(app.wheel(1), nav(Nav::Turn(1)));
+        assert_eq!(app.wheel_push(), nav(Nav::Push));
+        assert_eq!(press(&mut app, button::MINUS), nav(Nav::Step(-1)));
+        // The chain editor: the screen's (the effect picker, else Q-Link
+        // 1) without an outline; the push is the screen's too, which gives
+        // it to the picker or the outline (gui.rs).
+        app.set_outline(false);
+        app.open_chain();
+        assert_eq!(app.view(), View::Chain);
+        assert_eq!(app.wheel(1), vec![Effect::ChainWheel(1)]);
+        assert_eq!(app.wheel_push(), vec![Effect::ChainPush]);
+        app.set_outline(true);
+        assert_eq!(app.wheel(-1), nav(Nav::Turn(-1)));
+        // A page with rows keeps its rows, outline or not.
+        app.open_tab(View::Synth);
+        assert_eq!(app.wheel(1), vec![Effect::Rows(RowKey::Pick(1))]);
+        assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
     }
 
     /// The mode buttons, ERASE and the SHIFT combos from the hardware
@@ -5721,11 +6648,27 @@ mod tests {
         assert_eq!(fx[0], Effect::SampleEditor(Editor::Wave));
         assert!(fx.contains(&Effect::Show(View::Sample)));
         assert_eq!(press(&mut app, 67), [Effect::ProgEdit]);
-        // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
-        assert!(press(&mut app, 60).is_empty());
-        assert!(shifted(&mut app, 60).is_empty());
+        // ERASE and SHIFT + ERASE only tell the screen while they are held
+        // (ERASE + a tap deletes); they go to no page.
+        let only_status = |fx: Vec<Effect>| fx.iter().all(|e| matches!(e, Effect::Status(_)));
+        assert!(only_status(press(&mut app, 60)));
+        assert!(only_status(shifted(&mut app, 60)));
+        assert!(!app.erase_held, "let go");
+        // 16 LEVEL: Play, and 16 Levels on or off (the screen holds the
+        // kit and says back what it did: the light and the wheel follow).
+        let fx = press(&mut app, 62);
+        assert!(fx.contains(&Effect::Show(View::Play)), "{fx:?}");
+        assert_eq!(fx.last(), Some(&Effect::SixteenLevels));
+        assert_eq!(press(&mut app, 62), [Effect::SixteenLevels]);
+        assert_eq!(app.levels_shown(true, true), [Effect::Light(62, LIGHT_ON)]);
+        assert_eq!(app.wheel(-1), [Effect::LevelsWheel(-1)]);
+        assert_eq!(app.levels_shown(true, false), [Effect::Light(62, LIGHT_ON)]);
+        assert!(!app.wheel(1).contains(&Effect::LevelsWheel(1)));
+        assert_eq!(
+            app.levels_shown(false, false),
+            [Effect::Light(62, LIGHT_OFF)]
+        );
         // SHIFT + 16 LEVEL: Chromatic | In key (no scale yet: Major).
-        assert!(press(&mut app, 62).is_empty());
         assert!(shifted(&mut app, 62)
             .iter()
             .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));

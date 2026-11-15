@@ -381,6 +381,12 @@ pub struct clap_plugin_params {
     >,
 }
 
+/// `clap_host_params::rescan` flags.
+pub const CLAP_PARAM_RESCAN_VALUES: u32 = 1 << 0;
+pub const CLAP_PARAM_RESCAN_TEXT: u32 = 1 << 1;
+pub const CLAP_PARAM_RESCAN_INFO: u32 = 1 << 2;
+pub const CLAP_PARAM_RESCAN_ALL: u32 = 1 << 3;
+
 #[repr(C)]
 pub struct clap_host_params {
     pub rescan: Option<unsafe extern "C" fn(host: *const clap_host, flags: u32)>,
@@ -507,6 +513,243 @@ pub struct clap_host_thread_check {
     pub is_audio_thread: Option<unsafe extern "C" fn(host: *const clap_host) -> bool>,
 }
 
+// ------------------------------------------------------------------ presets
+
+/// The preset discovery factory (CLAP 1.2), from `clap_plugin_entry::get_factory`.
+pub const CLAP_PRESET_DISCOVERY_FACTORY_ID: &[u8] = b"clap.preset-discovery-factory/2\0";
+/// The same factory under its draft id, which older plugins answer to.
+pub const CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT: &[u8] =
+    b"clap.preset-discovery-factory/draft-2\0";
+pub const CLAP_EXT_PRESET_LOAD: &[u8] = b"clap.preset-load/2\0";
+pub const CLAP_EXT_PRESET_LOAD_COMPAT: &[u8] = b"clap.preset-load.draft/2\0";
+
+/// A location that is a file or a folder on disk.
+pub const CLAP_PRESET_DISCOVERY_LOCATION_FILE: u32 = 0;
+/// Presets inside the plugin itself; the location is null.
+pub const CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN: u32 = 1;
+
+pub const CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT: u32 = 1 << 0;
+pub const CLAP_PRESET_DISCOVERY_IS_USER_CONTENT: u32 = 1 << 1;
+pub const CLAP_PRESET_DISCOVERY_IS_DEMO_CONTENT: u32 = 1 << 2;
+pub const CLAP_PRESET_DISCOVERY_IS_FAVORITE: u32 = 1 << 3;
+
+#[repr(C)]
+pub struct clap_universal_plugin_id {
+    pub abi: *const c_char,
+    pub id: *const c_char,
+}
+
+#[repr(C)]
+pub struct clap_preset_discovery_metadata_receiver {
+    pub receiver_data: *mut c_void,
+    pub on_error: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            os_error: i32,
+            error_message: *const c_char,
+        ),
+    >,
+    pub begin_preset: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            name: *const c_char,
+            load_key: *const c_char,
+        ) -> bool,
+    >,
+    pub add_plugin_id: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            plugin_id: *const clap_universal_plugin_id,
+        ),
+    >,
+    pub set_soundpack_id: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            soundpack_id: *const c_char,
+        ),
+    >,
+    pub set_flags: Option<
+        unsafe extern "C" fn(receiver: *const clap_preset_discovery_metadata_receiver, flags: u32),
+    >,
+    pub add_creator: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            creator: *const c_char,
+        ),
+    >,
+    pub set_description: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            description: *const c_char,
+        ),
+    >,
+    pub set_timestamps: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            creation_time: u64,
+            modification_time: u64,
+        ),
+    >,
+    pub add_feature: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            feature: *const c_char,
+        ),
+    >,
+    pub add_extra_info: Option<
+        unsafe extern "C" fn(
+            receiver: *const clap_preset_discovery_metadata_receiver,
+            key: *const c_char,
+            value: *const c_char,
+        ),
+    >,
+}
+
+#[repr(C)]
+pub struct clap_preset_discovery_filetype {
+    pub name: *const c_char,
+    pub description: *const c_char,
+    /// Without the dot; null or empty matches every file.
+    pub file_extension: *const c_char,
+}
+
+#[repr(C)]
+pub struct clap_preset_discovery_location {
+    pub flags: u32,
+    pub name: *const c_char,
+    pub kind: u32,
+    /// A file or folder for `LOCATION_FILE`; null for `LOCATION_PLUGIN`.
+    pub location: *const c_char,
+}
+
+#[repr(C)]
+pub struct clap_preset_discovery_soundpack {
+    pub flags: u32,
+    pub id: *const c_char,
+    pub name: *const c_char,
+    pub description: *const c_char,
+    pub homepage_url: *const c_char,
+    pub vendor: *const c_char,
+    pub image_path: *const c_char,
+    pub release_timestamp: u64,
+}
+
+#[repr(C)]
+pub struct clap_preset_discovery_provider_descriptor {
+    pub clap_version: clap_version,
+    pub id: *const c_char,
+    pub name: *const c_char,
+    pub vendor: *const c_char,
+}
+
+#[repr(C)]
+pub struct clap_preset_discovery_provider {
+    pub desc: *const clap_preset_discovery_provider_descriptor,
+    pub provider_data: *mut c_void,
+    pub init: Option<unsafe extern "C" fn(provider: *const clap_preset_discovery_provider) -> bool>,
+    pub destroy: Option<unsafe extern "C" fn(provider: *const clap_preset_discovery_provider)>,
+    pub get_metadata: Option<
+        unsafe extern "C" fn(
+            provider: *const clap_preset_discovery_provider,
+            location_kind: u32,
+            location: *const c_char,
+            metadata_receiver: *const clap_preset_discovery_metadata_receiver,
+        ) -> bool,
+    >,
+    pub get_extension: Option<
+        unsafe extern "C" fn(
+            provider: *const clap_preset_discovery_provider,
+            extension_id: *const c_char,
+        ) -> *const c_void,
+    >,
+}
+
+#[repr(C)]
+pub struct clap_preset_discovery_indexer {
+    pub clap_version: clap_version,
+    pub name: *const c_char,
+    pub vendor: *const c_char,
+    pub url: *const c_char,
+    pub version: *const c_char,
+    pub indexer_data: *mut c_void,
+    pub declare_filetype: Option<
+        unsafe extern "C" fn(
+            indexer: *const clap_preset_discovery_indexer,
+            filetype: *const clap_preset_discovery_filetype,
+        ) -> bool,
+    >,
+    pub declare_location: Option<
+        unsafe extern "C" fn(
+            indexer: *const clap_preset_discovery_indexer,
+            location: *const clap_preset_discovery_location,
+        ) -> bool,
+    >,
+    pub declare_soundpack: Option<
+        unsafe extern "C" fn(
+            indexer: *const clap_preset_discovery_indexer,
+            soundpack: *const clap_preset_discovery_soundpack,
+        ) -> bool,
+    >,
+    pub get_extension: Option<
+        unsafe extern "C" fn(
+            indexer: *const clap_preset_discovery_indexer,
+            extension_id: *const c_char,
+        ) -> *const c_void,
+    >,
+}
+
+#[repr(C)]
+pub struct clap_preset_discovery_factory {
+    pub count: Option<unsafe extern "C" fn(factory: *const clap_preset_discovery_factory) -> u32>,
+    pub get_descriptor: Option<
+        unsafe extern "C" fn(
+            factory: *const clap_preset_discovery_factory,
+            index: u32,
+        ) -> *const clap_preset_discovery_provider_descriptor,
+    >,
+    pub create: Option<
+        unsafe extern "C" fn(
+            factory: *const clap_preset_discovery_factory,
+            indexer: *const clap_preset_discovery_indexer,
+            provider_id: *const c_char,
+        ) -> *const clap_preset_discovery_provider,
+    >,
+}
+
+#[repr(C)]
+pub struct clap_plugin_preset_load {
+    pub from_location: Option<
+        unsafe extern "C" fn(
+            plugin: *const clap_plugin,
+            location_kind: u32,
+            location: *const c_char,
+            load_key: *const c_char,
+        ) -> bool,
+    >,
+}
+
+#[repr(C)]
+pub struct clap_host_preset_load {
+    pub on_error: Option<
+        unsafe extern "C" fn(
+            host: *const clap_host,
+            location_kind: u32,
+            location: *const c_char,
+            load_key: *const c_char,
+            os_error: i32,
+            msg: *const c_char,
+        ),
+    >,
+    pub loaded: Option<
+        unsafe extern "C" fn(
+            host: *const clap_host,
+            location_kind: u32,
+            location: *const c_char,
+            load_key: *const c_char,
+        ),
+    >,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +779,17 @@ mod tests {
             size_of::<clap_audio_port_info>(),
             size_of::<clap_note_port_info>(),
             size_of::<clap_plugin_entry>(),
+            size_of::<clap_universal_plugin_id>(),
+            size_of::<clap_preset_discovery_metadata_receiver>(),
+            size_of::<clap_preset_discovery_filetype>(),
+            size_of::<clap_preset_discovery_location>(),
+            size_of::<clap_preset_discovery_soundpack>(),
+            size_of::<clap_preset_discovery_provider_descriptor>(),
+            size_of::<clap_preset_discovery_provider>(),
+            size_of::<clap_preset_discovery_indexer>(),
+            size_of::<clap_preset_discovery_factory>(),
+            size_of::<clap_plugin_preset_load>(),
+            size_of::<clap_host_preset_load>(),
         ];
         let want = [
             16,
@@ -555,6 +809,17 @@ mod tests {
             w(288, 276),
             268,
             w(40, 24),
+            w(16, 8),
+            w(88, 44),
+            w(24, 12),
+            w(32, 16),
+            w(64, 40),
+            w(40, 24),
+            w(48, 24),
+            w(88, 48),
+            w(24, 12),
+            w(8, 4),
+            w(16, 8),
         ];
         assert_eq!(got, want);
         assert_eq!(std::mem::offset_of!(clap_event_note, velocity), 32);
@@ -565,5 +830,21 @@ mod tests {
         assert_eq!(std::mem::offset_of!(clap_event_transport, tempo), 40);
         assert_eq!(std::mem::offset_of!(clap_param_info, min_value), 1296);
         assert_eq!(align_of::<clap_event_transport>(), 8);
+        assert_eq!(
+            std::mem::offset_of!(clap_preset_discovery_location, location),
+            w(24, 12)
+        );
+        assert_eq!(
+            std::mem::offset_of!(clap_preset_discovery_soundpack, release_timestamp),
+            w(56, 32)
+        );
+        assert_eq!(
+            std::mem::offset_of!(clap_preset_discovery_indexer, get_extension),
+            w(80, 44)
+        );
+        assert_eq!(
+            std::mem::offset_of!(clap_preset_discovery_metadata_receiver, add_extra_info),
+            w(80, 40)
+        );
     }
 }

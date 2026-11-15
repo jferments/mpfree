@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs
-checked: 2026-11-12 15df706
+checked: 2026-11-14 b76c3c7
 -->
 
 # Recording loops
@@ -29,7 +29,7 @@ The looper holds five minutes of stereo sound across all its loops and layers (t
 
 ## The buttons
 
-These are on the Play page's Loop view. The MPC's own **REC**, **OVERDUB** and **UNDO** buttons do the same while the Looper tab is open, on the loop picked there:
+These are on the Play page's Loop view. The MPC's own **REC**, **OVERDUB** and **UNDO** buttons do the same while the Looper tab is open, on the loop picked there, and on the Play page's All and Loop views. There, **UNDO** (and **SHIFT + UNDO** for Redo) works on the loop from the Loop view, and from the All view when the loop is what you changed last. To record a pattern from the pads with REC, use the Beats view or the Arrange tab:
 
 | Button | Empty loop | Recording the first pass | Playing |
 |---|---|---|---|
@@ -52,7 +52,7 @@ The **Looper** tab is where you set up and mix your loops. It has room for up to
 
 The list on the left shows each loop with its length and number of layers, and whether it is playing, muted or empty. Tap a loop to pick it: the editor shows it, and REC, OVERDUB and UNDO act on it. **+ New loop** picks the first empty one, ready to record.
 
-- **The speaker** on each loop's card decides whether the loop plays. Tap it to mute the loop (the speaker shows a ×): the loop is kept and keeps its place in the song, but stays silent when you press PLAY. Tap it again and the loop comes back in, in time. You don't have to pick a loop to mute it.
+- **The speaker** on each loop's card (in its box at the bottom right) decides whether the loop plays. Tap it, or anywhere in the card's bottom right corner, to mute the loop (the speaker shows a ×): the loop is kept and keeps its place in the song, but stays silent when you press PLAY. Tap it again and the loop comes back in, in time. You don't have to pick a loop to mute it.
 - **Clear loop** (under + New loop, outlined in red) deletes the picked loop, every layer and the first pass, so you can record it again. It fades out rather than cutting off.
 
 Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others.
@@ -63,10 +63,12 @@ Every loop plays at once, in time with the song, but only one records at a time:
 
 The picked loop's waveform runs across the top, with its length, tempo and source above it. While the first pass records, the waveform grows as you play, drawn against the bars you set (with a free length, against two bars, then four, and so on). Under it is a **lane for each layer**, with its own waveform and:
 
-- **the speaker** to mute that layer,
+- **the speaker** (in its box under the layer's name) to mute that layer,
 - **S** to solo it (hear only this layer of the loop),
 - **a level** you can drag,
 - **×** to delete the layer. A deleted layer can be brought back with UNDO, like an overdub. On the loop's only layer (the first pass, once the others are gone), **×** clears the whole loop, like **Clear loop**.
+
+You can also hold **ERASE** and tap a layer's lane to delete it, with the same UNDO. ERASE leaves the loops in the list alone, since a cleared loop can't be brought back.
 
 Tap a lane to pick that layer for the Q-Links:
 
@@ -92,7 +94,7 @@ The panel at the bottom left holds how the looper records. The Play page's loope
 
 **After recording** sets what the loop does when its first pass ends: **play**, or go straight into **overdub**. **Start** (next bar line) shows how the looper works today and can't be changed yet. **At another tempo** still reads "like tape" in this build, but loops keep their pitch, as described above.
 
-Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB) and **Loop memory**.
+Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB) and **Loop memory**. The Loop level, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
 
 ### Editing a loop
 
@@ -136,7 +138,7 @@ Recording MPFree's own pads needs nothing made up: they are already in time. For
 
 - **To a pad**: send a loop to a pad as a sample on the Sample tab.
 - **To a clip**: send it to the Arrange tab as an audio clip.
-- **Save loop**: keep it on the stick with its layers. Loops will also be saved with your project once projects arrive (see [Saving your work](saving.md)).
+- **Save loop**: keep it on the stick with its layers. Your loops are also saved with your project, every layer with its mix (see [Saving your work](saving.md)).
 
 > [!MPC]
 > On the MPC the Looper is a separate screen with one loop, which can run free of the transport and start when the input passes a threshold. MPFree has up to eight loops with a mixable lane per layer. Its loops always follow the song's bars and tempo, can record MPFree's own pads and synth as well as the inputs, and make up for the input's latency so overdubs land in time.

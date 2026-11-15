@@ -4,7 +4,7 @@
 
 use crate::draw::Mask;
 use mpfree_ui::text::FontId;
-use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Theme, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Target, Theme, Touch, Widget};
 use std::f32::consts::PI;
 
 // Panels build their tiles, cards and nodes without knowing the theme, so
@@ -109,6 +109,9 @@ pub fn knob(
 /// the right. A tap on tab `i` gives `Tab(i)`.
 pub struct TitleBar {
     pub swatch: Color,
+    /// Draw the swatch (the Synth tab's page title leaves it to the
+    /// instrument card beside it).
+    pub show_swatch: bool,
     pub title: String,
     pub subtitle: String,
     pub tabs: Vec<String>,
@@ -125,6 +128,7 @@ impl TitleBar {
     pub fn new() -> TitleBar {
         TitleBar {
             swatch: QLINK_COLORS[1],
+            show_swatch: true,
             title: String::new(),
             subtitle: String::new(),
             tabs: Vec::new(),
@@ -181,21 +185,27 @@ impl Widget for TitleBar {
         let t = cx.theme.clone();
         cx.panel(r);
         let inner = r.inset_xy(PAD, 10);
-        let sw = inner.h.min(40);
-        cx.canvas.fill_round_rect(
-            Rect::new(inner.x, inner.y + (inner.h - sw) / 2, sw, sw),
-            10,
-            t.content(self.swatch),
-        );
+        let (sw, gap) = if self.show_swatch {
+            (inner.h.min(40), 14)
+        } else {
+            (0, 4)
+        };
+        if self.show_swatch {
+            cx.canvas.fill_round_rect(
+                Rect::new(inner.x, inner.y + (inner.h - sw) / 2, sw, sw),
+                10,
+                t.content(self.swatch),
+            );
+        }
         let pill = if self.tabs.is_empty() {
             Rect::new(r.right(), r.y, 0, 0)
         } else {
             self.tabs_rect(r)
         };
         let text = Rect::new(
-            inner.x + sw + 14,
+            inner.x + sw + gap,
             inner.y,
-            pill.x - inner.x - sw - 28,
+            pill.x - inner.x - sw - gap - 14,
             inner.h,
         );
         let (top, bottom) = text.take_top(text.h * 3 / 5);
@@ -243,6 +253,16 @@ impl Widget for TitleBar {
                 name,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.tabs.len())
+            // The page shown: a tap shows nothing new.
+            .map(|i| {
+                Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i))
+                    .disabled_if(i == self.active)
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -402,74 +422,38 @@ impl Widget for Visuals {
                 &card.caption,
             );
             let p = Visuals::plot_rect(c);
-            for (x, label) in &card.grid {
-                let gx = p.x + (x * p.w as f32) as i32;
-                cx.canvas.fill_rect(Rect::new(gx, p.y, 1, p.h), t.outline);
-                if !label.is_empty() {
-                    let lr = Rect::new(gx + 4, p.bottom() - 16, 40, 14);
-                    cx.text(FontId::Sans, 11.0, lr, Align::Left, t.text_faint, label);
-                }
-            }
-            if card.midline {
-                cx.canvas
-                    .fill_rect(Rect::new(p.x, p.y + p.h / 2, p.w, 1), t.outline);
-            }
-            if !card.bars.is_empty() {
-                let n = card.bars.len() as i32;
-                let slot = (p.w / n).max(1);
-                let bw = (slot * 2 / 3).clamp(2, 40);
-                let labels = if card.bar_labels.is_empty() { 0 } else { 16 };
-                let (under, bars) = p.take_bottom(labels);
-                for (k, &b) in card.bars.iter().enumerate() {
-                    let h = ((b.clamp(0.0, 1.0) * bars.h as f32).round() as i32).max(2);
-                    let x = p.x + k as i32 * slot + (slot - bw) / 2;
-                    let color = card
-                        .bar_colors
-                        .get(k)
-                        .copied()
-                        .or(card.bar_color)
-                        .map_or(t.accent, |c| themed(&t, c));
-                    let c = if b > 0.0 { color } else { t.outline };
-                    cx.canvas
-                        .fill_rect(Rect::new(x, bars.bottom() - h, bw, h), c);
-                    if let Some(l) = card.bar_labels.get(k) {
-                        let lr = Rect::new(p.x + k as i32 * slot, under.y + 2, slot, under.h - 2);
-                        cx.text(FontId::Sans, 11.0, lr, Align::Center, t.text_faint, l);
-                    }
-                }
-            }
-            let clip = cx.canvas.clip();
-            cx.canvas.set_clip(clip.intersect(p.inset_xy(-2, -2)));
-            for tr in &card.traces {
-                let pts = to_screen(p, &tr.pts);
-                if tr.fill {
-                    let mut m = Mask::new(p);
-                    m.fill_under(&pts, p.bottom() as f32, 0.16);
-                    m.draw(cx.canvas, themed(&t, tr.color));
-                }
-                let mut m = Mask::new(p.inset_xy(-2, -2));
-                if tr.dashed {
-                    m.dashed(&pts, tr.width, 6.0);
-                } else {
-                    m.polyline(&pts, tr.width);
-                }
-                m.draw(cx.canvas, themed(&t, tr.color));
-            }
-            if let (Some(x), Some(tr)) = (card.dot, card.traces.first()) {
-                if let Some(&(_, y)) = tr
-                    .pts
-                    .iter()
-                    .min_by(|a, b| (a.0 - x).abs().total_cmp(&(b.0 - x).abs()))
-                {
-                    let s = to_screen(p, &[(x, y)])[0];
-                    let mut m = Mask::new(p.inset_xy(-6, -6));
-                    m.disc(s.0, s.1, 4.5);
-                    m.draw(cx.canvas, t.text);
-                }
-            }
-            paint_nodes(cx, p, &card.nodes);
-            cx.canvas.set_clip(clip);
+            paint_plot(cx, p, card, &|c| themed(&t, c));
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        let mut first = 0;
+        for (i, c) in self.cards.iter().enumerate() {
+            let cr = self.card_rect(r, i);
+            let p = Visuals::plot_rect(cr);
+            // The card's title line picks the card; a box on it picks that box.
+            // The card of the page shown (marked) has nothing new to show.
+            out.push(
+                Target::tap(
+                    "card",
+                    i,
+                    c.title.clone(),
+                    Rect::new(cr.x, cr.y, cr.w, (p.y - cr.y).max(8)),
+                )
+                .disabled_if(c.active),
+            );
+            for (k, n) in c.nodes.iter().enumerate() {
+                out.push(Target::tap(
+                    "node",
+                    first + k,
+                    n.label.clone(),
+                    node_rect(p, n),
+                ));
+            }
+            first += c.nodes.len();
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -497,6 +481,81 @@ impl Widget for Visuals {
     }
 }
 
+/// Draws a card's plot into `p`: its grid, midline, bars, curves, dot and
+/// boxes, without the card's panel or title. `color` turns each colour the
+/// card names into the one drawn ([`themed`] for the strip; a section
+/// draws the Q-Link colours in shades of its own).
+pub fn paint_plot(cx: &mut PaintCx, p: Rect, card: &Card, color: &dyn Fn(Color) -> Color) {
+    let t = cx.theme.clone();
+    for (x, label) in &card.grid {
+        let gx = p.x + (x * p.w as f32) as i32;
+        cx.canvas.fill_rect(Rect::new(gx, p.y, 1, p.h), t.outline);
+        if !label.is_empty() {
+            let lr = Rect::new(gx + 4, p.bottom() - 16, 40, 14);
+            cx.text(FontId::Sans, 11.0, lr, Align::Left, t.text_faint, label);
+        }
+    }
+    if card.midline {
+        cx.canvas
+            .fill_rect(Rect::new(p.x, p.y + p.h / 2, p.w, 1), t.outline);
+    }
+    if !card.bars.is_empty() {
+        let n = card.bars.len() as i32;
+        let slot = (p.w / n).max(1);
+        let bw = (slot * 2 / 3).clamp(2, 40);
+        let labels = if card.bar_labels.is_empty() { 0 } else { 16 };
+        let (under, bars) = p.take_bottom(labels);
+        for (k, &b) in card.bars.iter().enumerate() {
+            let h = ((b.clamp(0.0, 1.0) * bars.h as f32).round() as i32).max(2);
+            let x = p.x + k as i32 * slot + (slot - bw) / 2;
+            let fill = card
+                .bar_colors
+                .get(k)
+                .copied()
+                .or(card.bar_color)
+                .map_or(t.accent, color);
+            let c = if b > 0.0 { fill } else { t.outline };
+            cx.canvas
+                .fill_rect(Rect::new(x, bars.bottom() - h, bw, h), c);
+            if let Some(l) = card.bar_labels.get(k) {
+                let lr = Rect::new(p.x + k as i32 * slot, under.y + 2, slot, under.h - 2);
+                cx.text(FontId::Sans, 11.0, lr, Align::Center, t.text_faint, l);
+            }
+        }
+    }
+    let clip = cx.canvas.clip();
+    cx.canvas.set_clip(clip.intersect(p.inset_xy(-2, -2)));
+    for tr in &card.traces {
+        let pts = to_screen(p, &tr.pts);
+        if tr.fill {
+            let mut m = Mask::new(p);
+            m.fill_under(&pts, p.bottom() as f32, 0.16);
+            m.draw(cx.canvas, color(tr.color));
+        }
+        let mut m = Mask::new(p.inset_xy(-2, -2));
+        if tr.dashed {
+            m.dashed(&pts, tr.width, 6.0);
+        } else {
+            m.polyline(&pts, tr.width);
+        }
+        m.draw(cx.canvas, color(tr.color));
+    }
+    if let (Some(x), Some(tr)) = (card.dot, card.traces.first()) {
+        if let Some(&(_, y)) = tr
+            .pts
+            .iter()
+            .min_by(|a, b| (a.0 - x).abs().total_cmp(&(b.0 - x).abs()))
+        {
+            let s = to_screen(p, &[(x, y)])[0];
+            let mut m = Mask::new(p.inset_xy(-6, -6));
+            m.disc(s.0, s.1, 4.5);
+            m.draw(cx.canvas, t.text);
+        }
+    }
+    paint_nodes(cx, p, &card.nodes, color);
+    cx.canvas.set_clip(clip);
+}
+
 /// A node's box on screen.
 pub fn node_rect(plot: Rect, n: &CardNode) -> Rect {
     let (x, y) = to_screen(plot, &[(n.x, n.y)])[0];
@@ -510,7 +569,7 @@ pub fn node_rect(plot: Rect, n: &CardNode) -> Rect {
 
 /// Draws a card's boxes and their feedback loops: a loop leaves a box's
 /// right side, runs up past the box it feeds and comes down into its top.
-fn paint_nodes(cx: &mut PaintCx, p: Rect, nodes: &[CardNode]) {
+fn paint_nodes(cx: &mut PaintCx, p: Rect, nodes: &[CardNode], color: &dyn Fn(Color) -> Color) {
     let t = cx.theme.clone();
     for n in nodes {
         let Some(to) = n.feedback.and_then(|k| nodes.get(k)) else {
@@ -536,11 +595,10 @@ fn paint_nodes(cx: &mut PaintCx, p: Rect, nodes: &[CardNode]) {
         let (fill, text) = if n.dim {
             (t.raised, t.text_faint)
         } else {
-            (themed(&t, n.fill), themed(&t, n.text))
+            (color(n.fill), color(n.text))
         };
         if let Some(c) = n.ring {
-            cx.canvas
-                .stroke_round_rect(b.inset(-3), 7, 2, themed(&t, c));
+            cx.canvas.stroke_round_rect(b.inset(-3), 7, 2, color(c));
         }
         cx.canvas.fill_round_rect(b, 5, fill);
         cx.text(FontId::Bold, 11.0, b, Align::Center, text, &n.label);
@@ -829,6 +887,44 @@ impl Widget for TileGrid {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        for (i, tile) in self.tiles.iter().enumerate() {
+            let tr = self.tile_rect(r, i);
+            match &tile.kind {
+                TileKind::Knob { .. } => {
+                    out.push(Target::drag("knob", i, tile.label.clone(), tr).towards(0, -40))
+                }
+                TileKind::Choice { names, index } => {
+                    let parts = TileGrid::choice_rects(tr, names.len());
+                    let arrows = parts.len() != names.len() || names.len() > 4;
+                    for (k, pr) in parts.iter().enumerate() {
+                        if arrows {
+                            let id = if k == 0 { "choice-less" } else { "choice-more" };
+                            out.push(Target::tap(
+                                id,
+                                i,
+                                format!("{} {}", tile.label, ["‹", "›"][k.min(1)]),
+                                *pr,
+                            ));
+                        } else if k != *index {
+                            let name = names.get(k).cloned().unwrap_or_default();
+                            out.push(Target::tap(
+                                "choice",
+                                i * 16 + k,
+                                format!("{}: {name}", tile.label),
+                                *pr,
+                            ));
+                        }
+                    }
+                }
+                TileKind::Toggle(_) => out.push(Target::tap("toggle", i, tile.label.clone(), tr)),
+                TileKind::Meter => {}
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -1045,6 +1141,19 @@ impl Widget for QLinkStrip {
             t.text,
             &self.wheel_value,
         );
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.cells.len().min(4))
+            .map(|i| {
+                Target::tap(
+                    "cell",
+                    i,
+                    self.cells[i].label.clone(),
+                    QLinkStrip::cell_rect(r, i),
+                )
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

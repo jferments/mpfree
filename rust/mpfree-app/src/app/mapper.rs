@@ -78,6 +78,8 @@ pub enum Job {
     /// The data dial's push: in a menu, opens the row for the wheel to
     /// change, and a second push sets it (Jay, 12 Nov 08:11Z).
     DataPush,
+    /// BROWSE: the browser over the page (SHIFT: save the project).
+    Browse,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,7 +115,7 @@ pub const CONTROLS: [Control; 42] = [
     c("SHIFT", Job::Fixed(button::SHIFT)),
     c("MENU", Job::Menu),
     c("MAIN", Job::Main),
-    c("BROWSE", Job::None),
+    c("BROWSE", Job::Browse),
     // Opens the mixer. Named after the MPC 3.6 guide's MPC One top panel
     // (p. 348, item 17, as the FX thread cites it); not yet seen by the pad
     // player, so it works once found with the mapper.

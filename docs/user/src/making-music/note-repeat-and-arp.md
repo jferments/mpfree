@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-arp rust/mpfree-arp-ui rust/mpfree-scale rust/mpfree-app/src/app/arp.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-14 b76c3c7
 -->
 
 # Note Repeat, Latch and the arpeggiator
@@ -43,7 +43,7 @@ What a new pad press does while Latch is on is a setting in [Prefs](../reference
 
 Latched pads stay lit on the MPC, and the top bar says so.
 
-For a sound that should simply keep playing after you let go (a loop, a drone, a grain cloud) without repeating, give the pad its own **Latch** in the Sample tab instead: see [Pads that stop, play or hold others](sampling.md#pads-that-stop-play-or-hold-others).
+For a sound that should simply keep playing after you let go (a loop, a drone, a grain cloud) without repeating, give the pad its own **Latch** in the Sample tab instead: see [Pads that stop, play or hold others](shaping-a-pad.md#pads-that-stop-play-or-hold-others).
 
 > [!TIP]
 > Latch a hi-hat at 1/16, then play the kick and snare over it by hand. With the pattern recording, the latched hats record too.
@@ -159,7 +159,7 @@ Drag a cell up or down, or select it and turn the data wheel, to change it. **Ro
 5. Tap **Save**.
 
 > [!NOTE]
-> Saved patterns are kept on the MPFree stick, so they are still there after you switch off. See [Saving your work](saving.md).
+> Saved patterns are kept on the MPFree stick, so they are still there after you switch off. Each track's arp, with its pattern as you left it, is saved in your project too, and comes back when you open it. See [Saving your work](saving.md).
 
 > [!MPC]
 > On the MPC, Note Repeat and the Arpeggiator are separate, and the arpeggiator is a full-screen editor. In MPFree they are one engine: NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the Play page's view while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. MPFree's patterns (steps with ratchets, chance, ties and octave jumps) have no equivalent on the MPC.

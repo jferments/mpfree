@@ -1,9 +1,9 @@
-//! The MIDI, Sync and CV sections of the mixer's I/O view.
+//! The MIDI, Sync, CV and Monitor sections of the mixer's I/O view.
 //!
 //! The owner's calls (2026-11-12): a project's routing lives in an I/O view
 //! inside the mixer, opened by the I/O icon beside the mixer icon. The
 //! mixer (`mpfree-mixer-ui`) owns the view and its Audio section; this crate
-//! gives it three more through [`mpfree_mixer_ui::IoSection`]:
+//! gives it four more through [`mpfree_mixer_ui::IoSection`]:
 //!
 //! - **MIDI**: each port's input (Plays tracks, Learn only, Both) and thru,
 //!   and each track's one output setting, "Plays on", the port and the
@@ -12,6 +12,10 @@
 //!   arriving now, and each port's clock out (Off, While playing, Always).
 //! - **CV**: the eight CV/gate outputs: each one's job, track and main
 //!   setting, with the volts it gives now.
+//! - **Monitor**: every message in and out of the ports as it happens, a
+//!   light per port and channel each way, and the tempo of any clock
+//!   ([`IoModel::monitor`], fed by the app through
+//!   [`mpfree_midi::monitor::Feed`]). It sets nothing.
 //!
 //! The sections edit a [`Shared`] [`IoModel`]: the project's
 //! [`MidiSetup`] (saved with the project) and [`Live`] facts the app fills
@@ -32,13 +36,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use learn::control_text;
+pub use monitor::words as monitor_words;
 use mpfree_midi::cv::CV_OUTS;
+pub use mpfree_midi::monitor::Monitor;
 pub use mpfree_midi::setup::MidiSetup;
 
 mod cv;
 mod form;
 mod learn;
 mod midi;
+mod monitor;
 mod sync;
 
 pub mod sample;
@@ -71,6 +78,8 @@ pub struct Built {
     pub clock_out: bool,
     /// The CV/gate outputs driven, counted from CV 1 (0: CV out is off).
     pub cv_outs: u8,
+    /// The app feeds the Monitor ([`IoModel::monitor`]).
+    pub monitor: bool,
 }
 
 /// What the app tells the sections about the world now.
@@ -128,10 +137,18 @@ pub struct IoModel {
     /// Goes up each time the setup changes (a section, or a project
     /// opened), so the app copies the setup only when it has changed.
     pub gen: u64,
+    /// What the Monitor section lists and lights: the app drains its
+    /// [`mpfree_midi::monitor::Feed`] into it while holding the lock, and
+    /// copies its port table in when ports come and go
+    /// ([`Monitor::set_ports`]). Not part of the setup: `gen` doesn't move.
+    pub monitor: Monitor,
 }
 
-/// The project's `midi` part (`parts/midi.txt`): the setup the sections
-/// edit, saved and opened with the project.
+/// The project's `midi` part (`parts/midi.txt`): the song's share of the
+/// setup the sections edit ([`MidiSetup::project`]: tracks' outputs, Tempo
+/// from, clock out, CV jobs, learned controls), saved and opened with the
+/// project. Each port's input and thru are the rig's, kept for every
+/// project by the app ([`MidiSetup::rig`]); opening a project leaves them.
 pub struct MidiPart(pub Shared);
 
 /// The part's file name in a project.
@@ -147,7 +164,7 @@ impl mpfree_library::Part for MidiPart {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .setup
-            .to_text()
+            .project_text()
     }
 
     /// Reads what it can. Lines it can't read are skipped, kept in
@@ -156,7 +173,7 @@ impl mpfree_library::Part for MidiPart {
     fn load(&mut self, text: &str) -> Result<(), String> {
         let (setup, warnings) = MidiSetup::parse(text);
         let mut m = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        m.setup = setup;
+        m.setup.set_project(&setup);
         m.warnings = warnings;
         m.gen += 1;
         Ok(())
@@ -171,14 +188,16 @@ pub type Shared = Arc<Mutex<IoModel>>;
 pub const MIDI: &str = "MIDI";
 pub const SYNC: &str = "Sync";
 pub const CV: &str = "CV";
+pub const MONITOR: &str = "Monitor";
 
-/// The three sections, in the order the I/O view lists them, all on one
+/// The four sections, in the order the I/O view lists them, all on one
 /// model. Hand each to `mpfree_mixer_ui::add_io_section`.
 pub fn sections(model: &Shared) -> Vec<Box<dyn mpfree_mixer_ui::IoSection>> {
     vec![
         Box::new(form::FormSection::new(midi::Midi, model.clone())),
         Box::new(form::FormSection::new(sync::Sync, model.clone())),
         Box::new(form::FormSection::new(cv::Cv, model.clone())),
+        Box::new(monitor::MonitorSection::new(model.clone())),
     ]
 }
 
@@ -206,11 +225,48 @@ mod tests {
         let mut part = MidiPart(other.clone());
         assert_eq!(part.owner(), "midi");
         part.load(&text).unwrap();
-        assert_eq!(other.lock().unwrap().setup, model.lock().unwrap().setup);
+        let project = || model.lock().unwrap().setup.project();
+        assert_eq!(other.lock().unwrap().setup, project());
         assert!(other.lock().unwrap().warnings.is_empty());
         part.load(&format!("{text}cv.9 = off\n")).unwrap();
         assert_eq!(other.lock().unwrap().warnings.len(), 1);
-        assert_eq!(other.lock().unwrap().setup, model.lock().unwrap().setup);
+        assert_eq!(other.lock().unwrap().setup, project());
+        // Opening a project keeps the rig's port inputs.
+        other.lock().unwrap().setup.set_port("Keystep 37", |p| {
+            p.input = mpfree_midi::setup::PortInput::LearnOnly
+        });
+        part.load(&text).unwrap();
+        assert_eq!(
+            other.lock().unwrap().setup.port("Keystep 37").input,
+            mpfree_midi::setup::PortInput::LearnOnly
+        );
+    }
+
+    #[test]
+    fn every_sections_controls_fit_the_io_panel() {
+        // The I/O view keeps the master strip at its right, so a section
+        // gets less than the screen's width; a field past its edge was
+        // drawn over the master and a tap on it went to the master.
+        use form::testing::{paint, AREA};
+        let model: Shared = Arc::new(Mutex::new(sample::rig()));
+        for s in sections(&model) {
+            let _ = paint(s.as_ref());
+            let ts = s.targets(AREA);
+            assert!(!ts.is_empty(), "{} has controls", s.label());
+            for t in ts {
+                let r = t.rect;
+                assert!(
+                    r.x >= AREA.x
+                        && r.y >= AREA.y
+                        && r.right() <= AREA.right()
+                        && r.y + r.h <= AREA.y + AREA.h,
+                    "{}: {} \"{}\" at {r:?} is outside {AREA:?}",
+                    s.label(),
+                    t.id,
+                    t.label
+                );
+            }
+        }
     }
 
     #[test]

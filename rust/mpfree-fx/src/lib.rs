@@ -19,6 +19,18 @@
 //!   that ride the music, tone and width, all under one Amount.
 //! - [`Compressor`]: soft-knee, log-domain compressor with parallel mix and
 //!   a sidechain input.
+//! - [`Ducker`]: the pump: a volume envelope (attack, hold, shaped
+//!   release) triggered by a sidechain key or by the tempo.
+//! - [`TransientShaper`]: more or less attack and sustain on each hit, with
+//!   no threshold.
+//! - [`PitchShifter`]: two octaves down to two up without changing speed,
+//!   with fine tune, stereo spread and feedback.
+//! - [`PitchCorrect`]: tunes a voice to the nearest note of a key and
+//!   scale, from a gentle pull to the hard robot snap, formants kept.
+//! - [`Harmonizer`]: two extra voices a third, fourth, fifth, sixth or
+//!   octave away that follow the key, panned either side.
+//! - [`Tuner`]: the note a sound is on and how many cents off, to well
+//!   under a cent from a bass's low B to the top of a voice.
 //! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
 //!   five characters (plate, room, hall, cloud, echoes) and freeze.
 //! - [`MasterSafety`]: the last stage of every output: DC block, trim, a
@@ -31,6 +43,13 @@
 //! - [`XyPad`]: the XY pad's logic (two parameters, snap back or hold).
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
 //!   ringing after bypass, latency-matched dry paths and a NaN guard.
+//! - [`bounce`]: the mixer's capture points streamed to 24-bit WAV files
+//!   while the song plays (the export's mixdown and stems), lined up for
+//!   each point's latency.
+//!
+//! [`registry`] lists every effect in one table (id, name, a line about
+//! it, its [`Category`], a factory and its presets): the one place a new
+//! effect joins.
 //!
 //! # Clipping
 //!
@@ -49,6 +68,8 @@
 //! is cut into blocks. The tests in `tests/` check each of these.
 #![forbid(unsafe_code)]
 
+mod amp;
+pub mod bounce;
 mod chain;
 mod character;
 mod cloud;
@@ -57,18 +78,42 @@ mod comp;
 mod crush;
 mod delay;
 mod drive;
+mod ducker;
+mod dynamics;
+mod echoes;
 mod eq;
+pub mod families;
+mod grains;
+mod kit;
 mod lofi;
+pub mod main_page;
 mod master;
 mod mixer;
 mod modfx;
+mod motion;
+pub mod mpc;
 mod oversample;
+pub mod page_plan;
 mod perform;
+pub mod picker;
+mod pitch;
 mod presets;
 pub mod print;
+pub mod registry;
+mod rooms;
+mod shift;
+mod stereo;
+mod strip;
 mod svf;
+mod transient;
+mod tuner;
+mod vocal;
+mod wah;
 mod xy;
+pub mod xyfx;
 
+pub use amp::{Amp, Exciter};
+pub use bounce::{bounce, wav_header, BounceIn, BounceOut, Pumped};
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use character::Character;
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
@@ -77,7 +122,13 @@ pub use comp::Compressor;
 pub use crush::Crush;
 pub use delay::Delay;
 pub use drive::Drive;
+pub use ducker::{
+    Ducker, RATES as DUCKER_RATES, RATE_BEATS as DUCKER_RATE_BEATS, SOURCES as DUCKER_SOURCES,
+};
+pub use dynamics::{DeEsser, Gate, Limiter, MultibandCompressor};
+pub use echoes::{MultiTap, TapeDelay};
 pub use eq::Eq;
+pub use grains::Granulator;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
 pub use mixer::{
@@ -86,16 +137,31 @@ pub use mixer::{
     MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB,
 };
 pub use modfx::{Chorus, Flanger, Phaser};
-pub use oversample::{Down2, IirDown2, IirUp2, Up2};
+pub use motion::{AutoPan, RingMod, Rotary, Tremolo};
+pub use oversample::{Down2, IirDown2, IirPhase, IirUp2, Up2};
 pub use perform::{
     state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
     LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,
     SLOTS as PERFORM_SLOTS,
 };
+pub use pitch::PitchShifter;
 pub use presets::presets;
 pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
+pub use registry::{Category, FxEntry, EFFECTS};
+pub use rooms::{Plate, Room, Spring};
+pub use shift::FreqShifter;
+pub use stereo::{SampleDelay, StereoWidth};
+pub use strip::ChannelStrip;
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
+pub use transient::TransientShaper;
+pub use tuner::Tuner;
+pub use vocal::{
+    interval_semis, nearest_note, Harmonizer, PitchCorrect, INTERVALS as VOCAL_INTERVALS,
+    KEYS as VOCAL_KEYS, RANGES as VOCAL_RANGES, SCALES as VOCAL_SCALES,
+};
+pub use wah::{AutoWah, TalkBox};
 pub use xy::{XyAxis, XyPad};
+pub use xyfx::XyFx;
 
 pub use mpfree_lanes;
 pub use mpfree_node;
@@ -103,6 +169,8 @@ pub use mpfree_node;
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
+    pub use crate::amp::amp_ids as amp;
+    pub use crate::amp::exciter;
     pub use crate::character::ids as character;
     pub use crate::cloud::ids as cloud;
     pub use crate::comb::ids as comb;
@@ -110,16 +178,43 @@ pub mod ids {
     pub use crate::crush::ids as crush;
     pub use crate::delay::ids as delay;
     pub use crate::drive::ids as drive;
+    pub use crate::ducker::ids as ducker;
+    pub use crate::dynamics::deesser;
+    pub use crate::dynamics::gate;
+    pub use crate::dynamics::limiter;
+    pub use crate::dynamics::multiband;
+    pub use crate::echoes::multitap;
+    pub use crate::echoes::tape;
     pub use crate::eq::ids as eq;
+    pub use crate::grains::ids as granulator;
     pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;
     pub use crate::mixer::ids as mixer;
     pub use crate::modfx::chorus;
     pub use crate::modfx::flanger;
     pub use crate::modfx::phaser;
+    pub use crate::motion::autopan;
+    pub use crate::motion::ringmod;
+    pub use crate::motion::rotary;
+    pub use crate::motion::tremolo;
     pub use crate::perform::ids as perform;
+    pub use crate::pitch::ids as pitch;
+    pub use crate::rooms::plate;
+    pub use crate::rooms::room;
+    pub use crate::rooms::spring;
+    pub use crate::shift::ids as freqshift;
+    pub use crate::stereo::sample_delay_ids as sample_delay;
+    pub use crate::stereo::width_ids as width;
+    pub use crate::strip::ids as channel_strip;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
+    pub use crate::transient::ids as transient;
+    pub use crate::tuner::ids as tuner;
+    pub use crate::vocal::harm_ids as harmonizer;
+    pub use crate::vocal::tune_ids as pitch_correct;
+    pub use crate::wah::autowah;
+    pub use crate::wah::talkbox;
+    pub use crate::xyfx::ids as xyfx;
 }
 
 /// A factory preset: a name and the parameter values that differ from the
@@ -305,6 +400,10 @@ impl FixedDelay {
     #[cfg(test)]
     pub(crate) fn frames(&self) -> usize {
         self.buf.len()
+    }
+    /// No delay: what goes in comes straight out.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buf.is_empty()
     }
     #[inline]
     pub(crate) fn run(&mut self, x: f32) -> f32 {

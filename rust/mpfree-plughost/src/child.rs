@@ -2,7 +2,8 @@
 //! the host.
 //!
 //! Two threads. The **main thread** (the plugin's CLAP main thread) answers
-//! the control channel: prepare, state, a value's text, quit; between
+//! the control channel: prepare, state, a value's text, a preset, quit;
+//! between
 //! messages it answers the plugin's own requests (`ClapControl::idle`). The
 //! **audio thread** waits on the shared block's `req` word, runs one block
 //! of the plugin and posts `done`.
@@ -13,7 +14,7 @@
 
 use crate::shm::{self, Mapping};
 use crate::wire::{self, Hello, ToChild, ToHost};
-use mpfree_clap::{ClapControl, ClapNode, Library, ParamSpec};
+use mpfree_clap::{ClapControl, ClapNode, Library, ParamSpec, Place, Preset};
 use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, Timed, MAX_BLOCK};
 use std::ffi::OsString;
 use std::io;
@@ -64,6 +65,13 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Option<Args> {
 
 /// The process's whole life; returns its exit status.
 pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
+    let args: Vec<OsString> = args.into_iter().collect();
+    if args.len() == 2 && args[0] == "--list" {
+        return list_main(&PathBuf::from(&args[1]));
+    }
+    if args.len() == 2 && args[0] == "--presets" {
+        return presets_main(&PathBuf::from(&args[1]));
+    }
     let Some(a) = parse_args(args) else {
         eprintln!("usage: mpfree-plughost --plugin FILE --id PLUGIN-ID --shm-fd N --ctl-fd N");
         eprintln!("(started by MPFree's plugin sandbox, not by hand)");
@@ -113,6 +121,136 @@ pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
     i32::from(served.is_err())
 }
 
+/// `--list FILE`: loads the file and prints one line per plugin in it
+/// ([`list_line`]), so MPFree can see what a plugin file holds without
+/// loading it into its own process. Exit 0 with the lines, 2 if the file
+/// won't load (the reason on stderr).
+fn list_main(file: &std::path::Path) -> i32 {
+    match Library::open(file) {
+        Ok(lib) => {
+            use std::io::Write;
+            let mut out = io::stdout().lock();
+            for d in lib.plugins() {
+                let kind = if d.features.iter().any(|f| f == "instrument") {
+                    Kind::Instrument
+                } else {
+                    Kind::Effect
+                };
+                if writeln!(out, "{}", list_line(&d.id, &d.name, &d.vendor, kind)).is_err() {
+                    return 2;
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            2
+        }
+    }
+}
+
+/// One plugin as `--list` prints it: `plugin`, then its id, name, vendor
+/// and `instrument` or `effect`, separated by tabs (tabs and line breaks
+/// in the plugin's own text become spaces).
+pub fn list_line(id: &str, name: &str, vendor: &str, kind: Kind) -> String {
+    let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+    let kind = match kind {
+        Kind::Instrument => "instrument",
+        Kind::Effect => "effect",
+    };
+    format!(
+        "plugin\t{}\t{}\t{}\t{kind}",
+        clean(id),
+        clean(name),
+        clean(vendor)
+    )
+}
+
+/// `--presets FILE`: loads the file and prints one line per preset its
+/// preset providers know of ([`preset_line`]), then an `error` line per
+/// error kept, `more-errors N` and `cut-short` when they apply. Exit 0
+/// with the lines (none for a file with no presets), 2 if the file won't
+/// load (the reason on stderr).
+fn presets_main(file: &std::path::Path) -> i32 {
+    use std::io::Write;
+    let lib = match Library::open(file) {
+        Ok(lib) => lib,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let found = lib.presets();
+    let mut out = io::stdout().lock();
+    let mut lines: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
+    for p in &found.presets {
+        match preset_line(p) {
+            Some(l) => lines.push(l),
+            None => skipped += 1,
+        }
+    }
+    for e in &found.errors {
+        lines.push(format!("error\t{}", escape(e)));
+    }
+    if skipped > 0 {
+        lines.push(format!(
+            "error\t{skipped} presets have a path that isn't UTF-8 and were left out"
+        ));
+    }
+    if found.more_errors > 0 {
+        lines.push(format!("more-errors\t{}", found.more_errors));
+    }
+    if found.cut_short {
+        lines.push("cut-short".into());
+    }
+    for l in lines {
+        if writeln!(out, "{l}").is_err() {
+            return 2;
+        }
+    }
+    0
+}
+
+/// Escapes a field of a `--presets` line: backslash, tab and line breaks.
+pub fn escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => o.push_str("\\\\"),
+            '\t' => o.push_str("\\t"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
+/// One preset as `--presets` prints it: `preset`, then its name, its place
+/// (`plugin`, or `file:` and the path), its load key (empty for none), its
+/// flags, collection, category and creator, then one field per plugin id
+/// it is for; tab-separated, each field [`escape`]d. None when the path
+/// isn't UTF-8.
+pub fn preset_line(p: &Preset) -> Option<String> {
+    let place = match &p.place {
+        Place::Plugin => "plugin".to_string(),
+        Place::File(f) => format!("file:{}", f.to_str()?),
+    };
+    let mut f = vec![
+        "preset".to_string(),
+        escape(&p.name),
+        escape(&place),
+        escape(p.load_key.as_deref().unwrap_or("")),
+        p.flags.to_string(),
+        escape(&p.collection),
+        escape(&p.category),
+        escape(&p.creator),
+    ];
+    f.extend(p.plugins.iter().map(|id| escape(id)));
+    Some(f.join("\t"))
+}
+
 /// The main thread: answers the host until it says quit or goes away.
 fn serve(sock: &mut UnixStream, node: &Mutex<ClapNode>, control: &ClapControl) -> io::Result<()> {
     loop {
@@ -153,6 +291,24 @@ fn serve(sock: &mut UnixStream, node: &Mutex<ClapNode>, control: &ClapControl) -
             ToChild::SaveState => ToHost::State(control.save_state()),
             ToChild::LoadState(b) => ToHost::Loaded(control.load_state(&b)),
             ToChild::ParamText { index, value } => ToHost::Text(control.param_text(index, value)),
+            ToChild::LoadPreset { file, key } => {
+                use std::os::unix::ffi::OsStringExt;
+                let place = match file {
+                    Some(b) => Place::File(PathBuf::from(OsString::from_vec(b))),
+                    None => Place::Plugin,
+                };
+                let p = Preset {
+                    name: String::new(),
+                    place,
+                    load_key: key,
+                    plugins: Vec::new(),
+                    collection: String::new(),
+                    category: String::new(),
+                    creator: String::new(),
+                    flags: 0,
+                };
+                ToHost::PresetLoaded(control.load_preset(&p))
+            }
             ToChild::Quit => return Ok(()),
         };
         wire::send_to_host(sock, &answer)?;

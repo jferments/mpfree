@@ -123,6 +123,11 @@ pub struct StripView {
     pub cost_pct: Option<f32>,
     /// It plays a take of its inserts in their place (a track or a pad).
     pub frozen: bool,
+    /// Its menu offers Freeze (or Thaw, while frozen). [`StripView::new`]
+    /// sets it for a track or a pad channel, the strips the mixer can
+    /// freeze; the app clears it where it has no loop to take (the looper,
+    /// the audio tracks).
+    pub freezable: bool,
     /// A freeze or print of it under way (the app's, from its `Print`).
     pub take: Option<TakeView>,
 }
@@ -155,13 +160,15 @@ impl StripView {
             }),
             cost_pct: None,
             frozen: false,
+            freezable: matches!(id, StripId::Track(_) | StripId::Pad(_)),
             take: None,
         }
     }
 
-    /// Whether the strip can be frozen (a track or a pad channel).
+    /// Whether the strip's menu offers Freeze or Thaw
+    /// ([`StripView::freezable`]; a frozen strip can always thaw).
     pub fn can_freeze(&self) -> bool {
-        matches!(self.id, StripId::Track(_) | StripId::Pad(_))
+        self.freezable || self.frozen
     }
 
     /// Whether the strip has an output to choose (a return and the master
@@ -272,7 +279,19 @@ impl MixState {
     /// master, and their meters since the last call (it takes the peaks
     /// and, while profiling, the probe windows). `name` names each strip.
     pub fn from_mixer(m: &mut Mixer, view: MixView, name: &dyn Fn(StripId) -> String) -> MixState {
-        let ids: Vec<StripId> = match view {
+        Self::from_mixer_where(m, view, name, &|_| true)
+    }
+
+    /// [`MixState::from_mixer`] with only the strips `keep` keeps (the
+    /// master always): the others aren't read at all, so a mixer with many
+    /// unused tracks costs no more to show than the ones in use.
+    pub fn from_mixer_where(
+        m: &mut Mixer,
+        view: MixView,
+        name: &dyn Fn(StripId) -> String,
+        keep: &dyn Fn(StripId) -> bool,
+    ) -> MixState {
+        let mut ids: Vec<StripId> = match view {
             MixView::Tracks => (0..m.tracks()).map(StripId::Track).collect(),
             MixView::Pads => (0..m.pads()).map(StripId::Pad).collect(),
             MixView::Inputs => (0..m.inputs()).map(StripId::Input).collect(),
@@ -287,6 +306,7 @@ impl MixState {
                 .chain((0..BUSES).map(StripId::Bus))
                 .collect(),
         };
+        ids.retain(|&s| keep(s));
         let strips = ids.iter().map(|&s| read_strip(m, s, name)).collect();
         let master = read_strip(m, StripId::Master, name);
         let rate = m.rate();
@@ -357,7 +377,11 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
         v.slots = c.capacity();
         v.inserts = (0..c.len())
             .map(|slot| InsertView {
-                name: c.node(slot).map_or("?", |n| n.info().name).to_string(),
+                // As the chain editor names it: "Reverb · Plate" for an
+                // effect in a family's mode.
+                name: c
+                    .node(slot)
+                    .map_or_else(|| "?".to_string(), mpfree_fx::families::insert_name),
                 on: c.is_on(slot),
                 key: keys[slot].map(name),
                 cost_pct: if profiling {
@@ -401,4 +425,30 @@ pub fn default_name(s: StripId) -> String {
 /// A level in dBFS for a meter, from a linear peak (-80 for silence).
 pub fn peak_db(p: f32) -> f32 {
     gain_to_db(p).max(-80.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mpfree_fx::MixerConfig;
+
+    /// An insert is named as the chain editor names it: a family's mode
+    /// as "Reverb · Plate", any other effect by its engine's name.
+    #[test]
+    fn inserts_are_named_as_the_chain_editor_names_them() {
+        let mut m = Mixer::new(MixerConfig::default(), 44_100, 128);
+        let chain = m.chain_mut(StripId::Track(0)).unwrap();
+        for id in ["mpfree.fx.plate", "mpfree.fx.compressor"] {
+            chain.push(mpfree_fx::registry::make(id).unwrap());
+        }
+        let st = MixState::from_mixer(&mut m, MixView::Tracks, &default_name);
+        let names: Vec<&str> = st
+            .strip(StripId::Track(0))
+            .unwrap()
+            .inserts
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(names, ["Reverb · Plate", "Compressor"]);
+    }
 }

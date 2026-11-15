@@ -38,11 +38,11 @@ CAPTURE's history and the move log moved to the control half, not the audio half
 
 ### Messages
 
-**To audio** (`ToAudio`, 256 slots): a new view, which says what it includes; a transport command; the tracks' settings when they change (the armed track, and each track's "Clips through the arp", destination and "Record pad pressure", as a fixed array).
+**To audio** (`ToAudio`, 256 slots): a new view, which says what it includes; a transport command; the tracks' settings when they change: how many tracks and which is armed (`ToAudio::Tracks`), and, one message per track that changed, its "Clips through the arp", destination and "Record pad pressure" (`ToAudio::Track`). Both halves keep a table of all 128 tracks (`link::Tracks`), but a message carries only what changed, so it stays small; one that finds the queue full goes at the next poll.
 
 **To control** (`ToControl`, 8192 slots, a busy second of periods), in the order things happened: each pad note played, each pad pressure value that changed (both for CAPTURE's history) and each gesture taken, with its offset; each cue that started (`Started`); each recorded change (`Rec`) with its number, after its pressure or gesture points in fixed chunks; a request to compile again; each of the period's spans; the clock follower's counts when they change; the period's end, with the transport as it left it and the audio half's counts; and each view to free.
 
-The pad player's audio loop calls the audio half directly for what it hands the time engine each period: the pads, their pressure, the knobs, the gestures, FILL, the tempo it follows, the followed port's clock bytes, and the metronome.
+The pad player's audio loop calls the audio half directly for what it hands the time engine each period: the pads, their pressure, the knobs, the gestures, FILL, the tempo it follows, the followed port's clock bytes, and the metronome. It can also queue a transport command on an exact frame of the coming period (`TimeHost::command_at`), where a command through the queue waits for the next period: the export stops the song on its range's last frame with it ([export.md](export.md#the-apps-part)).
 
 ### Where time matters
 

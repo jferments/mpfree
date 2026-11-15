@@ -7,6 +7,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      full_arm:
+        description: Also run the control sweep and song workflows as ARM under qemu (about 30 minutes more)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -711,10 +716,13 @@ jobs:
           rustup target add --toolchain stable armv7-unknown-linux-gnueabihf
           rustc --version
           cargo --version
-      - name: Test Rust core in native release and debug
+      - name: Test Rust core natively (debug, once)
+        # Once, in debug, where overflow checks and debug assertions run; the
+        # release builds come from the steps below (the bench, the renders,
+        # the ARM program and its tests). Both debug and release took 15 of
+        # this job's 57 minutes (train 42, 14 Nov).
         run: |
           cargo test --manifest-path rust/Cargo.toml --workspace --all-targets --locked
-          cargo test --manifest-path rust/Cargo.toml --workspace --release --all-targets --locked
           cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-render
       - name: No allocation on any engine's audio path (mpfree-bench)
         # Exits 2 if an engine allocates inside its audio callback. The timings
@@ -1108,6 +1116,7 @@ jobs:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm
           RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+          FULL_ARM: ${{ github.event_name == 'workflow_dispatch' && inputs.full_arm }}
         run: |
           # Its ALSA and input layouts against the kernel's own headers for 32-bit ARM (compile only).
           arm-linux-gnueabihf-gcc -c rust/mpfree-app/abi-check.c -o "$RUNNER_TEMP/abi-check.o"
@@ -1121,8 +1130,16 @@ jobs:
             echo "mpfree must be statically linked"; exit 1
           fi
           # Its unit tests and the GUI's as 32-bit ARM (the parameter blocks, event layout, drawing), under qemu.
-          cargo test --manifest-path rust/Cargo.toml --release --locked \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-ui
+          # The smoke module (the control sweep over every screen, the workflows and the song workflows)
+          # took about 32 minutes of this job under qemu (14 Nov). It runs natively above on every run;
+          # as ARM only by hand, with Run workflow's full_arm box ticked.
+          if [ "$FULL_ARM" = true ]; then
+            cargo test --manifest-path rust/Cargo.toml --release --locked \
+              --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-ui
+          else
+            cargo test --manifest-path rust/Cargo.toml --release --locked \
+              --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-ui -- --skip smoke::
+          fi
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
           # It took 110-115 s on the self-hosted runners with four mpfree jobs sharing the CPU
           # (2026-11-11) and two runs hit a 120 s limit, so the limit is 600 s; it only stops a hang.

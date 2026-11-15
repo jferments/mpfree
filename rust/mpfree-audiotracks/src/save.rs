@@ -281,25 +281,43 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
 /// `audio` (interleaved, `channels` of them) as a 32-bit float WAV at
 /// `rate`.
 pub fn wav(audio: &[f32], channels: usize, rate: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(44 + 4 * audio.len());
+    write_wav(&mut b, audio, channels, rate).expect("a Vec takes every write");
+    b
+}
+
+/// [`wav`] written to `w` a piece at a time, without a copy of the whole
+/// file (a project's save writes each take this way).
+pub fn write_wav(
+    w: &mut dyn std::io::Write,
+    audio: &[f32],
+    channels: usize,
+    rate: u32,
+) -> std::io::Result<()> {
     let ch = channels.clamp(1, 2) as u16;
     let data = 4 * audio.len();
-    let mut b = Vec::with_capacity(44 + data);
-    b.extend_from_slice(b"RIFF");
-    b.extend_from_slice(&(36 + data as u32).to_le_bytes());
-    b.extend_from_slice(b"WAVEfmt ");
-    b.extend_from_slice(&16u32.to_le_bytes());
-    b.extend_from_slice(&3u16.to_le_bytes());
-    b.extend_from_slice(&ch.to_le_bytes());
-    b.extend_from_slice(&rate.to_le_bytes());
-    b.extend_from_slice(&(rate * 4 * u32::from(ch)).to_le_bytes());
-    b.extend_from_slice(&(4 * ch).to_le_bytes());
-    b.extend_from_slice(&32u16.to_le_bytes());
-    b.extend_from_slice(b"data");
-    b.extend_from_slice(&(data as u32).to_le_bytes());
-    for v in audio {
-        b.extend_from_slice(&v.to_le_bytes());
+    let mut h = Vec::with_capacity(44);
+    h.extend_from_slice(b"RIFF");
+    h.extend_from_slice(&(36 + data as u32).to_le_bytes());
+    h.extend_from_slice(b"WAVEfmt ");
+    h.extend_from_slice(&16u32.to_le_bytes());
+    h.extend_from_slice(&3u16.to_le_bytes());
+    h.extend_from_slice(&ch.to_le_bytes());
+    h.extend_from_slice(&rate.to_le_bytes());
+    h.extend_from_slice(&(rate * 4 * u32::from(ch)).to_le_bytes());
+    h.extend_from_slice(&(4 * ch).to_le_bytes());
+    h.extend_from_slice(&32u16.to_le_bytes());
+    h.extend_from_slice(b"data");
+    h.extend_from_slice(&(data as u32).to_le_bytes());
+    w.write_all(&h)?;
+    let mut buf = [0u8; 4096];
+    for piece in audio.chunks(buf.len() / 4) {
+        for (o, v) in buf.chunks_exact_mut(4).zip(piece) {
+            o.copy_from_slice(&v.to_le_bytes());
+        }
+        w.write_all(&buf[..4 * piece.len()])?;
     }
-    b
+    Ok(())
 }
 
 /// A WAV file [`wav`] wrote: its audio (interleaved), channels and rate.

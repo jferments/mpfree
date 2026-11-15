@@ -1265,6 +1265,46 @@ enum Undo {
     Group(Vec<Undo>),
 }
 
+impl Undo {
+    /// What this step changes, for the undo history's names.
+    fn info(&self) -> StepInfo {
+        let mut i = StepInfo::default();
+        self.add_info(&mut i);
+        i
+    }
+
+    fn add_info(&self, i: &mut StepInfo) {
+        match self {
+            Undo::Pad { index, .. } => {
+                i.pads += 1;
+                i.first_pad = Some(i.first_pad.map_or(*index, |f| f.min(*index)));
+            }
+            Undo::Master { .. } => i.master = true,
+            Undo::AddSource { .. } => i.sources += 1,
+            Undo::AddChop { .. } => i.chop = true,
+            Undo::PadsPlay { .. } => i.pads_play = true,
+            Undo::Group(steps) => steps.iter().for_each(|u| u.add_info(i)),
+        }
+    }
+}
+
+/// What an undo step changes, so the undo history can name it (Jay after
+/// live test 3: hold UNDO to see the page's history).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StepInfo {
+    /// How many pads it changes, and the lowest of them.
+    pub pads: usize,
+    pub first_pad: Option<usize>,
+    /// The master effect.
+    pub master: bool,
+    /// How many samples it adds.
+    pub sources: usize,
+    /// It adds a chop set.
+    pub chop: bool,
+    /// It changes what the pads play.
+    pub pads_play: bool,
+}
+
 /// The sampler's project: its sources, chop sets, pads and undo history.
 #[derive(Clone, Debug, Default)]
 pub struct Project {
@@ -1323,6 +1363,12 @@ impl Project {
     }
     pub fn sources(&self) -> &[Source] {
         &self.sources
+    }
+
+    /// Every source the project holds in memory: its sources, and those
+    /// undo took out and redo may bring back.
+    pub fn held(&self) -> impl Iterator<Item = &Source> {
+        self.sources.iter().chain(&self.removed)
     }
 
     pub fn pad(&self, index: usize) -> Option<&Pad> {
@@ -2090,6 +2136,15 @@ impl Project {
     }
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    /// The undo history: the steps undo takes back, oldest first, and the
+    /// ones redo brings back, the next one first.
+    pub fn history(&self) -> (Vec<StepInfo>, Vec<StepInfo>) {
+        (
+            self.undo.iter().map(Undo::info).collect(),
+            self.redo.iter().rev().map(Undo::info).collect(),
+        )
     }
 
     pub fn undo(&mut self) -> bool {

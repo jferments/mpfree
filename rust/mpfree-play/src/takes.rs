@@ -28,6 +28,12 @@
 //! locks (a lock set on a step, a step's locks going with it) undo and
 //! redo with its notes.
 //!
+//! A track added at the end of the project ([`Takes::add_track`]) is a
+//! take too, so UNDO takes it away again (with whatever it holds then,
+//! which redo puts back). Takes are undone last first, so the takes made
+//! on the new track are undone before it goes, and no take ever names a
+//! track that moved.
+//!
 //! A recorded note's pad pressure goes in with it ([`Takes::add_touched`]):
 //! into the clip's pressure first, which only ever grows, so undo and
 //! redo of the note need not touch it.
@@ -62,7 +68,9 @@
 
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
-use mpfree_seq::{touch_room, Clip, Lock, ModelError, Note, Project, Touch, TouchPoint};
+use mpfree_seq::{
+    touch_room, Clip, DestId, Lock, ModelError, Note, Project, Touch, TouchPoint, Track, MAX_TRACKS,
+};
 use mpfree_transport::time::Tick;
 
 use crate::recorded::Rec;
@@ -120,6 +128,10 @@ pub struct Take {
     /// empties the slot and keeps the clip as it was then; redo puts it
     /// back if the slot is still empty.
     pub made: Vec<(usize, usize, Clip)>,
+    /// Clips the take took out of their slots (ERASE + a clip), as
+    /// (track, slot, clip). Undo puts each back if its slot is still
+    /// empty; redo takes it out again.
+    pub removed: Vec<(usize, usize, Clip)>,
     /// Clips the take made longer or shorter, as (track, slot, from, to)
     /// in ticks (a page added or taken off).
     pub resized: Vec<(usize, usize, Tick, Tick)>,
@@ -130,6 +142,10 @@ pub struct Take {
     pub moves: Vec<MovePut>,
     /// Lanes an edit moved, as (track, slot, before and after).
     pub moves_edited: Vec<(usize, usize, MovesEdit)>,
+    /// A track the take added at the end of the project, as (its index,
+    /// the track). Undo takes it off the end, kept as it is then; redo
+    /// puts it back if the project is that long again.
+    pub track_added: Option<(usize, Track)>,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -380,6 +396,59 @@ impl Takes {
         Ok(take.number)
     }
 
+    /// ERASE + a clip (Jay after live test 3): take clip `slot` of
+    /// `track` out of its slot, as an edit of its own that undo puts back.
+    /// The edit's number. `BadSlot` if there is no clip there; nothing
+    /// changes then.
+    pub fn remove_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+    ) -> Result<u32, ModelError> {
+        let gone = slot_mut(project, track, slot)
+            .and_then(Option::take)
+            .ok_or(ModelError::BadSlot)?;
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            removed: vec![(track, slot, gone)],
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
+    /// A new empty track named `name` at the end of the project, as an
+    /// edit of its own. Its destination is the lowest one no track uses
+    /// (a new project's tracks use their own numbers). Its edit number and
+    /// index, or `TooManyTracks` at [`MAX_TRACKS`].
+    pub fn add_track(
+        &mut self,
+        project: &mut Project,
+        name: &str,
+    ) -> Result<(u32, usize), ModelError> {
+        if project.tracks.len() >= MAX_TRACKS {
+            return Err(ModelError::TooManyTracks);
+        }
+        let dest = (0..=MAX_TRACKS as DestId)
+            .find(|d| project.tracks.iter().all(|t| t.dest != *d))
+            .unwrap_or(project.tracks.len() as DestId);
+        let index = project.tracks.len();
+        let track = Track::new(name, dest);
+        project.tracks.push(track.clone());
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            track_added: Some((index, track)),
+            ..Take::default()
+        });
+        Ok((number, index))
+    }
+
     /// CAPTURE into a clip that holds notes already (the one that was
     /// playing): add `notes` to clip `slot` of `track`, as a take of its
     /// own, with their pressure: each note's `touch` names its run in
@@ -591,6 +660,20 @@ impl Takes {
                 *made = c;
             }
         }
+        for (track, slot, gone) in take.removed.iter().rev() {
+            // A slot filled meanwhile keeps its clip.
+            if let Some(s) = slot_mut(project, *track, *slot).filter(|s| s.is_none()) {
+                *s = Some(gone.clone());
+            }
+        }
+        if let Some((index, kept)) = &mut take.track_added {
+            // Kept as it is now (its name, its clips), for redo.
+            if project.tracks.len() == *index + 1 {
+                if let Some(t) = project.tracks.pop() {
+                    *kept = t;
+                }
+            }
+        }
         let n = take.number;
         self.undone.push(take);
         Some(n)
@@ -599,6 +682,17 @@ impl Takes {
     /// Redo the latest undone take. Its number, or None.
     pub fn redo(&mut self, project: &mut Project) -> Option<u32> {
         let mut take = self.undone.pop()?;
+        if let Some((index, t)) = &take.track_added {
+            if project.tracks.len() == *index {
+                project.tracks.push(t.clone());
+            }
+        }
+        for (track, slot, gone) in &mut take.removed {
+            // Kept as it is now, for the next undo.
+            if let Some(c) = slot_mut(project, *track, *slot).and_then(Option::take) {
+                *gone = c;
+            }
+        }
         for (track, slot, made) in &take.made {
             // A slot filled meanwhile keeps its clip.
             if let Some(s) = slot_mut(project, *track, *slot).filter(|s| s.is_none()) {
@@ -810,6 +904,41 @@ mod tests {
     }
 
     #[test]
+    fn an_added_track_undoes_after_its_own_takes_and_redoes_with_them() {
+        let mut p = project();
+        p.tracks.push(Track::new("t2", 1));
+        let mut t = Takes::default();
+        assert_eq!(t.add_track(&mut p, "Track 3"), Ok((1, 2)));
+        assert_eq!((p.tracks.len(), p.tracks[2].dest), (3, 2));
+        // A clip recorded on it, then its name changed (not a take).
+        let mut c = Clip::new("new", 3840);
+        c.notes.push(taken(0, 9).note);
+        p.tracks[2].slots[4] = Some(c);
+        p.tracks[2].name = "Keys".into();
+        t.remove_clip(&mut p, 2, 4).unwrap();
+        assert_eq!(t.undo(&mut p), Some(2), "the clip first");
+        assert!(p.tracks[2].slots[4].is_some());
+        assert_eq!(t.undo(&mut p), Some(1), "then the track");
+        assert_eq!(p.tracks.len(), 2);
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.tracks[2].name, "Keys", "back as it went");
+        assert!(p.tracks[2].slots[4].is_some());
+        // A destination no track uses: a gap is filled first.
+        p.tracks[0].dest = 7;
+        assert_eq!(t.add_track(&mut p, "Track 4").map(|r| r.1), Ok(3));
+        assert_eq!(p.tracks[3].dest, 0);
+        // 128 at most.
+        while p.tracks.len() < MAX_TRACKS {
+            t.add_track(&mut p, "more").unwrap();
+        }
+        assert_eq!(
+            t.add_track(&mut p, "one too many"),
+            Err(ModelError::TooManyTracks)
+        );
+        p.check().unwrap();
+    }
+
+    #[test]
     fn a_new_take_ends_redo() {
         let mut p = project();
         let mut t = Takes::default();
@@ -836,6 +965,28 @@ mod tests {
         assert_eq!(t.undo(&mut p), Some(2));
         assert_eq!(t.undo(&mut p), None);
         assert_eq!(ticks(&p), vec![100], "take 1 stays");
+    }
+
+    #[test]
+    fn a_removed_clip_comes_back_with_undo_and_goes_again_with_redo() {
+        let mut p = project();
+        let mut t = Takes::default();
+        t.add(&mut p, &taken(0, 1)).unwrap();
+        let before = p.clip(0, 0).cloned().unwrap();
+        assert_eq!(t.remove_clip(&mut p, 0, 0), Ok(1));
+        assert_eq!(p.clip(0, 0), None);
+        assert_eq!(t.remove_clip(&mut p, 0, 0), Err(ModelError::BadSlot));
+        assert_eq!(t.remove_clip(&mut p, 0, 5), Err(ModelError::BadSlot));
+        assert_eq!(t.done().len(), 2, "the removal is a take of its own");
+        assert!(t.done()[1].edited);
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(p.clip(0, 0), Some(&before), "back with its notes");
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.clip(0, 0), None);
+        // A slot filled meanwhile keeps its clip on undo.
+        p.tracks[0].slots[0] = Some(Clip::new("new", 3840));
+        t.undo(&mut p);
+        assert_eq!(p.clip(0, 0).unwrap().name, "new");
     }
 
     #[test]

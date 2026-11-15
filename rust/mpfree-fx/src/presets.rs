@@ -2,32 +2,19 @@
 //! [`presets`] by node id. A preset holds the values that differ from the
 //! node's defaults; the effect page keeps the Mix and Quality the effect
 //! has (a preset sets the sound, not how much of it is heard or what it
-//! costs). The DJ filter (one knob), Master safety (a safety stage) and
-//! Perform FX (its own pad banks) have none.
+//! costs). The DJ filter (one knob), Master safety (a safety stage),
+//! Perform FX (its own pad banks) and the Tuner (a meter) have none.
 
 use crate::ids::{
-    character, chorus, comb, compressor as comp, crush, delay, drive, eq, filter, flanger, phaser,
+    character, chorus, comb, compressor as comp, crush, delay, drive, ducker, eq, filter, flanger,
+    harmonizer as harm, phaser, pitch, pitch_correct as tune, transient,
 };
 use crate::Preset;
 
-/// An effect's factory presets by its node id (empty for one without).
+/// An effect's factory presets by its node id (empty for one without), as
+/// the [registry](crate::registry) lists them.
 pub fn presets(id: &str) -> &'static [Preset] {
-    match id {
-        "mpfree.fx.eq" => EQ,
-        "mpfree.fx.filter" => FILTER,
-        "mpfree.fx.drive" => DRIVE,
-        "mpfree.fx.comb" => COMB,
-        "mpfree.fx.crush" => CRUSH,
-        "mpfree.fx.delay" => DELAY,
-        "mpfree.fx.chorus" => CHORUS,
-        "mpfree.fx.flanger" => FLANGER,
-        "mpfree.fx.phaser" => PHASER,
-        "mpfree.fx.compressor" => COMPRESSOR,
-        "mpfree.fx.character" => CHARACTER,
-        "mpfree.fx.lofi" => crate::lofi::PRESETS,
-        "mpfree.fx.cloud" => crate::cloud::PRESETS,
-        _ => &[],
-    }
+    crate::registry::entry(id).map_or(&[], |e| e.presets)
 }
 
 // EQ band types and cut slopes (band 1 is a low shelf, band 4 a high
@@ -585,6 +572,9 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::RELEASE, 300.0),
             (comp::KNEE, 10.0),
             (comp::MAKEUP, 2.0),
+            // A bus compressor that follows the mix's body, not the kick.
+            (comp::SC_FILTER, 90.0),
+            (comp::DETECT, 1.0),
         ],
     },
     Preset {
@@ -607,6 +597,8 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::RELEASE, 120.0),
             (comp::KNEE, 8.0),
             (comp::MAKEUP, 5.0),
+            // Levels the phrase; consonants still come through.
+            (comp::DETECT, 1.0),
         ],
     },
     Preset {
@@ -675,6 +667,213 @@ pub static CHARACTER: &[Preset] = &[
         values: &[
             (character::MODE, character::SOFTEN),
             (character::AMOUNT, 50.0),
+        ],
+    },
+];
+
+// Ducker sources and rates.
+const TEMPO: f32 = 1.0;
+const R16: f32 = 0.0;
+const R8: f32 = 1.0;
+const R2: f32 = 3.0;
+
+/// Ducker: the kick pushing the bass and pads down, or a pump in time.
+pub static DUCKER: &[Preset] = &[
+    Preset {
+        name: "Kick duck",
+        values: &[
+            (ducker::DEPTH, 12.0),
+            (ducker::ATTACK, 1.0),
+            (ducker::HOLD, 10.0),
+            (ducker::RELEASE, 120.0),
+        ],
+    },
+    Preset {
+        name: "Big pump",
+        values: &[
+            (ducker::SOURCE, TEMPO),
+            (ducker::RELEASE, 350.0),
+            (ducker::SHAPE, 70.0),
+        ],
+    },
+    Preset {
+        name: "Eighth pulse",
+        values: &[
+            (ducker::SOURCE, TEMPO),
+            (ducker::RATE, R8),
+            (ducker::DEPTH, 20.0),
+            (ducker::HOLD, 0.0),
+            (ducker::RELEASE, 160.0),
+            (ducker::SHAPE, 30.0),
+        ],
+    },
+    Preset {
+        name: "Sixteenth gate",
+        values: &[
+            (ducker::SOURCE, TEMPO),
+            (ducker::RATE, R16),
+            (ducker::DEPTH, 36.0),
+            (ducker::ATTACK, 0.5),
+            (ducker::HOLD, 0.0),
+            (ducker::RELEASE, 90.0),
+            (ducker::SHAPE, 100.0),
+        ],
+    },
+    Preset {
+        name: "Slow swell",
+        values: &[
+            (ducker::SOURCE, TEMPO),
+            (ducker::RATE, R2),
+            (ducker::DEPTH, 24.0),
+            (ducker::ATTACK, 20.0),
+            (ducker::RELEASE, 1500.0),
+            (ducker::SHAPE, 0.0),
+        ],
+    },
+];
+
+/// Transient shaper: punch, softness and room on drums and plucks.
+pub static TRANSIENT: &[Preset] = &[
+    Preset {
+        name: "Punchy kick",
+        values: &[(transient::ATTACK, 80.0), (transient::SUSTAIN, -20.0)],
+    },
+    Preset {
+        name: "Snappy snare",
+        values: &[
+            (transient::ATTACK, 70.0),
+            (transient::SUSTAIN, 20.0),
+            (transient::SPEED, 8.0),
+        ],
+    },
+    Preset {
+        name: "Tight room",
+        values: &[(transient::ATTACK, 10.0), (transient::SUSTAIN, -70.0)],
+    },
+    Preset {
+        name: "Soft hits",
+        values: &[(transient::ATTACK, -60.0), (transient::SPEED, 30.0)],
+    },
+    Preset {
+        name: "Long tails",
+        values: &[
+            (transient::ATTACK, 0.0),
+            (transient::SUSTAIN, 70.0),
+            (transient::OUTPUT, -4.0),
+        ],
+    },
+];
+
+/// Pitch shifter: octaves, harmony and doubling.
+pub static PITCH: &[Preset] = &[
+    Preset {
+        name: "Octave down",
+        values: &[(pitch::PITCH, -12.0), (pitch::WINDOW, 80.0)],
+    },
+    Preset {
+        name: "Fifth up",
+        values: &[(pitch::PITCH, 7.0)],
+    },
+    Preset {
+        name: "Wide doubler",
+        values: &[
+            (pitch::PITCH, 0.0),
+            (pitch::SPREAD, 24.0),
+            (pitch::WINDOW, 30.0),
+        ],
+    },
+    Preset {
+        name: "Rising stairs",
+        values: &[(pitch::PITCH, 5.0), (pitch::FEEDBACK, 60.0)],
+    },
+    Preset {
+        name: "Chipmunk",
+        values: &[(pitch::PITCH, 19.0), (pitch::WINDOW, 25.0)],
+    },
+];
+
+// Pitch correct and Harmonizer scales and intervals (by their place in
+// `VOCAL_SCALES` and `VOCAL_INTERVALS`).
+const MAJOR: f32 = 1.0;
+const MINOR: f32 = 2.0;
+const MAJOR_PENTA: f32 = 4.0;
+const KEY_A: f32 = 9.0;
+const OFF: f32 = 0.0;
+const OCT_DOWN: f32 = 1.0;
+const FOURTH_DOWN: f32 = 4.0;
+const THIRD_DOWN: f32 = 5.0;
+const THIRD_UP: f32 = 7.0;
+const FIFTH_UP: f32 = 9.0;
+const OCT_UP: f32 = 11.0;
+
+/// Pitch correct: from a gentle nudge to the hard, stepped snap.
+pub static PITCH_CORRECT: &[Preset] = &[
+    Preset {
+        name: "Natural",
+        values: &[(tune::SPEED, 60.0), (tune::AMOUNT, 80.0)],
+    },
+    Preset {
+        name: "Hard tune",
+        values: &[(tune::SCALE, MAJOR), (tune::SPEED, 0.0)],
+    },
+    Preset {
+        name: "A minor snap",
+        values: &[(tune::KEY, KEY_A), (tune::SCALE, MINOR), (tune::SPEED, 5.0)],
+    },
+    Preset {
+        name: "Pentatonic glide",
+        values: &[(tune::SCALE, MAJOR_PENTA), (tune::SPEED, 120.0)],
+    },
+    Preset {
+        name: "Low voice",
+        values: &[(tune::RANGE, 0.0), (tune::SPEED, 40.0)],
+    },
+];
+
+/// Harmonizer: stacks that follow the key.
+pub static HARMONIZER: &[Preset] = &[
+    Preset {
+        name: "Third above",
+        values: &[
+            (harm::VOICE1, THIRD_UP),
+            (harm::LEVEL1, 80.0),
+            (harm::PAN1, 0.0),
+            (harm::VOICE2, OFF),
+        ],
+    },
+    Preset {
+        name: "Close harmony",
+        values: &[
+            (harm::VOICE1, THIRD_UP),
+            (harm::VOICE2, THIRD_DOWN),
+            (harm::GLIDE, 60.0),
+        ],
+    },
+    Preset {
+        name: "Octave stack",
+        values: &[
+            (harm::VOICE1, OCT_UP),
+            (harm::LEVEL1, 45.0),
+            (harm::PAN1, -20.0),
+            (harm::VOICE2, OCT_DOWN),
+            (harm::PAN2, 20.0),
+        ],
+    },
+    Preset {
+        name: "Wide fifths",
+        values: &[
+            (harm::VOICE1, FIFTH_UP),
+            (harm::PAN1, -80.0),
+            (harm::VOICE2, FOURTH_DOWN),
+            (harm::PAN2, 80.0),
+        ],
+    },
+    Preset {
+        name: "A minor thirds",
+        values: &[
+            (harm::KEY, KEY_A),
+            (harm::SCALE, MINOR),
+            (harm::VOICE2, OFF),
         ],
     },
 ];

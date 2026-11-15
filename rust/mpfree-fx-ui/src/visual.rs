@@ -17,10 +17,14 @@
 
 use crate::state::{FxState, Scratch};
 use mpfree_fx::ids::{
-    character, chorus, cloud, comb, compressor as comp, crush, delay, drive, eq, filter, flanger,
-    lofi, master, phaser,
+    character, chorus, cloud, comb, compressor as comp, crush, delay, drive, ducker, eq, filter,
+    flanger, harmonizer as harm, lofi, master, phaser, pitch, pitch_correct as tune, transient,
+    tuner,
 };
-use mpfree_fx::Cloud;
+use mpfree_fx::{
+    interval_semis, nearest_note, Cloud, Ducker, TransientShaper, DUCKER_RATE_BEATS, VOCAL_KEYS,
+};
+use mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_synth_ui::format::value_text;
 use mpfree_synth_ui::widgets::{Card, CardNode, Trace, QLINK_COLORS};
 use mpfree_ui::{Color, Theme};
@@ -60,6 +64,12 @@ pub fn has_visuals(id: &str) -> bool {
             | "mpfree.fx.cloud"
             | "mpfree.fx.master_safety"
             | "mpfree.fx.character"
+            | "mpfree.fx.ducker"
+            | "mpfree.fx.transient"
+            | "mpfree.fx.pitch"
+            | "mpfree.fx.pitch_correct"
+            | "mpfree.fx.harmonizer"
+            | "mpfree.fx.tuner"
     )
 }
 
@@ -527,10 +537,62 @@ pub fn strip(
         Scratch::None => match st.info.id {
             "mpfree.fx.crush" => crush_card(&mut s, st, page, t),
             "mpfree.fx.cloud" => cloud_cards(&mut s, st, page, t),
+            "mpfree.fx.ducker" => ducker_card(&mut s, st, page, t),
+            "mpfree.fx.transient" => transient_card(&mut s, st, page, t),
+            "mpfree.fx.pitch" => pitch_card(&mut s, st, page, t),
+            "mpfree.fx.pitch_correct" => tune_card(&mut s, st, page, t),
+            "mpfree.fx.harmonizer" => harmony_card(&mut s, st, page, t),
+            "mpfree.fx.tuner" => tuner_card(&mut s, st, page, t),
             _ => {}
         },
     }
+    if let Some(levels) = st.levels {
+        levels_card(&mut s, st, page, levels, t);
+    }
     s
+}
+
+/// The meters every effect gets while its host watches it: the input and
+/// output peaks (-60 to 0 dBFS), and the effect's own gain meter where it
+/// has one (its first read-only parameter in dB: the compressor's
+/// reduction, the ducker's gain), as bars.
+fn levels_card(s: &mut Strip, st: &FxState, page: &str, (inp, out): (f32, f32), t: &Theme) {
+    let bar = |db: f32| ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+    let db_text = |db: f32| {
+        if db <= -60.0 {
+            "-inf".to_string()
+        } else {
+            format!("{db:.1}")
+        }
+    };
+    let mut bars = vec![bar(inp), bar(out)];
+    let mut bar_colors = vec![t.accent, t.good];
+    let mut bar_labels = vec!["In".to_string(), "Out".to_string()];
+    let mut caption = format!("in {} · out {} dB", db_text(inp), db_text(out));
+    let own = st
+        .params
+        .iter()
+        .zip(&st.values)
+        .find(|(p, _)| p.readonly && p.unit == mpfree_node::Unit::Db);
+    if let Some((p, &v)) = own {
+        let reach = p.min.abs().max(p.max.abs()).max(1.0);
+        bars.push((v.abs() / reach).clamp(0.0, 1.0));
+        bar_colors.push(t.warn);
+        bar_labels.push(p.name.to_string());
+        caption += &format!(" · {} {v:.1}", p.name.to_lowercase());
+    }
+    s.push(
+        Card {
+            title: "Levels".into(),
+            caption,
+            bars,
+            bar_colors,
+            bar_labels,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
 }
 
 /// An LFO's rate as a page writes it: the synced length or the Hz.
@@ -776,6 +838,17 @@ fn comp_cards(s: &mut Strip, st: &FxState, page: &str, c: &mpfree_fx::Compressor
         trim_num(st.value(comp::RATIO)),
         text(st, comp::KNEE)
     );
+    // The detector, when it isn't plain peak on the full band.
+    if st.value(comp::DETECT) >= 0.5 {
+        caption += " · RMS";
+    }
+    let sc = st.value(comp::SC_FILTER);
+    if st
+        .index(comp::SC_FILTER)
+        .is_some_and(|i| sc > st.params[i].min)
+    {
+        caption += &format!(" · SC from {}", hz_text(sc));
+    }
     if now < -0.05 {
         caption += &format!(" · now {now:.1} dB");
     }
@@ -1022,6 +1095,445 @@ fn character_cards(s: &mut Strip, st: &FxState, page: &str, c: &mpfree_fx::Chara
                 ),
             ],
             midline: true,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// A fresh copy of the effect `st` shows, running at `rate`, with the
+/// page's values: for the drawings that are the effect itself played
+/// on a test signal.
+fn copy_of(st: &FxState, mut n: Box<dyn Node>, rate: u32) -> Box<dyn Node> {
+    n.prepare(rate, MAX_BLOCK);
+    for (p, &v) in st.params.iter().zip(&st.values) {
+        if !p.readonly {
+            n.set_param(p.id, v);
+        }
+    }
+    n.reset();
+    n
+}
+
+/// Plays `input` (on both sides) through `n` from frame 0, stopped at
+/// `bpm`, with `key` as the sidechain: the left side out.
+fn play(n: &mut dyn Node, rate: u32, bpm: f64, input: &[f32], key: Option<&[f32]>) -> Vec<f32> {
+    let (mut l, mut r) = (input.to_vec(), input.to_vec());
+    let mut at = 0;
+    while at < l.len() {
+        let end = (at + MAX_BLOCK).min(l.len());
+        let ctx = Ctx {
+            bpm,
+            sidechain: key.map(|k| (&k[at..end], &k[at..end])),
+            ..Ctx::new(rate, at as u64)
+        };
+        n.process(&ctx, &[], &mut l[at..end], &mut r[at..end]);
+        at = end;
+    }
+    l
+}
+
+/// `x` cut into `N` stretches, each folded to one value by `f`.
+fn buckets(x: &[f32], f: impl Fn(f32, f32) -> f32, start: f32) -> Vec<f32> {
+    (0..N)
+        .map(|k| {
+            let (a, b) = (
+                k * x.len() / N,
+                ((k + 1) * x.len() / N).max(k * x.len() / N + 1),
+            );
+            x[a.min(x.len() - 1)..b.min(x.len())]
+                .iter()
+                .fold(start, |m, &v| f(m, v))
+        })
+        .collect()
+}
+
+/// A rate that plays `ms` in about 4000 frames: the drawing's 180 points
+/// need no more, and the page redraws on every turn of a knob.
+fn draw_rate(ms: f32) -> u32 {
+    (4_000_000.0 / ms.max(1.0)).clamp(1_000.0, 48_000.0) as u32
+}
+
+/// The Ducker: its gain over time, played on a steady signal. On Tempo,
+/// two cycles of the Rate at the song's tempo (a trigger at each line); on
+/// Sidechain, one 10 ms key 6 dB over full scale (the dashed pulse), until
+/// the duck has come back.
+fn ducker_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let tempo = v(ducker::SOURCE) >= 0.5;
+    let bpm = if st.bpm > 0.0 { st.bpm } else { 120.0 };
+    let (att, hold, rel) = (v(ducker::ATTACK), v(ducker::HOLD), v(ducker::RELEASE));
+    let rates = DUCKER_RATE_BEATS.len() - 1;
+    let beats = DUCKER_RATE_BEATS[(v(ducker::RATE).max(0.0) as usize).min(rates)];
+    let lead = 0.1 * (att + hold + rel);
+    // The duck played over `span` ms: the gain out, and the key in.
+    let render = |span: f32| {
+        let rate = draw_rate(span);
+        let frames = (span * 0.001 * rate as f32).ceil().max(2.0) as usize;
+        let at = (lead * 0.001 * rate as f32) as usize;
+        let key: Vec<f32> = (0..frames)
+            .map(|i| (i >= at && i < at + rate as usize / 100) as u8 as f32 * 2.0)
+            .collect();
+        let mut n = copy_of(st, Box::new(Ducker::new()), rate);
+        let ones = vec![1.0f32; frames];
+        (
+            play(n.as_mut(), rate, bpm, &ones, (!tempo).then_some(&key[..])),
+            rate,
+        )
+    };
+    let span = if tempo {
+        2.0 * (beats * 60_000.0 / bpm) as f32
+    } else {
+        // Long enough for the key to fall back under the threshold and the
+        // release to finish, then cut to where the gain is back.
+        let most = lead + 300.0 + 1.2 * (att + hold + rel);
+        let (out, rate) = render(most);
+        let back = out.iter().rposition(|&g| g < 0.99).unwrap_or(0);
+        (1.1 * back as f32 * 1000.0 / rate as f32).clamp(3.0 * lead + 1.0, most)
+    };
+    let (out, _) = render(span);
+    let lo = -(v(ducker::DEPTH).max(12.0) * 1.1);
+    let gain: Vec<(f32, f32)> = buckets(&out, f32::min, f32::MAX)
+        .into_iter()
+        .enumerate()
+        .map(|(k, g)| {
+            let db = 20.0 * g.max(1e-6).log10();
+            (k as f32 / (N - 1) as f32, 0.12 + 0.8 * y_db(db, lo, 0.0))
+        })
+        .collect();
+    let mut traces = Vec::new();
+    let mut grid = Vec::new();
+    if tempo {
+        grid = vec![(0.0, text(st, ducker::RATE)), (0.5, String::new())];
+    } else {
+        let (a, b) = (lead / span, ((lead + 10.0) / span).min(1.0));
+        traces.push(dashed(
+            vec![
+                (0.0, 0.04),
+                (a, 0.04),
+                (a, 0.1),
+                (b, 0.1),
+                (b, 0.04),
+                (1.0, 0.04),
+            ],
+            t.text_faint,
+        ));
+    }
+    traces.push(line(gain, t.good));
+    let trigger = if tempo {
+        format!("every {}", text(st, ducker::RATE))
+    } else {
+        format!("key over {}", text(st, ducker::THRESHOLD))
+    };
+    s.push(
+        Card {
+            title: "Pump".into(),
+            caption: format!(
+                "{trigger} · {} down · release {}",
+                text(st, ducker::DEPTH),
+                ms_text(rel)
+            ),
+            traces,
+            grid,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The Transient shaper: a drum hit's level over 400 ms (dashed) and what
+/// the shaper makes of it (the line), played through a copy of it.
+fn transient_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    const SPAN: f32 = 400.0;
+    let rate = draw_rate(SPAN).max(8_000);
+    let frames = (SPAN * 0.001 * rate as f32) as usize;
+    let lead = rate as usize / 50;
+    // A hit: a fast crack and a slower room tail, on noise.
+    let mut seed = 0x2545_f491_u32;
+    let hit: Vec<f32> = (0..frames)
+        .map(|i| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0;
+            if i < lead {
+                return 0.0;
+            }
+            let ms = (i - lead) as f32 * 1000.0 / rate as f32;
+            0.5 * noise * ((-ms / 25.0).exp() + 0.12 * (-ms / 150.0).exp())
+        })
+        .collect();
+    let mut n = copy_of(st, Box::new(TransientShaper::new()), rate);
+    let out = play(n.as_mut(), rate, st.bpm, &hit, None);
+    let env = |x: &[f32]| -> Vec<(f32, f32)> {
+        buckets(x, |m, v| m.max(v.abs()), 0.0)
+            .into_iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let db = 20.0 * p.max(1e-6).log10();
+                (k as f32 / (N - 1) as f32, y_db(db, -54.0, 6.0))
+            })
+            .collect()
+    };
+    s.push(
+        Card {
+            title: "Hit".into(),
+            caption: format!(
+                "attack {} · sustain {} · speed {}",
+                text(st, transient::ATTACK),
+                text(st, transient::SUSTAIN),
+                text(st, transient::SPEED)
+            ),
+            traces: vec![dashed(env(&hit), t.text_faint), line(env(&out), t.accent)],
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The Pitch shifter: where the sound goes, from two octaves down to two
+/// up (octaves dashed). The dry note is the middle line; the shifted one
+/// comes in after half a window, and with feedback each pass is shifted
+/// again, fainter, half a window later (the stairs), while it stays in
+/// range and over -30 dB.
+fn pitch_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let shift = v(pitch::PITCH) + v(pitch::FINE) / 100.0;
+    let win = v(pitch::WINDOW);
+    let fb = v(pitch::FEEDBACK) / 100.0;
+    let span = 5.0 * win;
+    let y = |semis: f32| 0.5 + semis / 52.0;
+    let mut traces: Vec<Trace> = [-24.0, -12.0, 12.0, 24.0]
+        .iter()
+        .map(|&o| dashed(vec![(0.0, y(o)), (1.0, y(o))], t.text_faint))
+        .collect();
+    traces.push(line(vec![(0.0, y(0.0)), (1.0, y(0.0))], t.text_faint));
+    let mut level = 1.0f32;
+    for k in 1..=8 {
+        let at = (k as f32 * 0.5 * win / span).min(1.0);
+        let semis = k as f32 * shift;
+        if at >= 1.0 || semis.abs() > 24.5 || level < 0.03 {
+            break;
+        }
+        let first = k == 1;
+        traces.push(Trace {
+            width: if first { 3.0 } else { 2.0 },
+            ..line(
+                vec![(at, y(semis)), (1.0, y(semis))],
+                if first { t.accent } else { t.good },
+            )
+        });
+        level *= fb;
+    }
+    let mut caption = format!("{} · {} window", text(st, pitch::PITCH), ms_text(win));
+    if v(pitch::FINE).abs() >= 0.5 {
+        caption += &format!(" · fine {}", text(st, pitch::FINE));
+    }
+    if v(pitch::SPREAD) >= 0.5 {
+        caption += &format!(" · spread {}", text(st, pitch::SPREAD));
+    }
+    if fb > 0.005 {
+        caption += &format!(" · feedback {}", text(st, pitch::FEEDBACK));
+    }
+    s.push(
+        Card {
+            title: "Shift".into(),
+            caption,
+            traces,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The key's notes across one octave from its tonic, as grid lines: each
+/// note of the scale, named when the scale has seven or fewer (else the
+/// tonic alone), so a page shows which notes it will sing.
+fn scale_grid(key: usize, scale: usize) -> Vec<(f32, String)> {
+    let notes: Vec<i32> = (0..12)
+        .filter(|&k| nearest_note((60 + key as i32 + k) as f32, key, scale) == 60 + key as i32 + k)
+        .collect();
+    let named = notes.len() <= 7;
+    notes
+        .iter()
+        .map(|&k| {
+            let name = if named || k == 0 {
+                VOCAL_KEYS[(key + k as usize) % 12].to_string()
+            } else {
+                String::new()
+            };
+            ((k as f32 + 0.5) / 12.0, name)
+        })
+        .collect()
+}
+
+/// The note sung, as an x across the octave from the key (None while
+/// unvoiced), from the effect's Note meter.
+fn sung_x(st: &FxState, note_id: u16, key: usize) -> Option<f32> {
+    let note = st.value(note_id);
+    (note >= 1.0).then(|| (((note as i32 - key as i32).rem_euclid(12)) as f32 + 0.5) / 12.0)
+}
+
+/// Pitch correct: the note sung (across, one octave from the key) against
+/// the note heard (up): stairs on the scale's notes at full Amount, a
+/// slope part way to them below it, and the dashed line where nothing
+/// would change. The dot is the note being sung now.
+fn tune_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let (key, scale) = (v(tune::KEY) as usize, v(tune::SCALE) as usize);
+    let amount = v(tune::AMOUNT) / 100.0;
+    let base = 60.0 + key as f32;
+    // Up the card: half a semitone under the tonic to half over the octave.
+    let y = |midi: f32| ((midi - base + 0.5) / 13.0).clamp(0.0, 1.0);
+    let pts: Vec<(f32, f32)> = (0..=N)
+        .map(|k| {
+            let x = k as f32 / N as f32;
+            let sung = base - 0.5 + 12.0 * x;
+            let to = nearest_note(sung, key, scale) as f32;
+            (x, y(sung + amount * (to - sung)))
+        })
+        .collect();
+    let even = vec![(0.0, y(base - 0.5)), (1.0, y(base + 11.5))];
+    let mut caption = format!(
+        "{} {} · {} · {}",
+        text(st, tune::KEY),
+        text(st, tune::SCALE),
+        if v(tune::SPEED) < 0.5 {
+            "snap".to_string()
+        } else {
+            ms_text(v(tune::SPEED))
+        },
+        text(st, tune::AMOUNT)
+    );
+    if v(tune::NOTE) >= 1.0 {
+        caption += &format!(" · {} {:+.0} c", text(st, tune::NOTE), v(tune::CORRECTION));
+    }
+    s.push(
+        Card {
+            title: "Tune".into(),
+            caption,
+            traces: vec![line(pts, t.accent), dashed(even, t.text_faint)],
+            grid: scale_grid(key, scale),
+            dot: sung_x(st, tune::NOTE, key),
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The Harmonizer: for each note sung across the octave from the key, how
+/// far up or down each voice sings (an octave either way, unison in the
+/// middle, dashed), in its Q-Link's colour, faint while its level is
+/// down. A 3rd up steps between major and minor as the key has it. The
+/// dot is the note being sung now.
+fn harmony_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let (key, scale) = (v(harm::KEY) as usize, v(harm::SCALE) as usize);
+    let y = |semis: f32| 0.5 + semis / 26.0;
+    let mut traces = Vec::new();
+    let mut names = Vec::new();
+    let voices = [
+        (harm::VOICE1, harm::LEVEL1, QLINK_COLORS[0]),
+        (harm::VOICE2, harm::LEVEL2, QLINK_COLORS[2]),
+    ];
+    for (pick, level, color) in voices {
+        let k = v(pick) as usize;
+        let mut pts = Vec::new();
+        for n in 0..12 {
+            let sung = 60 + key as i32 + n;
+            // The shift the voice makes on this note (from the note of the
+            // scale nearest it), flat across its twelfth of the card.
+            let Some(semis) = interval_semis(k, nearest_note(sung as f32, key, scale), key, scale)
+            else {
+                break;
+            };
+            pts.push((n as f32 / 12.0, y(semis as f32)));
+            pts.push(((n + 1) as f32 / 12.0, y(semis as f32)));
+        }
+        if pts.is_empty() {
+            continue;
+        }
+        let color = if v(level) < 0.5 { t.text_faint } else { color };
+        traces.push(line(pts, color));
+        names.push(text(st, pick));
+    }
+    traces.push(dashed(vec![(0.0, y(0.0)), (1.0, y(0.0))], t.text_faint));
+    traces.extend(
+        [-12.0, 12.0]
+            .iter()
+            .map(|&o| dashed(vec![(0.0, y(o)), (1.0, y(o))], t.text_faint)),
+    );
+    let mut caption = format!("{} {}", text(st, harm::KEY), text(st, harm::SCALE));
+    if names.is_empty() {
+        caption += " · no voices";
+    } else {
+        caption += &format!(" · {}", names.join(" · "));
+    }
+    if v(harm::NOTE) >= 1.0 {
+        caption += &format!(" · {}", text(st, harm::NOTE));
+    }
+    s.push(
+        Card {
+            title: "Voices".into(),
+            caption,
+            traces,
+            grid: scale_grid(key, scale),
+            dot: sung_x(st, harm::NOTE, key),
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The Tuner: a needle across -50 to +50 cents, green within 3 cents of
+/// the note, amber within 15 and red past that, over the in-tune middle
+/// (dashed); no needle while nothing is heard.
+fn tuner_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let x = |cents: f32| (0.5 + cents / 100.0).clamp(0.0, 1.0);
+    let mut traces = vec![dashed(vec![(0.5, 0.0), (0.5, 1.0)], t.text_faint)];
+    let reference = format!("A = {}", trim_num(v(tuner::REFERENCE)));
+    let caption = if v(tuner::NOTE) >= 1.0 {
+        let cents = v(tuner::CENTS);
+        let color = match cents.abs() {
+            c if c < 3.0 => t.good,
+            c if c < 15.0 => t.warn,
+            _ => t.bad,
+        };
+        traces.push(Trace {
+            width: 5.0,
+            ..line(vec![(x(cents), 0.12), (x(cents), 0.88)], color)
+        });
+        format!(
+            "{} · {:+.1} c · {:.2} Hz · {reference}",
+            text(st, tuner::NOTE),
+            cents,
+            v(tuner::HZ)
+        )
+    } else {
+        format!("Play a note · {reference}")
+    };
+    let grid = [-40.0, -20.0, 0.0, 20.0, 40.0]
+        .iter()
+        .map(|&c| {
+            let label = if c == 0.0 {
+                "0".to_string()
+            } else {
+                format!("{c:+.0}")
+            };
+            (x(c), label)
+        })
+        .collect();
+    s.push(
+        Card {
+            title: "Tuner".into(),
+            caption,
+            traces,
+            grid,
             active: true,
             ..Card::default()
         },

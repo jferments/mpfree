@@ -885,6 +885,17 @@ pub struct LoopHost {
     saved: Option<Saved>,
     /// Saves started again because a loop changed while it was read.
     pub save_restarts: u64,
+    /// An open or New project ([`LoopHost::clear_all`]): every loop is to
+    /// be cleared once the command queue has room for it.
+    clear_next: bool,
+    /// The loops are fading out for an open; the project's loops go in
+    /// once every one is empty.
+    emptying: bool,
+    /// An opened project's loops, waiting for the loops to empty.
+    incoming: Option<Saved>,
+    /// Periods to run before the loops can be seen empty: the clears
+    /// queued apply with the next period.
+    settle: u8,
     /// The loop the last pick asked for: commands queued after it act on
     /// it ([`LoopHost::toggle_mute`] picks it back).
     picked: usize,
@@ -970,7 +981,8 @@ impl Printer {
         let spawned = std::thread::Builder::new()
             .name("mpfree-print".into())
             .spawn(move || {
-                let _ = crate::cores::background(); // off the sound's cores and priority
+                // Off the sound's cores and priority, and after the screen.
+                mpfree_lanes::os::idle_job();
                 for m in jobs {
                     let reply = match m {
                         ToPrinter::Buffer(n) => FromPrinter::Buffer(Vec::with_capacity(n)),
@@ -1184,6 +1196,10 @@ impl LoopHost {
             saving: None,
             saved: None,
             save_restarts: 0,
+            clear_next: false,
+            emptying: false,
+            incoming: None,
+            settle: 0,
             steps_left: 0,
             picked: 0,
         }
@@ -1198,8 +1214,6 @@ impl LoopHost {
     /// (`mpfree_looper::save::to_text`, each layer naming its file) and a
     /// WAV a layer (`save::wav`). Allocates only the list of loops, here
     /// and when it starts again.
-    // The project browser calls this (not wired into the app yet).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn save(&mut self) -> String {
         if self.printer.tx.is_none() {
             return "looper: cannot save, the worker did not start".into();
@@ -1215,8 +1229,6 @@ impl LoopHost {
     }
 
     /// How far the save is, 0 to 1 (0 while it waits for a loop).
-    // The project browser calls this (not wired into the app yet).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn saving(&self) -> Option<f32> {
         match self.saving.as_ref()? {
             Saving::Reading {
@@ -1240,10 +1252,90 @@ impl LoopHost {
     }
 
     /// The save, once done: drop it away from the audio loop.
-    // The project browser calls this (not wired into the app yet).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn take_saved(&mut self) -> Option<Saved> {
         self.saved.take()
+    }
+
+    /// A save under way stops, and one done but not taken is dropped (a
+    /// project opening while the save of another goes on). Does not
+    /// allocate.
+    pub fn cancel_save(&mut self) {
+        if let Some(s) = self.saved.take() {
+            self.printer.send(ToPrinter::DropSaved(s));
+        }
+        if let Some(Saving::Reading { saved, .. }) = self.saving.take() {
+            self.printer.send(ToPrinter::DropSaved(saved));
+        }
+    }
+
+    /// Loops taken from a save that is not going ahead, dropped on the
+    /// worker rather than here.
+    pub fn drop_saved(&self, s: Saved) {
+        self.printer.send(ToPrinter::DropSaved(s));
+    }
+
+    /// An open or New project: a save under way stops, and every loop
+    /// fades out and is forgotten (as Clear does), from the next periods.
+    /// The project's loops, if it has any, come with [`LoopHost::open`]
+    /// and go in once every loop is empty ([`LoopHost::tend_open`]).
+    pub fn clear_all(&mut self) -> String {
+        self.cancel_save();
+        if let Some(s) = self.incoming.take() {
+            self.printer.send(ToPrinter::DropSaved(s));
+        }
+        self.steps_left = 0;
+        self.clear_next = true;
+        self.emptying = true;
+        self.tend_open();
+        "looper: every loop fades out for the project".into()
+    }
+
+    /// An opened project's loops: they go in once every loop is empty.
+    pub fn open(&mut self, saved: Saved) {
+        if let Some(s) = self.incoming.replace(saved) {
+            self.printer.send(ToPrinter::DropSaved(s));
+        }
+    }
+
+    /// Whether an open's loops are still going out or coming in.
+    pub fn opening(&self) -> bool {
+        self.clear_next || self.emptying || self.incoming.is_some()
+    }
+
+    /// Between periods while [`LoopHost::opening`]: the clears once the
+    /// queue has room, then the project's loops once every loop is empty.
+    /// Returns a line for the log when they go in.
+    pub fn tend_open(&mut self) -> Option<String> {
+        if self.clear_next {
+            if self.looper.room() < 2 * MAX_LOOPS + 1 {
+                return None;
+            }
+            for n in 0..MAX_LOOPS {
+                self.looper.select_loop(n);
+                self.looper.command(Command::Clear);
+            }
+            self.looper.select_loop(0);
+            self.picked = 0;
+            self.clear_next = false;
+            // The clears apply with the next period: a load before then
+            // would be cleared with them.
+            self.settle = 2;
+            return None;
+        }
+        if self.settle > 0 {
+            return None;
+        }
+        let empty = (0..MAX_LOOPS).all(|n| {
+            self.looper
+                .loop_status(n)
+                .is_some_and(|s| s.phase == Phase::Empty && s.loading.is_none())
+        });
+        if !empty {
+            return None;
+        }
+        self.emptying = false;
+        let saved = self.incoming.take()?;
+        Some(self.load(saved))
     }
 
     /// Load saved loops (`save::from_text`, each layer's audio from its
@@ -1251,8 +1343,6 @@ impl LoopHost {
     /// from, which must be empty: each copies in while silent, then fades
     /// in, in time with the song. A loop that is not empty keeps what it
     /// has (its saved one is dropped on the worker).
-    // The project browser calls this (not wired into the app yet).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn load(&mut self, saved: Saved) -> String {
         let (mut done, mut kept) = (Vec::new(), Vec::new());
         for (n, f) in saved.loops {
@@ -1728,6 +1818,7 @@ impl LoopHost {
         }
         self.out.fill(0.0);
         self.looper.process(block, &self.input, &mut self.out);
+        self.settle = self.settle.saturating_sub(1);
         if let Some(span) = block.spans().last() {
             self.printer.tend(&mut self.looper, span.bpm);
         }
@@ -2579,6 +2670,48 @@ mod tests {
             .map(|i| (a[i] - c[i]).abs())
             .fold(0.0, f32::max);
         assert!(worst < 1e-5, "differs by {worst}");
+    }
+
+    #[test]
+    fn an_open_clears_every_loop_then_its_loops_go_in() {
+        let (mut h, mut t, mut b) = saving_host();
+        h.save();
+        let saved = saved_from(&mut h, &mut t, &mut b);
+        // Loop 3 armed too: an open clears it as well.
+        h.select(2);
+        h.command(Command::Record);
+        run_host(&mut h, &mut t, &mut b, 2);
+        assert_eq!(h.looper.loop_status(2).unwrap().phase, Phase::Armed);
+        // A save under way stops.
+        h.save();
+        assert!(h.clear_all().starts_with("looper: every loop fades out"));
+        assert!(h.saving().is_none() && h.opening());
+        h.open(saved.clone());
+        // Nothing goes in while loop 1 fades out.
+        assert_eq!(h.tend_open(), None);
+        let start = std::time::Instant::now();
+        let line = loop {
+            run_host(&mut h, &mut t, &mut b, 1);
+            if let Some(line) = h.tend_open() {
+                break line;
+            }
+            assert!(start.elapsed().as_secs() < 60, "the loops never went in");
+        };
+        assert!(line.starts_with("looper: loading loops 1"), "{line}");
+        assert!(!h.opening());
+        assert_eq!(h.looper.loop_status(2).unwrap().phase, Phase::Empty);
+        run_host(&mut h, &mut t, &mut b, 400);
+        let s = h.looper.loop_status(0).unwrap();
+        assert_eq!((s.phase, s.layers), (Phase::Playing, 2));
+        // New project: cleared, and nothing comes in.
+        h.clear_all();
+        let start = std::time::Instant::now();
+        while h.opening() {
+            run_host(&mut h, &mut t, &mut b, 1);
+            assert_eq!(h.tend_open(), None);
+            assert!(start.elapsed().as_secs() < 60);
+        }
+        assert!((0..MAX_LOOPS).all(|n| h.looper.loop_status(n).unwrap().phase == Phase::Empty));
     }
 
     #[test]

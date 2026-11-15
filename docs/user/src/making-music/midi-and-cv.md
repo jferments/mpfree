@@ -1,14 +1,14 @@
 <!--
 status: changing
 covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/cv_out.rs
-checked: 2026-11-12 870b4ce
+checked: 2026-11-14 b76c3c7
 -->
 
 # Playing other gear: MIDI, sync and CV
 
 The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too. Playing gear from **MIDI OUT** and the CV outputs stay off until they've been checked on an MPC One. This page says what each will do, so you can plan your setup.
 
-All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon beside the mixer icon, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. For now these settings last until MPFree quits; saving them with the project is coming.
+All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon at the right end of the top bar, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. Each port's input and thru describe your gear, so they stay the same for every project: MPFree keeps them when it quits and puts them back at the next start (with a data folder on the stick). Everything else (what each track plays on, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the song: it is saved with the project and comes back when you open it, and a new project starts from the defaults.
 
 ## Playing MPFree from a keyboard
 
@@ -45,8 +45,8 @@ MPFree can also send its own clock from **MIDI OUT**, so a drum machine or an ar
 
 MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn an effect's knob.
 
-1. Open the effect in the [chain editor](mixing-and-effects.md#the-chain-editor) and touch the knob.
-2. Tap **Learn to a Q-Link**. It now reads **Turn a Q-Link or a MIDI control**.
+1. Open the effect in the [chain editor](effects.md#adding-an-effect-the-chain-editor) and touch the knob.
+2. Tap **Learn** in the **Modulate** row under the page. It now reads **Turn a Q-Link**, and the line under the knob's name says it is learning.
 3. Move the control on your keyboard. From now on it turns that knob, as far up and down as the knob goes. (Turn a Q-Link instead, and the Q-Link learns it, as before.)
 
 The move that teaches a control doesn't play a note, and neither does a learned control. Teach a control again and it moves to the new knob.
@@ -60,7 +60,7 @@ Each learned control is listed in the mixer's I/O view, under **MIDI** and then 
 
 Tap **Forget** to take a learned control off. A row in amber says why its control does nothing: the device isn't plugged in, or its port is set to **Plays tracks**, which keeps every message for playing. A port set to **Learn only** turns knobs but plays no notes.
 
-Still to come: keeping learned controls with the project (for now they last until MPFree quits), learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
+Learned controls are saved with the project. Still to come: learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
 
 ## CV and gate
 
@@ -80,4 +80,13 @@ CV 1 to 4 will work first, once MPFree has been checked on an MPC One with a met
 
 ## Seeing what comes in and goes out
 
-With **Show developer tools** on in [Prefs](../reference/prefs.md), the Dev tab's MIDI page lists every message in, from the MPC's own pads, knobs and buttons, from **MIDI IN** and from USB keyboards. Clock from another device is counted rather than listed: the page says when it starts and stops arriving.
+The mixer's I/O view has a **Monitor** section: open the mixer with the I/O icon and pick **Monitor** in the list on the left. It changes no setting; it shows every MIDI message going in and out of the 5-pin jacks and USB devices as it happens.
+
+- **The lights.** Each port has a row with a light for each of the 16 channels: the upper half lights green when something comes in on that channel, the lower half blue when something goes out. The last column shows the tempo of any clock coming in or going out.
+- **The list,** newest at the top: when it happened, the port and which way (*in* or *out*, the outgoing ones in blue), the channel, the message in words (*Note on · C3 · vel 100*, *CC 1 Mod wheel · 64*, *Program 5*) and its bytes. Clock, active sensing and time code arrive many times a second, so they are counted rather than listed: one line when each starts and one when it stops. A SysEx message is one line with its length and, for well-known makers, the maker's name.
+- **Picking what is listed.** The chips along the top switch each kind of message on and off (Notes, CC, Program, Bend & pressure, Clock, SysEx) and each way (In, Out). Tap a channel's light to list only that port, way and channel, or a port's name to list only that port and way; tap it again to list everything.
+- **Looking back.** Turn the data wheel (or use the page arrows) to scroll back; the list holds still while you look. Scroll back to the top and it follows again. **Hold** stops the list until you tap it again, and **Clear** empties it.
+
+If the section says the monitor isn't connected to the ports yet, this build doesn't feed it, and the Dev tab's MIDI page below is the place to look.
+
+The Monitor shows the external ports only. With **Show developer tools** on in [Prefs](../reference/prefs.md), the Dev tab's MIDI page lists every message in at a lower level, the MPC's own pads, knobs and buttons included. Clock from another device is counted rather than listed there too.

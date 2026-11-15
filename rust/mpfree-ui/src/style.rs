@@ -20,7 +20,12 @@
 use crate::canvas::{Canvas, Image};
 use crate::color::Color;
 use crate::geom::Rect;
+use crate::shape::Shape;
 use crate::theme::{Backdrop, Corners, Theme};
+
+/// How far a glowing theme's halo reaches outside a stroked outline, in
+/// pixels ([`Styled`]'s `stroke_round_rect`).
+pub(crate) const GLOW_REACH: i32 = 3;
 
 pub struct Styled<'a> {
     pub inner: &'a mut dyn Canvas,
@@ -194,8 +199,9 @@ impl Canvas for Styled<'_> {
     fn stroke_round_rect(&mut self, r: Rect, radius: i32, width: i32, c: Color) {
         let g = self.theme.glow as u32;
         if g > 0 && c.a > 0 {
-            // A halo: three outlines outside the line, fading out.
-            for (i, k) in [(1, 90u32), (2, 50), (3, 24)] {
+            // A halo: three outlines outside the line, fading out, reaching
+            // GLOW_REACH pixels.
+            for (i, k) in [(1, 90u32), (2, 50), (GLOW_REACH, 24)] {
                 let a = (c.a as u32 * g * k / (255 * 100)) as u8;
                 if a > 0 {
                     let rr = r.inset(-i);
@@ -257,6 +263,21 @@ impl Canvas for Styled<'_> {
 
     fn draw_image(&mut self, x: i32, y: i32, img: &Image) {
         self.inner.draw_image(x, y, img)
+    }
+
+    fn blend_shape(&mut self, shape: &Shape, c: Color) {
+        let r = shape.r;
+        if r.is_empty() {
+            return;
+        }
+        if self.theme.text_glow > 0 {
+            // The glow is worked out from the pixels, so it goes the way
+            // masks go (as these shapes did when they were masks).
+            let cov = shape.coverage();
+            self.blend_mask(r.x, r.y, r.w as usize, r.h as usize, &cov, c);
+        } else {
+            self.inner.blend_shape(shape, c)
+        }
     }
 }
 
@@ -324,5 +345,28 @@ mod tests {
         Styled::new(&mut c, &t).stroke_round_rect(Rect::new(10, 10, 40, 40), 6, 1, t.accent);
         assert_ne!(c.pixel(30, 8), Color::rgb(0));
         assert_eq!(c.pixel(30, 4), Color::rgb(0));
+    }
+
+    #[test]
+    fn shapes_glow_as_masks_and_otherwise_stay_shapes() {
+        use crate::record::{Op, Recorder};
+        let mut shape = Shape::new(Rect::new(2, 2, 30, 20));
+        shape.polyline(&[(3.0, 18.0), (16.0, 4.0), (30.0, 18.0)], 2.0);
+        for theme in [Theme::dark(), Theme::console()] {
+            // Through a shape and through its coverage as a mask: the same
+            // pixels, glow included.
+            let mut a = SoftCanvas::new(40, 30);
+            shape.draw(&mut Styled::new(&mut a, &theme), theme.text);
+            let mut b = SoftCanvas::new(40, 30);
+            let cov = shape.coverage();
+            Styled::new(&mut b, &theme).blend_mask(2, 2, 30, 20, &cov, theme.text);
+            assert_eq!(a.px, b.px, "glow {}", theme.text_glow);
+            // A recorded list keeps the parts unless the glow needs pixels.
+            let mut rec = Recorder::new(40, 30);
+            rec.begin_frame();
+            shape.draw(&mut Styled::new(&mut rec, &theme), theme.text);
+            let kept = rec.ops().iter().any(|op| matches!(op, Op::Shape { .. }));
+            assert_eq!(kept, theme.text_glow == 0, "glow {}", theme.text_glow);
+        }
     }
 }

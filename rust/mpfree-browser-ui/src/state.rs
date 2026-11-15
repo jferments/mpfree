@@ -11,6 +11,8 @@ use mpfree_library::{
 };
 use std::path::PathBuf;
 
+use crate::export::{ExportChoice, ExportInput, ExportPanel, ExportPhase, ExportSetup};
+
 /// The rows of the places column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -226,6 +228,15 @@ pub enum Button {
     Cancel,
     /// A project's earlier saves, to open one.
     Versions,
+    /// Saves the work as the current project (the first time, as a new
+    /// one named for the time): the same as SHIFT + BROWSE.
+    Save,
+    /// Saves the work under a name typed on the keyboard.
+    SaveAs,
+    /// Starts a new, empty project (asks first over unsaved work).
+    NewProject,
+    /// Opens the Export panel: the song to WAV files and a MIDI file.
+    Export,
 }
 
 impl Button {
@@ -246,6 +257,10 @@ impl Button {
             Button::EmptyTrash => "Empty Trash",
             Button::Cancel => "Cancel",
             Button::Versions => "Earlier saves",
+            Button::Save => "Save",
+            Button::SaveAs => "Save as",
+            Button::NewProject => "New project",
+            Button::Export => "Export",
         }
     }
 }
@@ -279,6 +294,8 @@ pub enum Input {
     Search,
     /// The order chip: by name or newest first.
     Sort,
+    /// A touch on the Export panel.
+    Export(ExportInput),
 }
 
 /// The order of a list.
@@ -297,6 +314,13 @@ impl Sort {
             Sort::Newest => "Newest",
         }
     }
+}
+
+/// Seconds since 1970 (UTC) now, for a name made from the time.
+fn now_utc() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// What the app must do (the browser does everything else itself).
@@ -360,12 +384,32 @@ pub enum BrowseAction {
     ProjectSaved {
         loc: Loc,
     },
-    /// Save as was given a name: call [`Browser::save`] with the engines'
-    /// parts now.
+    /// The unsaved work was autosaved, into autosave's project here.
+    Autosaved {
+        loc: Loc,
+    },
+    /// Save (or Save as, once given a name) was pressed: call
+    /// [`Browser::save`] with the engines' parts now.
     SaveRequested,
+    /// New project was pressed (and, over unsaved work, agreed to): the
+    /// app puts every engine back to a fresh, empty project. The browser
+    /// has already forgotten the project it had ([`Browser::new_project`]).
+    NewProject,
     /// Recent and Favourites changed: save this text as the "browser"
     /// owner's file in the store ([`Browser::lists_text`]).
     SaveLists(String),
+    /// [`Browser::open_last`]'s project couldn't be opened (why); the
+    /// work in progress stays as it was.
+    LastNotOpened(String),
+    /// Export was pressed: call [`Browser::open_export`] with what the
+    /// panel needs to know about the song.
+    ExportAsked,
+    /// Start was pressed on the Export panel: make the plan and start the
+    /// pass; say how far it has got with [`Browser::export_running`] and
+    /// how it ended with [`Browser::export_over`].
+    ExportStart(ExportChoice),
+    /// Cancel was pressed while the export runs.
+    ExportCancel,
 }
 
 /// What waits for a yes.
@@ -377,6 +421,8 @@ pub enum Confirm {
     Open(Loc),
     /// Open this earlier save of a project over unsaved changes.
     OpenVersion(Loc, String),
+    /// Start a new, empty project over unsaved changes.
+    NewProject,
 }
 
 /// What the keyboard is typing.
@@ -450,6 +496,9 @@ pub struct Screen {
     pub pick: Option<Pick>,
     /// The list's order.
     pub sort: Sort,
+    /// The Export panel, over everything, while it is open (hidden while
+    /// a picker is open).
+    pub export: Option<ExportPanel>,
 }
 
 impl Screen {
@@ -475,6 +524,7 @@ impl Screen {
             filters: FILTERS.to_vec(),
             pick: None,
             sort: Sort::Name,
+            export: None,
         }
     }
 }
@@ -540,6 +590,11 @@ pub struct Browser {
     select_name: Option<String>,
     /// The project being worked on (where SHIFT + BROWSE saves).
     project: Option<Loc>,
+    /// The project last saved or opened, kept with Recent and Favourites:
+    /// Prefs > At start can open it again ([`Browser::open_last`]).
+    last: Option<Loc>,
+    /// [`Browser::open_last`] is waiting for the library.
+    opening_last: bool,
     /// When it was first saved.
     created: u64,
     actions: Vec<BrowseAction>,
@@ -550,8 +605,16 @@ pub struct Browser {
     tried: bool,
     /// The work in progress changed since it was last saved or opened.
     unsaved: bool,
+    /// An open of autosave's project is under way: still unsaved once it
+    /// lands ([`Browser::open_landed`]).
+    recovering: bool,
     mode: Mode,
     sort: Sort,
+    /// The Export panel while it is open (it stays through a picker and
+    /// the overlay closing, so a running export comes back with it).
+    export: Option<ExportPanel>,
+    /// What the last export asked for, ticked again next time.
+    export_last: Option<ExportChoice>,
 }
 
 impl Browser {
@@ -592,14 +655,19 @@ impl Browser {
             favourites: Vec::new(),
             select_name: None,
             project: None,
+            last: None,
+            opening_last: false,
             created: 0,
             actions: Vec::new(),
             pick: None,
             before_pick: None,
             tried: false,
             unsaved: false,
+            recovering: false,
             mode: Mode::Folder,
             sort: Sort::Name,
+            export: None,
+            export_last: None,
         };
         b.refresh();
         b
@@ -658,6 +726,9 @@ impl Browser {
                         return;
                     }
                 }
+                if std::mem::take(&mut self.opening_last) {
+                    self.actions.push(BrowseAction::LastNotOpened(e.clone()));
+                }
                 self.status = Some((e, true))
             }
             Ok(Outcome::Listed(loc, entries)) => {
@@ -697,22 +768,52 @@ impl Browser {
                 self.status = Some((format!("Trash emptied: {} freed", size(bytes)), false));
                 self.refresh();
             }
+            Ok(Outcome::Autosaved(loc)) => {
+                self.actions.push(BrowseAction::Autosaved { loc });
+                if self.folder == Loc::top(Place::Projects) {
+                    self.refresh();
+                }
+            }
             Ok(Outcome::Saved(loc)) => {
                 self.status = Some((format!("Saved {}", loc.name()), false));
                 self.unsaved = false;
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectSaved { loc });
                 self.refresh();
             }
+            Ok(Outcome::Project(loc, snap)) if snap.meta.is_autosave() => {
+                // Autosave's project opens as a new, unsaved one: SHIFT +
+                // BROWSE keeps it as a project of the musician's (named for
+                // the time), never as autosave's again.
+                self.status = Some((
+                    format!(
+                        "Opened the work autosaved {}. SHIFT + BROWSE saves it as a new project",
+                        when(snap.meta.saved)
+                    ),
+                    false,
+                ));
+                self.project = None;
+                self.created = 0;
+                self.unsaved = true;
+                self.recovering = true;
+                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
+                if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
+                    self.close_pick(true);
+                }
+            }
             Ok(Outcome::Project(loc, snap)) => {
                 self.status = Some((format!("Opened {}", loc.name()), false));
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.created = snap.meta.created;
                 self.unsaved = false;
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
-                if self.pick.is_some() {
+                // Opened at start (Prefs > At start), the Pads tab's
+                // picker stays where it is.
+                if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
                     self.close_pick(true);
                 }
             }
@@ -732,6 +833,7 @@ impl Browser {
                     false,
                 ));
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.created = snap.meta.created;
                 // Not the newest save: saving it keeps what it replaces.
                 self.unsaved = true;
@@ -991,12 +1093,16 @@ impl Browser {
         }
     }
 
-    /// Recent and Favourites, as saved by [`Browser::lists_text`].
+    /// Recent and Favourites, and the last project, as saved by
+    /// [`Browser::lists_text`].
     pub fn load_lists(&mut self, text: &str) {
         self.recent.clear();
         self.favourites.clear();
+        self.last = None;
         for line in text.lines() {
-            if let Some(l) = line.strip_prefix("recent = ").and_then(Loc::from_line) {
+            if let Some(l) = line.strip_prefix("project = ").and_then(Loc::from_line) {
+                self.last = Some(l);
+            } else if let Some(l) = line.strip_prefix("recent = ").and_then(Loc::from_line) {
                 if self.recent.len() < RECENT && !self.recent.contains(&l) {
                     self.recent.push(l);
                 }
@@ -1010,9 +1116,13 @@ impl Browser {
     }
 
     /// Recent and Favourites as text, one `recent = Samples/Drums/Kick.wav`
-    /// or `favourite = ...` line each.
+    /// or `favourite = ...` line each, after the last project's
+    /// (`project = Projects/Night drive`).
     pub fn lists_text(&self) -> String {
         let mut s = String::new();
+        if let Some(l) = &self.last {
+            s.push_str(&format!("project = {}\n", l.to_line()));
+        }
         for l in &self.recent {
             s.push_str(&format!("recent = {}\n", l.to_line()));
         }
@@ -1034,7 +1144,8 @@ impl Browser {
         let before = self.recent.len() + self.favourites.len();
         self.recent.retain(|r| !l.contains(r));
         self.favourites.retain(|r| !l.contains(r));
-        if self.recent.len() + self.favourites.len() != before {
+        let last = self.last.take_if(|p| l.contains(p)).is_some();
+        if last || self.recent.len() + self.favourites.len() != before {
             self.actions
                 .push(BrowseAction::SaveLists(self.lists_text()));
         }
@@ -1089,6 +1200,9 @@ impl Browser {
 
     /// Up one folder (the - button, Back).
     pub fn back(&mut self) {
+        if self.export_shown().is_some() {
+            return self.export_input(ExportInput::Close);
+        }
         if let Mode::Versions(l, _) = &self.mode {
             self.select_name = Some(l.name().to_string());
         }
@@ -1123,6 +1237,15 @@ impl Browser {
 
     /// The data dial: moves the selection.
     pub fn dial(&mut self, delta: i32) {
+        if self.pick.is_none() {
+            if let Some(p) = self.export.as_mut() {
+                // The panel's bar count, while it is ready.
+                if p.phase == ExportPhase::Ready {
+                    p.step_bars(delta);
+                }
+                return;
+            }
+        }
         if !matches!(self.modal, Modal::None) || self.rows.is_empty() {
             return;
         }
@@ -1211,9 +1334,24 @@ impl Browser {
         self.unsaved = unsaved;
     }
 
+    /// The app says an open has landed (the engines hold the project):
+    /// nothing is unsaved then, unless it was autosave's project, whose
+    /// work is still to be saved as a project of the musician's.
+    pub fn open_landed(&mut self) {
+        self.unsaved = std::mem::take(&mut self.recovering);
+    }
+
     /// The dial's push: open a folder or project, load anything else, or
     /// answer the question on screen.
     pub fn push(&mut self) {
+        if let Some(p) = self.export_shown() {
+            let i = match p.phase {
+                ExportPhase::Ready => ExportInput::Start,
+                ExportPhase::Running { .. } => return,
+                ExportPhase::Done { .. } | ExportPhase::Stopped(_) => ExportInput::Close,
+            };
+            return self.export_input(i);
+        }
         match &self.modal {
             Modal::Confirm { .. } => return self.input(Input::ConfirmYes),
             Modal::Keyboard { .. } => return self.input(Input::Key(Key::Done)),
@@ -1259,6 +1397,12 @@ impl Browser {
     // ------------------------------------------------------------ input
 
     pub fn input(&mut self, i: Input) {
+        // The Export panel, over everything, takes only its own touches.
+        match (self.export_shown().is_some(), &i) {
+            (true, Input::Export(e)) => return self.export_input(*e),
+            (true, _) | (false, Input::Export(_)) => return,
+            (false, _) => {}
+        }
         if !matches!(self.modal, Modal::None)
             && !matches!(i, Input::Key(_) | Input::ConfirmYes | Input::ConfirmNo)
         {
@@ -1307,7 +1451,17 @@ impl Browser {
                 };
                 self.rebuild();
             }
+            Input::Export(_) => {}
         }
+    }
+
+    /// A button that works on the selected row, with none selected: say so
+    /// in place rather than do nothing (Jay, 13 Nov).
+    fn pick_first(&mut self, b: Button) {
+        self.status = Some((
+            format!("Pick something in the list first, then {}", b.label()),
+            false,
+        ));
     }
 
     fn button(&mut self, b: Button) {
@@ -1337,8 +1491,23 @@ impl Browser {
         }
         match b {
             Button::Cancel => self.cancel_picker(),
+            Button::Save => self.actions.push(BrowseAction::SaveRequested),
+            Button::Export => self.actions.push(BrowseAction::ExportAsked),
+            Button::SaveAs => self.save_as(now_utc()),
+            Button::NewProject => {
+                if self.unsaved {
+                    self.modal = Modal::Confirm {
+                        text: "Unsaved changes. Start a new, empty project anyway?".into(),
+                        what: Confirm::NewProject,
+                    };
+                } else {
+                    self.start_new_project();
+                }
+            }
             Button::Versions => {
-                let Some(r) = row else { return };
+                let Some(r) = row else {
+                    return self.pick_first(b);
+                };
                 let Some(loc) = loc.filter(|_| r.kind == Kind::Project) else {
                     return;
                 };
@@ -1350,7 +1519,9 @@ impl Browser {
             }
             Button::Load | Button::LoadToPad => {
                 let to_pad = b == Button::LoadToPad;
-                let Some(r) = row else { return };
+                let Some(r) = row else {
+                    return self.pick_first(b);
+                };
                 if let Some(index) = r.factory {
                     self.actions
                         .push(BrowseAction::LoadFactoryKit { index, to_pad });
@@ -1362,7 +1533,10 @@ impl Browser {
                     Kind::Project | Kind::Folder => self.button(Button::Open),
                     Kind::Audio(_) | Kind::Kit | Kind::Preset => {
                         let Ok(path) = self.library().file_path(&loc) else {
-                            self.status = Some((format!("{} is not there", r.name), true));
+                            // Which button asked, so Load to pad after Load
+                            // says something new.
+                            self.status =
+                                Some((format!("{}: {} is not there", b.label(), r.name), true));
                             return;
                         };
                         self.actions.push(match (r.kind, to_pad) {
@@ -1401,7 +1575,9 @@ impl Browser {
                 }
             }
             Button::Open => {
-                let Some(r) = row else { return };
+                let Some(r) = row else {
+                    return self.pick_first(b);
+                };
                 let Some(loc) = loc else { return };
                 match r.kind {
                     Kind::Folder => self.go_folder(loc),
@@ -1504,7 +1680,9 @@ impl Browser {
                 }
             }
             Button::Delete => {
-                let Some(r) = row else { return };
+                let Some(r) = row else {
+                    return self.pick_first(b);
+                };
                 let Some(loc) = loc else { return };
                 if r.factory.is_some() || r.trash_id.is_some() {
                     return;
@@ -1549,6 +1727,7 @@ impl Browser {
                 Confirm::EmptyTrash => self.send(Job::EmptyTrash),
                 Confirm::Open(loc) => self.send(Job::OpenProject(loc)),
                 Confirm::OpenVersion(loc, id) => self.send(Job::OpenVersion(loc, id)),
+                Confirm::NewProject => self.start_new_project(),
             }
         }
     }
@@ -1630,6 +1809,24 @@ impl Browser {
         self.project.as_ref()
     }
 
+    /// The project last saved or opened, in this run or an earlier one.
+    pub fn last_project(&self) -> Option<&Loc> {
+        self.last.as_ref()
+    }
+
+    /// Opens the last project (Prefs > At start), as the Projects list
+    /// would, without closing the Pads tab's picker. False when there is
+    /// none. It comes as [`BrowseAction::ProjectOpened`], or
+    /// [`BrowseAction::LastNotOpened`] if the library can't open it.
+    pub fn open_last(&mut self) -> bool {
+        let Some(loc) = self.last.clone() else {
+            return false;
+        };
+        self.opening_last = true;
+        self.send(Job::OpenProject(loc));
+        true
+    }
+
     /// SHIFT + BROWSE: saves `snap` as the current project, or, the first
     /// time, as a new project named for the time (no typing needed;
     /// Rename changes it later). `now` is seconds since 1970 (UTC).
@@ -1673,6 +1870,55 @@ impl Browser {
         });
     }
 
+    /// Autosave (every 2 minutes while there is unsaved work, the app's
+    /// clock): `snap` and its sounds go to autosave's own project
+    /// (`mpfree_library::Library::autosave_project`), keeping no earlier
+    /// saves. The current project, the unsaved mark and the status line
+    /// stay as they are; a failed autosave says so on the status line.
+    pub fn autosave_with(&mut self, mut snap: Snapshot, samples: Vec<NewSample>, now: u64) {
+        snap.meta.name = match &self.project {
+            Some(l) => format!("Autosave of {}", l.name()),
+            None => "Autosave of a new project".to_string(),
+        };
+        if snap.meta.created == 0 {
+            snap.meta.created = now;
+        }
+        snap.meta.saved = now;
+        self.send(Job::Autosave { snap, samples });
+    }
+
+    /// At the start, before anything autosaves: autosave's project, if it
+    /// holds work newer than the last project's save (the last run ended,
+    /// by a crash or the power switch, with unsaved work), is set aside as
+    /// a project of its own (`mpfree_library::Library::keep_autosave`), so
+    /// that this run's autosave can't write over it. Its new place, or why
+    /// it stayed. A rename in Projects, on the caller's thread.
+    pub fn keep_newer_autosave(&mut self) -> Option<Result<Loc, String>> {
+        let (loc, saved) = self.newer_autosave()?;
+        let kept = self
+            .library()
+            .keep_autosave(&loc, saved)
+            .map_err(|e| e.to_string());
+        if kept.is_ok() && self.folder == Loc::top(Place::Projects) {
+            self.refresh();
+        }
+        Some(kept)
+    }
+
+    /// Autosave's project and when it was last written, if there is one
+    /// and it holds work newer than the last project's save (the work a
+    /// crash or the power switch would otherwise lose). Reads two
+    /// project.txt files.
+    fn newer_autosave(&self) -> Option<(Loc, u64)> {
+        let (loc, meta) = self.library().autosave_meta()?;
+        let last = self
+            .last
+            .as_ref()
+            .and_then(|l| self.library().project_meta(l).ok())
+            .map_or(0, |m| m.saved);
+        (meta.saved > last).then_some((loc, meta.saved))
+    }
+
     /// Save as: asks for a name (the time-stamped one ready to keep).
     pub fn save_as(&mut self, now: u64) {
         self.modal = Modal::Keyboard {
@@ -1691,6 +1937,132 @@ impl Browser {
     pub fn new_project(&mut self) {
         self.project = None;
         self.created = 0;
+    }
+
+    /// New project, agreed: forget the project and ask the app for a
+    /// fresh one ([`BrowseAction::NewProject`]).
+    fn start_new_project(&mut self) {
+        self.new_project();
+        self.unsaved = false;
+        self.status = Some((
+            "New project: nothing saved yet (Save names it for the time)".into(),
+            false,
+        ));
+        self.actions.push(BrowseAction::NewProject);
+    }
+
+    /// Whether the work has changed since it was last saved or opened.
+    pub fn unsaved(&self) -> bool {
+        self.unsaved
+    }
+
+    /// Whether the worker has jobs not answered yet (a save, say): the app
+    /// keeps stepping the browser while it doesn't show, so the answer
+    /// lands.
+    pub fn busy(&self) -> bool {
+        self.pending > 0
+    }
+
+    // ------------------------------------------------------------ export
+
+    /// Opens the Export panel (after [`BrowseAction::ExportAsked`]), with
+    /// what it needs to know about the song. A panel already open (an
+    /// export running, say) stays as it is.
+    pub fn open_export(&mut self, setup: ExportSetup) {
+        if self.export.as_ref().is_some_and(ExportPanel::running) {
+            return;
+        }
+        self.export = Some(ExportPanel::new(setup, self.export_last));
+    }
+
+    /// The panel, if it is open.
+    pub fn export_panel(&self) -> Option<&ExportPanel> {
+        self.export.as_ref()
+    }
+
+    /// The panel as the screen shows it (not while a picker is open).
+    fn export_shown(&self) -> Option<&ExportPanel> {
+        self.export.as_ref().filter(|_| self.pick.is_none())
+    }
+
+    /// Whether an export runs (Start was pressed, and it isn't over).
+    pub fn exporting(&self) -> bool {
+        self.export.as_ref().is_some_and(ExportPanel::running)
+    }
+
+    /// How far the export has got: "1:12 of 3:50", and the part done when
+    /// the length is known.
+    pub fn export_running(&mut self, words: String, part: Option<f32>) {
+        if let Some(p) = self.export.as_mut().filter(|p| p.running()) {
+            p.phase = ExportPhase::Running {
+                words,
+                part: part.map(|f| f.clamp(0.0, 1.0)),
+            };
+        }
+    }
+
+    /// The export is over: `folder` is where its files are when it made
+    /// them (Show in BROWSE goes there), None when it stopped or failed;
+    /// `text` says what happened. The status line says it too.
+    pub fn export_over(&mut self, text: String, folder: Option<Loc>) {
+        let ok = folder.is_some();
+        self.status = Some((text.clone(), !ok));
+        let phase = match folder {
+            Some(f) => ExportPhase::Done {
+                text,
+                folder: Some(f),
+            },
+            None => ExportPhase::Stopped(text),
+        };
+        match self.export.as_mut() {
+            Some(p) => p.phase = phase,
+            None => {
+                // Closed in the meantime: the status line has it.
+            }
+        }
+    }
+
+    fn export_input(&mut self, i: ExportInput) {
+        let Some(p) = self.export.as_mut() else {
+            return;
+        };
+        match i {
+            ExportInput::Start => {
+                if p.can_start() {
+                    let c = p.choice();
+                    self.export_last = Some(c);
+                    p.phase = ExportPhase::Running {
+                        words: "Starting".into(),
+                        part: None,
+                    };
+                    self.actions.push(BrowseAction::ExportStart(c));
+                }
+            }
+            ExportInput::Cancel if p.running() => {
+                self.actions.push(BrowseAction::ExportCancel);
+                p.phase = ExportPhase::Running {
+                    words: "Stopping".into(),
+                    part: None,
+                };
+            }
+            ExportInput::Cancel | ExportInput::Close => {
+                if !p.running() {
+                    self.export = None;
+                }
+            }
+            ExportInput::Show => {
+                if let ExportPhase::Done {
+                    folder: Some(f), ..
+                } = &p.phase
+                {
+                    let f = f.clone();
+                    self.export = None;
+                    self.mode = Mode::Folder;
+                    self.go_folder(f);
+                }
+            }
+            other => p.pick(other),
+        }
     }
 
     // ------------------------------------------------------------ out
@@ -1730,9 +2102,15 @@ impl Browser {
                 _ if self.mode != Mode::Folder => Vec::new(),
                 Source::Place(Place::Trash) => vec![Button::EmptyTrash],
                 Source::Place(p) => {
-                    // Projects are made by saving, so no New folder there.
+                    // Projects are made by saving, so no New folder there:
+                    // New project, Save and Save as instead.
                     let mut v = if p == Place::Projects {
-                        Vec::new()
+                        vec![
+                            Button::NewProject,
+                            Button::SaveAs,
+                            Button::Save,
+                            Button::Export,
+                        ]
                     } else {
                         vec![Button::NewFolder]
                     };
@@ -1763,6 +2141,7 @@ impl Browser {
             },
             pick: self.pick.clone(),
             sort: self.sort,
+            export: self.export.clone().filter(|_| self.pick.is_none()),
         }
     }
 

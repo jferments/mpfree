@@ -1,21 +1,20 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-13 dcaefdd
+covers: rust/mpfree-sampler-ui/src/levels_panel.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
+checked: 2026-11-14 b76c3c7
 -->
 
 # Playing live
 
-The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. It has four **views**, each arranged for a different way of playing. Tap **All**, **Beats**, **Loop** or **Drum** on the right of the transport bar to switch; the page remembers your view while you visit other tabs.
+The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. It has three **views**, each arranged for a different way of playing. Tap **All**, **Beats** or **Loop** on the right of the transport bar to switch; the page remembers your view while you visit other tabs.
 
-## The four views
+## The three views
 
 | View | Made for | What's on it |
 |---|---|---|
 | **All** | Everything at once (the home view) | The loop, the pattern across the page, the throws and the XY pad |
-| **Beats** | Programming and editing patterns | The whole pattern, every row, with all eight throws under it |
+| **Beats** | Programming patterns and practising finger drumming | The whole pattern, your timing under it, and all eight throws |
 | **Loop** | Live looping | The loop, large, with its buttons; the throws and the XY pad |
-| **Drum** | Practising finger drumming | Your timing beside the XY pad, and the throws |
 
 There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loop and the effects. The pads' own settings and sounds are on the Pads tab, next to Play.
 
@@ -27,11 +26,11 @@ There are no pads on the Play page: you play the real ones, and the room goes to
 
 **Drop drums** mutes the kick, snare and hi-hats while you hold it: the classic breakdown move.
 
+**Several at once.** Hold throws with different fingers and they play together: Delay throw and Reverb wash stack, and Filter dip and Drop drums go on top of anything. Stutter, Tape stop, Beat repeat and Vinyl brake each take over the sound, so of those only the one you pressed last plays; let it go and the one you held before comes back.
+
 ## The XY pad
 
 The **XY pad** is a filter and an echo under one finger. Left of the middle is a low-pass filter (darker), right of it a high-pass filter (thinner), and the middle is no filter at all. Higher up adds more echo. When you lift your finger the pad glides back to the middle and the bottom, so the sound comes back clean. Its label says where it is, for example "HP 173 Hz · echo 62 %".
-
-The **FX mix** Q-Link (in the Drum view) sets how much of the throws and the XY pad you hear, from none to all.
 
 ## Fills
 
@@ -39,17 +38,34 @@ While the music plays, hold **PLAY** for a fill: notes set to play only in fills
 
 ## Muting
 
-There is no separate mute page. A **speaker icon** sits beside each pattern row and each loop layer; tap it to mute that pad or layer, and again to bring it back.
+There is no separate mute page. Each pattern row's name is its **mute button**, with a speaker icon in a box: tap anywhere on the name to mute that pad (the box turns red and the speaker shows a ×), and again to bring it back. On the loop strip, each layer's name and speaker are one button that mutes that layer.
+
+Hold **ERASE** and tap a row's name to delete that sound's steps from the pattern instead. **UNDO** brings them back.
 
 ### Muting tracks and pads
 
-**TRACK MUTE** turns the pads into mute buttons over whatever page you are on, so you can drop parts in and out without leaving the screen you are using. Pads 1-8 are tracks 1-8: green while the track plays a clip, dim green when it has nothing playing, red while it is muted. Tap a pad to mute or unmute its track; the track's clip keeps its place, so it comes back in time. **SHIFT + TRACK MUTE** does the same for the pads of the kit: a pad lit in the kit's colour plays, a red one is muted. Press the same button again to play the pads as usual. The hint line at the bottom of the screen says which mode the pads are in.
+**TRACK MUTE** turns the pads into mute buttons over whatever page you are on, so you can drop parts in and out without leaving the screen you are using. Pads 1-16 are tracks 1-16: green while the track plays a clip, dim green when it has nothing playing, red while it is muted, and dark where there is no track. Tap a pad to mute or unmute its track; the track's clip keeps its place, so it comes back in time. With more than 16 tracks, the **PAD BANK** buttons pick which 16 the pads are, as on Akai's MPC: A is tracks 1-16, B is 17-32, and so on up to H, 113-128 (SHIFT or a second press gives E-H, as when you pick kits). The kit playing stays the same, and TRACK MUTE remembers the bank for next time. **SHIFT + TRACK MUTE** does the same for the pads of the kit: a pad lit in the kit's colour plays, a red one is muted. Press the same button again to play the pads as usual. The hint line at the bottom of the screen says which mode the pads are in.
+
+## 16 Levels
+
+**16 LEVEL** spreads one sound over all 16 pads: the pad you hit last plays on every pad, each one a step of something else. Press **16 LEVEL** and the 16 Levels panel opens on the Play page, under the transport bar:
+
+- The cells are the pads, pad 1 at the bottom left. Each one shows what that pad plays, and they are lit in the same colour as the pads, with the pad you are holding bright.
+- The column on the right picks what the steps change: **Velocity** (8 to 127), **Tune** (a semitone a pad, pad 9 as recorded), **Cutoff** (100 Hz to 20 kHz), **Decay** (25 ms to 4.5 s) or **Start** (where in the sound it starts). Tap one, or turn the wheel.
+- **Pick pad**, then hit a pad: the levels play that pad's sound instead.
+- **Close** hides the panel and keeps the pads on 16 Levels. **Off**, or **16 LEVEL** again, gives the pads their own sounds back. The 16 LEVEL button is lit while 16 Levels is on, and a **16 Levels** chip in the top bar says what the steps change.
+
+16 Levels belongs to the kit, so it is saved with it and one UNDO on the Sample tab takes it back. The synth's pads don't have it: pick a kit first.
+
+{{shot: play-16-levels | The 16 Levels panel by Tune: pad 9 plays the sound as recorded, the others a semitone apart, and pad 12 is held.}}
 
 ## Your timing
 
-The **Drum** view shows the last two bars you played as dots against the beat grid, so you can see whether you rush or drag. Under it, **Average** says how early or late you play on average, **Spread** how consistent you are, and **Velocity** how hard you hit.
+The **Beats** view has a **Your timing** strip under the pattern: it reads the last two bars you played against the sixteenth-note grid. **Average** says how early or late you play on average, **Spread** how consistent you are, and **Velocity** how hard you hit; the bars on the right show how your hits spread, from 30 ms early to 30 ms late, with the green bar on the grid.
 
-{{shot: play-drum | The Drum view: each dot is a hit; dots left of a grid line are early.}}
+The strip takes a little room from the pattern. To give the pattern more rows, press **MENU** on Play and set **Timing strip** to **Off**; set it back to **On** to see your timing again. MPFree remembers the choice.
+
+{{shot: play-beats | The Beats view: the pattern, your timing (7 ms early on average) and the throws.}}
 
 ## The Q-Links on the Play page
 
@@ -60,7 +76,6 @@ The four knobs change with the view:
 | All and Beats | Swing | Tune (last pad played) | Drums' filter | Drums' delay send |
 | Beats, with a step picked | Velocity | Length | Nudge | Chance |
 | Loop | Loop level | Loop's delay send | Line input level | Loop filter |
-| Drum | Tune | Decay | Swing | FX mix |
 
 Swing reads **off** at 50 %, which is straight time, as it does in the transport bar. Turn it up for a shuffle.
 

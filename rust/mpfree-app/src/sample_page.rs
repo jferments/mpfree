@@ -73,8 +73,8 @@ use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source, SourceId, Warp,
-    WARP_BPM,
+    ChannelPick, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source,
+    SourceId, Warp, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -339,6 +339,19 @@ pub fn rec_sources() -> Vec<(String, RecSource)> {
     v
 }
 
+/// What the Sample tab's sounds hold in memory (Dev > CPU by engine,
+/// `memory.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SampleMemory {
+    /// Every kit's sounds, those undo keeps included, each counted once.
+    pub sounds: usize,
+    pub count: usize,
+    /// The stretched copies warped pads play.
+    pub copies: usize,
+    /// The Rec tab's input buffer, while it is held.
+    pub input: usize,
+}
+
 /// The sampler's input buffer's size: stereo `f32`.
 pub fn input_bytes(rate: u32) -> u64 {
     u64::from(INPUT_SECONDS) * u64::from(rate) * 2 * 4
@@ -351,6 +364,9 @@ pub type ReadSample = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send>;
 pub struct SamplePage {
     projects: Vec<Project>,
     names: Vec<String>,
+    /// The kits and their names as the app first gave them (kits.bin):
+    /// what New project goes back to ([`SamplePage::reset_kits`]).
+    factory: Option<(Vec<Project>, Vec<String>)>,
     rate: u32,
     /// Waveform peaks, tempo and root note, per source, made the first time
     /// a pad using the source is shown.
@@ -378,6 +394,10 @@ pub struct SamplePage {
     /// The Pads tab, added the first time it shows.
     pads: Option<PadsTab>,
     pads_state: Option<PadsState>,
+    /// The effects on the mixer's pad channels, by pad, for the Pad list's
+    /// Effects row ([`SamplePage::set_pad_fx`]); empty until the mixer
+    /// says.
+    pad_fx: Vec<Vec<String>>,
     /// The Grain tab, added the first time it is opened.
     grain: Option<GrainTab>,
     grain_state: Option<GrainState>,
@@ -389,6 +409,10 @@ pub struct SamplePage {
     renamed: Vec<usize>,
     /// The kit or pad changed since the page was last built.
     stale: bool,
+    /// The last touch's tab answered it with an action (see
+    /// [`SamplePage::event`]).
+    answered: bool,
+
     /// The wheel's push opened the picked row of the settings list: the
     /// wheel changes its value (`app::RowKey`). Kept here so a list made
     /// again (another pad or tab) shows it too.
@@ -421,6 +445,12 @@ pub struct SamplePage {
     stretcher: Option<Worker>,
     /// Copies asked of it and not back yet.
     stretching: Vec<CopyKey>,
+    /// Copies refused for want of memory at this tempo, said once each
+    /// (their pads repitch).
+    unstretched: Vec<CopyKey>,
+    /// The memory free for new loads ([`crate::memory::free_bytes`]; a
+    /// test gives its own).
+    mem_free: fn() -> Option<u64>,
     /// The Warp tab, added the first time it is opened. It shows the Wave
     /// tab's state.
     warp: Option<WarpTab>,
@@ -463,6 +493,9 @@ pub struct SamplePage {
     auto_synth: Option<String>,
     /// A plan Start asked for: the app makes the patch's copy for it.
     auto_request: Option<Plan>,
+    /// A number to be typed, asked for by a tab (the Warp tempo): the
+    /// screen opens the number pad ([`SamplePage::take_number_ask`]).
+    number_ask: Option<mpfree_ui::numpad::NumberAsk>,
     auto_job: Option<AutoJob>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
@@ -507,6 +540,7 @@ impl SamplePage {
         let mut p = SamplePage {
             projects: Vec::new(),
             names: Vec::new(),
+            factory: None,
             rate: 44_100,
             sources: HashMap::new(),
             kit: 0,
@@ -524,12 +558,14 @@ impl SamplePage {
             velocity: None,
             pads: None,
             pads_state: None,
+            pad_fx: Vec::new(),
             grain: None,
             grain_state: None,
             cloud: Some(Box::default()),
             cloud_shown: false,
             renamed: Vec::new(),
             stale: true,
+            answered: false,
             editing: false,
             dirty: Vec::new(),
             in_flight: false,
@@ -546,6 +582,8 @@ impl SamplePage {
             warps: Warps::default(),
             stretcher: None,
             stretching: Vec::new(),
+            unstretched: Vec::new(),
+            mem_free: crate::memory::free_bytes,
             warp: None,
             rec: None,
             rec_state: None,
@@ -569,6 +607,7 @@ impl SamplePage {
             auto_state: None,
             auto_synth: None,
             auto_request: None,
+            number_ask: None,
             auto_job: None,
             auto_last: String::new(),
             fx_open: None,
@@ -595,6 +634,10 @@ impl SamplePage {
         }
         self.dirty = vec![false; projects.len()];
         self.in_flight = false;
+        if self.factory.is_none() {
+            // The sounds are shared (Arc): this copy costs the lists only.
+            self.factory = Some((projects.clone(), Vec::new()));
+        }
         self.projects = projects;
         self.rate = rate;
         self.sources.clear();
@@ -620,6 +663,9 @@ impl SamplePage {
 
     /// The kits' names, for the page and the log.
     pub fn set_names(&mut self, names: Vec<String>) {
+        if let Some((_, n)) = self.factory.as_mut().filter(|(_, n)| n.is_empty()) {
+            n.clone_from(&names);
+        }
         self.names = names;
         self.stale = true;
     }
@@ -753,6 +799,29 @@ impl SamplePage {
         self.state.as_ref()
     }
 
+    /// What the sounds hold in memory: every kit's sounds (a sound two
+    /// kits share counted once), the stretched copies, the input buffer.
+    pub fn memory(&self) -> SampleMemory {
+        let mut seen: Vec<(usize, usize)> = self
+            .projects
+            .iter()
+            .flat_map(Project::held)
+            .map(|s| (s.data().as_ptr() as usize, s.data().len()))
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        SampleMemory {
+            sounds: seen.iter().map(|&(_, n)| n * 4).sum(),
+            count: seen.len(),
+            copies: self.warps.bytes(),
+            input: if self.input.is_some() {
+                input_bytes(self.rate) as usize
+            } else {
+                0
+            },
+        }
+    }
+
     #[cfg(test)]
     pub fn project(&self, kit: usize) -> Option<&Project> {
         self.projects.get(kit)
@@ -785,6 +854,62 @@ impl SamplePage {
             PadsPlay::Levels { pad: of, .. } if pad < 16 => usize::from(of),
             _ => pad,
         }
+    }
+
+    /// The kit the pads play now (past the kits: the synth).
+    pub fn kit(&self) -> usize {
+        self.kit
+    }
+
+    /// The pad the page edits: the one hit last (with 16 Levels on, the
+    /// pad they play).
+    pub fn pad(&self) -> usize {
+        self.pad
+    }
+
+    /// The pad 16 Levels play and what they step through, while the
+    /// playing kit's pads play 16 Levels.
+    pub fn levels(&self) -> Option<(usize, Levels)> {
+        match self.projects.get(self.kit)?.pads_play() {
+            PadsPlay::Levels { pad, by } => Some((usize::from(pad), by)),
+            _ => None,
+        }
+    }
+
+    /// Pad `pad`'s name as the 16 Levels panel shows it ("A2") and its
+    /// sound's name (empty without one).
+    pub fn pad_names(&self, pad: usize) -> (String, String) {
+        let name = self
+            .projects
+            .get(self.kit)
+            .and_then(|p| p.pad(pad))
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        (self.pad_text(self.kit, pad), name)
+    }
+
+    /// 16 Levels of `pad` by `by` on the playing kit, or (None) its pads
+    /// back to their own sounds: one undo step and a `sample:` line, as
+    /// the Play tab's Pads play row. False if there is no kit to change.
+    pub fn set_levels(&mut self, ui: &mut Ui, levels: Option<(usize, Levels)>) -> bool {
+        if self.projects.get(self.kit).is_none() {
+            return false;
+        }
+        let play = match levels {
+            Some((pad, by)) if pad < 16 => PadsPlay::Levels { pad: pad as u8, by },
+            Some(_) => return false,
+            None => PadsPlay::Pads,
+        };
+        if self.projects[self.kit].pads_play() == play {
+            return true;
+        }
+        let mut out = Vec::new();
+        self.act_play(ui, PlayAction::PadsPlay(play), &mut out);
+        self.lift();
+        if let Some((pad, _)) = levels {
+            self.pick(pad);
+        }
+        true
     }
 
     fn light(&mut self, ui: &mut Ui, pad: usize, down: bool) {
@@ -903,6 +1028,17 @@ impl SamplePage {
         Some(UiEvent {
             widget: name.to_string(),
             kind: EventKind::Step { index, delta },
+        })
+    }
+
+    /// The picked row is a button (the Pad list's Effects): the wheel's
+    /// push presses it, as a tap would, instead of opening it for the wheel.
+    pub fn button_row(&self, ui: &Ui) -> Option<UiEvent> {
+        let name = self.list()?;
+        let l = ui.get::<SettingList>(name)?;
+        l.buttons.contains(&l.selected).then(|| UiEvent {
+            widget: name.to_string(),
+            kind: EventKind::Tab(l.selected),
         })
     }
 
@@ -1066,7 +1202,8 @@ impl SamplePage {
         let Some(project) = self.projects.get(self.kit) else {
             return;
         };
-        let st = PadsState::from_project(project, self.pad);
+        let mut st = PadsState::from_project(project, self.pad);
+        st.effects = self.pad_fx.get(self.pad).cloned();
         let kit = match self.names.get(self.kit) {
             Some(n) => format!("Kit {} · {n}", self.kit + 1),
             None => format!("Kit {}", self.kit + 1),
@@ -1219,6 +1356,7 @@ impl SamplePage {
                 None => left.push(self.pad_text(kit, pad)),
             }
         }
+        let mut mapped = !roots.is_empty();
         let what = if roots.is_empty() {
             "no pad has a note to map to keys (none in its name, no clear pitch)".to_string()
         } else {
@@ -1253,9 +1391,21 @@ impl SamplePage {
                     }
                     what
                 }
-                Err(e) => format!("not mapped to keys ({e:?})"),
+                Err(e) => {
+                    mapped = false;
+                    format!("not mapped to keys ({e:?})")
+                }
             }
         };
+        // On the hint line too when nothing was mapped: nothing else on the
+        // screen changes then. A mapping shows itself on the keys.
+        if !mapped {
+            let mut told = what.clone();
+            if let Some(c) = told.get_mut(0..1) {
+                c.make_ascii_uppercase();
+            }
+            self.told.push(told);
+        }
         let kit = self.kit_text_of(kit);
         self.lines.push(format!("sample: {kit}: {what}"));
     }
@@ -1315,7 +1465,52 @@ impl SamplePage {
     /// A touch on one of the editor's widgets. Taps that play the pad go
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        let before = touched_row(ui, ev);
+        let card = touched_card(ui, ev);
+        // A faint button or Q-Link card tapped: why it is faint, and nothing
+        // else.
+        if let EventKind::Select(i) = ev.kind {
+            let card = ui
+                .get::<mpfree_sampler_ui::widgets::KnobCard>(&ev.widget)
+                .filter(|c| i == 1 && !c.enabled)
+                .map(|c| c.why.clone());
+            let why = ui
+                .get::<mpfree_sampler_ui::widgets::ButtonRow>(&ev.widget)
+                .and_then(|b| b.why_faint(i))
+                .map(str::to_string)
+                .or(card);
+            if let Some(why) = why {
+                self.told.push(why);
+                return;
+            }
+        }
+        self.answered = false;
         self.event_on(ui, ev, out);
+        // A tap on a Q-Link card the wheel can't move to (the Chop tab's):
+        // what the card is for.
+        if let Some((label, focused)) = card {
+            if !self.answered
+                && self.told.is_empty()
+                && touched_card(ui, ev).is_some_and(|(_, now)| now == focused)
+            {
+                self.told
+                    .push(format!("{label}: turn the knob on the MPC to change it"));
+            }
+        }
+        // A step on a settings row that nothing answered and that left the
+        // row as it was says so in place (Jay, 13 Nov).
+        if let Some((row, delta)) = before {
+            if !self.answered
+                && self.told.is_empty()
+                && touched_row(ui, ev).is_some_and(|(now, _)| now == row)
+            {
+                let way = if delta < 0 { "lower" } else { "higher" };
+                self.told.push(format!(
+                    "{} stays {}: it goes no {way} here",
+                    row.name, row.value
+                ));
+            }
+        }
         // The FX tab: the chain editor on the pad's channel, in the page's
         // place (the audio loop owns the mixer it edits).
         if let Some(pad) = self.fx_open.take() {
@@ -1338,7 +1533,11 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(note) = tab.take_note() {
+                self.told.push(note);
+            }
+            if let Some(a) = self.took(a) {
                 self.act_chop(ui, a, out);
             }
             return;
@@ -1347,7 +1546,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
                 self.act_play(ui, a, out);
             }
             return;
@@ -1356,7 +1556,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.grain.as_mut(), self.grain_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
                 self.act_grain(ui, a);
             }
             return;
@@ -1365,7 +1566,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.rec.as_mut(), self.rec_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
                 self.act_rec(ui, a);
             }
             return;
@@ -1374,7 +1576,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.auto.as_mut(), self.auto_state.as_ref()) else {
                 return;
             };
-            match tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            match self.took(a) {
                 Some(a) => self.act_auto(ui, a),
                 // A row stepped: the pads it would go onto follow.
                 None => self.refresh_auto_state(ui),
@@ -1385,7 +1588,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
                 self.act(ui, a, out);
             }
             return;
@@ -1394,7 +1598,11 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(note) = tab.take_note() {
+                self.told.push(note);
+            }
+            if let Some(a) = self.took(a) {
                 self.act_pads(ui, a, out);
             }
             return;
@@ -1402,9 +1610,16 @@ impl SamplePage {
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
-        if let Some(a) = tab.action(ui, ev, st) {
+        let a = tab.action(ui, ev, st);
+        if let Some(a) = self.took(a) {
             self.act(ui, a, out);
         }
+    }
+
+    /// Notes whether a tab answered the touch with an action.
+    fn took<T>(&mut self, a: Option<T>) -> Option<T> {
+        self.answered = a.is_some();
+        a
     }
 
     /// A press on the buttons beside the bar ([`send::BUTTONS`]).
@@ -1515,6 +1730,20 @@ impl SamplePage {
     }
 
     /// The Pads tab's view (Browse or Pad, of `pads_tab::VIEWS`).
+    /// The effects on the mixer's pad channels changed (`fx[pad]`, the
+    /// first [`crate::mixing::PADS`] pads): the Pad list's Effects row
+    /// names them.
+    pub fn set_pad_fx(&mut self, ui: &mut Ui, fx: Vec<Vec<String>>) {
+        if fx == self.pad_fx {
+            return;
+        }
+        self.pad_fx = fx;
+        if let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_mut()) {
+            st.effects = self.pad_fx.get(st.pad).cloned();
+            tab.update(ui, st);
+        }
+    }
+
     pub fn set_pads_view(&mut self, ui: &mut Ui, view: usize) {
         self.pads_view = view;
         if let Some(tab) = self.pads.as_mut() {
@@ -1727,6 +1956,8 @@ impl SamplePage {
                 self.map_to_keys(pads);
                 self.refresh(ui);
             }
+            // The Effects row: the pad's chain in the Mix tab.
+            PadsAction::Effects(pad) => out.push(FromUi::PadEffects { pad: *pad }),
             PadsAction::Audition { pad, down } => out.push(FromUi::Pad {
                 pad: *pad,
                 down: *down,
@@ -2224,6 +2455,29 @@ impl SamplePage {
             }
             WaveAction::Audition { pad } => self.audition(pad, out),
             WaveAction::Tab(i) => self.open(ui, i),
+            WaveAction::Ask(ask) => self.number_ask = Some(ask),
+        }
+    }
+
+    /// A number a tab asked to be typed (Jay after live test 3: the Warp
+    /// tempo), for the screen's number pad.
+    pub fn take_number_ask(&mut self) -> Option<mpfree_ui::numpad::NumberAsk> {
+        self.number_ask.take()
+    }
+
+    /// The number typed for `key`: the tab showing makes the change, an
+    /// undo step of its own.
+    pub fn typed(&mut self, ui: &mut Ui, key: &str, value: f64, out: &mut Vec<FromUi>) {
+        let Some(st) = self.state.as_ref() else {
+            return;
+        };
+        let a = match self.editor {
+            Editor::Warp => self.warp.as_mut().and_then(|t| t.typed(st, key, value)),
+            _ => self.tab.as_mut().and_then(|t| t.typed(st, key, value)),
+        };
+        if let Some(a) = a {
+            self.act(ui, a, out);
+            self.lift();
         }
     }
 
@@ -2353,6 +2607,12 @@ impl SamplePage {
                 .is_some_and(|t| t.method() == mpfree_sampler_ui::chop_tab::Method::Live)
     }
 
+    /// Whether UNDO has something to take back in the playing kit (for
+    /// the UNDO light).
+    pub fn can_undo(&self) -> bool {
+        self.projects.get(self.kit).is_some_and(Project::can_undo)
+    }
+
     /// UNDO (or redo) in the playing kit.
     pub fn undo(&mut self, ui: &mut Ui, redo: bool) {
         self.lift();
@@ -2365,6 +2625,7 @@ impl SamplePage {
             return;
         };
         if if redo { p.redo() } else { p.undo() } {
+            self.edits += 1;
             if let Some(d) = self.dirty.get_mut(kit) {
                 *d = true;
             }
@@ -2375,6 +2636,57 @@ impl SamplePage {
         } else {
             self.lines
                 .push(format!("sample: nothing to {what} in {}", self.kit_text()));
+        }
+    }
+
+    /// The playing kit's undo history as the list shows it (hold UNDO):
+    /// "Start", each step undo takes back, oldest first, then redo's, and
+    /// the row that is now. None while the synth has the pads.
+    pub fn history_rows(&self) -> Option<(String, Vec<String>, usize)> {
+        let kit = self.kit;
+        let p = self.projects.get(kit)?;
+        let (done, redo) = p.history();
+        let mut rows = vec!["Start: before these edits".to_string()];
+        rows.extend(done.iter().map(|&i| self.step_name(kit, i)));
+        let now = rows.len() - 1;
+        rows.extend(redo.iter().map(|&i| self.step_name(kit, i)));
+        let mut title = self.kit_text();
+        if let Some(c) = title.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        Some((title, rows, now))
+    }
+
+    /// An undo step as the history names it: "Pad A3", "Chop to 8 pads
+    /// from A5", "New sample on pad A1".
+    fn step_name(&self, kit: usize, i: mpfree_sampler::model::StepInfo) -> String {
+        let first = i
+            .first_pad
+            .map(|p| self.pad_text(kit, p))
+            .unwrap_or_default();
+        let pads = |n: usize| {
+            if n == 1 {
+                format!("pad {first}")
+            } else {
+                format!("{n} pads from {first}")
+            }
+        };
+        match i {
+            _ if i.chop && i.pads > 0 => format!("Chop to {}", pads(i.pads)),
+            _ if i.pads_play && i.pads > 0 => format!("Keys on {}", pads(i.pads)),
+            _ if i.pads_play => "What the pads play".to_string(),
+            _ if i.sources > 0 && i.pads > 0 => format!("New sample on {}", pads(i.pads)),
+            _ if i.sources > 0 => "New sample".to_string(),
+            _ if i.chop => "New chop".to_string(),
+            _ if i.master => "Master effect".to_string(),
+            _ if i.pads > 0 => {
+                let p = pads(i.pads);
+                let mut c = p.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                    .unwrap_or(p)
+            }
+            _ => "Edit".to_string(),
         }
     }
 
@@ -2712,11 +3024,21 @@ impl SamplePage {
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn open_part(&mut self, text: String, read: ReadSample) {
         let (tx, rx) = mpsc::channel();
+        let free = self.mem_free;
         let spawned = std::thread::Builder::new()
             .name("sample-open".into())
             .spawn(move || {
                 let _ = crate::cores::background(); // off the sound's cores and priority
-                let r = save::from_text(&text, &mut |f| wav::read(f, &read(f)?));
+                                                    // Each sound only while it leaves the memory MPFree keeps
+                                                    // free; one that doesn't is left out and the log says why.
+                let r = save::from_text(&text, &mut |f| {
+                    let bytes = read(f)?;
+                    crate::memory::room_in(
+                        free(),
+                        crate::memory::decode_need(f, bytes.len() as u64),
+                    )?;
+                    wav::read(f, &bytes)
+                });
                 let _ = tx.send(r);
             });
         match spawned {
@@ -2745,11 +3067,12 @@ impl SamplePage {
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn load_file(&mut self, path: PathBuf, to_pad: bool) {
         let (tx, rx) = mpsc::channel();
+        let free = self.mem_free;
         let spawned = std::thread::Builder::new()
             .name("sample-load".into())
             .spawn(move || {
                 let _ = crate::cores::background(); // off the sound's cores and priority
-                let _ = tx.send(read_sound(&path));
+                let _ = tx.send(read_sound(&path, free));
             });
         match spawned {
             Ok(_) => self.loading = Some((rx, to_pad)),
@@ -2785,6 +3108,17 @@ impl SamplePage {
         for n in &o.notes {
             self.lines.push(format!("sample: {n}"));
         }
+        let short = o
+            .notes
+            .iter()
+            .filter(|n| n.contains(crate::memory::SHORT))
+            .count();
+        if short > 0 {
+            self.told.push(format!(
+                "{short} of the project's sounds left out: {}; the Console lists them",
+                crate::memory::SHORT
+            ));
+        }
         let have = self.projects.len();
         if o.kits.len() > have {
             self.lines.push(format!(
@@ -2818,6 +3152,34 @@ impl SamplePage {
         });
     }
 
+    /// New project: every kit back as the app first had it (the factory
+    /// kits, no edits, no undo), kit 1 playing. A take, auto-sample or
+    /// open under way is dropped. False before the kits have come.
+    pub fn reset_kits(&mut self, ui: &mut Ui) -> bool {
+        let Some((projects, names)) = self.factory.clone() else {
+            return false;
+        };
+        self.opening = None;
+        self.loading = None;
+        self.assign = None;
+        let rate = self.rate;
+        let n = projects.len();
+        self.set_kits(ui, projects, rate);
+        if !names.is_empty() {
+            self.set_names(names);
+        }
+        for k in 0..n {
+            self.dirty[k] = true;
+            self.mark_renamed(k);
+        }
+        if self.kit != 0 {
+            self.wanted_kit = Some(0);
+        }
+        self.lines
+            .push("sample: the kits are back as they started (new project)".to_string());
+        true
+    }
+
     fn poll_load(&mut self, ui: &mut Ui) {
         let Some((rx, to_pad)) = &self.loading else {
             return;
@@ -2847,7 +3209,12 @@ impl SamplePage {
                 let (kit, pad) = (self.kit, self.pad);
                 self.keep_loaded(ui, kit, pad, l);
             }
-            Err(e) => self.lines.push(format!("sample: not loaded ({e})")),
+            Err(e) => {
+                if e.starts_with(crate::memory::SHORT) {
+                    self.told.push(format!("Not loaded: {e}"));
+                }
+                self.lines.push(format!("sample: not loaded ({e})"));
+            }
         }
     }
 
@@ -3315,6 +3682,16 @@ impl SamplePage {
         let notes = plan.notes();
         let per_note = plan.velocities.len() * usize::from(plan.round_robins);
         let est = plan.estimate();
+        if let Err(why) = crate::memory::room_in((self.mem_free)(), est.bytes_most) {
+            self.auto_last = format!("Not started: {why}");
+            self.lines.push(format!(
+                "sample: auto-sample of {} not started ({why})",
+                plan.name
+            ));
+            self.told.push(format!("Auto-sample not started: {why}"));
+            self.refresh_auto_state(ui);
+            return;
+        }
         let text = format!(
             "sample: auto-sample {}{how} started: {} notes ({} to {}), {} takes, {:.0} s of notes, up to {:.0} MB",
             plan.name,
@@ -3664,6 +4041,7 @@ impl SamplePage {
             w.cancel();
         }
         self.stretching.clear();
+        self.unstretched.clear();
     }
 
     /// Copies kit `kit` needs at the tempo go to the stretch thread.
@@ -3675,7 +4053,7 @@ impl SamplePage {
             .warps
             .missing(project)
             .into_iter()
-            .filter(|k| !self.stretching.contains(k))
+            .filter(|k| !self.stretching.contains(k) && !self.unstretched.contains(k))
             .collect();
         if missing.is_empty() {
             return;
@@ -3691,6 +4069,20 @@ impl SamplePage {
         }
         let Some(w) = &self.stretcher else { return };
         for k in missing {
+            // The copy, and the source's part the thread is handed.
+            let ch = project
+                .source(k.source)
+                .map_or(2, |s| u64::from(s.channels()));
+            let need = (k.frames + k.end.saturating_sub(k.start)) * ch * 4;
+            if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
+                self.unstretched.push(k);
+                self.lines.push(format!(
+                    "sample: not stretched, the pad repitches instead ({why})"
+                ));
+                self.told
+                    .push(format!("Not stretched, the pad repitches instead: {why}"));
+                continue;
+            }
             match Warps::spec(project, &k) {
                 Ok(spec) => {
                     if w.send(k, spec) {
@@ -3756,16 +4148,21 @@ impl SamplePage {
                 let stored = scene::Scene::of(project);
                 let n = stored.sounds();
                 project.scenes[k] = Some(stored);
+                self.edits += 1;
                 // Saved with the kit; the new view puts the crossfader's
                 // values back (take_view).
                 if let Some(d) = self.dirty.get_mut(kit) {
                     *d = true;
                 }
-                self.lines.push(format!(
-                    "sample: {name}: scene {} stored ({n} pad{})",
+                let what = format!(
+                    "{} stored ({n} pad{})",
                     ["A", "B"][k],
                     if n == 1 { "" } else { "s" }
-                ));
+                );
+                // On the hint line too: storing again changes nothing else
+                // on the screen.
+                self.told.push(format!("Scene {what}"));
+                self.lines.push(format!("sample: {name}: scene {what}"));
             }
             SceneAction::Store(_) => {}
             SceneAction::Fade(x) => {
@@ -3958,6 +4355,12 @@ impl SamplePage {
         self.cloud = Some(c);
     }
 
+    /// Gives the memory free for new loads from `f` (a test's).
+    #[cfg(test)]
+    pub fn set_mem_free(&mut self, f: fn() -> Option<u64>) {
+        self.mem_free = f;
+    }
+
     /// Lines for the log since the last call.
     /// Refusals to show in place (they are in `take_lines` too).
     pub fn take_told(&mut self) -> Vec<String> {
@@ -4139,14 +4542,15 @@ struct LoadedSound {
 type LoadedPad = Result<LoadedSound, String>;
 
 /// Reads and decodes `path` on a thread of its own; the answer comes on
-/// the channel (the browser's preview).
+/// the channel (the browser's preview). Refused, as a Load is, when it
+/// would leave less than the memory MPFree keeps free.
 pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("preview-load".into())
         .spawn(move || {
             let _ = crate::cores::background(); // off the sound's cores and priority
-            let _ = tx.send(read_one(&path));
+            let _ = tx.send(read_one(&path, crate::memory::free_bytes));
         })?;
     Ok(rx)
 }
@@ -4156,8 +4560,8 @@ pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
 /// (`Break 92.mpfree` beside `Break 92.wav`) read too, and the other
 /// sounds it names beside it.
 #[allow(dead_code)] // reached through load_file
-fn read_sound(path: &Path) -> LoadedPad {
-    let (src, note) = read_one(path)?;
+fn read_sound(path: &Path, free: fn() -> Option<u64>) -> LoadedPad {
+    let (src, note) = read_one(path, free)?;
     let side = path.with_extension(export::SIDECAR);
     let sidecar_name = side
         .file_name()
@@ -4175,7 +4579,7 @@ fn read_sound(path: &Path) -> LoadedPad {
             if name.is_empty() || name.contains(['/', '\\']) || name == ".." {
                 return Err("not beside it".to_string());
             }
-            read_one(&dir.join(name)).map(|(s, _)| s)
+            read_one(&dir.join(name), free).map(|(s, _)| s)
         })
     });
     Ok(LoadedSound {
@@ -4186,18 +4590,45 @@ fn read_sound(path: &Path) -> LoadedPad {
     })
 }
 
-/// One sound file, no bigger than the sampler holds in memory.
-fn read_one(path: &Path) -> Loaded {
+/// One sound file, no bigger than the sampler holds in memory, and only
+/// while that leaves the memory MPFree keeps free (`free`: what is free
+/// now).
+fn read_one(path: &Path, free: fn() -> Option<u64>) -> Loaded {
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     if len > wav::MAX_SAMPLES as u64 * 8 + (1 << 20) {
         return Err("too long to hold in memory".to_string());
     }
+    let file = path.to_string_lossy();
+    crate::memory::room_in(free(), crate::memory::decode_need(&file, len))?;
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     sound_file::read(&name, &bytes)
+}
+
+/// The Q-Link card a tap touches: its label and whether the wheel is on it.
+fn touched_card(ui: &Ui, ev: &UiEvent) -> Option<(String, bool)> {
+    if !matches!(ev.kind, EventKind::Select(_)) {
+        return None;
+    }
+    let c = ui.get::<mpfree_sampler_ui::widgets::KnobCard>(&ev.widget)?;
+    Some((c.label.clone(), c.focused))
+}
+
+/// The settings row a step touches (its name and value as shown), and the
+/// step's way.
+fn touched_row(ui: &Ui, ev: &UiEvent) -> Option<(mpfree_sampler_ui::widgets::Setting, i32)> {
+    let EventKind::Step { index, delta } = ev.kind else {
+        return None;
+    };
+    let row = ui
+        .get::<mpfree_sampler_ui::widgets::SettingList>(&ev.widget)?
+        .rows
+        .get(index)?
+        .clone();
+    Some((row, delta))
 }
 
 #[cfg(test)]

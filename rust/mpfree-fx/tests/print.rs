@@ -523,6 +523,95 @@ fn frozen_audio_follows_the_transport_and_thaws_click_free() {
 }
 
 #[test]
+fn frozen_audio_held_quiet_fades_out_and_comes_back() {
+    let mut m = rig(Vec::new());
+    let mut song = Song::new();
+    let mut p = Print::new(RATE, 10.0);
+    p.arm(job(0.0, 2.0)).unwrap();
+    run(
+        &mut m,
+        &mut song,
+        2 * BEAT as usize + 256,
+        &mut fixed(128),
+        Some(&mut p),
+        &mut nothing(),
+    );
+    let t = p.take().unwrap();
+    assert!(
+        !m.set_frozen_quiet(StripId::Track(1), true),
+        "not frozen yet"
+    );
+    assert!(m.freeze(StripId::Track(1), t.frozen()).is_ok());
+    assert!(m.set_capture(1, Some((StripId::Track(1), CapturePoint::BeforeFader))));
+    let loud = |m: &Mixer| {
+        let (l, r) = m.capture(1).unwrap();
+        l.iter().chain(r).fold(0f32, |a, &v| a.max(v.abs()))
+    };
+    let mut peak = 0f32;
+    let mut watch = |m: &mut Mixer, _: &mut Song, _: Option<&mut Print>| peak = peak.max(loud(m));
+    run(
+        &mut m,
+        &mut song,
+        BEAT as usize,
+        &mut fixed(128),
+        None,
+        &mut watch,
+    );
+    assert!(peak > 0.1, "it plays: {peak}");
+    // Held quiet (its track muted): silent within a few ms while the song
+    // rolls on, and still frozen.
+    assert!(m.set_frozen_quiet(StripId::Track(1), true));
+    run(
+        &mut m,
+        &mut song,
+        2048,
+        &mut fixed(128),
+        None,
+        &mut nothing(),
+    );
+    assert_eq!(loud(&m), 0.0);
+    assert_eq!(m.freeze_state(StripId::Track(1)), FreezeState::On);
+    // Let go: it plays again, in step with the song.
+    assert!(m.set_frozen_quiet(StripId::Track(1), false));
+    let mut peak = 0f32;
+    let mut watch = |m: &mut Mixer, _: &mut Song, _: Option<&mut Print>| peak = peak.max(loud(m));
+    run(
+        &mut m,
+        &mut song,
+        BEAT as usize,
+        &mut fixed(128),
+        None,
+        &mut watch,
+    );
+    assert!(peak > 0.1, "it plays again: {peak}");
+    // A thaw lets go of the hold for the next freeze.
+    assert!(m.set_frozen_quiet(StripId::Track(1), true));
+    assert!(m.thaw(StripId::Track(1)));
+    run(
+        &mut m,
+        &mut song,
+        4800,
+        &mut fixed(128),
+        None,
+        &mut nothing(),
+    );
+    let back = m.pop_thawed().unwrap();
+    assert!(!m.set_frozen_quiet(StripId::Track(1), false), "thawed");
+    assert!(m.freeze(StripId::Track(1), back).is_ok());
+    let mut peak = 0f32;
+    let mut watch = |m: &mut Mixer, _: &mut Song, _: Option<&mut Print>| peak = peak.max(loud(m));
+    run(
+        &mut m,
+        &mut song,
+        BEAT as usize,
+        &mut fixed(128),
+        None,
+        &mut watch,
+    );
+    assert!(peak > 0.1, "frozen again, not held: {peak}");
+}
+
+#[test]
 fn the_crossfade_has_no_click() {
     // A frozen copy that is the live signal turned upside down: the
     // crossfade passes through silence smoothly, with no step bigger than

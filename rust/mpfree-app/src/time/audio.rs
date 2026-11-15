@@ -15,7 +15,7 @@
 use mpfree_play::{Event, Out, PlayView, Player, Rec, Recent, Recorder, TrackArps};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
-use mpfree_seq::TouchPoint;
+use mpfree_seq::{TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
 
@@ -143,7 +143,15 @@ impl TimeAudio {
                         self.refused += 1;
                     }
                 }
-                ToAudio::Tracks(t) => self.tracks = t,
+                ToAudio::Tracks { n, armed } => {
+                    self.tracks.n = n.min(MAX_TRACKS);
+                    self.tracks.armed = armed;
+                }
+                ToAudio::Track(t, s) => {
+                    if let Some(set) = self.tracks.set.get_mut(t) {
+                        *set = s;
+                    }
+                }
             }
         }
     }
@@ -238,6 +246,14 @@ impl TimeAudio {
     /// transport's queue is full.
     pub fn command(&mut self, cmd: Command) -> bool {
         let at = self.transport.frame();
+        self.transport.command(at, cmd)
+    }
+
+    /// A transport command on frame `at` of the transport's clock, or at
+    /// the next period's start if that is later. False if the queue is
+    /// full.
+    pub fn command_at(&mut self, at: u64, cmd: Command) -> bool {
+        let at = at.max(self.transport.frame());
         self.transport.command(at, cmd)
     }
 
@@ -414,8 +430,8 @@ impl TimeAudio {
     /// The per-track arps take each track's switch and destination.
     pub fn dress_arps(&self, arps: &mut TrackArps) {
         for t in 0..self.tracks.n {
-            arps.set_through(t, self.tracks.through_arp[t]);
-            arps.set_dest(t, self.tracks.dest[t]);
+            arps.set_through(t, self.tracks.set[t].through_arp);
+            arps.set_dest(t, self.tracks.set[t].dest);
         }
     }
 
@@ -594,6 +610,17 @@ impl TimeAudio {
 
     pub fn block(&self) -> &Block {
         &self.block
+    }
+
+    pub fn tempo_map(&self) -> &mpfree_transport::TempoMap {
+        self.transport.tempo_map()
+    }
+
+    /// What `track` plays now ([`mpfree_play::Player::now_playing`]): for
+    /// a frozen mixer strip that follows the track's loop (takes.rs).
+    pub fn now_playing(&self, track: usize) -> Option<mpfree_play::NowPlaying> {
+        self.player
+            .now_playing(&self.view, track, self.transport.position())
     }
 
     pub fn position_text(&self) -> String {

@@ -230,8 +230,7 @@ impl ModMix {
 
     /// The set-up as `key = value` lines: [`ModEngine::save`]'s, then the
     /// macros' names (`name.0 = Wash`) for any not called "Macro n".
-    // Used once the panels are on the app's screens (after round 9).
-    #[allow(dead_code)]
+    // Saved and opened with the project (project.rs).
     pub fn save(&self) -> String {
         use std::fmt::Write as _;
         let mut out = self.engine.save();
@@ -246,8 +245,7 @@ impl ModMix {
     /// Takes back what [`ModMix::save`] wrote, once the mixer has its
     /// inserts (a line about a parameter it doesn't have is skipped).
     /// Returns how many lines were skipped.
-    // Used once the panels are on the app's screens (after round 9).
-    #[allow(dead_code)]
+    // Saved and opened with the project (project.rs).
     pub fn load(&mut self, mixer: &Mixer, text: &str) -> usize {
         let mut rest = String::new();
         let mut names: Vec<String> = (1..=MACROS).map(|m| format!("Macro {m}")).collect();
@@ -405,7 +403,7 @@ mod tests {
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
         for i in from..from + periods {
             let ctx = Ctx::new(RATE, i * PERIOD as u64);
-            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
         }
     }
 

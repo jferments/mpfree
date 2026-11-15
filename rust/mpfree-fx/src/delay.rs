@@ -170,9 +170,13 @@ impl Line {
         // Truncation is floor here (d > 0), with no library call.
         let di = d as usize as f32;
         let t = d - di;
-        let at =
-            |k: isize| -> f32 { self.buf[((self.w as isize - k).rem_euclid(n as isize)) as usize] };
-        let k = di as isize;
+        // `w + n - k` lies in [w + 1, w + n - 1] for 1 <= k < n, so one
+        // conditional subtract wraps it (no integer division per read).
+        let at = |k: usize| -> f32 {
+            let i = self.w + n - k;
+            self.buf[if i >= n { i - n } else { i }]
+        };
+        let k = di as usize;
         // Points at delays k-1, k, k+1, k+2; t moves from k toward k+1.
         let (x0, x1, x2, x3) = (at(k - 1), at(k), at(k + 1), at(k + 2));
         let c1 = 0.5 * (x2 - x0);
@@ -392,6 +396,10 @@ impl Node for Delay {
             self.frames.target = self.target_frames(ctx.bpm);
             self.run(&mut left[from..to], &mut right[from..to]);
         }
+    }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
     }
     fn tail_frames(&self) -> u32 {
         if self.v[7] >= 0.5 {

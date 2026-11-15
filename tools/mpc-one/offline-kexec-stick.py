@@ -348,6 +348,10 @@ fi
 echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg
 exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}
 """
+# A crash (a panic, a crash outside Rust, the out-of-memory killer) restarts the app after 2 s; it then
+# makes a safe start (the app's crash.rs): a new project even if Prefs > At start says Last project, and
+# the screen says why. A stop (systemctl stop) is not a failure, so the app stays stopped. A fourth
+# failure within a minute stops the restarts, and OnFailure starts the log display, as before.
 APP_UNIT = """[Unit]
 Description=MPFree test boot: the pad player, from power-on
 DefaultDependencies=no
@@ -356,10 +360,14 @@ Conflicts=shutdown.target
 Before=shutdown.target
 IgnoreOnIsolate=yes
 OnFailure=mpfree-test-screen.service
+StartLimitIntervalSec=60
+StartLimitBurst=4
 
 [Service]
 Type=simple
 ExecStart=/bin/sh /etc/mpfree-test/start-app.sh
+Restart=on-failure
+RestartSec=2
 
 [Install]
 WantedBy=sysinit.target

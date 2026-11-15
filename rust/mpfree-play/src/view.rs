@@ -174,6 +174,11 @@ pub(crate) struct ClipView {
     /// The clip's pad pressure, as it holds it ([`Clip::touch`]): each
     /// note's [`Touch`] names its run here.
     pub touch: Vec<TouchPoint>,
+    /// A hash of everything above but where it plays (`slot`, `origin`,
+    /// `start`): it changes with any edit to what the clip plays
+    /// ([`NowPlaying::stamp`]). Recording in place keeps it as a compile
+    /// of the edited clip would make it ([`stamp_of`]).
+    pub stamp: u64,
 }
 
 impl ClipView {
@@ -215,6 +220,7 @@ impl ClipView {
         let v = self.note_view(n);
         let i = self.notes.partition_point(|x| x.local <= v.local);
         self.notes.insert(i, v);
+        self.stamp = self.stamp.wrapping_add(debug_hash(&v));
         true
     }
 
@@ -222,7 +228,8 @@ impl ClipView {
     fn remove_note(&mut self, n: &Note) -> bool {
         match self.notes.iter().position(|x| x.src == *n) {
             Some(i) => {
-                self.notes.remove(i);
+                let v = self.notes.remove(i);
+                self.stamp = self.stamp.wrapping_sub(debug_hash(&v));
                 true
             }
             None => false,
@@ -239,7 +246,11 @@ impl ClipView {
             return match self.locks.iter().position(|x| x.src == *old) {
                 // Same tick, so the same place.
                 Some(i) if self.locks[i].local == v.local => {
-                    self.locks[i] = v;
+                    let was = std::mem::replace(&mut self.locks[i], v);
+                    self.stamp = self
+                        .stamp
+                        .wrapping_sub(debug_hash(&was))
+                        .wrapping_add(debug_hash(&v));
                     true
                 }
                 _ => false,
@@ -250,6 +261,7 @@ impl ClipView {
         }
         let i = self.locks.partition_point(|x| x.local <= v.local);
         self.locks.insert(i, v);
+        self.stamp = self.stamp.wrapping_add(debug_hash(&v));
         true
     }
 
@@ -257,7 +269,8 @@ impl ClipView {
     fn remove_lock(&mut self, l: &Lock) -> bool {
         match self.locks.iter().position(|x| x.src == *l) {
             Some(i) => {
-                self.locks.remove(i);
+                let v = self.locks.remove(i);
+                self.stamp = self.stamp.wrapping_sub(debug_hash(&v));
                 true
             }
             None => false,
@@ -292,7 +305,11 @@ impl ClipView {
         {
             return false;
         }
+        let first = self.touch.len();
         self.touch.extend_from_slice(points);
+        for (i, p) in points.iter().enumerate() {
+            self.stamp = self.stamp.wrapping_add(touch_hash(first + i, *p));
+        }
         true
     }
 
@@ -348,9 +365,14 @@ impl ClipView {
         points: &[(f64, f32, Kind)],
         len: u32,
     ) -> bool {
-        len == self.length as u32
-            && self.moves.fits(target, points.len())
-            && self.moves.put(target, map, points, len).is_ok()
+        if len != self.length as u32 || !self.moves.fits(target, points.len()) {
+            return false;
+        }
+        let was = self.moves.lane(target).map_or(0, lane_hash);
+        let put = self.moves.put(target, map, points, len).is_ok();
+        let now = self.moves.lane(target).map_or(0, lane_hash);
+        self.stamp = self.stamp.wrapping_sub(was).wrapping_add(now);
+        put
     }
 }
 
@@ -511,7 +533,7 @@ impl PlayView {
         if !lanes.is_empty() {
             // One long pass from tick 0 that never loops.
             let len = Tick::from(SONG_LANE_LEN);
-            self.song_lanes = Some(ClipView {
+            let mut song = ClipView {
                 slot: SONG_SLOT,
                 origin: 0,
                 start: 0,
@@ -524,7 +546,11 @@ impl PlayView {
                 locks: Vec::new(),
                 moves: lanes.clone(),
                 touch: Vec::new(),
-            });
+                stamp: 0,
+            };
+            // Recorded moves land here in place too: keep it as they would.
+            song.stamp = stamp_of(&song);
+            self.song_lanes = Some(song);
         }
         for (i, p) in project.arrangement.placements.iter().enumerate() {
             let track = project
@@ -839,12 +865,110 @@ fn view_of(
         locks: Vec::new(),
         moves: clip.moves.clone(),
         touch: clip.touch.clone(),
+        stamp: 0,
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
     view.locks = clip.locks.iter().map(|l| view.lock_view(l)).collect();
     view.locks.sort_by(|a, b| a.local.total_cmp(&b.local));
+    view.stamp = stamp_of(&view);
     view
+}
+
+/// FNV-1a, fed text (`write!`) or whole words, finished with a mix so
+/// that the sums in [`ClipView::stamp`] spread over every bit. It never
+/// allocates, so the audio thread keeps a stamp up to date as it records.
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Fnv {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn word(&mut self, w: u64) {
+        self.0 = (self.0 ^ w).wrapping_mul(0x0100_0000_01b3);
+    }
+
+    fn done(self) -> u64 {
+        // splitmix64's finish.
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+}
+
+impl std::fmt::Write for Fnv {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for b in s.bytes() {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        Ok(())
+    }
+}
+
+fn debug_hash(v: &impl std::fmt::Debug) -> u64 {
+    use std::fmt::Write;
+    let mut h = Fnv::new();
+    let _ = write!(h, "{v:?}");
+    h.done()
+}
+
+/// A pressure point's share of a stamp: where it sits counts, since
+/// notes name their runs by place.
+fn touch_hash(i: usize, p: TouchPoint) -> u64 {
+    let mut h = Fnv::new();
+    h.word(i as u64);
+    h.word(u64::from(p.at) << 8 | u64::from(p.value));
+    h.done()
+}
+
+/// A lane's share of a stamp. Word by word: a lane can hold thousands of
+/// points and the audio thread hashes one after each recorded gesture.
+fn lane_hash(l: &mpfree_seq::mpfree_moves::Lane) -> u64 {
+    use std::fmt::Write;
+    let mut h = Fnv::new();
+    let _ = write!(h, "{:?}|{:?}|", l.target, l.map);
+    for p in &l.points {
+        h.word(u64::from(p.tick) << 32 | u64::from(p.u.to_bits()));
+        h.word(p.kind as u64);
+    }
+    h.done()
+}
+
+/// [`ClipView::stamp`] worked out whole: a hash of the clip's settings
+/// plus the sum of a hash per note, lock, pressure point and moves lane.
+/// A sum, so a recorded note or lock changes it by its own share alone
+/// (the same as a compile of the clip with it would give).
+fn stamp_of(v: &ClipView) -> u64 {
+    let head = debug_hash(&(v.length, v.speed, v.quantise, v.song_len, v.swing));
+    let notes = v.notes.iter().map(debug_hash);
+    let locks = v.locks.iter().map(debug_hash);
+    let touch = v.touch.iter().enumerate().map(|(i, p)| touch_hash(i, *p));
+    let lanes = v.moves.lanes().iter().map(lane_hash);
+    notes
+        .chain(locks)
+        .chain(touch)
+        .chain(lanes)
+        .fold(head, u64::wrapping_add)
+}
+
+/// What a track plays now ([`crate::Player::now_playing`]), for a host
+/// that follows its loop, such as a frozen mixer strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NowPlaying {
+    /// The clip's slot on its track (a placement's clip in song mode).
+    pub slot: usize,
+    /// The song tick its tick 0 falls on; it repeats every `song_len`.
+    pub origin: Tick,
+    /// One pass, in song ticks.
+    pub song_len: f64,
+    /// Changes with any edit to what the clip plays (its notes, locks,
+    /// moves, pressure, length, speed, quantise or swing), not with where
+    /// it plays.
+    pub stamp: u64,
+    /// The track is muted.
+    pub muted: bool,
 }
 
 /// A cue carried out on the audio thread that the view does not show yet.
@@ -868,6 +992,9 @@ pub(crate) struct Switches {
     /// Switches made on each track so far, for a view that says how many
     /// it shows ([`Includes::switches`]).
     made: [u32; MAX_TRACKS],
+    /// One past the last track with a switch in `on` (0: none), so a period
+    /// looks at those tracks only, not all 128.
+    hi: usize,
 }
 
 impl Switches {
@@ -875,6 +1002,7 @@ impl Switches {
         Switches {
             on: [None; MAX_TRACKS],
             made: [0; MAX_TRACKS],
+            hi: 0,
         }
     }
 
@@ -883,7 +1011,8 @@ impl Switches {
     /// the track as were made; any other once its cue is gone (the control
     /// thread applied it, or took it back).
     pub fn follow(&mut self, view: &PlayView) {
-        for (i, s) in self.on.iter_mut().enumerate() {
+        let mut hi = 0;
+        for (i, s) in self.on[..self.hi].iter_mut().enumerate() {
             let Some(sw) = *s else {
                 continue;
             };
@@ -897,8 +1026,11 @@ impl Switches {
             };
             if shown {
                 *s = None;
+            } else {
+                hi = i + 1;
             }
         }
+        self.hi = hi;
     }
 
     /// Where the cue on `track` starts in a span playing `ticks`, if it
@@ -932,6 +1064,7 @@ impl Switches {
             mute: cue.mute,
         });
         self.made[track] = self.made[track].wrapping_add(1);
+        self.hi = self.hi.max(track + 1);
         Some(Started {
             track,
             slot: cue.slot,
@@ -1045,6 +1178,101 @@ mod tests {
         assert_eq!((c.song_len, c.notes[0].len, c.origin), (480.0, 5.0, 3840));
         assert_eq!(v.tracks[0].dest, 3);
         assert!(v.tracks[1].clip.is_none());
+    }
+
+    #[test]
+    fn a_stamp_kept_up_while_recording_in_place_is_the_one_a_compile_makes() {
+        let mut clip = project().tracks[0].slots[2].clone().unwrap();
+        let cut = Target::Track(RelAddr::new(mpfree_param::OnTrack::Inst, 3));
+        let map = Map::linear(0.0, 1.0);
+        let gesture = |a: f64, b: f64| [(a, 0.2, Kind::Ramp), (b, 0.7, Kind::Ramp)];
+        clip.moves.put(cut, map, &gesture(0.0, 100.0), 960).unwrap();
+        let fresh = |c: &Clip| view_of(c, None, 2, 0, 0);
+        let mut v = fresh(&clip);
+        v.make_room(4, 4);
+        let mut stamps = vec![v.stamp];
+        let mut check = |v: &ClipView, c: &Clip, what: &str| {
+            assert_eq!(*v, fresh(c), "{what}: in place, as a compile makes it");
+            assert!(!stamps.contains(&v.stamp), "{what}: a new stamp");
+            stamps.push(v.stamp);
+        };
+        // A note with its pressure.
+        let pts = [
+            TouchPoint { at: 0, value: 40 },
+            TouchPoint { at: 5, value: 90 },
+        ];
+        let mut n = Note::new(300, 10, 5, 70);
+        assert!(v.record_note(n, &pts));
+        n.touch = Touch {
+            first: clip.touch.len() as u32,
+            len: 2,
+        };
+        clip.touch.extend_from_slice(&pts);
+        clip.notes.push(n);
+        check(&v, &clip, "a note");
+        // A lock, then a lock in its place.
+        let l = Lock::new(
+            300,
+            None,
+            RelAddr::new(mpfree_param::OnTrack::Inst, 3),
+            0.25,
+        );
+        assert!(v.record_lock(&l));
+        clip.locks.push(l);
+        check(&v, &clip, "a lock");
+        let l2 = Lock { value: 0.75, ..l };
+        assert!(v.record_lock(&l2));
+        clip.locks[0] = l2;
+        check(&v, &clip, "a lock replaced");
+        // A gesture over the lane's own.
+        assert!(v.put_move(cut, map, &gesture(50.0, 400.0), 960));
+        clip.moves
+            .put(cut, map, &gesture(50.0, 400.0), 960)
+            .unwrap();
+        check(&v, &clip, "a gesture");
+        // Taken out again.
+        assert!(v.remove_lock(&l2));
+        clip.locks.clear();
+        assert!(v.remove_note(&n));
+        clip.notes.pop();
+        assert_eq!(v, fresh(&clip), "taken out");
+    }
+
+    #[test]
+    fn now_playing_names_the_clip_and_its_stamp_follows_edits_only() {
+        let launch = |origin| Launch {
+            track: 0,
+            slot: 2,
+            origin,
+            start: origin,
+        };
+        let p = project();
+        let player = crate::Player::new();
+        let v = PlayView::compile(&p, &[launch(3840)]).unwrap();
+        let now = player.now_playing(&v, 0, 4000).unwrap();
+        assert_eq!((now.slot, now.origin, now.song_len), (2, 3840, 480.0));
+        assert!(!now.muted);
+        assert_eq!(player.now_playing(&v, 1, 4000), None, "nothing plays");
+        assert_eq!(player.now_playing(&v, 7, 4000), None, "no such track");
+        // Launched somewhere else: the same stamp.
+        let moved = PlayView::compile(&p, &[launch(0)]).unwrap();
+        let there = player.now_playing(&moved, 0, 10).unwrap();
+        assert_eq!((there.origin, there.stamp), (0, now.stamp));
+        // A note's velocity, the length, the swing: each a new stamp.
+        let mut stamps = vec![now.stamp];
+        let edits: [fn(&mut mpfree_seq::Clip); 3] = [
+            |c| c.notes[0].velocity = 91,
+            |c| c.length = 1920,
+            |c| c.swing = Some(Swing::new(240, 60).unwrap()),
+        ];
+        for edit in edits {
+            let mut e = project();
+            edit(e.tracks[0].slots[2].as_mut().unwrap());
+            let v = PlayView::compile(&e, &[launch(3840)]).unwrap();
+            let s = player.now_playing(&v, 0, 4000).unwrap().stamp;
+            assert!(!stamps.contains(&s), "an edit changes the stamp");
+            stamps.push(s);
+        }
     }
 
     #[test]

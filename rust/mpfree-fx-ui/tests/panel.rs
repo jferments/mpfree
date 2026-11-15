@@ -7,9 +7,7 @@ use mpfree_fx_ui::perform::{self, PerformPads, XyView};
 use mpfree_fx_ui::sample::{app_ui, samples, BPM, RATE};
 use mpfree_fx_ui::view::{self, FxAction, PLAIN_LAYOUT};
 use mpfree_fx_ui::visual::has_visuals;
-use mpfree_fx_ui::{
-    make, preset_values, FxPanel, FxState, Locks, PerformAction, PerformPanel, CATALOGUE,
-};
+use mpfree_fx_ui::{make, preset_values, FxPanel, FxState, Locks, PerformAction, PerformPanel};
 use mpfree_synth_ui::widgets::TitleBar;
 use mpfree_synth_ui::widgets::{TileGrid, Visuals};
 use mpfree_ui::{Color, EventKind, Fonts, SoftCanvas, Touch, Ui, UiEvent};
@@ -46,7 +44,7 @@ fn ev(widget: &str, kind: EventKind) -> UiEvent {
 #[test]
 fn every_sample_screen_draws() {
     let list = samples(Fonts::embedded).unwrap();
-    assert_eq!(list.len(), 21);
+    assert_eq!(list.len(), 30);
     for mut s in list {
         let (w, h) = s.ui.size();
         let mut c = SoftCanvas::new(w, h);
@@ -60,7 +58,8 @@ fn every_sample_screen_draws() {
 
 #[test]
 fn every_effect_gets_a_page_and_its_drawings_stay_in_their_cards() {
-    for (id, name) in CATALOGUE {
+    for fx in mpfree_fx::EFFECTS {
+        let (id, name) = (&fx.id, &fx.name);
         let (ui, p) = panel(id, &[]);
         assert!(!p.pages().is_empty(), "{name} has no page");
         let placed: usize = p.pages().iter().map(|pg| pg.params.len()).sum();
@@ -532,4 +531,216 @@ fn a_held_step_locks_perform_pads_turns_and_the_xy_pad() {
     p.set_locks(&mut ui, None);
     let d = ui.touch(3, Touch::Down, c.x + 5, c.y + 5).unwrap();
     assert_eq!(p.event(&mut ui, &d), vec![PerformAction::Press(4)]);
+}
+
+#[test]
+fn a_watched_effect_gets_a_levels_card() {
+    use mpfree_fx::ids::compressor as comp;
+    let theme = mpfree_ui::Theme::dark();
+    let mut st = state("mpfree.fx.compressor", &[]);
+    let r = st.index(comp::REDUCTION).unwrap();
+    st.values[r] = -6.0;
+    let cards = |st: &FxState| {
+        let scratch = mpfree_fx_ui::Scratch::new(st);
+        mpfree_fx_ui::visual::strip(st, "Compressor", None, &scratch, &theme).cards
+    };
+    let plain = cards(&st).len();
+    assert!(cards(&st).iter().all(|c| c.title != "Levels"));
+    st.levels = Some((-12.0, -18.0));
+    let with = cards(&st);
+    assert_eq!(with.len(), plain + 1);
+    let c = with.last().unwrap();
+    assert_eq!(c.title, "Levels");
+    assert_eq!(c.bar_labels, ["In", "Out", "Reduction"]);
+    // -60 to 0 dBFS across the bar; the reduction against its 60 dB.
+    let want = [48.0 / 60.0, 42.0 / 60.0, 6.0 / 60.0];
+    for (b, w) in c.bars.iter().zip(want) {
+        assert!((b - w).abs() < 1e-4, "{:?}", c.bars);
+    }
+    assert!(
+        c.caption.contains("in -12.0 · out -18.0 dB"),
+        "{}",
+        c.caption
+    );
+    // An effect with no gain meter of its own: just in and out.
+    let mut st = state("mpfree.fx.delay", &[]);
+    st.levels = Some((-130.0, 3.0));
+    let c = cards(&st).pop().unwrap();
+    assert_eq!(c.bars, [0.0, 1.0]);
+    assert!(
+        c.caption.starts_with("in -inf · out 3.0 dB"),
+        "{}",
+        c.caption
+    );
+}
+
+#[test]
+fn the_new_effects_draw_what_they_play() {
+    use mpfree_fx::ids::{ducker, pitch, transient};
+    let theme = mpfree_ui::Theme::dark();
+    let card = |st: &FxState, page: &str| {
+        let scratch = mpfree_fx_ui::Scratch::new(st);
+        mpfree_fx_ui::visual::strip(st, page, None, &scratch, &theme)
+            .cards
+            .remove(0)
+    };
+    let low = |c: &mpfree_synth_ui::widgets::Card| {
+        let pts = &c.traces.last().unwrap().pts;
+        pts.iter().map(|p| p.1).fold(f32::MAX, f32::min)
+    };
+    // The ducker's pump goes deeper with more depth, on Tempo and on
+    // Sidechain.
+    for source in [0.0, 1.0] {
+        let a = card(
+            &state(
+                "mpfree.fx.ducker",
+                &[(ducker::SOURCE, source), (ducker::DEPTH, 6.0)],
+            ),
+            "Ducker",
+        );
+        let b = card(
+            &state(
+                "mpfree.fx.ducker",
+                &[(ducker::SOURCE, source), (ducker::DEPTH, 24.0)],
+            ),
+            "Ducker",
+        );
+        assert_eq!(a.title, "Pump");
+        assert!(
+            low(&b) < low(&a) - 0.1,
+            "source {source}: {} {}",
+            low(&a),
+            low(&b)
+        );
+    }
+    // More attack lifts the front of the hit.
+    let top = |c: &mpfree_synth_ui::widgets::Card| {
+        c.traces
+            .last()
+            .unwrap()
+            .pts
+            .iter()
+            .map(|p| p.1)
+            .fold(0.0, f32::max)
+    };
+    let flat = card(
+        &state("mpfree.fx.transient", &[(transient::ATTACK, 0.0)]),
+        "Transient shaper",
+    );
+    let punch = card(
+        &state("mpfree.fx.transient", &[(transient::ATTACK, 100.0)]),
+        "Transient shaper",
+    );
+    assert!(
+        top(&punch) > top(&flat) + 0.03,
+        "{} {}",
+        top(&flat),
+        top(&punch)
+    );
+    // The shift sits where the pitch says, and feedback adds stairs.
+    let dry = card(
+        &state(
+            "mpfree.fx.pitch",
+            &[(pitch::PITCH, 7.0), (pitch::FEEDBACK, 0.0)],
+        ),
+        "Pitch shifter",
+    );
+    let fb = card(
+        &state(
+            "mpfree.fx.pitch",
+            &[(pitch::PITCH, 7.0), (pitch::FEEDBACK, 60.0)],
+        ),
+        "Pitch shifter",
+    );
+    let y7 = 0.5 + 7.0 / 52.0;
+    assert!(dry
+        .traces
+        .iter()
+        .any(|t| t.pts.iter().all(|p| (p.1 - y7).abs() < 1e-5)));
+    assert!(fb.traces.len() >= dry.traces.len() + 2);
+}
+
+#[test]
+fn the_vocal_effects_draw_their_key() {
+    use mpfree_fx::ids::{harmonizer as harm, pitch_correct as tune};
+    let theme = mpfree_ui::Theme::dark();
+    let card = |st: &FxState, page: &str| {
+        let scratch = mpfree_fx_ui::Scratch::new(st);
+        mpfree_fx_ui::visual::strip(st, page, None, &scratch, &theme)
+            .cards
+            .remove(0)
+    };
+    // Pitch correct in C major at full Amount: stairs, one flat step per
+    // note of the scale; the grid names its seven notes.
+    let full = card(
+        &state(
+            "mpfree.fx.pitch_correct",
+            &[(tune::SCALE, 1.0), (tune::AMOUNT, 100.0)],
+        ),
+        "Pitch correct",
+    );
+    assert_eq!(full.title, "Tune");
+    let mut levels: Vec<f32> = full.traces[0].pts.iter().map(|p| p.1).collect();
+    levels.dedup_by(|a, b| (*a - *b).abs() < 1e-5);
+    assert_eq!(levels.len(), 8, "C to C: {levels:?}");
+    let names: Vec<&str> = full.grid.iter().map(|g| g.1.as_str()).collect();
+    assert_eq!(names, ["C", "D", "E", "F", "G", "A", "B"]);
+    // At zero Amount the line is the dashed one: nothing changes.
+    let none = card(
+        &state("mpfree.fx.pitch_correct", &[(tune::AMOUNT, 0.0)]),
+        "Pitch correct",
+    );
+    let (a, b) = (&none.traces[0].pts, &none.traces[1].pts);
+    assert!((a[0].1 - b[0].1).abs() < 1e-4 && (a[a.len() - 1].1 - b[1].1).abs() < 1e-4);
+
+    // The Harmonizer, a 3rd up in C major: four semitones on C, F and G,
+    // three on D, E, A and B.
+    let h = card(
+        &state(
+            "mpfree.fx.harmonizer",
+            &[(harm::SCALE, 1.0), (harm::VOICE1, 7.0), (harm::VOICE2, 0.0)],
+        ),
+        "Harmonizer",
+    );
+    assert_eq!(h.title, "Voices");
+    let step = |n: usize| ((h.traces[0].pts[2 * n].1 - 0.5) * 26.0).round() as i32;
+    let thirds: Vec<i32> = [0, 2, 4, 5, 7, 9, 11].iter().map(|&n| step(n)).collect();
+    assert_eq!(thirds, [4, 3, 3, 4, 4, 3, 3]);
+    assert!(h.caption.contains("3rd up"), "{}", h.caption);
+}
+
+#[test]
+fn the_tuner_needle_sits_on_the_cents() {
+    use mpfree_fx::ids::tuner;
+    let theme = mpfree_ui::Theme::dark();
+    let card = |st: &FxState| {
+        let scratch = mpfree_fx_ui::Scratch::new(st);
+        mpfree_fx_ui::visual::strip(st, "Tuner", None, &scratch, &theme)
+            .cards
+            .remove(0)
+    };
+    // Nothing heard: no needle, and the card says to play.
+    let quiet = card(&state("mpfree.fx.tuner", &[]));
+    assert_eq!(quiet.title, "Tuner");
+    assert_eq!(quiet.traces.len(), 1);
+    assert!(
+        quiet.caption.starts_with("Play a note"),
+        "{}",
+        quiet.caption
+    );
+    // A2, 7 cents flat: the needle a fourteenth left of the middle, amber.
+    let mut st = state("mpfree.fx.tuner", &[]);
+    for (id, v) in [
+        (tuner::NOTE, 45.0),
+        (tuner::CENTS, -7.0),
+        (tuner::HZ, 109.56),
+    ] {
+        let i = st.index(id).unwrap();
+        st.values[i] = v;
+    }
+    let c = card(&st);
+    let needle = &c.traces[1];
+    assert!((needle.pts[0].0 - 0.43).abs() < 1e-5);
+    assert_eq!(needle.color, theme.warn);
+    assert!(c.caption.starts_with("A2 · -7.0 c"), "{}", c.caption);
 }

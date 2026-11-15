@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-13 9560b32
+checked: 2026-11-14 b76c3c7
 -->
 
 # The screen
@@ -22,12 +22,20 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | **Synth** | MPFree's synths and their sounds. |
 | **Looper** | Setting up and editing loops. |
 | **Sample** | Recording, chopping and shaping the sound on one pad. |
+| **Mix** | The mixer and every sound's effects (next build). See [Mixing and effects](../making-music/mixing-and-effects.md). |
 
-**The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. The small **mixer icon** at the far right opens the mixer, and the **I/O icon** just left of it opens the mixer's I/O view, where the project's audio, MIDI, sync and CV are routed. While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot.
+**The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). Two of them do something when tapped:
+
+- **The kit chip** (such as **Classic House · Bank A**) opens a list of every kit over the page. Tap a kit to load it on the pads; the list closes and you are back where you were. The last row is the synth. **Back**, the kit chip again or any tab closes the list and keeps the kit that is playing.
+- **The Full level or Half level chip** turns that level off, as pressing **FULL LEVEL** again would: the pads play as hard as you hit them again.
+
+Tap any other chip and the hint line says what it shows.
+
+The small **I/O icon** at the far right opens the mixer's I/O view, where the project's audio, MIDI, sync and CV are routed. While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot.
 
 ## The transport bar
 
-On the Play page, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**), and dots that light up with each bar and beat. On the right of it is the view switch; see [Playing live](../making-music/playing-live.md).
+On the Play page, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo), and dots that light up with each bar and beat. On the right of it is the view switch; see [Playing live](../making-music/playing-live.md).
 
 ## The Q-Link column and the master bar
 
@@ -41,20 +49,39 @@ The line along the bottom of the screen always says what the buttons do on the p
 
 When something you asked for can't happen, or does nothing, the hint line says why in amber for a few seconds, then goes back to the hint. For example: "The chain is full", or why a sample edit was refused.
 
+The same goes for a faint button or card: tap it and the hint line says why it is faint and what to do first, such as "Copy a pad first" or "The filter is off: pick one in the Filter row". A setting that is already as low or as high as it goes says so too, such as "Count-in is off already". A tab, row or card that is already lit has nothing new to show, so a tap on it changes nothing.
+
 ## Things that open over the page
 
 Some things are not tabs. They open over the page you are on, and close the same way they opened:
 
 - **Options:** press **MENU** for the current page's settings, such as the repeat rate or the tempo on the Play page.
 - **Prefs:** press **SHIFT + MENU** for MPFree's settings. See [Prefs](../reference/prefs.md).
-- **The mixer:** press **TRACK MIX**, or tap the mixer icon. The I/O icon beside it opens the mixer's [I/O view](../making-music/mixing-and-effects.md#the-io-view).
+- **The mixer's I/O view:** tap the I/O icon at the top right. See [the I/O view](../making-music/mixing-and-effects.md#the-io-view). (The mixer itself is the **Mix** tab from the next build; on the current test build it opens over the page with **TRACK MIX** or the sliders icon.)
 - **The Arp panel:** hold **NOTE REPEAT** and press **MENU**.
+- **The list of kits:** tap the kit chip in the top bar.
+
+{{shot: kits | The list of kits, opened from the kit chip. Tap a kit to load it on the pads; Back closes the list.}}
 
 {{shot: options | Play's options, opened with MENU. Turn the wheel or tap to pick a row; – and + change it.}}
 
 In a list of settings like this one, turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. Or push the data wheel: the row's value is outlined, the wheel now changes it, and a second push sets it so the wheel moves between rows again. The panel on the right explains the row you picked.
 
 The settings beside the Sample tab's pages and the Pads tab's Pad view, the Synth tab's tiles and Arrange's Record settings work the same way: the wheel picks, **–** and **+** change, and the push lets the wheel change it. Holding **SHIFT** gives the wheel its other job on that page (the next pad, the next page, scrolling).
+
+## The wheel's outline
+
+On the Play page, the Looper tab, the mixer and the FX chain editor, the data wheel takes you round the screen without touching it (next build):
+
+- **Tap a control** and an outline appears on it. **Turn the wheel** and the outline moves to the next control, left to right and top to bottom through that part of the screen, then on into the next part. On Play and the Looper tab you can also just turn the wheel: the outline starts on the first control.
+- **Push the wheel** to press the control the outline is on, as a tap would. On a throw, the push holds it on until you push again.
+- **On a value** (a fader, a pan, a send, a Q-Link card, the master level, an effect's knob), the push grabs it: the outline gets thicker and the wheel turns the value. Push again to let go, and the wheel moves the outline again. **–** and **+** step an outlined value without the push.
+- **In the chain editor**, push on the picked effect to pick it up: the wheel (or **–** and **+**) moves it up or down the chain, and a push puts it down.
+- Some values can't be turned with the wheel yet (the XY pad, the Looper tab's trims); the line at the bottom says to drag them.
+- On the mixer and the chain editor, the wheel keeps its old job (the selected strip's volume, the first knob) until you tap a control. Changing page, or tapping an empty spot, takes the outline away.
+- While the list of effects is open, the wheel moves through the effects and its push opens presets and then adds, as always (see [Adding an effect](../making-music/mixing-and-effects.md#adding-an-effect)).
+
+To change the kit, tap the kit chip, press a **PAD BANK** button, or hold **SHIFT** and turn the wheel on the Play page.
 
 ## Touch
 

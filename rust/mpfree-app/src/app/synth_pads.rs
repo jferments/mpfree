@@ -23,12 +23,14 @@
 //! Chromatic | In key switch ([`App::synth_pick_layout`]) and the PAD BANK
 //! buttons picking a bank's layout ([`App::synth_bank`]) change them too.
 //!
-//! They are kept between starts as the store's "synth" settings
-//! ([`App::synth_settings`], put back by [`App::restore_synth`]): every row
-//! above, and each bank's layout. The bank playing and the octave are not
-//! kept: the pads start on bank A, pad 1 at C3.
+//! They are the song's (Jay, 13 Nov): kept in the project's "synth" part
+//! ([`App::synth_settings`], put back by [`App::open_synth`]), not in
+//! Prefs, so a project's key and tuning don't follow you into the next
+//! one. New project starts chromatic in C at A4 = 440. Every row above is
+//! kept, and each bank's layout; the bank playing and the octave are not:
+//! the pads stay where they are.
 
-use super::{App, Effect, Item};
+use super::{App, Effect, Item, View};
 use crate::synth::{Builtin, Engine, A4_MAX, A4_MIN, BANKS};
 use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
 use mpfree_arp::scale::{Scale, NOTE_NAMES, SCALES};
@@ -178,7 +180,7 @@ impl App {
         let file = self.tuning_file();
         let mapped = file.is_some_and(|f| f.1);
         match item {
-            SynthItem::Engine => ("Engine", p.engine.name().to_string()),
+            SynthItem::Engine => (instrument_label(self.track), self.engine_text()),
             SynthItem::Scale => (
                 "Scale",
                 match self.pad_scale_entry(self.pad_scale_choice()) {
@@ -237,12 +239,15 @@ impl App {
     pub(super) fn synth_item_help(item: SynthItem) -> Vec<&'static str> {
         match item {
             SynthItem::Engine => vec![
-                "The synth the pads play: Poly (subtractive),",
-                "FM (six operators), Drums (a sound on each",
-                "pad; no scale or octave) or Pluck (strings",
-                "and mallets). A note still ringing on the",
-                "other one finishes its release. The Synth",
-                "tab shows the engine picked.",
+                "What the selected track plays: Kit (the pads'",
+                "kit, as every track starts), or its own",
+                "instrument: Poly (subtractive), FM (six",
+                "operators), Drums (a sound on each pad), Pluck",
+                "(strings and mallets), Wavetable, then the",
+                "plugin synths in files/plugins/. It starts as",
+                "a copy of the Synth tab's sound, and the tab",
+                "then edits the track's own. The pads play the",
+                "selected track; the old sound rings out.",
             ],
             SynthItem::Scale => vec![
                 "The pads' own scale (the arp has its own).",
@@ -299,9 +304,7 @@ impl App {
     pub(super) fn step_synth_item(&mut self, item: SynthItem, d: i32) -> Vec<Effect> {
         let before = (self.synth_pads, self.pad_scale_pick, self.pad_scale_root);
         match item {
-            SynthItem::Engine => {
-                self.synth_pads.engine = step_in(&Engine::ALL, self.synth_pads.engine, d)
-            }
+            SynthItem::Engine => return self.step_track_sound(d),
             SynthItem::Scale => {
                 self.pad_scale_pick = (self.pad_scale_choice() as i32 + d)
                     .clamp(0, self.pad_scale_choices() as i32 - 1)
@@ -350,8 +353,93 @@ impl App {
         if (self.synth_pads, self.pad_scale_pick, self.pad_scale_root) == before {
             return Vec::new();
         }
-        self.save_dirty = true;
+        self.project_edit = true;
         vec![Effect::SynthPads(self.synth_pads)]
+    }
+
+    /// The Instrument row's choices for a track: Kit (None), the built-in
+    /// engines, then the plugin synths, as (node id, name).
+    fn sound_choices(&self) -> Vec<Option<(&'static str, &'static str)>> {
+        std::iter::once(None)
+            .chain(Engine::ALL.iter().map(|e| Some((e.node_id(), e.name()))))
+            .chain(self.plugin_synths.iter().map(|&p| Some(p)))
+            .collect()
+    }
+
+    /// The Instrument row's value: what the selected track plays.
+    fn engine_text(&self) -> String {
+        match self.track_sound(self.track) {
+            Some(h) => h.name.to_string(),
+            None => "Kit".to_string(),
+        }
+    }
+
+    /// The Instrument row stepped by `d`: the selected track's sound, Kit first,
+    /// then the engines and the plugin synths.
+    fn step_track_sound(&mut self, d: i32) -> Vec<Effect> {
+        let choices = self.sound_choices();
+        let now = self.track_sound(self.track).map(|h| h.id);
+        let at = choices
+            .iter()
+            .position(|c| c.map(|c| c.0) == now)
+            .unwrap_or(0);
+        let to = (at as i32 + d).clamp(0, choices.len() as i32 - 1) as usize;
+        if to == at {
+            return Vec::new();
+        }
+        let pick = choices[to];
+        // A track on the kit takes a place only while one is free.
+        let others = self.track_sounds.iter().flatten().count();
+        if now.is_none() && others >= crate::instruments::SLOTS {
+            return vec![Effect::Tell(format!(
+                "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit first",
+                self.track + 1,
+                crate::instruments::SLOTS
+            ))];
+        }
+        let track = self.track;
+        // The project keeps each track's instrument: unsaved work.
+        self.project_edit = true;
+        self.set_track_sound(
+            track,
+            pick.map(|(id, name)| crate::instruments::Held {
+                id,
+                name,
+                instance: 0,
+            }),
+        );
+        vec![Effect::TrackSound {
+            track,
+            id: pick.map(|c| c.0),
+        }]
+    }
+
+    /// A tap on track `track`'s sound line on Arrange: the Synth tab's
+    /// MENU opens on the Instrument row, for that track (the screen arms
+    /// it, so the selected track follows).
+    pub fn open_track_instrument(&mut self, track: usize) -> Vec<Effect> {
+        if self.view == View::Guide {
+            return Vec::new();
+        }
+        let mut fx = self.set_track(track);
+        if self.view != View::Synth {
+            fx.extend(self.show(View::Synth));
+        }
+        // MENU there: the Options rows, the Instrument row first.
+        fx.extend(self.show(View::Options));
+        fx
+    }
+
+    /// What track `track` plays as its own instrument (None: the kit).
+    pub fn track_sound(&self, track: usize) -> Option<crate::instruments::Held> {
+        self.track_sounds.get(track).copied().flatten()
+    }
+
+    /// Track `track`'s own instrument as the audio loop has it now.
+    pub fn set_track_sound(&mut self, track: usize, held: Option<crate::instruments::Held>) {
+        if let Some(t) = self.track_sounds.get_mut(track) {
+            *t = held;
+        }
     }
 
     /// The pads panel's Chromatic | In key switch (Jay, 12:22Z): the bank
@@ -388,7 +476,7 @@ impl App {
             ))];
         }
         self.synth_pads.set_layout(want);
-        self.save_dirty = true;
+        self.project_edit = true;
         let line = if in_key && picked {
             format!("pads: In key, {scale} (MENU on the Synth tab, Scale, changes it)")
         } else if in_key {
@@ -441,12 +529,31 @@ impl App {
         out
     }
 
-    /// Puts back the Synth tab's options kept as the "synth" settings. Call
-    /// it once at start, after the owner's scales (the arp's patterns file)
-    /// and the tuning files are known. Returns the lines for the log (what
-    /// was put back, and anything left out: a word not understood, a scale
-    /// or tuning file that is gone) and the effect that hands the synth its
-    /// settings (none when nothing was kept).
+    /// A project's Synth tab options (its "synth" part), over the
+    /// defaults: an option the project doesn't have (or can't be used) is
+    /// the default, never the last project's. Returns the lines for the log
+    /// and the effect that hands the synth its settings.
+    pub fn open_synth(&mut self, s: &Settings) -> (Vec<String>, Vec<Effect>) {
+        // The bank playing and each bank's octave stay where they are.
+        let old = self.synth_pads;
+        self.synth_pads = crate::synth::PadSettings {
+            bank: old.bank,
+            ..Default::default()
+        };
+        for (b, (_, octave)) in self.synth_pads.banks.iter_mut().zip(old.banks) {
+            b.1 = octave;
+        }
+        (self.pad_scale_pick, self.pad_scale_root) = (0, 0);
+        let (notes, _) = self.restore_synth(s);
+        (notes, vec![Effect::SynthPads(self.synth_pads)])
+    }
+
+    /// Puts back the Synth tab's options from `s` (words as
+    /// [`App::synth_settings`] writes them) over the ones in use. The
+    /// owner's scales and the tuning files must be known. Returns the lines
+    /// for the log (what was put back, and anything left out: a word not
+    /// understood, a scale or tuning file that is gone) and the effect that
+    /// hands the synth its settings (none when `s` is empty).
     pub fn restore_synth(&mut self, s: &Settings) -> (Vec<String>, Vec<Effect>) {
         let mut skipped = Vec::new();
         let mut scale = None;
@@ -527,8 +634,8 @@ impl App {
         if !s.is_empty() {
             let text = |item| self.synth_item_text(item).1;
             notes.push(format!(
-                "saved synth options: {}, scale {} on {}, pad layout {}, tuning {} (root {}, A4 {})",
-                text(SynthItem::Engine),
+                "synth options: {}, scale {} on {}, pad layout {}, tuning {} (root {}, A4 {})",
+                self.synth_pads.engine.name(),
                 text(SynthItem::Scale),
                 text(SynthItem::Root),
                 text(SynthItem::Layout),
@@ -539,13 +646,10 @@ impl App {
         }
         if !skipped.is_empty() {
             notes.push(format!(
-                "saved synth options left out (not understood, or the scale or tuning file is gone): {}",
+                "synth options left out (not understood, or the scale or tuning file is gone): {}",
                 skipped.join(", ")
             ));
         }
-        // What was just read is what the store holds. If something was left
-        // out, the next save (after any change) writes what is in use.
-        self.saved[super::saved::SYNTH_SLOT] = s.to_text();
         let fx = if s.is_empty() {
             Vec::new()
         } else {
@@ -553,4 +657,28 @@ impl App {
         };
         (notes, fx)
     }
+}
+
+/// The Instrument row's label, naming the selected track so the row says
+/// whose sound it sets ("Track 2 instrument").
+fn instrument_label(track: usize) -> &'static str {
+    const LABELS: [&str; 16] = [
+        "Track 1 instrument",
+        "Track 2 instrument",
+        "Track 3 instrument",
+        "Track 4 instrument",
+        "Track 5 instrument",
+        "Track 6 instrument",
+        "Track 7 instrument",
+        "Track 8 instrument",
+        "Track 9 instrument",
+        "Track 10 instrument",
+        "Track 11 instrument",
+        "Track 12 instrument",
+        "Track 13 instrument",
+        "Track 14 instrument",
+        "Track 15 instrument",
+        "Track 16 instrument",
+    ];
+    LABELS.get(track).copied().unwrap_or("Instrument")
 }
