@@ -67,6 +67,10 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     and writes only /run/mpfree-test-eth, which the log service copies
   - root's password field, only if it marks the account locked ("!"), is set
     to "*" so OpenSSH accepts key logins; no password works either way
+  - /boot/mpfree-kexec/ for MPFree's boot hook (hook-install.sh): zImage (a
+    link to the image's own kernel), kexec.dtb and cmdline.txt as in the
+    build folder, and their SHA256SUMS. With the hook installed on the MPC,
+    power-on with the stick in reads them and jumps to the stick
   - only with --akai-app (phase 3 of the 3.10.1 stick test, for developer
     mode): Akai's app is NOT masked and its launcher is NOT stubbed, so it
     starts at power-on and draws the screen; the log display is installed but
@@ -84,7 +88,10 @@ Inputs, found automatically:
                     folder, or --image FILE
   boot-files        ~/mpfree-work/boot-files/<release>/ (from
                     offline-rootfs-survey.sh) for the image's kernel release
-                    and for the release running on the MPC
+                    and for the release running on the MPC. They can be the
+                    same release (an installed 3.10.1 starting the 3.10.1
+                    stick); then the running tree must be the installed
+                    system's, with its eMMC controller enabled
   the running tree  live.dtb in the newest kexec-preflight-*/ folder (from
                     collect-over-ssh.sh --kexec-preflight)
   your public key   $MPC_KEY.pub (default /home/jesse/.ssh/mpc_one_autorun_ed25519.pub)
@@ -197,6 +204,9 @@ REQUIRED = {"/usr/sbin/sshd": "regular", "/usr/lib/systemd/system/data.mount": "
             "/etc/systemd/system": "directory", "/etc/systemd/system/multi-user.target.wants": "directory",
             "/etc/shadow": "regular", "/bin/sh": None}
 MADE_IF_MISSING = ("/etc/systemd/system-generators", "/etc/sysctl.d", "/etc/systemd/system/sysinit.target.wants")
+# The files MPFree's boot hook on an installed MPC reads at power-on (tools/mpc-one/hook-install.sh): the
+# kernel (a link to the image's own), the device tree and command line made here, and their hashes.
+KEXEC_DIR = "/boot/mpfree-kexec"
 
 STUB = """#!/bin/sh
 # MPFree kexec test boot: this program is disabled on the test stick.
@@ -796,9 +806,22 @@ def running_release(pre, work, target_release):
             raise Stop("cannot tell which release the MPC runs: rerun collect-over-ssh.sh --kexec-preflight "
                        "(it records the release now)")
         release, how = others[0], "the only other boot-files release; the preflight predates release.txt"
-    if not SAFE.match(release) or release == target_release:
+    if not SAFE.match(release):
         raise Stop(f"unusable running release {release!r}")
     return release, how
+
+
+def check_same_release(live):
+    """The MPC runs the stick's own release (an installed 3.10.1 that starts the 3.10.1 stick).
+
+    Then the preflight must have read the tree U-Boot gave the installed system, not the tree of a test
+    build that the stick test started by kexec (which has the eMMC controller disabled, and would make
+    our own changes look like U-Boot's)."""
+    emmc = dtb.nodes_at(live, dtb.EMMC_ADDRESS)
+    if len(emmc) != 1 or dtb.status_of(emmc[0][1]) == "disabled":
+        raise Stop("the running tree has no enabled eMMC controller: the preflight ran on a test build started "
+                   "by kexec, not on the installed system. Run collect-over-ssh.sh --kexec-preflight again on the "
+                   "installed system (MPC_PORT=22 for developer mode)")
 
 
 def firewall_lines(img, scratch):
@@ -827,13 +850,14 @@ def firewall_lines(img, scratch):
 
 
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
-                 app=None, kits_uuid=None, data_uuid=None, akai_app=False):
+                 app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
     pad player starts at power-on in place of the log display, which stays installed for when the app fails.
     With `akai_app`, Akai's app is neither masked nor its launcher stubbed, and the log display is
-    installed but not started; partitions 3 and 4 are made all the same."""
+    installed but not started; partitions 3 and 4 are made all the same.
+    With `kexec_files` (release, kexec.dtb bytes, cmdline.txt bytes), KEXEC_DIR gets the boot hook's files."""
     if akai_app:
         if app is not None or splash[0] is not None or kits_uuid is None or data_uuid is None:
             raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
@@ -868,7 +892,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                   "/etc/sysctl.d/90-mpfree-test.conf"] +
                  ["/etc/systemd/system-generators/" + g for g in MASK_GENERATORS] +
                  (["/etc/systemd/system/mpfree-test-splash.service",
-                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] if splash_program else []))
+                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] if splash_program else []) +
+                 ([KEXEC_DIR] if kexec_files else []))
     for path in new_paths:
         if img.kind(path) is not None:
             raise Stop(f"{path} already exists in the image; refusing to guess what it is")
@@ -910,6 +935,14 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         add("/etc/mpfree-test/ethernet-details.sh", fh.read(), 0o755)
     add("/etc/mpfree-test/ethernet-retry.sh", ETHERNET_SCRIPT, 0o755)
     add("/etc/systemd/system/mpfree-test-ethernet.service", ETHERNET_UNIT, 0o644)
+    if kexec_files:
+        release, kexec_dtb, cmdline = kexec_files
+        kernel = img.read("/boot/zImage-" + release, scratch)
+        sums = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n"
+                       for name, data in (("zImage", kernel), ("kexec.dtb", kexec_dtb), ("cmdline.txt", cmdline)))
+        add(KEXEC_DIR + "/kexec.dtb", kexec_dtb, 0o644)
+        add(KEXEC_DIR + "/cmdline.txt", cmdline, 0o644)
+        add(KEXEC_DIR + "/SHA256SUMS", sums, 0o644)
     stubbed, absent = [], []
     for prog in stub_programs:
         kind = img.kind(prog)
@@ -957,8 +990,10 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     if splash_program:
         links["/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] = \
             "/etc/systemd/system/mpfree-test-splash.service"
+    if kexec_files:
+        links[KEXEC_DIR + "/zImage"] = "../zImage-" + kexec_files[0]
 
-    commands = ["mkdir /etc/mpfree-test"]
+    commands = ["mkdir /etc/mpfree-test"] + ([f"mkdir {KEXEC_DIR}"] if kexec_files else [])
     for folder in MADE_IF_MISSING:
         kind = img.kind(folder)
         if kind is None:
@@ -1127,6 +1162,9 @@ def main(argv):
         OUT.say(f"running tree: {live_path} ({dtb.model(live)}; {', '.join(board)})")
         running, how = running_release(pre, work, release)
         OUT.say(f"running release: {running} ({how})")
+        if running == release:
+            check_same_release(live)
+            OUT.say("  the stick's own release, installed: U-Boot's changes are read against its own board file")
         new_folder = os.path.join(work, "boot-files", release)
         old_folder = os.path.join(work, "boot-files", running)
         for folder in (new_folder, old_folder):
@@ -1185,6 +1223,10 @@ def main(argv):
             OUT.say("startup screen: none (no --splash)")
         kits_uuid = str(uuid.uuid4()) if parts34 else None
         data_uuid = str(uuid.uuid4()) if parts34 else None
+        cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
+                   "sysctl.kernel.kexec_load_disabled=1")
+        with open(dtb_out, "rb") as fh:
+            kexec_files = (release, fh.read(), (cmdline + "\n").encode())
         if args.akai_app:
             OUT.say(AKAI_APP_MARK)
             OUT.say(f"  {AKAI_APP_UNIT} and {AKAI_APP_LAUNCHER} are left as Akai ships them: Akai's app starts at "
@@ -1207,9 +1249,12 @@ def main(argv):
                     "stick's in place or carries it over, and makes the partition fill the stick")
         else:
             OUT.say("pad player: none (no --app); the log display starts at power-on")
+        OUT.say(f"for MPFree's boot hook: {KEXEC_DIR} on partition 1, with a link to the kernel, kexec.dtb, "
+                "cmdline.txt and their SHA256SUMS (the same files as in the build folder); with the hook installed "
+                "on the MPC, power-on with this stick in jumps to it")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
                                                                   screen_log, rotation, splash, app, kits_uuid,
-                                                                  data_uuid, args.akai_app)
+                                                                  data_uuid, args.akai_app, kexec_files)
         if app:
             if img.kind(GROW_PROGRAM) in ("regular", "symlink"):
                 OUT.say(f"partition 4: {GROW_PROGRAM} is in this version, so its filesystem grows at boot to fill "
@@ -1246,8 +1291,6 @@ def main(argv):
             OUT.say(f"partition 4 data PARTUUID {data_uuid} ({DATA_NAME}, ext4 with a journal, label "
                     f"MPFREE-DATA, at {DATA_START * SECTOR >> 20} MiB, {DATA_SIZE >> 20} MiB, empty)")
         shutil.copyfile(zimage, os.path.join(outdir, "zImage"))
-        cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
-                   "sysctl.kernel.kexec_load_disabled=1")
         with open(os.path.join(outdir, "cmdline.txt"), "w") as fh:
             fh.write(cmdline + "\n")
         with open(host_key + ".pub") as fh:

@@ -95,6 +95,17 @@ def live_tree():
     return dtb.build(tree)
 
 
+def live_tree_new(emmc="okay"):
+    """The tree U-Boot gives an installed NEW release: its board file plus what U-Boot fills in."""
+    tree = dtb.parse(new_board())
+    tree.root.set_prop("serial-number", dt_strings(SERIAL))
+    tree.find("/ethernet@ff290000").set_prop("local-mac-address", MAC)
+    tree.find("/memory@0").set_prop("reg", cells(0, 0x80000000))
+    tree.find("/chosen").set_prop("bootargs", dt_strings("root=PARTUUID=FAKE-EMMC-UUID rootwait ro"))
+    tree.find("/dwmmc@ff0f0000").set_prop("status", dt_strings(emmc))
+    return dtb.build(tree)
+
+
 def build_rootfs(base, shadow_root="!", extra=None, merged=True):
     root = os.path.join(base, "root")
     shutil.rmtree(root, ignore_errors=True)
@@ -240,6 +251,7 @@ class KexecStickTests(unittest.TestCase):
         self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
         self.assertEqual(run(["e2fsck", "-fn", log_img]).returncode, 0)
         self.assertIn(p2["uuid"].lower(), self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
+        self.check_hook_files(root_img, out)
 
         for unit in ("acvs.service", "touch-fw-update.service", "az0x-data-mkfs.service", "iptables.service"):
             self.assertIn('Fast link dest: "/dev/null"', self.dfs(root_img, f"stat /etc/systemd/system/{unit}"))
@@ -307,6 +319,43 @@ class KexecStickTests(unittest.TestCase):
             self.assertEqual(fh.read().split(), ["mpfree-kexec-test"] + derived)
         with open(os.path.join(out, "report.txt")) as fh:
             self.assertNotIn(SERIAL, fh.read())
+
+    def check_hook_files(self, root_img, out):
+        """/boot/mpfree-kexec on partition 1: the boot hook's copy of the build folder's kexec files."""
+        self.assertIn('Fast link dest: "../zImage-' + NEW + '"', self.dfs(root_img, "stat /boot/mpfree-kexec/zImage"))
+        for name in ("kexec.dtb", "cmdline.txt"):
+            copy = os.path.join(self.tmp, "hook-" + name)
+            run(["debugfs", "-R", f"dump /boot/mpfree-kexec/{name} {copy}", root_img])
+            self.assertEqual(sha(copy), sha(os.path.join(out, name)), name)
+            self.assertRegex(self.dfs(root_img, f"stat /boot/mpfree-kexec/{name}"), r"Type: regular\s+Mode:\s+0644")
+        sums = self.dfs(root_img, "cat /boot/mpfree-kexec/SHA256SUMS")
+        self.assertEqual(sums, "".join(f"{sha(os.path.join(out, n))}  {n}\n" for n in ("zImage", "kexec.dtb", "cmdline.txt")))
+
+    def test_same_release_installed(self):
+        """An installed 3.10.1 starting the 3.10.1 stick: the running tree is U-Boot's for the same release."""
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new())
+        res = self.build()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"running release: {NEW} (recorded by the preflight)\n  the stick's own release, installed",
+                      res.stdout)
+        self.assertIn("board file of the running release: " + os.path.join(self.work, "boot-files", NEW,
+                                                                             "rk3288-az01-acva.dtb"), res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        tree = dtb.load(os.path.join(out, "kexec.dtb"))
+        self.assertEqual(tree.find("/dwmmc@ff0f0000").prop("status"), dt_strings("disabled"))
+        self.assertEqual(tree.find("/dwmmc@ff0f0000").prop("new-in-9.9"), dt_strings("yes"))
+        self.assertEqual(tree.root.prop("serial-number"), dt_strings(SERIAL))
+        self.assertEqual(tree.find("/ethernet@ff290000").prop("local-mac-address"), MAC)
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(out, "stick.img"), 1, root_img)
+        self.check_hook_files(root_img, out)
+
+        # A tree read on a test build that the stick test started (its eMMC hidden) is refused.
+        shutil.rmtree(out)
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new(emmc="disabled"))
+        self.expect_stop("the running tree has no enabled eMMC controller")
 
     def test_startup_screen_before_the_log(self):
         splash = os.path.join(self.tmp, "mpfree-splash")
