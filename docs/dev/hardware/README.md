@@ -12,7 +12,9 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[Trying firmware 3.10.1 from the USB stick](firmware-3.10.1-stick-test.md)** is the runbook for testing 3.10.1, and its developer mode, by kexec from the USB stick before installing it.
 
-**[Starting MPFree from the stick at power-on](stick-autoboot.md)** tracks the goal of switching on with the stick in and getting MPFree with no computer and no tap: what can start the jump on an installed 3.10.1, what is ruled out, and the udev-rule canary test.
+**[How MPFree boots from the stick on MPC OS 3.10.1](soft-reboot-boot.md)** explains the boot system that works today: with the stick in at power-on, a hook on Akai's data partition hands over to the stick's system by a systemd soft-reboot on Akai's running kernel, and the stick switches the eMMC and SD card off before anything can touch them. Start here to understand or change the boot.
+
+**[Starting MPFree from the stick at power-on](stick-autoboot.md)** is the record of how that boot was found and proven: what can start the jump on an installed 3.10.1, what is ruled out, the canary, the kexec hook that LoadPin refused, both soft-reboot power-ons, and the owner's blocks.
 
 **[Qualifying main on the installed MPC OS 3.10.1](firmware-3.10.1-qualification.md)** is the runbook for the reference unit since the owner installed 3.10.1 (2026-11-15): developer mode's SSH locked to a key, a fresh eMMC backup, the kexec test boot from the installed system, the pad player on it, and the way back.
 
