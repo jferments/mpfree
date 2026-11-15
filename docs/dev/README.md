@@ -74,6 +74,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 ### Installing
 
 - [USB installer architecture](design/usb-installer.md): design for a future one-USB, owner-consented installer with rollback.
+- [The MPFree USB creator](design/usb-creator.md): plan for a desktop app (Linux, macOS, Windows) that builds the boot stick from the musician's own Akai 3.10.1 update file, and a one-tap, terminal-free hook install through Akai's script runner (proposal, 2026-11-15).
 
 ## Decisions
 
