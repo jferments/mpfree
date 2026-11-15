@@ -3,7 +3,7 @@
 
 Run it through `collect-over-ssh.sh --app`, after `--kexec-boot` has started
 the test build from the USB stick. It talks only to the test build: it uses
-the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so stock 3.6 (a
+the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so Akai's system (a
 different host key) is refused before anything runs. Step by step, each
 started by you pressing Enter:
 
@@ -1074,7 +1074,7 @@ def main(argv):
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
         raise Stop("the test build did not answer. Start it first with the --kexec-boot block; "
-                   "on stock 3.6 this tool runs nothing")
+                   "on Akai's system this tool runs nothing")
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build is not ready; nothing was changed on it")
 
@@ -1219,7 +1219,7 @@ def main(argv):
         out.say(f"  | {line}")
     out.say("\nRESULT: " + ("all steps ran (see each step's lines above)." if result == 0 else "stopped early."))
     out.say("NEXT: switch the MPC off with its power switch, take out the stick, wait 10 s, switch it on,")
-    out.say("and wait for 3.6. Then run the boot-map block to confirm nothing on the eMMC changed.")
+    out.say("and wait for Akai's system. Then run the boot-map block to confirm nothing on the eMMC changed.")
     return result
 
 

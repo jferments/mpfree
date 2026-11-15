@@ -178,6 +178,11 @@ if [ -d /data/mpfree/ssh ]; then
   echo '/data/mpfree/ssh entries (names only, contents NOT read):'
   ls -1 /data/mpfree/ssh 2>/dev/null || :
 fi
+if [ -d /data/ssh/mpfree-lock-backup ]; then
+  echo 'developer mode SSH locked to a key by collect-over-ssh.sh --devmode-lock (/data/ssh/mpfree-lock-backup holds Akai'"'"'s files)'
+else
+  echo 'developer mode SSH lock by collect-over-ssh.sh --devmode-lock: not in place'
+fi
 
 section 'Recent kernel boot messages about MMC/USB/boot (bounded)'
 dmesg 2>/dev/null | grep -i -E 'mmc|emmc|dwc2|otg|rockchip.*boot|Machine model' | redact | head -n 60 || :
