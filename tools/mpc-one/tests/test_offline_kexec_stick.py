@@ -53,6 +53,14 @@ def sha(path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
+def fakes_first(bin_dir):
+    """Shell functions that send each fake tool in BIN_DIR to its file, to put before a script run by BusyBox's
+    sh. A BusyBox built with a standalone shell (such as Ubuntu's busybox-static) runs its own applets (sync,
+    mount, umount, dmesg) before it looks at PATH, and every BusyBox runs sleep itself, so without these the
+    fakes would be skipped. A function comes before both."""
+    return "".join(f'{name}() {{ "{os.path.join(bin_dir, name)}" "$@"; }}\n' for name in sorted(os.listdir(bin_dir)))
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                           env={**os.environ, "PATH": SBIN_PATH}, **kw)
@@ -1535,6 +1543,8 @@ class ChainTests(unittest.TestCase):
 
     def run_script(self, **env):
         script = stick_module().CHAIN_SCRIPT.replace("R=''", f"R='{self.root}'", 1)
+        if self.busybox:
+            script = fakes_first(self.bin) + script
         return subprocess.run([*self.shell, "-c", script],
                               env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root, **env},
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
@@ -1793,6 +1803,8 @@ class ChainDoneTests(unittest.TestCase):
 
     def run_script(self):
         script = stick_module().CHAIN_DONE_SCRIPT.replace("R=''", f"R='{self.root}'", 1)
+        if self.busybox:
+            script = fakes_first(self.bin) + script
         return subprocess.run([*self.shell, "-c", script],
                               env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root},
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
@@ -1841,14 +1853,6 @@ class ChainDoneTests(unittest.TestCase):
 
 class ChainDoneBusyBoxTests(ChainDoneTests):
     busybox = True
-
-    # BusyBox's sh runs sleep itself (a builtin), so the fake sleep cannot make time pass there. The waits are the
-    # same shell code; the dash runs above cover them.
-    def test_waits_until_the_kernel_has_run_30_s(self):
-        self.skipTest("BusyBox's sleep is a shell builtin; covered under dash")
-
-    def test_leaves_the_mark_if_the_log_partition_is_not_mounted(self):
-        self.skipTest("BusyBox's sleep is a shell builtin; covered under dash")
 
 
 class ChainBusyBoxTests(ChainTests):
