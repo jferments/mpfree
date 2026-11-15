@@ -126,6 +126,7 @@ mod sample_page;
 mod sampler;
 mod screen_cost;
 mod shed;
+mod skin_page;
 #[cfg(test)]
 mod smoke;
 mod synth;
@@ -3660,6 +3661,8 @@ fn player_session(
         out.say(&line);
     }
     let found_plugins = std::sync::Arc::new(found_plugins);
+    // The MPC plugins' folders, where the Synth tab finds their skins.
+    out.show(gui::ToUi::PluginFolders(skin_page::folders(&found_plugins)));
     let (tuning_files, notes) = load_tuning_files(&store);
     for line in notes {
         out.say(&line);
@@ -4176,6 +4179,11 @@ fn player_session(
                     if mix.instruments.holds(app.track()) =>
                 {
                     mix.instruments.param(app.track(), id, value);
+                }
+                // A plugin skin showing asks for the plugin's values and
+                // texts (skin_page.rs).
+                gui::FromUi::SkinValues => {
+                    mix.ask_values(app.track());
                 }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     let from = synth.value(id);
@@ -5348,6 +5356,32 @@ fn player_session(
                         }
                     }
                     (track == app.track()).then_some(track)
+                }
+                control::PresetNews::Values {
+                    track,
+                    instance,
+                    values,
+                } => {
+                    let held = mix
+                        .instruments
+                        .held(track)
+                        .filter(|h| h.instance == instance && track == app.track());
+                    // No answer still clears the ask, so the next one goes.
+                    let (values, texts) = values.unwrap_or_default();
+                    if let Some(h) = held {
+                        out.show(gui::ToUi::SkinValues {
+                            id: h.id.to_string(),
+                            values,
+                            texts,
+                        });
+                    } else {
+                        out.show(gui::ToUi::SkinValues {
+                            id: String::new(),
+                            values: Vec::new(),
+                            texts: Vec::new(),
+                        });
+                    }
+                    None
                 }
             };
             if let Some(track) = shown {

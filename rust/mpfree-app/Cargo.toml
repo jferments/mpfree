@@ -59,6 +59,8 @@ mpfree-library = { path = "../mpfree-library" }
 # CLAP plugins (plugins.rs): each in its own mpfree-plughost process, as
 # mixer inserts from the chain editor.
 mpfree-plughost = { path = "../mpfree-plughost" }
+# MPC plugins' own screens, drawn as on an MPC (skin_page.rs).
+mpfree-mpcskin = { path = "../mpfree-mpcskin" }
 mpfree-browser-ui = { path = "../mpfree-browser-ui" }
 # Export: the mixdown, the stems and the MIDI file (export.rs).
 mpfree-export = { path = "../mpfree-export" }

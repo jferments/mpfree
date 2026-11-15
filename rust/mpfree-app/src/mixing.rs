@@ -490,6 +490,31 @@ impl MixHost {
         }
     }
 
+    /// Asks for track `track`'s plugin's values and texts, for its skin (on
+    /// the builder thread); [`MixHost::poll_presets`] brings them. False if
+    /// the track has no plugin or the builder is busy.
+    pub fn ask_values(&mut self, track: usize) -> bool {
+        let Some(held) = self.instruments.held(track) else {
+            return false;
+        };
+        if !Plugins::is_plugin(held.id) {
+            return false;
+        }
+        let instance = held.instance;
+        match self.builder.as_mut() {
+            Some(b) => b.values(track, instance),
+            None => {
+                let values = self.plugins.values(instance);
+                self.preset_news.push(crate::control::PresetNews::Values {
+                    track,
+                    instance,
+                    values,
+                });
+                true
+            }
+        }
+    }
+
     /// Once a period: presets listed or loaded on the builder thread, if
     /// any are back (a listed plugin's are kept for
     /// [`MixHost::plugin_presets`]). Never waits.

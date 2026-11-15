@@ -39,6 +39,7 @@ use crate::play_page::{self, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPa
 use crate::play_widgets::{self, MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
+use crate::skin_page;
 use crate::time::{HitInfo, StepAction, StepsData};
 use crate::touch_bell::Doorbell;
 use crate::touch_dev::{self, TouchTest, TuneList};
@@ -608,6 +609,16 @@ pub enum ToUi {
     /// The synth: its parameters, values and presets (at the start, and
     /// when the Synth tab's options pick the other engine).
     Synth(SynthState),
+    /// The MPC plugins' node ids and folders (where their skins are), at
+    /// the start (skin_page.rs).
+    PluginFolders(Vec<(String, std::path::PathBuf)>),
+    /// Plugin `id`'s parameter values and texts now, for its skin (empty
+    /// when it couldn't say).
+    SkinValues {
+        id: String,
+        values: Vec<f32>,
+        texts: Vec<String>,
+    },
     /// Every value of the synth, in its parameter order (after a preset).
     SynthValues(Vec<f32>),
     /// The synth's meters, by parameter index.
@@ -826,6 +837,9 @@ pub enum FromUi {
     Time(TimeAction),
     /// A change on the Synth page, for the synth on the audio thread.
     Synth(SynthAction),
+    /// The plugin skin showing wants the plugin's values and texts
+    /// (skin_page.rs).
+    SkinValues,
     /// UNDO (or SHIFT + UNDO, `redo`) on a page whose turns the audio
     /// thread keeps ([`crate::undo`]).
     UndoOn {
@@ -1016,6 +1030,10 @@ pub struct Player {
     /// The effect picked on the mixer's Effects look, as the column last
     /// heard of it.
     mix_pick: Option<(mpfree_fx::StripId, usize)>,
+    /// The MPC plugins' folders, and the skin of the one the armed track
+    /// plays (skin_page.rs).
+    skin_folders: Vec<(String, std::path::PathBuf)>,
+    skin: Option<skin_page::SkinState>,
     /// The I/O view's sections after Audio, by title, in their order there
     /// (Audio is 0, these 1 on): [`add_io_sections`].
     io_sections: Vec<String>,
@@ -1388,6 +1406,8 @@ impl Player {
             sample_live: false,
             mix_view: None,
             mix_pick: None,
+            skin_folders: Vec::new(),
+            skin: None,
             io_sections,
             io_clock: Duration::ZERO,
             ready: false,
@@ -1588,6 +1608,140 @@ impl Player {
     /// Arrange has the same column with Play's knobs and banks (layout spec
     /// section 4c: every sequencer track plays the kit, so there is no
     /// track strip of its own to turn yet).
+    /// The armed track's plugin's skin shows on the Synth tab
+    /// (skin_page.rs).
+    fn skin_showing(&self) -> bool {
+        self.view == View::Synth && self.skin.as_ref().is_some_and(|s| s.on)
+    }
+
+    /// The Synth tab's page: the plugin's skin, or MPFree's own.
+    fn synth_page(&self) -> String {
+        if self.skin.as_ref().is_some_and(|s| s.on) {
+            skin_page::PAGE.to_string()
+        } else {
+            "Synth".to_string()
+        }
+    }
+
+    /// After the Synth tab's node or the plugins' folders changed: reads
+    /// the skin of the plugin the armed track plays, or puts the old one
+    /// away. The same plugin again keeps its skin as it is.
+    fn skin_follow(&mut self) {
+        let Some(p) = self.synth.as_ref() else {
+            return;
+        };
+        let (id, params, values) = (p.state.info.id, p.state.params, p.state.values.clone());
+        if let Some(s) = self.skin.as_mut().filter(|s| s.id == id) {
+            // A preset went in, or another track plays it: ask again.
+            s.stale = true;
+            return;
+        }
+        let had = self.skin.take().is_some();
+        let folder = self
+            .skin_folders
+            .iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, f)| f.clone());
+        let loaded = folder.and_then(|f| match skin_page::load(id, &f, params, &values) {
+            Ok(w) => w,
+            Err(e) => {
+                println!("screen: {e}; MPFree's own page shows instead");
+                None
+            }
+        });
+        let wrap: fn(&str) -> String = match loaded {
+            Some(w) => {
+                let tabs = skin_page::SkinTabs::new(&w.view.tabs());
+                self.ui.add(skin_page::SKIN, w);
+                self.ui.add(skin_page::TABS, tabs);
+                self.ui.add(skin_page::CHIP, skin_page::SkinChip);
+                let (sw, sh) = self.ui.size();
+                let slots = skin_page::slots(sw, sh, self.ui.theme.gap);
+                match self.ui.add_page_slots(skin_page::PAGE, &slots) {
+                    Ok(()) => self.skin = Some(skin_page::SkinState::new(id)),
+                    Err(e) => println!("screen: no skin page ({e})"),
+                }
+                skin_page::synth_with_chip
+            }
+            None => play_page::synth_with_pads,
+        };
+        if had || self.skin.is_some() {
+            if let Some(p) = self.synth.as_mut() {
+                let _ = p.set_layout_wrap(&mut self.ui, wrap);
+            }
+            if self.view == View::Synth {
+                self.show_view(View::Synth);
+            }
+        }
+    }
+
+    /// The skin's edits, out as the Synth page's own.
+    fn skin_edits(&mut self) {
+        let edits = self
+            .ui
+            .get_mut_quiet::<skin_page::SkinWidget>(skin_page::SKIN)
+            .map(|w| w.take_edits())
+            .unwrap_or_default();
+        if !edits.is_empty() {
+            if let Some(s) = self.skin.as_mut() {
+                s.edited_now(Instant::now());
+            }
+        }
+        for (id, value) in edits {
+            self.outbox
+                .push(FromUi::Synth(SynthAction::Set { id, value }));
+        }
+        self.refresh_qlinks();
+    }
+
+    /// A touch on the skin, its tabs, or "Plugin skin" on MPFree's page.
+    fn skin_event(&mut self, ev: &UiEvent) {
+        match (ev.widget.as_str(), &ev.kind) {
+            (skin_page::TABS, EventKind::Tab(k)) => {
+                let key = self
+                    .ui
+                    .get::<skin_page::SkinTabs>(skin_page::TABS)
+                    .and_then(|t| t.keys.get(*k))
+                    .map(|k| k.0);
+                match key {
+                    // A function key's button: its tab, or its next sub-tab.
+                    Some(key) => {
+                        let mut tab = None;
+                        if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
+                            w.view.press_key(key);
+                            w.render();
+                            tab = Some(w.view.tab());
+                        }
+                        if let (Some(tab), Some(t)) =
+                            (tab, self.ui.get_mut::<skin_page::SkinTabs>(skin_page::TABS))
+                        {
+                            t.current = tab;
+                        }
+                        if let Some(s) = self.skin.as_mut() {
+                            s.stale = true;
+                        }
+                    }
+                    // "MPFree page".
+                    None => {
+                        if let Some(s) = self.skin.as_mut() {
+                            s.on = false;
+                        }
+                        self.show_view(View::Synth);
+                    }
+                }
+            }
+            (skin_page::CHIP, EventKind::Tab(_)) => {
+                if let Some(s) = self.skin.as_mut() {
+                    s.on = true;
+                    s.stale = true;
+                }
+                self.show_view(View::Synth);
+            }
+            _ => {}
+        }
+        self.skin_edits();
+    }
+
     fn refresh_qlinks(&mut self) {
         let play_like = matches!(self.view, View::Play | View::Arrange);
         let arp = self.view == View::Arp || (play_like && self.band_showing());
@@ -1624,6 +1778,13 @@ impl Player {
                 },
                 cards,
             )
+        } else if let Some(w) = self
+            .ui
+            .get::<skin_page::SkinWidget>(skin_page::SKIN)
+            .filter(|_| self.skin_showing())
+        {
+            // A plugin's skin: the knobs its Q-Links file gives the tab.
+            ("Q-Links · Skin", w.qlink_cards())
         } else if let Some(p) = self.synth.as_ref().filter(|_| self.view == View::Synth) {
             // The Synth tab: what the page's Q-Links turn, named as their
             // sections show them (the badges Q1 to Q4 on the page).
@@ -2375,6 +2536,9 @@ impl Player {
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
                 View::Looper => format!("Tap: pick   ·   drag a layer to a loop (SHIFT: copy)   ·   REC: record   ·   \
                                          OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
+                View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
+                                        Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
+                                       self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: pick a knob   ·   \
                                         - / +, or push the wheel and turn: change it   ·   SHIFT + wheel: page   ·   {stop}",
                                        self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
@@ -3901,7 +4065,30 @@ impl Player {
                         Err(e) => println!("screen: no Synth page ({e})"),
                     },
                 }
+                self.skin_follow();
                 self.refresh_qlinks();
+            }
+            ToUi::PluginFolders(folders) => {
+                self.skin_folders = folders;
+                self.skin_follow();
+            }
+            ToUi::SkinValues { id, values, texts } => {
+                let take = self
+                    .skin
+                    .as_mut()
+                    .is_some_and(|s| s.answer() && s.id == id && !values.is_empty());
+                let changed = take
+                    && self
+                        .ui
+                        .get_mut_quiet::<skin_page::SkinWidget>(skin_page::SKIN)
+                        .is_some_and(|w| w.vals.values != values || w.vals.texts != texts);
+                if changed {
+                    if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
+                        w.set_values(values, texts);
+                        w.render();
+                    }
+                    self.refresh_qlinks();
+                }
             }
             ToUi::SynthValues(values) => {
                 if let Some(p) = self
@@ -3933,6 +4120,15 @@ impl Player {
                     p.set_pressures(&mut self.ui, &values);
                 }
             }
+            ToUi::SynthQLink(n, ticks) if self.skin_showing() => {
+                let fine = self.status.shift;
+                if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
+                    let e = w.view.qlink(&w.vals, n, ticks, fine);
+                    w.push(e);
+                    w.render();
+                }
+                self.skin_edits();
+            }
             ToUi::SynthQLink(n, ticks) => {
                 if let Some(a) = self
                     .synth
@@ -3942,6 +4138,15 @@ impl Player {
                     self.outbox.push(FromUi::Synth(a));
                 }
                 self.refresh_qlinks();
+            }
+            ToUi::SynthWheel(ticks) if self.skin_showing() => {
+                let fine = self.status.shift;
+                if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
+                    let e = w.view.wheel(&w.vals, ticks, fine);
+                    w.push(e);
+                    w.render();
+                }
+                self.skin_edits();
             }
             ToUi::SynthWheel(ticks) => {
                 if let Some(a) = self
@@ -4212,6 +4417,12 @@ impl Player {
             return;
         }
         match (self.view, k) {
+            (View::Synth, RowKey::Pick(d)) if self.skin_showing() => {
+                if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
+                    w.view.focus_step(&w.vals, d);
+                    w.render();
+                }
+            }
             (View::Synth, RowKey::Pick(d)) => {
                 if let Some(p) = self.synth.as_mut() {
                     p.pick_tile(&mut self.ui, d);
@@ -5662,7 +5873,7 @@ impl Player {
                 .page_for(self.settings.timing_strip)
                 .to_string(),
             View::Arrange => CLIPS_PAGE.to_string(),
-            View::Synth => "Synth".to_string(),
+            View::Synth => self.synth_page(),
             View::Looper => LOOPER_PAGE.to_string(),
             View::Sample => {
                 let name = self.auto_synth_name();
@@ -5988,6 +6199,10 @@ impl Player {
 
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
+        if [skin_page::SKIN, skin_page::TABS, skin_page::CHIP].contains(&ev.widget.as_str()) {
+            self.skin_event(&ev);
+            return None;
+        }
         let synth_widget = [
             synth_view::TITLE,
             synth_view::INST,
@@ -6478,6 +6693,16 @@ impl Player {
         self.io_clock += Duration::from_secs_f32(dt.max(0.0));
         if self.io_showing() {
             mpfree_mixer_ui::io_tick(&mut self.ui, self.io_clock);
+        }
+        // A plugin's skin showing: the plugin's values and texts, a few
+        // times a second and soon after an edit.
+        if self.skin_showing()
+            && self
+                .skin
+                .as_mut()
+                .is_some_and(|s| s.ask_now(Instant::now()))
+        {
+            self.outbox.push(FromUi::SkinValues);
         }
         // The XY pad glides home after the finger lifts.
         if let Some(fx) = self.play.tick_xy(dt * 1000.0) {
@@ -12063,6 +12288,120 @@ mod tests {
             p.touch(2, Touch::Down, chromatic.x + 10, chromatic.y + 10),
             Some(FromUi::PadsLayout { in_key: false })
         );
+    }
+
+    #[test]
+    fn an_mpc_plugins_skin_fills_the_synth_tab_and_mpfree_page_is_one_tap_away() {
+        use mpfree_node::{Curve, Kind, NodeInfo, ParamInfo, Unit};
+        let mut p = sample_player(Fonts::embedded());
+        let dir = std::env::temp_dir().join(format!("mpfree-gui-skin-{}", std::process::id()));
+        let folder = mpfree_mpcskin::testing::write_plugin(&dir).unwrap();
+        let info: &'static NodeInfo = Box::leak(Box::new(NodeInfo {
+            id: "mpc:MTsk.test-skin",
+            name: "Test Skin",
+            kind: Kind::Instrument,
+        }));
+        let params: &'static [ParamInfo] = Box::leak(
+            ["A", "B", "On"]
+                .iter()
+                .enumerate()
+                .map(|(i, name)| ParamInfo {
+                    id: i as u16,
+                    name,
+                    group: "",
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    unit: Unit::None,
+                    curve: Curve::Linear,
+                    readonly: false,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let state = SynthState {
+            info,
+            params,
+            values: vec![0.5, 0.25, 0.0],
+            track: "Track 1".into(),
+            color: Color::rgb(0xFF_8800),
+            presets: Vec::new(),
+            preset: None,
+            edited: false,
+            pressures: Vec::new(),
+        };
+        p.apply(ToUi::PluginFolders(vec![(info.id.to_string(), folder)]));
+        p.apply(ToUi::Synth(state));
+        p.apply(ToUi::Show(View::Synth));
+        // Full width at MPC size right under the top bar, its tabs below
+        // (Jay, 15 Nov).
+        assert_eq!(p.ui.page(), skin_page::PAGE);
+        let header = p.ui.rect_of("header").unwrap();
+        let skin = p.ui.rect_of(skin_page::SKIN).unwrap();
+        assert_eq!(skin, mpfree_ui::Rect::new(0, header.bottom(), 1280, 628));
+        assert!(
+            p.ui.rect_of(play_page::QLINKS).is_none(),
+            "the Q-Link column steps aside"
+        );
+        // It asks the plugin for its values and texts, and shows them.
+        p.take_actions();
+        p.tick(0.02);
+        assert!(p.take_actions().contains(&FromUi::SkinValues));
+        p.apply(ToUi::SkinValues {
+            id: info.id.into(),
+            values: vec![0.5, 0.25, 0.0],
+            texts: vec!["50 %".into(), "25 %".into(), "Off".into()],
+        });
+        let mut c = SoftCanvas::new(1280, 800);
+        p.ui.paint(&mut c);
+        // The first slot's own background, pixel for pixel at the skin's
+        // (110, 110).
+        let at = |x: i32, y: i32| ((skin.y + y) * 1280 + x) as usize;
+        assert_eq!(c.px[at(110, 110)] & 0xFF_FFFF, 0x10_1010);
+        // A drag on the first slot turns parameter A, as the Synth page's
+        // own edits do.
+        p.touch(1, Touch::Down, 200, skin.y + 200);
+        p.touch(1, Touch::Move, 200, skin.y + 150);
+        p.touch(1, Touch::Up, 200, skin.y + 150);
+        let acts = p.take_actions();
+        assert!(
+            acts.iter().any(|a| matches!(a,
+                FromUi::Synth(SynthAction::Set { id: 0, value }) if (*value - 0.7).abs() < 1e-3)),
+            "{acts:?}"
+        );
+        // Q-Link 4 turns what the skin's Q-Links give it (parameter A).
+        p.apply(ToUi::SynthQLink(3, -20));
+        let acts = p.take_actions();
+        assert!(
+            acts.iter().any(|a| matches!(a,
+                FromUi::Synth(SynthAction::Set { id: 0, value }) if (*value - 0.5).abs() < 1e-3)),
+            "{acts:?}"
+        );
+        // "MPFree page": MPFree's own page, with "Plugin skin" back.
+        let tabs = p.ui.rect_of(skin_page::TABS).unwrap();
+        let back = mpfree_ui::Widget::targets(
+            p.ui.get::<skin_page::SkinTabs>(skin_page::TABS).unwrap(),
+            tabs,
+        )
+        .last()
+        .unwrap()
+        .centre();
+        p.touch(2, Touch::Down, back.0, back.1);
+        p.touch(2, Touch::Up, back.0, back.1);
+        assert_eq!(p.ui.page(), "Synth");
+        let chip =
+            p.ui.rect_of(skin_page::CHIP)
+                .expect("Plugin skin on MPFree's page");
+        p.touch(3, Touch::Down, chip.x + 20, chip.y + 20);
+        p.touch(3, Touch::Up, chip.x + 20, chip.y + 20);
+        assert_eq!(p.ui.page(), skin_page::PAGE);
+        // Another instrument puts the skin away.
+        let mut s = crate::synth::Synth::new(44_100);
+        p.apply(ToUi::Synth(s.state()));
+        assert_eq!(p.ui.page(), "Synth");
+        assert!(p.ui.rect_of(skin_page::CHIP).is_none());
+        let _ = &mut s;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
