@@ -160,6 +160,9 @@ class KexecPreflightTests(unittest.TestCase):
         self.assertIn("--dtb=FILE", text)
         self.assertNotIn("--no-ifdown", text, "only the options a kexec boot needs are listed")
         self.assertIn("systemd 255", text)
+        self.assertIn("=== Next root staged for a userspace-only restart (should be none) ===", text)
+        self.assertIn("/run/nextroot: absent (nothing staged)", text)
+        self.assertIn("kexec/lockdown/ipe/loadpin lines", text)
         self.assertIn("=== Running device tree, compared on the workstation ===", text)
         self.assertIn("model: Akai Professional MPC One", text)
         self.assertIn("property /serial-number: only in B (17 bytes)", text)
@@ -211,7 +214,7 @@ class StaticTests(unittest.TestCase):
             if "kexec " in line and "kexec --" in line:
                 self.assertRegex(line, r"kexec --(version|help) ")
         for forbidden in ("kexec -l", "kexec -e", "kexec -p", "--load ", "--exec ", "systemctl kexec",
-                          "systemctl start", "systemctl stop", "mount ", "of=", "> /dev", ">/dev/mmc", "echo 1 >"):
+                          "systemctl start", "systemctl stop", "systemctl soft-reboot", "mount ", "of=", "> /dev", ">/dev/mmc", "echo 1 >"):
             self.assertNotIn(forbidden, code)
         subprocess.run(["sh", "-n", REMOTE], check=True)
 

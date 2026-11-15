@@ -48,12 +48,19 @@ jobs:
           bash -n tools/mpc-one/offline-akai-updater.sh
           bash -n tools/mpc-one/offline-rootfs-survey.sh
           sh -n tools/mpc-one/read-only-kexec-preflight.sh
+          sh -n tools/mpc-one/read-only-hook-canary.sh
+          sh -n tools/mpc-one/hook-canary-install.sh
+          sh -n tools/mpc-one/hook-canary-remove.sh
+          sh -n tools/mpc-one/hook-install.sh
+          sh -n tools/mpc-one/hook-remove.sh
+          sh -n tools/mpc-one/read-only-hook-report.sh
           sh -n tools/mpc-one/read-only-inventory.sh
           sh -n tools/mpc-one/read-only-detail.sh
           sh -n tools/mpc-one/read-only-runtime.sh
           sh -n tools/mpc-one/read-only-io.sh
           sh -n tools/mpc-one/read-only-abi.sh
           sh -n tools/mpc-one/read-only-handoff-preflight.sh
+          sh -n tools/mpc-one/read-only-plugin-host.sh
           sh -n tools/mpc-one/read-only-process-map.sh
           sh -n tools/mpc-one/read-only-touchscreen.sh
           sh -n tools/mpc-one/read-only-touch-axes-env.sh
@@ -67,6 +74,7 @@ jobs:
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
           sh -n tools/mpc-one/read-only-audio-midi.sh
           sh -n tools/mpc-one/read-only-midi-counters.sh
+          sh -n tools/mpc-one/read-only-system-310.sh
           sh -n tools/mpc-one/passive-usbmon-capture.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
@@ -91,12 +99,15 @@ jobs:
           python3 tools/mpc-one/tests/test_offline_kexec_details.py
           MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hook_canary.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_check.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_login.py
           python3 tools/mpc-one/tests/test_write_autorun_drive.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_bench_mpc.py
@@ -129,12 +140,14 @@ jobs:
               Path("tools/mpc-one/read-only-capacity.sh"),
               Path("tools/mpc-one/read-only-boot-map.sh"),
               Path("tools/mpc-one/read-only-kexec-preflight.sh"),
+              Path("tools/mpc-one/read-only-hook-canary.sh"),
               Path("tools/mpc-one/read-only-ethernet.sh"),
               Path("tools/mpc-one/read-only-backup-preflight.sh"),
               Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
               Path("tools/mpc-one/read-only-audio-midi.sh"),
               Path("tools/mpc-one/read-only-midi-counters.sh"),
               Path("tools/mpc-one/passive-usbmon-capture.sh"),
+              Path("tools/mpc-one/read-only-system-310.sh"),
           ]
           prohibited = (
               r"\b(?:mkfs(?:\.\w+)?|flashcp|fw_setenv|reboot|poweroff|shutdown)\b",
@@ -173,6 +186,7 @@ jobs:
           assert '"--backup")' in wrapper
           assert '"--kexec-preflight")' in wrapper
           assert '"--ethernet")' in wrapper
+          assert '"--hook-canary")' in wrapper and 'MPFREE_ACCEPT_HOOK_CANARY' in wrapper
           # The kexec preflight may ask kexec only for its version and help text.
           kexec_exec = [line for line in Path("tools/mpc-one/read-only-kexec-preflight.sh").read_text().splitlines()
                         if not line.lstrip().startswith("#")]
@@ -1162,6 +1176,12 @@ jobs:
           assert any(data), "nothing was drawn"
           print("PASS: static ARMv7 screen log program draws on a fake framebuffer under qemu")
           PY
+      - name: Build and check the example MPC plugins for 32-bit ARM (do not deploy)
+        # rust/mpfree-mpcplug: MPFree nodes as MPC OS 3.10.1 plugins. Checks each
+        # .so against the SDK's rules (ELF32 hard-float, only VSTPluginMain,
+        # libc/libm/loader only, glibc <= 2.39). The host-contract tests run
+        # natively with the workspace tests above.
+        run: bash tools/mpc-plugins/build-arm32.sh
       - name: Build and check the static mpfree program for the kexec test boot (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc

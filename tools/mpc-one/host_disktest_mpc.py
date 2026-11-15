@@ -3,8 +3,8 @@
 
 Run it after `collect-over-ssh.sh --kexec-boot` has started the test build
 from the USB stick. Like host_bench_mpc.py, it talks only to the test build:
-it uses the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so stock
-3.6 (a different host key) is refused before anything runs. Each step after
+it uses the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so Akai's
+system (a different host key) is refused before anything runs. Each step after
 the first waits for you to press Enter:
 
   1. Workstation, read-only: checks that the program is a static ARM EABI5
@@ -69,7 +69,7 @@ TIMEOUT = 900
 REFUSED = 3
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
-    "port": int(os.environ.get("MPC_PORT", "2222")),
+    "port": int(os.environ.get("MPC_TEST_PORT", "2222")),  # the test build's own SSH, not Akai's
     "user": os.environ.get("MPC_USER", "root"),
     "key": os.environ.get("MPC_KEY", "/home/jesse/.ssh/mpc_one_autorun_ed25519"),
 }
@@ -146,7 +146,7 @@ def main(argv):
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
         raise Stop("the test build did not answer. Start it first with the --kexec-boot block; "
-                   "on stock 3.6 this tool runs nothing")
+                   "on Akai's system this tool runs nothing")
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build is not ready; nothing was changed on it")
     rc, text = mpc.run(DF, test=True)

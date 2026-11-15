@@ -1,6 +1,6 @@
 # MPC OS 3.10.1 — Developer Access and Boot Compatibility
 
-**As of November 13, 2026** · **Scope:** Original MPC One Gen 1 · **Evidence:** Official feature descriptions plus *offline* 3.10.1 firmware comparison. The reference device has **not** been upgraded for this assessment.
+**As of November 15, 2026** · **Scope:** Original MPC One Gen 1 · **Evidence:** Official feature descriptions plus *offline* 3.10.1 firmware comparison and the USB-stick tests. The assessment below was made before the install. **The owner installed 3.10.1 on the reference device on 2026-11-15**, with developer mode on. The [qualification runbook](firmware-3.10.1-qualification.md) checks main against the installed system: logging in, a fresh backup, the kexec test boot and the way back.
 
 For full details read [the canonical architecture](mpc-one-boot-architecture.md#10-mpc-os-3101-official-developer-facilities-and-boot-system-compatibility).
 
@@ -14,7 +14,11 @@ The 3.10.1 image itself answers most of that (offline survey, 2026-11-13; detail
 
 On the 3.10.1 test stick (2026-11-14, [phase 3's first run](firmware-3.10.1-stick-test.md#phase-3-first-run-2026-11-14-clone-dcce005)), developer mode came on from Akai's app as the files say. Akai's SSH server was not running before it: `enable.sh`'s reload failed, and `sshd.service` then started and listened on port 22. Turning it on also tried to start Akai's web server (`az0x-webserver.service`, masked on the stick). 3.10.1's firewall rules files are empty, so its firewall units load no rules from the image.
 
-The developer mode means an owner need not use the earlier USB `autorun.sh` technique or a rootfs change (MOD-001) solely to obtain a shell. Because it opens without authentication, it should run only on a controlled network and be locked to a key at once. Whether it stays on across reboots, and how it behaves on this physical MPC, have not been established: the overlay on `/etc` lives only in RAM, so that depends on the app (an inference from the files).
+The developer mode means an owner need not use the earlier USB `autorun.sh` technique or a rootfs change (MOD-001) solely to obtain a shell. Because it opens without authentication, it should run only on a controlled network and be locked to a key at once. The overlay on `/etc` lives only in RAM, but on the installed 3.10.1 developer mode stays on after a restart (below).
+
+### On the installed 3.10.1 (2026-11-15)
+
+The owner installed 3.10.1 on the reference MPC with Akai's updater on 2026-11-15 and switched developer mode on; it stays on after a restart. With a FAT32 stick in at power-on, the script runner asked only once the app was fully up, then ran `autorun.sh` as root through `systemd-run` (a transient `autorun-sh.service`, not inside the app), 26 s after power-on. kexec is allowed (`kexec_load_disabled` 0, `/usr/sbin/kexec` present). Details, and the work towards starting MPFree from the stick at power-on, are in [starting MPFree from the stick](stick-autoboot.md).
 
 ## Offline comparison findings
 
@@ -35,6 +39,6 @@ These are **image-level findings**, not hardware validation after a 3.10.1 updat
 
 ## Update gate
 
-Retain verified off-device backups; complete analysis of the changed integrity component; qualify SSH/authentication and per-partition changes on an appropriate device; and preserve a proven factory return path. Do not treat the existence of official SSH as proof of independent OS boot. The [stick test runbook](firmware-3.10.1-stick-test.md) covers the checks that can be made before installing.
+Retain verified off-device backups; complete analysis of the changed integrity component; qualify SSH/authentication and per-partition changes on an appropriate device; and preserve a proven factory return path. Do not treat the existence of official SSH as proof of independent OS boot. The [stick test runbook](firmware-3.10.1-stick-test.md) covers the checks that can be made before installing. The owner installed 3.10.1 on 2026-11-15 after those checks. The [qualification runbook](firmware-3.10.1-qualification.md) covers the checks after it, starting with a fresh backup of the installed system.
 
 **Sources:** [Akai firmware](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/), [release notes](https://www.akaipro.com/mpc-release-notes/), [inMusic SDK](https://github.com/inmusic-software/mpc-plugin-builder-sdk).

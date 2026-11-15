@@ -670,6 +670,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-mpcplug"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-node",
+ "mpfree-synth",
+]
+
+[[package]]
 name = "mpfree-network"
 version = "0.1.0"
 

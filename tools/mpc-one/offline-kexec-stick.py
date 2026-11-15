@@ -27,8 +27,9 @@ from ~/mpfree-work and writes one new private folder there:
 What changes in the COPY of the root filesystem (the image itself is only read):
   - masks (links to /dev/null in /etc/systemd/system) for the MPC app, the
     touch, XMOS and USB-SATA firmware updaters, the network update server,
-    the USB script runner, the /data and content formatters and the firewall,
-    and for the generator that mounts the eMMC content partition
+    the USB script runner, the /data and content formatters, the firewall and
+    the tool that zeroes ext4 reserved blocks (tune2fs), and for the generator
+    that mounts the eMMC content partition
   - /data becomes a RAM disk, so the /etc and /var overlays live in RAM
   - Akai's update, flashing and U-Boot-environment programs and kexec are
     replaced by a stub that refuses and notes the call in the kernel log
@@ -67,6 +68,19 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     and writes only /run/mpfree-test-eth, which the log service copies
   - root's password field, only if it marks the account locked ("!"), is set
     to "*" so OpenSSH accepts key logins; no password works either way
+  - /boot/mpfree-kexec/ for MPFree's boot hook (hook-install.sh): zImage (a
+    link to the image's own kernel), kexec.dtb and cmdline.txt as in the
+    build folder, and their SHA256SUMS. With the hook installed on the MPC,
+    power-on with the stick in reads them and jumps to the stick
+  - for MPFree's soft-reboot hook (hook-install.sh, the route on an installed
+    3.10.1, where LoadPin refuses kexec): a service that switches the MPC's
+    eMMC and SD card off first thing at boot, before udev or any mount
+    (mpfree-test-internal-off.service, /etc/mpfree-test/internal-off.sh), a
+    udev rule that leaves any eMMC or SD device alone, and
+    /boot/mpfree-softreboot/: PROTOCOL, release (the kernel release this
+    system runs on), preload-modules.txt (only with --preload-module) and
+    SHA256SUMS of those and the service's files. After a kexec jump the
+    controllers are already hidden and the service finds nothing to do
   - only with --akai-app (phase 3 of the 3.10.1 stick test, for developer
     mode): Akai's app is NOT masked and its launcher is NOT stubbed, so it
     starts at power-on and draws the screen; the log display is installed but
@@ -84,7 +98,10 @@ Inputs, found automatically:
                     folder, or --image FILE
   boot-files        ~/mpfree-work/boot-files/<release>/ (from
                     offline-rootfs-survey.sh) for the image's kernel release
-                    and for the release running on the MPC
+                    and for the release running on the MPC. They can be the
+                    same release (an installed 3.10.1 starting the 3.10.1
+                    stick); then the running tree must be the installed
+                    system's, with its eMMC controller enabled
   the running tree  live.dtb in the newest kexec-preflight-*/ folder (from
                     collect-over-ssh.sh --kexec-preflight)
   your public key   $MPC_KEY.pub (default /home/jesse/.ssh/mpc_one_autorun_ed25519.pub)
@@ -108,6 +125,10 @@ Optional inputs:
                       folder. They are Akai's sounds: the stick stays private
   --akai-app          start Akai's app at power-on instead (see above); not
                       with --app, --splash or --splash-font
+  --preload-module M  a kernel module the stick's system needs that Akai's
+                      boot may not have loaded by 6 s (repeatable). After a
+                      soft-reboot LoadPin refuses every module load, so the
+                      hook loads these from Akai's own system just before it
 
 The device tree also gets the Ethernet PHY's ID (Realtek RTL8211E, as 3.6.0
 reads it on the reference unit). 3.6.0 holds the PHY in reset when it shuts
@@ -172,6 +193,10 @@ MASK_UNITS = (
     "acvs-content-resize.service",   # resizes the content partition
     "iptables.service",              # Akai's firewall rules, unknown here: they might block port 2222
     "ip6tables.service",
+    # Runs tune2fs (set-no-ext4-reserved-blocks) on each partition as it appears, which writes an ext4
+    # superblock. After the soft-reboot (2026-11-15) one started on the MPC's SD card while it was being switched
+    # off and read it. The mask covers every instance.
+    "no-reserved-blocks@.service",
 )
 MASK_GENERATORS = ("acva-emmc-content-generator",)
 # With --akai-app these two stay as Akai ships them: the app's unit and its launcher, which runs
@@ -184,6 +209,8 @@ AKAI_APP_MARK = "akai app: on (--akai-app)"
 # installed system, since that decides whether developer mode's SSH port can be reached there.
 FIREWALL_UNITS = ("/usr/lib/systemd/system/iptables.service", "/usr/lib/systemd/system/ip6tables.service")
 RULES_MAX = 64 << 10
+# Where the image's udev rules live (/lib is a link into /usr); the report lists the units they start.
+UDEV_RULE_DIRS = ("/usr/lib/udev/rules.d", "/etc/udev/rules.d")
 # Programs replaced by the stub, where present. Paths under /usr only: /bin, /sbin
 # and /lib are links into /usr on these images (checked below).
 STUB_PROGRAMS = (
@@ -196,7 +223,137 @@ STUB_PROGRAMS = (
 REQUIRED = {"/usr/sbin/sshd": "regular", "/usr/lib/systemd/system/data.mount": "regular",
             "/etc/systemd/system": "directory", "/etc/systemd/system/multi-user.target.wants": "directory",
             "/etc/shadow": "regular", "/bin/sh": None}
-MADE_IF_MISSING = ("/etc/systemd/system-generators", "/etc/sysctl.d", "/etc/systemd/system/sysinit.target.wants")
+MADE_IF_MISSING = ("/etc/systemd/system-generators", "/etc/sysctl.d", "/etc/systemd/system/sysinit.target.wants",
+                   "/etc/udev", "/etc/udev/rules.d")
+# The files MPFree's boot hook on an installed MPC reads at power-on (tools/mpc-one/hook-install.sh): the
+# kernel (a link to the image's own), the device tree and command line made here, and their hashes.
+KEXEC_DIR = "/boot/mpfree-kexec"
+
+# MPFree's soft-reboot hook (hook-install.sh) starts this system on Akai's running kernel, with Akai's device
+# tree: the eMMC and SD card controllers are on. This service switches them off before udev or any mount can
+# touch them. The hook refuses a stick without these files (it checks them against SOFTREBOOT_DIR/SHA256SUMS).
+SOFTREBOOT_DIR = "/boot/mpfree-softreboot"
+SOFTREBOOT_PROTOCOL = "mpfree-softreboot-1"
+MODULE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+INTERNAL_OFF_SCRIPT = """R=''
+# MPFree: switch the MPC's internal eMMC and SD card off, before anything can touch them.
+# (The R='' line is an empty root prefix; only tests change it.)
+# Run first thing at boot (mpfree-test-internal-off.service, before udev and every mount). After MPFree's
+# soft-reboot hook, this system runs on Akai's kernel with Akai's device tree, where both controllers are on;
+# after a kexec jump they are already hidden and there is nothing to do. It
+#   1. waits up to 10 s for the old system's writable filesystems on the eMMC to be let go (the soft-reboot
+#      detaches Akai's /data; systemd synced it first). Akai's root is read-only (dm-verity), not waited for;
+#   2. marks every eMMC and SD block device read-only;
+#   3. unbinds the two controllers' driver (the eMMC's at ff0f0000, the SD card's at ff0c0000), so the
+#      kernel removes their block devices; nothing is written to them, before or after;
+#   4. checks that no eMMC or SD block device is left, and removes stale /dev/disk links to them.
+# If any step fails it keeps its notes and the kernel log on the stick's own log partition (partition 2,
+# "mpfree-test-log", MPFree's; never anything of the MPC's), exits 1, and the unit's FailureAction powers the
+# MPC off: MPFree never runs with the internal storage reachable. Taking the stick out gives Akai's system at
+# the next power-on. Otherwise it writes only /run (RAM), /dev links (RAM), the controllers' sysfs unbind
+# files and the kernel log.
+[ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
+HOSTS="ff0f0000 ff0c0000"
+say() { echo "mpfree-internal-off: $*" > "$R/dev/kmsg" 2>/dev/null; echo "mpfree-internal-off: $*" >> "$R/run/mpfree-internal-off.txt"; }
+stop() {
+  say "STOP: $1; powering off"
+  log=''
+  for u in "$R"/sys/class/block/sd*/uevent; do
+    grep -qx 'PARTNAME=mpfree-test-log' "$u" 2>/dev/null || continue
+    p=${u%/uevent}
+    case "$(readlink -f "$p")" in */usb*) log=${p##*/} ;; esac
+  done
+  m="$R/run/mpfree-internal-off-log"
+  if [ -n "$log" ] && [ -b "$R/dev/$log" ] && mkdir -p "$m" &&
+      mount -t ext4 -o rw,nosuid,nodev,noexec,sync "$R/dev/$log" "$m"; then
+    d="$m/boot-$(cat "$R/proc/sys/kernel/random/boot_id")"
+    mkdir -p "$d" && { cat "$R/run/mpfree-internal-off.txt"; dmesg; } > "$d/internal-off.txt" 2>&1
+    umount "$m"
+  fi
+  exit 1
+}
+how=kexec
+[ -e "$R/run/mpfree-hook/soft-reboot" ] && how=soft-reboot
+say "started at $(cut -d' ' -f1 "$R/proc/uptime") s (after $how)"
+held() {   # prints a writable filesystem still mounted from the eMMC or SD card, even a detached one
+  for f in "$R"/sys/fs/ext4/* "$R"/sys/fs/f2fs/*; do
+    [ -e "$f" ] || continue
+    n=${f##*/}
+    case "$n" in
+      mmcblk*) echo "$n"; return 0 ;;
+      dm-*) for s in "$R"/sys/block/"$n"/slaves/*; do
+              case "${s##*/}" in mmcblk*) [ "$(cat "$R/sys/block/$n/ro" 2>/dev/null)" = 1 ] || { echo "$n"; return 0; } ;; esac
+            done ;;
+    esac
+  done
+  return 1
+}
+n=0
+while busy=$(held); do
+  [ "$n" -ge 10 ] && { sync; stop "$busy is still mounted after 10 s"; }
+  sleep 1; n=$((n + 1))
+done
+if command -v blockdev > /dev/null 2>&1; then
+  for b in "$R"/sys/block/mmcblk*; do
+    [ -e "$b" ] || continue
+    for d in "$R/dev/${b##*/}" "$R/dev/${b##*/}"p*; do
+      [ -b "$d" ] && blockdev --setro "$d" 2>/dev/null
+    done
+  done
+fi
+for a in $HOSTS; do
+  for dev in "$R"/sys/bus/platform/devices/"$a".*; do
+    [ -e "$dev/driver" ] || continue
+    name=${dev##*/}
+    echo "$name" > "$dev/driver/unbind" || stop "could not unbind $name"
+    say "switched off $name"
+  done
+done
+left() {   # prints a controller still bound, or an eMMC or SD block device still there
+  for a in $HOSTS; do
+    for dev in "$R"/sys/bus/platform/devices/"$a".*; do
+      [ -e "$dev/driver" ] && { echo "${dev##*/} still has its driver"; return 0; }
+    done
+  done
+  for b in "$R"/sys/block/mmcblk*; do
+    [ -e "$b" ] && { echo "${b##*/} is still there"; return 0; }
+  done
+  return 1
+}
+n=0
+while what=$(left); do   # the kernel removes them as it unbinds; allow it a moment
+  [ "$n" -ge 5 ] && stop "$what"
+  sleep 1; n=$((n + 1))
+done
+for l in "$R"/dev/disk/by-*/*; do
+  case "$(readlink "$l" 2>/dev/null)" in *mmcblk*) rm -f "$l" ;; esac
+done
+say "done at $(cut -d' ' -f1 "$R/proc/uptime") s: no eMMC or SD card block device is left"
+"""
+INTERNAL_OFF_UNIT = """[Unit]
+Description=MPFree: switch the MPC's eMMC and SD card off before anything touches them
+DefaultDependencies=no
+Before=sysinit.target local-fs-pre.target local-fs.target systemd-udevd.service systemd-udev-trigger.service
+Before=systemd-udev-settle.service systemd-remount-fs.service systemd-fsck-root.service data.mount swap.target
+Before=mpfree-test-logs.service mpfree-test-app.service mpfree-test-sshd.service
+Wants=local-fs-pre.target
+FailureAction=poweroff
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /etc/mpfree-test/internal-off.sh
+TimeoutStartSec=30
+
+[Install]
+WantedBy=sysinit.target
+"""
+INTERNAL_OFF_RULE = """# MPFree: the MPC's internal eMMC and SD card are not MPFree's. mpfree-test-internal-off.service removes
+# them before udev starts; should one appear anyway, systemd and udisks leave it alone.
+SUBSYSTEM=="block", KERNEL=="mmcblk*", ENV{SYSTEMD_READY}="0", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"
+"""
+INTERNAL_OFF_FILES = ("/etc/mpfree-test/internal-off.sh", "/etc/systemd/system/mpfree-test-internal-off.service",
+                      "/etc/udev/rules.d/00-mpfree-internal-off.rules")
 
 STUB = """#!/bin/sh
 # MPFree kexec test boot: this program is disabled on the test stick.
@@ -796,9 +953,25 @@ def running_release(pre, work, target_release):
             raise Stop("cannot tell which release the MPC runs: rerun collect-over-ssh.sh --kexec-preflight "
                        "(it records the release now)")
         release, how = others[0], "the only other boot-files release; the preflight predates release.txt"
-    if not SAFE.match(release) or release == target_release:
+    if not SAFE.match(release):
         raise Stop(f"unusable running release {release!r}")
+    if release == target_release:
+        # An installed 3.10.1 runs the same kernel the test build boots: its board file is the reference too.
+        how += "; the same kernel as the test build's"
     return release, how
+
+
+def check_same_release(live):
+    """The MPC runs the stick's own release (an installed 3.10.1 that starts the 3.10.1 stick).
+
+    Then the preflight must have read the tree U-Boot gave the installed system, not the tree of a test
+    build that the stick test started by kexec (which has the eMMC controller disabled, and would make
+    our own changes look like U-Boot's)."""
+    emmc = dtb.nodes_at(live, dtb.EMMC_ADDRESS)
+    if len(emmc) != 1 or dtb.status_of(emmc[0][1]) == "disabled":
+        raise Stop("the running tree has no enabled eMMC controller: the preflight ran on a test build started "
+                   "by kexec, not on the installed system. Run collect-over-ssh.sh --kexec-preflight again on the "
+                   "installed system (MPC_PORT=22 for developer mode)")
 
 
 def firewall_lines(img, scratch):
@@ -826,14 +999,56 @@ def firewall_lines(img, scratch):
     return lines
 
 
+def udev_wants_lines(img, scratch, masked):
+    """Every rule in the image's udev rules that starts a unit when a device appears (SYSTEMD_WANTS), for the report.
+
+    After the soft-reboot the stick's systemd takes over Akai's devices, and these wants with them, before the eMMC
+    and SD card are switched off. A unit named here that is not masked can start in that gap."""
+    lines = []
+    for folder in UDEV_RULE_DIRS:
+        if img.kind(folder) != "directory":
+            continue
+        for name in sorted(img.names(folder)):
+            path = f"{folder}/{name}"
+            if not name.endswith(".rules") or img.kind(path) != "regular":
+                continue
+            text = img.read(path, scratch)[:RULES_MAX].decode("utf-8", "replace")
+            for line in text.splitlines():
+                if "SYSTEMD_WANTS" not in line or line.lstrip().startswith("#"):
+                    continue
+                lines.append(f"  {path}: {line.strip()[:300]}")
+                for value in re.findall(r'SYSTEMD_WANTS\}\s*\+?=\s*"([^"]*)"', line):
+                    for unit in value.split():
+                        placeholder = "%" in unit or "$" in unit
+                        if "@" not in unit:
+                            if placeholder:
+                                lines.append(f"    {unit}: named only when the device appears; this tool cannot "
+                                             "tell which unit")
+                            else:
+                                lines.append(f"    {unit}: " + ("masked on the stick" if unit in masked else
+                                                                "NOT masked"))
+                            continue
+                        # An instance (or one filled in when the device appears) is masked with its template.
+                        at, dot = unit.index("@"), unit.rfind(".")
+                        template = unit[:at + 1] + (unit[dot:] if dot > at else ".service")
+                        if unit in masked or template in masked:
+                            lines.append(f"    {unit}: masked on the stick")
+                        else:
+                            lines.append(f"    {unit}: NOT masked")
+    return lines or ["  none"]
+
+
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
-                 app=None, kits_uuid=None, data_uuid=None, akai_app=False):
+                 app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
     pad player starts at power-on in place of the log display, which stays installed for when the app fails.
     With `akai_app`, Akai's app is neither masked nor its launcher stubbed, and the log display is
-    installed but not started; partitions 3 and 4 are made all the same."""
+    installed but not started; partitions 3 and 4 are made all the same.
+    With `kexec_files` (release, kexec.dtb bytes, cmdline.txt bytes), KEXEC_DIR gets the boot hook's files.
+    With `softreboot` (release, module names), the service that switches the eMMC and SD card off is installed
+    and SOFTREBOOT_DIR gets the soft-reboot hook's files."""
     if akai_app:
         if app is not None or splash[0] is not None or kits_uuid is None or data_uuid is None:
             raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
@@ -868,7 +1083,10 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                   "/etc/sysctl.d/90-mpfree-test.conf"] +
                  ["/etc/systemd/system-generators/" + g for g in MASK_GENERATORS] +
                  (["/etc/systemd/system/mpfree-test-splash.service",
-                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] if splash_program else []))
+                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] if splash_program else []) +
+                 ([KEXEC_DIR] if kexec_files else []) +
+                 ([SOFTREBOOT_DIR, *INTERNAL_OFF_FILES,
+                   "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] if softreboot else []))
     for path in new_paths:
         if img.kind(path) is not None:
             raise Stop(f"{path} already exists in the image; refusing to guess what it is")
@@ -910,6 +1128,27 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         add("/etc/mpfree-test/ethernet-details.sh", fh.read(), 0o755)
     add("/etc/mpfree-test/ethernet-retry.sh", ETHERNET_SCRIPT, 0o755)
     add("/etc/systemd/system/mpfree-test-ethernet.service", ETHERNET_UNIT, 0o644)
+    if kexec_files:
+        release, kexec_dtb, cmdline = kexec_files
+        kernel = img.read("/boot/zImage-" + release, scratch)
+        sums = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n"
+                       for name, data in (("zImage", kernel), ("kexec.dtb", kexec_dtb), ("cmdline.txt", cmdline)))
+        add(KEXEC_DIR + "/kexec.dtb", kexec_dtb, 0o644)
+        add(KEXEC_DIR + "/cmdline.txt", cmdline, 0o644)
+        add(KEXEC_DIR + "/SHA256SUMS", sums, 0o644)
+    if softreboot:
+        release, modules = softreboot
+        add(INTERNAL_OFF_FILES[0], INTERNAL_OFF_SCRIPT, 0o755)
+        add(INTERNAL_OFF_FILES[1], INTERNAL_OFF_UNIT, 0o644)
+        add(INTERNAL_OFF_FILES[2], INTERNAL_OFF_RULE, 0o644)
+        add(SOFTREBOOT_DIR + "/PROTOCOL", SOFTREBOOT_PROTOCOL + "\n", 0o644)
+        add(SOFTREBOOT_DIR + "/release", release + "\n", 0o644)
+        listed = list(INTERNAL_OFF_FILES) + [SOFTREBOOT_DIR + "/PROTOCOL", SOFTREBOOT_DIR + "/release"]
+        if modules:
+            add(SOFTREBOOT_DIR + "/preload-modules.txt", "".join(m + "\n" for m in modules), 0o644)
+            listed.append(SOFTREBOOT_DIR + "/preload-modules.txt")
+        add(SOFTREBOOT_DIR + "/SHA256SUMS",
+            "".join(f"{hashlib.sha256(files[p][0]).hexdigest()}  {p}\n" for p in listed), 0o644)
     stubbed, absent = [], []
     for prog in stub_programs:
         kind = img.kind(prog)
@@ -957,8 +1196,14 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     if splash_program:
         links["/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] = \
             "/etc/systemd/system/mpfree-test-splash.service"
+    if kexec_files:
+        links[KEXEC_DIR + "/zImage"] = "../zImage-" + kexec_files[0]
 
-    commands = ["mkdir /etc/mpfree-test"]
+    if softreboot:
+        links["/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] = INTERNAL_OFF_FILES[1]
+
+    commands = (["mkdir /etc/mpfree-test"] + ([f"mkdir {KEXEC_DIR}"] if kexec_files else []) +
+                ([f"mkdir {SOFTREBOOT_DIR}"] if softreboot else []))
     for folder in MADE_IF_MISSING:
         kind = img.kind(folder)
         if kind is None:
@@ -1077,7 +1322,14 @@ def main(argv):
     ap.add_argument("--kits", help="its drum kits (kits.bin; default: the newest factory-kit-* folder's)")
     ap.add_argument("--akai-app", action="store_true",
                     help="start Akai's app at power-on (for developer mode); every flasher stays a stub")
+    ap.add_argument("--preload-module", action="append", default=[], metavar="NAME",
+                    help="a kernel module the soft-reboot hook loads from Akai's system first (repeatable)")
     args = ap.parse_args(argv)
+    for name in args.preload_module:
+        if not MODULE_NAME.match(name):
+            raise Stop(f"--preload-module {name!r} is not a plain module name")
+    if len(set(args.preload_module)) != len(args.preload_module) or len(args.preload_module) > 64:
+        raise Stop("--preload-module: each name once, at most 64")
     for tool in ("debugfs", "e2fsck", "mke2fs", "sfdisk", "ssh-keygen"):
         if not shutil.which(tool):
             raise Stop(f"missing '{tool}'. Install e2fsprogs, util-linux (fdisk) and openssh with your package manager")
@@ -1127,6 +1379,9 @@ def main(argv):
         OUT.say(f"running tree: {live_path} ({dtb.model(live)}; {', '.join(board)})")
         running, how = running_release(pre, work, release)
         OUT.say(f"running release: {running} ({how})")
+        if running == release:
+            check_same_release(live)
+            OUT.say("  the stick's own release, installed: U-Boot's changes are read against its own board file")
         new_folder = os.path.join(work, "boot-files", release)
         old_folder = os.path.join(work, "boot-files", running)
         for folder in (new_folder, old_folder):
@@ -1185,6 +1440,10 @@ def main(argv):
             OUT.say("startup screen: none (no --splash)")
         kits_uuid = str(uuid.uuid4()) if parts34 else None
         data_uuid = str(uuid.uuid4()) if parts34 else None
+        cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
+                   "sysctl.kernel.kexec_load_disabled=1")
+        with open(dtb_out, "rb") as fh:
+            kexec_files = (release, fh.read(), (cmdline + "\n").encode())
         if args.akai_app:
             OUT.say(AKAI_APP_MARK)
             OUT.say(f"  {AKAI_APP_UNIT} and {AKAI_APP_LAUNCHER} are left as Akai ships them: Akai's app starts at "
@@ -1207,9 +1466,22 @@ def main(argv):
                     "stick's in place or carries it over, and makes the partition fill the stick")
         else:
             OUT.say("pad player: none (no --app); the log display starts at power-on")
+        OUT.say(f"for MPFree's boot hook: {KEXEC_DIR} on partition 1, with a link to the kernel, kexec.dtb, "
+                "cmdline.txt and their SHA256SUMS (the same files as in the build folder); with the hook installed "
+                "on the MPC, power-on with this stick in jumps to it")
+        OUT.say(f"for MPFree's soft-reboot hook: {SOFTREBOOT_DIR} on partition 1 (protocol {SOFTREBOOT_PROTOCOL}, "
+                f"kernel release {release}) and mpfree-test-internal-off.service, which switches the MPC's eMMC and "
+                "SD card off first thing at boot, before udev and every mount; it fails safe by powering off")
+        if args.preload_module:
+            OUT.say("  modules the hook loads from Akai's system before the soft-reboot: "
+                    + " ".join(args.preload_module))
+        else:
+            OUT.say("  modules the hook loads first: none (no --preload-module); after the soft-reboot LoadPin refuses "
+                    "every module load, so the stick's system has the modules Akai's boot loaded by then")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
                                                                   screen_log, rotation, splash, app, kits_uuid,
-                                                                  data_uuid, args.akai_app)
+                                                                  data_uuid, args.akai_app, kexec_files,
+                                                                  (release, args.preload_module))
         if app:
             if img.kind(GROW_PROGRAM) in ("regular", "symlink"):
                 OUT.say(f"partition 4: {GROW_PROGRAM} is in this version, so its filesystem grows at boot to fill "
@@ -1224,6 +1496,10 @@ def main(argv):
         for path in absent:
             OUT.say(f"absent   {path} (nothing to stub)")
         OUT.say(root_note)
+        OUT.say("units Akai's udev rules start when a device appears (after the soft-reboot these can start before "
+                "the eMMC and SD card are off, so any that can touch a disk must be masked):")
+        for line in udev_wants_lines(img, scratch, set(MASK_UNITS) - ({AKAI_APP_UNIT} if args.akai_app else set())):
+            OUT.say(line)
         if args.akai_app:
             OUT.say("Akai's firewall: masked on the stick, so developer mode's SSH port can be reached here. On an "
                     "installed 3.10.1 these units start at boot and load these rules:")
@@ -1246,8 +1522,6 @@ def main(argv):
             OUT.say(f"partition 4 data PARTUUID {data_uuid} ({DATA_NAME}, ext4 with a journal, label "
                     f"MPFREE-DATA, at {DATA_START * SECTOR >> 20} MiB, {DATA_SIZE >> 20} MiB, empty)")
         shutil.copyfile(zimage, os.path.join(outdir, "zImage"))
-        cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
-                   "sysctl.kernel.kexec_load_disabled=1")
         with open(os.path.join(outdir, "cmdline.txt"), "w") as fh:
             fh.write(cmdline + "\n")
         with open(host_key + ".pub") as fh:
