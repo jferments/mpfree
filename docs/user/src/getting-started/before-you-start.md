@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/main.rs tools/mpc-one/offline-kexec-stick.py
-checked: 2026-11-15 472bb03
+covers: rust/mpfree-app/src/main.rs tools/mpc-one/offline-kexec-stick.py tools/mpc-one/hook-install.sh
+checked: 2026-11-15 291b206
 -->
 
 # Before you start
@@ -17,6 +17,8 @@ MPFree is a new operating system for making music on the Akai MPC One. It replac
 ## How MPFree runs
 
 MPFree starts from a **USB stick**. While it runs, the MPC's own storage is hidden from it and never written to, so when you switch off and take the stick out, your MPC starts its factory software again exactly as before. Your projects, samples and settings in the factory software are untouched.
+
+Once a small start-up helper is on the MPC, switching on with the stick in starts MPFree by itself: the MPC logo shows for a few seconds, then MPFree's startup screen, without the factory software loading first. Switch on without the stick and the factory software starts as usual.
 
 > [!WARNING]
 > MPFree is early test software, and there is no installer or download for musicians yet. Today the test stick is made by MPFree's developers. When there is a way for anyone to try it, this page will say how.
