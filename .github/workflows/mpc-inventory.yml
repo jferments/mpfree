@@ -76,6 +76,7 @@ jobs:
           sh -n tools/mpc-one/read-only-midi-counters.sh
           sh -n tools/mpc-one/read-only-system-310.sh
           sh -n tools/mpc-one/passive-usbmon-capture.sh
+          sh -n tools/fxprobe/fxprobe.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
@@ -115,6 +116,7 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_disktest_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_midi_capture.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/fxprobe/test/test_fxprobe_sh.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_factory_kit.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_mpc_projects.py
           python3 tools/mpc-import/tests/test_inspect_xpj.py

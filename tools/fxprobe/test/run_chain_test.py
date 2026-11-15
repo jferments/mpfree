@@ -10,6 +10,12 @@ controller uses:
 2. Source -> the SDK's StereoDelay example -> Tap, with the gain and timing
    options: the capture must be complete, louder than nothing after the dry
    signal stops (the delay tail), with a timing log and a host-call log.
+3. fxprobe.py setup, capture at two gains and pull, read back by fxlab
+   analyse as a flat wire.
+4. The kit on a stick: stage.py makes it, fxprobe.sh installs the plugins to a
+   fake internal drive, the plugins load from there and find the work folder
+   on the stick's data partition through their pointer, also after the stick
+   comes back under another mount name, without rerunning the old command.
 
 Usage: MPC_SDK=/path/to/mpc-plugin-builder-sdk python3 tools/fxprobe/test/run_chain_test.py
 Needs a C++17 compiler (c++) and a release build of fxlab
@@ -123,6 +129,92 @@ def run_chain(bins, work, middle, seconds, control, extra=()):
         fail("chain_sim exited with %d" % p.returncode)
 
 
+def fxprobe_sh(root, kit, *args):
+    r = subprocess.run(["sh", os.path.join(kit, "fxprobe.sh")] + list(args), env=dict(os.environ, FXPROBE_TEST_ROOT=root),
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        fail("fxprobe.sh %s: %s %s" % (" ".join(args), r.stdout, r.stderr))
+    return r.stdout
+
+
+def stick_test(bins, tmp, rate):
+    built = os.path.join(tmp, "built")
+    for project, folder, slug in (("FXProbeSource", "MPFree - VST - FXProbe Source", "fxprobe-source"),
+                                  ("FXProbeTap", "MPFree - VST - FXProbe Tap", "fxprobe-tap")):
+        os.makedirs(os.path.join(built, folder, "VST"))
+        shutil.copy(os.path.join(FXPROBE, project, "plugin.json"), os.path.join(built, folder))
+        shutil.copy(os.path.join(bins, slug + ".so"), os.path.join(built, folder, "VST", slug + ".so"))
+    root = os.path.join(tmp, "root")
+    media = os.path.join(root, "media")
+    for d in ("az01-internal", "MPFREE-KITS", "4c1e9a52-data"):
+        os.makedirs(os.path.join(media, d))
+    os.makedirs(os.path.join(root, "proc"))
+
+    def mounts(data_name):
+        with open(os.path.join(root, "proc", "mounts"), "w") as f:
+            f.write("/dev/mmcblk0p8 /media/az01-internal ext4 rw,relatime 0 0\n"
+                    "/dev/sdz3 /media/MPFREE-KITS ext4 rw,nosuid,nodev,noexec,relatime,nosymfollow 0 0\n"
+                    "/dev/sdz4 /media/%s ext4 rw,nosuid,nodev,noexec,relatime,nosymfollow 0 0\n" % data_name)
+    mounts("4c1e9a52-data")
+    kit = os.path.join(media, "MPFREE-KITS", "fxprobe")
+    r = subprocess.run([sys.executable, os.path.join(FXPROBE, "stage.py"), "--plugins-from", built, "--native-test",
+                        "--fxlab", FXLAB, "--out", kit], capture_output=True, text=True)
+    if r.returncode != 0 or "STAGE-OK" not in r.stdout:
+        fail("stage.py: " + r.stdout + r.stderr)
+    fxprobe_sh(root, kit, "install")
+    installed = os.path.join(media, "az01-internal", "VST2 Plugins")
+    env = {k: v for k, v in os.environ.items() if k != "FXPROBE_DIR"}
+    p = subprocess.Popen([os.path.join(bins, "chain_sim"), "--seconds", "600", "--speed", "4",
+                          os.path.join(installed, "MPFree - VST - FXProbe Source", "VST", "fxprobe-source.so"),
+                          os.path.join(installed, "MPFree - VST - FXProbe Tap", "VST", "fxprobe-tap.so")], env=env)
+    try:
+        time.sleep(1.5)
+        if any(os.path.exists(os.path.join(media, d, "FXProbe")) for d in os.listdir(media)):
+            fail("a work folder appeared before setup")
+        fxprobe_sh(root, kit, "setup")
+        work = os.path.join(media, "4c1e9a52-data", "FXProbe")
+        wait_for(lambda: read_status(work, "source-s1.txt").get("state") == "idle"
+                 and read_status(work, "tap-s1.txt").get("state") == "idle", 10,
+                 "the installed plugins to find the work folder through their pointer")
+        out = fxprobe_sh(root, kit, "capture", "wire-stick", "--gains", "0,-12", "--tail", "1")
+        if "CAPTURE-OK" not in out:
+            fail("fxprobe.sh capture: " + out)
+        print("ok   stage.py kit, fxprobe.sh install/setup/capture: installed plugins find the stick's work folder")
+        # The stick out and back in under another mount name.
+        mounts("MPFREE-DATA")
+        os.rename(os.path.join(media, "4c1e9a52-data"), os.path.join(media, "MPFREE-DATA"))
+        work = os.path.join(media, "MPFREE-DATA", "FXProbe")
+        before = sorted(os.listdir(os.path.join(work, "captures")))
+        for f in os.listdir(os.path.join(work, "status")):
+            os.remove(os.path.join(work, "status", f))
+        wait_for(lambda: read_status(work, "source-s1.txt") and read_status(work, "tap-s1.txt"), 10,
+                 "the plugins to find the work folder under its new mount name")
+        time.sleep(1.5)
+        if sorted(os.listdir(os.path.join(work, "captures"))) != before:
+            fail("the command already in control.txt ran again when the stick came back")
+        out = fxprobe_sh(root, kit, "capture", "wire-again", "--tail", "1")
+        if "CAPTURE-OK" not in out:
+            fail("fxprobe.sh capture after the stick came back: " + out)
+        print("ok   stick out and back under another name: found again, the old command not rerun, captures again")
+    finally:
+        p.terminate()
+        p.wait(timeout=10)
+    sched = os.path.join(kit, "programmes", "short.tsv")
+    for name, gain in (("wire-stick-g0", "0"), ("wire-stick-gm12", "-12"), ("wire-again", "0")):
+        wavf = os.path.join(work, "captures", name + "-s1.wav")
+        an = os.path.join(tmp, "an-" + name)
+        r = subprocess.run([FXLAB, "analyse", wavf, "--schedule", sched, "--gain", gain, "--out", an],
+                           capture_output=True, text=True)
+        card = open(os.path.join(an, "captures.json")).read() if r.returncode == 0 else ""
+        m = re.search(r'"resp_1k_db": ([-0-9.e]+)', card)
+        if not m or abs(float(m.group(1))) > 0.01:
+            fail("fxlab analyse of %s: %s %s" % (wavf, r.stderr, card[:400]))
+    out = fxprobe_sh(root, kit, "remove")
+    if os.path.exists(installed) or "REMOVE-OK" not in out:
+        fail("fxprobe.sh remove left %s: %s" % (installed, out))
+    print("ok   fxlab analyse reads the stick's captures as a flat wire; remove leaves the internal drive as it was")
+
+
 def main():
     sdk = os.environ.get("MPC_SDK")
     if not sdk or not os.path.isfile(os.path.join(sdk, "framework", "mpc_plugin.h")):
@@ -223,6 +315,13 @@ def main():
             if r.returncode != 0 or not m or abs(float(m.group(1))) > 0.01:
                 fail("fxlab analyse of %s: %s %s" % (wavf, r.stderr, card[:400]))
         print("ok   fxprobe.py setup/capture/pull at two gains, fxlab analyse reads both as a flat wire")
+
+        # 4. The kit on a stick, as on the MPC under Akai's system: stage.py
+        #    makes the kit (native builds), fxprobe.sh installs the plugins
+        #    to a fake internal drive, the plugins load from there and find
+        #    the work folder on the stick's data partition through their
+        #    pointer, also after the stick comes back under another name.
+        stick_test(bins, tmp, rate)
         print("PASS")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
