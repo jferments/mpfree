@@ -184,8 +184,10 @@ class FxprobeShTests(unittest.TestCase):
                               text=True, timeout=60)
 
     def sh(self, *args, timeout=60):
+        # umask 077, as a strict shell would have: what it makes must still be readable by everyone.
         return subprocess.run([self.shell, os.path.join(self.kit, "fxprobe.sh")] + list(args), env=self.env,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout,
+                              preexec_fn=lambda: os.umask(0o077))
 
     def ok(self, res, last):
         self.assertEqual(res.returncode, 0, res.stdout)
@@ -194,6 +196,13 @@ class FxprobeShTests(unittest.TestCase):
     def stopped(self, res, text):
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("STOP: " + text, res.stdout)
+
+    def assert_readable(self, path):
+        """Every folder under path is 0755 and every file 0644."""
+        for dirpath, _, files in os.walk(path):
+            self.assertEqual(os.stat(dirpath).st_mode & 0o777, 0o755, dirpath)
+            for f in files:
+                self.assertEqual(os.stat(os.path.join(dirpath, f)).st_mode & 0o777, 0o644, f)
 
     def tree(self, path):
         out = {}
@@ -264,6 +273,7 @@ class FxprobeShTests(unittest.TestCase):
             kit = self.tree(f"{self.kit}/plugins/{folder}")
             got = self.tree(f"{target}/{folder}")
             self.assertEqual({k: v for k, v in got.items() if k in kit}, kit)
+        self.assert_readable(target)
         res = self.sh("check")
         self.ok(res, "CHECK-OK")
         self.assertIn(f"  {TAP}: installed, same as the kit; pointer {self.root}/media/*/FXProbe", res.stdout)
@@ -313,9 +323,12 @@ class FxprobeShTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(f"{self.work}/.fxprobe-work"))
         self.assertEqual(sorted(os.listdir(f"{self.work}/programmes")),
                          ["short.tsv", "short.wav", "standard.tsv", "standard.wav"])
+        self.assert_readable(self.work)
+        os.chmod(self.work, 0o700)   # made earlier by a stricter shell: setup opens it up again
         res = self.sh("setup")
         self.ok(res, "SETUP-OK")
         self.assertNotIn("setup: programmes/", res.stdout)   # already there, not copied again
+        self.assert_readable(self.work)
         self.instances = Instances(self.work)
         self.instances.thread.start()
         deadline = time.time() + 10
@@ -328,6 +341,7 @@ class FxprobeShTests(unittest.TestCase):
         self.assertIn("slots: 1 2; 2 capture(s) of 1.450 s each", res.stdout)
         self.assertIn("captured flanger-g0 from 2 slot(s)", res.stdout)
         self.assertIn("captured flanger-gm12 from 2 slot(s)", res.stdout)
+        self.assertEqual(os.stat(f"{self.work}/control.txt").st_mode & 0o777, 0o644)
         with open(f"{self.work}/control.txt") as fh:
             self.assertEqual(fh.read(), "seq 2\naction run\nprogramme short.wav\ngain -12\npreroll 0.5\n"
                                         "capture flanger-gm12\nseconds 1.450\n")

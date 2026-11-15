@@ -265,7 +265,7 @@ private:
         timingThis_ = c.timing || getInt(kTiming) == 1;
         if (timingThis_)
         {
-            timingFile_ = std::fopen((base_ + ".timing.tsv").c_str(), "wb");
+            timingFile_ = createFile(base_ + ".timing.tsv");
             timingHeader_ = false;
         }
         timingOn_.store(timingThis_);
