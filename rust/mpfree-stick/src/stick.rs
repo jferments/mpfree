@@ -57,7 +57,14 @@ pub const ABOUT_FILE: &str = "/etc/mpfree-test/made-by.txt";
 pub struct Programs {
     pub pad_player: Vec<u8>,
     pub screen_log: Vec<u8>,
+    /// The startup screen, `mpfree-startup`: it plays once per power-on,
+    /// and the pad player keeps its last frame until it draws.
+    pub startup: Vec<u8>,
 }
+
+/// The programs' file names in a programs folder: the pad player, the log
+/// display and the startup screen.
+pub const PROGRAM_FILES: [&str; 3] = ["mpfree", "mpfree-screen-log", "mpfree-startup"];
 
 /// Is this a 32-bit little-endian ARM ELF executable?
 pub fn arm_elf(b: &[u8]) -> bool {
@@ -69,7 +76,7 @@ pub fn arm_elf(b: &[u8]) -> bool {
 }
 
 impl Programs {
-    /// `mpfree` and `mpfree-screen-log` from a folder.
+    /// [`PROGRAM_FILES`] from a folder.
     pub fn from_dir(dir: &Path) -> io::Result<Programs> {
         let read = |name: &str| -> io::Result<Vec<u8>> {
             let p = dir.join(name);
@@ -83,9 +90,11 @@ impl Programs {
             }
             Ok(b)
         };
+        let [pad_player, screen_log, startup] = PROGRAM_FILES;
         Ok(Programs {
-            pad_player: read("mpfree")?,
-            screen_log: read("mpfree-screen-log")?,
+            pad_player: read(pad_player)?,
+            screen_log: read(screen_log)?,
+            startup: read(startup)?,
         })
     }
 }
@@ -624,6 +633,7 @@ pub fn apply<'a>(
             Content::Placeholder(p) if *p == r.placeholders["screen_log"] => {
                 programs.screen_log.clone()
             }
+            Content::Placeholder(p) if *p == r.placeholders["startup"] => programs.startup.clone(),
             Content::Placeholder(p) if *p == r.placeholders["host_key"] => ssh
                 .ok_or_else(|| bad("the host key is only for developer SSH"))?
                 .host_private

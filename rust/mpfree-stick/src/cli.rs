@@ -43,8 +43,9 @@ UPDATE may be a folder: the supported update in it is used. DISK may be mpfree f
 stick that is in (not for write). Reading or writing a disk needs root or an administrator.
 
 Options for write and build:
-  --programs FOLDER  mpfree and mpfree-screen-log built for the MPC (default: $MPFREE_STICK_PROGRAMS,
-                     stick-programs/ next to this program, or the clone's armv7 release build)
+  --programs FOLDER  mpfree, mpfree-screen-log and mpfree-startup built for the MPC (default:
+                     $MPFREE_STICK_PROGRAMS, stick-programs/ next to this program, or the clone's armv7
+                     release build)
   --kits FILE        partition 3's kits.bin (default: MPFree's own kits, from the Drums synth)
   --ssh-key FILE     developer SSH, off without it: your public key file (key-only root, port 2222)
   --any-update       developer option: take an Akai update MPFree does not know
@@ -206,7 +207,11 @@ impl Disk for Target {
 /// `stick-programs/` next to this program (as a release ships it), else a
 /// clone's ARM build.
 pub fn default_programs() -> Option<PathBuf> {
-    let has = |p: &Path| p.join("mpfree").is_file() && p.join("mpfree-screen-log").is_file();
+    let has = |p: &Path| {
+        crate::stick::PROGRAM_FILES
+            .iter()
+            .all(|f| p.join(f).is_file())
+    };
     if let Some(p) = std::env::var_os("MPFREE_STICK_PROGRAMS") {
         return Some(PathBuf::from(p)).filter(|p| has(p));
     }
