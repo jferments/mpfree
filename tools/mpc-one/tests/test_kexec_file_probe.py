@@ -20,13 +20,15 @@ TOOLS = os.path.dirname(HERE)
 PROBE = os.path.join(TOOLS, "kexec-file-probe.sh")
 
 FAKE_KEXEC = r'''#!/bin/sh
-# Mimic LoadPin: the old buffer syscall is denied; the file syscall is allowed for a kernel on disk and
-# denied for one under /run (an untrusted filesystem).
+# Mimic LoadPin and this kexec on 3.10.1: the old buffer syscall is denied; the file syscall is allowed for
+# a kernel on disk and denied for one under /run (an untrusted filesystem); and the file syscall cannot
+# carry a device tree ("DTB file cannot be specified in file mode").
 L="$FAKE_ROOT/sys/kernel/kexec_loaded"
-mode=buffer; file=
+mode=buffer; file=; dtb=
 for a in "$@"; do
   case "$a" in
     --kexec-file-syscall) mode=file ;;
+    --dtb=*) dtb=1 ;;
     -u|--unload) echo 0 > "$L"; exit 0 ;;
     /*) file=$a ;;
   esac
@@ -36,6 +38,7 @@ case " $* " in *" -e "*|*" --exec "*) echo EXEC > "$FAKE_ROOT/EXECUTED"; exit 0 
 if [ "$mode" = buffer ]; then
   echo "LoadPin: kexec-image old-api-denied" >&2; echo "kexec_load failed: Operation not permitted" >&2; exit 1
 fi
+[ -n "$dtb" ] && { echo "DTB file cannot be specified in file mode" >&2; exit 255; }
 case "$file" in
   */run/*) echo "LoadPin: kexec-image loadpin-denied" >&2; echo "kexec_file_load failed: Operation not permitted" >&2; exit 1 ;;
   *) echo 1 > "$L"; exit 0 ;;
@@ -93,12 +96,12 @@ class ProbeTests(unittest.TestCase):
         res = self.run_probe()
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
-        # The old buffer syscall is refused; the file syscall of the trusted kernel loads.
+        # The old buffer syscall is refused; the file syscall of the trusted kernel with a command line loads.
         self.assertIn("old buffer syscall", out)
         self.assertRegex(out, r"old buffer syscall[^\n]*: refused")
-        self.assertRegex(out, r"file syscall, reuse this kernel's command line: LOADED")
         self.assertRegex(out, r"file syscall, our command line: LOADED")
-        self.assertRegex(out, r"file syscall, our command line \+ a device tree: LOADED")
+        # The file syscall cannot carry a device tree, so that probe is refused.
+        self.assertRegex(out, r"file syscall, our command line \+ a device tree: refused")
         # The same kernel copied to /run (untrusted) is refused.
         self.assertRegex(out, r"copied to /run[^\n]*: refused")
         self.assertIn("RESULT: probe done, nothing is staged", out)

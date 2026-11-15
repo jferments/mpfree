@@ -8,8 +8,10 @@ R=''
 # MPFree from the stick before Akai's app starts. When the Wi-Fi module cfg80211 loads, about 6 s after
 # power-on, a modprobe line runs the hook; it starts a short service that Akai's app and its firmware
 # updaters wait for. The service mounts the stick's partition 1 read-only, copies its /boot/mpfree-kexec
-# files (kernel, device tree, command line) to /run, checks them against their SHA256SUMS and the stick,
-# loads them with kexec and has systemd restart into them. A udev rule is the backup trigger. Without the
+# files (kernel, device tree, command line) to /run and checks them against their SHA256SUMS; then it loads
+# the system's OWN kernel with the file-based kexec (the only load LoadPin accepts on 3.10.1), after proving
+# that kernel is byte-for-byte the stick's, with the stick's command line, and has systemd restart into it.
+# A udev rule is the backup trigger. Without the
 # stick, or on any problem, it does nothing and Akai's system starts as usual. This was tried first with a
 # harmless canary (hook-canary-install.sh): the modprobe line ran at 5.96 s, its service at 6.09 s, and
 # Akai's app started at 6.36 s.
@@ -85,8 +87,9 @@ SCRIPT_TEXT=$(cat <<'MPFREE_EOF'
 R=''
 # MPFree boot hook, written by tools/mpc-one/hook-install.sh.
 # With MPFree's stick in at power-on (a USB disk partition named mpfree-test-root), it starts MPFree from
-# the stick before Akai's app starts: it loads the stick's kernel and device tree with kexec, and systemd
-# restarts into them. Without that stick it does nothing. It is run:
+# the stick before Akai's app starts: it loads the system's own kernel (identical to the stick's, and the
+# only one LoadPin lets a file-based kexec load) with the stick as its root, and systemd restarts into it.
+# Without that stick it does nothing. It is run:
 #   modprobe  by the module loader, when the Wi-Fi module cfg80211 loads (about 6 s after power-on);
 #   udev      by udev, for a device event (the backup, if cfg80211 does not load);
 #   jump      by systemd, as the service the first of those started (Akai's app and its firmware
@@ -140,7 +143,9 @@ say() { if [ "$kind" = check ]; then echo "$1"; else kmsg "$1"; fi; }
 W=''; K=''; mnt=''; ours=''; loaded=''
 cleanup() {
   if [ "$loaded" = yes ] && [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" != 0 ]; then
-    "$R/usr/sbin/kexec" --unload --kexec-syscall && say "kernel unloaded (kexec --unload)"
+    # Unload with the file syscall: LoadPin denies the old one (-u --kexec-syscall) the same way it denies
+    # the old load ("kexec-image old-api-denied"), and the kernel was loaded with the file syscall.
+    "$R/usr/sbin/kexec" --unload --kexec-file-syscall && say "kernel unloaded (kexec --unload)"
   fi
   loaded=''
   if [ "$ours" = yes ]; then umount "$mnt" 2>/dev/null || say "could not unmount the stick's partition 1"; fi
@@ -216,6 +221,7 @@ prepare() {   # $1 = work folder in /run. Finds the stick, copies and checks its
     ours=''
     umount "$mnt" || fail "could not unmount the stick's partition 1"
   fi
+  want_zimage=''
   for f in zImage kexec.dtb cmdline.txt; do
     want=''; count=0
     while read -r sum file rest; do
@@ -224,8 +230,18 @@ prepare() {   # $1 = work folder in /run. Finds the stick, copies and checks its
     [ "$count" = 1 ] || fail "SHA256SUMS on the stick has no single line for $f"
     got=$(sha256sum < "$K/$f" | cut -d' ' -f1)
     [ "$got" = "$want" ] || fail "$f on the stick does not match its SHA256SUMS (damaged? write the stick again)"
+    [ "$f" = zImage ] && want_zimage=$want
   done
   say "kexec files: kernel $rel, checked against SHA256SUMS"
+  # The file-based kexec (the only load LoadPin accepts) can load only a kernel on the system's own trusted
+  # filesystem, not the stick. We load the system's /boot/zImage-$rel, but only after proving it is byte-for-
+  # byte the kernel this stick was built with (its SHA256SUMS zImage line). If the system has no such kernel,
+  # or it differs, stop: the file-based load cannot hand the stick a kernel the system does not already trust.
+  syskernel="$R/boot/zImage-$rel"
+  [ -f "$syskernel" ] && [ ! -L "$syskernel" ] || fail "the system has no /boot/zImage-$rel (this stick's kernel is not this system's; reinstall MPC OS $rel first)"
+  sysgot=$(sha256sum < "$syskernel" | cut -d' ' -f1)
+  [ "$sysgot" = "$want_zimage" ] || fail "the system's /boot/zImage-$rel differs from the stick's kernel; the file-based load can use only the system's own kernel"
+  say "system kernel /boot/zImage-$rel matches the stick's: the file-based load will use it"
   [ "$(wc -l < "$K/cmdline.txt" | tr -cd 0-9)" = 1 ] || fail "cmdline.txt is not one line"
   cmdline=$(cat "$K/cmdline.txt")
   [ -z "$(printf '%s' "$cmdline" | tr -d 'A-Za-z0-9=._,:/ -')" ] || fail "cmdline.txt has unusual characters"
@@ -244,10 +260,16 @@ load() {
   [ "$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)" = 0 ] || fail "kexec is turned off on this system"
   [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] || fail "a kexec kernel is already loaded"
   loaded=yes
-  "$R/usr/sbin/kexec" --load --kexec-syscall --dtb="$K/kexec.dtb" --command-line="$cmdline" "$K/zImage" ||
-    fail "kexec --load refused the stick's kernel"
+  # LoadPin (enforce + verity) on 3.10.1 denies the old kexec_load buffer syscall ("kexec-image
+  # old-api-denied") and accepts only the file-based kexec_file_load of a kernel on its trusted filesystem.
+  # So load the system's OWN /boot/zImage-$rel, which prepare() has already proved is byte-for-byte the
+  # kernel this stick was built with. The file syscall cannot carry a custom device tree ("DTB file cannot
+  # be specified in file mode"), so the kernel reuses the running device tree: the eMMC and SD stay visible,
+  # and MPFree must mount and write only the stick. The command line still points root= at the stick.
+  "$R/usr/sbin/kexec" --load --kexec-file-syscall --command-line="$cmdline" "$R/boot/zImage-$rel" ||
+    fail "kexec --load (file-based) refused the system's kernel"
   [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 1 ] || fail "kexec_loaded is not 1 after kexec --load"
-  say "kernel loaded (kexec --load) at $(cut -d' ' -f1 "$R/proc/uptime") s"
+  say "kernel loaded (kexec --load, file-based) at $(cut -d' ' -f1 "$R/proc/uptime") s"
 }
 
 case "$kind" in

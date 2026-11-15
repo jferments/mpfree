@@ -67,15 +67,14 @@ probe() {
 
 say ""
 say "=== Probes (each loads then immediately unloads; nothing boots) ==="
-probe "old buffer syscall (what the hook used; expected to be denied by LoadPin)" -c --kexec-syscall --reuse-cmdline "$TRUSTED"
-probe "file syscall, reuse this kernel's command line" -s --kexec-file-syscall --reuse-cmdline "$TRUSTED"
+probe "old buffer syscall (what the hook used; expected to be denied by LoadPin)" -c --kexec-syscall --command-line="$CMDLINE" "$TRUSTED"
 probe "file syscall, our command line" -s --kexec-file-syscall --command-line="$CMDLINE" "$TRUSTED"
 probe "file syscall, our command line + a device tree" -s --kexec-file-syscall --command-line="$CMDLINE" --dtb="$R/sys/firmware/fdt" "$TRUSTED"
 
 # Control: the same kernel from an untrusted place (a copy in /run, a RAM filesystem) should be refused,
 # which is why the hook must load the on-disk trusted kernel, not a copy from the stick.
 if cp "$TRUSTED" "$WORK/zImage" 2>/dev/null; then
-  probe "file syscall, SAME kernel but copied to /run (untrusted place; expected refused)" -s --kexec-file-syscall --reuse-cmdline "$WORK/zImage"
+  probe "file syscall, SAME kernel but copied to /run (untrusted place; expected refused)" -s --kexec-file-syscall --command-line="$CMDLINE" "$WORK/zImage"
 fi
 
 say ""

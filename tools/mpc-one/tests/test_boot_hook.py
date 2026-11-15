@@ -80,9 +80,18 @@ rm -rf "$1"/*
 '''
 FAKE_KEXEC = r'''#!/bin/sh
 echo "kexec: $*" >> "$FAKE_LOG"
+# Mimic LoadPin on 3.10.1: the old buffer syscall (--kexec-syscall) is denied for both load and unload
+# ("kexec-image old-api-denied"); only the file syscall (--kexec-file-syscall) is accepted, and it cannot
+# carry a device tree ("DTB file cannot be specified in file mode").
 case "$1" in
-  --load) [ -n "${FAKE_KEXEC_FAIL:-}" ] && exit 1; echo 1 > "$FAKE_ROOT/sys/kernel/kexec_loaded" ;;
-  --unload) echo 0 > "$FAKE_ROOT/sys/kernel/kexec_loaded" ;;
+  --load)
+    [ -n "${FAKE_KEXEC_FAIL:-}" ] && exit 1
+    case " $* " in *" --kexec-file-syscall "*) ;; *) echo "LoadPin: kexec-image old-api-denied" >&2; exit 1 ;; esac
+    case " $* " in *" --dtb="*) echo "DTB file cannot be specified in file mode" >&2; exit 255 ;; esac
+    echo 1 > "$FAKE_ROOT/sys/kernel/kexec_loaded" ;;
+  --unload)
+    case " $* " in *" --kexec-file-syscall "*) echo 0 > "$FAKE_ROOT/sys/kernel/kexec_loaded" ;;
+      *) echo "LoadPin: kexec-image old-api-denied" >&2; exit 1 ;; esac ;;
 esac
 '''
 
@@ -141,6 +150,11 @@ class BootHookTests(unittest.TestCase):
         write(os.path.join(r, "sys/kernel/kexec_loaded"), "0\n")
         write(os.path.join(r, "sbin/modprobe"), FAKE_KMOD, 0o755)
         write(os.path.join(r, "usr/sbin/kexec"), FAKE_KEXEC, 0o755)
+        # The system's own kernel on the (LoadPin-trusted) root filesystem, byte-for-byte the stick's: the
+        # file-based kexec loads this one, not the stick's copy.
+        os.makedirs(os.path.join(r, "boot"), exist_ok=True)
+        with open(os.path.join(r, "boot/zImage-" + RELEASE), "wb") as fh:
+            fh.write(KERNEL)
         os.makedirs(os.path.join(r, "bin"))
         os.symlink(self.dash, os.path.join(r, "bin/sh"))
         write(os.path.join(r, "data/system/etc/overlay/hostname"), "mpc-one\n")
@@ -253,17 +267,18 @@ class BootHookTests(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(self.root, rel)))
         self.assertIn("stick: /dev/sda1 (partition 1 of a USB disk), at 6.05 s", out)
         self.assertIn("kexec files: kernel " + RELEASE + ", checked against SHA256SUMS", out)
+        self.assertIn("system kernel /boot/zImage-" + RELEASE + " matches the stick's", out)
         self.assertIn("command line: root=PARTUUID=(this stick) rootwait=60 ro panic=10", out)
-        self.assertIn("kernel loaded (kexec --load)", out)
+        self.assertIn("kernel loaded (kexec --load, file-based)", out)
         self.assertIn("kernel unloaded (kexec --unload)", out)
         self.assertIn("CHECK-OK: at power-on with this stick in, the MPC would restart into it", out)
         self.assertIn("RESULT: the hook is installed, and the stick checks out. NEXT: switch the MPC off, then on "
                       "with the stick in.", out)
         work = os.path.join(self.root, "run/mpfree-hook-check")
         self.assertEqual(self.calls("kexec: "), [
-            f"kexec: --load --kexec-syscall --dtb={work}/kexec/kexec.dtb --command-line={CMDLINE.strip()} "
-            f"{work}/kexec/zImage",
-            "kexec: --unload --kexec-syscall"])
+            f"kexec: --load --kexec-file-syscall --command-line={CMDLINE.strip()} "
+            f"{self.root}/boot/zImage-{RELEASE}",
+            "kexec: --unload --kexec-file-syscall"])
         self.assertEqual(self.calls("mount: "), [f"mount: -t ext4 -o ro,noload,nodev,nosuid,noexec "
                                                  f"{self.root}/dev/sda1 {work}/stick"])
         self.assertEqual(self.calls("umount: "), [f"umount: {work}/stick"])
@@ -346,7 +361,7 @@ class BootHookTests(unittest.TestCase):
         self.assertIn(f"partition 1 is mounted already at {media}; read from there", res.stdout)
         self.assertIn("CHECK-OK", res.stdout)
         self.assertEqual(self.calls("mount: ") + self.calls("umount: "), [], "Akai's mount is used and left alone")
-        self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-syscall"])
+        self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-file-syscall"])
         self.assertEqual(self.read("sys/kernel/kexec_loaded"), "0\n")
         self.assertEqual(self.run_files(), [], "the copies in /run are removed again")
 
@@ -437,13 +452,14 @@ class BootHookTests(unittest.TestCase):
         for line in ("jump service started at 6.05 s; Akai's app: inactive",
                      "stick: /dev/sda1 (partition 1 of a USB disk), at 6.05 s",
                      f"kexec files: kernel {RELEASE}, checked against SHA256SUMS",
-                     "kernel loaded (kexec --load) at 6.05 s", "restarting into MPFree (kexec.target) at 6.05 s"):
+                     "kernel loaded (kexec --load, file-based) at 6.05 s",
+                     "restarting into MPFree (kexec.target) at 6.05 s"):
             self.assertIn("mpfree-hook: " + line + "\n", kmsg)
         self.assertNotIn("STOP", kmsg)
         work = os.path.join(self.root, "run/mpfree-hook")
         self.assertEqual(self.calls("kexec: "), [
-            f"kexec: --load --kexec-syscall --dtb={work}/kexec/kexec.dtb --command-line={CMDLINE.strip()} "
-            f"{work}/kexec/zImage"])
+            f"kexec: --load --kexec-file-syscall --command-line={CMDLINE.strip()} "
+            f"{self.root}/boot/zImage-{RELEASE}"])
         self.assertEqual(self.calls("systemctl: --no-block"),
                          ["systemctl: --no-block --job-mode=replace-irreversibly start kexec.target"])
         self.assertEqual(self.calls("umount: "), [f"umount: {work}/stick"])
@@ -463,7 +479,7 @@ class BootHookTests(unittest.TestCase):
         self.assertEqual(self.calls("systemctl: --no-block"),
                          ["systemctl: --no-block --job-mode=replace-irreversibly start kexec.target"] if asked else [])
         self.assertEqual(self.read("sys/kernel/kexec_loaded"), "0\n")
-        self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-syscall"] if loaded else [])
+        self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-file-syscall"] if loaded else [])
         self.assertEqual(self.run_files(), ["run/mpfree-hook", "run/mpfree-hook.txt"], "only the marker and the log")
         return res
 
@@ -498,8 +514,20 @@ class BootHookTests(unittest.TestCase):
             os.symlink("../zImage-" + RELEASE, link)
         with self.subTest("partition not mountable"):
             self.expect_stop("could not mount /dev/sda1 read-only", FAKE_MOUNT_FAIL="1")
+        with self.subTest("the system has no kernel to load"):
+            sysk = os.path.join(self.root, "boot/zImage-" + RELEASE)
+            os.rename(sysk, sysk + ".aside")
+            self.expect_stop("the system has no /boot/zImage-" + RELEASE)
+            os.rename(sysk + ".aside", sysk)
+        with self.subTest("the system kernel differs from the stick's"):
+            sysk = os.path.join(self.root, "boot/zImage-" + RELEASE)
+            with open(sysk, "wb") as fh:
+                fh.write(KERNEL + b"X")
+            self.expect_stop("the system's /boot/zImage-" + RELEASE + " differs from the stick's kernel")
+            with open(sysk, "wb") as fh:
+                fh.write(KERNEL)
         with self.subTest("kexec refuses"):
-            self.expect_stop("kexec --load refused the stick's kernel", loaded=False, FAKE_KEXEC_FAIL="1")
+            self.expect_stop("kexec --load (file-based) refused the system's kernel", loaded=False, FAKE_KEXEC_FAIL="1")
         with self.subTest("a firmware updater keeps running"):
             res = self.expect_stop("touch-fw-update.service is still running after 20 s",
                                    FAKE_BUSY_UNIT="touch-fw-update.service")
