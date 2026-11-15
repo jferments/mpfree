@@ -331,7 +331,8 @@ class AppTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         for text in ("static ARM EABI5 hard-float", f"release: {NEW}",
-                     "started by: no boot hook marker (kexec, or a direct boot)", "no MMC block device", "/: read-only",
+                     "started by: no soft-reboot marker: a kexec (the boot hook's opt-in kexec_file route or its chain, "
+                     "or --kexec-boot on 3.6.0), or a direct boot", "no MMC block device", "/: read-only",
                      "/run: tmpfs rw,nosuid,nodev,mode=755", "Akai's app (acvs.service): inactive",
                      "/dev/fb0: pid 321 (mpfree-screen-l)", "CHECKS-OK", "its hash on the MPC matches",
                      "inventory done", "pad player: was inactive, now inactive",
