@@ -819,6 +819,105 @@ class KexecStickTests(unittest.TestCase):
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn(problem, res.stdout)
 
+    def dev_tools(self):
+        top = os.path.join(self.tmp, "dev")
+        write(os.path.join(top, "fxprobe/fxprobe.sh"), "#!/bin/sh\necho fxprobe\n", 0o755)
+        write(os.path.join(top, "fxprobe/plugins/MPFree - VST - FXProbe Source/plugin.so"), os.urandom(3000))
+        write(os.path.join(top, "fxprobe/programmes/short.wav"), os.urandom(5000))
+        write(os.path.join(top, "README.txt"), "tools\n")
+        return top
+
+    def test_dev_tools_go_on_partition_3(self):
+        """--dev-tools: the folder's files under /mpfree-dev on partition 3, root's, 0644 and 0755, with
+        SHA256SUMS and the marker; the rest of the stick is as without it."""
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        top = self.dev_tools()
+        res = self.build("--app", app, "--kits", kits, "--dev-tools", top)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("developer tools for Akai's system (--dev-tools " + os.path.realpath(top) + "): 4 files, ",
+                      res.stdout)
+        script_sha = hashlib.sha256(b"#!/bin/sh\necho fxprobe\n").hexdigest()
+        self.assertIn(f"  dev tool /mpfree-dev/fxprobe/fxprobe.sh  sha256 {script_sha}\n", res.stdout)
+        self.assertIn("/kits.bin and /mpfree-dev, sha256 ", res.stdout)
+        [folder] = self.outputs()
+        kits_img = os.path.join(self.tmp, "p3.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 3, kits_img)
+        self.assertEqual(run(["e2fsck", "-fn", kits_img]).returncode, 0)
+        self.assertNotIn("has_journal", re.search(r"^Filesystem features:(.*)$", self.dfs(kits_img, "stats"),
+                                                  re.M).group(1))
+        sums = self.dfs(kits_img, "cat /mpfree-dev/SHA256SUMS")
+        want = ""
+        for rel in ("README.txt", "fxprobe/fxprobe.sh", "fxprobe/plugins/MPFree - VST - FXProbe Source/plugin.so",
+                    "fxprobe/programmes/short.wav"):
+            copy = os.path.join(self.tmp, "copy")
+            if os.path.exists(copy):
+                os.unlink(copy)
+            run(["debugfs", "-R", f'dump "/mpfree-dev/{rel}" {copy}', kits_img])
+            self.assertEqual(sha(copy), sha(os.path.join(top, rel)), rel)
+            self.assertRegex(self.dfs(kits_img, f'stat "/mpfree-dev/{rel}"'), r"Type: regular\s+Mode:\s+0644")
+            self.assertRegex(self.dfs(kits_img, f'stat "/mpfree-dev/{rel}"'), r"User:\s+0\s+Group:\s+0")
+            want += f"{sha(os.path.join(top, rel))}  {rel}\n"
+        self.assertEqual(sums, want)
+        for d in ("/mpfree-dev", "/mpfree-dev/fxprobe", "/mpfree-dev/fxprobe/plugins",
+                  "/mpfree-dev/fxprobe/plugins/MPFree - VST - FXProbe Source", "/mpfree-dev/fxprobe/programmes"):
+            self.assertRegex(self.dfs(kits_img, f'stat "{d}"'), r"Type: directory\s+Mode:\s+0755", d)
+            self.assertRegex(self.dfs(kits_img, f'stat "{d}"'), r"User:\s+0\s+Group:\s+0", d)
+        self.assertIn("run a script here with sh", self.dfs(kits_img, "cat /mpfree-dev/MPFREE-DEV.txt"))
+        copy = os.path.join(self.tmp, "kits-copy")
+        run(["debugfs", "-R", f"dump /kits.bin {copy}", kits_img])
+        self.assertEqual(sha(copy), sha(kits), "the kits are as without --dev-tools")
+
+    def test_dev_tools_stops(self):
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        top = self.dev_tools()
+        res = self.build("--app", app, "--kits", kits)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("developer tools: none (no --dev-tools)", res.stdout)
+        linked = os.path.join(self.tmp, "linked")
+        shutil.copytree(top, linked)
+        os.symlink("README.txt", os.path.join(linked, "again.txt"))
+        spaced = os.path.join(self.tmp, "spaced")
+        shutil.copytree(top, spaced)
+        write(os.path.join(spaced, "two  spaces/x.so"), b"x")
+        trailing = os.path.join(self.tmp, "trailing")
+        shutil.copytree(top, trailing)
+        write(os.path.join(trailing, "ends with a space /x.so"), b"x")
+        quoted = os.path.join(self.tmp, "quoted")
+        shutil.copytree(top, quoted)
+        write(os.path.join(quoted, 'say "hi".txt'), b"x")
+        dotted = os.path.join(self.tmp, "dotted")
+        shutil.copytree(top, dotted)
+        write(os.path.join(dotted, ".hidden"), b"x")
+        ours = os.path.join(self.tmp, "ours")
+        shutil.copytree(top, ours)
+        write(os.path.join(ours, "SHA256SUMS"), b"x")
+        empty = os.path.join(self.tmp, "empty")
+        os.makedirs(os.path.join(empty, "only-a-folder"))
+        fifo = os.path.join(self.tmp, "fifo")
+        shutil.copytree(top, fifo)
+        os.mkfifo(os.path.join(fifo, "pipe"))
+        big = os.path.join(self.tmp, "big")
+        write(os.path.join(big, "huge.bin"), b"\0" * ((64 << 20) + 1))
+        for args, problem in ((("--dev-tools", top), "--dev-tools needs --app"),
+                              (("--app", app, "--kits", kits, "--dev-tools", os.path.join(top, "README.txt")),
+                               "is not a folder"),
+                              (("--app", app, "--kits", kits, "--dev-tools", linked), "is a link"),
+                              (("--app", app, "--kits", kits, "--dev-tools", spaced), "has an unusual name"),
+                              (("--app", app, "--kits", kits, "--dev-tools", trailing), "has an unusual name"),
+                              (("--app", app, "--kits", kits, "--dev-tools", quoted), "has an unusual name"),
+                              (("--app", app, "--kits", kits, "--dev-tools", dotted), "has an unusual name"),
+                              (("--app", app, "--kits", kits, "--dev-tools", ours), "a name this tool makes itself"),
+                              (("--app", app, "--kits", kits, "--dev-tools", empty), "holds no files"),
+                              (("--app", app, "--kits", kits, "--dev-tools", fifo), "is not a plain file"),
+                              (("--app", app, "--kits", kits, "--dev-tools", big), "more than 64 MiB")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+
     def test_the_pad_player_runs_as_root_without_app_user(self):
         """Without --app-user the stick is as before: no mpfree user, no storage service, the app unit as it was."""
         app = os.path.join(self.tmp, "mpfree")
