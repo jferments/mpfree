@@ -556,6 +556,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-fxlab"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-node",
+]
+
+[[package]]
 name = "mpfree-grain"
 version = "0.1.0"
 dependencies = [
