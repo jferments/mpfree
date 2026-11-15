@@ -327,6 +327,7 @@ macro_rules! band {
     ($n:literal) => {
         Section {
             trim: &[concat!("Band ", $n, "/Freq"), concat!("Band ", $n, "/Q")],
+            rows: &[concat!("Band ", $n, "/Use"), concat!("Band ", $n, "/Type")],
             ..s(
                 concat!("b", $n),
                 concat!("Band ", $n),
@@ -734,7 +735,10 @@ pub static PLANS: &[Plan] = &[
                     band!(2),
                     band!(3),
                     band!(4),
-                    s("output", "Output", Voice, &["Output"]),
+                    Section {
+                        rows: &["Listen"],
+                        ..s("output", "Output", Voice, &["Output", "Listen"])
+                    },
                 ],
             ),
             Page {

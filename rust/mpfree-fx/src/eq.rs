@@ -65,6 +65,10 @@ pub mod ids {
         37 + b as u16
     }
     pub const OUTPUT: u16 = 20;
+    /// Listen: Off, or band `n` (1 to 8) heard alone through a band-pass
+    /// at its frequency and Q, to find what it touches. Not saved with a
+    /// sound: pages turn it off when they close.
+    pub const LISTEN: u16 = 45;
     /// The band an id belongs to and which of its params it is: 0 type,
     /// 1 freq, 2 gain, 3 Q, 4 Use.
     pub const fn band_of(id: u16) -> Option<(usize, u16)> {
@@ -80,7 +84,10 @@ pub mod ids {
 const SLOPES: &[&str] = &["Off", "12 dB", "24 dB"];
 const TYPES: &[&str] = &["Bell", "Low shelf", "High shelf", "Notch"];
 const USES: &[&str] = &["Unused", "On", "Bypassed"];
-const N: usize = 45;
+const LISTENS: &[&str] = &[
+    "Off", "Band 1", "Band 2", "Band 3", "Band 4", "Band 5", "Band 6", "Band 7", "Band 8",
+];
+const N: usize = 46;
 
 static INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.eq",
@@ -583,6 +590,17 @@ static PARAMS: [ParamInfo; N] = [
         curve: Curve::Choice(USES),
         readonly: false,
     },
+    ParamInfo {
+        id: ids::LISTEN,
+        name: "Listen",
+        group: "Output",
+        min: 0.0,
+        max: 8.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(LISTENS),
+        readonly: false,
+    },
 ];
 
 /// Butterworth Qs: one 12 dB stage, or two stages for 24 dB.
@@ -804,6 +822,13 @@ pub struct Eq {
     out: Smooth,
     /// The type-swap glide per frame (10 ms each way).
     step: f32,
+    /// Listen: the band heard (its index while Listen is on, kept while
+    /// fading out), the band-pass, and its share of the output, 0 to 1.
+    listen_band: usize,
+    listen: Svf,
+    /// The band-pass peaks at Q; this brings its peak to unity.
+    listen_k: f32,
+    listen_mix: Smooth,
 }
 
 impl Default for Eq {
@@ -832,6 +857,10 @@ impl Eq {
             bands: std::array::from_fn(band),
             out: Smooth::new(db_to_gain(v[20])),
             step: 0.0,
+            listen_band: 0,
+            listen: Svf::default(),
+            listen_k: 1.0,
+            listen_mix: Smooth::new(0.0),
         };
         eq.low.slope(v[1] as usize);
         eq.high.slope(v[3] as usize);
@@ -852,6 +881,13 @@ impl Eq {
             ids::HIGH_CUT => self.high.log_hz.target = v.log2(),
             ids::HIGH_SLOPE => self.high.slope(v as usize),
             ids::OUTPUT => self.out.target = db_to_gain(v),
+            ids::LISTEN => {
+                let n = v as usize;
+                if n > 0 {
+                    self.listen_band = n - 1;
+                }
+                self.listen_mix.target = if n > 0 { 1.0 } else { 0.0 };
+            }
             _ => {
                 let Some((b, what)) = ids::band_of(id) else {
                     return;
@@ -884,6 +920,18 @@ impl Eq {
             && cut(&self.high)
             && self.out.settled()
             && self.bands.iter().all(|b| !b.moving())
+            && self.listen_mix.settled()
+            && self.listen_mix.value == 0.0
+    }
+
+    /// Points the Listen band-pass at its band's frequency and Q as they
+    /// are this frame.
+    fn aim_listen(&mut self) {
+        let b = &self.bands[self.listen_band];
+        let hz = b.log_hz.value.exp2();
+        let q = b.log_q.value.exp2();
+        self.listen.set(SvfMode::BandPass, hz, q, 0.0, self.rate);
+        self.listen_k = 1.0 / q;
     }
 
     /// [`Eq::run`] while [`Eq::still`]: the same output, sample for sample,
@@ -949,16 +997,27 @@ impl Eq {
             let (lo12, lo24) = self.low.weights();
             let (hi12, hi24) = self.high.weights();
             let g = self.out.next();
+            let m = self.listen_mix.next();
+            if m > 0.0 {
+                self.aim_listen();
+            } else {
+                self.listen.reset();
+            }
             let mut y = [l[i], r[i]];
             for (ch, x) in y.iter_mut().enumerate() {
-                let mut s = self.low.run(ch, *x, lo12, lo24);
+                let dry = *x;
+                let mut s = self.low.run(ch, dry, lo12, lo24);
                 s = self.high.run(ch, s, hi12, hi24);
                 for b in &mut self.bands {
                     if !b.flat {
                         s = b.run(ch, s);
                     }
                 }
-                *x = g * s;
+                s *= g;
+                if m > 0.0 {
+                    s += m * (self.listen_k * self.listen.run(ch, dry) - s);
+                }
+                *x = s;
             }
             l[i] = y[0];
             r[i] = y[1];
@@ -1052,6 +1111,7 @@ impl Node for Eq {
             b.log_q.set_time(self.rate, 20.0);
         }
         self.out.set_time(self.rate, 20.0);
+        self.listen_mix.set_time(self.rate, 20.0);
         self.step = 1.0 / (0.01 * self.rate as f32);
         self.update_all();
     }
@@ -1062,6 +1122,8 @@ impl Node for Eq {
             b.snap();
         }
         self.out.snap(self.out.target);
+        self.listen_mix.snap(self.listen_mix.target);
+        self.listen.reset();
         self.update_all();
     }
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
