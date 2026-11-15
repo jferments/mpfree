@@ -1,6 +1,6 @@
 # Boot routes on MPC OS 3.10.1: soft-reboot, kexec_file, our own kernel
 
-**Status:** 2026-11-15. The soft-reboot works and is the default. The kexec-file route is opt-in and built, but has not been tried on the MPC. Chaining to our own kernel and the U-Boot route are not built. **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed (kernel `6.18.44-az01-2026-08-10-rt6`).
+**Status:** 2026-11-15. The soft-reboot works and is the default. The kexec-file route is opt-in; its first round on the MPC restarted on Akai's kernel with LoadPin off, but Ethernet did not come up. Chaining to our own kernel is the next step (the owner's choice); the U-Boot route is not built. **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed (kernel `6.18.44-az01-2026-08-10-rt6`).
 
 This page compares the ways MPFree can take over the MPC after power-on. It explains the kernel policy that decides between them (LoadPin), and what each way means for running our own kernel and for external hardware that needs its own drivers. How the soft-reboot works in detail is in [How MPFree boots from the stick](soft-reboot-boot.md). The history and the owner's runbooks are in [the stick auto-boot record](stick-autoboot.md).
 
@@ -35,7 +35,7 @@ systemd stops Akai's programs and starts the stick's systemd as PID 1 on the ker
 - **Speed:** about 16 s from power-on to the pad player.
 - **After an Akai update:** the hook refuses the stick until it is rebuilt for the new release.
 
-### 2. kexec_file of Akai's own kernel (opt-in, untried)
+### 2. kexec_file of Akai's own kernel (opt-in, first round passed)
 
 A stick built with `offline-kexec-stick.py --kexec-file` asks the hook to load Akai's `/boot/zImage-<release>` with the file-based kexec and the stick's command line, then start `kexec.target`. If that is not possible it soft-reboots instead ([how](soft-reboot-boot.md#the-opt-in-kexec-file-route), [runbook](stick-autoboot.md#the-kexec-file-route-step-6-opt-in)).
 - **Kernel:** Akai's, started again. The hook first checks that its hash is the one the stick was built with.
@@ -43,8 +43,8 @@ A stick built with `offline-kexec-stick.py --kexec-file` asks the hook to load A
 - **Command line:** ours. `root=` points at the stick, and the hook allows only a short list of words. `--loadpin-off` adds `loadpin.enforce=0`.
 - **LoadPin:** starts afresh. Without `loadpin.enforce=0` it is expected to pin the stick's root, as in the stick test, so the stick's modules and firmware load. With it, nothing is pinned and every load is allowed. Akai may have changed LoadPin in their build; the boot log line `LoadPin: ready to pin (currently enforcing)` or `(currently not enforcing)` shows which.
 - **Inherited state:** none. `/run` and the udev database start empty, and no driver state from Akai's app carries over.
-- **Cost and risks:** a second kernel start (a few seconds). The jump has never been made from 3.10.1's kernel. Ethernet may not find its PHY without the stick test's device-tree fix. If the new kernel panics, the MPC restarts and tries again until the stick is pulled.
-- **Reported so far:** a load-and-unload probe was reported to succeed on 2026-11-15, by work on PR #364's branch; its log is not in this repo. The install check repeats it.
+- **Cost and risks:** a second kernel start (a few seconds). Ethernet does not find its PHY on Akai's device tree. If the new kernel panics, the MPC restarts and tries again until the stick is pulled.
+- **Shown on 2026-11-15** ([first round, zip 192320Z](stick-autoboot.md#first-round-2026-11-15-zip-192320z-the-jump-worked-loadpin-off-no-ethernet)): the install check loads and unloads Akai's kernel with the stick's command line. Both power-ons restarted on it and reached the pad player with no tap. `LoadPin: ready to pin (currently not enforcing)`, so Akai's kernel takes `loadpin.enforce=0`. LoadPin pinned the stick's root, and a module (`cfg80211`) loaded from it. The eMMC and SD card were only probed before the switch-off service turned them off, at 4.0 s and 7.3 s. The saved setting came back. Ethernet stayed down: `MDIO device at address 1 is missing`.
 
 ### 3. Our own kernel, by a chain (not built)
 
@@ -105,13 +105,13 @@ So the soft-reboot covers the class-compliant devices most musicians use. kexec_
 
 ## What the next runs answer
 
-| Question | How it is answered |
-|---|---|
-| Does Akai's kernel accept kexec_file with our command line? | The install check of a `--kexec-file` stick (load and unload, RAM only) |
-| Does the jump come up on Akai's device tree? | The first `--kexec-file` power-on |
-| Does `loadpin.enforce=0` take? | That power-on's `LoadPin: ready to pin (currently ...)` line in the stick's `dmesg.txt` |
-| Do modules and firmware load from the stick? | The same `dmesg.txt`: no LoadPin refusals |
-| Does Ethernet find its PHY? | The same log, and whether SSH on port 2222 answers |
-| Does Akai's kernel require signed modules? | A read-only grep of `/proc/config.gz` for `CONFIG_MODULE_SIG_FORCE` (not run yet) |
+| Question | How it is answered | Answer (2026-11-15, zip 192320Z) |
+|---|---|---|
+| Does Akai's kernel accept kexec_file with our command line? | The install check of a `--kexec-file` stick (load and unload, RAM only) | Yes |
+| Does the jump come up on Akai's device tree? | The first `--kexec-file` power-on | Yes, on both power-ons |
+| Does `loadpin.enforce=0` take? | That power-on's `LoadPin: ready to pin (currently ...)` line in the stick's `dmesg.txt` | Yes: `currently not enforcing` |
+| Do modules and firmware load from the stick? | The same `dmesg.txt`: no LoadPin refusals | A module did (`cfg80211`), with no refusal; no firmware was asked for |
+| Does Ethernet find its PHY? | The same log, and whether SSH on port 2222 answers | No: `MDIO device at address 1 is missing` |
+| Does Akai's kernel require signed modules? | A read-only grep of `/proc/config.gz` for `CONFIG_MODULE_SIG_FORCE` | Not run yet |
 
-If `loadpin.enforce=0` takes, the chain to our own kernel becomes a design to write and an owner decision. If it does not, kexec_file is still worth keeping for module and firmware loads, and our own kernel waits for the U-Boot route.
+`loadpin.enforce=0` takes, so LoadPin no longer blocks the chain to our own kernel. The owner chose it as the next step, starting with the stick's own device tree on Akai's kernel: that gives the Ethernet PHY its ID and disables the eMMC and SD controllers in the tree.

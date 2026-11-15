@@ -32,7 +32,7 @@ A systemd 255 soft-reboot loads no kernel. It stops all units, pivots into a new
 | A systemd unit in the root filesystem | Blocked | Root filesystem write; an Akai update would remove it. |
 | U-Boot booting USB first | Blocked | U-Boot environment write, behind proven MaskROM recovery. |
 | Raw `kexec_load` from the hook | Refused by the kernel | LoadPin. |
-| `kexec_file_load` of Akai's own signed kernel | Opt-in, untried | `--dtb` is refused in file mode, so it gives Akai's kernel and device tree with our root, plus a full kernel restart. Its gains: an empty `/run` and udev database, LoadPin starting afresh, and a command line of our own. A `--kexec-file` stick asks for it and falls back to the soft-reboot ([below](#the-opt-in-kexec-file-route)). Never tried as a jump. |
+| `kexec_file_load` of Akai's own signed kernel | Opt-in; first round passed 2026-11-15, without Ethernet | `--dtb` is refused in file mode, so it gives Akai's kernel and device tree with our root, plus a full kernel restart. Its gains: an empty `/run` and udev database, LoadPin starting afresh, and a command line of our own. A `--kexec-file` stick asks for it and falls back to the soft-reboot ([below](#the-opt-in-kexec-file-route)). Its first round restarted on Akai's kernel on both power-ons, with `loadpin.enforce=0` taken; Ethernet found no PHY on Akai's device tree ([record](stick-autoboot.md#first-round-2026-11-15-zip-192320z-the-jump-worked-loadpin-off-no-ethernet)). |
 | MPFree under Akai's init (chroot or namespace) | Fallback | Akai's systemd stays PID 1 and its units can still write `/data`. |
 | **systemd soft-reboot** | **Chosen, works** | No kernel load, Akai's userspace fully stopped, MPFree's systemd as PID 1. |
 
