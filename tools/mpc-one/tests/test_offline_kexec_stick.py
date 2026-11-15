@@ -249,6 +249,7 @@ class KexecStickTests(unittest.TestCase):
         self.assertNotIn("acva-c.dtb", res.stdout, "the -c board file must not be picked")
         self.assertNotIn(SERIAL, res.stdout)
         self.assertNotIn("FAKE-EMMC-UUID", res.stdout)
+        self.assertIn("  route: soft-reboot only (no --kexec-file)", res.stdout)
 
         tree = dtb.load(os.path.join(out, "kexec.dtb"))
         self.assertEqual(tree.find("/dwmmc@ff0f0000").prop("status"), dt_strings("disabled"))
@@ -374,8 +375,10 @@ class KexecStickTests(unittest.TestCase):
         self.assertEqual(sums, "".join(f"{sha(os.path.join(out, n))}  {n}\n" for n in ("zImage", "kexec.dtb", "cmdline.txt")))
         self.check_softreboot_files(root_img, NEW)
 
-    def check_softreboot_files(self, root_img, release, modules=()):
-        """/boot/mpfree-softreboot and the service that switches the eMMC and SD card off, as the hook checks them."""
+    def check_softreboot_files(self, root_img, release, modules=(), kexec_file=None, chain=False):
+        """/boot/mpfree-softreboot and the service that switches the eMMC and SD card off, as the hook checks them.
+        With `kexec_file` (the command line), the three files of --kexec-file too; without, none of them. With
+        `chain`, the chain's service and the stick's own kernel files are listed too."""
         mod = stick_module()
         self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/PROTOCOL"), "mpfree-softreboot-1\n")
         self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/release"), release + "\n")
@@ -388,6 +391,22 @@ class KexecStickTests(unittest.TestCase):
             listed.append("/boot/mpfree-softreboot/preload-modules.txt")
         else:
             self.assertIn("File not found", self.dfs(root_img, "stat /boot/mpfree-softreboot/preload-modules.txt"))
+        if kexec_file:
+            self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/jump"), "kexec-file\n")
+            self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/cmdline"), kexec_file + "\n")
+            self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-softreboot/kernel.sha256"),
+                             f"{hashlib.sha256(ZIMAGE).hexdigest()}  /boot/zImage-{release}\n")
+            listed += [f"/boot/mpfree-softreboot/{n}" for n in ("jump", "cmdline", "kernel.sha256")]
+        else:
+            for name in ("jump", "cmdline", "kernel.sha256"):
+                self.assertIn("File not found", self.dfs(root_img, f"stat /boot/mpfree-softreboot/{name}"))
+        if chain:
+            listed += ["/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service",
+                       "/boot/mpfree-kexec/kexec.dtb", "/boot/mpfree-kexec/cmdline.txt", "/boot/mpfree-kexec/SHA256SUMS"]
+        else:
+            for path in ("/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service",
+                         "/etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service"):
+                self.assertIn("File not found", self.dfs(root_img, f"stat {path}"))
         want = ""
         for path in listed:
             copy = os.path.join(self.tmp, "softreboot-copy")
@@ -433,6 +452,122 @@ class KexecStickTests(unittest.TestCase):
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn("STOP: --preload-module", res.stdout)
             self.assertEqual(self.outputs(), [])
+
+    def test_kexec_file_route_is_opt_in(self):
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new())
+        res = self.build("--kexec-file", "--loadpin-off")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        with open(os.path.join(out, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()
+        self.assertNotIn("loadpin", cmdline, "the kexec test boot's own command line is unchanged")
+        self.assertIn(f"  its command line: {cmdline} loadpin.enforce=0", res.stdout)
+        self.assertIn("--kexec-file: /boot/mpfree-softreboot/jump asks the hook to restart into Akai's own kernel",
+                      res.stdout)
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(out, "stick.img"), 1, root_img)
+        self.check_softreboot_files(root_img, NEW, kexec_file=cmdline + " loadpin.enforce=0")
+        shutil.rmtree(out)
+        res = self.build("--kexec-file")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [folder] = self.outputs()
+        with open(os.path.join(self.work, folder, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()   # a new stick: a new partition UUID
+        self.assertIn(f"  its command line: {cmdline}\n", res.stdout)
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.check_softreboot_files(root_img, NEW, kexec_file=cmdline)
+        shutil.rmtree(os.path.join(self.work, folder))
+        res = self.build("--loadpin-off")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("STOP: --loadpin-off goes with --kexec-file", res.stdout)
+        self.assertEqual(self.outputs(), [])
+
+    def chain_image(self, shutdown=b"\x00/usr/sbin/kexec\x00-e\x00/sys/kernel/kexec_loaded\x00", kexec=True):
+        unpacked = os.path.join(self.work, "akai-unpacked-20260101T000000Z-abc")
+        extra = {"usr/sbin/kexec": "#!/bin/sh\n# AKAI-KEXEC\n"} if kexec else {}
+        if shutdown is not None:
+            extra["usr/lib/systemd/systemd-shutdown"] = b"\x7fELF-FAKE" + shutdown
+        build_rootfs(unpacked, extra=extra)
+
+    def test_chain_is_opt_in(self):
+        """--chain: the kexec-file kernel keeps kexec on and asks for the chain; the stick restarts into its own
+        kernel and device tree with chain.sh; Akai's kexec stays. Without it, the stick is as before."""
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new())
+        self.chain_image()
+        mod = stick_module()
+        res = self.build("--kexec-file", "--loadpin-off", "--chain")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        with open(os.path.join(out, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()
+        self.assertIn("sysctl.kernel.kexec_load_disabled=1", cmdline, "the second kernel keeps kexec off")
+        self.assertNotIn("chain", cmdline)
+        first = cmdline.replace(" sysctl.kernel.kexec_load_disabled=1", "") + " loadpin.enforce=0 mpfree.chain=1"
+        self.assertIn(f"  its command line: {first}\n", res.stdout)
+        self.assertIn("  --chain: on that kernel (mpfree.chain=1, kexec left on), mpfree-test-chain.service loads "
+                      "/boot/mpfree-kexec's kernel and device tree", res.stdout)
+        self.assertIn("  --chain: /usr/lib/systemd/systemd-shutdown runs /usr/sbin/kexec for kexec.target; "
+                      "/usr/sbin/kexec stays Akai's", res.stdout)
+        self.assertNotIn("written  /usr/sbin/kexec", res.stdout)
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(out, "stick.img"), 1, root_img)
+        self.check_softreboot_files(root_img, NEW, kexec_file=first, chain=True)
+        self.assertEqual(self.dfs(root_img, "cat /usr/sbin/kexec"), "#!/bin/sh\n# AKAI-KEXEC\n")
+        self.assertEqual(self.dfs(root_img, "cat /etc/mpfree-test/chain.sh"), mod.CHAIN_SCRIPT)
+        self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/chain.sh"), r"Type: regular\s+Mode:\s+0755")
+        self.assertEqual(self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-chain.service"), mod.CHAIN_UNIT)
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-chain.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service"))
+        self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-kexec/cmdline.txt"), cmdline + "\n")
+        self.assertIn("kernel.kexec_load_disabled = 1", self.dfs(root_img, "cat /etc/sysctl.d/90-mpfree-test.conf"))
+        shutil.rmtree(out)
+        # The same image without --chain: Akai's kexec is a stub again, and no chain files.
+        res = self.build("--kexec-file", "--loadpin-off")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        [folder] = self.outputs()
+        self.assertIn("written  /usr/sbin/kexec  (stub)", res.stdout)
+        self.assertNotIn("--chain", res.stdout)
+        with open(os.path.join(self.work, folder, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.check_softreboot_files(root_img, NEW, kexec_file=cmdline + " loadpin.enforce=0")
+        self.assertIn("is disabled on this test boot", self.dfs(root_img, "cat /usr/sbin/kexec"))
+        shutil.rmtree(os.path.join(self.work, folder))
+
+    def test_chain_stops(self):
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new())
+        for args, stop in ((("--chain",), "--chain goes with --kexec-file and --loadpin-off"),
+                           (("--kexec-file", "--chain"), "--chain goes with --kexec-file and --loadpin-off"),
+                           (("--loadpin-off", "--chain"), "--loadpin-off goes with --kexec-file")):
+            with self.subTest(args):
+                res = self.build(*args)
+                self.assertEqual(res.returncode, 1, res.stdout)
+                self.assertIn("STOP: " + stop, res.stdout)
+                self.assertEqual(self.outputs(), [])
+        for name, image, stop in (
+                ("no kexec in the image", dict(kexec=False),
+                 "--chain: the image has no regular /usr/sbin/kexec"),
+                ("no systemd-shutdown", dict(shutdown=None),
+                 "--chain: the image has no /usr/lib/systemd/systemd-shutdown"),
+                ("systemd-shutdown runs another kexec", dict(shutdown=b"\x00/usr/bin/kexec\x00"),
+                 "--chain: /usr/lib/systemd/systemd-shutdown names /usr/bin/kexec for kexec")):
+            with self.subTest(name):
+                self.chain_image(**image)
+                res = self.build("--kexec-file", "--loadpin-off", "--chain")
+                self.assertEqual(res.returncode, 1, res.stdout)
+                self.assertIn("STOP: " + stop, res.stdout)
+                self.assertEqual([d for d in self.outputs() if os.path.exists(os.path.join(self.work, d, "stick.img"))],
+                                 [])
+        with self.subTest("systemd-shutdown starts the kernel itself"):
+            self.chain_image(shutdown=b"\x00reboot\x00/sys/kernel/kexec_loaded\x00")
+            res = self.build("--kexec-file", "--loadpin-off", "--chain")
+            self.assertEqual(res.returncode, 0, res.stdout)
+            self.assertIn("runs no kexec program (it starts the loaded kernel itself)", res.stdout)
 
     def test_same_release_installed(self):
         """An installed 3.10.1 starting the 3.10.1 stick: the running tree is U-Boot's for the same release."""
@@ -739,6 +874,30 @@ class KexecStickTests(unittest.TestCase):
                      "/etc/systemd/system/mpfree-test-storage.service"):
             self.assertRegex(self.dfs(root_img, f"stat {path}"), r"User:\s+0\s+Group:\s+0", path)
         # The soft-reboot hook's files are the same as without --app-user: the hook checks them.
+        sums = self.dfs(root_img, "cat /boot/mpfree-softreboot/SHA256SUMS")
+        self.assertNotIn("storage", sums)
+        self.assertNotIn("passwd", sums)
+
+    def test_app_user_and_kexec_file_together(self):
+        """The round of step 6 builds both opt-ins into one stick; each does what it does alone."""
+        self.app_user_image()
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        res = self.build("--app", app, "--kits", kits, "--app-user", "--kexec-file", "--loadpin-off")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("pad player user: mpfree (--app-user)", res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        with open(os.path.join(out, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()
+        self.assertIn(f"  its command line: {cmdline} loadpin.enforce=0\n", res.stdout)
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(out, "stick.img"), 1, root_img)
+        self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
+        self.check_softreboot_files(root_img, NEW, kexec_file=cmdline + " loadpin.enforce=0")
+        self.assertIn("mpfree:x:960:960:", self.dfs(root_img, "cat /etc/passwd"))
+        self.assertIn("User=mpfree\n", self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service"))
         sums = self.dfs(root_img, "cat /boot/mpfree-softreboot/SHA256SUMS")
         self.assertNotIn("storage", sums)
         self.assertNotIn("passwd", sums)
@@ -1283,6 +1442,256 @@ class InternalOffTests(unittest.TestCase):
             self.assertRegex(line, r'(> /dev/null|> "\$R/dev/kmsg"|>> "\$R/run/mpfree-internal-off.txt"|'
                                    r'> "\$dev/driver/unbind"|> "\$d/internal-off.txt")', line)
 
+
+
+CHAIN_UUID = "1a2b3c4d-5e6f-4071-8293-a4b5c6d7e8f9"
+CHAIN_NOW = (f"root=PARTUUID={CHAIN_UUID} rootwait=60 ro panic=10 rfkill.default_state=0 loadpin.enforce=0 "
+             "mpfree.chain=1 isolcpus=2-3")
+CHAIN_NEXT = f"root=PARTUUID={CHAIN_UUID} rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1"
+# Akai's kexec on the kernel the hook started: LoadPin is not enforcing, so the ordinary load is let through.
+CHAIN_KEXEC = r"""#!/bin/sh
+echo "kexec: $*" >> "$FAKE_LOG"
+case "$1" in
+  --load)
+    [ -n "${FAKE_REFUSE:-}" ] && { echo "kexec_load failed: Operation not permitted" >&2; exit 1; }
+    echo 1 > "$FAKE_ROOT/sys/kernel/kexec_loaded"
+    [ -n "${FAKE_FAIL_LOADED:-}" ] && { echo "kexec: late error" >&2; exit 1; }
+    exit 0 ;;
+  --unload)
+    [ -n "${FAKE_UNLOAD_FAIL:-}" ] && exit 1
+    echo 0 > "$FAKE_ROOT/sys/kernel/kexec_loaded"; exit 0 ;;
+esac
+exit 2
+"""
+
+
+class ChainTests(unittest.TestCase):
+    """chain.sh (--chain), on the kernel the hook started with mpfree.chain=1, against a fake root, under dash
+    with the host's tools (ChainBusyBoxTests: the same under BusyBox's shell and tools)."""
+    busybox = False
+
+    def tool(self, name):
+        return shutil.which(name)
+
+    def setUp(self):
+        if self.busybox:
+            self.bb = shutil.which("busybox")
+            if not self.bb:
+                if os.environ.get("MPFREE_REQUIRE_BUSYBOX") == "1":
+                    self.fail("busybox is missing")
+                self.skipTest("busybox not installed")
+            self.dash = None
+            self.shell = [self.bb, "sh"]
+        else:
+            self.dash = shutil.which("dash")
+            if not self.dash:
+                self.skipTest("dash not installed")
+            self.shell = [self.dash]
+        self.tmp = tempfile.mkdtemp(prefix="mpfree-chain-test-")
+        self.root = os.path.join(self.tmp, "root")
+        self.bin = os.path.join(self.tmp, "bin")
+        self.log = os.path.join(self.tmp, "log")
+        os.makedirs(self.bin)
+        write(os.path.join(self.bin, "systemctl"),
+              '#!/bin/sh\necho "systemctl: $*" >> "$FAKE_LOG"\nexit "${FAKE_START_RC:-0}"\n', 0o755)
+        write(os.path.join(self.bin, "dmesg"), '#!/bin/sh\necho "[ 7.5] fake kernel log"\n', 0o755)
+        for tool in ("cat", "cut", "sed", "sha256sum", "wc", "tr", "grep", "readlink", "mkdir"):
+            self.link(tool)
+        r = self.root
+        for rel, text in (("proc/cmdline", CHAIN_NOW + "\n"), ("proc/uptime", "7.40 2.00\n"), ("dev/kmsg", ""),
+                          ("sys/kernel/kexec_loaded", "0\n"), ("proc/sys/kernel/kexec_load_disabled", "0\n"),
+                          ("boot/zImage-" + NEW, ZIMAGE), ("boot/mpfree-kexec/kexec.dtb", b"FAKE-STICK-DTB"),
+                          ("boot/mpfree-kexec/cmdline.txt", CHAIN_NEXT + "\n")):
+            write(os.path.join(r, rel), text)
+        os.symlink("../zImage-" + NEW, os.path.join(r, "boot/mpfree-kexec/zImage"))
+        write(os.path.join(r, "usr/sbin/kexec"), CHAIN_KEXEC, 0o755)
+        os.makedirs(os.path.join(r, "run"))
+        self.sums()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def link(self, tool):
+        if self.busybox:
+            write(os.path.join(self.bin, tool), f'#!/bin/sh\nexec {self.bb} {tool} "$@"\n', 0o755)
+        else:
+            os.symlink(shutil.which(tool), os.path.join(self.bin, tool))
+
+    def sums(self):
+        d = os.path.join(self.root, "boot/mpfree-kexec")
+        write(os.path.join(d, "SHA256SUMS"), "".join(f"{sha(os.path.join(d, n))}  {n}\n"
+                                                     for n in ("zImage", "kexec.dtb", "cmdline.txt")))
+
+    def run_script(self, **env):
+        script = stick_module().CHAIN_SCRIPT.replace("R=''", f"R='{self.root}'", 1)
+        return subprocess.run([*self.shell, "-c", script],
+                              env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root, **env},
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+
+    def calls(self, prefix):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as fh:
+            return [l for l in fh.read().splitlines() if l.startswith(prefix)]
+
+    def notes(self):
+        with open(os.path.join(self.root, "run/mpfree-chain.txt")) as fh:
+            return fh.read()
+
+    def load_call(self):
+        d = os.path.join(self.root, "boot/mpfree-kexec")
+        return f"kexec: --load --kexec-syscall --dtb={d}/kexec.dtb --command-line={CHAIN_NEXT} {d}/zImage"
+
+    def loaded(self):
+        with open(os.path.join(self.root, "sys/kernel/kexec_loaded")) as fh:
+            return fh.read()
+
+    def test_loads_the_sticks_kernel_and_tree_and_restarts_into_them(self):
+        res = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.calls("kexec: "), [self.load_call()])
+        self.assertEqual(self.calls("systemctl: "), ["systemctl: --no-block --job-mode=replace-irreversibly start "
+                                                     "kexec.target"])
+        self.assertEqual(self.loaded(), "1\n")
+        notes = self.notes()
+        self.assertIn("mpfree-chain: started at 7.40 s\n", notes)
+        self.assertIn("mpfree-chain: the stick's kernel and device tree are loaded at 7.40 s; restart into them "
+                      "(kexec.target)\n", notes)
+        self.assertNotIn("instead", notes)
+
+    def test_nothing_without_the_chain_word(self):
+        for cmdline in (CHAIN_NEXT, CHAIN_NOW.replace("mpfree.chain=1", "mpfree.chain=10")):
+            with self.subTest(cmdline):
+                write(os.path.join(self.root, "proc/cmdline"), cmdline + "\n")
+                res = self.run_script()
+                self.assertEqual(res.returncode, 0, res.stdout)
+                self.assertEqual(self.calls("kexec: ") + self.calls("systemctl: "), [])
+                self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-chain.txt")))
+
+    def test_any_problem_leaves_mpfree_on_the_first_kernel(self):
+        d = os.path.join(self.root, "boot/mpfree-kexec")
+        tail = "; MPFree starts on this kernel, with Akai's device tree\n"
+
+        def check(note, loads=0, unloads=0, **env):
+            for f in (self.log, os.path.join(self.root, "run/mpfree-chain.txt")):
+                if os.path.exists(f):
+                    os.unlink(f)
+            res = self.run_script(**env)
+            self.assertEqual(res.returncode, 0, res.stdout)
+            self.assertIn("mpfree-chain: " + note + tail, self.notes())
+            self.assertEqual(len(self.calls("kexec: --load")), loads)
+            self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-syscall"] * unloads)
+            self.assertEqual(self.calls("systemctl: ")[:1] if not env.get("FAKE_START_RC") else [], [])
+            self.assertEqual(self.loaded(), "0\n", "nothing left loaded")
+
+        with self.subTest("the kernel refuses the load"):
+            check("the kernel refused the load (kexec_load failed: Operation not permitted)", 1, FAKE_REFUSE="1")
+        with self.subTest("a late failure leaves it loaded: unloaded again"):
+            check("the kernel refused the load (kexec: late error)", 1, 1, FAKE_FAIL_LOADED="1")
+        with self.subTest("systemd will not start kexec.target"):
+            check("systemctl could not start kexec.target", 1, 1, FAKE_START_RC="1")
+        with self.subTest("kexec is off on this kernel"):
+            write(os.path.join(self.root, "proc/sys/kernel/kexec_load_disabled"), "1\n")
+            check("kexec is turned off on this kernel")
+            write(os.path.join(self.root, "proc/sys/kernel/kexec_load_disabled"), "0\n")
+        with self.subTest("a kernel is loaded already"):
+            write(os.path.join(self.root, "sys/kernel/kexec_loaded"), "1\n")
+            os.unlink(self.log) if os.path.exists(self.log) else None
+            res = self.run_script()
+            self.assertIn("a kexec kernel is loaded already", self.notes())
+            self.assertEqual(self.calls("kexec: "), [], "someone else's kernel is left alone")
+            write(os.path.join(self.root, "sys/kernel/kexec_loaded"), "0\n")
+        with self.subTest("the device tree does not match its SHA256SUMS"):
+            write(os.path.join(d, "kexec.dtb"), b"DAMAGED")
+            check("/boot/mpfree-kexec/kexec.dtb does not match its SHA256SUMS")
+            write(os.path.join(d, "kexec.dtb"), b"FAKE-STICK-DTB")
+        with self.subTest("the kernel is not listed"):
+            with open(os.path.join(d, "SHA256SUMS")) as fh:
+                lines = fh.read().splitlines(True)
+            write(os.path.join(d, "SHA256SUMS"), "".join(l for l in lines if not l.endswith("  zImage\n")))
+            check("/boot/mpfree-kexec/zImage does not match its SHA256SUMS")
+            self.sums()
+        for name, cmdline, note in (
+                ("another partition", CHAIN_NEXT.replace(CHAIN_UUID, "99999999-2222-3333-4444-555555555555"),
+                 "cmdline.txt does not start the system on this partition"),
+                ("a second root=", CHAIN_NEXT + " root=/dev/mmcblk0p6",
+                 "cmdline.txt does not start the system on this partition"),
+                ("kexec left on", CHAIN_NEXT.replace(" sysctl.kernel.kexec_load_disabled=1", ""),
+                 "cmdline.txt does not turn kexec off"),
+                ("the chain again", CHAIN_NEXT + " mpfree.chain=1", "cmdline.txt asks for the chain again")):
+            with self.subTest(name):
+                write(os.path.join(d, "cmdline.txt"), cmdline + "\n")
+                self.sums()
+                check(note)
+        write(os.path.join(d, "cmdline.txt"), CHAIN_NEXT + "\n")
+        self.sums()
+        with self.subTest("no kexec program"):
+            os.unlink(os.path.join(self.root, "usr/sbin/kexec"))
+            check("this system has no /usr/sbin/kexec")
+
+    def test_a_kernel_that_will_not_unload_is_noted(self):
+        res = self.run_script(FAKE_START_RC="1", FAKE_UNLOAD_FAIL="1")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("could not unload the kernel loaded here (it stays in RAM until the MPC is switched off)",
+                      self.notes())
+
+    def test_keeps_its_notes_on_the_sticks_log_partition(self):
+        part = os.path.join(self.root, "sys/devices/platform/ff540000.usb/usb2/2-1/host0/block/sda/sda2")
+        write(os.path.join(part, "uevent"), "MAJOR=8\nMINOR=2\nDEVNAME=sda2\nDEVTYPE=partition\nPARTN=2\n"
+                                            "PARTNAME=mpfree-test-log\n")
+        os.makedirs(os.path.join(self.root, "sys/class/block"))
+        os.symlink(os.path.relpath(part, os.path.join(self.root, "sys/class/block")),
+                   os.path.join(self.root, "sys/class/block/sda2"))
+        write(os.path.join(self.root, "proc/sys/kernel/random/boot_id"), "0123abcd-0000-4000-8000-00000000c4a1\n")
+        dev = os.path.join(self.root, "dev/sda2")
+        disk = os.path.join(self.tmp, "log-partition")
+        os.makedirs(disk)
+        if os.geteuid() == 0:
+            subprocess.run(["mknod", dev, "b", "7", "250"], check=True)
+        else:
+            self.skipTest("needs root to make a block device node")
+        write(os.path.join(self.bin, "mount"), '#!/bin/sh\necho "mount: $*" >> "$FAKE_LOG"\n'
+                                               'for d; do :; done\nrmdir "$d" && ln -s "$FAKE_DISK" "$d"\n', 0o755)
+        write(os.path.join(self.bin, "umount"), '#!/bin/sh\necho "umount: $*" >> "$FAKE_LOG"\n', 0o755)
+        for tool in ("rmdir", "ln"):
+            self.link(tool)
+        res = self.run_script(FAKE_DISK=disk)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        mnt = os.path.join(self.root, "run/mpfree-chain-log")
+        self.assertEqual(self.calls("mount") + self.calls("umount"),
+                         [f"mount: -t ext4 -o rw,nosuid,nodev,noexec,sync {dev} {mnt}", f"umount: {mnt}"])
+        with open(self.log) as fh:
+            order = [l.split(":")[0] for l in fh.read().splitlines()]
+        self.assertLess(order.index("umount"), order.index("systemctl"), "the notes are kept before the restart")
+        with open(os.path.join(disk, "boot-0123abcd-0000-4000-8000-00000000c4a1/chain.txt")) as fh:
+            saved = fh.read()
+        self.assertIn("restart into them (kexec.target)", saved)
+        self.assertIn("fake kernel log", saved)
+
+    def test_script_and_unit(self):
+        mod = stick_module()
+        code = "\n".join(l for l in mod.CHAIN_SCRIPT.splitlines() if not l.lstrip().startswith("#"))
+        for forbidden in ("mkfs", "dd ", "fw_setenv", "/data", "mmcblk", "--kexec-file-syscall", "kexec -e",
+                          "systemctl kexec", "--exec"):
+            self.assertNotIn(forbidden, code)
+        self.assertEqual(code.count("mount -t"), 1, "only the stick's own log partition")
+        self.assertEqual(code.count('"$K" --load'), 1)
+        unit = mod.CHAIN_UNIT
+        for line in ("DefaultDependencies=no", "ConditionKernelCommandLine=mpfree.chain=1",
+                     "Requires=mpfree-test-internal-off.service", "After=mpfree-test-internal-off.service",
+                     "Type=oneshot", "ExecStart=/bin/sh /etc/mpfree-test/chain.sh", "WantedBy=sysinit.target"):
+            self.assertIn(line + "\n", unit)
+        self.assertNotIn("FailureAction", unit, "a failed chain leaves MPFree on the first kernel")
+        before = " ".join(l[len("Before="):] for l in unit.splitlines() if l.startswith("Before=")).split()
+        # Before systemd-sysctl: the stick's sysctl file turns kexec off. Before the log service: both mount
+        # the log partition.
+        for u in ("systemd-sysctl.service", "mpfree-test-logs.service", "mpfree-test-app.service",
+                  "mpfree-test-storage.service", "data.mount", "sysinit.target"):
+            self.assertIn(u, before)
+
+
+class ChainBusyBoxTests(ChainTests):
+    busybox = True
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
