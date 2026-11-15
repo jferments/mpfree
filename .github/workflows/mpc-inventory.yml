@@ -51,6 +51,9 @@ jobs:
           sh -n tools/mpc-one/read-only-hook-canary.sh
           sh -n tools/mpc-one/hook-canary-install.sh
           sh -n tools/mpc-one/hook-canary-remove.sh
+          sh -n tools/mpc-one/hook-install.sh
+          sh -n tools/mpc-one/hook-remove.sh
+          sh -n tools/mpc-one/read-only-hook-report.sh
           sh -n tools/mpc-one/read-only-inventory.sh
           sh -n tools/mpc-one/read-only-detail.sh
           sh -n tools/mpc-one/read-only-runtime.sh
@@ -95,6 +98,7 @@ jobs:
           MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hook_canary.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
           python3 tools/mpc-one/tests/test_write_test_stick.py
