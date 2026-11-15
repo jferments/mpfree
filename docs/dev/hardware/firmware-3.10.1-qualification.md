@@ -12,7 +12,7 @@ The owner wants to know that main still does everything MPFree needs on the inst
 | Akai's system, the stick out | Q1 to Q5: trust, lock, survey, backup, device tree | MPC on 3.10.1 | 20 min |
 | The stick | Q6, Q6-write | Workstation | 5 min |
 | Akai's system, then the stick in | Q7a restart, Q7b the boot hook | MPC on 3.10.1 | 10 min |
-| MPFree, first boot | Q7c power-on, Q8 app check, Q8b benchmark; Q9 GPU flips and Q9b app run (optional) | MPC on the stick | 60 to 90 min |
+| MPFree, first boot | Q7c power-on, Q7d REC, OVERDUB and PLAY, Q8 app check, Q8b benchmark; Q9 GPU flips and Q9b app run (optional) | MPC on the stick | 60 to 90 min |
 | MPFree, second boot (optional) | S1 to S4: Sound cores on cores 3 and 2, an hour-long song | MPC on the stick | 80 min |
 | Akai's system, the stick out, then in | Q10 back to 3.10.1; F1 to F8 FXProbe (optional) | MPC on 3.10.1 | 10 min, F 30 min |
 | Logs and the zip | Q11 | Workstation | 5 min |
@@ -48,6 +48,7 @@ The optional parts can be left out, and the round can stop after any block that 
 | Do developer mode, the lock and the SSH host key survive a restart? | Q7a, compared with Q3 |
 | Does main's boot hook install, and does it accept the stick main builds? | Q7b |
 | Does a power-on with the stick in start MPFree with no tap, with the eMMC and SD card switched off before anything reads them? | Q7c and the stick logs |
+| Do REC, OVERDUB, UNDO and PLAY work and light as soon as MPFree starts, with no Map controls (#387)? | Q7d |
 | Does the stick's system answer on port 2222 after the soft-reboot, and does the hardware work in it (Ethernet, screen, touch, pads, sound, partition 4)? | Q8 |
 | What does each engine cost on the MPC, and how many voices fit in each budget (round 8 of the performance plan)? | Q8b |
 | Does what has merged in the app since live test 3 work on the MPC (drag and drop, 128 tracks on TRACK MUTE, the Mix tab, effect modes)? | Q9b |
@@ -219,6 +220,22 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 ```
 
 It shows what the hook decided at this power-on and why it stopped.
+
+**Step Q7d: REC, OVERDUB and PLAY, first thing** (on the MPC only, about 2 minutes, no SSH; read-only on the MPC: you only press buttons and pads, the loop stays in RAM, and anything MPFree saves goes to the stick's partition 4, as in Q8). This checks the transport fix (#387): REC, OVERDUB, UNDO and PLAY work and light as soon as MPFree starts, without Map controls, so it comes before Q8's phase 1 maps anything. Stay on the **Play** page, **All** view, where MPFree starts. Turn the volume down a little.
+
+1. Press **REC** once. Expect **REC and PLAY both blink**, about three times a second, and the loop strip shows the loop armed.
+2. Press **PLAY**. Expect **PLAY to stay lit** and **REC to keep blinking** while the first pass records. Play a few pads.
+3. Wait about 4 seconds, two bars at 120 BPM. Expect **REC to go dark** and the loop to play back what you played.
+4. Press **OVERDUB**. Expect **OVERDUB to blink**. Play a few more pads.
+5. Press **OVERDUB** again. Expect **OVERDUB to go dark**, and the loop to play both layers.
+6. Press **UNDO**. Expect the second layer to go away.
+7. Press **STOP**. Expect **PLAY to go dark** and the transport to stop.
+8. Press **SHIFT + SAMPLER** for the Looper tab, and press **REC**. Expect REC to blink with PLAY. Press **STOP** twice to finish.
+
+- **If a step goes wrong,** write down its number and what the lights did, and go on.
+- **If REC does nothing at all,** open Prefs > Map controls and read the REC row. It should say `button 73`. Another number means Map controls saved that one on the stick in an earlier round, and the saved number wins. Tap the row and press REC to set it again, and say so in your notes.
+- Q8's session summary, which reads everything since power-on, carries the app's `looper: …` lines from these steps.
+- **Undo:** none needed. The loop is in RAM, and the power-off in Q10 clears it.
 
 **Block Q8: the pad player on the test build** (read-only: the check starts, copies and stops nothing; each phase starts and ends with Enter):
 
@@ -481,6 +498,7 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 - Q6's report has the soft-reboot line, `route: soft-reboot only (no --kexec-file)` and `pad player user: root (no --app-user)`, `no-reserved-blocks@…` is `masked on the stick`, and no unit starting `az0` is `NOT masked`.
 - Q7b ends `RESULT: the hook is installed, and the stick checks out.`
 - In Q7c the MPC went from the logo to MPFree's pad player with no tap, and Akai's app never drew.
+- In Q7d each step's lights do what the step says.
 - Q8 ends its checks with `started by: the boot hook's soft-reboot` and `CHECKS-OK`, and its phases work as in the stick test's phase 2.
 - Q8b ends `RESULT: both builds ran (numbers above).` with the pad player started again.
 - Q9b ends its checks with `CHECKS-OK`, and each phase does what its text says, or your answer says what it did instead.
@@ -501,7 +519,7 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 | Q5 | A private folder under `~/mpfree-work` (it holds the serial number and MAC) | Delete it |
 | Q6-write | The stick's partitions 1 to 3 | Rebuild and write an earlier stick; partition 4 stays |
 | Q7b | The boot hook's three files on `/data`, in place of an earlier version | The hook stays installed after the round: it is how MPFree starts. To take it off the MPC, block Q7b-undo |
-| Q7c, Q8, Q8b, Q9, Q9b | RAM on the MPC; the stick's log partition and partition 4 | Switch off, take out the stick, wait 10 s, switch on |
+| Q7c, Q7d, Q8, Q8b, Q9, Q9b | RAM on the MPC; the stick's log partition and partition 4 | Switch off, take out the stick, wait 10 s, switch on |
 | Q8 (phase 16) | Loop memory (10 min) and the pad velocity curve, in `settings/app.conf` on the stick's partition 4 | Block S4, steps 3 and 4 (in the first boot if the S blocks are skipped) |
 | S1 | `sound-cores` in `settings/app.conf` on the stick's partition 4 | Block S4, steps 1 and 2 |
 | S2 | `Projects/Autosave` on partition 4, kept as an `Unsaved …` project at the next start | Delete it in BROWSE > Projects, if you like |
