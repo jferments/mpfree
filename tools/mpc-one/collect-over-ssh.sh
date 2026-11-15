@@ -34,6 +34,9 @@ case "${1:-}" in
   "--boot-menu-survey") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-boot-menu.sh"; REPORT_KIND="mpc-one-boot-menu-survey" ;;
   "--kexec-preflight") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-kexec-preflight.sh"; REPORT_KIND="mpc-one-kexec-preflight" ;;
   "--ethernet") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ethernet.sh"; REPORT_KIND="mpc-one-ethernet" ;;
+  "--hook-canary") REMOTE_SCRIPT="$SCRIPT_DIR/hook-canary-install.sh"; REPORT_KIND="mpc-one-hook-canary" ;;
+  "--hook-canary-remove") REMOTE_SCRIPT="$SCRIPT_DIR/hook-canary-remove.sh"; REPORT_KIND="mpc-one-hook-canary-remove" ;;
+  "--hook-canary-report") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-hook-canary.sh"; REPORT_KIND="mpc-one-hook-canary-report" ;;
   "--kexec-boot") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-kexec-boot" ;;
   "--app") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-app" ;;
   "--devmode-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-check" ;;
@@ -51,7 +54,7 @@ case "${1:-}" in
   "--touch-capture-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture-preflight" ;;
   "--touch-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --devmode-check (read-only on the 3.10.1 test build made with --akai-app: what Akai'"'"'s developer mode opens on port 22; only after you type LOCK, Akai'"'"'s own lock-down to your key, RAM only), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --hook-canary (STATE-CHANGING, data partition only, port 22 only: two small files, a udev rule in Akai'"'"'s writable /etc layer and the script it runs, which only log when a USB stick appears; needs MPFREE_ACCEPT_HOOK_CANARY=YES), --hook-canary-remove (its undo: deletes them), --hook-canary-report (read-only: did the canary run at power-on, and when), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --devmode-check (read-only on the 3.10.1 test build made with --akai-app: what Akai'"'"'s developer mode opens on port 22; only after you type LOCK, Akai'"'"'s own lock-down to your key, RAM only), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -208,6 +211,32 @@ else
   [[ -f "$REMOTE_SCRIPT" && -r "$REMOTE_SCRIPT" ]] || die "Missing read-only inventory script: $REMOTE_SCRIPT"
 fi
 [[ -f "$MPC_KEY" && -r "$MPC_KEY" ]] || die "SSH private key is missing or unreadable: $MPC_KEY"
+
+# MPC_PORT=22 is Akai's developer mode on an installed 3.10.1 (or later): Akai's own SSH server, which
+# lets root in with no key and no password until Akai's lock-down. Only the modes that stream one
+# read-only script run there. Its host key is pinned in a known_hosts file of its own, outside the
+# clone, on first contact (behind the MAC check below) and must match on every later run.
+DEVMODE=0
+case "${1:-}" in
+  --hook-canary*) [[ "$MPC_PORT" == 22 ]] ||
+    die "${1:-} is for Akai's developer mode on an installed 3.10.1: run it with MPC_PORT=22" ;;
+esac
+if [[ "${1:-}" == "--hook-canary" && "${MPFREE_ACCEPT_HOOK_CANARY:-}" != 'YES' ]]; then
+  die "Opt-in required (writes two small files to the MPC's data partition; undo: --hook-canary-remove): MPC_PORT=22 MPFREE_ACCEPT_HOOK_CANARY=YES bash tools/mpc-one/collect-over-ssh.sh --hook-canary"
+fi
+if [[ "$MPC_PORT" == 22 ]]; then
+  DEVMODE=1
+  [[ -n "$REMOTE_SCRIPT" ]] ||
+    die "${1:-} does not run on developer mode's port 22; only the modes that stream one script do (the read-only reports such as --boot-map and --kexec-preflight, and the --hook-canary ones). Nothing was run."
+  command -v ssh-keygen >/dev/null 2>&1 || die 'ssh-keygen missing on workstation'
+  devmode_work="$(realpath -m -- "${MPFREE_WORK_DIR:-$HOME/mpfree-work}")"
+  case "$devmode_work/" in
+    "$REPO_ROOT"/*)
+      git -C "$REPO_ROOT" check-ignore -q -- "$devmode_work/probe" 2>/dev/null ||
+        die "MPFREE_WORK_DIR is inside the git clone and not git-ignored: $devmode_work" ;;
+  esac
+  DEVMODE_KNOWN="$devmode_work/mpc-devmode-known_hosts"
+fi
 [[ -n "$MPC_EXPECT_MAC" && -n "$MPC_HOST_IP_CIDR" ]] || die 'Device identity gates must be supplied'
 
 if ! ip -4 addr show dev "$MPC_IFACE" | grep -Fq "inet $MPC_HOST_IP_CIDR"; then
@@ -275,6 +304,31 @@ if [[ "$found_mac" != "${MPC_EXPECT_MAC,,}" ]]; then
   die "Device identity mismatch: expected ${MPC_EXPECT_MAC,,}, observed $found_mac"
 fi
 
+# The SSH options every read-only report uses. On port 22 the host key is checked against its own file:
+# accepted and saved only when that file has none for this address yet, strictly after that.
+ssh_options() {
+  ssh_opts=(-T -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=8 -o ForwardAgent=no
+            -o ClearAllForwardings=yes -i "$MPC_KEY" -p "$MPC_PORT")
+  if (( DEVMODE )); then
+    ssh_opts=(-F /dev/null "${ssh_opts[@]}" -o "UserKnownHostsFile=$DEVMODE_KNOWN" -o GlobalKnownHostsFile=/dev/null
+              -o CheckHostIP=no -o UpdateHostKeys=no -o "StrictHostKeyChecking=$1")
+  else
+    ssh_opts+=(-o StrictHostKeyChecking=yes)
+  fi
+}
+if (( DEVMODE )); then
+  mkdir -p -- "$devmode_work"
+  if [[ -f "$DEVMODE_KNOWN" ]] && ssh-keygen -F "$MPC_IP" -f "$DEVMODE_KNOWN" >/dev/null 2>&1; then
+    echo "Developer mode SSH (port 22): its host key must match the one saved in $DEVMODE_KNOWN"
+    ssh_options yes
+  else
+    echo "Developer mode SSH (port 22), first contact: its host key will be saved in $DEVMODE_KNOWN"
+    ssh_options accept-new
+  fi
+else
+  ssh_options yes
+fi
+
 mkdir -p -- "$MPC_REPORT_DIR"
 REPORT="$(mktemp "$MPC_REPORT_DIR/${REPORT_KIND}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX.txt")"
 echo "Verified direct Ethernet: $MPC_IFACE ($MPC_HOST_IP_CIDR) -> $MPC_IP ($found_mac)"
@@ -290,6 +344,10 @@ elif [[ "${1:-}" == "--kexec-boot" ]]; then
   echo "OWNER OPT-IN: kexec test boot from the USB stick (RAM only on the MPC). Log: $REPORT"
 elif [[ "${1:-}" == "--app" ]]; then
   echo "OWNER OPT-IN: mpfree on the test build (RAM only on the MPC). Log: $REPORT"
+elif [[ "${1:-}" == "--hook-canary" ]]; then
+  echo "OWNER OPT-IN, STATE-CHANGING on the data partition only: the boot-hook canary (two small files). Log: $REPORT"
+elif [[ "${1:-}" == "--hook-canary-remove" ]]; then
+  echo "STATE-CHANGING on the data partition only: removing the boot-hook canary. Log: $REPORT"
 elif [[ "${1:-}" == "--devmode-check" ]]; then
   echo "Developer mode check on the test build (read-only; RAM only after a typed LOCK). Log: $REPORT"
 elif [[ "${1:-}" == "--app-start-capture" ]]; then
@@ -444,28 +502,33 @@ elif [[ "${1:-}" == "--ram-smoke-check" || "${1:-}" == "--ram-smoke" || "${1:-}"
   fi
   sed -n '1,45p' "$REPORT"
 else
-if ! timeout 180 ssh -T \
-   -o BatchMode=yes \
-   -o IdentitiesOnly=yes \
-   -o StrictHostKeyChecking=yes \
-   -o ConnectTimeout=8 \
-   -o ForwardAgent=no \
-   -o ClearAllForwardings=yes \
-   -i "$MPC_KEY" \
-   -p "$MPC_PORT" \
-   "$MPC_USER@$MPC_IP" 'sh -s' < "$REMOTE_SCRIPT" > "$REPORT" 2>&1; then
+if ! timeout 180 ssh "${ssh_opts[@]}" "$MPC_USER@$MPC_IP" 'sh -s' < "$REMOTE_SCRIPT" > "$REPORT" 2>&1; then
   echo "SSH or remote inventory failed; report retained for diagnosis: $REPORT" >&2
   sed -n '1,30p' "$REPORT" >&2
-  echo "For a passphrase-protected key, first run: ssh-add $MPC_KEY" >&2
+  if (( DEVMODE )) && grep -q 'Host key verification failed' "$REPORT"; then
+    echo "Developer mode's SSH answered with another host key than the one saved in $DEVMODE_KNOWN, so nothing" >&2
+    echo "was run on it. Its key changes only if the MPC's /data was reset or the MPC was reinstalled. If that" >&2
+    echo "happened, remove the old key with: ssh-keygen -R $MPC_IP -f $DEVMODE_KNOWN  and run this again." >&2
+  elif (( DEVMODE )) && grep -qE 'Connection refused|Permission denied|timed out|No route' "$REPORT"; then
+    echo "On port 22 this needs Akai's developer mode switched on (SHIFT + MENU > Developer)." >&2
+  else
+    echo "For a passphrase-protected key, first run: ssh-add $MPC_KEY" >&2
+  fi
   exit 1
 fi
+fi
+if (( DEVMODE )); then
+  ssh_options yes   # the key is saved now: every later connection must match it
+  printf 'Developer mode SSH host key: %s\n' "$(ssh-keygen -l -F "$MPC_IP" -f "$DEVMODE_KNOWN" | grep -v '^#' | head -n 1)"
+fi
+
+if [[ "${1:-}" == --hook-canary* ]]; then
+  sed -n '1,60p' "$REPORT"
 fi
 
 if [[ "${1:-}" == "--kexec-preflight" ]]; then
   # Read-only on the MPC: `cat /sys/firmware/fdt` and `uname -r`. The comparison runs here.
-  ssh_ro=(timeout 60 ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
-          -o ConnectTimeout=8 -o ForwardAgent=no -o ClearAllForwardings=yes
-          -i "$MPC_KEY" -p "$MPC_PORT" "$MPC_USER@$MPC_IP")
+  ssh_ro=(timeout 60 ssh "${ssh_opts[@]}" "$MPC_USER@$MPC_IP")
   mkdir -p -- "$work_abs"
   fdt_dir="$(mktemp -d "$work_abs/kexec-preflight-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
   running="$("${ssh_ro[@]}" 'uname -r')" || die "could not read the running kernel release; report: $REPORT"

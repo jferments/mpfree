@@ -48,6 +48,9 @@ jobs:
           bash -n tools/mpc-one/offline-akai-updater.sh
           bash -n tools/mpc-one/offline-rootfs-survey.sh
           sh -n tools/mpc-one/read-only-kexec-preflight.sh
+          sh -n tools/mpc-one/read-only-hook-canary.sh
+          sh -n tools/mpc-one/hook-canary-install.sh
+          sh -n tools/mpc-one/hook-canary-remove.sh
           sh -n tools/mpc-one/read-only-inventory.sh
           sh -n tools/mpc-one/read-only-detail.sh
           sh -n tools/mpc-one/read-only-runtime.sh
@@ -91,6 +94,7 @@ jobs:
           python3 tools/mpc-one/tests/test_offline_kexec_details.py
           MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hook_canary.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
           python3 tools/mpc-one/tests/test_write_test_stick.py
@@ -129,6 +133,7 @@ jobs:
               Path("tools/mpc-one/read-only-capacity.sh"),
               Path("tools/mpc-one/read-only-boot-map.sh"),
               Path("tools/mpc-one/read-only-kexec-preflight.sh"),
+              Path("tools/mpc-one/read-only-hook-canary.sh"),
               Path("tools/mpc-one/read-only-ethernet.sh"),
               Path("tools/mpc-one/read-only-backup-preflight.sh"),
               Path("tools/mpc-one/read-only-ram-smoke-env.sh"),
@@ -173,6 +178,7 @@ jobs:
           assert '"--backup")' in wrapper
           assert '"--kexec-preflight")' in wrapper
           assert '"--ethernet")' in wrapper
+          assert '"--hook-canary")' in wrapper and 'MPFREE_ACCEPT_HOOK_CANARY' in wrapper
           # The kexec preflight may ask kexec only for its version and help text.
           kexec_exec = [line for line in Path("tools/mpc-one/read-only-kexec-preflight.sh").read_text().splitlines()
                         if not line.lstrip().startswith("#")]
