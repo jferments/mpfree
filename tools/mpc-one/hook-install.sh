@@ -11,7 +11,12 @@ R=''
 # is a system for the running kernel that switches the MPC's eMMC and SD card off before anything can
 # touch them, and asks systemd for a soft-reboot: systemd stops Akai's programs, unmounts /data and starts
 # the stick's system on the kernel that is already running. No kernel is loaded, so LoadPin (which refuses
-# kexec on 3.10.1) has nothing to refuse. A udev rule is the backup trigger. Without the stick, or on any
+# kexec on 3.10.1) has nothing to refuse. A udev rule is the backup trigger.
+# A stick built with `offline-kexec-stick.py --kexec-file` asks for the second, opt-in route instead: the
+# service loads Akai's own kernel from Akai's root (the only kernel LoadPin lets the file-based kexec load)
+# with the stick's command line, and systemd restarts into it. If that load is refused, or this system's
+# kernel is not the one the stick was built with, it soft-reboots as above. A stick without that option
+# always takes the soft-reboot. Without the stick, or on any
 # problem, it does nothing and Akai's system starts as usual. The trigger was tried first with a harmless
 # canary (hook-canary-install.sh): the modprobe line ran at 5.96 s, its service at 6.09 s, and Akai's app
 # started at 6.36 s.
@@ -30,7 +35,9 @@ R=''
 # Then, with the stick in the MPC now, it runs the hook's own check (`hook.sh check`): the same checks on
 # the stick as at power-on, without the soft-reboot. It changes nothing: the stick's partition is mounted
 # read-only in /run and unmounted again, or read where Akai's system has already mounted it, and modules the
-# stick names are only looked up (modprobe --dry-run).
+# stick names are only looked up (modprobe --dry-run). For a --kexec-file stick it also loads Akai's kernel
+# into RAM with the file-based kexec and unloads it again (RAM only, never started), to show whether the
+# kernel accepts the load with the stick's command line.
 # Undo: `collect-over-ssh.sh --hook-remove`, which deletes the three files and the folders this made (by
 # hand: rm /data/system/etc/overlay/udev/rules.d/99-mpfree-hook.rules
 # /data/system/etc/overlay/modprobe.d/99-mpfree-hook.conf; rm -r /data/mpfree-hook). Without the stick
@@ -92,14 +99,20 @@ R=''
 # With MPFree's stick in at power-on (a USB disk partition named mpfree-test-root), it starts MPFree from
 # the stick before Akai's app starts: it mounts the stick's system read-only at /run/nextroot and asks
 # systemd for a soft-reboot, which stops Akai's programs and starts the stick's system on the kernel that
-# is already running. No kernel is loaded. Without that stick it does nothing. It is run:
+# is already running. No kernel is loaded. Without that stick it does nothing.
+# Opt-in second route: a stick whose /boot/mpfree-softreboot/jump says kexec-file (offline-kexec-stick.py
+# --kexec-file) asks for a restart into Akai's OWN kernel, /boot/zImage-<release> on Akai's root, loaded
+# with the file-based kexec and the stick's command line (root= the stick). That is the only kexec load
+# LoadPin accepts on 3.10.1. If this system's kernel is not the one the stick was built with, or the kernel
+# refuses the load, or systemd will not start kexec.target, the hook soft-reboots as for any other stick.
+# It is run:
 #   modprobe  by the module loader, when the Wi-Fi module cfg80211 loads (about 6 s after power-on);
 #   udev      by udev, for a device event (the backup, if cfg80211 does not load);
 #   jump      by systemd, as the service the first of those started (Akai's app and its firmware
 #             updaters wait for it to finish);
 #   check     by hook-install.sh: the same checks on the stick, without the soft-reboot.
 # It writes only to /run (RAM) and the kernel log, mounts the stick's partition 1 read-only, and may load
-# kernel modules the stick names, from Akai's own system. On any problem it stops, cleans up and leaves
+# kernel modules the stick names, from Akai's own system, or (kexec-file sticks) Akai's own kernel into RAM. On any problem it stops, cleans up and leaves
 # Akai's system to start as usual. Undo: collect-over-ssh.sh --hook-remove, or take the stick out.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin   # udev and modprobe give no useful PATH (tests set R and theirs)
 export PATH
@@ -114,6 +127,10 @@ HOLD='acvs.service touch-fw-update.service xmos-update.service az01-usbsata-fixe
 UPDATERS='touch-fw-update.service xmos-update.service az01-usbsata-fixer.service'
 FLASHERS='dfu-util touch-fw-upd xmosdfu midifirmup az01-update'
 LATE=15   # seconds after power-on; later than this it never starts the jump
+# The only words a kexec-file stick's command line may hold (root= must name the stick's own partition 1),
+# and the ones it must hold: read-only root, a wait for the stick, a restart on panic, no further kexec.
+KWORDS='ro rootwait=60 panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1 loadpin.enforce=0'
+KNEED='ro rootwait=60 panic=10 sysctl.kernel.kexec_load_disabled=1'
 kind=${1:-}
 up=$(cut -d' ' -f1 "$R/proc/uptime" 2>/dev/null)
 log() { echo "mpfree-hook: $1" >> "$R/run/mpfree-hook.txt" 2>/dev/null; }
@@ -148,8 +165,21 @@ trigger() {   # no call to systemd here but the service start: systemd may itsel
 
 # --- jump, check ------------------------------------------------------------------------------------------
 say() { if [ "$kind" = check ]; then echo "$1"; else kmsg "$1"; fi; }
-M=''; ours=''; W=''
+M=''; ours=''; W=''; loaded=''; jump=soft-reboot; kcmd=''; ksum=''
+unload() {   # takes out again a kernel this hook loaded (with the file syscall: LoadPin denies the old one)
+  [ "$loaded" = yes ] || return 0
+  loaded=''
+  [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] && return 0
+  if "$R/usr/sbin/kexec" --unload --kexec-file-syscall > /dev/null 2>&1 &&
+      [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ]; then
+    say "Akai's kernel unloaded again (kexec --unload)"
+    return 0
+  fi
+  say "could not unload the kernel this hook loaded (it stays in RAM until power-off; nothing of ours starts it)"
+  return 1
+}
 cleanup() {
+  unload
   if [ "$ours" = yes ]; then
     umount "$M" 2>/dev/null || say "could not unmount the stick's partition 1 from ${M#$R}"
   fi
@@ -274,6 +304,67 @@ prepare() {   # Finds the stick, mounts its partition 1 read-only and checks it 
   # Akai's own system instead.
   regular "$M/usr/lib/os-release" || regular "$M/etc/os-release" || fail "the stick has no os-release file"
   say "kernel $rel; the stick's system is for it"
+  [ -e "$B/jump" ] || return 0
+  # The opt-in second route (offline-kexec-stick.py --kexec-file): jump, cmdline and kernel.sha256, all
+  # three listed in SHA256SUMS, so checked above.
+  for f in jump cmdline kernel.sha256; do
+    case "$listed" in *" /$SDIR/$f "*) ;; *) fail "/$SDIR/$f is not listed in /$SDIR/SHA256SUMS" ;; esac
+  done
+  [ "$(cat "$B/jump")" = kexec-file ] || fail "/$SDIR/jump is not kexec-file (stick and hook from different versions)"
+  uuid=''
+  for l in "$R"/dev/disk/by-partuuid/*; do
+    [ "$(readlink -f "$l")" = "$dev" ] && uuid=${l##*/}
+  done
+  case "$uuid" in
+    *[!0-9a-f-]*|'') fail "/dev/$name has no plain partition UUID link (the kexec-file command line names it)" ;;
+  esac
+  [ "$(wc -l < "$B/cmdline" | tr -cd 0-9)" = 1 ] || fail "/$SDIR/cmdline is not one line"
+  kcmd=$(cat "$B/cmdline")
+  [ "${#kcmd}" -le 512 ] || fail "/$SDIR/cmdline is unusually long"
+  [ -z "$(printf '%s' "$kcmd" | tr -d 'A-Za-z0-9=._/ -')" ] || fail "/$SDIR/cmdline has unusual characters"
+  seen=' '
+  for w in $kcmd; do
+    case "$seen" in *" $w "*) fail "/$SDIR/cmdline has $w twice" ;; esac
+    case "$w" in
+      "root=PARTUUID=$uuid") ;;
+      root=*) fail "/$SDIR/cmdline does not start the system on this stick's partition 1" ;;
+      *) case " $KWORDS " in *" $w "*) ;; *) fail "/$SDIR/cmdline has $w, which the hook does not allow" ;; esac ;;
+    esac
+    seen="$seen$w "
+  done
+  for w in "root=PARTUUID=$uuid" $KNEED; do
+    case "$seen" in *" $w "*) ;; *) fail "/$SDIR/cmdline lacks ${w%%=$uuid}" ;; esac
+  done
+  [ "$(wc -l < "$B/kernel.sha256" | tr -cd 0-9)" = 1 ] || fail "/$SDIR/kernel.sha256 is not one line"
+  read -r ksum kfile krest < "$B/kernel.sha256"
+  [ -z "$krest" ] && [ "$kfile" = "/boot/zImage-$rel" ] || fail "/$SDIR/kernel.sha256 does not name /boot/zImage-$rel"
+  case "$ksum" in *[!0-9a-f]*|'') fail "/$SDIR/kernel.sha256 has an unusual hash" ;; esac
+  [ "${#ksum}" = 64 ] || fail "/$SDIR/kernel.sha256 has an unusual hash"
+  jump=kexec-file
+  say "this stick asks to start on Akai's own kernel (kexec_file), command line: $(printf '%s' "$kcmd" | sed 's/PARTUUID=[^ ]*/PARTUUID=(this stick)/')"
+}
+kexec_file() {   # $1 = what happens instead. Loads Akai's own kernel with the stick's command line (RAM only).
+                 # Returns 1, with a note, where it did not: the MPC then soft-reboots instead.
+  K="$R/boot/zImage-$rel"
+  regular "$K" || { say "kexec_file: this system has no /boot/zImage-$rel; $1"; return 1; }
+  [ "$(sha256sum < "$K" | cut -d' ' -f1)" = "$ksum" ] ||
+    { say "kexec_file: this system's /boot/zImage-$rel is not the kernel the stick was built with; $1"; return 1; }
+  [ -x "$R/usr/sbin/kexec" ] || { say "kexec_file: this system has no /usr/sbin/kexec; $1"; return 1; }
+  [ "$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)" = 0 ] ||
+    { say "kexec_file: kexec is turned off on this system; $1"; return 1; }
+  [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] ||
+    { say "kexec_file: a kexec kernel is loaded already (not by this hook); $1"; return 1; }
+  loaded=yes
+  # The file syscall only: LoadPin denies the old buffer one ("kexec-image old-api-denied"), and refuses a
+  # device tree in file mode, so the kernel keeps the running one. The command line points root= at the stick.
+  if ! out=$("$R/usr/sbin/kexec" --load --kexec-file-syscall --command-line="$kcmd" "$K" 2>&1); then
+    say "kexec_file: the kernel refused the load ($(printf '%s' "$out" | tr -c 'A-Za-z0-9 ._:/()=-' ' ' | cut -c1-200)); $1"
+    unload
+    return 1
+  fi
+  [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 1 ] ||
+    { say "kexec_file: kexec_loaded is not 1 after the load; $1"; unload; return 1; }
+  say "Akai's kernel loaded with the stick's command line (kexec_file) at $(cut -d' ' -f1 "$R/proc/uptime") s"
 }
 
 case "$kind" in
@@ -288,6 +379,13 @@ case "$kind" in
       [ "$n" = 0 ] && say "waiting for $what to finish"
       sleep 1; n=$((n + 1))
     done
+    if [ "$jump" = kexec-file ] && kexec_file "soft-reboot instead"; then
+      what=$(busy) && fail "$what started; no restart while firmware may be written"
+      say "restart into MPFree on Akai's own kernel (kexec.target) at $(cut -d' ' -f1 "$R/proc/uptime") s"
+      systemctl --no-block --job-mode=replace-irreversibly start kexec.target && exit 0
+      say "kexec_file: systemctl could not start kexec.target; soft-reboot instead"
+      unload || fail "the kernel loaded for kexec_file could not be unloaded"
+    fi
     modules load
     what=$(busy) && fail "$what started; no restart while firmware may be written"
     echo "$up" > "$R/run/mpfree-hook/soft-reboot" 2>/dev/null   # tells the stick's system how it was started
@@ -303,6 +401,17 @@ case "$kind" in
     for w in $(cat "$R/proc/cmdline" 2>/dev/null); do
       case "$w" in init=*|systemd.*) say "note: the kernel command line has $w, which the stick's system also reads" ;; esac
     done
+    if [ "$jump" = kexec-file ]; then
+      if kexec_file "at power-on this stick would soft-reboot instead"; then
+        unload || { cleanup; say "STOP: the test load could not be unloaded"; exit 1; }
+        cleanup
+        say "CHECK-OK: at power-on with this stick in, the MPC would restart into it on Akai's own kernel (kexec_file; the test load and unload passed), and soft-reboot into it if that load fails then"
+        exit 0
+      fi
+      cleanup
+      say "CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it (the kexec_file route it asks for is not available, above)"
+      exit 0
+    fi
     cleanup
     say "CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it" ;;
   *) exit 0 ;;

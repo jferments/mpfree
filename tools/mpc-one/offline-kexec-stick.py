@@ -81,6 +81,17 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     system runs on), preload-modules.txt (only with --preload-module) and
     SHA256SUMS of those and the service's files. After a kexec jump the
     controllers are already hidden and the service finds nothing to do
+  - only with --kexec-file (the opt-in second route of the hook): in
+    /boot/mpfree-softreboot/ also jump ("kexec-file"), cmdline (the kernel
+    command line for that restart; with --loadpin-off it adds
+    loadpin.enforce=0) and kernel.sha256 (the hash of the image's own
+    /boot/zImage-<release>), listed in its SHA256SUMS. The hook then loads
+    Akai's own kernel from the MPC's root with the file-based kexec and this
+    command line, and restarts into it; Akai's device tree stays, so the
+    switch-off service above does the same work as after a soft-reboot. If
+    the MPC's kernel is not this one, or the load is refused, the hook
+    soft-reboots instead. Without --kexec-file none of these three files is
+    made and the stick is the soft-reboot stick as before
   - only with --akai-app (phase 3 of the 3.10.1 stick test, for developer
     mode): Akai's app is NOT masked and its launcher is NOT stubbed, so it
     starts at power-on and draws the screen; the log display is installed but
@@ -234,6 +245,11 @@ KEXEC_DIR = "/boot/mpfree-kexec"
 # touch them. The hook refuses a stick without these files (it checks them against SOFTREBOOT_DIR/SHA256SUMS).
 SOFTREBOOT_DIR = "/boot/mpfree-softreboot"
 SOFTREBOOT_PROTOCOL = "mpfree-softreboot-1"
+# --kexec-file: the hook's opt-in second route (a restart into Akai's own kernel, loaded with the file-based
+# kexec). These three files in SOFTREBOOT_DIR ask for it; the hook checks every word of the command line.
+KEXEC_FILE_JUMP = "kexec-file"
+KEXEC_FILE_FILES = ("jump", "cmdline", "kernel.sha256")
+LOADPIN_OFF = "loadpin.enforce=0"
 MODULE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 INTERNAL_OFF_SCRIPT = """R=''
 # MPFree: switch the MPC's internal eMMC and SD card off, before anything can touch them.
@@ -1047,8 +1063,9 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     With `akai_app`, Akai's app is neither masked nor its launcher stubbed, and the log display is
     installed but not started; partitions 3 and 4 are made all the same.
     With `kexec_files` (release, kexec.dtb bytes, cmdline.txt bytes), KEXEC_DIR gets the boot hook's files.
-    With `softreboot` (release, module names), the service that switches the eMMC and SD card off is installed
-    and SOFTREBOOT_DIR gets the soft-reboot hook's files."""
+    With `softreboot` (release, module names, kexec-file command line or None), the service that switches the
+    eMMC and SD card off is installed and SOFTREBOOT_DIR gets the soft-reboot hook's files; with a command line,
+    also the three files that ask the hook for its kexec-file route."""
     if akai_app:
         if app is not None or splash[0] is not None or kits_uuid is None or data_uuid is None:
             raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
@@ -1137,7 +1154,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         add(KEXEC_DIR + "/cmdline.txt", cmdline, 0o644)
         add(KEXEC_DIR + "/SHA256SUMS", sums, 0o644)
     if softreboot:
-        release, modules = softreboot
+        release, modules, kexec_file = softreboot
         add(INTERNAL_OFF_FILES[0], INTERNAL_OFF_SCRIPT, 0o755)
         add(INTERNAL_OFF_FILES[1], INTERNAL_OFF_UNIT, 0o644)
         add(INTERNAL_OFF_FILES[2], INTERNAL_OFF_RULE, 0o644)
@@ -1147,6 +1164,11 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         if modules:
             add(SOFTREBOOT_DIR + "/preload-modules.txt", "".join(m + "\n" for m in modules), 0o644)
             listed.append(SOFTREBOOT_DIR + "/preload-modules.txt")
+        if kexec_file:
+            kernel_sum = hashlib.sha256(img.read("/boot/zImage-" + release, scratch)).hexdigest()
+            for name, data in zip(KEXEC_FILE_FILES, (KEXEC_FILE_JUMP, kexec_file, f"{kernel_sum}  /boot/zImage-{release}")):
+                add(f"{SOFTREBOOT_DIR}/{name}", data + "\n", 0o644)
+                listed.append(f"{SOFTREBOOT_DIR}/{name}")
         add(SOFTREBOOT_DIR + "/SHA256SUMS",
             "".join(f"{hashlib.sha256(files[p][0]).hexdigest()}  {p}\n" for p in listed), 0o644)
     stubbed, absent = [], []
@@ -1324,7 +1346,15 @@ def main(argv):
                     help="start Akai's app at power-on (for developer mode); every flasher stays a stub")
     ap.add_argument("--preload-module", action="append", default=[], metavar="NAME",
                     help="a kernel module the soft-reboot hook loads from Akai's system first (repeatable)")
+    ap.add_argument("--kexec-file", action="store_true",
+                    help="ask the boot hook for its opt-in second route: restart into Akai's own kernel (file-based "
+                         "kexec) with this stick as root, soft-reboot if that is refused")
+    ap.add_argument("--loadpin-off", action="store_true",
+                    help=f"with --kexec-file: add {LOADPIN_OFF} to that kernel's command line (an experiment: "
+                         "whether Akai's kernel takes it, so modules and firmware can load from the stick)")
     args = ap.parse_args(argv)
+    if args.loadpin_off and not args.kexec_file:
+        raise Stop("--loadpin-off goes with --kexec-file (it changes only that route's command line)")
     for name in args.preload_module:
         if not MODULE_NAME.match(name):
             raise Stop(f"--preload-module {name!r} is not a plain module name")
@@ -1444,6 +1474,7 @@ def main(argv):
                    "sysctl.kernel.kexec_load_disabled=1")
         with open(dtb_out, "rb") as fh:
             kexec_files = (release, fh.read(), (cmdline + "\n").encode())
+        kexec_file_cmdline = (cmdline + (" " + LOADPIN_OFF if args.loadpin_off else "")) if args.kexec_file else None
         if args.akai_app:
             OUT.say(AKAI_APP_MARK)
             OUT.say(f"  {AKAI_APP_UNIT} and {AKAI_APP_LAUNCHER} are left as Akai ships them: Akai's app starts at "
@@ -1478,10 +1509,17 @@ def main(argv):
         else:
             OUT.say("  modules the hook loads first: none (no --preload-module); after the soft-reboot LoadPin refuses "
                     "every module load, so the stick's system has the modules Akai's boot loaded by then")
+        if kexec_file_cmdline:
+            OUT.say(f"  --kexec-file: {SOFTREBOOT_DIR}/jump asks the hook to restart into Akai's own kernel "
+                    f"(/boot/zImage-{release} on the MPC, loaded with the file-based kexec) instead of the soft-reboot, "
+                    "and to soft-reboot if that load is refused or the MPC's kernel is not this one")
+            OUT.say(f"  its command line: {kexec_file_cmdline}")
+        else:
+            OUT.say("  route: soft-reboot only (no --kexec-file)")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
                                                                   screen_log, rotation, splash, app, kits_uuid,
                                                                   data_uuid, args.akai_app, kexec_files,
-                                                                  (release, args.preload_module))
+                                                                  (release, args.preload_module, kexec_file_cmdline))
         if app:
             if img.kind(GROW_PROGRAM) in ("regular", "symlink"):
                 OUT.say(f"partition 4: {GROW_PROGRAM} is in this version, so its filesystem grows at boot to fill "
