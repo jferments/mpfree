@@ -158,7 +158,8 @@ def stick_test(bins, tmp, rate):
                     "/dev/sdz3 /media/MPFREE-KITS ext4 rw,nosuid,nodev,noexec,relatime,nosymfollow 0 0\n"
                     "/dev/sdz4 /media/%s ext4 rw,nosuid,nodev,noexec,relatime,nosymfollow 0 0\n" % data_name)
     mounts("4c1e9a52-data")
-    kit = os.path.join(media, "MPFREE-KITS", "fxprobe")
+    kit = os.path.join(media, "MPFREE-KITS", "mpfree-dev", "fxprobe")
+    os.makedirs(os.path.dirname(kit))
     r = subprocess.run([sys.executable, os.path.join(FXPROBE, "stage.py"), "--plugins-from", built, "--native-test",
                         "--fxlab", FXLAB, "--out", kit], capture_output=True, text=True)
     if r.returncode != 0 or "STAGE-OK" not in r.stdout:

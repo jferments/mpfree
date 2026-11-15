@@ -2,7 +2,7 @@
 # fxprobe.sh: run FXProbe on the MPC, under Akai's MPC OS 3.10.1 in developer
 # mode, from the FXProbe kit on the MPFree test stick. BusyBox sh.
 #
-#   sh /media/<kits partition>/fxprobe/fxprobe.sh MODE [OPTIONS]
+#   sh /media/<kits partition>/mpfree-dev/fxprobe/fxprobe.sh MODE [OPTIONS]
 #
 # The kit (this script's folder, made by stage.py) holds both plugins, the
 # test programmes and this script. Akai's system mounts every partition of a
