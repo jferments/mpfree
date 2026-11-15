@@ -50,8 +50,11 @@ command = args[-1]
 test = "HostKeyAlias=mpfree-kexec-test" in opts
 with open(os.environ["FAKE_STAGE"]) as fh:
     stage = fh.read().strip()
+port = opts[[a for a in args if a in ("-o", "-i", "-p", "-l", "-F")].index("-p")] if "-p" in args else "22"
 with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write(f"ssh[{'test' if test else '3.6'}@{stage}]: {command}\n")
+with open(os.environ["FAKE_LOG"] + ".ports", "a") as fh:
+    fh.write(f"{'test' if test else 'stock'} {port}\n")
 if stage == "dead" or (test and stage != "310") or (not test and stage == "310"):
     print("Host key verification failed." if stage != "dead" else "ssh: connect to host: No route to host",
           file=sys.stderr)
@@ -164,7 +167,7 @@ class KexecBootTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def build(self, emmc="disabled", akai=False):
+    def build(self, emmc="disabled", akai=False, running=OLD):
         folder = os.path.join(self.work, "kexec-stick-20260101T000000Z-abc")
         tree = board_tree(serial="FAKE-SERIAL", mac=bytes.fromhex("020000000001"))
         tree.find("/dwmmc@ff0f0000").set_prop("status", (emmc + "\0").encode())
@@ -178,7 +181,7 @@ class KexecBootTests(unittest.TestCase):
                 raw = data if isinstance(data, bytes) else data.encode()
                 fh.write(f"{hashlib.sha256(raw).hexdigest()}  {name}\n")
         write(os.path.join(folder, "report.txt"), f"its kernel release: {NEW}\n"
-                                                  f"running release: {OLD} (the only other boot-files release)\n"
+                                                  f"running release: {running} (the only other boot-files release)\n"
               + ("akai app: on (--akai-app)\n" if akai else ""))
         return folder
 
@@ -270,6 +273,32 @@ class KexecBootTests(unittest.TestCase):
         self.assertIn("systemctl: kexec", log)
         with open(self.report) as fh:
             self.assertIn("RESULT: the test build is running", fh.read(), "the report gets the same lines")
+
+    def ports(self):
+        with open(self.log + ".ports") as fh:
+            return sorted(set(fh.read().split("\n")) - {""})
+
+    def test_akais_system_and_the_test_build_answer_on_their_own_ports(self):
+        res = self.run_helper()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.ports(), ["stock 22", "test 2222"])
+
+    def test_3_6_0_with_mod_001_is_still_reachable_on_2222(self):
+        cmd = self.helper_cmd() + ["--stock-port", "2222"]
+        res = subprocess.run(cmd, input="no\n", env=self.env, text=True, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, timeout=120)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertEqual(self.ports(), ["stock 2222"], "3.6.0 with MOD-001 is still reachable on 2222")
+
+    def test_an_installed_3_10_1_runs_the_test_builds_own_kernel(self):
+        # The jump starts from the same kernel release it boots: the check expects the release the stick names.
+        self.folder = self.build(running=NEW)
+        env = dict(self.env, FAKE_OLD=NEW)
+        res = subprocess.run(self.helper_cmd(), input="BOOT 3.10\n", env=env, text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"running release: {NEW}", res.stdout)
+        self.assertIn("RESULT: the test build is running from the stick", res.stdout)
 
     def test_build_that_runs_akais_app(self):
         res = self.run_helper(active="acvs.service")
@@ -403,8 +432,8 @@ class KexecBootTests(unittest.TestCase):
         self.assert_untouched()
 
     def test_jump_outcomes(self):
-        cases = (("no-jump", "RESULT: the jump did not start. 3.6 is running as before.", True),
-                 ("stock-back", "RESULT: the MPC is on 3.6 again. If you did not switch it off", False),
+        cases = (("no-jump", "RESULT: the jump did not start. Akai's system is running as before.", True),
+                 ("stock-back", "RESULT: the MPC is on Akai's system again. If you did not switch it off", False),
                  ("nothing", "RESULT: nothing answered. Switch the MPC off", False))
         for scenario, result, undone in cases:
             with self.subTest(scenario):
@@ -453,7 +482,7 @@ class StaticTests(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         scripts = {name: getattr(mod, name) for name in
-                   ("CHECK_36", "PREPARE", "RECEIVE", "HASHES", "LOAD", "UNDO", "JUMP", "STATE", "CHECK_310")}
+                   ("CHECK_STOCK", "PREPARE", "RECEIVE", "HASHES", "LOAD", "UNDO", "JUMP", "STATE", "CHECK_310")}
         for akai in (False, True):
             filled = mod.check_310({"new": NEW, "p1": P1, "akai": akai})
             self.assertNotIn("@@", filled)

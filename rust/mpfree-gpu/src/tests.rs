@@ -671,6 +671,67 @@ fn a_full_shape_atlas_is_cleared_and_draws_the_same_picture() {
     assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
 }
 
+/// The FM synth page's shapes since its redesign: seven layers of one big
+/// graph, a frame round them and three small knob rings.
+fn graph_and_knobs_page(c: &mut dyn Canvas, _fonts: &mut Fonts) {
+    use mpfree_ui::Shape;
+    let (w, h) = c.size();
+    c.fill_rect(Rect::new(0, 0, w, h), Color::rgb(0x12161E));
+    let g = Rect::new(266, 206, 388, 191);
+    for k in 0..7 {
+        let mut s = Shape::new(g);
+        let pts: Vec<(f32, f32)> = (0..=80)
+            .map(|i| {
+                let t = i as f32 / 80.0;
+                let y = 300.0 + (t * (2.0 + k as f32) * 3.1).sin() * (20.0 + 9.0 * k as f32);
+                (g.x as f32 + 2.0 + t * 384.0, y)
+            })
+            .collect();
+        if k < 3 {
+            s.fill_under(&pts, 395.0, 0.3);
+        }
+        s.polyline(&pts, 1.5 + k as f32 * 0.5);
+        s.draw(
+            c,
+            Color::rgb(0x40C0FF ^ (k as u32 * 0x1A2B3C)).with_alpha(200),
+        );
+    }
+    let f = Rect::new(256, 196, 408, 211);
+    let (x0, y0, x1, y1) = (258.0, 198.0, 662.0, 405.0);
+    let mut s = Shape::new(f);
+    s.polyline(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)], 2.0);
+    s.dashed(&[(x0, 300.0), (x1, 300.0)], 1.0, 4.0);
+    s.disc(460.0, 300.0, 5.0);
+    s.segment((x0, y1), (x1, y0), 1.0);
+    s.draw(c, Color::rgb(0xE0E0E0));
+    for k in 0..3 {
+        let mut ring = Shape::new(Rect::new(762, 465, 67, 67));
+        ring.arc(795.5, 498.5, 28.0, 2.4, 2.4 + 1.5 * (k + 1) as f32, 5.0);
+        ring.draw(c, Color::rgb(0xF0A040 ^ (k as u32 * 0x203040)));
+    }
+}
+
+/// A few big shapes leave shelves too tall for small ones: the knobs then
+/// go on those shelves, so one page's shapes fit the atlas together
+/// rather than clearing it halfway.
+#[test]
+fn big_graph_layers_and_small_knobs_share_the_shape_atlas() {
+    let gpu = gpu();
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &graph_and_knobs_page);
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    let s = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert_eq!(
+        (s.shapes_drawn, s.shapes_cleared, s.uploads, s.draws),
+        (11, 0, 0, 2),
+        "{s:?}"
+    );
+    let d = compare(&want, &r.read_native(&gpu));
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+    // Drawn again, as when a knob moves: nothing is worked out again.
+    let again = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert_eq!((again.shapes_drawn, again.draws), (0, 1), "{again:?}");
+}
+
 #[test]
 fn without_max_blending_shapes_go_as_software_masks() {
     let gpu = gpu();
