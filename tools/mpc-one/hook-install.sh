@@ -112,7 +112,7 @@ NEED='/etc/mpfree-test/internal-off.sh /etc/systemd/system/mpfree-test-internal-
 WANTS=etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service
 HOLD='acvs.service touch-fw-update.service xmos-update.service az01-usbsata-fixer.service'
 UPDATERS='touch-fw-update.service xmos-update.service az01-usbsata-fixer.service'
-FLASHERS='dfu-util touch-fw-upd xmosdfu midifirmup az01-update az01-usbsata-fixer'
+FLASHERS='dfu-util touch-fw-upd xmosdfu midifirmup az01-update'
 LATE=15   # seconds after power-on; later than this it never starts the jump
 kind=${1:-}
 up=$(cut -d' ' -f1 "$R/proc/uptime" 2>/dev/null)
@@ -164,6 +164,14 @@ busy() {   # prints what may be writing firmware right now
     case "$(systemctl is-active "$u" 2>/dev/null)" in activating|deactivating|reloading) echo "$u"; return 0 ;; esac
   done
   for p in $FLASHERS; do pidof "$p" > /dev/null 2>&1 && { echo "$p"; return 0; }; done
+  # az01-usbsata-fixer runs all the time on 3.10.1 (its service stays active; seen still running two hours
+  # after power-on). It writes only to a JMicron USB-SATA bridge (USB vendor 152d), so it counts only while
+  # one is attached. Assumption from its name, its log ("USB-SATA bridge fixer") and its unit; not read in code.
+  if pidof az01-usbsata-fixer > /dev/null 2>&1; then
+    for v in "$R"/sys/bus/usb/devices/*/idVendor; do
+      grep -qx 152d "$v" 2>/dev/null && { echo "az01-usbsata-fixer (a JMicron USB-SATA bridge is attached)"; return 0; }
+    done
+  fi
   grep -qs 'SME0/Firmware/update.sh' "$R"/proc/[0-9]*/cmdline && { echo "Akai's controller update.sh"; return 0; }
   return 1
 }
