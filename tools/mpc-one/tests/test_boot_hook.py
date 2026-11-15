@@ -215,10 +215,10 @@ class BootHookTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0 if ok else 1, res.stdout)
         return res
 
-    def hook(self, *args, shell=None, **env):
+    def hook(self, *args, shell=None, wrap=(), **env):
         """hook.sh as installed, run as udev, modprobe or systemd would, with R set to the fake root."""
         script = self.read(SCRIPT).replace("R=''", f"R='{self.root}'", 1)
-        return subprocess.run([shell or self.dash, "-c", script, "hook.sh", *args],
+        return subprocess.run([*wrap, shell or self.dash, "-c", script, "hook.sh", *args],
                               env={"PATH": self.remote, "FAKE_LOG": self.log, "FAKE_ROOT": self.root,
                                    "FAKE_STICK": self.stick, **env},
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
@@ -315,10 +315,40 @@ class BootHookTests(unittest.TestCase):
         self.write_sums(**{"kexec.dtb": "0" * 64})
         res = self.install(ok=False)
         self.assertIn("STOP: kexec.dtb on the stick does not match its SHA256SUMS", res.stdout)
-        self.assertIn("RESULT: the hook is installed, but the check stopped (above). Until that is fixed, power-on "
-                      "starts Akai's system as usual.", res.stdout)
+        self.assertIn("RESULT: the hook is installed, but the check stopped (above). Take the stick out before you "
+                      "next switch the MPC on (without it the hook does nothing), and send the results.", res.stdout)
         self.assertEqual(self.calls("kexec: "), [])
         self.assertEqual(self.run_files(), [])
+
+    def test_check_reads_the_stick_where_akai_mounted_it_without_links(self):
+        # Akai's edisksd mounts every partition of a USB disk at /media/..., with nosymfollow (seen on the MPC
+        # on 2026-11-15), so /boot/mpfree-kexec/zImage cannot be followed there. The same mount is made here in
+        # a private mount namespace, so the kernel enforces it as on the MPC.
+        unshare, mount = shutil.which("unshare"), shutil.which("mount")
+        if not unshare or not mount:
+            self.skipTest("needs unshare and mount (util-linux)")
+        self.install(ok=False)
+        self.plug_in()
+        media = "/media/c73b610c-cb57-4e47-84f5-4ff2ae94d259"
+        os.makedirs(self.root + media)
+        with open(os.path.join(self.root, "proc/mounts"), "a") as fh:
+            fh.write(f"/dev/sda1 {media} ext4 rw,nosuid,nodev,noexec,relatime,nosymfollow 0 0\n")
+        akai_mount = (f'{mount} --bind "$1" "$2" && {mount} -o remount,bind,nosymfollow "$2" || exit 77; '
+                      '[ -f "$2/boot/mpfree-kexec/zImage" ] && exit 78; shift 2; exec "$@"')
+        ns = ["-m"] if os.geteuid() == 0 else ["-r", "-m"]
+        wrap = (unshare, *ns, "--propagation", "private", "/bin/sh", "-c", akai_mount, "sh", self.stick,
+                self.root + media)
+        open(self.log, "w").close()
+        res = self.hook("check", wrap=wrap)
+        if res.returncode in (77, 78) or "unshare: " in res.stdout:
+            self.skipTest("cannot make a nosymfollow mount here: " + res.stdout.strip())
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"partition 1 is mounted already at {media}; read from there", res.stdout)
+        self.assertIn("CHECK-OK", res.stdout)
+        self.assertEqual(self.calls("mount: ") + self.calls("umount: "), [], "Akai's mount is used and left alone")
+        self.assertEqual(self.calls("kexec: --unload"), ["kexec: --unload --kexec-syscall"])
+        self.assertEqual(self.read("sys/kernel/kexec_loaded"), "0\n")
+        self.assertEqual(self.run_files(), [], "the copies in /run are removed again")
 
     def test_install_stops_on_files_it_did_not_write(self):
         for rel in (RULE, CONF, CANARY[0]):

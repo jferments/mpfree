@@ -201,12 +201,16 @@ prepare() {   # $1 = work folder in /run. Finds the stick, copies and checks its
   case "$link" in ../zImage-*) ;; *) fail "/$KDIR/zImage is not a link to ../zImage-<release>" ;; esac
   case "$rel" in ''|*[!A-Za-z0-9._+-]*) fail "/$KDIR/zImage links to an unusual name" ;; esac
   [ -f "$mnt/boot/zImage-$rel" ] && [ ! -L "$mnt/boot/zImage-$rel" ] || fail "the stick has no /boot/zImage-$rel"
+  # The kernel is read from the link's target, never through the link: Akai's system mounts USB disks with
+  # nosymfollow, where following a link fails ("Too many levels of symbolic links").
   for n in zImage:33554432 kexec.dtb:1048576 cmdline.txt:1024 SHA256SUMS:1024; do
     f=${n%%:*}; max=${n#*:}
-    [ -f "$B/$f" ] || fail "the stick has no /$KDIR/$f"
-    bytes=$(size "$B/$f")
-    [ -n "$bytes" ] && [ "$bytes" -gt 0 ] && [ "$bytes" -le "$max" ] || fail "/$KDIR/$f has an unusual size (${bytes:-?} bytes)"
-    cp "$B/$f" "$K/$f" || fail "could not copy /$KDIR/$f"
+    src="$B/$f"; shown="/$KDIR/$f"
+    [ "$f" = zImage ] && { src="$mnt/boot/zImage-$rel"; shown="/boot/zImage-$rel"; }
+    [ -f "$src" ] && [ ! -L "$src" ] || fail "the stick has no $shown"
+    bytes=$(size "$src")
+    [ -n "$bytes" ] && [ "$bytes" -gt 0 ] && [ "$bytes" -le "$max" ] || fail "$shown has an unusual size (${bytes:-?} bytes)"
+    cp "$src" "$K/$f" || fail "could not copy $shown"
   done
   if [ "$ours" = yes ]; then
     ours=''
@@ -360,6 +364,6 @@ fi
 if "$R/bin/sh" -c "$(sed "1s|^R=''\$|R='$R'|" "$SCRIPT")" hook.sh check < /dev/null; then
   say "RESULT: the hook is installed, and the stick checks out. NEXT: switch the MPC off, then on with the stick in."
 else
-  say "RESULT: the hook is installed, but the check stopped (above). Until that is fixed, power-on starts Akai's system as usual."
+  say "RESULT: the hook is installed, but the check stopped (above). Take the stick out before you next switch the MPC on (without it the hook does nothing), and send the results."
   exit 1
 fi
