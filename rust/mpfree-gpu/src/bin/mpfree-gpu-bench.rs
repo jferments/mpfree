@@ -20,7 +20,8 @@
 //!       untouched, that what the GPU wrote into a screen buffer is the
 //!       picture expected; then shows each page for N ms; then times a
 //!       whole page and a tick's redraw the GPU's way, and software's (draw,
-//!       turn and copy into a screen buffer that is not shown); then puts
+//!       turn into the panel's layout, copy into a screen buffer that is
+//!       not shown, each timed on its own); then puts
 //!       the screen back as it was (STATE-CHANGING, in RAM only: see below)
 //!   mpfree-gpu-bench panel DIR [--hold-ms N] [--frames N]
 //!       the GPU's pictures on the panel: draws each page on the GPU, reads
@@ -353,7 +354,8 @@ fn panel(dir: &Path, hold_ms: usize, frames: usize, fb: &Path, sysfs: &Path) -> 
     let mut buf = Vec::with_capacity(g.frame_len());
     let (mut g_draw, mut g_read, mut g_copy, mut g_all) =
         (Times::new(), Times::new(), Times::new(), Times::new());
-    let (mut s_draw, mut s_copy, mut s_all) = (Times::new(), Times::new(), Times::new());
+    let (mut s_draw, mut s_turn, mut s_copy, mut s_all) =
+        (Times::new(), Times::new(), Times::new(), Times::new());
     for _ in 0..frames {
         let t = Instant::now();
         g_draw.time(|| {
@@ -368,10 +370,10 @@ fn panel(dir: &Path, hold_ms: usize, frames: usize, fb: &Path, sysfs: &Path) -> 
         g_all.0.push(t.elapsed().as_secs_f64() * 1e3);
         let t = Instant::now();
         s_draw.time(|| replay(&page.ops, &store, &mut soft));
-        s_copy.time(|| {
-            target.layout.rows(&soft, 0, g.height, &mut buf);
-            target.present_frame(&buf)
-        })?;
+        // The turn into the panel's layout and the write to the panel, apart:
+        // drawing in the panel's own layout would save the first, not the second.
+        s_turn.time(|| target.layout.rows(&soft, 0, g.height, &mut buf));
+        s_copy.time(|| target.present_frame(&buf))?;
         s_all.0.push(t.elapsed().as_secs_f64() * 1e3);
     }
     println!(
@@ -388,8 +390,9 @@ fn panel(dir: &Path, hold_ms: usize, frames: usize, fb: &Path, sysfs: &Path) -> 
         g_all.at(1.0)
     );
     println!(
-        "summary: panel software: draw p50 {:.2}, turn and copy p50 {:.2}; whole p50 {:.2} p95 {:.2} max {:.2}",
+        "summary: panel software: draw p50 {:.2}, turn p50 {:.2}, copy p50 {:.2}; whole p50 {:.2} p95 {:.2} max {:.2}",
         s_draw.at(0.5),
+        s_turn.at(0.5),
         s_copy.at(0.5),
         s_all.at(0.5),
         s_all.at(0.95),
@@ -672,7 +675,7 @@ fn flip_run(
     let mut soft = SoftCanvas::new(w, h);
     let mut rows = Vec::with_capacity(g.frame_len());
     let mut sw = |ops: &[mpfree_ui::record::Op], label: &str| {
-        let (mut draw, mut copy) = (Times::new(), Times::new());
+        let (mut draw, mut turn, mut copy) = (Times::new(), Times::new(), Times::new());
         let cpu = cpu_time();
         let started = Instant::now();
         for _ in 0..frames {
@@ -683,9 +686,11 @@ fn flip_run(
                 soft.set_clip(mpfree_ui::Rect::new(0, 0, w, h));
                 replay(ops, &store, &mut soft)
             });
-            copy.time(|| {
+            turn.time(|| {
                 rows.clear();
                 layout.rows(&soft, 0, nh as usize, &mut rows);
+            });
+            copy.time(|| {
                 let n = rows.len().min(sw_buf.bytes().len());
                 sw_buf.bytes_mut()[..n].copy_from_slice(&rows[..n]);
             });
@@ -693,10 +698,11 @@ fn flip_run(
         let wall = started.elapsed().as_secs_f64();
         let used = (cpu_time() - cpu).as_secs_f64();
         println!(
-            "summary: flip software {label}: draw p50 {:.2}, turn and copy (whole frame) p50 {:.2}; whole p50 {:.2}; CPU {:.0} % of one core",
+            "summary: flip software {label}: draw p50 {:.2}, turn p50 {:.2}, copy into the screen buffer p50 {:.2} (whole frame); whole p50 {:.2}; CPU {:.0} % of one core",
             draw.at(0.5),
+            turn.at(0.5),
             copy.at(0.5),
-            draw.at(0.5) + copy.at(0.5),
+            draw.at(0.5) + turn.at(0.5) + copy.at(0.5),
             100.0 * used / wall.max(1e-9)
         );
     };
@@ -846,13 +852,14 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
             draws: drawn.draws,
         });
     }
-    // The software path's copy to the panel (the banded turn), whole frame.
+    // The software path's turn into the panel's layout (banded), whole frame:
+    // the copy to the panel itself is timed by `panel` and `flip`, on the MPC.
     let soft = SoftCanvas::new(w, h);
-    let mut copy = Times::new();
+    let mut turn = Times::new();
     let mut out = Vec::with_capacity(NATIVE.0 * NATIVE.1 * 4);
     for _ in 0..frames {
         out.clear();
-        copy.time(|| layout.rows(&soft, 0, NATIVE.1, &mut out));
+        turn.time(|| layout.rows(&soft, 0, NATIVE.1, &mut out));
     }
     let median = |f: fn(&Page) -> f64| {
         let mut v: Vec<f64> = pages.iter().map(f).collect();
@@ -889,9 +896,9 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
         worst(|p| p.cpu_tick)
     );
     println!(
-        "summary: software copy to the panel (whole frame, banded turn) p50 {:.2} max {:.2}",
-        copy.at(0.5),
-        copy.at(1.0)
+        "summary: software turn into the panel's layout (whole frame, banded) p50 {:.2} max {:.2}",
+        turn.at(0.5),
+        turn.at(1.0)
     );
     println!(
         "summary: gpu against software: at most {worst_diff} levels apart in any channel; {:.1} s in all",
