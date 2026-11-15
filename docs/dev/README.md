@@ -118,6 +118,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 - [Hardware ownership strategy](research/hardware-ownership.md): win back hardware resources in userspace first, custom Linux later.
 - [Reversible factory handoff](research/reversible-handoff.md): safety design for stopping and restoring the factory app.
 - [Factory GUI handoff research](research/factory-gui-handoff.md): factory processes and what a screen takeover needs.
+- [The MPC plugin SDK and the factory OS](research/mpc-plugin-sdk.md): what an MPC OS 3.10.1 SDK plugin can do inside Akai's app, ranked ideas for using it, and the line we keep (2026-11-15).
 - [ARMv7 userspace compatibility](research/armv7-userspace-compat.md): matching the device's glibc, loader and ABI.
 - [Auxiliary compute over Ethernet and USB](research/auxiliary-compute.md): offloading synths and effects to another computer.
 - [Samplers: what people like, what they don't, and what to borrow](research/sampler-landscape.md): MPC owners' praise and complaints, other samplers, granular synthesis, and MIT-compatible libraries (2026-11-10).

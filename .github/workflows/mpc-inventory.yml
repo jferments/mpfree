@@ -50,6 +50,7 @@ jobs:
           sh -n tools/mpc-one/read-only-io.sh
           sh -n tools/mpc-one/read-only-abi.sh
           sh -n tools/mpc-one/read-only-handoff-preflight.sh
+          sh -n tools/mpc-one/read-only-plugin-host.sh
           sh -n tools/mpc-one/read-only-process-map.sh
           sh -n tools/mpc-one/read-only-touchscreen.sh
           sh -n tools/mpc-one/read-only-touch-axes-env.sh
