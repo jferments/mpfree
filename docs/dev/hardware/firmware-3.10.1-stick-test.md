@@ -1,5 +1,8 @@
 # Trying firmware 3.10.1 from the USB stick before installing it
 
+> [!NOTE]
+> **Superseded on 2026-11-15:** the owner installed 3.10.1, so 3.6.0 can no longer start the stick by kexec, and on 3.10.1 LoadPin refuses kexec. The stick now starts at power-on through MPFree's boot hook ([starting MPFree from the stick](stick-autoboot.md)), and the runbook for the installed 3.10.1 is the [qualification round](firmware-3.10.1-qualification.md). This page is kept as the record of the test before the install; its blocks are for a unit still on 3.6.0.
+
 **Status:** runbook, 2026-11-13. Phases 1 and 2 are done (results below): the firmware matches, developer mode's files have been read, and 3.10.1 runs the pad player from the stick with the eMMC untouched. Phase 3's tools are ready and its blocks are below; running it waits for the owner's go, since it is the first time Akai's app runs on the test build. **Scope:** the reference MPC One (Gen 1) on 3.6.0 with MOD-001 and MOD-002.
 
 The owner wants to move MPFree's way in from our own persistent SSH ([MOD-001/002](archive/2026-11/device-modifications.md)) to the developer mode Akai added in 3.10.1 ([compatibility page](firmware-3.10.1-compatibility.md)), and to check first that 3.10.1 does everything we need. Installing it is the one step that cannot be undone safely: it rewrites the rootfs, may rewrite the bootloader partitions, and a downgrade to 3.6.0 has not been checked. So 3.10.1 is tried the way 3.10.0 was ([kexec test boot](archive/2026-11/kexec-test-boot.md)): 3.6.0 starts it by kexec, its root filesystem comes from the USB stick, and the eMMC and SD card are hidden from it. A power-cycle brings 3.6.0 back.

@@ -1,17 +1,17 @@
-# mpfree on the kexec test build
+# mpfree on the test build
 
 The app is called mpfree. Phase 1 called it Hello MPC, and its crate was `mpfree-hello` until 2026-11-11; it is now [`rust/mpfree-app`](../../../rust/mpfree-app), and the program is `mpfree`.
 
 **Status (2026-11-14):** rounds 1 to 7 ran on the MPC on 10 and 11 Nov. Round 3 made every Phase 1 part work on the test build (the screen, touch, pads, Q-Links, wheel, buttons, pad lights and sound from the pads; [results](#round-3-results-2026-11-10)), and round 4 ran [the pad player](#round-4-the-pad-player-and-mpfrees-first-gui), MPFree's first GUI: 323 hits in 120 s with 0 underruns and 8.7 ms from pad to sound ([results](#round-4-results-2026-11-10)). Since then the owner has run parts of the app check on `main` in the live tests of 12 and 13 Nov; [live test 3](#live-test-3-2026-11-13-main-c556b49) is the latest. Rounds 8 to 10 and what has merged since are built and tested on the workstation, and most of it has not run on the MPC yet ([what they add](#rounds-8-to-10-the-app-as-it-stands), [since live test 3](#merged-since-live-test-3)).
 
-Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the screen, the touchscreen, the pads and the audio output. It runs on the [kexec test build](../hardware/archive/2026-11/kexec-test-boot.md): Akai's 3.10.0 system started from the USB stick, with Akai's app blocked and the eMMC and SD card hidden from it. A power-cycle brings back stock 3.6.0.
+Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the screen, the touchscreen, the pads and the audio output. It runs on the test build: an Akai system on the USB stick, with Akai's app blocked and the eMMC and SD card hidden from it. Rounds 1 to 7 and the live tests ran on the [kexec test build](../hardware/archive/2026-11/kexec-test-boot.md), Akai's 3.10.0 system started from stock 3.6.0 by kexec. Since 2026-11-15 the MPC runs Akai's 3.10.1 installed, and the test build is the stick's own 3.10.1 system: with MPFree's boot hook installed, switching the MPC on with the stick in soft-reboots into it ([starting MPFree from the stick](../hardware/stick-autoboot.md)). Switching on without the stick brings back Akai's system.
 
 ## What runs, and what it changes
 
 The program is `mpfree` (crate [`mpfree-app`](../../../rust/mpfree-app/src/main.rs)), a static ARM binary. `collect-over-ssh.sh --app` runs [`host_app_mpc.py`](../../../tools/mpc-one/host_app_mpc.py), which:
 
 1. checks the program on the workstation (a static ARM EABI5 hard-float executable);
-2. connects **only to the test build**: it uses the test build's own SSH host key, so stock 3.6.0 is refused before anything runs. On the test build it checks, read-only, the release, that no MMC device exists, that kexec is off, that `/` is read-only, that `/run` allows programs and has room, and that Akai's app is not running. It also lists which programs hold the sound, MIDI, touch and screen devices;
+2. connects **only to the test build**: it uses the test build's own SSH host key, so Akai's system is refused before anything runs. On the test build it checks, read-only, the release, whether the boot hook started it, that no MMC device exists, that kexec is off, that `/` is read-only, that `/run` allows programs and has room, and that Akai's app is not running. It also lists which programs hold the sound, MIDI, touch and screen devices;
 3. copies the program to `/run/mpfree-app` (RAM) and checks its hash there. If the drums or play step is chosen, it copies the drum kits there too and checks their hash. When the only steps are `app` and `line`, nothing is copied;
 4. runs one step at a time. Each step starts only when you press Enter. `s` skips a step and `q` stops. `MPFREE_APP_STEPS` picks the steps by name, comma-separated (default `inventory,screen,touch,pads,click`); they always run in the order of the table. `MPFREE_APP_PHASES` picks the app step's phases by number, with ranges (`9-11,16-19`): the others are skipped without a prompt, and the start-up check and the summary still read the whole session. The app step may run up to three hours;
 5. after the lights, drums, setup and play steps, checks read-only that the controller still has its normal USB id, `09e8:0046`, and stops if it does not.
@@ -65,7 +65,7 @@ cargo build --manifest-path rust/Cargo.toml --release --locked \
   --target armv7-unknown-linux-gnueabihf -p mpfree-app
 ```
 
-Then, with the test build running (`--kexec-boot`, see [the kexec test boot](../hardware/archive/2026-11/kexec-test-boot.md)):
+Then start the test build. On the installed 3.10.1, build and write the stick and install the boot hook once (blocks 4.1 to 4.3 of [starting MPFree from the stick](../hardware/stick-autoboot.md#blocks-for-the-owner), or Q0 to Q7b of the [qualification round](../hardware/firmware-3.10.1-qualification.md)). Then switch the MPC off, wait 10 s, and switch it on with the stick in: MPFree's pad player comes up instead of Akai's app. (On a unit still on 3.6.0, `--kexec-boot` from [the kexec test boot](../hardware/archive/2026-11/kexec-test-boot.md) starts it.) With the test build running:
 
 ```bash
 MPFREE_ACCEPT_APP=YES bash tools/mpc-one/collect-over-ssh.sh --app
@@ -80,7 +80,7 @@ MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=screen,play bash tools/mpc-one/collect-ov
 
 The host tool takes the newest `~/mpfree-work/factory-kit-*/kits.bin`, or the file named by `MPFREE_APP_KIT`. Without one it leaves the drums and play steps out. A round 3 `kit.bin` is not used.
 
-Wrap every command in `python3 tools/mpc-one/results.py run NAME -- ...` so the output lands in the round's results folder. Afterwards: switch the MPC off, take out the stick, wait 10 s, switch it on, and run the boot-map survey to confirm nothing on the eMMC changed.
+Wrap every command in `python3 tools/mpc-one/results.py run NAME -- ...` so the output lands in the round's results folder. Afterwards: switch the MPC off, take out the stick, wait 10 s, switch it on, and run the boot-map survey to confirm nothing on the eMMC changed. The stick must come out: with the hook installed, a power-on with it in starts MPFree again.
 
 `mpfree --preview DIR` draws the screens with sample data into new PNG files in `DIR` (`console`, `loading`, `loading-failed`, `play`, `debug`, `syslog`, `prefs`, `options` and `guide`, each `.png`) on the workstation, with no devices; CI runs it for ARM under qemu. `--font`, `--bold-font` and `--mono-font FILE` replace the built-in fonts with any TTF or OTF file, on the workstation or the MPC.
 

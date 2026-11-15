@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""mpfree-bench on the kexec test build: what every MPFree engine costs on the MPC One. RAM ONLY on the MPC.
+"""mpfree-bench on the test build: what every MPFree engine costs on the MPC One. RAM ONLY on the MPC.
 
-Run it after `collect-over-ssh.sh --kexec-boot` has started the test build
-from the USB stick. Like host_app_mpc.py, it talks only to the test build:
+Run it while the test build runs from the USB stick (started at power-on by
+the boot hook on the installed 3.10.1, or by `collect-over-ssh.sh --kexec-boot`
+on 3.6.0). Like host_app_mpc.py, it talks only to the test build:
 it uses the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so Akai's
 system (a different host key) is refused before anything runs. Each step after
 the first waits for you to press Enter:
@@ -156,8 +157,7 @@ def main(argv):
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
-        raise Stop("the test build did not answer. Start it first with the --kexec-boot block; "
-                   "on Akai's system this tool runs nothing")
+        raise Stop(app.NOT_RUNNING)
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build is not ready; nothing was changed on it")
 

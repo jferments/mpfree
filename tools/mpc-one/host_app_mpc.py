@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""mpfree, the app, on the kexec test build. RAM ONLY on the MPC.
+"""mpfree, the app, on the test build: the USB stick's own system. RAM ONLY on the MPC.
 
-Run it through `collect-over-ssh.sh --app`, after `--kexec-boot` has started
-the test build from the USB stick. It talks only to the test build: it uses
+Run it through `collect-over-ssh.sh --app` while the test build runs. On the
+installed MPC OS 3.10.1 the boot hook starts it: with the hook installed
+(`--hook-install`), switch the MPC on with the stick in, and the hook
+soft-reboots into the stick's system on Akai's kernel
+(docs/dev/hardware/stick-autoboot.md). On 3.6.0, `--kexec-boot` starts it.
+It talks only to the test build: it uses
 the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so Akai's system (a
 different host key) is refused before anything runs. Step by step, each
 started by you pressing Enter:
@@ -11,7 +15,8 @@ started by you pressing Enter:
      (rust/target/armv7-unknown-linux-gnueabihf/release/mpfree) is a
      static ARM EABI5 hard-float executable, and finds the test build's folder.
   2. Test build, read-only: checks it is the test build (release, no MMC
-     device, kexec off, / read-only), that /run has room and allows programs,
+     device, kexec off, / read-only; it also says whether the boot hook
+     started it), that /run has room and allows programs,
      that Akai's app is not running, and lists who holds the sound, MIDI,
      touch and screen devices.
   3. Test build RAM: copies the program to /run/mpfree-app and checks its
@@ -124,6 +129,10 @@ PHASES = {
 }
 
 Stop = kexec.Stop
+# What to do when port 2222 does not answer (the other tools on the test build reuse it).
+NOT_RUNNING = ("the test build did not answer on port 2222. Start it first: with the boot hook installed "
+               "(--hook-install), switch the MPC off, wait 10 s and switch it on with the stick in (on 3.6.0, "
+               "the --kexec-boot block). On Akai's system this tool runs nothing")
 
 
 def arm_static_problem(data):
@@ -153,6 +162,11 @@ bad() { printf 'PROBLEM: %s\n' "$*"; fail=1; }
 rel=$(cat "$R/proc/sys/kernel/osrelease")
 say "release: $rel"
 [ "$rel" = '@@NEW@@' ] || bad "running $rel, not the test build's @@NEW@@"
+if [ -e "$R/run/mpfree-hook/soft-reboot" ]; then
+  say "started by: the boot hook's soft-reboot (asked at $(cat "$R/run/mpfree-hook/soft-reboot") s after power-on)"
+else
+  say "started by: no boot hook marker (kexec, or a direct boot)"
+fi
 if ls "$R/sys/block" | grep -q '^mmcblk'; then bad "an MMC block device exists"; else say "no MMC block device"; fi
 v=$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)
 say "kexec_load_disabled: $v"
@@ -1073,8 +1087,7 @@ def main(argv):
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
-        raise Stop("the test build did not answer. Start it first with the --kexec-boot block; "
-                   "on Akai's system this tool runs nothing")
+        raise Stop(NOT_RUNNING)
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build is not ready; nothing was changed on it")
 

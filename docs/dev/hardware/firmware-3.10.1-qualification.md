@@ -1,8 +1,8 @@
 # Qualifying main on the installed MPC OS 3.10.1
 
-**Status:** runbook, 2026-11-15. Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One (Gen 1). The owner installed MPC OS 3.10.1 on it with Akai's updater on 2026-11-15 and switched developer mode on. Before that it ran 3.6.0 with [MOD-001 and MOD-002](archive/2026-11/device-modifications.md).
+**Status:** runbook, 2026-11-15, revised the same day for the boot hook ([#370](stick-autoboot.md)). Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One (Gen 1). The owner installed MPC OS 3.10.1 on it with Akai's updater on 2026-11-15 and switched developer mode on. Before that it ran 3.6.0 with [MOD-001 and MOD-002](archive/2026-11/device-modifications.md).
 
-The owner wants to know that main still does everything MPFree needs on the installed 3.10.1: log in, survey, back up, boot the test build from the USB stick by kexec, run the pad player on it, and come back. The [stick test](firmware-3.10.1-stick-test.md) answered most of it before the install, with 3.6.0 doing the jump. This round does the same from the installed 3.10.1, in one sitting, with every step's undo below.
+The owner wants to know that main still does everything MPFree needs on the installed 3.10.1: log in, survey, back up, start MPFree from the USB stick at power-on with the boot hook (the soft-boot USB), run the pad player on it, and come back. The [stick test](firmware-3.10.1-stick-test.md) answered most of it before the install, with 3.6.0 doing a kexec jump, and the [boot hook's runs](stick-autoboot.md#second-power-on-2026-11-15-zip-092220z-mpfree-started) showed the power-on start once. This round does all of it from main on the installed 3.10.1, in one sitting, with every step's undo below.
 
 ## What the update changed for the tools
 
@@ -12,10 +12,12 @@ The owner wants to know that main still does everything MPFree needs on the inst
 - **New modes**, all in [survey tools](../guides/survey-tools.md):
     - `--devmode-trust`, `--devmode-status`, `--devmode-lock` and `--devmode-unlock` ([`host_devmode_login.py`](../../../tools/mpc-one/host_devmode_login.py)).
     - `--system-survey` ([`read-only-system-310.sh`](../../../tools/mpc-one/read-only-system-310.sh)).
-- **The kexec test boot from an installed 3.10.1.**
-    - The running kernel, `6.18.44-az01-2026-08-10-rt6`, is the one the test build boots. The stick builder accepts that: one `boot-files` folder serves both.
-    - The boot step no longer requires 3.6.0's release on the MPC: it checks the release the stick was built against.
-    - The jump uses the `kexec_load` system call (`kexec --load --kexec-syscall`), which takes the kernel from memory. 3.10.1's LoadPin pins files the kernel reads itself, such as `kexec_file_load`'s. That is our reading of the kernel; the round shows whether it holds.
+- **MPFree starts from the stick by the boot hook, not by kexec.**
+    - 3.10.1's LoadPin refuses the kexec jump (`kexec-image old-api-denied`, [the preflight of 2026-11-15](stick-autoboot.md#the-hook-step-3-the-kexec-version-replaced)), so `--kexec-boot` stops at its checks there and loads nothing.
+    - Instead, `--hook-install` writes MPFree's boot hook to `/data`: three small files. At each power-on with the stick in, the hook checks the stick and soft-reboots into the stick's own system on Akai's running kernel, at about 6 s, before Akai's app starts. The stick's system switches the eMMC and SD card off before anything mounts. Without the stick, Akai's system starts as usual. How it works is in [starting MPFree from the stick](stick-autoboot.md#the-soft-reboot-hook-step-4).
+    - The hook was installed on this MPC in the boot-hook runs of 2026-11-15, and Q3 shows whether it still is. Q7b installs main's version either way.
+    - **So a power-on with the stick in starts MPFree, not Akai's system.** Every block that needs Akai's system runs with the stick out of the MPC, until Q7b.
+    - The stick's system is built for the running kernel, `6.18.44-az01-2026-08-10-rt6`: the builder takes the release Q5 records, and the hook refuses a stick built for another release.
 - **The backup's baseline is still 3.6.0's**, the only one recorded. The update rewrote `mmcblk0p6` (the root filesystem), so the backup is expected to end with a `BASELINE MISMATCH` for p6 and exit code 3. Any other partition in that list means stop. After this round, a 3.10.1 baseline is made from its boot map and backup.
 
 ## What this round answers
@@ -25,11 +27,12 @@ The owner wants to know that main still does everything MPFree needs on the inst
 | Does developer mode answer as the image says: port 22, root, no key, no password? | Q1 |
 | Does Akai's lock-down to a key work on the installed system? | Q2 |
 | Which ports are open with developer mode on (Akai's web server too), and is Wi-Fi on? | Q3 |
-| Is kexec allowed on the installed 3.10.1 (`/usr/sbin/kexec`, `kexec_load_disabled`, lockdown)? | Q3, then the checks in Q7b |
 | Did the update change any boot partition besides the root filesystem? | Q4 and the boot maps in Q7a and Q10 |
 | Do developer mode, the lock and the SSH host key survive a restart? | Q7a, compared with Q3 |
-| Does the jump from the installed 3.10.1 work, and does the hardware come up in the test build after it (Ethernet, screen, pads, sound)? | Q7b, Q8 |
-| Does the MPC come back to 3.10.1 with the eMMC unchanged? | Q10 |
+| Does main's boot hook install, and does it accept the stick main builds? | Q7b |
+| Does a power-on with the stick in start MPFree with no tap, with the eMMC and SD card switched off before anything reads them? | Q7c and the stick logs |
+| Does the stick's system answer on port 2222 after the soft-reboot, and does the hardware work in it (Ethernet, screen, touch, pads, sound, partition 4)? | Q8 |
+| Does the MPC come back to 3.10.1 with the eMMC's boot areas unchanged? | Q10 |
 
 ## You need
 
@@ -37,6 +40,8 @@ The owner wants to know that main still does everything MPFree needs on the inst
 - Developer mode on: Menu > Preferences > Enhancements, switch on the developer panel; then hold SHIFT and press MENU, and choose Developer.
 - About 8 GiB free in `~/mpfree-backups` for Q4, and a second disk for the copy the backup tool asks you to make.
 - The USB stick from earlier rounds. Its partition 4 keeps the pad player's settings.
+- **The stick out of the MPC at the start.** With the boot hook on the MPC, switching on with the stick in starts MPFree instead of Akai's system. The stick goes into the MPC in Q7b, while Akai's system runs.
+- An SD card in the MPC's slot can stay. The stick's system switches the SD card off with the eMMC, and the stick logs show that nothing read it first.
 
 Every block runs in a terminal on the workstation, from the clone at `/home/jesse/code/mpfree-hardware-survey`. Each step's output lands in one results folder, and Q10 packs it into one zip.
 
@@ -45,7 +50,7 @@ Every block runs in a terminal on the workstation, from the clone at `/home/jess
 **Block Q0: update, check, build** (workstation only):
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C qual-3101 origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py status && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_login.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_emmc_backup.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py && python3 tools/mpc-one/tests/test_results.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app && cd rust/target/armv7-unknown-linux-gnueabihf/release && sha256sum mpfree-screen-log mpfree-startup mpfree'
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C qual-3101 origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py status && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_login.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_emmc_backup.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py && python3 tools/mpc-one/tests/test_results.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app && cd rust/target/armv7-unknown-linux-gnueabihf/release && sha256sum mpfree-screen-log mpfree-startup mpfree'
 ```
 
 It ends with three hashes. `results.py status` lists what is already in the results folder: if an earlier round left files there, run `python3 tools/mpc-one/results.py zip` first, so this round gets its own zip.
@@ -83,7 +88,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 **Block Q3: what the installed 3.10.1 looks like** (read-only):
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run devmode-status -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run system-survey -- bash tools/mpc-one/collect-over-ssh.sh --system-survey
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run devmode-status -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run system-survey -- bash tools/mpc-one/collect-over-ssh.sh --system-survey && python3 tools/mpc-one/results.py run hook-report-before -- bash tools/mpc-one/collect-over-ssh.sh --hook-report
 ```
 
 - **The status** shows where `/` and `/data` come from and the `/etc` overlay. It shows the SSH server's settings as the server reads them, the lock, the kind of root's password field (never its value) and the open TCP ports. It also prints the host key's fingerprint and date, and how long the MPC has been on: Q7a prints them again after a restart. It ends `LOCKED: only your key gets in`. Root's password field still shows `empty`, because that comes from Akai's overlay. The server refuses it after the lock: its settings show `permitemptypasswords no` and `authenticationmethods any`.
@@ -93,6 +98,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
     - network interfaces and open ports (Wi-Fi shows here);
     - sound and MIDI (cards, sequencer clients, `aconnect -l`, `amidi -l`), input devices, drives and the names at their top level;
     - screen and GPU devices, controller scripts, and Akai's app's thread count.
+- **The hook report** shows whether the boot hook from the 2026-11-15 runs is still on the MPC: its three files and their hashes, and what it did at this power-on. With no stick in, expect `MPFree's stick in now: no` and nothing staged at `/run/nextroot`.
 
 **Block Q4: a fresh full eMMC backup** (read-only on the MPC; about 7.3 GiB to `~/mpfree-backups`, about 4 minutes; keep the MPC idle):
 
@@ -121,7 +127,10 @@ The report compares the running tree with Akai's board files in `~/mpfree-work/b
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run build-stick -- python3 tools/mpc-one/offline-kexec-stick.py --splash rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-startup --app rust/target/armv7-unknown-linux-gnueabihf/release/mpfree
 ```
 
-It takes the newest unpacked image (3.10.1) and the device tree from Q5. Its report must say `running release: 6.18.44-az01-2026-08-10-rt6 (recorded by the preflight; the same kernel as the test build's)`.
+It takes the newest unpacked image (3.10.1) and the device tree from Q5. Its report must say:
+- `running release: 6.18.44-az01-2026-08-10-rt6 (recorded by the preflight; the same kernel as the test build's)`;
+- `for MPFree's soft-reboot hook: /boot/mpfree-softreboot on partition 1 (protocol mpfree-softreboot-1, kernel release 6.18.44-az01-2026-08-10-rt6)`, then `modules the hook loads first: none`;
+- under `units Akai's udev rules start when a device appears`, `no-reserved-blocks@.service` as masked. Any unit there marked `NOT masked` that can touch a disk means stop and send the results.
 
 **Block Q6-write: write the stick** (**erases the stick's partitions 1 to 3**, keeps partition 4; you type `WRITE`; the stick in the workstation):
 
@@ -129,12 +138,7 @@ It takes the newest unpacked image (3.10.1) and the device tree from Q5. Its rep
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run write-stick -- python3 tools/mpc-one/write-test-stick.py
 ```
 
-**On the MPC, after Q6-write:** switch the MPC off and put the stick into its USB-A port. Switch it on and wait for Akai's app.
-
-- Answer No or Cancel to anything that offers to update, format or erase, and note what it asked.
-- If developer mode is not on any more, note that, and switch it on again (SHIFT + MENU, Developer).
-
-**Block Q7a: after the restart** (read-only):
+**Block Q7a: restart without the stick** (read-only). Leave the stick out of the MPC. Switch the MPC off, wait 10 s, and switch it on. Wait for Akai's app. If developer mode is not on any more, note that, and switch it on again (SHIFT + MENU, Developer). Then:
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run status-after-restart -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run boot-map-before -- bash tools/mpc-one/collect-over-ssh.sh --boot-map
@@ -144,17 +148,36 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 - **If it stops with `did not show the host key recorded`,** the MPC made a new host key at the restart. That is a finding, and nothing was changed. Run Q1 again: it prints the new fingerprint and the exact `ssh-keygen -R` line that removes the old one. Compare the new fingerprint on the MPC's screen, as in Q1, then run the printed line and Q1 once more, then Q7a.
 - **If the logins say `nothing listens on that port`,** developer mode is off. Switch it on and run Q7a again.
 
-**Block Q7b: start the test build** (**state-changing, RAM only**; you type `BOOT 3.10`):
+**Block Q7b: install main's boot hook, with the stick in the MPC** (**state-changing, on `/data`**: three small files; then a read-only check of the stick). First put the stick into the MPC's USB-A port while Akai's app runs. Answer No or Cancel to anything that offers to update, format or erase, and note what it asked. Then:
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run kexec-boot -- env MPFREE_ACCEPT_KEXEC_BOOT=YES bash tools/mpc-one/collect-over-ssh.sh --kexec-boot
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-install -- env MPFREE_ACCEPT_HOOK=YES bash tools/mpc-one/collect-over-ssh.sh --hook-install
 ```
 
-- **Before it asks,** it checks Akai's system, read-only: the release the stick was built against, kexec allowed, lockdown, the stick plugged in and on USB, at least 64 MiB free in `/run`, and no unit or shutdown hook that reacts to kexec other than systemd's own. It records the eMMC write counters.
-- **Then** it copies the kernel and device tree to `/run` and loads them (`kexec --load`), and asks you to type `BOOT 3.10`. Anything else unloads them and stops.
-- **After `BOOT 3.10`,** Akai's system shuts down cleanly and jumps.
-- **Passes when** it ends `RESULT: the test build is running from the stick, and it cannot see the eMMC or SD card.` The pad player starts on the screen after the startup screen.
-- **If the jump fails,** systemd restarts Akai's system normally, and the step says the MPC is on Akai's system again. If nothing answers, the step says so: switch off, take out the stick, wait 10 s, switch on.
+- **What it changes:** it writes `/data/mpfree-hook/hook.sh`, the udev rule `/data/system/etc/overlay/udev/rules.d/99-mpfree-hook.rules` and the modprobe line `/data/system/etc/overlay/modprobe.d/99-mpfree-hook.conf`, in Akai's writable `/etc` layer. It writes nothing else. With the 2026-11-15 version still there, it says `an earlier version of the hook is in place; it is replaced`; if main's version is there already, it says `already in place, unchanged` and writes nothing.
+- **Then it checks the stick, read-only:** it mounts partition 1 read-only, checks it as the hook will at power-on, and unmounts it. It ends `CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it`.
+- **Passes when** it ends `RESULT: the hook is installed, and the stick checks out.`
+- **If it says `MPFree's stick is not in the MPC`,** put the stick in, wait for Akai's app to settle, and run Q7b again. It writes nothing more.
+- **If the check stops,** it ends `RESULT: the hook is installed, but the check stopped (above).` Take the stick out before you next switch the MPC on (without it the hook does nothing), skip to Q10 and send the zip.
+- **If it is cut off halfway:** each file is written under a temporary name and renamed, the script first, so nothing points at a half-written script. Run it again to finish.
+- **Undo:** block Q7b-undo below.
+
+**Step Q7c: the power-on into MPFree** (**state-changing**: at about 6 s Akai's programs stop and MPFree's system runs from the stick on Akai's kernel; the eMMC and SD card are switched off in software and nothing is written to them; MPFree writes only RAM and the stick). Leave the stick in. Switch the MPC off, wait 10 s, and switch it on.
+
+- **Expected:** the MPC logo, then MPFree's startup screen and the pad player, about 16 s after power-on, with Akai's app never drawing. Play a few pads. On 2026-11-15 this took no tap.
+- **If Akai's app comes up instead, leave the stick in and the MPC on,** and run block Q7c-report first. The hook's notes are in RAM and last only until the power-off. Then go to Q10.
+- **If the MPC switches itself off,** the stick's switch-off service refused to go on: the eMMC or SD card was still in use, or would not switch off. It saved its notes to the stick. Go to Q10.
+- **If the screen stays on the logo for more than a minute,** hold the power button to switch off, and go to Q10.
+- Don't touch the MPC's power while it shows an update screen.
+- **Undo, always:** switch off, take the stick out, wait 10 s, switch on. Akai's system starts as before.
+
+**Block Q7c-report: only if Akai's app came up in Q7c** (read-only; the stick still in):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-report-stick-in -- bash tools/mpc-one/collect-over-ssh.sh --hook-report
+```
+
+It shows what the hook decided at this power-on and why it stopped.
 
 **Block Q8: the pad player on the test build** (read-only: the check starts, copies and stops nothing; each phase starts and ends with Enter):
 
@@ -171,9 +194,13 @@ Six of the app check's nineteen phases ([the app guide](../guides/mpfree-app.md#
 - 16: Prefs, System info and saving.
 - 19: menus, the console and STOP.
 
-They show the screen, touch, pads, buttons, sound and partition 4 working after a jump from the installed 3.10.1. The check also prints when the pad player started playing, and the GPU facts it always reads.
+They show the screen, touch, pads, buttons, sound and partition 4 working after the soft-reboot from the installed 3.10.1. The check also prints when the pad player started playing, and the GPU facts it always reads.
 
-**Q9 (optional): GPU page flips in the same boot.** The test build is running from Q7b, and Q8 is done. Nothing else in this round depends on Q9, so skip to Q10 if you'd rather not. These are the GPU thread's page-flip blocks, rehearsed by that thread word for word at this round's commit. Inside the round, G0 fetches nothing, so the GPU blocks use Q0's commit even if main moves during the round.
+- **This is the first login on port 2222 after a soft-reboot.** Before it reads anything, the check prints `started by: the boot hook's soft-reboot (asked at … s after power-on)`, `no MMC block device`, `kexec_load_disabled: 1` and `/: read-only`, and ends `CHECKS-OK`. The release is Akai's own kernel now, so the stick's host key and the missing MMC devices are what tell the stick's system from Akai's.
+- **Our reading, which the check shows:** after the soft-reboot `/` stays the stick's read-only partition 1, `/run` is Akai's tmpfs carried over and allows programs, and the stick's own sysctl file turns kexec off. If any of these is wrong, the check prints a `PROBLEM` line and stops before it reads anything else.
+- **If it says `the test build did not answer on port 2222`,** note what the screen shows. The pad player can still be played by hand. Go to Q10: the stick logs show the network state.
+
+**Q9 (optional): GPU page flips in the same boot.** The test build is running from Q7c, and Q8 is done. Nothing else in this round depends on Q9, so skip to Q10 if you'd rather not. These are the GPU thread's page-flip blocks, rehearsed by that thread word for word at this round's commit. Inside the round, G0 fetches nothing, so the GPU blocks use Q0's commit even if main moves during the round.
 
 **Block G0: check the clone** (workstation only, read-only):
 
@@ -245,11 +272,13 @@ RESULT: the GPU benchmark ran (numbers above).
 
 **The numbers this is for** (live test 3, 13 Nov): the GPU's way to the panel took 63 ms a frame and software's 32 ms. Step 7's GPU `whole p50` is the number the page flips are meant to bring below software's.
 
-**Block Q10: back to 3.10.1.** Switch the MPC off, take out the stick, wait 10 s and switch it on. Wait for Akai's app, and switch developer mode on again if it is off. Then (read-only):
+**Block Q10: back to 3.10.1.** Switch the MPC off, take out the stick, wait 10 s and switch it on. The stick must be out: with the hook installed, a power-on with the stick in starts MPFree again. Wait for Akai's app, and switch developer mode on again if it is off. Then (read-only):
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run status-after -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run boot-map-after -- bash tools/mpc-one/collect-over-ssh.sh --boot-map
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run status-after -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run hook-report-after -- bash tools/mpc-one/collect-over-ssh.sh --hook-report && python3 tools/mpc-one/results.py run boot-map-after -- bash tools/mpc-one/collect-over-ssh.sh --boot-map
 ```
+
+The hook report should show main's hook files, with the hashes Q7b wrote, and `MPFree's stick in now: no`.
 
 Then, with the stick in the workstation (read-only on the stick):
 
@@ -263,10 +292,13 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 
 - Q1 records the host key; Q2 ends `LOCKED`; Q3, Q7a and Q10 end `LOCKED: only your key gets in`.
 - Q4's backup is verified, and its baseline mismatch names only `mmcblk0p6`.
-- Q7b ends with its `RESULT` line for a running test build, with no `PROBLEM` line.
-- Q8's phases work as in the stick test's phase 2.
+- Q6's report has the soft-reboot line, and no unit Akai's udev rules start is `NOT masked` if it can touch a disk.
+- Q7b ends `RESULT: the hook is installed, and the stick checks out.`
+- In Q7c the MPC went from the logo to MPFree's pad player with no tap, and Akai's app never drew.
+- Q8 ends its checks with `started by: the boot hook's soft-reboot` and `CHECKS-OK`, and its phases work as in the stick test's phase 2.
+- The stick's `dmesg.txt` shows `mpfree-internal-off: switched off ff0f0000...` before any `sd` or `mmc` mount. Nothing reads the eMMC or SD card before `mpfree-internal-off: done`: no `no-reserved-blocks` unit and no `Buffer I/O error` on `mmcblk`.
 - The boot maps from Q7a and Q10 have the same boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1 since the power-on in Q10.
-- The stick logs show no failed unit we didn't expect and no `mpfree-test: blocked` line we can't explain.
+- The stick logs show no failed unit we didn't expect and no `mpfree-test: blocked` line we can't explain. Akai's `az0x-loadpin-trustpoints` fails after the soft-reboot, as on 2026-11-15; that failure is harmless.
 
 ## Undo, block by block
 
@@ -278,7 +310,8 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 | Q4 | A new folder under `~/mpfree-backups` | Keep it: it is the return point for 3.10.1 |
 | Q5 | A private folder under `~/mpfree-work` (it holds the serial number and MAC) | Delete it |
 | Q6-write | The stick's partitions 1 to 3 | Rebuild and write an earlier stick; partition 4 stays |
-| Q7b, Q8, Q9 | RAM on the MPC | Switch off, take out the stick, wait 10 s, switch on |
+| Q7b | The boot hook's three files on `/data`, in place of the 2026-11-15 version | The hook stays installed after the round: it is how MPFree starts. To take it off the MPC, block Q7b-undo |
+| Q7c, Q8, Q9 | RAM on the MPC; the stick's log partition and partition 4 | Switch off, take out the stick, wait 10 s, switch on |
 
 **Block Q2-undo: unlock** (**state-changing, on `/data`**; you type `UNLOCK`). It logs in with your key, puts both files back from `/data/ssh/mpfree-lock-backup`, removes that folder, reloads the server, and checks that the login with no key works again, as Akai ships it:
 
@@ -296,10 +329,22 @@ systemctl reload sshd.service
 
 When the backup folder holds a file named `absent` instead of `authorized_keys`, there was none before the lock: the second line is then `rm /data/ssh/authorized_keys`. Akai's files say that switching developer mode off deletes `/data/ssh` and `/data/root` and restarts the MPC, which removes the lock too. That has not been seen on this unit.
 
+**Block Q7b-undo: remove the boot hook** (**state-changing, on `/data`**; Akai's system, the stick out). It deletes the hook's three files, and the folders its installs made, and nothing else. From the next power-on the MPC starts Akai's system, stick in or not:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-remove -- bash tools/mpc-one/collect-over-ssh.sh --hook-remove
+```
+
+It ends `RESULT: the hook is gone.` By hand, in the developer panel's terminal:
+
+```sh
+rm /data/system/etc/overlay/modprobe.d/99-mpfree-hook.conf /data/system/etc/overlay/udev/rules.d/99-mpfree-hook.rules
+rm -r /data/mpfree-hook
+```
+
 ## What this round cannot show
 
-- Whether developer mode, the lock and the host key survive a long power-off or Akai's next update.
-- Anything about installing MPFree to start at power-on: that is a lasting change to Akai's files with its own gate ([stick test, after the test](firmware-3.10.1-stick-test.md#after-the-test)).
+- Whether developer mode, the lock, the host key and the boot hook survive a long power-off or Akai's next update. After an update, the stick must be rebuilt from a fresh Q5: the hook refuses a stick built for another kernel, and Akai's system starts.
 
 ## Rehearsal (2026-11-15, commit 8c5e2ab4)
 
