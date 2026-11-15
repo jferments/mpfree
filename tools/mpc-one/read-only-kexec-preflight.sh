@@ -112,7 +112,15 @@ done
 
 section 'LoadPin'
 if [ -d /sys/kernel/security/loadpin ]; then ls /sys/kernel/security/loadpin; else printf 'no /sys/kernel/security/loadpin\n'; fi
+# The kernel's sysctl is kernel.loadpin.enforce (security/loadpin/loadpin.c). With enforce=1 LoadPin refuses
+# every raw kexec_load ("kexec-image old-api-denied"), whatever IPE says, and on a read-only (dm-verity)
+# pinned root the sysctl cannot be lowered at runtime; only loadpin.enforce=0 or loadpin.exclude=kexec-image
+# on the kernel command line lift it. kexec_file_load is allowed only from the pinned or a trusted verity
+# filesystem. The older name (enabled) is read too, in case a vendor kernel used it.
+show /proc/sys/kernel/loadpin/enforce
 show /proc/sys/kernel/loadpin/enabled
+printf 'command-line words for LoadPin, IPE, lockdown and the LSM list: %s\n' \
+  "$(tr ' ' '\n' < /proc/cmdline 2>/dev/null | grep -E '^(loadpin|ipe|lockdown|lsm|security)[.=]' | tr '\n' ' ')"
 
 # What can refuse loading a kernel at runtime (so the owner knows before any install whether an unsigned
 # kexec will be accepted). A kexec_load that returns "Operation not permitted" with kexec_load_disabled=0
@@ -141,7 +149,17 @@ if [ -d /sys/kernel/security/ipe ]; then
 else
   printf 'no /sys/kernel/security/ipe\n'
 fi
-printf 'kernel log, kexec/lockdown/ipe lines:\n'
-dmesg 2>/dev/null | grep -iE 'ipe:|lockdown|kexec' | tail -n 20 || printf '(none)\n'
+printf 'kernel log, kexec/lockdown/ipe/loadpin lines:\n'
+dmesg 2>/dev/null | grep -iE 'ipe:|lockdown|kexec|loadpin' | tail -n 30 || printf '(none)\n'
+
+# A route that loads no kernel: systemd's soft-reboot (systemd 254 and later) stops all of userspace and,
+# when /run/nextroot holds an OS tree, starts that tree's init on the same running kernel. Whether this
+# systemd has it, and whether /run/nextroot exists now (it should not). Asks for help text only.
+section 'Userspace restart without a new kernel (soft-reboot)'
+if systemctl --help 2>/dev/null | grep -q 'soft-reboot'; then printf 'systemctl knows soft-reboot\n'
+else printf 'systemctl does not list soft-reboot\n'; fi
+[ -e /usr/lib/systemd/system/soft-reboot.target ] && printf 'soft-reboot.target: present\n' || printf 'soft-reboot.target: absent\n'
+[ -e /usr/lib/systemd/system/systemd-soft-reboot.service ] && printf 'systemd-soft-reboot.service: present\n' || printf 'systemd-soft-reboot.service: absent\n'
+[ -e /run/nextroot ] && printf '/run/nextroot: exists\n' || printf '/run/nextroot: absent\n'
 
 printf '\nEND OF KEXEC PREFLIGHT\n'

@@ -89,6 +89,7 @@ case "$1" in
   --version) echo "systemd 255 (255.fake)" ;;
   show) echo "Id=kexec.target"; echo "LoadState=loaded" ;;
   is-system-running) echo "running" ;;
+  --help) echo "  soft-reboot                         Shut down and reboot userspace" ;;
   *) echo "systemctl stand-in: refusing $*" >&2; exit 99 ;;
 esac
 '''
@@ -160,6 +161,9 @@ class KexecPreflightTests(unittest.TestCase):
         self.assertIn("--dtb=FILE", text)
         self.assertNotIn("--no-ifdown", text, "only the options a kexec boot needs are listed")
         self.assertIn("systemd 255", text)
+        self.assertIn("=== Userspace restart without a new kernel (soft-reboot) ===", text)
+        self.assertIn("systemctl knows soft-reboot", text)
+        self.assertIn("kexec/lockdown/ipe/loadpin lines", text)
         self.assertIn("=== Running device tree, compared on the workstation ===", text)
         self.assertIn("model: Akai Professional MPC One", text)
         self.assertIn("property /serial-number: only in B (17 bytes)", text)
@@ -180,7 +184,7 @@ class KexecPreflightTests(unittest.TestCase):
         self.assertEqual(sorted(c for c in calls if c.startswith("kexec: ")), ["kexec: --help", "kexec: --version"])
         for c in calls:
             if c.startswith("systemctl: "):
-                self.assertRegex(c, r"^systemctl: (--version|show |is-system-running)")
+                self.assertRegex(c, r"^systemctl: (--version|--help|show |is-system-running)")
 
     def test_without_boot_files_it_says_what_to_run(self):
         shutil.rmtree(os.path.join(self.work, "boot-files"))
@@ -211,7 +215,7 @@ class StaticTests(unittest.TestCase):
             if "kexec " in line and "kexec --" in line:
                 self.assertRegex(line, r"kexec --(version|help) ")
         for forbidden in ("kexec -l", "kexec -e", "kexec -p", "--load ", "--exec ", "systemctl kexec",
-                          "systemctl start", "systemctl stop", "mount ", "of=", "> /dev", ">/dev/mmc", "echo 1 >"):
+                          "systemctl start", "systemctl stop", "systemctl soft-reboot", "mount ", "of=", "> /dev", ">/dev/mmc", "echo 1 >"):
             self.assertNotIn(forbidden, code)
         subprocess.run(["sh", "-n", REMOTE], check=True)
 
