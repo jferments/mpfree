@@ -226,6 +226,8 @@ class BootHookTests(unittest.TestCase):
         if chain:
             files[STICK.CHAIN_FILES[0]] = STICK.CHAIN_SCRIPT
             files[STICK.CHAIN_FILES[1]] = STICK.CHAIN_UNIT
+            files[STICK.CHAIN_FILES[2]] = STICK.CHAIN_DONE_SCRIPT
+            files[STICK.CHAIN_FILES[3]] = STICK.CHAIN_DONE_UNIT
             files[STICK.KEXEC_DIR + "/kexec.dtb"] = "FAKE STICK DEVICE TREE\n"
             files[STICK.KEXEC_DIR + "/cmdline.txt"] = KCMD + "\n"
             files[STICK.KEXEC_DIR + "/SHA256SUMS"] = "0" * 64 + "  zImage\n"
@@ -239,6 +241,9 @@ class BootHookTests(unittest.TestCase):
                    os.path.join(self.stick, "etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"))
         if chain:
             os.symlink(STICK.CHAIN_FILES[1], os.path.join(self.stick, STICK.CHAIN_WANTS.lstrip("/")))
+            done = os.path.join(self.stick, STICK.CHAIN_DONE_WANTS.lstrip("/"))
+            os.makedirs(os.path.dirname(done), exist_ok=True)
+            os.symlink(STICK.CHAIN_FILES[3], done)
         self.assertTrue(os.path.isdir(os.path.join(self.stick, sr)))
 
     def write_sums(self, **override):
