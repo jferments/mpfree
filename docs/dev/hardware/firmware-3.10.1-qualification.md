@@ -30,7 +30,7 @@ The app step asks only about these ([device checks](device-checks.md); `python3 
 | `load` | Q8, S2 | Round 8: the worst case for the cores, on Shared in Q8 and on cores 3 and 2 in S2 | Supersaw and the Grains kit with 8 pads | 2 min |
 | `track-mute` | Q8 | #332: pad colours as track mutes, and PAD BANK past 16 tracks | TRACK MUTE and the pads | 3 min |
 | `wheel` | Q8 | #339 and #355: the outline and the push on the real wheel, and a Song block moved by wheel | Turn and push | 3 min |
-| `touch` | Q8 | The real panel: Touch lab, Calibrate touch, two fingers, and a drag past the 12 px lift | Follow the Touch lab, drag two clips | 6 min |
+| `touch` | Q8 | The real panel: Touch lab, Calibrate touch, two fingers, and a drag past the 12 px lift | Follow the Touch lab, drag a clip twice | 6 min |
 | `note-repeat` | Q8 | Never reached on the MPC in live test 3 | NOTE REPEAT, Latch, the Arp panel | 2 min |
 | `looper` | Q8 | Live test 3's loop that kept playing after STOP | Record 2 bars, STOP | 2 min |
 | `console` | Q8 | Button chords on the real panel, and STOP's silence | The console chord, TAP TEMPO, STOP | 1 min |
