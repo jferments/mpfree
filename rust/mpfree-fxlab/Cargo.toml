@@ -1,0 +1,10 @@
+[package]
+name = "mpfree-fxlab"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Offline measurement of MPFree's effects (and of captured reference effects): aliasing, distortion, noise, response, nulls, loudness, reverb decay and density, dynamics timing and zipper noise, as report cards"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+mpfree-fx = { path = "../mpfree-fx" }

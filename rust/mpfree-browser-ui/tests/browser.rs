@@ -5,7 +5,8 @@ use mpfree_browser_ui::sample::{fill, samples, FACTORY};
 use mpfree_browser_ui::state::{when, Key, Modal, SOURCES};
 use mpfree_browser_ui::{
     step, BrowseAction, Browser, BrowserView, Button, ExportBits, ExportChoice, ExportFormat,
-    ExportInput, ExportPhase, ExportRange, ExportSetup, Filter, Input, Pick, Sort, BROWSER,
+    ExportInput, ExportPhase, ExportRange, ExportSetup, Filter, Input, Pick, Sort, StemsBy,
+    BROWSER,
 };
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::{Fonts, SoftCanvas, Touch};
@@ -816,6 +817,8 @@ fn export_setup(arrangement: bool) -> ExportSetup {
         from_bar: 3,
         mode: "Fast, quiet".into(),
         stems: 5,
+        tracks_arrangement: (6, 3),
+        tracks_bars: (6, 3),
         folder: "Recordings / Night drive 2026-11-14 01.32".into(),
         format: ExportFormat {
             bits: ExportBits::I24,
@@ -847,8 +850,10 @@ fn export_asks_the_app_and_its_panel_takes_the_screen() {
         ExportRange::Bars(10),
         "the wheel sets the bars"
     );
-    // Ticks and a format, then Start (the push).
+    // Ticks, stems by channel and a format, then Start (the push).
     b.input(Input::Export(ExportInput::Midi));
+    assert_eq!(b.screen().export.unwrap().by, StemsBy::Track);
+    b.input(Input::Export(ExportInput::ByChannel));
     b.input(Input::Export(ExportInput::Fewer));
     b.input(Input::Export(ExportInput::Bits16));
     b.input(Input::Export(ExportInput::Rate48));
@@ -857,6 +862,7 @@ fn export_asks_the_app_and_its_panel_takes_the_screen() {
         mixdown: true,
         stems: true,
         midi: false,
+        by: StemsBy::Channel,
         range: ExportRange::Bars(9),
         format: ExportFormat {
             bits: ExportBits::I16,
@@ -944,6 +950,8 @@ fn the_export_panel_answers_taps() {
             "export/Mixdown",
             "export/Stems",
             "export/MIDI file",
+            "export/Track",
+            "export/Channel",
             "export/Arrangement",
             "export/Bars",
             "export/-",
@@ -984,6 +992,16 @@ fn the_export_panel_answers_taps() {
         matches!(acts.as_slice(), [BrowseAction::ExportStart(c)] if !c.stems && c.range == ExportRange::Arrangement),
         "{acts:?}"
     );
+    // Stems by: the row under Make, Channel its second button.
+    b.open_export(export_setup(true));
+    b.export_over("Export cancelled, and its files removed".into(), None);
+    b.push();
+    b.open_export(export_setup(true));
+    step(&mut ui, &mut b);
+    let by_y = make_y + 28 + 8 + 28;
+    tap(&mut ui, card.0 + 24 + 120 + 140 + 8 + 70, by_y);
+    step(&mut ui, &mut b);
+    assert_eq!(b.screen().export.unwrap().by, StemsBy::Channel);
     let mut c = SoftCanvas::new(1280, 800);
     ui.paint(&mut c);
 }
