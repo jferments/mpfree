@@ -402,10 +402,13 @@ class KexecStickTests(unittest.TestCase):
                 self.assertIn("File not found", self.dfs(root_img, f"stat /boot/mpfree-softreboot/{name}"))
         if chain:
             listed += ["/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service",
+                       "/etc/mpfree-test/chain-done.sh", "/etc/systemd/system/mpfree-test-chain-done.service",
                        "/boot/mpfree-kexec/kexec.dtb", "/boot/mpfree-kexec/cmdline.txt", "/boot/mpfree-kexec/SHA256SUMS"]
         else:
             for path in ("/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service",
-                         "/etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service"):
+                         "/etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service",
+                         "/etc/mpfree-test/chain-done.sh", "/etc/systemd/system/mpfree-test-chain-done.service",
+                         "/etc/systemd/system/multi-user.target.wants/mpfree-test-chain-done.service"):
                 self.assertIn("File not found", self.dfs(root_img, f"stat {path}"))
         want = ""
         for path in listed:
@@ -522,6 +525,14 @@ class KexecStickTests(unittest.TestCase):
         self.assertEqual(self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-chain.service"), mod.CHAIN_UNIT)
         self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-chain.service"',
                       self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service"))
+        self.assertEqual(self.dfs(root_img, "cat /etc/mpfree-test/chain-done.sh"), mod.CHAIN_DONE_SCRIPT)
+        self.assertEqual(self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-chain-done.service"),
+                         mod.CHAIN_DONE_UNIT)
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-chain-done.service"',
+                      self.dfs(root_img,
+                               "stat /etc/systemd/system/multi-user.target.wants/mpfree-test-chain-done.service"))
+        self.assertIn("  --chain: one try per failed power-on: chain-pending on the log partition until the stick's "
+                      "kernel has run 30 s", res.stdout)
         self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-kexec/cmdline.txt"), cmdline + "\n")
         self.assertIn("kernel.kexec_load_disabled = 1", self.dfs(root_img, "cat /etc/sysctl.d/90-mpfree-test.conf"))
         shutil.rmtree(out)
@@ -1635,7 +1646,8 @@ class ChainTests(unittest.TestCase):
         self.assertIn("could not unload the kernel loaded here (it stays in RAM until the MPC is switched off)",
                       self.notes())
 
-    def test_keeps_its_notes_on_the_sticks_log_partition(self):
+    def log_partition(self):
+        """A fake stick log partition (sda2 on USB) whose mount is a link to a folder; needs root for mknod."""
         part = os.path.join(self.root, "sys/devices/platform/ff540000.usb/usb2/2-1/host0/block/sda/sda2")
         write(os.path.join(part, "uevent"), "MAJOR=8\nMINOR=2\nDEVNAME=sda2\nDEVTYPE=partition\nPARTN=2\n"
                                             "PARTNAME=mpfree-test-log\n")
@@ -1653,20 +1665,57 @@ class ChainTests(unittest.TestCase):
         write(os.path.join(self.bin, "mount"), '#!/bin/sh\necho "mount: $*" >> "$FAKE_LOG"\n'
                                                'for d; do :; done\nrmdir "$d" && ln -s "$FAKE_DISK" "$d"\n', 0o755)
         write(os.path.join(self.bin, "umount"), '#!/bin/sh\necho "umount: $*" >> "$FAKE_LOG"\n', 0o755)
-        for tool in ("rmdir", "ln"):
+        write(os.path.join(self.bin, "umount"), '#!/bin/sh\necho "umount: $*" >> "$FAKE_LOG"\n'
+                                                'for d; do :; done\nrm "$d" && mkdir "$d"\n', 0o755)
+        for tool in ("rmdir", "ln", "rm"):
             self.link(tool)
+        return dev, disk
+
+    def test_keeps_its_notes_on_the_sticks_log_partition(self):
+        dev, disk = self.log_partition()
         res = self.run_script(FAKE_DISK=disk)
         self.assertEqual(res.returncode, 0, res.stdout)
         mnt = os.path.join(self.root, "run/mpfree-chain-log")
-        self.assertEqual(self.calls("mount") + self.calls("umount"),
-                         [f"mount: -t ext4 -o rw,nosuid,nodev,noexec,sync {dev} {mnt}", f"umount: {mnt}"])
+        mount = f"mount: -t ext4 -o rw,nosuid,nodev,noexec,sync {dev} {mnt}"
+        self.assertEqual(self.calls("mount") + self.calls("umount"), [mount, mount, f"umount: {mnt}", f"umount: {mnt}"])
         with open(self.log) as fh:
             order = [l.split(":")[0] for l in fh.read().splitlines()]
-        self.assertLess(order.index("umount"), order.index("systemctl"), "the notes are kept before the restart")
+        self.assertLess(len(order) - 1 - order[::-1].index("umount"), order.index("systemctl"),
+                        "the notes and the mark are kept before the restart")
         with open(os.path.join(disk, "boot-0123abcd-0000-4000-8000-00000000c4a1/chain.txt")) as fh:
             saved = fh.read()
         self.assertIn("restart into them (kexec.target)", saved)
         self.assertIn("fake kernel log", saved)
+        with open(os.path.join(disk, "chain-pending")) as fh:
+            self.assertEqual(fh.read(), "0123abcd-0000-4000-8000-00000000c4a1\n", "the mark names the boot that jumped")
+
+    def test_a_mark_left_by_a_kernel_that_did_not_stay_up_stops_the_next_try(self):
+        dev, disk = self.log_partition()
+        write(os.path.join(disk, "chain-pending"), "the boot before\n")
+        res = self.run_script(FAKE_DISK=disk)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("mpfree-chain: the last restart into the stick's kernel did not stay up for 30 s (chain-pending "
+                      "is still on the stick's log partition), so not again on this power-on; MPFree starts on this "
+                      "kernel, with Akai's device tree\n", self.notes())
+        self.assertEqual(self.calls("kexec: ") + self.calls("systemctl: "), [], "no load, no restart")
+        self.assertFalse(os.path.exists(os.path.join(disk, "chain-pending")), "the next power-on tries again")
+        with open(os.path.join(disk, "boot-0123abcd-0000-4000-8000-00000000c4a1/chain.txt")) as fh:
+            self.assertIn("did not stay up for 30 s", fh.read())
+
+    def test_a_failed_restart_takes_its_mark_away(self):
+        dev, disk = self.log_partition()
+        res = self.run_script(FAKE_DISK=disk, FAKE_START_RC="1")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("systemctl could not start kexec.target; MPFree starts on this kernel", self.notes())
+        self.assertFalse(os.path.exists(os.path.join(disk, "chain-pending")),
+                         "MPFree runs on this kernel, so the next power-on may try again")
+
+    def test_without_a_log_partition_the_chain_still_runs(self):
+        res = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.calls("systemctl: "), ["systemctl: --no-block --job-mode=replace-irreversibly start "
+                                                     "kexec.target"])
+        self.assertNotIn("chain-pending", self.notes())
 
     def test_script_and_unit(self):
         mod = stick_module()
@@ -1675,6 +1724,7 @@ class ChainTests(unittest.TestCase):
                           "systemctl kexec", "--exec"):
             self.assertNotIn(forbidden, code)
         self.assertEqual(code.count("mount -t"), 1, "only the stick's own log partition")
+        self.assertEqual(code.count("rm -f"), 1, "only the mark")
         self.assertEqual(code.count('"$K" --load'), 1)
         unit = mod.CHAIN_UNIT
         for line in ("DefaultDependencies=no", "ConditionKernelCommandLine=mpfree.chain=1",
@@ -1688,6 +1738,117 @@ class ChainTests(unittest.TestCase):
         for u in ("systemd-sysctl.service", "mpfree-test-logs.service", "mpfree-test-app.service",
                   "mpfree-test-storage.service", "data.mount", "sysinit.target"):
             self.assertIn(u, before)
+        done = mod.CHAIN_DONE_UNIT
+        for line in ("ConditionKernelCommandLine=!mpfree.chain=1", "After=mpfree-test-logs.service", "Type=simple",
+                     "ExecStart=/bin/sh /etc/mpfree-test/chain-done.sh", "WantedBy=multi-user.target"):
+            self.assertIn(line + "\n", done)
+        self.assertNotIn("FailureAction", done)
+        code = "\n".join(l for l in mod.CHAIN_DONE_SCRIPT.splitlines() if not l.lstrip().startswith("#"))
+        for forbidden in ("mount", "mkfs", "dd ", "kexec", "mmcblk", "systemctl", "reboot"):
+            self.assertNotIn(forbidden + " ", code.replace("/run/mpfree-log", ""))
+        self.assertEqual(code.count("rm -f"), 1, "only the mark")
+
+
+class ChainDoneTests(unittest.TestCase):
+    """chain-done.sh (--chain), on the kernel the chain started, against a fake root, under dash
+    (ChainDoneBusyBoxTests: BusyBox)."""
+    busybox = False
+
+    def setUp(self):
+        if self.busybox:
+            self.bb = shutil.which("busybox")
+            if not self.bb:
+                if os.environ.get("MPFREE_REQUIRE_BUSYBOX") == "1":
+                    self.fail("busybox is missing")
+                self.skipTest("busybox not installed")
+            self.shell = [self.bb, "sh"]
+        else:
+            dash = shutil.which("dash")
+            if not dash:
+                self.skipTest("dash not installed")
+            self.shell = [dash]
+        self.tmp = tempfile.mkdtemp(prefix="mpfree-chain-done-test-")
+        self.root = os.path.join(self.tmp, "root")
+        self.bin = os.path.join(self.tmp, "bin")
+        self.log = os.path.join(self.tmp, "log")
+        os.makedirs(self.bin)
+        # sleep: note it, and let time pass (the uptime goes to 31 s)
+        write(os.path.join(self.bin, "sleep"), '#!/bin/sh\necho "sleep: $*" >> "$FAKE_LOG"\n'
+                                               'echo "31.00 4.00" > "$FAKE_ROOT/proc/uptime"\n', 0o755)
+        write(os.path.join(self.bin, "sync"), '#!/bin/sh\necho "sync" >> "$FAKE_LOG"\n', 0o755)
+        for tool in ("cat", "cut", "grep", "rm"):
+            if self.busybox:
+                write(os.path.join(self.bin, tool), f'#!/bin/sh\nexec {self.bb} {tool} "$@"\n', 0o755)
+            else:
+                os.symlink(shutil.which(tool), os.path.join(self.bin, tool))
+        write(os.path.join(self.root, "proc/uptime"), "35.20 4.00\n")
+        write(os.path.join(self.root, "proc/mounts"), "/dev/sda1 / ext4 ro 0 0\n"
+                                                     "/dev/sda2 /run/mpfree-log ext4 rw,sync 0 0\n")
+        write(os.path.join(self.root, "dev/kmsg"), "")
+        write(os.path.join(self.root, "run/mpfree-log/chain-pending"), "boot\n")
+        write(os.path.join(self.root, "run/mpfree-log/boot-1/chain.txt"), "notes\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_script(self):
+        script = stick_module().CHAIN_DONE_SCRIPT.replace("R=''", f"R='{self.root}'", 1)
+        return subprocess.run([*self.shell, "-c", script],
+                              env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root},
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+
+    def kmsg(self):
+        with open(os.path.join(self.root, "dev/kmsg")) as fh:
+            return fh.read()
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as fh:
+            return fh.read().splitlines()
+
+    def test_takes_the_mark_away_after_30_s(self):
+        res = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-log/chain-pending")))
+        self.assertTrue(os.path.exists(os.path.join(self.root, "run/mpfree-log/boot-1/chain.txt")), "only the mark")
+        self.assertEqual(self.calls(), ["sync"])
+        self.assertEqual(self.kmsg(), "mpfree-chain: up for 30 s on the stick's kernel; chain-pending taken away, so "
+                                      "the next power-on restarts into it again\n")
+
+    def test_waits_until_the_kernel_has_run_30_s(self):
+        write(os.path.join(self.root, "proc/uptime"), "12.50 4.00\n")
+        res = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.calls(), ["sleep: 2", "sync"])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-log/chain-pending")))
+
+    def test_leaves_the_mark_if_the_log_partition_is_not_mounted(self):
+        write(os.path.join(self.root, "proc/mounts"), "/dev/sda1 / ext4 ro 0 0\n")
+        res = self.run_script()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertEqual(self.calls(), ["sleep: 1"] * 60)
+        self.assertTrue(os.path.exists(os.path.join(self.root, "run/mpfree-log/chain-pending")))
+        self.assertIn("the log partition is not mounted, so chain-pending stays", self.kmsg())
+
+    def test_nothing_to_do_without_a_mark(self):
+        os.unlink(os.path.join(self.root, "run/mpfree-log/chain-pending"))
+        res = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.kmsg(), "")
+
+
+class ChainDoneBusyBoxTests(ChainDoneTests):
+    busybox = True
+
+    # BusyBox's sh runs sleep itself (a builtin), so the fake sleep cannot make time pass there. The waits are the
+    # same shell code; the dash runs above cover them.
+    def test_waits_until_the_kernel_has_run_30_s(self):
+        self.skipTest("BusyBox's sleep is a shell builtin; covered under dash")
+
+    def test_leaves_the_mark_if_the_log_partition_is_not_mounted(self):
+        self.skipTest("BusyBox's sleep is a shell builtin; covered under dash")
 
 
 class ChainBusyBoxTests(ChainTests):
