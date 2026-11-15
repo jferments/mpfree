@@ -1188,7 +1188,7 @@ jobs:
         # tools/mpc-plugins/catalog-check.txt (never committed or shipped), and
         # runs each in its own plugin process with rack_check. About a minute.
         run: |
-          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends unzip qemu-user
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends qemu-user
           # Kept between runs beside the cargo targets (the runner's home
           # isn't writable on the self-hosted runner).
           MPFREE_CATALOG_CACHE="${RUNNER_WORKSPACE:-$RUNNER_TEMP}/mpfree-catalog" \
