@@ -703,7 +703,8 @@ STORAGE_SCRIPT = """#!/bin/sh
 # MPFree test boot (--app-user): get the pad player's storage ready, as root, before it starts as the
 # {user} user (uid {uid}). Its drum kits are on the stick's partition 3, mounted read-only. Partition 4 holds
 # its saved settings and files, mounted read-write; files there that are not yet the {user} user's are given
-# to it (find -xdev stays on partition 4). This runs before the pad player starts and not again when it
+# to it (find -xdev stays on partition 4), except the eMMC backups in backup/, which stay root's (the pad player
+# only reads them, through its group). This runs before the pad player starts and not again when it
 # restarts, so no process of the {user} user can change those folders while they are walked.
 # The framebuffer's sysfs `pan` file is opened to the {user} group (in RAM, until power-off), so the pad
 # player can ask the kernel to show the screen.
@@ -723,7 +724,7 @@ while [ ! -e "$data" ] && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
 mkdir -p /run/mpfree-data
 if grep -q ' /run/mpfree-data ' /proc/mounts ||
     mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then
-  find /run/mpfree-data -xdev ! -user {uid} -exec chown -h {uid}:{uid} {{}} \\; ||
+  find /run/mpfree-data -xdev -path /run/mpfree-data/backup -prune -o ! -user {uid} -exec chown -h {uid}:{uid} {{}} \\; ||
     echo "mpfree-test-storage: some files on partition 4 could not be given to {user}" > /dev/kmsg
   # Partition 4 fills the stick but its filesystem may be smaller: grow it to fill the partition, online
   # (the kernel does it while mounted, and writes only partition 4). When it already fills it, nothing changes.
