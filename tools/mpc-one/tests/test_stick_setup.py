@@ -3,10 +3,13 @@
 
 - setup-backup.sh, the first-start wizard's read-only eMMC window, runs under dash with BusyBox applets
   against a fake kernel: a fake sysfs whose drivers_probe and unbind files are FIFOs served by a thread, as
-  the eMMC controller and udev would answer them, and /dev files holding a small fake eMMC. It is rehearsed
-  through every way it can stop.
+  the eMMC controller and udev would answer them, each disk's ro file following its force_ro file as the
+  MMC driver's do, and /dev files holding a small fake eMMC. It is rehearsed through every way it can stop.
 - setup-format.sh, which makes partition 4's filesystem once, against a fake partition file and a stand-in
   mke2fs.
+- Both run with nothing on PATH but the programs their NEEDS line names (the USB creator checks Akai's
+  system has each one), so a program missing from Akai's system shows up here: the MPC's BusyBox has no
+  blockdev, and its od has no -A or -t (a stand-in od refuses them).
 - autorun.sh, the script Akai's script runner runs, against test_boot_hook.py's fake MPC: it runs the real
   hook-install.sh and hook-remove.sh there.
 
@@ -72,6 +75,32 @@ def need_busybox():
     return busybox, dash
 
 
+def needs(path):
+    """The programs a stick script names in its NEEDS='...' line."""
+    with open(path) as fh:
+        (line,) = [line for line in fh.read().splitlines() if line.startswith("NEEDS='")]
+    return line[len("NEEDS='"):-1].split()
+
+
+# The MPC's BusyBox od (no CONFIG_DESKTOP) has no -A or -t; this one refuses them too.
+OD = ('#!/bin/sh\nfor a; do case "$a" in -A*|-t*) echo "od: invalid option -- ${a#-}" >&2; exit 1 ;; esac; done\n'
+      'exec {bb} od "$@"\n')
+
+
+def program_dir(folder, busybox, wanted, fakes, extras=()):
+    """A PATH folder with exactly the programs `wanted` names (plus `extras`): each a stand-in from `fakes`
+    or BusyBox's applet."""
+    os.makedirs(folder)
+    unused = set(fakes) - set(wanted) - set(extras)
+    if unused:
+        raise AssertionError(f"stand-ins for programs the script does not name in NEEDS: {sorted(unused)}")
+    for name in list(wanted) + list(extras):
+        if name in fakes:
+            write(os.path.join(folder, name), fakes[name].replace("{bb}", busybox), 0o755)
+        else:
+            os.symlink(busybox, os.path.join(folder, name))
+
+
 def layout_text(layout):
     return "\n".join(f"{n} {name} {start} {'-' if size is None else size}" for n, name, start, size in layout)
 
@@ -87,14 +116,19 @@ def blob(seed, size):
 class FakeEmmc:
     """The eMMC controller as the kernel and udev answer setup-backup.sh. Writing the controller's name to
     /sys/bus/platform/drivers_probe binds it: the block devices appear in /sys/block and /dev (with udev's
-    /dev/disk links), read-only only if the window's udev rule was there first (udev would run its
-    blockdev --setro), and boot0 and boot1 with force_ro = 1. Writing it to the driver's unbind file takes
-    them all away again. Options make it misbehave."""
+    /dev/disk links). Each disk's ro file, and its partitions', follow the disk's force_ro file (they are
+    links to it), as the MMC driver's do: writing 1 there marks the whole disk read-only. boot0 and boot1
+    start with force_ro = 1, as the kernel makes them; the user area only if the window's udev rule was
+    there first (udev writes its force_ro). Writing the name to the driver's unbind file takes them all
+    away again. Options make it misbehave: `writable`, a disk that stays writable whatever force_ro says;
+    `ignore_rule`, udev that does not apply the rule."""
 
     def __init__(self, root, layout=TEST_LAYOUT, ignore_unbind=False, no_disk=False, extra_disk=False,
-                 writable=False):
+                 writable=False, ignore_rule=False):
         self.root, self.layout = root, layout
         self.ignore_unbind, self.no_disk, self.extra_disk, self.writable = ignore_unbind, no_disk, extra_disk, writable
+        self.ignore_rule = ignore_rule
+        self.force_ro_at_unbind = {}
         self.bound, self.unbound, self.rule = [], [], None
         self.images = {"mmcblk0": blob("user area", DISK_SECTORS * 512),
                        "mmcblk0boot0": blob("boot0", BOOT_SECTORS * 512),
@@ -132,13 +166,20 @@ class FakeEmmc:
 
     def disk(self, name, files, parts=()):
         """A /sys/block entry, made whole in a side folder and renamed into place, as the script may look
-        at any moment."""
+        at any moment. A value ("link", target) is a symbolic link."""
         stage = os.path.join(self.root, "sys/block", "." + name)
-        for rel, text in files.items():
-            write(os.path.join(stage, rel), text)
+
+        def put(path, value):
+            if isinstance(value, tuple):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                os.symlink(value[1], path)
+            else:
+                write(path, value)
+        for rel, value in files.items():
+            put(os.path.join(stage, rel), value)
         for pname, pfiles in parts:
-            for rel, text in pfiles.items():
-                write(os.path.join(stage, pname, rel), text)
+            for rel, value in pfiles.items():
+                put(os.path.join(stage, pname, rel), value)
         os.rename(stage, os.path.join(self.root, "sys/block", name))
 
     def bind(self, name):
@@ -150,7 +191,9 @@ class FakeEmmc:
             return
         rule = os.path.join(self.root, "run/udev/rules.d/00-mpfree-setup-ro.rules")
         self.rule = read_text(rule) or None
-        ro = "1\n" if self.rule and not self.writable else "0\n"
+        user_area = "1\n" if self.rule and not self.ignore_rule else "0\n"
+        disk_ro = "0\n" if self.writable else ("link", "force_ro")
+        part_ro = "0\n" if self.writable else ("link", "../force_ro")
         for disk, data in self.images.items():
             write(os.path.join(self.root, "dev", disk), data)
         for n, pname, start, size in self.layout:
@@ -162,13 +205,14 @@ class FakeEmmc:
             size = DISK_SECTORS - start if size is None else size
             parts.append((f"mmcblk0p{n}", {"uevent": f"MAJOR=179\nMINOR={n}\nDEVNAME=mmcblk0p{n}\nDEVTYPE=partition\n"
                                                      f"PARTN={n}\nPARTNAME={pname}\n",
-                                           "start": f"{start}\n", "size": f"{size}\n", "ro": ro, "stat": stat}))
+                                           "start": f"{start}\n", "size": f"{size}\n", "ro": part_ro,
+                                           "stat": stat}))
         for boot in ("mmcblk0boot0", "mmcblk0boot1"):
-            self.disk(boot, {"ro": ro, "force_ro": "1\n", "size": f"{BOOT_SECTORS}\n", "stat": stat})
+            self.disk(boot, {"ro": disk_ro, "force_ro": "1\n", "size": f"{BOOT_SECTORS}\n", "stat": stat})
         if self.extra_disk:
-            self.disk("mmcblk1", {"ro": "0\n", "size": "1024\n", "stat": stat})
-        self.disk("mmcblk0", {"ro": ro, "size": f"{DISK_SECTORS}\n", "stat": stat, "device/name": "DG4008\n"},
-                  parts)
+            self.disk("mmcblk1", {"ro": ("link", "force_ro"), "force_ro": "0\n", "size": "1024\n", "stat": stat})
+        self.disk("mmcblk0", {"ro": disk_ro, "force_ro": user_area, "size": f"{DISK_SECTORS}\n", "stat": stat,
+                              "device/name": "DG4008\n"}, parts)
         self.link_driver(EMMC)
 
     def unbind(self, name):
@@ -180,6 +224,7 @@ class FakeEmmc:
             return
         for disk in os.listdir(os.path.join(self.root, "sys/block")):
             if disk.startswith("mmcblk"):
+                self.force_ro_at_unbind[disk] = read_text(os.path.join(self.root, "sys/block", disk, "force_ro"))
                 shutil.rmtree(os.path.join(self.root, "sys/block", disk))
         for dev in os.listdir(os.path.join(self.root, "dev")):
             if dev.startswith("mmcblk"):
@@ -202,8 +247,7 @@ class FakeEmmc:
             t.join(5)
 
 
-BACKUP_APPLETS = ("cat", "grep", "sed", "tr", "cut", "mkdir", "chmod", "mv", "rm", "sha256sum", "stat", "date",
-                  "readlink", "tee", "awk", "head", "ls", "wc", "basename", "dirname")
+RO_RULE = 'SUBSYSTEM=="block", KERNEL=="mmcblk*", ENV{DEVTYPE}=="disk", ACTION=="add", ATTR{force_ro}="1"\n'
 
 
 class BackupTests(unittest.TestCase):
@@ -216,16 +260,12 @@ class BackupTests(unittest.TestCase):
         self.root = os.path.join(self.tmp, "root")
         self.bin = os.path.join(self.tmp, "bin")
         self.log = os.path.join(self.tmp, "log")
-        os.makedirs(self.bin)
-        for applet in BACKUP_APPLETS:
-            os.symlink(self.busybox, os.path.join(self.bin, applet))
         bb = self.busybox
         fakes = {
             "sleep": f'#!/bin/sh\necho "sleep: $*" >> "$FAKE_LOG"\nexec {bb} usleep 50000\n',
             "sync": '#!/bin/sh\necho "sync" >> "$FAKE_LOG"\n',
             "df": '#!/bin/sh\necho "df: $*" >> "$FAKE_LOG"\necho "Filesystem 1024-blocks Used Available Capacity '
                   'Mounted on"\necho "/dev/sda4 30000000 1000 $FAKE_FREE_KB 1% $2"\n',
-            "blockdev": '#!/bin/sh\necho "blockdev: $*" >> "$FAKE_LOG"\n',
             "udevadm": '#!/bin/sh\necho "udevadm: $*" >> "$FAKE_LOG"\n',
             "systemctl": '#!/bin/sh\necho "systemctl: $*" >> "$FAKE_LOG"\n',
             "poweroff": '#!/bin/sh\necho "poweroff: $*" >> "$FAKE_LOG"\n',
@@ -236,8 +276,7 @@ class BackupTests(unittest.TestCase):
                   f'[ -n "${{FAKE_BUMP:-}}" ] && echo "{STAT.format(w=1, ws=8, d=0).strip()}" > '
                   f'"$FAKE_ROOT/sys/block/mmcblk0/mmcblk0p8/stat"\nexec {bb} dd "$@"\n',
         }
-        for name, text in fakes.items():
-            write(os.path.join(self.bin, name), text, 0o755)
+        program_dir(self.bin, bb, needs(BACKUP), fakes, extras=("poweroff",))
         r = self.root
         write(os.path.join(r, "proc/mounts"), "/dev/sda1 / ext4 ro,relatime,noload 0 0\n"
                                               "/dev/sda4 /run/mpfree-data ext4 rw,nosuid,nodev,noexec,relatime 0 0\n")
@@ -322,9 +361,8 @@ class BackupTests(unittest.TestCase):
         self.assert_closed()
         self.assert_only_reads()
         self.assertEqual(len(self.calls("dd: ")), 3)
-        bd = os.path.join(self.bin, "blockdev")
-        self.assertEqual(self.kernel.rule, f'SUBSYSTEM=="block", KERNEL=="mmcblk*", ACTION=="add", '
-                                           f'RUN+="{bd} --setro /dev/%k"\n', "the rule is there before the bind")
+        self.assertEqual(self.kernel.rule, RO_RULE, "the rule is there before the bind")
+        self.assertEqual(self.kernel.force_ro_at_unbind, {d: "1\n" for d in self.kernel.images})
         self.assertEqual(self.calls("udevadm: "), ["control --reload", "control --reload"])
         (name,) = self.backups()
         self.assertRegex(name, r"^mpc-one-emmc-\d{8}T\d{6}Z$")
@@ -371,6 +409,25 @@ class BackupTests(unittest.TestCase):
         self.assertIn("already run this boot", self.notes())
         self.assertEqual(self.backups(), [name])
 
+    def test_marks_the_disks_read_only_itself_too(self):
+        """Should udev not apply the rule, the script's own force_ro writes make every disk read-only."""
+        self.kernel = FakeEmmc(self.root, ignore_rule=True)
+        res = self.run_backup()
+        self.assertEqual(res.returncode, 0, res.stdout + self.notes())
+        self.assert_closed()
+        self.assertEqual(self.kernel.force_ro_at_unbind, {d: "1\n" for d in self.kernel.images})
+        self.assertEqual(len(self.backups()), 1)
+
+    def test_stops_first_when_a_program_is_missing(self):
+        self.kernel = FakeEmmc(self.root)
+        for name in ("stat", "tee"):
+            os.unlink(os.path.join(self.bin, name))
+        res = self.run_backup()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertEqual(self.kernel.bound, [], "nothing is bound")
+        self.assertEqual(self.status()["message"], "this system lacks programs the backup needs: stat tee")
+        self.assertEqual(self.calls("dd: ") + self.calls("df: "), [])
+
     def test_checks_before_the_window_opens(self):
         cases = {
             "partition 4 not mounted read-write": (
@@ -408,6 +465,7 @@ class BackupTests(unittest.TestCase):
         wrong = tuple((n, name, start, 300 if n == 6 else size) for n, name, start, size in TEST_LAYOUT)
         cases = {
             "not read-only": ({"writable": True}, "mmcblk0 is not read-only"),
+            "no force_ro": ({"writable": True, "ignore_rule": True}, "mmcblk0 is not read-only"),
             "another layout": ({"layout": wrong}, "this is not the MPC One's eMMC layout: partition 6 (rootfs) has "
                                                   "300 sectors, not 256"),
             "another block device": ({"extra_disk": True}, "an unexpected block device appeared: mmcblk1"),
@@ -479,15 +537,19 @@ class StaticTests(unittest.TestCase):
 
     def test_the_backup_window_never_writes_the_emmc(self):
         text = self.read(BACKUP)
-        code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        code = "\n".join(line for line in text.splitlines()
+                         if not line.lstrip().startswith("#") and not line.startswith("NEEDS="))
         self.assertNotIn("of=", code)
         for word in ("mount", "umount", "fsck", "mkfs", "mke2fs", "blkdiscard", "hdparm", "mmc ", "sfdisk", "sgdisk",
                      "parted", "wipefs", "tune2fs", "resize2fs", "e2fsck", "debugfs", "truncate", "fallocate"):
             self.assertNotRegex(code, rf"(^|[\s;|&(]){re.escape(word.strip())}(\s|$)", word)
-        self.assertEqual(re.findall(r"blockdev\s+--\S+", code), ["blockdev --setro"])
+        self.assertNotIn("blockdev", code, "Akai's system has none")
+        self.assertEqual(re.findall(r'echo (\S+) > "\$R/sys/block/\$b/force_ro"', code), ["1"])
+        self.assertEqual(re.findall(r"ATTR\{[^}]*\}=\S*", code), ['ATTR{force_ro}="1"\''])
         self.assertEqual(re.findall(r"\bdd\b[^\n|]*", code), ['dd if="$R/dev/$b" bs=1048576 2>/dev/null '])
         self.assertEqual(re.findall(r'>\s*"?\$R/dev/[^\s;]+', code), ['> "$R/dev/kmsg"'])
-        self.assertEqual(re.findall(r'>\s*"?\$R/sys/[^\s;]+', code), ['> "$R/sys/bus/platform/drivers_probe"'])
+        self.assertEqual(re.findall(r'>\s*"?\$R/sys/[^\s;]+', code), ['> "$R/sys/block/$b/force_ro"',
+                                                                     '> "$R/sys/bus/platform/drivers_probe"'])
 
     def test_units(self):
         service = self.read(os.path.join(STICK, "mpfree-setup-backup.service"))
@@ -514,17 +576,17 @@ class FormatTests(unittest.TestCase):
         self.root = os.path.join(self.tmp, "root")
         self.bin = os.path.join(self.tmp, "bin")
         self.log = os.path.join(self.tmp, "log")
-        os.makedirs(self.bin)
-        for applet in ("cat", "dd", "od", "tr", "grep", "readlink"):
-            os.symlink(self.busybox, os.path.join(self.bin, applet))
         bb = self.busybox
-        write(os.path.join(self.bin, "sleep"), '#!/bin/sh\necho "sleep: $*" >> "$FAKE_LOG"\n', 0o755)
-        write(os.path.join(self.bin, "sync"), '#!/bin/sh\necho "sync" >> "$FAKE_LOG"\n', 0o755)
-        # mke2fs: logged, and it leaves an ext2/3/4 magic number where the superblock has it.
-        write(os.path.join(self.bin, "mke2fs"),
-              f'#!/bin/sh\necho "mke2fs: $*" >> "$FAKE_LOG"\n[ -n "${{FAKE_MKE2FS_FAIL:-}}" ] && exit 1\n'
-              f'for dev; do :; done\n{bb} printf "\\123\\357" | {bb} dd of="$dev" bs=1 seek=1080 conv=notrunc '
-              f'2>/dev/null\n', 0o755)
+        fakes = {
+            "sleep": '#!/bin/sh\necho "sleep: $*" >> "$FAKE_LOG"\n',
+            "sync": '#!/bin/sh\necho "sync" >> "$FAKE_LOG"\n',
+            "od": OD,
+            # mke2fs: logged, and it leaves an ext2/3/4 magic number where the superblock has it.
+            "mke2fs": f'#!/bin/sh\necho "mke2fs: $*" >> "$FAKE_LOG"\n[ -n "${{FAKE_MKE2FS_FAIL:-}}" ] && exit 1\n'
+                      f'for dev; do :; done\n{bb} printf "\\123\\357" | {bb} dd of="$dev" bs=1 seek=1080 '
+                      f'conv=notrunc 2>/dev/null\n',
+        }
+        program_dir(self.bin, bb, needs(FORMAT), fakes)
         r = self.root
         part = os.path.join(r, "sys/devices/platform/ff540000.usb/usb2/2-1/2-1:1.0/host0/target0:0:0/0:0:0:0/"
                                "block/sda/sda4")
@@ -646,6 +708,13 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertEqual(self.after()[:49], b"MPFREE-FORMAT-ME " + TOKEN.encode(), "the next boot tries again")
         self.assertIn("mke2fs failed", self.notes())
+
+    def test_touches_nothing_when_a_program_is_missing(self):
+        os.unlink(os.path.join(self.bin, "mke2fs"))
+        res = self.run_format()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertEqual(self.after(), self.before, "partition 4 is untouched")
+        self.assertEqual(self.notes(), "this system lacks programs this needs: mke2fs; partition 4 not touched\n")
 
 
 AUTORUN_SYSTEMCTL = FAKE_SYSTEMCTL.replace('  *) echo "systemctl stand-in', '  reboot) ;;\n  *) echo "systemctl stand-in')

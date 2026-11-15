@@ -564,6 +564,23 @@ pub fn apply<'a>(
             )));
         }
     }
+    let missing: Vec<&str> = recipe::setup_programs()
+        .into_iter()
+        .filter(|prog| {
+            !["/usr/bin", "/usr/sbin"].iter().any(|d| {
+                matches!(
+                    kind_of(tree, &format!("{d}/{prog}")),
+                    Some("regular" | "symlink")
+                )
+            })
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(bad(format!(
+            "Akai's root filesystem has no {} in /usr/bin or /usr/sbin, which the stick's first-start setup needs",
+            missing.join(", ")
+        )));
+    }
     let skip = |p: &str| ssh.is_none() && r.only_with_ssh.iter().any(|s| s == p);
     let mut new_paths: Vec<&str> = r
         .files
