@@ -43,7 +43,8 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     from the device tree; it writes only the framebuffer
   - only with --splash: a startup screen first. Our program mpfree-startup
     (rust/mpfree-startup, built for ARM beforehand) plays the default theme's
-    startup screen (synthwave) on /dev/fb0 for 6 seconds, and the log display
+    startup screen (synthwave) on /dev/fb0 for 6 seconds, once per boot (with
+    --chain, on the kernel MPFree runs on), and the log display
     starts when it ends; it writes only the framebuffer and the framebuffer's
     sysfs `pan` file (a mode set; nothing is stored). The older mpfree-splash
     (the galaxy, with an optional --splash-font) takes the same place
@@ -521,7 +522,7 @@ Requires=mpfree-test-internal-off.service
 After=mpfree-test-internal-off.service
 Before=sysinit.target systemd-sysctl.service systemd-udevd.service systemd-udev-trigger.service local-fs.target
 Before=data.mount mpfree-test-logs.service mpfree-test-storage.service mpfree-test-app.service
-Before=mpfree-test-sshd.service mpfree-test-ethernet.service
+Before=mpfree-test-sshd.service mpfree-test-ethernet.service mpfree-test-splash.service
 
 [Service]
 Type=oneshot
@@ -668,6 +669,11 @@ Nice=10
 WantedBy=sysinit.target
 """
 # Only with --splash. The log display waits for it (After= in its unit); if it fails, the log simply starts.
+# RemainAfterExit: once it has played, the unit stays active, so it plays once per boot. Without it a finished
+# oneshot is inactive again, and any later start job that pulls in sysinit.target again starts it a second time.
+# That happened in step 7b's third power-on (zip 215433Z): played at 3.8 s, finished at 11.1 s, played again at
+# 12.0 s (just after the udev coldplug finished), and the pad player waited for the second one. With --chain, CHAIN_UNIT also orders it after the chain, so it plays on
+# the kernel MPFree runs on, not on the one the chain leaves.
 SPLASH_SECONDS = 6
 SPLASH_UNIT = """[Unit]
 Description=MPFree test boot: startup screen before the live log
@@ -678,6 +684,7 @@ IgnoreOnIsolate=yes
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 ExecStart=/etc/mpfree-test/mpfree-splash --framebuffer --rotation {rotation} --seconds {seconds}{font}
 TimeoutStartSec={timeout}
 
@@ -1882,7 +1889,7 @@ def main(argv):
         if splash[0]:
             OUT.say(f"startup screen program: {os.path.realpath(args.splash)} ({len(splash[0])} bytes, "
                     f"sha256 {hashlib.sha256(splash[0]).hexdigest()}, static ARM EABI5 hard-float), "
-                    f"shown for {SPLASH_SECONDS} s before the log")
+                    f"shown for {SPLASH_SECONDS} s before the log, once per boot")
             if splash[2]:
                 OUT.say(f"startup screen font: {os.path.realpath(args.splash_font)} ({len(splash[2])} bytes, "
                         f"sha256 {hashlib.sha256(splash[2]).hexdigest()})")
@@ -1957,6 +1964,9 @@ def main(argv):
                         f"stick's kernel has run {CHAIN_UP_SECONDS} s; if it is still there at the next power-on, "
                         f"MPFree starts on the first kernel instead (switch off only after {CHAIN_UP_SECONDS} s, or "
                         f"the next power-on skips the chain once)")
+                if splash[0]:
+                    OUT.say("  --chain: the startup screen waits for the chain, so it plays once: on the stick's "
+                            "kernel, or on the first kernel only when the chain does not restart")
         else:
             OUT.say("  route: soft-reboot only (no --kexec-file)")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,

@@ -541,6 +541,11 @@ class KexecStickTests(unittest.TestCase):
                                "stat /etc/systemd/system/multi-user.target.wants/mpfree-test-chain-done.service"))
         self.assertIn("  --chain: one try per failed power-on: chain-pending on the log partition until the stick's "
                       "kernel has run 30 s", res.stdout)
+        # The startup screen waits for the chain (ordered from the chain's side; without --splash it names a
+        # unit that is not there, which systemd ignores), so it plays only on the kernel MPFree runs on.
+        self.assertIn("Before=mpfree-test-sshd.service mpfree-test-ethernet.service mpfree-test-splash.service\n",
+                      mod.CHAIN_UNIT)
+        self.assertNotIn("the startup screen waits for the chain", res.stdout)
         self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-kexec/cmdline.txt"), cmdline + "\n")
         self.assertIn("kernel.kexec_load_disabled = 1", self.dfs(root_img, "cat /etc/sysctl.d/90-mpfree-test.conf"))
         shutil.rmtree(out)
@@ -555,6 +560,18 @@ class KexecStickTests(unittest.TestCase):
         self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
         self.check_softreboot_files(root_img, NEW, kexec_file=cmdline + " loadpin.enforce=0")
         self.assertIn("is disabled on this test boot", self.dfs(root_img, "cat /usr/sbin/kexec"))
+        shutil.rmtree(os.path.join(self.work, folder))
+        # With a startup screen, as the owner's builds have it: the report says it plays once.
+        splash = os.path.join(self.tmp, "mpfree-splash")
+        write(splash, fake_elf(), 0o755)
+        res = self.build("--splash", splash, "--kexec-file", "--loadpin-off", "--chain")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("  --chain: the startup screen waits for the chain, so it plays once: on the stick's kernel, or "
+                      "on the first kernel only when the chain does not restart\n", res.stdout)
+        [folder] = self.outputs()
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        self.assertEqual(self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-chain.service"), mod.CHAIN_UNIT)
+        self.assertIn("RemainAfterExit=yes\n", self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-splash.service"))
         shutil.rmtree(os.path.join(self.work, folder))
 
     def test_chain_stops(self):
@@ -622,14 +639,16 @@ class KexecStickTests(unittest.TestCase):
         write(font, b"OTTO" + os.urandom(2000))
         res = self.build("--splash", splash, "--splash-font", font)
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("shown for 6 s before the log", res.stdout)
+        self.assertIn("shown for 6 s before the log, once per boot", res.stdout)
         self.assertIn(f"startup screen font: {os.path.realpath(font)}", res.stdout)
         [folder] = self.outputs()
         root_img = os.path.join(self.tmp, "p1.img")
         self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
         self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
         unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-splash.service")
-        for line in ("DefaultDependencies=no", "Type=oneshot", "Before=shutdown.target mpfree-test-screen.service",
+        # RemainAfterExit: a finished oneshot is started again by any later job that pulls in sysinit.target.
+        for line in ("DefaultDependencies=no", "Type=oneshot", "RemainAfterExit=yes",
+                     "Before=shutdown.target mpfree-test-screen.service",
                      "ExecStart=/etc/mpfree-test/mpfree-splash --framebuffer --rotation 270 --seconds 6 "
                      "--font /etc/mpfree-test/splash-font.otf --tracking 0.15",
                      "TimeoutStartSec=20", "WantedBy=sysinit.target"):
