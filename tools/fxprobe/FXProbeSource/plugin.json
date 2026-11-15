@@ -1,0 +1,17 @@
+{
+  "name": "FXProbe Source",
+  "manufacturer": "MPFree",
+  "version": "1.0.0",
+  "format": "vst2",
+  "kind": "instrument",
+  "uid": "MFps",
+  "numInputs": 0,
+  "numOutputs": 2,
+  "category": "Synth",
+  "file32": "VST/fxprobe-source-arm32.so",
+  "file64": "VST/fxprobe-source-arm64.so",
+  "description": "Measurement tool: plays an fxlab test programme on command, so the effect after it can be recorded and measured.",
+  "author": "MPFree",
+  "url": "https://github.com/jferments/mpfree",
+  "license": "MIT"
+}
