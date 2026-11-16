@@ -202,7 +202,7 @@ pub struct Session {
     /// UNDO on the Synth tab and the mixer: their turns, as the audio loop
     /// keeps them, and whether each had something to undo when last told.
     synth_turns: undo::Turns<u16>,
-    mix_turns: undo::Turns<(mpfree_fx::StripId, u16)>,
+    mix_turns: crate::mixturns::MixTurns,
     turns_told: (bool, bool),
     /// The library the browser saves projects into (`with_library`).
     pub library: Option<mpfree_library::Library>,
@@ -1068,12 +1068,7 @@ impl Session {
         self.sent.push(super::short(&a));
         let t = self.t();
         let now = self.now();
-        let mix_turn = match &a {
-            FromUi::Mixer(mpfree_mixer_ui::MixAction::Set { strip, id, value }) => {
-                Some((*strip, *id, self.mix.value(*strip, *id), *value))
-            }
-            _ => None,
-        };
+        let mix_turn = crate::mixturns::before_ui(&a, &self.mix, self.app.view() == View::Mixer);
         let mut fx = std::mem::take(&mut self.fx);
         let rest = {
             let (mut d, out) = self.desk();
@@ -1082,14 +1077,8 @@ impl Session {
         self.fx = fx;
         // As the audio loop does: a mixer turn, from its value before the
         // desk set it.
-        if let Some((strip, id, from, value)) = mix_turn {
-            let master = (mpfree_fx::StripId::Master, mpfree_fx::ids::mixer::VOLUME);
-            let to = if (strip, id) == master {
-                self.level_db
-            } else {
-                value
-            };
-            self.mix_turns.turned((strip, id), from, to, now);
+        if let Some(turn) = mix_turn {
+            crate::mixturns::record(&mut self.mix_turns, turn, self.level_db, now);
         }
         let Some(a) = rest else { return };
         match a {
@@ -1206,7 +1195,7 @@ impl Session {
                     gui::UndoOn::Mixer => self
                         .mix_turns
                         .rows("Start: the mix before these turns", |t| {
-                            crate::mix_turn_row(t.key.0, t.key.1, t.to)
+                            crate::mixturns::row(t)
                         }),
                 };
                 self.out.show(ToUi::UndoHistory { on, rows, now });
@@ -1232,14 +1221,12 @@ impl Session {
                             self.mix_turns.undo()
                         };
                         turn.map(|t| {
-                            let (strip, id) = t.key;
-                            let value = if redo { t.to } else { t.from };
-                            let set = mpfree_mixer_ui::MixAction::Set { strip, id, value };
-                            if let Some(db) = self.mix.action(&set) {
+                            let (line, level) = crate::mixturns::apply(&mut self.mix, &t, redo);
+                            if let Some(db) = level {
                                 self.level_db = db;
                                 self.out.show(ToUi::Level { db });
                             }
-                            crate::mix_turn_said(strip, id, redo)
+                            line
                         })
                     }
                 };

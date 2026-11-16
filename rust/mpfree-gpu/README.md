@@ -219,9 +219,14 @@ was written; the times there are an emulator's and mean nothing.
 
 ## Not yet
 
-- On the MPC: `flip` (step 7 of the device tool) and then the app with
-  `--gpu-screen` have not run yet; each waits for Jay's go. The app's run
-  needs `mpfree-gpu-screen` copied beside the app on the stick.
+- On the MPC: `flip` (step 7 of the device tool) is block Q9 (G0 to G2)
+  of the [3.10.1 device round](../../docs/dev/hardware/firmware-3.10.1-qualification.md),
+  run from the soft-boot USB stick. Its GPU `whole p50` against software's
+  32 ms (live test 3) says whether drawing on the GPU pays, and its software
+  line says whether the turn into the panel's layout or the copy costs more.
+- The app with `--gpu-screen` has not run on the MPC. The test stick does
+  not carry `mpfree-gpu-screen` yet (the stick builder copies only the
+  app), so that run needs a stick-builder change and its own runbook block.
 - Plain pixels are still drawn about three times over on a busy page
   (panels over the background); drawing front to back with a depth test
   could skip the hidden ones.
