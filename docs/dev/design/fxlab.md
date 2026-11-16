@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab tools/fxprobe
-checked: 2026-11-15 d58eb513
+checked: 2026-11-16 da8e97d3
 -->
 # fxlab and FXProbe: measuring our effects against the MPC's
 
@@ -21,8 +21,17 @@ Every analysis works on a device under test (`dut::Dut`): any MPFree node throug
 | Reverb and delay tails | `room` | Schroeder backward integral per octave; echo density (Abel and Huang); "metallic" excess (Welch spectrum of the tail against its third-octave average); IACC. | EDT, T20, T30 per octave, time to diffuse, tail excess, IACC |
 | Dynamics | `dynamics` | Static curve from steady sines; attack and release from a 1 kHz sine stepping -40/0/-40 dBFS, gain tracked every millisecond. | Curve points, depth, attack, release (63 % and 90 %) |
 | Zipper noise | `zipper` | Each continuous parameter swept end to end over 50 ms under a 997 Hz sine; the largest second difference while it moves against at rest. | Worst step in dB |
+| Delay repeats | `echo` | Each repeat of an impulse response: energy centroid, a 512-frame FFT around it. | Landing frame, level at 1, 5, 10, 15 kHz, side, loss per repeat |
+| EQ shape | `prototype` | RBJ cookbook analog bell and shelves, Butterworth cuts, against a digital curve. | Worst difference, half-gain width |
+| Mix law | `mixlaw` | Loudness change against the dry at Mix 0 to 100 % on pink noise and drum-like hits. | LU per setting, dip and bump |
+| Controls | `knob` | Decay against T60 at mid frequencies; Pre-delay against the reverb's onset. | Error in percent, frames |
+| Reverb start | `clarity` | Early against late energy; EDT over T30; a left-only impulse. | C50, C80, EDT/T30, early side |
+| Wow and flutter | `flutter` | A 3.15 kHz tone, isolated, its instantaneous frequency from the analytic signal. | Peak and RMS deviation, % (unweighted) |
+| Smear | `wobble` | A held 440 Hz tone's spectrum, its power-weighted spread, the window's own taken out. | Cents RMS |
 
 A **report card** (`card`) is one effect at one setting, measured by every analysis that fits its category, as named numbers (`resp_1k_db`, `thd_1k_-18_db`, `alias_5k_0_db`, `t30_1k_s`...). Effects that move frequencies (ring mod, frequency shifter, pitch, harmonizer, granulator) get no harmonics or response, which would mean nothing for them.
+
+The **quality report** (`quality`, `fxlab quality`) gathers every target of the FX quality plan for delay, EQ and reverb, and **the ratchet** (`tests/quality.rs` against `quality/ratchet.tsv`, on CI in release) stops any of those numbers getting worse: [FX quality](fx-quality.md).
 
 **Quality gates** (`tests/gates.rs`, run by `cargo test`): lines of the plan our effects already meet, so a change that makes one worse fails. Transparent effects are flat within 0.01 dB with THD under -140 dB; Drive HQ keeps aliases 90 dB down at 5 kHz full scale, Eco 50 dB; the limiter in true-peak mode holds true peaks within 0.5 dB of its ceiling on hot pink noise; master safety never passes its ceiling; every effect's quick card is finite and is quiet one second after its tail. Gaps the plan still has to close are reported by `fxlab cards`, not asserted.
 
@@ -95,6 +104,7 @@ On a workstation (no MPC):
 ```sh
 cd rust && cargo build --release -p mpfree-fxlab
 ./target/release/fxlab cards --presets --out /tmp/cards        # every engine and preset
+./target/release/fxlab quality --out /tmp/quality               # the FX quality report (fx-quality.md)
 ./target/release/fxlab plan --effect mpfree.fx.flanger --gains 0,-12 --out /tmp/plan
 ./target/release/fxlab sweep --effect mpfree.fx.drive --out /tmp/sweep
 ./target/release/fxlab programme --short --out /tmp/prog         # short.wav + short.tsv
@@ -107,6 +117,7 @@ On the MPC, building and installing the plugins and each `fxprobe.sh` and `fxpro
 
 ## Tests
 
-- `cargo test -p mpfree-fxlab`: 38 unit tests (each analysis on signals with known answers, schedules, plans, capture analysis against direct measurement) and the six quality gates.
+- `cargo test -p mpfree-fxlab`: 53 unit tests (each analysis on signals with known answers, schedules, plans, capture analysis against direct measurement, the ratchet's comparisons) and the six quality gates.
+- `cargo test --release -p mpfree-fxlab --test quality`: the FX quality ratchet (ignored in a debug build), on CI in the `rust` job.
 - `tools/fxprobe/test/run_chain_test.py` (by hand; needs the SDK checkout and a C++ compiler): builds both plugins and `chain_sim`, a small host that runs plugins in series the way an MPC track does, then checks that a wire capture holds the programme bit for bit at the frame fxlab finds, that a capture through the SDK's delay example is complete with its gain, timing log and host-call log, that `fxprobe.py` setup, capture and pull at two gains read back through `fxlab analyse` as a flat wire, and the stick route end to end: a staged kit, `fxprobe.sh install` to a fake internal drive, the installed plugins finding the work folder through their pointer (also after the stick comes back under another mount name, without rerunning the old command), and captures that read back as a flat wire.
 - `tools/fxprobe/test/test_fxprobe_sh.py` (CI, under BusyBox): `stage.py` with stand-in builds, and every `fxprobe.sh` mode against a fake MPC root and stand-in plugin instances, refusals included.

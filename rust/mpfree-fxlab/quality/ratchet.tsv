@@ -1,0 +1,257 @@
+# The FX quality ratchet: every number may stay or get better, never worse.
+# Written by `MPFREE_QUALITY_BLESS=1 cargo test --release -p mpfree-fxlab --test quality`;
+# see docs/dev/design/fx-quality.md. key<TAB>value
+delay/digital/alias_5k_0_db	-75.1309
+delay/digital/hidden_loss_10k_db	0.7423
+delay/digital/hidden_loss_15k_db	3.5259
+delay/digital/mix_bump_lu	0
+delay/digital/mix_dip_lu	-3.055
+delay/digital/mono_sum_lu	0
+delay/digital/pingpong_side_db	60
+delay/digital/runaway_dc_dbfs	-90.3287
+delay/digital/runaway_peak_dbfs	-7.3702
+delay/digital/tail_cut_db	-77.4232
+delay/digital/time_error_frames	0
+delay/digital/zipper_worst_db	0
+delay/digital[Dotted ping-pong]/alias_5k_0_db	-98.0491
+delay/digital[Dotted ping-pong]/tail_cut_db	-81.7804
+delay/digital[Dotted ping-pong]/zipper_worst_db	0.0009
+delay/digital[Dub echo]/alias_5k_0_db	-93.1539
+delay/digital[Dub echo]/tail_cut_db	-47.6286
+delay/digital[Dub echo]/zipper_worst_db	0
+delay/digital[Quarter repeats]/alias_5k_0_db	-68.9659
+delay/digital[Quarter repeats]/tail_cut_db	-65.4998
+delay/digital[Quarter repeats]/zipper_worst_db	0
+delay/digital[Slapback]/alias_5k_0_db	-140
+delay/digital[Slapback]/tail_cut_db	-140
+delay/digital[Slapback]/zipper_worst_db	35.2229
+delay/digital[Tape runaway]/alias_5k_0_db	-58.1236
+delay/digital[Tape runaway]/tail_cut_db	-74.3952
+delay/digital[Tape runaway]/zipper_worst_db	0
+delay/digital[Triplet bounce]/alias_5k_0_db	-82.8828
+delay/digital[Triplet bounce]/tail_cut_db	-140
+delay/digital[Triplet bounce]/zipper_worst_db	0
+delay/multi-tap/alias_5k_0_db	-140
+delay/multi-tap/hidden_loss_10k_db	0.7411
+delay/multi-tap/hidden_loss_15k_db	3.577
+delay/multi-tap/mix_bump_lu	1.4417
+delay/multi-tap/mix_dip_lu	-2.1954
+delay/multi-tap/mono_sum_lu	-0.7876
+delay/multi-tap/runaway_dc_dbfs	-102.8933
+delay/multi-tap/runaway_peak_dbfs	-8.0562
+delay/multi-tap/tail_cut_db	-52.4885
+delay/multi-tap/time_error_frames	0
+delay/multi-tap/zipper_worst_db	0
+delay/multi-tap[Build up]/alias_5k_0_db	-140
+delay/multi-tap[Build up]/tail_cut_db	-28.5308
+delay/multi-tap[Build up]/zipper_worst_db	0
+delay/multi-tap[Dotted bounce]/alias_5k_0_db	-140
+delay/multi-tap[Dotted bounce]/tail_cut_db	-70.5107
+delay/multi-tap[Dotted bounce]/zipper_worst_db	0
+delay/multi-tap[Triplet scatter]/alias_5k_0_db	-140
+delay/multi-tap[Triplet scatter]/tail_cut_db	-55.1621
+delay/multi-tap[Triplet scatter]/zipper_worst_db	0.3347
+delay/multi-tap[Wide ping]/alias_5k_0_db	-140
+delay/multi-tap[Wide ping]/tail_cut_db	-55.9985
+delay/multi-tap[Wide ping]/zipper_worst_db	0
+delay/tape/alias_5k_0_db	-83.0389
+delay/tape/first_echo_colour_share	0
+delay/tape/flutter_off_peak_pct	0.0001
+delay/tape/hidden_loss_10k_db	0.7597
+delay/tape/hidden_loss_15k_db	2.2675
+delay/tape/mix_bump_lu	0.4277
+delay/tape/mix_dip_lu	-2.8117
+delay/tape/mono_sum_lu	0
+delay/tape/runaway_dc_dbfs	-73.5145
+delay/tape/runaway_peak_dbfs	-7.0293
+delay/tape/tail_cut_db	-140
+delay/tape/time_error_frames	0
+delay/tape/zipper_worst_db	12.1388
+delay/tape[Dub echo]/alias_5k_0_db	-140
+delay/tape[Dub echo]/tail_cut_db	-8.5531
+delay/tape[Dub echo]/zipper_worst_db	0
+delay/tape[Runaway]/alias_5k_0_db	-69.7771
+delay/tape[Runaway]/tail_cut_db	0.538
+delay/tape[Runaway]/zipper_worst_db	0
+delay/tape[Slapback]/alias_5k_0_db	-45.6102
+delay/tape[Slapback]/tail_cut_db	-140
+delay/tape[Slapback]/zipper_worst_db	5.1127
+delay/tape[Space heads]/alias_5k_0_db	-140
+delay/tape[Space heads]/tail_cut_db	-100.1047
+delay/tape[Space heads]/zipper_worst_db	22.6589
+delay/tape[Worn tape]/alias_5k_0_db	-140
+delay/tape[Worn tape]/tail_cut_db	-140
+delay/tape[Worn tape]/zipper_worst_db	10.9225
+eq/bell_12k_q0.71_width_ratio	0.5775
+eq/bell_12k_q0.71_worst_db	-6.5548
+eq/bell_12k_q1.41_width_ratio	0.5785
+eq/bell_12k_q1.41_worst_db	-4.1929
+eq/bell_12k_q4_width_ratio	0.5792
+eq/bell_12k_q4_worst_db	-3.1293
+eq/bell_16k_q0.71_width_ratio	0.349
+eq/bell_16k_q0.71_worst_db	-7.879
+eq/bell_16k_q1.41_width_ratio	0.3371
+eq/bell_16k_q1.41_worst_db	-7.3493
+eq/bell_16k_q4_width_ratio	0.3304
+eq/bell_16k_q4_worst_db	-5.8631
+eq/bell_1k_q0.71_width_ratio	0.996
+eq/bell_1k_q0.71_worst_db	-0.0984
+eq/bell_1k_q1.41_width_ratio	0.9974
+eq/bell_1k_q1.41_worst_db	-0.0307
+eq/bell_1k_q4_width_ratio	0.9972
+eq/bell_1k_q4_worst_db	-0.0203
+eq/bell_5k_q0.71_width_ratio	0.9006
+eq/bell_5k_q0.71_worst_db	-1.7758
+eq/bell_5k_q1.41_width_ratio	0.9128
+eq/bell_5k_q1.41_worst_db	-0.754
+eq/bell_5k_q4_width_ratio	0.9175
+eq/bell_5k_q4_worst_db	-0.5122
+eq/bell_8k_q0.71_width_ratio	0.7773
+eq/bell_8k_q0.71_worst_db	-3.7268
+eq/bell_8k_q1.41_width_ratio	0.7907
+eq/bell_8k_q1.41_worst_db	-1.8981
+eq/bell_8k_q4_width_ratio	0.797
+eq/bell_8k_q4_worst_db	-1.3386
+eq/drawn_vs_heard_db	0.0265
+eq/high_cut_12k_24db_worst_db	-14.2988
+eq/high_cut_5k_12db_worst_db	-2.217
+eq/high_cut_5k_24db_worst_db	-1.4194
+eq/high_shelf_12k_worst_db	1.0323
+eq/high_shelf_2k_worst_db	0.0302
+eq/high_shelf_5k_worst_db	0.1873
+eq/high_shelf_8k_worst_db	0.4732
+eq/low_cut_100_12db_worst_db	-0.0002
+eq/low_cut_100_24db_worst_db	-0.0003
+eq/low_shelf_100_worst_db	-0.0001
+eq/low_shelf_200_worst_db	-0.0003
+eq/low_shelf_500_worst_db	-0.0019
+eq/low_shelf_50_worst_db	0.0001
+eq/mirror_db	0
+eq/q_convention_oct	-0.0046
+eq/shelf_midpoint_db	0
+eq/thd_100_db	-140
+eq/zipper_worst_db	0.0131
+eq[Kick weight]/zipper_worst_db	3.1806
+eq[Snare crack]/zipper_worst_db	4.1976
+eq[Telephone]/zipper_worst_db	6.2214
+eq[Thin for layering]/zipper_worst_db	0.1326
+eq[Vocal clarity]/zipper_worst_db	3.1276
+eq[Warm and dark]/zipper_worst_db	0.0384
+reverb/cloud/decay_error_pct@1s	19.4439
+reverb/cloud/decay_error_pct@2.5s	21.7053
+reverb/cloud/decay_error_pct@6s	8.2076
+reverb/cloud/diffuse_ms	49.9093
+reverb/cloud/early_side_db	21.4479
+reverb/cloud/edt_t30_log2	0.1608
+reverb/cloud/iacc_tail	0.0313
+reverb/cloud/mix_bump_lu	0
+reverb/cloud/mix_dip_lu	-3.3134
+reverb/cloud/mono_sum_lu	-3.0168
+reverb/cloud/predelay_error_frames	0
+reverb/cloud/tail_excess_over_ideal_db	0.7384
+reverb/cloud/wet_lu	-0.6512
+reverb/cloud/wobble_cents	3.5537
+reverb/cloud/zipper_worst_db	2.7584
+reverb/cloud[Endless cloud]/wet_lu	1.2125
+reverb/cloud[Endless cloud]/zipper_worst_db	2.828
+reverb/echoes/decay_error_pct@1s	-1.4844
+reverb/echoes/decay_error_pct@2.5s	-14.2006
+reverb/echoes/decay_error_pct@6s	-26.816
+reverb/echoes/diffuse_ms	1204.2857
+reverb/echoes/early_side_db	17.4004
+reverb/echoes/edt_t30_log2	1.3072
+reverb/echoes/iacc_tail	0.0647
+reverb/echoes/mix_bump_lu	0
+reverb/echoes/mix_dip_lu	-3.3754
+reverb/echoes/mono_sum_lu	-3.0378
+reverb/echoes/predelay_error_frames	0
+reverb/echoes/tail_excess_over_ideal_db	0.6486
+reverb/echoes/wet_lu	-0.7304
+reverb/echoes/wobble_cents	3.0363
+reverb/echoes/zipper_worst_db	17.9925
+reverb/echoes[Echo chamber]/wet_lu	-0.8344
+reverb/echoes[Echo chamber]/zipper_worst_db	21.0197
+reverb/hall/decay_error_pct@1s	8.1698
+reverb/hall/decay_error_pct@2.5s	0.9218
+reverb/hall/decay_error_pct@6s	-1.6534
+reverb/hall/diffuse_ms	45.9184
+reverb/hall/early_side_db	9.2775
+reverb/hall/edt_t30_log2	0.2589
+reverb/hall/iacc_tail	0.0223
+reverb/hall/mix_bump_lu	0.7915
+reverb/hall/mix_dip_lu	-2.5795
+reverb/hall/mono_sum_lu	-3.0647
+reverb/hall/predelay_error_frames	0
+reverb/hall/tail_excess_over_ideal_db	2.2291
+reverb/hall/wet_lu	0.7915
+reverb/hall/wobble_cents	3.1489
+reverb/hall/zipper_worst_db	2.6101
+reverb/hall[Big hall]/wet_lu	0.646
+reverb/hall[Big hall]/zipper_worst_db	1.8486
+reverb/plate/decay_error_pct@0.5s	14.5746
+reverb/plate/decay_error_pct@2s	9.4339
+reverb/plate/decay_error_pct@6s	6.1948
+reverb/plate/diffuse_ms	166.644
+reverb/plate/early_side_db	-0.1831
+reverb/plate/edt_t30_log2	-0.0053
+reverb/plate/iacc_tail	0.0409
+reverb/plate/mix_bump_lu	0.9413
+reverb/plate/mix_dip_lu	-2.5172
+reverb/plate/mono_sum_lu	-3.0911
+reverb/plate/predelay_error_frames	1
+reverb/plate/tail_excess_over_ideal_db	2.7462
+reverb/plate/wet_lu	0.9413
+reverb/plate/wobble_cents	4.9468
+reverb/plate/zipper_worst_db	4.6942
+reverb/plate[Dark plate]/wet_lu	0.5037
+reverb/plate[Dark plate]/zipper_worst_db	5.0633
+reverb/plate[Endless plate]/wet_lu	6.0301
+reverb/plate[Endless plate]/zipper_worst_db	7.076
+reverb/plate[Snare plate]/wet_lu	0.4413
+reverb/plate[Snare plate]/zipper_worst_db	7.3097
+reverb/plate[Vocal plate]/wet_lu	0.7059
+reverb/plate[Vocal plate]/zipper_worst_db	6.0998
+reverb/room/decay_error_pct@0.3s	-15.9918
+reverb/room/decay_error_pct@0.8s	-1.6366
+reverb/room/decay_error_pct@2s	-1.5234
+reverb/room/decay_error_pct@5s	-0.7146
+reverb/room/diffuse_ms	314.3084
+reverb/room/early_side_db	0.8702
+reverb/room/edt_t30_log2	-1.3131
+reverb/room/iacc_tail	0.0922
+reverb/room/mix_bump_lu	0
+reverb/room/mix_dip_lu	-6.0968
+reverb/room/mono_sum_lu	-1.917
+reverb/room/predelay_error_frames	1
+reverb/room/tail_excess_over_ideal_db	4.9319
+reverb/room/wet_lu	-4.8565
+reverb/room/wobble_cents	0.1659
+reverb/room/zipper_worst_db	3.4564
+reverb/room[Big studio]/wet_lu	-4.2726
+reverb/room[Big studio]/zipper_worst_db	1.6832
+reverb/room[Drum room]/wet_lu	-4.7284
+reverb/room[Drum room]/zipper_worst_db	3.3024
+reverb/room[Gated snare]/wet_lu	-3.4185
+reverb/room[Gated snare]/zipper_worst_db	3.9139
+reverb/room[Small booth]/wet_lu	-3.0812
+reverb/room[Small booth]/zipper_worst_db	4.7454
+reverb/spring/decay_error_pct@1s	4.025
+reverb/spring/decay_error_pct@2.5s	-4.4519
+reverb/spring/decay_error_pct@6s	-14.5295
+reverb/spring/diffuse_ms	10
+reverb/spring/early_side_db	0.7585
+reverb/spring/edt_t30_log2	-0.2358
+reverb/spring/iacc_tail	0.0416
+reverb/spring/mix_bump_lu	0.7286
+reverb/spring/mix_dip_lu	-2.6147
+reverb/spring/mono_sum_lu	-2.9529
+reverb/spring/tail_excess_over_ideal_db	5.6259
+reverb/spring/wet_lu	0.7286
+reverb/spring/wobble_cents	0.0187
+reverb/spring/zipper_worst_db	2.1845
+reverb/spring[Amp spring]/wet_lu	0.4191
+reverb/spring[Amp spring]/zipper_worst_db	2.2323
+reverb/spring[Dub splash]/wet_lu	1.2866
+reverb/spring[Dub splash]/zipper_worst_db	2.8779
+reverb/spring[Short tank]/wet_lu	0.8421
+reverb/spring[Short tank]/zipper_worst_db	2.3305
