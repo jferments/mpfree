@@ -533,6 +533,36 @@ CHECKS = (
          "plugins_live_in_the_data_folder_or_else_a_temp_folder_never_the_real_home"],
         wait_status=True),
     Check(
+        "mpc-plugin-install", "Install a plugin from the stick and over Ethernet, and see its own screen",
+        "#398: BROWSE's Plugins place (zips on the stick, the Open MPC catalog over HTTPS through the system's "
+        "libcurl) and MPC plugin skins on the Synth tab", "hands",
+        ["1. Press BROWSE. Hold SHIFT and turn the wheel to Plugins (it sits after Recordings).",
+         "2. Tap On the stick, pick Tidal-Verb-1.6.0-mpc-armv7.zip, then tap Install from zip.",
+         "3. Tap Catalog, then Instruments. Pick Modal Voice and tap Install: the bar shows the download.",
+         "   If the catalog says there is no network, go on: its line in the log says why.",
+         "4. Open the Synth tab. On the Instrument row, pick [SYN] Modal Voice, or [SYN] Mono Voice if step 3",
+         "   could not run. The plugin's own screen fills the page under the top bar. Play a few pads."],
+        [("the Plugins place says what is there and whether downloads can work",
+          seen(r"^plugins: \d+ installed, [1-9]\d* zip\(s\) on the stick, .*, "
+               r"downloads (possible \(libcurl found\)|off \(no libcurl\))")),
+         ("the catalog came over the network, or the line says why not",
+          seen(r"^plugins: (The catalog lists \d+ plugins; \d+ run on this MPC|not done \(catalog\): )")),
+         ("the zip on the stick installed", seen(r"^plugins: (Installed|Updated) .*Tidal")),
+         ("the Synth tab offers the plugins again after the install", seen(r"^plugins: \d+ offered after an install")),
+         ("Modal Voice installed from the catalog (needs a route out)", seen(r"^plugins: Installed .*Modal Voice")),
+         ("a track plays the plugin", seen(r"^track \d+: plays \[SYN\] (Modal|Mono) Voice")),
+         ("it started in its own process", seen(r"^plugins: \[SYN\] (Modal|Mono) Voice started in its own process")),
+         ("its own screen is drawn on the Synth tab",
+          seen(r"^screen: mpc:.*: its own screen, \d+ tab\(s\), on the Synth tab")),
+         ("it did not refuse to start", not_seen(r"^plugins: .* would not start"))],
+        "Did the plugin's own screen (its knobs and pictures, not MPFree's list) show, and did the pads play it?",
+        ["the_plugins_place_lists_the_stick_and_deletes_a_zip_on_the_second_tap",
+         "an_mpc_plugins_skin_fills_the_synth_tab_and_mpfree_page_is_one_tap_away",
+         "lists_a_zip_on_the_stick_and_refuses_one_that_is_not_a_plugin",
+         "installed_and_older_says_update_and_remove_asks_twice",
+         "the_log_says_what_is_there_and_what_was_done"],
+        needs=['BROWSE']),
+    Check(
         "power", "The power button opens the power card",
         "#389: a short press opens the card; Shut down and Restart end the boot, so the stick logs judge them",
         "hands",
@@ -746,6 +776,23 @@ def cmd_show(text):
 
 
 TEST_LINE = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)")
+FAILURE_HEAD = re.compile(r"^---- (\S+) stdout ----$")
+
+
+def failure_lines(output, most=6):
+    """{test name: the first lines of what it printed when it failed (the panic and its values)}."""
+    out, name = {}, None
+    for line in output.splitlines():
+        m = FAILURE_HEAD.match(line)
+        if m:
+            name = m.group(1).rsplit("::", 1)[-1]
+            out[name] = []
+        elif name is not None:
+            if line.startswith("stack backtrace:") or line in ("failures:", "successes:"):
+                name = None
+            elif line.strip() and len(out[name]) < most:
+                out[name].append(line.strip())
+    return out
 
 
 def cmd_smoke():
@@ -757,7 +804,8 @@ def cmd_smoke():
         head = ""
     print(f"commit: {head.strip() or '(not a git checkout)'}")
     # Release: it builds for longer but runs the smoke workflows several times faster (about 6 minutes in all).
-    cmd = ["cargo", "test", "-p", "mpfree-app", "--release", "--locked"]
+    # --no-fail-fast: one failing test program doesn't keep the others (tests/*.rs) from running.
+    cmd = ["cargo", "test", "-p", "mpfree-app", "--release", "--locked", "--no-fail-fast"]
     print(f"running: (cd rust && {' '.join(cmd)})", flush=True)
     if not shutil.which("cargo"):
         print("RESULT: the tests did not run: cargo is not on PATH (the Rust toolchain that builds the stick's programs)")
@@ -792,8 +840,11 @@ def cmd_smoke():
     good = all([report(title, tests) for title, tests in AREAS]) and good
     if failed:
         print("\nFailed:")
+        why = failure_lines(proc.stdout + "\n" + proc.stderr)
         for n in failed:
             print(f"  {n}")
+            for line in why.get(n, []):
+                print(f"      {line}")
     print("\nRESULT: " + ("every test passed." if proc.returncode == 0 and good else "some tests failed (above)."))
     return 0 if proc.returncode == 0 and good else 1
 
