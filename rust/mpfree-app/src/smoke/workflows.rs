@@ -1297,7 +1297,12 @@ mod tests {
             let mut s = Session::new();
             let before = s.level_db;
             s.press("master", "level", "");
-            assert!(s.level_db > before, "the bar went up");
+            // A tap on the bar sets the level where it lands (which may
+            // be under the -6 dB the level starts at since round 4).
+            assert!(
+                (s.level_db - before).abs() > 0.05,
+                "the bar moved the level"
+            );
             let master = s.mix.mixer.param(StripId::Master, mx::VOLUME);
             assert!(
                 (master - s.level_db).abs() < 0.05,

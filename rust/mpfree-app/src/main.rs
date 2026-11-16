@@ -182,7 +182,9 @@ struct Options {
     command: String,
     seconds: u64,
     keepalive: bool,
-    gain_db: f32,
+    /// `--gain-db`: the top of the level (play, app) or the level itself
+    /// (drums, click); see [`Options::gain_db`].
+    gain_db: Option<f32>,
     fb: PathBuf,
     sysfs: PathBuf,
     preview: Option<PathBuf>,
@@ -218,12 +220,38 @@ struct Options {
     power_request: Option<PathBuf>,
 }
 
+/// The loudest the drums and click checks play (`--gain-db` there): their
+/// sounds peak at most this far below full scale.
+const TEST_TOP_DB: f32 = -6.0;
+/// The drums and click checks' level without `--gain-db`.
+const TEST_GAIN_DB: f32 = -12.0;
+/// The top of the pad player's level without `--gain-db`: 0 dB, as the
+/// mixer's master fader and Akai's own. It starts 6 dB under, at the
+/// browser's audition level ([`preview::LEVEL_DB`]), so a sound heard in
+/// the browser plays as loud on the pads. Until round 4 the top was
+/// -12 dB, a first-test precaution, and pads played 12 dB under the
+/// audition (Jay: "much quieter" on Play).
+const PLAYER_TOP_DB: f32 = 0.0;
+
+impl Options {
+    /// The pad player's top level (play, app), or the checks' level
+    /// (drums, click).
+    fn gain_db(&self) -> f32 {
+        let default = if self.command == "app" || self.command == "play" {
+            PLAYER_TOP_DB
+        } else {
+            TEST_GAIN_DB
+        };
+        self.gain_db.unwrap_or(default)
+    }
+}
+
 fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut o = Options {
         command: String::new(),
         seconds: 10,
         keepalive: false,
-        gain_db: -12.0,
+        gain_db: None,
         fb: PathBuf::from("/dev/fb0"),
         sysfs: PathBuf::from("/sys/class/graphics/fb0"),
         preview: None,
@@ -263,12 +291,13 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--keepalive" => o.keepalive = true,
             "--gain-db" => {
-                o.gain_db = value()?
+                let db: f32 = value()?
                     .parse()
                     .map_err(|_| "--gain-db needs a number".to_string())?;
-                if !(-40.0..=-6.0).contains(&o.gain_db) {
-                    return Err("--gain-db must be between -40 and -6".to_string());
+                if !(-40.0..=0.0).contains(&db) {
+                    return Err("--gain-db must be between -40 and 0".to_string());
                 }
+                o.gain_db = Some(db);
             }
             "--fb" => o.fb = PathBuf::from(value()?),
             "--sysfs" => o.sysfs = PathBuf::from(value()?),
@@ -312,6 +341,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         }
     } else if !(1..=max).contains(&o.seconds) {
         return Err(format!("--seconds must be 1 to {max}"));
+    }
+    if o.gain_db.is_some_and(|db| db > TEST_TOP_DB) && o.command != "app" && o.command != "play" {
+        return Err(format!(
+            "--gain-db must be between -40 and {TEST_TOP_DB} for {}",
+            o.command
+        ));
     }
     if o.keep_screen && o.command != "app" && o.command != "play" {
         return Err("--keep-screen goes with app or play".to_string());
@@ -2114,9 +2149,9 @@ fn drums(o: &Options) -> Result<(), String> {
         &as_slices(&colours),
     )?;
     let pcm = open_acva(&mut out, PERIODS)?;
-    let master = 10f32.powf(o.gain_db / 20.0);
+    let master = 10f32.powf(o.gain_db() / 20.0);
     out.say(&format!("play the pads for {} s; each sound peaks at most {:.0} dB below full scale at full velocity",
-                     o.seconds, -o.gain_db));
+                     o.seconds, -o.gain_db()));
     out.draw();
     ports.quiet = true;
     let mut play = Playback::start(pcm, PERIODS)?;
@@ -3804,7 +3839,7 @@ fn player_session(
     app.set_sound_cores_now(sound_cores);
     let mut play = Playback::start(open_acva(out, periods)?, periods)?;
     progress(out, 6, "Ready", "Have fun", 1.0);
-    let max_db = o.gain_db;
+    let max_db = o.gain_db();
     let mut level_db = (max_db - 6.0).max(LEVEL_MIN_DB);
     out.show(gui::ToUi::Level { db: level_db });
     // The mixer sums everything; the Level is its master fader (mixing.rs).
@@ -6652,12 +6687,12 @@ fn click(o: &Options) -> Result<(), String> {
     }) {
         return Err("the click engine refused its settings".to_string());
     }
-    let gain = 10f32.powf(o.gain_db / 20.0);
+    let gain = 10f32.powf(o.gain_db() / 20.0);
     out.say(&format!(
         "playing a 120 BPM click for {} s at {:.0} dB (peak about {:.0} dBFS); \
                       keep the volume knob low",
         o.seconds,
-        o.gain_db,
+        o.gain_db(),
         20.0 * (0.47 * gain).log10()
     ));
     out.draw();
@@ -7160,6 +7195,19 @@ mod tests {
         );
         assert!(parse_args(&args("click --keepalive")).is_err());
         assert!(parse_args(&args("click --gain-db -3")).is_err());
+        assert!(parse_args(&args("drums --seconds 5 --gain-db -1")).is_err());
+        assert!(parse_args(&args("app --gain-db 1")).is_err());
+        let o = parse_args(&args("click --seconds 5")).unwrap();
+        assert_eq!(o.gain_db(), -12.0, "the click check stays where it was");
+        let o = parse_args(&args("app")).unwrap();
+        assert_eq!(o.gain_db(), 0.0, "the pad player's top is 0 dB");
+        assert_eq!(
+            o.gain_db() - 6.0,
+            preview::LEVEL_DB,
+            "and it starts at the audition's level"
+        );
+        let o = parse_args(&args("app --gain-db -12")).unwrap();
+        assert_eq!(o.gain_db(), -12.0);
         assert!(parse_args(&args("click --seconds 61")).is_err());
         assert!(parse_args(&args("click --seconds 0")).is_err());
         assert!(parse_args(&args("format")).is_err());
