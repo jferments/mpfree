@@ -5,7 +5,9 @@ A fake `ssh` stands in for the client and for Akai's SSH server: it checks the h
 known_hosts file it is given, lets a login in the way the server's loaded settings say (no key while
 allow-access.conf said `AuthenticationMethods none` at the last reload, otherwise only a key listed in
 /data/ssh/authorized_keys), keeps an OpenSSH-style control connection, and runs the remote scripts
-under BusyBox against a fake root folder. A fake `systemctl reload sshd.service` loads the settings.
+under BusyBox against a fake root folder. Like OpenSSH in batch mode, it can use a key with a passphrase
+only through the SSH agent, and only when the agent is not turned off (IdentityAgent=none); a fake
+`ssh-add -L` lists the agent's keys. A fake `systemctl reload sshd.service` loads the settings.
 """
 import os
 import re
@@ -58,12 +60,20 @@ lines = open(known).read().splitlines() if known and os.path.isfile(known) else 
 if want not in lines:
     print("Host key verification failed.", file=sys.stderr)
     sys.exit(255)
+def usable(key):
+    """As OpenSSH in batch mode: a key with a passphrase only through the agent, which IdentityAgent=none turns off."""
+    plain = subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", key], stdin=subprocess.DEVNULL, capture_output=True)
+    if plain.returncode == 0:
+        return True
+    return (opts.get("identityagent", "default") != "none" and bool(os.environ.get("SSH_AUTH_SOCK"))
+            and os.environ.get("FAKE_AGENT") == "holds-key")
 def allowed():
     with open(state) as fh:
         loaded = fh.read()
     if "AuthenticationMethods none" in loaded:
         return True
-    if opts.get("pubkeyauthentication") == "yes" and "-i" in opts and os.environ.get("FAKE_KEYS") != "ignored":
+    if (opts.get("pubkeyauthentication") == "yes" and "-i" in opts and os.environ.get("FAKE_KEYS") != "ignored"
+            and usable(opts["-i"])):
         mine = open(opts["-i"] + ".pub").read().split()[:2]
         path = os.path.join(root, "data/ssh/authorized_keys")
         held = [l.split()[:2] for l in open(path).read().splitlines()] if os.path.isfile(path) else []
@@ -77,6 +87,9 @@ if "-N" in flags:
     log.write("ssh: open control\n")
     sys.exit(0)
 via = control != "none" and os.path.exists(control)
+if not via:
+    log.write(f"ssh: login key={opts.get('pubkeyauthentication', 'default')} "
+              f"agent={opts.get('identityagent', 'default')}\n")
 if not via and not allowed():
     print("root@host: Permission denied (publickey).", file=sys.stderr)
     sys.exit(255)
@@ -93,6 +106,14 @@ if command == "sh -s":
     sys.exit(subprocess.run([os.path.join(os.environ["FAKE_REMOTE_PATH"], "sh"), "-c", script], env=env).returncode)
 print(f"fake ssh: command not allowed: {command}", file=sys.stderr)
 sys.exit(255)
+'''
+
+FAKE_SSH_ADD = r'''#!/bin/sh
+[ "$1" = -L ] || exit 2
+[ -n "$SSH_AUTH_SOCK" ] || { echo "Could not open a connection to your authentication agent." >&2; exit 2; }
+[ "$FAKE_AGENT" = holds-key ] || { echo "The agent has no identities."; exit 1; }
+echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyOtherKeyOtherKeyOtherKeyOtherKey other@workstation"
+cat "$FAKE_AGENT_PUB"
 '''
 
 FAKE_KEYSCAN = r'''#!/bin/sh
@@ -169,6 +190,7 @@ class DevmodeLoginTests(unittest.TestCase):
         fakebin, remote = os.path.join(t, "fakebin"), os.path.join(t, "remote-bin")
         write(os.path.join(fakebin, "ssh"), FAKE_SSH, 0o755)
         write(os.path.join(fakebin, "ssh-keyscan"), FAKE_KEYSCAN, 0o755)
+        write(os.path.join(fakebin, "ssh-add"), FAKE_SSH_ADD, 0o755)
         os.symlink(shutil.which("ssh-keygen"), os.path.join(fakebin, "ssh-keygen"))
         os.makedirs(remote)
         for name in APPLETS:
@@ -375,6 +397,70 @@ class DevmodeLoginTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("is not one ssh-ed25519 public key line; nothing was sent", res.stdout)
         self.assertNotIn("sh -s", read(self.log))
+
+    def give_the_key_a_passphrase(self):
+        res = subprocess.run(["ssh-keygen", "-q", "-p", "-P", "", "-N", "a long passphrase", "-f", self.key],
+                             capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertNotEqual(subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", self.key],
+                                           stdin=subprocess.DEVNULL, capture_output=True).returncode, 0)
+
+    def test_a_key_with_a_passphrase_is_used_through_the_agent(self):
+        # Q2 of the 16 Nov round: the owner's key has a passphrase and lives in his SSH agent. The lock's
+        # logins turned the agent off, so the key was refused after the lock and the lock undid itself.
+        self.give_the_key_a_passphrase()
+        agent = {"SSH_AUTH_SOCK": os.path.join(self.tmp, "agent.sock"), "FAKE_AGENT": "holds-key",
+                 "FAKE_AGENT_PUB": self.key + ".pub"}
+        self.trust()
+        before = self.files()
+        res = self.run_helper("status", **agent)
+        self.assertIn("your key on this computer: usable: it is in your SSH agent", res.stdout)
+        res = self.run_helper("lock", "LOCK\n", **agent)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("your key on this computer: usable: it is in your SSH agent", res.stdout)
+        self.assertIn("LOCKED: the login with no key is refused and your key gets in", res.stdout)
+        self.assertEqual(self.files()["data/ssh/authorized_keys"], self.pub + "\n")
+        res = self.run_helper("status", **agent)
+        self.assertIn("LOCKED: only your key gets in.", res.stdout)
+        res = self.run_helper("unlock", "UNLOCK\n", **agent)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.files(), before)
+        logins = re.findall(r"ssh: login key=(\S+) agent=(\S+)", read(self.log))
+        self.assertTrue(logins)
+        for key, agent_opt in logins:
+            self.assertEqual(agent_opt, "default" if key == "yes" else "none", logins)
+
+    def test_a_key_with_a_passphrase_not_in_the_agent_stops_before_any_change(self):
+        self.give_the_key_a_passphrase()
+        self.trust()
+        before = self.files()
+        for env in ({}, {"SSH_AUTH_SOCK": os.path.join(self.tmp, "agent.sock")}):
+            with self.subTest(agent=bool(env)):
+                res = self.run_helper("status", **env)
+                self.assertEqual(res.returncode, 0, res.stdout)
+                self.assertIn("your key on this computer: not usable without a question", res.stdout)
+                self.assertIn(f"first run  ssh-add {self.key}", res.stdout)
+                write(self.log, "")
+                for action, word in (("lock", "LOCK\n"), ("unlock", "UNLOCK\n")):
+                    res = self.run_helper(action, word, **env)
+                    self.assertEqual(res.returncode, 1, res.stdout)
+                    self.assertIn(f"STOP: your key needs its passphrase and is not in your SSH agent", res.stdout)
+                    self.assertIn(f"    ssh-add {self.key}\n", res.stdout)
+                    self.assertIn("Nothing was changed", res.stdout)
+                    self.assertNotIn("Type ", res.stdout, "it stops before asking")
+                self.assertEqual(read(self.log), "", "nothing reached the MPC")
+                self.assertEqual(self.files(), before)
+
+    def test_a_key_that_is_not_its_pub_is_never_sent(self):
+        self.trust()
+        other = os.path.join(self.tmp, "other")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", other], check=True, capture_output=True)
+        shutil.copy(other + ".pub", self.key + ".pub")
+        write(self.log, "")
+        res = self.run_helper("lock", "LOCK\n")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("are two different keys; nothing was sent to the MPC", res.stdout)
+        self.assertEqual(read(self.log), "")
 
     def test_wrapper_modes(self):
         wrapper = read(WRAPPER)
