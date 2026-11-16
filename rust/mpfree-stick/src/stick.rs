@@ -69,11 +69,72 @@ pub struct Programs {
     /// The startup screen, `mpfree-startup`: it plays once per power-on,
     /// and the pad player keeps its last frame until it draws.
     pub startup: Vec<u8>,
+    /// The Plugins place's download helper, [`FETCH_FILE`], if the folder
+    /// has it: linked dynamically, since the static pad player can't open
+    /// libcurl itself (`mpfree_mpcstore::fetch`). Without it the stick
+    /// installs plugins from zips only.
+    pub fetch: Option<Vec<u8>>,
 }
 
 /// The programs' file names in a programs folder: the pad player, the log
 /// display and the startup screen.
 pub const PROGRAM_FILES: [&str; 3] = ["mpfree", "mpfree-screen-log", "mpfree-startup"];
+/// The download helper's file name in a programs folder (optional).
+pub const FETCH_FILE: &str = "mpfree-fetch";
+/// The newest glibc the MPC One has (3.10.1 reports 2.39).
+pub const MPC_GLIBC: (u32, u32) = (2, 39);
+
+/// Why `b` can't be the download helper: it must be an ARM program linked
+/// dynamically for the MPC's loader, asking for no glibc newer than
+/// [`MPC_GLIBC`] (cargo zigbuild for glibc 2.34 makes one).
+pub fn fetch_problem(b: &[u8]) -> Option<String> {
+    if !arm_elf(b) {
+        return Some("not a program for the MPC (32-bit ARM)".into());
+    }
+    let u32_at = |at: usize| {
+        b.get(at..at + 4)
+            .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize)
+    };
+    let u16_at = |at: usize| {
+        b.get(at..at + 2)
+            .map(|s| u16::from_le_bytes([s[0], s[1]]) as usize)
+    };
+    let (Some(phoff), Some(size), Some(n)) = (u32_at(28), u16_at(42), u16_at(44)) else {
+        return Some("cut short".into());
+    };
+    let interp = (0..n).find_map(|i| {
+        let h = phoff + i * size;
+        (u32_at(h)? == 3).then_some(())?;
+        let (off, len) = (u32_at(h + 4)?, u32_at(h + 16)?);
+        b.get(off..off + len)
+    });
+    if interp.map(|i| i.strip_suffix(b"\0").unwrap_or(i)) != Some(b"/lib/ld-linux-armhf.so.3") {
+        return Some(
+            "not linked dynamically for the MPC's loader (it opens libcurl, so it must not be static)"
+                .into(),
+        );
+    }
+    let mut newest = (0, 0);
+    for (i, w) in b.windows(8).enumerate() {
+        if w != b"GLIBC_2." {
+            continue;
+        }
+        let digits: String = b[i + 8..]
+            .iter()
+            .take_while(|c| c.is_ascii_digit())
+            .map(|&c| c as char)
+            .collect();
+        if let Ok(minor) = digits.parse::<u32>() {
+            newest = newest.max((2, minor));
+        }
+    }
+    (newest > MPC_GLIBC).then(|| {
+        format!(
+            "built against glibc {}.{}, newer than the MPC's {}.{}",
+            newest.0, newest.1, MPC_GLIBC.0, MPC_GLIBC.1
+        )
+    })
+}
 
 /// Is this a 32-bit little-endian ARM ELF executable?
 pub fn arm_elf(b: &[u8]) -> bool {
@@ -100,10 +161,29 @@ impl Programs {
             Ok(b)
         };
         let [pad_player, screen_log, startup] = PROGRAM_FILES;
+        let fetch = match std::fs::read(dir.join(FETCH_FILE)) {
+            Ok(b) => match fetch_problem(&b) {
+                None => Some(b),
+                Some(why) => {
+                    return Err(bad(format!(
+                        "{} is {why}; build it with cargo zigbuild for armv7-unknown-linux-gnueabihf.2.34",
+                        dir.join(FETCH_FILE).display()
+                    )))
+                }
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("{}: {e}", dir.join(FETCH_FILE).display()),
+                ))
+            }
+        };
         Ok(Programs {
             pad_player: read(pad_player)?,
             screen_log: read(screen_log)?,
             startup: read(startup)?,
+            fetch,
         })
     }
 }
@@ -647,6 +727,11 @@ pub fn apply<'a>(
                 programs.screen_log.clone()
             }
             Content::Placeholder(p) if *p == r.placeholders["startup"] => programs.startup.clone(),
+            // Only when the programs folder has the helper.
+            Content::Placeholder(p) if *p == r.placeholders["fetch"] => match &programs.fetch {
+                Some(b) => b.clone(),
+                None => continue,
+            },
             Content::Placeholder(p) if *p == r.placeholders["host_key"] => ssh
                 .ok_or_else(|| bad("the host key is only for developer SSH"))?
                 .host_private
@@ -688,6 +773,16 @@ pub fn apply<'a>(
         }
     }
     notes.push(format!("stubbed: {}", stubbed.join(" ")));
+    notes.push(match &programs.fetch {
+        Some(b) => format!(
+            "download helper: {FETCH_FILE} ({} bytes, sha256 {}): the Plugins place downloads through it",
+            b.len(),
+            update::hex(&Sha256::digest(b))
+        ),
+        None => format!(
+            "download helper: none (no {FETCH_FILE} in the programs folder): the Plugins place installs from zips on the stick only"
+        ),
+    });
     if ssh.is_some() {
         let (shadow, perm) = file_text(tree, "/etc/shadow", read)?;
         if let Some(edited) = shadow_edit(&shadow)? {

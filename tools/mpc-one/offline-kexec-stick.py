@@ -175,6 +175,15 @@ Optional inputs:
                       folder. They are Akai's sounds: the stick stays private
   --app-user          with --app: run the pad player as the mpfree user, not
                       root (see above)
+  --fetch FILE        with --app: mpfree-fetch, the Plugins place's download
+                      helper, beside the pad player (/etc/mpfree-test/). The
+                      static pad player can't open libcurl itself, so this
+                      one is linked DYNAMICALLY against the MPC's glibc
+                      (2.39 or older), never with +crt-static:
+                      cargo zigbuild --manifest-path rust/Cargo.toml --release \
+                        --locked --target armv7-unknown-linux-gnueabihf.2.34 \
+                        -p mpfree-mpcstore --bin mpfree-fetch
+                      Without it the Plugins place installs from zips only
   --dev-tools DIR     with --app: developer tools for Akai's system, on
                       partition 3 under /mpfree-dev (see above)
   --akai-app          start Akai's app at power-on instead (see above); not
@@ -238,6 +247,10 @@ PANEL = "/mipi@ff960000/panel@0"
 SCREEN_LOG_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release",
                                 "mpfree-screen-log")
 SCREEN_LOG_MAX = 16 << 20
+# --fetch: the Plugins place's download helper, beside the pad player. Dynamic (the pad player is static and
+# can't open libcurl: mpfree-mpcstore's fetch.rs), so it must not ask for a newer glibc than the MPC's.
+FETCH_PROGRAM = "/etc/mpfree-test/mpfree-fetch"
+FETCH_MAX_GLIBC = (2, 39)
 SAFE = re.compile(r"^[A-Za-z0-9@._+/=-]+$")
 SAFE_UNIT = re.compile(r"^[A-Za-z0-9@._\\-]+$")
 
@@ -1425,6 +1438,51 @@ def static_arm_program(path):
     return data
 
 
+def dynamic_arm_program(path, max_glibc=FETCH_MAX_GLIBC):
+    """The file's bytes, checked to be a dynamically linked ARM EABI5 hard-float executable for the MPC's loader
+    that asks for no glibc newer than max_glibc."""
+    with open(path, "rb") as fh:
+        data = fh.read(SCREEN_LOG_MAX + 1)
+    problem = None
+    if len(data) > SCREEN_LOG_MAX or len(data) < 52 or data[:7] != b"\x7fELF\x01\x01\x01":
+        problem = "not a 32-bit little-endian ELF file of a plausible size"
+    else:
+        e_type, e_machine = struct.unpack_from("<HH", data, 16)
+        phoff, = struct.unpack_from("<I", data, 28)
+        flags, = struct.unpack_from("<I", data, 36)
+        phentsize, phnum = struct.unpack_from("<HH", data, 42)
+        heads = [struct.unpack_from("<IIIII", data, phoff + i * phentsize) for i in range(phnum)] \
+            if phentsize >= 32 and phoff + phnum * phentsize <= len(data) else None
+        interp = [data[h[1]:h[1] + h[4]].rstrip(b"\0") for h in heads or () if h[0] == 3]
+        needs = [tuple(map(int, m)) for m in re.findall(rb"GLIBC_(\d+)\.(\d+)", data)]
+        if e_type not in (2, 3) or e_machine != 40:
+            problem = "not an ARM executable"
+        elif flags & 0xFF000000 != 0x05000000 or not flags & 0x400:
+            problem = "not EABI5 hard-float"
+        elif heads is None:
+            problem = "its program headers run past the end"
+        elif interp != [b"/lib/ld-linux-armhf.so.3"]:
+            problem = "not linked dynamically for the MPC's loader (it must not be static: it opens libcurl)"
+        elif needs and max(needs) > max_glibc:
+            problem = (f"built against glibc {'.'.join(map(str, max(needs)))}, newer than the MPC's "
+                       f"{'.'.join(map(str, max_glibc))}")
+    if problem:
+        raise Stop(f"{path} is {problem}; build it with cargo zigbuild as --fetch's help says")
+    return data
+
+
+def fetch_input(args):
+    """--fetch: (path, bytes) of the download helper, or (None, None)."""
+    if not args.fetch:
+        return None, None
+    if not args.app:
+        raise Stop("--fetch needs --app: it is the pad player's download helper")
+    path = os.path.realpath(args.fetch)
+    if not os.path.isfile(path):
+        raise Stop(f"missing {path}: build mpfree-fetch first")
+    return path, dynamic_arm_program(path)
+
+
 def newest(pattern):
     found = sorted(glob.glob(pattern))
     return found[-1] if found else None
@@ -1644,7 +1702,7 @@ def chain_kexec_check(img, scratch):
 
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
                  app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None,
-                 app_user=False, chain=False):
+                 app_user=False, chain=False, fetch=None):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
@@ -1660,9 +1718,12 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     mounts its partitions as root first. Without it, nothing here differs from a build before --app-user.
     With `chain` (only with `kexec_files` and a kexec-file command line in `softreboot`), mpfree-test-chain.service
     is installed, listed in SOFTREBOOT_DIR's SHA256SUMS with KEXEC_DIR's files, and Akai's KEXEC_PROGRAM is
-    left in place (not stubbed). Without it, nothing here differs from a build before --chain."""
+    left in place (not stubbed). Without it, nothing here differs from a build before --chain.
+    With `fetch` (only with `app`), FETCH_PROGRAM is the Plugins place's download helper."""
     if app_user and app is None:
         raise Stop("--app-user needs --app: it changes who the pad player runs as")
+    if fetch is not None and app is None:
+        raise Stop("--fetch needs --app: it is the pad player's download helper")
     if chain and not (kexec_files and softreboot and softreboot[2]):
         raise Stop("--chain needs the kexec-file route and the stick's own kernel and device tree")
     if akai_app:
@@ -1686,7 +1747,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     if chain:
         chain_kexec_check(img, scratch)
     splash_program, font_name, font = splash
-    extra = len(splash_program or b"") + len(font or b"") + len(app or b"")
+    extra = len(splash_program or b"") + len(font or b"") + len(app or b"") + len(fetch or b"")
     free_bytes, free_inodes = img.free()
     if free_bytes < len(screen_log) + extra + (4 << 20) or free_inodes < 64:
         raise Stop(f"the image has too little room for the changes ({free_bytes} bytes, {free_inodes} inodes free)")
@@ -1762,6 +1823,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                               power=f" --power-request {POWER_REQUEST}"), 0o755)
         add("/etc/systemd/system/mpfree-test-app.service",
             APP_UNIT.format(after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
+    if fetch is not None:
+        add(FETCH_PROGRAM, fetch, 0o755)
     if app is not None:
         add(POWER_FILES[0], POWER_SCRIPT.format(request=POWER_REQUEST), 0o755)
         add(POWER_FILES[1], POWER_PATH_UNIT.format(request=POWER_REQUEST), 0o644)
@@ -1983,6 +2046,9 @@ def main(argv):
                     help="start Akai's app at power-on (for developer mode); every flasher stays a stub")
     ap.add_argument("--app-user", action="store_true",
                     help="with --app: run the pad player as the mpfree user, without root (opt-in)")
+    ap.add_argument("--fetch", metavar="FILE",
+                    help="with --app: mpfree-fetch, the Plugins place's download helper (dynamic ARM, glibc 2.39 "
+                         "or older; see above), beside the pad player")
     ap.add_argument("--dev-tools", metavar="DIR",
                     help="with --app: a folder of developer tools for Akai's system, copied to partition 3 under "
                          "/mpfree-dev (see above)")
@@ -2027,6 +2093,7 @@ def main(argv):
     screen_path, screen_log = screen_log_program()
     splash = splash_inputs(args)
     app_path, app, kits_path, kits = app_inputs(args, work)
+    fetch_path, fetch = fetch_input(args)
     dev = dev_tools_input(args)
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -2209,7 +2276,12 @@ def main(argv):
                                                                   screen_log, rotation, splash, app, kits_uuid,
                                                                   data_uuid, args.akai_app, kexec_files,
                                                                   (release, args.preload_module, kexec_file_cmdline),
-                                                                  args.app_user, args.chain)
+                                                                  args.app_user, args.chain, fetch)
+        if fetch:
+            OUT.say(f"download helper: {fetch_path} ({len(fetch)} bytes, sha256 {hashlib.sha256(fetch).hexdigest()}, "
+                    f"dynamic ARM EABI5 hard-float), at {FETCH_PROGRAM}: the Plugins place downloads through it")
+        elif app:
+            OUT.say("download helper: none (no --fetch): the Plugins place installs from zips on the stick only")
         if args.app_user:
             OUT.say(f"  {APP_USER} is in the groups: {' '.join(app_user_groups(img, scratch))}"
                     + ("" if "systemd-journal" in app_user_groups(img, scratch) else

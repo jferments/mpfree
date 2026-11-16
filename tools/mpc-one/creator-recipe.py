@@ -3,7 +3,7 @@
 
 The creator (rust/mpfree-stick) makes the same changes to a copy of Akai's root filesystem as
 offline-kexec-stick.py does for the soft-reboot boot with the pad player as the mpfree user and MPFree's
-startup screen (--app --app-user --splash mpfree-startup, no --akai-app, no kexec files). To keep the two
+startup screen (--app --app-user --splash mpfree-startup --fetch, no --akai-app, no kexec files). To keep the two
 from drifting, this tool doesn't restate those changes: it RUNS the builder's own build_rootfs on a tiny
 fake root filesystem, with placeholders such as @LOG_UUID@ for every value that differs from stick to
 stick, and records what build_rootfs wrote (paths, modes, contents and links). The creator fills in the
@@ -44,6 +44,8 @@ HOSTKEY = b"@HOST_KEY@\n"
 APP = b"@PAD_PLAYER@"
 SCREEN_LOG = b"@SCREEN_LOG@"
 STARTUP = b"@STARTUP@"
+# The Plugins place's download helper (--fetch): the creator writes it only when its programs folder has one.
+FETCH = b"@FETCH@"
 
 
 def builder():
@@ -108,7 +110,8 @@ def recipe():
         b.OUT.lines = []
         _, stubbed, absent, links, written = b.build_rootfs(
             img, scratch, PUBKEY, host_key, LOG_UUID, SCREEN_LOG, ROTATION, app=APP, kits_uuid=KITS_UUID,
-            data_uuid=DATA_UUID, softreboot=(RELEASE, (), None), app_user=True, splash=(STARTUP, None, None))
+            data_uuid=DATA_UUID, softreboot=(RELEASE, (), None), app_user=True, splash=(STARTUP, None, None),
+            fetch=FETCH)
         if absent:
             raise SystemExit(f"the fake root lacks stub programs: {absent}")
         from_image = {"/etc/shadow", "/etc/passwd", "/etc/group", *stubbed}
@@ -121,7 +124,7 @@ def recipe():
             if owner != (0, 0):
                 raise SystemExit(f"{path} is not root's")
             entry = {"mode": mode}
-            if data in (APP, SCREEN_LOG, STARTUP, HOSTKEY):
+            if data in (APP, SCREEN_LOG, STARTUP, HOSTKEY, FETCH):
                 entry["placeholder"] = data.decode().strip()
             else:
                 entry["text"] = data.decode("utf-8", "strict")
@@ -137,7 +140,8 @@ def recipe():
             "placeholders": {"log_uuid": LOG_UUID, "kits_uuid": KITS_UUID, "data_uuid": DATA_UUID,
                              "release": RELEASE, "rotation": ROTATION, "authorized_keys": PUBKEY.strip(),
                              "host_key": HOSTKEY.decode().strip(), "pad_player": APP.decode(),
-                             "screen_log": SCREEN_LOG.decode(), "startup": STARTUP.decode()},
+                             "screen_log": SCREEN_LOG.decode(), "startup": STARTUP.decode(),
+                             "fetch": FETCH.decode()},
             "files": files,
             "links": link_targets,
             "mkdirs": mkdirs,

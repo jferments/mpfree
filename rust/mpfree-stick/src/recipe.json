@@ -60,6 +60,10 @@
    "mode": 493,
    "placeholder": "@PAD_PLAYER@"
   },
+  "/etc/mpfree-test/mpfree-fetch": {
+   "mode": 493,
+   "placeholder": "@FETCH@"
+  },
   "/etc/mpfree-test/mpfree-screen-log": {
    "mode": 493,
    "placeholder": "@SCREEN_LOG@"
@@ -190,6 +194,7 @@
  "placeholders": {
   "authorized_keys": "@AUTHORIZED_KEYS@",
   "data_uuid": "@DATA_UUID@",
+  "fetch": "@FETCH@",
   "host_key": "@HOST_KEY@",
   "kits_uuid": "@KITS_UUID@",
   "log_uuid": "@LOG_UUID@",
