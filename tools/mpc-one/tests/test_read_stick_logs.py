@@ -40,6 +40,33 @@ def digest(path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
+class NewestBuildTests(unittest.TestCase):
+    def test_the_newest_of_both_builders_folders_by_the_time_in_its_name(self):
+        spec = importlib.util.spec_from_file_location("read_stick_logs", TOOL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        other = "0a0b0c0d-0e0f-4a1b-8c2d-3e4f5a6b7c8d"
+        with tempfile.TemporaryDirectory() as work:
+            old = os.path.join(work, "kexec-stick-20261110T000000Z-abc")
+            write(os.path.join(old, "stick.img"), b"\0")
+            write(os.path.join(old, "report.txt"), f"partition 2 logs PARTUUID {LOG_UUID}\n")
+            self.assertEqual(mod.newest_build(work), (old, LOG_UUID))
+            # The USB creator's record (mpfree-stick write --record): report.txt, no stick.img.
+            new = os.path.join(work, "creator-stick-20261116T030000Z")
+            write(os.path.join(new, "report.txt"), f"its kernel release: x\npartition 2 logs PARTUUID {other}\n")
+            self.assertEqual(mod.newest_build(work), (new, other))
+            # Passed over: a creator folder without its report, one with no time in its name, a kexec folder
+            # without its stick.img.
+            write(os.path.join(work, "creator-stick-20261117T000000Z", "known_hosts"), "x\n")
+            write(os.path.join(work, "creator-stick-later", "report.txt"), "x\n")
+            write(os.path.join(work, "kexec-stick-20261118T000000Z-def", "report.txt"), "x\n")
+            self.assertEqual(mod.newest_build(work)[0], new)
+            newer = os.path.join(work, "kexec-stick-20261116T040000Z-xyz")
+            write(os.path.join(newer, "stick.img"), b"\0")
+            write(os.path.join(newer, "report.txt"), f"partition 2 logs PARTUUID {LOG_UUID}\n")
+            self.assertEqual(mod.newest_build(work), (newer, LOG_UUID))
+
+
 @unittest.skipUnless(HAVE_TOOLS, "needs e2fsprogs (mke2fs, debugfs, e2fsck)")
 class ReaderTests(unittest.TestCase):
     def setUp(self):
@@ -164,7 +191,7 @@ class ReaderTests(unittest.TestCase):
         os.remove(os.path.join(self.work, "kexec-stick-20261110T000000Z-abc", "stick.img"))
         res = self.reader()
         self.assertEqual(res.returncode, 1, res.stdout)
-        self.assertIn("no kexec-stick folder with a stick.img", res.stdout)
+        self.assertIn("no kexec-stick folder with a stick.img, or creator-stick folder with a report.txt", res.stdout)
         self.assertEqual(self.reader("--help").returncode, 2)
 
     @unittest.skipUnless(os.geteuid() == 0 and shutil.which("mount", path=SBIN_PATH), "needs root to loop-mount")

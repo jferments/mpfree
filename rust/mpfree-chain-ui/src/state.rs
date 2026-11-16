@@ -186,6 +186,81 @@ pub struct ChainState {
     /// ([`crate::eq_page`]), `params` hold every one of its controls and
     /// there are no sections or page tabs.
     pub eq: bool,
+    /// The selected effect's presets, for the list its name in the header
+    /// opens: "Defaults", then its factory presets (a family's, those of
+    /// the mode it is in). Empty when it has none (a plugin).
+    pub presets: Vec<PresetPick>,
+    /// The one of [`ChainState::presets`] its settings are now, if any.
+    pub preset: Option<usize>,
+}
+
+/// One entry of the header's presets list: its name and every value
+/// loading it sets (each settable control but Mix and Quality, which
+/// stay as they are: a preset sets the sound, not how much of it is
+/// heard or what it costs).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresetPick {
+    pub name: &'static str,
+    /// The engine it is for (the insert's `info().id`).
+    pub id: &'static str,
+    pub values: Vec<(u16, f32)>,
+}
+
+/// Insert `n`'s presets for the header's list ([`ChainState::presets`]),
+/// in the mode `found` of its family, if it is in one.
+fn preset_picks(
+    n: &dyn Node,
+    found: Option<(&'static mpfree_fx::families::Family, Option<usize>)>,
+) -> Vec<PresetPick> {
+    let id = n.info().id;
+    let (list, fixed): (Vec<&'static mpfree_fx::Preset>, &[(u16, f32)]) = match found {
+        Some((f, Some(m))) => (
+            mpfree_fx::families::presets(f)
+                .into_iter()
+                .filter(|p| p.mode == m && p.id == id)
+                .map(|p| p.preset)
+                .collect(),
+            f.modes[m].fixed,
+        ),
+        // A Cloud reverb set to its own Plate or Room: in no mode, so no
+        // mode's presets.
+        Some((_, None)) => return Vec::new(),
+        None => (mpfree_fx::picker::presets(id).iter().collect(), &[]),
+    };
+    if list.is_empty() {
+        return Vec::new();
+    }
+    let values = |preset: Option<&mpfree_fx::Preset>| -> Vec<(u16, f32)> {
+        n.params()
+            .iter()
+            .filter(|p| !p.readonly && !matches!(p.name, "Mix" | "Quality"))
+            .map(|p| {
+                let set = |vals: &[(u16, f32)]| vals.iter().find(|(q, _)| *q == p.id).map(|v| v.1);
+                let v = set(fixed)
+                    .or_else(|| preset.and_then(|pr| set(pr.values)))
+                    .unwrap_or(p.default);
+                (p.id, p.clamp(v))
+            })
+            .collect()
+    };
+    std::iter::once(PresetPick {
+        name: "Defaults",
+        id,
+        values: values(None),
+    })
+    .chain(list.into_iter().map(|p| PresetPick {
+        name: p.name,
+        id,
+        values: values(Some(p)),
+    }))
+    .collect()
+}
+
+/// Whether insert `n`'s settings are what loading `pick` sets.
+fn plays(n: &dyn Node, pick: &PresetPick) -> bool {
+    pick.values
+        .iter()
+        .all(|&(id, v)| (n.param(id) - v).abs() <= 1e-4 * (1.0 + v.abs()))
 }
 
 /// The selected insert's family and its modes, for the Mode chooser.
@@ -230,6 +305,8 @@ impl Default for ChainState {
             shelf: mpfree_fx::picker::Shelf::default(),
             mode: None,
             eq: false,
+            presets: Vec::new(),
+            preset: None,
         }
     }
 }
@@ -457,6 +534,7 @@ impl ChainState {
             .or(if slots.is_empty() { None } else { Some(0) });
         let mut page = PageView::default();
         let mut mode = None;
+        let (mut presets, mut preset) = (Vec::new(), None);
         if let (Some(s), Some(n)) = (selected, selected.and_then(|s| chain.node(s))) {
             let owner = Owner::Insert(strip, slots[s].uid);
             let found = mpfree_fx::families::node_mode(n);
@@ -474,6 +552,8 @@ impl ChainState {
             } else {
                 crate::sections::page_view(n, owner, engine, hide, group)
             };
+            presets = preset_picks(n, found);
+            preset = presets.iter().position(|p| plays(n, p));
         }
         let eq = selected
             .and_then(|s| chain.node(s))
@@ -529,6 +609,8 @@ impl ChainState {
             shelf: mpfree_fx::picker::Shelf::default(),
             mode,
             eq,
+            presets,
+            preset,
         }
     }
 

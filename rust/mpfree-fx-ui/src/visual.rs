@@ -17,12 +17,13 @@
 
 use crate::state::{FxState, Scratch};
 use mpfree_fx::ids::{
-    character, chorus, cloud, comb, compressor as comp, crush, delay, drive, ducker, eq, filter,
-    flanger, harmonizer as harm, lofi, master, phaser, pitch, pitch_correct as tune, transient,
-    tuner,
+    channel_strip as cs, character, chorus, cloud, comb, compressor as comp, crush, delay, drive,
+    ducker, eq, filter, flanger, harmonizer as harm, lofi, master, multitap, phaser, pitch,
+    pitch_correct as tune, plate, room, spring, tape, transient, tuner,
 };
 use mpfree_fx::{
-    interval_semis, nearest_note, Cloud, Ducker, TransientShaper, DUCKER_RATE_BEATS, VOCAL_KEYS,
+    interval_semis, nearest_note, Cloud, Ducker, Svf, SvfMode, TransientShaper, DUCKER_RATE_BEATS,
+    VOCAL_KEYS,
 };
 use mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_synth_ui::format::value_text;
@@ -70,6 +71,12 @@ pub fn has_visuals(id: &str) -> bool {
             | "mpfree.fx.pitch_correct"
             | "mpfree.fx.harmonizer"
             | "mpfree.fx.tuner"
+            | "mpfree.fx.plate"
+            | "mpfree.fx.room"
+            | "mpfree.fx.spring"
+            | "mpfree.fx.tape_delay"
+            | "mpfree.fx.multitap"
+            | "mpfree.fx.channel_strip"
     )
 }
 
@@ -477,6 +484,7 @@ pub fn strip(
             );
         }
         Scratch::Comp(c) => comp_cards(&mut s, st, page, c, t),
+        Scratch::Strip(x) => strip_cards(&mut s, st, page, x, t),
         Scratch::Master(m) => {
             let y = |out: f32| (out / 1.25).clamp(0.0, 1.0);
             let curve: Vec<(f32, f32)> = (0..N)
@@ -543,6 +551,11 @@ pub fn strip(
             "mpfree.fx.pitch_correct" => tune_card(&mut s, st, page, t),
             "mpfree.fx.harmonizer" => harmony_card(&mut s, st, page, t),
             "mpfree.fx.tuner" => tuner_card(&mut s, st, page, t),
+            "mpfree.fx.plate" => plate_cards(&mut s, st, page, t),
+            "mpfree.fx.room" => room_cards(&mut s, st, page, t),
+            "mpfree.fx.spring" => spring_card(&mut s, st, page, t),
+            "mpfree.fx.tape_delay" => tape_cards(&mut s, st, page, t),
+            "mpfree.fx.multitap" => multitap_card(&mut s, st, page, t),
             _ => {}
         },
     }
@@ -786,18 +799,7 @@ fn delay_card(s: &mut Strip, st: &FxState, page: &str, d: &mpfree_fx::Delay, t: 
             ..line(vec![(at, 0.0), (at, 0.92 * a)], color)
         });
     }
-    let beat = 60_000.0 / st.bpm.max(1.0) as f32;
-    let step = if span / beat > 16.0 { 4.0 } else { 1.0 };
-    let grid = (1..)
-        .map(|b| b as f32 * step)
-        .take_while(|&b| b * beat < span)
-        .map(|b| {
-            (
-                x(b * beat),
-                format!("{} beat{}", b as u32, if b == 1.0 { "" } else { "s" }),
-            )
-        })
-        .collect();
+    let grid = beat_grid(span, st.bpm, x);
     let synced = st.value(delay::SYNC) >= 1.0;
     let mut caption = if synced {
         format!("{} · {}", text(st, delay::SYNC), ms_text(time))
@@ -1538,6 +1540,678 @@ fn tuner_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
             caption,
             traces,
             grid,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+// ------------------------------------------------- reverbs, tape, strip
+
+/// A one-pole low-pass `y += (x - y) k` at angular frequency `w` (radians
+/// per sample), in dB.
+fn one_pole_db(k: f32, w: f32) -> f32 {
+    let a = (1.0 - k).clamp(0.0, 1.0);
+    let den = 1.0 + a * a - 2.0 * a * w.cos();
+    10.0 * ((1.0 - a) * (1.0 - a) / den.max(1e-12)).max(1e-24).log10()
+}
+
+/// The one-pole coefficient the reverbs use for a corner at `hz`.
+fn pole_k(hz: f32, rate: u32) -> f32 {
+    (1.0 - (-std::f32::consts::TAU * hz / rate.max(1) as f32).exp()).min(1.0)
+}
+
+/// An SVF stage's gain at `hz`, in dB, set as the effect sets it.
+fn svf_db(mode: SvfMode, corner: f32, q: f32, gain: f32, rate: u32, hz: f32) -> f32 {
+    let mut f = Svf::default();
+    f.set(mode, corner, q, gain, rate);
+    let (re, im) = f.response(hz.min(0.49 * rate as f32), rate);
+    (10.0 * (re * re + im * im).max(1e-24).log10()) as f32
+}
+
+/// A reverb tail: silence for `pre`, then a fall to -60 dB over `decay`
+/// ms (cut short at `gate` ms after the start, when there is one), on a
+/// span of `span` ms, as a filled trace from 0.9 down.
+fn tail(pre: f32, decay: f32, gate: Option<f32>, span: f32, color: Color) -> Trace {
+    let x = |ms: f32| (ms / span).clamp(0.0, 1.0);
+    let end = gate.map_or(pre + decay, |g| (pre + g).min(pre + decay));
+    let top = 0.9;
+    // The level falls in a straight line in dB: 0.9 at the start, 0 at
+    // -60 dB.
+    let at_end = top * (1.0 - (end - pre) / decay.max(1.0));
+    filled(
+        vec![
+            (0.0, 0.0),
+            (x(pre), 0.0),
+            (x(pre), top),
+            (x(end), at_end.max(0.0)),
+            (x(end), 0.0),
+            (1.0, 0.0),
+        ],
+        color,
+    )
+}
+
+/// The plate: its decay (the pre-delay, then the tail to -60 dB) and its
+/// tone (the input's low cut and bandwidth, and the damping's loss each
+/// time round the tank, dashed).
+fn plate_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let (pre, decay) = (v(plate::PREDELAY), v(plate::DECAY));
+    let span = pre + decay * 1.15;
+    s.push(
+        Card {
+            title: "Decay · 60 dB".into(),
+            caption: format!(
+                "{} · pre {} · size {}",
+                ms_text(decay),
+                ms_text(pre),
+                text(st, plate::SIZE)
+            ),
+            traces: vec![tail(pre, decay, None, span, t.accent)],
+            grid: time_grid(span, |ms| ms / span),
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+    let rate = st.rate.max(1);
+    let (tone_k, damp_k) = (
+        pole_k(v(plate::TONE), rate),
+        1.0 - 0.85 * v(plate::DAMPING) / 100.0,
+    );
+    let w = |hz: f32| std::f32::consts::TAU * hz.min(0.49 * rate as f32) / rate as f32;
+    let input = freq_curve(
+        |hz| {
+            svf_db(SvfMode::HighPass, v(plate::LOW_CUT), 0.707, 0.0, rate, hz)
+                + one_pole_db(tone_k, w(hz))
+        },
+        -30.0,
+        30.0,
+    );
+    let damp = freq_curve(|hz| one_pole_db(damp_k, w(hz)), -30.0, 30.0);
+    s.push(
+        Card {
+            title: "Tone".into(),
+            caption: format!(
+                "{} to {} · damping {}",
+                text(st, plate::LOW_CUT),
+                text(st, plate::TONE),
+                text(st, plate::DAMPING)
+            ),
+            traces: vec![dashed(damp, t.warn), filled(input, t.accent)],
+            grid: freq_grid(),
+            midline: true,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// How much sooner a room's highs die than its lows over `secs`, in dB
+/// at `w`: the one-pole loss filter Jot's design puts in each line, with
+/// a gain of 1 at DC and, at Nyquist, the highs' extra loss over that
+/// time (Decay the lows' time to -60 dB, Damping how much sooner the
+/// highs get there).
+fn room_hf_db(decay_ms: f32, damping: f32, secs: f32, w: f32) -> f32 {
+    let rt = decay_ms * 0.001;
+    let rt_hi = (rt * (1.0 - 0.9 * damping / 100.0)).max(0.02);
+    let g = 10f32.powf(-3.0 * secs / rt);
+    let g_hi = 10f32.powf(-3.0 * secs / rt_hi);
+    let ratio = (g_hi / g).clamp(0.0, 1.0);
+    let a = (1.0 - ratio) / (1.0 + ratio);
+    let den = 1.0 + a * a - 2.0 * a * w.cos();
+    10.0 * ((1.0 - a) * (1.0 - a) / den.max(1e-12)).max(1e-24).log10()
+}
+
+/// The room: its decay (the pre-delay, the early reflections growing
+/// apart with Size, then the tail to -60 dB, cut short by Gate) and its
+/// tone (the low cut, and how much sooner the highs die over 100 ms,
+/// dashed).
+fn room_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let (pre, decay, gate) = (v(room::PREDELAY), v(room::DECAY), v(room::GATE));
+    let gate = (gate > 0.0).then_some(gate);
+    let span = pre + gate.map_or(decay, |g| g.min(decay)) * 1.15;
+    let x = |ms: f32| (ms / span).clamp(0.0, 1.0);
+    let mut traces = vec![tail(pre, decay, gate, span, t.accent)];
+    // The early reflections: eight taps from about 4 to 37 ms at full
+    // size, a quarter of that at the smallest and half as much again at
+    // the largest, each quieter than the one before.
+    let size = 0.25 + 1.25 * v(room::SIZE) / 100.0;
+    let early = v(room::EARLY) / 100.0;
+    for k in 0..8 {
+        let at = x(pre + size * (4.3 + 4.6 * k as f32));
+        let h = 0.9 * early * (0.84 - 0.08 * k as f32);
+        if h > 0.01 {
+            traces.push(Trace {
+                width: 3.0,
+                ..line(vec![(at, 0.0), (at, h)], t.good)
+            });
+        }
+    }
+    let mut caption = format!(
+        "{} · pre {} · early {}",
+        ms_text(decay),
+        ms_text(pre),
+        text(st, room::EARLY)
+    );
+    if let Some(g) = gate {
+        caption += &format!(" · gated at {}", ms_text(g));
+    }
+    s.push(
+        Card {
+            title: "Decay · 60 dB".into(),
+            caption,
+            traces,
+            grid: time_grid(span, x),
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+    let rate = st.rate.max(1);
+    let w = |hz: f32| std::f32::consts::TAU * hz.min(0.49 * rate as f32) / rate as f32;
+    let cut = freq_curve(
+        |hz| svf_db(SvfMode::HighPass, v(room::LOW_CUT), 0.707, 0.0, rate, hz),
+        -30.0,
+        30.0,
+    );
+    let damp = freq_curve(
+        |hz| room_hf_db(decay, v(room::DAMPING), 0.1, w(hz)),
+        -30.0,
+        30.0,
+    );
+    s.push(
+        Card {
+            title: "Tone".into(),
+            caption: format!(
+                "low cut {} · highs die {} sooner",
+                text(st, room::LOW_CUT),
+                text(st, room::DAMPING)
+            ),
+            traces: vec![dashed(damp, t.warn), filled(cut, t.accent)],
+            grid: freq_grid(),
+            midline: true,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The spring: its decay to -60 dB, with the spring's echo coming back
+/// each Length (a drip on each, as loud as Drip).
+fn spring_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let (length, decay) = (v(spring::LENGTH), v(spring::DECAY));
+    let span = decay * 1.15;
+    let x = |ms: f32| (ms / span).clamp(0.0, 1.0);
+    let mut traces = vec![tail(0.0, decay, None, span, t.accent)];
+    let drip = v(spring::DRIP) / 100.0;
+    // The first two dozen returns: later ones blur into the tail.
+    let mut k = 1;
+    while (k as f32) * length < decay && k <= 24 {
+        let ms = k as f32 * length;
+        let h = 0.9 * (1.0 - ms / decay) * (0.35 + 0.65 * drip);
+        traces.push(Trace {
+            width: 2.0,
+            ..line(vec![(x(ms), 0.0), (x(ms), h)], t.good)
+        });
+        k += 1;
+    }
+    s.push(
+        Card {
+            title: "Decay · 60 dB".into(),
+            caption: format!(
+                "{} · echo every {} · drip {}",
+                ms_text(decay),
+                ms_text(length),
+                text(st, spring::DRIP)
+            ),
+            traces,
+            grid: time_grid(span, x),
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// Beat lines across a span of `span` ms at `bpm`, at `x` of each time:
+/// up to eight, every beat or every 2, 4, 8 or 16 on a longer span.
+fn beat_grid(span: f32, bpm: f64, x: impl Fn(f32) -> f32) -> Vec<(f32, String)> {
+    let beat = 60_000.0 / bpm.max(1.0) as f32;
+    let step = [1.0, 2.0, 4.0, 8.0]
+        .into_iter()
+        .find(|&step| span / (beat * step) <= 8.0)
+        .unwrap_or(16.0);
+    (1..)
+        .map(|b| b as f32 * step)
+        .take_while(|&b| b * beat < span)
+        .map(|b| {
+            (
+                x(b * beat),
+                format!("{} beat{}", b as u32, if b == 1.0 { "" } else { "s" }),
+            )
+        })
+        .collect()
+}
+
+/// Time lines across a span of `span` ms, at `x` of each: up to six, a
+/// round step apart ("250 ms", "1 s", "1.5 s").
+fn time_grid(span: f32, x: impl Fn(f32) -> f32) -> Vec<(f32, String)> {
+    let step = [
+        10.0, 20.0, 50.0, 100.0, 200.0, 250.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0,
+    ]
+    .into_iter()
+    .find(|&step| span / step <= 6.0)
+    .unwrap_or(20_000.0);
+    (1..)
+        .map(|k| k as f32 * step)
+        .take_while(|&ms| ms < span * 0.96)
+        .map(|ms| {
+            let label = if ms >= 1000.0 {
+                format!("{} s", trim_num(ms / 1000.0))
+            } else {
+                format!("{ms:.0} ms")
+            };
+            (x(ms), label)
+        })
+        .collect()
+}
+
+/// A note value from its name as the delays' Sync choices write it, in
+/// beats: "1/8" half a beat, "1/8D" three quarters, "1/8T" a third,
+/// "1 bar" four.
+fn beats_of(name: &str) -> Option<f32> {
+    if name == "1 bar" {
+        return Some(4.0);
+    }
+    let (base, mul) = match name.strip_suffix('D') {
+        Some(b) => (b, 1.5),
+        None => match name.strip_suffix('T') {
+            Some(b) => (b, 2.0 / 3.0),
+            None => (name, 1.0),
+        },
+    };
+    let n: f32 = base.strip_prefix("1/")?.parse().ok()?;
+    Some(4.0 / n * mul)
+}
+
+/// The echoes of a delay line read at each of `taps` (ms, gain), whose
+/// reads at `fb_from` (ms, gain) go round the loop again at `fb`, up to
+/// `span` ms: each arrival's time, level and the tap it comes out of,
+/// the first pass first.
+fn echoes(
+    taps: &[(f32, f32)],
+    fb_from: &[(f32, f32)],
+    fb: f32,
+    span: f32,
+) -> Vec<(f32, f32, usize)> {
+    let mut out: Vec<(f32, f32, usize)> = taps
+        .iter()
+        .enumerate()
+        .filter(|(_, &(_, g))| g > 0.01)
+        .map(|(k, &(ms, g))| (ms, g, k))
+        .collect();
+    // Each pass round the loop: every arrival that is fed back comes back
+    // again at each feedback tap.
+    let mut wave: Vec<(f32, f32)> = vec![(0.0, 1.0)];
+    for _ in 1..12 {
+        let mut next = Vec::new();
+        for &(at, g) in &wave {
+            for &(ms, h) in fb_from {
+                let (t, a) = (at + ms, g * h * fb);
+                if t < span && a > 0.01 {
+                    next.push((t, a));
+                }
+            }
+        }
+        // Arrivals that land together add up.
+        next.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f32, f32)> = Vec::new();
+        for (t, a) in next {
+            match merged.last_mut() {
+                Some(m) if (t - m.0).abs() < 0.5 => m.1 += a,
+                _ => merged.push((t, a)),
+            }
+        }
+        merged.truncate(48);
+        for &(t0, a0) in &merged {
+            for (k, &(ms, g)) in taps.iter().enumerate() {
+                if t0 + ms < span && a0 * g > 0.01 {
+                    out.push((t0 + ms, a0 * g, k));
+                }
+            }
+        }
+        if merged.is_empty() {
+            break;
+        }
+        wave = merged;
+    }
+    out
+}
+
+/// A delay's repeats as bars on a beat grid: `arrivals` (ms, level, tap),
+/// the dry hit at 0, each bar in `color` of its tap.
+fn repeats_card(
+    arrivals: &[(f32, f32, usize)],
+    span: f32,
+    bpm: f64,
+    color: impl Fn(usize) -> Color,
+    t: &Theme,
+) -> (Vec<Trace>, Vec<(f32, String)>) {
+    let x = |ms: f32| 0.01 + 0.98 * ms / span;
+    let top = arrivals.iter().map(|a| a.1).fold(1.0f32, f32::max);
+    let mut traces = vec![Trace {
+        width: 4.0,
+        ..line(vec![(x(0.0), 0.0), (x(0.0), 0.92)], t.text_dim)
+    }];
+    for &(ms, a, tap) in arrivals {
+        traces.push(Trace {
+            width: 4.0,
+            ..line(vec![(x(ms), 0.0), (x(ms), 0.92 * a / top)], color(tap))
+        });
+    }
+    (traces, beat_grid(span, bpm, x))
+}
+
+/// The tape echo: its repeats (each head's first echo, then the loop's
+/// feedback from all of them, which is how two or three heads make their
+/// rhythm) and its tone (what a pass round the loop keeps: Tone, Low cut
+/// and the heads' bump, filled; after four passes, dashed).
+fn tape_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let sync = v(tape::SYNC) as usize;
+    let time = if sync > 0 {
+        let name = st
+            .index(tape::SYNC)
+            .and_then(|i| match st.params[i].curve {
+                mpfree_node::Curve::Choice(names) => names.get(sync).copied(),
+                _ => None,
+            })
+            .unwrap_or("1/4");
+        (beats_of(name).unwrap_or(1.0) * 60_000.0 / st.bpm.max(1.0) as f32).min(1300.0)
+    } else {
+        v(tape::TIME)
+    };
+    let heads = (v(tape::HEADS) as usize).min(2) + 1;
+    let at = [1.0, 1.95, 2.9];
+    let per = 1.0 / heads as f32;
+    let taps: Vec<(f32, f32)> = at.iter().take(heads).map(|&a| (time * a, per)).collect();
+    let fb = (v(tape::FEEDBACK) / 100.0).min(1.0);
+    let span = time * (at[heads - 1] + 6.0);
+    let arrivals = echoes(&taps, &taps, fb, span);
+    let (traces, grid) = repeats_card(&arrivals, span, st.bpm, |_| t.accent, t);
+    let caption = format!(
+        "{} · {} head{} · {} repeats",
+        if sync > 0 {
+            format!("{} · {}", text(st, tape::SYNC), ms_text(time))
+        } else {
+            ms_text(time)
+        },
+        heads,
+        if heads == 1 { "" } else { "s" },
+        arrivals.len()
+    );
+    s.push(
+        Card {
+            title: "Repeats".into(),
+            caption,
+            traces,
+            grid,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+    let rate = st.rate.max(1);
+    let pass = |hz: f32| {
+        svf_db(SvfMode::LowPass, v(tape::TONE), 0.6, 0.0, rate, hz)
+            + svf_db(SvfMode::HighPass, v(tape::LOW_CUT), 0.6, 0.0, rate, hz)
+            + svf_db(SvfMode::Bell, 110.0, 0.8, 2.0, rate, hz)
+    };
+    s.push(
+        Card {
+            title: "Tone".into(),
+            caption: format!(
+                "each pass: {} to {} · saturation {}",
+                text(st, tape::LOW_CUT),
+                text(st, tape::TONE),
+                text(st, tape::SATURATION)
+            ),
+            traces: vec![
+                dashed(freq_curve(|hz| 4.0 * pass(hz), -30.0, 30.0), t.warn),
+                filled(freq_curve(pass, -30.0, 30.0), t.accent),
+            ],
+            grid: freq_grid(),
+            midline: true,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The multi-tap delay: its four taps on the beat grid (coloured by side:
+/// left in the accent, right in green), and the pattern again from the
+/// last tap, as loud as Feedback.
+fn multitap_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let sixteenth = 15_000.0 / st.bpm.max(1.0) as f32;
+    let taps: Vec<(f32, f32, f32)> = (0..multitap::TAPS)
+        .map(|k| {
+            (
+                v(multitap::time(k)) * sixteenth,
+                v(multitap::level(k)) / 100.0,
+                v(multitap::pan(k)),
+            )
+        })
+        .collect();
+    let last = taps[multitap::TAPS - 1].0;
+    let fb = (v(multitap::FEEDBACK) / 100.0).min(1.0);
+    let span = taps.iter().map(|tp| tp.0).fold(0.0, f32::max).max(last) + last * 2.0 + sixteenth;
+    let gains: Vec<(f32, f32)> = taps.iter().map(|tp| (tp.0, tp.1)).collect();
+    let arrivals = echoes(&gains, &[(last, 1.0)], fb, span);
+    let (traces, grid) = repeats_card(
+        &arrivals,
+        span,
+        st.bpm,
+        |k| if taps[k].2 > 10.0 { t.good } else { t.accent },
+        t,
+    );
+    s.push(
+        Card {
+            title: "Repeats".into(),
+            caption: format!(
+                "taps at {} sixteenths · feedback {}",
+                taps.iter()
+                    .filter(|tp| tp.1 > 0.0)
+                    .map(|tp| format!("{:.0}", tp.0 / sixteenth))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                text(st, multitap::FEEDBACK)
+            ),
+            traces,
+            grid,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The Channel strip: its dynamics curve (the gate's drop by Range under
+/// its threshold, the compressor over its own, makeup), its EQ's response
+/// and its signal path, each stage dim while it is off.
+fn strip_cards(s: &mut Strip, st: &FxState, page: &str, x: &crate::state::StripScratch, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let on = |id: u16| v(id) >= 0.5;
+    let (gate_on, comp_on, eq_on) = (on(cs::GATE), on(cs::COMP), on(cs::EQ));
+    let (gate_thr, range) = (v(cs::GATE_THRESHOLD), v(cs::GATE_RANGE));
+    let comp_thr = v(cs::COMP_THRESHOLD);
+    let y = |out: f32| y_db(out, -60.0, 12.0);
+    let level = |db_in: f32| {
+        let mut out = db_in;
+        if gate_on && db_in < gate_thr {
+            out += range;
+        }
+        if comp_on {
+            out = x.comp.curve_db(out);
+        }
+        out
+    };
+    let curve: Vec<(f32, f32)> = (0..N)
+        .map(|k| {
+            let xx = k as f32 / (N - 1) as f32;
+            (xx, y(level(-60.0 + 60.0 * xx)))
+        })
+        .collect();
+    let at = |db: f32| ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+    let mut grid = Vec::new();
+    if gate_on {
+        grid.push((at(gate_thr), "gate".to_string()));
+    }
+    if comp_on {
+        grid.push((at(comp_thr), "comp".to_string()));
+    }
+    let mut caption = Vec::new();
+    if gate_on {
+        caption.push(format!(
+            "gate {} by {}",
+            text(st, cs::GATE_THRESHOLD),
+            text(st, cs::GATE_RANGE)
+        ));
+    }
+    if comp_on {
+        caption.push(format!(
+            "{}:1 from {} · makeup {}",
+            trim_num(v(cs::RATIO)),
+            text(st, cs::COMP_THRESHOLD),
+            text(st, cs::MAKEUP)
+        ));
+    }
+    if caption.is_empty() {
+        caption.push("gate and compressor off".to_string());
+    }
+    s.push(
+        Card {
+            title: "Curve".into(),
+            caption: caption.join(" · "),
+            traces: vec![
+                dashed(vec![(0.0, y(-60.0)), (1.0, y(0.0))], t.text_faint),
+                line(curve, t.accent),
+            ],
+            grid,
+            active: gate_on || comp_on,
+            ..Card::default()
+        },
+        page,
+    );
+    let hz: Vec<f32> = (0..N).map(|k| x_freq(k as f32 / (N - 1) as f32)).collect();
+    let mut db = vec![0.0; N];
+    if eq_on {
+        x.eq.response_db(&hz, &mut db);
+    }
+    let pts = db
+        .iter()
+        .enumerate()
+        .map(|(k, &d)| (k as f32 / (N - 1) as f32, y_db(d, -18.0, 18.0)))
+        .collect();
+    let low_cut_on = st
+        .index(cs::LOW_CUT)
+        .is_some_and(|i| v(cs::LOW_CUT) > st.params[i].min);
+    let caption = if !eq_on {
+        "EQ off".to_string()
+    } else {
+        format!(
+            "{}low {} · mid {} · high {}",
+            if low_cut_on {
+                format!("cut {} · ", text(st, cs::LOW_CUT))
+            } else {
+                String::new()
+            },
+            text(st, cs::LOW_GAIN),
+            text(st, cs::MID_GAIN),
+            text(st, cs::HIGH_GAIN)
+        )
+    };
+    s.push(
+        Card {
+            title: "Response".into(),
+            caption,
+            traces: vec![filled(pts, t.accent)],
+            grid: freq_grid(),
+            midline: true,
+            active: eq_on,
+            ..Card::default()
+        },
+        page,
+    );
+    // The signal path: in, the three stages in the order Order sets, out.
+    let eq_first = v(cs::ORDER) >= 0.5;
+    let stages: [(&str, bool); 3] = if eq_first {
+        [("EQ", eq_on), ("G", gate_on), ("C", comp_on)]
+    } else {
+        [("G", gate_on), ("C", comp_on), ("EQ", eq_on)]
+    };
+    let xs = [0.25, 0.5, 0.75];
+    let nodes = stages
+        .iter()
+        .zip(xs)
+        .enumerate()
+        .map(|(k, (&(label, lit), x))| CardNode {
+            x,
+            y: 0.5,
+            label: label.to_string(),
+            fill: if lit { QLINK_COLORS[k] } else { t.outline },
+            text: t.bg,
+            ring: None,
+            dim: !lit,
+            feedback: None,
+        })
+        .collect();
+    let grid = stages
+        .iter()
+        .zip(xs)
+        .map(|(&(label, _), x)| {
+            let name = match label {
+                "G" => "gate",
+                "C" => "comp",
+                _ => "EQ",
+            };
+            (x, name.to_string())
+        })
+        .collect();
+    // In, an arrow into each stage, an arrow out.
+    let mut traces = vec![line(vec![(0.03, 0.5), (0.97, 0.5)], t.text_dim)];
+    for x in [0.14, 0.375, 0.625, 0.86] {
+        traces.push(Trace {
+            width: 2.0,
+            ..line(
+                vec![(x - 0.012, 0.75), (x, 0.5), (x - 0.012, 0.25)],
+                t.text_dim,
+            )
+        });
+    }
+    s.push(
+        Card {
+            title: "Signal path".into(),
+            caption: format!(
+                "{} · out {}",
+                if eq_first {
+                    "EQ before the dynamics"
+                } else {
+                    "EQ after the dynamics"
+                },
+                text(st, cs::OUTPUT)
+            ),
+            traces,
+            grid,
+            nodes,
             active: true,
             ..Card::default()
         },
