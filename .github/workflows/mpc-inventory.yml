@@ -70,6 +70,7 @@ jobs:
           sh -n tools/mpc-one/read-only-boot-map.sh
           sh -n tools/mpc-one/read-only-boot-menu.sh
           sh -n tools/mpc-one/read-only-ethernet.sh
+          sh -n tools/mpc-one/read-only-drivers.sh
           sh -n tools/mpc-one/read-only-backup-preflight.sh
           sh -n tools/mpc-one/read-only-ram-smoke-env.sh
           sh -n tools/mpc-one/read-only-audio-midi.sh
@@ -106,6 +107,8 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_stick_setup.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_drivers.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_own_kernel_survey.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_creator_recipe.py
           python3 tools/mpc-one/tests/test_compare_emmc_backups.py
