@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-export rust/mpfree-fx/src/bounce.rs rust/mpfree-fx/src/resample.rs rust/mpfree-midi/src/smf.rs rust/mpfree-browser-ui/src/export.rs rust/mpfree-app/src/export.rs rust/mpfree-play/src/arps.rs
-checked: 2026-11-14 8e8bf05
+checked: 2026-11-16 873e19d
 -->
 
 # Export: mixdown, stems and MIDI file
