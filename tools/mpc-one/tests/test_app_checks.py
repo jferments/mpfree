@@ -89,6 +89,17 @@ class CatalogueTests(unittest.TestCase):
         self.assertIn("RESULT: the tests did not run: cargo is not on PATH", res.stdout)
         self.assertNotIn("Traceback", res.stderr)
 
+    def test_a_failed_tests_panic_is_shown_with_its_name(self):
+        out = ("test smoke::phases::looper::layers_x ... FAILED\n\nfailures:\n\n"
+               "---- smoke::phases::looper::layers_x stdout ----\n\n"
+               "thread '<unnamed>' (15472) panicked at mpfree-app/src/smoke/phases.rs:382:13:\n"
+               "assertion `left == right` failed: x deleted layer 2\n  left: 2\n right: 1\n"
+               "stack backtrace:\n   0: __rustc::rust_begin_unwind\n\nfailures:\n    smoke::phases::looper::layers_x\n")
+        why = checks.failure_lines(out)
+        self.assertEqual(why["layers_x"], ["thread '<unnamed>' (15472) panicked at mpfree-app/src/smoke/phases.rs:382:13:",
+                                           "assertion `left == right` failed: x deleted layer 2",
+                                           "left: 2", "right: 1"])
+
 
 class JudgeTests(unittest.TestCase):
     def judge(self, name, window):
@@ -150,6 +161,23 @@ class JudgeTests(unittest.TestCase):
         got = checks.judge(checks.BY_NAME["first-start"], checks.Window([], [], 10.0, 10.0))
         self.assertEqual([ok for ok, _, _ in got], [False, False, False])
         self.assertIn("no line like", got[0][2])
+
+    def test_mpc_plugin_install_reads_the_plugins_place_and_the_skin(self):
+        """Lines as the app writes them (plugin_page.rs, main.rs, gui.rs); a direct cable with no route out."""
+        window = lines(
+            "plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found)",
+            "plugins: not done (catalog): The catalog didn't download: no network",
+            "plugins: Installed Tidal Verb 1.6.0: Tidal Verb ready on the Synth tab or in the chain editor",
+            "plugins: 2 offered after an install",
+            "track 7: plays [SYN] Mono Voice",
+            "plugins: [SYN] Mono Voice started in its own process",
+            "screen: mpc:timncox.monovoice: its own screen, 2 tab(s), on the Synth tab")
+        got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(window, window))
+        self.assertEqual([ok for ok, _, _ in got], [True, True, True, True, False, True, True, True, True])
+        self.assertEqual(got[4][1], "Modal Voice installed from the catalog (needs a route out)")
+        refused = window + lines("plugins: [SYN] Modal Voice would not start: failed to map segment")
+        got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(refused, refused))
+        self.assertFalse(got[-1][0])
 
     def test_kept_reads_the_running_value_too(self):
         session = lines("saved settings: pad curve Hard, sound cores two, loop memory 10 min, x",
