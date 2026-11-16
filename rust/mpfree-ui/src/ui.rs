@@ -594,6 +594,34 @@ impl Ui {
         Ok(())
     }
 
+    /// A page with every widget at an exact rectangle instead of a layout
+    /// spec: for a picture that keeps its own size and place on screen
+    /// (an MPC plugin's skin, 1280 x 628 pixel for pixel).
+    pub fn add_page_slots(&mut self, name: &str, slots: &[(&str, Rect)]) -> Result<(), String> {
+        let screen = Rect::new(0, 0, self.size.0, self.size.1);
+        let mut placed = Vec::new();
+        for &(slot, r) in slots {
+            let i = self
+                .widgets
+                .iter()
+                .position(|(n, _, _)| n == slot)
+                .ok_or_else(|| format!("page {name}: no widget called '{slot}'"))?;
+            placed.push((i, r.intersect(screen)));
+        }
+        let page = Page {
+            name: name.to_string(),
+            spec: String::new(),
+            margin: false,
+            slots: placed,
+        };
+        match self.pages.iter().position(|p| p.name == name) {
+            Some(i) => self.pages[i] = page,
+            None => self.pages.push(page),
+        }
+        self.full = true;
+        Ok(())
+    }
+
     /// Rearrange an existing page: a new layout spec over the same widgets.
     /// On an error the page keeps its old layout.
     pub fn set_layout(&mut self, page: &str, spec: &str) -> Result<(), String> {
@@ -1484,6 +1512,26 @@ mod tests {
         // A bad file changes nothing.
         assert!(ui.apply_layouts("two = col(nope)\n").is_err());
         assert_eq!(ui.layout_of("two"), Some("col(b)"));
+    }
+
+    #[test]
+    fn a_page_can_place_its_widgets_exactly() {
+        let mut ui = ui();
+        ui.add_page_slots(
+            "exact",
+            &[
+                ("a", Rect::new(0, 10, 200, 60)),
+                ("b", Rect::new(5, 75, 300, 50)),
+            ],
+        )
+        .unwrap();
+        ui.show("exact").unwrap();
+        assert_eq!(ui.rect_of("a"), Some(Rect::new(0, 10, 200, 60)));
+        // Kept on the screen.
+        assert_eq!(ui.rect_of("b"), Some(Rect::new(5, 75, 195, 25)));
+        assert!(ui
+            .add_page_slots("bad", &[("nope", Rect::new(0, 0, 1, 1))])
+            .is_err());
     }
 
     #[test]

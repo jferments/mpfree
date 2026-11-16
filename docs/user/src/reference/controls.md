@@ -89,6 +89,8 @@ While the browser shows (**BROWSE**), the controls work it. See [Saving your wor
 | **ERASE** | Moves the item picked to the Trash (asks first). | Works |
 | **Q-Link knobs 1–4** | 1: moves through the list. 2: the filter. 3: the level you hear sounds at. 4: the places. | Works |
 
+In the **Plugins** place, the data wheel moves through the plugins and its push shows the next picture; **+** installs the one picked (or updates it, or installs its zip), **–** takes back a Remove you tapped or clears a search, and Q-Link 2 changes the All, Instruments and Effects chips. See [Getting plugins](../making-music/plugins.md).
+
 While the Export panel shows, the data wheel sets the number of bars, its push presses **Start** (and **Close** once the export is over), and **–** closes the panel. See [Exporting your music](../making-music/exporting.md).
 
 ## Sample and Synth tabs
