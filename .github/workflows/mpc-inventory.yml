@@ -111,6 +111,8 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_login.py
           python3 tools/mpc-one/tests/test_write_autorun_drive.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py
+          python3 tools/mpc-one/tests/test_app_checks.py
+          python3 tools/mpc-one/tests/test_stick_plugin.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_bench_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_gpu_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_disktest_mpc.py

@@ -11,6 +11,8 @@ MPC OS 3.10.1 loads third-party instruments and effects: Linux shared libraries 
 
 MPFree never bundles these plugins. People download the ones they want and copy them to `files/plugins/` (Jay, 15 Nov). Hosting a binary the user installed puts no licence duty on MPFree.
 
+On the MPC, the device round's `mpc-plugin` check plays [SYN] Mono Voice ([device checks](../hardware/device-checks.md)); `tools/mpc-one/stick-plugin.py add mono-voice` puts the pinned release on the stick for it.
+
 ## Finding plugins
 
 [`folder.rs`](../../../rust/mpfree-mpchost/src/folder.rs) reads a plugin folder from the first description it has:
