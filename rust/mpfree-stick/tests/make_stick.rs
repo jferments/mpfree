@@ -78,6 +78,7 @@ fn makes_a_stick_the_hook_takes() {
         ssh: None,
         dev: None,
         creator: "test creator",
+        choices: Default::default(),
     };
     let out = t.0.join("stick.img");
     let made = stick::build_image(&b, &out, &mut |m| notes.push(m)).unwrap();
@@ -289,6 +290,7 @@ fn refuses_a_system_without_a_program_the_setup_needs() {
         ssh: None,
         dev: None,
         creator: "test creator",
+        choices: Default::default(),
     };
     let out = t.0.join("stick.img");
     let Err(e) = stick::build_image(&b, &out, &mut |_| {}) else {
@@ -315,6 +317,7 @@ fn developer_ssh_when_asked() {
         ssh: Some(&s),
         dev: None,
         creator: "test",
+        choices: Default::default(),
     };
     let out = t.0.join("stick.img");
     stick::build_image(&b, &out, &mut |_| {}).unwrap();
@@ -368,6 +371,7 @@ fn developer_tools_go_on_the_setup_partition() {
         ssh: None,
         dev: Some(&dev),
         creator: "test",
+        choices: Default::default(),
     };
     let out = t.0.join("stick.img");
     let made = stick::build_image(&b, &out, &mut |_| {}).unwrap();
@@ -433,6 +437,7 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
         ssh: None,
         dev: None,
         creator: "test",
+        choices: Default::default(),
     };
     // A 16 GB stick, as a sparse file.
     let disk_path = t.0.join("disk.img");
@@ -506,6 +511,32 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
         stick::uuid_text(&again.layout.part(4).guid),
         again.values.data_uuid
     );
+    let root = part_fs(&disk, again.layout.part(1));
+    assert!(
+        root.lookup(stick::NEW_BACKUP_FILE).unwrap().is_none(),
+        "the backup there is used unless a new one is asked for"
+    );
+    // Made again asking for a new backup: partition 4 is kept, and the
+    // first start finds the request (a token, once) on partition 1.
+    let asked = Build {
+        choices: stick::Choices { new_backup: true },
+        ..b
+    };
+    let again = stick::write_disk(&asked, &disk, bytes, &t.0, false, &mut |_| {}).unwrap();
+    assert_eq!(stick::existing_data(&disk), Some(p4.last), "kept");
+    let root = part_fs(&disk, again.layout.part(1));
+    let token = read(&root, stick::NEW_BACKUP_FILE);
+    assert_eq!(token.len(), 33);
+    assert!(token[..32].iter().all(u8::is_ascii_hexdigit) && token[32] == b'\n');
+    assert_eq!(
+        root.lookup(stick::NEW_BACKUP_FILE).unwrap().unwrap().perm(),
+        0o644,
+        "the pad player reads it"
+    );
+    assert!(String::from_utf8(read(&root, stick::ABOUT_FILE))
+        .unwrap()
+        .contains("new backup at the first start: asked\n"));
+    assert!(again.notes.iter().any(|n| n.contains("--new-backup")));
     // The newest finished backup, copied off and checked.
     let to = t.0.join("backups");
     let got = stick::copy_backup(&disk, &to, &mut |_| {}).unwrap();

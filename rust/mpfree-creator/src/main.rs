@@ -365,6 +365,9 @@ struct Prefs {
     ssh_key: String,
     any_update: bool,
     fresh_data: bool,
+    /// Back the MPC up again at the first start (`--new-backup`), when
+    /// updating a stick that keeps its partition 4.
+    new_backup: bool,
 }
 
 struct Creator {
@@ -578,6 +581,9 @@ impl Creator {
             // "Keep my backup, settings and files": stop rather than erase a
             // partition 4 this version can't keep.
             args.push("--keep-data".into());
+            if self.prefs.new_backup {
+                args.push("--new-backup".into());
+            }
         }
         self.start(JobKind::Make, args);
     }
@@ -816,6 +822,10 @@ impl Creator {
                 );
                 ui.indent("keep", |ui| {
                     ui.label(RichText::new("The backup of your MPC, your settings, projects and samples, and the Akai kits stay on the stick. The MPC starts straight into MPFree, without the long first start.").color(look::DIM));
+                    if !self.prefs.fresh_data {
+                        ui.checkbox(&mut self.prefs.new_backup, "Back up my MPC again too");
+                        ui.label(RichText::new("The next start makes a new backup (20 to 30 minutes, about 8 GB on the stick) and keeps the one there. Without it, the MPC says when the backup on the stick was made.").color(look::DIM));
+                    }
                 });
                 ui.add_space(4.0);
                 ui.radio_value(
@@ -1132,6 +1142,9 @@ impl Creator {
             if keep {
                 ui.label("MPFree on the stick is replaced by this version.");
                 ui.label(RichText::new("Kept: the backup of your MPC, your settings and files, and the Akai kits and samples.").color(look::DIM));
+                if self.prefs.new_backup {
+                    ui.label(RichText::new("The next start backs up your MPC again.").color(look::DIM));
+                }
             } else if has_mpfree {
                 ui.label("Everything on it is erased and replaced by MPFree, including the backup of your MPC and your MPFree settings and files.");
             } else {

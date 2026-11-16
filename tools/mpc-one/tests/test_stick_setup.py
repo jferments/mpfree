@@ -404,6 +404,8 @@ class BackupTests(unittest.TestCase):
 
     def test_copies_the_emmc_through_a_read_only_window(self):
         self.kernel = FakeEmmc(self.root)
+        # A made-up serial number, as U-Boot puts it in the tree (NUL at the end).
+        write(os.path.join(self.root, "sys/firmware/devicetree/base/serial-number"), b"TEST-SERIAL-1\x00")
         request = self.request()
         res = self.run_backup()
         self.assertFalse(os.path.exists(request), "the request is taken away, so the path unit stays quiet")
@@ -432,6 +434,12 @@ class BackupTests(unittest.TestCase):
         self.assertIn(f"kernel: {RELEASE}\n", manifest)
         self.assertIn("  p7 content 1024 512\n", manifest)
         self.assertIn("  mmcblk0p8 0 0 0 0 0 0\n", manifest, "the counters it checked are recorded")
+        # The MPC's fingerprint, as the pad player makes it (setup.rs, the_mpc_fingerprint_is_the_shells);
+        # never the serial number.
+        mpc = hashlib.sha256(b"mpfree-mpc:TEST-SERIAL-1").hexdigest()[:16]
+        self.assertEqual(mpc, "ef35dd49421177f8")
+        self.assertIn(f"MPC: {mpc} (a fingerprint of its serial number, not the number)\n", manifest)
+        self.assertNotIn("TEST-SERIAL", manifest)
         backup = os.path.join(self.root, "run/mpfree-data/backup")
         self.assertEqual(self.calls("chown: "), [f"0:960 {backup} {folder}.part",
                                                  f"0:960 {folder}.part/MANIFEST.txt {folder}.part/SHA256SUMS "
@@ -485,6 +493,10 @@ class BackupTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(backup, "notes.part")))
         names = self.backups()
         self.assertEqual(len([n for n in names if re.fullmatch(r"mpc-one-emmc-\d{8}T\d{6}Z", n)]), 2, names)
+        (new,) = [n for n in names if n.startswith("mpc-one-emmc-") and os.path.join(backup, n) != done
+                  and not n.endswith(".part")]
+        with open(os.path.join(backup, new, "MANIFEST.txt")) as fh:
+            self.assertIn("MPC: unknown (", fh.read(), "a tree with no serial number")
 
     def test_zeros_are_left_as_holes_and_read_back_the_same(self):
         """A disk of zeros costs the stick no writes: its image is a hole that reads back as the disk."""
