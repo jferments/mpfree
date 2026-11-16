@@ -13,7 +13,7 @@
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
-291639	Chain: drive, filter, delay, comp
+255104	Chain: drive, filter, delay, comp
 20095	Character (Console)
 27006	Character (Iron)
 23167	Character (Soften)
@@ -34,7 +34,7 @@
 20996	Compressor
 10346	Crush
 13406	DJ filter
-77742	Delay
+70889	Delay
 129473	Drawbar Church, 8 keys
 173856	Drawbar Full Organ, 8 keys
 167152	Drawbar Gospel, 16 keys
@@ -66,6 +66,7 @@
 9033	Moves: 16 lanes playing, the move log taking 3 controls
 11308	Multi filter (LP 12)
 33708	Multi filter (LP 24, drive)
+95212	Multi-tap delay
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
@@ -96,6 +97,7 @@
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
 64328	Squelch Square Acid, a line
+87944	Tape delay
 8130	Time with trig conditions and ratchets, 8 clips, arp
 8528	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block

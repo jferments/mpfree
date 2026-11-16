@@ -1,7 +1,7 @@
-//! The Tape and Multi-tap delays' tails (FX quality plan, D12). What each
-//! reports covers its echoes down to -60 dB, so a bypassed slot or a
-//! resting chain never cuts one off; and a loop that gains on each pass
-//! rings on until its Feedback comes down.
+//! The delays' tails (FX quality plan, D12). What each reports covers its
+//! echoes down to -60 dB, so a bypassed slot or a resting chain never cuts
+//! one off; and a loop that gains on each pass rings on until its Feedback
+//! comes down.
 
 use mpfree_fx::ids::{multitap as mt, tape};
 use mpfree_fx::mpfree_node::{Ctx, Node, NodeEvent, Timed};
@@ -9,7 +9,11 @@ use mpfree_fx::{presets, registry};
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
-const IDS: [&str; 2] = ["mpfree.fx.tape_delay", "mpfree.fx.multitap"];
+const IDS: [&str; 3] = [
+    "mpfree.fx.delay",
+    "mpfree.fx.tape_delay",
+    "mpfree.fx.multitap",
+];
 
 /// The engine at its defaults, then once at each factory preset.
 fn setups(id: &str) -> Vec<(&'static str, Box<dyn Node>)> {
@@ -90,12 +94,15 @@ fn a_loop_that_gains_rings_on_until_feedback_comes_down() {
     let finite = t.tail_frames();
     assert!(finite < 30 * RATE, "defaults: {finite}");
     // Over 100 % the loop grows: it rings on.
-    t.set_param(tape::FEEDBACK, 105.0);
+    t.set_param(tape::FEEDBACK, 120.0);
     assert_eq!(t.tail_frames(), u32::MAX);
-    // So do the presets that run away by design.
+    // So does the preset that runs away by design; Dub echo, at 80 %,
+    // dies away (its saturation adds no gain).
     for (name, n) in setups("mpfree.fx.tape_delay") {
-        if matches!(name, "Dub echo" | "Runaway") {
-            assert_eq!(n.tail_frames(), u32::MAX, "{name}");
+        match name {
+            "Runaway" => assert_eq!(n.tail_frames(), u32::MAX, "{name}"),
+            "Dub echo" => assert!(n.tail_frames() < 30 * RATE, "{name}"),
+            _ => {}
         }
     }
     // And back down, it dies away again.
