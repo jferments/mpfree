@@ -373,6 +373,21 @@ struct HistoryOpen {
     ask_in: f32,
 }
 
+/// The power card open over a page (power.rs): the page to go back to,
+/// and while a save runs before a shut down, how long it has waited and
+/// whether the library's worker has taken it.
+#[derive(Clone, Debug)]
+struct PowerOpen {
+    back: String,
+    waited: f32,
+    save_taken: bool,
+}
+
+/// How long a save asked for before a shut down may take to start (the
+/// audio loop's parts come in a few periods); once the library's worker has
+/// it, the card waits for as long as it takes.
+const POWER_SAVE_START_S: f32 = 10.0;
+
 /// Where a typed number goes, and the page the number pad was opened over.
 #[derive(Clone, Debug)]
 struct Typing {
@@ -443,6 +458,9 @@ fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
 pub enum ToUi {
     /// A line for the terminal and the Events log.
     Line(String),
+    /// A short press of the power button (power.rs): the power card opens,
+    /// or closes if it is open.
+    PowerPress,
     /// What Export needs to know about the song (export.rs), after
     /// [`FromUi::ExportAsk`].
     ExportFacts(Box<crate::export::Facts>),
@@ -1152,6 +1170,11 @@ pub struct Player {
     /// The number pad is open: where the number goes, and the page to go
     /// back to.
     typing: Option<Typing>,
+    /// The power card is open over a page (power.rs).
+    power: Option<PowerOpen>,
+    /// Where a shut down or restart is handed to the system
+    /// (`mpfree app --power-request FILE`); None: it can't be.
+    power_request: Option<std::path::PathBuf>,
     /// A finger on Play's BPM: which, how long (s) and where it landed.
     tempo_press: Option<(u64, f32, i32, i32)>,
     /// The undo history is open over a page.
@@ -1223,6 +1246,7 @@ impl Player {
         ui.add("options", OptionList::new("Options"));
         ui.add("help", Card::new("About this setting"));
         ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
+        ui.add(crate::power::CARD, crate::power::PowerCard::default());
         ui.add(HISTORY, mpfree_ui::history::HistoryPanel::default());
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
@@ -1252,6 +1276,8 @@ impl Player {
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
         ui.add_page(NUMPAD_PAGE, NUMPAD_LAYOUT)
             .expect("number pad layout");
+        ui.add_page(crate::power::PAGE, crate::power::LAYOUT)
+            .expect("power card layout");
         ui.add_page(HISTORY_PAGE, HISTORY_LAYOUT)
             .expect("undo history layout");
         ui.add_page(KITS_PAGE, KITS_LAYOUT).expect("kits layout");
@@ -1336,6 +1362,8 @@ impl Player {
             song_grab: false,
             seen_takes: (0, 0),
             typing: None,
+            power: None,
+            power_request: None,
             tempo_press: None,
             history: None,
             undo_held: None,
@@ -2288,7 +2316,18 @@ impl Player {
             Mode::Pattern => "pattern",
             Mode::Direct | Mode::Repeat => "rate",
         };
-        let text = if self.typing.is_some() {
+        let text = if self.power.is_some() {
+            let waiting = self
+                .ui
+                .get::<crate::power::PowerCard>(crate::power::CARD)
+                .is_some_and(|c| !c.cancellable());
+            if waiting {
+                crate::power::WAIT_HINT
+            } else {
+                crate::power::HINT
+            }
+            .to_string()
+        } else if self.typing.is_some() {
             NUMPAD_HINT.to_string()
         } else if self.history.is_some() {
             HISTORY_HINT.to_string()
@@ -3025,6 +3064,216 @@ impl Player {
         }
     }
 
+    // ------------------------------------------------------------ the power card
+
+    /// Shut down and restart are handed to the system through this file
+    /// (`mpfree app --power-request FILE`, power.rs).
+    pub fn set_power_request(&mut self, path: std::path::PathBuf) {
+        self.power_request = Some(path);
+    }
+
+    /// The project as the power card names it: "“Song 3”", or "the new
+    /// project" before its first save; empty when there is nothing new
+    /// to save in a project never saved; None without a library.
+    fn power_project(&self) -> Option<(String, bool)> {
+        let b = self.browser.as_ref()?;
+        let name = match b.project() {
+            Some(l) => format!("\u{201c}{}\u{201d}", l.name()),
+            None if b.unsaved() => "the new project".to_string(),
+            None => String::new(),
+        };
+        Some((name, b.unsaved()))
+    }
+
+    fn power_card(&mut self) -> Option<&mut crate::power::PowerCard> {
+        self.ui
+            .get_mut::<crate::power::PowerCard>(crate::power::CARD)
+    }
+
+    fn power_show(&mut self, step: crate::power::Step) {
+        if let Some(c) = self.power_card() {
+            c.show(step);
+        }
+        self.refresh_hint();
+    }
+
+    /// A short press of the power button: the card opens over the page
+    /// showing, or closes (Cancel) if it is open and can be.
+    fn power_press(&mut self) {
+        if self.power.is_some() {
+            if self.power_card().is_some_and(|c| c.cancellable()) {
+                self.close_power();
+            }
+            return;
+        }
+        // The timed step from the workstation has its own way out (STOP).
+        if self.timed {
+            return;
+        }
+        self.close_numpad();
+        if self.history.is_some() {
+            self.close_history();
+        }
+        let back = self.ui.page().to_string();
+        let project = self.power_project();
+        self.power_show(crate::power::Step::Ask { project });
+        if self.ui.show(crate::power::PAGE).is_ok() {
+            self.power = Some(PowerOpen {
+                back,
+                waited: 0.0,
+                save_taken: false,
+            });
+            self.outbox.push(FromUi::Overlay(true));
+            self.say("power: the power card is open".to_string());
+            self.refresh_hint();
+        }
+    }
+
+    /// Closes the power card and shows the page it was opened over.
+    fn close_power(&mut self) {
+        let Some(p) = self.power.take() else {
+            return;
+        };
+        if let Some(c) = self.power_card() {
+            c.close();
+        }
+        let _ = self.ui.show(&p.back);
+        self.outbox.push(FromUi::Overlay(false));
+        self.refresh_hint();
+    }
+
+    /// While the card is open: the wheel and - / + move its outline and
+    /// the push chooses (true: taken). A change of page closes a card that
+    /// only asks; while it saves or goes, the card stays over the new page.
+    fn power_input(&mut self, msg: &ToUi) -> bool {
+        use crate::app::RowKey;
+        match msg {
+            ToUi::SampleWheel(d) | ToUi::Rows(RowKey::Pick(d) | RowKey::Step(d)) => {
+                let d = *d;
+                if let Some(c) = self.power_card() {
+                    c.wheel(d);
+                }
+                true
+            }
+            ToUi::Rows(RowKey::Editing(_)) => {
+                if let Some(i) = self.power_card().map(|c| c.picked) {
+                    self.power_tap(i);
+                }
+                true
+            }
+            ToUi::Show(_) | ToUi::PlayView(_) => {
+                if self.power_card().is_some_and(|c| c.cancellable()) {
+                    self.close_power();
+                    false
+                } else {
+                    // Saving or going: the card stays, and the page with it.
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// A button on the card, by its place (a tap, or the wheel's push).
+    fn power_tap(&mut self, i: usize) {
+        use crate::power::{Choice, Step};
+        let Some(choice) = self
+            .power_card()
+            .and_then(|c| c.buttons().get(i).map(|(c, _)| *c))
+        else {
+            return;
+        };
+        match choice {
+            Choice::Cancel => self.close_power(),
+            Choice::Go(action) => match self.power_project() {
+                Some((name, true)) => self.power_show(Step::Unsaved { action, name }),
+                _ => self.power_go(action),
+            },
+            Choice::SaveThen(action) => {
+                let name = self.power_project().map(|(n, _)| n).unwrap_or_default();
+                self.power_show(Step::Saving { action, name });
+                if let Some(p) = self.power.as_mut() {
+                    p.waited = 0.0;
+                    p.save_taken = false;
+                }
+                self.say("power: saving the project first".to_string());
+                self.ask_save();
+            }
+            Choice::DontSave(action) => {
+                self.say("power: going on without saving".to_string());
+                self.power_go(action);
+            }
+        }
+    }
+
+    /// Hands the shut down or restart to the system (power.rs), and says
+    /// so on the card, which stays until the app is stopped.
+    fn power_go(&mut self, action: crate::power::Action) {
+        use crate::power::Step;
+        let Some(path) = self.power_request.clone() else {
+            self.say("power: not handed over (the app was started without --power-request)".into());
+            self.power_show(Step::Unavailable(
+                "This MPFree wasn\u{2019}t started with shut down set up.".into(),
+            ));
+            return;
+        };
+        match crate::power::request(&path, action) {
+            Ok(()) => {
+                self.say(format!(
+                    "power: {} asked for ({})",
+                    action.word(),
+                    path.display()
+                ));
+                self.power_show(Step::Going(action));
+            }
+            Err(e) => {
+                self.say(format!("power: {} not asked for ({e})", action.word()));
+                self.power_show(Step::Unavailable(format!(
+                    "The request couldn\u{2019}t be handed over ({e})."
+                )));
+            }
+        }
+    }
+
+    /// While a save runs before a shut down: once it has landed the MPC
+    /// goes; if it didn't, the card says why and offers to go on without.
+    fn power_tick(&mut self, dt: f32) {
+        use crate::power::Step;
+        let Some(Step::Saving { action, name }) = self
+            .ui
+            .get::<crate::power::PowerCard>(crate::power::CARD)
+            .and_then(|c| c.step.clone())
+        else {
+            return;
+        };
+        let Some(b) = self.browser.as_ref() else {
+            return self.power_go(action);
+        };
+        // (The frame steps the browser while its worker is busy, so the
+        // save's answer lands while the card shows.)
+        let (busy, unsaved) = (b.busy(), b.unsaved());
+        let status = b.status_line().map(|(t, bad)| (t.to_string(), bad));
+        let Some(p) = self.power.as_mut() else {
+            return;
+        };
+        p.waited += dt.max(0.0);
+        p.save_taken |= busy;
+        if !busy && !unsaved {
+            self.power_go(action);
+        } else if !busy && (p.save_taken || p.waited >= POWER_SAVE_START_S) {
+            let why = match status {
+                Some((t, true)) => format!("{t}."),
+                _ if p.save_taken => "The save didn\u{2019}t finish.".to_string(),
+                _ => "The save didn\u{2019}t start. Try again in a moment.".to_string(),
+            };
+            self.say(format!(
+                "power: the save before {} didn't land ({why})",
+                action.word()
+            ));
+            self.power_show(Step::SaveFailed { action, name, why });
+        }
+    }
+
     /// Closes the number pad (nothing typed goes anywhere) and shows the
     /// page it was opened over.
     fn close_numpad(&mut self) {
@@ -3091,6 +3340,11 @@ impl Player {
     }
 
     pub fn apply(&mut self, msg: ToUi) {
+        // The power card takes the wheel, - / + and the push while open,
+        // and holds the screen until it is closed (power.rs).
+        if self.power.is_some() && self.power_input(&msg) {
+            return;
+        }
         // The number pad takes the wheel, - / + and the push while open;
         // a change of page closes it.
         if self.typing.is_some() {
@@ -3905,6 +4159,7 @@ impl Player {
                     self.tell(&why);
                 }
             }
+            ToUi::PowerPress => self.power_press(),
             ToUi::TouchBell | ToUi::Quit => {}
         }
         self.print_sample_lines();
@@ -5829,6 +6084,10 @@ impl Player {
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
+            (crate::power::CARD, EventKind::Tab(i)) => {
+                self.power_tap(i);
+                None
+            }
             (NUMPAD, EventKind::Tab(mpfree_ui::numpad::KEY_ENTER)) => self.numpad_enter(),
             (NUMPAD, EventKind::Tab(mpfree_ui::numpad::KEY_CANCEL)) => {
                 self.close_numpad();
@@ -6167,6 +6426,7 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        self.power_tick(dt);
         // UNDO held: the page's undo history.
         if let Some(held) = self.undo_held {
             let held = held + dt.max(0.0);
@@ -8072,6 +8332,28 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         n.typed = "98.5".to_string();
     }
     out.push(("numpad-tempo", typing));
+    // The power card (power.rs): a short press of the power button over
+    // Play, then Shut down over unsaved work, and the card as the MPC goes.
+    let mut power = sample_player(fonts());
+    power.apply(ToUi::Show(View::Play));
+    power.power_press();
+    power.power_show(crate::power::Step::Ask {
+        project: Some(("\u{201c}Night Drive\u{201d}".into(), true)),
+    });
+    out.push(("power-ask", power));
+    let mut power = sample_player(fonts());
+    power.apply(ToUi::Show(View::Play));
+    power.power_press();
+    power.power_show(crate::power::Step::Unsaved {
+        action: crate::power::Action::ShutDown,
+        name: "\u{201c}Night Drive\u{201d}".into(),
+    });
+    out.push(("power-unsaved", power));
+    let mut power = sample_player(fonts());
+    power.apply(ToUi::Show(View::Play));
+    power.power_press();
+    power.power_show(crate::power::Step::Going(crate::power::Action::ShutDown));
+    out.push(("power-going", power));
     // UNDO held on Play's Beats view: the takes' history, two undone, the
     // wheel's outline one step back from now.
     let mut undo = sample_player(fonts());
@@ -11037,6 +11319,83 @@ mod tests {
         p.apply(ToUi::Rows(RowKey::Editing(true)));
         assert_eq!(p.page(), sample_page::PAGE);
         assert!((bpm(&p) - (before + 0.3)).abs() < 0.001, "{}", bpm(&p));
+    }
+
+    /// Jay, 15 Nov: a short press of the power button opens the power
+    /// card over any page; a second press, or Cancel, closes it again.
+    #[test]
+    fn a_short_press_of_the_power_button_opens_the_power_card() {
+        use crate::power::{PowerCard, Step, CARD, PAGE};
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.take_actions();
+        p.apply(ToUi::PowerPress);
+        assert_eq!(p.page(), PAGE);
+        assert!(p.take_actions().contains(&FromUi::Overlay(true)));
+        // No library here: nothing is kept, and the card says so.
+        let card = p.ui.get::<PowerCard>(CARD).unwrap();
+        assert_eq!(card.step, Some(Step::Ask { project: None }));
+        // The wheel picks Cancel and the push chooses it.
+        p.apply(ToUi::Rows(crate::app::RowKey::Pick(-2)));
+        p.apply(ToUi::Rows(crate::app::RowKey::Editing(true)));
+        assert_eq!(p.page(), "Play");
+        assert!(p.take_actions().contains(&FromUi::Overlay(false)));
+        // A second press closes it too, back on the page it was opened over.
+        p.apply(ToUi::Show(View::Arrange));
+        let arrange = p.page().to_string();
+        p.apply(ToUi::PowerPress);
+        assert_eq!(p.page(), PAGE);
+        p.apply(ToUi::PowerPress);
+        assert_eq!(p.page(), arrange);
+    }
+
+    /// Shut down hands one word to the system through --power-request's
+    /// file, and the card stays up until the app is stopped; without the
+    /// option it says it can't and points at the hard power-off.
+    #[test]
+    fn shut_down_and_restart_go_to_the_systems_file() {
+        use crate::power::{Action, PowerCard, Step, CARD, PAGE};
+        let dir = std::env::temp_dir().join(format!("mpfree-gui-power-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("power-request");
+        let step = |p: &Player| p.ui.get::<PowerCard>(CARD).unwrap().step.clone();
+        let tap = |p: &mut Player, label: &str| {
+            let r = p.ui.rect_of(CARD).unwrap();
+            let card = p.ui.get::<PowerCard>(CARD).unwrap();
+            let i = card.buttons().iter().position(|(_, l)| l == label).unwrap();
+            let b = card.button_rects(r)[i];
+            let a = p.touch(9, Touch::Down, b.x + b.w / 2, b.y + b.h / 2);
+            p.touch(9, Touch::Up, b.x + b.w / 2, b.y + b.h / 2);
+            a
+        };
+        // Without --power-request.
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.apply(ToUi::PowerPress);
+        tap(&mut p, "Shut down");
+        assert!(matches!(step(&p), Some(Step::Unavailable(_))));
+        tap(&mut p, "OK");
+        assert_eq!(p.page(), "Play");
+        // With it: Restart, then Shut down.
+        for (label, action, word) in [
+            ("Restart", Action::Restart, "restart\n"),
+            ("Shut down", Action::ShutDown, "poweroff\n"),
+        ] {
+            let mut p = sample_player(Fonts::embedded());
+            p.set_power_request(file.clone());
+            p.apply(ToUi::Show(View::Play));
+            p.apply(ToUi::PowerPress);
+            tap(&mut p, label);
+            assert_eq!(step(&p), Some(Step::Going(action)));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), word);
+            // Going: nothing closes it, not even the power button.
+            p.apply(ToUi::PowerPress);
+            p.apply(ToUi::Show(View::Arrange));
+            assert_eq!(p.page(), PAGE);
+            assert!(p.ui.get::<PowerCard>(CARD).unwrap().buttons().is_empty());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Jay after live test 3: a finger held on Play's BPM types the tempo.

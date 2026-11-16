@@ -48,6 +48,7 @@ extern "C" {
     fn signal(sig: c_int, handler: usize) -> usize;
     fn raise(sig: c_int) -> c_int;
     fn unlink(path: *const c_char) -> c_int;
+    fn sync();
 }
 
 // The same numbers on 32-bit ARM and x86-64 Linux (signal(7)).
@@ -154,6 +155,13 @@ pub fn lock_memory() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// sync(2): everything written so far goes to the disks (power.rs, before
+/// a shut down is handed over).
+pub fn sync_disks() {
+    // SAFETY: sync takes nothing and cannot fail.
+    unsafe { sync() }
 }
 
 /// The file the stop handler removes: null, or a NUL-terminated C string
