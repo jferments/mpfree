@@ -36,7 +36,7 @@ MPFree only works with the exact factory software it was made for. The creator c
    - **macOS:** the first time, macOS refuses to open it. Open **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next to the creator's name, and enter your password.
    - **Linux:** allow the file to run as a program (in most file managers: right-click, **Properties**, **Allow executing**), then open it.
    The creator opens on **Make a stick**, with three numbered steps. Its other pages are the tabs along the top: **Copy the backup** and **Take MPFree off my MPC**. **Preferences** and **Help** are at the top right.
-2. In step **1, Akai's update file**, the creator shows the update file it found in your Downloads, Desktop or Documents folder, with a green tick and **MPC 3.10.1 for the MPC One**. If it didn't find it, drag the file onto the creator's window, or type where it is (the file, or the folder it is in).
+2. In step **1, Akai's update file**, the creator shows the update file it found in your Downloads, Desktop or Documents folder, with a green tick and **MPC 3.10.1 (MPC One, Gen 1)**. If it didn't find it, drag the file onto the creator's window, or type where it is (the file, or the folder it is in).
 3. Put the USB stick into the computer. In step **2, Your USB stick**, choose it. The creator lists only USB sticks, never your computer's own disks, with their name and size.
 4. In step **3**, click **Make the stick**, tick **Yes, erase this stick**, and click **Erase and make the stick**.
 5. Your computer asks for your password (on Windows: "Do you want to allow this app to make changes?", click **Yes**). The creator needs it to write the stick.

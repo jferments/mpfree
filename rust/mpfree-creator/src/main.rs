@@ -738,7 +738,7 @@ impl Creator {
                 Some(u) => match (&u.problem, u.supported) {
                     (Some(p), _) => status(ui, Tone::Bad, p),
                     (None, Some(s)) => {
-                        status(ui, Tone::Good, &format!("{} for the MPC One (Akai build {})", s.firmware, u.build));
+                        status(ui, Tone::Good, &format!("{}, Akai build {}", s.firmware, u.build));
                         update_ok = true;
                     }
                     (None, None) if self.prefs.any_update => {
