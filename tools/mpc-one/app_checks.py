@@ -549,6 +549,22 @@ CHECKS = (
          "shut_down_and_restart_go_to_the_systems_file",
          "a_request_is_one_word_in_a_whole_file"]),
     Check(
+        "first-start", "The USB creator's first-start setup: the backup, then the MPC's kits and samples",
+        "#386: the read-only eMMC window was approved on condition that it runs on the reference MPC first",
+        "auto",
+        looks=[("the setup ran at this start",
+                at_start(r"^first start: setup, try [1-3] of 3$", r"^first start: ")),
+               ("the backup was copied, read back and checked, with no write to the eMMC",
+                at_start(r"^first start: (backup done|using the backup made before): \S*/backup/"
+                         r"mpc-one-emmc-\d{8}T\d{6}Z$", r"^first start: ")),
+               ("the MPC's own kits and samples came in",
+                at_start(r"^first start: done: [1-9]\d* Akai kits, [1-9]\d* samples; the backup is in ",
+                         r"^first start: "))],
+        smoke=["needed_only_with_the_service_and_until_done",
+               "kits_and_samples_from_the_backup",
+               "a_failed_or_missing_backup_is_tried_again_later",
+               "one_bar_for_the_whole_first_start"]),
+    Check(
         "kept", "The settings partition 4 kept came back at this start",
         "Prefs saved in one boot and used in the next (Sound cores, Loop memory)", "auto",
         looks=[("the start's settings agree with settings/app.conf", kept_settings())],
