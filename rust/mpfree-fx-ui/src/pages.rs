@@ -159,6 +159,7 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
                     cloud::WIDTH,
                     cloud::EARLY,
                     cloud::MIX,
+                    cloud::MIX_CURVE,
                     cloud::FREEZE,
                 ],
                 &[cloud::DAMPING, cloud::HIGH_CUT, cloud::EARLY, cloud::MIX],

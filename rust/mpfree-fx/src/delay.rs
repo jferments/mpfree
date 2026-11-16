@@ -6,6 +6,7 @@
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
+use crate::kit::{self, Blend};
 use crate::svf::{Segs, Svf, SvfMode};
 use crate::{db_to_gain, defaults, flush, soft};
 
@@ -19,6 +20,9 @@ pub mod ids {
     pub const SATURATION: u16 = 5;
     pub const MIX: u16 = 6;
     pub const FREEZE: u16 = 7;
+    /// How Mix blends: Equal (equal power), Dry first or Linear
+    /// ([`crate::kit::MIX_CURVES`]).
+    pub const MIX_CURVE: u16 = 8;
 }
 
 const SYNCS: &[&str] = &[
@@ -49,7 +53,7 @@ static INFO: NodeInfo = NodeInfo {
     name: "Delay",
     kind: Kind::Effect,
 };
-static PARAMS: [ParamInfo; 8] = [
+static PARAMS: [ParamInfo; 9] = [
     ParamInfo {
         id: 0,
         name: "Sync",
@@ -138,6 +142,17 @@ static PARAMS: [ParamInfo; 8] = [
         curve: Curve::Toggle,
         readonly: false,
     },
+    ParamInfo {
+        id: 8,
+        name: "Mix curve",
+        group: "Output",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(kit::MIX_CURVES),
+        readonly: false,
+    },
 ];
 
 /// One channel's delay line with a cubic (Hermite) fractional read.
@@ -193,13 +208,13 @@ impl Line {
 /// Stereo delay with sync, ping-pong, filtered and saturated feedback, and
 /// freeze.
 pub struct Delay {
-    v: [f32; 8],
+    v: [f32; 9],
     rate: u32,
     frames: Smooth,
     fb: Smooth,
     log_tone: Smooth,
     sat: Smooth,
-    mix: Smooth,
+    blend: Blend,
     frozen: Smooth,
     lines: [Line; 2],
     tone: Svf,
@@ -231,7 +246,7 @@ impl Delay {
             fb: Smooth::new(v[2] / 100.0),
             log_tone: Smooth::new(v[4].log2()),
             sat: Smooth::new(v[5] / 100.0),
-            mix: Smooth::new(v[6] / 100.0),
+            blend: Blend::new(v[6] / 100.0, v[8] as usize),
             frozen: Smooth::new(0.0),
             lines: [Line::new(8), Line::new(8)],
             tone: Svf::default(),
@@ -252,7 +267,8 @@ impl Delay {
             ids::FEEDBACK => self.fb.target = v / 100.0,
             ids::TONE => self.log_tone.target = v.log2(),
             ids::SATURATION => self.sat.target = v / 100.0,
-            ids::MIX => self.mix.target = v / 100.0,
+            ids::MIX => self.blend.set_mix(v / 100.0),
+            ids::MIX_CURVE => self.blend.set_curve(v),
             ids::FREEZE => self.frozen.target = v,
             _ => {}
         }
@@ -295,7 +311,7 @@ impl Delay {
                 drive = db_to_gain(18.0 * sat);
                 undrive = 1.0 / drive;
             }
-            let mix = self.mix.next();
+            let g = self.blend.next();
             let ya = self.lines[0].read(d);
             let yb = self.lines[1].read(d);
             let mut loopv = [ya, yb];
@@ -314,8 +330,8 @@ impl Delay {
             };
             self.lines[0].write(wa);
             self.lines[1].write(wb);
-            l[i] = crate::lerp(x0, ya, mix);
-            r[i] = crate::lerp(x1, yb, mix);
+            l[i] = kit::blend(x0, ya, g);
+            r[i] = kit::blend(x1, yb, g);
         }
     }
 }
@@ -341,14 +357,10 @@ impl Node for Delay {
         }
         self.rate = rate;
         self.frames.set_time(rate, 60.0);
-        for s in [
-            &mut self.fb,
-            &mut self.log_tone,
-            &mut self.sat,
-            &mut self.mix,
-        ] {
+        for s in [&mut self.fb, &mut self.log_tone, &mut self.sat] {
             s.set_time(rate, 20.0);
         }
+        self.blend.set_time(rate, 20.0);
         self.frozen.set_time(rate, 30.0);
         self.frames.snap(self.target_frames(self.bpm));
         self.hp.set(SvfMode::HighPass, 60.0, 0.707, 0.0, rate);
@@ -365,11 +377,11 @@ impl Node for Delay {
             &mut self.fb,
             &mut self.log_tone,
             &mut self.sat,
-            &mut self.mix,
             &mut self.frozen,
         ] {
             s.snap(s.target);
         }
+        self.blend.snap();
         self.frames.snap(self.target_frames(self.bpm));
         for line in &mut self.lines {
             line.clear();
