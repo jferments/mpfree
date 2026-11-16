@@ -10,6 +10,15 @@
 //!   density, metallic tails, stereo correlation), [`dynamics`] (static
 //!   curve, attack and release), [`zipper`] (clicks and zipper noise on
 //!   parameter sweeps).
+//! - For the FX quality plan (`docs/dev/design/fx-quality.md`): [`echo`]
+//!   (a delay's repeats, their timing and tone), [`prototype`] (analog EQ
+//!   curves to compare a digital one with), [`mixlaw`] (loudness across
+//!   the Mix knob), [`knob`] (Decay and Pre-delay against what they
+//!   measure), [`clarity`] (C50, C80, EDT against T30, which side a
+//!   reverb starts on), [`flutter`] (wow and flutter of a 3.15 kHz tone),
+//!   [`wobble`] (how much modulation smears a held note), and [`quality`]
+//!   (every target of a class as one report, and the ratchet that keeps
+//!   the numbers from getting worse).
 //! - [`programme`]: every stimulus in one recording with a sync chirp and
 //!   a schedule, for capturing a reference device and cutting it back up.
 //! - [`card`]: report cards over the registry, written as JSON.
@@ -21,16 +30,24 @@
 
 pub mod capture;
 pub mod card;
+pub mod clarity;
 pub mod dut;
 pub mod dynamics;
+pub mod echo;
 pub mod fft;
+pub mod flutter;
 pub mod harmonics;
+pub mod knob;
 pub mod loudness;
+pub mod mixlaw;
 pub mod null;
 pub mod plan;
 pub mod programme;
+pub mod prototype;
+pub mod quality;
 pub mod response;
 pub mod room;
 pub mod signals;
 pub mod wav;
+pub mod wobble;
 pub mod zipper;
