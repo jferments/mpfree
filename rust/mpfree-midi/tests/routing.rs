@@ -248,6 +248,121 @@ fn only_the_clock_source_reaches_the_clock() {
     assert_eq!(r.stats.foreign_clock, 48);
 }
 
+/// A port set to ignore a kind lists it (Seen, then Ignored) and routes
+/// none of it; ignored clock never reaches the clock, even from the clock
+/// source.
+#[test]
+fn a_port_ignores_what_it_is_set_to() {
+    use mpfree_midi::setup::{IgnoreSet, Ignored};
+    let mut r = InputRouter::new();
+    r.set_selected(Some(2));
+    r.set_clock_source(Some(KEYS));
+    let set = IgnoreSet::NONE
+        .with(Ignored::Clock, true)
+        .with(Ignored::Program, true)
+        .with(Ignored::Aftertouch, true)
+        .with(Ignored::AllNotesOff, true);
+    r.set_ignore(KEYS, set);
+    assert_eq!(r.ignores(KEYS), set);
+    assert_eq!(r.ignores(DIN), IgnoreSet::NONE);
+    // A held key, then everything the port ignores.
+    let evs = feed(
+        &mut r,
+        KEYS,
+        &[
+            0x90, 60, 100, // note on
+            0xD0, 40, // channel pressure
+            0xA0, 60, 30, // poly pressure
+            0xC0, 5, // program
+            0xB0, 123, 0, // all notes off
+            0xF8, 0xFA, 0xF2, 0, 0, // clock, start, song position
+        ],
+    );
+    assert_eq!(
+        to_tracks(&evs),
+        vec![(
+            2,
+            Msg::NoteOn {
+                ch: 0,
+                note: 60,
+                vel: 100
+            }
+        )]
+    );
+    let ignored: Vec<Msg> = evs
+        .iter()
+        .filter_map(|e| match *e {
+            In::Ignored { msg, port, .. } => {
+                assert_eq!(port, KEYS);
+                Some(msg)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ignored.len(), 4, "{ignored:?}");
+    let seen = evs.iter().filter(|e| matches!(e, In::Seen { .. })).count();
+    assert_eq!(seen, 5);
+    assert!(!evs.iter().any(|e| matches!(e, In::ClockByte { .. })));
+    // 4 messages and 3 clock bytes (F8, FA, F2; Song Position's data is
+    // the F2's).
+    assert_eq!(r.stats.ignored, 7);
+    // The key is still held: All notes off was ignored.
+    assert_eq!(r.held(), 1);
+    // The same port, nothing ignored: All notes off lets the key go, and
+    // the CC itself is routed as before.
+    r.set_ignore(KEYS, IgnoreSet::NONE);
+    let evs = feed(&mut r, KEYS, &[0xB0, 123, 0]);
+    assert_eq!(
+        to_tracks(&evs),
+        vec![
+            (
+                2,
+                Msg::NoteOff {
+                    ch: 0,
+                    note: 60,
+                    vel: 64
+                }
+            ),
+            (
+                2,
+                Msg::Cc {
+                    ch: 0,
+                    cc: 123,
+                    value: 0
+                }
+            )
+        ]
+    );
+    assert_eq!(r.held(), 0);
+}
+
+/// All notes off ends only its own port's and channel's keys.
+#[test]
+fn all_notes_off_ends_only_its_ports_channel() {
+    let mut r = InputRouter::new();
+    r.set_selected(Some(0));
+    feed(&mut r, KEYS, &[0x90, 60, 100, 0x91, 62, 100]);
+    feed(&mut r, DIN, &[0x90, 64, 100]);
+    assert_eq!(r.held(), 3);
+    // All sound off on channel 2 of the keyboard: only its D4 ends.
+    let evs = feed(&mut r, KEYS, &[0xB1, 120, 0]);
+    let offs: Vec<u8> = to_tracks(&evs)
+        .into_iter()
+        .filter_map(|(_, m)| match m {
+            Msg::NoteOff { note, .. } => Some(note),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(offs, vec![62]);
+    assert_eq!(r.held(), 2);
+    // Reset all controllers (121) ends nothing.
+    feed(&mut r, KEYS, &[0xB0, 121, 0]);
+    assert_eq!(r.held(), 2);
+    // Poly mode on (127) ends the keyboard's channel 1.
+    feed(&mut r, KEYS, &[0xB0, 127, 0]);
+    assert_eq!(r.held(), 1);
+}
+
 #[test]
 fn tracks_out_with_their_own_channels() {
     let mut out = OutputRouter::new();

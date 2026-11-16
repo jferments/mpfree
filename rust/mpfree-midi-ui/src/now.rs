@@ -281,7 +281,7 @@ pub(crate) fn cards(area: Rect) -> Cards {
 }
 
 /// Seconds as "just now", "6 s ago", "2 min ago".
-fn ago(s: f64) -> String {
+pub(crate) fn ago(s: f64) -> String {
     if s < 1.0 {
         "just now".to_string()
     } else if s < 60.0 {
@@ -301,7 +301,7 @@ fn held_for(s: f32) -> String {
 }
 
 /// A card: its panel and title, and the area below the title.
-fn card(cx: &mut PaintCx, r: Rect, title: &str, right: &str, right_ink: Color) -> Rect {
+pub(crate) fn card(cx: &mut PaintCx, r: Rect, title: &str, right: &str, right_ink: Color) -> Rect {
     let t = cx.theme.clone();
     cx.canvas.fill_round_rect(r, 10, t.surface);
     let head = Rect::new(r.x + 14, r.y + 8, r.w - 28, 24);

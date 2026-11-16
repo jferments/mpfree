@@ -3,8 +3,9 @@
 //!
 //! The owner's calls (2026-11-12): MIDI and sync are project settings, not
 //! Prefs, because they change from project to project. Facts about the rig
-//! rather than the project (a port's shown name, its delay, each CV output's
-//! tuning) stay in Prefs and are not here.
+//! rather than the project are kept apart ([`MidiSetup::rig`], saved by the
+//! app for every project): each port's input, thru, what it ignores coming
+//! in and the delay of the gear on it.
 //!
 //! - **Ports are named, not numbered.** A project says "Digitone" or
 //!   [`DIN_NAME`]; the app finds the port by that name when the device is
@@ -23,7 +24,7 @@
 
 use crate::cv::{CvAssign, Priority, Scale, CV_OUTS};
 use crate::learn::Saved;
-use crate::msg::Channel;
+use crate::msg::{Channel, Msg};
 use crate::output::MAX_TRACKS;
 
 /// The 5-pin MIDI jacks' name in a project.
@@ -107,8 +108,136 @@ impl ClockOut {
     }
 }
 
-/// One port's project settings. A port with none of its own uses
-/// [`PortSetup::new`]'s defaults.
+/// What a port can be set to ignore coming in (its page's "Ignore coming
+/// in"). Ignored messages still show in the MIDI monitor, marked
+/// "ignored", but nothing past the port gets them: no track, Learn, clock
+/// follower or thru.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ignored {
+    /// Clock, start, continue, stop and song position: the port can't lead
+    /// the tempo.
+    Clock,
+    /// Program changes.
+    Program,
+    /// Pressure: polyphonic and channel aftertouch.
+    Aftertouch,
+    /// The messages that end every held note on a channel: All notes off
+    /// (CC 123), All sound off (CC 120) and the mode changes (CC 124 to
+    /// 127). Akai's "Filter All Notes Off".
+    AllNotesOff,
+}
+
+impl Ignored {
+    pub const ALL: [Ignored; 4] = [
+        Ignored::Clock,
+        Ignored::Program,
+        Ignored::Aftertouch,
+        Ignored::AllNotesOff,
+    ];
+
+    /// As the port's page says it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Ignored::Clock => "Clock",
+            Ignored::Program => "Program",
+            Ignored::Aftertouch => "Aftertouch",
+            Ignored::AllNotesOff => "All notes off",
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Ignored::Clock => "clock",
+            Ignored::Program => "program",
+            Ignored::Aftertouch => "aftertouch",
+            Ignored::AllNotesOff => "all-notes-off",
+        }
+    }
+
+    fn bit(self) -> u8 {
+        1 << Ignored::ALL.iter().position(|k| *k == self).unwrap_or(0)
+    }
+
+    /// The kind a channel message is, if it is one a port can ignore.
+    pub fn of(m: &Msg) -> Option<Ignored> {
+        match *m {
+            Msg::Program { .. } => Some(Ignored::Program),
+            Msg::PolyPressure { .. } | Msg::ChanPressure { .. } => Some(Ignored::Aftertouch),
+            Msg::Cc { cc, .. } if ends_notes(cc) => Some(Ignored::AllNotesOff),
+            _ => None,
+        }
+    }
+}
+
+/// Whether controller `cc` is a channel mode message that ends every held
+/// note on its channel: All sound off (120), All notes off (123), Omni off
+/// and on (124, 125), Mono and Poly (126, 127).
+pub fn ends_notes(cc: u8) -> bool {
+    cc == 120 || (123..=127).contains(&cc)
+}
+
+/// The kinds one port ignores.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct IgnoreSet(u8);
+
+impl IgnoreSet {
+    pub const NONE: IgnoreSet = IgnoreSet(0);
+
+    pub fn has(self, k: Ignored) -> bool {
+        self.0 & k.bit() != 0
+    }
+
+    pub fn with(self, k: Ignored, on: bool) -> IgnoreSet {
+        if on {
+            IgnoreSet(self.0 | k.bit())
+        } else {
+            IgnoreSet(self.0 & !k.bit())
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Whether a channel message is one this set ignores.
+    pub fn msg(self, m: &Msg) -> bool {
+        Ignored::of(m).is_some_and(|k| self.has(k))
+    }
+
+    /// The kinds, in [`Ignored::ALL`]'s order.
+    pub fn kinds(self) -> impl Iterator<Item = Ignored> {
+        Ignored::ALL.into_iter().filter(move |k| self.has(*k))
+    }
+
+    fn text(self) -> String {
+        self.kinds()
+            .map(Ignored::word)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn parse(v: &str) -> Result<IgnoreSet, String> {
+        let mut set = IgnoreSet::NONE;
+        for w in v.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+            let k = Ignored::ALL
+                .into_iter()
+                .find(|k| k.word() == w)
+                .ok_or(format!("unknown kind \"{w}\""))?;
+            set = set.with(k, true);
+        }
+        Ok(set)
+    }
+}
+
+/// The most a port's gear can be said to sound late, in tenths of a ms
+/// (100 ms).
+pub const MAX_DELAY_TENTHS: u16 = 1000;
+/// The port page's - and + step, in tenths of a ms.
+pub const DELAY_STEP_TENTHS: u16 = 5;
+
+/// One port's settings. A port with none of its own uses
+/// [`PortSetup::new`]'s defaults. Its clock out is the project's; the rest
+/// is the rig's ([`MidiSetup::rig`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortSetup {
     pub name: String,
@@ -116,6 +245,12 @@ pub struct PortSetup {
     pub clock_out: ClockOut,
     /// What arrives on this port's input leaves its output too.
     pub thru: bool,
+    /// What its input ignores.
+    pub ignore: IgnoreSet,
+    /// How late the gear on this port sounds after a message leaves, in
+    /// tenths of a ms (its MIDI and its own processing): MIDI out sends
+    /// this much early, so it lands on the beat. 0 to [`MAX_DELAY_TENTHS`].
+    pub delay_tenths: u16,
 }
 
 impl PortSetup {
@@ -125,7 +260,14 @@ impl PortSetup {
             input: PortInput::default(),
             clock_out: ClockOut::default(),
             thru: false,
+            ignore: IgnoreSet::NONE,
+            delay_tenths: 0,
         }
+    }
+
+    /// The delay in ms.
+    pub fn delay_ms(&self) -> f32 {
+        f32::from(self.delay_tenths) / 10.0
     }
 
     fn is_default(&self) -> bool {
@@ -272,6 +414,8 @@ impl MidiSetup {
             m.set_port(&name, |p| {
                 p.input = PortInput::default();
                 p.thru = false;
+                p.ignore = IgnoreSet::NONE;
+                p.delay_tenths = 0;
             });
         }
         m
@@ -279,13 +423,16 @@ impl MidiSetup {
 
     /// The settings that belong to the gear on the desk, kept for every
     /// project (owner, 13 Nov 2026: project settings apart from system-wide
-    /// ones): each port's input (Plays tracks, Learn only, Both) and thru.
+    /// ones): each port's input (Plays tracks, Learn only, Both), thru,
+    /// what it ignores coming in and its gear's delay.
     pub fn rig(&self) -> MidiSetup {
         let mut m = MidiSetup::default();
         for p in &self.ports {
             m.set_port(&p.name, |q| {
                 q.input = p.input;
                 q.thru = p.thru;
+                q.ignore = p.ignore;
+                q.delay_tenths = p.delay_tenths;
             });
         }
         m
@@ -299,7 +446,8 @@ impl MidiSetup {
         self.set_rig(&rig);
     }
 
-    /// `rig`'s port inputs and thru, this setup's song settings kept.
+    /// `rig`'s port settings (input, thru, ignore, delay), this setup's
+    /// song settings kept.
     pub fn set_rig(&mut self, rig: &MidiSetup) {
         let names: Vec<String> = self
             .ports
@@ -312,6 +460,8 @@ impl MidiSetup {
             self.set_port(&name, |p| {
                 p.input = want.input;
                 p.thru = want.thru;
+                p.ignore = want.ignore;
+                p.delay_tenths = want.delay_tenths;
             });
         }
     }
@@ -349,6 +499,16 @@ impl MidiSetup {
             line(&mut s, &format!("{k}.input"), p.input.word());
             line(&mut s, &format!("{k}.clock-out"), p.clock_out.word());
             line(&mut s, &format!("{k}.thru"), on_off(p.thru));
+            if !p.ignore.is_empty() {
+                line(&mut s, &format!("{k}.ignore"), &p.ignore.text());
+            }
+            if p.delay_tenths != 0 {
+                line(
+                    &mut s,
+                    &format!("{k}.delay-ms"),
+                    &format!("{:.1}", p.delay_ms()),
+                );
+            }
         }
         for (i, t) in self.tracks.iter().enumerate() {
             let Some(t) = t else { continue };
@@ -466,6 +626,8 @@ impl MidiSetup {
                             ClockOut::from_word(v).ok_or(format!("unknown clock out \"{v}\""))?
                     }
                     ["thru"] => p.thru = parse_on(v)?,
+                    ["ignore"] => p.ignore = IgnoreSet::parse(v)?,
+                    ["delay-ms"] => p.delay_tenths = parse_delay(v)?,
                     _ => return Err("unknown key".into()),
                 }
             }
@@ -509,6 +671,18 @@ fn on_off(b: bool) -> &'static str {
     } else {
         "off"
     }
+}
+
+/// "6.5" (ms) as tenths of a ms, 0 to [`MAX_DELAY_TENTHS`].
+fn parse_delay(v: &str) -> Result<u16, String> {
+    let ms: f32 = v
+        .parse()
+        .map_err(|_| format!("\"{v}\" is not a number of ms"))?;
+    let max = f32::from(MAX_DELAY_TENTHS) / 10.0;
+    if !(0.0..=max).contains(&ms) {
+        return Err(format!("{ms} ms is outside 0 to {max} ms"));
+    }
+    Ok((ms * 10.0).round() as u16)
 }
 
 fn parse_on(v: &str) -> Result<bool, String> {
@@ -768,19 +942,27 @@ mod tests {
             p.thru = true;
             p.clock_out = ClockOut::Always;
         });
-        m.set_port("Keystep 37", |p| p.input = PortInput::PlaysTracks);
+        m.set_port("Keystep 37", |p| {
+            p.input = PortInput::PlaysTracks;
+            p.ignore = IgnoreSet::NONE.with(Ignored::Clock, true);
+        });
+        m.set_port("Digitone", |p| p.delay_tenths = 65);
         m.tracks[0] = Some(TrackOut::new(DIN_NAME, 9));
         let project = m.project();
         let rig = m.rig();
-        // The song keeps the clock out, not the input or thru.
+        // The song keeps the clock out, not the input, thru, what a port
+        // ignores or its gear's delay.
         assert_eq!(project.port(DIN_NAME).clock_out, ClockOut::Always);
         assert_eq!(project.port(DIN_NAME).input, PortInput::default());
         assert!(!project.port(DIN_NAME).thru);
         assert!(project.ports.iter().all(|p| p.name != "Keystep 37"));
+        assert!(project.ports.iter().all(|p| p.name != "Digitone"));
         assert_eq!(project.tracks[0], m.tracks[0]);
-        // The rig keeps only the inputs and thru.
+        // The rig keeps the inputs, thru, ignores and delays.
         assert_eq!(rig.port(DIN_NAME).input, PortInput::LearnOnly);
         assert!(rig.port(DIN_NAME).thru);
+        assert!(rig.port("Keystep 37").ignore.has(Ignored::Clock));
+        assert_eq!(rig.port("Digitone").delay_tenths, 65);
         assert_eq!(rig.port(DIN_NAME).clock_out, ClockOut::default());
         assert_eq!(rig.tempo, TempoSource::Internal);
         assert!(rig.tracks.iter().all(Option::is_none));
@@ -801,6 +983,74 @@ mod tests {
 
     use super::*;
 
+    /// What a port ignores is a set of kinds, read back as written; each
+    /// channel message is the kind it is.
+    #[test]
+    fn a_port_ignores_the_kinds_set_and_says_them() {
+        let set = IgnoreSet::NONE
+            .with(Ignored::AllNotesOff, true)
+            .with(Ignored::Aftertouch, true);
+        assert_eq!(set.text(), "aftertouch,all-notes-off");
+        assert_eq!(IgnoreSet::parse(&set.text()), Ok(set));
+        assert_eq!(IgnoreSet::parse(""), Ok(IgnoreSet::NONE));
+        assert!(IgnoreSet::parse("clock,tempo").is_err());
+        assert!(!set
+            .with(Ignored::Aftertouch, false)
+            .has(Ignored::Aftertouch));
+        let pressure = Msg::ChanPressure { ch: 0, value: 9 };
+        let poly = Msg::PolyPressure {
+            ch: 0,
+            note: 60,
+            value: 9,
+        };
+        let all_off = Msg::Cc {
+            ch: 3,
+            cc: 123,
+            value: 0,
+        };
+        let sound_off = Msg::Cc {
+            ch: 3,
+            cc: 120,
+            value: 0,
+        };
+        let mod_wheel = Msg::Cc {
+            ch: 3,
+            cc: 1,
+            value: 0,
+        };
+        let reset = Msg::Cc {
+            ch: 3,
+            cc: 121,
+            value: 0,
+        };
+        let program = Msg::Program { ch: 0, program: 4 };
+        for m in [pressure, poly, all_off, sound_off] {
+            assert!(set.msg(&m), "{m:?}");
+        }
+        for m in [mod_wheel, reset, program] {
+            assert!(!set.msg(&m), "{m:?}");
+        }
+        assert_eq!(Ignored::of(&program), Some(Ignored::Program));
+        assert!((124..=127).all(ends_notes) && !ends_notes(121) && !ends_notes(122));
+    }
+
+    /// The gear's delay is written in ms and read back; one out of range
+    /// is named and skipped.
+    #[test]
+    fn a_ports_delay_is_kept_in_ms() {
+        let mut m = MidiSetup::default();
+        m.set_port(DIN_NAME, |p| p.delay_tenths = 65);
+        let text = m.rig_text();
+        assert!(text.contains("port.1.delay-ms = 6.5\n"), "{text}");
+        let (back, w) = MidiSetup::parse(&text);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(back.port(DIN_NAME).delay_tenths, 65);
+        assert_eq!(back.port(DIN_NAME).delay_ms(), 6.5);
+        let (_, w) = MidiSetup::parse(&format!("{HEADER}\nport.1 = MIDI\nport.1.delay-ms = 250\n"));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("outside 0 to 100"), "{w:?}");
+    }
+
     fn busy() -> MidiSetup {
         let mut m = MidiSetup {
             tempo: TempoSource::Port("Digitone = 2".into()),
@@ -811,7 +1061,13 @@ mod tests {
             p.clock_out = ClockOut::WhilePlaying;
             p.thru = true;
         });
-        m.set_port("Keystep 37", |p| p.input = PortInput::LearnOnly);
+        m.set_port("Keystep 37", |p| {
+            p.input = PortInput::LearnOnly;
+            p.ignore = IgnoreSet::NONE
+                .with(Ignored::Program, true)
+                .with(Ignored::AllNotesOff, true);
+            p.delay_tenths = 120;
+        });
         m.tracks[0] = Some(TrackOut::new(DIN_NAME, 9));
         m.tracks[15] = Some(TrackOut {
             program: Some(127),

@@ -171,7 +171,8 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **A track's settings on Arrange:** Instrument gains "External MIDI", with one "Plays on" field that holds the port and the channel together. Under the track name it says "MIDI Out · ch 1", or "Sends nothing: no port" in the warn colour. There is one MIDI output setting per track, never two look-alike settings (Jay, 12 Nov 07:00Z).
 - **Dev's MIDI log page** gains port and kind filters, and Clock, Timing and Counts panels.
 - **MIDI Learn:** SHIFT + a touch on a value. It takes values only: SHIFT + drag on an audio region and SHIFT + swipe on a take lane keep their jobs (section 4c).
-- **The MIDI, sync and CV settings** are the project's, in the mixer's I/O view (section 2, the I/O icon). Facts about the rig (CV tuning, port names, delays) stay in Prefs.
+- **The MIDI, sync and CV settings** are the project's, in the mixer's I/O view (section 2, the I/O icon). Facts about the rig (CV tuning, port names) stay in Prefs.
+- **A port's page** (board 6 of the MIDI powerhouse mockups, https://claude.ai/artifact/9W8R9NDy4KJUcScN9DoTh6, all eight boards approved by Jay on 16 Nov 18:35Z): each port's row in the I/O view's MIDI section gains a Page field, **Open ›**, which (or a tap on the port's name) opens the port's page over the section; **‹ MIDI** or Back closes it. Left: This port (what it is, Input), Ignore coming in (Clock, Program, Aftertouch, All notes off), What it does. Right: Now, Clock to this port (the Sync section's setting, never on the same screen), This gear's delay (kept with the rig, so the delay is on the page rather than in Prefs), and Send to it (labelled SENDS MIDI: Test note, All notes off). Q-Links 1 to 3: Input, Clock, the delay.
 
 ## 4e. The Pads tab
 
@@ -231,11 +232,12 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   6. Sound cores (Shared, Core 3, Cores 3 and 2, Cores 3, 2 and 1 (a test Jay asked for on 12 Nov): where the sound runs from the next start; asked for by the profiling thread, agreed by the app thread on 12 Nov; Jay's go 12 Nov 07:10Z, merged in PR #200, train 14)
   7. Map controls
   8. Line input
-  9. System info
-  10. At start (New project, the default, or Last project: what opens when MPFree starts, once the sound is going; Jay's pick on the project thread's settings card, 13 Nov 14:09Z)
-  11. Export (Fast, quiet, the default, or Listen: how an export plays; a song that needs outside gear listens anyway; Jay, 14 Nov 01:32Z, on the missing-features thread)
-  12. Export file (24-bit, the default, 16-bit with dither, or 32-bit float) and 13. Export rate (44.1 kHz, the default, or 48 kHz): the format each export starts from; the Export panel's File row changes it for one export (Jay's pick "Both", 14 Nov 07:51Z, on the missing-features thread)
-  14. Touch screen (opens its own rows)
+  9. Send MIDI and CV out (Off, the default, or "On (sends MIDI)": the MIDI Out jack and the CV jacks send only while it is on, and it is kept across restarts; Jay's pick on the MIDI thread's card, 16 Nov 23:16Z, in place of the `--midi-out` and `--cv-out` start flags. It sits after the Line input latency row)
+  10. System info
+  11. At start (New project, the default, or Last project: what opens when MPFree starts, once the sound is going; Jay's pick on the project thread's settings card, 13 Nov 14:09Z)
+  12. Export (Fast, quiet, the default, or Listen: how an export plays; a song that needs outside gear listens anyway; Jay, 14 Nov 01:32Z, on the missing-features thread)
+  13. Export file (24-bit, the default, 16-bit with dither, or 32-bit float) and 14. Export rate (44.1 kHz, the default, or 48 kHz): the format each export starts from; the Export panel's File row changes it for one export (Jay's pick "Both", 14 Nov 07:51Z, on the missing-features thread)
+  15. Touch screen (opens its own rows)
 - **The Touch screen rows** ("Prefs · Touch screen", approved in the touch thread at 08:13Z, #69):
   1. Back
   2. Screen pad velocity
