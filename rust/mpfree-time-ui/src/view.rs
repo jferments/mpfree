@@ -2008,8 +2008,8 @@ mod tests {
         assert_eq!(morph.h, 64);
         assert!(morph.w >= 800, "{morph:?}");
         // Five record settings are in view at once (58 px a row); the
-        // sixth, Pressure, scrolls in when a row below the middle is
-        // picked (the list keeps the picked row in view).
+        // sixth, Pressure, scrolls in when the row above it is picked (the
+        // list keeps the picked row and the next one in view).
         let record = ui.rect_of(RECORD).unwrap();
         assert!(record.h - 14 * 2 - 34 >= 58 * 5, "{record:?}");
         let list = ui.get_mut::<OptionList>(RECORD).unwrap();
@@ -2021,6 +2021,8 @@ mod tests {
             .collect();
         assert!(list.row_rects(record, 5).is_none());
         list.selected = 3;
+        assert!(list.row_rects(record, 5).is_none(), "no jump yet");
+        list.selected = 4;
         assert!(list.row_rects(record, 5).is_some());
         // Three takes and the buttons.
         let takes = ui.rect_of(TAKES).unwrap();

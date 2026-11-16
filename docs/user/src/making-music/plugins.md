@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/plugin_page.rs rust/mpfree-app/src/plugin_store.rs rust/mpfree-browser-ui/src/plugins.rs rust/mpfree-mpcstore
-checked: 2026-11-16 d653b57
+checked: 2026-11-16 a994ab4
 -->
 
 # Getting plugins

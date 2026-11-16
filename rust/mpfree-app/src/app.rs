@@ -2189,6 +2189,15 @@ impl App {
     /// decision 5); STOP again, or STOP with nothing latched, lets go of
     /// the latched pads too. PLAY or a pad press plays the kept latch again.
     fn stop(&mut self) -> Vec<Effect> {
+        // A loop waiting for PLAY (an overdub, or an armed first pass)
+        // lets go too, so its lights stop blinking.
+        let waiting = Effect::Looper(LoopAction::StopWaiting);
+        let mut fx = self.stop_sounds();
+        fx.insert(0, waiting);
+        fx
+    }
+
+    fn stop_sounds(&mut self) -> Vec<Effect> {
         if self.latched
             && self.generating()
             && !self.arps.engine_at(self.track).hushed()
