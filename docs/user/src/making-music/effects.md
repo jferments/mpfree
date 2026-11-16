@@ -108,7 +108,7 @@ The EQ's page in the chain editor is a graph of what the EQ does, from 20 Hz on 
 - **Drag a dot** to move its band: sideways for its frequency, up and down for its gain. While you hold it, a bubble shows its values.
 - **Turn the data wheel** on a dot, or put a **second finger** on the screen while you hold one, to make the band narrower or wider (its Q). On a cut, the wheel switches between 12 and 24 dB.
 - **Tap the graph twice** where there is no dot to add a band there.
-- Under the graph, tap a band's chip to pick it, **+ Band** to add one, and a type to change it: **Low cut**, **Low shelf**, **Bell**, **Notch**, **High shelf** or **High cut**. **ON** switches the band off and on again (it keeps its settings), **Remove** takes it away, and **Listen** plays only what that band touches, to help you find a ring or a boom; Listen follows the band you pick and stops when you leave the page.
+- Under the graph, tap a band's chip to pick it, **+ Band** to add one, and a type to change it: **Low cut**, **Low shelf**, **Bell**, **Notch**, **High shelf** or **High cut**. **ON** switches the band off and on again (it keeps its settings), **Remove** takes it away, and **Solo band** lets you hear only the part of the sound that band shapes, to help you find a ring or a boom. Solo band follows the band you pick, and stops when you tap it again or leave the page.
 - The Q-Links turn the picked band's frequency, gain and Q, and the EQ's output.
 
 The Mix tab's **EQ** look shows every strip's EQ at once (see [Mixing](mixing-and-effects.md#every-eq-at-once-eq)).
