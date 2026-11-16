@@ -88,6 +88,8 @@
 374672	Poly Supersaw, 8 voices
 931756	Sampler, 20 pads
 1451388	Sampler, 20 pads + master grains
+39166	Sampler, drum kit, 24 voices
+74456	Sampler, drum kit, 64 voices
 722153	Sampler, the 16 sample pads alone
 235626	Sampler, the 4 granular pads alone
 3317675	Song: sampler, 2 synths, mixer+FX, time, looper

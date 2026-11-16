@@ -617,6 +617,51 @@ fn sampler_engine(
     e
 }
 
+/// The pad player's drum kits as it plays them: 16 one-shot pads with the
+/// kit pads' settings (no filter, the envelope open, at the sound's own
+/// rate, 4 voices a pad), 2 s sounds, hit so that `voices` voices play
+/// all the time (a hit every block, the next pad round, each voice ringing
+/// until a hit on its pad pushes it out). Jay's round 4 kits, with Note
+/// Repeat, kept the pool full like this.
+fn drum_kit(name: &str, rate: u32, voices: usize) -> Case {
+    let s = Source::new(
+        "drum",
+        rate,
+        2,
+        (0..rate as usize * 4)
+            .map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0)
+            .collect(),
+    )
+    .expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..16usize {
+        let mut pad = Pad::new("kit", Layer::new(Region::whole(&s)));
+        pad.polyphony = 4;
+        pad.level_db = 3.0;
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, voices);
+    e.set_view(EngineView::build(&p, rate));
+    let mut b0 = 0u64;
+    Case {
+        name: name.to_string(),
+        module: "sampler",
+        what: "16 kit pads, one-shot and open, every voice playing",
+        block: Box::new(move |_b, l, r| {
+            e.apply(Event::NoteOn {
+                pad: (b0 % 16) as u8,
+                velocity: 100,
+            });
+            b0 += 1;
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 /// The [`sampler`] case's hits: every 4 blocks, a note off on one pad and a
 /// note on another, with a random velocity. A hit on a pad an engine
 /// doesn't have does nothing, so engines that split the pads can all take
@@ -1008,6 +1053,12 @@ pub fn all(rate: u32) -> Vec<Case> {
             false,
             SamplerPads::Samples,
         )
+    }));
+    v.push(measured(|| {
+        drum_kit("Sampler, drum kit, 24 voices", rate, 24)
+    }));
+    v.push(measured(|| {
+        drum_kit("Sampler, drum kit, 64 voices", rate, 64)
     }));
     v.push(measured(|| {
         sampler(
