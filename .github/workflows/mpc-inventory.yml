@@ -102,8 +102,11 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hook_canary.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_stick_setup.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_creator_recipe.py
+          python3 tools/mpc-one/tests/test_compare_emmc_backups.py
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
@@ -568,6 +571,7 @@ jobs:
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/Cargo.toml --all --check
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-splash-gl/Cargo.toml --all --check
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-gpu/Cargo.toml --all --check
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-creator/Cargo.toml --all --check
       - name: Clippy on the whole workspace, every target
         run: |
           # Index loops are the clearest way to write much of our DSP, and
@@ -575,6 +579,20 @@ jobs:
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --manifest-path rust/Cargo.toml \
             --workspace --all-targets --locked -- -D warnings \
             -A clippy::needless_range_loop -A clippy::should_implement_trait
+      - name: The USB creator on Linux, Windows and macOS (clippy; no hosted runners, so a compile check)
+        # The creator's window is its own workspace (rust/mpfree-creator). Its disk
+        # code differs per system, so mpfree-stick and the window are also checked
+        # for Windows and macOS; checking needs only each target's standard library.
+        run: |
+          rustup target add --toolchain "$MPFREE_CLIPPY_TOOLCHAIN" x86_64-pc-windows-gnu x86_64-apple-darwin
+          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-gnu x86_64-apple-darwin; do
+            cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --manifest-path rust/Cargo.toml -p mpfree-stick \
+              --all-targets --locked --target "$target" -- -D warnings \
+              -A clippy::needless_range_loop -A clippy::should_implement_trait
+            cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --manifest-path rust/mpfree-creator/Cargo.toml \
+              --all-targets --locked --target "$target" -- -D warnings \
+              -A clippy::needless_range_loop -A clippy::should_implement_trait
+          done
 
   instructions:
     name: Instructions per bench case (fails on a rise over 5 %)

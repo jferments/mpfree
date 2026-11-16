@@ -107,6 +107,7 @@ mod midi_in;
 mod midi_out;
 mod midi_saved;
 mod mixing;
+mod mixturns;
 mod modmix;
 mod modpanels;
 mod pace;
@@ -125,6 +126,7 @@ mod rt_safety;
 mod sample_page;
 mod sampler;
 mod screen_cost;
+mod setup;
 mod shed;
 #[cfg(test)]
 mod smoke;
@@ -2264,6 +2266,61 @@ fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
 /// The loading steps, for the progress bar.
 const STEPS: usize = 6;
 
+/// The first start on a stick the USB creator made ([`setup`]): only with
+/// `--data`, never in `play`, and only where the stick has the backup
+/// service. Returns the settings to save (when it ran) and the MPC's own
+/// kits file (when there is one, from this start or an earlier one).
+fn first_start(
+    o: &Options,
+    out: &mut Out,
+    timed: bool,
+) -> (Option<mpfree_store::Settings>, Option<PathBuf>) {
+    let Some(data) = o.data.as_deref().filter(|_| !timed) else {
+        return (None, None);
+    };
+    let paths = setup::Paths::on_the_stick(data, Path::new(REPORT_DIR));
+    // The store opens later (step 6); its setup.conf is only read here.
+    let conf = data.join("settings").join(format!("{}.conf", setup::OWNER));
+    let saved = mpfree_store::Settings::parse(&fs::read_to_string(conf).unwrap_or_default());
+    let (mut to_save, mut made) = (None, None);
+    if setup::needed(&paths, &saved) {
+        let mut lines = Vec::new();
+        let outcome = setup::run(
+            &paths,
+            &saved,
+            &setup::Timing::on_the_mpc(),
+            &mut |s| {
+                out.show(gui::ToUi::Progress {
+                    message: s.message,
+                    detail: s.detail,
+                    value: s.value,
+                })
+            },
+            &mut |line| lines.push(line),
+        );
+        for line in lines {
+            out.say(&line);
+        }
+        if let Some(why) = &outcome.failed {
+            out.show(gui::ToUi::Progress {
+                message: "The first-start setup did not finish".into(),
+                detail: format!("{why}   ·   it tries again at the next start"),
+                value: 0.0,
+            });
+            thread::sleep(Duration::from_secs(5));
+        }
+        to_save = Some(outcome.saved);
+        made = outcome.kits;
+    }
+    let kits = made.or_else(|| {
+        let lib = mpfree_library::Library::at(data).ok()?;
+        let loc =
+            mpfree_library::Loc::new(mpfree_library::Place::Kits, &[setup::KITS_FILE]).ok()?;
+        lib.file_path(&loc).ok()
+    });
+    (to_save, kits)
+}
+
 /// One loading step on the screen (and in the log).
 fn progress(out: &mut Out, step: usize, message: &str, detail: &str, value: f32) {
     out.show(gui::ToUi::Progress {
@@ -3341,30 +3398,6 @@ fn synth_turn_row(synth: &synth::Synth, id: u16, to: f32) -> String {
     }
 }
 
-/// A mixer control's turn as the undo history lists it: "Drums Volume to
-/// -6.0 dB".
-fn mix_turn_row(strip: mpfree_fx::StripId, id: u16, to: f32) -> String {
-    match mpfree_fx::strip_params().iter().find(|p| p.id == id) {
-        Some(p) => format!(
-            "{} {} to {}",
-            mixing::name(strip),
-            p.name,
-            mpfree_synth_ui::format::value_line(p, to)
-        ),
-        None => format!("{} control", mixing::name(strip)),
-    }
-}
-
-/// What UNDO (or REDO) of a mixer control says: "Undid Drums Volume".
-fn mix_turn_said(strip: mpfree_fx::StripId, id: u16, redo: bool) -> String {
-    let done = if redo { "Redid" } else { "Undid" };
-    let name = mpfree_fx::strip_params()
-        .iter()
-        .find(|p| p.id == id)
-        .map_or("a control", |p| p.name);
-    format!("{done} {} {name}", mixing::name(strip))
-}
-
 /// Everything the time pages show, with the audio tracks' lanes.
 fn time_state(time: &time::TimeHost, tracks: &audiotracks::TrackHost) -> mpfree_time_ui::TimeState {
     let mut st = time.state();
@@ -3450,9 +3483,13 @@ fn player_session(
     timed: bool,
     from_ui: &Receiver<gui::FromUi>,
 ) -> Result<(), String> {
-    // 1. Kits.
+    // 0. The first start on a stick the USB creator made: the eMMC backup,
+    // then the MPC's own kits and samples from it (setup.rs). What it did is
+    // saved once the store is open (step 6).
+    let (setup_saved, akai_kits) = first_start(o, out, timed);
+    // 1. Kits: the MPC's own (from the first start), then MPFree's.
     progress(out, 1, "Loading drum kits", "Reading the kits file", 0.02);
-    let mut kits = load_kits(&o.kits, &mut |done, total| {
+    let own = load_kits(&o.kits, &mut |done, total| {
         let value = 0.02 + 0.38 * done as f32 / total.max(1) as f32;
         progress(
             out,
@@ -3462,6 +3499,24 @@ fn player_session(
             value,
         );
     })?;
+    let mut kits = match &akai_kits {
+        Some(path) => match load_kits(path, &mut |_, _| {}) {
+            Ok(akai) => {
+                out.say(&format!(
+                    "kits: {} of the MPC's own, from {}, before MPFree's {}",
+                    akai.len(),
+                    path.display(),
+                    own.len()
+                ));
+                setup::combine(akai, own, kit::MAX_KITS)
+            }
+            Err(e) => {
+                out.say(&format!("kits: the MPC's own kits not loaded ({e})"));
+                own
+            }
+        },
+        None => own,
+    };
     // The sampler engine plays them (and adds the Grains kit when there is room).
     progress(
         out,
@@ -3506,7 +3561,7 @@ fn player_session(
     let mut param_log = synth::ParamLog::default();
     // UNDO on the Synth tab and the mixer: their knob and fader turns.
     let mut synth_turns: undo::Turns<u16> = undo::Turns::default();
-    let mut mix_turns: undo::Turns<(mpfree_fx::StripId, u16)> = undo::Turns::default();
+    let mut mix_turns: mixturns::MixTurns = undo::Turns::default();
     // What the screen was last told about them, for the UNDO light.
     let mut turns_told = (false, false);
     let mut synth_time = RenderTime::default();
@@ -3618,6 +3673,13 @@ fn player_session(
         }
         None => mpfree_store::Store::none(),
     };
+    if let Some(saved) = setup_saved {
+        if let Err(e) = store.save_settings(setup::OWNER, &saved) {
+            out.say(&format!(
+                "first start: not saved ({e}); it runs again at the next start"
+            ));
+        }
+    }
     // The themes folder: theme files the user put in files/themes/ (read
     // only), offered in Prefs > Appearance after the built-in themes. Listed
     // before restore so a saved theme file comes back.
@@ -4005,12 +4067,7 @@ fn player_session(
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
             let (t_item, item) = (Instant::now(), parts::Name::of(&a));
-            let mix_turn = match &a {
-                gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Set { strip, id, value }) => {
-                    Some((*strip, *id, mix.value(*strip, *id), *value))
-                }
-                _ => None,
-            };
+            let mix_turn = mixturns::before_ui(&a, &mix, app.view() == app::View::Mixer);
             // The app, the mixer, the time engine, the looper and the chain
             // editor take theirs (desk.rs); the rest is this loop's.
             let mut desk = desk::Desk {
@@ -4029,14 +4086,8 @@ fn player_session(
             save_shelf(&mut mix, &store, out);
             // UNDO on the mixer: a strip control's turn, from its value
             // before the desk set it.
-            if let Some((strip, id, from, value)) = mix_turn {
-                let to =
-                    if (strip, id) == (mpfree_fx::StripId::Master, mpfree_fx::ids::mixer::VOLUME) {
-                        level_db
-                    } else {
-                        value
-                    };
-                mix_turns.turned((strip, id), from, to, t_read);
+            if let Some(turn) = mix_turn {
+                mixturns::record(&mut mix_turns, turn, level_db, t_read);
             }
             let Some(a) = a else {
                 parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
@@ -4090,10 +4141,9 @@ fn player_session(
                             .rows("Start: the sound before these turns", |t| {
                                 synth_turn_row(&synth, t.key, t.to)
                             }),
-                        gui::UndoOn::Mixer => mix_turns
-                            .rows("Start: the mix before these turns", |t| {
-                                mix_turn_row(t.key.0, t.key.1, t.to)
-                            }),
+                        gui::UndoOn::Mixer => {
+                            mix_turns.rows("Start: the mix before these turns", mixturns::row)
+                        }
                     };
                     out.show(gui::ToUi::UndoHistory { on, rows, now });
                 }
@@ -4119,17 +4169,12 @@ fn player_session(
                                 mix_turns.undo()
                             };
                             turn.map(|t| {
-                                let (strip, id) = t.key;
-                                let value = if redo { t.to } else { t.from };
-                                if let Some(db) = mix.action(&mpfree_mixer_ui::MixAction::Set {
-                                    strip,
-                                    id,
-                                    value,
-                                }) {
+                                let (line, level) = mixturns::apply(&mut mix, &t, redo);
+                                if let Some(db) = level {
                                     level_db = db;
                                     out.show(gui::ToUi::Level { db: level_db });
                                 }
-                                mix_turn_said(strip, id, redo)
+                                line
                             })
                         }
                     };
@@ -6783,12 +6828,25 @@ mod tests {
     #[test]
     fn undo_of_a_turn_names_it() {
         assert_eq!(
-            mix_turn_said(
-                mpfree_fx::StripId::Track(mixing::DRUMS),
-                mpfree_fx::ids::mixer::VOLUME,
+            mixturns::said(
+                &mixturns::MixKey::Strip(
+                    mpfree_fx::StripId::Track(mixing::DRUMS),
+                    mpfree_fx::ids::mixer::VOLUME
+                ),
                 false
             ),
             "Undid Drums Volume"
+        );
+        assert_eq!(
+            mixturns::said(
+                &mixturns::MixKey::Insert {
+                    strip: mpfree_fx::StripId::Track(mixing::DRUMS),
+                    uid: 1,
+                    ids: [mpfree_fx::ids::eq::freq(1), mpfree_fx::ids::eq::gain(1)],
+                },
+                true
+            ),
+            "Redid Drums EQ Band 2"
         );
         let synth = synth::Synth::new(RATE);
         let p = (0..256u16).find_map(|id| synth.param_info(id)).unwrap();

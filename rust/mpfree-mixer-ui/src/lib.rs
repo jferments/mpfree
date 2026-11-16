@@ -45,6 +45,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod eq_look;
 pub mod io;
 pub mod qlinks;
 pub mod sample;
@@ -75,6 +76,8 @@ pub const MIXER_HINT: &str = "Drag a fader, pan or send  ·  tap M, S or an outp
 pub const MIXER_HINT_TAKES: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name: its Q-Links (again: Freeze, Print)  ·  + FX or an effect: its chain  ·  Effects: every chain  ·  TRACK MIX: back";
 /// The hint line on Effects.
 pub const MIXER_HINT_EFFECTS: &str = "Tap + FX: add an effect  ·  tap an effect: its knobs, again: its chain  ·  drag one along its row: move it  ·  Faders: the levels  ·  TRACK MIX: back";
+/// The hint line on EQ.
+pub const MIXER_HINT_EQ: &str = "Tap a curve: its band on the Q-Links, again: open it  ·  drag a dot: move that band  ·  a strip's name: its Q-Links  ·  + EQ: add one  ·  TRACK MIX: back";
 /// The hint line while the I/O view shows.
 pub const MIXER_HINT_IO: &str = "Tap a row to select it  ·  tap an output to route it  ·  wheel: select  ·  - and +: step its output  ·  the I/O icon or TRACK MIX: back";
 
@@ -173,6 +176,7 @@ pub fn hint(ui: &Ui) -> &'static str {
 pub fn hint_for(l: Look, takes: bool) -> &'static str {
     match l {
         Look::Effects => MIXER_HINT_EFFECTS,
+        Look::Eq => MIXER_HINT_EQ,
         Look::Faders if takes => MIXER_HINT_TAKES,
         Look::Faders => MIXER_HINT,
     }

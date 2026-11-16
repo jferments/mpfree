@@ -623,20 +623,21 @@ fn eq_card(
         .map(|(k, &d)| (k as f32 / (N - 1) as f32, y_db(d, -18.0, 18.0)))
         .collect();
     let focus_band = focus
-        .map(|i| st.params[i].id)
-        .filter(|&id| (eq::band_type(0)..eq::OUTPUT).contains(&id))
-        .map(|id| usize::from((id - eq::band_type(0)) / 4));
+        .and_then(|i| eq::band_of(st.params[i].id))
+        .map(|(b, _)| b);
+    // An Unused band isn't on the page.
     let nodes = (0..eq::BANDS)
+        .filter(|&b| st.value(eq::band_use(b)) != eq::USE_UNUSED)
         .map(|b| {
             let gain = st.value(eq::gain(b));
             CardNode {
                 x: freq_x(st.value(eq::freq(b))),
                 y: y_db(gain, -18.0, 18.0).clamp(0.08, 0.92),
                 label: (b + 1).to_string(),
-                fill: QLINK_COLORS[b],
+                fill: QLINK_COLORS[b % QLINK_COLORS.len()],
                 text: t.bg,
                 ring: (focus_band == Some(b)).then_some(t.text),
-                dim: gain == 0.0,
+                dim: gain == 0.0 || st.value(eq::band_use(b)) != eq::USE_ON,
                 feedback: None,
             }
         })
@@ -654,8 +655,11 @@ fn eq_card(
         cut(eq::HIGH_CUT, eq::HIGH_SLOPE, "high cut"),
         text(st, eq::OUTPUT)
     );
-    s.node_pages
-        .extend((0..eq::BANDS).map(|_| "Bands".to_string()));
+    s.node_pages.extend(
+        (0..eq::BANDS)
+            .filter(|&b| st.value(eq::band_use(b)) != eq::USE_UNUSED)
+            .map(|_| "Bands".to_string()),
+    );
     s.push(
         Card {
             title: "Response · ±18 dB".into(),

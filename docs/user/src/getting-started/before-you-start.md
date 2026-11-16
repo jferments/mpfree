@@ -16,7 +16,7 @@ MPFree is a new operating system for making music on the Akai MPC One. It replac
 
 ## How MPFree runs
 
-MPFree starts from a **USB stick**. While it runs, the MPC's own storage, and any memory card in its SD slot, is switched off and never written to, so when you switch off and take the stick out, your MPC starts its factory software again exactly as before. Your projects, samples and settings in the factory software are untouched. What you save in MPFree is kept on the stick.
+MPFree starts from a **USB stick**. While it runs, the MPC's own storage, and any memory card in its SD slot, is switched off and never written to, so when you switch off and take the stick out, your MPC starts its factory software again exactly as before. (At MPFree's very first start it switches the MPC's storage on for a few minutes, read-only, to make a backup of it on the stick: see [Installing MPFree](installing.md).) Your projects, samples and settings in the factory software are untouched. What you save in MPFree is kept on the stick.
 
 Once a small start-up helper is on the MPC, switching on with the stick in starts MPFree by itself, with nothing to tap: the MPC logo shows for a few seconds, then MPFree's startup screen, and the pads are ready about 16 seconds after you switch on. The factory software never appears first. Switch on without the stick and the factory software starts as usual.
 
@@ -45,7 +45,7 @@ Tap a button, or turn the data wheel to it and push the wheel.
 > As on the MPC: a short press of the power button asks before switching off, and holding it switches off at once.
 
 > [!WARNING]
-> MPFree is early test software, and there is no installer or download for musicians yet. Today the test stick is made by MPFree's developers. When there is a way for anyone to try it, this page will say how.
+> MPFree is early test software. The stick is made with the MPFree USB creator from your own copy of Akai's update file: [Installing MPFree](installing.md) shows how. There are no downloads for musicians yet; that page will say where to get the creator when there is a release.
 
 ## What works today
 

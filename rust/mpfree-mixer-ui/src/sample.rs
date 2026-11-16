@@ -233,12 +233,103 @@ pub fn screen(fonts: Fonts, st: MixState) -> Result<Ui, String> {
 }
 
 /// A screen on the Effects look, its hint with it.
-fn effects(mut ui: Ui) -> Ui {
-    crate::set_look(&mut ui, crate::Look::Effects);
+fn effects(ui: Ui) -> Ui {
+    look(ui, crate::Look::Effects)
+}
+
+/// A screen on look `l`, its hint with it.
+fn look(mut ui: Ui, l: crate::Look) -> Ui {
+    crate::set_look(&mut ui, l);
     if let Some(h) = ui.get_mut::<mpfree_ui::widgets::Label>("hint") {
-        h.text = crate::hint_for(crate::Look::Effects, false).to_string();
+        h.text = crate::hint_for(l, false).to_string();
     }
     ui
+}
+
+/// The song's EQs shaped as a user would (the EQ look's sample): a kick
+/// EQ added, the bass's and the lead's and the master's set.
+fn shape_eqs(m: &mut Mixer) {
+    use mpfree_fx::ids::eq as q;
+    let t = StripId::Track;
+    m.chain_mut(t(0)).unwrap().push(Box::new(Eq::new()));
+    type Settings<'a> = &'a [(u16, f32)];
+    let sets: [(StripId, usize, Settings<'_>); 4] = [
+        (
+            t(0),
+            0,
+            &[
+                (q::LOW_SLOPE, 2.0),
+                (q::LOW_CUT, 30.0),
+                (q::freq(0), 60.0),
+                (q::gain(0), 4.0),
+                (q::q(0), 1.2),
+                (q::freq(1), 350.0),
+                (q::gain(1), -5.0),
+                (q::q(1), 1.6),
+                (q::band_type(3), 2.0),
+                (q::freq(3), 6_000.0),
+                (q::gain(3), 2.5),
+                (q::band_use(2), q::USE_UNUSED),
+            ],
+        ),
+        (
+            t(3),
+            1,
+            &[
+                (q::LOW_SLOPE, 1.0),
+                (q::LOW_CUT, 35.0),
+                (q::HIGH_SLOPE, 1.0),
+                (q::HIGH_CUT, 9_000.0),
+                (q::freq(0), 90.0),
+                (q::gain(0), 3.0),
+                (q::freq(1), 320.0),
+                (q::gain(1), -3.5),
+                (q::q(1), 1.4),
+                (q::freq(2), 1_200.0),
+                (q::gain(2), 2.0),
+                (q::q(2), 2.0),
+                (q::band_use(3), q::USE_UNUSED),
+            ],
+        ),
+        (
+            t(5),
+            0,
+            &[
+                (q::LOW_SLOPE, 1.0),
+                (q::LOW_CUT, 180.0),
+                (q::freq(1), 3_000.0),
+                (q::gain(1), 3.0),
+                (q::q(1), 1.2),
+                (q::band_type(2), 3.0),
+                (q::freq(2), 5_200.0),
+                (q::q(2), 8.0),
+                (q::band_type(3), 2.0),
+                (q::freq(3), 12_000.0),
+                (q::gain(3), 1.5),
+                (q::band_use(0), q::USE_UNUSED),
+            ],
+        ),
+        (
+            StripId::Master,
+            0,
+            &[
+                (q::LOW_SLOPE, 1.0),
+                (q::LOW_CUT, 25.0),
+                (q::band_type(3), 2.0),
+                (q::freq(3), 10_000.0),
+                (q::gain(3), 1.0),
+                (q::band_use(0), q::USE_UNUSED),
+                (q::band_use(1), q::USE_UNUSED),
+                (q::band_use(2), q::USE_UNUSED),
+            ],
+        ),
+    ];
+    for (s, slot, values) in sets {
+        let c = m.chain_mut(s).unwrap();
+        for &(id, v) in values {
+            c.set_param(slot, id, v);
+        }
+    }
 }
 
 fn tap(ui: &mut Ui, x: i32, y: i32) {
@@ -273,6 +364,17 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "mixer-effects", about: "The Effects look: each track's chain as a row of eight slots in order, + FX in the first free one, the master's row pinned at the bottom", ui: effects(screen(fonts(), tracks.clone())?) },
         Sample { name: "mixer-effects-pads", about: "The Effects look on the pads: each pad channel's chain", ui: effects(screen(fonts(), pads.clone())?) },
     ];
+    // The EQ look: the song's EQs shaped, the bass's picked on band 2.
+    let mut me = song_mixer();
+    shape_eqs(&mut me);
+    play(&mut me, 60);
+    let eqs = state(&mut me, MixView::Tracks);
+    let mut ui = look(screen(fonts(), eqs)?, crate::Look::Eq);
+    if let Some((x, y)) = eq_dot(&ui, 3, 1) {
+        tap(&mut ui, x, y);
+        let _ = crate::take_actions(&mut ui);
+    }
+    out.push(Sample { name: "mixer-eq", about: "The EQ look: each track's first EQ as its curve, a dot a band, + EQ on a strip without one; the bass's EQ picked on band 2 for the Q-Links", ui });
     // Solo in place: the bass soloed; what does not reach the master with
     // it is dimmed.
     m.set(StripId::Track(3), mx::SOLO, 1.0);
@@ -375,6 +477,16 @@ pub fn next_button(ui: &Ui) -> (i32, i32) {
     (r.right() - 26, head_y)
 }
 
+/// Where band `band` of track `track`'s EQ is drawn on the EQ look.
+pub fn eq_dot(ui: &Ui, track: usize, band: usize) -> Option<(i32, i32)> {
+    let r = ui.rect_of(crate::MIXER)?;
+    ui.get::<MixerView>(crate::MIXER)?.eq_dot_at(
+        r,
+        StripId::Track(track),
+        crate::eq_look::Dot::Band(band),
+    )
+}
+
 /// Where strip `col`'s output button is (the bottom of the strip).
 pub fn output_button(ui: &Ui, col: usize) -> (i32, i32) {
     let r = ui.rect_of(crate::MIXER).expect("the mixer page");
@@ -390,7 +502,7 @@ mod tests {
     #[test]
     fn the_samples_read_a_real_mixer_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 12);
+        assert_eq!(s.len(), 13);
         let mut st = MixState::default();
         for mut sample in s {
             let mut c = SoftCanvas::new(1280, 800);

@@ -1,0 +1,8 @@
+[package]
+name = "mpfree-diskimage"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Disk images without outside tools: GPT tables, a read-only ext4 reader and a writer for fresh ext2-style filesystems"
+
+[dependencies]

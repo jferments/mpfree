@@ -90,6 +90,8 @@ The galaxy splash stays in `mpfree-splash`. The Spaceship galaxy is a different,
 
 `mpfree-startup --framebuffer [--theme NAME] [--rotation 270] [--seconds N]` plays a scene on `/dev/fb0` in real time and exits with its last frame showing, for the app's loading page (`app --keep-screen`). It writes only to the framebuffer device and its sysfs `pan` file, as `mpfree-splash` does, and never to storage. Without `--theme` it plays the default theme's startup screen (synthwave), or, with `--data DIR`, the startup screen of the theme picked in Prefs > Appearance (for a themes-folder file, its `startup` key or its base's). `--data` reads only `settings/app.conf` and that theme file, follows no symlinks and never writes; anything missing or odd shows synthwave.
 
+With `--setup-status FILE` (or `MPFREE_SETUP_STATUS`, which the USB creator's sticks set in a drop-in for the splash unit), it does not exit when the scene ends while that file says a first-start format step is still working: it keeps the last frame up under the pad player's own loading card, with a bar that follows the bytes the step has written and the time left. [`setup.rs`](../../../rust/mpfree-startup/src/setup.rs) reads the file and smooths the bar; the [USB creator design](usb-creator.md#progress-the-musician-sees) describes the step. It only reads that file, and waits at most 330 s.
+
 ## Layouts: rearranging pages
 
 The app's own layout (top bar, tab set and order, Play page, right-hand column, pad grid) is owned by the Hello MPC thread and set by its layout spec, which Jay approves (`/mnt/project-files/hello-mpc/layout-spec.md`). Themes never change it, and this PR ships no layout change. Layout files are a user's own rearrangement, read on top of the app's layouts.

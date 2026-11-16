@@ -36,6 +36,7 @@ use mpfree_synth_ui::sections::Job;
 use mpfree_synth_ui::widgets::Card;
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
+use crate::eq_page::EqPage;
 use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
 use crate::state::{macro_color, ChainState, ParamView, StripList, STRIP_GROUPS};
 
@@ -525,6 +526,8 @@ enum Drag {
     Page {
         turned: Option<ParamAddr>,
     },
+    /// A finger on the EQ's page: it has it ([`crate::eq_page`]).
+    Eq,
 }
 
 /// Pixels a finger moves on an effect's row before the row lifts to be
@@ -626,6 +629,8 @@ pub struct ChainView {
     list_first: usize,
     /// What is open over the page.
     open: Open,
+    /// The EQ's page, while the EQ is selected ([`ChainState::eq`]).
+    eq: EqPage,
 }
 
 impl Default for ChainView {
@@ -646,6 +651,7 @@ impl ChainView {
             list_open: None,
             list_first: 0,
             open: Open::default(),
+            eq: EqPage::default(),
         }
     }
 
@@ -667,6 +673,27 @@ impl ChainView {
     /// The page's section widget as it stands (what it draws).
     pub fn page(&self) -> &SectionView {
         &self.page
+    }
+
+    /// The EQ's page as it stands (what it draws while the EQ is selected).
+    pub fn eq_page(&self) -> &EqPage {
+        &self.eq
+    }
+
+    /// The EQ's page is up: the EQ is selected and the picker shut.
+    /// Turns the EQ's Listen off when the EQ page shows with it on (the
+    /// app calls this when the editor goes away by a button). The actions
+    /// are for the app to send; none when Listen is off.
+    pub fn stop_listening(&mut self) -> Vec<ChainAction> {
+        if self.eq_shown() {
+            self.eq.stop_listening()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn eq_shown(&self) -> bool {
+        self.state.eq && self.state.selected.is_some() && !self.state.picking
     }
 
     /// Shows a new state. Of the old one it keeps only an open picker
@@ -702,6 +729,9 @@ impl ChainView {
             self.open_picker();
         }
         self.fill_page();
+        if self.state.eq {
+            self.eq.update(&self.state.params, self.state.focus);
+        }
     }
 
     /// The picker opens on the section it showed last (the first time:
@@ -1199,6 +1229,23 @@ impl ChainView {
     }
 
     fn push(&mut self, a: ChainAction) {
+        // Leaving the EQ page stops Listen first, so the track never stays
+        // on one band.
+        let leaving = match &a {
+            ChainAction::Select(i) => self.state.selected != Some(*i),
+            ChainAction::Back
+            | ChainAction::Scope(_)
+            | ChainAction::OpenStrip(_)
+            | ChainAction::OpenPage(_)
+            | ChainAction::Picker(true)
+            | ChainAction::Remove(_) => true,
+            _ => false,
+        };
+        if leaving && self.eq_shown() {
+            for stop in self.eq.stop_listening() {
+                self.actions.push(stop);
+            }
+        }
         // Show what can be shown at once.
         match &a {
             ChainAction::Select(i) => self.state.selected = Some(*i),
@@ -1825,7 +1872,11 @@ impl Widget for ChainView {
                 }
             }
         }
-        out.extend(self.page.targets(l.page));
+        if self.eq_shown() {
+            self.eq.targets(l.page, &mut out);
+        } else {
+            out.extend(self.page.targets(l.page));
+        }
         self.modulate_targets(&l, &mut out);
         out
     }
@@ -1838,6 +1889,7 @@ impl Widget for ChainView {
                 .get(t.index)
                 .is_some_and(|p| !p.info.readonly),
             "slot" => t.index < self.state.slots.len() && !self.state.picking,
+            "eq-band" => self.eq_shown() && self.eq.band_target(t.index).is_some(),
             _ => false,
         }
     }
@@ -1848,6 +1900,15 @@ impl Widget for ChainView {
     /// one place along the chain per detent (turned up, later in the
     /// chain), as Up and Down do.
     fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        if t.id == "eq-band" {
+            let b = self.eq.band_target(t.index)?;
+            let mut out = Vec::new();
+            self.eq.wheel(b, delta, &mut out);
+            for a in out {
+                self.push(a);
+            }
+            return Some(EventKind::Select(self.actions.len()));
+        }
         if t.id == "slot" {
             let n = self.state.slots.len();
             let from = self.state.selected.unwrap_or(t.index);
@@ -1977,6 +2038,17 @@ impl ChainView {
                 }
                 let on_page =
                     !self.state.picking && self.state.selected.is_some() && l.page.contains(x, y);
+                if on_page && self.eq_shown() {
+                    let mut out = Vec::new();
+                    self.eq.down(finger, x, y, l.page, &mut out);
+                    for a in out {
+                        self.push(a);
+                    }
+                    if self.drag.is_none() {
+                        self.drag = Some((finger, Drag::Eq));
+                    }
+                    return;
+                }
                 if on_page {
                     let mut turned = None;
                     if let Some(ev) = self.page.touch(finger, Touch::Down, x, y, l.page) {
@@ -2002,6 +2074,14 @@ impl ChainView {
                 }
             }
             Touch::Move => {
+                if matches!(self.drag, Some((_, Drag::Eq))) {
+                    let mut out = Vec::new();
+                    self.eq.moved(finger, x, y, l.page, &mut out);
+                    for a in out {
+                        self.push(a);
+                    }
+                    return;
+                }
                 let Some((f, d)) = &self.drag else {
                     return;
                 };
@@ -2031,6 +2111,7 @@ impl ChainView {
                         }
                         self.drag = Some((finger, Drag::Page { turned }));
                     }
+                    Drag::Eq => {}
                     Drag::Depth { k } => {
                         let Some(&(bar, _)) = l.depth_rows.get(k) else {
                             return;
@@ -2052,6 +2133,18 @@ impl ChainView {
                     self.lift_picker(&pl, finger, x, y);
                 } else if self.picker.press.is_some_and(|(f, ..)| f == finger) {
                     self.picker.press = None;
+                }
+                if matches!(self.drag, Some((_, Drag::Eq))) {
+                    let mut out = Vec::new();
+                    self.eq
+                        .up(finger, x, y, l.page, phase == Touch::Cancel, &mut out);
+                    for a in out {
+                        self.push(a);
+                    }
+                    if self.drag.as_ref().is_some_and(|(f, _)| *f == finger) {
+                        self.drag = None;
+                    }
+                    return;
                 }
                 if !self.drag.as_ref().is_some_and(|(f, _)| *f == finger) {
                     return;
@@ -2353,8 +2446,12 @@ impl ChainView {
                 }
             }
         }
-        self.page.paint(cx, l.page);
-        self.paint_badges(cx, l.page);
+        if self.eq_shown() {
+            self.eq.paint(cx, l.page);
+        } else {
+            self.page.paint(cx, l.page);
+            self.paint_badges(cx, l.page);
+        }
         self.paint_modulate(cx, l);
         if let Some(panel) = l.rows_panel {
             self.paint_rows(cx, l, panel);
