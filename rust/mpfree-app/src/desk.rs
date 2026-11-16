@@ -222,6 +222,7 @@ impl Desk<'_> {
             | gui::FromUi::Kit(_)
             | gui::FromUi::SaveTouch(_)
             | gui::FromUi::Synth(_)
+            | gui::FromUi::SkinValues
             | gui::FromUi::Slice { .. }
             | gui::FromUi::SampleLiveChop { .. }
             | gui::FromUi::SampleHit { .. }
@@ -230,6 +231,7 @@ impl Desk<'_> {
             | gui::FromUi::Preview(_)
             | gui::FromUi::PreviewStop
             | gui::FromUi::SaveBrowserLists(_)
+            | gui::FromUi::PluginsChanged
             | gui::FromUi::SampleView(_)
             | gui::FromUi::SampleInput(_)
             | gui::FromUi::SampleSource(_)

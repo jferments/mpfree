@@ -115,6 +115,8 @@ mod parts;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod plugin_page;
+mod plugin_store;
 mod plugins;
 mod port_writer;
 mod power;
@@ -128,6 +130,7 @@ mod sampler;
 mod screen_cost;
 mod setup;
 mod shed;
+mod skin_page;
 #[cfg(test)]
 mod smoke;
 mod synth;
@@ -3722,6 +3725,8 @@ fn player_session(
         out.say(&line);
     }
     let found_plugins = std::sync::Arc::new(found_plugins);
+    // The MPC plugins' folders, where the Synth tab finds their skins.
+    out.show(gui::ToUi::PluginFolders(skin_page::folders(&found_plugins)));
     let (tuning_files, notes) = load_tuning_files(&store);
     for line in notes {
         out.say(&line);
@@ -4222,6 +4227,11 @@ fn player_session(
                 {
                     mix.instruments.param(app.track(), id, value);
                 }
+                // A plugin skin showing asks for the plugin's values and
+                // texts (skin_page.rs).
+                gui::FromUi::SkinValues => {
+                    mix.ask_values(app.track());
+                }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     let from = synth.value(id);
                     synth.set(id, value);
@@ -4477,6 +4487,19 @@ fn player_session(
                         drop(old);
                         out.note("project: two opens going back; one freed on the audio thread");
                     }
+                }
+                // A plugin installed from BROWSE's Plugins place: the Synth
+                // tab offers the rack's plugin synths again, and their skins.
+                gui::FromUi::PluginsChanged => {
+                    app.plugin_synths = found_plugins
+                        .instruments()
+                        .map(|e| (e.node_id, e.name))
+                        .collect();
+                    out.show(gui::ToUi::PluginFolders(skin_page::folders(&found_plugins)));
+                    out.note(&format!(
+                        "plugins: {} offered after an install",
+                        found_plugins.entries().len()
+                    ));
                 }
                 gui::FromUi::SaveBrowserLists(text) => {
                     if !store.saves() {
@@ -5393,6 +5416,32 @@ fn player_session(
                         }
                     }
                     (track == app.track()).then_some(track)
+                }
+                control::PresetNews::Values {
+                    track,
+                    instance,
+                    values,
+                } => {
+                    let held = mix
+                        .instruments
+                        .held(track)
+                        .filter(|h| h.instance == instance && track == app.track());
+                    // No answer still clears the ask, so the next one goes.
+                    let (values, texts) = values.unwrap_or_default();
+                    if let Some(h) = held {
+                        out.show(gui::ToUi::SkinValues {
+                            id: h.id.to_string(),
+                            values,
+                            texts,
+                        });
+                    } else {
+                        out.show(gui::ToUi::SkinValues {
+                            id: String::new(),
+                            values: Vec::new(),
+                            texts: Vec::new(),
+                        });
+                    }
+                    None
                 }
             };
             if let Some(track) = shown {

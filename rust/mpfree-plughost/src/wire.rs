@@ -28,6 +28,9 @@ pub enum ToChild {
         file: Option<Vec<u8>>,
         key: Option<String>,
     },
+    /// Every parameter's value and text, as the plugin holds them now (an
+    /// MPC plugin's skin shows these).
+    Values,
 }
 
 /// What the plugin process says about its plugin, once, at the start.
@@ -53,6 +56,10 @@ pub enum ToHost {
     Text(Option<String>),
     /// The answer to `LoadPreset`: done, or the plugin's reason.
     PresetLoaded(Result<(), String>),
+    /// The answer to `Values`: each parameter's value (0 to 1) and text,
+    /// or None from a plugin that can't say (CLAP's go through the
+    /// node).
+    Values(Option<(Vec<f32>, Vec<String>)>),
     /// The plugin couldn't be loaded or made; the process exits after this.
     Failed(String),
 }
@@ -176,6 +183,9 @@ pub fn send_to_child(w: &mut impl Write, m: &ToChild) -> io::Result<()> {
                 .u8(u8::from(key.is_some()))
                 .str(key.as_deref().unwrap_or(""));
         }
+        ToChild::Values => {
+            e.u8(7);
+        }
     }
     frame(w, &e.0)
 }
@@ -205,6 +215,7 @@ pub fn read_to_child(r: &mut impl Read) -> io::Result<ToChild> {
                 key: has_key.then_some(key),
             }
         }
+        7 => ToChild::Values,
         _ => return Err(bad()),
     })
 }
@@ -297,6 +308,15 @@ pub fn send_to_host(w: &mut impl Write, m: &ToHost) -> io::Result<()> {
                 .u8(u8::from(r.is_ok()))
                 .str(r.as_ref().err().map_or("", String::as_str));
         }
+        ToHost::Values(v) => {
+            e.u8(107).u8(u8::from(v.is_some()));
+            if let Some((values, texts)) = v {
+                e.u32(values.len() as u32);
+                for (&v, t) in values.iter().zip(texts) {
+                    e.f32(v).str(t);
+                }
+            }
+        }
         ToHost::Failed(msg) => {
             e.u8(199).str(msg);
         }
@@ -350,6 +370,23 @@ pub fn read_to_host(r: &mut impl Read) -> io::Result<ToHost> {
             let why = d.str()?;
             ToHost::PresetLoaded(if ok { Ok(()) } else { Err(why) })
         }
+        107 => {
+            if d.u8()? == 0 {
+                ToHost::Values(None)
+            } else {
+                let n = d.u32()? as usize;
+                if n > usize::from(u16::MAX) {
+                    return Err(bad());
+                }
+                let mut values = Vec::with_capacity(n);
+                let mut texts = Vec::with_capacity(n);
+                for _ in 0..n {
+                    values.push(d.f32()?);
+                    texts.push(d.str()?);
+                }
+                ToHost::Values(Some((values, texts)))
+            }
+        }
         199 => ToHost::Failed(d.str()?),
         _ => return Err(bad()),
     })
@@ -381,6 +418,7 @@ mod tests {
                 file: None,
                 key: Some("bright".into()),
             },
+            ToChild::Values,
         ];
         for m in &to_child {
             let mut buf = Vec::new();
@@ -426,6 +464,8 @@ mod tests {
             ToHost::Text(None),
             ToHost::PresetLoaded(Ok(())),
             ToHost::PresetLoaded(Err("no such preset".into())),
+            ToHost::Values(Some((vec![0.25, 1.0], vec!["25%".into(), "On".into()]))),
+            ToHost::Values(None),
             ToHost::Failed("no".into()),
         ];
         for m in &to_host {
