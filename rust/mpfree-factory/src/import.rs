@@ -171,11 +171,7 @@ impl<F: ReadAt> Content<F> {
             let Some(prog) = xpm::samples(&String::from_utf8_lossy(&data)) else {
                 continue;
             };
-            let dir = match path.rfind('/') {
-                Some(0) => "/",
-                Some(i) => &path[..i],
-                None => "",
-            };
+            let dir = folder_of(path);
             let mut samples: Vec<String> = Vec::new();
             for r in &prog.samples {
                 if let Some(f) = xpm::resolve(r, dir, &sizes, &by_name) {
@@ -189,11 +185,28 @@ impl<F: ReadAt> Content<F> {
             } else {
                 prog.name
             };
+            let pads = match prog.kind {
+                xpm::Kind::Drum => xpm::program(&String::from_utf8_lossy(&data))
+                    .map(|d| {
+                        let (pads, _, _) = drum_pads(&d, dir, &sizes, &by_name);
+                        pads.into_iter()
+                            .map(|(r, f)| {
+                                Some(PadFile {
+                                    name: pad_label(&r?),
+                                    file: f?,
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
             out.push(ProgramFiles {
                 path: path.clone(),
                 kind: prog.kind,
                 name,
                 samples,
+                pads,
             });
         }
         out
@@ -230,27 +243,7 @@ impl<F: ReadAt> Content<F> {
             let Some(prog) = xpm::program(&String::from_utf8_lossy(&data)) else {
                 continue;
             };
-            let (by_pad, by_note) = xpm::mappings(&prog);
-            let dir = match path.rfind('/') {
-                Some(0) => "/",
-                Some(i) => &path[..i],
-                None => "",
-            };
-            let found = |m: &[Option<xpm::SampleRef>; 16]| -> [Option<String>; 16] {
-                std::array::from_fn(|i| {
-                    m[i].as_ref()
-                        .and_then(|r| xpm::resolve(r, dir, &sizes, &by_name))
-                })
-            };
-            let (fp, fnote) = (found(&by_pad), found(&by_note));
-            let n_pad = fp.iter().flatten().count();
-            let n_note = fnote.iter().flatten().count();
-            let use_note = n_note > n_pad;
-            let (refs, wavs) = if use_note {
-                (by_note, fnote)
-            } else {
-                (by_pad, fp)
-            };
+            let (pads, found, reading) = drum_pads(&prog, folder_of(path), &sizes, &by_name);
             let name = if prog.name.is_empty() {
                 let base = path.rsplit('/').next().unwrap_or(path);
                 base.rsplit_once('.').map_or(base, |(b, _)| b).to_string()
@@ -260,11 +253,11 @@ impl<F: ReadAt> Content<F> {
             candidates.push(Candidate {
                 path: path.clone(),
                 name,
-                reading: if use_note { "by note" } else { "by pad number" },
-                pads: std::array::from_fn(|i| (refs[i].clone(), wavs[i].clone())),
-                found: n_pad.max(n_note),
+                reading,
+                pads,
+                found,
             });
-            if chosen.is_none() && n_pad.max(n_note) >= MIN_PADS {
+            if chosen.is_none() && found >= MIN_PADS {
                 chosen = Some(candidates.len() - 1);
             }
         }
@@ -352,13 +345,7 @@ impl<F: ReadAt> Content<F> {
         let mut sounds = Vec::new();
         for (i, (r, w)) in c.pads.iter().enumerate() {
             let note = PAD_NOTES[i];
-            let label = r.as_ref().map(|(s, f)| {
-                if s.is_empty() {
-                    f.rsplit(['/', '\\']).next().unwrap_or(f).to_string()
-                } else {
-                    s.clone()
-                }
-            });
+            let label = r.as_ref().map(pad_label);
             let Some(w) = w else { continue };
             if sizes.get(w).copied().unwrap_or(u64::MAX) > MAX_WAV {
                 say(format!("  pad {:2}: {w} is too big", i + 1));
@@ -404,6 +391,71 @@ pub struct ProgramFiles {
     pub name: String,
     /// The sample files' paths, each once, in the program's order.
     pub samples: Vec<String>,
+    /// A drum program's pads 1-16 (PAD BANK A, pad 1 bottom left), read as
+    /// the kits file reads them ([`Content::kits`]): each pad's first sound,
+    /// if found. Empty for any other program.
+    pub pads: Vec<Option<PadFile>>,
+}
+
+/// One pad of a drum program ([`ProgramFiles::pads`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PadFile {
+    /// The sample's name in the program, or its file's name.
+    pub name: String,
+    /// The sample file's path in the partition.
+    pub file: String,
+}
+
+/// The folder a path in the partition is in (`/` for one at the top).
+fn folder_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(0) => "/",
+        Some(i) => &path[..i],
+        None => "",
+    }
+}
+
+/// A pad's name: its sample's name in the program, or the file's name.
+fn pad_label((sample, file): &xpm::SampleRef) -> String {
+    if sample.is_empty() {
+        file.rsplit(['/', '\\']).next().unwrap_or(file).to_string()
+    } else {
+        sample.clone()
+    }
+}
+
+type DrumPads = [(Option<xpm::SampleRef>, Option<String>); 16];
+
+/// A drum program's pads 1-16: each pad's sample and the file it is found
+/// as, read by pad number or by note, whichever finds more; with how many
+/// were found and which reading it was.
+fn drum_pads(
+    prog: &xpm::Program,
+    dir: &str,
+    sizes: &BTreeMap<String, u64>,
+    by_name: &BTreeMap<String, Vec<String>>,
+) -> (DrumPads, usize, &'static str) {
+    let (by_pad, by_note) = xpm::mappings(prog);
+    let found = |m: &[Option<xpm::SampleRef>; 16]| -> [Option<String>; 16] {
+        std::array::from_fn(|i| {
+            m[i].as_ref()
+                .and_then(|r| xpm::resolve(r, dir, sizes, by_name))
+        })
+    };
+    let (fp, fnote) = (found(&by_pad), found(&by_note));
+    let n_pad = fp.iter().flatten().count();
+    let n_note = fnote.iter().flatten().count();
+    let use_note = n_note > n_pad;
+    let (refs, wavs) = if use_note {
+        (by_note, fnote)
+    } else {
+        (by_pad, fp)
+    };
+    (
+        std::array::from_fn(|i| (refs[i].clone(), wavs[i].clone())),
+        n_pad.max(n_note),
+        if use_note { "by note" } else { "by pad number" },
+    )
 }
 
 /// `Kit` for `/a/Kit.Drum.xpm`.
@@ -423,7 +475,7 @@ struct Candidate {
     path: String,
     name: String,
     reading: &'static str,
-    pads: [(Option<xpm::SampleRef>, Option<String>); 16],
+    pads: DrumPads,
     found: usize,
 }
 
@@ -657,6 +709,19 @@ mod tests {
         );
         assert_eq!(all[0].samples[0], "/Drums/Alpha/Hit 01.wav");
         assert_eq!(all[0].samples, all[1].samples, "the same sounds");
+        // A drum program's pads 1-16, as the kits file reads them; none for
+        // an instrument.
+        let pads: Vec<Option<&str>> = all[0]
+            .pads
+            .iter()
+            .map(|p| p.as_ref().map(|p| p.file.as_str()))
+            .collect();
+        assert_eq!(pads.len(), 16);
+        assert_eq!(pads[0], Some("/Drums/Alpha/Hit 01.wav"));
+        assert!(pads.iter().all(|p| p.is_some()), "{pads:?}");
+        assert!(all[0].pads.iter().flatten().all(|p| !p.name.is_empty()));
+        assert_eq!(all[3].pads.iter().flatten().count(), 4, "Gamma: 4 pads");
+        assert!(all[4].pads.is_empty(), "Soft Keys is an instrument");
         let kept = c.programs(&|p| !p.starts_with("/MPC Documents/"));
         assert_eq!(kept.len(), 5);
         assert_eq!(program_stem("/a/Trap Kit.Drum.xpm"), "Trap Kit");
