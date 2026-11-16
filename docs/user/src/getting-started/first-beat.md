@@ -28,7 +28,7 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 1. Tap **Beats** in the view switch on the right of the transport bar. The pattern fills most of the screen.
 2. Tap squares to light them. A classic start: kick on steps 1, 5, 9 and 13; snare on 5 and 13; hi-hat on every odd step.
-3. Press **PLAY**. The pattern plays round and round, and a line moves across the grid to show where it is.
+3. Press **PLAY**. The pattern plays round and round, and a line moves across the grid to show where it is. It does after you open a project too: PLAY starts the pattern on the screen when nothing else is playing.
 4. Tap more squares while it plays. Changes play the next time round.
 5. Press **STOP** to stop.
 
