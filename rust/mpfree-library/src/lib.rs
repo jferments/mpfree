@@ -29,11 +29,13 @@
 #![forbid(unsafe_code)]
 
 pub mod audio;
+pub mod kit;
 pub mod name;
 pub mod project;
 pub mod worker;
 
 pub use audio::{read_info, AudioFormat, AudioInfo};
+pub use kit::KIT_FILE;
 pub use name::{clean_name, natural_cmp, unique_folder_name, unique_name, valid_name};
 pub use project::{Meta, NewSample, Part, SampleData, Snapshot, Version};
 pub use worker::{Done, Job, Outcome, Worker};
@@ -55,6 +57,9 @@ pub const WORK: &str = ".work";
 pub const MAX_FILE: u64 = 2 << 30;
 /// The most entries a folder listing returns.
 pub const MAX_LIST: usize = 5000;
+/// A folder of more entries than this is listed without reading each
+/// file's size and time ([`Library::list`]).
+pub const QUICK_LIST: usize = 300;
 /// The most folders one search looks in.
 pub const MAX_SEARCH_FOLDERS: usize = 4000;
 /// How deep a search goes below a place.
@@ -214,6 +219,7 @@ pub enum Kind {
     Folder,
     Project,
     Audio(AudioFormat),
+    /// A kit folder (it holds `kit.txt`: [`kit`]).
     Kit,
     /// An instrument preset (`.preset`).
     Preset,
@@ -228,15 +234,28 @@ impl Kind {
             return Kind::Audio(f);
         }
         match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()) {
-            Some(e) if e == "kit" => Kind::Kit,
             Some(e) if e == "preset" => Kind::Preset,
             Some(e) if e == "pattern" || e == "arp" => Kind::Pattern,
             _ => Kind::Other,
         }
     }
 
+    /// A folder on the disk: a plain folder, a project or a kit
+    /// ([`kit`]). Listed before files.
     pub fn is_folder(self) -> bool {
-        matches!(self, Kind::Folder | Kind::Project)
+        matches!(self, Kind::Folder | Kind::Project | Kind::Kit)
+    }
+
+    /// What a folder at `dir` is: a project (it holds `project.txt`), a kit
+    /// (`kit.txt`) or a plain folder.
+    pub(crate) fn of_dir(dir: &Path) -> Kind {
+        if is_project(dir) {
+            Kind::Project
+        } else if kit::is_kit(dir) {
+            Kind::Kit
+        } else {
+            Kind::Folder
+        }
     }
 }
 
@@ -249,6 +268,19 @@ pub struct Entry {
     pub bytes: u64,
     /// Seconds since 1970 (UTC), or 0 if unknown.
     pub modified: u64,
+    /// False when `bytes` and `modified` were not read (a big folder:
+    /// [`Library::list`]).
+    pub sized: bool,
+}
+
+/// Folders, projects and kits first, then files, each in natural order.
+pub fn sort_entries(e: &mut [Entry]) {
+    e.sort_by(|a, b| {
+        b.kind
+            .is_folder()
+            .cmp(&a.kind.is_folder())
+            .then_with(|| natural_cmp(&a.name, &b.name))
+    });
 }
 
 /// An item in the Trash.
@@ -401,11 +433,86 @@ impl Library {
             .is_ok_and(|p| fs::symlink_metadata(p).is_ok())
     }
 
-    /// What a folder holds: folders and projects first, then files, each
-    /// in natural order. Hidden files, unfinished `.part` files, links and
-    /// names the library would not take are left out. At most
+    /// What a folder holds: folders, projects and kits first, then files,
+    /// each in natural order. Hidden files, unfinished `.part` files, links
+    /// and names the library would not take are left out. At most
     /// [`MAX_LIST`] entries.
+    ///
+    /// A folder of more than [`QUICK_LIST`] entries is listed from the
+    /// folder's own records alone: each file's size and time are left
+    /// unknown (`sized` false) rather than read one file at a time, which
+    /// on a USB stick is what makes a folder of thousands of sounds slow.
+    /// [`Library::sizes`] reads them afterwards.
     pub fn list(&self, folder: &Loc) -> io::Result<Vec<Entry>> {
+        let (p, m) = self.existing(folder)?;
+        if !m.is_dir() {
+            return Err(err(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a folder", folder.display()),
+            ));
+        }
+        // The names and types first: one read of the folder.
+        let mut found: Vec<(String, fs::FileType, PathBuf)> = Vec::new();
+        for e in fs::read_dir(&p)? {
+            let e = e?;
+            let Some(name) = e.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if !valid_name(&name) {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            if !ft.is_dir() && !ft.is_file() {
+                continue;
+            }
+            found.push((name, ft, e.path()));
+            if found.len() >= MAX_LIST {
+                break;
+            }
+        }
+        let quick = found.len() > QUICK_LIST;
+        let mut out = Vec::with_capacity(found.len());
+        for (name, ft, path) in found {
+            if ft.is_dir() {
+                out.push(Entry {
+                    kind: Kind::of_dir(&path),
+                    bytes: 0,
+                    modified: if quick {
+                        0
+                    } else {
+                        fs::symlink_metadata(&path).map_or(0, |m| modified(&m))
+                    },
+                    sized: !quick,
+                    name,
+                });
+            } else if quick {
+                out.push(Entry {
+                    kind: Kind::of_file(&name),
+                    bytes: 0,
+                    modified: 0,
+                    sized: false,
+                    name,
+                });
+            } else {
+                let Ok(m) = fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                out.push(Entry {
+                    kind: Kind::of_file(&name),
+                    bytes: m.len(),
+                    modified: modified(&m),
+                    sized: true,
+                    name,
+                });
+            }
+        }
+        sort_entries(&mut out);
+        Ok(out)
+    }
+
+    /// Each file's and folder's size and time in `folder`, by name, for a
+    /// list [`Library::list`] gave without them. Stops after `max` names.
+    pub fn sizes(&self, folder: &Loc, max: usize) -> io::Result<Vec<(String, u64, u64)>> {
         let (p, m) = self.existing(folder)?;
         if !m.is_dir() {
             return Err(err(
@@ -422,35 +529,16 @@ impl Library {
             if !valid_name(&name) {
                 continue;
             }
-            let Ok(m) = e.metadata() else { continue };
-            let ft = m.file_type();
-            let kind = if ft.is_dir() {
-                if is_project(&e.path()) {
-                    Kind::Project
-                } else {
-                    Kind::Folder
-                }
-            } else if ft.is_file() {
-                Kind::of_file(&name)
-            } else {
+            let Ok(m) = fs::symlink_metadata(e.path()) else {
                 continue;
             };
-            out.push(Entry {
-                bytes: if ft.is_file() { m.len() } else { 0 },
-                modified: modified(&m),
-                name,
-                kind,
-            });
-            if out.len() >= MAX_LIST {
+            if m.is_file() || m.is_dir() {
+                out.push((name, if m.is_file() { m.len() } else { 0 }, modified(&m)));
+            }
+            if out.len() >= max {
                 break;
             }
         }
-        out.sort_by(|a, b| {
-            b.kind
-                .is_folder()
-                .cmp(&a.kind.is_folder())
-                .then_with(|| natural_cmp(&a.name, &b.name))
-        });
         Ok(out)
     }
 
@@ -715,11 +803,7 @@ impl Library {
         }
         let (src, m) = self.existing(loc)?;
         let kind = if m.is_dir() {
-            if is_project(&src) {
-                Kind::Project
-            } else {
-                Kind::Folder
-            }
+            Kind::of_dir(&src)
         } else {
             Kind::of_file(loc.name())
         };
@@ -796,11 +880,7 @@ impl Library {
             }
             let t = e.file_type().ok()?;
             let kind = if t.is_dir() {
-                if is_project(&e.path()) {
-                    Kind::Project
-                } else {
-                    Kind::Folder
-                }
+                Kind::of_dir(&e.path())
             } else if t.is_file() {
                 Kind::of_file(&name)
             } else {
@@ -1081,6 +1161,34 @@ pub(crate) mod tests {
         assert!(lib.search("nothing like it", 10).unwrap().is_empty());
     }
 
+    /// A folder of thousands of sounds is listed from the folder alone:
+    /// the same names in the same order, sizes left for later.
+    #[test]
+    fn a_big_folder_is_listed_without_a_look_at_each_file() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let s = Loc::top(Place::Samples);
+        let big = lib.new_folder(&s, "Big").unwrap();
+        let dir = lib.path(&big).unwrap();
+        for i in 0..(QUICK_LIST + 50) {
+            fs::write(dir.join(format!("Hit {i}.wav")), b"RIFF").unwrap();
+        }
+        lib.new_folder(&big, "Sub").unwrap();
+        let l = lib.list(&big).unwrap();
+        assert_eq!(l.len(), QUICK_LIST + 51);
+        assert_eq!(l[0].name, "Sub");
+        assert_eq!(l[1].name, "Hit 0.wav");
+        assert_eq!(l[2].name, "Hit 1.wav");
+        assert_eq!(l[11].name, "Hit 10.wav");
+        assert!(l.iter().all(|e| !e.sized && e.bytes == 0));
+        let sizes = lib.sizes(&big, 10_000).unwrap();
+        assert_eq!(sizes.len(), QUICK_LIST + 51);
+        assert!(sizes.iter().any(|(n, b, _)| n == "Hit 7.wav" && *b == 4));
+        // A small folder still has its sizes.
+        let small = lib.list(&s).unwrap();
+        assert!(small.iter().all(|e| e.sized));
+    }
+
     fn names(v: &[Entry]) -> Vec<&str> {
         v.iter().map(|e| e.name.as_str()).collect()
     }
@@ -1238,7 +1346,8 @@ pub(crate) mod tests {
     #[test]
     fn kinds_come_from_the_extension() {
         assert_eq!(Kind::of_file("Glass bell.preset"), Kind::Preset);
-        assert_eq!(Kind::of_file("Boom bap.KIT"), Kind::Kit);
+        // A kit is a folder holding kit.txt (kit.rs), never a file.
+        assert_eq!(Kind::of_file("Boom bap.KIT"), Kind::Other);
         assert_eq!(Kind::of_file("Up down.arp"), Kind::Pattern);
         assert_eq!(Kind::of_file("notes.txt"), Kind::Other);
         assert_eq!(Place::from_label("Instruments"), Some(Place::Instruments));
