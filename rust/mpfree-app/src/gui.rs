@@ -6902,6 +6902,8 @@ impl Player {
         self.io_clock += Duration::from_secs_f32(dt.max(0.0));
         if self.io_showing() {
             mpfree_mixer_ui::io_tick(&mut self.ui, self.io_clock);
+            // A section's answer that came later (the Monitor's Save log).
+            self.say_io_note();
         }
         // A plugin's skin showing: the plugin's values and texts, a few
         // times a second and soon after an edit.
