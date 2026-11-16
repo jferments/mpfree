@@ -424,8 +424,7 @@ mod tests {
         a.mapper.marks[CONTROLS.iter().position(|c| c.name == "Other 1").unwrap()] =
             Mark::Found(Code::Button(52));
         a.map.learn(Job::Sampler, Some(56));
-        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "Other 2").unwrap()] =
-            Mark::Skipped;
+        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "Other 2").unwrap()] = Mark::Skipped;
         a.save_dirty = true;
         let saves = a.take_saves();
         assert_eq!(
@@ -537,7 +536,11 @@ mod tests {
         assert_eq!(a.map.undo, Some(99), "Map controls' own number wins");
         let map = a.map_settings();
         assert_eq!(map.get_str("rec"), Some("button 73"));
-        assert_eq!(map.get_str("other-1"), Some("skipped"), "other skips are kept");
+        assert_eq!(
+            map.get_str("other-1"),
+            Some("skipped"),
+            "other skips are kept"
+        );
     }
 
     #[test]
