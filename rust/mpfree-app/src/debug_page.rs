@@ -1,5 +1,11 @@
-//! The Debug tab's pages beyond the MIDI log (debug mode, from Prefs):
+//! The Debug tab's pages (debug mode, from Prefs):
 //!
+//! - MIDI: the MIDI monitor in debug mode (`mpfree_midi_ui::DevMonitor`,
+//!   widget [`MONITOR`]): every message in and out of the ports with where
+//!   it went, and the MPC's own controller (pads, buttons, Q-Links, the
+//!   wheel; the lights, pad colours, keep-alive and CV values the app
+//!   writes) and MPFree's own events, each source a chip. Beside it, the
+//!   events log and the timing.
 //! - Performance: CPU per thread and for the whole process, memory, load,
 //!   temperature and clock (`perf.rs`, read by the screen thread), and the
 //!   audio loop's own numbers (render time against the 2.9 ms period,
@@ -29,13 +35,15 @@ use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Tone, Ui, Widget};
 use std::collections::VecDeque;
 
 pub const STRIP: &str = "dtabs";
+/// The MIDI page's monitor (debug mode).
+pub const MONITOR: &str = "midimon";
 pub const PERF_PAGE: &str = "Performance";
 pub const ENGINES_PAGE: &str = "CPU by engine";
 pub const PROCS_PAGE: &str = "Processes";
 pub const MAP_PAGE: &str = "Map controls";
 pub const CONSOLE_PAGE: &str = "Dev console";
 pub const DEBUG_LAYOUT: &str =
-    "col(header:60, dtabs:52, row(midi:*, col(events:*, timing:232):460):*, hint:26)";
+    "col(header:60, dtabs:52, row(midimon:*, col(events:*, timing:232):460):*, hint:26)";
 pub const PERF_LAYOUT: &str =
     "col(header:60, dtabs:52, row(col(threads:*, graph:210):*, col(audio:*, system:*):500):*, hint:26)";
 pub const ENGINES_LAYOUT: &str =
@@ -152,8 +160,10 @@ fn found_colour(m: Mark) -> Option<Color> {
 }
 
 impl DebugPages {
-    /// Adds the widgets and the pages ("Debug" is the MIDI log; the Console
-    /// page uses the "syslog" widget, added with the plain Console page).
+    /// Adds the widgets and the pages ("Debug" is the MIDI monitor, its
+    /// widget added here on a model of its own until the app's arrives;
+    /// the Console page uses the "syslog" widget, added with the plain
+    /// Console page).
     pub fn add(ui: &mut Ui) -> Result<DebugPages, String> {
         ui.add(
             STRIP,
@@ -166,6 +176,10 @@ impl DebugPages {
                 "Touch",
                 "Console",
             ]),
+        );
+        ui.add(
+            MONITOR,
+            mpfree_midi_ui::DevMonitor::new(std::sync::Arc::default()),
         );
         ui.add("threads", StatList::new("Threads, CPU (100 % = one core)"));
         ui.add(

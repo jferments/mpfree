@@ -30,13 +30,19 @@ pub const MAX_TRACKS: usize = 16;
 /// Messages one port can take in one period.
 pub const QUEUE: usize = 256;
 
-/// One message at a frame offset in the period.
+/// One message at a frame offset in the period, and the track that sent
+/// it (none for the clock).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timed {
     pub offset: u32,
     bytes: [u8; 3],
     len: u8,
+    /// The sending track, or [`NO_TRACK`].
+    track: u8,
 }
+
+/// [`Timed`]'s track when no track sent it.
+const NO_TRACK: u8 = 0xFF;
 
 impl Timed {
     pub fn msg(offset: u32, m: Msg) -> Timed {
@@ -45,7 +51,18 @@ impl Timed {
             offset,
             bytes,
             len: len as u8,
+            track: NO_TRACK,
         }
+    }
+
+    /// The same message, sent by `track` (for the MIDI monitor).
+    pub fn by(self, track: u8) -> Timed {
+        Timed { track, ..self }
+    }
+
+    /// The track that sent it, if one did.
+    pub fn track(&self) -> Option<u8> {
+        (self.track != NO_TRACK).then_some(self.track)
     }
 
     /// One real-time byte (F8 clock, FA start, FB continue, FC stop).
@@ -54,6 +71,7 @@ impl Timed {
             offset,
             bytes: [byte, 0, 0],
             len: 1,
+            track: NO_TRACK,
         }
     }
 
@@ -66,6 +84,7 @@ impl Timed {
             offset,
             bytes,
             len: len as u8,
+            track: NO_TRACK,
         }
     }
 
@@ -328,7 +347,7 @@ impl OutputRouter {
             }
             _ => {}
         }
-        q.push(Timed::msg(offset, m));
+        q.push(Timed::msg(offset, m).by(track));
     }
 
     fn track_off(&mut self, t: usize, offset: u32, queues: &mut [OutQueue]) {
@@ -338,14 +357,12 @@ impl OutputRouter {
             let n = std::mem::take(&mut self.sounding[i]);
             if let Some(q) = queues.get_mut(usize::from(r.port.0)) {
                 for _ in 0..n {
-                    q.push(Timed::msg(
-                        offset,
-                        Msg::NoteOff {
-                            ch: r.channel,
-                            note,
-                            vel: 64,
-                        },
-                    ));
+                    let off = Msg::NoteOff {
+                        ch: r.channel,
+                        note,
+                        vel: 64,
+                    };
+                    q.push(Timed::msg(offset, off).by(t as u8));
                 }
             }
         }
@@ -438,6 +455,9 @@ mod tests {
         );
         let b: Vec<Vec<u8>> = q[0].as_slice().iter().map(|t| t.bytes().to_vec()).collect();
         assert_eq!(b, vec![vec![0x90, 60, 100], vec![0x80, 60, 64]]);
+        // Both say which track sent them (the MIDI monitor's "sent by").
+        assert!(q[0].as_slice().iter().all(|t| t.track() == Some(2)));
+        assert_eq!(Timed::realtime(0, 0xF8).track(), None);
         assert!(q[1].is_empty());
         assert_eq!(r.sounding(), 0);
     }

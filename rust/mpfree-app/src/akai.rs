@@ -245,6 +245,26 @@ pub fn button_light(note: u8, value: u8) -> [u8; 3] {
     [0xB0, note & 0x7F, value & 0x7F]
 }
 
+/// A message the app writes to the controller, as the MIDI monitor lists
+/// it in debug mode: a button light (Private), a pad colour or the session
+/// ping (Public). None for the rest (the setup messages at the start).
+pub fn monitor_out(private: bool, msg: &[u8]) -> Option<mpfree_midi::monitor::Mpc> {
+    use mpfree_midi::monitor::Mpc;
+    match (private, msg) {
+        (true, &[0xB0, button, value]) => Some(Mpc::Light { button, value }),
+        (false, &[0xF0, 0x47, 0x7F, 0x46, 0x65, 0x00, 0x04, pad, r, g, b, 0xF7]) => {
+            Some(Mpc::PadColour {
+                pad,
+                rgb: [r, g, b],
+            })
+        }
+        (false, &[0xF0, 0x47, 0x00, 0x46, 0x52, 0x00, 0x04, _, _, _, _, 0xF7]) => {
+            Some(Mpc::KeepAlive)
+        }
+        _ => None,
+    }
+}
+
 /// One pad colour message: F0 47 7F 46 65 00 04 <pad 0-15> R G B F7, for the Public port.
 pub fn pad_colour(pad: u8, rgb: [u8; 3]) -> [u8; 12] {
     [
@@ -331,6 +351,31 @@ mod tests {
         for note in [0x54, 0x01, 0x10, 0x64] {
             assert!(!app_lights(note), "{note}");
         }
+    }
+
+    #[test]
+    fn the_monitor_names_what_the_app_writes() {
+        use mpfree_midi::monitor::Mpc;
+        assert_eq!(
+            monitor_out(true, &button_light(3, 127)),
+            Some(Mpc::Light {
+                button: 3,
+                value: 127
+            })
+        );
+        assert_eq!(
+            monitor_out(false, &pad_colour(5, [1, 2, 3])),
+            Some(Mpc::PadColour {
+                pad: 5,
+                rgb: [1, 2, 3]
+            })
+        );
+        assert_eq!(
+            monitor_out(false, &session_ping(SESSION_TOKEN)),
+            Some(Mpc::KeepAlive)
+        );
+        assert_eq!(monitor_out(false, &IDENTITY_REQUEST), None);
+        assert_eq!(monitor_out(false, &button_light(3, 127)), None);
     }
 
     #[test]

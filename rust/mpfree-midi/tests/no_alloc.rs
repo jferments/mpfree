@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_midi::cv::{CvAssign, CvEngine, Priority, Scale};
 use mpfree_midi::input::{In, InputMode, InputRouter, Listen};
-use mpfree_midi::monitor::{Dir, Feed, Monitor, KEEP};
+use mpfree_midi::monitor::{Dir, Event, Feed, Monitor, Mpc, To, KEEP};
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed};
 use mpfree_midi::smf::NoteLog;
 use mpfree_midi::{Msg, PortId, DIN, MAX_PORTS};
@@ -190,8 +190,17 @@ fn the_monitor_never_allocates_once_made() {
         feed.bytes(usb, Dir::In, t, &[0x90, 60, 100, 0xF8, 0x80, 60, 0]);
         feed.bytes(DIN, Dir::Out, t, &[0xB1, 74, (i % 128) as u8, 0xF8]);
         feed.bytes(DIN, Dir::In, t, &[0xF0, 0x47, 0x00, 0x01, 0xF7, 0xFE]);
+        // Where each went, what went out, and the debug sources.
+        if feed.bytes(usb, Dir::In, t, &[0xB0, 74, 1]) {
+            feed.to(To::Nothing);
+        }
+        feed.sent(DIN, t, &[0x91, 36, 100], To::SentBy(1));
+        feed.debug = i % 2 == 0;
+        feed.mpc(Dir::Out, t, Mpc::KeepAlive);
+        feed.event(t, Event::OutStopped);
         if i % 8 == 0 {
             feed.drain_into(&mut m, t);
+            m.set_epoch(t);
         }
     }
     feed.drain_into(&mut m, t + 2.0);
