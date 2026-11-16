@@ -487,6 +487,53 @@ impl TimeControl {
         Ok(Some(line))
     }
 
+    /// PLAY from stopped with no clip playing or waiting anywhere (a
+    /// project just opened, at start too, or every clip stopped): the
+    /// pattern the Play page shows starts with it, as it does in a new
+    /// project, where its first step launched it. Without this the grid's
+    /// line moved over steps that never played (the 16 Nov device round).
+    /// Song mode plays the song instead, and a clip launched on Arrange
+    /// is left as it is.
+    fn ready_to_play(&mut self) -> Result<Option<String>, String> {
+        if self.song || !self.launches.is_empty() || !self.cues.is_empty() {
+            return Ok(None);
+        }
+        let (track, Some(slot)) = self.step_focus() else {
+            return Ok(None);
+        };
+        let info = self.info;
+        let launch = TimeAction::Launch { track, slot };
+        let before = (self.launches.clone(), self.cues.clone());
+        (self.launches, self.cues) =
+            clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
+        if let Err(e) = self.compile() {
+            (self.launches, self.cues) = before;
+            return Err(e);
+        }
+        Ok(Some(format!(
+            "slot {} of track {} launched (the Play page's pattern)",
+            slot + 1,
+            track + 1
+        )))
+    }
+
+    /// A step put on the Play page's pattern while its track plays no
+    /// clip and has none waiting: the pattern starts (at the next bar
+    /// line while the music plays), so what was added is heard, as a new
+    /// pattern's first step does. Not in song mode.
+    fn launch_edited(&mut self, track: usize, slot: usize) {
+        if self.song
+            || self.launches.iter().any(|l| l.track == track)
+            || self.cues.iter().any(|c| c.track == track)
+        {
+            return;
+        }
+        let info = self.info;
+        let launch = TimeAction::Launch { track, slot };
+        (self.launches, self.cues) =
+            clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
+    }
+
     /// "take 3 · Drums / 1", as the takes list names it: what UNDO and
     /// REDO say they did.
     /// A drop on the Clips grid went in: the launches and cues follow the
@@ -698,7 +745,14 @@ impl TimeControl {
         self.takes
             .edit(&mut self.project, track, slot, &edit, join)
             .map_err(|e| format!("steps: {e:?}"))?;
-        self.compile()?;
+        let before = (self.launches.clone(), self.cues.clone());
+        if made.is_none() && !edit.add.is_empty() {
+            self.launch_edited(track, slot);
+        }
+        if let Err(e) = self.compile() {
+            (self.launches, self.cues) = before;
+            return Err(e);
+        }
         let on = if edit.add.is_empty() { "off" } else { "on" };
         Ok(match (made, a) {
             (Some(name), _) => format!(
@@ -792,6 +846,18 @@ impl TimeControl {
                 Ok(match made {
                     Some(line) => format!("transport: Record, {line}"),
                     None => "transport: Record".into(),
+                })
+            }
+            TimeAction::Transport(cmd @ (Command::Play | Command::PlayStart))
+                if !info.state.rolling() =>
+            {
+                let launched = self.ready_to_play()?;
+                if !self.command(cmd) {
+                    return Err("transport: command queue full".into());
+                }
+                Ok(match launched {
+                    Some(line) => format!("transport: {cmd:?}, {line}"),
+                    None => format!("transport: {cmd:?}"),
                 })
             }
             TimeAction::Transport(cmd) => {

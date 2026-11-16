@@ -983,6 +983,161 @@ mod tests {
         });
     }
 
+    /// A project opened (as at start, Prefs > At start) has no clip
+    /// launched. PLAY then starts the pattern Play's Beats shows, as in a
+    /// new project; TRACK MUTE's pad 1 silences it and lets it play again.
+    /// A step put on the pattern while nothing plays on its track starts
+    /// it at the next bar line. (The 16 Nov device round: the grid's line
+    /// moved over steps that never played, and TRACK MUTE had nothing to
+    /// mute.)
+    #[test]
+    fn an_opened_projects_pattern_plays_on_play_and_track_mute_silences_it() {
+        on_big_stack(|| {
+            let dir =
+                std::env::temp_dir().join(format!("mpfree-open-plays-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button_with("SHIFT", "BROWSE").run_for(0.5);
+            let name = s
+                .said()
+                .into_iter()
+                .find_map(|l| l.strip_prefix("project: saved ").map(str::to_string))
+                .expect("saved");
+            // BROWSE, Projects, the row: the first tap picks it, or opens
+            // it when it is picked already (the save and an open leave it
+            // picked), and a second tap opens it. Over unsaved work the
+            // browser asks first: an edit counts once the open has settled,
+            // 1.5 s of the wall clock (OPEN_SETTLE), so a slow machine asks
+            // where a fast one doesn't. The library opens on its own
+            // thread, in real time.
+            let open = |s: &mut Session| {
+                if s.app.view() != View::Browser {
+                    s.button("BROWSE");
+                }
+                s.press("browser", "place", "Projects");
+                let is_in = format!("project: {name} is in");
+                let opening = format!("project: opening {name}");
+                let count = |v: &[String], l: &str| v.iter().filter(|x| *x == l).count();
+                let ins = count(&s.lines, &is_in);
+                let opens = count(&s.said(), &opening);
+                let asks = |s: &mut Session| s.control("browser", "confirm-yes", "").is_some();
+                s.press("browser", "row", &name);
+                if !asks(s) && count(&s.said(), &opening) == opens {
+                    s.press("browser", "row", &name);
+                }
+                if asks(s) {
+                    s.press("browser", "confirm-yes", "");
+                }
+                let wall = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while count(&s.lines, &is_in) == ins && std::time::Instant::now() < wall {
+                    s.run_for(0.05);
+                }
+                assert!(
+                    count(&s.lines, &is_in) > ins,
+                    "{name} opened: {:?}",
+                    &s.lines[s.lines.len().saturating_sub(10)..]
+                );
+                s.run_for(0.3);
+                s.press("header", "tab", "Play");
+                s.press("play-transport", "view", "Beats");
+            };
+            open(&mut s);
+            let kick = s
+                .time
+                .steps()
+                .clip
+                .map(|_| 0)
+                .expect("the pattern is there");
+            assert_eq!(on(&clip_row(&s, kick)), [1, 5, 9, 13]);
+            assert!(
+                s.time.now_playing(0).is_none(),
+                "an opened project launches nothing"
+            );
+
+            let from = s.hits.on.len();
+            s.button("PLAY").run_for(2.0);
+            let n = hits_on(&s, kick, from);
+            assert!(
+                (4..=5).contains(&n),
+                "PLAY plays the pattern: {n} kicks in a bar"
+            );
+            assert!(
+                s.lines
+                    .iter()
+                    .any(|l| l.contains("launched (the Play page's pattern)")),
+                "{:?}",
+                &s.lines[s.lines.len().saturating_sub(6)..]
+            );
+
+            // TRACK MUTE: pad 1 mutes track 1, and again lets it play.
+            s.button("TRACK MUTE");
+            s.pad(0, 100, 0.05);
+            assert_eq!(s.time.muted(0), Some(true), "pad 1: track 1");
+            s.run_for(0.6);
+            let from = s.hits.on.len();
+            s.run_for(2.0);
+            assert_eq!(hits_on(&s, kick, from), 0, "muted, the kick is silent");
+            s.pad(0, 100, 0.05);
+            assert_eq!(s.time.muted(0), Some(false));
+            s.run_for(0.6);
+            let from = s.hits.on.len();
+            s.run_for(2.0);
+            assert!(hits_on(&s, kick, from) >= 3, "unmuted, it plays again");
+            s.button("TRACK MUTE");
+            s.button("STOP");
+            s.run_for(0.2);
+
+            // Opened again and playing with nothing launched (the looper's
+            // REC + PLAY, say): a step put on the pattern starts it.
+            open(&mut s);
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::Play),
+            ));
+            s.run_for(0.1);
+            assert!(
+                s.time.now_playing(0).is_some(),
+                "PLAY on its own launches it too"
+            );
+            s.button("STOP");
+            s.run_for(0.2);
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::StopAll,
+            ));
+            s.run_for(0.2);
+            assert!(s.time.now_playing(0).is_none(), "every clip stopped");
+            let label = step_label(&mut s, 3);
+            s.press("steps", "step", &label);
+            s.run_for(0.1);
+            assert!(
+                s.time.now_playing(0).is_some(),
+                "the step started the pattern"
+            );
+            let from = s.hits.on.len();
+            s.button("PLAY").run_for(2.0);
+            assert!(hits_on(&s, kick, from) >= 4, "and it plays");
+            s.button("STOP");
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// The label of step `k` (from 1) on the first lane of Play's Beats.
+    fn step_label(s: &mut Session, k: usize) -> String {
+        s.controls()
+            .iter()
+            .find(|c| {
+                c.widget == "steps"
+                    && c.target.id == "step"
+                    && c.target.label.ends_with(&format!(" step {k}"))
+            })
+            .map(|c| c.target.label.clone())
+            .expect("a step on Beats")
+    }
+
     /// Recording on Beats into the pattern: a pad hit while REC records
     /// shows on the grid while it records (not only after STOP), the clip
     /// has it after STOP, and UNDO takes the take back out, bringing back
