@@ -1,6 +1,8 @@
-//! The plugin sandbox (roadmap P2): each CLAP plugin runs in its own
-//! process, `mpfree-plughost`, so a plugin that crashes, hangs or blocks
-//! can't take the audio thread with it.
+//! The plugin sandbox (roadmap P2): each plugin runs in its own process,
+//! `mpfree-plughost`, so a plugin that crashes, hangs or blocks can't take
+//! the audio thread with it. Two formats: CLAP (`.clap` files, through
+//! `mpfree-clap`) and MPC plugins (the VST 2.4 binary interface MPC OS
+//! loads, as in the Open MPC catalog, through `mpfree-mpchost`).
 //!
 //! - **[`spawn`]** starts the process for one plugin and returns a
 //!   [`SandboxNode`] (an [`mpfree_node::Node`], so it goes in a track host
@@ -28,6 +30,7 @@
 //!
 //! The node's id and parameters are the same as `mpfree-clap`'s in-process
 //! node (`clap:` and the plugin id), so a project doesn't care which runs.
+//! An MPC plugin's node id is `mpc:` and its id ([`node_id`]).
 
 pub mod child;
 pub mod rack;
@@ -38,7 +41,7 @@ pub mod wire;
 /// [`Sandbox::load_preset`] loads them.
 pub use mpfree_clap::{Place, Preset};
 
-use mpfree_clap::{intern_info, intern_params};
+use mpfree_clap::{intern_node_info, intern_params};
 use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed};
 use shm::{Mapping, ShmEvent};
 use std::io;
@@ -345,7 +348,7 @@ pub fn parse_list_line(line: &str) -> Option<Listed> {
     })
 }
 
-/// Lists the plugins in the `.clap` file `plugin` by starting the plugin
+/// Lists the plugins in `plugin` (a `.clap` file, or an MPC plugin) by starting the plugin
 /// process with `--list`, so a plugin file that crashes
 /// or hangs while loading can't take MPFree with it. Waits at most
 /// [`CONTROL_TIMEOUT`], then kills the process. Control thread only.
@@ -510,8 +513,26 @@ fn run_tool(
     Ok(out)
 }
 
-/// Starts `exe` (the `mpfree-plughost` binary) for plugin `id` in the
-/// `.clap` file `plugin`. Control thread only.
+/// Whether `plugin` is an MPC plugin (a plugin folder, the Open MPC
+/// catalog's format) rather than a `.clap` file.
+pub fn is_mpc(plugin: &Path) -> bool {
+    mpfree_mpchost::is_mpc_plugin(plugin)
+}
+
+/// The node id of plugin `id` in `plugin`: `mpc:` and the id for an MPC
+/// plugin ([`mpfree_mpchost::plugin_id`]), `clap:` and the id for a CLAP
+/// one.
+pub fn node_id(plugin: &Path, id: &str) -> String {
+    if is_mpc(plugin) {
+        format!("mpc:{id}")
+    } else {
+        format!("clap:{id}")
+    }
+}
+
+/// Starts `exe` (the `mpfree-plughost` binary) for plugin `id` in
+/// `plugin`: a `.clap` file, or an MPC plugin folder (whose one
+/// plugin's id is its [`mpfree_mpchost::plugin_id`]). Control thread only.
 pub fn spawn(exe: &Path, plugin: &Path, id: &str) -> Result<(SandboxNode, Sandbox), Error> {
     spawn_with(&Program::new(exe), plugin, id)
 }
@@ -525,8 +546,9 @@ pub fn spawn_with(
 ) -> Result<(SandboxNode, Sandbox), Error> {
     let map = Mapping::create()?;
     let (ctl, hello) = start(program, plugin, id, &map)?;
-    let info = intern_info(&hello.id, &hello.name, hello.kind);
-    let params = intern_params(&hello.id, hello.params.clone());
+    let node_id = node_id(plugin, &hello.id);
+    let info = intern_node_info(&node_id, &hello.name, hello.kind);
+    let params = intern_params(&node_id, hello.params.clone());
     let values: Box<[AtomicU32]> = params
         .iter()
         .map(|p| AtomicU32::new(p.default.to_bits()))

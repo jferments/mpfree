@@ -1,9 +1,11 @@
 //! The plugin rack: the plugins found in a folder and the sandboxed
 //! processes running, watched and restarted.
 //!
-//! - **Finding them.** [`Rack::scan`] lists each `.clap` file in a folder
-//!   by starting the plugin process with `--list` ([`crate::list`]), so even
-//!   a file that crashes while loading can't take the host with it.
+//! - **Finding them.** [`Rack::scan`] lists each `.clap` file in a folder,
+//!   and each MPC plugin ([`mpfree_mpchost::find`]: plugin folders, a
+//!   `VST2 Plugins/` or `Synths/` folder, a catalog release folder), by
+//!   starting the plugin process with `--list` ([`crate::list`]), so even
+//!   a plugin that crashes while loading can't take the host with it.
 //! - **Making one.** [`Rack::make`] starts a plugin's process
 //!   ([`crate::spawn_with`]) and keeps its control handle; the node goes
 //!   wherever a node goes (a mixer insert, a track host slot).
@@ -47,15 +49,16 @@ const MAX_LINES: usize = 64;
 /// One plugin a file holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
-    /// `clap:` and the plugin's id: the node's id, what the chain editor
-    /// asks the builder for and what a project names.
+    /// `clap:` (or `mpc:`) and the plugin's id: the node's id, what the
+    /// chain editor asks the builder for and what a project names.
     pub node_id: &'static str,
-    /// The plugin's own (CLAP) id.
+    /// The plugin's own id (CLAP's, or [`mpfree_mpchost::plugin_id`]).
     pub plugin_id: String,
     pub name: &'static str,
     /// "Plugin · Vendor", the picker's line about it.
     pub about: &'static str,
     pub kind: Kind,
+    /// The `.clap` file, or the MPC plugin's folder.
     pub file: PathBuf,
 }
 
@@ -141,7 +144,7 @@ impl Rack {
         }
     }
 
-    /// Lists the `.clap` files in `dir` with `program` (the plugin
+    /// Lists the `.clap` files and MPC plugins in `dir` with `program` (the plugin
     /// process); `shown` is how the lines name the folder. It starts a
     /// process per file and waits for each: before the sound starts.
     /// Returns the plugins and lines for the report (what was found, and
@@ -155,16 +158,17 @@ impl Rack {
         let mut files: Vec<PathBuf> = rd
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|f| f.extension().is_some_and(|x| x == "clap"))
+            .filter(|f| f.is_file() && f.extension().is_some_and(|x| x == "clap"))
             .collect();
         files.sort();
+        files.extend(mpfree_mpchost::find(dir));
         if files.is_empty() {
             return (p, notes);
         }
         for file in &files {
             let short = file
-                .file_name()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                .strip_prefix(dir)
+                .map_or_else(|_| file.display().to_string(), |p| p.display().to_string());
             match crate::list(&program, file) {
                 Err(e) => notes.push(format!("plugins: {short} left out: {e}")),
                 Ok(list) if list.is_empty() => {
@@ -177,7 +181,7 @@ impl Rack {
                                 .push(format!("plugins: only the first {MAX_PLUGINS} are offered"));
                             break;
                         }
-                        let node_id = format!("clap:{}", l.id);
+                        let node_id = crate::node_id(file, &l.id);
                         if p.entries.iter().any(|e| e.node_id == node_id) {
                             notes.push(format!(
                                 "plugins: {} in {short} left out: another file has the same id",
@@ -243,9 +247,9 @@ impl Rack {
         self.entries.iter().find(|e| e.node_id == node_id)
     }
 
-    /// True for a plugin's node id (`clap:`...).
+    /// True for a plugin's node id (`clap:`... or `mpc:`...).
     pub fn is_plugin(id: &str) -> bool {
-        id.starts_with("clap:")
+        id.starts_with("clap:") || id.starts_with("mpc:")
     }
 
     /// Starts plugin `node_id`'s process and gives its node, keeping its

@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-mpchost-testplug"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A test MPC plugin library for mpfree-mpchost and the plugin sandbox: MPFree's Delay or Squelch, picked by the folder it is loaded from"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mpfree-mpcplug = { path = "../mpfree-mpcplug" }
+mpfree-node = { path = "../mpfree-node" }
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-synth = { path = "../mpfree-synth" }

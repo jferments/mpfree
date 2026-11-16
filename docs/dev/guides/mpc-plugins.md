@@ -2,7 +2,7 @@
 
 **Status:** desktop and qemu only, 2026-11-15. Complete plugin folders build and pass the SDK's checks; nothing has been copied to an MPC yet.
 
-Since MPC OS 3.10.1, Akai's app loads third-party plugins. [`rust/mpfree-mpcplug`](../../../rust/mpfree-mpcplug) wraps any MPFree node (an effect from `mpfree-fx`, an instrument from `mpfree-synth`) in the binary interface that host speaks: VST 2.4, one exported symbol, `VSTPluginMain`. Why we want it, and the line we keep, are in [the plugin SDK research](../research/mpc-plugin-sdk.md).
+Since MPC OS 3.10.1, Akai's app loads third-party plugins. [`rust/mpfree-mpcplug`](../../../rust/mpfree-mpcplug) wraps any MPFree node (an effect from `mpfree-fx`, an instrument from `mpfree-synth`) in the binary interface that host speaks: VST 2.4, one exported symbol, `VSTPluginMain`. Why we want it, and the line we keep, are in [the plugin SDK research](../research/mpc-plugin-sdk.md). The other direction, MPC plugins running inside MPFree, is [MPC plugins in MPFree](../design/mpc-plugin-host.md).
 
 ## How a plugin is made
 
