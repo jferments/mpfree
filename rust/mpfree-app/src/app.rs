@@ -383,7 +383,8 @@ impl GuideStep {
     }
 }
 
-/// The buttons the guide asks for: measured in round 5, or learned again.
+/// Every button's number: all built in ([`ButtonMap::measured`]), and Map
+/// controls or the guide can give one another.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ButtonMap {
     pub menu: Option<u8>,
@@ -397,12 +398,12 @@ pub struct ButtonMap {
     pub overdub: Option<u8>,
     pub undo: Option<u8>,
     pub play_start: Option<u8>,
-    /// PAD BANK A/E to D/H, found with the control mapper.
+    /// PAD BANK A/E to D/H.
     pub bank: [Option<u8>; 4],
-    /// TRACK MIX (SHIFT: PAD MIX), found with the control mapper.
+    /// TRACK MIX (SHIFT: PAD MIX).
     pub track_mix: Option<u8>,
     /// The mode buttons and the rest of the hardware control map (Jay,
-    /// 20:40Z), found with the control mapper.
+    /// 20:40Z).
     pub erase: Option<u8>,
     pub main: Option<u8>,
     pub sixteen_level: Option<u8>,
@@ -413,14 +414,14 @@ pub struct ButtonMap {
     pub prog_edit: Option<u8>,
     pub q_link: Option<u8>,
     pub track_mute: Option<u8>,
-    /// The data dial's push, found with the control mapper.
+    /// The data dial's push.
     pub data_push: Option<u8>,
-    /// BROWSE (SHIFT: save the project), found with the control mapper.
+    /// BROWSE (SHIFT: save the project).
     pub browse: Option<u8>,
 }
 
 impl ButtonMap {
-    /// The numbers the round 5 guide found on the reference MPC One.
+    /// The numbers measured on the reference MPC One: every button.
     pub fn measured() -> ButtonMap {
         ButtonMap {
             menu: Some(button::MENU),
@@ -1582,8 +1583,9 @@ impl App {
         fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(
             10f32.powf(s.loop_level_db / 20.0),
         ))));
-        // Buttons not known yet are found with the control mapper (Debug
-        // mode), at the owner's pace: nothing asks for them at power-on.
+        // Every button is built in (ButtonMap::measured): nothing asks for
+        // them at power-on, and the control mapper (Debug mode) can still
+        // give one another number.
         fx.push(Effect::Show(self.view));
         fx
     }
