@@ -12,6 +12,9 @@
 //! - [`spaceship::Spaceship`]: a purple spiral galaxy in open space under a
 //!   sci-fi overlay analysing it, then the same title, white to violet.
 //!
+//! [`setup`]: on a USB creator stick's first start, the card that stays over
+//! the last frame while the stick's data partition is made.
+//!
 //! A [`Scene`] draws the whole screen for a time in seconds. Everything that
 //! never moves is drawn once into layers when the scene is made; a frame
 //! copies layers and draws only what moves, to stay inside the RK3288's
@@ -24,6 +27,7 @@
 pub mod blade;
 pub mod console;
 pub mod gfx;
+pub mod setup;
 pub mod spaceship;
 pub mod synthwave;
 

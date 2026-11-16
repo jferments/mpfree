@@ -35,9 +35,10 @@ MPFree only works with the exact factory software it was made for. The creator c
    - **Windows:** the first time, Windows may show "Windows protected your PC". Click **More info**, then **Run anyway**.
    - **macOS:** the first time, macOS refuses to open it. Open **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next to the creator's name, and enter your password.
    - **Linux:** allow the file to run as a program (in most file managers: right-click, **Properties**, **Allow executing**), then open it.
-2. Under **1. Akai's update file**, the creator shows the update file it found in your Downloads, Desktop or Documents folder, and **Good: MPC 3.10.1 (MPC One, Gen 1)**. If it didn't find it, drag the file onto the creator's window, or type where it is.
-3. Put the USB stick into the computer. Under **2. The USB stick**, choose it. The creator lists only USB sticks, never your computer's own disks, with their name and size.
-4. Click **Make the stick**, tick **Yes, erase this stick**, and click **Make the stick** again.
+   The creator opens on **Make a stick**, with three numbered steps. Its other pages are the tabs along the top: **Copy the backup** and **Take MPFree off my MPC**. **Preferences** and **Help** are at the top right.
+2. In step **1, Akai's update file**, the creator shows the update file it found in your Downloads, Desktop or Documents folder, with a green tick and **MPC 3.10.1 for the MPC One**. If it didn't find it, drag the file onto the creator's window, or type where it is (the file, or the folder it is in).
+3. Put the USB stick into the computer. In step **2, Your USB stick**, choose it. The creator lists only USB sticks, never your computer's own disks, with their name and size.
+4. In step **3**, click **Make the stick**, tick **Yes, erase this stick**, and click **Erase and make the stick**.
 5. Your computer asks for your password (on Windows: "Do you want to allow this app to make changes?", click **Yes**). The creator needs it to write the stick.
 6. Wait. The creator unpacks the MPC's system from the update file, adds MPFree, writes the stick and reads it all back to check it. This takes a few minutes. Keep the stick in until it says **The stick is ready**.
 7. Eject the stick (on macOS: click the eject button next to **MPFREE** in the Finder; on Windows: **Safely Remove Hardware**), and take it out.
@@ -60,10 +61,11 @@ The helper is three small files in the MPC's own storage. It changes nothing els
 
 ## 4. The first start
 
-The first time MPFree starts, it sets itself up before you can play. The screen shows two steps with a progress bar:
+The first time MPFree starts, it sets itself up before you can play. It can take 20 to 30 minutes in all, once; the stick's speed decides most of it. The screen always says what it is doing, and one progress bar covers the whole setup: it moves as the data is copied, and once MPFree has measured how fast the stick is, the screen says how long is left.
 
-1. **Backing up your MPC.** MPFree copies everything in the MPC's own storage onto the stick: the factory software, your projects, samples and settings. It only reads: it never writes the MPC's storage, and checks that nothing was written. This takes 10 to 30 minutes, depending on the stick.
-2. **Extracting Akai drum kits and samples.** From the backup on the stick, MPFree makes drum kits from the MPC's factory drum programs, and copies its factory samples into your library, where **BROWSE** finds them in the **Akai factory** folder.
+1. **Preparing the stick for its first start.** Over the startup screen, MPFree makes the space on the stick for your sounds and settings. This takes a few seconds.
+2. **Backing up your MPC, so you can always go back.** MPFree copies everything in the MPC's own storage onto the stick: the factory software, your projects, samples and settings (about 8 GB), then **checks the backup on the stick** by reading it all back. It only reads the MPC's storage: it never writes it, and checks that nothing was written. This is the longest step.
+3. **Extracting Akai drum kits and samples.** From the backup on the stick, MPFree makes drum kits from the MPC's factory drum programs, and copies its factory samples into your library, where **BROWSE** finds them in the **Akai factory** folder.
 
 **Keep the stick in and the MPC on until the pads light up.** If the first start is interrupted, nothing is harmed: MPFree tries again at the next start (up to three times), and plays with its own drum kits meanwhile.
 
@@ -86,7 +88,7 @@ MPFree's start-up helper should stay on the MPC after this. That has not been ch
 The backup on the stick is the way back if anything ever goes wrong with your MPC. Keep a copy on your computer too:
 
 1. Put the stick into the computer and open the creator.
-2. Choose **More > Copy my MPC's backup to this computer**.
+2. Choose the **Copy the backup** tab.
 3. Choose the stick, check the folder (**MPFree backups** in your home folder), and click **Copy the backup**.
 
 The creator copies the newest backup and checks every byte of the copy against the stick. It doesn't change anything on the stick. The backup holds your own projects and your MPC's serial numbers: keep it safe, and don't share it.
@@ -101,23 +103,23 @@ To start a stick's MPFree data afresh (erasing its settings, work and backups), 
 
 ## Removing MPFree
 
-To use the factory software, just switch on without the stick. To take MPFree's start-up helper off the MPC as well:
+To use the factory software, just switch on without the stick. MPFree changes one thing on the MPC, the small start-up helper from step 3. To take it off as well, you turn the stick into a **removal stick** and let the MPC run it once:
 
-1. In the creator, choose **More > Remove MPFree from my MPC**, choose the stick, and click **Prepare the stick to remove MPFree**.
-2. Switch on the MPC with the stick in. The factory software starts, because a stick prepared this way doesn't start MPFree.
+1. In the creator, choose the **Take MPFree off my MPC** tab. Choose the stick and click **Make it a removal stick**. A removal stick no longer starts MPFree; your MPFree settings, work and backups on it are kept.
+2. Put the stick into the MPC and switch on. The factory software starts, not MPFree.
 3. Switch developer mode on as in step 3 above, and tap **Yes** when the MPC asks to run the script.
 4. The MPC restarts into the factory software. The helper is gone; nothing else on the MPC changed. If the MPC asks to run the script again, tapping **Yes** does nothing, and **No** is fine too.
 
 Then switch developer mode off as in step 5.
 
-To use the stick for MPFree again afterwards, choose **Set it back to install** on the same page and do step 3 again.
+**Changed your mind?** On the same page, click **Make it an MPFree stick again**: the stick starts MPFree again, with your settings and work. If you already took the helper off the MPC, do step 3 again to put it back.
 
 ## Developer SSH (for developers)
 
 The creator can give the stick a way for developers to log in to the MPC over Ethernet while MPFree runs. It is off unless you turn it on, and musicians don't need it.
 
-1. In the creator, open **More > Preferences** and tick **Developer SSH** under **Developer options**.
-2. Under **Your public key file**, the creator fills in your usual SSH public key (`~/.ssh/id_ed25519.pub`, for example) if you have one, and says **Good: a public key**. If you have none, click **Make a key for me**: it makes `mpfree_ed25519` (keep it private) and `mpfree_ed25519.pub` in the `.ssh` folder of your home folder.
+1. In the creator, click **Preferences** (top right) and tick **Developer SSH** under **Developer options**.
+2. Under **Your public key file**, the creator fills in your usual SSH public key (`~/.ssh/id_ed25519.pub`, for example) if you have one, and says **A public key** with a green tick. If you have none, click **Make a key for me**: it makes `mpfree_ed25519` (keep it private) and `mpfree_ed25519.pub` in the `.ssh` folder of your home folder.
 3. Make the stick as above. The creator's **Details** list shows the stick's host key, starting with `SHA256:`. Note it.
 4. Plug an Ethernet cable from the MPC's Ethernet port into your router (or into your computer, with its internet sharing on). Start MPFree, and find the MPC's address in your router's list of devices.
 5. Connect, as root, on port 2222, with your key. On Linux, macOS or Windows (PowerShell), with the key the creator made:

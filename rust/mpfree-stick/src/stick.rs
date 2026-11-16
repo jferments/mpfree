@@ -701,6 +701,9 @@ pub fn apply<'a>(
     )?;
     for (path, mode, text) in recipe::SETUP_FILES {
         let text = text.replace("@DATA_UUID@", &v.data_uuid);
+        if let Some((folder, _)) = path.rsplit_once('/') {
+            tree.mkdir_all(folder, root_meta(0o755))?;
+        }
         tree.put(
             path,
             Body::File(Data::Bytes(text.into_bytes())),

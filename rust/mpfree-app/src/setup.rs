@@ -23,6 +23,13 @@
 //!    say): a stick set up before runs only that step, from the backup it
 //!    already has.
 //!
+//! **The bar** ([`Estimate`]) covers the whole first start. Each stage's
+//! share is the time it is expected to take: the bytes it moves (the copy,
+//! the read-back, the samples) or the kits it makes, at the rate measured so
+//! far, or a first guess before that. So the bar moves as the bytes move, at
+//! a steady pace from one stage to the next, never backwards, and the card
+//! says how long is left once a rate is known.
+//!
 //! It runs only where the stick has the backup service (the creator's
 //! sticks), only with `--data`, and never in `play`.
 
@@ -160,9 +167,179 @@ pub struct Show {
 fn show(f: &mut dyn FnMut(Show), message: &str, detail: String, value: f32) {
     f(Show {
         message: message.to_string(),
-        detail: format!("First start   ·   {detail}"),
+        detail,
         value,
     });
+}
+
+/// The first start's stages, in order, for the bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Stage {
+    /// The eMMC copied to the stick (bytes).
+    Copy,
+    /// The copy read back from the stick and checked (bytes).
+    Verify,
+    /// The Akai kits made (kits).
+    Kits,
+    /// The Akai samples copied (bytes).
+    Samples,
+}
+
+const STAGES: [Stage; 4] = [Stage::Copy, Stage::Verify, Stage::Kits, Stage::Samples];
+
+/// Rates measured over less time than this are not trusted yet.
+const MEASURE: f64 = 10.0;
+
+#[derive(Clone, Copy, Debug)]
+struct Part {
+    /// The work (bytes or kits) and the first guess at its rate, per second.
+    work: f64,
+    guess: f64,
+    done: f64,
+    started: Option<f64>,
+    took: Option<f64>,
+}
+
+impl Part {
+    fn rate(&self, now: f64) -> Option<f64> {
+        let t = now - self.started?;
+        (t >= MEASURE && self.done > 0.0).then(|| self.done / t)
+    }
+
+    /// Seconds this stage takes (finished), or is expected to.
+    fn seconds(&self, now: f64) -> f64 {
+        if let Some(t) = self.took {
+            return t;
+        }
+        self.work / self.rate(now).unwrap_or(self.guess).max(1e-9)
+    }
+
+    fn end(&mut self, now: f64) {
+        if self.took.is_none() {
+            self.took = Some(self.started.map_or(0.0, |t| (now - t).max(0.0)));
+            self.done = self.work;
+        }
+    }
+
+    fn left(&self, now: f64) -> f64 {
+        if self.took.is_some() {
+            return 0.0;
+        }
+        (self.work - self.done).max(0.0) / self.rate(now).unwrap_or(self.guess).max(1e-9)
+    }
+
+    fn fraction(&self) -> f64 {
+        match self.took {
+            Some(_) => 1.0,
+            None if self.work > 0.0 => (self.done / self.work).clamp(0.0, 1.0),
+            None => 0.0,
+        }
+    }
+}
+
+/// The whole first start as one bar (see the module notes). Times are
+/// seconds from any fixed start, so tests can run it on their own clock.
+#[derive(Clone, Debug)]
+pub struct Estimate {
+    parts: [Part; 4],
+    shown: f32,
+}
+
+impl Estimate {
+    /// For a backup of `bytes` (the eMMC's user area and boot areas). The
+    /// first guesses: the copy at 10 MB/s (a USB 2 stick writing), the
+    /// read-back at 25 MB/s, the kits at two a second, and 1.5 GB of samples
+    /// at 6 MB/s (read from the backup and written to the same stick); each is
+    /// replaced by the measured rate after 10 s, and the samples' size by the
+    /// real one once the backup is open.
+    pub fn new(bytes: u64) -> Estimate {
+        let part = |work: f64, guess: f64| Part {
+            work,
+            guess,
+            done: 0.0,
+            started: None,
+            took: None,
+        };
+        let b = bytes as f64;
+        Estimate {
+            parts: [
+                part(b, 10e6),
+                part(b, 25e6),
+                part(24.0, 2.0),
+                part(1.5e9, 6e6),
+            ],
+            shown: 0.0,
+        }
+    }
+
+    fn part(&mut self, s: Stage) -> &mut Part {
+        let i = STAGES.iter().position(|x| *x == s).unwrap_or(0);
+        &mut self.parts[i]
+    }
+
+    /// The stage's real amount of work, once known.
+    pub fn work(&mut self, s: Stage, work: u64) {
+        self.part(s).work = work as f64;
+    }
+
+    /// `done` of the stage's work at `now`; the first report starts it.
+    pub fn at(&mut self, s: Stage, done: u64, now: f64) {
+        let p = self.part(s);
+        p.started.get_or_insert(now);
+        p.done = done as f64;
+    }
+
+    /// The stage is over (or was done at an earlier start: it then counts
+    /// for nothing).
+    pub fn finish(&mut self, s: Stage, now: f64) {
+        self.part(s).end(now);
+    }
+
+    /// The bar, 0 to 1; it never goes back, and reaches 1 only when every
+    /// stage is over.
+    pub fn value(&mut self, now: f64) -> f32 {
+        let total: f64 = self.parts.iter().map(|p| p.seconds(now)).sum();
+        let done: f64 = self
+            .parts
+            .iter()
+            .map(|p| p.seconds(now) * p.fraction())
+            .sum();
+        let all = self.parts.iter().all(|p| p.took.is_some());
+        let v = if total > 0.0 {
+            (done / total) as f32
+        } else {
+            0.0
+        };
+        let v = if all { 1.0 } else { v.min(0.99) };
+        self.shown = self.shown.max(v);
+        self.shown
+    }
+
+    /// Seconds left of the whole first start, once a stage has a measured
+    /// rate (a first guess alone is not worth saying).
+    pub fn left(&self, now: f64) -> Option<f64> {
+        self.parts
+            .iter()
+            .any(|p| p.took.is_some_and(|t| t > 0.0) || p.rate(now).is_some())
+            .then(|| self.parts.iter().map(|p| p.left(now)).sum())
+    }
+
+    /// "   ·   about 12 min left", or nothing before a rate is known.
+    pub fn says_left(&self, now: f64) -> String {
+        match self.left(now) {
+            Some(secs) => format!("   ·   {}", time_left(secs)),
+            None => String::new(),
+        }
+    }
+}
+
+/// "about 25 s left" or "about 3 min left": rounded up, to 5 s or a minute.
+pub fn time_left(secs: f64) -> String {
+    if secs < 55.0 {
+        format!("about {} s left", ((secs / 5.0).ceil() as u64 * 5).max(5))
+    } else {
+        format!("about {} min left", (secs / 60.0).ceil() as u64)
+    }
 }
 
 /// What the setup did: the settings to keep (the steps done, tries, the
@@ -174,11 +351,55 @@ pub struct Outcome {
     pub failed: Option<String>,
 }
 
-const BACKING_UP: &str = "Backing up your MPC";
+const BACKING_UP: &str = "Backing up your MPC, so you can always go back";
+const CHECKING: &str = "Checking the backup on the stick";
 const EXTRACTING: &str = "Extracting Akai drum kits and samples";
 
 fn gb(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / 1e9)
+}
+
+/// "120 of 480 MB" or "0.4 of 1.6 GB".
+fn of(done: u64, total: u64) -> String {
+    if total >= 1_000_000_000 {
+        format!("{} of {} GB", gb(done), gb(total))
+    } else {
+        format!("{:.0} of {:.0} MB", done as f64 / 1e6, total as f64 / 1e6)
+    }
+}
+
+/// The backup's size before the service says it: the MPC One's eMMC.
+const EMMC_BYTES: u64 = (15_273_600 + 2 * 8192) * 512;
+
+/// The bar and the clock it runs on.
+struct Bar {
+    est: Estimate,
+    clock: Instant,
+}
+
+impl Bar {
+    fn now(&self) -> f64 {
+        self.clock.elapsed().as_secs_f64()
+    }
+
+    fn value(&mut self) -> f32 {
+        let now = self.now();
+        self.est.value(now)
+    }
+
+    fn left(&self) -> String {
+        self.est.says_left(self.now())
+    }
+
+    fn at(&mut self, s: Stage, done: u64) {
+        let now = self.now();
+        self.est.at(s, done, now);
+    }
+
+    fn finish(&mut self, s: Stage) {
+        let now = self.now();
+        self.est.finish(s, now);
+    }
 }
 
 /// The backup's copy of the eMMC's user area: a FILE in the backup folder on
@@ -227,22 +448,29 @@ pub fn run(
             failed: Some(why),
         }
     };
+    let mut bar = Bar {
+        est: Estimate::new(EMMC_BYTES),
+        clock: Instant::now(),
+    };
     let folder = match earlier_backup(paths, saved) {
         Some(f) => {
             say(format!(
                 "first start: using the backup made before: {}",
                 f.display()
             ));
+            bar.finish(Stage::Copy);
+            bar.finish(Stage::Verify);
             f
         }
-        None => match backup(paths, timing, show_f, say) {
+        None => match backup(paths, timing, &mut bar, show_f, say) {
             Ok(f) => f,
             Err(why) => return fail(out, why, say),
         },
     };
     out.set_str("backup", &folder.display().to_string());
     mark(&mut out, &mut done, "backup");
-    show(show_f, EXTRACTING, "Reading the backup".into(), 0.7);
+    let v = bar.value();
+    show(show_f, EXTRACTING, "Reading the backup".into(), v);
     // The backup's copy of the eMMC's user area: a file on partition 4, read only.
     let image = image_in(&folder);
     let content = match File::open(&image)
@@ -260,7 +488,7 @@ pub fn run(
     let mut failed = Vec::new();
     // Each step is tried even when one before it failed; a later start
     // tries only what failed.
-    let kits = match extract_kits(&content, &lib, show_f, say) {
+    let kits = match extract_kits(&content, &lib, &mut bar, show_f, say) {
         Ok((kits, made)) => {
             out.set_i64("akai-kits", made as i64);
             mark(&mut out, &mut done, "kits");
@@ -271,7 +499,7 @@ pub fn run(
             None
         }
     };
-    match extract_samples(&content, &lib, show_f, say) {
+    match extract_samples(&content, &lib, &mut bar, show_f, say) {
         Ok(samples) => {
             out.set_i64("akai-samples", samples as i64);
             mark(&mut out, &mut done, "samples");
@@ -305,6 +533,7 @@ pub fn run(
 fn backup(
     paths: &Paths,
     timing: &Timing,
+    bar: &mut Bar,
     show_f: &mut dyn FnMut(Show),
     say: &mut dyn FnMut(String),
 ) -> Result<PathBuf, String> {
@@ -353,25 +582,52 @@ fn backup(
                         ));
                     }
                     say(format!("first start: backup done: {}", folder.display()));
+                    bar.finish(Stage::Copy);
+                    bar.finish(Stage::Verify);
                     return Ok(folder);
                 }
                 if s.state == "failed" {
                     return Err(format!("the backup did not work: {}", s.message));
                 }
-                let (detail, value) = match s.step.as_str() {
-                    "copying" if s.total > 0 => (
-                        format!(
-                            "{} of {} GB   ·   keep the stick in and the MPC on",
-                            gb(s.done),
-                            gb(s.total)
-                        ),
-                        0.05 + 0.6 * s.done as f32 / s.total as f32,
-                    ),
-                    "closing" => ("Switching the internal storage off again".to_string(), 0.66),
-                    "verifying" => ("Checking the copy on the stick".to_string(), 0.68),
-                    _ => (s.message.clone(), 0.02),
+                if s.total > 0 {
+                    bar.est.work(Stage::Copy, s.total);
+                    bar.est.work(Stage::Verify, s.total);
+                }
+                let (heading, detail) = match s.step.as_str() {
+                    "copying" if s.total > 0 => {
+                        bar.at(Stage::Copy, s.done);
+                        (
+                            BACKING_UP,
+                            format!(
+                                "{} copied{}   ·   keep the stick in and the MPC on",
+                                of(s.done, s.total),
+                                bar.left()
+                            ),
+                        )
+                    }
+                    "closing" => {
+                        bar.finish(Stage::Copy);
+                        (
+                            BACKING_UP,
+                            "Copied. Switching the MPC's internal storage off again".to_string(),
+                        )
+                    }
+                    "verifying" if s.total > 0 => {
+                        bar.finish(Stage::Copy);
+                        bar.at(Stage::Verify, s.done);
+                        (
+                            CHECKING,
+                            format!(
+                                "{} read back{}   ·   keep the stick in and the MPC on",
+                                of(s.done, s.total),
+                                bar.left()
+                            ),
+                        )
+                    }
+                    _ => (BACKING_UP, s.message.clone()),
                 };
-                show(show_f, BACKING_UP, detail, value);
+                let value = bar.value();
+                show(show_f, heading, detail, value);
                 if s.step != last {
                     say(format!("first start: backup: {} ({})", s.step, s.message));
                     last = s.step.clone();
@@ -398,6 +654,7 @@ fn folder_in(lib: &Library, parent: &Loc, name: &str) -> std::io::Result<Loc> {
 fn extract_kits(
     content: &Content<Offset<File>>,
     lib: &Library,
+    bar: &mut Bar,
     show_f: &mut dyn FnMut(Show),
     say: &mut dyn FnMut(String),
 ) -> Result<(Option<PathBuf>, usize), String> {
@@ -414,11 +671,18 @@ fn extract_kits(
                     DEFAULT_KITS,
                     &mut |line| say(format!("first start: kits: {line}")),
                     &mut |done, total| {
+                        bar.est.work(Stage::Kits, total as u64);
+                        bar.at(Stage::Kits, done as u64);
+                        let value = bar.value();
                         show(
                             show_f,
                             EXTRACTING,
-                            format!("Making drum kit {} of {total}", (done + 1).min(total)),
-                            0.7 + 0.1 * done as f32 / total.max(1) as f32,
+                            format!(
+                                "Making drum kit {} of {total}{}",
+                                (done + 1).min(total),
+                                bar.left()
+                            ),
+                            value,
                         )
                     },
                 )
@@ -440,6 +704,7 @@ fn extract_kits(
             }
         }
     };
+    bar.finish(Stage::Kits);
     Ok((kits, made))
 }
 
@@ -447,6 +712,7 @@ fn extract_kits(
 fn extract_samples(
     content: &Content<Offset<File>>,
     lib: &Library,
+    bar: &mut Bar,
     show_f: &mut dyn FnMut(Show),
     say: &mut dyn FnMut(String),
 ) -> Result<usize, String> {
@@ -454,16 +720,24 @@ fn extract_samples(
     let top = folder_in(lib, &Loc::top(Place::Samples), SAMPLES_FOLDER)
         .map_err(|e| format!("the samples folder: {e}"))?;
     let mut copied = 0;
-    let total = samples.len();
-    for (n, (path, size)) in samples.iter().enumerate() {
-        if n % 8 == 0 {
+    // The bar follows the bytes copied (the samples left out count as done).
+    let total: u64 = samples.iter().map(|(_, size)| *size).sum();
+    bar.est.work(Stage::Samples, total);
+    let mut moved = 0u64;
+    let mut last_show: Option<Instant> = None;
+    for (path, size) in samples.iter() {
+        if last_show.is_none_or(|t| t.elapsed() >= Duration::from_millis(250)) {
+            bar.at(Stage::Samples, moved);
+            let value = bar.value();
             show(
                 show_f,
                 EXTRACTING,
-                format!("Copying samples: {n} of {total}"),
-                0.8 + 0.2 * n as f32 / total.max(1) as f32,
+                format!("Copying samples: {}{}", of(moved, total), bar.left()),
+                value,
             );
+            last_show = Some(Instant::now());
         }
+        moved += size;
         if *size > MAX_SAMPLE {
             say(format!("first start: {path} left out ({size} bytes)"));
             continue;
@@ -502,6 +776,7 @@ fn extract_samples(
             Err(e) => say(format!("first start: {path}: {e}")),
         }
     }
+    bar.finish(Stage::Samples);
     Ok(copied)
 }
 
@@ -720,6 +995,73 @@ mod tests {
             Some("the backup is not on partition 4 (/etc)")
         );
         assert!(!needed(&p, &o.saved), "three tries, then it gives up");
+    }
+
+    #[test]
+    fn one_bar_for_the_whole_first_start() {
+        // 1 GB to back up: guesses of 100 s copying, 40 s reading back, 12 s
+        // of kits and 250 s of samples.
+        let mut e = Estimate::new(1_000_000_000);
+        assert_eq!(e.value(0.0), 0.0);
+        assert_eq!(e.left(5.0), None, "no time left before a rate is measured");
+        e.at(Stage::Copy, 0, 0.0);
+        e.at(Stage::Copy, 100_000_000, 5.0);
+        let v = e.value(5.0);
+        assert!(
+            (v - 10.0 / 402.0).abs() < 1e-3,
+            "{v}: a tenth of the copy's share"
+        );
+        // Measured after 10 s: 20 MB/s, so the copy's share shrinks to 50 s.
+        e.at(Stage::Copy, 200_000_000, 10.0);
+        let v = e.value(10.0);
+        assert!((v - 10.0 / 352.0).abs() < 1e-3, "{v}");
+        let left = e.left(10.0).unwrap();
+        assert!((left - (40.0 + 40.0 + 12.0 + 250.0)).abs() < 1e-6, "{left}");
+        // A slower stretch never takes the bar back.
+        e.at(Stage::Copy, 210_000_000, 30.0);
+        assert!(e.value(30.0) >= v);
+        e.finish(Stage::Copy, 50.0);
+        e.at(Stage::Verify, 500_000_000, 60.0);
+        let before = e.value(60.0);
+        e.work(Stage::Samples, 6_000_000);
+        assert!(
+            e.value(60.0) > before,
+            "fewer samples than guessed: further along"
+        );
+        e.finish(Stage::Verify, 70.0);
+        e.finish(Stage::Kits, 80.0);
+        assert!(
+            e.value(80.0) <= 0.99,
+            "short of the end until every stage is over"
+        );
+        e.finish(Stage::Samples, 81.0);
+        assert_eq!(e.value(81.0), 1.0);
+        assert_eq!(e.left(81.0), Some(0.0));
+    }
+
+    #[test]
+    fn a_backup_made_before_counts_for_nothing() {
+        let mut e = Estimate::new(1_000_000_000);
+        e.finish(Stage::Copy, 0.0);
+        e.finish(Stage::Verify, 0.0);
+        assert_eq!(e.value(0.0), 0.0, "the kits and samples are the whole bar");
+        assert_eq!(e.left(0.0), None);
+        e.at(Stage::Kits, 0, 0.0);
+        e.at(Stage::Kits, 12, 6.0);
+        assert!(
+            (e.value(6.0) - 6.0 / 262.0).abs() < 1e-4,
+            "half the kits: 6 of 262 s"
+        );
+    }
+
+    #[test]
+    fn says_how_long_is_left() {
+        assert_eq!(time_left(0.3), "about 5 s left");
+        assert_eq!(time_left(41.0), "about 45 s left");
+        assert_eq!(time_left(55.0), "about 1 min left");
+        assert_eq!(time_left(13.2 * 60.0), "about 14 min left");
+        assert_eq!(of(2_100_000_000, 7_828_000_000), "2.1 of 7.8 GB");
+        assert_eq!(of(120_000_000, 480_000_000), "120 of 480 MB");
     }
 
     #[test]

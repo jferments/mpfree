@@ -10,4 +10,4 @@ IgnoreOnIsolate=yes
 [Service]
 Type=oneshot
 ExecStart=/bin/sh /etc/mpfree-test/setup-backup.sh
-TimeoutStartSec=3600
+TimeoutStartSec=7200
