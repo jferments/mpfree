@@ -76,6 +76,7 @@ fn makes_a_stick_the_hook_takes() {
         programs: &progs,
         kits: &kits,
         ssh: None,
+        dev: None,
         creator: "test creator",
     };
     let out = t.0.join("stick.img");
@@ -286,6 +287,7 @@ fn refuses_a_system_without_a_program_the_setup_needs() {
         programs: &progs,
         kits: b"MPFK test kits",
         ssh: None,
+        dev: None,
         creator: "test creator",
     };
     let out = t.0.join("stick.img");
@@ -311,6 +313,7 @@ fn developer_ssh_when_asked() {
         programs: &progs,
         kits: b"k",
         ssh: Some(&s),
+        dev: None,
         creator: "test",
     };
     let out = t.0.join("stick.img");
@@ -340,6 +343,83 @@ fn developer_ssh_when_asked() {
         .contains("developer SSH: on"));
 }
 
+/// `--dev-tools`: the folder under `mpfree-dev/` on partition 5, with its
+/// SHA256SUMS and MPFREE-DEV.txt, and the report naming each file.
+#[test]
+fn developer_tools_go_on_the_setup_partition() {
+    let t = tmp("dev");
+    let upd = update_file(&t.0);
+    let src = stick::open_update(&upd, &t.0, true, &mut |_| {}).unwrap();
+    let kit = t.0.join("dev-tools");
+    std::fs::create_dir_all(kit.join("fxprobe/MPFree - VST - FXProbe Tap")).unwrap();
+    std::fs::create_dir_all(kit.join("empty")).unwrap();
+    std::fs::write(kit.join("fxprobe/fxprobe.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+    std::fs::write(
+        kit.join("fxprobe/MPFree - VST - FXProbe Tap/plugin.json"),
+        b"{}\n",
+    )
+    .unwrap();
+    let dev = mpfree_stick::dev::DevTools::from_dir(&kit).unwrap();
+    let progs = programs();
+    let b = Build {
+        source: &src,
+        programs: &progs,
+        kits: b"k",
+        ssh: None,
+        dev: Some(&dev),
+        creator: "test",
+    };
+    let out = t.0.join("stick.img");
+    let made = stick::build_image(&b, &out, &mut |_| {}).unwrap();
+    let img = File::open(&out).unwrap();
+    let (_, mut setup) = stick::read_setup(&img).unwrap();
+    let get = |img: &mut Vec<u8>, p: &str| stick::setup_read(img, p).unwrap();
+    assert_eq!(
+        get(&mut setup, "mpfree-dev/fxprobe/fxprobe.sh").unwrap(),
+        b"#!/bin/sh\necho hi\n"
+    );
+    assert_eq!(
+        get(
+            &mut setup,
+            "mpfree-dev/fxprobe/MPFree - VST - FXProbe Tap/plugin.json"
+        )
+        .unwrap(),
+        b"{}\n"
+    );
+    let sums = String::from_utf8(get(&mut setup, "mpfree-dev/SHA256SUMS").unwrap()).unwrap();
+    assert_eq!(sums, dev.sums());
+    assert_eq!(sums.lines().count(), 2);
+    assert!(sums.contains(&format!(
+        "{}  fxprobe/fxprobe.sh\n",
+        update::hex(&Sha256::digest(b"#!/bin/sh\necho hi\n"))
+    )));
+    assert!(get(&mut setup, "mpfree-dev/MPFREE-DEV.txt").is_some());
+    // The setup files are still there, and setting the mode keeps the tools.
+    assert!(get(&mut setup, "autorun.sh").is_some());
+    assert!(made
+        .notes
+        .iter()
+        .any(|n| n.contains("2 files, 21 bytes, on partition 5 under /mpfree-dev")));
+    assert!(made
+        .notes
+        .iter()
+        .any(|n| n.starts_with("  dev tool /mpfree-dev/fxprobe/fxprobe.sh  sha256 ")));
+    drop(img);
+    let disk = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&out)
+        .unwrap();
+    let len = disk.metadata().unwrap().len();
+    stick::set_mode(&disk, len, "remove").unwrap();
+    let (_, mut after) = stick::read_setup(&disk).unwrap();
+    assert_eq!(get(&mut after, "mode.txt").unwrap(), b"remove\n");
+    assert_eq!(
+        get(&mut after, "mpfree-dev/fxprobe/fxprobe.sh").unwrap(),
+        b"#!/bin/sh\necho hi\n"
+    );
+}
+
 #[test]
 fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
     let t = tmp("disk");
@@ -351,6 +431,7 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
         programs: &progs,
         kits: b"k",
         ssh: None,
+        dev: None,
         creator: "test",
     };
     // A 16 GB stick, as a sparse file.
