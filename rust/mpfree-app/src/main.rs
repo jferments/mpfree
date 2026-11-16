@@ -116,6 +116,7 @@ mod play_page;
 mod play_widgets;
 mod plugins;
 mod port_writer;
+mod power;
 mod preview;
 mod project;
 mod qlink_touch;
@@ -205,6 +206,11 @@ struct Options {
     /// (`mpfree-gpu-screen`; `play` and `app`; drawing.rs). Off until a
     /// device round has checked it; any failure draws in software again.
     gpu_screen: Option<PathBuf>,
+    /// The power button (`app` only; power.rs): a short press opens the
+    /// power card, and Shut down or Restart writes its word to this file
+    /// for the system to act on (the stick's root path unit). Without it
+    /// the button is not read.
+    power_request: Option<PathBuf>,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -229,6 +235,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         midi_out: false,
         cv_out: false,
         gpu_screen: None,
+        power_request: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -273,6 +280,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--cv-out" => o.cv_out = true,
             "--data" => o.data = Some(PathBuf::from(value()?)),
             "--gpu-screen" => o.gpu_screen = Some(PathBuf::from(value()?)),
+            "--power-request" => o.power_request = Some(PathBuf::from(value()?)),
             "--sound-cores" => {
                 o.sound_cores =
                     Some(cores::SoundCores::parse(&value()?).ok_or_else(|| {
@@ -314,6 +322,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.cv_out && o.command != "app" {
         return Err("--cv-out goes with app".to_string());
+    }
+    if o.power_request.is_some() && o.command != "app" {
+        return Err("--power-request goes with app".to_string());
     }
     if o.data.is_some() && o.command != "app" {
         return Err("--data goes with app".to_string());
@@ -2376,6 +2387,21 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     }
     let (to_ui, from_audio) = sync_channel::<gui::ToUi>(4096);
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
+    // The power button: only when the system can act on a request
+    // (`--power-request`, the stick's root path unit). Read-only, not
+    // grabbed, on a thread of its own (power.rs).
+    if let Some(path) = &o.power_request {
+        player.set_power_request(path.clone());
+        match power::spawn_reader(to_ui.clone(), || gui::ToUi::PowerPress, gui::ToUi::Line) {
+            Ok(()) => out.say(&format!(
+                "power button: a short press opens the power card; shut down and restart go to {}",
+                path.display()
+            )),
+            Err(e) => out.say(&format!("power button: not read ({e})")),
+        }
+    } else {
+        out.say("power button: not read (no --power-request); hold it to switch off");
+    }
     // The screen thread starts before this thread asks for real-time priority,
     // so it keeps normal priority.
     // With --gpu-screen, the GPU draws the screen in a process of its own,

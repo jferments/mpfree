@@ -715,6 +715,7 @@ impl Session {
         self.change_kit();
         // The time engine, as player_session runs it.
         self.app.set_rolling(self.time.info().state.rolling());
+        self.app.set_track_count(self.time.track_count());
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
         let lights = self.app.transport_lights(
@@ -797,11 +798,34 @@ impl Session {
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
+        // The Looper tab and the Play page's strip follow the loop, as
+        // main.rs shows them: its wave a slice at a time, its changes in
+        // the log, and the loop's view about as often as the transport card
+        // (every 11 periods, 32 ms).
+        if let Some(wave) = self
+            .looper
+            .wave_step(self.periods, crate::LOOP_WAVE_PERIODS)
+        {
+            self.out.show(ToUi::LoopWave(wave));
+        }
+        for line in self.looper.changes(|| self.time.position_text()) {
+            self.out.note(&line);
+        }
+        if self.periods.is_multiple_of(11) {
+            let view = self.looper.view(self.app.settings.bpm);
+            self.out.show(ToUi::Looper(Box::new(view)));
+        }
         self.save_period();
         // The mixer's period (silence in): edits to its chains land here,
         // as they do in player_session's.
         if let Some(line) = self.mix.poll_built() {
             self.out.note(line);
+        }
+        // A switch of mode that came in: Q-Links and MIDI controls learned
+        // on the insert's controls follow them, as in main.rs.
+        for landed in self.mix.modes.take_landed() {
+            self.music.retarget(&landed);
+            self.out.show(ToUi::ParamsMoved(Box::new(landed)));
         }
         let ctx = mixing::ctx(
             RATE,
