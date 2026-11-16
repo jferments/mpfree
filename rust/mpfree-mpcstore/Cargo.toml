@@ -1,0 +1,13 @@
+[package]
+name = "mpfree-mpcstore"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Installs MPC plugins from the Open MPC catalog's release zips into MPFree's plugin folder: the catalog, zip reading, SHA-256 and safe unpacking"
+
+[dependencies]
+# The skin crate's inflate and JSON reader: no new dependency.
+mpfree-mpcskin = { path = "../mpfree-mpcskin" }
+# dlopen for the system's libcurl (fetch.rs); already used across the workspace.
+libc = "0.2"

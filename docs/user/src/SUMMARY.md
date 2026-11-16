@@ -25,6 +25,7 @@
 - [Recording audio tracks](making-music/audio-tracks.md)
 - [Mixing](making-music/mixing-and-effects.md)
 - [Effects](making-music/effects.md)
+- [Getting plugins](making-music/plugins.md)
 - [Playing other gear: MIDI, sync and CV](making-music/midi-and-cv.md)
 - [Saving your work](making-music/saving.md)
 - [Exporting your music](making-music/exporting.md)

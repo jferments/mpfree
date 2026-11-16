@@ -102,6 +102,13 @@ impl Control {
         }
     }
 
+    fn values(&self) -> Option<(Vec<f32>, Vec<String>)> {
+        match self {
+            Control::Clap(_) => None,
+            Control::Mpc(c) => Some(c.values()),
+        }
+    }
+
     fn load_preset(&self, p: &Preset) -> Result<(), String> {
         match self {
             Control::Clap(c) => c.load_preset(p),
@@ -484,6 +491,7 @@ fn serve(sock: &mut UnixStream, node: &Mutex<Plug>, control: &Control) -> io::Re
             ToChild::SaveState => ToHost::State(control.save_state()),
             ToChild::LoadState(b) => ToHost::Loaded(control.load_state(&b)),
             ToChild::ParamText { index, value } => ToHost::Text(control.param_text(index, value)),
+            ToChild::Values => ToHost::Values(control.values()),
             ToChild::LoadPreset { file, key } => {
                 use std::os::unix::ffi::OsStringExt;
                 let place = match file {
