@@ -20,6 +20,8 @@
 //!   Projects place opens over the browser: what to make, the range, how
 //!   it will play, then the time done and the outcome. The app makes and
 //!   runs the export (`mpfree-export`).
+//! - [`plugins`]: the Plugins place's list and selected column
+//!   ([`PluginsScreen`]), drawn from what the app gives it.
 //! - [`sample`]: sample screens over a real library in a scratch folder,
 //!   for the workstation preview (`mpfree-browser-preview`) and the tests.
 //!
@@ -37,6 +39,7 @@
 #![forbid(unsafe_code)]
 
 pub mod export;
+pub mod plugins;
 pub mod sample;
 pub mod state;
 pub mod view;
@@ -44,6 +47,10 @@ pub mod view;
 pub use export::{
     ExportBits, ExportChoice, ExportFormat, ExportInput, ExportPanel, ExportPhase, ExportRange,
     ExportSetup, StemsBy, EXPORT_RATES,
+};
+pub use plugins::{
+    KindFilter, PluginButton, PluginDetail, PluginInput, PluginRow, PluginsScreen, PluginsView,
+    Tone,
 };
 pub use state::{BrowseAction, Browser, Button, Filter, Input, Pick, Screen, Sort, Source};
 pub use view::BrowserView;
@@ -56,6 +63,8 @@ pub const BROWSER: &str = "browser";
 pub const BROWSER_PAGE: &str = "browser";
 /// The page: the app's header, the browser, the hint line.
 pub const BROWSER_LAYOUT: &str = "col(header:60, browser:*, hint:26)";
+/// The hint line while the Plugins place shows.
+pub const PLUGINS_HINT: &str = "Dial: move  ·  push: next picture  ·  +: install  ·  -: back  ·  SHIFT + dial: places  ·  BROWSE closes";
 /// The hint line while the browser is open.
 pub const BROWSER_HINT: &str = "Dial: move  ·  push: open or load  ·  - / +: up / into a folder  ·  PLAY: hear it  ·  ERASE: to Trash  ·  BROWSE closes  ·  SHIFT + BROWSE: save project";
 
@@ -98,6 +107,7 @@ pub fn step(ui: &mut Ui, browser: &mut Browser) -> Vec<BrowseAction> {
     };
     if let Some(r) = ui.rect_of(BROWSER) {
         browser.set_visible(BrowserView::rows_in(r));
+        browser.set_plugin_rows(BrowserView::plugin_rows_in(r));
     } else {
         browser.set_visible(rows);
     }
@@ -128,13 +138,18 @@ pub fn show(ui: &mut Ui, browser: &Browser) {
 /// What the Q-Link cards say while the browser is open: (title, value).
 pub fn qlinks(browser: &Browser, preview_level_db: f32) -> [(String, String); 4] {
     let s = browser.screen();
-    let pos = match (s.selected, s.rows.len()) {
+    // The Plugins place: its own list and chips.
+    let (selected, rows, show) = match &s.plugins {
+        Some(p) => (p.selected, p.rows.len(), p.filter.label()),
+        None => (s.selected, s.rows.len(), s.filter.label()),
+    };
+    let pos = match (selected, rows) {
         (Some(i), n) if n > 0 => format!("{} / {n}", i + 1),
         _ => "—".into(),
     };
     [
         ("Scroll".into(), pos),
-        ("Show".into(), s.filter.label().into()),
+        ("Show".into(), show.into()),
         ("Preview".into(), format!("{preview_level_db:.0} dB")),
         ("Place".into(), state::SOURCES[s.source].label().into()),
     ]
@@ -154,6 +169,14 @@ pub enum QLinkEffect {
 pub fn qlink_turn(browser: &mut Browser, knob: usize, detents: i32) -> QLinkEffect {
     match knob {
         0 => browser.dial(detents),
+        1 if browser.plugins_shown() => {
+            if let Some(p) = browser.screen().plugins {
+                let k = plugins::KIND_FILTERS;
+                let i = k.iter().position(|x| *x == p.filter).unwrap_or(0) as i32;
+                let next = k[(i + detents.signum()).rem_euclid(k.len() as i32) as usize];
+                browser.input(Input::Plugins(PluginInput::Filter(next)));
+            }
+        }
         1 if browser.picking().is_none() => {
             let f = browser.screen().filter;
             let i = state::FILTERS.iter().position(|x| *x == f).unwrap_or(0) as i32;

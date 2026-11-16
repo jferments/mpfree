@@ -799,6 +799,8 @@ dependencies = [
  "mpfree-midi-ui",
  "mpfree-mixer-ui",
  "mpfree-mod",
+ "mpfree-mpcskin",
+ "mpfree-mpcstore",
  "mpfree-node",
  "mpfree-perform",
  "mpfree-play",
@@ -1132,6 +1134,21 @@ dependencies = [
  "mpfree-fx",
  "mpfree-node",
  "mpfree-synth",
+]
+
+[[package]]
+name = "mpfree-mpcskin"
+version = "0.1.0"
+dependencies = [
+ "mpfree-ui",
+]
+
+[[package]]
+name = "mpfree-mpcstore"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-mpcskin",
 ]
 
 [[package]]
