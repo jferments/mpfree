@@ -10,11 +10,12 @@ The owner wants to know that main still does everything MPFree needs on the inst
 |---|---|---|---|
 | Builds, and the app's tests | Q0, Q0b, Q0c, Q0d | Workstation | 30 min |
 | Akai's system, the stick out | Q1 to Q5: trust, lock, survey, backup, device tree | MPC on 3.10.1 | 20 min |
-| The stick | Q6, Q6-write | Workstation | 5 min |
+| The stick | Q6, Q6-write, Q6b the plugin | Workstation | 5 min |
 | Akai's system, then the stick in | Q7a restart, Q7b the boot hook | MPC on 3.10.1 | 10 min |
 | MPFree, first boot | Q7c power-on, Q8 this round's checks, Q8b benchmark; Q9 GPU flips (optional) | MPC on the stick | 60 to 90 min |
 | MPFree, second boot (optional) | S1 to S4: Sound cores on cores 3 and 2, the load again, an hour of play | MPC on the stick | 80 min |
 | Akai's system, the stick out, then in | Q10 back to 3.10.1; F1 to F8 FXProbe (optional) | MPC on 3.10.1 | 10 min, F 30 min |
+| Optional add-ons | A1 after Q4: Akai's instruments from the backup; A2 after Q10: Akai's app as it runs; A3 before Q11: your MPC projects | Workstation; A2 on MPC on 3.10.1 | 10 min |
 | Logs and the zip | Q11 | Workstation | 5 min |
 
 The optional parts can be left out, and the round can stop after any block that leaves Akai's system or MPFree running: Q10 and then Q11 end it from anywhere. Q1 to Q5 have to come first, because Q4's backup is the way back for everything after it.
@@ -34,8 +35,11 @@ The app step asks only about these ([device checks](device-checks.md); `python3 
 | `note-repeat` | Q8 | Never reached on the MPC in live test 3 | NOTE REPEAT, Latch, the Arp panel | 2 min |
 | `looper` | Q8 | Live test 3's loop that kept playing after STOP | Record 2 bars, STOP | 2 min |
 | `console` | Q8 | Button chords on the real panel, and STOP's silence | The console chord, TAP TEMPO, STOP | 1 min |
+| `fx-add` | Q8 | Live test 3's "+ Add effect" did nothing. The fixes (#275, #287, #353) have never run on the MPC | + FX on the Drums row, Reverb, its ON pill, Remove | 2 min |
+| `eq` | Q8 | #388: the parametric EQ. Only the MPC shows a dot following a real finger and Listen on real speakers; its cost on the Cortex-A17 is Q8b's `EQ (4 bands and both cuts)` | "+ EQ" on the Drums row, drag a dot, UNDO, Listen | 2 min |
 | `power` | Q8; S2 and Q10 | #389: a short press of the power button opens the power card. Its Restart starts S2's second boot and its Shut down ends the round's last MPFree boot; the stick logs judge those | Two presses, Cancel; then the card in place of the power switch | 1 min |
-| `midi-in` | Q8, last | The MPC's real MIDI IN and its port in the I/O view; `s` skips it without a keyboard and a 5-pin cable | Play the keyboard | 3 min |
+| `midi-in` | Q8 | The MPC's real MIDI IN and its port in the I/O view; `s` skips it without a keyboard and a 5-pin cable | Play the keyboard | 3 min |
+| `mpc-plugin` | Q8, last | #385: an Open MPC plugin instrument ([SYN] Mono Voice, put on the stick by Q6b) runs in its own process on the MPC's own cores, with sound out; CI runs it only under qemu. Last, because it changes the synth track's instrument | Pick it on the Synth tab, play pads | 2 min |
 | `kept` | S2 | Sound cores, set in S1, comes back at the next start and runs | Nothing: it reads the log and partition 4 | 0 |
 | `hour` | S3 | #273's underruns at 25 and 51 minutes | Nothing: it reads the status lines | 0 |
 
@@ -73,6 +77,9 @@ The app step asks only about these ([device checks](device-checks.md); `python3 
 | Does the app, at this round's commit, pass its own tests, the UI smoke workflows among them? | Q0d |
 | Do REC, OVERDUB, UNDO and PLAY work and light as soon as MPFree starts, with no Map controls (#387)? | Q8: `transport` |
 | Does a short press of the power button open the power card, and do its Restart and Shut down end the boot cleanly (#389)? | Q8: `power`; S2, Q10 and the stick logs |
+| Can you add an effect on the Mix tab and hear it, which live test 3 couldn't (#275, #287, #353)? | Q8: `fx-add` |
+| Does an Open MPC plugin instrument play in real time on the MPC's own cores (#385)? | Q6b; Q8: `mpc-plugin` |
+| Does the parametric EQ follow a finger on the real panel, undo, and Listen on the MPC's outputs, and what do its bands cost on the MPC's cores (#388)? | Q8: `eq`; Q8b |
 | Does the stick's system answer on port 2222 after the soft-reboot, and does the hardware work in it (Ethernet, screen, touch, pads, buttons, sound, partition 4)? | Q8: its checks, then `basics` and `touch` |
 | What does each engine cost on the MPC, and how many voices fit in each budget (round 8 of the performance plan)? | Q8b |
 | Does what has merged in the app since live test 3 work on the MPC? The app's tests check it in Q0d; on the MPC, what only the MPC shows: 128 tracks on TRACK MUTE's pads, the real wheel, a real drag | Q0d; Q8: `track-mute`, `wheel`, `touch` |
@@ -80,6 +87,8 @@ The app step asks only about these ([device checks](device-checks.md); `python3 
 | Does Prefs > Sound cores > Cores 3 and 2 come back at the next start and put the audio thread on core 3 and its lanes on core 2, and does a song play for an hour with no underrun? | S2: `kept`; S3: `hour` |
 | Does the MPC come back to 3.10.1 with the eMMC's boot areas unchanged? | Q10 |
 | Does Akai's app load the FXProbe plugins from the internal drive, and do they capture AIR effects at 0 and -12 dB? | F1 to F8 |
+| Are Akai's instruments separate files, and what would running Akai's own app beside MPFree need and cost (guest mode)? | A1, A2 (optional) |
+| What do your own MPC projects hold, for the importer? | A3 (optional) |
 
 ## You need
 
@@ -184,6 +193,17 @@ This becomes the return point for the installed 3.10.1, which the 3.6.0 backup n
 - **Stop if** the list names any other partition (p1, p3, p4, p5, boot0 or boot1), and send the zip before going on.
 - Make the second copy it asks for.
 
+**Block A1 (optional add-on): Akai's instruments and guest mode, from the backup** (workstation only, read-only: it reads Q4's backup image with `debugfs`, which opens it without `-w`; nothing is mounted, no sudo, and the MPC isn't contacted; a few minutes). This is for the synths thread's guest-mode plan: running Akai's own, unmodified app in the background as a sound engine. It answers whether Akai's instruments are separate files, where the activation lives (file names only), and what the app needs from the kernel and its devices. Run it any time after Q4:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run akai-scan -- python3 tools/mpc-one/offline-akai-scan.py
+```
+
+- It reads the newest backup under `~/mpfree-backups`, which is Q4's, so the root filesystem it reads is the installed 3.10.1.
+- It writes `~/mpfree-work/akai-scan-…/report.txt`, and the results folder gets a copy. The report names Akai's files and quotes short strings from Akai's app. It holds no audio, no licence file contents and no settings that look like accounts, keys or serials. It goes in the round's zip, never into a repository.
+- **Passes when** it ends `RESULT: done.`
+- **Undo:** none needed. Delete the folder in `~/mpfree-work` whenever you like.
+
 **Block Q5: the running device tree for the stick** (read-only; copies `/sys/firmware/fdt` to a private folder under `~/mpfree-work`):
 
 ```bash
@@ -212,6 +232,18 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 ```
 
 If the stick last held an opt-in build (steps 6 and 7 of the record), this replaces it with the default one. Partition 4 is kept, and its files may belong to the `mpfree` user from `--app-user`; the pad player, root on this stick, still reads and writes them.
+
+**Block Q6b: an Open MPC plugin on the stick, for `mpc-plugin`** (**state-changing, on the stick only**: one folder, `files/plugins/SYN-Mono-Voice-1.0.2`, on partition 4; the stick still in the workstation after Q6-write; sudo asks for your password; under a minute). [SYN] Mono Voice is an MIT-licensed release from the Open MPC catalog, the one CI already runs under qemu. It is downloaded from its GitHub release into `~/mpfree-work/plugins`, checked against the SHA-256 that CI pins in `tools/mpc-plugins/catalog-check.txt`, and never committed or shipped. MPFree looks for plugins only in partition 4's `files/plugins/`, and Q6-write keeps partition 4 as it was, so the plugin goes in with its own block. Skip it, and type `s` at `mpc-plugin` in Q8, if you'd rather not.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run stick-plugin -- python3 tools/mpc-one/stick-plugin.py add mono-voice
+```
+
+- It looks for the one partition named `mpfree-test-data` with an ext4 labelled `MPFREE-DATA` on a removable USB disk, and stops if there is none or more than one. If the desktop hasn't mounted it, it mounts it with `udisksctl`, as the file manager would.
+- It unzips the release with Python's zipfile, which keeps every file inside the release's own folder. Nothing in the release runs on the workstation. Then it syncs, counts what landed, and unmounts the partition.
+- **Passes when** it ends `PLUGIN-OK: mono-voice (instrument) is in files/plugins/SYN-Mono-Voice-1.0.2 on the stick's partition 4`. Run again, it says `already on the stick; nothing written`.
+- **If it is cut off halfway,** run `python3 tools/mpc-one/stick-plugin.py remove mono-voice`, then the block again.
+- **Undo:** `python3 tools/mpc-one/stick-plugin.py remove mono-voice`, with the stick in the workstation. It deletes that one folder and nothing else.
 
 **Block Q7a: restart without the stick** (read-only). Leave the stick out of the MPC. Switch the MPC off, wait 10 s, and switch it on. Wait for Akai's app. If developer mode is not on any more, note that, and switch it on again (SHIFT + MENU, Developer). Then:
 
@@ -254,10 +286,10 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 It shows what the hook decided at this power-on and why it stopped.
 
-**Block Q8: this round's checks** (read-only on the MPC: the tool starts, copies and stops nothing and only reads the app's log; you press buttons and pads, the loops stay in RAM, and anything MPFree saves goes to the stick's partition 4; about 30 minutes). These are the first boot's checks in [this round's checks](#this-rounds-checks), in that order. `transport` comes first, so REC, OVERDUB, UNDO and PLAY are tried before anything else uses them (#387). Turn the volume down a little before you start.
+**Block Q8: this round's checks** (read-only on the MPC: the tool starts, copies and stops nothing and only reads the app's log; you press buttons and pads, the loops stay in RAM, and anything MPFree saves goes to the stick's partition 4; about 40 minutes). These are the first boot's checks in [this round's checks](#this-rounds-checks), in that order. `transport` comes first, so REC, OVERDUB, UNDO and PLAY are tried before anything else uses them (#387). Turn the volume down a little before you start.
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-checks -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_CHECKS=transport,basics,load,track-mute,wheel,touch,note-repeat,looper,console,power,midi-in bash tools/mpc-one/collect-over-ssh.sh --app
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-checks -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_CHECKS=transport,basics,load,track-mute,wheel,touch,note-repeat,looper,console,fx-add,eq,power,midi-in,mpc-plugin bash tools/mpc-one/collect-over-ssh.sh --app
 ```
 
 - **This is the first login on port 2222 after a soft-reboot.** Before it reads anything, the tool prints `started by: the boot hook's soft-reboot (asked at … s after power-on)`, `no MMC block device`, `kexec_load_disabled: 1` and `/: read-only`, and ends `CHECKS-OK`. The release is Akai's own kernel now, so the stick's host key and the missing MMC devices are what tell the stick's system from Akai's.
@@ -267,13 +299,15 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 - **Each check** shows its steps. Press Enter to start (`s` skips the check, `q` stops here), do the steps, and press Enter when you are done. It then prints `what the log showed:`, with `seen`, `NOT SEEN` or `unclear` for each thing it looked for, and asks at most one question, about what only you can see or hear. Answer in a few words, with the step's number if one went wrong.
 - **`transport`:** a mapping saved on the stick in an earlier round still applies, and wins over the built-in numbers. If REC does nothing at all (`button 73 never reached the app`), open Prefs > Map controls after the check and read the REC row: a number other than `button 73` is the saved one. Tap the row and press REC to set it again, and say so in your answer. If OVERDUB, UNDO or PLAY START does nothing while REC works, write down the number its Map controls row shows: 80, 67 and 83 are inferred from Akai's light messages, so that number corrects the default.
 - **`load`** waits up to 40 s after your Enter for the app's next status line, so it can say whether the worst case underran, then prints the cores, the clock and the threads.
+- **`eq`** waits up to 40 s after your Enter for the app's next status line, so it can say whether the EQ underran while you played.
 - **`power`:** press the power button briefly, never hold it: a hold is still the hard power-off. The card's Shut down and Restart wait for S2 and Q10, because they end the boot.
-- **`midi-in`** is last: type `s` at its prompt if no keyboard and 5-pin cable are at hand.
+- **`midi-in`:** type `s` at its prompt if no keyboard and 5-pin cable are at hand.
+- **`mpc-plugin`** is last, because it changes the synth track's instrument. Type `s` at its prompt if you skipped Q6b.
 - **At the end** it lists each check with how many of its lines were seen and your answer, then the session summary since power-on and the app's latest status.
 - **If it says `the test build did not answer on port 2222`,** note what the screen shows. The pad player can still be played by hand. Go to Q10: the stick logs show the network state.
 - **Undo:** none needed. The loops are in RAM, and the power-off in Q10 clears them. Buttons that Map controls finds stay in `settings/map.conf` on partition 4, where they are meant to be.
 
-**Block Q8b: what each engine costs on the MPC** (**RAM only**: it copies the two benchmark builds into `/run/mpfree-bench` and stops the pad player while it runs; press Enter at each of steps 2 to 5; about 30 minutes). This is round 8's first ask in the [performance plan](../design/profiling.md#mpfree-bench): real voice counts for every engine, Analog at 8 and 16 voices among them, and the sampler after its 31 % pass.
+**Block Q8b: what each engine costs on the MPC** (**RAM only**: it copies the two benchmark builds into `/run/mpfree-bench` and stops the pad player while it runs; press Enter at each of steps 2 to 5; about 30 minutes). This is round 8's first ask in the [performance plan](../design/profiling.md#mpfree-bench): real voice counts for every engine, Analog at 8 and 16 voices among them, the sampler after its 31 % pass, and the parametric EQ (`EQ (4 bands and both cuts)`, #388).
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run bench -- env MPFREE_ACCEPT_BENCH=YES python3 tools/mpc-one/host_bench_mpc.py
@@ -408,13 +442,29 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 This boot keeps running on cores 3 and 2 until it ends; the next start runs Shared. Nothing else needs undoing: Cores 3 and 2 changes no other setting, project or file. Q10's power card saves the song as a project. If the boot ends another way (the button held), the next MPFree start keeps the song's autosave as a project named `Unsaved 2026-11-15 HH.MM` in BROWSE > Projects, and the hint line says so for a few seconds. Either is harmless; delete it in the browser whenever you like.
 
-**Block Q10: back to 3.10.1.** In MPFree, press the power button briefly and tap **Shut down** (#389). If the card asks to save, tap **Save and shut down**: it saves the project to partition 4 first. Expect "Saving…", "Shutting down…", and the MPC switching itself off within about a minute; note how long it took. If it hangs for more than a minute, hold the power button to switch off. Then take out the stick, wait 10 s and switch it on. The stick must be out: with the hook installed, a power-on with the stick in starts MPFree again. Wait for Akai's app, and switch developer mode on again if it is off. Then (read-only):
+**Block Q10: back to 3.10.1.** In MPFree, press the power button briefly and tap **Shut down** (#389). If the card asks to save, tap **Save and shut down**: it saves the project to partition 4 first. Expect "Saving…", "Shutting down…", and the MPC switching itself off within about a minute; note how long it took. If it hangs for more than a minute, hold the power button to switch off. If Q9 sent you here with a black or frozen screen, skip the card: hold the power button to switch off. That boot then has no `power.txt`, which is expected. Then take out the stick, wait 10 s and switch it on. The stick must be out: with the hook installed, a power-on with the stick in starts MPFree again. Wait for Akai's app, and switch developer mode on again if it is off. Then (read-only):
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run status-after -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run hook-report-after -- bash tools/mpc-one/collect-over-ssh.sh --hook-report && python3 tools/mpc-one/results.py run boot-map-after -- bash tools/mpc-one/collect-over-ssh.sh --boot-map
 ```
 
-The hook report should show main's hook files, with the hashes Q7b wrote, and `MPFree's stick in now: no`. Then go on to the F blocks, or straight to Q11.
+The hook report should show main's hook files, with the hashes Q7b wrote, and `MPFree's stick in now: no`. Then go on to A2, the F blocks, or straight to Q11.
+
+**Block A2 (optional add-on): Akai's app as it runs** (read-only on the MPC: the script reads `/proc` only, over developer mode's SSH with your key; it starts, stops or signals nothing and writes no file; under a minute each). Also for guest mode, and for the owner's question of how much memory Akai's app uses. The stick stays out, Akai's app is up, and the **transport is stopped** in both runs: the memory summary walks the app's page tables, which could cost its audio a few milliseconds while it plays. First with an empty project:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run akai-app-empty -- sh -c "ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh -s' < tools/mpc-one/read-only-akai-app.sh"
+```
+
+Then load Hype and Mellotron on two tracks in Akai's app (or whichever of Akai's plugin instruments you have), play a few notes, stop the transport, and:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run akai-app-hype -- sh -c "ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh -s' < tools/mpc-one/read-only-akai-app.sh"
+```
+
+- Each prints the app's resident and locked memory, its memory-lock limit and cgroup, each thread's CPU and real-time policy, the files it has mapped (an instrument in a file of its own shows up only once loaded), its open devices, and the kernel features guest mode would use. It never reads the app's environment or the contents of a file it has open.
+- **Passes when** each ends `DONE: read-only.` If it says `STOP: Akai's app (/usr/bin/MPC) is not running`, wait for the app and run it again.
+- **Undo:** none needed. You don't need to save the project with the instruments; F3 restarts Akai's app anyway.
 
 **F (optional): FXProbe, the FX thread's measuring plugins, under Akai's system.** FXProbe lets fxlab measure the AIR effects on the MPC exactly as it measures MPFree's ([fxlab and FXProbe](../design/fxlab.md)). This is its first time on an MPC, so the first question is whether Akai's app loads the two plugins at all. The kit came onto the stick's partition 3 in Q6, under `/mpfree-dev/fxprobe`. Akai's system mounts every partition of a stick noexec, so the kit's script runs with `sh`, and the plugins are copied once to the MPC's internal drive, where the app can load them. Captures go to the stick's partition 4. Skip to Q11 if you'd rather not: nothing else depends on F. The F blocks can also run on another day, with the stick from this round. They need **External Plugin Support** on in Akai's app (Menu > Preferences > Enhancements).
 
@@ -482,6 +532,17 @@ It asks for your sudo password: Akai's system wrote `FXProbe/` as root. The kit 
 
 The plugins and `FXProbe/` can stay: without the marked folder the plugins do nothing, and the next measuring rounds need them. Their undo is block F-undo, in the undo section.
 
+**Block A3 (optional add-on): your own MPC projects** (workstation only, read-only: the tool opens each project file to read it and writes nothing on the card or drive; the MPC isn't contacted; a minute or two). This is for the MPC import thread: what Akai's project files hold, so MPFree can open them. The 2026-11-09 backup's internal drive holds no projects, so yours are on the SD card or USB drive you use with the MPC. Switch the MPC off if the card is in it, take the card or drive out, and put it into the workstation. The desktop mounts it under `/media/jesse`, as it does the stick in F8; if it doesn't appear there, open it once in the file manager. Then:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-import/tests/test_inspect_xpj.py && python3 tools/mpc-one/results.py run mpc-projects -- python3 tools/mpc-import/inspect-xpj.py /media/jesse
+```
+
+- It reads every `.xpj` under `/media/jesse`, so every card or drive mounted there; the stick's partitions hold none. For each project it prints the format, tempo, tracks and their programs, pads, inserts, sequences, songs and samples, and the importer's checklist. It never prints audio or an effect's or plugin's settings, only their size.
+- Best with at least one project saved on 3.10.1, and a few that use Akai's plugin instruments and insert effects.
+- **Passes when** the test prints `OK` and each project has an `=== …` heading with a `format:` line. A card with no projects prints `no .xpj here`, which is an answer too.
+- **Undo:** none needed. Eject the card in the file manager before you take it out.
+
 **Block Q11: the stick logs and the zip.** If the stick is in the MPC (after F), switch the MPC off first, then take the stick out. Put it into the workstation. Then (read-only on the stick):
 
 ```bash
@@ -496,15 +557,17 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 - Q1 records the host key; Q2 ends `LOCKED`; Q3, Q7a and Q10 end `LOCKED: only your key gets in`.
 - Q4's backup is verified, and its baseline mismatch names only `mmcblk0p6`.
 - Q6's report has the soft-reboot line, `route: soft-reboot only (no --kexec-file)` and `pad player user: root (no --app-user)`, `no-reserved-blocks@…` is `masked on the stick`, and no unit starting `az0` is `NOT masked`.
+- Q6b ends `PLUGIN-OK: mono-voice (instrument) is in files/plugins/SYN-Mono-Voice-1.0.2 on the stick's partition 4`.
 - Q7b ends `RESULT: the hook is installed, and the stick checks out.`
 - In Q7c the MPC went from the logo to MPFree's pad player with no tap, and Akai's app never drew.
 - Q8 ends its checks with `started by: the boot hook's soft-reboot` and `CHECKS-OK`, and each of its checks has every line `seen` and an answer that says it looked and sounded right. A `NOT SEEN` line, or an answer that says otherwise, is a finding: the report has the app's log for that check's time.
 - Q8b ends `RESULT: both builds ran (numbers above).` with the pad player started again.
 - In S2, `kept` and `load` have every line `seen`, and the session summary has `sound cores: two: the audio thread on core 3, lanes on core 2`. S3's `hour` is `seen`: more than 1,240,312 periods, `0 underruns` and no restart, or at least no new underrun near periods 524,292 and 1,048,580. The stick logs of the second boot have no `underrun at period` line.
+- The add-ons, if run: A1 ends `RESULT: done.`; both A2 runs end `DONE: read-only.`; A3's test prints `OK` and each project has a `format:` line.
 - F1 ends `CHECK-OK`, F2 `INSTALL-OK`, F4 `SETUP-OK`; F6 lists three Sources and three Taps, `idle`; F7 ends `CAPTURE-OK` with three slots at each gain; F8 writes `fxprobe-round1.tar.gz` into the results.
 - The stick's `dmesg.txt` shows `mpfree-internal-off: switched off ff0f0000...` before any `sd` or `mmc` mount. Nothing reads the eMMC or SD card before `mpfree-internal-off: done`: no `no-reserved-blocks` unit and no `Buffer I/O error` on `mmcblk`.
 - The boot maps from Q7a and Q10 have the same boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1 since the power-on in Q10.
-- The stick logs have a `power.txt` in the boot Q10 ended, with `asked: poweroff`, and, if the S blocks ran, one in the first boot with `asked: restart`; each boot's `dmesg.txt` has `mpfree-test-power: the pad player asked for …`. The first boot's `units.txt` shows whether Akai's `az01-power-button.service` runs on the stick.
+- The stick logs have a `power.txt` in the boot Q10 ended, with `asked: poweroff` (none if Q9 sent you to Q10 and you held the button), and, if the S blocks ran, one in the first boot with `asked: restart`; each boot's `dmesg.txt` has `mpfree-test-power: the pad player asked for …`. The first boot's `units.txt` shows whether Akai's `az01-power-button.service` runs on the stick.
 - The stick logs show no failed unit we didn't expect and no `mpfree-test: blocked` line we can't explain. Akai's `az0x-loadpin-trustpoints` fails after the soft-reboot, as on 2026-11-15; that failure is harmless.
 
 ## Undo, block by block
@@ -520,6 +583,7 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 | Q7b | The boot hook's three files on `/data`, in place of an earlier version | The hook stays installed after the round: it is how MPFree starts. To take it off the MPC, block Q7b-undo |
 | Q7c, Q8, Q8b, Q9 | RAM on the MPC; the stick's log partition and partition 4 | Switch off, take out the stick, wait 10 s, switch on |
 | Q8 (`map-controls`, if it ran) | The buttons found, in `settings/map.conf` on the stick's partition 4 | Keep them: they are this MPC's own numbers. To start again from the built-in numbers, delete `settings/map.conf` on partition 4 with the stick in the workstation |
+| Q6b | `files/plugins/SYN-Mono-Voice-1.0.2` on the stick's partition 4 | `cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/stick-plugin.py remove mono-voice`, the stick in the workstation; or keep it for the next rounds |
 | S1 | `sound-cores` in `settings/app.conf` on the stick's partition 4 | Block S4 |
 | S2 | `Projects/Autosave` on partition 4, kept as an `Unsaved …` project at the next start | Delete it in BROWSE > Projects, if you like |
 | Q10 (the power card's save) | The project, saved to `Projects` on partition 4 | Delete it in BROWSE > Projects, if you like |

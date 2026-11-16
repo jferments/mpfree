@@ -11,6 +11,7 @@
   - `start-app.sh` mounts it read-write at `/run/mpfree-data` (nosuid, nodev, noexec) and passes `--data /run/mpfree-data` to the pad player.
   - If the mount fails, the app runs without saving and logs why.
 - **Kept across rounds:** `write-test-stick.py` leaves partition 4 where it is when the stick already has it at 1 GiB, and rewrites only partitions 1 to 3 and the partition table. A stick with the old 64 MiB layout has its partition 4 saved to the build folder first, then moved. `--fresh-data` starts empty; `--data-from FILE` writes a saved copy.
+- **A plugin for a device round:** `tools/mpc-one/stick-plugin.py add ID` (workstation, sudo, the stick in the workstation) puts one Open MPC release that CI pins in `tools/mpc-plugins/catalog-check.txt` into `files/plugins/` on partition 4, unzipped, or as the zip with `--as-zip`. It finds the one `mpfree-test-data` partition with an ext4 `MPFREE-DATA` on a removable USB disk, checks the release's SHA-256, and unmounts after. `remove ID` deletes that one folder or zip. The release is never committed or shipped.
 - **Undo:** rewrite the stick with `--fresh-data`, write a saved copy back with `--data-from`, or delete files on partition 4 from the workstation.
 - **If a write is cut off:** each file is written whole to `NAME.part`, synced, then renamed over the old one. A cut-off write leaves the old file.
 

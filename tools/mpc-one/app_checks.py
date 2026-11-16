@@ -95,6 +95,16 @@ def seen_times(pattern, least):
     return test
 
 
+def not_seen(pattern):
+    """Passes when no line of the check's time matches `pattern`; if one does, says it."""
+    regex = re.compile(pattern)
+
+    def test(w):
+        bad = [m for m in w.messages() if regex.search(m)]
+        return not bad, bad[0] if bad else "none"
+    return test
+
+
 def at_start(pattern, about):
     """Passes when a line since power-on matches `pattern`; if not, says the last line that matches `about`."""
     regex, near = re.compile(pattern), re.compile(about)
@@ -470,6 +480,59 @@ CHECKS = (
         ["the_warp_tab_pins_the_hits_and_the_copy_goes_through_them",
          "a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready"]),
     Check(
+        "fx-add", "Add an effect on the Mix tab and hear it",
+        "live test 3's + Add effect did nothing (#275, #287, #353); never run on the MPC since", "hands",
+        ["1. On Play with kit 1, hit a few pads. Press TRACK MIX, tap Effects, then the Drums row's + FX:",
+         "   the effect picker opens.",
+         "2. Tap Delay and reverb, then Reverb. \"Reverb \u00b7 Room\" goes in after \"Filter \u00b7 DJ\". Hit pads: they ring.",
+         "3. Tap Reverb \u00b7 Room's ON pill: the pads go dry. Tap it again: the reverb comes back.",
+         "4. Tap Reverb \u00b7 Room, then Remove (UNDO doesn't take back chain edits). Press MAIN."],
+        [("the touchscreen was used", touch_rose()),
+         ("no refusal", not_seen(r"^(mixer|chain): (The chain is full|The mixer is busy"
+                                 r"|the chain editor asked for an effect that has no maker)")),
+         ("the app kept running", stayed_up())],
+        "Did the pads ring once the reverb was in, go dry with its ON pill off, and ring again with it on?",
+        ["the_chain_editors_taps_reach_the_app",
+         "the_effects_look_adds_picks_turns_and_moves_an_effect",
+         "an_insert_added_on_the_mixer_is_turned_bypassed_moved_and_removed",
+         "the_effect_pickers_cancel_adds_nothing",
+         "the_mixer_opens_the_editor_on_a_strip_and_adds_an_effect_from_the_picker",
+         "room_to_plate_keeps_the_shared_knobs_and_learned_q_links_follow"],
+        needs=['TRACK MIX / PAD MIX', 'MAIN']),
+    Check(
+        "eq", "The Mix tab's EQ: a dot follows a finger, UNDO and Listen",
+        "#388: the parametric EQ (the EQ look on the Mix tab, the EQ page in the chain editor)", "hands",
+        ["1. Press TRACK MIX, tap EQ at the top right of the Mix tab, and tap \"+ EQ\" on the Drums row.",
+         "   Play pads, drag the second dot of the new curve up, down and sideways, and let go.",
+         "2. Press UNDO: the curve goes back and the hint line says \"Undid Drums EQ Band 2\".",
+         "3. Tap the Drums curve twice to open the EQ page, tap Listen, and play pads (you hear only",
+         "   band 2's slice). Press MAIN to go back to Play."],
+        [("UNDO (67) reached the app", pressed(UNDO)),
+         ("UNDO took back the EQ drag", seen(r"^Undid .+ EQ Band \d$")),
+         ("no underrun while it played", no_underruns_while())],
+        "Did the sound follow the dot while you dragged it, and did Listen play only a thin slice of the sound?",
+        ["the_eq_look_adds_picks_and_shapes_an_eq"],
+        needs=['TRACK MIX / PAD MIX', 'MAIN'], wait_status=True),
+    Check(
+        "mpc-plugin", "An Open MPC plugin instrument plays on the MPC",
+        "#385: MPC-format plugins in the plugin sandbox; CI runs them as ARM only under qemu", "hands",
+        ["1. Open the Synth tab. On the Instrument row, step past the built-in engines to [SYN] Mono Voice.",
+         "2. Play pads 1 to 8 for about 10 s, soft and hard.",
+         "3. Hold a pad for 30 s, so a status line counts the plugin."],
+        [("the app found the plugin at its start",
+          at_start(r"^plugins: \d+ effect\(s\) and [1-9]\d* instrument\(s\) in \S*files/plugins/?; "
+                   r"each runs in its own process", r"^plugins: \d+ effect")),
+         ("a track plays it", seen(r"^track \d+: plays \[SYN\] Mono Voice")),
+         ("it started in its own process", seen(r"^plugins: \[SYN\] Mono Voice started in its own process")),
+         ("a status line counts it running, none down",
+          seen(r"^status: plugins: \d+ found \u00b7 [1-9]\d* running \u00b7 0 down \u00b7 0 crashes")),
+         ("it did not refuse to start", not_seen(r"^plugins: .* would not start")),
+         ("no underrun while it played", no_underruns_while())],
+        "Did the pads play a synth sound from the MPC's outputs, following how hard you hit?",
+        ["a_plugin_made_with_the_app_as_its_process_plays",
+         "plugins_live_in_the_data_folder_or_else_a_temp_folder_never_the_real_home"],
+        wait_status=True),
+    Check(
         "power", "The power button opens the power card",
         "#389: a short press opens the card; Shut down and Restart end the boot, so the stick logs judge them",
         "hands",
@@ -526,7 +589,7 @@ AREAS = (
       "play_held_while_rolling_is_a_fill_and_twice_latches_it",
       "fill_held_plays_the_fill_notes_and_only_then",
       "the_master_bar_and_the_mixer_master_are_one_level"]),
-    ("Mix: strips, effect chains, modes, learn, macros and I/O",
+    ("Mix: strips, effect chains, the EQ, modes, learn, macros and I/O",
      ["the_mix_tab_holds_the_mixer_and_its_chains_and_track_mix_goes_back",
       "the_mixer_strip_controls_set_the_mixer",
       "the_effects_look_adds_picks_turns_and_moves_an_effect",
@@ -537,7 +600,8 @@ AREAS = (
       "q_link_steps_plays_column_through_the_macro_banks",
       "the_io_view_follows_its_section_and_says_why_a_setting_stays",
       "track_mix_comes_and_goes_and_undo_takes_back_strip_changes",
-      "room_to_plate_keeps_the_shared_knobs_and_learned_q_links_follow"]),
+      "room_to_plate_keeps_the_shared_knobs_and_learned_q_links_follow",
+      "the_eq_look_adds_picks_and_shapes_an_eq"]),
     ("Looper tab: layers, tools, undo history, trim and drags",
      ["the_looper_tab_picks_loops_and_works_layers",
       "a_layer_dragged_onto_a_loop_moves_or_copies_and_another_length_says_why",
