@@ -1226,6 +1226,10 @@ impl MixHost {
             | MixAction::PickInsert { .. }
             | MixAction::MoveInsert { .. }
             | MixAction::Unpick
+            | MixAction::AddEq { .. }
+            | MixAction::FocusInsert { .. }
+            | MixAction::SetInsert { .. }
+            | MixAction::ReleaseInsert { .. }
             | MixAction::Look(_) => None,
             // Freeze, Thaw and Print need the song: `MixHost::take_action`.
             MixAction::Freeze(_)

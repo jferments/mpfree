@@ -57,6 +57,17 @@ On **Effects** each strip of the view is a row: its name and how many of its eig
 
 Tracks, Pads, Inputs and Submixes work on Effects as on Faders, and **< >** page through the rows.
 
+## Every EQ at once: EQ
+
+{{shot: mixer-eq | The EQ look: each track's EQ as its curve, a dot for each band, + EQ on the tracks without one; the bass's EQ is picked on band 2.}}
+
+On **EQ** each strip of the view is a row again: its name, its EQ drawn as a curve (a dot for each band, in the band's colour), and where the EQ sits in the chain with its cuts. It shows the strip's first EQ effect; the Channel strip's EQ stage isn't shown here.
+
+- **+ EQ** shows on a strip without an EQ. Tap it to add one at the end of the strip's chain; its curve appears in the row.
+- **Tap a curve** to pick that EQ (it is outlined), and the band under your finger if you tapped a dot: the Q-Links then turn that band's frequency, gain and Q and the EQ's output. Tap it again to open the EQ in the chain editor.
+- **Drag a dot** to move its band: sideways for its frequency, up and down for its gain (a cut's dot only moves sideways). One drag is one **UNDO**.
+- **Tap a strip's name** to select it and give the Q-Links back to its level, pan and sends.
+
 ## The I/O view
 
 **I/O** shows the project's routing in one place instead of strip by strip. The master stays on the right; down the left is a list of sections, and the section you pick fills the rest.

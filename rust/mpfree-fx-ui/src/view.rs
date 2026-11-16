@@ -315,7 +315,12 @@ impl FxPanel {
                 let page = self.pages.iter().position(|p| p.name == want)?;
                 self.show_page(ui, page);
                 if self.state.info.id == "mpfree.fx.eq" {
-                    self.focus = self.state.index(mpfree_fx::ids::eq::gain(*k));
+                    // Box k is the k-th band in use (Unused bands have none).
+                    use mpfree_fx::ids::eq;
+                    let band = (0..eq::BANDS)
+                        .filter(|&b| self.state.value(eq::band_use(b)) != eq::USE_UNUSED)
+                        .nth(*k)?;
+                    self.focus = self.state.index(eq::gain(band));
                     self.refresh(ui);
                 }
                 None

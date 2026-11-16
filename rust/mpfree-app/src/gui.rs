@@ -5722,6 +5722,16 @@ impl Player {
             // A pad a tap on the waveform (or the pad map) holds is let go.
             self.sample.leave(&mut self.outbox);
         }
+        if self.view == View::Chain && v != View::Chain {
+            // The EQ's Listen stops with its page.
+            if let Some(cv) = self
+                .ui
+                .get_mut::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+            {
+                let stop = cv.stop_listening();
+                self.outbox.extend(stop.into_iter().map(FromUi::Chain));
+            }
+        }
         let (was, now) = (self.view == View::Touch, v == View::Touch);
         if was && !now {
             self.leave_touch_dev();
