@@ -59,6 +59,9 @@ Options for write and build:
                      files). MPFree never reads them; Akai's system mounts them noexec (run with sh)
   --record FOLDER    also saves this run's report as report.txt and, with --ssh-key, the stick's host
                      key as known_hosts, in a new FOLDER/creator-stick-<UTC>/ (for the device rounds)
+  --new-backup       the stick's first start backs the MPC up again even if partition 4 has a backup
+                     (from an earlier first start), keeping the backups it has. Without it, a backup of
+                     this MPC already there is used, and the first start shows when it was made
 
   --status FILE      (before the command) also writes each progress line to FILE, for the window
 ";
@@ -248,6 +251,7 @@ struct Inputs {
     ssh_fingerprint: Option<String>,
     dev: Option<DevTools>,
     work: PathBuf,
+    choices: stick::Choices,
 }
 
 /// The update file: the path given, or the update to use in a folder.
@@ -280,6 +284,9 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
     let ssh_key = a.value("--ssh-key")?;
     let dev_dir = a.value("--dev-tools")?;
     let any_update = a.flag("--any-update");
+    let choices = stick::Choices {
+        new_backup: a.flag("--new-backup"),
+    };
     let update_path = update_path(&given, any_update, out)?;
     let work = a
         .value("--work")?
@@ -316,6 +323,7 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
         ssh_fingerprint,
         dev,
         work,
+        choices,
     })
 }
 
@@ -748,6 +756,7 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
                 ssh: i.ssh.as_ref(),
                 dev: i.dev.as_ref(),
                 creator: CREATOR,
+                choices: i.choices.clone(),
             };
             let made = stick::build_image(&b, &out_path, &mut |m| out.say(m))?;
             report(&made, out);
@@ -805,6 +814,7 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
                 ssh: i.ssh.as_ref(),
                 dev: i.dev.as_ref(),
                 creator: CREATOR,
+                choices: i.choices.clone(),
             };
             let made = stick::write_disk(&b, &target, target.bytes(), &i.work, fresh, &mut |m| {
                 out.say(m)

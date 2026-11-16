@@ -53,6 +53,11 @@ pub const MARK: &str = "MPFREE-FORMAT-ME ";
 pub const BOARD_DTB: &str = "/boot/rk3288-az01-acva.dtb";
 pub const TOKEN_FILE: &str = "/etc/mpfree-test/format-token";
 pub const ABOUT_FILE: &str = "/etc/mpfree-test/made-by.txt";
+/// `--new-backup`: asks the stick's first start to back the MPC up again
+/// even when partition 4 has a backup. A random token in hex, which the pad
+/// player's setup honours once (mpfree-app's `setup::NEW_BACKUP`, the same
+/// path); readable by the pad player.
+pub const NEW_BACKUP_FILE: &str = "/etc/mpfree-test/new-backup";
 /// What a write says when the stick's partition 4 (its backups, settings and
 /// files) is kept; the window reads it back to tell an update from a new stick.
 pub const KEPT_NOTE: &str = "partition 4: this stick's saved settings, files and backups are kept";
@@ -531,6 +536,7 @@ pub fn apply<'a>(
     programs: &'a Programs,
     ssh: Option<&'a Ssh>,
     about: &str,
+    choices: &Choices,
 ) -> io::Result<Vec<String>> {
     let r = Recipe::load();
     let mut notes = Vec::new();
@@ -604,6 +610,9 @@ pub fn apply<'a>(
     new_paths.extend(recipe::SETUP_FILES.iter().map(|f| f.0));
     new_paths.extend(recipe::SETUP_LINKS.iter().map(|l| l.0));
     new_paths.extend([TOKEN_FILE, ABOUT_FILE]);
+    if choices.new_backup {
+        new_paths.push(NEW_BACKUP_FILE);
+    }
     for p in &new_paths {
         if kind_of(tree, p).is_some() {
             return Err(bad(format!(
@@ -724,6 +733,19 @@ pub fn apply<'a>(
         Body::File(Data::Bytes(about.as_bytes().to_vec())),
         root_meta(0o644),
     )?;
+    if choices.new_backup {
+        tree.put(
+            NEW_BACKUP_FILE,
+            Body::File(Data::Bytes(
+                format!("{}\n", update::hex(&gpt::random16())).into_bytes(),
+            )),
+            root_meta(0o644),
+        )?;
+        notes.push(
+            "first start: backs the MPC up again, keeping the backups partition 4 has (--new-backup)"
+                .into(),
+        );
+    }
     let mut links: Vec<(&str, &str)> = r
         .links
         .iter()
@@ -927,6 +949,15 @@ pub struct Build<'a> {
     pub dev: Option<&'a DevTools>,
     /// A line for made-by.txt and the report: the creator's version.
     pub creator: &'a str,
+    pub choices: Choices,
+}
+
+/// What the person making the stick chose beyond the defaults.
+#[derive(Clone, Debug, Default)]
+pub struct Choices {
+    /// `--new-backup`: the first start backs the MPC up again even when
+    /// partition 4 has a backup ([`NEW_BACKUP_FILE`]).
+    pub new_backup: bool,
 }
 
 /// What was made.
@@ -960,7 +991,7 @@ pub fn write_head<W: WriteAt + ReadAt>(
             .ok_or_else(|| bad(format!("Akai's root filesystem has no {p}")))?;
         fs.read_file(&i)
     };
-    let about = format!(
+    let mut about = format!(
         "MPFree stick, made by {}\nfrom Akai build {} (kernel {})\nmade: {} (seconds since 1970)\ndeveloper SSH: {}\n",
         b.creator,
         src.update.build,
@@ -968,7 +999,10 @@ pub fn write_head<W: WriteAt + ReadAt>(
         v.time,
         if b.ssh.is_some() { "on (port 2222, key only)" } else { "off" }
     );
-    let mut notes = apply(&mut tree, &read, &v, b.programs, b.ssh, &about)?;
+    if b.choices.new_backup {
+        about.push_str("new backup at the first start: asked\n");
+    }
+    let mut notes = apply(&mut tree, &read, &v, b.programs, b.ssh, &about, &b.choices)?;
     let root_opts = Options {
         label: fs.label.clone(),
         uuid: gpt::random16(),
