@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost
+covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost rust/mpfree-mpcskin rust/mpfree-app/src/skin_page.rs
 checked: 2026-11-14 b76c3c7
 -->
 
@@ -53,7 +53,8 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 - **Its own mixer channel.** A track with an instrument gets a channel named after it (**Track 1**, **Track 2**) in the mixer's Tracks view, with its own fader, inserts and sends. The channel only shows while the track has an instrument, and its settings stay with the track: set it to Kit and give it an instrument again later, and the channel is as you left it. See [Mixing and effects](mixing-and-effects.md).
 - **Shared options.** The scale, pad layouts, tuning and octave on the Synth tab's options are the same for every track's instrument.
 - **A plugin synth** runs in a process of its own, as plugin effects do. If it crashes, the track goes quiet and the plugin restarts on its own, while the rest of MPFree plays on. If it can't be started at all, the line along the bottom of the screen says so for a few seconds and the track keeps what it had. Its controls show on the Synth tab like a built-in synth's.
-- **An MPC plugin instrument's presets** are the programs built into it, listed on the Synth tab in the plugin's own order. Its controls show as a plain list until MPFree draws MPC plugin skins.
+- **An MPC plugin instrument's presets** are the programs built into it, listed on the Synth tab in the plugin's own order.
+- **An MPC plugin instrument's own screen.** Most MPC plugins come with a skin: the screen their makers drew for the MPC. The Synth tab shows it full width, right under the top bar, exactly as the plugin shows on an MPC (see [The plugin's own screen](#the-plugins-own-screen)).
 - **A plugin synth's own presets** are listed on the Synth tab, as "Category / Name" (Surge XT's factory presets read "Bass / Attacky", "Pads / ..."). The first time a plugin's presets are asked for, the plugin reads them all, which takes a few seconds; the list appears when it is done. Tap one to load it into the track's plugin. Some plugins load a preset in the background: Surge XT goes quiet for a moment, and notes you play in that moment aren't heard. If a plugin can't load a preset, the line along the bottom of the screen gives its reason. A plugin without presets of its own, such as Dexed, lists none. The project keeps the plugin's sound, but not which preset it came from.
 
 {{shot: synth-track | The Synth tab editing track 2's own FM, with the Glass Keys preset.}}
@@ -138,6 +139,20 @@ The Synth tab takes its colours from the theme picked in **Prefs > Appearance**,
 
 > [!NOTE]
 > Each synth's sound, edits and all, is saved with the project (see [Saving your work](saving.md#projects)). Saving an edited sound as a preset of its own comes later.
+
+## The plugin's own screen
+
+When the selected track plays an MPC plugin instrument that has a skin, the Synth tab shows that skin, as its makers drew it for the MPC: the same pictures, knobs, buttons and text, at the same size.
+
+- **Tap and drag** the skin's controls as you would on an MPC. A double tap on a knob or a menu opens its larger editor over the screen; a tap outside it closes it.
+- **The buttons under the skin** are its tabs, one per function key as on an MPC. A tap shows that tab; when a key has more than one tab (its button reads "Osc  1/2"), another tap goes to the next.
+- **Q-Links 1 to 4** turn the knobs the plugin's makers chose for the tab. A tap on a control picks the group of knobs it belongs to, as on an MPC. The skin shows the change.
+- **The wheel** picks the skin's controls one after another; push it and turn to change the one picked (see [The screen](../getting-started/the-screen.md#the-wheels-outline)).
+- **MPFree page** shows the plugin's controls on MPFree's own Synth page instead, with its presets and the Q-Link column. **Plugin skin** under the instrument card goes back.
+
+The values and their text ("20 %", "Pan Delay") come from the plugin itself, a few times a second, so the skin also follows a preset you load.
+
+A plugin without a skin shows on MPFree's own page. MPC plugin effects show their knobs as a list in the chain editor for now; their skins come next.
 
 ## Playing the synth on the pads
 

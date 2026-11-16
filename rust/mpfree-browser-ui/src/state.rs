@@ -12,6 +12,7 @@ use mpfree_library::{
 use std::path::PathBuf;
 
 use crate::export::{ExportChoice, ExportInput, ExportPanel, ExportPhase, ExportSetup};
+use crate::plugins::{PluginInput, PluginsScreen};
 
 /// The rows of the places column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,17 +22,21 @@ pub enum Source {
     Favourites,
     /// The kits made from the owner's own backup (kits.bin): read only.
     Factory,
+    /// MPC plugins: the Open MPC catalog, the ones installed and the zips
+    /// on the stick (`crate::plugins`; the app fills it).
+    Plugins,
 }
 
 /// The places column, top to bottom. A gap is drawn before Recent and
 /// before Trash.
-pub const SOURCES: [Source; 10] = [
+pub const SOURCES: [Source; 11] = [
     Source::Place(Place::Projects),
     Source::Place(Place::Samples),
     Source::Place(Place::Kits),
     Source::Place(Place::Instruments),
     Source::Place(Place::Patterns),
     Source::Place(Place::Recordings),
+    Source::Plugins,
     Source::Recent,
     Source::Favourites,
     Source::Factory,
@@ -45,6 +50,7 @@ impl Source {
             Source::Recent => "Recent",
             Source::Favourites => "Favourites",
             Source::Factory => "Factory",
+            Source::Plugins => "Plugins",
         }
     }
 }
@@ -87,7 +93,7 @@ impl Pick {
             .filter(|(_, s)| match s {
                 Source::Place(p) => places.contains(p),
                 Source::Recent | Source::Favourites => true,
-                Source::Factory => false,
+                Source::Factory | Source::Plugins => false,
             })
             .map(|(i, _)| i)
             .collect()
@@ -296,6 +302,8 @@ pub enum Input {
     Sort,
     /// A touch on the Export panel.
     Export(ExportInput),
+    /// A touch in the Plugins place.
+    Plugins(PluginInput),
 }
 
 /// The order of a list.
@@ -410,6 +418,9 @@ pub enum BrowseAction {
     ExportStart(ExportChoice),
     /// Cancel was pressed while the export runs.
     ExportCancel,
+    /// The Plugins place's touches, dial and buttons, for the app, which
+    /// answers with [`Browser::set_plugins`].
+    Plugins(PluginInput),
 }
 
 /// What waits for a yes.
@@ -434,6 +445,8 @@ pub enum Purpose {
     SaveAs,
     /// Text to look for.
     Search,
+    /// Text to look for among the plugins.
+    PluginSearch,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -499,6 +512,8 @@ pub struct Screen {
     /// The Export panel, over everything, while it is open (hidden while
     /// a picker is open).
     pub export: Option<ExportPanel>,
+    /// The Plugins place, while it is the place shown.
+    pub plugins: Option<PluginsScreen>,
 }
 
 impl Screen {
@@ -525,6 +540,7 @@ impl Screen {
             pick: None,
             sort: Sort::Name,
             export: None,
+            plugins: None,
         }
     }
 }
@@ -615,6 +631,10 @@ pub struct Browser {
     export: Option<ExportPanel>,
     /// What the last export asked for, ticked again next time.
     export_last: Option<ExportChoice>,
+    /// What the Plugins place shows, as the app last gave it.
+    plugins: PluginsScreen,
+    /// The rows the Plugins place's list has room for.
+    plugin_rows: usize,
 }
 
 impl Browser {
@@ -668,6 +688,8 @@ impl Browser {
             sort: Sort::Name,
             export: None,
             export_last: None,
+            plugins: PluginsScreen::default(),
+            plugin_rows: 8,
         };
         b.refresh();
         b
@@ -983,6 +1005,7 @@ impl Browser {
                         })
                         .collect()
                 }
+                Source::Plugins => Vec::new(),
                 Source::Factory => self
                     .factory
                     .iter()
@@ -1176,7 +1199,44 @@ impl Browser {
         self.rows.clear();
         self.trash.clear();
         self.modal = Modal::None;
+        if SOURCES[i] == Source::Plugins {
+            self.actions.push(BrowseAction::Plugins(PluginInput::Shown));
+        }
         self.refresh();
+    }
+
+    /// The Plugins place is the one shown (and no picker is open).
+    pub fn plugins_shown(&self) -> bool {
+        self.pick.is_none() && self.current() == Source::Plugins
+    }
+
+    /// What the Plugins place shows, from the app.
+    pub fn set_plugins(&mut self, s: PluginsScreen) {
+        self.plugins = s;
+    }
+
+    /// The rows the Plugins place's list has room for (the app keeps the
+    /// selected one among them).
+    pub fn plugin_rows(&self) -> usize {
+        self.plugin_rows
+    }
+
+    pub fn set_plugin_rows(&mut self, rows: usize) {
+        if rows > 0 {
+            self.plugin_rows = rows;
+        }
+    }
+
+    /// The Plugins place's dial, push and buttons go to the app.
+    fn send_plugins(&mut self, i: PluginInput) -> bool {
+        if self.plugins_shown()
+            && matches!(self.modal, Modal::None)
+            && self.export_shown().is_none()
+        {
+            self.actions.push(BrowseAction::Plugins(i));
+            return true;
+        }
+        false
     }
 
     fn go_folder(&mut self, folder: Loc) {
@@ -1200,6 +1260,9 @@ impl Browser {
 
     /// Up one folder (the - button, Back).
     pub fn back(&mut self) {
+        if self.send_plugins(PluginInput::Back) {
+            return;
+        }
         if self.export_shown().is_some() {
             return self.export_input(ExportInput::Close);
         }
@@ -1226,6 +1289,9 @@ impl Browser {
 
     /// Into the selected folder (the + button).
     pub fn enter(&mut self) {
+        if self.send_plugins(PluginInput::Enter) {
+            return;
+        }
         if let Some(r) = self.selected_row().cloned() {
             if r.kind == Kind::Folder {
                 if let Some(l) = r.loc {
@@ -1245,6 +1311,9 @@ impl Browser {
                 }
                 return;
             }
+        }
+        if self.send_plugins(PluginInput::Dial(delta)) {
+            return;
         }
         if !matches!(self.modal, Modal::None) || self.rows.is_empty() {
             return;
@@ -1357,6 +1426,9 @@ impl Browser {
             Modal::Keyboard { .. } => return self.input(Input::Key(Key::Done)),
             Modal::None => {}
         }
+        if self.send_plugins(PluginInput::Push) {
+            return;
+        }
         let Some(r) = self.selected_row().cloned() else {
             return;
         };
@@ -1383,6 +1455,9 @@ impl Browser {
 
     /// ERASE while the browser is open: Delete (asks first).
     pub fn erase(&mut self) {
+        if self.plugins_shown() {
+            return;
+        }
         self.button(Button::Delete);
     }
 
@@ -1452,6 +1527,17 @@ impl Browser {
                 self.rebuild();
             }
             Input::Export(_) => {}
+            Input::Plugins(PluginInput::Search) => {
+                self.modal = Modal::Keyboard {
+                    purpose: Purpose::PluginSearch,
+                    title: "Look for a plugin".into(),
+                    text: self.plugins.search.clone().unwrap_or_default(),
+                    shift: false,
+                };
+            }
+            Input::Plugins(p) => {
+                self.send_plugins(p);
+            }
         }
     }
 
@@ -1761,6 +1847,12 @@ impl Browser {
             Key::Cancel => self.modal = Modal::None,
             Key::Done => {
                 let name = text.trim().to_string();
+                if *purpose == Purpose::PluginSearch {
+                    self.modal = Modal::None;
+                    self.actions
+                        .push(BrowseAction::Plugins(PluginInput::SearchText(name)));
+                    return;
+                }
                 if *purpose == Purpose::Search {
                     if name.is_empty() {
                         return;
@@ -1796,7 +1888,7 @@ impl Browser {
                             self.actions.push(BrowseAction::SaveRequested);
                         }
                     }
-                    Purpose::Search => {}
+                    Purpose::Search | Purpose::PluginSearch => {}
                 }
             }
         }
@@ -2148,6 +2240,7 @@ impl Browser {
             pick: self.pick.clone(),
             sort: self.sort,
             export: self.export.clone().filter(|_| self.pick.is_none()),
+            plugins: self.plugins_shown().then(|| self.plugins.clone()),
         }
     }
 

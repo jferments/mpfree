@@ -454,6 +454,13 @@ pub enum PresetNews {
         name: String,
         result: Result<(), String>,
     },
+    /// Track `track`'s plugin `instance`'s parameter values and texts now,
+    /// for its skin (skin_page.rs); None if it couldn't say.
+    Values {
+        track: usize,
+        instance: u64,
+        values: Option<(Vec<f32>, Vec<String>)>,
+    },
 }
 
 /// A preset to load into a track's plugin.
@@ -492,6 +499,11 @@ enum Job {
     /// List a plugin's presets (the first time: its own process, seconds).
     Presets(&'static str),
     LoadPreset(Box<PresetJob>),
+    /// Read a track plugin's values and texts (its skin's).
+    Values {
+        track: usize,
+        instance: u64,
+    },
     Drop(Insert),
     DropInstrument(Instrument),
     /// A take's memory (takes.rs): a print of so many seconds at a rate.
@@ -598,6 +610,16 @@ impl Builder {
                         }
                         Job::LoadPreset(job) => {
                             if preset_tx.send(job.run(&plugins)).is_err() {
+                                return;
+                            }
+                        }
+                        Job::Values { track, instance } => {
+                            let news = PresetNews::Values {
+                                track,
+                                instance,
+                                values: plugins.values(instance),
+                            };
+                            if preset_tx.send(news).is_err() {
                                 return;
                             }
                         }
@@ -716,6 +738,12 @@ impl Builder {
     /// queue is full. Never waits.
     pub fn load_preset(&mut self, job: Box<PresetJob>) -> bool {
         self.tx.try_send(Job::LoadPreset(job)).is_ok()
+    }
+
+    /// Asks for a track plugin's values and texts (for its skin). False if
+    /// the queue is full. Never waits.
+    pub fn values(&mut self, track: usize, instance: u64) -> bool {
+        self.tx.try_send(Job::Values { track, instance }).is_ok()
     }
 
     /// The next presets listed or preset loaded, if one is ready. Never

@@ -37,7 +37,9 @@ LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(RE
               os.path.join(REPO, "rust", "mpfree-library", "src"), os.path.join(REPO, "rust", "mpfree-browser-ui", "src"),
               # The first start on a creator stick (mpfree-app/setup.rs) reads the eMMC backup's copy on the stick with
               # these; they only read (the disk image writer, ext2w, writes only through a WriteAt it is handed).
-              os.path.join(REPO, "rust", "mpfree-factory", "src"), os.path.join(REPO, "rust", "mpfree-diskimage", "src"))
+              os.path.join(REPO, "rust", "mpfree-factory", "src"), os.path.join(REPO, "rust", "mpfree-diskimage", "src"),
+              # The Plugins place: mpcstore writes only under files/plugins/, mpcskin only reads.
+              os.path.join(REPO, "rust", "mpfree-mpcstore", "src"), os.path.join(REPO, "rust", "mpfree-mpcskin", "src"))
 # The two writers the storage spec allows (approved by Jay 12 Nov 00:56Z): mpfree-store under the folder it is
 # given (settings/ and files/), and mpfree-library under the library/ folder in it. The library is linked since
 # the Pads tab's browser (12 Nov 2026); its write sites are reviewed line by line below.
@@ -77,6 +79,56 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/project.rs", "fs::remove_file(&tmp)?;"),
     ("mpfree-library/project.rs", "let _ = fs::remove_file(&tmp);"),
     ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)"),                            # a part file written
+)
+# The Plugins place (BROWSE, Jay 15 Nov 23:34Z and 23:36Z): the app's plugin worker (plugin_store.rs) and
+# mpfree-mpcstore write only in files/plugins/ under the --data folder (the plugin home, plugins.rs), and
+# only when the musician taps Install, Install from zip, Update, Remove, Delete zip, Favourite or Update
+# list, or opens the place (the catalog is fetched once per run). Reviewed by the Open MPC plugins thread,
+# 16 Nov 2026.
+PLUGIN_STORE_NEEDLES = (
+    # Delete zip: a .zip straight in files/plugins/ (its parent is the folder, install::is_zip), as listed.
+    # (The line before it holds the check; test_the_program_writes_only_where_reviewed reads it.)
+    ("mpfree-app/plugin_store.rs", "std::fs::remove_file(&path).map(|_| format!(\"Deleted {}\", file_name(&path)))"
+     ".map_err(|e| format!(\"{}: {e}\", file_name(&path)))"),
+    # Favourites: files/plugins/.favourites.part written, renamed over .favourites.
+    ("mpfree-app/plugin_store.rs", "std::fs::write(&part, text).map_err(|e| e.to_string())?;"),
+    ("mpfree-app/plugin_store.rs", "std::fs::rename(&part, dir.join(FAVOURITES)).map_err(|e| e.to_string())"),
+    # The catalog: fetched to files/plugins/.catalog.json.part, renamed over .catalog.json once it reads,
+    # removed if it doesn't.
+    ("mpfree-app/plugin_store.rs", "let _ = std::fs::remove_file(&part);"),
+    ("mpfree-app/plugin_store.rs", "std::fs::rename(&part, dir.join(CATALOG_FILE)).map_err(|e| e.to_string())?;"),
+    # A download, files/plugins/.downloads/<sha256>.zip (the catalog's 64 hex digits), removed once read.
+    ("mpfree-app/plugin_store.rs", "let _ = std::fs::remove_file(&file);"),
+    # The catalog's picture, files/plugins/.downloads/picture-<16 hex digits>.png, removed if it doesn't decode.
+    ("mpfree-app/plugin_store.rs", "let _ = std::fs::remove_file(&cache);"),
+    # fetch: the file it is given (only the three above), made new or emptied; removed on any failure.
+    ("mpfree-mpcstore/fetch.rs", "let file = File::create(out).map_err(|e| format!(\"{}: {e}\", out.display()))?;"),
+    ("mpfree-mpcstore/fetch.rs", "let _ = std::fs::remove_file(out);"),
+    # install: each plugin folder unpacked into files/plugins/.mpfree-installing-<folder> (names checked by
+    # safe_parts, links never unpacked, a link where the folder goes refused), then renamed in; an update
+    # moves the old folder to .mpfree-replaced-<folder>, carries the musician's own files over (renames
+    # inside files/plugins/), swaps, and removes the old one. Leftovers of a cut-off install go first.
+    ("mpfree-mpcstore/install.rs", "fs::remove_dir_all(p).map_err(|e| io(p, e))?;"),
+    ("mpfree-mpcstore/install.rs", "let _ = fs::remove_dir_all(&staging);"),
+    ("mpfree-mpcstore/install.rs", "fs::rename(&target, &old).map_err(|e| io(&target, e))?;"),
+    ("mpfree-mpcstore/install.rs", "if let Err(e) = fs::rename(&staging, &target) {"),
+    ("mpfree-mpcstore/install.rs", "let _ = fs::rename(&old, &target);"),
+    ("mpfree-mpcstore/install.rs", "let _ = fs::remove_dir_all(&old);"),
+    ("mpfree-mpcstore/install.rs", "fs::rename(&staging, &target).map_err(|e| io(&target, e))?;"),
+    ("mpfree-mpcstore/install.rs", "fs::rename(e.path(), &there)?;"),
+    # remove: a folder with a record loses the files the record lists (never through a link) and the
+    # folders left empty; one copied by hand (no record, not a link) goes whole. Two taps on the screen.
+    ("mpfree-mpcstore/install.rs", "fs::remove_dir_all(&dir).map_err(|e| io(&dir, e))?;"),
+    ("mpfree-mpcstore/install.rs", "match fs::remove_file(&p) {"),
+    ("mpfree-mpcstore/install.rs", "fs::remove_file(&rp).map_err(|e| io(&rp, e))?;"),
+    ("mpfree-mpcstore/install.rs", "let _ = fs::remove_dir(dir);"),
+    # The host-only sample screen browser-plugins (--preview, never on the MPC): a test skin written into the
+    # scratch folder the sample makes in the workstation's temp folder (removed again, the gui.rs line above).
+    ("mpfree-mpcskin/testing.rs", "std::fs::write(skins.join(\"TUI.json\"), SKIN)?;"),
+)
+PLUGIN_STORE_OPENS = (
+    # install's files, made new (never through a link: create_new), 0o644 or 0o755 as the zip says, synced.
+    "o.write(true).create_new(true);",
 )
 LIBRARY_OPENS = (
     "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).custom_flags(0x20000) "
@@ -1156,7 +1208,7 @@ class StaticTests(unittest.TestCase):
                     # /run/mpfree-app/power-request, in RAM), synced, then renamed over it for the stick's root
                     # path unit to read.
                     ("mpfree-app/power.rs", "let mut f = fs::File::create(&tmp)?;"),
-                    ("mpfree-app/power.rs", "fs::rename(&tmp, path)")} | set(LIBRARY_NEEDLES)
+                    ("mpfree-app/power.rs", "fs::rename(&tmp, path)")} | set(LIBRARY_NEEDLES) | set(PLUGIN_STORE_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
@@ -1202,12 +1254,24 @@ class StaticTests(unittest.TestCase):
             # (RAM), which the stick's mpfree-setup-backup.path watches (Paths::on_the_stick, with REPORT_DIR)
             "match OpenOptions::new().write(true).create_new(true).mode(0o644).open(&paths.request) {",
         )
-        expected += LIBRARY_OPENS
+        expected += LIBRARY_OPENS + PLUGIN_STORE_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
         self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/crash.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs",
                                  "mpfree-app/setup.rs", "mpfree-store/lib.rs",
-                                 "mpfree-library/lib.rs", "mpfree-library/project.rs"}, files)
+                                 "mpfree-library/lib.rs", "mpfree-library/project.rs",
+                                 "mpfree-mpcstore/install.rs"}, files)
+        # The plugin store's folder is files/plugins/ beside the library, in the --data folder.
+        gui = dict(self.program_sources())["mpfree-app/gui.rs"]
+        self.assertEqual(gui.count("self.plugin_page.set_dir("), 1)
+        self.assertIn('self.plugin_page.set_dir(b.library().root().parent().map(|d| d.join("files")'
+                      '.join(crate::plugins::PLUGINS_FOLDER)));', gui)
+        store = dict(self.program_sources())["mpfree-app/plugin_store.rs"]
+        self.assertEqual(store.count("std::fs::remove_file(&path)"), 1)
+        self.assertIn("Some(d) if path.parent() == Some(d) && install::is_zip(&path) => {\n"
+                      "                        std::fs::remove_file(&path)", store)
+        plugins = dict(self.program_sources())["mpfree-app/plugins.rs"]
+        self.assertIn('pub const PLUGINS_FOLDER: &str = "plugins";', plugins)
         # Folders are made only by the store and the library, and only start-app.sh names the folder they are given.
         for name, code in self.program_sources():
             if name not in ("mpfree-store/lib.rs", "mpfree-library/lib.rs"):
@@ -1246,12 +1310,21 @@ class StaticTests(unittest.TestCase):
 
     def test_unsafe_code_only_in_sys(self):
         """The C calls (ioctl, fcntl, sched_setscheduler, mlockall, sync for the power card, and signal, raise and unlink for the safe
-        start's stop handler) are the only unsafe code in MPFree's own source."""
+        start's stop handler) are the only unsafe code in MPFree's own source, but for the Plugins place's
+        downloads (libcurl through dlopen, in mpfree-mpcstore's fetch.rs)."""
         for name, code in self.program_sources():
             if name == "mpfree-app/main.rs":
                 self.assertIn("#![deny(unsafe_code)]", code)
             if name in ("mpfree-ui/lib.rs", "mpfree-touch/lib.rs", "mpfree-screen-log/lib.rs"):
                 self.assertIn("#![forbid(unsafe_code)]", code, name)
+            if name == "mpfree-mpcstore/fetch.rs":
+                # Downloads for the Plugins place: libcurl opened with dlopen (no build dependency), and only
+                # these of its functions looked up and called.
+                self.assertEqual(sorted(set(re.findall(r"libc::(\w+)\(", code))), ["dlopen", "dlsym"])
+                self.assertEqual(sorted(set(re.findall(r'sym\(c"(\w+)"\)', code))),
+                                 ["curl_easy_cleanup", "curl_easy_init", "curl_easy_perform", "curl_easy_setopt",
+                                  "curl_easy_strerror", "curl_global_init"])
+                continue
             if name != "mpfree-app/sys.rs":
                 self.assertNotIn("unsafe {", code, name)
                 self.assertNotIn("unsafe extern", code, name)

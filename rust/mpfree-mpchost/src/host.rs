@@ -924,6 +924,19 @@ impl MpcControl {
         }
     }
 
+    /// Every parameter's value now (0 to 1) and the plugin's text for it,
+    /// what an MPC's screen shows.
+    pub fn values(&self) -> (Vec<f32>, Vec<String>) {
+        (0..self.nparams)
+            .map(|i| {
+                (
+                    self.inst.get_param(i),
+                    self.inst.string(EFF_GET_PARAM_DISPLAY, i as i32),
+                )
+            })
+            .unzip()
+    }
+
     /// The plugin's text for parameter `index` at `value`. A VST 2 plugin
     /// only shows its current value, so any other value has no text.
     pub fn param_text(&self, index: u16, value: f32) -> Option<String> {
