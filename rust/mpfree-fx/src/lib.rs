@@ -146,7 +146,7 @@ pub use perform::{
     SLOTS as PERFORM_SLOTS,
 };
 pub use pitch::PitchShifter;
-pub use presets::presets;
+pub use presets::{page_keeps, presets};
 pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
 pub use registry::{Category, FxEntry, EFFECTS};
 pub use rooms::{Plate, Room, Spring};
@@ -224,6 +224,16 @@ pub mod ids {
 pub struct Preset {
     pub name: &'static str,
     pub values: &'static [(u16, f32)],
+}
+
+/// The hint line's words while control `name` is touched, set to
+/// `value`, for a control that explains its choices (the delays' and
+/// reverbs' Mix curve); None for every other control.
+pub fn control_hint(name: &str, value: f32) -> Option<&'static str> {
+    (name == "Mix curve").then(|| {
+        let i = (value.max(0.0) as usize).min(kit::MIX_CURVE_HINTS.len() - 1);
+        kit::MIX_CURVE_HINTS[i]
+    })
 }
 
 /// A crossfade from `a` (at 0) to `b` (at 1) that is exact at both ends,

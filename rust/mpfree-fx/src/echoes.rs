@@ -7,12 +7,36 @@
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
-use crate::kit::{self, node_impl, param, Choice, Glide, Hz, Line, Linear, Log, Ms, Percent, NONE};
+use crate::kit::{
+    self, node_impl, param, Blend, Choice, Glide, Hz, Line, Linear, Log, Ms, Percent, NONE,
+};
 use crate::svf::{Svf, SvfMode};
 use crate::{defaults, fast_tanh, flush, lerp, Preset, Rng};
 
 /// The longest echo either keeps, in seconds.
 const MAX_SECONDS: f32 = 4.0;
+
+/// The longest tail either reports, in seconds.
+const MAX_TAIL_SECONDS: f32 = 30.0;
+
+/// The frames a feedback loop rings for once its input stops: `first`
+/// (to the last echo of the input itself), then `trip` frames per pass
+/// until a gain of `g` per pass has taken it 60 dB down, at most
+/// [`MAX_TAIL_SECONDS`]. A loop whose gain is 1 or more never dies away
+/// on its own, so it rings on (`u32::MAX`, as a frozen delay does) until
+/// Feedback comes down.
+fn ring(g: f32, trip: f32, first: f32, rate: u32) -> u32 {
+    if g >= 1.0 {
+        return u32::MAX;
+    }
+    // -60 dB over 20 log10(g) dB a pass.
+    let passes = if g <= 0.001 {
+        1.0
+    } else {
+        (-3.0 / g.log10()).ceil()
+    };
+    (first + trip * passes).min(MAX_TAIL_SECONDS * rate as f32) as u32
+}
 
 // ---------------------------------------------------------------- tape
 
@@ -29,6 +53,8 @@ pub mod tape {
     pub const LOW_CUT: u16 = 8;
     pub const SPREAD: u16 = 9;
     pub const MIX: u16 = 10;
+    /// How Mix blends ([`crate::kit::MIX_CURVES`]).
+    pub const MIX_CURVE: u16 = 11;
 }
 
 const TAPE_SYNCS: &[&str] = &[
@@ -50,13 +76,15 @@ const HEADS: &[&str] = &["One", "Two", "Three"];
 /// The heads sit at these multiples of Time (the spacing of a 1970s
 /// three-head echo).
 const HEAD_AT: [f32; 3] = [1.0, 1.95, 2.9];
+/// The head bump's gain at its peak (+2 dB at 110 Hz).
+const BUMP_DB: f32 = 2.0;
 
 static TAPE_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.tape_delay",
     name: "Tape delay",
     kind: Kind::Effect,
 };
-static TAPE_PARAMS: [ParamInfo; 11] = [
+static TAPE_PARAMS: [ParamInfo; 12] = [
     param(0, "Time", "Echo", 20.0, 1300.0, 330.0, Ms, Log),
     param(1, "Sync", "Echo", 0.0, 9.0, 0.0, NONE, Choice(TAPE_SYNCS)),
     param(2, "Feedback", "Echo", 0.0, 110.0, 45.0, Percent, Linear),
@@ -68,6 +96,16 @@ static TAPE_PARAMS: [ParamInfo; 11] = [
     param(8, "Low cut", "Tape", 20.0, 800.0, 120.0, Hz, Log),
     param(9, "Spread", "Echo", 0.0, 100.0, 50.0, Percent, Linear),
     param(10, "Mix", "Echo", 0.0, 100.0, 30.0, Percent, Linear),
+    param(
+        11,
+        "Mix curve",
+        "Output",
+        0.0,
+        2.0,
+        0.0,
+        NONE,
+        Choice(kit::MIX_CURVES),
+    ),
 ];
 
 /// Tape delay factory presets.
@@ -123,7 +161,7 @@ pub static TAPE_PRESETS: &[Preset] = &[
 /// flutter (a fast, small one) move the pitch; a time change slides the
 /// pitch as the motor changes speed.
 pub struct TapeDelay {
-    v: [f32; 11],
+    v: [f32; 12],
     rate: u32,
     line: Line,
     time: Smooth,
@@ -133,7 +171,7 @@ pub struct TapeDelay {
     flutter: Smooth,
     sat: Smooth,
     spread: Smooth,
-    mix: Smooth,
+    blend: Blend,
     tone: Svf,
     low_cut: Svf,
     bump: Svf,
@@ -167,7 +205,7 @@ impl TapeDelay {
             flutter: Smooth::new(0.0),
             sat: Smooth::new(0.0),
             spread: Smooth::new(0.0),
-            mix: Smooth::new(0.3),
+            blend: Blend::new(0.3, 0),
             tone: Svf::default(),
             low_cut: Svf::default(),
             bump: Svf::default(),
@@ -203,7 +241,8 @@ impl TapeDelay {
             tape::TONE => self.tone.set(SvfMode::LowPass, v, 0.6, 0.0, self.rate),
             tape::LOW_CUT => self.low_cut.set(SvfMode::HighPass, v, 0.6, 0.0, self.rate),
             tape::SPREAD => self.spread.target = v / 100.0,
-            tape::MIX => self.mix.target = v / 100.0,
+            tape::MIX => self.blend.set_mix(v / 100.0),
+            tape::MIX_CURVE => self.blend.set_curve(v),
             _ => {}
         }
     }
@@ -274,10 +313,10 @@ impl TapeDelay {
             let w = input + self.fb_sample;
             self.line.push(if w.abs() > 1.0 { fast_tanh(w) } else { w });
 
-            let mix = self.mix.glide();
+            let g = self.blend.next();
             let s = per_head;
-            l[i] = lerp(l[i], side[0] * s, mix);
-            r[i] = lerp(r[i], side[1] * s, mix);
+            l[i] = kit::blend(l[i], side[0] * s, g);
+            r[i] = kit::blend(r[i], side[1] * s, g);
         }
     }
 
@@ -292,13 +331,13 @@ impl TapeDelay {
             &mut self.flutter,
             &mut self.sat,
             &mut self.spread,
-            &mut self.mix,
         ] {
             s.set_time(rate, 30.0);
         }
+        self.blend.set_time(rate, 30.0);
         self.wow_inc = 0.7 / rate as f32;
         self.flut_inc = [6.3 / rate as f32, 11.7 / rate as f32];
-        self.bump.set(SvfMode::Bell, 110.0, 0.8, 2.0, rate);
+        self.bump.set(SvfMode::Bell, 110.0, 0.8, BUMP_DB, rate);
         for id in 0..TAPE_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
         }
@@ -323,16 +362,26 @@ impl TapeDelay {
             &mut self.flutter,
             &mut self.sat,
             &mut self.spread,
-            &mut self.mix,
         ] {
             s.snap(s.target);
         }
+        self.blend.snap();
     }
 
+    /// Until the loop has lost 60 dB ([`ring`]), counting passes round
+    /// the farthest head: the heads share the loop, so a pass of that
+    /// length loses at least the loop's gain however they add up. The
+    /// gain is taken at its most, which no tone or low cut lowers: the
+    /// saturation's gain on quiet echoes (it lifts them, and squashes
+    /// loud ones) and the head bump's peak.
     fn tail(&self) -> u32 {
-        // Feedback can ring for a long time; the host's silence check ends
-        // it sooner when it has died away.
-        (MAX_SECONDS * 2.0 * self.rate as f32) as u32
+        let heads = (self.v[tape::HEADS as usize] as usize).min(2);
+        let ms = self.time.target.max(self.time.value);
+        let trip = ms * HEAD_AT[heads] * self.rate as f32 * 0.001;
+        let sat = self.v[tape::SATURATION as usize] / 100.0;
+        let quiet = 1.0 - sat + sat * (1.0 + 4.0 * sat).sqrt();
+        let g = self.v[tape::FEEDBACK as usize] / 100.0 * quiet * crate::db_to_gain(BUMP_DB);
+        ring(g, trip, trip, self.rate)
     }
     fn lat(&self) -> u32 {
         0
@@ -360,6 +409,8 @@ pub mod multitap {
     pub const TONE: u16 = 13;
     pub const LOW_CUT: u16 = 14;
     pub const MIX: u16 = 15;
+    /// How Mix blends ([`crate::kit::MIX_CURVES`]).
+    pub const MIX_CURVE: u16 = 16;
 }
 
 static MULTITAP_INFO: NodeInfo = NodeInfo {
@@ -368,7 +419,7 @@ static MULTITAP_INFO: NodeInfo = NodeInfo {
     kind: Kind::Effect,
 };
 use mpfree_node::Curve;
-static MULTITAP_PARAMS: [ParamInfo; 16] = [
+static MULTITAP_PARAMS: [ParamInfo; 17] = [
     param(
         0,
         "Tap 1 time",
@@ -466,6 +517,16 @@ static MULTITAP_PARAMS: [ParamInfo; 16] = [
     param(13, "Tone", "Echo", 500.0, 20_000.0, 8000.0, Hz, Log),
     param(14, "Low cut", "Echo", 20.0, 1000.0, 80.0, Hz, Log),
     param(15, "Mix", "Echo", 0.0, 100.0, 30.0, Percent, Linear),
+    param(
+        16,
+        "Mix curve",
+        "Output",
+        0.0,
+        2.0,
+        0.0,
+        NONE,
+        Choice(kit::MIX_CURVES),
+    ),
 ];
 
 use multitap as mt;
@@ -520,7 +581,7 @@ pub static MULTITAP_PRESETS: &[Preset] = &[
 /// through a tone and low cut for trails. Rhythms a single delay can't
 /// make, and every ping-pong pattern.
 pub struct MultiTap {
-    v: [f32; 16],
+    v: [f32; 17],
     rate: u32,
     line: Line,
     bpm: f64,
@@ -528,7 +589,7 @@ pub struct MultiTap {
     levels: [Smooth; 4],
     pans: [Smooth; 4],
     feedback: Smooth,
-    mix: Smooth,
+    blend: Blend,
     tone: Svf,
     low_cut: Svf,
     fb_sample: f32,
@@ -553,7 +614,7 @@ impl MultiTap {
             levels: [s(0.0), s(0.0), s(0.0), s(0.0)],
             pans: [s(0.0), s(0.0), s(0.0), s(0.0)],
             feedback: s(0.0),
-            mix: s(0.3),
+            blend: Blend::new(0.3, 0),
             tone: Svf::default(),
             low_cut: Svf::default(),
             fb_sample: 0.0,
@@ -583,7 +644,8 @@ impl MultiTap {
             mt::FEEDBACK => self.feedback.target = v / 100.0,
             mt::TONE => self.tone.set(SvfMode::LowPass, v, 0.6, 0.0, self.rate),
             mt::LOW_CUT => self.low_cut.set(SvfMode::HighPass, v, 0.6, 0.0, self.rate),
-            mt::MIX => self.mix.target = v / 100.0,
+            mt::MIX => self.blend.set_mix(v / 100.0),
+            mt::MIX_CURVE => self.blend.set_curve(v),
             _ => {}
         }
     }
@@ -618,9 +680,9 @@ impl MultiTap {
             f = self.low_cut.run(0, f);
             self.fb_sample = flush(f * self.feedback.glide());
             self.line.push(0.5 * (l[i] + r[i]) + self.fb_sample);
-            let mix = self.mix.glide();
-            l[i] = lerp(l[i], y[0], mix);
-            r[i] = lerp(r[i], y[1], mix);
+            let g = self.blend.next();
+            l[i] = kit::blend(l[i], y[0], g);
+            r[i] = kit::blend(r[i], y[1], g);
         }
     }
 
@@ -634,10 +696,11 @@ impl MultiTap {
             .levels
             .iter_mut()
             .chain(self.pans.iter_mut())
-            .chain([&mut self.feedback, &mut self.mix])
+            .chain([&mut self.feedback])
         {
             s.set_time(rate, 20.0);
         }
+        self.blend.set_time(rate, 20.0);
         for id in 0..MULTITAP_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
         }
@@ -654,14 +717,23 @@ impl MultiTap {
             .iter_mut()
             .chain(self.levels.iter_mut())
             .chain(self.pans.iter_mut())
-            .chain([&mut self.feedback, &mut self.mix])
+            .chain([&mut self.feedback])
         {
             s.snap(s.target);
         }
+        self.blend.snap();
     }
 
+    /// Until the loop has lost 60 dB ([`ring`]): tap 4 feeds back, through
+    /// a tone and a low cut that only take away, so each pass round tap
+    /// 4's time loses at least Feedback; the farthest tap reads the last
+    /// of each pass.
     fn tail(&self) -> u32 {
-        (MAX_SECONDS * 2.0 * self.rate as f32) as u32
+        let at = |s: &Smooth| s.target.max(s.value);
+        let farthest = self.times.iter().map(at).fold(0.0f32, f32::max);
+        let trip = at(&self.times[mt::TAPS - 1]);
+        let g = self.v[mt::FEEDBACK as usize] / 100.0;
+        ring(g, trip, farthest, self.rate)
     }
     fn lat(&self) -> u32 {
         0
