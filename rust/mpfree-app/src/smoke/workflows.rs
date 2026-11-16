@@ -1008,18 +1008,41 @@ mod tests {
                 .into_iter()
                 .find_map(|l| l.strip_prefix("project: saved ").map(str::to_string))
                 .expect("saved");
+            // BROWSE, Projects, the row: the first tap picks it, or opens
+            // it when it is picked already (the save and an open leave it
+            // picked), and a second tap opens it. Over unsaved work the
+            // browser asks first: an edit counts once the open has settled,
+            // 1.5 s of the wall clock (OPEN_SETTLE), so a slow machine asks
+            // where a fast one doesn't. The library opens on its own
+            // thread, in real time.
             let open = |s: &mut Session| {
                 if s.app.view() != View::Browser {
                     s.button("BROWSE");
                 }
                 s.press("browser", "place", "Projects");
+                let is_in = format!("project: {name} is in");
+                let opening = format!("project: opening {name}");
+                let count = |v: &[String], l: &str| v.iter().filter(|x| *x == l).count();
+                let ins = count(&s.lines, &is_in);
+                let opens = count(&s.said(), &opening);
+                let asks = |s: &mut Session| s.control("browser", "confirm-yes", "").is_some();
                 s.press("browser", "row", &name);
-                s.press("browser", "row", &name);
+                if !asks(s) && count(&s.said(), &opening) == opens {
+                    s.press("browser", "row", &name);
+                }
+                if asks(s) {
+                    s.press("browser", "confirm-yes", "");
+                }
+                let wall = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while count(&s.lines, &is_in) == ins && std::time::Instant::now() < wall {
+                    s.run_for(0.05);
+                }
+                assert!(
+                    count(&s.lines, &is_in) > ins,
+                    "{name} opened: {:?}",
+                    &s.lines[s.lines.len().saturating_sub(10)..]
+                );
                 s.run_for(0.3);
-                assert!(s
-                    .lines
-                    .iter()
-                    .any(|l| *l == format!("project: {name} is in")));
                 s.press("header", "tab", "Play");
                 s.press("play-transport", "view", "Beats");
             };
