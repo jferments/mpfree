@@ -822,6 +822,11 @@ jobs:
         # Exits 2 if an engine allocates inside its audio callback. The timings
         # it prints are for reading, not a gate: a shared VM is too noisy.
         run: cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-bench -- --quick --check-allocs
+      - name: FX quality ratchet (no delay, EQ or reverb number gets worse)
+        # Release only, about 20 s of renders: every number of fxlab's quality
+        # report against rust/mpfree-fxlab/quality/ratchet.tsv. An improvement
+        # is recorded with MPFREE_QUALITY_BLESS=1 (docs/dev/design/fx-quality.md).
+        run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test quality
       - name: Test host-native Rust MPC userspace coexistence self-test
         run: |
           cargo run --manifest-path rust/Cargo.toml --release --locked \
