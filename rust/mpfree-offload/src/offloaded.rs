@@ -631,8 +631,10 @@ mod tests {
         let d_ms = 256.0f32 * 1000.0 / 44_100.0;
         block(&mut node, 0, &[]);
         let sent: Vec<_> = node.to_remote.iter().map(param).collect();
-        // 15 parameters at the block's start, then the first resent.
-        assert_eq!(sent.len(), 16);
+        // Every parameter (16 since the Mix curve) at the block's start,
+        // then the first resent.
+        assert_eq!(node.params().len(), 16);
+        assert_eq!(sent.len(), 17);
         assert!(sent.iter().all(|&(at, _, _)| at == 0));
         assert_eq!(sent[ids::cloud::QUALITY as usize].2, FULL);
         assert_eq!(sent[ids::cloud::MIX as usize].2, 100.0);

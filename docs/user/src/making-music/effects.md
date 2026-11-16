@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-16 0893b87
+checked: 2026-11-16 ececc7e
 -->
 
 # Effects
@@ -26,7 +26,7 @@ Tap an effect already in a strip's insert row to open the chain editor on it. Th
 - To move an effect further, **drag it** up or down the chain: once your finger moves it lifts and follows you, a line shows where it will land, and it moves there when you lift. Lift it where it started to leave it where it was. With the wheel, push on the picked effect to pick it up, turn to move it, and push again to put it down.
 - The effect's page is in **sections**, each named and coloured for what it does: the effect's heart (its space, its echoes, its pitch) in cyan, tone and colour in coral, dynamics in lime, movement in pink, and the output in grey. Drag a knob, fader or slider to turn it; tap a choice's name, or step it with its arrows; tap a switch to flip it.
 - A control that does nothing as the effect is set shows dim, and its section says why: a delay's **Time** with **Sync** on, for one.
-- **Presets:** tap the effect's name at the top of its page for its presets: **Defaults**, then its own (for an effect with modes, the mode's). Tap one to load it; the effect's **Mix** and **Quality** stay as you set them. While the effect is set as a preset, the top of the page shows the preset's name, with the effect's beside it; once you change a control it shows the effect's name again.
+- **Presets:** tap the effect's name at the top of its page for its presets: **Defaults**, then its own (for an effect with modes, the mode's). Tap one to load it; the effect's **Mix**, **Mix curve** and **Quality** stay as you set them. While the effect is set as a preset, the top of the page shows the preset's name, with the effect's beside it; once you change a control it shows the effect's name again.
 - Most effects show all their controls on one page. The few with more have a tab for each page beside the effect's name; if there are more tabs than fit, **‹** and **›** step to the page before or after. The Channel strip's first page shows its stages (**Gate**, **Comp**, **EQ**) as sections, each with its switch: tap a stage's switch to turn it on or off, or **Open ›** for its page.
 - The four controls with a **Q1** to **Q4** badge are the effect's **Q-Links**, the four it is played by. They stay the same on every page, so you keep the same controls under your hands while you look through the rest; when a setting takes a control out of play (a delay's **Time** when **Sync** is on), its Q-Link turns the control in its place. The data wheel works as Q-Link 1 until you tap a control: then it moves the outline, and a push on a knob lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)).
 - **‹** at the top left goes back to where you opened the editor: the Mix tab as you left it, or the Pads tab.
@@ -98,6 +98,19 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Tuner** | Tunes a guitar, a bass, a voice or a synth: put it on the strip the instrument comes in on (an input, usually) and play one note at a time. It shows the note, how many cents sharp or flat (the needle is green when you're within 3 cents) and the frequency. **Reference** sets the pitch of A, 440 Hz unless your band tunes to something else; **Mute** silences the strip while you tune. It doesn't change the sound and adds no delay. |
 | **Stereo width** | Makes the sound narrower or wider, with the lows, mids and highs set apart: put the bass in the middle and open up the top. **Delay** widens a mono sound and still sounds right when the mix is played in mono. |
 | **Sample delay** | Delays the left or the right side by a few samples, and flips either side's polarity: for lining up two microphones, or a quick stereo spread. |
+
+### A delay's or reverb's Mix
+
+**Mix** sets how much of the echoes or the room you hear against the sound going in: 0 is the sound alone and 100 % the effect alone. Every delay and reverb mode also has a **Mix curve** in its Output section, a small choice you step with its arrows, for how the two blend in between. Touch it and the hint line at the bottom of the screen says what the choice does.
+
+- **Equal** (equal power, the default): the level stays the same as you turn Mix, so the effect comes in without the sound dipping half way.
+- **Dry first**: up to half way, Mix only adds the effect, with the sound going in at full level; from half way the dry sound fades out.
+- **Linear**: a plain crossfade, a little quieter in the middle.
+
+Changing the curve glides from one blend to the other, so it doesn't click. A preset, or a switch to another mode, leaves the Mix curve as you set it.
+
+> [!NOTE]
+> Projects saved before the Mix curve open at **Equal**, so a delay or reverb set between 0 and 100 % sounds a little louder and wetter than it did (at Mix 35 %, about 3 dB). Pick **Linear** for the blend it had before. The Room reverb is also about 4 dB louder than before, as loud as the other reverbs.
 
 ### The EQ's page
 

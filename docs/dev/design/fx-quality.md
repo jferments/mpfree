@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-16 da8e97d3
+checked: 2026-11-16 ececc7e
 -->
 # FX quality: targets, the report and the ratchet
 
-**Status:** measuring built 2026-11-16 (delay, EQ and reverb); no effect's sound has changed yet. The fixes come one class at a time, each in its own pull request, judged by these numbers and by blind, level-matched listening. Research and the full plan: jferments/mpfree-claude `fx/quality/` (plan.md, research-delay.md, research-eq.md, research-reverb.md, baseline-2026-11-16.md).
+**Status:** measuring built 2026-11-16 (delay, EQ and reverb). The first sound change, PR B (the delays' and reverbs' Mix curve, the Room's level and the Tape and Multi-tap tails), is below. The fixes come one class at a time, each in its own pull request, judged by these numbers and by blind, level-matched listening. Research and the full plan: jferments/mpfree-claude `fx/quality/` (plan.md, research-delay.md, research-eq.md, research-reverb.md, baseline-2026-11-16.md).
 
 An effect is good when it meets its measured targets, wins or ties in blind, level-matched listening, has the controls musicians know, and fits the MPC's budget. This page holds the first of those: each target as a number with its reason, how fxlab measures it, and the ratchet on CI that stops any number getting worse.
 
@@ -91,9 +91,18 @@ Engines: Room, Plate, Spring (`rooms.rs`) and the Cloud engine's Hall, Cloud and
 
 `c80_db` is reported for each mode. R2 (Damping does what it says), R13 (Freeze and spillover) and R14 (cost) are still to measure or checked elsewhere.
 
-## Today (2026-11-16, before any fix)
+## Baseline (2026-11-16, before any fix)
 
 55 of 81 delay targets, 21 of 50 EQ targets and 68 of 114 reverb targets met. The large gaps: delay repeats lose 0.74 dB per repeat at 10 kHz and 3.5 dB at 15 kHz when the time falls between frames (the default 1/8 dotted at 120 BPM does); the Tape's first echo has none of the tape's colour; every delay and reverb dips 2 to 6 LU as Mix turns (a linear crossfade); EQ bells above 5 kHz are cramped (a 12 kHz, Q 0.71 bell is 6.6 dB short at 20 kHz and 42 % narrower than its prototype); Room is 4.9 LU quieter than the dry, starts with a slap (EDT/T30 0.40), takes 314 ms to diffuse and rings 4.9 dB over an ideal tail; Plate takes 167 ms to diffuse and smears a held note by 4.9 cents; no reverb but the Cloud engine's keeps a source's side.
+
+## PR B: the Mix curve, the Room's level and the echo tails
+
+What changed (design: [fx.md](fx.md#the-delays-and-reverbs-mix-curve)): every delay and reverb blends on an equal-power curve by default, with **Dry first** and **Linear** as choices (D6, R7); the Room's wet signal is 4 dB louder (R6); and the Tape and Multi-tap work their tails out from Feedback instead of a fixed 8 s (D12). After it: 62 of 79 delay targets, 21 of 50 EQ targets and 78 of 114 reverb targets met.
+
+- **Met now:** every delay and reverb mode dips less than 1 LU as Mix turns (it was 2 to 6); the Room and its four presets are within 1 LU of the dry (they were 3 to 4.9 LU under); every Multi-tap preset's tail is cut under -60 dB (Build up was cut at -28.5 dB, the defaults at -52.5); the Tape's Space heads went from -100 to under -140 dB.
+- **Rings on:** the Tape's Dub echo and Runaway gain on each pass (their saturation lifts quiet echoes up to 1.43 times at Saturation 55 %, and the head bump adds 2 dB), so their tails are endless and a bypassed slot rings on until Feedback comes down. Their D12 rows (they were cut at -8.6 and +0.5 dB) are notes now ("rings on"); making those loops lose again is a sound change for PR C.
+- **Blessed worse, and why:** at the same Mix the equal-power curve plays more of the effect (at 35 %, the wet is 3.5 dB louder and the dry 2.4 dB), and the Room's trim adds 4 dB more, so every number measured on the blend against the input moved by about that much: the delays' runaway peaks and DC (D4; the peaks still 10 dB inside the target), their aliases (D5), the Digital delay's tail cuts (D12) and the Slapback's Time sweep (D7), and the zipper of the Room's and the Snare plate's Pre-delay and Size (their wet path's own Doppler on a time sweep, now louder against the dry; R11) and of the Digital delay's Mix sweep on two presets (D7: an equal-power blend of two signals in phase adds up to 3 dB half way; 1.5 dB at most, inside the 3 dB target). With the curve set to Linear and the Room's trim taken out, every one of those rows comes back to its old value; only the Tape's default and Worn tape tails stay shorter (cut at -115 and -120 dB where the fixed 8 s left -140), still 55 dB inside the target.
+- **Cost:** no bench case rises: the Delay's 128-frame block counts 72.5k instructions against the baseline's 77.7k (its gains rest once they arrive), and the Cloud engine's modes 0.2 to 0.6 % more.
 
 ## Running it
 
