@@ -40,7 +40,7 @@ These are on the Play page's Loop view. The MPC's own **REC**, **OVERDUB** and *
 | **Clear** | | | Deletes the whole loop, so you can start again. |
 | **Mute** | | | Silences the loop without losing it. Press again to hear it. |
 
-Stopping the transport while you overdub ends the overdub.
+Stopping the transport while you overdub ends the overdub. With the transport stopped, Record or Overdub on a loop that has something in it waits for **PLAY**, with OVERDUB and PLAY blinking; **STOP** then lets go of it (and of a loop armed with Record), so nothing is left blinking.
 
 ## The Looper tab
 

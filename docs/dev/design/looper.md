@@ -14,7 +14,7 @@ Up to 8 stereo loops on the transport, recorded from the line input or the pad p
 - **Each layer has its own mix.** Level (0 to 2), pan (a balance, -1 to 1), mute and solo. While any layer is soloed, only soloed layers play.
 - **Any layer can be deleted**, the first pass too; the last layer stays (Clear removes the loop). A delete fades the layer out, and Undo brings it back in its place. Undo and Redo walk one history of overdubs and deletes, newest first.
 - **Layer ids.** A layer keeps its id while it exists, whatever comes and goes around it, so a screen can name it safely.
-- **Silent while stopped or counting in.** Overdub pressed while stopped waits for Play. Stopping ends an overdub, with a fade.
+- **Silent while stopped or counting in.** Overdub pressed while stopped waits for Play. Stopping ends an overdub, with a fade. STOP pressed while already stopped lets go of an overdub waiting for Play and disarms an armed loop, on every loop (`LoopHost::stop_waiting`, the app's `LoopAction::StopWaiting`), so no light is left blinking.
 
 ## Several loops
 

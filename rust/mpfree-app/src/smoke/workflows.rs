@@ -1420,6 +1420,64 @@ mod tests {
         });
     }
 
+    /// STOP with the transport stopped lets go of a loop waiting for PLAY
+    /// (the final round's transport check, step 8: on the Looper tab REC
+    /// on the playing loop started an overdub that waits for PLAY, so
+    /// OVERDUB and PLAY blinked, and STOP twice left them blinking). Also
+    /// an armed first pass: STOP disarms it, REC and PLAY go dark.
+    #[test]
+    fn stop_lets_go_of_a_loop_waiting_for_play() {
+        use crate::app::LIGHT_DARK;
+        use mpfree_controller::mpc_one::button;
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            // Armed on Play, then STOP: disarmed, the lights dark.
+            s.button("REC").run_for(0.1);
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            s.button("STOP").run_for(0.3);
+            assert_eq!(s.looper.phase(), Phase::Empty, "STOP disarms");
+            assert_eq!(lights_over(&mut s, button::REC, 0.7), vec![LIGHT_DARK]);
+            assert_eq!(lights_over(&mut s, button::PLAY, 0.7), vec![LIGHT_DARK]);
+
+            // A loop recorded, then stopped (steps 1 to 7 of the check).
+            s.button("REC").run_for(0.1);
+            s.button("PLAY").run_for(0.3);
+            for _ in 0..100 {
+                if s.looper.phase() == Phase::Playing {
+                    break;
+                }
+                s.run_for(0.1);
+            }
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            s.button("STOP").run_for(0.3);
+            assert!(!s.time.info().state.rolling());
+
+            // Step 8: the Looper tab, REC: an overdub waits for PLAY.
+            s.button_with("SHIFT", "SAMPLER").run_for(0.2);
+            assert_eq!(s.view(), View::Looper);
+            s.button("REC").run_for(0.2);
+            assert_eq!(s.looper.phase(), Phase::Overdubbing, "REC overdubs a loop");
+            let dub = lights_over(&mut s, button::OVERDUB, 1.0);
+            assert!(dub.len() > 1, "OVERDUB blinks while it waits: {dub:?}");
+
+            // STOP: the waiting overdub goes, and every light with it.
+            s.button("STOP").run_for(0.3);
+            assert_eq!(s.looper.phase(), Phase::Playing, "the overdub let go");
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "looper: STOP: loop 1: the overdub waiting for PLAY is off"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(lights_over(&mut s, button::OVERDUB, 0.7), vec![LIGHT_DARK]);
+            assert_eq!(lights_over(&mut s, button::REC, 0.7), vec![LIGHT_DARK]);
+            assert_eq!(lights_over(&mut s, button::PLAY, 0.7), vec![LIGHT_DARK]);
+            assert_eq!(s.looper.looper.status().layers, 1, "nothing was added");
+        });
+    }
+
     /// REC and OVERDUB on the Looper tab, on a fresh MPC: REC arms the
     /// picked loop and lights; REC again disarms it.
     #[test]
