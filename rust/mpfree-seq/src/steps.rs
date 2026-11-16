@@ -487,6 +487,30 @@ impl Grid {
         }
     }
 
+    /// Clear steps `from` up to (not including) `to` of sound `pitch`:
+    /// their notes and the row's locks on them come out (ERASE + a step
+    /// pad, or + a PAD BANK for the page, with STEP SEQ on). Steps past
+    /// the clip's end are left out; nothing there gives an empty edit.
+    pub fn clear_steps(self, clip: &Clip, pitch: u8, from: usize, to: usize) -> Edit {
+        let to = to.min(self.steps(clip.length));
+        let within = |tick: Tick| (from..to).contains(&self.place(clip.length, tick).0);
+        Edit {
+            erase: clip
+                .notes
+                .iter()
+                .filter(|n| n.note == pitch && within(n.tick))
+                .copied()
+                .collect(),
+            erase_locks: clip
+                .locks
+                .iter()
+                .filter(|l| l.sound == Some(pitch) && within(l.tick))
+                .copied()
+                .collect(),
+            ..Edit::default()
+        }
+    }
+
     /// Change step `i` of sound `pitch`. Values are kept in range; an
     /// empty step, or one already so, gives an empty edit.
     pub fn change(self, clip: &Clip, pitch: u8, i: usize, change: Change) -> Edit {
@@ -1197,6 +1221,31 @@ mod tests {
         c.apply(&off).unwrap();
         assert_eq!(c.notes, vec![Note::new(960, 240, 36, 90)]);
         assert!(g.toggle(&c, 36, 16, 90).is_empty(), "past the last step");
+    }
+
+    #[test]
+    fn clearing_steps_takes_one_rows_notes_and_locks_in_the_range() {
+        use mpfree_param::OnTrack;
+        let g = Grid::new(240).unwrap();
+        // Kick on steps 0, 5 and 17 (page 2), a snare on step 5.
+        let mut c = clip(2 * BAR, &[(0, 36), (1200, 36), (17 * 240, 36), (1200, 38)]);
+        let addr = RelAddr::new(OnTrack::Inst, 1);
+        c.apply(&g.lock(&c, Some(36), 5, addr, 0.5)).unwrap();
+        c.apply(&g.lock(&c, Some(38), 5, addr, 0.5)).unwrap();
+        // One step: Kick's note and its lock go, the snare's stay.
+        let one = g.clear_steps(&c, 36, 5, 6);
+        assert_eq!(one.erase, vec![Note::new(1200, 60, 36, 100)]);
+        assert_eq!(one.erase_locks.len(), 1);
+        assert_eq!(one.erase_locks[0].sound, Some(36));
+        // The first page: steps 0 and 5, not 17.
+        let page = g.clear_steps(&c, 36, 0, 16);
+        assert_eq!(page.erase.len(), 2);
+        assert!(page.erase.iter().all(|n| n.tick < 16 * 240));
+        // Past the end, or an empty range: nothing.
+        assert!(g.clear_steps(&c, 36, 32, 48).is_empty());
+        assert!(g.clear_steps(&c, 36, 6, 6).is_empty());
+        c.apply(&page).unwrap();
+        assert_eq!(g.row(&c, 36).iter().flatten().count(), 1, "step 17 stays");
     }
 
     /// Page edits take the clip's moves along: a copied page copies them,
