@@ -574,8 +574,12 @@ impl Builder {
                                 for &(p, v) in preset {
                                     n.set_param(p, v);
                                 }
-                                if let Some(sw) = &switch {
-                                    sw.0.apply(n.as_mut());
+                                match &switch {
+                                    Some(sw) => sw.0.apply(n.as_mut()),
+                                    // A new delay or reverb on a return
+                                    // starts fully wet (a mode switch
+                                    // keeps the Mix it had).
+                                    None => crate::mixing::wet_on_a_return(strip, n.as_mut()),
                                 }
                             }
                             let replace = switch.map(|sw| sw.1);
@@ -1029,5 +1033,27 @@ mod tests {
         let insert = got[0].insert.take().expect("a drive");
         assert!(got[1].insert.is_none(), "no such effect");
         assert!(b.drop_later(insert), "dropped on the builder thread");
+    }
+
+    /// The builder makes a reverb for a return fully wet, and one for a
+    /// track at its own Mix (Jay, 16 Nov).
+    #[test]
+    fn the_builder_makes_a_return_reverb_wet() {
+        use mpfree_fx::ids::plate;
+        let mut b = Builder::start(Arc::new(Plugins::none())).unwrap();
+        assert!(b.build(StripId::Return(2), "mpfree.fx.plate", 44_100, 128));
+        assert!(b.build(StripId::Track(1), "mpfree.fx.plate", 44_100, 128));
+        let give_up = Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        while got.len() < 2 && Instant::now() < give_up {
+            if let Some(x) = b.take() {
+                got.push(x);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        let mix = |x: &mut Built| x.insert.as_ref().expect("a plate").node().param(plate::MIX);
+        assert_eq!(got[0].strip, StripId::Return(2));
+        assert_eq!(mix(&mut got[0]), 100.0, "on a return");
+        assert_eq!(mix(&mut got[1]), 25.0, "on a track");
     }
 }

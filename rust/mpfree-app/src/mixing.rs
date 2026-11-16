@@ -177,6 +177,25 @@ pub fn name(s: StripId) -> String {
     }
 }
 
+/// A delay or reverb put on a send return starts fully wet (Jay, 16 Nov):
+/// the tracks' own sound already reaches the master through their strips,
+/// so a return only has to add the effect, and each track's send sets how
+/// much. At an insert's Mix (25 to 30 %) most of what came back would be a
+/// second dry copy. On any other strip, and for any other effect, `node`
+/// keeps its own default. The Play page's delay on Return A is set wet
+/// where it is made.
+pub fn wet_on_a_return(strip: StripId, node: &mut dyn Node) {
+    if !matches!(strip, StripId::Return(_)) {
+        return;
+    }
+    let delay_or_reverb = mpfree_fx::families::family(node.info().id)
+        .is_some_and(|f| matches!(f.name, "Delay" | "Reverb"));
+    let mix = node.params().iter().find(|p| p.name == "Mix").map(|p| p.id);
+    if let (true, Some(mix)) = (delay_or_reverb, mix) {
+        node.set_param(mix, 100.0);
+    }
+}
+
 pub struct MixHost {
     pub mixer: Mixer,
     /// The mod engine between the clips' locks and the mixer.
@@ -765,6 +784,7 @@ impl MixHost {
         for &(p, v) in preset {
             node.set_param(p, v);
         }
+        wet_on_a_return(strip, node.as_mut());
         let at = self.mixer.chain(strip).map_or(0, |c| c.len());
         self.mixer
             .edit(Edit::Insert {
@@ -1481,6 +1501,57 @@ mod tests {
             0.0,
             "dropped, not muted"
         );
+    }
+
+    /// Jay, 16 Nov: a delay or reverb put on a send return starts fully
+    /// wet; everywhere else, and every other effect, keeps its default.
+    #[test]
+    fn a_delay_or_reverb_on_a_return_starts_wet() {
+        let mix = |n: &dyn Node| {
+            let id = n.params().iter().find(|p| p.name == "Mix").map(|p| p.id);
+            n.param(id.unwrap_or_else(|| panic!("{} has a Mix", n.info().id)))
+        };
+        let fresh = |id: &str, fixed: &[(u16, f32)]| {
+            let mut n = mpfree_fx_ui::make(id).unwrap_or_else(|| panic!("{id}"));
+            for &(p, v) in fixed {
+                n.set_param(p, v);
+            }
+            n
+        };
+        let mut checked = 0;
+        for f in mpfree_fx::families::FAMILIES {
+            if !matches!(f.name, "Delay" | "Reverb") {
+                continue;
+            }
+            for m in f.modes {
+                let mut on_return = fresh(m.id, m.fixed);
+                let default = mix(on_return.as_ref());
+                assert!(default < 100.0, "{} {} starts partly dry", f.name, m.label);
+                wet_on_a_return(StripId::Return(1), on_return.as_mut());
+                assert_eq!(mix(on_return.as_ref()), 100.0, "{} on a return", m.label);
+                for strip in [StripId::Track(0), StripId::Bus(0), StripId::Master] {
+                    let mut n = fresh(m.id, m.fixed);
+                    wet_on_a_return(strip, n.as_mut());
+                    assert_eq!(mix(n.as_ref()), default, "{} on {strip:?}", m.label);
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(
+            checked, 9,
+            "Room, Plate, Spring, Hall, Cloud, Echoes; three delays"
+        );
+        // Other effects with a Mix keep it, on a return too.
+        for id in [
+            "mpfree.fx.granulator",
+            "mpfree.fx.drive",
+            "mpfree.fx.chorus",
+        ] {
+            let mut n = fresh(id, &[]);
+            let default = mix(n.as_ref());
+            wet_on_a_return(StripId::Return(0), n.as_mut());
+            assert_eq!(mix(n.as_ref()), default, "{id}");
+        }
     }
 
     #[test]
