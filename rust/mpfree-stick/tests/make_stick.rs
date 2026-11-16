@@ -217,6 +217,13 @@ fn makes_a_stick_the_hook_takes() {
     // The first-start setup and the formatter, with this stick's values.
     let fmt = String::from_utf8(read(&root, "/etc/mpfree-test/setup-format.sh")).unwrap();
     assert!(fmt.contains(&made.values.data_uuid) && !fmt.contains("@DATA_UUID@"));
+    // The startup screen waits for the format step, in a drop-in folder of its own.
+    let drop_in = String::from_utf8(read(
+        &root,
+        "/etc/systemd/system/mpfree-test-splash.service.d/mpfree-setup.conf",
+    ))
+    .unwrap();
+    assert!(drop_in.contains("Environment=MPFREE_SETUP_STATUS=/run/mpfree-setup/format-status\n"));
     assert_eq!(
         read(&root, stick::TOKEN_FILE),
         format!("{}\n", made.values.token).as_bytes()

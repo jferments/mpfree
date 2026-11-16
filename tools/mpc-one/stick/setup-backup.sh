@@ -15,21 +15,28 @@ R=''
 #      marked again here and checked (ro = 1 on the disk and each partition, force_ro = 1 on every disk);
 #      the partition table must match the MPC One's (names, starts and sizes); nothing may be mounted
 #      from it. The block layer's write and discard counters are recorded;
-#   3. copies the user area (mmcblk0) and the two boot areas (mmcblk0boot0, mmcblk0boot1) with dd, each
-#      hashed (SHA-256) as it is read, into partition 4's backup/mpc-one-emmc-<UTC>.part/;
+#   3. copies the user area (mmcblk0) and the two boot areas (mmcblk0boot0, mmcblk0boot1) with dd straight
+#      into partition 4's backup/mpc-one-emmc-<UTC>.part/, while sha256sum hashes each disk from the eMMC
+#      beside it. No tee: Akai's BusyBox tee is built without block I/O and moves one byte per system call
+#      (about 80 KB/s on the MPC; the second creator stick crawled at that on 2026-11-16). While it copies,
+#      vm.dirty_bytes is 32 MiB (RAM only, put back afterwards), so the copy runs at most that far ahead of
+#      the stick and its file size, which the progress shows, is what the stick holds;
 #   4. checks the counters did not move, then closes the window: unbinds the controller, waits until no
 #      eMMC block device is left and removes the udev rule and stale /dev/disk links. If the controller
 #      will not let go, it powers the MPC off (MPFree never runs with the internal storage reachable);
-#   5. drops the page cache and reads the copy back from the stick: every image must match its hash.
+#   5. drops the page cache and reads the copy back from the stick: every image must match the eMMC's hash
+#      (progress: the stick's block layer read counter).
 #      Then MANIFEST.txt is written and the folder renamed to backup/mpc-one-emmc-<UTC>/, owned by root
 #      and readable by the pad player's group (it reads the factory kits and samples from it).
 # Nothing is ever written to the eMMC: no mount, no fsck, no write. The only writes are partition 4's
 # backup folder, /run (RAM: the status, the udev rule, and the request, removed), the kernel log, the
-# controller's sysfs bind and unbind files and the eMMC disks' force_ro files (which only switch read-only on).
+# controller's sysfs bind and unbind files, the eMMC disks' force_ro files (which only switch read-only on)
+# and vm.dirty_bytes (RAM only, put back when the copy ends or fails).
 # Every program it runs is in NEEDS: it stops before anything else when one is missing, and the USB creator
 # will not make a stick from an update whose system lacks one.
 # Progress and the result: /run/mpfree-setup/status (key=value lines), read by the pad player.
 # Any failure before step 4 closes the window first; a failed backup is deleted and the status says why.
+# So does a stop (systemd's TERM, at a timeout or shutdown): the copy and the hash are stopped first.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 EMMC=ff0f0000
@@ -50,16 +57,19 @@ LAYOUT='1 uboot-spl 64 128
 # Room needed on partition 4, in KiB: the 7.8 GB user area, the two 4 MiB boot areas and 256 MiB to spare.
 NEED_KB=7900000
 DISKS='mmcblk0 mmcblk0boot0 mmcblk0boot1'
-NEEDS='awk cat chmod chown cut date dd df grep head mkdir mv readlink rm sed sha256sum sleep stat sync systemctl tee tr udevadm'
+NEEDS='awk cat chmod chown cut date dd df grep mkdir mv readlink rm sed sha256sum sleep stat sync systemctl tr udevadm'
 opened=''
 name=''
 dir=''
 devdir=''
+jobs_running=''
+dirty_set=''
 
 mkdir -p "$S"
 # The request has done its job: taken away so the path unit does not start this again when it ends.
 rm -f "$R/run/mpfree-app/setup-backup.request"
 status() {   # state step done total message
+  step=$2
   { echo "state=$1"; echo "step=$2"; echo "done=$3"; echo "total=$4"; echo "message=$5"
     if [ -n "$dir" ]; then echo "folder=${dir#$R}"; fi; } > "$S/status.new" && mv "$S/status.new" "$S/status"
 }
@@ -92,8 +102,25 @@ close_window() {
   opened=''
   say "window closed: no eMMC block device is left"
 }
+stop_jobs() {   # the copy, hash or read-back still running, if any
+  for j in $jobs_running; do kill "$j" 2>/dev/null; done
+  for j in $jobs_running; do wait "$j" 2>/dev/null; done
+  jobs_running=''
+}
+dirty_back() {   # vm.dirty_bytes as it was (0 means the kernel used dirty_ratio, so that is written back)
+  [ -n "$dirty_set" ] || return 0
+  if [ "${dirty_was:-0}" != 0 ]; then
+    echo "$dirty_was" > "$R/proc/sys/vm/dirty_bytes"
+  else
+    echo "$ratio_was" > "$R/proc/sys/vm/dirty_ratio"
+  fi 2>/dev/null || say "could not put vm.dirty_bytes back (RAM only; a restart does)"
+  dirty_set=''
+}
 fail() {
+  trap - TERM INT
   say "STOP: $1"
+  stop_jobs
+  dirty_back
   close_window
   [ -n "$dir" ] && [ -d "$dir.part" ] && rm -rf "$dir.part"
   status failed "${2:-checking}" 0 0 "$1"
@@ -106,6 +133,7 @@ if [ -e "$S/started" ]; then
 fi
 : > "$S/started"
 : > "$S/backup-log.txt"
+trap 'fail "stopped by the system before the backup finished" "${step:-checking}"' TERM INT
 missing=''
 for p in $NEEDS; do command -v "$p" > /dev/null 2>&1 || missing="$missing $p"; done
 [ -z "$missing" ] || fail "this system lacks programs the backup needs:$missing"
@@ -175,6 +203,12 @@ echo "$LAYOUT" | while read -r n pname start sectors; do
 done > "$S/layout.txt"
 [ -s "$S/layout.txt" ] && fail "this is not the MPC One's eMMC layout: $(cat "$S/layout.txt")"
 emmc=$(cat "$R/sys/block/mmcblk0/device/name" 2>/dev/null)
+# How the eMMC came up (clock, bus width, timing), from debugfs, read only: a slow copy can then say why.
+for h in "$devdir"/mmc_host/mmc*; do
+  [ -e "$h" ] || continue
+  ios=$(tr '\n' ';' < "$R/sys/kernel/debug/${h##*/}/ios" 2>/dev/null)
+  say "eMMC bus (${h##*/}): ${ios:-debugfs not readable}"
+done
 counters() {   # writes and discards of every eMMC block device (block layer stat fields 5-7 and 12-14)
   for b in mmcblk0 mmcblk0boot0 mmcblk0boot1; do
     for s in "$R/sys/block/$b/stat" "$R"/sys/block/"$b"/"$b"p*/stat; do
@@ -191,34 +225,70 @@ total=$(( (size + $(cat "$R/sys/block/mmcblk0boot0/size") + $(cat "$R/sys/block/
 say "window open: eMMC ${emmc:-?}, $size sectors, all read-only; layout checked"
 
 # 3. The copy.
+# Every 30 s the kernel log gets how it goes: what is in the copy, what was read from the eMMC and written
+# to the stick (block layer counters), and what waits in memory, so a slow side shows which it is.
+stick=$(awk -v d="$DATA" '$2 == d { print $1 }' "$R/proc/mounts")
+stick=${stick##*/}
+field() { awk -v f="$2" '{ print $f + 0 }' "$1" 2>/dev/null || echo 0; }   # a block layer stat field
+mib() { [ -e "$1" ] && echo $(( $(field "$1" "$2") / 2048 )) || echo '?'; }   # stat field in sectors, as MiB
+pace() {   # name bytes-now bytes-30-s-ago
+  waiting=$(awk '/^(Dirty|Writeback):/ { kb += $2 } END { print int(kb / 1024) }' "$R/proc/meminfo" 2>/dev/null)
+  say "copying $1: $(($2 >> 20)) MiB, $(( ($2 - $3) / 30720 )) KB/s; eMMC read $(mib "$R/sys/block/$1/stat" 3) MiB," \
+    "stick written $(mib "$R/sys/class/block/$stick/stat" 7) MiB, waiting in memory ${waiting:-?} MiB"
+}
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 dir="$R$DATA/backup/mpc-one-emmc-$stamp"
 [ ! -e "$dir" ] || fail "$dir exists already"
 mkdir -p "$dir.part" || fail "could not make the backup folder" copying
 chown 0:"$APP_GID" "$R$DATA/backup" "$dir.part" && chmod 0750 "$R$DATA/backup" "$dir.part" ||
   fail "could not set the backup folder's owner" copying
+# The copy may run at most 32 MiB ahead of the stick (RAM only; put back below, or by fail).
+dirty_was=$(cat "$R/proc/sys/vm/dirty_bytes" 2>/dev/null)
+ratio_was=$(cat "$R/proc/sys/vm/dirty_ratio" 2>/dev/null)
+case "$dirty_was$ratio_was" in
+  *[!0-9]*|'') say "vm.dirty_bytes or dirty_ratio unreadable; the copy's progress may run ahead of the stick" ;;
+  *) echo 33554432 > "$R/proc/sys/vm/dirty_bytes" 2>/dev/null && dirty_set=yes ||
+       say "could not set vm.dirty_bytes; the copy's progress may run ahead of the stick" ;;
+esac
+started=$(cut -d. -f1 "$R/proc/uptime")
 done_before=0
 for b in $DISKS; do
   bytes=$(( $(cat "$R/sys/block/$b/size") * 512 ))
   out="$dir.part/$b.img"
   status running copying "$done_before" "$total" "Backing up the MPC's internal storage"
-  ( dd if="$R/dev/$b" bs=1048576 2>/dev/null | tee "$out" | sha256sum > "$dir.part/$b.sha" ) &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
+  dd if="$R/dev/$b" of="$out" bs=1048576 2> "$S/copy-$b.err" &
+  copier=$!
+  sha256sum "$R/dev/$b" > "$S/$b.sha" 2> "$S/hash-$b.err" &
+  hasher=$!
+  jobs_running="$copier $hasher"
+  tick=0
+  last=0
+  while kill -0 "$copier" 2>/dev/null; do
     got=$(stat -c %s "$out" 2>/dev/null || echo 0)
     status running copying $((done_before + got)) "$total" "Backing up the MPC's internal storage"
+    tick=$((tick + 1))
+    if [ "$tick" -ge 30 ]; then
+      pace "$b" "$got" "$last"
+      tick=0
+      last=$got
+    fi
     sleep 1
   done
-  wait "$pid" || fail "reading $b failed" copying
+  wait "$copier" || fail "reading $b failed: $(sed -n '$p' "$S/copy-$b.err")" copying
+  wait "$hasher" || fail "hashing $b on the eMMC failed: $(sed -n '$p' "$S/hash-$b.err")" copying
+  jobs_running=''
   got=$(stat -c %s "$out" 2>/dev/null || echo 0)
   [ "$got" = "$bytes" ] || fail "$b: $got bytes copied, $bytes expected" copying
-  sum=$(cut -d' ' -f1 "$dir.part/$b.sha")
+  sum=$(cut -d' ' -f1 "$S/$b.sha")
   case "$sum" in *[!0-9a-f]*|'') fail "$b: no hash" copying ;; esac
   echo "$sum  $b.img" >> "$dir.part/SHA256SUMS"
-  rm -f "$dir.part/$b.sha"
+  rm -f "$S/$b.sha"
   done_before=$((done_before + bytes))
-  say "copied $b: $bytes bytes, sha256 $sum"
+  say "copied $b: $bytes bytes, sha256 $sum (eMMC)"
 done
+dirty_back
+took=$(( $(cut -d. -f1 "$R/proc/uptime") - started ))
+say "copy took $took s ($(( total / 1024 / (took > 0 ? took : 1) )) KB/s)"
 counters > "$S/counters-after.txt"
 [ "$(cat "$S/counters-before.txt")" = "$(cat "$S/counters-after.txt")" ] ||
   fail "the eMMC's write or discard counters moved during the copy (see $S/counters-*.txt)" copying
@@ -230,12 +300,32 @@ done
 status running closing "$total" "$total" "Switching the MPC's internal storage off again"
 close_window
 
-# 5. Read the copy back from the stick.
+# 5. Read the copy back from the stick. Progress: what the stick's partition has read since.
 status running verifying 0 "$total" "Checking the backup"
 sync
 { echo 3 > "$R/proc/sys/vm/drop_caches"; } 2>/dev/null
-( cd "$dir.part" && sha256sum -c SHA256SUMS > "$S/verify.txt" 2>&1 ) ||
-  fail "the backup on the stick does not read back as copied: $(grep -v ': OK$' "$S/verify.txt" | head -n 3 | tr '\n' ' ')" verifying
+started=$(cut -d. -f1 "$R/proc/uptime")
+read_before=$(field "$R/sys/class/block/$stick/stat" 3)
+# Each image is hashed again and compared here (no sha256sum -c: one option fewer to need of Akai's BusyBox).
+( cd "$dir.part" && for b in $DISKS; do sha256sum "$b.img" || exit 1; done ) > "$S/verify.txt" 2> "$S/verify-errors.txt" &
+checker=$!
+jobs_running=$checker
+while kill -0 "$checker" 2>/dev/null; do
+  got=$(( ($(field "$R/sys/class/block/$stick/stat" 3) - read_before) * 512 ))
+  [ "$got" -le "$total" ] || got=$total
+  status running verifying "$got" "$total" "Checking the backup"
+  sleep 1
+done
+wait "$checker" || fail "the backup could not be read back from the stick: $(sed -n '$p' "$S/verify-errors.txt")" verifying
+jobs_running=''
+bad=''
+for b in $DISKS; do
+  want=$(grep " $b.img\$" "$dir.part/SHA256SUMS" | cut -d' ' -f1)
+  [ -n "$want" ] && [ "$(grep " $b.img\$" "$S/verify.txt" | cut -d' ' -f1)" = "$want" ] || bad="$bad $b.img"
+done
+[ -z "$bad" ] || fail "the backup on the stick does not read back as copied:$bad" verifying
+took=$(( $(cut -d. -f1 "$R/proc/uptime") - started ))
+say "read back and checked in $took s ($(( total / 1024 / (took > 0 ? took : 1) )) KB/s)"
 {
   echo "MPFree eMMC backup, made on the MPC by MPFree's first-start setup (setup-backup.sh)"
   echo "made: $stamp (the MPC's clock, UTC)"

@@ -129,7 +129,8 @@ impl Recipe {
 }
 
 /// The creator stick's own files on partition 1 (path, mode, text), from
-/// tools/mpc-one/stick/. `@DATA_UUID@` is filled in when the stick is made.
+/// tools/mpc-one/stick/. `@DATA_UUID@` is filled in when the stick is made;
+/// a missing folder (the splash unit's drop-in folder) is made.
 pub const SETUP_FILES: &[(&str, u16, &str)] = &[
     (
         "/etc/mpfree-test/setup-backup.sh",
@@ -155,6 +156,11 @@ pub const SETUP_FILES: &[(&str, u16, &str)] = &[
         "/etc/systemd/system/mpfree-setup-format.service",
         0o644,
         include_str!("../../../tools/mpc-one/stick/mpfree-setup-format.service"),
+    ),
+    (
+        "/etc/systemd/system/mpfree-test-splash.service.d/mpfree-setup.conf",
+        0o644,
+        include_str!("../../../tools/mpc-one/stick/mpfree-test-splash-setup.conf"),
     ),
 ];
 
@@ -234,7 +240,9 @@ mod tests {
         for (path, _, text) in SETUP_FILES {
             assert!(!r.files.contains_key(*path), "{path}");
             assert!(
-                text.starts_with("R=''\n") || text.starts_with("[Unit]\n"),
+                text.starts_with("R=''\n")
+                    || text.starts_with("[Unit]\n")
+                    || text.starts_with("[Service]\n"),
                 "{path}"
             );
         }
