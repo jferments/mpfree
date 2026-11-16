@@ -196,7 +196,7 @@ This becomes the return point for the installed 3.10.1, which the 3.6.0 backup n
 - **Stop if** the list names any other partition (p1, p3, p4, p5, boot0 or boot1), and send the zip before going on.
 - Make the second copy it asks for.
 
-**Block A1 (optional add-on): Akai's instruments and guest mode, from the backup** (workstation only, read-only: it reads Q4's backup image with `debugfs`, which opens it without `-w`; nothing is mounted, no sudo, and the MPC isn't contacted; a few minutes). This is for the synths thread's guest-mode plan: running Akai's own, unmodified app in the background as a sound engine. It answers whether Akai's instruments are separate files, where the activation lives (file names only), and what the app needs from the kernel and its devices. Run it any time after Q4:
+**Block A1 (optional add-on): Akai's instruments and guest mode, from the backup** (workstation only, read-only: it reads Q4's backup image with `debugfs`, which opens it without `-w`; nothing is mounted, no sudo, and the MPC isn't contacted; a few minutes). This is for the synths thread's guest-mode plan: running Akai's own, unmodified app in the background as a sound engine. It answers whether Akai's instruments are separate files, where the activation lives (file names only), and what the app needs from the kernel and its devices. A1 and A2 use the synths thread's tools from #401: if Q0's clone has no `tools/mpc-one/offline-akai-scan.py`, #401 has not merged yet, so skip A1 and A2. Run it any time after Q4:
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run akai-scan -- python3 tools/mpc-one/offline-akai-scan.py
