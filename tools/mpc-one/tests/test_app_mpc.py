@@ -673,6 +673,24 @@ class AppTests(unittest.TestCase):
         self.assertEqual(out.count("Enter:   your answer:"), 2)
         self.assertEqual(self.log_lines("program: "), [])
 
+    def test_the_app_lines_named_after_sh_are_the_apps(self):
+        """The creator's stick starts the app with /bin/sh start-app.sh, which execs it, so journald names the
+        app's lines "sh[...]" (the final round, 16 Nov: every check read NOT SEEN). They are the app's lines;
+        systemd's stay marked as systemd's."""
+        write(self.app, "active\n")
+        lines = [(t, m.replace("mpfree[211]: ", "sh[1246]: ")) for t, m in self.transport_lines(111.0)]
+        self.add_journal([(105.0, "systemd[1]: Started MPFree test boot: the pad player, from power-on.")] + lines,
+                         at=120)
+        res = self.run_helper("\n\nlights right\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="transport")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in ("seen      REC (73) armed the loop (button 73 x1)",
+                     "seen      OVERDUB again turned it off", "seen      UNDO (67) took the layer back",
+                     "transport: 6 of 6 seen in the log; your answer: lights right"):
+            self.assertIn(text, res.stdout)
+        self.assertNotIn("(sh[1246])", res.stdout)
+        with open(self.report) as fh:
+            self.assertIn("(systemd[1]) Started MPFree test boot", fh.read())
+
     def test_auto_checks_read_the_stick_and_ask_nothing(self):
         """kept and hour: no steps and no question; partition 4's settings and the status lines decide."""
         write(self.app, "active\n")

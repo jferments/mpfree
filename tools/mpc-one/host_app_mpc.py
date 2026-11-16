@@ -569,6 +569,7 @@ SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "touch: doorbell", "touch
                     "MIDI in: ", "MIDI Out", "controller output", "report: ", "chain editor: ", "control: ",
                     "threads: ", "PANIC: ", "safe start: ")
 APP_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s+(.*)$")
+APP_IDENTS = ("sh", "mpfree", "mpfree-hello")  # whose lines in the app unit's log are the app's (app_lines)
 MIDI_LINE = re.compile(r"^\+\d+\.\d+ s (->\s*)?(Public|Private|MIDI Port)\b")
 SHOWN_PER_PHASE = 60
 
@@ -597,12 +598,14 @@ def app_lines(mpc, since):
         if not m or float(m.group(1)) < since:
             continue
         rest = m.group(2)
-        # "mpfree[211]: text" or "systemd[1]: text": keep the text, and who wrote it if not the app
-        # (a stick built before the rename names the app "mpfree-hello").
+        # "sh[1246]: text" or "systemd[1]: text": keep the text, and who wrote it if not the app. The log is
+        # the app unit's only. Its ExecStart is /bin/sh start-app.sh, which execs the app, so journald names
+        # the app's lines "sh" (the final round's creator stick, 16 Nov); a unit that starts the app itself
+        # names them "mpfree", or "mpfree-hello" on a stick built before the rename.
         ident, sep, message = rest.partition(": ")
         if not sep:
             message = rest
-        elif ident.partition("[")[0] not in ("mpfree", "mpfree-hello"):
+        elif ident.partition("[")[0] not in APP_IDENTS:
             message = f"({ident}) {message}"
         lines.append((float(m.group(1)), message))
     return lines
