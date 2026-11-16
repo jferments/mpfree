@@ -146,8 +146,8 @@ fn human(bytes: u64) -> String {
     }
 }
 
-/// The log's line for the first listing: what is there and whether
-/// downloads can work.
+/// The log's line for the first listing: what is there, whether downloads
+/// can work, and what libcurl's TLS library said as it started.
 fn listing_line(l: &Listing) -> String {
     let catalog = match &l.catalog {
         Some(c) => format!(
@@ -157,13 +157,17 @@ fn listing_line(l: &Listing) -> String {
         ),
         None => "no catalog kept yet".into(),
     };
-    let downloads = if l.no_folder {
+    let mut downloads = if l.no_folder {
         "downloads off (no data folder)"
     } else if l.can_download {
         "downloads possible (libcurl found)"
     } else {
         "downloads off (no libcurl)"
-    };
+    }
+    .to_string();
+    if let Some(tls) = &l.tls {
+        downloads = format!("{downloads}, {tls}");
+    }
     format!(
         "plugins: {} installed, {} zip(s) on the stick, {catalog}, {downloads}",
         l.installed.len(),
@@ -284,6 +288,7 @@ impl PluginPage {
                 ..ZipFile::default()
             }],
             can_download: true,
+            tls: None,
             no_folder: false,
             favourites: vec!["example.drift-pad".into()],
         };
@@ -1347,6 +1352,7 @@ mod tests {
             installed,
             zips,
             can_download,
+            tls: None,
             no_folder: false,
             favourites: Vec::new(),
         })));
@@ -1530,6 +1536,20 @@ mod tests {
         assert_eq!(s.detail.title, "Mono Bass");
         assert_eq!(s.detail.buttons[0], PluginButton::Update);
         assert_eq!(s.detail.picture_label, "1 / 2");
+    }
+
+    #[test]
+    fn the_log_says_what_libcurls_tls_said() {
+        let mut p = PluginPage::new();
+        p.take(News::Listing(Box::new(Listing {
+            can_download: true,
+            tls: Some("OpenSSL 3.0.13 ready".into()),
+            ..Listing::default()
+        })));
+        assert_eq!(
+            p.take_lines(),
+            vec!["plugins: 0 installed, 0 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found), OpenSSL 3.0.13 ready"]
+        );
     }
 
     #[test]

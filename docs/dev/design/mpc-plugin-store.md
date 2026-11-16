@@ -1,11 +1,11 @@
 <!--
 covers: rust/mpfree-mpcstore rust/mpfree-app/src/plugin_store.rs rust/mpfree-app/src/plugin_page.rs rust/mpfree-browser-ui/src/plugins.rs rust/mpfree-plughost/src/rack.rs
-checked: 2026-11-16 a994ab4
+checked: 2026-11-16 873e19d
 -->
 
 # Installing MPC plugins: the Plugins place
 
-**Status:** 2026-11-16. Built and tested on the workstation, including a live run against the real catalog and a real release (fetched, checked, unpacked and loaded). Not yet run on an MPC: whether the soft-boot stick reaches HTTPS (the system's libcurl and CA certificates under Akai's root filesystem) is a read-only check for Jay's next combined device run. The musician's side is [Getting plugins](../../user/src/making-music/plugins.md).
+**Status:** 2026-11-16. Built and tested on the workstation, including a live run against the real catalog and a real release (fetched, checked, unpacked and loaded). On the MPC (final round, 16 Nov) a zip installed from the stick, and libcurl was found, but the catalog failed with libcurl's `Insufficient randomness`: its OpenSSL couldn't make random numbers. The check and repair below (`fetch::tls`) haven't met the MPC yet. The musician's side is [Getting plugins](../../user/src/making-music/plugins.md).
 
 MPFree never ships MPC plugins (Jay, 15 Nov: "I don't want to bundle these plugins"). The musician picks them. Jay asked for an easier install than copying folders, ideally a browser of the [Open MPC catalog](https://open-mpc.github.io) inside MPFree (22:06Z), and chose the route on two cards:
 
@@ -31,6 +31,21 @@ The catalog is kept as `files/plugins/.catalog.json`, so the list is there witho
 ## Downloading
 
 `fetch` opens `libcurl.so.4` with `dlopen` (no new build dependency, nothing to cross-compile) and refuses anything but `https://` to `open-mpc.github.io`, `sd88me.github.io`, `github.com`, `raw.githubusercontent.com` and `objects.githubusercontent.com`. Redirects (GitHub's release downloads go through two) must stay on HTTPS and are capped at 8. It fails on an HTTP error, gives up on a stalled transfer (under 1 KB/s for 30 s), caps the size (512 MB for a zip, 32 MB for the catalog, 16 MB for a picture) and removes a partial file. Downloads land in `files/plugins/.downloads/`, named by their SHA-256, and are removed once installed. A catalog entry whose id or version isn't a plain name (letters, digits and `-_.+`, not starting with a dot) is left out, so nothing from the catalog can name a file outside the folder or add a line to an install record; every entry on 16 Nov passes. No libcurl: Install is not offered and the place says to copy zips instead.
+
+### OpenSSL's random numbers
+
+TLS needs random numbers before it sends anything, and when libcurl's OpenSSL can't make them libcurl says only `Insufficient randomness`. That is what the MPC said in the final round. One cause reproduces that exact text: a system `openssl.cnf` that turns on a provider (the legacy one, say) but not the default one. OpenSSL then never loads its default provider, so it has no random number generator at all. The other causes are a seed source that fails or a kernel that won't give the process random bytes.
+
+So once libcurl has started OpenSSL, `fetch` checks it (`check_tls`):
+
+- It finds the `libcrypto.so.3` libcurl opened (`RTLD_NOLOAD`, so never another copy) and asks `RAND_status`.
+- If that fails, it loads the default provider (`OSSL_PROVIDER_load(NULL, "default")`), as OpenSSL does by itself when a config turns on none, and asks again. This only changes the app's own process; nothing is written.
+- `fetch::tls()` says what happened, and the Plugins place's first log line ends with it:
+  - `OpenSSL 3.0.13 ready`;
+  - `OpenSSL 3.0.13 ready (its random numbers didn't start: <OpenSSL's errors>; MPFree loaded its default provider)`;
+  - or `OpenSSL 3.0.13 not ready: its random numbers can't start (<errors>; with its default provider: <errors>); it seeds from <source>, its config is in <folder>, the kernel's getrandom works`. The same text follows any later `Insufficient randomness`.
+
+All three were reproduced on the workstation, in the app's static ARM build under qemu as well as natively: with the system's config, with a config that turns on only the null provider (libcurl's exact error before the repair; past it after), and with a config that names a random number generator that doesn't exist (the full account).
 
 ## Installing
 
@@ -58,15 +73,15 @@ Only `files/plugins/` under the data folder, and only when the musician acts (or
 
 ## Tests
 
-- `mpfree-mpcstore`: the zip reader (entry kinds, a damaged entry, unsafe names), SHA-256 against the standard examples, the catalog's release pick, finding a release's plugin folder, install with the sum checked and an update keeping the musician's file, an unsafe name stopping the install, links never followed by install or remove, odd catalog ids and versions left out, the hosts `fetch` allows, and `fetch` against a local server (progress, the size cap, an HTTP error, cancel). `examples/install.rs` and `examples/fetch.rs` run the real thing by hand; on 15 Nov they installed 6W6 from the live catalog.
+- `mpfree-mpcstore`: the zip reader (entry kinds, a damaged entry, unsafe names), SHA-256 against the standard examples, the catalog's release pick, finding a release's plugin folder, install with the sum checked and an update keeping the musician's file, an unsafe name stopping the install, links never followed by install or remove, odd catalog ids and versions left out, the hosts `fetch` allows, and `fetch` against a local server (progress, the size cap, an HTTP error, cancel). `fetch::tls` on the workstation's OpenSSL, and `tests/tls.rs` with a config that leaves out the default provider (repaired and said). `examples/install.rs` and `examples/fetch.rs` (which prints the `TLS:` line first) run the real thing by hand; on 15 Nov they installed 6W6 from the live catalog.
 - `plugin_store.rs`: listing, a zip that isn't one refused and deleted (and Delete zip refusing anything but a zip in the folder), no data folder, the picture fit.
-- `plugin_page.rs`: the catalog view, orders, chips and search, Update and the two-tap Remove, zips on the stick, favourites and the selection kept in view, version order, the sample screen.
+- `plugin_page.rs`: the log's first line with what OpenSSL said, the catalog view, orders, chips and search, Update and the two-tap Remove, zips on the stick, favourites and the selection kept in view, version order, the sample screen.
 - `gui.rs`: `the_plugins_place_lists_the_stick_and_deletes_a_zip_on_the_second_tap` drives the real browser and worker on a scratch data folder; the sample screen `browser-plugins` is the manual's picture and goes through the controls sweep.
 - `mpfree-plughost/tests/mpc.rs`: `a_plugin_installed_while_running_is_offered_at_once`.
 
 ## Not yet
 
-1. **On the MPC.** Does the soft-boot stick reach HTTPS: libcurl present, CA certificates found, DNS over the Ethernet port. Folded into Jay's next combined device run (check `mpc-plugin-install`).
+1. **On the MPC.** The final round found libcurl but not OpenSSL's random numbers. The check `mpc-plugin-install` now reads the `OpenSSL ... ready` line too, and the catalog's line says why if it still fails. CA certificates and DNS over the Ethernet port come after that.
 2. **Loading from the stick.** The stick mounts the data partition `noexec`, and the kernel won't map a plugin's library from a noexec mount, so a plugin in `files/plugins/` (MPC or CLAP) can't load there until the stick lets that one folder run code. The device rounds thread's stick change (#399) bind-mounts `files/plugins/` with `exec,nosuid,nodev`; without it the check `mpc-plugin` records the error.
 3. **A zip's pictures before installing.** Only the catalog's picture shows until it is installed.
 4. **Wi-Fi.** Needs the firmware loaded before the handover, or the opt-in chain route (`loadpin.enforce=0`), and a Wi-Fi page; the stick's owner thread would carry it.
