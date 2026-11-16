@@ -47,6 +47,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod eq_page;
 pub mod macros;
 pub mod picker;
 pub mod sample;
@@ -79,6 +80,8 @@ pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hin
 pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
 pub const CHAIN_HINT: &str = "Q-Links: the effect's four, on every page  ·  SHIFT + Q-Link: fine  ·  drag an effect: move it  ·  touch a control: macro, Learn, + LFO  ·  strip button: other strips";
+/// The hint line on the EQ's page.
+pub const EQ_HINT: &str = "Drag a dot: frequency and gain  ·  wheel or two fingers: its Q  ·  tap the graph twice: add a band  ·  Q-Links: the band  ·  ‹: back";
 /// The hint line while the strip list is open.
 pub const STRIPS_HINT: &str =
     "Tap a strip: its chain  ·  Tracks, Pads and the rest: those strips  ·  Back: keep this one";
@@ -148,11 +151,13 @@ pub fn chain_picking(ui: &Ui) -> bool {
 }
 
 /// The chain editor's hint line: [`PICKER_HINT`] while the effect picker
-/// is open, [`STRIPS_HINT`] while the strip list is, else [`CHAIN_HINT`].
+/// is open, [`STRIPS_HINT`] while the strip list is, [`EQ_HINT`] on the
+/// EQ's page, else [`CHAIN_HINT`].
 pub fn chain_hint(ui: &Ui) -> &'static str {
     match ui.get::<ChainView>(CHAIN) {
         Some(v) if v.state().picking => PICKER_HINT,
         Some(v) if v.state().list.is_some() => STRIPS_HINT,
+        Some(v) if v.state().eq && v.state().selected.is_some() => EQ_HINT,
         _ => CHAIN_HINT,
     }
 }

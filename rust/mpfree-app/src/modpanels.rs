@@ -500,6 +500,13 @@ fn set(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
     }
 }
 
+/// Sets `addr` as a knob turn would and lets it go at once (UNDO and
+/// REDO of a mixer turn, `mixturns.rs`).
+pub fn set_param_now(h: &mut MixHost, addr: ParamAddr, value: f32) {
+    set(h, addr, value, false);
+    h.modu.release(addr);
+}
+
 /// A knob's map when it goes on a macro: the one it has if it is on
 /// another, else from where it is now to the far end of its travel.
 fn mapping(h: &MixHost, target: ParamAddr) -> MacroMap {
@@ -754,6 +761,66 @@ impl Panels {
             ChainOut::Refused(why) => vec![Effect::Tell(format!("mixer: {why}"))],
             _ => Vec::new(),
         }
+    }
+
+    /// "+ EQ" on the mixer's EQ look (`MixAction::AddEq`): a parametric
+    /// EQ added at the end of the strip's chain (its first free slot), as
+    /// the chain editor adds one.
+    pub fn add_eq(&mut self, mix: &mut MixHost, strip: StripId) -> Vec<Effect> {
+        let Some(mut h) = ChainHost::from_mixer(strip, None) else {
+            return Vec::new();
+        };
+        self.sent_at = None;
+        match h.action(mix, &ChainAction::Add(mpfree_chain_ui::state::EQ_ID), false) {
+            ChainOut::Refused(why) => vec![Effect::Tell(format!("mixer: {why}"))],
+            _ => Vec::new(),
+        }
+    }
+
+    /// A band picked or a dot dragged on the mixer's EQ look
+    /// (`MixAction::FocusInsert`, `SetInsert`, `ReleaseInsert`): parameter
+    /// `id` of insert `slot`, as the chain editor's knobs set it (so a
+    /// drag is one UNDO step and the picked EQ's Q-Links follow the band).
+    /// The EQ is picked first if it wasn't.
+    pub fn insert_param(
+        &mut self,
+        mix: &mut MixHost,
+        a: &mpfree_mixer_ui::MixAction,
+        recording: bool,
+    ) {
+        use mpfree_mixer_ui::MixAction as M;
+        let (strip, slot, id) = match *a {
+            M::FocusInsert { strip, slot, id }
+            | M::SetInsert {
+                strip, slot, id, ..
+            }
+            | M::ReleaseInsert { strip, slot, id } => (strip, slot, id),
+            _ => return,
+        };
+        let (Some(s), Some(uid)) = (
+            strip_of(strip),
+            mix.mixer.chain(strip).and_then(|c| c.uid(slot)),
+        ) else {
+            return;
+        };
+        let addr = ParamAddr::new(Owner::Insert(s, uid), id);
+        let picked = self.picked
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(|h| h.strip() == s && h.selected == Some(slot));
+        if !picked {
+            self.pick_insert(strip, slot);
+        }
+        let ca = match *a {
+            M::FocusInsert { .. } => ChainAction::Focus(addr),
+            M::SetInsert { value, .. } => ChainAction::Set { addr, value },
+            _ => ChainAction::Release(addr),
+        };
+        if let Some(h) = self.chain.as_mut() {
+            h.action(mix, &ca, recording);
+        }
+        self.sent_at = None;
     }
 
     /// The Sample tab's FX sub-tab: the chain editor on the playing kit's

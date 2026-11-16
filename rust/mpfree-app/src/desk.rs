@@ -88,6 +88,18 @@ impl Desk<'_> {
                 fx.extend(panels.move_insert(mix, strip, from, to))
             }
             gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Unpick) => panels.unpick(),
+            // The EQ look: + EQ, and a band picked or dragged.
+            gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::AddEq { strip }) => {
+                fx.extend(panels.add_eq(mix, strip))
+            }
+            gui::FromUi::Mixer(
+                a @ (mpfree_mixer_ui::MixAction::FocusInsert { .. }
+                | mpfree_mixer_ui::MixAction::SetInsert { .. }
+                | mpfree_mixer_ui::MixAction::ReleaseInsert { .. }),
+            ) => {
+                let recording = time.info().state == mpfree_transport::State::Recording;
+                panels.insert_param(mix, &a, recording)
+            }
             // The Sample tab's FX: the chain editor on the pad's channel.
             gui::FromUi::SampleFx { pad } => fx.extend(panels.open_pad(app, pad, mixing::DRUMS)),
             gui::FromUi::PadEffects { pad } => fx.extend(panels.open_pad_mix(app, mix, pad)),
