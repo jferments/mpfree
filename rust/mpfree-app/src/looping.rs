@@ -873,6 +873,13 @@ pub struct LoopHost {
     /// The pad player's sound for this period (see [`LoopHost::take_pads`]).
     pads_l: [f32; PERIOD],
     pads_r: [f32; PERIOD],
+    /// The latency the pads' sound comes with: 0 dry, a period and more
+    /// from the mixer ([`LoopHost::take_pads_as`]).
+    pads_latency: u32,
+    /// Why the pads are recorded dry, when they are.
+    pads_dry: Option<&'static str>,
+    /// The latency the looper was last given.
+    latency_set: u32,
     input: Vec<f32>,
     out: Vec<f32>,
     last: Status,
@@ -1192,6 +1199,9 @@ impl LoopHost {
             input_r: [0.0; PERIOD],
             pads_l: [0.0; PERIOD],
             pads_r: [0.0; PERIOD],
+            pads_latency: 0,
+            pads_dry: None,
+            latency_set: 0,
             input: vec![0.0; 2 * PERIOD],
             out: vec![0.0; 2 * PERIOD],
             last,
@@ -1487,6 +1497,16 @@ impl LoopHost {
 
     /// A press or a setting, with its `looper:` line for the log.
     pub fn command(&mut self, c: Command) -> String {
+        // The app's latency is the line input's; the pads have their own.
+        let c = match c {
+            Command::SetLatency(_) if self.source == LoopSource::Pads => {
+                Command::SetLatency(self.pads_latency)
+            }
+            c => c,
+        };
+        if let Command::SetLatency(l) = c {
+            self.latency_set = l;
+        }
         self.steps_left = 0;
         let s = self.looper.status();
         let moved = self.moved_text(c, &s);
@@ -1883,6 +1903,32 @@ impl LoopHost {
     pub fn take_pads(&mut self, left: &[f32; PERIOD], right: &[f32; PERIOD]) {
         self.pads_l = *left;
         self.pads_r = *right;
+        self.pads_latency = 0;
+    }
+
+    /// The pads' sound for this period as the app records it: wet from the
+    /// mixer, `latency` frames late after the period it lags
+    /// ([`crate::mixing::MixHost::pads_wet`]), or dry from the engines, in
+    /// time, with the reason it isn't wet. A line for the log when that
+    /// changes (rarely: a strip routed to a submix, or a plugin's latency).
+    pub fn take_pads_as(
+        &mut self,
+        left: &[f32; PERIOD],
+        right: &[f32; PERIOD],
+        how: Result<u32, &'static str>,
+    ) -> Option<String> {
+        self.pads_l = *left;
+        self.pads_r = *right;
+        self.pads_latency = how.map_or(0, |l| PERIOD as u32 + l);
+        let dry = how.err();
+        if dry == self.pads_dry {
+            return None;
+        }
+        self.pads_dry = dry;
+        Some(match dry {
+            None => "looper: records the pads with their effects again".to_string(),
+            Some(why) => format!("looper: records the pads dry, without their effects: {why}"),
+        })
     }
 
     /// One period for the mixer: read the line input, run the looper on the
@@ -1961,6 +2007,13 @@ impl LoopHost {
         // A period nobody handed the pads' sound to records silence.
         self.pads_l = [0.0; PERIOD];
         self.pads_r = [0.0; PERIOD];
+        // The pads' latency follows the mix (a plugin's latency, or dry).
+        if self.source == LoopSource::Pads
+            && self.latency_set != self.pads_latency
+            && self.looper.command(Command::SetLatency(self.pads_latency))
+        {
+            self.latency_set = self.pads_latency;
+        }
         if let Some(span) = block.spans().first() {
             self.beats_per_bar = u32::from(span.meter.beats);
             self.bpm = span.bpm;
@@ -1989,13 +2042,17 @@ impl LoopHost {
         let at = at();
         if s.phase != was.phase {
             lines.push(match s.phase {
-                Phase::Empty if was.phase == Phase::Recording => format!("looper: first pass thrown away at {at} (the \
-                                                                           transport stopped or jumped)"),
+                Phase::Empty if was.phase == Phase::Recording => format!("looper: first pass thrown away at {at} (STOP \
+                                                                           before a 1/16 note, or the transport jumped)"),
                 Phase::Empty => format!("looper: empty at {at}"),
                 Phase::Armed => format!("looper: armed at {at}"),
                 Phase::Recording => format!("looper: recording the first pass from {at} ({})", bars_text(s.bars)),
                 Phase::Playing if was.phase == Phase::Recording => {
-                    format!("looper: loop of {} at {at}: {} frames ({:.2} s), playing", ticks_text(s.ticks, self.beats_per_bar),
+                    let kept = match s.cut {
+                        Some(c) => format!(", cut at STOP after {:.2} s (silent to the bar line)", c as f64 / 44_100.0),
+                        None => String::new(),
+                    };
+                    format!("looper: loop of {} at {at}: {} frames ({:.2} s), playing{kept}", ticks_text(s.ticks, self.beats_per_bar),
                             s.frames, s.frames as f64 / 44_100.0)
                 }
                 Phase::Playing => format!("looper: playing at {at}, {} layers", s.layers),
@@ -2172,7 +2229,7 @@ pub fn bars_text(b: Option<u32>) -> String {
     match b {
         Some(1) => "1 bar".to_string(),
         Some(n) => format!("{n} bars"),
-        None => "free (until Record again)".to_string(),
+        None => "free (until STOP or Record again)".to_string(),
     }
 }
 
@@ -2584,6 +2641,70 @@ mod tests {
                 .describe()
                 .contains(&format!("records from {}", source.name().to_lowercase())));
         }
+    }
+
+    /// The pads from the mix come a period late (the looper runs before
+    /// the mixer): the looper makes it up, whatever latency the app asks
+    /// for (that is the line input's), so the loop is in time to the
+    /// frame. Falling back to the dry pads, and back to the mix, each say
+    /// so once.
+    #[test]
+    fn the_pads_from_the_mix_are_recorded_in_time_though_a_period_late() {
+        let mut h = LoopHost::new(44_100, 20);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        // The app's latency on the pads: the pads' own stands.
+        h.command(Command::SetLatency(512));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        const BAR: u64 = 88_200;
+        let late = PERIOD as u64;
+        let mut checked = 0;
+        for p in 0..(2 * BAR / PERIOD as u64 + 2) {
+            assert!(t.process(PERIOD as u32, &mut b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            for f in 0..PERIOD {
+                let n = (p * PERIOD as u64 + f as u64).checked_sub(late);
+                if let Some(n) = n.filter(|&n| n < BAR) {
+                    (l[f], r[f]) = pads_at(n);
+                }
+            }
+            assert_eq!(h.take_pads_as(&l, &r, Ok(0)), None, "the mix all along");
+            h.period(&b, &mut l, &mut r);
+            for f in 0..PERIOD {
+                let n = p * PERIOD as u64 + f as u64;
+                if (BAR + 1_000..2 * BAR - 1_000).contains(&n) {
+                    let want = pads_at(n - BAR);
+                    assert!(
+                        (l[f] - want.0).abs() < 1e-6 && (r[f] - want.1).abs() < 1e-6,
+                        "frame {n}: {:?}, want {want:?}",
+                        (l[f], r[f])
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, BAR - 2_000);
+        assert_eq!(h.looper.status().latency, PERIOD as u32);
+        // Dry: said once, and the latency goes to 0 with it.
+        let z = [0.0; PERIOD];
+        let why = "the Loop track goes to a submix";
+        assert_eq!(
+            h.take_pads_as(&z, &z, Err(why)).as_deref(),
+            Some("looper: records the pads dry, without their effects: the Loop track goes to a submix")
+        );
+        assert_eq!(h.take_pads_as(&z, &z, Err(why)), None);
+        let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+        assert!(t.process(PERIOD as u32, &mut b));
+        h.period(&b, &mut l, &mut r);
+        assert!(t.process(PERIOD as u32, &mut b));
+        h.period(&b, &mut l, &mut r);
+        assert_eq!(h.looper.status().latency, 0);
+        assert_eq!(
+            h.take_pads_as(&z, &z, Ok(0)).as_deref(),
+            Some("looper: records the pads with their effects again")
+        );
     }
 
     /// The audio thread's part: handing over the pads, a period, the log
@@ -3147,7 +3268,8 @@ mod tests {
     }
 
     /// The wave goes when the loop does: cleared, or its first pass
-    /// thrown away (stopped before the end) while its wave was shown.
+    /// thrown away (STOP before a 1/16 note was played) while its wave was
+    /// shown.
     #[test]
     fn the_wave_empties_when_the_loop_does() {
         for clear in [true, false] {
@@ -3155,7 +3277,7 @@ mod tests {
             h.command(Command::Record);
             t.command(0, T::Play);
             let mut n = 0;
-            let until = if clear { 1_000 } else { 300 };
+            let until = if clear { 1_000 } else { 30 };
             let mut shown = None;
             for p in 0..until {
                 wave_period(&mut h, &mut t, &mut b, &mut n, pads_at);

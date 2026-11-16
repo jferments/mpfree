@@ -790,10 +790,18 @@ impl Session {
         if let Some(c) = self.cloud.take() {
             self.out.show(ToUi::SampleGrains(c));
         }
-        // The looper's period (silence in), as main.rs runs it: it reads
-        // the loops for a save and lets an open's clears land.
-        let z0 = [0f32; PERIOD];
-        self.looper.take_pads(&z0, &z0);
+        // The looper's period, as main.rs runs it: the pads as heard in the
+        // last period's mix (silence when that can't be had: the session
+        // has no dry feed), and the loop out to the mixer's Loop track. It
+        // reads the loops for a save and lets an open's clears land.
+        let (mut pl, mut pr) = ([0f32; PERIOD], [0f32; PERIOD]);
+        let how = self.mix.pads_wet(&mut pl, &mut pr);
+        if how.is_err() {
+            (pl, pr) = ([0f32; PERIOD], [0f32; PERIOD]);
+        }
+        if let Some(line) = self.looper.take_pads_as(&pl, &pr, how) {
+            self.out.note(&line);
+        }
         let (mut ll, mut lr) = ([0f32; PERIOD], [0f32; PERIOD]);
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
@@ -859,7 +867,7 @@ impl Session {
         self.mix.period(
             &ctx,
             (&z, &z),
-            (&z, &z),
+            (&ll, &lr),
             (&al, &ar),
             (&z, &z),
             &mut l,
