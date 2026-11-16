@@ -1282,12 +1282,24 @@ impl LooperPage {
         }
         self.selected = v.selected;
         // A Q-Link turned a moment ago: keep what it set until the looper
-        // has caught up.
+        // has caught up. Only the values it sets, on the same loop: the
+        // layers themselves come from the looper, so a layer an overdub
+        // adds, or one a move or delete takes away, shows at once, and a
+        // row's × names the layer the looper has there. (Found 16 Nov by
+        // the Looper smoke test in a release build: × on a new overdub,
+        // within 400 ms of a turn, sent the id of a layer moved away
+        // before, and nothing was deleted.)
         let fresh = self
             .turned
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(400))
+            && v.selected == self.view.selected;
         if fresh {
-            v.layers = self.view.layers;
+            for l in v.layers.iter_mut().flatten() {
+                if let Some(set) = self.view.layers.iter().flatten().find(|s| s.id == l.id) {
+                    l.level = set.level;
+                    l.pan = set.pan;
+                }
+            }
             v.status.level = self.view.status.level;
             v.status.fade_old = self.view.status.fade_old;
             v.status.seam = self.view.status.seam;
@@ -2136,6 +2148,41 @@ mod tests {
         assert_eq!(page.qlink(&mut ui, 0, 1, false), None);
         assert_eq!(page.qlink(&mut ui, 2, 1, false), None);
         assert_eq!(card(&ui, 0).0, "No layer");
+    }
+
+    #[test]
+    fn a_turn_holds_what_it_set_but_the_layers_follow_the_looper() {
+        let (mut ui, mut page) = page();
+        let v = two_loops();
+        page.update(&mut ui, &v, &Settings::default());
+        page.pick_layer(&mut ui, 0);
+        page.qlink(&mut ui, 0, 2, false);
+        let turned = 10f32.powf(1.0 / 20.0);
+        // Within the hold, the looper's view: layer 11 moved to another
+        // loop and an overdub added layer 13.
+        let mut w = v.clone();
+        w.layers = [None; MAX_LAYERS];
+        for (k, id) in [10, 12, 13].into_iter().enumerate() {
+            w.layers[k] = Some(layer(id));
+        }
+        page.update(&mut ui, &w, &Settings::default());
+        let ids: Vec<u8> = (0..MAX_LAYERS)
+            .filter_map(|k| page.layer_info(k).map(|l| l.id))
+            .collect();
+        assert_eq!(ids, [10, 12, 13], "each row's × names the looper's layer");
+        let level = page.layer_info(0).map_or(0.0, |l| l.level);
+        assert!(
+            (level - turned).abs() < 1e-4,
+            "the turned level holds: {level}"
+        );
+        // Loop 2 picked: its layer 10 is its own, nothing held from loop 1.
+        let mut x = w.clone();
+        x.selected = 1;
+        x.status = x.loops[1];
+        x.layers = [None; MAX_LAYERS];
+        x.layers[0] = Some(layer(10));
+        page.update(&mut ui, &x, &Settings::default());
+        assert_eq!(page.layer_info(0).map(|l| l.level), Some(1.0));
     }
 
     #[test]
