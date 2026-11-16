@@ -292,9 +292,11 @@ impl State {
             Ask::DeleteZip { path } => {
                 let key = path.display().to_string();
                 let r = match self.dir.as_deref() {
-                    Some(d) if path.parent() == Some(d) => std::fs::remove_file(&path)
-                        .map(|_| format!("Deleted {}", file_name(&path)))
-                        .map_err(|e| format!("{}: {e}", file_name(&path))),
+                    Some(d) if path.parent() == Some(d) && install::is_zip(&path) => {
+                        std::fs::remove_file(&path)
+                            .map(|_| format!("Deleted {}", file_name(&path)))
+                            .map_err(|e| format!("{}: {e}", file_name(&path)))
+                    }
                     _ => Err("not a zip in the plugins folder".into()),
                 };
                 self.done(&key, r, false);
@@ -379,7 +381,8 @@ impl State {
             .ok_or_else(|| format!("{} can't be installed here: {}", p.name, p.fit.why_not()))?;
         let downloads = dir.join(DOWNLOADS);
         std::fs::create_dir_all(&downloads).map_err(|e| format!("{}: {e}", downloads.display()))?;
-        let file = downloads.join(format!("{id}-{}.zip", r.version.replace('/', "-")));
+        // Named by its sum (64 hex digits, checked when the catalog is read).
+        let file = downloads.join(format!("{}.zip", r.sha256));
         let tx = self.tx.clone();
         let cancel = Arc::clone(&self.cancel);
         let key = id.to_string();
@@ -843,6 +846,13 @@ mod tests {
         });
         wait(&w, |n| matches!(n, News::Done { said: Ok(_), .. }));
         assert!(!dir.join("notes.zip").exists());
+        // Only a zip straight in the folder.
+        std::fs::write(dir.join(FAVOURITES), b"x\n").unwrap();
+        w.ask(Ask::DeleteZip {
+            path: dir.join(FAVOURITES),
+        });
+        wait(&w, |n| matches!(n, News::Done { said: Err(_), .. }));
+        assert!(dir.join(FAVOURITES).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

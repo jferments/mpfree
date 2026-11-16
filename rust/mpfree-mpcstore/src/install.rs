@@ -153,6 +153,11 @@ fn unpack(zip: &Zip, f: &Found, dest: &Path, head: &str) -> Result<Installed, St
     let target = dest.join(&f.folder);
     let old = dest.join(format!("{OLD}{}", f.folder));
     let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    // A link where the folder goes (made by hand) is left alone: an update
+    // would carry files over from wherever it points.
+    if is_link(&target) {
+        return Err(format!("{} is a link, so MPFree leaves it alone", f.folder));
+    }
     // Left over from an install that was cut off.
     for p in [&staging, &old] {
         if p.exists() {
@@ -339,7 +344,17 @@ pub fn remove(dest: &Path, folder: &str) -> Result<Removed, String> {
         let Some(parts) = safe_parts(f) else {
             continue;
         };
-        let p = parts.iter().fold(dir.clone(), |p, s| p.join(s));
+        // Never through a link the musician put inside the folder: only
+        // the files themselves, where the install put them.
+        let mut p = dir.clone();
+        let mut through_link = false;
+        for (i, s) in parts.iter().enumerate() {
+            p.push(s);
+            through_link |= i + 1 < parts.len() && is_link(&p);
+        }
+        if through_link {
+            continue;
+        }
         match fs::remove_file(&p) {
             Ok(()) => files += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -351,6 +366,10 @@ pub fn remove(dest: &Path, folder: &str) -> Result<Removed, String> {
     prune(&dir);
     let kept = if dir.exists() { count_files(&dir) } else { 0 };
     Ok(Removed { files, kept })
+}
+
+fn is_link(p: &Path) -> bool {
+    fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
 }
 
 fn count_files(dir: &Path) -> usize {
@@ -384,17 +403,19 @@ pub fn zips(dir: &Path) -> Vec<PathBuf> {
         .map(|rd| {
             rd.flatten()
                 .map(|e| e.path())
-                .filter(|p| {
-                    p.is_file()
-                        && p.extension()
-                            .and_then(|s| s.to_str())
-                            .is_some_and(|s| s.eq_ignore_ascii_case("zip"))
-                })
+                .filter(|p| p.is_file() && is_zip(p))
                 .collect()
         })
         .unwrap_or_default();
     out.sort();
     out
+}
+
+/// Whether a file's name ends in `.zip` (any case).
+pub fn is_zip(p: &Path) -> bool {
+    p.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("zip"))
 }
 
 #[cfg(test)]
@@ -561,6 +582,36 @@ mod tests {
             "nothing left behind"
         );
         let _ = fs::remove_dir_all(&dest);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_and_remove_never_go_through_a_link() {
+        let dest = scratch("links");
+        let outside = scratch("links-outside");
+        fs::write(outside.join("TUI.json"), b"mine").unwrap();
+        let z = release(b"1");
+        install(&z, &dest, None, Origin::default()).unwrap();
+        let dir = dest.join("Maker - VST - Thing");
+        // The musician swaps a folder of the plugin for a link elsewhere.
+        fs::remove_dir_all(dir.join("Plugin Skins")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("Plugin Skins")).unwrap();
+        let r = remove(&dest, "Maker - VST - Thing").unwrap();
+        assert_eq!(
+            r.files, 3,
+            "the file behind the link is not counted or removed"
+        );
+        assert_eq!(fs::read(outside.join("TUI.json")).unwrap(), b"mine");
+        // A link where the plugin's folder goes: the install leaves it.
+        let _ = fs::remove_dir_all(&dir);
+        std::os::unix::fs::symlink(&outside, &dir).unwrap();
+        assert!(install(&z, &dest, None, Origin::default())
+            .unwrap_err()
+            .contains("is a link"));
+        assert_eq!(fs::read(outside.join("TUI.json")).unwrap(), b"mine");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&dest);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]
