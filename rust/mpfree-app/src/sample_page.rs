@@ -359,6 +359,12 @@ pub fn input_bytes(rate: u32) -> u64 {
 
 /// Gives a sound file's bytes from its name in a project's `samples/`
 /// ([`SamplePage::open_part`]).
+/// A kit as a kit file: its name, its `kit.txt` and each sound by file name.
+pub type KitFile = (String, String, Vec<(String, Source)>);
+
+/// A kit file being read: the answer, the kit it goes on, its name.
+type KitLoading = (Receiver<Result<Opened, String>>, usize, String);
+
 pub type ReadSample = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send>;
 
 pub struct SamplePage {
@@ -506,6 +512,9 @@ pub struct SamplePage {
     gear_out: Option<GearOut>,
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
     opening: Option<Receiver<Result<Opened, String>>>,
+    /// A kit file being read and decoded ([`SamplePage::open_kit`]): it
+    /// goes in place of this kit, under this name.
+    kit_loading: Option<KitLoading>,
     /// A file being read for the browser's Load (true: Load to pad).
     loading: Option<(Receiver<LoadedPad>, bool)>,
     /// A sound Load to pad put on the next pad hit.
@@ -613,6 +622,7 @@ impl SamplePage {
             fx_open: None,
             gear_out: None,
             opening: None,
+            kit_loading: None,
             loading: None,
             assign: None,
             sending: None,
@@ -3056,6 +3066,143 @@ impl SamplePage {
         }
     }
 
+    /// The kit the pads play as a kit file (`mpfree_library::kit`): its
+    /// name, its `kit.txt` (the sampler's part for that one kit) and each
+    /// sound it names, by a file name made from the sound's name (`Kick.wav`,
+    /// `Kick 2.wav` for a second sound of that name). None when the pads play
+    /// no kit of the page's (the synth).
+    pub fn kit_file(&self) -> Option<KitFile> {
+        let k = self.kit;
+        let p = self.projects.get(k)?;
+        let name = self
+            .names
+            .get(k)
+            .cloned()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("Kit {}", k + 1));
+        let (text, files) = kit_file_of(&name, p);
+        Some((name, text, files))
+    }
+
+    /// The names of the kits the app first gave, once they have come.
+    pub fn factory_names(&self) -> Option<&[String]> {
+        self.factory
+            .as_ref()
+            .map(|(_, n)| n.as_slice())
+            .filter(|n| !n.is_empty())
+    }
+
+    /// The kits the app first gave (before any edit) whose names `keep`
+    /// takes, each as [`SamplePage::kit_file`] gives one.
+    pub fn factory_kit_files(&self, keep: &dyn Fn(&str) -> bool) -> Vec<KitFile> {
+        let Some((projects, names)) = &self.factory else {
+            return Vec::new();
+        };
+        projects
+            .iter()
+            .zip(names)
+            .filter(|(_, n)| keep(n))
+            .map(|(p, n)| {
+                let (text, files) = kit_file_of(n, p);
+                (n.clone(), text, files)
+            })
+            .collect()
+    }
+
+    /// Loads a kit file (`dir` is its folder: `kit.txt` and its sounds) in
+    /// place of the kit the pads play, named for the folder. Read and decoded
+    /// on a thread of its own; the kit changes on a later
+    /// [`SamplePage::tick`]. What can't be used is left out and said in the
+    /// log. A load while another is under way replaces it.
+    pub fn open_kit(&mut self, dir: PathBuf) {
+        let Some(k) = (self.kit < self.projects.len()).then_some(self.kit) else {
+            self.told
+                .push("Pick a drum kit first: the pads play the synth".to_string());
+            return;
+        };
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Kit")
+            .to_string();
+        let (tx, rx) = mpsc::channel();
+        let free = self.mem_free;
+        let spawned = std::thread::Builder::new()
+            .name("sample-kit".into())
+            .spawn(move || {
+                let _ = crate::cores::background(); // off the sound's cores and priority
+                let r = read_kit_file(&dir, &mut |f, len| {
+                    crate::memory::room_in(free(), crate::memory::decode_need(f, len))
+                });
+                let _ = tx.send(r);
+            });
+        match spawned {
+            Ok(_) => {
+                self.kit_loading = Some((rx, k, name.clone()));
+                self.lines.push(format!("sample: loading the kit {name}"));
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: the kit {name} wasn't loaded ({e})")),
+        }
+    }
+
+    fn poll_kit(&mut self, ui: &mut Ui) {
+        let Some((rx, _, _)) = &self.kit_loading else {
+            return;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+        };
+        let Some((_, k, name)) = self.kit_loading.take() else {
+            return;
+        };
+        let mut o = match r {
+            Ok(o) => o,
+            Err(e) => {
+                self.lines
+                    .push(format!("sample: the kit {name} wasn't loaded ({e})"));
+                self.told.push(format!("The kit {name} wasn't loaded: {e}"));
+                return;
+            }
+        };
+        for n in &o.notes {
+            self.lines.push(format!("sample: {n}"));
+        }
+        if o.kits.is_empty() || k >= self.projects.len() {
+            self.lines
+                .push(format!("sample: the kit {name} has no kit in it"));
+            return;
+        }
+        let (_, p) = o.kits.swap_remove(0);
+        let mut projects = std::mem::take(&mut self.projects);
+        let mut names = self.names.clone();
+        projects[k] = p;
+        if let Some(n) = names.get_mut(k) {
+            n.clone_from(&name);
+        }
+        let rate = self.rate;
+        self.set_kits(ui, projects, rate);
+        self.set_names(names);
+        self.dirty[k] = true;
+        self.mark_renamed(k);
+        // The work changed: the app marks it unsaved.
+        self.edits += 1;
+        let left = o.notes.len();
+        self.told.push(if left == 0 {
+            format!("Loaded the kit {name} on kit {}", k + 1)
+        } else {
+            format!(
+                "Loaded the kit {name} on kit {}; {left} sounds left out (the Console says why)",
+                k + 1
+            )
+        });
+        self.lines
+            .push(format!("sample: kit {} is now {name}", k + 1));
+    }
+
     /// The kit the project just opened was playing, once, for the app to
     /// switch the pads to.
     pub fn take_wanted_kit(&mut self) -> Option<usize> {
@@ -3907,6 +4054,7 @@ impl SamplePage {
         }
         self.poll_auto(ui, showing);
         self.poll_open(ui);
+        self.poll_kit(ui);
         self.poll_load(ui);
     }
 
@@ -4631,6 +4779,58 @@ fn touched_row(ui: &Ui, ev: &UiEvent) -> Option<(mpfree_sampler_ui::widgets::Set
         .get(index)?
         .clone();
     Some((row, delta))
+}
+
+/// One kit as a kit file: its `kit.txt` text and each sound it names, by a
+/// file name made from the sound's name (`Kick.wav`, `Kick 2.wav` for a
+/// second sound of that name).
+pub fn kit_file_of(name: &str, p: &Project) -> (String, Vec<(String, Source)>) {
+    let mut files: Vec<(String, Source)> = Vec::new();
+    let mut by_id = HashMap::new();
+    for src in p.sources() {
+        let base = mpfree_library::clean_name(&src.name, "Sound");
+        let file = mpfree_library::unique_name(&format!("{base}.wav"), |n| {
+            n.eq_ignore_ascii_case(mpfree_library::KIT_FILE)
+                || files.iter().any(|(f, _)| f.eq_ignore_ascii_case(n))
+        });
+        by_id.insert(src.id(), file.clone());
+        files.push((file, src.clone()));
+    }
+    let text = save::to_text(&[(name, p)], 0, &|s: &Source| {
+        by_id
+            .get(&s.id())
+            .cloned()
+            .unwrap_or_else(|| wav::file_name(s))
+    });
+    (text, files)
+}
+
+/// Reads a kit folder: its `kit.txt` (the sampler's part, one kit) and the
+/// sounds it names, each only if `room(file, bytes)` says it fits in
+/// memory. Files are looked for in the folder only (no links, no paths).
+fn read_kit_file(
+    dir: &std::path::Path,
+    room: &mut dyn FnMut(&str, u64) -> Result<(), String>,
+) -> Result<Opened, String> {
+    let text_path = dir.join(mpfree_library::KIT_FILE);
+    let m = std::fs::symlink_metadata(&text_path).map_err(|e| format!("kit.txt: {e}"))?;
+    if !m.is_file() || m.len() > mpfree_library::kit::MAX_KIT_TEXT {
+        return Err("its kit.txt is not a kit file".to_string());
+    }
+    let text = std::fs::read_to_string(&text_path).map_err(|e| format!("kit.txt: {e}"))?;
+    save::from_text(&text, &mut |f| {
+        if !mpfree_library::valid_name(f) || f.eq_ignore_ascii_case(mpfree_library::KIT_FILE) {
+            return Err("not a sound's name".to_string());
+        }
+        let p = dir.join(f);
+        let m = std::fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
+        if !m.is_file() {
+            return Err("not a file".to_string());
+        }
+        room(f, m.len())?;
+        let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+        wav::read(f, &bytes)
+    })
 }
 
 #[cfg(test)]

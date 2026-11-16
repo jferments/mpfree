@@ -21,11 +21,13 @@ The switch at the top right shows **Browse** or **Pad** beside the pads.
 
 {{shot: pads-browse | The Pads tab's Browse view: the bank on the left, the browser beside it in Samples / Drums, and Kick 01 picked, with its waveform and buttons.}}
 
-**Browse** finds sounds on the stick. Pick a place on the left (**Samples**, **Recordings**, **Recent** or **Favourites**), open folders, and pick a sound to see its length, format and waveform. Then:
+**Browse** finds sounds and kits on the stick. Pick a place on the left (**Samples**, **Kits**, **Recordings**, **Recent** or **Favourites**). Tap a folder to open it, and tap a sound to pick it and see its length, format and waveform. Then:
 
-- **Load** puts it on the pad picked; **Load to pad** puts it on the next pad you hit.
+- **Load** puts it on the pad picked (so does a second tap on it); **Load to pad** puts it on the next pad you hit.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
-- **Favourite** stars it, so it is in Favourites next time.
+- The **star** at the right end of each row adds it to Favourites; tap it again to take it out.
+
+**Whole kits.** A kit (green icon) loads all at once: pick it and tap it again, push the data wheel, or tap **Load**. It takes the place of the kit the pads play now, with every pad's sound and settings. To see the sounds inside a kit one by one, press **+**. **Save kit**, at the top of the **Kits** place, keeps the kit the pads play as a kit of its own, so you can load it in another project; save it before you load another kit over it if you want to keep your changes. MPFree puts its own drum kits in **Kits > MPFree** the first time it starts with your library.
 
 The data wheel, its push, **–** and **+** move through the browser too; see [Buttons and controls](../reference/controls.md#pads-tab). Browse needs the data partition on MPFree's stick; without it, the view says so and the Pad view still works.
 

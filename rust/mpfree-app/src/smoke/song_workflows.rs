@@ -38,7 +38,8 @@ mod tests {
         Lab { s, dir }
     }
 
-    /// BROWSE, Projects, the song's row, Open: as on the MPC.
+    /// BROWSE, Projects, the song's row tapped twice (the first picks it,
+    /// the second opens it): as on the MPC.
     fn open(s: &mut Session, name: &str) {
         // BROWSE opens the browser, or closes it if it shows (it stays
         // open after New project, say).
@@ -47,7 +48,7 @@ mod tests {
         }
         s.press("browser", "place", "Projects");
         s.press("browser", "row", name);
-        s.press("browser", "button", "Open");
+        s.press("browser", "row", name);
         s.run_for(0.3);
         assert!(
             s.lines
