@@ -161,6 +161,13 @@ impl Writer {
         self.stats.max_late_us.load(Ordering::Relaxed) as f64 / 1000.0
     }
 
+    /// Lets the thread write what is queued and stop, without waiting: for
+    /// the sound loop, when Prefs turns sending off. The thread closes its
+    /// port when it ends.
+    pub fn let_go(self) {
+        drop(self.tx);
+    }
+
     /// Lets the thread write what is queued and stop, waiting at most a
     /// second. True when it finished.
     pub fn finish(self) -> bool {
@@ -174,6 +181,59 @@ impl Writer {
             let _ = self.thread.join();
         }
         done
+    }
+}
+
+/// A writer Prefs switched off, kept until what it was handed has left:
+/// switched on again soon, the port is taken back rather than opened a
+/// second time (a rawmidi output may refuse that while the old file is
+/// open), and a button light still goes out between CV pairs.
+pub struct Closing {
+    writer: Writer,
+    until: Instant,
+}
+
+/// How long a switched-off writer is kept after its last message is due.
+const LINGER: Duration = Duration::from_millis(250);
+
+impl Closing {
+    /// `lead`: how long after now its last message is due.
+    pub fn new(writer: Writer, lead: Duration) -> Closing {
+        Closing {
+            writer,
+            until: Instant::now() + lead + LINGER,
+        }
+    }
+
+    pub fn writer(&self) -> &Writer {
+        &self.writer
+    }
+
+    /// Its log lines; true when it is time to let it go (its messages
+    /// have left, or the port failed).
+    pub fn tick(&self, log: &mut dyn FnMut(String)) -> bool {
+        let gone = self.writer.gone();
+        self.writer.log_lines(log);
+        gone || Instant::now() >= self.until
+    }
+
+    /// The writer again, for a switch turned back on; none if its port
+    /// failed meanwhile.
+    pub fn take_back(self) -> Option<Writer> {
+        if self.writer.gone() {
+            self.writer.let_go();
+            None
+        } else {
+            Some(self.writer)
+        }
+    }
+
+    pub fn let_go(self) {
+        self.writer.let_go();
+    }
+
+    pub fn finish(self) -> bool {
+        self.writer.finish()
     }
 }
 

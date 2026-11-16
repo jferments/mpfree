@@ -8801,8 +8801,32 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     ))));
     io.apply(ToUi::ClockFrom(Some("MIDI In".to_string())));
     io.apply(ToUi::Show(View::Mixer));
-    io.apply(ToUi::Mixer(Box::new(io_state)));
+    io.apply(ToUi::Mixer(Box::new(io_state.clone())));
     out.push(("mixer-io", io));
+    // A port's page over the I/O view's MIDI section (board 6 of the MIDI
+    // mockups): the USB keyboard's, opened by its row's Open ›.
+    let mut port = sample_player(fonts());
+    port.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+        mpfree_midi_ui::sample::rig(),
+    ))));
+    port.apply(ToUi::Show(View::Mixer));
+    port.apply(ToUi::Mixer(Box::new(io_state)));
+    port.open_io_section(mpfree_midi_ui::MIDI);
+    let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+    port.ui.paint(&mut c);
+    if let Some(t) = port.ui.targets().into_iter().find(|t| {
+        t.widget == mpfree_mixer_ui::MIXER
+            && t.target.id == "field"
+            && t.target.label == "Keystep 37: Open ›"
+    }) {
+        let (x, y) = t.target.centre();
+        port.touch(1, Touch::Down, x, y);
+        port.touch(1, Touch::Up, x, y);
+    }
+    let _ = port.take_actions();
+    // Drawn whole again, as a screen first shown is.
+    port.ui.invalidate();
+    out.push(("mixer-io-port", port));
     // The FX chain editor in the mixer's place (a strip's insert row): the
     // drum bus, Drive selected, Tone touched; and the macros panel over the
     // page (a long press on a macro card), layout spec 4b.
@@ -17369,6 +17393,13 @@ mod tests {
                     let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
                     let d = p.ui.paint(&mut c);
                     assert_eq!(d.len(), 1, "{name}: a first paint covers the screen");
+                    if name == "mixer-io-port" {
+                        // The tap on Open › found its row: the page shows.
+                        assert!(
+                            p.ui.targets().iter().any(|t| t.target.id == "port-back"),
+                            "{name}: the port's page is open"
+                        );
+                    }
                 }
             })
             .unwrap()

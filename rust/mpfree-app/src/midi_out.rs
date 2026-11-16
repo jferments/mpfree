@@ -5,8 +5,9 @@
 //! ("MIDI Port"), which is the MIDI Out jack (the owner's read-only captures
 //! of 2026-11-12, docs/dev/hardware/controller-protocol.md). Nothing is
 //! stored on the MPC. Only note, pressure, bank and program messages are
-//! ever sent, never SysEx. The app opens the port only when started with
-//! `mpfree app --midi-out`, until a device round has checked it.
+//! ever sent, never SysEx (plus, from a port's page, its test note and All
+//! notes off). The app opens the port only while Prefs' "Send MIDI and CV
+//! out" is on (off until the musician turns it on; kept across restarts).
 //!
 //! - The sound loop calls [`MidiOut::sync`] once a period before the notes:
 //!   it takes the project's track outputs when they change, and sends each
@@ -18,6 +19,9 @@
 //!   (the period's start plus the sound's lead plus its offset), sleeps
 //!   until then and writes it. A message that finds the writer's queue full
 //!   is dropped and counted.
+//! - **The gear's delay** (the port's page): each message leaves that much
+//!   before its frame is heard, but never before its period was made, so
+//!   at most the sound's lead early ([`leave_at`]).
 //! - `OutputRouter` remembers every note that is on, so a route change, a
 //!   stop or a panic ends exactly those notes, and closing the port ends
 //!   them before it lets go.
@@ -43,11 +47,11 @@ use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed, MAX
 use mpfree_midi::port::DIN;
 use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
 use mpfree_midi_clock::{ClockOut as Pulses, Messages, PULSE_TICKS};
-use mpfree_midi_ui::{IoModel, Shared};
+use mpfree_midi_ui::{IoModel, PortSend, Shared, ToPort};
 use mpfree_play::{Event, Out};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
-use crate::port_writer::{Wire, Writer, STALL};
+use crate::port_writer::{Closing, Wire, Writer, STALL};
 
 /// Notes one pad can start (a synth pad's chord); more are not sent.
 const CHORD: usize = 8;
@@ -63,6 +67,22 @@ pub enum NoteIs<'a> {
     /// MPC's own note for the pad with a kit ([`kit_notes`]). A pad's
     /// note-off and pressure go to the notes its note-on sent.
     Pad(&'a [u8]),
+}
+
+/// When a message heard at `heard` leaves for gear that sounds `early`
+/// late: that much before, but never before `t0`, when its period was made
+/// (so at most the sound's lead early).
+fn leave_at(heard: Instant, early: Duration, t0: Instant) -> Instant {
+    heard.checked_sub(early).map_or(t0, |d| d.max(t0))
+}
+
+/// The test note's note-off.
+fn test_off(ch: u8) -> Msg {
+    Msg::NoteOff {
+        ch,
+        note: TEST_NOTE,
+        vel: 64,
+    }
 }
 
 /// A kit pad's note on MIDI Out: the MPC's own pad notes (pad 1 is C#2,
@@ -216,6 +236,8 @@ pub struct MidiOut {
     rate: u32,
     lead: Duration,
     writer: Option<Writer>,
+    /// The writer Prefs switched off, until its last messages have left.
+    closing: Option<Closing>,
     tracks: [Option<Applied>; MAX_TRACKS],
     /// Bank and program to send before this period's notes.
     program_due: [bool; MAX_TRACKS],
@@ -243,7 +265,20 @@ pub struct MidiOut {
     /// ([`MidiOut::sent`]), and when its frame 0 is heard.
     sent: OutQueue,
     sent_at: Instant,
+    /// The jacks' gear delay (their port's "This gear's delay"): messages
+    /// leave this much before their frame is heard, at most `lead`.
+    early: Duration,
+    /// The port page's test note still on: its channel and the frames
+    /// until its note-off.
+    test_off: Option<(u8, u32)>,
 }
+
+/// The port page's test note: C4, held half a second.
+pub const TEST_NOTE: u8 = 60;
+const TEST_VEL: u8 = 100;
+const TEST_HELD: Duration = Duration::from_millis(500);
+/// All notes off (CC 123).
+const ALL_NOTES_OFF: u8 = 123;
 
 impl MidiOut {
     /// Closed: no track is taken until [`MidiOut::open`]. `lead` is how long
@@ -261,6 +296,7 @@ impl MidiOut {
             rate: rate.max(1),
             lead,
             writer: None,
+            closing: None,
             tracks: [None; MAX_TRACKS],
             program_due: [false; MAX_TRACKS],
             chords: Chords::new(),
@@ -277,6 +313,8 @@ impl MidiOut {
             free_next: 0.0,
             sent: OutQueue::new(),
             sent_at: Instant::now(),
+            early: Duration::ZERO,
+            test_off: None,
         }
     }
 
@@ -288,9 +326,21 @@ impl MidiOut {
         Ok(())
     }
 
-    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.writer.is_some()
+    }
+
+    /// Prefs switched sending on again before the last writer let go of
+    /// the port: it takes that writer back. False when there is none.
+    pub fn reopen(&mut self) -> bool {
+        match self.closing.take().and_then(Closing::take_back) {
+            Some(w) => {
+                self.writer = Some(w);
+                self.lost = false;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Whether MIDI clock (or start and stop) goes out on the jacks, to
@@ -337,19 +387,26 @@ impl MidiOut {
         if self.shown_on != Some(on) {
             m.live.built.notes_out = on;
             m.live.built.clock_out = on;
+            m.live.early_ms = self.lead.as_secs_f32() * 1000.0;
             self.shown_on = Some(on);
+        }
+        if let Some(ask) = m.asks.port_send.take() {
+            let (said, sent) = self.port_send(&ask);
+            if sent && ask.what == ToPort::AllNotesOff {
+                m.monitor.out_notes_up();
+            }
+            m.live.port_said = Some(said);
         }
         if self.applied_gen == Some(m.gen) {
             return;
         }
         self.applied_gen = Some(m.gen);
         // Found in place: `MidiSetup::port` would make a copy.
-        self.clock_mode = m
-            .setup
-            .ports
-            .iter()
-            .find(|p| p.name == DIN_NAME)
-            .map_or(ClockOut::default(), |p| p.clock_out);
+        let din = m.setup.ports.iter().find(|p| p.name == DIN_NAME);
+        self.clock_mode = din.map_or(ClockOut::default(), |p| p.clock_out);
+        self.early = din.map_or(Duration::ZERO, |p| {
+            Duration::from_micros(u64::from(p.delay_tenths) * 100)
+        });
         for t in 0..MAX_TRACKS {
             let want = m.setup.tracks[t].as_ref().and_then(Applied::of);
             if want == self.tracks[t] {
@@ -365,6 +422,74 @@ impl MidiOut {
             }
             self.tracks[t] = want;
             self.program_due[t] = want.is_some_and(|a| a.program.is_some() || a.bank.is_some());
+        }
+    }
+
+    /// A port page's send: what it said, and whether anything went out.
+    /// Only the 5-pin jacks for now.
+    fn port_send(&mut self, ask: &PortSend) -> (String, bool) {
+        if self.writer.is_none() {
+            return ("Nothing sent: MIDI out is off (Prefs)".to_string(), false);
+        }
+        if ask.port != DIN_NAME {
+            return (
+                format!(
+                    "Nothing sent: MPFree doesn't send to USB devices yet ({})",
+                    ask.port
+                ),
+                false,
+            );
+        }
+        match ask.what {
+            ToPort::TestNote { channel } => {
+                let ch = channel.min(15);
+                // One test note at a time: a second press ends the first.
+                if let Some((old, _)) = self.test_off.take() {
+                    self.queue[0].push(Timed::msg(0, test_off(old)));
+                }
+                self.queue[0].push(Timed::msg(
+                    0,
+                    Msg::NoteOn {
+                        ch,
+                        note: TEST_NOTE,
+                        vel: TEST_VEL,
+                    },
+                ));
+                let frames = (TEST_HELD.as_secs_f64() * f64::from(self.rate)) as u32;
+                self.test_off = Some((ch, frames));
+                (
+                    format!(
+                        "Test note C4 sent to MIDI on ch {}, held half a second",
+                        ch + 1
+                    ),
+                    true,
+                )
+            }
+            ToPort::AllNotesOff => {
+                self.end_test_note(0);
+                self.all_off(0);
+                for ch in 0..16 {
+                    self.queue[0].push(Timed::msg(
+                        0,
+                        Msg::Cc {
+                            ch,
+                            cc: ALL_NOTES_OFF,
+                            value: 0,
+                        },
+                    ));
+                }
+                (
+                    "All notes off sent to MIDI on all 16 channels".to_string(),
+                    true,
+                )
+            }
+        }
+    }
+
+    /// Ends the test note now, if it is on.
+    fn end_test_note(&mut self, offset: u32) {
+        if let Some((ch, _)) = self.test_off.take() {
+            self.queue[0].push(Timed::msg(offset, test_off(ch)));
         }
     }
 
@@ -509,11 +634,23 @@ impl MidiOut {
     /// writer, each due when its frame is heard. `t0` is when the period
     /// was made (the loop's start); the sound is heard `lead` later.
     pub fn period_end(&mut self, frames: u32, t0: Instant) {
+        // The port page's test note ends in this period, or later.
+        if let Some((ch, left)) = self.test_off {
+            if left < frames {
+                self.queue[0].push(Timed::msg(left, test_off(ch)));
+                self.test_off = None;
+            } else {
+                self.test_off = Some((ch, left - frames));
+            }
+        }
         let q = &mut self.queue[0];
         // The clock went in first (`clock` runs before the notes), in the
         // order it must leave.
         q.sort_by_frame();
         let at = t0 + self.lead;
+        // The gear's delay: each message leaves that much before its frame
+        // is heard, never before the period was made.
+        let early = self.early;
         let rate = f64::from(self.rate);
         let writer = self.writer.as_ref();
         let sent = &mut self.sent;
@@ -522,8 +659,8 @@ impl MidiOut {
         let (mut queued, mut full) = (0u64, 0u64);
         self.pacer.pace(q, frames, |m, _| {
             let Some(w) = writer else { return };
-            let due = at + Duration::from_secs_f64(f64::from(m.offset) / rate);
-            if w.send(Wire::new(due, m.bytes())) {
+            let heard = at + Duration::from_secs_f64(f64::from(m.offset) / rate);
+            if w.send(Wire::new(leave_at(heard, early, t0), m.bytes())) {
                 queued += 1;
                 sent.push(*m);
             } else {
@@ -556,6 +693,11 @@ impl MidiOut {
     /// play on the pads again and the I/O view says MIDI out is off.
     /// Returns true when it stopped now.
     pub fn tick(&mut self, log: &mut dyn FnMut(String)) -> bool {
+        if self.closing.as_ref().is_some_and(|c| c.tick(log)) {
+            if let Some(c) = self.closing.take() {
+                c.let_go();
+            }
+        }
         let Some(w) = &self.writer else { return false };
         // `gone` first, then the lines: a port that fails between the two
         // still has its failure's line read before the writer goes.
@@ -577,9 +719,35 @@ impl MidiOut {
     /// waiting at most a second. True when everything queued was written
     /// or there was nothing to close.
     pub fn close(&mut self) -> bool {
+        let closed = self.closing.take().is_none_or(Closing::finish);
         if self.writer.is_none() {
-            return true;
+            return closed;
         }
+        self.wind_down();
+        let done = self.writer.take().is_none_or(Writer::finish);
+        self.shown_on = None;
+        done && closed
+    }
+
+    /// Prefs turned sending off: as [`MidiOut::close`], but the sound loop
+    /// never waits: the writer is kept aside until its last messages have
+    /// left ([`Closing`]; [`MidiOut::tick`] lets it go).
+    pub fn switch_off(&mut self) {
+        if self.writer.is_none() {
+            return;
+        }
+        self.wind_down();
+        if let Some(w) = self.writer.take() {
+            if let Some(old) = self.closing.replace(Closing::new(w, self.lead)) {
+                old.let_go();
+            }
+        }
+        self.shown_on = None;
+    }
+
+    /// The test note, the notes on and the clock end, handed to the writer.
+    fn wind_down(&mut self) {
+        self.end_test_note(0);
         self.all_off(0);
         // The other device stops with us.
         if self.pulses.running() {
@@ -591,9 +759,6 @@ impl MidiOut {
             }
         }
         self.period_end(0, Instant::now() - self.lead);
-        let done = self.writer.take().is_none_or(Writer::finish);
-        self.shown_on = None;
-        done
     }
 
     /// The run's counts, for the log at exit.
@@ -979,6 +1144,179 @@ mod tests {
         assert!(writes[0].0 >= t0 + lead);
         assert!(writes[1].0 >= t0 + lead + Duration::from_millis(100));
         assert!(mo.close());
+    }
+
+    /// The 5-pin jacks' gear delay (the port page): each message leaves
+    /// that much before its frame is heard, but never before its period
+    /// was made, so MIDI out sends at most the sound's lead early (which
+    /// the page shows).
+    #[test]
+    fn the_gears_delay_sends_early_up_to_the_lead() {
+        let ms = Duration::from_millis;
+        let (mut mo, _sink) = open(ms(10));
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
+        m.lock()
+            .unwrap()
+            .setup
+            .set_port(DIN_NAME, |p| p.delay_tenths = 45);
+        mo.sync(&m, false);
+        assert_eq!(mo.early, Duration::from_micros(4500));
+        assert_eq!(m.lock().unwrap().live.early_ms, 10.0);
+        let t0 = Instant::now();
+        // Heard 20 ms after its period was made: it leaves at 15.5 ms.
+        assert_eq!(leave_at(t0 + ms(20), mo.early, t0), t0 + ms(20) - mo.early);
+        // 40 ms early is more than there is: it leaves when it is made.
+        assert_eq!(leave_at(t0 + ms(20), ms(40), t0), t0);
+        // Back to none.
+        {
+            let mut g = m.lock().unwrap();
+            g.setup.set_port(DIN_NAME, |p| p.delay_tenths = 0);
+            g.gen += 1;
+        }
+        mo.sync(&m, false);
+        assert_eq!(mo.early, Duration::ZERO);
+        assert!(mo.close());
+    }
+
+    /// The port page's test note: C4 on the asked channel, its note-off
+    /// half a second of frames later; a second press ends the first. It
+    /// says what it sent.
+    #[test]
+    fn the_test_note_is_held_half_a_second() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[]);
+        m.lock().unwrap().asks.port_send = Some(PortSend {
+            port: DIN_NAME.into(),
+            what: ToPort::TestNote { channel: 9 },
+        });
+        mo.sync(&m, false);
+        let said = m.lock().unwrap().live.port_said.clone().unwrap();
+        assert!(
+            said.starts_with("Test note C4 sent to MIDI on ch 10"),
+            "{said}"
+        );
+        // 0.5 s is 22050 frames: 172 periods of 128 hold it, the 173rd
+        // ends it.
+        for _ in 0..172 {
+            mo.period_end(PERIOD, Instant::now());
+        }
+        assert!(mo.test_off.is_some());
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.test_off.is_none());
+        assert!(mo.close());
+        assert_eq!(sink.bytes(), [0x99, 60, 100, 0x89, 60, 64]);
+    }
+
+    /// All notes off: MPFree's own notes on end first, then CC 123 goes on
+    /// all 16 channels, and the monitor forgets the notes it held on.
+    #[test]
+    fn all_notes_off_ends_mpfrees_notes_then_every_channel() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 2))]);
+        mo.sync(&m, true);
+        mo.send(
+            &ev(
+                0,
+                0,
+                Event::NoteOn {
+                    note: 64,
+                    velocity: 90,
+                },
+            ),
+            NoteIs::Note,
+        );
+        mo.period_end(PERIOD, Instant::now());
+        m.lock().unwrap().asks.port_send = Some(PortSend {
+            port: DIN_NAME.into(),
+            what: ToPort::AllNotesOff,
+        });
+        mo.sync(&m, true);
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        let b = sink.bytes();
+        let mut want = vec![0x92, 64, 90, 0x82, 64, 64];
+        for ch in 0..16u8 {
+            want.extend([0xB0 | ch, 123, 0]);
+        }
+        assert_eq!(b, want);
+        assert_eq!(
+            m.lock().unwrap().live.port_said.as_deref(),
+            Some("All notes off sent to MIDI on all 16 channels")
+        );
+    }
+
+    /// A send to a USB device, or while MIDI out is off, sends nothing and
+    /// says why.
+    #[test]
+    fn a_send_says_why_nothing_went() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[]);
+        m.lock().unwrap().asks.port_send = Some(PortSend {
+            port: "Keystep 37".into(),
+            what: ToPort::AllNotesOff,
+        });
+        mo.sync(&m, false);
+        assert!(m
+            .lock()
+            .unwrap()
+            .live
+            .port_said
+            .as_deref()
+            .unwrap()
+            .contains("doesn't send to USB devices yet"));
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        assert!(sink.bytes().is_empty());
+        let mut off = MidiOut::new(RATE, Duration::ZERO);
+        m.lock().unwrap().asks.port_send = Some(PortSend {
+            port: DIN_NAME.into(),
+            what: ToPort::TestNote { channel: 0 },
+        });
+        off.sync(&m, false);
+        assert_eq!(
+            m.lock().unwrap().live.port_said.as_deref(),
+            Some("Nothing sent: MIDI out is off (Prefs)")
+        );
+    }
+
+    /// Prefs turns sending off without waiting: the notes on end and the
+    /// writer finishes on its own; the I/O view hears MIDI out is off.
+    #[test]
+    fn switching_off_ends_the_notes_without_waiting() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
+        mo.sync(&m, true);
+        mo.send(
+            &ev(
+                0,
+                0,
+                Event::NoteOn {
+                    note: 60,
+                    velocity: 80,
+                },
+            ),
+            NoteIs::Note,
+        );
+        mo.period_end(PERIOD, Instant::now());
+        mo.switch_off();
+        assert!(!mo.is_open());
+        mo.sync(&m, false);
+        assert!(!m.lock().unwrap().live.built.notes_out);
+        let give_up = Instant::now() + Duration::from_secs(2);
+        while sink.bytes().len() < 6 && Instant::now() < give_up {
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(sink.bytes(), [0x90, 60, 80, 0x80, 60, 64]);
+        // Switched on again at once: the same writer, on the same port.
+        assert!(mo.reopen());
+        assert!(mo.is_open());
+        mo.sync(&m, false);
+        assert!(m.lock().unwrap().live.built.notes_out);
+        // Off again; once its last messages have left, tick lets it go.
+        mo.switch_off();
+        thread::sleep(Duration::from_millis(300));
+        mo.tick(&mut |_| {});
+        assert!(!mo.reopen());
     }
 
     /// A port that fails stops the writer; the loop says so, lets the port
