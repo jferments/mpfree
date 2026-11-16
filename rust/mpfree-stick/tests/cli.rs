@@ -324,20 +324,21 @@ fn makes_and_looks_after_a_stick() {
     // is written, not even the partition table.
     let p4 = 1024u64 << 20;
     let plant = |label: &[u8]| {
-        use std::os::unix::fs::FileExt;
-        let f = std::fs::OpenOptions::new().write(true).open(&disk).unwrap();
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&disk).unwrap();
         let mut sb = [0u8; 1024];
         sb[56..58].copy_from_slice(&0xEF53u16.to_le_bytes());
         sb[120..120 + label.len()].copy_from_slice(label);
-        f.write_all_at(&sb, p4 + 1024).unwrap();
+        f.seek(SeekFrom::Start(p4 + 1024)).unwrap();
+        f.write_all(&sb).unwrap();
     };
     plant(b"SOMETHING-ELSE");
     let head = |len: usize| {
-        use std::os::unix::fs::FileExt;
+        use std::io::Read;
         let mut b = vec![0u8; len];
         std::fs::File::open(&disk)
             .unwrap()
-            .read_exact_at(&mut b, 0)
+            .read_exact(&mut b)
             .unwrap();
         b
     };
