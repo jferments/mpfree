@@ -6,13 +6,14 @@
 //!
 //! **A static program never opens libcurl itself.** The pad player for the
 //! MPC is linked statically (`+crt-static`), and glibc's static `dlopen`
-//! can't host libcurl: with the workstation's glibc newer than the MPC's
-//! (2.43 against 2.39) the loaded libraries run against a C library that
-//! doesn't match, and OpenSSL's random number generator fails to start
-//! (curl's "Insufficient randomness", the 16 Nov live run); with the same
-//! glibc, TLS works but libcurl's resolver thread crashes in
-//! `pthread_create`, since a thread made inside a library loaded by a static
-//! program finds no thread setup of its own. So a static build hands each
+//! can't host libcurl reliably. Under qemu, a build linked against the
+//! workstation's glibc (2.43, newer than the MPC's 2.39) crashed inside
+//! `dlopen`; one linked against 2.39 got through TLS, but libcurl's resolver
+//! thread crashed in `pthread_create`, since a thread made inside a library
+//! loaded by a static program finds no thread setup of its own. On the MPC
+//! (the 16 Nov live run) the download stopped at curl's "Insufficient
+//! randomness" instead; that exact failure was not reproduced, so it being
+//! the same static `dlopen` is an assumption. So a static build hands each
 //! download to [`HELPER`], a small program linked dynamically against the
 //! MPC's glibc (built with `cargo zigbuild` for glibc 2.34) and installed
 //! beside it, which runs this same code ([`fetch_here`]) and reports on its
