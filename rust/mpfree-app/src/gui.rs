@@ -2618,8 +2618,8 @@ impl Player {
                 }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / + or SHIFT + wheel: next pad with a \
                                          sound   ·   {stop}"),
-                View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
-                                        Dev page   ·   MENU: options   ·   {stop}"),
+                View::Debug => format!("Every MIDI message and event, newest first   ·   tap a chip: show or hide a \
+                                        source   ·   SHIFT + wheel or - / +: Dev page   ·   MENU: options   ·   {stop}"),
                 View::Perf => format!("CPU per thread and memory every 2 s, audio every 0.25 s; a perf: line goes to \
                                        the log every 30 s   ·   SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Engines => format!("Each stage of the audio loop, every 0.25 s; a cpu by engine line goes to the \
@@ -3916,6 +3916,11 @@ impl Player {
                 if self.chain_page.drives(self.view) {
                     self.refresh_qlinks();
                 }
+                // The hint follows the page shown (the EQ's, another
+                // effect's, or none after a Remove).
+                if self.view == View::Chain {
+                    self.refresh_hint();
+                }
             }
             ToUi::ParamsMoved(landed) => {
                 self.chain_page.bind.retarget(|a| landed.target(a));
@@ -3974,6 +3979,11 @@ impl Player {
                 if self.io_sections.is_empty() {
                     self.io_sections = add_io_sections(&mut self.ui, &model);
                 }
+                // Dev › MIDI: the same monitor, in debug mode.
+                self.ui.add(
+                    crate::debug_page::MONITOR,
+                    mpfree_midi_ui::DevMonitor::new(model.clone()),
+                );
                 self.io_model = Some(model);
             }
             ToUi::ProjectParts(c) => self.save_project(c),
@@ -4004,6 +4014,9 @@ impl Player {
             }
             ToUi::Menu(m) => {
                 if let Some(o) = self.ui.get_mut::<OptionList>("options") {
+                    if o.title != m.title {
+                        o.reset_view();
+                    }
                     o.title = m.title;
                     o.rows = m
                         .rows
@@ -4076,6 +4089,10 @@ impl Player {
                     );
                 }
                 self.midi_held_back = 0;
+                // The Dev page's MIDI monitor is a MIDI log too.
+                if let Some(m) = &self.io_model {
+                    m.lock().unwrap_or_else(|e| e.into_inner()).monitor.clear();
+                }
             }
             ToUi::ClearConsole => {
                 self.ui
@@ -6234,7 +6251,26 @@ impl Player {
 
     /// A touch: what it means for the app, if anything. Before the app is
     /// ready, the pages are switched here (loading and console only).
+    ///
+    /// The actions reach the app in the order the touches made them. A
+    /// touch hands back its first action and leaves the rest for
+    /// [`Self::take_actions`]; when several touches come in one read (a
+    /// fast drag), a later touch's first action would overtake an earlier
+    /// one's rest (an EQ dot's frequency set again by an older move). So
+    /// while actions wait, this touch's first waits behind them too.
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
+        let waiting = self.outbox.len();
+        let action = self.touch_unordered(finger, phase, x, y);
+        match action {
+            Some(a) if waiting > 0 => {
+                self.outbox.insert(waiting.min(self.outbox.len()), a);
+                None
+            }
+            a => a,
+        }
+    }
+
+    fn touch_unordered(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
         // The Touch page measures every finger before the tuning.
         if self.ready && self.touch_page.is_none() && self.view == View::Touch {
             let area = self
@@ -8713,7 +8749,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     )));
     macros.apply(ToUi::QLinkBank);
     out.push(("play-macros", macros));
+    // Dev › MIDI: the monitor in debug mode, fed as though the app had run
+    // for a second and a half (mpfree_midi_ui::sample::debugged).
     let mut debug = sample_player(fonts());
+    {
+        use mpfree_midi_ui::sample::{debugged, monitored, rig};
+        let model = debugged(monitored(rig()));
+        debug.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+            model,
+        ))));
+    }
     debug.apply(ToUi::Show(View::Debug));
     out.push(("debug", debug));
     let mut console = sample_player(fonts());
@@ -11855,6 +11900,9 @@ mod tests {
         p.touch(1, Touch::Up, x, y);
         p.tick(1.0);
         assert_ne!(p.page(), NUMPAD_PAGE);
+        // What the tap left goes out, as after every read of the
+        // touchscreen (a touch's action waits behind any still waiting).
+        let _ = p.take_actions();
         // Held: the number pad, for the tempo.
         assert_eq!(p.touch(2, Touch::Down, x, y), Some(FromUi::TapTempo));
         p.tick(0.4);
@@ -12852,7 +12900,10 @@ mod tests {
         );
         assert_eq!(p.page(), "Play");
         p.apply(ToUi::Show(View::Debug));
-        assert!(p.ui.rect_of("midi").is_some() && p.ui.rect_of(play_page::STEPS).is_none());
+        assert!(
+            p.ui.rect_of(crate::debug_page::MONITOR).is_some()
+                && p.ui.rect_of(play_page::STEPS).is_none()
+        );
         // A menu row's arrow steps its value.
         let mut app = sample_app();
         let fx = app.button(mpfree_controller::mpc_one::button::MENU, true, 0.0);

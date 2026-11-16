@@ -1,6 +1,6 @@
 # UI architecture
 
-**Status:** 2026-11-14 (the wheel's outline; on 13 Nov, controls listed for the smoke tests, and saying why in place); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
+**Status:** 2026-11-16 (actions keep the order of the touches that made them, even several in one read); 2026-11-14 (the wheel's outline; on 13 Nov, controls listed for the smoke tests, and saying why in place); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
 
 ## What the owner asked for
 
@@ -87,6 +87,8 @@ In the pad player, the screen has its own thread at normal priority; the audio t
 
 - audio to screen: what happened (a pad hit, a kit change, a MIDI message, timing). The audio thread uses `try_send`, so it never waits for the screen; a full queue drops the message and counts it.
 - screen to audio: actions from touches (play pad N, select kit K, set the level).
+
+Actions reach the audio thread in the order the touches made them. A touch hands back its first action at once and leaves the rest in the screen's outbox, which is sent after each read of the touchscreen; a read can hold several touches (a fast drag), so while actions wait in the outbox, a later touch's first action waits behind them (`Player::touch`). Without that, an EQ dot dragged fast could end on an older move's frequency (found by `a_drag_on_the_eq_look_is_what_you_hear`, 16 Nov).
 
 The screen thread redraws at most every 33 ms, and only what changed. It also prints every line to stdout, which reaches the workstation's terminal over SSH.
 

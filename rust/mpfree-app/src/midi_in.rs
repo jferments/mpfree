@@ -33,6 +33,13 @@
 //! sound loop, so it never waits for the screen: when the screen holds the
 //! model, that period's update is skipped and counted.
 //!
+//! **The MIDI monitor** (`mpfree_midi::monitor`): every message in goes
+//! to [`MusicIn::feed`] as it comes, with where it went: the armed track
+//! (and the pad its note plays with a kit), MIDI Learn and what it moved,
+//! the clock follower, or nothing. The app adds what MIDI out sends and, in
+//! debug mode, the MPC's own controller and its events; [`MusicIn::sync`]
+//! moves the lines to the I/O view's Monitor.
+//!
 //! **MIDI Learn** (step M5): the app arms a parameter ([`MusicIn::arm`],
 //! with the chain editor's Learn), and the next press or move on a port
 //! whose input is "Learn only" or "Both" takes it. Learned controls are the
@@ -48,6 +55,7 @@ use std::time::Duration;
 
 use mpfree_midi::input::{In, InputRouter, PortFilter};
 use mpfree_midi::learn::{Input, LearnMap, Saved, Write};
+use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
 use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
@@ -196,6 +204,14 @@ pub struct MusicIn {
     leader_sp: u8,
     /// Leader bytes past [`LEADER_BYTES`] in a period, dropped.
     leader_dropped: u64,
+    /// The MIDI monitor's feed: every message in, each with where it
+    /// went; the app adds what goes out ([`Feed::sent`]) and, in debug
+    /// mode, the MPC's own controller and MPFree's events. [`MusicIn::sync`]
+    /// moves it to the I/O view.
+    pub feed: Feed,
+    /// The armed track (from 0), and whether keys play it by note (a
+    /// synth's pad layout) or as the kit pad each note plays.
+    armed: (u8, bool),
 }
 
 impl Default for MusicIn {
@@ -237,7 +253,17 @@ impl MusicIn {
             leader_len: 0,
             leader_sp: 0,
             leader_dropped: 0,
+            feed: Feed::new(),
+            armed: (0, true),
         }
+    }
+
+    /// Once a period, before the bytes: the track keys play (from 0), and
+    /// whether they play it by note (`true`) or as the pad each note plays
+    /// (`mpc_one::pad_index`). It only names where the monitor says a key
+    /// went; the app plays the keys itself.
+    pub fn set_armed(&mut self, track: u8, by_note: bool) {
+        self.armed = (track, by_note);
     }
 
     /// Once a period, before the transport runs: what following another
@@ -463,8 +489,13 @@ impl MusicIn {
                     last_in: None,
                 })
                 .collect();
+            m.monitor.set_ports(self.ports.all());
             self.ports_changed = false;
         }
+        // The monitor: what came and went since the last period.
+        self.feed.drain_into(&mut m.monitor, t);
+        m.monitor.set_epoch(t);
+        m.live.built.monitor = true;
         for lp in m.live.ports.iter_mut() {
             if let Some(p) = self.ports.all().iter().find(|p| p.name == lp.name) {
                 lp.last_in = self.last_in[usize::from(p.id.0)].map(Duration::from_secs_f64);
@@ -510,9 +541,15 @@ impl MusicIn {
         self.ports.plugged(name, true, false)
     }
 
-    /// A USB keyboard went away: every key it held is let go.
-    pub fn unplugged(&mut self, port: PortId, keys: &mut Vec<Key>) {
+    /// A USB keyboard went away: every key it held is let go. Returns how
+    /// many were.
+    pub fn unplugged(&mut self, port: PortId, keys: &mut Vec<Key>) -> u16 {
+        let held = keys.len();
         self.router.port_gone(port, 0, |e| key_of(e, keys));
+        let ended = keys[held..]
+            .iter()
+            .filter(|k| matches!(k, Key::Up { .. }))
+            .count();
         self.ports.unplugged(port);
         self.ports_changed = true;
         if let Some(c) = self.clock.get_mut(usize::from(port.0)) {
@@ -522,6 +559,7 @@ impl MusicIn {
             s.clock_running = false;
             s.sysex = None;
         }
+        u16::try_from(ended).unwrap_or(u16::MAX)
     }
 
     /// Bytes that came in on `port` at `t` seconds: the keys they play go
@@ -553,7 +591,14 @@ impl MusicIn {
         let learn_only = self.input[p] == PortInput::LearnOnly;
         let learns = self.input[p] != PortInput::PlaysTracks;
         let frame = (t.max(0.0) * f64::from(CLOCK_RATE)) as u64;
+        let armed = self.armed;
+        // What following this port takes: its clock, and its Start, Stop
+        // and Song Position as the project says.
+        let led = self.follow.filter(|_| self.leader == Some(port));
         for &b in data {
+            // The monitor's line, if this byte ends a message; where it
+            // went is said below, once the message is routed.
+            let listed = self.feed.bytes(port, Dir::In, t, &[b]);
             self.clock[p].byte(frame, b);
             let s = &mut self.seen[p];
             match b {
@@ -613,6 +658,12 @@ impl MusicIn {
             let mut seen = None;
             let mut got = false;
             let mut learned = None;
+            // Where a channel message went, for the monitor.
+            let mut to = if learn_only {
+                To::LearnOnly
+            } else {
+                To::Nothing
+            };
             let (learn, learning, sets) =
                 (&mut self.learn, &mut self.learning, &mut self.learn_sets);
             self.router.feed(port, b, 0, |e| match e {
@@ -622,9 +673,13 @@ impl MusicIn {
                     // What Learn takes doesn't play.
                     if let In::Track { msg, .. } = &other {
                         if learns && learn.takes(port, msg) {
+                            if let Some(target) = learn.target_of(port, msg) {
+                                to = To::Learned(target);
+                            }
                             learn.input(port, msg, |i| match i {
                                 Input::Learned(i) => learned = Some(i),
                                 Input::Write(w) => {
+                                    to = To::Learned(w.target);
                                     note_set(sets, w.target, w.value, t);
                                     learning.push(Learning::Set(w))
                                 }
@@ -635,10 +690,30 @@ impl MusicIn {
                     // "Learn only" plays nothing, but a note-off still
                     // ends a note this port started before.
                     if !(learn_only && starts_or_presses(&other)) {
+                        if !learn_only {
+                            if let Some(note) = key_note(&other) {
+                                to = armed_to(armed, note);
+                            }
+                        }
                         key_of(other, keys)
                     }
                 }
             });
+            if listed {
+                let to = match self.feed.listed() {
+                    Some(What::Channel { .. }) => match learned.and_then(|i| self.learn.get(i)) {
+                        Some(m) => To::Took(m.target),
+                        None => to,
+                    },
+                    Some(What::Arriving(Steady::Clock)) => follows(led.is_some()),
+                    Some(What::Start | What::Continue | What::Stop) => {
+                        follows(led.is_some_and(|f| f.start_stop))
+                    }
+                    Some(What::SongPosition(_)) => follows(led.is_some_and(|f| f.position)),
+                    _ => To::Ignored,
+                };
+                self.feed.to(to);
+            }
             if let Some(m) = learned.and_then(|i| self.learn.get(i).copied()) {
                 let name = self.ports.get(port).map(|p| p.name.clone());
                 let control =
@@ -738,6 +813,42 @@ pub fn io_model() -> Shared {
         .map(|i| format!("Track {i}"))
         .collect();
     std::sync::Arc::new(std::sync::Mutex::new(m))
+}
+
+/// The note a key message plays (note on, note off, pressure).
+fn key_note(e: &In) -> Option<u8> {
+    match e {
+        In::Track {
+            msg:
+                Msg::NoteOn { note, .. } | Msg::NoteOff { note, .. } | Msg::PolyPressure { note, .. },
+            ..
+        } => Some(*note),
+        _ => None,
+    }
+}
+
+/// Where a key went, for the monitor: the armed track, by note or as the
+/// pad its note plays.
+fn armed_to((track, by_note): (u8, bool), note: u8) -> To {
+    if by_note {
+        return To::Track { track, pad: None };
+    }
+    match mpfree_controller::mpc_one::pad_index(note) {
+        Some(pad) => To::Track {
+            track,
+            pad: Some(pad),
+        },
+        None => To::NoPad { track },
+    }
+}
+
+/// Clock, start, stop or song position: followed or not.
+fn follows(yes: bool) -> To {
+    if yes {
+        To::Follows
+    } else {
+        To::NotFollowed
+    }
 }
 
 /// A note-on or pressure: what a "Learn only" port doesn't play.
@@ -1027,7 +1138,7 @@ mod tests {
         assert_eq!(keys.len(), 2);
         assert!(lines[0].contains("Keystation 49: 90 3C 64"));
         let mut gone = Vec::new();
-        m.unplugged(usb, &mut gone);
+        assert_eq!(m.unplugged(usb, &mut gone), 2, "both held notes let go");
         gone.sort_by_key(|k| match k {
             Key::Up { note } => *note,
             _ => 0,
@@ -1099,6 +1210,89 @@ mod tests {
 
     fn cutoff() -> ParamAddr {
         "t1.inst.12".parse().unwrap()
+    }
+
+    /// The MIDI monitor: each message in is listed once, with where it
+    /// went, and `sync` moves the lines to the I/O view and says the
+    /// monitor is fed.
+    #[test]
+    fn the_monitor_says_where_each_message_went() {
+        let mut m = MusicIn::new();
+        let usb = m.plugged("Keystep 37").unwrap();
+        let s = following_din();
+        m.sync(&s, 0.0);
+        assert!(s.lock().unwrap().live.built.monitor);
+        assert!(s
+            .lock()
+            .unwrap()
+            .monitor
+            .shown_ports()
+            .any(|p| p.name == "Keystep 37"));
+        // A kit on track 3: a key plays the pad its note plays, or none.
+        m.set_armed(2, false);
+        run(&mut m, usb, &[0x99, 37, 100, 0x99, 20, 90]);
+        // A synth on track 2: by note; a bend nothing takes yet.
+        m.set_armed(1, true);
+        run(&mut m, usb, &[0x90, 60, 96, 0xE0, 0, 0x50]);
+        // Learn: armed, a knob takes the parameter; then it moves it.
+        m.arm(cutoff());
+        run(&mut m, usb, &[0xB2, 74, 10]);
+        m.sync(&s, 0.5);
+        run(&mut m, usb, &[0xB2, 74, 127]);
+        // The tempo is from the 5-pin jacks: their clock and Start are
+        // followed; a clock on USB isn't; a SysEx is never read.
+        run(&mut m, DIN, &[0xF8, 0xFA]);
+        run(&mut m, usb, &[0xF8, 0xF0, 0x41, 0x10, 0xF7]);
+        m.sync(&s, 1.5);
+        let v = s.lock().unwrap();
+        let mut went: Vec<(PortId, To)> = v.monitor.newest().map(|(_, l)| (l.port, l.to)).collect();
+        went.reverse();
+        assert_eq!(
+            went,
+            [
+                (
+                    usb,
+                    To::Track {
+                        track: 2,
+                        pad: Some(0)
+                    }
+                ),
+                (usb, To::NoPad { track: 2 }),
+                (
+                    usb,
+                    To::Track {
+                        track: 1,
+                        pad: None
+                    }
+                ),
+                (usb, To::Nothing),
+                (usb, To::Took(cutoff())),
+                (usb, To::Learned(cutoff())),
+                (DIN, To::Follows),
+                (DIN, To::Follows),
+                (usb, To::NotFollowed),
+                (usb, To::Ignored),
+            ]
+        );
+        drop(v);
+        // A "Learn only" port's keys: nothing, said so.
+        {
+            let mut v = s.lock().unwrap();
+            v.setup
+                .set_port("Keystep 37", |p| p.input = PortInput::LearnOnly);
+            v.gen += 1;
+        }
+        m.sync(&s, 2.0);
+        run(&mut m, usb, &[0x90, 64, 90]);
+        m.sync(&s, 2.1);
+        let v = s.lock().unwrap();
+        // (Newer: the clocks stopping, which no message took.)
+        let key = v
+            .monitor
+            .newest()
+            .find(|(_, l)| matches!(l.what, What::Channel { .. }))
+            .unwrap();
+        assert_eq!(key.1.to, To::LearnOnly);
     }
 
     /// Armed, a knob on a keyboard takes the parameter; the project keeps

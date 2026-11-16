@@ -167,7 +167,7 @@ class JudgeTests(unittest.TestCase):
         window = lines(
             "plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found)",
             "plugins: not done (catalog): The catalog didn't download: no network",
-            "plugins: Installed Tidal Verb 1.6.0: Tidal Verb ready on the Synth tab or in the chain editor",
+            "plugins: Installed Tidal Verb 1.6.0: Tidal Verb ready in + Add effect, under Plugins",
             "plugins: 2 offered after an install",
             "track 7: plays [SYN] Mono Voice",
             "plugins: [SYN] Mono Voice started in its own process",

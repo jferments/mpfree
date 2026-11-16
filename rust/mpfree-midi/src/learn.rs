@@ -350,6 +350,15 @@ impl LearnMap {
             || self.maps.iter().any(|(m, _)| m.control.matches(port, msg))
     }
 
+    /// What the mapped control that `msg` comes from moves, if one is
+    /// mapped (for the MIDI monitor).
+    pub fn target_of(&self, port: PortId, msg: &Msg) -> Option<ParamAddr> {
+        self.maps
+            .iter()
+            .find(|(m, _)| m.control.matches(port, msg))
+            .map(|(m, _)| m.target)
+    }
+
     pub fn mappings(&self) -> impl Iterator<Item = &Mapping> {
         self.maps.iter().map(|(m, _)| m)
     }

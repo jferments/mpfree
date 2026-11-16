@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-16 a994ab4
 -->
 
 # Buttons and controls
@@ -42,7 +42,7 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 | **–** and **+** | Step the picked row's value down or up. With the outline on a value, step it; on anything else, move the outline. | Works (the outline: next build) |
 | **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. With the outline on a control, does what a tap does; on a value, lets the wheel turn it until you push again. | Works (the outline: next build) |
 
-**The transport lights** light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing. **UNDO** blinks while you record, and otherwise is bright when the page you are on has something to undo and dim when it has nothing. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own.
+**The transport lights** light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing; **STOP** lets go of a looper Record or Overdub still waiting for PLAY, and the lights go dark (see [Looping](../making-music/looping.md)). **UNDO** blinks while you record, and otherwise is bright when the page you are on has something to undo and dim when it has nothing. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own.
 
 ## Repeat and arpeggiator
 

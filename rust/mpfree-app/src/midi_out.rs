@@ -239,6 +239,10 @@ pub struct MidiOut {
     /// Always, while stopped: frames from this period's start to the next
     /// pulse.
     free_next: f64,
+    /// The last period's messages the writer took, for the MIDI monitor
+    /// ([`MidiOut::sent`]), and when its frame 0 is heard.
+    sent: OutQueue,
+    sent_at: Instant,
 }
 
 impl MidiOut {
@@ -271,6 +275,8 @@ impl MidiOut {
             pulses: Pulses::new(),
             clock_msgs: Messages::new(),
             free_next: 0.0,
+            sent: OutQueue::new(),
+            sent_at: Instant::now(),
         }
     }
 
@@ -510,12 +516,16 @@ impl MidiOut {
         let at = t0 + self.lead;
         let rate = f64::from(self.rate);
         let writer = self.writer.as_ref();
+        let sent = &mut self.sent;
+        sent.clear();
+        self.sent_at = at;
         let (mut queued, mut full) = (0u64, 0u64);
         self.pacer.pace(q, frames, |m, _| {
             let Some(w) = writer else { return };
             let due = at + Duration::from_secs_f64(f64::from(m.offset) / rate);
             if w.send(Wire::new(due, m.bytes())) {
                 queued += 1;
+                sent.push(*m);
             } else {
                 full += 1;
             }
@@ -525,11 +535,28 @@ impl MidiOut {
         self.full += full;
     }
 
+    /// The last period's messages the writer took, each with when it is
+    /// due to leave and the track that sent it (none: MPFree's clock), for
+    /// the MIDI monitor.
+    pub fn sent(&self) -> impl Iterator<Item = (Instant, &Timed)> + '_ {
+        let rate = f64::from(self.rate);
+        self.sent.as_slice().iter().map(move |m| {
+            let due = self.sent_at + Duration::from_secs_f64(f64::from(m.offset) / rate);
+            (due, m)
+        })
+    }
+
+    /// Messages dropped so far because the writer's queue was full.
+    pub fn dropped_full(&self) -> u64 {
+        self.full
+    }
+
     /// The writer's log lines (the first messages sent, failures), and
     /// whether the port stopped. A port that stopped is let go: its tracks
     /// play on the pads again and the I/O view says MIDI out is off.
-    pub fn tick(&mut self, log: &mut dyn FnMut(String)) {
-        let Some(w) = &self.writer else { return };
+    /// Returns true when it stopped now.
+    pub fn tick(&mut self, log: &mut dyn FnMut(String)) -> bool {
+        let Some(w) = &self.writer else { return false };
         // `gone` first, then the lines: a port that fails between the two
         // still has its failure's line read before the writer goes.
         let gone = w.gone();
@@ -542,6 +569,7 @@ impl MidiOut {
             self.all_off(0);
             self.queue[0].clear();
         }
+        gone
     }
 
     /// Ends the notes that are on (and the clock, with Stop), lets the
@@ -746,6 +774,35 @@ mod tests {
         assert!(mo.close());
         // Pad 1 is C#2, note 37 (0x25), on channel 10.
         assert_eq!(sink.bytes(), [0x99, 0x25, 100, 0x89, 0x25, 64]);
+    }
+
+    /// The MIDI monitor gets what the writer took, each with when it is
+    /// due and the track that sent it; the clock has none. A period that
+    /// sends nothing leaves the list empty.
+    #[test]
+    fn the_monitor_gets_what_went_out_and_who_sent_it() {
+        let (mut mo, _sink) = open(Duration::from_millis(10));
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 9))]);
+        mo.sync(&m, false);
+        // A pulse of the clock, as `MidiOut::clock` queues it.
+        mo.queue[0].push(Timed::realtime(0, mpfree_midi_clock::CLOCK));
+        mo.send(&ev(1, 441, on(0, 100)), NoteIs::Pad(kit_notes(0)));
+        let t0 = Instant::now();
+        mo.period_end(PERIOD, t0);
+        let sent: Vec<(Duration, Vec<u8>, Option<u8>)> = mo
+            .sent()
+            .map(|(due, m)| (due - t0, m.bytes().to_vec(), m.track()))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (Duration::from_millis(10), vec![0xF8], None),
+                (Duration::from_millis(20), vec![0x99, 0x25, 100], Some(1)),
+            ]
+        );
+        mo.period_end(PERIOD, Instant::now());
+        assert_eq!(mo.sent().count(), 0);
+        assert!(mo.close());
     }
 
     /// While MIDI out is off, a routed track plays on the pads and the I/O

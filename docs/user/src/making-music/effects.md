@@ -22,7 +22,7 @@ Tap an effect already in a strip's insert row to open the chain editor on it. Th
 
 - The line over the effects says how many the chain holds out of how many it can ("3 of 8"), and how much of the MPC's power the chain takes. Each effect's row has its number, its name, a line on how it is set (or "bypassed"), a dot for each macro that moves it, a **~** when an LFO or follower does, and its **ON** switch, which bypasses it.
 - **+ Add effect** opens the list of effects again, and **Cancel** closes it.
-- **Up** and **Down** move the selected effect in the chain, and **Remove** takes it out.
+- **Up** and **Down** move the selected effect in the chain, and **Remove** takes it out. Its page shuts with it: the chain's list stays, with nothing picked, until you tap another effect.
 - To move an effect further, **drag it** up or down the chain: once your finger moves it lifts and follows you, a line shows where it will land, and it moves there when you lift. Lift it where it started to leave it where it was. With the wheel, push on the picked effect to pick it up, turn to move it, and push again to put it down.
 - The effect's page is in **sections**, each named and coloured for what it does: the effect's heart (its space, its echoes, its pitch) in cyan, tone and colour in coral, dynamics in lime, movement in pink, and the output in grey. Drag a knob, fader or slider to turn it; tap a choice's name, or step it with its arrows; tap a switch to flip it.
 - A control that does nothing as the effect is set shows dim, and its section says why: a delay's **Time** with **Sync** on, for one.

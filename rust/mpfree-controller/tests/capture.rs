@@ -337,3 +337,50 @@ fn output_builders_mask_to_7_bits() {
     let (_, led) = mpc_one::button_led(0xff, 0xff);
     assert_eq!(led, [0xB0, 0x7f, 0x7f]);
 }
+
+#[test]
+fn every_button_found_has_its_panel_name() {
+    use mpfree_controller::mpc_one::button_name;
+    let all = [
+        button::FULL_LEVEL,
+        button::SHIFT,
+        button::STOP,
+        button::PLAY,
+        button::TAP_TEMPO,
+        button::MENU,
+        button::NOTE_REPEAT,
+        button::MINUS,
+        button::PLUS,
+        button::REC,
+        button::OVERDUB,
+        button::PLAY_START,
+        button::UNDO,
+        button::BROWSE,
+        button::MAIN,
+        button::DATA_PUSH,
+        button::PAD_BANK[0],
+        button::PAD_BANK[1],
+        button::PAD_BANK[2],
+        button::PAD_BANK[3],
+        button::SIXTEEN_LEVEL,
+        button::ERASE,
+        button::COPY,
+        button::TC,
+        button::TRACK_MIX,
+        button::Q_LINK,
+        button::TRACK_MUTE,
+        button::NEXT_SEQ,
+        button::STEP_SEQ,
+        button::SAMPLER,
+        button::SAMPLE_EDIT,
+        button::PROG_EDIT,
+    ];
+    let mut names: Vec<&str> = all.iter().map(|&b| button_name(b).unwrap()).collect();
+    names.sort();
+    names.dedup();
+    // 32 buttons, each named once.
+    assert_eq!(names.len(), 32);
+    assert_eq!(button_name(button::REC), Some("REC"));
+    assert_eq!(button_name(button::PAD_BANK[2]), Some("PAD BANK C"));
+    assert_eq!(button_name(1), None);
+}
