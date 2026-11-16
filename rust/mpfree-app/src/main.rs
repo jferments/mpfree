@@ -148,6 +148,7 @@ mod undo;
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
+use mpfree_midi::monitor::{Dir, Event, Mpc, To};
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::{SynthAction, SynthState};
 use mpfree_time_ui::view::AudioAction;
@@ -1329,7 +1330,14 @@ struct Ports {
     /// The audio loop's outputs: queued for the `mpfree-lights` thread
     /// ([`Ports::queue`]) instead of written here.
     lights: Option<control::Lights>,
+    /// Debug mode: the lights, pad colours and pings written, for the MIDI
+    /// monitor (taken each period); nothing is kept while it is off.
+    tap_on: bool,
+    tapped: Vec<(f64, mpfree_midi::monitor::Mpc)>,
 }
+
+/// What [`Ports::tapped`] keeps between two periods; more are not listed.
+const TAPPED: usize = 128;
 
 impl Ports {
     fn open(out: &mut Out, with_private: bool) -> Result<Ports, String> {
@@ -1357,7 +1365,21 @@ impl Ports {
             quiet: false,
             show_pressure: false,
             lights: None,
+            tap_on: false,
+            tapped: Vec::with_capacity(TAPPED),
         })
+    }
+
+    /// Debug mode: a message written to the controller, for the MIDI
+    /// monitor (`akai::monitor_out` names it). Never allocates.
+    fn tap(&mut self, private: bool, msg: &[u8]) {
+        if !self.tap_on || self.tapped.len() >= TAPPED {
+            return;
+        }
+        if let Some(m) = akai::monitor_out(private, msg) {
+            let t = self.t();
+            self.tapped.push((t, m));
+        }
     }
 
     /// From now on [`Ports::send`] queues each message for the
@@ -1442,6 +1464,11 @@ impl Ports {
         self.start.elapsed().as_secs_f64()
     }
 
+    /// `when` on the same clock as [`Ports::t`].
+    fn at(&self, when: Instant) -> f64 {
+        when.saturating_duration_since(self.start).as_secs_f64()
+    }
+
     fn line(&self, out: &mut Out, text: &str) {
         if self.quiet {
             out.note(text);
@@ -1451,6 +1478,7 @@ impl Ports {
     }
 
     fn send(&mut self, private: bool, msg: &[u8]) -> Result<(), String> {
+        self.tap(private, msg);
         if let Some(l) = self.lights.as_mut() {
             if private && self.private.is_none() {
                 return Err("the Private output is not open".into());
@@ -1694,6 +1722,7 @@ impl UsbKeys {
             match found {
                 Ok(f) => match music.plugged(&f.name) {
                     Some(port) => {
+                        music.feed.event(t, Event::Plugged(port));
                         out.midi(&format!(
                             "+{t:.3} s {}: plugged in (USB, card {}); listening, read only",
                             f.name, f.card
@@ -1736,7 +1765,14 @@ impl UsbKeys {
             };
             if gone {
                 let u = self.open.swap_remove(k);
-                music.unplugged(u.port, keys);
+                let ended = music.unplugged(u.port, keys);
+                music.feed.event(
+                    t,
+                    Event::Unplugged {
+                        port: u.port,
+                        ended,
+                    },
+                );
             } else {
                 k += 1;
             }
@@ -4114,6 +4150,9 @@ fn player_session(
     );
     let mut keys: Vec<midi_in::Key> = Vec::with_capacity(64);
     let mut key_misses = 0u64;
+    // MIDI out's messages dropped with its writer's queue full, as the
+    // monitor was last told.
+    let mut out_full = 0u64;
     // The lanes' deadline for this period (cores.rs): when the sound card's
     // queue would run dry, less a period. The buffer starts full.
     let mut lane_until = cores::lane_deadline(Instant::now(), None, periods);
@@ -4713,6 +4752,11 @@ fn player_session(
         }
         parts.lap(parts::SCREEN_ACTIONS);
         ports.show_pressure = app.settings.show_pressure;
+        // The MIDI monitor: where keys go, and the debug sources while the
+        // developer tools are on.
+        music.set_armed(app.track() as u8, synth_on && app.arp_plays_notes());
+        music.feed.debug = app.settings.debug_mode;
+        ports.tap_on = app.settings.debug_mode;
         let mut got = ports.poll(out, &mut buf)?;
         let mt = ports.t();
         got.retain(|m| {
@@ -4721,9 +4765,36 @@ fn player_session(
             }
             !m.music
         });
+        for m in &got {
+            // Pad pressure as the MIDI log has it (MENU on the Dev tab).
+            let pressure = matches!(m.event, Some(ControlEvent::PadPressure { .. }));
+            if let Some(ev) = m.event.filter(|_| app.settings.show_pressure || !pressure) {
+                let mut bytes = [0u8; 3];
+                let n = m.bytes.len().min(3);
+                bytes[..n].copy_from_slice(&m.bytes[..n]);
+                music.feed.mpc(Dir::In, mt, Mpc::Control { ev, bytes });
+            }
+        }
+        for (t, m) in ports.tapped.drain(..) {
+            music.feed.mpc(Dir::Out, t, m);
+        }
         usb.poll(&mut music, &mut buf, mt, &mut keys, out);
         music.tick(mt, &mut |l| out.midi(&l));
-        midi_out.tick(&mut |l| out.midi(&l));
+        if midi_out.tick(&mut |l| out.midi(&l)) {
+            music.feed.event(mt, Event::OutStopped);
+        }
+        let full = midi_out.dropped_full();
+        if full > out_full {
+            let n = u32::try_from(full - out_full).unwrap_or(u32::MAX);
+            music.feed.event(
+                mt,
+                Event::Dropped {
+                    port: midi_in::DIN,
+                    n,
+                },
+            );
+            out_full = full;
+        }
         cv_out.tick(&mut |l| out.midi(&l));
         music.sync(&io_model, mt);
         // MIDI Learn (M5): a control that took the armed knob ends the
@@ -5021,7 +5092,9 @@ fn player_session(
                 app::Effect::Light(note, value) if akai::app_lights(note) => {
                     // Through CV out's writer while it shares the port.
                     let light = akai::button_light(note, value);
-                    if !cv_out.light(&light) {
+                    if cv_out.light(&light) {
+                        ports.tap(true, &light);
+                    } else {
                         ports.send(true, &light)?
                     }
                 }
@@ -5314,7 +5387,9 @@ fn player_session(
                 };
                 if akai::app_lights(note) {
                     let light = akai::button_light(note, value);
-                    if !cv_out.light(&light) {
+                    if cv_out.light(&light) {
+                        ports.tap(true, &light);
+                    } else {
                         ports.send(true, &light)?;
                     }
                 } else if !unlit[note as usize & 0x7F] {
@@ -5544,6 +5619,16 @@ fn player_session(
         time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
         seq.midi.period_end(PERIOD as u32, t_read);
         seq.cv.period_end(PERIOD as u32, t_read);
+        // The MIDI monitor: what went out, when it leaves.
+        for (due, m) in seq.midi.sent() {
+            let to = m.track().map_or(To::Clock, To::SentBy);
+            music.feed.sent(midi_in::DIN, ports.at(due), m.bytes(), to);
+        }
+        for (due, out, value) in seq.cv.sent() {
+            music
+                .feed
+                .mpc(Dir::Out, ports.at(due), Mpc::Cv { out, value });
+        }
         // The time engine: the transport, the clips and every track's arp
         // (the pads' notes start here; their sounds are the sampler's or
         // the synth's).

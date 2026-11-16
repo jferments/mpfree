@@ -2618,8 +2618,8 @@ impl Player {
                 }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / + or SHIFT + wheel: next pad with a \
                                          sound   ·   {stop}"),
-                View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
-                                        Dev page   ·   MENU: options   ·   {stop}"),
+                View::Debug => format!("Every MIDI message and event, newest first   ·   tap a chip: show or hide a \
+                                        source   ·   SHIFT + wheel or - / +: Dev page   ·   MENU: options   ·   {stop}"),
                 View::Perf => format!("CPU per thread and memory every 2 s, audio every 0.25 s; a perf: line goes to \
                                        the log every 30 s   ·   SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Engines => format!("Each stage of the audio loop, every 0.25 s; a cpu by engine line goes to the \
@@ -3979,6 +3979,11 @@ impl Player {
                 if self.io_sections.is_empty() {
                     self.io_sections = add_io_sections(&mut self.ui, &model);
                 }
+                // Dev › MIDI: the same monitor, in debug mode.
+                self.ui.add(
+                    crate::debug_page::MONITOR,
+                    mpfree_midi_ui::DevMonitor::new(model.clone()),
+                );
                 self.io_model = Some(model);
             }
             ToUi::ProjectParts(c) => self.save_project(c),
@@ -4084,6 +4089,10 @@ impl Player {
                     );
                 }
                 self.midi_held_back = 0;
+                // The Dev page's MIDI monitor is a MIDI log too.
+                if let Some(m) = &self.io_model {
+                    m.lock().unwrap_or_else(|e| e.into_inner()).monitor.clear();
+                }
             }
             ToUi::ClearConsole => {
                 self.ui
@@ -8740,7 +8749,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     )));
     macros.apply(ToUi::QLinkBank);
     out.push(("play-macros", macros));
+    // Dev › MIDI: the monitor in debug mode, fed as though the app had run
+    // for a second and a half (mpfree_midi_ui::sample::debugged).
     let mut debug = sample_player(fonts());
+    {
+        use mpfree_midi_ui::sample::{debugged, monitored, rig};
+        let model = debugged(monitored(rig()));
+        debug.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+            model,
+        ))));
+    }
     debug.apply(ToUi::Show(View::Debug));
     out.push(("debug", debug));
     let mut console = sample_player(fonts());
@@ -12882,7 +12900,10 @@ mod tests {
         );
         assert_eq!(p.page(), "Play");
         p.apply(ToUi::Show(View::Debug));
-        assert!(p.ui.rect_of("midi").is_some() && p.ui.rect_of(play_page::STEPS).is_none());
+        assert!(
+            p.ui.rect_of(crate::debug_page::MONITOR).is_some()
+                && p.ui.rect_of(play_page::STEPS).is_none()
+        );
         // A menu row's arrow steps its value.
         let mut app = sample_app();
         let fx = app.button(mpfree_controller::mpc_one::button::MENU, true, 0.0);
