@@ -1,6 +1,6 @@
 # The 3.10.1 device round: qualification, GPU flips, performance and FX tools
 
-**Status:** runbook, 2026-11-15, revised the same day for MPFree's boot hook (#370, [how MPFree boots from the stick](soft-reboot-boot.md)), and again for the pad player without root (#372) and the opt-in boot routes (#374, [boot routes](boot-routes.md)). That revision kept to the default stick, with the pad player as root. Revised once more for the whole round the owner asked for on 2026-11-15: round 8's benchmark (Q8b) and second boot (the S blocks), the GPU page flips (Q9), the app's targeted run, and the FX thread's FXProbe (the F blocks), which the stick now carries as developer tools for Akai's system (`--dev-tools`). Revised again that night for [targeted device checks](device-checks.md): the app step asks only about this round's checks, confirms each step from the app's log, and leaves to the app's own tests (Q0d) everything they already check. Revised on 2026-11-16 for the last round before the project moves to another account: the stick is made by the USB creator (#386) instead of `offline-kexec-stick.py`, its setup script installs the boot hook with one tap through Akai's script runner, and its first start backs the eMMC up and brings in the MPC's own kits and samples; the round adds the checks for what merged since the last run (#385, #387, #388, #389) and three optional add-ons. Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One (Gen 1). The owner installed MPC OS 3.10.1 on it with Akai's updater on 2026-11-15 and switched developer mode on. Before that it ran 3.6.0 with [MOD-001 and MOD-002](archive/2026-11/device-modifications.md).
+**Status:** runbook, 2026-11-15, revised the same day for MPFree's boot hook (#370, [how MPFree boots from the stick](soft-reboot-boot.md)), and again for the pad player without root (#372) and the opt-in boot routes (#374, [boot routes](boot-routes.md)). That revision kept to the default stick, with the pad player as root. Revised once more for the whole round the owner asked for on 2026-11-15: round 8's benchmark (Q8b) and second boot (the S blocks), the GPU page flips (Q9), the app's targeted run, and the FX thread's FXProbe (the F blocks), which the stick now carries as developer tools for Akai's system (`--dev-tools`). Revised again that night for [targeted device checks](device-checks.md): the app step asks only about this round's checks, confirms each step from the app's log, and leaves to the app's own tests (Q0d) everything they already check. Revised on 2026-11-16 for the last round before the project moves to another account: the stick is made by the USB creator (#386) instead of `offline-kexec-stick.py`, its setup script installs the boot hook with one tap through Akai's script runner, and its first start backs the eMMC up and brings in the MPC's own kits and samples; the round adds the checks for what merged since the last run (#385, #387, #388, #389) and three optional add-ons. Revised after that round (run 16 Nov): the F blocks come straight after the stick is made, while Akai's system is up with developer mode on, instead of after Q10. Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One (Gen 1). The owner installed MPC OS 3.10.1 on it with Akai's updater on 2026-11-15 and switched developer mode on. Before that it ran 3.6.0 with [MOD-001 and MOD-002](archive/2026-11/device-modifications.md).
 
 The owner wants to know that main still does everything MPFree needs on the installed 3.10.1: log in, survey, back up, start MPFree from the USB stick at power-on with the boot hook (the soft-boot USB), run the pad player on it, and come back. The [stick test](firmware-3.10.1-stick-test.md) answered most of it before the install, with 3.6.0 doing a kexec jump, and the [boot hook's runs](stick-autoboot.md#second-power-on-2026-11-15-zip-092220z-mpfree-started) showed the power-on start once. This round does all of it from main on the installed 3.10.1, with every step's undo below. Since then the owner asked for more in the same round: the GPU page flips, the performance plan's round 8, the app's targeted run, and the FX measuring tools on the same stick, run from inside Akai's system.
 
@@ -11,10 +11,11 @@ The owner wants to know that main still does everything MPFree needs on the inst
 | Builds, and the app's tests | Q0, Q0b, Q0c, Q0d | Workstation | 30 min |
 | Akai's system, the stick out | Q1 to Q4: trust, lock, survey, backup | MPC on 3.10.1 | 20 min |
 | The stick | Q6a which stick, Q6 the USB creator writes it, Q6b the plugins | Workstation | 10 min |
+| Akai's system, the stick in (optional) | F1 to F8: FXProbe, before the stick boots MPFree | MPC on 3.10.1 | 30 min |
 | Akai's system, then the stick in | Q7a restart, Q7b one tap: the stick's setup script installs the boot hook | MPC on 3.10.1 | 5 min |
 | MPFree, first boot | Q7c the restart into MPFree and its first-start setup (the backup, kits and samples), Q8 this round's checks, Q8b benchmark; Q9 GPU flips (optional) | MPC on the stick | 90 to 120 min |
 | MPFree, second boot (optional) | S1 to S4: Sound cores on cores 3 and 2, the load again, an hour of play | MPC on the stick | 80 min |
-| Akai's system, the stick out, then in | Q10 back to 3.10.1; F1 to F8 FXProbe (optional) | MPC on 3.10.1 | 10 min, F 30 min |
+| Akai's system, the stick out | Q10 back to 3.10.1 | MPC on 3.10.1 | 10 min |
 | Optional add-ons | A1 after Q4: Akai's instruments from the backup; A2 after Q10: Akai's app as it runs; A3 before Q11: your MPC projects | Workstation; A2 on MPC on 3.10.1 | 10 min |
 | Logs, the setup's backup, and the zip | Q11, Q11b | Workstation | 25 min |
 
@@ -249,6 +250,74 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 - **If it is cut off halfway,** run `python3 tools/mpc-one/stick-plugin.py remove mono-voice` and `python3 tools/mpc-one/stick-plugin.py remove tidal-verb --as-zip`, then the block again.
 - **Undo:** the same two `remove` lines, with the stick in the workstation. Each deletes that one folder or zip and nothing else.
 
+**F (optional): FXProbe, the FX thread's measuring plugins, under Akai's system.** FXProbe lets fxlab measure the AIR effects on the MPC exactly as it measures MPFree's ([fxlab and FXProbe](../design/fxlab.md)). This is its first time on an MPC, so the first question is whether Akai's app loads the two plugins at all. The kit came onto the stick's setup partition (5, FAT32, which Akai's system mounts at `/media/MPFREE`) in Q6, under `/mpfree-dev/fxprobe`. Akai's system mounts every partition of a stick noexec, so the kit's script runs with `sh`, and the plugins are copied once to the MPC's internal drive, where the app can load them. Captures go to the stick's partition 4. Skip to Q7a if you'd rather not: nothing else depends on F. The F blocks can also run on another day, with the stick from this round. They need **External Plugin Support** on in Akai's app (Menu > Preferences > Enhancements).
+
+**They come here, before the stick boots MPFree,** because they need Akai's own system with developer mode on, which Q1 to Q4 have just shown working. In the 16 Nov round they came after Q10, the MPC was not in Akai's system with developer mode on by then, F1's login was refused on port 22, and none of them ran. Like Q6b, they need a stick whose partition 4 MPFree has made already (F1 says `FORMAT: mpfree-data 1`): a new stick gets it at its first start, so with a new stick run them after Q10 instead, with the stick out at power-on and developer mode on.
+
+Every F block runs the kit's script on the MPC over developer mode's SSH, with your key, from the workstation. The stick goes in only while Akai's app is up: with the hook installed, a power-on with the stick in starts MPFree. **Each time the stick goes in, Akai's app offers to run its `autorun.sh` again: tap No.** Yes would install the hook again (unchanged) and restart the MPC into MPFree.
+
+**Block F1: what is where** (read-only). Akai's app is still up from Q4, with developer mode on; if you switched the MPC off since, switch it on with the stick out, wait for Akai's app and check developer mode is on (SHIFT + MENU, Developer). Put the stick into the MPC's USB-A port. Tap No when it offers to run `autorun.sh`, answer No or Cancel to anything that offers to update, format or erase, and note what it asked. Wait 10 s. Then:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-check -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh check'
+```
+
+It checks the kit against its `SHA256SUMS` and shows the kits and data partitions, the internal drive's mount options, whether the plugins are installed, and the work folder. It ends `CHECK-OK`, and says `FORMAT: mpfree-data 1` for partition 4. If it says `can't open '/media/*/mpfree-dev/fxprobe/fxprobe.sh'`, Akai's system has not mounted the stick: take it out, put it in again, wait 10 s and run F1 again.
+
+**Block F2: install the plugins** (**state-changing, on the MPC's internal drive**: two folders, about 1.1 MB, into `/media/az01-internal/VST2 Plugins`; Akai's app keeps running):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-install -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh install'
+```
+
+- **What it changes:** it copies `MPFree - VST - FXProbe Source` and `MPFree - VST - FXProbe Tap` to `.fxprobe-staging` at the internal drive's top, checks the copy against the kit's hashes, then moves each folder into `VST2 Plugins` (it makes that folder if there is none), so the app never sees half a plugin. Each folder gets a pointer file, `workfolder.txt`, that finds the work folder on the stick. It refuses a drive that is not mounted read-write or is noexec, and a folder of the same name that isn't FXProbe's. It ends `INSTALL-OK`, and its lines name what changed.
+- **If it stops partway:** before the moves, nothing in `VST2 Plugins` changed and the staging folder is gone. Between the two moves, run F2 again, or the undo.
+- **Undo:** block F-undo's `remove` deletes exactly those two folders, and `VST2 Plugins` if F2 made it and it is empty. The plugins can also stay for later measuring rounds.
+
+**Block F3: restart Akai's app, so it lists the plugins** (read-only on the MPC). Switch the MPC off first, so the stick's file systems are left clean, then take the stick out. Wait 10 s and switch on. Wait for Akai's app, and put the stick in again once it is up. Tap No when it offers to run `autorun.sh`. Wait 10 s.
+
+**Block F4: the work folder** (**state-changing, on the stick only**: `FXProbe/` on partition 4, with the test programmes and the marker the plugins look for):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-setup -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh setup'
+```
+
+It ends `SETUP-OK`. Undo: F-undo's `clean`, which deletes `FXProbe/` from partition 4, captures included.
+
+**Step F5: three plugin tracks in Akai's app** (on the MPC: an Akai project in RAM; don't save it unless you want to). These taps follow the plugin SDK's description and have **not been checked on 3.10.1 yet**: note where the screens differ. FXProbe Source plays sines at 0 dBFS, so turn **MASTER VOL** down first, and set each Tap's **Output** to **Mute** before anything plays. Finish each track before you start the next, because tracks made in order get slots 1, 2 and 3:
+
+- **Track 1, the reference:** a new instrument track, as a plugin program, and browse to External Plugins > **FXProbe Source**. In insert 1, **FXProbe Tap**, with Slot **1** and Output **Mute** on its screen. This proves the route is a wire.
+- **Track 2:** the same, with **AIR Distortion** at its defaults in insert 1, and FXProbe Tap in insert 2, Slot **2**, Output **Mute**.
+- **Track 3:** the same, with **AIR Spring Reverb** at its defaults in insert 1, and FXProbe Tap in insert 2, Slot **3**, Output **Mute**.
+
+Leave Source's own Slot and Trigger at their defaults. If the app doesn't list FXProbe under External Plugins, note what it lists, skip to F-undo or Q7a, and tell the FX thread: that answers this round's first question.
+
+**Block F6: do the plugins report?** (read-only):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-status -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh status'
+```
+
+Three Sources and three Taps, slots 1 to 3, each `idle`.
+
+**Block F7: the first capture** (**state-changing, on the stick only**: `control.txt` and new files in `FXProbe/captures/` on partition 4; about 2 minutes):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-capture -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh capture round1-defaults --programme standard --gains 0,-12 --timing'
+```
+
+It plays the standard programme through every slot, once at 0 dB and once at -12 dB, and records what reaches each Tap. It prints `slots: 1 2 3; 2 capture(s) of 52.639 s each` and `loaded standard.wav in every Source` (each Source reads the 17.5 MB programme from the stick before the first gain, so none starts late), then `captured round1-defaults-g0 from 3 slot(s)` and the same for `round1-defaults-gm12`, and ends `CAPTURE-OK`. If a Source can't read the programme, it stops with `STOP: source-s1: cannot read programmes/standard.wav; …` before anything is recorded. It checks every report for overruns, dropped frames and samples that aren't numbers; a problem shows as `…; PROBLEMS: …` and exit code 1. `--timing` also logs the audio thread's scheduling and block sizes. AIR Distortion is measured against MPFree's Drive (aliasing), and the Spring Reverb against MPFree's spring (its metallic tail).
+
+**Block F8: measure the captures** (workstation only; read-only on the stick). Switch the MPC off, take the stick out, and put it into the workstation. The desktop mounts its data partition at `/media/jesse/MPFREE-DATA`; if it doesn't, mount it the way the file manager does, with `udisksctl mount -b /dev/disk/by-label/MPFREE-DATA`. Then:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-analyse -- bash -c 'set -e; w=/home/jesse/mpfree-work/fxprobe-round1; mkdir -p "$w"; sudo cp -r /media/jesse/MPFREE-DATA/FXProbe/captures /media/jesse/MPFREE-DATA/FXProbe/programmes "$w/"; sudo chown -R "$(id -u):$(id -g)" "$w"; rust/target/release/fxlab analyse "$w"/captures/round1-defaults-g0-s*.wav --schedule "$w/programmes/standard.tsv" --gain 0 --reverb --out "$w/g0"; rust/target/release/fxlab analyse "$w"/captures/round1-defaults-gm12-s*.wav --schedule "$w/programmes/standard.tsv" --gain -12 --reverb --out "$w/gm12"; tar -czf /home/jesse/mpfree-results/current/fxprobe-round1.tar.gz --exclude="*.wav" -C "$w" .'
+```
+
+It asks for your sudo password: Akai's system wrote `FXProbe/` as root. The kit and the plugins make its folders 0755 and its files 0644, but this is their first time on the MPC, so the copy reads as root anyway and then makes the copy yours. It copies the captures and programmes into `~/mpfree-work/fxprobe-round1`, measures each gain with fxlab (built in Q0c), and packs everything but the WAV files into `fxprobe-round1.tar.gz` in the results folder, so Q11's zip carries the numbers. The WAV files stay on your workstation: they are Akai's effects' output, so they never go into the repository.
+
+The plugins and `FXProbe/` can stay: without the marked folder the plugins do nothing, and the next measuring rounds need them. Their undo is block F-undo, in the undo section. Then unmount the data partition (`udisksctl unmount -b /dev/disk/by-label/MPFREE-DATA`, or eject it in the file manager), take the stick out of the workstation, and go on to Q7a with it out of the MPC.
+
 **Block Q7a: restart without the stick** (read-only). Leave the stick out of the MPC. Switch the MPC off, wait 10 s, and switch it on. Wait for Akai's app. If developer mode is not on any more, note that, and switch it on again (SHIFT + MENU, Developer). Then:
 
 ```bash
@@ -471,7 +540,7 @@ This boot keeps running on cores 3 and 2 until it ends; the next start runs Shar
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run status-after -- bash tools/mpc-one/collect-over-ssh.sh --devmode-status && python3 tools/mpc-one/results.py run hook-report-after -- bash tools/mpc-one/collect-over-ssh.sh --hook-report && python3 tools/mpc-one/results.py run boot-map-after -- bash tools/mpc-one/collect-over-ssh.sh --boot-map
 ```
 
-The hook report should show main's hook files, with the hashes Q7b wrote, and `MPFree's stick in now: no`. Then go on to A2, the F blocks, or straight to Q11.
+The hook report should show main's hook files, with the hashes Q7b wrote, and `MPFree's stick in now: no`. Then go on to A2, or straight to Q11.
 
 **Block A2 (optional add-on): Akai's app as it runs** (read-only on the MPC: the script reads `/proc` only, over developer mode's SSH with your key; it starts, stops or signals nothing and writes no file; under a minute each). Also for guest mode, and for the owner's question of how much memory Akai's app uses. The stick stays out, Akai's app is up, and the **transport is stopped** in both runs: the memory summary walks the app's page tables, which could cost its audio a few milliseconds while it plays. First with an empty project:
 
@@ -487,73 +556,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 - Each prints the app's resident and locked memory, its memory-lock limit and cgroup, each thread's CPU and real-time policy, the files it has mapped (an instrument in a file of its own shows up only once loaded), its open devices, and the kernel features guest mode would use. It never reads the app's environment or the contents of a file it has open.
 - **Passes when** each ends `DONE: read-only.` If it says `STOP: Akai's app (/usr/bin/MPC) is not running`, wait for the app and run it again.
-- **Undo:** none needed. You don't need to save the project with the instruments; F3 restarts Akai's app anyway.
-
-**F (optional): FXProbe, the FX thread's measuring plugins, under Akai's system.** FXProbe lets fxlab measure the AIR effects on the MPC exactly as it measures MPFree's ([fxlab and FXProbe](../design/fxlab.md)). This is its first time on an MPC, so the first question is whether Akai's app loads the two plugins at all. The kit came onto the stick's setup partition (5, FAT32, which Akai's system mounts at `/media/MPFREE`) in Q6, under `/mpfree-dev/fxprobe`. Akai's system mounts every partition of a stick noexec, so the kit's script runs with `sh`, and the plugins are copied once to the MPC's internal drive, where the app can load them. Captures go to the stick's partition 4. Skip to Q11 if you'd rather not: nothing else depends on F. The F blocks can also run on another day, with the stick from this round. They need **External Plugin Support** on in Akai's app (Menu > Preferences > Enhancements).
-
-Every F block runs the kit's script on the MPC over developer mode's SSH, with your key, from the workstation. The stick goes in only while Akai's app is up: with the hook installed, a power-on with the stick in starts MPFree. **Each time the stick goes in, Akai's app offers to run its `autorun.sh` again: tap No.** Yes would install the hook again (unchanged) and restart the MPC into MPFree.
-
-**Block F1: what is where** (read-only). With Akai's app up, put the stick into the MPC's USB-A port. Tap No when it offers to run `autorun.sh`, answer No or Cancel to anything that offers to update, format or erase, and note what it asked. Wait 10 s. Then:
-
-```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-check -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh check'
-```
-
-It checks the kit against its `SHA256SUMS` and shows the kits and data partitions, the internal drive's mount options, whether the plugins are installed, and the work folder. It ends `CHECK-OK`, and says `FORMAT: mpfree-data 1` for partition 4. If it says `can't open '/media/*/mpfree-dev/fxprobe/fxprobe.sh'`, Akai's system has not mounted the stick: take it out, put it in again, wait 10 s and run F1 again.
-
-**Block F2: install the plugins** (**state-changing, on the MPC's internal drive**: two folders, about 1.1 MB, into `/media/az01-internal/VST2 Plugins`; Akai's app keeps running):
-
-```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-install -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh install'
-```
-
-- **What it changes:** it copies `MPFree - VST - FXProbe Source` and `MPFree - VST - FXProbe Tap` to `.fxprobe-staging` at the internal drive's top, checks the copy against the kit's hashes, then moves each folder into `VST2 Plugins` (it makes that folder if there is none), so the app never sees half a plugin. Each folder gets a pointer file, `workfolder.txt`, that finds the work folder on the stick. It refuses a drive that is not mounted read-write or is noexec, and a folder of the same name that isn't FXProbe's. It ends `INSTALL-OK`, and its lines name what changed.
-- **If it stops partway:** before the moves, nothing in `VST2 Plugins` changed and the staging folder is gone. Between the two moves, run F2 again, or the undo.
-- **Undo:** block F-undo's `remove` deletes exactly those two folders, and `VST2 Plugins` if F2 made it and it is empty. The plugins can also stay for later measuring rounds.
-
-**Block F3: restart Akai's app, so it lists the plugins** (read-only on the MPC). Switch the MPC off first, so the stick's file systems are left clean, then take the stick out. Wait 10 s and switch on. Wait for Akai's app, and put the stick in again once it is up. Tap No when it offers to run `autorun.sh`. Wait 10 s.
-
-**Block F4: the work folder** (**state-changing, on the stick only**: `FXProbe/` on partition 4, with the test programmes and the marker the plugins look for):
-
-```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-setup -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh setup'
-```
-
-It ends `SETUP-OK`. Undo: F-undo's `clean`, which deletes `FXProbe/` from partition 4, captures included.
-
-**Step F5: three plugin tracks in Akai's app** (on the MPC: an Akai project in RAM; don't save it unless you want to). These taps follow the plugin SDK's description and have **not been checked on 3.10.1 yet**: note where the screens differ. FXProbe Source plays sines at 0 dBFS, so turn **MASTER VOL** down first, and set each Tap's **Output** to **Mute** before anything plays. Finish each track before you start the next, because tracks made in order get slots 1, 2 and 3:
-
-- **Track 1, the reference:** a new instrument track, as a plugin program, and browse to External Plugins > **FXProbe Source**. In insert 1, **FXProbe Tap**, with Slot **1** and Output **Mute** on its screen. This proves the route is a wire.
-- **Track 2:** the same, with **AIR Distortion** at its defaults in insert 1, and FXProbe Tap in insert 2, Slot **2**, Output **Mute**.
-- **Track 3:** the same, with **AIR Spring Reverb** at its defaults in insert 1, and FXProbe Tap in insert 2, Slot **3**, Output **Mute**.
-
-Leave Source's own Slot and Trigger at their defaults. If the app doesn't list FXProbe under External Plugins, note what it lists, skip to F-undo or Q11, and tell the FX thread: that answers this round's first question.
-
-**Block F6: do the plugins report?** (read-only):
-
-```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-status -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh status'
-```
-
-Three Sources and three Taps, slots 1 to 3, each `idle`.
-
-**Block F7: the first capture** (**state-changing, on the stick only**: `control.txt` and new files in `FXProbe/captures/` on partition 4; about 2 minutes):
-
-```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-capture -- ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -i /home/jesse/.ssh/mpc_one_autorun_ed25519 root@10.42.0.141 'sh /media/*/mpfree-dev/fxprobe/fxprobe.sh capture round1-defaults --programme standard --gains 0,-12 --timing'
-```
-
-It plays the standard programme through every slot, once at 0 dB and once at -12 dB, and records what reaches each Tap. It prints `slots: 1 2 3; 2 capture(s) of 52.639 s each` and `loaded standard.wav in every Source` (each Source reads the 17.5 MB programme from the stick before the first gain, so none starts late), then `captured round1-defaults-g0 from 3 slot(s)` and the same for `round1-defaults-gm12`, and ends `CAPTURE-OK`. If a Source can't read the programme, it stops with `STOP: source-s1: cannot read programmes/standard.wav; …` before anything is recorded. It checks every report for overruns, dropped frames and samples that aren't numbers; a problem shows as `…; PROBLEMS: …` and exit code 1. `--timing` also logs the audio thread's scheduling and block sizes. AIR Distortion is measured against MPFree's Drive (aliasing), and the Spring Reverb against MPFree's spring (its metallic tail).
-
-**Block F8: measure the captures** (workstation only; read-only on the stick). Switch the MPC off, take the stick out, and put it into the workstation. The desktop mounts its data partition at `/media/jesse/MPFREE-DATA`; if it doesn't, mount it the way the file manager does, with `udisksctl mount -b /dev/disk/by-label/MPFREE-DATA`. Then:
-
-```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run fx-analyse -- bash -c 'set -e; w=/home/jesse/mpfree-work/fxprobe-round1; mkdir -p "$w"; sudo cp -r /media/jesse/MPFREE-DATA/FXProbe/captures /media/jesse/MPFREE-DATA/FXProbe/programmes "$w/"; sudo chown -R "$(id -u):$(id -g)" "$w"; rust/target/release/fxlab analyse "$w"/captures/round1-defaults-g0-s*.wav --schedule "$w/programmes/standard.tsv" --gain 0 --reverb --out "$w/g0"; rust/target/release/fxlab analyse "$w"/captures/round1-defaults-gm12-s*.wav --schedule "$w/programmes/standard.tsv" --gain -12 --reverb --out "$w/gm12"; tar -czf /home/jesse/mpfree-results/current/fxprobe-round1.tar.gz --exclude="*.wav" -C "$w" .'
-```
-
-It asks for your sudo password: Akai's system wrote `FXProbe/` as root. The kit and the plugins make its folders 0755 and its files 0644, but this is their first time on the MPC, so the copy reads as root anyway and then makes the copy yours. It copies the captures and programmes into `~/mpfree-work/fxprobe-round1`, measures each gain with fxlab (built in Q0c), and packs everything but the WAV files into `fxprobe-round1.tar.gz` in the results folder, so Q11's zip carries the numbers. The WAV files stay on your workstation: they are Akai's effects' output, so they never go into the repository.
-
-The plugins and `FXProbe/` can stay: without the marked folder the plugins do nothing, and the next measuring rounds need them. Their undo is block F-undo, in the undo section.
+- **Undo:** none needed. You don't need to save the project with the instruments.
 
 **Block A3 (optional add-on): your own MPC projects** (workstation only, read-only: the tool opens each project file to read it and writes nothing on the card or drive; the MPC isn't contacted; a minute or two). This is for the MPC import thread: what Akai's project files hold, so MPFree can open them. The 2026-11-09 backup's internal drive holds no projects, so yours are on the SD card or USB drive you use with the MPC. Switch the MPC off if the card is in it, take the card or drive out, and put it into the workstation. The desktop mounts it under `/media/jesse`, as it does the stick in F8; if it doesn't appear there, open it once in the file manager. Then:
 
@@ -566,7 +569,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-import/tests/tes
 - **Passes when** the test prints `OK` and each project has an `=== …` heading with a `format:` line. A card with no projects prints `no .xpj here`, which is an answer too.
 - **Undo:** none needed. Eject the card in the file manager before you take it out.
 
-**Block Q11: the stick logs.** If the stick is in the MPC (after F), switch the MPC off first, then take the stick out. Put it into the workstation. Then (read-only on the stick; sudo asks for your password):
+**Block Q11: the stick logs.** The stick is out of the MPC since Q10. Put it into the workstation. Then (read-only on the stick; sudo asks for your password):
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run stick-logs -- python3 tools/mpc-one/read-stick-logs.py ; python3 tools/mpc-one/results.py run setup-log -- sudo rust/target/release/mpfree-stick setup-log --device mpfree ; python3 tools/mpc-one/results.py run stick-after -- sudo rust/target/release/mpfree-stick inspect --device mpfree
