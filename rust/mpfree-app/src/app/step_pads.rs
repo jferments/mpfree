@@ -16,6 +16,9 @@
 //!   turns Follow on, so the page turns with the playhead; picking a page
 //!   by hand turns it off.
 //! - **ERASE + PAD BANK** clears the sound's steps on that page.
+//! - **COPY** held: a step pad picks a step and each one after takes a
+//!   copy (`step_keys.rs`); a PAD BANK picks a page and the next one takes
+//!   a copy of it, the sound's steps and their locks.
 //!
 //! The app keeps the mode, the sound, the page and Follow. The audio loop
 //! turns the pads' presses into step edits and lights them
@@ -45,6 +48,12 @@ pub struct StepPads {
     /// STEP SEQ is held: the pads play the kit, and the pad tapped is the
     /// next sound.
     pub picking: bool,
+    /// COPY is held: a step pad picks the step to copy, then takes the
+    /// copy, and so does a PAD BANK for a page.
+    pub copying: bool,
+    /// COPY + a PAD BANK picked this page to copy; the next PAD BANK
+    /// takes it.
+    pub copy_page: Option<usize>,
 }
 
 impl StepPads {
@@ -67,6 +76,10 @@ pub(super) struct StepSeq {
     picked: bool,
     /// The pad played last: the sound when STEP SEQ goes on.
     last_pad: u8,
+    /// COPY is down.
+    copy_held: bool,
+    /// COPY + PAD BANK: the page picked to copy.
+    copy_page: Option<usize>,
 }
 
 impl App {
@@ -85,7 +98,34 @@ impl App {
             page: s.page,
             follow: s.follow,
             picking: s.held,
+            copying: s.copy_held,
+            copy_page: s.copy_page,
         })
+    }
+
+    /// COPY is held: a step pad pressed now picks a step to copy, or takes
+    /// the copy.
+    pub fn copy_held(&self) -> bool {
+        self.step_seq.copy_held
+    }
+
+    /// COPY pressed or let go. Its job is STEP SEQ's for now (the layout
+    /// spec's section 6): while the pads are steps, the screen says what
+    /// it does.
+    pub(super) fn copy_button(&mut self, pressed: bool) -> Vec<Effect> {
+        self.step_seq.copy_held = pressed;
+        self.step_seq.copy_page = None;
+        if !self.step_seq.on {
+            return Vec::new();
+        }
+        let mut fx = vec![self.status()];
+        if pressed {
+            fx.push(Effect::Note(
+                "COPY held: tap a step, then the steps it goes to (a PAD BANK, then another: a page)"
+                    .to_string(),
+            ));
+        }
+        fx
     }
 
     /// A pad press is a step edit now: STEP SEQ is on and not held.
@@ -209,16 +249,34 @@ impl App {
     /// the sound's steps on that page are cleared instead.
     pub(super) fn step_page_button(&mut self, button: u8, shift: bool) -> Vec<Effect> {
         let s = self.step_seq;
+        // ERASE or COPY + PAD BANK: the page that button lights now
+        // (SHIFT: the other four).
+        let group = (s.page / 4 * 4 + if shift { 4 } else { 0 }) % PAGES;
+        let lit = group + (button as usize & 3);
         if self.erase_held {
-            // ERASE + PAD BANK: the page that button lights now (SHIFT:
-            // the other four).
-            let group = (s.page / 4 * 4 + if shift { 4 } else { 0 }) % PAGES;
-            let page = group + (button as usize & 3);
             return vec![Effect::Steps(StepAction::ClearSteps {
                 pad: s.sound,
-                from: page * PAGE,
-                to: (page + 1) * PAGE,
+                from: lit * PAGE,
+                to: (lit + 1) * PAGE,
             })];
+        }
+        if s.copy_held {
+            return match s.copy_page {
+                Some(from) if from != lit => vec![Effect::Steps(StepAction::CopySteps {
+                    pad: s.sound,
+                    from: from * PAGE,
+                    to: lit * PAGE,
+                    count: PAGE,
+                })],
+                _ => {
+                    self.step_seq.copy_page = Some(lit);
+                    let line = format!(
+                        "COPY: page {} picked; press the PAD BANK it goes to",
+                        lit + 1
+                    );
+                    vec![self.status(), Effect::Tell(line)]
+                }
+            };
         }
         let page = bank_target(s.page, button, shift);
         self.step_seq.page = page;

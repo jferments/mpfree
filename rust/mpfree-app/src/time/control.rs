@@ -731,6 +731,21 @@ impl TimeControl {
                 Some(change.key(pad, step)),
                 format!("step {} of pad {}: {change:?}", step + 1, pad + 1),
             ),
+            StepAction::ChangeSteps { pad, steps, change } => {
+                let held: Vec<usize> = (0..128).filter(|i| steps & (1u128 << i) != 0).collect();
+                (
+                    grid.change_steps(clip, pad, &held, change),
+                    Some(change.key_steps(pad, steps)),
+                    format!(
+                        "steps {} of pad {}: {change:?}",
+                        held.iter()
+                            .map(|i| (i + 1).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        pad + 1
+                    ),
+                )
+            }
             StepAction::ClearPad { pad } => (
                 grid.clear_row(clip, pad),
                 None,
@@ -743,6 +758,27 @@ impl TimeControl {
                     format!("step {} of pad {}", from + 1, pad + 1)
                 } else {
                     format!("steps {} to {to} of pad {}", from + 1, pad + 1)
+                },
+            ),
+            StepAction::CopySteps {
+                pad,
+                from,
+                to,
+                count,
+            } => (
+                grid.copy_steps(clip, pad, from, to, count),
+                None,
+                if count == 1 {
+                    format!("step {} of pad {} to step {}", from + 1, pad + 1, to + 1)
+                } else {
+                    format!(
+                        "steps {} to {} of pad {} to steps {} to {}",
+                        from + 1,
+                        from + count,
+                        pad + 1,
+                        to + 1,
+                        to + count
+                    )
                 },
             ),
             StepAction::Length { steps, copy } => {
@@ -773,6 +809,7 @@ impl TimeControl {
             (None, StepAction::ClearPad { .. } | StepAction::ClearSteps { .. }) => {
                 format!("steps: {what} erased")
             }
+            (None, StepAction::CopySteps { .. }) => format!("steps: {what} copied"),
             (None, StepAction::Length { steps, copy }) => {
                 let bars = steps.div_ceil(16);
                 let s = if bars == 1 { "" } else { "s" };
