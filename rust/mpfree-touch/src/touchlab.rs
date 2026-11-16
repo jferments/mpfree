@@ -99,13 +99,17 @@ pub const STEPS: [LabStep; 9] = [
     },
     LabStep {
         name: "hold_centre",
-        seconds: 12,
+        // 10 s held, with time to reach the dot and lift (12 s timed a
+        // real 10 s hold out: Jay's final round, 16 Nov).
+        seconds: 15,
         check: Check::Hold,
         instruction: "Hold one finger still on the centre dot for 10 seconds, then lift.",
     },
     LabStep {
         name: "hold_corner",
-        seconds: 12,
+        // 10 s held, with time to reach the dot and lift (12 s timed a
+        // real 10 s hold out: Jay's final round, 16 Nov).
+        seconds: 15,
         check: Check::Hold,
         instruction: "Hold one finger still on the top-left dot for 10 seconds, then lift.",
     },
