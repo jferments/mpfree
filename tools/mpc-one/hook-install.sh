@@ -70,6 +70,10 @@ case "$rel" in
   6.18.*-az01-*) ;;
   *) stop "this is for Akai's 3.10.1 (kernel 6.18, az01) installed on the MPC; it runs $rel" ;;
 esac
+# MPFree has only been tested on the MPC One (Gen 1), whose device tree names it inmusic,acva.
+tr '\000' '\n' < "$R/proc/device-tree/compatible" 2>/dev/null | grep -qx 'inmusic,acva' ||
+  stop "this is not an MPC One (no inmusic,acva in /proc/device-tree/compatible); MPFree has only been tested on the MPC One (Gen 1)"
+say "board: MPC One (inmusic,acva)"
 grep -q " /etc overlay .*upperdir=/data/system/etc/overlay," "$R/proc/mounts" ||
   stop "/etc is not Akai's overlay with its upper folder in /data/system/etc/overlay"
 grep -q ' /data ext4 rw' "$R/proc/mounts" || stop "/data is not mounted read-write"
@@ -250,6 +254,9 @@ modules() {   # $1 = load or try: the stick's preload list, from Akai's own syst
 }
 
 prepare() {   # Finds the stick, mounts its partition 1 read-only and checks it is a system to start.
+  # MPFree has only been tested on the MPC One (Gen 1): its device tree names it inmusic,acva.
+  tr '\000' '\n' < "$R/proc/device-tree/compatible" 2>/dev/null | grep -qx 'inmusic,acva' ||
+    fail "this is not an MPC One (no inmusic,acva in the device tree); MPFree has only been tested on the MPC One"
   dev=$(readlink -f "$R/dev/disk/by-partlabel/$LABEL" 2>/dev/null)
   [ -n "$dev" ] && [ -e "$dev" ] || fail "MPFree's stick is not in (no partition named $LABEL)"
   name=${dev##*/}

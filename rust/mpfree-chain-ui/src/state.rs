@@ -182,6 +182,10 @@ pub struct ChainState {
     /// The selected effect's modes, when it is one of a family
     /// (`mpfree_fx::families`): the Mode chooser.
     pub mode: Option<ModeView>,
+    /// The selected effect is the EQ: its page is the curve
+    /// ([`crate::eq_page`]), `params` hold every one of its controls and
+    /// there are no sections or page tabs.
+    pub eq: bool,
 }
 
 /// The selected insert's family and its modes, for the Mode chooser.
@@ -225,6 +229,7 @@ impl Default for ChainState {
             plugins: Vec::new(),
             shelf: mpfree_fx::picker::Shelf::default(),
             mode: None,
+            eq: false,
         }
     }
 }
@@ -353,6 +358,63 @@ pub fn param_view(n: &dyn Node, owner: Owner, engine: &ModEngine, id: u16) -> Op
     })
 }
 
+/// The EQ's node id: its page is the curve ([`crate::eq_page`]).
+pub const EQ_ID: &str = "mpfree.fx.eq";
+
+/// The EQ's page: every control (the curve and the band panel reach them
+/// all), no sections, and the Q-Links on the band last touched
+/// ([`eq_four`]).
+pub fn eq_page(
+    n: &dyn Node,
+    owner: Owner,
+    engine: &ModEngine,
+    focus: Option<ParamAddr>,
+) -> crate::sections::PageView {
+    let params: Vec<ParamView> = n
+        .params()
+        .iter()
+        .filter(|p| !p.readonly)
+        .filter_map(|p| param_view(n, owner, engine, p.id))
+        .collect();
+    let qlinks = eq_four(&params, focus);
+    crate::sections::PageView {
+        pages: Vec::new(),
+        page: 0,
+        spec: String::new(),
+        params,
+        sections: Vec::new(),
+        qlinks,
+    }
+}
+
+/// What the Q-Links turn on the EQ's page: the picked band's Freq, Gain
+/// and Q (a cut: its frequency and slope), then the EQ's Output. The
+/// picked band is the one whose control was touched last, else the first
+/// band in use.
+pub fn eq_four(params: &[ParamView], focus: Option<ParamAddr>) -> Vec<ParamView> {
+    use mpfree_fx::ids::eq as ids;
+    let value = |id: u16| params.iter().find(|p| p.info.id == id).map(|p| p.value);
+    let used = |b: usize| value(ids::band_use(b)).is_some_and(|u| u != ids::USE_UNUSED);
+    let touched = focus.and_then(|f| params.iter().find(|p| p.addr == f).map(|p| p.info.id));
+    let ids: Vec<u16> = match touched {
+        Some(ids::LOW_CUT | ids::LOW_SLOPE) => vec![ids::LOW_CUT, ids::LOW_SLOPE],
+        Some(ids::HIGH_CUT | ids::HIGH_SLOPE) => vec![ids::HIGH_CUT, ids::HIGH_SLOPE],
+        t => {
+            let b = t
+                .and_then(ids::band_of)
+                .map(|(b, _)| b)
+                .filter(|&b| used(b))
+                .or_else(|| (0..ids::BANDS).find(|&b| used(b)))
+                .unwrap_or(0);
+            vec![ids::freq(b), ids::gain(b), ids::q(b)]
+        }
+    };
+    ids.into_iter()
+        .chain([ids::OUTPUT])
+        .filter_map(|id| params.iter().find(|p| p.info.id == id).cloned())
+        .collect()
+}
+
 impl ChainState {
     /// Reads a chain (on `strip`) and the engine that modulates it.
     /// `selected`, `group` and `focus` are what the screen had.
@@ -407,8 +469,15 @@ impl ChainState {
                 Some((f, Some(m))) => f.modes[m].fixed,
                 _ => &[],
             };
-            page = crate::sections::page_view(n, owner, engine, hide, group);
+            page = if n.info().id == EQ_ID {
+                eq_page(n, owner, engine, focus)
+            } else {
+                crate::sections::page_view(n, owner, engine, hide, group)
+            };
         }
+        let eq = selected
+            .and_then(|s| chain.node(s))
+            .is_some_and(|n| n.info().id == EQ_ID);
         let PageView {
             pages: groups,
             page: group_shown,
@@ -459,6 +528,7 @@ impl ChainState {
             plugins: Vec::new(),
             shelf: mpfree_fx::picker::Shelf::default(),
             mode,
+            eq,
         }
     }
 

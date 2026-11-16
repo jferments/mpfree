@@ -1,0 +1,14 @@
+[Unit]
+Description=MPFree first-start setup: wait for the pad player to ask for the eMMC backup
+DefaultDependencies=no
+After=mpfree-test-internal-off.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Path]
+PathExists=/run/mpfree-app/setup-backup.request
+Unit=mpfree-setup-backup.service
+
+[Install]
+WantedBy=sysinit.target

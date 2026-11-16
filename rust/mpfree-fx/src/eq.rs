@@ -1,14 +1,20 @@
-//! A four-band parametric EQ with low and high cuts, built on the same
+//! An eight-band parametric EQ with low and high cuts, built on the same
 //! zero-delay-feedback state-variable filters as the Multi filter, so a
 //! band swept or boosted under automation never zips or blows up.
 //!
 //! - Low cut and high cut: Off, 12 or 24 dB per octave (Butterworth). A
 //!   slope change crossfades over about 20 ms.
-//! - Four bands, each a bell, a low shelf or a high shelf, with frequency,
-//!   gain (±18 dB) and Q. A band at 0 dB is exactly flat. A shelf's Q stops
-//!   at 2, where it rings a 5 dB bump past the corner at full gain. A type
-//!   change glides the band's gain to 0 dB, where every type passes the
-//!   input exactly, swaps, and glides back, so it never clicks.
+//! - Eight bands, each a bell, a low shelf, a high shelf or a notch, with
+//!   frequency, gain (±18 dB; a notch ignores it) and Q. A band at 0 dB is
+//!   exactly flat. A shelf's Q stops at 2, where it rings a 5 dB bump past
+//!   the corner at full gain. A type change glides the band's gain to 0 dB,
+//!   where every type passes the input exactly, swaps, and glides back, so
+//!   it never clicks.
+//! - Each band's Use: Unused (not on the EQ page), On, or Bypassed. Only
+//!   On is heard; leaving On glides the band flat the same way. Bands 1 to
+//!   4 start On and bands 5 to 8 Unused, so a project saved with the
+//!   four-band EQ sounds and looks as it did: bands 5 to 8 and the Use
+//!   params took new ids after Output, and the old ids are unchanged.
 //! - Output gain.
 //!
 //! [`Eq::response_db`] gives the curve the settings are heading to, exact
@@ -20,32 +26,68 @@ use crate::svf::{Segs, Svf, SvfMode};
 use crate::{db_to_gain, defaults};
 
 /// [`Eq`] parameter ids. Each band has four in a row: `band_type(b)`,
-/// `freq(b)`, `gain(b)` and `q(b)` for band `b` from 0 to 3.
+/// `freq(b)`, `gain(b)` and `q(b)` for band `b` from 0 to 7, plus its
+/// `band_use(b)`. Bands 1 to 4 keep the ids of the four-band EQ (4 to 19);
+/// bands 5 to 8 follow Output (21 to 36), then the eight Use params.
 pub mod ids {
     pub const LOW_CUT: u16 = 0;
     pub const LOW_SLOPE: u16 = 1;
     pub const HIGH_CUT: u16 = 2;
     pub const HIGH_SLOPE: u16 = 3;
     /// How many bands.
-    pub const BANDS: usize = 4;
+    pub const BANDS: usize = 8;
+    /// The first id of band `b`'s row of four.
+    const fn base(b: usize) -> u16 {
+        if b < 4 {
+            4 + 4 * b as u16
+        } else {
+            21 + 4 * (b as u16 - 4)
+        }
+    }
     pub const fn band_type(b: usize) -> u16 {
-        4 + 4 * b as u16
+        base(b)
     }
     pub const fn freq(b: usize) -> u16 {
-        5 + 4 * b as u16
+        base(b) + 1
     }
     pub const fn gain(b: usize) -> u16 {
-        6 + 4 * b as u16
+        base(b) + 2
     }
     pub const fn q(b: usize) -> u16 {
-        7 + 4 * b as u16
+        base(b) + 3
+    }
+    /// A band's Use: Unused (not on the page), On (heard) or Bypassed.
+    pub const USE_UNUSED: f32 = 0.0;
+    pub const USE_ON: f32 = 1.0;
+    pub const USE_BYPASSED: f32 = 2.0;
+    /// Band `b`'s Use: [`USE_UNUSED`], [`USE_ON`] or [`USE_BYPASSED`].
+    pub const fn band_use(b: usize) -> u16 {
+        37 + b as u16
     }
     pub const OUTPUT: u16 = 20;
+    /// Listen: Off, or band `n` (1 to 8) heard alone through a band-pass
+    /// at its frequency and Q, to find what it touches. Not saved with a
+    /// sound: pages turn it off when they close.
+    pub const LISTEN: u16 = 45;
+    /// The band an id belongs to and which of its params it is: 0 type,
+    /// 1 freq, 2 gain, 3 Q, 4 Use.
+    pub const fn band_of(id: u16) -> Option<(usize, u16)> {
+        match id {
+            4..=19 => Some(((id as usize - 4) / 4, (id - 4) % 4)),
+            21..=36 => Some((4 + (id as usize - 21) / 4, (id - 21) % 4)),
+            37..=44 => Some((id as usize - 37, 4)),
+            _ => None,
+        }
+    }
 }
 
 const SLOPES: &[&str] = &["Off", "12 dB", "24 dB"];
-const TYPES: &[&str] = &["Bell", "Low shelf", "High shelf"];
-const N: usize = 21;
+const TYPES: &[&str] = &["Bell", "Low shelf", "High shelf", "Notch"];
+const USES: &[&str] = &["Unused", "On", "Bypassed"];
+const LISTENS: &[&str] = &[
+    "Off", "Band 1", "Band 2", "Band 3", "Band 4", "Band 5", "Band 6", "Band 7", "Band 8",
+];
+const N: usize = 46;
 
 static INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.eq",
@@ -102,7 +144,7 @@ static PARAMS: [ParamInfo; N] = [
         name: "Type",
         group: "Band 1",
         min: 0.0,
-        max: 2.0,
+        max: 3.0,
         default: 1.0,
         unit: Unit::None,
         curve: Curve::Choice(TYPES),
@@ -146,7 +188,7 @@ static PARAMS: [ParamInfo; N] = [
         name: "Type",
         group: "Band 2",
         min: 0.0,
-        max: 2.0,
+        max: 3.0,
         default: 0.0,
         unit: Unit::None,
         curve: Curve::Choice(TYPES),
@@ -190,7 +232,7 @@ static PARAMS: [ParamInfo; N] = [
         name: "Type",
         group: "Band 3",
         min: 0.0,
-        max: 2.0,
+        max: 3.0,
         default: 0.0,
         unit: Unit::None,
         curve: Curve::Choice(TYPES),
@@ -234,7 +276,7 @@ static PARAMS: [ParamInfo; N] = [
         name: "Type",
         group: "Band 4",
         min: 0.0,
-        max: 2.0,
+        max: 3.0,
         default: 2.0,
         unit: Unit::None,
         curve: Curve::Choice(TYPES),
@@ -284,6 +326,281 @@ static PARAMS: [ParamInfo; N] = [
         curve: Curve::Linear,
         readonly: false,
     },
+    ParamInfo {
+        id: 21,
+        name: "Type",
+        group: "Band 5",
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(TYPES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 22,
+        name: "Freq",
+        group: "Band 5",
+        min: 20.0,
+        max: 20_000.0,
+        default: 60.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 23,
+        name: "Gain",
+        group: "Band 5",
+        min: -18.0,
+        max: 18.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 24,
+        name: "Q",
+        group: "Band 5",
+        min: 0.1,
+        max: 18.0,
+        default: 0.71,
+        unit: Unit::None,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 25,
+        name: "Type",
+        group: "Band 6",
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(TYPES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 26,
+        name: "Freq",
+        group: "Band 6",
+        min: 20.0,
+        max: 20_000.0,
+        default: 250.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 27,
+        name: "Gain",
+        group: "Band 6",
+        min: -18.0,
+        max: 18.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 28,
+        name: "Q",
+        group: "Band 6",
+        min: 0.1,
+        max: 18.0,
+        default: 0.71,
+        unit: Unit::None,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 29,
+        name: "Type",
+        group: "Band 7",
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(TYPES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 30,
+        name: "Freq",
+        group: "Band 7",
+        min: 20.0,
+        max: 20_000.0,
+        default: 1_000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 31,
+        name: "Gain",
+        group: "Band 7",
+        min: -18.0,
+        max: 18.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 32,
+        name: "Q",
+        group: "Band 7",
+        min: 0.1,
+        max: 18.0,
+        default: 0.71,
+        unit: Unit::None,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 33,
+        name: "Type",
+        group: "Band 8",
+        min: 0.0,
+        max: 3.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(TYPES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 34,
+        name: "Freq",
+        group: "Band 8",
+        min: 20.0,
+        max: 20_000.0,
+        default: 5_000.0,
+        unit: Unit::Hz,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 35,
+        name: "Gain",
+        group: "Band 8",
+        min: -18.0,
+        max: 18.0,
+        default: 0.0,
+        unit: Unit::Db,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 36,
+        name: "Q",
+        group: "Band 8",
+        min: 0.1,
+        max: 18.0,
+        default: 0.71,
+        unit: Unit::None,
+        curve: Curve::Log,
+        readonly: false,
+    },
+    ParamInfo {
+        id: 37,
+        name: "Use",
+        group: "Band 1",
+        min: 0.0,
+        max: 2.0,
+        default: 1.0,
+        unit: Unit::None,
+        curve: Curve::Choice(USES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 38,
+        name: "Use",
+        group: "Band 2",
+        min: 0.0,
+        max: 2.0,
+        default: 1.0,
+        unit: Unit::None,
+        curve: Curve::Choice(USES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 39,
+        name: "Use",
+        group: "Band 3",
+        min: 0.0,
+        max: 2.0,
+        default: 1.0,
+        unit: Unit::None,
+        curve: Curve::Choice(USES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 40,
+        name: "Use",
+        group: "Band 4",
+        min: 0.0,
+        max: 2.0,
+        default: 1.0,
+        unit: Unit::None,
+        curve: Curve::Choice(USES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 41,
+        name: "Use",
+        group: "Band 5",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(USES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 42,
+        name: "Use",
+        group: "Band 6",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(USES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 43,
+        name: "Use",
+        group: "Band 7",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(USES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 44,
+        name: "Use",
+        group: "Band 8",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(USES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::LISTEN,
+        name: "Listen",
+        group: "Output",
+        min: 0.0,
+        max: 8.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(LISTENS),
+        readonly: false,
+    },
 ];
 
 /// Butterworth Qs: one 12 dB stage, or two stages for 24 dB.
@@ -295,10 +612,10 @@ const SHELF_Q: f32 = 2.0;
 
 /// The Q a band of type `kind` uses for the Q knob's `q`.
 fn band_q(kind: usize, q: f32) -> f32 {
-    if kind == 0 {
-        q
-    } else {
+    if kind == 1 || kind == 2 {
         q.min(SHELF_Q)
+    } else {
+        q
     }
 }
 
@@ -306,9 +623,15 @@ fn band_mode(kind: usize) -> SvfMode {
     match kind {
         1 => SvfMode::LowShelf,
         2 => SvfMode::HighShelf,
+        3 => SvfMode::Notch,
         _ => SvfMode::Bell,
     }
 }
+
+/// A notch: its type value. It has no gain; instead the band's output
+/// crossfades from the input to the notch filter (`wet`), so it swaps type
+/// and turns on and off as smoothly as a bell gliding to 0 dB.
+const NOTCH: usize = 3;
 
 /// One parametric band.
 #[derive(Clone, Copy)]
@@ -316,34 +639,51 @@ struct Band {
     log_hz: Smooth,
     gain: Smooth,
     log_q: Smooth,
-    /// The type playing and the type asked for; while they differ the gain
-    /// glides to 0 dB (`amt` to 0), then the type swaps.
+    /// The type playing and the type asked for; while they differ, or
+    /// while the band is not On, the gain glides to 0 dB (`amt` to 0), then
+    /// the type swaps.
     kind: usize,
     want: usize,
+    on: bool,
     amt: f32,
-    /// At 0 dB the band is exactly the input: it rests, its state cleared.
+    /// A notch's share of the output, 0 to 1 (the rest is the input).
+    wet: f32,
+    /// At 0 dB (a notch: at no share) the band is exactly the input: it
+    /// rests, its state cleared.
     flat: bool,
     svf: Svf,
 }
 
 impl Band {
-    fn new(kind: usize, hz: f32, gain: f32, q: f32) -> Band {
+    fn new(kind: usize, hz: f32, gain: f32, q: f32, on: bool) -> Band {
         Band {
             log_hz: Smooth::new(hz.log2()),
             gain: Smooth::new(gain),
             log_q: Smooth::new(q.log2()),
             kind,
             want: kind,
-            amt: 1.0,
-            flat: gain == 0.0,
+            on,
+            amt: if on { 1.0 } else { 0.0 },
+            wet: if on { 1.0 } else { 0.0 },
+            flat: !on || (kind != NOTCH && gain == 0.0),
             svf: Svf::default(),
+        }
+    }
+    /// Where `amt` rests: 1 while On, 0 while not.
+    fn rest(&self) -> f32 {
+        if self.on {
+            1.0
+        } else {
+            0.0
         }
     }
     fn update(&mut self, rate: u32) {
         // An S-curve on the type-swap glide, so the gain eases in and out
         // instead of turning a corner.
         let ease = self.amt * self.amt * (3.0 - 2.0 * self.amt);
-        let db = self.gain.value * ease;
+        let notch = self.kind == NOTCH;
+        let db = if notch { 0.0 } else { self.gain.value * ease };
+        self.wet = if notch { ease } else { 1.0 };
         self.svf.set(
             band_mode(self.kind),
             self.log_hz.value.exp2(),
@@ -351,9 +691,9 @@ impl Band {
             db,
             rate,
         );
-        // Waking from rest it starts from silence, which only the gain,
-        // gliding up from nothing, lets through.
-        self.flat = db == 0.0;
+        // Waking from rest it starts from silence, which only the gain (a
+        // notch: its share), gliding up from nothing, lets through.
+        self.flat = if notch { ease == 0.0 } else { db == 0.0 };
         if self.flat {
             self.svf.reset();
         }
@@ -362,7 +702,7 @@ impl Band {
         !(self.log_hz.settled()
             && self.gain.settled()
             && self.log_q.settled()
-            && self.amt == 1.0
+            && self.amt == self.rest()
             && self.kind == self.want)
     }
     /// One frame of glide: the smoothers, then the type swap.
@@ -370,8 +710,8 @@ impl Band {
         self.log_hz.next();
         self.gain.next();
         self.log_q.next();
-        if self.kind != self.want {
-            self.amt -= step;
+        if self.kind != self.want || !self.on {
+            self.amt = (self.amt - step).max(0.0);
             if self.amt <= 0.0 {
                 // At 0 dB every type passes the input exactly, so the swap
                 // is silent; whatever the old type left in the state fades
@@ -383,12 +723,22 @@ impl Band {
             self.amt = (self.amt + step).min(1.0);
         }
     }
+    /// One sample of channel `ch` through the band (not called while flat).
+    #[inline]
+    fn run(&mut self, ch: usize, x: f32) -> f32 {
+        let y = self.svf.run(ch, x);
+        if self.kind == NOTCH {
+            x + self.wet * (y - x)
+        } else {
+            y
+        }
+    }
     fn snap(&mut self) {
         self.log_hz.snap(self.log_hz.target);
         self.gain.snap(self.gain.target);
         self.log_q.snap(self.log_q.target);
         self.kind = self.want;
-        self.amt = 1.0;
+        self.amt = self.rest();
         self.svf.reset();
     }
 }
@@ -462,7 +812,7 @@ impl Cut {
     }
 }
 
-/// A four-band parametric EQ with low and high cuts and an output gain.
+/// An eight-band parametric EQ with low and high cuts and an output gain.
 pub struct Eq {
     v: [f32; N],
     rate: u32,
@@ -472,6 +822,13 @@ pub struct Eq {
     out: Smooth,
     /// The type-swap glide per frame (10 ms each way).
     step: f32,
+    /// Listen: the band heard (its index while Listen is on, kept while
+    /// fading out), the band-pass, and its share of the output, 0 to 1.
+    listen_band: usize,
+    listen: Svf,
+    /// The band-pass peaks at Q; this brings its peak to unity.
+    listen_k: f32,
+    listen_mix: Smooth,
 }
 
 impl Default for Eq {
@@ -489,6 +846,7 @@ impl Eq {
                 v[ids::freq(b) as usize],
                 v[ids::gain(b) as usize],
                 v[ids::q(b) as usize],
+                v[ids::band_use(b) as usize] == ids::USE_ON,
             )
         };
         let mut eq = Eq {
@@ -496,9 +854,13 @@ impl Eq {
             rate: 48_000,
             low: Cut::new(SvfMode::HighPass, v[0]),
             high: Cut::new(SvfMode::LowPass, v[2]),
-            bands: [band(0), band(1), band(2), band(3)],
+            bands: std::array::from_fn(band),
             out: Smooth::new(db_to_gain(v[20])),
             step: 0.0,
+            listen_band: 0,
+            listen: Svf::default(),
+            listen_k: 1.0,
+            listen_mix: Smooth::new(0.0),
         };
         eq.low.slope(v[1] as usize);
         eq.high.slope(v[3] as usize);
@@ -519,13 +881,24 @@ impl Eq {
             ids::HIGH_CUT => self.high.log_hz.target = v.log2(),
             ids::HIGH_SLOPE => self.high.slope(v as usize),
             ids::OUTPUT => self.out.target = db_to_gain(v),
+            ids::LISTEN => {
+                let n = v as usize;
+                if n > 0 {
+                    self.listen_band = n - 1;
+                }
+                self.listen_mix.target = if n > 0 { 1.0 } else { 0.0 };
+            }
             _ => {
-                let b = &mut self.bands[(id as usize - 4) / 4];
-                match (id - 4) % 4 {
+                let Some((b, what)) = ids::band_of(id) else {
+                    return;
+                };
+                let b = &mut self.bands[b];
+                match what {
                     0 => b.want = v as usize,
                     1 => b.log_hz.target = v.log2(),
                     2 => b.gain.target = v,
-                    _ => b.log_q.target = v.log2(),
+                    3 => b.log_q.target = v.log2(),
+                    _ => b.on = v == ids::USE_ON,
                 }
             }
         }
@@ -547,6 +920,18 @@ impl Eq {
             && cut(&self.high)
             && self.out.settled()
             && self.bands.iter().all(|b| !b.moving())
+            && self.listen_mix.settled()
+            && self.listen_mix.value == 0.0
+    }
+
+    /// Points the Listen band-pass at its band's frequency and Q as they
+    /// are this frame.
+    fn aim_listen(&mut self) {
+        let b = &self.bands[self.listen_band];
+        let hz = b.log_hz.value.exp2();
+        let q = b.log_q.value.exp2();
+        self.listen.set(SvfMode::BandPass, hz, q, 0.0, self.rate);
+        self.listen_k = 1.0 / q;
     }
 
     /// [`Eq::run`] while [`Eq::still`]: the same output, sample for sample,
@@ -567,15 +952,35 @@ impl Eq {
         {
             return;
         }
+        // The bands that shape the sound, found once a block: the rest
+        // rest, and nothing changes while still.
+        // Filters in series commute, so the notches (which crossfade) run
+        // after the rest, each list without a branch per sample.
+        let (mut plain, mut notch) = ([0usize; ids::BANDS], [0usize; ids::BANDS]);
+        let (mut np, mut nn) = (0, 0);
+        for (k, b) in self.bands.iter().enumerate() {
+            if b.flat {
+                continue;
+            }
+            if b.kind == NOTCH {
+                notch[nn] = k;
+                nn += 1;
+            } else {
+                plain[np] = k;
+                np += 1;
+            }
+        }
+        let (plain, notch) = (&plain[..np], &notch[..nn]);
         for i in 0..l.len() {
             let mut y = [l[i], r[i]];
             for (ch, x) in y.iter_mut().enumerate() {
                 let mut s = self.low.run(ch, *x, lo12, lo24);
                 s = self.high.run(ch, s, hi12, hi24);
-                for b in &mut self.bands {
-                    if !b.flat {
-                        s = b.svf.run(ch, s);
-                    }
+                for &k in plain {
+                    s = self.bands[k].svf.run(ch, s);
+                }
+                for &k in notch {
+                    s = self.bands[k].run(ch, s);
                 }
                 *x = g * s;
             }
@@ -612,27 +1017,60 @@ impl Eq {
             let (lo12, lo24) = self.low.weights();
             let (hi12, hi24) = self.high.weights();
             let g = self.out.next();
+            let m = self.listen_mix.next();
+            if m > 0.0 {
+                self.aim_listen();
+            } else {
+                self.listen.reset();
+            }
             let mut y = [l[i], r[i]];
             for (ch, x) in y.iter_mut().enumerate() {
-                let mut s = self.low.run(ch, *x, lo12, lo24);
+                let dry = *x;
+                let mut s = self.low.run(ch, dry, lo12, lo24);
                 s = self.high.run(ch, s, hi12, hi24);
+                // As the still loop: the notches after the rest.
                 for b in &mut self.bands {
-                    if !b.flat {
-                        s = b.svf.run(ch, s);
+                    if !b.flat && b.kind != NOTCH {
+                        s = b.run(ch, s);
                     }
                 }
-                *x = g * s;
+                for b in &mut self.bands {
+                    if !b.flat && b.kind == NOTCH {
+                        s = b.run(ch, s);
+                    }
+                }
+                s *= g;
+                if m > 0.0 {
+                    s += m * (self.listen_k * self.listen.run(ch, dry) - s);
+                }
+                *x = s;
             }
             l[i] = y[0];
             r[i] = y[1];
         }
     }
 
+    /// The gain band `b` is heading to, in dB: 0 unless it is On.
+    fn target_db(&self, b: usize) -> f32 {
+        if self.v[ids::band_use(b) as usize] != ids::USE_ON {
+            return 0.0;
+        }
+        self.v[ids::gain(b) as usize]
+    }
+
+    /// Band `b` changes the sound once it gets where it is heading: it is
+    /// On, and a notch or away from 0 dB.
+    fn shapes(&self, b: usize) -> bool {
+        self.v[ids::band_use(b) as usize] == ids::USE_ON
+            && (self.v[ids::band_type(b) as usize] as usize == NOTCH
+                || self.v[ids::gain(b) as usize] != 0.0)
+    }
+
     /// The response in dB at each frequency of `hz` (written to `out`),
     /// for the settings the EQ is heading to: what an EQ page draws. Exact
     /// to the filters, cuts and output gain included.
     pub fn response_db(&self, hz: &[f32], out: &mut [f32]) {
-        let mut stages = [Svf::default(); 10];
+        let mut stages = [Svf::default(); 4 + ids::BANDS];
         let mut n = 0;
         for (cut, f, s) in [
             (&self.low, self.v[0], self.v[1] as usize),
@@ -649,8 +1087,8 @@ impl Eq {
             }
         }
         for b in 0..ids::BANDS {
-            let gain = self.v[ids::gain(b) as usize];
-            if gain != 0.0 {
+            let gain = self.target_db(b);
+            if self.shapes(b) {
                 let kind = self.v[ids::band_type(b) as usize] as usize;
                 stages[n].set(
                     band_mode(kind),
@@ -699,6 +1137,7 @@ impl Node for Eq {
             b.log_q.set_time(self.rate, 20.0);
         }
         self.out.set_time(self.rate, 20.0);
+        self.listen_mix.set_time(self.rate, 20.0);
         self.step = 1.0 / (0.01 * self.rate as f32);
         self.update_all();
     }
@@ -709,6 +1148,8 @@ impl Node for Eq {
             b.snap();
         }
         self.out.snap(self.out.target);
+        self.listen_mix.snap(self.listen_mix.target);
+        self.listen.reset();
         self.update_all();
     }
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
@@ -737,7 +1178,7 @@ impl Node for Eq {
             secs = secs.max(ring(Q24[1], self.v[2]));
         }
         for b in 0..ids::BANDS {
-            if self.v[ids::gain(b) as usize] != 0.0 {
+            if self.shapes(b) {
                 let kind = self.v[ids::band_type(b) as usize] as usize;
                 secs = secs.max(ring(
                     band_q(kind, self.v[ids::q(b) as usize]),
@@ -762,7 +1203,7 @@ mod tests {
     /// bit for bit, and an EQ that does nothing leaves the block as it is.
     #[test]
     fn the_still_loop_matches_the_general_one() {
-        let settings: [&[(u16, f32)]; 4] = [
+        let settings: [&[(u16, f32)]; 5] = [
             &[],
             &[(1, 1.0), (3, 2.0)],
             &[
@@ -777,6 +1218,16 @@ mod tests {
                 (ids::gain(3), 3.0),
                 (ids::freq(1), 700.0),
                 (ids::gain(1), 9.0),
+            ],
+            &[
+                (ids::band_use(5), ids::USE_ON),
+                (ids::band_type(5), 3.0),
+                (ids::freq(5), 3000.0),
+                (ids::q(5), 6.0),
+                (ids::band_use(6), ids::USE_ON),
+                (ids::gain(6), -5.0),
+                (ids::band_use(0), ids::USE_BYPASSED),
+                (ids::gain(0), 9.0),
             ],
         ];
         for (n, set) in settings.iter().enumerate() {

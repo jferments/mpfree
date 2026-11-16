@@ -27,6 +27,7 @@ cmake-build-*/
 # Rust workspace build outputs (retain rust/Cargo.lock for reproducible builds).
 rust/target/
 rust/mpfree-splash-gl/target/
+rust/mpfree-creator/target/
 /splash-font-*
 docs/user/build/
 

@@ -129,7 +129,9 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-class BootHookTests(unittest.TestCase):
+class HookFixture(unittest.TestCase):
+    """The fake MPC, the stand-ins and the fake stick; test_stick_setup.py uses them too."""
+
     @classmethod
     def setUpClass(cls):
         cls.busybox, cls.dash = shutil.which("busybox"), shutil.which("dash")
@@ -172,6 +174,7 @@ class BootHookTests(unittest.TestCase):
         self.remote = remote
         r = self.root
         write(os.path.join(r, "proc/sys/kernel/osrelease"), RELEASE + "\n")
+        write(os.path.join(r, "proc/device-tree/compatible"), "inmusic,acva\0inmusic,az01\0rockchip,rk3288\0")
         write(os.path.join(r, "proc/mounts"), MOUNTS)
         write(os.path.join(r, "proc/uptime"), "6.05 9.10\n")
         write(os.path.join(r, "proc/sys/kernel/modprobe"), "/sbin/modprobe\n")
@@ -318,6 +321,8 @@ class BootHookTests(unittest.TestCase):
         return sorted(os.path.relpath(os.path.join(d, n), self.root)
                       for d, dirs, files in os.walk(os.path.join(self.root, "run")) for n in dirs + files)
 
+
+class BootHookTests(HookFixture):
     def test_install_needs_the_opt_in_and_port_22(self):
         res = self.run_wrapper("--hook-install")
         self.assertEqual(res.returncode, 1, res.stdout)
@@ -485,6 +490,15 @@ class BootHookTests(unittest.TestCase):
             self.assertEqual(self.tree(), self.before)
             os.unlink(os.path.join(self.root, rel))
 
+    def test_install_stops_on_another_mpc(self):
+        compat = os.path.join(self.root, "proc/device-tree/compatible")
+        write(compat, "inmusic,acv5\0inmusic,az01\0rockchip,rk3288\0")
+        res = self.install(ok=False)
+        self.assertIn("STOP: this is not an MPC One (no inmusic,acva in /proc/device-tree/compatible); MPFree has only "
+                      "been tested on the MPC One (Gen 1)", res.stdout)
+        write(compat, "inmusic,acva\0inmusic,az01\0rockchip,rk3288\0")
+        self.assertEqual(self.tree(), self.before)
+
     def test_install_stops_without_soft_reboot_or_kmod(self):
         os.unlink(os.path.join(self.root, "usr/lib/systemd/system/soft-reboot.target"))
         res = self.install(ok=False)
@@ -615,6 +629,12 @@ class BootHookTests(unittest.TestCase):
         self.install(ok=False)
         with self.subTest("no stick"):
             self.expect_stop("MPFree's stick is not in")
+        with self.subTest("a stick the USB creator set to remove MPFree (partition 1 renamed)"):
+            links = os.path.join(self.root, "dev/disk/by-partlabel")
+            os.makedirs(links, exist_ok=True)
+            os.symlink("../../sda1", os.path.join(links, "mpfree-test-root-off"))
+            self.expect_stop("MPFree's stick is not in")
+            os.unlink(os.path.join(links, "mpfree-test-root-off"))
         self.plug_in()
         sr = os.path.join(self.stick, "boot/mpfree-softreboot")
         with self.subTest("a damaged switch-off script"):
@@ -631,6 +651,12 @@ class BootHookTests(unittest.TestCase):
             os.unlink(os.path.join(self.stick, "etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"))
             self.expect_stop("the stick's system does not start mpfree-test-internal-off.service first")
             self.make_stick()
+        with self.subTest("another MPC model (the hook moved to an MPC that is not a One)"):
+            compat = os.path.join(self.root, "proc/device-tree/compatible")
+            write(compat, "inmusic,acvb\0inmusic,az01\0rockchip,rk3288\0")
+            self.expect_stop("this is not an MPC One (no inmusic,acva in the device tree); MPFree has only been "
+                             "tested on the MPC One")
+            write(compat, "inmusic,acva\0inmusic,az01\0rockchip,rk3288\0")
         with self.subTest("a stick for another firmware"):
             write(os.path.join(sr, "release"), "6.1.0-other\n")
             self.write_sums()

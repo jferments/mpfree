@@ -55,6 +55,16 @@ mod tests {
         n.param(info.id)
     }
 
+    /// Parameter `id` of insert `slot` of strip `sid`, as the mixer has it.
+    fn node_param_id(s: &Session, sid: StripId, slot: usize, id: u16) -> f32 {
+        s.mix
+            .mixer
+            .chain(sid)
+            .and_then(|c| c.node(slot))
+            .unwrap_or_else(|| panic!("{sid:?} has an insert {slot}"))
+            .param(id)
+    }
+
     /// The insert rows a strip shows on the mixer.
     fn strip_inserts(s: &Session, strip: &str) -> Vec<String> {
         let v = s.screen.ui.get::<MixerView>(MIXER).expect("the mixer");
@@ -204,6 +214,131 @@ mod tests {
             assert_eq!(mpfree_mixer_ui::look(&s.screen.ui), Look::Faders);
             assert_eq!(mpfree_mixer_ui::pick(&s.screen.ui), None);
             assert!(s.control("mixer", "fader", "Drums fader").is_some());
+        });
+    }
+
+    /// The Mix tab's EQ look (Jay's EQ boards, 15 Nov): + EQ adds a
+    /// parametric EQ in the strip's first free slot, a tap on its curve
+    /// picks it for the Q-Links, a dot dragged moves its band in the
+    /// mixer, the Q-Links follow the band, and a tap again opens it.
+    #[test]
+    fn the_eq_look_adds_picks_and_shapes_an_eq() {
+        on_big_stack(|| {
+            use mpfree_fx::ids::eq as q;
+            use mpfree_mixer_ui::Look;
+            use mpfree_ui::Touch;
+            let drums = StripId::Track(0);
+            let mut s = Session::new();
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "look", "EQ");
+            assert_eq!(mpfree_mixer_ui::look(&s.screen.ui), Look::Eq);
+            assert_eq!(s.hint(), mpfree_mixer_ui::MIXER_HINT_EQ);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
+
+            // + EQ: it lands after the filter, and the row shows its curve.
+            s.press("mixer", "eq-add", "Drums + EQ").run_for(0.3);
+            assert_eq!(s.view(), View::Mixer, "added in place");
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ", "EQ"]);
+            assert!(s.control("mixer", "eq", "Drums EQ").is_some());
+
+            // A tap on the curve away from a dot picks the EQ.
+            let curve = s
+                .control("mixer", "eq", "Drums EQ")
+                .expect("the curve")
+                .target
+                .rect;
+            let (x, y) = (curve.x + 6, curve.y + 4);
+            let mut acts: Vec<crate::gui::FromUi> =
+                s.screen.touch(9, Touch::Down, x, y).into_iter().collect();
+            acts.extend(s.screen.touch(9, Touch::Up, x, y));
+            acts.extend(s.screen.take_actions());
+            for a in acts {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            assert_eq!(mpfree_mixer_ui::pick(&s.screen.ui), Some((drums, 1)));
+
+            // Band 2's dot dragged up and right: its gain and frequency.
+            let r = s.screen.ui.rect_of(mpfree_mixer_ui::MIXER).unwrap();
+            let (x, y) = s
+                .screen
+                .ui
+                .get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER)
+                .unwrap()
+                .eq_dot_at(r, drums, mpfree_mixer_ui::eq_look::Dot::Band(1))
+                .expect("band 2's dot");
+            let hz = node_param_id(&s, drums, 1, q::freq(1));
+            let db = node_param_id(&s, drums, 1, q::gain(1));
+            // A fader moved first, so UNDO must take back the drag, not it.
+            s.route(crate::gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Set {
+                strip: drums,
+                id: mpfree_fx::ids::mixer::VOLUME,
+                value: -4.0,
+            }));
+            s.run_for(2.0);
+            let mut acts: Vec<crate::gui::FromUi> =
+                s.screen.touch(9, Touch::Down, x, y).into_iter().collect();
+            acts.extend(s.screen.touch(9, Touch::Move, x + 20, y - 10));
+            acts.extend(s.screen.touch(9, Touch::Move, x + 40, y - 20));
+            acts.extend(s.screen.touch(9, Touch::Up, x + 40, y - 20));
+            acts.extend(s.screen.take_actions());
+            for a in acts {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            assert!(
+                node_param_id(&s, drums, 1, q::gain(1)) > 3.0,
+                "band 2 raised"
+            );
+            assert!(node_param_id(&s, drums, 1, q::freq(1)) > hz, "and moved up");
+            assert_eq!(s.view(), View::Mixer);
+            let (hz2, db2) = (
+                node_param_id(&s, drums, 1, q::freq(1)),
+                node_param_id(&s, drums, 1, q::gain(1)),
+            );
+
+            // UNDO takes the whole drag back (frequency and gain), not the
+            // fader; SHIFT + UNDO puts it back.
+            s.button("UNDO").run_for(0.2);
+            assert!(
+                s.said().iter().any(|l| l == "Undid Drums EQ Band 2"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(node_param_id(&s, drums, 1, q::freq(1)), hz);
+            assert_eq!(node_param_id(&s, drums, 1, q::gain(1)), db);
+            assert_eq!(
+                s.mix.mixer.param(drums, mpfree_fx::ids::mixer::VOLUME),
+                -4.0,
+                "the fader stays"
+            );
+            s.button_with("SHIFT", "UNDO").run_for(0.2);
+            assert_eq!(node_param_id(&s, drums, 1, q::freq(1)), hz2);
+            assert_eq!(node_param_id(&s, drums, 1, q::gain(1)), db2);
+
+            // The Q-Links are band 2's: Q-Link 1 its frequency.
+            s.run_for(2.0);
+            let hz = node_param_id(&s, drums, 1, q::freq(1));
+            s.qlink(0, 4);
+            s.run_for(0.2);
+            assert!(
+                node_param_id(&s, drums, 1, q::freq(1)) > hz,
+                "Q-Link 1: band 2's Freq"
+            );
+            // That turn is the mixer's too: UNDO takes it back.
+            s.button("UNDO").run_for(0.2);
+            assert!(
+                s.said().iter().any(|l| l == "Undid Drums EQ Band 2"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(node_param_id(&s, drums, 1, q::freq(1)), hz);
+
+            // A tap on the picked EQ again: it opens in the chain editor.
+            s.press("mixer", "eq", "Drums EQ");
+            assert_eq!(s.view(), View::Chain, "a tap on the picked EQ opens it");
+            s.press("chain", "back", "").run_for(0.1);
+            assert_eq!(mpfree_mixer_ui::look(&s.screen.ui), Look::Eq);
         });
     }
 

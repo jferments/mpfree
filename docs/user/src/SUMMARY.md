@@ -5,6 +5,7 @@
 # Getting started
 
 - [Before you start](getting-started/before-you-start.md)
+- [Installing MPFree](getting-started/installing.md)
 - [A tour of the MPC One](getting-started/the-mpc-one.md)
 - [The screen](getting-started/the-screen.md)
 - [Your first beat](getting-started/first-beat.md)
