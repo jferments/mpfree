@@ -134,6 +134,23 @@ class JudgeTests(unittest.TestCase):
         self.assertIn("2 underruns in 10,000 periods", detail)
         self.assertIsNone(test(checks.Window([], session[:1], 100.0, 120.0))[0], "no status after it yet")
 
+    def test_first_start_reads_the_setup_since_power_on(self):
+        start = [(6.0, "first start: setup, try 1 of 3"),
+                 (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),
+                 (900.0, "first start: backup done: /run/mpfree-data/backup/mpc-one-emmc-20261116T031500Z"),
+                 (1500.0, "first start: done: 52 Akai kits, 1630 samples; the backup is in "
+                          "/run/mpfree-data/backup/mpc-one-emmc-20261116T031500Z")]
+        got = checks.judge(checks.BY_NAME["first-start"], checks.Window([], start, 1600.0, 1600.0))
+        self.assertEqual([ok for ok, _, _ in got], [True, True, True])
+        failed = start[:2] + [(700.0, "first start: the backup did not work: the eMMC's write or discard "
+                                      "counters moved during the copy (see /run/mpfree-setup/counters-*.txt)")]
+        got = checks.judge(checks.BY_NAME["first-start"], checks.Window([], failed, 800.0, 800.0))
+        self.assertEqual([ok for ok, _, _ in got], [True, False, False])
+        self.assertIn("counters moved", got[1][2])
+        got = checks.judge(checks.BY_NAME["first-start"], checks.Window([], [], 10.0, 10.0))
+        self.assertEqual([ok for ok, _, _ in got], [False, False, False])
+        self.assertIn("no line like", got[0][2])
+
     def test_kept_reads_the_running_value_too(self):
         session = lines("saved settings: pad curve Hard, sound cores two, loop memory 10 min, x",
                         "sound cores: shared: the audio thread runs where the kernel puts it")
