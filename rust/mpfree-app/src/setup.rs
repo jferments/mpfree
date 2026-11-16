@@ -1502,9 +1502,10 @@ mod tests {
         assert_eq!(o.failed, None, "{said:?}");
         assert_eq!(o.saved.get_i64("akai-kits"), Some(kits));
         assert!(
-            said.iter()
-                .any(|l| l.contains(&format!("is there already ({kits} kits); kept"))
-                    && l.starts_with("first start: ")),
+            said.iter().any(
+                |l| l.contains(&format!("is there already ({kits} kits); kept"))
+                    && l.starts_with("first start: ")
+            ),
             "{said:#?}"
         );
         assert!(

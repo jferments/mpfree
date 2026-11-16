@@ -4539,7 +4539,10 @@ mod tests {
         assert_eq!(press(&mut app, button::PLUS), vec![Effect::SynthPage(1)]);
         assert_eq!(press(&mut app, button::MINUS), vec![Effect::SynthPage(-1)]);
         app.button(button::SHIFT, false, 0.0);
-        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(
+            press(&mut app, button::PLUS),
+            vec![Effect::Rows(RowKey::Step(1))]
+        );
         // MENU on the Synth page opens its options and goes back to it.
         let fx = press(&mut app, MENU);
         assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Synth options"));
@@ -4999,8 +5002,14 @@ mod tests {
         app.set_overlay(true);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
         assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
-        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Rows(RowKey::Step(1))]);
-        assert_eq!(press(&mut app, button::MINUS), vec![Effect::Rows(RowKey::Step(-1))]);
+        assert_eq!(
+            press(&mut app, button::PLUS),
+            vec![Effect::Rows(RowKey::Step(1))]
+        );
+        assert_eq!(
+            press(&mut app, button::MINUS),
+            vec![Effect::Rows(RowKey::Step(-1))]
+        );
         // Another page: the screen closes it, so the wheel is the page's.
         app.open_tab(View::Arrange);
         app.open_tab(View::Play);
@@ -5092,8 +5101,14 @@ mod tests {
             vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
         );
         // - / + step the row picked.
-        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Rows(RowKey::Step(1))]);
-        assert_eq!(press(&mut app, button::MINUS), vec![Effect::Rows(RowKey::Step(-1))]);
+        assert_eq!(
+            press(&mut app, button::PLUS),
+            vec![Effect::Rows(RowKey::Step(1))]
+        );
+        assert_eq!(
+            press(&mut app, button::MINUS),
+            vec![Effect::Rows(RowKey::Step(-1))]
+        );
         // MENU opens the options and goes back to the Sample page.
         let fx = press(&mut app, MENU);
         assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Sample options"));
@@ -5120,8 +5135,14 @@ mod tests {
         assert_eq!(app.wheel(-3), vec![Effect::Browse(BrowseKey::Places(-1))]);
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
-        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Browse(BrowseKey::Enter)]);
-        assert_eq!(press(&mut app, button::MINUS), vec![Effect::Browse(BrowseKey::Back)]);
+        assert_eq!(
+            press(&mut app, button::PLUS),
+            vec![Effect::Browse(BrowseKey::Enter)]
+        );
+        assert_eq!(
+            press(&mut app, button::MINUS),
+            vec![Effect::Browse(BrowseKey::Back)]
+        );
         assert_eq!(
             press(&mut app, button::PLAY),
             vec![Effect::Browse(BrowseKey::Play)]
@@ -5134,7 +5155,10 @@ mod tests {
         // The Pad view: the Sample tab's controls.
         app.set_pads_browse(false);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
-        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(
+            press(&mut app, button::PLUS),
+            vec![Effect::Rows(RowKey::Step(1))]
+        );
         assert!(press(&mut app, button::PLAY)
             .contains(&Effect::Time(TimeAction::Transport(Command::Play))));
         // Elsewhere PLAY is the transport's again.
