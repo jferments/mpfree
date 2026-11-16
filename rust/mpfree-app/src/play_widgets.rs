@@ -629,6 +629,9 @@ pub struct StepGrid {
     pub pages: usize,
     /// The clip's length in steps; 0 with no clip yet.
     pub length: usize,
+    /// STEP SEQ: the lane whose steps the pads are (a pad), outlined and
+    /// tagged "On the pads".
+    pub on_pads: Option<usize>,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
 
@@ -651,6 +654,7 @@ struct StepLook {
     play: Option<usize>,
     selected: Option<(usize, usize)>,
     page: (usize, usize, usize),
+    on_pads: Option<usize>,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
@@ -792,6 +796,7 @@ impl StepGrid {
             play: self.play,
             selected: self.selected,
             page: (self.page, self.pages, self.length),
+            on_pads: self.on_pads,
         }
     }
 
@@ -935,14 +940,23 @@ impl Widget for StepGrid {
             cx.canvas
                 .fill_round_rect(Rect::new(nr.x, y + g.rh / 2 - 5, 10, 10), 3, c);
             let ink = if lane.muted { t.text_faint } else { t.text };
-            cx.text(
-                FontId::Sans,
-                14.0,
-                nr.take_left(18).1,
-                Align::Left,
-                ink,
-                &lane.name,
-            );
+            let on_pads = self.on_pads == Some(lane.pad);
+            // STEP SEQ's lane: its name over a small "ON THE PADS".
+            let name_r = if on_pads {
+                let (top, bottom) = nr.take_left(18).1.take_top(g.rh * 3 / 5);
+                cx.text(
+                    FontId::Bold,
+                    10.0,
+                    bottom,
+                    Align::Left,
+                    t.accent,
+                    "ON THE PADS",
+                );
+                top
+            } else {
+                nr.take_left(18).1
+            };
+            cx.text(FontId::Sans, 14.0, name_r, Align::Left, ink, &lane.name);
             // The mute button: a box round the speaker, red-tinted while
             // muted.
             if lane.muted {
@@ -985,6 +999,12 @@ impl Widget for StepGrid {
                 if self.selected == Some((lane.pad, s)) {
                     cx.canvas.stroke_round_rect(sr.inset(-3), 7, 2, t.text);
                 }
+            }
+            if on_pads {
+                // The whole lane, names to its last step, inside the gap.
+                let right = g.col_x(15) + g.cw;
+                let lane_r = Rect::new(g.names.x - 2, y - 2, right + 2 - (g.names.x - 2), g.rh + 4);
+                cx.canvas.stroke_round_rect(lane_r, 8, 2, t.accent);
             }
         }
         *self.painted.borrow_mut() = Some((r, self.look()));

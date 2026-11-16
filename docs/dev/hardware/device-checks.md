@@ -32,6 +32,7 @@ A round's runbook has a table of its checks: the check, why it's in this round, 
 | `basics` | hands | Pads, PAD BANK, FULL LEVEL, the wheel, the Q-Links (also on the Mix tab and the chain editor) and touch, on a new system or boot route | soft and hard hits, a bank change, Full Level on and off, wheel steps, Q-Link messages, touch interrupts rising |
 | `load` | hands | Supersaw and the Grains kit with 8 pads: the worst case for the cores | no underrun between the status lines around it; then the cores, clock and threads |
 | `track-mute` | hands | The pad colours as track mutes, and PAD BANK past 16 tracks (#332) | tracks muted and playing, another bank of 16 |
+| `step-pads` | hands | STEP SEQ's pads as steps (sequencer S1): the step colours, the white playhead walking across the pads and the PAD BANK page lights | the pads made steps, a step on and one off, page 2 |
 | `wheel` | hands | The outline and the push on the real wheel (#339), and moving a Song block by wheel (#355) | wheel steps, a block moved |
 | `touch` | hands | Touch lab, Calibrate touch, two fingers, and a real drag past the 12 px lift | the Touch lab's start and end, Calibrate's result, a clip moved and a copy dropped |
 | `note-repeat` | hands | NOTE REPEAT, Latch and the arp in real time | button 11, an arp mode, Latch on and off |
