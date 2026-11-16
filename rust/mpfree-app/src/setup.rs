@@ -41,7 +41,7 @@ use mpfree_library::{clean_name, unique_folder_name, unique_name, Library, Loc, 
 use mpfree_store::Settings;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -712,7 +712,14 @@ fn folder_in(lib: &Library, parent: &Loc, name: &str) -> std::io::Result<Loc> {
     lib.new_folder(parent, name)
 }
 
-/// The Akai kits from the backup: (the kits file, kits made).
+/// How many kits a kits file holds, from its header.
+fn kit_count(bytes: &[u8]) -> usize {
+    bytes
+        .get(8..12)
+        .map_or(0, |n| u32::from_le_bytes([n[0], n[1], n[2], n[3]]) as usize)
+}
+
+/// The Akai kits from the backup: (the kits file, its kits).
 fn extract_kits(
     content: &Content<Offset<File>>,
     lib: &Library,
@@ -724,7 +731,15 @@ fn extract_kits(
     let mut made = 0;
     let kits = match lib.file_path(&kits_loc) {
         Ok(p) => {
-            say(format!("first start: {KITS_FILE} is there already; kept"));
+            // Counted from the file kept, so a later start (a step added
+            // since) says how many kits there are, not 0.
+            let mut head = [0u8; 12];
+            made = File::open(&p)
+                .and_then(|mut f| f.read_exact(&mut head))
+                .map_or(0, |()| kit_count(&head));
+            say(format!(
+                "first start: {KITS_FILE} is there already ({made} kits); kept"
+            ));
             Some(p)
         }
         Err(_) => {
@@ -751,9 +766,7 @@ fn extract_kits(
                 .map_err(|e| format!("the kits: {e}"))?;
             match bytes {
                 Some(b) => {
-                    made = b
-                        .get(8..12)
-                        .map_or(0, |n| u32::from_le_bytes([n[0], n[1], n[2], n[3]]) as usize);
+                    made = kit_count(&b);
                     let loc = lib
                         .write_new(&Loc::top(Place::Kits), KITS_FILE, &b)
                         .map_err(|e| format!("saving the kits: {e}"))?;
@@ -1439,6 +1452,8 @@ mod tests {
         assert!(!p.request.exists(), "no new backup");
         assert_eq!(o.saved.get_str("done"), Some("backup,kits,kit folders"));
         assert_eq!(o.saved.get_i64("akai-samples"), Some(52));
+        let kits = o.saved.get_i64("akai-kits").unwrap();
+        assert!(kits > 0);
         assert!(
             said.iter().any(|l| l.ends_with(
                 "0 sounds there already, 36 moved from Akai's own folders, \
@@ -1481,9 +1496,22 @@ mod tests {
             gone,
             ["Drums", "Expansions", "Keys", "Loops", "MPC Documents"]
         );
-        // Again: nothing moves, nothing is copied.
+        // Again: nothing moves, nothing is copied, and the kits file kept
+        // still counts its kits (round 5's log said "done: 0 Akai kits").
         let (o, _, said) = run_it(&p, &older);
         assert_eq!(o.failed, None, "{said:?}");
+        assert_eq!(o.saved.get_i64("akai-kits"), Some(kits));
+        assert!(
+            said.iter()
+                .any(|l| l.contains(&format!("is there already ({kits} kits); kept"))
+                    && l.starts_with("first start: ")),
+            "{said:#?}"
+        );
+        assert!(
+            said.iter()
+                .any(|l| l.starts_with(&format!("first start: done: {kits} Akai kits, 52 samples"))),
+            "{said:#?}"
+        );
         assert!(said.iter().any(|l| l.ends_with(
             "52 sounds there already, 0 moved from Akai's own folders, \
              0 shared with a kit before, 0 copied from the backup"
