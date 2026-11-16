@@ -67,10 +67,10 @@ While the Pads tab shows its **Browse** view, the controls work the browser besi
 | Control | What it does | When |
 |---|---|---|
 | **Data wheel** | Moves through the list. | Works |
-| **SHIFT + data wheel** | Moves through the places on the left (Samples, Recordings, Recent, Favourites). | Works |
-| **The data wheel's push** | Opens the folder picked, or loads the sound picked onto the pad picked. | Works |
+| **SHIFT + data wheel** | Moves through the places on the left (Samples, Kits, Recordings, Recent, Favourites). | Works |
+| **The data wheel's push** | Opens the folder picked, loads the sound picked onto the pad picked, or loads the kit picked in place of the kit the pads play. | Works |
 | **–** | Back up one folder. | Works |
-| **+** | Into the folder picked. | Works |
+| **+** | Into the folder picked, or into the kit picked to see its sounds. | Works |
 | **PLAY** | Hears the sound picked (press again to stop it). PLAY doesn't start playback while Browse shows. | Works |
 | **Q-Link knobs 1–4** | 1: moves through the list. 3: the level you hear sounds at. 4: the places. | Works |
 
@@ -82,9 +82,9 @@ While the browser shows (**BROWSE**), the controls work it. See [Saving your wor
 |---|---|---|
 | **Data wheel** | Moves through the list. | Works |
 | **SHIFT + data wheel** | Moves through the places on the left. | Works |
-| **The data wheel's push** | Opens the folder or project picked, loads anything else, or answers yes to the question on screen. | Works |
+| **The data wheel's push** | Opens the folder or project picked, loads anything else (a whole kit, for a kit), or answers yes to the question on screen. | Works |
 | **–** | Back up one folder. | Works |
-| **+** | Into the folder picked. | Works |
+| **+** | Into the folder picked, or into the kit picked to see its sounds. | Works |
 | **PLAY** | Hears the sound picked. | Works |
 | **ERASE** | Moves the item picked to the Trash (asks first). | Works |
 | **Q-Link knobs 1–4** | 1: moves through the list. 2: the filter. 3: the level you hear sounds at. 4: the places. | Works |

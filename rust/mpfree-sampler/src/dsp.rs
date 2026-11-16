@@ -140,6 +140,12 @@ impl Envelope {
     pub fn is_releasing(&self) -> bool {
         self.stage == Stage::Release
     }
+    /// Holding a level that [`Envelope::next`] leaves as it is until a
+    /// release: its sustain, above zero. Its level is then the gain every
+    /// frame gets.
+    pub fn is_steady(&self) -> bool {
+        self.stage == Stage::Sustain && self.sustain > 0.0
+    }
     pub fn level(&self) -> f32 {
         self.level
     }

@@ -203,9 +203,33 @@ pub fn engine_velocity(v: u8) -> u8 {
     ((x.sqrt() * 127.0).round() as u8).clamp(1, 127)
 }
 
+/// The sampler's voice pool: up to [`MAX_VOICES`] (24) full voices, as it
+/// has always had, and the rest for plain one-shots (the kits' drum hits:
+/// no filter, envelope open, at their own pitch), which cost about a
+/// tenth as much each (the bench's "Sampler, drum kit" cases: 64 plain
+/// voices take less than a fifth of what 24 full-path ones did). Jay's
+/// round 4 kept 24 voices full most of the time; with Note Repeat 64 hold
+/// four sounds on every pad.
+pub const POOL_VOICES: usize = 64;
+
+/// Voices one kit pad holds before its own oldest gives way. A pad hit
+/// again and again (Note Repeat on a long sound) used to fill the whole
+/// pool and cut short every other pad's sound (Jay's round 4: 1,592 of
+/// 2,545 hits took a voice that was still playing); four copies of one
+/// sound is already more than the ear tells apart.
+pub const KIT_POLYPHONY: u8 = 4;
+
 fn kit_pad(name: &str, region: Region) -> Pad {
-    let mut pad = Pad::new(name, Layer::new(region));
-    pad.polyphony = MAX_VOICES as u8;
+    kit_pad_with(name, Layer::new(region))
+}
+
+/// A new pad as the kits' own play: centred at the level a kit plays at,
+/// [`KIT_POLYPHONY`] voices. The browser's Load onto an empty pad makes
+/// these too, so a loaded sound plays as loud as the kit's (a plain
+/// [`Pad::new`] is 3 dB quieter: the engine's centre pan).
+pub fn kit_pad_with(name: &str, layer: Layer) -> Pad {
+    let mut pad = Pad::new(name, layer);
+    pad.polyphony = KIT_POLYPHONY;
     pad.level_db = CENTRE_DB;
     pad
 }
@@ -303,7 +327,8 @@ impl Player {
                 sounds: grain_sounds,
             });
         }
-        let mut engine = Engine::new(rate, MAX_VOICES);
+        let mut engine = Engine::new(rate, POOL_VOICES);
+        engine.set_full_voices(MAX_VOICES);
         engine.set_view(views[0].take().expect("built above"));
         Ok(Player {
             engine,
@@ -1019,14 +1044,35 @@ mod tests {
     }
 
     #[test]
-    fn steals_past_the_voice_limit_and_clamps_but_reports_the_peak() {
+    fn one_pad_hit_again_and_again_keeps_to_its_own_voices() {
         let mut ks = kits();
         let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
         for _ in 0..MAX_VOICES + 5 {
             p.hit_at(0, 127, 0);
+            run(&mut p, 1);
+        }
+        run(&mut p, 1);
+        assert_eq!(p.playing(), usize::from(KIT_POLYPHONY));
+        assert_eq!(p.counters().steals, 0, "the pool never filled");
+    }
+
+    #[test]
+    fn steals_past_the_voice_limit_and_clamps_but_reports_the_peak() {
+        let tone = tone(3000, 0.01);
+        let sounds: Vec<(u8, &str, &[i16])> =
+            NOTES.iter().map(|&n| (n, "Tone", &tone[..])).collect();
+        let mut ks = kit::parse_kits(&kit::build_kits(&[("Full", kit::build(&sounds))])).unwrap();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        // Every pad hit once more than it holds, all at once: the kits'
+        // plain hits fill the whole pool, past the 24 full voices.
+        for k in 0..16 {
+            for _ in 0..=KIT_POLYPHONY {
+                p.hit_at(k, 127, 0);
+            }
         }
         let (out, peak) = run(&mut p, 2);
-        assert_eq!(p.playing(), MAX_VOICES);
+        assert_eq!(p.playing(), POOL_VOICES);
+        const { assert!(POOL_VOICES > MAX_VOICES) };
         assert!(p.counters().steals >= 5);
         assert!(peak > 1.0, "{peak}");
         assert!(out.iter().all(|&x| (-1.0..=1.0).contains(&x)));

@@ -7,9 +7,9 @@
 BROWSE opens the browser over the current page, under the top bar, as Prefs and the mixer do. It is not a tab. BROWSE again closes it. SHIFT + BROWSE saves the project from any page.
 
 - **Places** on the left: Projects, Samples, Kits, Instruments, Patterns, Recordings; Plugins; Recent and Favourites; Factory (the kits made from the owner's own backup, read only); Trash. **Plugins** (MPC plugins from the Open MPC catalog and zips on the stick) is not a library folder: the browser draws its list and Selected column from a `PluginsScreen` the app gives it (`Browser::set_plugins`) and hands every touch, dial turn, push, + and - back as `BrowseAction::Plugins`; see [Installing MPC plugins](mpc-plugin-store.md). Pickers never offer it.
-- **The list** in the middle: folders first, then files, in natural order (`Kick 2` before `Kick 10`). Back, the path, New folder and Paste at the top. The filter chips at the bottom (All, Audio, Projects, Kits), then **Search** and the order chip (**A to Z** or **Newest**: folders first either way, then the last changed first). A line under them says what just happened, or why something failed.
+- **The list** in the middle: folders (plain folders, projects and kits) first, then files, in natural order (`Kick 2` before `Kick 10`). Back, the path, New folder and Paste at the top (Save kit too in Kits). Each row that points at something has a **star** at its right end (`Input::Star`): a tap makes it a favourite or not (Jay, 16 Nov: no Favourite button). One tap on a plain folder opens it; anything else is picked by the first tap and opened or loaded by the second, as the dial's push does (no Open button). The filter chips at the bottom (All, Audio, Projects, Kits), then **Search** and the order chip (**A to Z** or **Newest**: folders first either way, then the last changed first). A line under them says what just happened, or why something failed.
 - **Search** opens the keyboard. The text is looked for, in any case, in every name in the library except the Trash, and not inside projects. Results show where each item is, with the same buttons as Recent (no Rename or Cut), and the filters still apply. Back returns to the folder. At most 200 results; the search stops after 4000 folders so it costs a bounded time on the worker.
-- **The selected item** on the right: for a sound, its length, rate, bits and channels and a quick waveform (WAV, AIFF and uncompressed AIFF-C read at each column's place; FLAC decodes the one frame at each column's place, found by guessing from the bytes, so a 3-minute FLAC reads about a third of the file: `mpfree_flac::overview`); for a project, its tempo and when it was saved. Then its buttons: Load, Load to pad, Audition, Favourite, Rename, Copy, Cut, Delete (Open for folders and projects, plus Earlier saves for a project; Put back in the Trash).
+- **The selected item** on the right: for a sound, its length, rate, bits and channels and a quick waveform (WAV, AIFF and uncompressed AIFF-C read at each column's place; FLAC decodes the one frame at each column's place, found by guessing from the bytes, so a 3-minute FLAC reads about a third of the file: `mpfree_flac::overview`); for a project, its tempo and when it was saved. Then its buttons: Load, Load to pad, Audition, Rename, Copy, Cut, Delete (Earlier saves for a project; Put back in the Trash). There is no Open or Favourite button (Jay, 16 Nov: clutter): a tap or the push opens, the row's star stars.
 - **Audition** is on by default: moving the selection to a sound plays it once through the preview path. A list arriving never plays anything by itself.
 - **Delete** asks first, with the name, and moves the item to the Trash. Empty Trash asks again.
 - **Rename and New folder** use an on-screen keyboard. Names may have spaces and capitals. They may not have `/ \ : * ? " < > |`, a leading dot or space, or a trailing dot or space, so they also fit a FAT stick.
@@ -19,20 +19,21 @@ BROWSE opens the browser over the current page, under the top bar, as Prefs and 
 |---|---|
 | Data dial | Moves the selection |
 | SHIFT + dial | Moves through the places |
-| Dial push | Opens a folder or project, loads anything else, answers yes to a question |
-| `-` / `+` | Up a folder / into the selected folder |
+| Dial push | Opens a folder or project, loads anything else (a kit whole), answers yes to a question |
+| `-` / `+` | Up a folder / into the selected folder or kit |
 | PLAY | Hears the selected sound |
 | ERASE | Delete (asks first) |
 | Q-Links 1 to 4 | Scroll, filter, preview level, place |
 
 ## Pickers
 
-Jay, 2026-11-11 23:16Z: BROWSE stays the full file manager, and each kind of thing also gets a focused picker opened from where it is used. A picker is the same browser narrowed (`Browser::open_picker(Pick)`), in the same place under the top bar. It offers only Load (Open for projects), Audition, Favourite and Cancel; nothing is renamed, moved or deleted there. When it closes, the full browser is back where it was.
+Jay, 2026-11-11 23:16Z: BROWSE stays the full file manager, and each kind of thing also gets a focused picker opened from where it is used. A picker is the same browser narrowed (`Browser::open_picker(Pick)`), in the same place under the top bar. It offers only Load (and opening by tap or push), Audition, the stars and Cancel; nothing is renamed, moved or deleted there. The Pads tab's picker also offers Save kit in Kits. When it closes, the full browser is back where it was.
 
 | Picker | Opened from | Shows | Does |
 |---|---|---|---|
 | `Pick::Preset { engine }` | the Synth page | `Instruments/<engine>/`, and that engine's presets in Recent and Favourites | Each turn of the dial sends `TryPreset` so the preset can be played on the pads; Load sends `LoadPreset`; Cancel sends `RevertPreset` |
 | `Pick::Sample` | the Sample page or a pad | Samples, Recordings, and sounds in Recent and Favourites | Auditions as you move; Load sends `LoadSample` for the pad it was opened for |
+| `Pick::Pads` | the Pads tab, beside the pads (stays open) | Samples, Kits, Recordings, Recent, Favourites: sounds and kits | `LoadSample`, `LoadToPad`, `LoadKit`; Save kit in Kits (`SaveKitRequested`) |
 | `Pick::Project` | Open project | Projects | Opening asks first while `set_unsaved(true)`: "Unsaved changes. Open ... anyway?" (the full browser asks too) |
 
 Every picker ends with `PickerClosed { loaded }`. BROWSE while a picker is open should call `cancel_picker`. The hint line is `PICKER_HINT`. Screens 12 to 14 in the previews.
@@ -54,6 +55,31 @@ library/
 - Whole or nothing: a new or copied file is written to `NAME.part`, synced and renamed; a copied folder is built under a hidden name and renamed. `Library::write_new_unsynced` is the same without the sync, for thousands of files synced once at the end (the creator stick's first start copies Akai's samples that way: two flushes of the stick per file had it crawling). For the same setup, `new_folder_unsynced` makes a folder without the sync, `move_file_unsynced` moves a file into a folder under a given name, and `link_file_unsynced` gives a file a second name in another folder (a hard link, so a sound in two kit folders is stored once). The last two refuse a name that is taken, a folder or link as the source, and the Trash. The library never changes a file in place, so a change through one name never shows through the other; deleting one name leaves the other.
 - A project save writes its new sounds to hidden `.incoming-<pid>-<n>.part` files and its parts to `.parts-new/` without a sync each, makes them durable together (one `sync` in the pad player, set with `mpfree_library::set_flush`; a sync of each file elsewhere), and only then renames the sounds in. A save of 16 sounds and 12 parts flushes the disk at most twice, where it flushed once per file (64 s for one save on the MPC, round 4). Hidden sounds a power cut left are removed at the next save of that project.
 - Every file operation runs on the `mpfree-library` worker thread, never on the UI or audio thread.
+
+## Kit files
+
+Jay, 16 Nov: load whole kits at once, as on the MPC, and keep kits as kits rather than loose sounds. A kit is one folder (`mpfree-library/src/kit.rs`):
+
+```text
+<Kit name>/
+  kit.txt        the sampler's part for one kit: "mpfree-sampler 1", kits = 1,
+                 every pad and setting (mpfree_sampler::save), sounds named by file
+  Kick.wav ...   its sounds, beside it
+```
+
+- Any folder holding `kit.txt` is `Kind::Kit`, wherever it is (Kits, Samples ...), listed with the folders. The folder's name is the kit's name, so Rename renames it. Search doesn't look inside kits (as projects).
+- **Load** (tap again, push, Load) sends `BrowseAction::LoadKit { loc, path }` with the folder; the app (`SamplePage::open_kit`) reads `kit.txt` and its sounds on a thread (each only if memory allows, `memory::room_in`), and puts the kit in place of the kit the pads play, named for the folder, as an edit (the work is unsaved). `+` goes into the kit to show its sounds.
+- **Save kit** (Kits place, full browser and the Pads tab's picker) sends `SaveKitRequested`; the app answers with `Browser::save_kit(name, text, sounds)` from `SamplePage::kit_file` (the kit the pads play; sounds named after themselves, `Kick.wav`, `Kick 2.wav`, by `sample_page::kit_file_of`). The worker's `Job::SaveKit` runs `Library::save_kit`: the folder is built under a hidden `.kit-<id>-<name>` beside where it goes, each file made new (`create_new`, `O_NOFOLLOW`) and synced, then renamed in (`Name 2` if taken). Never in Projects or the Trash.
+- **MPFree's own kits** (`mpfree-app/src/bundled.rs`): once per library, the factory kits whose names are the Drums synth's (`MPFree <preset>`, from kits.bin) are written as kit folders in `Kits/MPFree/` on a background thread. `bundled = mpfree-kits 1` in the browser's lists (`Browser::set_bundled`) records it, so a deleted kit stays deleted; a later tag adds only what is missing.
+- The USB creator's first start can write one kit folder per Akai kit the same way (`kit_file_of` and `Library::save_kit`).
+
+## Big folders
+
+A folder of thousands of sounds (Akai's factory content, 4,338 in one folder on Jay's round of 16 Nov, listed after minutes of "Reading…") must list at once.
+
+- `Library::list` reads each entry's type from the folder itself (`DirEntry::file_type`, no look at each file). Over `QUICK_LIST` (300) entries it leaves each file's size and time unknown (`Entry::sized` false); the browser shows the names at once and asks for `Job::Sizes`, which fills them in.
+- The worker's jobs can go in a **lane** (`Worker::send_in`): a job is skipped (`Outcome::Skipped`) when a newer one in the same lane was sent before it started. Listings and sizes go in `Lane::List`, a sound's picture and a project's facts in `Lane::Detail`, so moving quickly through folders or down a long list runs only the newest.
+- A listing or sizes job that takes more than 1.5 s says so in the log (`BrowseAction::Note`: `browser: listed Samples / ... (N items) in S s`), so a slow stick shows in the next round's report.
 
 ## Instrument presets
 
@@ -139,15 +165,16 @@ if let Some(text) = snap.part("sampler") {
 // BrowseAction::LoadToPad { path, .. } => sample_page.load_file(path, true),
 ```
 
-`BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `LoadPreset` (with the engine's folder name, to the synth thread's `mpfree-instruments`), `TryPreset` / `RevertPreset` / `PickerClosed` (pickers), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`), `ExportAsked` / `ExportStart` / `ExportCancel` (the Export panel: [export.md](export.md#the-apps-part)).
+`BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `SaveKitRequested` (answer with `Browser::save_kit`), `Note` (a line for the log), `LoadPreset` (with the engine's folder name, to the synth thread's `mpfree-instruments`), `TryPreset` / `RevertPreset` / `PickerClosed` (pickers), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`), `ExportAsked` / `ExportStart` / `ExportCancel` (the Export panel: [export.md](export.md#the-apps-part)).
 
-`mpfree-library` and `mpfree-browser-ui` are linked into the pad player, so `tools/mpc-one/tests/test_app_mpc.py` reads them (`LINKED_SRC`) and lists the library's write sites, all in `lib.rs` and `project.rs` and all under the library folder, line by line (`LIBRARY_NEEDLES`, `LIBRARY_OPENS`). A change to one of them changes that list in the same pull request.
+`mpfree-library` and `mpfree-browser-ui` are linked into the pad player, so `tools/mpc-one/tests/test_app_mpc.py` reads them (`LINKED_SRC`) and lists the library's write sites, all in `lib.rs`, `project.rs` and `kit.rs` and all under the library folder, line by line (`LIBRARY_NEEDLES`, `LIBRARY_OPENS`). A change to one of them changes that list in the same pull request.
 
 **In the pad player (the Pads tab).** With `--data`, the app sends the screen thread the folder and the saved lists (`ToUi::Library`); the screen opens `Library::at` (which makes `library/` and its place folders when missing) and a `Browser` on the library's worker thread, opened with `Pick::Pads`. `mpfree_browser_ui::step` runs each tick while Browse shows and after each touch. Its actions: `LoadSample` and `LoadToPad` go to `SamplePage::load_file`; `Audition` reads the file on a thread (`sample_page::read_in_thread`) and hands the sound to the audio thread in a box (`FromUi::Preview`, `mpfree-app/src/preview.rs`), which mixes it into the main out at the preview level and gives the box back to be freed on the screen thread (`ToUi::PreviewBack`); `StopAudition` fades it out over 256 frames (`FromUi::PreviewStop`); `SaveLists` goes to the store (`files/browser/lists.txt`). The others are logged as not wired on the Pads tab. Without `--data`, the Browse view shows a card that says so.
 
 ## Not yet
 
 - The other pickers in the pad player (presets on the Synth tab). The Pads tab's picker and the full browser are wired (above).
-- `LoadKit` and `LoadFactoryKit`, and `LoadPreset` / `TryPreset` in the full browser: a kit file's format and saving a kit on its own come later (sampler thread); presets with the synth thread's picker.
+- `LoadFactoryKit` (the Factory place's kits.bin kits), and `LoadPreset` / `TryPreset` in the full browser: presets with the synth thread's picker. Kit files load and save (above).
+- Freely licensed sample packs bundled with MPFree: which packs is the owner's pick (only CC0 or similar, checked one by one).
 - The arps' and the audio tracks' parts (above).
 - Sharing the library over Ethernet (WebDAV and a web page), a desktop `mpfree-sync`, and USB file mode: plan section 9, decisions 9 to 11.
