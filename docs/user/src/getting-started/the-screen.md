@@ -41,7 +41,7 @@ On the Play page, a bar under the tabs shows time: whether MPFree is stopped, pl
 
 At the right edge, the **Q-Link column** shows four cards, one for each Q-Link knob beside the screen, in the same order (knob 1 at the top). Each card names what its knob controls, what part of MPFree it belongs to, and its value. Turn the knob, or drag up and down on its card.
 
-Next to it, the **master bar** shows how loud MPFree's output is, with a meter that holds its peak. Drag the handle to set the overall level. "LIM" lights when the limiter is stopping the output from distorting.
+Next to it, the **master bar** shows how loud MPFree's output is, with a meter that holds its peak. Drag the handle to set the overall level. It starts at -6 dB, the level the browser auditions sounds at, so a sound plays as loud on the pads as it did when you heard it in the browser, and goes up to 0 dB. "LIM" lights when the limiter is stopping the output from distorting.
 
 ## The hint line
 

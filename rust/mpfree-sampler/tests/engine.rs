@@ -436,6 +436,77 @@ fn stealing_keeps_the_pool_bounded() {
 }
 
 #[test]
+fn a_full_pool_takes_from_the_busiest_pad_first() {
+    // Jay's round 4: Note Repeat on one long sound filled the pool and
+    // every repeat cut short whatever else rang, oldest first.
+    let s = dc(100_000, RATE);
+    let p = project_with(
+        &[
+            (0, Pad::new("ring", Layer::new(Region::whole(&s)))),
+            (1, Pad::new("repeat", Layer::new(Region::whole(&s)))),
+        ],
+        vec![s],
+    );
+    let mut e = engine(&p, 3);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    run(&mut e, 128);
+    for _ in 0..6 {
+        e.apply(Event::NoteOn {
+            pad: 1,
+            velocity: 127,
+        });
+        run(&mut e, 128);
+    }
+    assert_eq!(e.active_voices(), 3);
+    assert!(e.stats().steals >= 1);
+    assert_eq!(e.pad_voices(0), 1, "the sound on pad 0 rings on");
+    assert_eq!(e.pad_voices(1), 2);
+}
+
+#[test]
+fn full_voices_keep_to_their_limit_and_plain_hits_use_the_rest() {
+    let s = dc(100_000, RATE);
+    let mut full = Pad::new("filtered", Layer::new(Region::whole(&s)));
+    full.filter = Filter {
+        kind: FilterKind::LowPass,
+        poles: 2,
+        cutoff_hz: 2000.0,
+        resonance: 0.0,
+        env_octaves: 0.0,
+    };
+    let plain = Pad::new("plain", Layer::new(Region::whole(&s)));
+    let p = project_with(&[(0, full), (1, plain)], vec![s]);
+    let mut e = engine(&p, 6);
+    e.set_full_voices(2);
+    let hit = |e: &mut Engine, pad: u8| {
+        e.apply(Event::NoteOn { pad, velocity: 127 });
+        run(e, 128);
+    };
+    for _ in 0..3 {
+        hit(&mut e, 0);
+    }
+    assert_eq!(e.pad_voices(0), 2, "two full voices at most");
+    assert_eq!(e.stats().steals, 1, "the third took the first's place");
+    for _ in 0..4 {
+        hit(&mut e, 1);
+    }
+    assert_eq!(e.pad_voices(1), 4, "plain hits take the rest of the pool");
+    assert_eq!(e.pad_voices(0), 2);
+    hit(&mut e, 0);
+    assert_eq!(
+        (e.pad_voices(0), e.pad_voices(1)),
+        (2, 4),
+        "a full hit takes a full voice"
+    );
+    hit(&mut e, 1);
+    assert_eq!(e.active_voices(), 6);
+    assert_eq!(e.pad_voices(1), 4, "a full pool: the busiest pad gives way");
+}
+
+#[test]
 fn renders_are_deterministic() {
     let s = ramp(5000);
     let mut pad = Pad::new("v", Layer::new(Region::whole(&s)));

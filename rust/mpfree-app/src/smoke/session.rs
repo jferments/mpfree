@@ -31,8 +31,8 @@ const RATE: u32 = crate::RATE;
 const PERIOD: usize = crate::PERIOD;
 /// How long one period is, in seconds.
 pub const PERIOD_S: f64 = PERIOD as f64 / RATE as f64;
-/// The device's default level: 6 dB under a -12 dB top (`--gain-db`).
-const MAX_DB: f32 = -12.0;
+/// The device's default level: 6 dB under a 0 dB top (`--gain-db`).
+const MAX_DB: f32 = 0.0;
 
 /// The time engine's notes, counted (the sampler would play them).
 #[derive(Default)]

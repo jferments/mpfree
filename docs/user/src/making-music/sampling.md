@@ -21,11 +21,13 @@ The switch at the top right shows **Browse** or **Pad** beside the pads.
 
 {{shot: pads-browse | The Pads tab's Browse view: the bank on the left, the browser beside it in Samples / Drums, and Kick 01 picked, with its waveform and buttons.}}
 
-**Browse** finds sounds on the stick. Pick a place on the left (**Samples**, **Recordings**, **Recent** or **Favourites**), open folders, and pick a sound to see its length, format and waveform. Then:
+**Browse** finds sounds and kits on the stick. Pick a place on the left (**Samples**, **Kits**, **Recordings**, **Recent** or **Favourites**). Tap a folder to open it, and tap a sound to pick it and see its length, format and waveform. Then:
 
-- **Load** puts it on the pad picked; **Load to pad** puts it on the next pad you hit.
+- **Load** puts it on the pad picked (so does a second tap on it); **Load to pad** puts it on the next pad you hit.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
-- **Favourite** stars it, so it is in Favourites next time.
+- The **star** at the right end of each row adds it to Favourites; tap it again to take it out.
+
+**Whole kits.** A kit (green icon) loads all at once: pick it and tap it again, push the data wheel, or tap **Load**. It takes the place of the kit the pads play now, with every pad's sound and settings. To see the sounds inside a kit one by one, press **+**. **Save kit**, at the top of the **Kits** place, keeps the kit the pads play as a kit of its own, so you can load it in another project; save it before you load another kit over it if you want to keep your changes. MPFree puts its own drum kits in **Kits > MPFree** the first time it starts with your library.
 
 The data wheel, its push, **–** and **+** move through the browser too; see [Buttons and controls](../reference/controls.md#pads-tab). Browse needs the data partition on MPFree's stick; without it, the view says so and the Pad view still works.
 
@@ -37,7 +39,7 @@ The data wheel, its push, **–** and **+** move through the browser too; see [B
 
 - its **sound**;
 - how it plays (**Mode**): **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, and **Granular** plays it as grains;
-- how many notes can ring at once (**Polyphony**);
+- how many notes can ring at once (**Polyphony**). Kit pads, and a sound you load onto an empty pad, start at 4: hit a pad again (or let Note Repeat do it) and its fifth hit stops its oldest, while other pads' sounds ring on. MPFree plays up to 64 sounds at once: plain drum hits (One shot, no filter, the envelope open, at the sound's own pitch) can use all 64, and sounds with a filter, an envelope, a loop, grains or a tune up to 24 of them. When too many sounds play at once, MPFree stops the oldest sound of the pad that has the most playing first;
 - a **mute group**: pads in the same group cut each other off, like an open and a closed hi-hat;
 - its **level**, **pan** and **tune**;
 - **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). Only the first 16 pads have a channel of their own; the others show a dash.

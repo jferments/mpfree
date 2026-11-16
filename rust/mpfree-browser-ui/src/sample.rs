@@ -35,6 +35,11 @@ pub const FACTORY: [&str; 4] = [
 const RATE: u32 = 44_100;
 
 /// Fills a new library in `data` the way a user's might look.
+/// The sample kit's kit.txt: one pad playing Kick.wav.
+const BOOM_BAP_KIT: &str = "mpfree-sampler 1\nkits = 1\nkit = 0\nkit.0.name = Boom bap\n\
+kit.0.sources = 1\nkit.0.source.0.file = Kick.wav\nkit.0.source.0.name = Kick\n\
+kit.0.pad.0.name = Kick\nkit.0.pad.0.layers = 1\nkit.0.pad.0.layer.0.source = 0\n";
+
 pub fn fill(data: &Path) -> Result<Library, String> {
     let lib = Library::at(data).map_err(|e| e.to_string())?;
     let e = |e: std::io::Error| e.to_string();
@@ -75,8 +80,18 @@ pub fn fill(data: &Path) -> Result<Library, String> {
         .map_err(e)?;
     lib.write_new(&s, "Old kick.wav", &wav_bytes(RATE, 1, 16, 8_000))
         .map_err(e)?;
-    lib.write_new(&Loc::top(Place::Kits), "Boom bap.kit", b"mpfree-kit 1\n")
-        .map_err(e)?;
+    // A kit: its folder, with kit.txt and its sounds.
+    let kick = tone_wav(RATE, 18_000, 55.0, 9.0);
+    lib.save_kit(
+        &Loc::top(Place::Kits),
+        "Boom bap",
+        BOOM_BAP_KIT,
+        &[mpfree_library::NewSample::new(
+            "Kick.wav",
+            std::sync::Arc::new(move |w: &mut dyn std::io::Write| w.write_all(&kick)),
+        )],
+    )
+    .map_err(e)?;
     let inst = Loc::top(Place::Instruments);
     for (engine, preset) in [
         ("FM", "Glass bell.preset"),

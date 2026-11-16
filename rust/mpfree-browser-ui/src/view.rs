@@ -701,6 +701,13 @@ impl BrowserView {
         Geo::new(r, &Screen::empty()).visible()
     }
 
+    /// The middle of the star of the `k`th row shown, in a browser drawn
+    /// in `r` (for tests and the touch tools).
+    pub fn star_point(r: Rect, k: usize) -> (i32, i32) {
+        let sr = star_rect(Geo::new(r, &Screen::empty()).row_rect(k));
+        (sr.x + sr.w / 2, sr.y + sr.h / 2)
+    }
+
     /// The rows that fit in the Plugins place's list in a browser drawn
     /// in `r`.
     pub fn plugin_rows_in(r: Rect) -> usize {
@@ -762,6 +769,9 @@ impl BrowserView {
             let k = ((y - g.rows.y) / ROW_H) as usize;
             let i = s.top + k;
             if k < g.visible() && i < s.rows.len() {
+                if starrable(&s.rows[i]) && star_rect(g.row_rect(k)).contains(x, y) {
+                    return Some(Input::Star(i));
+                }
                 return Some(Input::Row(i));
             }
         }
@@ -854,12 +864,17 @@ impl Widget for BrowserView {
         let shown = g.visible().min(s.rows.len().saturating_sub(s.top));
         for k in 0..shown {
             let rr = Rect::new(g.rows.x, g.rows.y + k as i32 * ROW_H, g.rows.w, ROW_H);
-            out.push(Target::tap(
-                "row",
-                s.top + k,
-                s.rows[s.top + k].name.clone(),
-                rr,
-            ));
+            let row = &s.rows[s.top + k];
+            if starrable(row) {
+                let star = star_rect(g.row_rect(k));
+                out.push(Target::tap(
+                    "star",
+                    s.top + k,
+                    format!("Star {}", row.name),
+                    star,
+                ));
+            }
+            out.push(Target::tap("row", s.top + k, row.name.clone(), rr));
         }
         out
     }
@@ -951,6 +966,19 @@ fn chip(cx: &mut PaintCx, r: Rect, label: &str, on: bool) {
     );
 }
 
+/// Width of the star at a row's right end.
+const STAR_W: i32 = 44;
+
+/// Whether a row has a star to tap (it points at something in the library).
+fn starrable(row: &Row) -> bool {
+    row.loc.is_some() && row.trash_id.is_none() && row.version.is_none()
+}
+
+/// The tap target of a row's star (the row's right end).
+fn star_rect(rr: Rect) -> Rect {
+    Rect::new(rr.right() - STAR_W, rr.y, STAR_W, rr.h)
+}
+
 fn paint_row(cx: &mut PaintCx, rr: Rect, row: &Row, selected: bool) {
     let t = cx.theme.clone();
     if selected {
@@ -969,10 +997,26 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, row: &Row, selected: bool) {
         _ => t.text_faint,
     };
     kind_icon(cx, icon, row.kind, colour);
-    let (star, rest) = rest.take_right(if row.favourite { 30 } else { 0 });
-    if row.favourite {
-        star_shape(cx, star.x + star.w / 2, star.y + star.h / 2, 9, t.warn);
-    }
+    // The star: lit for a favourite, faint for the rest; a tap on it
+    // toggles (Jay, 16 Nov: no Favourite button).
+    let rest = if starrable(row) {
+        let star = star_rect(rr);
+        let (cx0, cy0) = (star.x + star.w / 2, star.y + star.h / 2);
+        if row.favourite {
+            star_shape(cx, cx0, cy0, 10, t.warn);
+        } else {
+            star_shape(
+                cx,
+                cx0,
+                cy0,
+                10,
+                if selected { t.text_faint } else { t.outline },
+            );
+        }
+        Rect::new(rest.x, rest.y, (star.x - rest.x).max(0), rest.h)
+    } else {
+        rest
+    };
     let dw = if row.detail.is_empty() {
         0
     } else {
@@ -1307,10 +1351,6 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
     for (b, br) in &g.detail_buttons {
         let lit = match b {
             Button::Audition => s.audition,
-            Button::Favourite => s
-                .selected
-                .and_then(|i| s.rows.get(i))
-                .is_some_and(|r| r.favourite),
             _ => false,
         };
         let label = match b {
