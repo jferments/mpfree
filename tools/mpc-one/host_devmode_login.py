@@ -43,6 +43,12 @@ empty /data/ssh/sshd_config.d/allow-access.conf and put the key in /data/ssh/aut
           reloads Akai's SSH server and checks that the login with no key gets in again (as Akai
           ships it).
 
+Your key: the logins with your key offer --key and nothing else (IdentitiesOnly). A key with a passphrase
+is used through your SSH agent, as with every other tool here: run `ssh-add KEY` first. The logins with
+no key turn the agent off. Before anything else, lock and unlock check on the workstation (read-only)
+that the key has no passphrase or is in your agent (`ssh-add -L`), and stop, changing nothing, if not;
+status says which.
+
 Undo, if this tool cannot run: the developer panel's own terminal on the MPC's screen is a root
 shell, where these three lines put the files back (they are printed again by lock):
     cp /data/ssh/mpfree-lock-backup/allow-access.conf /data/ssh/sshd_config.d/allow-access.conf
@@ -275,14 +281,16 @@ class Ssh:
                      "-o", f"UserKnownHostsFile={args.known_hosts}", "-o", "GlobalKnownHostsFile=/dev/null",
                      "-o", "UpdateHostKeys=no", "-o", "PasswordAuthentication=no",
                      "-o", "KbdInteractiveAuthentication=no", "-o", "GSSAPIAuthentication=no",
-                     "-o", "HostbasedAuthentication=no", "-o", "IdentityAgent=none", "-o", "ForwardAgent=no",
+                     "-o", "HostbasedAuthentication=no", "-o", "ForwardAgent=no",
                      "-o", "ClearAllForwardings=yes", "-o", "LogLevel=ERROR"]
         self.target = f"{args.user}@{args.ip}"
 
     def auth(self, key):
+        # With your key: that key only (IdentitiesOnly). A key with a passphrase comes from your SSH agent, as for
+        # every other tool here; key_ready() checks first that it can. With no key: no key at all, agent off.
         if key:
             return ["-o", "PubkeyAuthentication=yes", "-o", "IdentitiesOnly=yes", "-i", self.args.key]
-        return ["-o", "PubkeyAuthentication=no"]
+        return ["-o", "PubkeyAuthentication=no", "-o", "IdentityAgent=none"]
 
     def run(self, command, stdin=b"", key=True, master=False, timeout=60):
         cmd = list(self.base)
@@ -427,6 +435,13 @@ def status(args, out, ssh):
     if "STATUS-DONE" not in text.splitlines():
         raise Stop("could not read the running system's state (see above)")
     out.say("\n[2/2] Logins (read-only: `id -u` only)")
+    try:
+        ready, found = key_ready(args)
+    except Stop as err:
+        ready, found = False, str(err)
+    out.say(f"  your key on this computer: {found}")
+    if not ready:
+        out.say(f"    the lock and unlock blocks need it: first run  ssh-add {args.key}")
     none = show_probe(out, "no key, no password", ssh.probe(False))
     mine = show_probe(out, "your key", ssh.probe(True))
     out.say("\nRESULT:")
@@ -447,9 +462,46 @@ def public_key(args):
     return line
 
 
+def quiet(cmd):
+    """Run a workstation command that must never ask anything: (exit code, stdout), or (None, '') if it hangs."""
+    try:
+        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, ""
+    return res.returncode, res.stdout.decode("ascii", "replace")
+
+
+def key_ready(args):
+    """Whether ssh can log in with --key without asking for anything (READ-ONLY, on the workstation).
+
+    True when the key has no passphrase, or when your SSH agent holds it (`ssh-add -L` lists its .pub).
+    Returns (ready, what was found)."""
+    blob = public_key(args).split()[1]
+    rc, text = quiet(["ssh-keygen", "-y", "-P", "", "-f", args.key])
+    if rc == 0:
+        if text.split()[1:2] != [blob]:
+            raise Stop(f"{args.key} and {args.key}.pub are two different keys; nothing was sent to the MPC")
+        return True, "usable: it has no passphrase"
+    if os.environ.get("SSH_AUTH_SOCK") and shutil.which("ssh-add"):
+        rc, text = quiet(["ssh-add", "-L"])
+        if rc == 0 and [blob] in [line.split()[1:2] for line in text.splitlines()]:
+            return True, "usable: it is in your SSH agent"
+    return False, "not usable without a question: it needs its passphrase and is not in your SSH agent"
+
+
+def need_agent(args):
+    return Stop(f"your key needs its passphrase and is not in your SSH agent, so this tool's logins could not use "
+                f"it. In this terminal run\n    ssh-add {args.key}\n  type the key's passphrase, then run this "
+                f"block again. Nothing was changed")
+
+
 def lock(args, out, ssh):
     key = public_key(args)
     out.say("\n[1/4] Before (read-only)")
+    ready, found = key_ready(args)
+    out.say(f"  your key on this computer: {found}")
+    if not ready:
+        raise need_agent(args)
     none = show_probe(out, "no key, no password", ssh.probe(False))
     mine = show_probe(out, "your key", ssh.probe(True))
     if "wrong-host" in (none, mine):
@@ -526,6 +578,10 @@ def lock(args, out, ssh):
 
 def unlock(args, out, ssh):
     out.say("\n[1/3] Before (read-only)")
+    ready, found = key_ready(args)
+    out.say(f"  your key on this computer: {found}")
+    if not ready:
+        raise need_agent(args)
     none = show_probe(out, "no key, no password", ssh.probe(False))
     mine = show_probe(out, "your key", ssh.probe(True))
     if "wrong-host" in (none, mine):
