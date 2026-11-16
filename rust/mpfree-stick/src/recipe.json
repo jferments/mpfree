@@ -98,7 +98,7 @@
   },
   "/etc/systemd/system/mpfree-test-app.service": {
    "mode": 420,
-   "text": "[Unit]\nDescription=MPFree test boot: the pad player, from power-on, as the mpfree user\nDefaultDependencies=no\nWants=mpfree-test-storage.service\nAfter=systemd-journald.service systemd-udevd.service mpfree-test-storage.service mpfree-test-splash.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\nOnFailure=mpfree-test-screen.service\nStartLimitIntervalSec=60\nStartLimitBurst=4\n\n[Service]\nType=simple\nUser=mpfree\nGroup=mpfree\nExecStart=/bin/sh /etc/mpfree-test/start-app.sh\nRestart=on-failure\nRestartSec=2\nLimitRTPRIO=70\nLimitMEMLOCK=infinity\nNoNewPrivileges=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\nRuntimeDirectory=mpfree-app\nRuntimeDirectoryPreserve=yes\n\n[Install]\nWantedBy=sysinit.target\n"
+   "text": "[Unit]\nDescription=MPFree test boot: the pad player, from power-on, as the mpfree user\nDefaultDependencies=no\nWants=mpfree-test-storage.service\nAfter=systemd-journald.service systemd-udevd.service mpfree-test-storage.service mpfree-test-splash.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\nOnFailure=mpfree-test-screen.service\nStartLimitIntervalSec=60\nStartLimitBurst=4\n\n[Service]\nType=simple\nUser=mpfree\nGroup=mpfree\nExecStart=/bin/sh /etc/mpfree-test/start-app.sh\nSyslogIdentifier=mpfree\nRestart=on-failure\nRestartSec=2\nLimitRTPRIO=70\nLimitMEMLOCK=infinity\nNoNewPrivileges=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\nRuntimeDirectory=mpfree-app\nRuntimeDirectoryPreserve=yes\n\n[Install]\nWantedBy=sysinit.target\n"
   },
   "/etc/systemd/system/mpfree-test-ethernet.service": {
    "mode": 420,
@@ -149,6 +149,7 @@
   "/etc/systemd/system/az01-script-runner.service": "/dev/null",
   "/etc/systemd/system/az01-usbsata-fixer.service": "/dev/null",
   "/etc/systemd/system/az0x-data-mkfs.service": "/dev/null",
+  "/etc/systemd/system/az0x-loadpin-trustpoints.service": "/dev/null",
   "/etc/systemd/system/az0x-webserver.service": "/dev/null",
   "/etc/systemd/system/ip6tables.service": "/dev/null",
   "/etc/systemd/system/iptables.service": "/dev/null",
