@@ -217,6 +217,101 @@ impl Lfo {
     }
 }
 
+/// The Mix curves every delay and reverb offers (its "Mix curve" control,
+/// FX quality plan 8.1.1). Equal (equal power, the default) keeps the
+/// level as Mix turns: the wet signal is a different moment of the music,
+/// so the powers add. Dry first keeps the dry at full to half way and only
+/// adds the wet, then fades the dry. Linear is a plain crossfade, which
+/// dips 3 dB half way. The names are short so the page can show them in a
+/// small chip; the hint line says the rest.
+pub(crate) const MIX_CURVES: &[&str] = &["Equal", "Dry first", "Linear"];
+
+/// What the hint line says about each of [`MIX_CURVES`].
+pub(crate) const MIX_CURVE_HINTS: [&str; 3] = [
+    "Equal (equal power): the level stays the same as you turn Mix",
+    "Dry first: up to half way Mix only adds the effect, then the dry fades",
+    "Linear: a plain crossfade, quieter in the middle",
+];
+
+/// The dry and wet gains for Mix `m` (0 to 1) on curve `curve` (an index
+/// into [`MIX_CURVES`]). Mix 0 is exactly (1, 0) and Mix 1 exactly (0, 1)
+/// on every curve, so 0 % is the input bit for bit and 100 % the effect
+/// alone.
+#[inline]
+pub(crate) fn mix_gains(m: f32, curve: usize) -> (f32, f32) {
+    let m = at_most(at_least(m, 0.0), 1.0);
+    match curve {
+        1 => (at_most(2.0 - 2.0 * m, 1.0), at_most(2.0 * m, 1.0)),
+        2 => (1.0 - m, m),
+        // A quarter cycle: cos and sin of m pi/2.
+        _ => (cosine(0.25 * m), sine(0.25 * m)),
+    }
+}
+
+/// A delay's or reverb's dry and wet gains from its Mix and Mix curve.
+/// The gains themselves glide, so a turn of Mix and a change of curve are
+/// both smooth, and once they arrive a still knob costs two compares.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Blend {
+    mix: f32,
+    curve: usize,
+    dry: mpfree_node::Smooth,
+    wet: mpfree_node::Smooth,
+}
+
+impl Blend {
+    /// Settled at Mix `mix` (0 to 1) on `curve`.
+    pub(crate) fn new(mix: f32, curve: usize) -> Blend {
+        let curve = curve.min(MIX_CURVES.len() - 1);
+        let (d, w) = mix_gains(mix, curve);
+        Blend {
+            mix,
+            curve,
+            dry: mpfree_node::Smooth::new(d),
+            wet: mpfree_node::Smooth::new(w),
+        }
+    }
+    /// The Mix, 0 to 1.
+    pub(crate) fn set_mix(&mut self, mix: f32) {
+        self.mix = mix;
+        self.aim();
+    }
+    /// The curve, as the control's value (an index into [`MIX_CURVES`]).
+    pub(crate) fn set_curve(&mut self, curve: f32) {
+        self.curve = (at_least(curve, 0.0) as usize).min(MIX_CURVES.len() - 1);
+        self.aim();
+    }
+    fn aim(&mut self) {
+        let (d, w) = mix_gains(self.mix, self.curve);
+        self.dry.target = d;
+        self.wet.target = w;
+    }
+    pub(crate) fn set_time(&mut self, rate: u32, ms: f32) {
+        self.dry.set_time(rate, ms);
+        self.wet.set_time(rate, ms);
+    }
+    /// Jumps to where the controls are (on reset).
+    pub(crate) fn snap(&mut self) {
+        self.dry.snap(self.dry.target);
+        self.wet.snap(self.wet.target);
+    }
+    /// The next frame's (dry, wet) gains.
+    #[inline]
+    pub(crate) fn next(&mut self) -> (f32, f32) {
+        (self.dry.glide(), self.wet.glide())
+    }
+    /// Whether it puts out the effect alone, and will (Mix 100 %, settled).
+    pub(crate) fn all_wet(&self) -> bool {
+        self.dry.value == 0.0 && self.dry.target == 0.0 && self.wet.value == 1.0
+    }
+}
+
+/// `dry * x + wet * y`: one frame of a [`Blend`].
+#[inline]
+pub(crate) fn blend(x: f32, y: f32, (dry, wet): (f32, f32)) -> f32 {
+    dry * x + wet * y
+}
+
 /// [`Smooth::next`] with a quick way out once the value has arrived: the
 /// same values bit for bit, at about a third of the cost on ARMv7 while
 /// the control holds still (most of the time).
@@ -663,6 +758,56 @@ mod tests {
             let got = l.read_at(&l.frac(d, 0.7));
             assert!((want - got).abs() < 1e-5, "{d}: {want} {got}");
         }
+    }
+
+    #[test]
+    fn every_mix_curve_ends_exactly_and_keeps_its_shape() {
+        for c in 0..MIX_CURVES.len() {
+            assert_eq!(mix_gains(0.0, c), (1.0, 0.0), "{}", MIX_CURVES[c]);
+            assert_eq!(mix_gains(1.0, c), (0.0, 1.0), "{}", MIX_CURVES[c]);
+            // Out of range is held at the ends.
+            assert_eq!(mix_gains(-0.5, c), (1.0, 0.0));
+            assert_eq!(mix_gains(1.5, c), (0.0, 1.0));
+        }
+        for i in 1..100 {
+            let m = i as f32 / 100.0;
+            // Equal: the powers add to 1 (within the polynomial sine).
+            let (d, w) = mix_gains(m, 0);
+            assert!((d * d + w * w - 1.0).abs() < 0.005, "Equal at {m}");
+            // Dry first: the dry stays whole to half way, the wet from it.
+            let (d, w) = mix_gains(m, 1);
+            assert_eq!(d, if m <= 0.5 { 1.0 } else { 2.0 - 2.0 * m });
+            assert_eq!(w, if m >= 0.5 { 1.0 } else { 2.0 * m });
+            // Linear: the gains add to 1.
+            let (d, w) = mix_gains(m, 2);
+            assert!((d + w - 1.0).abs() < 1e-6, "Linear at {m}");
+        }
+    }
+
+    #[test]
+    fn a_blend_glides_to_its_gains_and_arrives_exactly() {
+        let mut b = Blend::new(0.0, 0);
+        b.set_time(48_000, 20.0);
+        assert_eq!(b.next(), (1.0, 0.0));
+        assert!(!b.all_wet());
+        b.set_mix(1.0);
+        let (d, w) = b.next();
+        assert!(d > 0.99 && w < 0.01, "a glide, not a step: {d} {w}");
+        for _ in 0..48_000 {
+            b.next();
+        }
+        assert_eq!(b.next(), (0.0, 1.0));
+        assert!(b.all_wet());
+        // A change of curve glides too; a snap jumps there.
+        b.set_mix(0.5);
+        b.set_curve(1.0);
+        assert_ne!(b.next(), (1.0, 1.0));
+        b.snap();
+        assert_eq!(b.next(), (1.0, 1.0));
+        // A curve past the list is the last one.
+        b.set_curve(9.0);
+        b.snap();
+        assert_eq!(b.next(), mix_gains(0.5, 2));
     }
 
     fn kit_noise(i: u32) -> f32 {

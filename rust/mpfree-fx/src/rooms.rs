@@ -9,7 +9,9 @@
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
-use crate::kit::{self, node_impl, param, Glide, Hz, Line, Linear, Log, Ms, Percent};
+use crate::kit::{
+    self, node_impl, param, Blend, Choice, Glide, Hz, Line, Linear, Log, Ms, Percent, NONE,
+};
 use crate::svf::{Svf, SvfMode};
 use crate::{defaults, flush, lerp, Preset};
 
@@ -80,6 +82,8 @@ pub mod plate {
     pub const LOW_CUT: u16 = 6;
     pub const WIDTH: u16 = 7;
     pub const MIX: u16 = 8;
+    /// How Mix blends ([`crate::kit::MIX_CURVES`]).
+    pub const MIX_CURVE: u16 = 9;
 }
 
 static PLATE_INFO: NodeInfo = NodeInfo {
@@ -87,7 +91,7 @@ static PLATE_INFO: NodeInfo = NodeInfo {
     name: "Plate reverb",
     kind: Kind::Effect,
 };
-static PLATE_PARAMS: [ParamInfo; 9] = [
+static PLATE_PARAMS: [ParamInfo; 10] = [
     param(0, "Pre-delay", "Plate", 0.0, 250.0, 10.0, Ms, Linear),
     param(1, "Size", "Plate", 50.0, 150.0, 100.0, Percent, Linear),
     param(2, "Decay", "Plate", 200.0, 20_000.0, 2000.0, Ms, Log),
@@ -97,6 +101,16 @@ static PLATE_PARAMS: [ParamInfo; 9] = [
     param(6, "Low cut", "Output", 20.0, 1000.0, 80.0, Hz, Log),
     param(7, "Width", "Output", 0.0, 100.0, 100.0, Percent, Linear),
     param(8, "Mix", "Output", 0.0, 100.0, 25.0, Percent, Linear),
+    param(
+        9,
+        "Mix curve",
+        "Output",
+        0.0,
+        2.0,
+        0.0,
+        NONE,
+        Choice(kit::MIX_CURVES),
+    ),
 ];
 
 /// Plate factory presets.
@@ -168,7 +182,7 @@ const PLATE_EXCURSION: f32 = 16.0;
 /// different. The modulation keeps the tank from ringing; Decay is the
 /// time to fall 60 dB.
 pub struct Plate {
-    v: [f32; 9],
+    v: [f32; 10],
     rate: u32,
     /// Frames per Dattorro frame at this rate.
     scale: f32,
@@ -191,7 +205,7 @@ pub struct Plate {
     pre_frames: Smooth,
     modd: Smooth,
     width: Smooth,
-    mix: Smooth,
+    blend: Blend,
     tone_k: f32,
 }
 
@@ -226,7 +240,7 @@ impl Plate {
             pre_frames: Smooth::new(0.0),
             modd: Smooth::new(0.0),
             width: Smooth::new(1.0),
-            mix: Smooth::new(0.25),
+            blend: Blend::new(0.25, 0),
             tone_k: 1.0,
         };
         p.setup(48_000);
@@ -258,7 +272,8 @@ impl Plate {
                 .low_cut
                 .set(SvfMode::HighPass, v, 0.707, 0.0, self.rate),
             plate::WIDTH => self.width.target = v / 100.0,
-            plate::MIX => self.mix.target = v / 100.0,
+            plate::MIX => self.blend.set_mix(v / 100.0),
+            plate::MIX_CURVE => self.blend.set_curve(v),
             _ => {}
         }
     }
@@ -327,9 +342,9 @@ impl Plate {
             let w = self.width.glide();
             let mid = 0.5 * (y[0] + y[1]);
             let (wl, wr) = (lerp(mid, y[0], w), lerp(mid, y[1], w));
-            let mix = self.mix.glide();
-            l[i] = lerp(l[i], wl, mix);
-            r[i] = lerp(r[i], wr, mix);
+            let g = self.blend.next();
+            l[i] = kit::blend(l[i], wl, g);
+            r[i] = kit::blend(r[i], wr, g);
         }
     }
 
@@ -353,10 +368,10 @@ impl Plate {
             &mut self.damping,
             &mut self.modd,
             &mut self.width,
-            &mut self.mix,
         ] {
             s.set_time(rate, 50.0);
         }
+        self.blend.set_time(rate, 50.0);
         self.pre_frames.set_time(rate, 100.0);
         for id in 0..PLATE_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
@@ -389,10 +404,10 @@ impl Plate {
             &mut self.pre_frames,
             &mut self.modd,
             &mut self.width,
-            &mut self.mix,
         ] {
             s.snap(s.target);
         }
+        self.blend.snap();
     }
 
     fn tail(&self) -> u32 {
@@ -431,6 +446,8 @@ pub mod room {
     pub const LOW_CUT: u16 = 7;
     pub const WIDTH: u16 = 8;
     pub const MIX: u16 = 9;
+    /// How Mix blends ([`crate::kit::MIX_CURVES`]).
+    pub const MIX_CURVE: u16 = 10;
 }
 
 const LINES: usize = 8;
@@ -461,13 +478,17 @@ const EARLY_PAN: [[f32; 2]; 8] = {
 /// The smallest Size, as a share of the lengths above.
 const ROOM_MIN: f32 = 0.25;
 const ROOM_MAX: f32 = 1.5;
+/// The wet level, +4 dB, so the Room plays as loud as the dry on pink
+/// noise like the other reverbs (it was 3 to 5 LU quieter at its defaults
+/// and every preset: fxlab quality, R6).
+const ROOM_TRIM: f32 = 1.584_893;
 
 static ROOM_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.room",
     name: "Room reverb",
     kind: Kind::Effect,
 };
-static ROOM_PARAMS: [ParamInfo; 10] = [
+static ROOM_PARAMS: [ParamInfo; 11] = [
     param(0, "Pre-delay", "Room", 0.0, 100.0, 5.0, Ms, Linear),
     param(1, "Size", "Room", 0.0, 100.0, 45.0, Percent, Linear),
     param(2, "Decay", "Room", 100.0, 5000.0, 800.0, Ms, Log),
@@ -478,6 +499,16 @@ static ROOM_PARAMS: [ParamInfo; 10] = [
     param(7, "Low cut", "Output", 20.0, 1000.0, 60.0, Hz, Log),
     param(8, "Width", "Output", 0.0, 100.0, 100.0, Percent, Linear),
     param(9, "Mix", "Output", 0.0, 100.0, 25.0, Percent, Linear),
+    param(
+        10,
+        "Mix curve",
+        "Output",
+        0.0,
+        2.0,
+        0.0,
+        NONE,
+        Choice(kit::MIX_CURVES),
+    ),
 ];
 
 /// Room factory presets.
@@ -525,7 +556,7 @@ pub static ROOM_PRESETS: &[Preset] = &[
 /// cuts the tail that many ms after the sound stops, the 1980s gated
 /// snare.
 pub struct Room {
-    v: [f32; 10],
+    v: [f32; 11],
     rate: u32,
     pre: Line,
     early: Line,
@@ -556,7 +587,7 @@ pub struct Room {
     early_gain: Smooth,
     modd: Smooth,
     width: Smooth,
-    mix: Smooth,
+    blend: Blend,
     env: f32,
     env_fall: f32,
     held: u32,
@@ -598,7 +629,7 @@ impl Room {
             early_gain: Smooth::new(0.6),
             modd: Smooth::new(0.0),
             width: Smooth::new(1.0),
-            mix: Smooth::new(0.25),
+            blend: Blend::new(0.25, 0),
             env: 0.0,
             env_fall: 0.0,
             held: 0,
@@ -644,7 +675,8 @@ impl Room {
                 .low_cut
                 .set(SvfMode::HighPass, v, 0.707, 0.0, self.rate),
             room::WIDTH => self.width.target = v / 100.0,
-            room::MIX => self.mix.target = v / 100.0,
+            room::MIX => self.blend.set_mix(v / 100.0),
+            room::MIX_CURVE => self.blend.set_curve(v),
             _ => {}
         }
     }
@@ -725,7 +757,9 @@ impl Room {
                 out[1] - out[3] + out[5] - out[7] + 0.5 * (out[2] + out[6]),
             ];
             for (side, v) in y.iter_mut().enumerate() {
-                *v = self.low_cut.run(side, 0.35 * *v + early_gain * er[side]);
+                *v = self
+                    .low_cut
+                    .run(side, ROOM_TRIM * (0.35 * *v + early_gain * er[side]));
             }
             // The gate, keyed by the dry input.
             if gate_on {
@@ -748,9 +782,9 @@ impl Room {
             }
             let w = self.width.glide();
             let mid = 0.5 * (y[0] + y[1]);
-            let mix = self.mix.glide();
-            l[i] = lerp(l[i], lerp(mid, y[0], w), mix);
-            r[i] = lerp(r[i], lerp(mid, y[1], w), mix);
+            let g = self.blend.next();
+            l[i] = kit::blend(l[i], lerp(mid, y[0], w), g);
+            r[i] = kit::blend(r[i], lerp(mid, y[1], w), g);
         }
     }
 
@@ -773,10 +807,10 @@ impl Room {
             &mut self.early_gain,
             &mut self.modd,
             &mut self.width,
-            &mut self.mix,
         ] {
             s.set_time(rate, 50.0);
         }
+        self.blend.set_time(rate, 50.0);
         self.pre_frames.set_time(rate, 100.0);
         for id in 0..ROOM_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
@@ -810,10 +844,10 @@ impl Room {
             &mut self.early_gain,
             &mut self.modd,
             &mut self.width,
-            &mut self.mix,
         ] {
             s.snap(s.target);
         }
+        self.blend.snap();
     }
 
     fn tail(&self) -> u32 {
@@ -852,6 +886,8 @@ pub mod spring {
     pub const TONE: u16 = 4;
     pub const LOW_CUT: u16 = 5;
     pub const MIX: u16 = 6;
+    /// How Mix blends ([`crate::kit::MIX_CURVES`]).
+    pub const MIX_CURVE: u16 = 7;
 }
 
 /// Stretched all-pass stages per spring (Parker's low chirp path, cut to
@@ -865,7 +901,7 @@ static SPRING_INFO: NodeInfo = NodeInfo {
     name: "Spring reverb",
     kind: Kind::Effect,
 };
-static SPRING_PARAMS: [ParamInfo; 7] = [
+static SPRING_PARAMS: [ParamInfo; 8] = [
     param(0, "Length", "Spring", 20.0, 80.0, 40.0, Ms, Linear),
     param(1, "Decay", "Spring", 500.0, 8000.0, 2500.0, Ms, Log),
     param(2, "Tension", "Spring", 0.0, 100.0, 50.0, Percent, Linear),
@@ -873,6 +909,16 @@ static SPRING_PARAMS: [ParamInfo; 7] = [
     param(4, "Tone", "Spring", 1000.0, 8000.0, 4000.0, Hz, Log),
     param(5, "Low cut", "Spring", 20.0, 1000.0, 150.0, Hz, Log),
     param(6, "Mix", "Spring", 0.0, 100.0, 30.0, Percent, Linear),
+    param(
+        7,
+        "Mix curve",
+        "Output",
+        0.0,
+        2.0,
+        0.0,
+        NONE,
+        Choice(kit::MIX_CURVES),
+    ),
 ];
 
 /// Spring factory presets.
@@ -967,7 +1013,7 @@ impl OneSpring {
 /// a tap on the tank gives. After Välimäki, Parker and Abel's parametric
 /// spring model, with the chain cut to 40 stages for the MPC.
 pub struct Spring {
-    v: [f32; 7],
+    v: [f32; 8],
     rate: u32,
     springs: [OneSpring; 2],
     in_hp: Svf,
@@ -975,7 +1021,7 @@ pub struct Spring {
     gain: f32,
     a: f32,
     drip: Smooth,
-    mix: Smooth,
+    blend: Blend,
 }
 
 impl Default for Spring {
@@ -996,7 +1042,7 @@ impl Spring {
             gain: 0.5,
             a: -0.6,
             drip: Smooth::new(0.5),
-            mix: Smooth::new(0.3),
+            blend: Blend::new(0.3, 0),
         };
         s.setup(48_000);
         s
@@ -1026,7 +1072,8 @@ impl Spring {
                 }
             }
             spring::LOW_CUT => self.in_hp.set(SvfMode::HighPass, v, 0.707, 0.0, self.rate),
-            spring::MIX => self.mix.target = v / 100.0,
+            spring::MIX => self.blend.set_mix(v / 100.0),
+            spring::MIX_CURVE => self.blend.set_curve(v),
             _ => {}
         }
     }
@@ -1052,9 +1099,9 @@ impl Spring {
                 s.fb = flush(self.gain * (back + drip * 0.25 * (c - back)));
                 y[k] = back + 0.3 * c;
             }
-            let mix = self.mix.glide();
-            l[i] = lerp(l[i], y[0], mix);
-            r[i] = lerp(r[i], y[1], mix);
+            let g = self.blend.next();
+            l[i] = kit::blend(l[i], y[0], g);
+            r[i] = kit::blend(r[i], y[1], g);
         }
     }
 
@@ -1064,7 +1111,7 @@ impl Spring {
         self.springs = [OneSpring::new(frames), OneSpring::new(frames)];
         self.length.set_time(rate, 200.0);
         self.drip.set_time(rate, 30.0);
-        self.mix.set_time(rate, 20.0);
+        self.blend.set_time(rate, 20.0);
         for id in 0..SPRING_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
         }
@@ -1078,7 +1125,7 @@ impl Spring {
         self.in_hp.reset();
         self.length.snap(self.length.target);
         self.drip.snap(self.drip.target);
-        self.mix.snap(self.mix.target);
+        self.blend.snap();
     }
 
     fn tail(&self) -> u32 {
