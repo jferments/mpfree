@@ -143,9 +143,9 @@ impl PartialEq for NewSample {
 }
 
 /// A file being written that may grow no bigger than [`crate::MAX_FILE`].
-struct Capped<'a> {
-    f: &'a mut File,
-    n: u64,
+pub(crate) struct Capped<'a> {
+    pub(crate) f: &'a mut File,
+    pub(crate) n: u64,
 }
 
 impl Write for Capped<'_> {
@@ -321,7 +321,7 @@ pub struct Version {
     pub saved: u64,
 }
 
-fn bad(kind: io::ErrorKind, s: impl Into<String>) -> io::Error {
+pub(crate) fn bad(kind: io::ErrorKind, s: impl Into<String>) -> io::Error {
     io::Error::new(kind, s.into())
 }
 

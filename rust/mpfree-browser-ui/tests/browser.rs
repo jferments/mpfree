@@ -33,11 +33,14 @@ fn names(b: &Browser) -> Vec<String> {
     b.screen().rows.iter().map(|r| r.name.clone()).collect()
 }
 
+/// Moves the selection to `name` with the dial (a tap would open a folder).
 fn select(b: &mut Browser, name: &str) {
     let s = b.screen();
     let i = s.rows.iter().position(|r| r.name == name).unwrap();
-    if s.selected != Some(i) {
-        b.input(Input::Row(i));
+    match s.selected {
+        Some(at) if at == i => {}
+        Some(at) => b.dial(i as i32 - at as i32),
+        None => b.dial(i as i32 + 1),
     }
 }
 
@@ -66,10 +69,10 @@ fn it_opens_on_samples_with_folders_first() {
 }
 
 #[test]
-fn folders_open_with_a_second_tap_or_the_push_and_minus_goes_back() {
+fn folders_open_with_one_tap_or_the_push_and_minus_goes_back() {
     let (mut b, _) = browser();
-    select(&mut b, "Drums");
-    b.input(Input::Row(0)); // a tap on the selected row opens it
+    select(&mut b, "Loops");
+    b.input(Input::Row(0)); // one tap on a folder opens it, selected or not
     assert_eq!(b.screen().path, "Samples / Drums");
     assert_eq!(names(&b)[0], "Clap.wav");
     b.back();
@@ -330,9 +333,26 @@ fn taps_and_drags_on_the_widget() {
         ui.touch(1, Touch::Down, x, y);
         ui.touch(1, Touch::Up, x, y);
     };
+    // Tap the fifth row, a sound: it is selected.
+    tap(&mut ui, x, y0 + 4 * 52);
+    step(&mut ui, &mut b);
+    assert_eq!(b.selected_row().unwrap().name, "Rhodes chord.wav");
+    assert!(!b.selected_row().unwrap().favourite);
+    // Its star, at the row's right end, makes it a favourite; again, not.
+    let (sx, sy) = BrowserView::star_point(r, 4);
+    tap(&mut ui, sx, sy);
+    step(&mut ui, &mut b);
+    assert!(b.selected_row().unwrap().favourite);
+    assert!(b
+        .lists_text()
+        .contains("favourite = Samples/Rhodes chord.wav"));
+    tap(&mut ui, sx, sy);
+    step(&mut ui, &mut b);
+    assert!(!b.selected_row().unwrap().favourite);
+    // Tap the second row, a folder: one tap opens it.
     tap(&mut ui, x, y0 + 52);
     step(&mut ui, &mut b);
-    assert_eq!(b.selected_row().unwrap().name, "Field recordings");
+    assert_eq!(b.screen().path, "Samples / Field recordings");
     // Tap Trash in the places.
     let trash_y = {
         let mut y = r.y + 34 + 4;
@@ -389,8 +409,8 @@ fn the_preset_picker_tries_each_preset_and_cancel_puts_the_old_one_back() {
         names(&b),
         ["Glass bell.preset", "Metal bass.preset", "Soft keys.preset"]
     );
-    // Only loading, hearing and starring: nothing is renamed or deleted.
-    assert_eq!(s.detail.buttons, [Button::Load, Button::Favourite]);
+    // Only loading: nothing is renamed or deleted (the row's star stars it).
+    assert_eq!(s.detail.buttons, [Button::Load]);
     b.erase();
     b.back();
     b.go_source(src("Samples"));
@@ -487,7 +507,7 @@ fn the_pads_tab_browser_stays_open_and_offers_both_loads() {
     assert_eq!(b.screen().title, "Sounds");
     assert_eq!(
         place_labels(&b),
-        ["Samples", "Recordings", "Recent", "Favourites"]
+        ["Samples", "Kits", "Recordings", "Recent", "Favourites"]
     );
     assert!(b.screen().list_buttons.is_empty(), "nothing to cancel");
     select(&mut b, "Rhodes chord.wav");
@@ -564,7 +584,8 @@ fn earlier_saves_of_a_project_open_in_its_place() {
         ]
     );
     assert_eq!(s.detail.kind, "Earlier save");
-    assert_eq!(s.detail.buttons, [Button::Open]);
+    // No Open button: a second tap or the push opens it.
+    assert!(s.detail.buttons.is_empty());
     // The row stands for the project's folder: Delete and the rest do nothing.
     let night = Loc::new(Place::Projects, &["Night drive"]).unwrap();
     b.erase();
@@ -1004,4 +1025,100 @@ fn the_export_panel_answers_taps() {
     assert_eq!(b.screen().export.unwrap().by, StemsBy::Channel);
     let mut c = SoftCanvas::new(1280, 800);
     ui.paint(&mut c);
+}
+
+#[test]
+fn a_kit_loads_whole_and_plus_shows_its_sounds() {
+    let (mut b, lib) = browser();
+    b.go_source(src("Kits"));
+    assert_eq!(names(&b), ["Boom bap"]);
+    let s = b.screen();
+    assert_eq!(s.rows[0].kind, mpfree_library::Kind::Kit);
+    assert_eq!(s.list_buttons, [Button::SaveKit, Button::NewFolder]);
+    assert!(s.detail.buttons.contains(&Button::Load));
+    b.take_actions();
+    // The push loads the whole kit: its folder goes to the app.
+    b.push();
+    let a = b.take_actions();
+    let kit = Loc::new(Place::Kits, &["Boom bap"]).unwrap();
+    assert!(
+        matches!(&a[0], BrowseAction::LoadKit { loc, path } if *loc == kit && path.join("kit.txt").is_file()),
+        "{a:?}"
+    );
+    assert!(lib.kit_text(&kit).unwrap().starts_with("mpfree-sampler 1"));
+    // + goes into it: its sounds, one by one.
+    b.enter();
+    assert_eq!(b.screen().path, "Kits / Boom bap");
+    assert!(names(&b).contains(&"Kick.wav".to_string()));
+    b.back();
+    // Save kit asks the app for the kit the pads play, then saves it here.
+    b.input(Input::Button(Button::SaveKit));
+    assert_eq!(b.take_actions(), [BrowseAction::SaveKitRequested]);
+    let wav: Vec<u8> = std::fs::read(lib.kit_sound_path(&kit, "Kick.wav").unwrap()).unwrap();
+    b.save_kit(
+        "Boom bap",
+        "mpfree-sampler 1\nkits = 1\n".into(),
+        vec![mpfree_library::NewSample::new(
+            "Kick.wav",
+            std::sync::Arc::new(move |w: &mut dyn std::io::Write| w.write_all(&wav)),
+        )],
+    );
+    assert_eq!(names(&b), ["Boom bap", "Boom bap 2"]);
+    assert_eq!(b.selected_row().unwrap().name, "Boom bap 2");
+    assert!(b.screen().status.unwrap().0.contains("Saved the kit"));
+    assert!(lib.is_kit(&Loc::new(Place::Kits, &["Boom bap 2"]).unwrap()));
+}
+
+#[test]
+fn the_pads_tab_browser_loads_and_saves_kits() {
+    let (mut b, _) = browser();
+    b.open_picker(Pick::Pads);
+    assert!(b.screen().list_buttons.is_empty());
+    b.go_source(src("Kits"));
+    assert_eq!(b.screen().path, "Kits");
+    assert_eq!(names(&b), ["Boom bap"]);
+    assert_eq!(b.screen().list_buttons, [Button::SaveKit]);
+    b.take_actions();
+    b.push();
+    assert!(matches!(&b.take_actions()[0], BrowseAction::LoadKit { .. }));
+    // It stays open, as for a sound.
+    assert!(b.picking().is_some());
+    b.input(Input::Button(Button::SaveKit));
+    assert_eq!(b.take_actions(), [BrowseAction::SaveKitRequested]);
+    // A kit in Samples shows there too, as a kit.
+    b.go_source(src("Samples"));
+    assert!(b.screen().list_buttons.is_empty());
+}
+
+#[test]
+fn a_tap_on_a_rows_star_toggles_the_favourite() {
+    let (mut b, _) = browser();
+    let i = b
+        .screen()
+        .rows
+        .iter()
+        .position(|r| r.name == "Rhodes chord.wav")
+        .unwrap();
+    b.input(Input::Star(i));
+    assert!(b.screen().rows[i].favourite);
+    assert!(
+        matches!(&b.take_actions()[..], [BrowseAction::SaveLists(t)] if t.contains("favourite = Samples/Rhodes chord.wav"))
+    );
+    // A folder can be starred without opening it.
+    b.input(Input::Star(0));
+    assert_eq!(b.screen().path, "Samples");
+    b.go_source(src("Favourites"));
+    assert_eq!(names(&b), ["Rhodes chord.wav", "Drums"]);
+    b.input(Input::Star(0));
+    assert_eq!(names(&b), ["Drums"]);
+    // No Open or Favourite buttons anywhere in the list's items.
+    b.go_source(src("Samples"));
+    for name in ["Drums", "Rhodes chord.wav"] {
+        select(&mut b, name);
+        let d = b.screen().detail.buttons;
+        assert!(
+            !d.contains(&Button::Open) && !d.contains(&Button::Favourite),
+            "{name}: {d:?}"
+        );
+    }
 }

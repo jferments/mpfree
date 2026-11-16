@@ -84,6 +84,7 @@ mod akai;
 mod alsa;
 mod app;
 mod audiotracks;
+mod bundled;
 mod calibrate_page;
 mod chain_page;
 mod control;

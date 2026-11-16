@@ -46,9 +46,9 @@ LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(RE
 LIBRARY_NEEDLES = (
     # Reviewed by the app thread, 12 Nov 2026. Every path is the library's root joined with a place's folder and
     # names checked by valid_name (Library::path), or a .part / temp / trash slot beside one; links are refused
-    # (symlink_metadata, O_NOFOLLOW). The Pads tab's browser reaches none of these: its picker refuses every
-    # button but Load, Load to pad, Open, Audition and Favourite (Pick::allows), which read; Recent and
-    # Favourites are saved through mpfree-store. The full browser (BROWSE, 13 Nov 2026) reaches them all:
+    # (symlink_metadata, O_NOFOLLOW). The Pads tab's browser reaches only Save kit (kit.rs, below): its picker
+    # refuses every button but Load, Load to pad, Open, Audition, Favourite, which read, and Save kit
+    # (Pick::allows); Recent and Favourites are saved through mpfree-store. The full browser (BROWSE, 13 Nov 2026) reaches them all:
     # New folder, Rename, Copy and Paste, Delete into the Trash (asks first; Put back undoes it), Empty
     # Trash (asks first; for good, the Trash only) and the project save (SHIFT + BROWSE, Save, Save as),
     # each inside library/ under --data and nowhere else. At start, Library::at makes library/ and its
@@ -79,6 +79,13 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/project.rs", "fs::remove_file(&tmp)?;"),
     ("mpfree-library/project.rs", "let _ = fs::remove_file(&tmp);"),
     ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)"),                            # a part file written
+    # Kit files (kit.rs; the browser thread, 16 Nov 2026): Save kit in BROWSE's Kits place or the Pads tab's
+    # picker builds the kit in a hidden .kit-<id>-<name> folder beside where it goes (in Kits, Samples ...;
+    # never Projects or the Trash: check_writable), each file made new (create_new, O_NOFOLLOW) with a name
+    # valid_name takes, then renames the folder in. A cut-off kit's folder or file is removed.
+    ("mpfree-library/kit.rs", "fs::rename(&tmp, fp.join(&name))?;"),
+    ("mpfree-library/kit.rs", "let _ = fs::remove_dir_all(&tmp);"),
+    ("mpfree-library/kit.rs", "let _ = fs::remove_file(p);"),
 )
 # The Plugins place (BROWSE, Jay 15 Nov 23:34Z and 23:36Z): the app's plugin worker (plugin_store.rs) and
 # mpfree-mpcstore write only in files/plugins/ under the --data folder (the plugin home, plugins.rs), and
@@ -140,6 +147,8 @@ LIBRARY_OPENS = (
     "} let mut o = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&tmp)?;",
     "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).custom_flags(0x20000) "
     "// O_NOFOLLOW.open(&tmp)?; {",
+    "let mut f = OpenOptions::new().write(true).create_new(true).mode(0o644).custom_flags(0x20000) "
+    "// O_NOFOLLOW.open(p)?; {",                                                       # a kit's file (kit.rs)
 )
 # mpfree-prof/alloc.rs holds the counting allocator, the crate's only unsafe code. It compiles only with the
 # crate's counting-alloc feature, which mpfree does not enable (mpfree-bench does), so it never
@@ -1259,7 +1268,7 @@ class StaticTests(unittest.TestCase):
         files = {name for name, _ in found}
         self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/crash.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs",
                                  "mpfree-app/setup.rs", "mpfree-store/lib.rs",
-                                 "mpfree-library/lib.rs", "mpfree-library/project.rs",
+                                 "mpfree-library/lib.rs", "mpfree-library/project.rs", "mpfree-library/kit.rs",
                                  "mpfree-mpcstore/install.rs"}, files)
         # The plugin store's folder is files/plugins/ beside the library, in the --data folder.
         gui = dict(self.program_sources())["mpfree-app/gui.rs"]
