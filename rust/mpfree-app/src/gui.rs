@@ -1662,6 +1662,12 @@ impl Player {
         let wrap: fn(&str) -> String = match loaded {
             Some(w) => {
                 let tabs = skin_page::SkinTabs::new(&w.view.tabs());
+                // For the device round's log: the skin is drawn.
+                println!(
+                    "screen: {id}: its own screen, {} tab(s), on the Synth tab",
+                    w.view.tabs().len()
+                );
+                let _ = io::stdout().flush();
                 self.ui.add(skin_page::SKIN, w);
                 self.ui.add(skin_page::TABS, tabs);
                 self.ui.add(skin_page::CHIP, skin_page::SkinChip);
@@ -4790,6 +4796,10 @@ impl Player {
     fn poll_plugins(&mut self) {
         if self.plugin_page.poll() {
             self.show_plugins();
+        }
+        // What the place did, in the log (and the Events log).
+        for l in self.plugin_page.take_lines() {
+            self.say(l);
         }
         if self.plugin_page.take_changed() {
             self.outbox.push(FromUi::PluginsChanged);

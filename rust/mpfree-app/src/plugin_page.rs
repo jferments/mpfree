@@ -115,6 +115,8 @@ pub struct PluginPage {
     reached: Option<bool>,
     /// The catalog fetch running was asked for with Update list.
     by_hand: bool,
+    /// Lines for the app's log: listings, the catalog, installs.
+    lines: Vec<String>,
 }
 
 impl Default for PluginPage {
@@ -142,6 +144,31 @@ fn human(bytes: u64) -> String {
     } else {
         format!("{} KB", bytes.div_ceil(1024))
     }
+}
+
+/// The log's line for the first listing: what is there and whether
+/// downloads can work.
+fn listing_line(l: &Listing) -> String {
+    let catalog = match &l.catalog {
+        Some(c) => format!(
+            "catalog of {} kept ({} plugins)",
+            c.generated.get(..10).unwrap_or(&c.generated),
+            c.plugins.len()
+        ),
+        None => "no catalog kept yet".into(),
+    };
+    let downloads = if l.no_folder {
+        "downloads off (no data folder)"
+    } else if l.can_download {
+        "downloads possible (libcurl found)"
+    } else {
+        "downloads off (no libcurl)"
+    };
+    format!(
+        "plugins: {} installed, {} zip(s) on the stick, {catalog}, {downloads}",
+        l.installed.len(),
+        l.zips.len()
+    )
 }
 
 /// "GitHub" for github.com and its file hosts, else the address's host.
@@ -206,6 +233,7 @@ impl PluginPage {
             offline: false,
             reached: None,
             by_hand: false,
+            lines: Vec::new(),
         }
     }
 
@@ -590,6 +618,9 @@ impl PluginPage {
         match n {
             News::Listing(l) => {
                 let first = !self.listed;
+                if first {
+                    self.lines.push(listing_line(&l));
+                }
                 self.listing = *l;
                 self.listed = true;
                 self.favourites = self.listing.favourites.clone();
@@ -607,6 +638,10 @@ impl PluginPage {
                 }
             }
             News::Done { key, said, changed } => {
+                self.lines.push(match &said {
+                    Ok(s) => format!("plugins: {s}"),
+                    Err(e) => format!("plugins: not done ({key}): {e}"),
+                });
                 if key == "catalog" {
                     self.fetching = false;
                     self.reached = Some(said.is_ok());
@@ -659,6 +694,11 @@ impl PluginPage {
                 }
             }
         }
+    }
+
+    /// What the place did since last asked, for the app's log.
+    pub fn take_lines(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.lines)
     }
 
     /// The plugins changed since last asked (installed or updated): the
@@ -1490,6 +1530,36 @@ mod tests {
         assert_eq!(s.detail.title, "Mono Bass");
         assert_eq!(s.detail.buttons[0], PluginButton::Update);
         assert_eq!(s.detail.picture_label, "1 / 2");
+    }
+
+    #[test]
+    fn the_log_says_what_is_there_and_what_was_done() {
+        let mut p = page_with(Vec::new(), Vec::new(), true);
+        let lines = p.take_lines();
+        assert_eq!(
+            lines,
+            vec!["plugins: 0 installed, 0 zip(s) on the stick, catalog of 2026-11-10 kept (3 plugins), downloads possible (libcurl found)"]
+        );
+        p.take(News::Done {
+            key: "maker.echo".into(),
+            said: Ok(
+                "Installed Echo 0.3.0: Echo ready on the Synth tab or in the chain editor".into(),
+            ),
+            changed: true,
+        });
+        p.take(News::Done {
+            key: "catalog".into(),
+            said: Err("The catalog didn't download: no network".into()),
+            changed: false,
+        });
+        assert_eq!(
+            p.take_lines(),
+            vec![
+                "plugins: Installed Echo 0.3.0: Echo ready on the Synth tab or in the chain editor",
+                "plugins: not done (catalog): The catalog didn't download: no network",
+            ]
+        );
+        assert!(p.take_changed());
     }
 
     #[test]
