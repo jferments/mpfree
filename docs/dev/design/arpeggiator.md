@@ -46,7 +46,7 @@ Threads on MPC-Forums (few posts, so a thin picture): the built-in patterns "get
 | **Active notes** | What the generators play: held notes plus latched ones. |
 | **Latch** | Keeps notes active after release. Modes: Reset (default), Toggle, and later Add and Transpose. Works in every mode, including plain playing, where it acts as a sustain. |
 | **Direct** | No generator: notes play as pressed. |
-| **Note Repeat** | Every active note retriggers on every step, following pad pressure, as on an MPC. |
+| **Note Repeat** | Every active note retriggers on every step, following pad pressure, as on an MPC. A latched note, once let go, goes back to the velocity it was struck with (`Notes::release`): the pressure falls to almost nothing as a finger lifts. |
 | **Arp** | One note per step, walking the active notes in an order, over 1–4 octaves. |
 | **Latch pattern** | A row of steps that says when to play and which active note(s) to play. Patterns and the arp share rate, gate, swing and octave settings. |
 

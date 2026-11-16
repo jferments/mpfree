@@ -776,7 +776,6 @@ pub enum Item {
     PadLevel,
     Latch,
     ShowPressure,
-    MidiLog,
     ClearLogs,
     ConsoleFollow,
     ClearConsole,
@@ -2189,6 +2188,15 @@ impl App {
     /// decision 5); STOP again, or STOP with nothing latched, lets go of
     /// the latched pads too. PLAY or a pad press plays the kept latch again.
     fn stop(&mut self) -> Vec<Effect> {
+        // A loop waiting for PLAY (an overdub, or an armed first pass)
+        // lets go too, so its lights stop blinking.
+        let waiting = Effect::Looper(LoopAction::StopWaiting);
+        let mut fx = self.stop_sounds();
+        fx.insert(0, waiting);
+        fx
+    }
+
+    fn stop_sounds(&mut self) -> Vec<Effect> {
         if self.latched
             && self.generating()
             && !self.arps.engine_at(self.track).hushed()
@@ -2881,7 +2889,8 @@ impl App {
                 Item::LoopMemory,
             ],
             (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
-                &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs]
+                // The MIDI page's monitor has its own Hold.
+                &[Item::ShowPressure, Item::ClearLogs]
             }
             // The full-screen touch checks, also in Prefs > Touch screen.
             (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
@@ -2987,10 +2996,6 @@ impl App {
             Item::ShowPressure => (
                 "Pad pressure in the MIDI log",
                 if s.show_pressure { "Shown" } else { "Hidden" }.to_string(),
-            ),
-            Item::MidiLog => (
-                "MIDI log",
-                if s.midi_paused { "Paused" } else { "Running" }.to_string(),
             ),
             Item::ClearLogs => ("Clear the MIDI and event logs", "Clear".to_string()),
             Item::ConsoleFollow => (
@@ -3194,7 +3199,6 @@ impl App {
                 "while a pad is held. Hidden, they are counted",
                 "but not listed.",
             ],
-            Item::MidiLog => vec!["Pause the MIDI log to read it."],
             Item::ClearLogs => vec!["Empty the MIDI and event logs."],
             Item::ConsoleFollow => vec![
                 "Pause the console to read it; it keeps",
@@ -3566,7 +3570,6 @@ impl App {
                 fx.extend(self.arp_changed());
             }
             Item::ShowPressure => s.show_pressure = d > 0,
-            Item::MidiLog => s.midi_paused = d > 0,
             Item::ClearLogs => fx.push(Effect::ClearLogs),
             Item::ConsoleFollow => s.console_paused = d > 0,
             Item::ClearConsole => fx.push(Effect::ClearConsole),

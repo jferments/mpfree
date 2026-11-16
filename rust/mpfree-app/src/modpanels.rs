@@ -100,6 +100,10 @@ pub struct ChainHost {
     /// The chain's slot ids when an effect was added: the one not among
     /// them is the new effect, selected when it lands.
     landing: Option<Vec<u16>>,
+    /// The open effect was removed: its page shut, and the editor shows
+    /// the chain's list with nothing picked until an effect is tapped
+    /// (otherwise no selection means the first effect's page).
+    page_shut: bool,
 }
 
 impl ChainHost {
@@ -115,6 +119,7 @@ impl ChainHost {
             picking: false,
             learning: false,
             landing: None,
+            page_shut: false,
         }
     }
 
@@ -161,6 +166,7 @@ impl ChainHost {
             {
                 self.selected = Some(slot);
                 self.landing = None;
+                self.page_shut = false;
             }
         }
         let title = format!("{} FX", self.scopes[self.scope].1);
@@ -181,6 +187,9 @@ impl ChainHost {
                 ..ChainState::default()
             },
         };
+        if self.page_shut && self.selected.is_none() {
+            st = st.without_page();
+        }
         st.macro_names = h.modu.names().to_vec();
         st.plugins = crate::plugins::picks(h.plugins());
         st.learning = self.learning;
@@ -207,6 +216,7 @@ impl ChainHost {
         match *a {
             ChainAction::Select(i) => {
                 self.selected = Some(i);
+                self.page_shut = false;
                 self.group = 0;
                 self.focus = None;
                 self.picking = false;
@@ -245,9 +255,16 @@ impl ChainHost {
                 {
                     self.focus = None;
                 }
+                // The removed effect's page shuts with it (Jay, 16 Nov:
+                // for every effect): back to the chain's list, nothing
+                // picked, rather than another effect's page.
                 self.selected = match self.selected {
                     Some(s) if s > slot => Some(s - 1),
-                    Some(s) if s == slot => s.checked_sub(1).or((len > 1).then_some(0)),
+                    Some(s) if s == slot => {
+                        self.page_shut = true;
+                        self.group = 0;
+                        None
+                    }
                     s => s,
                 };
             }
@@ -1454,7 +1471,7 @@ mod tests {
         assert_eq!(m.state(&r.h).macros[1].targets.len(), 0);
         let st = c.state(&r.h);
         assert_eq!(st.slots.len(), 1);
-        assert_eq!(st.selected, Some(0));
+        assert_eq!(st.selected, None, "the removed effect's page shut");
         m.action(&mut r.h, &MacroAction::Macro { m: 1, value: 1.0 }, false);
         r.run(4);
         assert_eq!(r.h.modu.unrouted(), 0);

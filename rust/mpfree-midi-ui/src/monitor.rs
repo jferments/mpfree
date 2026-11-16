@@ -14,26 +14,70 @@
 //!   are counted, not listed: a line when each starts and stops. The data
 //!   wheel and the page arrows scroll back, and the list holds while it is
 //!   scrolled back; scrolled to the top again, it follows.
+//! - **Went to:** each line says what took its message: the armed track
+//!   (and the pad its note plays with a kit), MIDI Learn and what it
+//!   moved, the clock follower, nothing, or "ignored"; a line going out
+//!   says which track sent it or that it is MPFree's clock.
+//!
+//! **Debug mode** ([`DevMonitor`], the Dev tab's MIDI page) is the same
+//! section with two more sources: the MPC's own controller (its pads,
+//! buttons, Q-Links and wheel as the app read them, and the lights, pad
+//! colours, keep-alive and CV values it wrote) and MPFree's own events.
+//! Its chips pick sources rather than kinds of message.
 
 use std::cell::Cell;
 use std::time::Duration;
 
-use mpfree_midi::monitor::{Dir, Filter, Kind, Monitor, Seen, Steady, What};
+use mpfree_controller::mpc_one::{button_name, ControlEvent};
+use mpfree_midi::monitor::{
+    Dir, Event, Filter, Kind, Monitor, Mpc, Seen, Steady, To, What, MPC, SYSTEM,
+};
 use mpfree_midi::{Msg, PortId};
 use mpfree_mixer_ui::{IoInput, IoReply, IoSection};
-use mpfree_ui::{Align, FontId, PaintCx, Rect, Target, Touch};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Theme, Touch, Widget};
 
 use crate::form::{BANNER_H, GAP};
 use crate::{note_name, IoModel, Shared};
 
-/// The chips' labels, in [`Kind::ALL`] order.
-const KIND_CHIPS: [(&str, i32); 6] = [
-    ("Notes", 78),
-    ("CC", 56),
-    ("Program", 96),
-    ("Bend & pressure", 158),
-    ("Clock", 74),
-    ("SysEx", 78),
+/// A chip: its label, its width, and the kinds it shows or hides.
+type Chip = (&'static str, i32, u16);
+
+fn chips_for(debug: bool) -> &'static [Chip] {
+    if debug {
+        &DEBUG_CHIPS
+    } else {
+        &KIND_CHIPS
+    }
+}
+
+/// The I/O view's chips: one per kind of message a port carries.
+const KIND_CHIPS: [Chip; 6] = [
+    ("Notes", 78, Kind::Notes.bit()),
+    ("CC", 56, Kind::Controls.bit()),
+    ("Program", 96, Kind::Programs.bit()),
+    ("Bend & pressure", 158, Kind::Bends.bit()),
+    ("Clock", 74, Kind::Clock.bit()),
+    ("SysEx", 78, Kind::System.bit()),
+];
+
+/// Debug mode's chips: one per source (a port's messages but its clock,
+/// and each of the debug sources), then the clock and the keep-alive.
+const DEBUG_CHIPS: [Chip; 7] = [
+    (
+        "Ports",
+        74,
+        Kind::Notes.bit()
+            | Kind::Controls.bit()
+            | Kind::Programs.bit()
+            | Kind::Bends.bit()
+            | Kind::System.bit(),
+    ),
+    ("MPC controls", 128, Kind::MpcControls.bit()),
+    ("Lights & colours", 156, Kind::Lights.bit()),
+    ("CV out", 84, Kind::Cv.bit()),
+    ("System", 84, Kind::Events.bit()),
+    ("Clock", 74, Kind::Clock.bit()),
+    ("Keep-alive", 110, Kind::KeepAlive.bit()),
 ];
 const DIR_CHIPS: [(&str, i32, Dir); 2] = [("In", 52, Dir::In), ("Out", 60, Dir::Out)];
 const BUTTON_W: i32 = 84;
@@ -48,17 +92,47 @@ const CLOCK_W: i32 = 124;
 
 const LIST_HEAD_H: i32 = 30;
 pub(crate) const LINE_H: i32 = 30;
-const TIME_W: i32 = 104;
-const PORT_COL_W: i32 = 200;
-const CH_W: i32 = 70;
-const BYTES_W: i32 = 120;
+
+/// The list's fixed columns: time, port and way, channel, bytes. The
+/// message and where it went share the rest.
+#[derive(Clone, Copy)]
+struct Cols {
+    time: i32,
+    port: i32,
+    ch: i32,
+    bytes: i32,
+}
+
+/// Narrower below 1000 px (the Dev page's half of the screen).
+fn cols(w: i32) -> Cols {
+    if w >= 1000 {
+        Cols {
+            time: 104,
+            port: 200,
+            ch: 70,
+            bytes: 120,
+        }
+    } else {
+        Cols {
+            time: 96,
+            port: 124,
+            ch: 52,
+            bytes: 120,
+        }
+    }
+}
+
+/// The Dev page's hint line (debug mode).
+pub(crate) const DEBUG_HINT: &str =
+    "Tap a chip: show or hide a source  ·  Hold stops the list  ·  the I/O view's Monitor has the wheel";
 
 /// The hint line while the Monitor shows.
 pub(crate) const HINT: &str = "Tap a light: only that port and channel  ·  wheel: scroll back  ·  Hold stops the list  ·  the I/O icon or TRACK MIX closes";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hit {
-    Kind(Kind),
+    /// A chip, by its place in the chips shown.
+    Chip(usize),
     Dir(Dir),
     Hold,
     Clear,
@@ -112,6 +186,12 @@ fn way(d: Dir) -> &'static str {
 
 /// A port's name and way, as the list says it ("Keystep 37 in").
 fn port_text(m: &Monitor, port: PortId, d: Dir) -> String {
+    if port == MPC {
+        return format!("MPC {}", way(d));
+    }
+    if port == SYSTEM {
+        return "System".to_string();
+    }
     match m.port_name(port) {
         Some(n) => format!("{n} {}", way(d)),
         None => format!("Port {} {}", port.0 + 1, way(d)),
@@ -236,6 +316,161 @@ pub fn words(s: &Seen) -> String {
             format!("{} stopped · {n} {what}", steady_name(k))
         }
         What::Undefined(b) => format!("Undefined {b:02X}"),
+        What::Mpc(m) => mpc_words(m),
+        What::Event(e) => event_words(e, |p| format!("port {}", p.0 + 1)),
+    }
+}
+
+/// A button as its panel prints it.
+fn button_text(note: u8) -> String {
+    button_name(note).map_or_else(|| format!("Button {note}"), str::to_string)
+}
+
+/// The MPC's own controller, in words (debug mode).
+fn mpc_words(m: Mpc) -> String {
+    match m {
+        Mpc::Control { ev, .. } => match ev {
+            ControlEvent::PadDown { pad, velocity } => {
+                format!("Pad {} down · vel {velocity}", pad + 1)
+            }
+            ControlEvent::PadUp { pad } => format!("Pad {} up", pad + 1),
+            ControlEvent::PadPressure { pad, pressure } => {
+                format!("Pad {} pressure · {pressure}", pad + 1)
+            }
+            ControlEvent::QLinkTurn { knob, delta } => {
+                format!("Q-Link {} turned {delta:+}", knob + 1)
+            }
+            ControlEvent::QLinkTouch { knob, touched } => format!(
+                "Q-Link {} {}",
+                knob + 1,
+                if touched { "touched" } else { "let go" }
+            ),
+            ControlEvent::DataWheel { delta } => format!("Data wheel {delta:+}"),
+            ControlEvent::Button { note, pressed } => format!(
+                "{} {}",
+                button_text(note),
+                if pressed { "pressed" } else { "released" }
+            ),
+            ControlEvent::KeepAliveReply { token } => format!(
+                "Keep-alive reply · token {:02X} {:02X} {:02X} {:02X}",
+                token[0], token[1], token[2], token[3]
+            ),
+        },
+        Mpc::Light { button, value } => {
+            let level = match value {
+                0 => "off".to_string(),
+                127 => "on".to_string(),
+                v => format!("at {v}"),
+            };
+            format!("Light {} {level}", button_text(button))
+        }
+        Mpc::PadColour { pad, rgb } => {
+            format!("Pad {} colour · {} {} {}", pad + 1, rgb[0], rgb[1], rgb[2])
+        }
+        Mpc::KeepAlive => "Keep-alive ping".to_string(),
+        Mpc::Cv { out, value } => {
+            let volts = f32::from(value) / f32::from(mpfree_midi::cv_wire::FULL_SCALE)
+                * mpfree_midi::setup::MAX_VOLTS;
+            format!(
+                "CV {} = {value} · {volts:.3} V if full scale is {} V",
+                out + 1,
+                mpfree_midi::setup::MAX_VOLTS
+            )
+        }
+    }
+}
+
+/// One of MPFree's events, in words (debug mode), naming ports by `name`.
+fn event_words(e: Event, name: impl Fn(PortId) -> String) -> String {
+    match e {
+        Event::Plugged(p) => format!("Plugged in: {} · listening, read only", name(p)),
+        Event::Unplugged { port, ended } => match ended {
+            0 => format!("Unplugged: {}", name(port)),
+            1 => format!("Unplugged: {} · 1 held note let go", name(port)),
+            n => format!("Unplugged: {} · {n} held notes let go", name(port)),
+        },
+        Event::OutStopped => "MIDI out stopped: its tracks play on the pads again".to_string(),
+        Event::Dropped { port, n } => {
+            format!("{n} messages to {} dropped: its queue was full", name(port))
+        }
+    }
+}
+
+/// A line's message in words, naming the ports an event is about.
+fn line_words(mon: &Monitor, s: &Seen) -> String {
+    match s.what {
+        What::Event(e) => event_words(e, |p| match mon.port_name(p) {
+            Some(n) if p == mpfree_midi::DIN => format!("{n} (5-pin jacks)"),
+            Some(n) => n.to_string(),
+            None => format!("port {}", p.0 + 1),
+        }),
+        _ => words(s),
+    }
+}
+
+/// How a line's "went to" is coloured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Went {
+    /// Played or moved something.
+    Took,
+    /// MIDI Learn.
+    Learn,
+    /// The clock follower, or MPFree's own clock.
+    Clock,
+    /// Nothing took it.
+    Nothing,
+    /// Going out: who sent it.
+    Sent,
+}
+
+/// Where a line's message went, in words ([`To`]); empty while unsaid.
+fn went_to(m: &IoModel, to: To) -> (String, Went) {
+    let track = |t: u8| {
+        m.live
+            .tracks
+            .get(usize::from(t))
+            .cloned()
+            .unwrap_or_else(|| format!("Track {}", u16::from(t) + 1))
+    };
+    let param = |a| {
+        m.setup
+            .learn
+            .iter()
+            .position(|l| l.target == a)
+            .and_then(|i| m.live.learn_names.get(i))
+            .cloned()
+            .unwrap_or_else(|| a.to_string())
+    };
+    match to {
+        To::Unsaid => (String::new(), Went::Nothing),
+        To::Track {
+            track: t,
+            pad: None,
+        } => (format!("{}, the armed track", track(t)), Went::Took),
+        To::Track {
+            track: t,
+            pad: Some(p),
+        } => (format!("{}, pad {}", track(t), p + 1), Went::Took),
+        To::NoPad { track: t } => (format!("nothing: no pad on {}", track(t)), Went::Nothing),
+        To::Learned(a) => (format!("Learn: {}", param(a)), Went::Learn),
+        To::Took(a) => (format!("Learn took it: {}", param(a)), Went::Learn),
+        To::LearnOnly => ("not played: Learn only".to_string(), Went::Nothing),
+        To::Follows => ("clock: the tempo follows it".to_string(), Went::Clock),
+        To::NotFollowed => ("not followed".to_string(), Went::Nothing),
+        To::Nothing => ("nothing takes it".to_string(), Went::Nothing),
+        To::Ignored => ("ignored".to_string(), Went::Nothing),
+        To::SentBy(t) => (format!("sent by {}", track(t)), Went::Sent),
+        To::Clock => ("MPFree's clock".to_string(), Went::Clock),
+    }
+}
+
+fn went_ink(t: &Theme, w: Went) -> Color {
+    match w {
+        Went::Took => t.text,
+        Went::Learn => t.accent2,
+        Went::Clock => t.good,
+        Went::Nothing => t.warn,
+        Went::Sent => t.text_dim,
     }
 }
 
@@ -247,7 +482,10 @@ fn bytes_text(w: &What) -> String {
         .map(|b| format!("{b:02X}"))
         .collect::<Vec<_>>()
         .join(" ");
-    if matches!(w, What::SysEx { .. }) {
+    if matches!(
+        w,
+        What::SysEx { .. } | What::Mpc(Mpc::PadColour { .. } | Mpc::KeepAlive)
+    ) {
         s.push_str(" … F7");
     }
     s
@@ -255,6 +493,9 @@ fn bytes_text(w: &What) -> String {
 
 pub(crate) struct MonitorSection {
     model: Shared,
+    /// Debug mode: the MPC's own controller and MPFree's events too, and
+    /// chips by source ([`DEBUG_CHIPS`]).
+    debug: bool,
     filter: Filter,
     /// The newest message listed while the list holds; None: it follows.
     anchor: Option<u64>,
@@ -271,6 +512,7 @@ impl MonitorSection {
     pub fn new(model: Shared) -> MonitorSection {
         MonitorSection {
             model,
+            debug: false,
             filter: Filter::ALL,
             anchor: None,
             held: false,
@@ -279,6 +521,29 @@ impl MonitorSection {
             down: None,
             fit: Cell::new(10),
         }
+    }
+
+    /// Whether a line is listed: the filter's, and the debug sources only
+    /// in debug mode (the app lists them while the developer tools are on,
+    /// for the Dev page; the I/O view keeps to the ports).
+    fn shows(&self, s: &Seen) -> bool {
+        self.filter.matches(s) && (self.debug || !matches!(s.what, What::Mpc(_) | What::Event(_)))
+    }
+
+    /// The chips shown: by kind, or by source in debug mode.
+    fn chip_set(&self) -> &'static [Chip] {
+        chips_for(self.debug)
+    }
+
+    fn chip_on(&self, i: usize) -> bool {
+        let mask = self.chip_set()[i].2;
+        self.filter.kinds & mask == mask
+    }
+
+    /// The time the lights read: the app's clock once it has said when
+    /// that started, else the screen's.
+    fn clock(&self, m: &IoModel) -> f64 {
+        m.monitor.now(self.now.as_secs_f64())
     }
 
     fn layout(&self, m: &IoModel, r: Rect) -> Layout {
@@ -290,8 +555,8 @@ impl MonitorSection {
         });
         let mut chips = Vec::new();
         let mut x = r.x;
-        for (k, (_, w)) in Kind::ALL.iter().zip(KIND_CHIPS) {
-            chips.push((Hit::Kind(*k), Rect::new(x, y, w, CHIP_H)));
+        for (i, &(_, w, _)) in self.chip_set().iter().enumerate() {
+            chips.push((Hit::Chip(i), Rect::new(x, y, w, CHIP_H)));
             x += w + CHIP_GAP;
         }
         // The ways, Hold and Clear follow on the same line when they fit
@@ -374,7 +639,7 @@ impl MonitorSection {
     fn lines(&self, m: &Monitor, most: usize) -> (Vec<(u64, Seen)>, usize) {
         let mut newer = 0;
         let mut out = Vec::new();
-        for (n, s) in m.newest().filter(|(_, s)| self.filter.matches(s)) {
+        for (n, s) in m.newest().filter(|(_, s)| self.shows(s)) {
             if self.anchor.is_some_and(|a| n > a) {
                 newer += 1;
                 continue;
@@ -394,7 +659,7 @@ impl MonitorSection {
         let list: Vec<u64> = m
             .monitor
             .newest()
-            .filter(|(_, s)| self.filter.matches(s))
+            .filter(|(_, s)| self.shows(s))
             .map(|(n, _)| n)
             .collect();
         drop(m);
@@ -422,7 +687,14 @@ impl MonitorSection {
     fn tap(&mut self, h: Hit) -> IoReply {
         let f = &mut self.filter;
         match h {
-            Hit::Kind(k) => f.kinds ^= k.bit(),
+            Hit::Chip(i) => {
+                let mask = chips_for(self.debug)[i].2;
+                if f.kinds & mask == mask {
+                    f.kinds &= !mask;
+                } else {
+                    f.kinds |= mask;
+                }
+            }
             Hit::Dir(d) => f.dirs ^= Filter::dir_bit(d),
             Hit::Hold => {
                 if self.anchor.is_some() {
@@ -598,11 +870,12 @@ impl MonitorSection {
         if let Some(c) = f.channel {
             parts.push(format!("channel {}", c + 1));
         }
-        let hidden: Vec<&str> = Kind::ALL
+        let hidden: Vec<&str> = self
+            .chip_set()
             .iter()
-            .zip(KIND_CHIPS)
-            .filter(|(k, _)| !f.shows_kind(**k))
-            .map(|(_, (name, _))| name)
+            .enumerate()
+            .filter(|&(i, _)| !self.chip_on(i))
+            .map(|(_, c)| c.0)
             .collect();
         if !hidden.is_empty() {
             parts.push(format!("no {}", hidden.join(", ")));
@@ -652,7 +925,9 @@ impl MonitorSection {
             &right,
         );
         if lines.is_empty() {
-            let why = if mon.is_empty() {
+            let why = if mon.is_empty() && self.debug {
+                "Nothing yet: press a pad, or play a keyboard on MIDI In or USB"
+            } else if mon.is_empty() {
                 "Nothing yet: play a keyboard plugged into MIDI In or USB"
             } else {
                 "Nothing listed matches the chips and lights picked"
@@ -667,6 +942,7 @@ impl MonitorSection {
             );
             return;
         }
+        let c = cols(l.list.w);
         for (i, (_, s)) in lines.iter().enumerate() {
             let y = l.list.y + i as i32 * LINE_H;
             let row = Rect::new(l.list.x, y, l.list.w, LINE_H - 2);
@@ -677,33 +953,60 @@ impl MonitorSection {
             let x = col(
                 cx,
                 x,
-                TIME_W,
+                c.time,
                 row,
                 FontId::Mono,
                 t.text_faint,
                 &clock_text(s.t),
             );
-            let ink = match s.dir {
-                Dir::In => t.text,
-                Dir::Out => t.accent,
+            let ink = match (s.port, s.dir) {
+                (SYSTEM, _) => t.text_dim,
+                (_, Dir::In) => t.text,
+                (_, Dir::Out) => t.accent,
             };
             let port = port_text(mon, s.port, s.dir);
-            let x = col(cx, x, PORT_COL_W, row, FontId::Sans, ink, &port);
+            let x = col(cx, x, c.port, row, FontId::Sans, ink, &port);
             let ch = s
                 .what
                 .channel()
                 .map_or(String::new(), |c| format!("Ch {}", c + 1));
-            let x = col(cx, x, CH_W, row, FontId::Sans, t.text_dim, &ch);
-            let words_w = row.x + row.w - BYTES_W - x;
+            let x = col(cx, x, c.ch, row, FontId::Sans, t.text_dim, &ch);
+            // The message and where it went share what is left; a line
+            // that went nowhere in particular (the MPC's own, an event)
+            // has it all.
+            let rest = row.x + row.w - c.bytes - x;
+            let (went, w) = went_to(m, s.to);
+            let words_w = if went.is_empty() {
+                rest
+            } else {
+                rest * 11 / 20
+            };
             let kind_ink = match s.what {
                 What::Arriving(_) | What::Stopped(..) => t.text_dim,
                 _ => t.text,
             };
-            col(cx, x, words_w, row, FontId::Sans, kind_ink, &words(s));
+            let x = col(
+                cx,
+                x,
+                words_w,
+                row,
+                FontId::Sans,
+                kind_ink,
+                &line_words(mon, s),
+            );
+            col(
+                cx,
+                x,
+                rest - words_w,
+                row,
+                FontId::Sans,
+                went_ink(&t, w),
+                &went,
+            );
             cx.text(
                 FontId::Mono,
                 t.size_small,
-                Rect::new(row.x + row.w - BYTES_W, row.y, BYTES_W - 8, row.h),
+                Rect::new(row.x + row.w - c.bytes, row.y, c.bytes - 8, row.h),
                 Align::Right,
                 t.text_faint,
                 &bytes_text(&s.what),
@@ -741,7 +1044,7 @@ impl IoSection for MonitorSection {
     }
 
     fn hint(&self) -> Option<&str> {
-        Some(HINT)
+        Some(if self.debug { DEBUG_HINT } else { HINT })
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -750,9 +1053,13 @@ impl IoSection for MonitorSection {
         let mut out = Vec::new();
         for &(h, cr) in &l.chips {
             let t = match h {
-                Hit::Kind(k) => {
-                    let i = Kind::ALL.iter().position(|&a| a == k).unwrap_or(0);
-                    Target::tap("monitor-kind", i, KIND_CHIPS[i].0, cr)
+                Hit::Chip(i) => {
+                    let id = if self.debug {
+                        "monitor-source"
+                    } else {
+                        "monitor-kind"
+                    };
+                    Target::tap(id, i, self.chip_set()[i].0, cr)
                 }
                 Hit::Dir(d) => {
                     let i = DIR_CHIPS.iter().position(|c| c.2 == d).unwrap_or(0);
@@ -809,9 +1116,8 @@ impl IoSection for MonitorSection {
         }
         for &(h, cr) in &l.chips {
             match h {
-                Hit::Kind(k) => {
-                    let i = Kind::ALL.iter().position(|x| *x == k).unwrap_or(0);
-                    Self::chip(cx, cr, KIND_CHIPS[i].0, self.filter.shows_kind(k));
+                Hit::Chip(i) => {
+                    Self::chip(cx, cr, self.chip_set()[i].0, self.chip_on(i));
                 }
                 Hit::Dir(d) => {
                     let name = DIR_CHIPS.iter().find(|c| c.2 == d).map_or("", |c| c.0);
@@ -841,7 +1147,7 @@ impl IoSection for MonitorSection {
                 _ => {}
             }
         }
-        let now = self.now.as_secs_f64();
+        let now = self.clock(&m);
         self.paint_lights(cx, &m, &l, now);
         self.paint_list(cx, &m, &l);
     }
@@ -882,7 +1188,7 @@ impl IoSection for MonitorSection {
         self.now = now;
         let live = {
             let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
-            self.live_now(&m, now.as_secs_f64())
+            self.live_now(&m, self.clock(&m))
         };
         if live != self.live {
             self.live = live;
@@ -896,6 +1202,58 @@ impl IoSection for MonitorSection {
         if !on {
             self.down = None;
         }
+    }
+}
+
+/// The monitor in debug mode as a page widget: the Dev tab's MIDI page.
+/// The same section as the I/O view's Monitor, with the MPC's own
+/// controller and MPFree's events among its sources. It draws again
+/// whenever what it shows changes.
+pub struct DevMonitor {
+    s: MonitorSection,
+    /// What it showed when last drawn ([`MonitorSection::live_now`]).
+    painted: Cell<u64>,
+}
+
+impl DevMonitor {
+    pub fn new(model: Shared) -> DevMonitor {
+        let mut s = MonitorSection::new(model);
+        s.debug = true;
+        DevMonitor {
+            s,
+            painted: Cell::new(u64::MAX),
+        }
+    }
+
+    fn live(&self) -> u64 {
+        let m = self.s.model.lock().unwrap_or_else(|e| e.into_inner());
+        self.s.live_now(&m, self.s.clock(&m))
+    }
+
+    /// The hint line while it shows.
+    pub fn hint(&self) -> &'static str {
+        DEBUG_HINT
+    }
+}
+
+impl Widget for DevMonitor {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        self.painted.set(self.live());
+        self.s.paint(cx, r);
+    }
+
+    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        // What a tap changes is the section's own; the page draws it again.
+        self.s.touch(finger, phase, x, y, r);
+        None
+    }
+
+    fn animating(&self) -> bool {
+        self.live() != self.painted.get()
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        self.s.targets(r)
     }
 }
 
@@ -989,7 +1347,7 @@ mod tests {
     #[test]
     fn chips_and_lights_pick_what_is_listed() {
         let mut s = MonitorSection::new(model());
-        let (x, y) = chip(&s, Hit::Kind(Kind::Notes));
+        let (x, y) = chip(&s, Hit::Chip(0));
         assert_eq!(tap(&mut s, x, y), IoReply::Redraw);
         assert_eq!(shown(&s).len(), 2, "no notes: {:?}", shown(&s));
         tap(&mut s, x, y);
@@ -1111,6 +1469,7 @@ mod tests {
             port: DIN,
             dir: Dir::In,
             what,
+            to: To::Unsaid,
         };
         let cases = [
             (
@@ -1157,5 +1516,194 @@ mod tests {
             }),
             "F0 47 … F7"
         );
+    }
+
+    #[test]
+    fn each_line_says_where_its_message_went() {
+        use mpfree_midi::learn::{Mode, Saved, Source, Takeover};
+        use mpfree_midi::monitor::Feed;
+        use mpfree_param::{OnTrack, ParamAddr};
+        let filter = ParamAddr::new(OnTrack::Inst.on(1), 3);
+        let mut m = IoModel::default();
+        m.live.built.monitor = true;
+        m.live.tracks = vec!["Drums".into(), "Bass".into()];
+        m.monitor.set_ports(&ports());
+        m.setup.learn = vec![Saved {
+            port: Some("Keystep 37".into()),
+            channel: 0,
+            source: Source::Cc(74),
+            target: filter,
+            lo: 0.0,
+            hi: 1.0,
+            mode: Mode::Absolute,
+            takeover: Takeover::Jump,
+        }];
+        m.live.learn_names = vec!["Cutoff (Filter, Bass)".into()];
+        let mut f = Feed::new();
+        let lines: [(&[u8], To); 6] = [
+            (
+                &[0x99, 37, 100],
+                To::Track {
+                    track: 0,
+                    pad: Some(0),
+                },
+            ),
+            (
+                &[0x90, 60, 96],
+                To::Track {
+                    track: 1,
+                    pad: None,
+                },
+            ),
+            (&[0xB0, 74, 88], To::Learned(filter)),
+            (&[0xF0, 0x41, 1, 0xF7], To::Ignored),
+            (&[0xFA], To::NotFollowed),
+            (&[0x99, 20, 90], To::NoPad { track: 0 }),
+        ];
+        for (b, to) in lines {
+            assert!(f.bytes(KEYS, Dir::In, 1.0, b));
+            f.to(to);
+        }
+        f.sent(DIN, 1.1, &[0x91, 36, 110], To::SentBy(1));
+        f.sent(DIN, 1.2, &[0xFA], To::Clock);
+        f.drain_into(&mut m.monitor, 1.3);
+        let went: Vec<(String, Went)> =
+            m.monitor.newest().map(|(_, s)| went_to(&m, s.to)).collect();
+        let text: Vec<&str> = went.iter().map(|w| w.0.as_str()).collect();
+        assert_eq!(
+            text,
+            [
+                "MPFree's clock",
+                "sent by Bass",
+                "nothing: no pad on Drums",
+                "not followed",
+                "ignored",
+                "Learn: Cutoff (Filter, Bass)",
+                "Bass, the armed track",
+                "Drums, pad 1",
+            ]
+        );
+        assert_eq!(went[5].1, Went::Learn);
+        assert_eq!(went[2].1, Went::Nothing);
+        // Learn names a parameter it doesn't know by its address.
+        let other = ParamAddr::new(OnTrack::Inst.on(1), 9);
+        assert_eq!(
+            went_to(&m, To::Took(other)).0,
+            format!("Learn took it: {other}")
+        );
+        assert_eq!(went_to(&m, To::Unsaid).0, "");
+        // Drawn at the I/O view's width and the Dev page's.
+        let s = MonitorSection::new(Arc::new(Mutex::new(m)));
+        let _ = paint(&s);
+        let _ = cols(1100);
+    }
+
+    #[test]
+    fn debug_mode_lists_the_mpc_and_mpfrees_events_by_source() {
+        use mpfree_midi::monitor::{Event, Feed};
+        let model = model();
+        let mut f = Feed::new();
+        // Off: the debug sources list nothing.
+        f.mpc(Dir::In, 3.0, Mpc::KeepAlive);
+        f.debug = true;
+        f.mpc(
+            Dir::In,
+            3.0,
+            Mpc::Control {
+                ev: ControlEvent::Button {
+                    note: mpfree_controller::mpc_one::button::PLAY,
+                    pressed: true,
+                },
+                bytes: [0x90, mpfree_controller::mpc_one::button::PLAY, 127],
+            },
+        );
+        f.mpc(
+            Dir::Out,
+            3.1,
+            Mpc::Light {
+                button: mpfree_controller::mpc_one::button::PLAY,
+                value: 127,
+            },
+        );
+        f.mpc(
+            Dir::Out,
+            3.2,
+            Mpc::Cv {
+                out: 0,
+                value: 16383,
+            },
+        );
+        f.event(3.3, Event::Plugged(KEYS));
+        f.event(
+            3.4,
+            Event::Unplugged {
+                port: KEYS,
+                ended: 2,
+            },
+        );
+        f.mpc(Dir::Out, 3.5, Mpc::KeepAlive);
+        f.drain_into(&mut model.lock().unwrap().monitor, 3.6);
+        let mut d = DevMonitor::new(model);
+        let lines = |d: &DevMonitor| -> Vec<String> {
+            let m = d.s.model.lock().unwrap();
+            d.s.lines(&m.monitor, 100)
+                .0
+                .iter()
+                .map(|(_, l)| {
+                    format!(
+                        "{} | {}",
+                        port_text(&m.monitor, l.port, l.dir),
+                        line_words(&m.monitor, l)
+                    )
+                })
+                .collect()
+        };
+        let all = lines(&d);
+        assert_eq!(
+            all[..6],
+            [
+                "MPC out | Keep-alive ping",
+                "System | Unplugged: Keystep 37 · 2 held notes let go",
+                "System | Plugged in: Keystep 37 · listening, read only",
+                "MPC out | CV 1 = 16383 · 5.000 V if full scale is 5 V",
+                "MPC out | Light PLAY on",
+                "MPC in | PLAY pressed",
+            ]
+        );
+        assert_eq!(all.len(), 6 + 6, "and the ports' own: {all:?}");
+        // The I/O view's Monitor on the same model keeps to the ports.
+        let io = MonitorSection::new(d.s.model.clone());
+        assert_eq!(shown(&io).len(), 6);
+        // Chips by source: "Ports" hides every port's messages but clock.
+        let l = {
+            let m = d.s.model.lock().unwrap();
+            d.s.layout(&m, AREA)
+        };
+        let ports = l.chips.iter().find(|c| c.0 == Hit::Chip(0)).unwrap().1;
+        let (x, y) = (ports.x + 4, ports.y + 4);
+        d.touch(1, Touch::Down, x, y, AREA);
+        d.touch(1, Touch::Up, x, y, AREA);
+        assert_eq!(
+            lines(&d).len(),
+            7,
+            "the debug lines and the clock: {:?}",
+            lines(&d)
+        );
+        assert!(d.s.targets(AREA).iter().any(|t| t.id == "monitor-source"));
+        assert_eq!(d.hint(), DEBUG_HINT);
+        // It draws again only when what it shows changes.
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        let theme = Theme::dark();
+        let mut fonts = mpfree_ui::Fonts::embedded();
+        let mut cx = PaintCx {
+            canvas: &mut c,
+            theme: &theme,
+            fonts: &mut fonts,
+        };
+        assert!(d.animating());
+        d.paint(&mut cx, AREA);
+        assert!(!d.animating());
+        d.s.model.lock().unwrap().monitor.clear();
+        assert!(d.animating());
     }
 }

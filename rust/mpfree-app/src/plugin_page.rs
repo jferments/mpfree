@@ -1542,9 +1542,7 @@ mod tests {
         );
         p.take(News::Done {
             key: "maker.echo".into(),
-            said: Ok(
-                "Installed Echo 0.3.0: Echo ready on the Synth tab or in the chain editor".into(),
-            ),
+            said: Ok("Installed Echo 0.3.0: Echo ready in + Add effect, under Plugins".into()),
             changed: true,
         });
         p.take(News::Done {
@@ -1555,7 +1553,7 @@ mod tests {
         assert_eq!(
             p.take_lines(),
             vec![
-                "plugins: Installed Echo 0.3.0: Echo ready on the Synth tab or in the chain editor",
+                "plugins: Installed Echo 0.3.0: Echo ready in + Add effect, under Plugins",
                 "plugins: not done (catalog): The catalog didn't download: no network",
             ]
         );
