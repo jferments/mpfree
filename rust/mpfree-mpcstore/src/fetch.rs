@@ -7,7 +7,7 @@
 //! Only `https://` addresses on the catalog's own hosts are fetched, and
 //! redirects may only go to HTTPS.
 
-use std::ffi::{c_char, c_int, c_long, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -65,6 +65,8 @@ struct Curl {
     perform: unsafe extern "C" fn(*mut c_void) -> c_int,
     cleanup: unsafe extern "C" fn(*mut c_void),
     strerror: unsafe extern "C" fn(c_int) -> *const c_char,
+    /// What [`check_tls`] said once libcurl had started.
+    tls: String,
 }
 
 fn curl() -> Result<&'static Curl, String> {
@@ -106,6 +108,7 @@ fn curl() -> Result<&'static Curl, String> {
             strerror: std::mem::transmute::<P, unsafe extern "C" fn(c_int) -> *const c_char>(sym(
                 c"curl_easy_strerror",
             )?),
+            tls: check_tls(),
         })
     })
     .as_ref()
@@ -115,6 +118,124 @@ fn curl() -> Result<&'static Curl, String> {
 /// Whether downloads can work here at all (libcurl is there).
 pub fn available() -> bool {
     curl().is_ok()
+}
+
+/// What libcurl's TLS library said as it started, for the log: for example
+/// "OpenSSL 3.0.13 ready". None without libcurl.
+pub fn tls() -> Option<String> {
+    curl().ok().map(|c| c.tls.clone())
+}
+
+// OpenSSL's numbers (openssl/crypto.h).
+const OPENSSL_VERSION: c_int = 0;
+const OPENSSL_INFO_CONFIG_DIR: c_int = 1001;
+const OPENSSL_INFO_SEED_SOURCE: c_int = 1007;
+
+/// Checks that libcurl's OpenSSL can make random numbers, which TLS needs
+/// before it sends anything; without them libcurl says only "Insufficient
+/// randomness". The usual cause is a system `openssl.cnf` that turns on a
+/// provider (the legacy one, say) but not the default one, which then never
+/// loads: OpenSSL then has no random number generator at all. This loads the
+/// default provider then, as OpenSSL does itself when a config turns on
+/// none. For any other cause it says what OpenSSL said, where it seeds from
+/// and whether the kernel gives this process random bytes. Only reads.
+fn check_tls() -> String {
+    unsafe {
+        // libcurl has opened it already: RTLD_NOLOAD finds that copy and
+        // never opens another.
+        let h = libc::dlopen(
+            c"libcrypto.so.3".as_ptr(),
+            libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_NOLOAD,
+        );
+        if h.is_null() {
+            return "TLS not through OpenSSL 3".into();
+        }
+        let sym = |n: &CStr| {
+            let p = libc::dlsym(h, n.as_ptr());
+            (!p.is_null()).then_some(p)
+        };
+        type P = *mut c_void;
+        let (
+            Some(version),
+            Some(info),
+            Some(status),
+            Some(get_error),
+            Some(error_string),
+            Some(load),
+        ) = (
+            sym(c"OpenSSL_version"),
+            sym(c"OPENSSL_info"),
+            sym(c"RAND_status"),
+            sym(c"ERR_get_error"),
+            sym(c"ERR_error_string_n"),
+            sym(c"OSSL_PROVIDER_load"),
+        )
+        else {
+            return "OpenSSL 3 without the functions MPFree checks it with".into();
+        };
+        let version =
+            std::mem::transmute::<P, unsafe extern "C" fn(c_int) -> *const c_char>(version);
+        let info = std::mem::transmute::<P, unsafe extern "C" fn(c_int) -> *const c_char>(info);
+        let status = std::mem::transmute::<P, unsafe extern "C" fn() -> c_int>(status);
+        let get_error = std::mem::transmute::<P, unsafe extern "C" fn() -> c_ulong>(get_error);
+        let error_string = std::mem::transmute::<
+            P,
+            unsafe extern "C" fn(c_ulong, *mut c_char, usize),
+        >(error_string);
+        let load = std::mem::transmute::<P, unsafe extern "C" fn(P, *const c_char) -> P>(load);
+        let text = |p: *const c_char| {
+            if p.is_null() {
+                "?".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        // OpenSSL's errors on this thread, oldest first, at most 4.
+        let errors = || {
+            let mut said = Vec::new();
+            loop {
+                let e = get_error();
+                if e == 0 {
+                    break;
+                }
+                if said.len() < 4 {
+                    let mut b = [0 as c_char; 256];
+                    error_string(e, b.as_mut_ptr(), b.len());
+                    said.push(text(b.as_ptr()));
+                }
+            }
+            if said.is_empty() {
+                "no error said".to_string()
+            } else {
+                said.join("; ")
+            }
+        };
+        let name = text(version(OPENSSL_VERSION));
+        let name = name.split(' ').take(2).collect::<Vec<_>>().join(" ");
+        errors();
+        if status() == 1 {
+            return format!("{name} ready");
+        }
+        let first = errors();
+        if !load(std::ptr::null_mut(), c"default".as_ptr()).is_null() && status() == 1 {
+            return format!(
+                "{name} ready (its random numbers didn't start: {first}; MPFree loaded its default provider)"
+            );
+        }
+        let then = errors();
+        let mut b = [0u8; 16];
+        let kernel =
+            match libc::getrandom(b.as_mut_ptr() as *mut c_void, b.len(), libc::GRND_NONBLOCK) {
+                16 => "works".to_string(),
+                n => format!("gave {n} ({})", std::io::Error::last_os_error()),
+            };
+        format!(
+            "{name} not ready: its random numbers can't start ({first}; with its default provider: {then}); \
+             it seeds from {}, its config is in {}, the kernel's getrandom {kernel}",
+            text(info(OPENSSL_INFO_SEED_SOURCE)),
+            text(info(OPENSSL_INFO_CONFIG_DIR)),
+        )
+    }
 }
 
 struct Sink<'a> {
@@ -239,7 +360,13 @@ fn fetch_any(
         let general = unsafe { CStr::from_ptr((c.strerror)(code)) }
             .to_string_lossy()
             .into_owned();
-        Err(if detail.is_empty() { general } else { detail })
+        let why = if detail.is_empty() { general } else { detail };
+        // libcurl's whole account of OpenSSL failing to make random numbers.
+        Err(if why.contains("randomness") {
+            format!("{why} ({})", check_tls())
+        } else {
+            why
+        })
     };
     if result.is_err() {
         let _ = std::fs::remove_file(out);
@@ -264,6 +391,20 @@ mod tests {
         let out = std::env::temp_dir().join("mpfree-mpcstore-never");
         assert!(fetch("https://example.com/x", &out, 10, &mut |_, _| true).is_err());
         assert!(!out.exists());
+    }
+
+    #[test]
+    fn the_tls_library_is_checked_as_libcurl_starts() {
+        let Some(tls) = tls() else {
+            eprintln!("no libcurl on this machine: not exercised");
+            return;
+        };
+        // A workstation's OpenSSL makes random numbers at once.
+        assert!(
+            tls == "TLS not through OpenSSL 3"
+                || (tls.starts_with("OpenSSL 3") && tls.ends_with(" ready")),
+            "{tls}"
+        );
     }
 
     /// One HTTP answer on a local port, for the libcurl path (plain HTTP:

@@ -165,7 +165,8 @@ class JudgeTests(unittest.TestCase):
     def test_mpc_plugin_install_reads_the_plugins_place_and_the_skin(self):
         """Lines as the app writes them (plugin_page.rs, main.rs, gui.rs); a direct cable with no route out."""
         window = lines(
-            "plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found)",
+            "plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found), "
+            "OpenSSL 3.5.4 ready",
             "plugins: not done (catalog): The catalog didn't download: no network",
             "plugins: Installed Tidal Verb 1.6.0: Tidal Verb ready in + Add effect, under Plugins",
             "plugins: 2 offered after an install",
@@ -173,8 +174,13 @@ class JudgeTests(unittest.TestCase):
             "plugins: [SYN] Mono Voice started in its own process",
             "screen: mpc:timncox.monovoice: its own screen, 2 tab(s), on the Synth tab")
         got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(window, window))
-        self.assertEqual([ok for ok, _, _ in got], [True, True, True, True, False, True, True, True, True])
-        self.assertEqual(got[4][1], "Modal Voice installed from the catalog (needs a route out)")
+        self.assertEqual([ok for ok, _, _ in got], [True, True, True, True, True, False, True, True, True, True])
+        self.assertEqual(got[5][1], "Modal Voice installed from the catalog (needs a route out)")
+        # The final round's failure, as the app now says it: OpenSSL still can't make random numbers.
+        unseeded = lines("plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible "
+                         "(libcurl found), OpenSSL 3.5.4 not ready: its random numbers can't start (...)") + window[1:]
+        got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(unseeded, unseeded))
+        self.assertEqual([ok for ok, _, _ in got][:2], [True, False])
         refused = window + lines("plugins: [SYN] Modal Voice would not start: failed to map segment")
         got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(refused, refused))
         self.assertFalse(got[-1][0])
