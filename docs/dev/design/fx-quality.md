@@ -4,7 +4,7 @@ checked: 2026-11-16 ececc7e
 -->
 # FX quality: targets, the report and the ratchet
 
-**Status:** measuring built 2026-11-16 (delay, EQ and reverb). The first sound change, PR B (the delays' and reverbs' Mix curve, the Room's level and the Tape and Multi-tap tails), is below. The fixes come one class at a time, each in its own pull request, judged by these numbers and by blind, level-matched listening. Research and the full plan: jferments/mpfree-claude `fx/quality/` (plan.md, research-delay.md, research-eq.md, research-reverb.md, baseline-2026-11-16.md).
+**Status:** measuring built 2026-11-16 (delay, EQ and reverb). The first sound changes are below: PR B (the delays' and reverbs' Mix curve, the Room's level and the Tape and Multi-tap tails) and PR C (the delays: flat reads, saturation at twice the rate, the Tape's colour on every echo and a Feedback that is its loop gain). The fixes come one class at a time, each in its own pull request, judged by these numbers and by blind, level-matched listening. Research and the full plan: jferments/mpfree-claude `fx/quality/` (plan.md, research-delay.md, research-eq.md, research-reverb.md, baseline-2026-11-16.md).
 
 An effect is good when it meets its measured targets, wins or ties in blind, level-matched listening, has the controls musicians know, and fits the MPC's budget. This page holds the first of those: each target as a number with its reason, how fxlab measures it, and the ratchet on CI that stops any number getting worse.
 
@@ -16,7 +16,7 @@ New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known an
 
 | Module | What it measures |
 |---|---|
-| `echo` | A delay's repeats from its impulse response: where each lands (energy centroid, so fractions of a frame show), its level at 1, 5, 10 and 15 kHz, left against right; loss per repeat from a line through the repeats' tilts |
+| `echo` | A delay's repeats from its impulse response: where each lands (its group delay from 1 to 4 kHz, the slope of its phase, so fractions of a frame show and an all-pass read reads at its true delay), its level at 1, 5, 10 and 15 kHz, left against right; loss per repeat from a line through the repeats' tilts |
 | `prototype` | The analog curves the EQ follows (RBJ cookbook bell and shelves, Butterworth cuts), the worst difference of a digital curve from them, the half-gain bandwidth and the octaves an RBJ Q stands for |
 | `mixlaw` | Loudness change (BS.1770) against the dry across Mix 0 to 100 % on pink noise and on drum-like hits; `Law` gives the gains of the linear, equal-power and dry-first curves |
 | `knob` | Decay against T60 at mid frequencies (the mean of the 500 Hz and 1 kHz octaves' T30); Pre-delay against when the reverb starts |
@@ -40,7 +40,7 @@ Engines: Digital (`delay.rs`), Tape and Multi-tap (`echoes.rs`), the Delay famil
 
 | Id | Row | Target | Why |
 |---|---|---|---|
-| D1 | `time_error_frames` | First repeat within 0.5 frame of Time | Grooves |
+| D1 | `time_error_frames` | First repeat within 0.5 frame of Time (its group delay from 1 to 4 kHz) | Grooves |
 | D2 | `hidden_loss_10k_db`, `hidden_loss_15k_db` | Loss per repeat at a time half a frame off a whole frame, minus the loss at a whole frame: ≤ 0.1 dB at 10 kHz, ≤ 0.3 dB at 15 kHz | Brightness must not depend on the tempo; loss compounds per repeat |
 | D4 | `runaway_peak_dbfs`, `runaway_dc_dbfs` | At the highest Feedback, 2 s of noise then 8 s ringing: peak ≤ +6 dBFS, DC ≤ -60 dBFS | Throws that howl but never blow up |
 | D5 | `alias_5k_0_db` | Worst alias of a 5 kHz full-scale sine ≤ -70 dB, every preset | Aliases recirculate |
@@ -52,7 +52,7 @@ Engines: Digital (`delay.rs`), Tape and Multi-tap (`echoes.rs`), the Delay famil
 | D11 | `mono_sum_lu` | The wet signal's mono sum within 3.5 LU of stereo | Phones and club systems |
 | D12 | `tail_cut_db` | Level when the slot stops processing (its tail estimate after 1 s of noise) ≤ -60 dB under the input, every preset | No cut-off echoes |
 
-D3 (loop filters equal their drawing), D13 (exact silence, the gates' `idle_db`) and D14 (cost, the instruction gate) are checked elsewhere.
+D3 (loop filters equal their drawing: `mpfree-fx/tests/delay.rs`), D13 (exact silence, the gates' `idle_db`) and D14 (cost, the instruction gate, which counts the Delay, Tape delay and Multi-tap delay cases) are checked elsewhere.
 
 ## EQ
 
@@ -103,6 +103,16 @@ What changed (design: [fx.md](fx.md#the-delays-and-reverbs-mix-curve)): every de
 - **Rings on:** the Tape's Dub echo and Runaway gain on each pass (their saturation lifts quiet echoes up to 1.43 times at Saturation 55 %, and the head bump adds 2 dB), so their tails are endless and a bypassed slot rings on until Feedback comes down. Their D12 rows (they were cut at -8.6 and +0.5 dB) are notes now ("rings on"); making those loops lose again is a sound change for PR C.
 - **Blessed worse, and why:** at the same Mix the equal-power curve plays more of the effect (at 35 %, the wet is 3.5 dB louder and the dry 2.4 dB), and the Room's trim adds 4 dB more, so every number measured on the blend against the input moved by about that much: the delays' runaway peaks and DC (D4; the peaks still 10 dB inside the target), their aliases (D5), the Digital delay's tail cuts (D12) and the Slapback's Time sweep (D7), and the zipper of the Room's and the Snare plate's Pre-delay and Size (their wet path's own Doppler on a time sweep, now louder against the dry; R11) and of the Digital delay's Mix sweep on two presets (D7: an equal-power blend of two signals in phase adds up to 3 dB half way; 1.5 dB at most, inside the 3 dB target). With the curve set to Linear and the Room's trim taken out, every one of those rows comes back to its old value; only the Tape's default and Worn tape tails stay shorter (cut at -115 and -120 dB where the fixed 8 s left -140), still 55 dB inside the target.
 - **Cost:** no bench case rises: the Delay's 128-frame block counts 72.5k instructions against the baseline's 77.7k (its gains rest once they arrive), and the Cloud engine's modes 0.2 to 0.6 % more.
+
+## PR C: the delays
+
+What changed (design: [fx.md](fx.md), the Delay, Tape delay and Multi-tap entries): all three delays read a fraction of a frame through a flat all-pass while the time is still (`kit::FlatRead`; the cubic while it glides); the Digital delay's and the Tape's loop saturation runs at twice the rate (`kit::Os2`); the Tape's tone, head bump and saturation sit at the record head, so the first echo has been round the tape once; and the Tape's saturation never adds gain, so Feedback is the loop's gain (its range goes to 150 % so Runaway still runs away). After it: 74 of 80 delay targets met; EQ and reverb unchanged.
+
+- **Met now:** the repeats keep their top end at any time (D2: a repeat half a frame off lost 0.74 to 0.76 dB more at 10 kHz and 2.3 to 3.6 dB more at 15 kHz; now within 0.01 dB, the Tape 0.17 dB at 15 kHz); every delay preset's 5 kHz alias is under -87 dB (D5: the Digital's Tape runaway preset was -57, the Tape's Slapback -44); the Tape's first echo carries half the second's darkening (D8: 0.50, it had none); the Tape's Dub echo dies away again (D12: its tail is cut at -76 dB; it rang on) and the Digital's Dub echo and Quarter repeats tails are cut 10 to 30 dB lower (-74 and -73 dB, the tail counts one pass more).
+- **Still unmet:** the Time sweeps of the Digital's Slapback and of the Tape at its defaults, Slapback, Space heads and Worn tape (D7, as before: a time change slides in pitch, and the P2 time modes are the fix), and the Multi-tap's Mix bump (below).
+- **Measured differently:** fxlab's D1 now reads where a repeat lands from its group delay from 1 to 4 kHz, not its energy centroid, which puts an all-pass read half a frame late when it is on time. The delays read 0.013 frame (the all-pass is a hundredth of a frame late by 4 kHz) and the Tape 0.41: its first echo now goes through the tone, and a 5 kHz low-pass delays 1 to 4 kHz by about that much. Both inside 0.5.
+- **Blessed worse, and why:** the Tape's runaway (D4, at Feedback 150 %, the new top) peaks at -2.8 dBFS and its DC at -63 dB (were -4.2 and -70), inside +6 and -60; the Tape's default and Worn tape tails are cut at -73 and -76 dB (were -112 and -116): the tail is now the passes at Feedback times the tone's peak, where the saturation's lift made it much longer than it needed to be, still 13 dB inside the target. The Digital's and the Multi-tap's full wet keep their top end, so they measure louder against the dry: the Digital's Mix bump 0.38 LU (was 0.01, target 1.5) and the Multi-tap's 1.69 LU (was 1.44), now 0.19 over the target; a trim on the Multi-tap's taps is left for its own change rather than moving its level here. Some zipper rows rose inside the target: the Digital's Mix sweep 0.53 dB, the Multi-tap's Triplet scatter Tap 1 level 2.7 dB, the Tape's Dub echo Saturation 2.8 dB and Runaway Tone 1.0 dB (both measured 0 while the loop ran away and hid every step). The Tape's Slapback Time sweep, unmet before (the tape's time slides in pitch; the P2 time modes are the fix), rose from 5.1 to 6.9 dB, because its echo plays 2.5 dB up against the dry (`TAPE_TRIM`). The Digital's default and Dotted ping-pong tails moved by 0.03 dB.
+- **Cost** (the instruction gate's cases, rustc 1.97.0, a 128-frame block at 44.1 kHz, against PR B): the Delay 72.5k to 70.9k (the flat read costs less than the cubic, which pays for the oversampled saturator), the Tape delay 70.1k to 87.9k (1.25 times, inside the plan's 1.3), the Multi-tap delay 89.2k to 95.2k. The Tape and Multi-tap cases are new on the gate with this PR.
 
 ## Running it
 

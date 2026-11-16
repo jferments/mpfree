@@ -632,6 +632,9 @@ pub struct StepGrid {
     /// STEP SEQ: the lane whose steps the pads are (a pad), outlined and
     /// tagged "On the pads".
     pub on_pads: Option<usize>,
+    /// STEP SEQ: the step pads held, (pad, step on the page), outlined as
+    /// the step picked is.
+    pub held: Vec<(usize, usize)>,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
 
@@ -655,6 +658,7 @@ struct StepLook {
     selected: Option<(usize, usize)>,
     page: (usize, usize, usize),
     on_pads: Option<usize>,
+    held: Vec<(usize, usize)>,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
@@ -797,6 +801,7 @@ impl StepGrid {
             selected: self.selected,
             page: (self.page, self.pages, self.length),
             on_pads: self.on_pads,
+            held: self.held.clone(),
         }
     }
 
@@ -996,7 +1001,7 @@ impl Widget for StepGrid {
                         t.bg.with_alpha(120),
                     );
                 }
-                if self.selected == Some((lane.pad, s)) {
+                if self.selected == Some((lane.pad, s)) || self.held.contains(&(lane.pad, s)) {
                     cx.canvas.stroke_round_rect(sr.inset(-3), 7, 2, t.text);
                 }
             }

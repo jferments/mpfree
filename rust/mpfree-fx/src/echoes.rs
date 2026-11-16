@@ -8,7 +8,8 @@
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
 use crate::kit::{
-    self, node_impl, param, Blend, Choice, Glide, Hz, Line, Linear, Log, Ms, Percent, NONE,
+    self, node_impl, param, Blend, Choice, FlatRead, Glide, Hz, Line, Linear, Log, Ms, Os2,
+    Percent, NONE,
 };
 use crate::svf::{Svf, SvfMode};
 use crate::{defaults, fast_tanh, flush, lerp, Preset, Rng};
@@ -36,6 +37,21 @@ fn ring(g: f32, trip: f32, first: f32, rate: u32) -> u32 {
         (-3.0 / g.log10()).ceil()
     };
     (first + trip * passes).min(MAX_TAIL_SECONDS * rate as f32) as u32
+}
+
+/// The tape's ceiling: untouched up to full scale, then bending smoothly
+/// (no corner, so no click or buzz) toward 1.25, which it never passes.
+/// It bounds a loop whose Feedback is over 100 %, and is the only thing
+/// that does at Saturation 0.
+#[inline]
+fn ceiling(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= 1.0 {
+        x
+    } else {
+        let u = a - 1.0;
+        (1.0 + 0.25 * u / (0.25 + u)).copysign(x)
+    }
 }
 
 // ---------------------------------------------------------------- tape
@@ -78,6 +94,10 @@ const HEADS: &[&str] = &["One", "Two", "Three"];
 const HEAD_AT: [f32; 3] = [1.0, 1.95, 2.9];
 /// The head bump's gain at its peak (+2 dB at 110 Hz).
 const BUMP_DB: f32 = 2.0;
+/// The echoes' playback level (not the loop's): +2.5 dB, so the first
+/// echo, which has been through the tape's tone once, is about as loud
+/// as the dry at the defaults (FX quality, D6).
+const TAPE_TRIM: f32 = 1.333_521_4;
 
 static TAPE_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.tape_delay",
@@ -87,7 +107,7 @@ static TAPE_INFO: NodeInfo = NodeInfo {
 static TAPE_PARAMS: [ParamInfo; 12] = [
     param(0, "Time", "Echo", 20.0, 1300.0, 330.0, Ms, Log),
     param(1, "Sync", "Echo", 0.0, 9.0, 0.0, NONE, Choice(TAPE_SYNCS)),
-    param(2, "Feedback", "Echo", 0.0, 110.0, 45.0, Percent, Linear),
+    param(2, "Feedback", "Echo", 0.0, 150.0, 45.0, Percent, Linear),
     param(3, "Heads", "Echo", 0.0, 2.0, 0.0, NONE, Choice(HEADS)),
     param(4, "Wow", "Tape", 0.0, 100.0, 25.0, Percent, Linear),
     param(5, "Flutter", "Tape", 0.0, 100.0, 25.0, Percent, Linear),
@@ -146,7 +166,7 @@ pub static TAPE_PRESETS: &[Preset] = &[
     Preset {
         name: "Runaway",
         values: &[
-            (tape::FEEDBACK, 105.0),
+            (tape::FEEDBACK, 130.0),
             (tape::SATURATION, 70.0),
             (tape::SYNC, 6.0),
         ],
@@ -154,16 +174,21 @@ pub static TAPE_PRESETS: &[Preset] = &[
 ];
 
 /// A tape echo: the sound goes onto a loop of tape and comes back from up
-/// to three playback heads. Each pass loses some top (Tone) and bottom
-/// (Low cut) and is saturated, so the repeats darken and thicken; the
-/// saturation also keeps Feedback over 100 % from running away, so it
-/// can howl and stay musical. Wow (a slow, wandering speed drift) and
-/// flutter (a fast, small one) move the pitch; a time change slides the
-/// pitch as the motor changes speed.
+/// to three playback heads. Each pass onto the tape, the first one too,
+/// loses some top (Tone) and bottom (Low cut), gets the heads' bump and is
+/// saturated, so the first echo already sounds like tape and each repeat
+/// darkens and thickens on from it. The saturation never adds gain, so
+/// Feedback is the loop's gain; over 100 % the echoes grow into a soft
+/// ceiling on the tape, so it can howl and stay musical. Wow (a slow,
+/// wandering speed drift) and flutter (a fast, small one) move the pitch;
+/// a time change slides the pitch as the motor changes speed.
 pub struct TapeDelay {
     v: [f32; 12],
     rate: u32,
     line: Line,
+    /// Each head's read: flat while the tape runs steady (the time
+    /// settled, no wow or flutter).
+    reads: [FlatRead; 3],
     time: Smooth,
     bpm: f64,
     feedback: Smooth,
@@ -175,7 +200,8 @@ pub struct TapeDelay {
     tone: Svf,
     low_cut: Svf,
     bump: Svf,
-    fb_sample: f32,
+    /// The record head's saturation and ceiling, at twice the rate.
+    os: Os2,
     wow_phase: f32,
     wow_inc: f32,
     flut_phase: [f32; 2],
@@ -198,6 +224,7 @@ impl TapeDelay {
             v,
             rate: 48_000,
             line: Line::default(),
+            reads: [FlatRead::default(); 3],
             time: Smooth::new(v[0]),
             bpm: 120.0,
             feedback: Smooth::new(v[2] / 100.0),
@@ -209,7 +236,7 @@ impl TapeDelay {
             tone: Svf::default(),
             low_cut: Svf::default(),
             bump: Svf::default(),
-            fb_sample: 0.0,
+            os: Os2::new(),
             wow_phase: 0.0,
             wow_inc: 0.0,
             flut_phase: [0.0; 2],
@@ -282,11 +309,15 @@ impl TapeDelay {
                     * ms
                     * (kit::sine(self.flut_phase[0]) + 0.5 * kit::sine(self.flut_phase[1]));
 
+            let steady = self.time.settled() && wow == 0.0 && flutter == 0.0;
             let mut sum = 0.0;
             let mut side = [0.0f32; 2];
             for (h, &at) in HEAD_AT.iter().enumerate().take(heads) {
                 let d = (time * at * ms + wobble).clamp(2.0, top);
-                let y = self.line.read(d - 1.0);
+                // Read the record stage's lag sooner, so a repeat lands on
+                // its time.
+                let back = (d - 1.0 - self.os.lag()).max(1.0);
+                let y = self.reads[h].read(&self.line, back, steady);
                 sum += y;
                 // Spread pans the heads apart: one left, one right, the
                 // third in the middle.
@@ -300,21 +331,24 @@ impl TapeDelay {
                 side[1] += y * (1.0 + pan.min(0.0));
             }
             let echo = sum * per_head;
-            // The loop: tone, low cut, a little head bump, saturation.
-            let mut f = self.tone.run(0, echo);
+            // The record head: the input and the feedback go onto the
+            // tape together, through one pass of its tone (Tone, Low cut,
+            // the heads' bump) and its saturation, so every echo has been
+            // round the tape once more than the one before it, the first
+            // echo once.
+            let input = 0.5 * (l[i] + r[i]);
+            let mut f = self.tone.run(0, input + fb * echo);
             f = self.low_cut.run(0, f);
             f = self.bump.run(0, f);
             let drive = 1.0 + 4.0 * sat;
-            f = lerp(f, fast_tanh(f * drive) / drive.sqrt(), sat);
-            self.fb_sample = flush(f * fb);
-            // Write the input plus feedback onto the tape (soft, so
-            // over-unity feedback saturates instead of climbing).
-            let input = 0.5 * (l[i] + r[i]);
-            let w = input + self.fb_sample;
-            self.line.push(if w.abs() > 1.0 { fast_tanh(w) } else { w });
+            let undrive = 1.0 / drive;
+            let w = self
+                .os
+                .run(f, |x| ceiling(lerp(x, fast_tanh(x * drive) * undrive, sat)));
+            self.line.push(flush(w));
 
             let g = self.blend.next();
-            let s = per_head;
+            let s = per_head * TAPE_TRIM;
             l[i] = kit::blend(l[i], side[0] * s, g);
             r[i] = kit::blend(r[i], side[1] * s, g);
         }
@@ -335,6 +369,9 @@ impl TapeDelay {
             s.set_time(rate, 30.0);
         }
         self.blend.set_time(rate, 30.0);
+        for r in &mut self.reads {
+            r.set_rate(rate);
+        }
         self.wow_inc = 0.7 / rate as f32;
         self.flut_inc = [6.3 / rate as f32, 11.7 / rate as f32];
         self.bump.set(SvfMode::Bell, 110.0, 0.8, BUMP_DB, rate);
@@ -346,10 +383,13 @@ impl TapeDelay {
 
     fn clear(&mut self) {
         self.line.clear();
+        for r in &mut self.reads {
+            r.reset(false);
+        }
         self.tone.reset();
         self.low_cut.reset();
         self.bump.reset();
-        self.fb_sample = 0.0;
+        self.os.reset();
         self.wow_phase = 0.0;
         self.flut_phase = [0.0, 0.3];
         self.drift = 0.0;
@@ -371,17 +411,33 @@ impl TapeDelay {
     /// Until the loop has lost 60 dB ([`ring`]), counting passes round
     /// the farthest head: the heads share the loop, so a pass of that
     /// length loses at least the loop's gain however they add up. The
-    /// gain is taken at its most, which no tone or low cut lowers: the
-    /// saturation's gain on quiet echoes (it lifts them, and squashes
-    /// loud ones) and the head bump's peak.
+    /// gain is Feedback times the most a pass of the tape's tone lets
+    /// through at any frequency (the head bump less what Low cut takes
+    /// of it); the saturation and the ceiling never add any.
     fn tail(&self) -> u32 {
         let heads = (self.v[tape::HEADS as usize] as usize).min(2);
         let ms = self.time.target.max(self.time.value);
         let trip = ms * HEAD_AT[heads] * self.rate as f32 * 0.001;
-        let sat = self.v[tape::SATURATION as usize] / 100.0;
-        let quiet = 1.0 - sat + sat * (1.0 + 4.0 * sat).sqrt();
-        let g = self.v[tape::FEEDBACK as usize] / 100.0 * quiet * crate::db_to_gain(BUMP_DB);
+        let g = self.v[tape::FEEDBACK as usize] / 100.0 * self.pass_peak();
         ring(g, trip, trip, self.rate)
+    }
+
+    /// The most one pass of the tape's tone lets through, at any
+    /// frequency: the bump's region, 20 Hz to 2 kHz in 1/8-octave steps
+    /// (Tone and Low cut never peak, so nothing above lifts), with a
+    /// little room for a peak between two steps.
+    fn pass_peak(&self) -> f32 {
+        let mut most = 0.0f64;
+        for k in 0..=56 {
+            let hz = 20.0 * 2f32.powf(k as f32 / 8.0);
+            let mut g = 1.0f64;
+            for f in [&self.tone, &self.low_cut, &self.bump] {
+                let (re, im) = f.response(hz, self.rate);
+                g *= (re * re + im * im).sqrt();
+            }
+            most = most.max(g);
+        }
+        most as f32 * 1.01
     }
     fn lat(&self) -> u32 {
         0
@@ -584,6 +640,8 @@ pub struct MultiTap {
     v: [f32; 17],
     rate: u32,
     line: Line,
+    /// Each tap's read: flat while its time holds still.
+    reads: [FlatRead; 4],
     bpm: f64,
     times: [Smooth; 4],
     levels: [Smooth; 4],
@@ -609,6 +667,7 @@ impl MultiTap {
             v,
             rate: 48_000,
             line: Line::default(),
+            reads: [FlatRead::default(); 4],
             bpm: 120.0,
             times: [s(0.0), s(0.0), s(0.0), s(0.0)],
             levels: [s(0.0), s(0.0), s(0.0), s(0.0)],
@@ -667,7 +726,8 @@ impl MultiTap {
                 let d = self.times[t].glide();
                 let level = self.levels[t].glide();
                 let pan = self.pans[t].glide();
-                let v = self.line.read(d - 1.0);
+                let still = self.times[t].settled();
+                let v = self.reads[t].read(&self.line, d - 1.0, still);
                 // Constant power across the pan.
                 let a = (pan + 1.0) * 0.125;
                 y[0] += v * level * kit::cosine(a) * std::f32::consts::SQRT_2;
@@ -701,6 +761,9 @@ impl MultiTap {
             s.set_time(rate, 20.0);
         }
         self.blend.set_time(rate, 20.0);
+        for r in &mut self.reads {
+            r.set_rate(rate);
+        }
         for id in 0..MULTITAP_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
         }
@@ -709,6 +772,9 @@ impl MultiTap {
 
     fn clear(&mut self) {
         self.line.clear();
+        for r in &mut self.reads {
+            r.reset(false);
+        }
         self.tone.reset();
         self.low_cut.reset();
         self.fb_sample = 0.0;

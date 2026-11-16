@@ -2300,7 +2300,8 @@ fn mute_key(
 }
 
 /// STEP SEQ: pad `pad` pressed as a step, `velocity` loud as it plays
-/// (step_keys.rs). ERASE held clears the step.
+/// (step_keys.rs). ERASE held clears the step; COPY held picks it to copy,
+/// or copies the step picked onto it.
 fn step_press(
     app: &app::App,
     keys: &mut step_keys::StepKeys,
@@ -2312,7 +2313,22 @@ fn step_press(
     let Some(s) = app.step_pads() else {
         return step_keys::Pressed::default();
     };
-    keys.press(s, pad, velocity, app.erase_held(), rolling, time)
+    let p = step_keys::Press {
+        velocity,
+        erase: app.erase_held(),
+        copy: app.copy_held(),
+        rolling,
+    };
+    keys.press(s, pad, p, time)
+}
+
+/// A Q-Link turn of the steps held on the step pads (or of the step
+/// picked on Beats): the steps held stay on their release.
+fn step_turn(a: &gui::FromUi) -> bool {
+    matches!(
+        a,
+        gui::FromUi::Steps(time::StepAction::Change { .. } | time::StepAction::ChangeSteps { .. })
+    )
 }
 
 /// What a step press did: its lines, and its sound once while stopped.
@@ -4401,6 +4417,9 @@ fn player_session(
                 max_db,
                 card: audio,
             };
+            if step_turn(&a) {
+                step_keys.turned();
+            }
             let a = desk.screen(a, t, out, &mut fx);
             save_shelf(&mut mix, &store, out);
             // UNDO on the mixer: a strip control's turn, from its value
@@ -5989,6 +6008,14 @@ fn player_session(
                     }
                 }
             }
+        }
+        // STEP SEQ: the steps held go to the screen (the Q-Links set
+        // them); COPY let go forgets the step picked.
+        if !app.copy_held() {
+            step_keys.forget_copy();
+        }
+        if let Some(held) = step_keys.held_news() {
+            out.show(gui::ToUi::StepsHeld(held));
         }
         // STEP SEQ: the pads show the steps of the sound on them, and with
         // Follow on, turn the page with the playhead.

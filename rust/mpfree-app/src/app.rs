@@ -1868,10 +1868,17 @@ impl App {
             if Some(note) == self.map.step_seq {
                 fx.extend(self.step_seq_up());
             }
+            if note == button::COPY && self.copy_held() {
+                fx.extend(self.copy_button(false));
+            }
             return fx;
         }
         if self.view == View::Guide {
             return self.guide_press(note);
+        }
+        if note == button::COPY {
+            // COPY: STEP SEQ's steps and pages (step_pads.rs).
+            return self.copy_button(true);
         }
         let shift = self.shift;
         if note == button::FULL_LEVEL {
@@ -7039,7 +7046,9 @@ mod tests {
                 sound: 4,
                 page: 0,
                 follow: false,
-                picking: false
+                picking: false,
+                copying: false,
+                copy_page: None,
             })
         );
         // On any page: the Looper tab keeps them.
@@ -7102,6 +7111,29 @@ mod tests {
         );
         app.button(button::ERASE, false, 0.0);
         assert_eq!(view(&app).page, 1, "ERASE + PAD BANK turns no page");
+        // COPY + PAD BANK picks a page; another PAD BANK takes the copy
+        // (pad 10's steps), and each one after takes it too.
+        let fx = app.button(button::COPY, true, 0.0);
+        assert!(view(&app).copying);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Status(_))));
+        let fx = press(&mut app, bank_a);
+        assert!(fx.contains(&Effect::Tell(
+            "COPY: page 1 picked; press the PAD BANK it goes to".into()
+        )));
+        assert_eq!(view(&app).copy_page, Some(0));
+        assert_eq!(
+            press(&mut app, bank_c),
+            [Effect::Steps(StepAction::CopySteps {
+                pad: 9,
+                from: 0,
+                to: 32,
+                count: 16
+            })]
+        );
+        assert_eq!(view(&app).page, 1, "COPY + PAD BANK turns no page");
+        app.button(button::COPY, false, 0.0);
+        assert!(!app.copy_held());
+        assert_eq!(view(&app).copy_page, None, "let go: forgotten");
         // TRACK MUTE takes the pads; STEP SEQ takes them back.
         let fx = press(&mut app, TRACK_MUTE);
         assert!(fx.contains(&Effect::Light(STEP_SEQ, LIGHT_OFF)));
