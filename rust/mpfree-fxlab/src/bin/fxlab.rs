@@ -22,6 +22,10 @@
 //!     Renders one of our effects at every setting of its plan through the
 //!     short programme and measures it as a capture would be; writes
 //!     DIR/plan.tsv and DIR/sweep.json.
+//! fxlab quality [--class delay|eq|reverb]... [--rate HZ] [--out DIR]
+//!     The FX quality report: every target of each class (all three when
+//!     none is named), met or not; writes DIR/quality.json
+//!     (docs/dev/design/fx-quality.md).
 //! ```
 
 use std::path::PathBuf;
@@ -30,7 +34,7 @@ use mpfree_fxlab::card::{self, Options};
 use mpfree_fxlab::dut::{Dut, NodeDut};
 use mpfree_fxlab::plan::{self, Context, ControlList, PlanOptions};
 use mpfree_fxlab::programme::{self, Programme, Schedule};
-use mpfree_fxlab::{capture, wav};
+use mpfree_fxlab::{capture, quality, wav};
 
 fn usage() -> ! {
     eprintln!("usage: fxlab cards [--rate HZ] [--quick] [--presets] [--effect ID]... [--out DIR]");
@@ -40,6 +44,7 @@ fn usage() -> ! {
     eprintln!("       fxlab plan (--effect ID | --controls LIST.tsv) [--points N] [--grid N] [--random N] [--seed N]");
     eprintln!("                  [--gains DB,DB...] [--programme FILE] [--out DIR]");
     eprintln!("       fxlab sweep --effect ID [plan options] [--out DIR]");
+    eprintln!("       fxlab quality [--class delay|eq|reverb]... [--rate HZ] [--out DIR]");
     std::process::exit(2);
 }
 
@@ -49,6 +54,7 @@ struct Args {
     presets: bool,
     short: bool,
     effects: Vec<String>,
+    classes: Vec<quality::Class>,
     out: PathBuf,
     rest: Vec<String>,
     schedule: Option<PathBuf>,
@@ -66,6 +72,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Args {
         presets: false,
         short: false,
         effects: Vec::new(),
+        classes: Vec::new(),
         out: PathBuf::from("fxlab-out"),
         rest: Vec::new(),
         schedule: None,
@@ -107,6 +114,11 @@ fn parse(mut it: impl Iterator<Item = String>) -> Args {
                 );
             }
             "--effect" => a.effects.push(it.next().unwrap_or_else(|| usage())),
+            "--class" => a.classes.push(
+                it.next()
+                    .and_then(|c| quality::Class::parse(&c))
+                    .unwrap_or_else(|| usage()),
+            ),
             "--out" => a.out = PathBuf::from(it.next().unwrap_or_else(|| usage())),
             _ if x.starts_with("--") => usage(),
             _ => a.rest.push(x),
@@ -299,6 +311,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cards.len(),
                 path.display()
             );
+        }
+        "quality" => {
+            let classes = if a.classes.is_empty() {
+                quality::Class::ALL.to_vec()
+            } else {
+                a.classes.clone()
+            };
+            let mut reports = Vec::new();
+            for c in classes {
+                let r = quality::report(c, a.rate);
+                print!("{}", quality::to_text(&r));
+                reports.push(r);
+            }
+            let path = a.out.join("quality.json");
+            std::fs::write(&path, quality::to_json(&reports))?;
+            eprintln!("wrote {}", path.display());
         }
         "cut" => {
             if a.rest.len() != 2 {
