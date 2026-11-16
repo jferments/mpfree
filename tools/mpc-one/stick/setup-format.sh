@@ -17,6 +17,10 @@ R=''
 # missing, and the USB creator will not make a stick from an update whose system lacks one.
 # The journal is 64 MiB (-J size=64): mke2fs zeroes it, and its default for a 64 GB stick, 256 MiB, took
 # about 37 s of the second creator stick's first start. The rest it writes is under 0.01 % of the partition.
+# One inode per 128 KiB (-i 131072; the default is one per 16 KiB): the kernel zeroes the inode tables in
+# the background after the first mount (ext4lazyinit), about 0.95 GB on a 64 GB stick by default, all during
+# the first start's backup on the same stick. This makes it about 120 MB, and still leaves room for over
+# 100,000 files on a 16 GB stick.
 # How it goes: /run/mpfree-setup/format-status (state: checking, running, done, none = nothing to do, failed;
 # done and total: bytes written to the partition, from the block layer, and the bytes expected). The
 # startup screen shows it on the creator's sticks (mpfree_startup::setup), until the state is final.
@@ -64,7 +68,7 @@ else
   before=$(written)
   wrote=0
   report running 0 "$total"
-  mke2fs -q -F -t ext4 -m 0 -J size=64 -L MPFREE-DATA -E root_owner=0:0 "$dev" \
+  mke2fs -q -F -t ext4 -m 0 -i 131072 -J size=64 -L MPFREE-DATA -E root_owner=0:0 "$dev" \
     > "$R/run/mpfree-setup-format-mke2fs.txt" 2>&1 &
   maker=$!
   while kill -0 "$maker" 2>/dev/null; do

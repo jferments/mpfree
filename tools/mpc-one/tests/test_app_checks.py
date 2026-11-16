@@ -207,9 +207,24 @@ class JudgeTests(unittest.TestCase):
 
     def test_not_found_names_buttons_without_a_number(self):
         chosen = checks.chosen("transport,track-mute")
-        missing = checks.not_found(chosen, "track-mute = skipped\npad-bank-a-e = button 35\n")
+        # Every button is built in: nothing to find, even with no map.conf.
+        self.assertEqual(checks.not_found(chosen, ""), [])
+        self.assertEqual(checks.not_found(checks.CHECKS, ""), [])
+        # As on a build from before every button was built in.
+        missing = checks.not_found(chosen, "track-mute = skipped\npad-bank-a-e = button 35\n", frozenset())
         self.assertEqual(missing, [("transport", "SAMPLER"), ("track-mute", "TRACK MUTE"),
                                    ("track-mute", "PAD BANK B/F")])
+
+    def test_built_in_is_every_button_in_the_apps_list(self):
+        """BUILT_IN names every control of the app's Map controls list but the spare Other rows."""
+        path = os.path.join(checks.RUST_DIR, "mpfree-app", "src", "app", "mapper.rs")
+        with open(path, encoding="utf-8") as fh:
+            names = re.findall(r'^\s*c\("([^"]+)", Job::', fh.read(), re.M)
+        self.assertEqual(len(names), 42)
+        self.assertEqual(checks.BUILT_IN, frozenset(n for n in names if not n.startswith("Other ")))
+        for c in checks.CHECKS:
+            for name in c.needs:
+                self.assertIn(name, names, c.name)
 
 
 if __name__ == "__main__":

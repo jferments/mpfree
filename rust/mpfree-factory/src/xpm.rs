@@ -80,6 +80,77 @@ pub fn program(text: &str) -> Option<Program> {
     })
 }
 
+/// What kind of program an .xpm holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Drum,
+    Keygroup,
+    /// Anything else (a clip, plugin or MIDI program): rarely any samples.
+    Other,
+}
+
+/// Every sample a program plays: its kind, its name, and each active
+/// layer's sample once, in the order the file lists them.
+pub struct Samples {
+    pub kind: Kind,
+    pub name: String,
+    pub samples: Vec<SampleRef>,
+}
+
+/// The first program in an .xpm file, of any kind, with every sample its
+/// active layers name; None if the file holds no program.
+pub fn samples(text: &str) -> Option<Samples> {
+    let root = xml::parse(text).ok()?;
+    let prog = root.iter("Program").into_iter().next()?;
+    let ty = prog.attr("type").unwrap_or("");
+    let kind = if ty.eq_ignore_ascii_case("drum") {
+        Kind::Drum
+    } else if ty.eq_ignore_ascii_case("keygroup") {
+        Kind::Keygroup
+    } else {
+        Kind::Other
+    };
+    let name = prog
+        .find_text("ProgramName")
+        .filter(|t| !t.is_empty())
+        .or_else(|| prog.find_text("Name"))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mut samples: Vec<SampleRef> = Vec::new();
+    for inst in prog.iter("Instrument") {
+        for layer in inst.iter("Layer") {
+            let active = layer
+                .find_text("Active")
+                .filter(|t| !t.is_empty())
+                .unwrap_or("True");
+            if active.trim().eq_ignore_ascii_case("false") {
+                continue;
+            }
+            let r = (
+                layer
+                    .find_text("SampleName")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                layer
+                    .find_text("SampleFile")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+            );
+            if (!r.0.is_empty() || !r.1.is_empty()) && !samples.contains(&r) {
+                samples.push(r);
+            }
+        }
+    }
+    Some(Samples {
+        kind,
+        name,
+        samples,
+    })
+}
+
 /// Two readings of which sample each of pads 1 to 16 plays: by pad number,
 /// and by the pad's note.
 pub fn mappings(p: &Program) -> ([Option<SampleRef>; 16], [Option<SampleRef>; 16]) {
@@ -213,6 +284,25 @@ mod tests {
         assert_eq!(by_pad[1].as_ref().unwrap().0, "Snare 1");
         assert_eq!(by_note[0].as_ref().unwrap().0, "Rim");
         assert!(program("<MPCVObject><Program type=\"Keygroup\"/></MPCVObject>").is_none());
+    }
+
+    #[test]
+    fn lists_every_sample_of_any_program() {
+        let s = samples(XPM).unwrap();
+        assert_eq!(s.kind, Kind::Drum);
+        assert_eq!(s.name, "Trap Kit 1");
+        let names: Vec<&str> = s.samples.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, ["Kick 1", "Snare 1", "Rim"], "active layers only");
+        let keys = r#"<MPCVObject><Program type="Keygroup"><ProgramName>Soft Keys</ProgramName>
+<Instruments><Instrument number="1"><Layers><Layer number="1"><SampleName>Keys C3</SampleName></Layer>
+<Layer number="2"><SampleName>Keys C3 Soft</SampleName></Layer></Layers></Instrument>
+<Instrument number="2"><Layers><Layer number="1"><SampleName>Keys C3</SampleName></Layer></Layers></Instrument>
+</Instruments></Program></MPCVObject>"#;
+        let s = samples(keys).unwrap();
+        assert_eq!(s.kind, Kind::Keygroup);
+        let names: Vec<&str> = s.samples.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, ["Keys C3", "Keys C3 Soft"], "each once, every layer");
+        assert!(samples("<MPCVObject/>").is_none());
     }
 
     #[test]

@@ -22,6 +22,16 @@ use std::time::{Duration, Instant};
 
 const MANUAL: &str =
     "https://github.com/jferments/mpfree/blob/main/docs/user/src/getting-started/installing.md";
+
+/// What to do on the MPC with a stick it has not started MPFree from yet.
+const NEW_STICK_STEPS: [&str; 6] = [
+    "Eject the stick from this computer and put it into the MPC's USB port.",
+    "Turn the MPC on. Akai's software starts as usual.",
+    "Switch on the developer panel (MENU > Preferences > Enhancements), then hold SHIFT, press MENU, choose Developer and switch developer mode on. This is needed once.",
+    "When the MPC asks whether to run the script on the stick (autorun.sh), tap Yes. It adds MPFree's start-up helper and restarts the MPC.",
+    "The MPC starts MPFree from the stick.",
+    "Afterwards, switch developer mode off again: stick out, in Akai's software, SHIFT + MENU > Developer.",
+];
 const MIN_STICK: u64 = mpfree_stick::stick::MIN_STICK;
 
 fn main() -> eframe::Result {
@@ -378,6 +388,8 @@ struct Creator {
     backup_to: String,
     programs: Option<PathBuf>,
     jobs_started: u32,
+    /// Debug builds' previews: a made-up stick that the disk list keeps.
+    preview_disks: bool,
 }
 
 impl Creator {
@@ -398,6 +410,7 @@ impl Creator {
             job: None,
             outcome: None,
             last_log: Vec::new(),
+            preview_disks: false,
             prefs_open: false,
             prefs: Prefs::default(),
             key_note: None,
@@ -417,13 +430,35 @@ impl Creator {
         #[cfg(debug_assertions)]
         if let Ok(page) = std::env::var("MPFREE_CREATOR_PREVIEW") {
             c.page = match page.as_str() {
-                "done" => Page::Done,
+                "done" | "done-update" => Page::Done,
                 "backup" => Page::Backup,
                 "remove" => Page::Remove,
                 _ => Page::Make,
             };
+            if page == "done-update" {
+                c.last_log = vec![format!("note {}", mpfree_stick::stick::KEPT_NOTE)];
+            }
+            if page == "update" {
+                c.disks = vec![DiskInfo {
+                    id: "/dev/sdz".into(),
+                    name: "PNY USB 3.2.1 FD".into(),
+                    bytes: 62_026_416_128,
+                    sector: 512,
+                    mounted: Vec::new(),
+                    mpfree: true,
+                }];
+                c.chosen = Some("/dev/sdz".into());
+                c.preview_disks = true;
+            }
         }
         c
+    }
+
+    /// The stick picked in step 2, as the disk list last saw it.
+    fn chosen_disk(&self) -> Option<&DiskInfo> {
+        self.disks
+            .iter()
+            .find(|d| Some(&d.id) == self.chosen.as_ref())
     }
 
     /// The update file to use: a file, or a folder holding it (typed or
@@ -449,6 +484,9 @@ impl Creator {
     }
 
     fn refresh_disks(&mut self, ctx: &egui::Context) {
+        if self.preview_disks {
+            return;
+        }
         if let Some(rx) = &self.disks_rx {
             if let Ok(r) = rx.try_recv() {
                 match r {
@@ -536,6 +574,10 @@ impl Creator {
         }
         if self.prefs.fresh_data {
             args.push("--fresh-data".into());
+        } else if self.chosen_disk().is_some_and(|d| d.mpfree) {
+            // "Keep my backup, settings and files": stop rather than erase a
+            // partition 4 this version can't keep.
+            args.push("--keep-data".into());
         }
         self.start(JobKind::Make, args);
     }
@@ -761,9 +803,33 @@ impl Creator {
             self.disk_picker(ui);
         });
         ui.add_space(12.0);
+        let has_mpfree = self.chosen_disk().is_some_and(|d| d.mpfree);
         card(ui, |ui| {
-            step_head(ui, 3, "Make the stick", false);
-            ui.label("Erases the stick and puts MPFree on it. It takes a few minutes, and asks for this computer's administrator password.");
+            if has_mpfree {
+                step_head(ui, 3, "Update MPFree on this stick", false);
+                ui.label("This stick already has MPFree. Updating puts this version of MPFree on it. It takes a few minutes, and asks for this computer's administrator password.");
+                ui.add_space(8.0);
+                ui.radio_value(
+                    &mut self.prefs.fresh_data,
+                    false,
+                    RichText::new("Keep my backup, settings and files").strong(),
+                );
+                ui.indent("keep", |ui| {
+                    ui.label(RichText::new("The backup of your MPC, your settings, projects and samples, and the Akai kits stay on the stick. The MPC starts straight into MPFree, without the long first start.").color(look::DIM));
+                });
+                ui.add_space(4.0);
+                ui.radio_value(
+                    &mut self.prefs.fresh_data,
+                    true,
+                    RichText::new("Erase everything and start over").strong(),
+                );
+                ui.indent("fresh", |ui| {
+                    ui.label(RichText::new("Everything on the stick goes, the backup of your MPC too. The first start then backs up your MPC again (20 to 30 minutes).").color(look::DIM));
+                });
+            } else {
+                step_head(ui, 3, "Make the stick", false);
+                ui.label("Erases the stick and puts MPFree on it. It takes a few minutes, and asks for this computer's administrator password.");
+            }
             if self.prefs.ssh {
                 ui.label(RichText::new("Developer SSH is on (Preferences).").color(look::WARN));
             }
@@ -773,7 +839,12 @@ impl Creator {
                 && self.job.is_none()
                 && self.programs.is_some()
                 && (!self.prefs.ssh || !self.prefs.ssh_key.is_empty());
-            if primary(ui, ready, "Make the stick").clicked() {
+            let go = if has_mpfree && !self.prefs.fresh_data {
+                "Update MPFree"
+            } else {
+                "Make the stick"
+            };
+            if primary(ui, ready, go).clicked() {
                 self.confirm = true;
                 self.understood = false;
             }
@@ -783,45 +854,64 @@ impl Creator {
     }
 
     fn done_page(&mut self, ui: &mut egui::Ui) {
+        // A remake that kept partition 4 says so in its log: the MPC already
+        // has the start-up helper and the backup, so the steps are shorter.
+        let kept = self
+            .last_log
+            .iter()
+            .any(|l| l.contains(mpfree_stick::stick::KEPT_NOTE));
+        let new_stick_steps = |ui: &mut egui::Ui| {
+            for (n, step) in NEW_STICK_STEPS.iter().enumerate() {
+                numbered(ui, n + 1, step);
+            }
+        };
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 sign(ui, Tone::Good, 26.0);
                 ui.label(
-                    RichText::new("The stick is ready")
-                        .size(22.0)
-                        .strong()
-                        .color(look::GOOD),
+                    RichText::new(if kept {
+                        "MPFree is updated"
+                    } else {
+                        "The stick is ready"
+                    })
+                    .size(22.0)
+                    .strong()
+                    .color(look::GOOD),
                 );
             });
             ui.add_space(4.0);
             ui.label("Now, on your MPC:");
             ui.add_space(8.0);
-            for (n, step) in [
-                "Eject the stick from this computer and put it into the MPC's USB port.",
-                "Turn the MPC on. Akai's software starts as usual.",
-                "Switch on the developer panel (MENU > Preferences > Enhancements), then hold SHIFT, press MENU, choose Developer and switch developer mode on. This is needed once.",
-                "When the MPC asks whether to run the script on the stick (autorun.sh), tap Yes. It adds MPFree's start-up helper and restarts the MPC.",
-                "The MPC starts MPFree from the stick.",
-                "Afterwards, switch developer mode off again: stick out, in Akai's software, SHIFT + MENU > Developer.",
-            ]
-            .iter()
-            .enumerate()
-            {
-                numbered(ui, n + 1, step);
+            if kept {
+                numbered(
+                    ui,
+                    1,
+                    "Eject the stick from this computer and put it back into the MPC's USB port.",
+                );
+                numbered(ui, 2, "Turn the MPC on. MPFree starts from the stick with your settings and files. Your backup and the kits are already on the stick, so there is no long setup this time. If the first start had not finished before, it carries on where it stopped.");
+                ui.add_space(6.0);
+                ui.label(RichText::new("If Akai's software starts instead, the MPC may have lost MPFree's start-up helper (an update of Akai's software may remove it). Then follow the steps for a new stick:").color(look::DIM));
+                egui::CollapsingHeader::new("Steps for a new stick")
+                    .id_salt("new-stick-steps")
+                    .show(ui, new_stick_steps);
+            } else {
+                new_stick_steps(ui);
             }
         });
-        ui.add_space(12.0);
-        card(ui, |ui| {
-            ui.label(
-                RichText::new("The first start takes a while")
-                    .size(17.0)
-                    .strong(),
-            );
-            ui.add_space(4.0);
-            ui.label("MPFree backs up your MPC's internal storage onto the stick, then copies its drum kits and samples into MPFree. It can take 20 to 30 minutes, once. The screen shows how far it is and how long is left. Keep the stick in and the MPC on.");
-            ui.add_space(4.0);
-            ui.label(RichText::new("After that, MPFree starts whenever the stick is in at power-on. Without the stick, Akai's software starts.").color(look::DIM));
-        });
+        if !kept {
+            ui.add_space(12.0);
+            card(ui, |ui| {
+                ui.label(
+                    RichText::new("The first start takes a while")
+                        .size(17.0)
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.label("MPFree backs up your MPC's internal storage onto the stick, then copies its drum kits and samples into MPFree. It can take 20 to 30 minutes, once. The screen shows how far it is and how long is left. Keep the stick in and the MPC on.");
+                ui.add_space(4.0);
+                ui.label(RichText::new("After that, MPFree starts whenever the stick is in at power-on. Without the stick, Akai's software starts.").color(look::DIM));
+            });
+        }
         if let Some(l) = self
             .last_log
             .iter()
@@ -838,7 +928,11 @@ impl Creator {
             });
         }
         ui.add_space(12.0);
-        ui.label("Then copy the backup of your MPC to this computer and keep it safe (Copy the backup, above).");
+        ui.label(if kept {
+            "If you haven't yet, copy the backup of your MPC to this computer and keep it safe (Copy the backup, above)."
+        } else {
+            "Then copy the backup of your MPC to this computer and keep it safe (Copy the backup, above)."
+        });
         ui.hyperlink_to(
             "The whole process, with pictures, in the user manual",
             MANUAL,
@@ -1009,7 +1103,7 @@ impl Creator {
                     });
                 }
                 ui.add_space(8.0);
-                option(ui, &mut self.prefs.fresh_data, "Start the stick's data fresh", "When making a stick that already has MPFree: erase its settings, files and backups too.");
+                option(ui, &mut self.prefs.fresh_data, "Start the stick's data fresh", "When making a stick that already has MPFree: erase its settings, files and backup too. Step 3 asks this itself when it recognises the stick.");
                 ui.add_space(8.0);
                 option(ui, &mut self.prefs.any_update, "Take any Akai update (not supported)", "Only for testing a new Akai version. Such a stick may not start.");
             });
@@ -1020,31 +1114,47 @@ impl Creator {
         if !self.confirm {
             return;
         }
-        let name = self
-            .disks
-            .iter()
-            .find(|d| Some(&d.id) == self.chosen.as_ref())
-            .map(|d| d.describe())
-            .unwrap_or_default();
+        let disk = self.chosen_disk();
+        let name = disk.map(|d| d.describe()).unwrap_or_default();
+        let has_mpfree = disk.is_some_and(|d| d.mpfree);
+        let keep = has_mpfree && !self.prefs.fresh_data;
         let mut go = false;
         let r = egui::Modal::new(egui::Id::unique("confirm")).show(ctx, |ui| {
             ui.set_max_width(440.0);
-            ui.label(RichText::new("Erase this stick?").size(20.0).strong());
+            if keep {
+                ui.label(RichText::new("Update MPFree on this stick?").size(20.0).strong());
+            } else {
+                ui.label(RichText::new("Erase this stick?").size(20.0).strong());
+            }
             ui.add_space(6.0);
             ui.label(RichText::new(&name).strong().color(look::ACCENT));
             ui.add_space(6.0);
-            ui.label("Everything on it is erased and replaced by MPFree.");
-            if !self.prefs.fresh_data {
-                ui.label(RichText::new("If it is already an MPFree stick, its MPFree settings, files and backups are kept.").color(look::DIM));
+            if keep {
+                ui.label("MPFree on the stick is replaced by this version.");
+                ui.label(RichText::new("Kept: the backup of your MPC, your settings and files, and the Akai kits and samples.").color(look::DIM));
+            } else if has_mpfree {
+                ui.label("Everything on it is erased and replaced by MPFree, including the backup of your MPC and your MPFree settings and files.");
+            } else {
+                ui.label("Everything on it is erased and replaced by MPFree.");
+                if !self.prefs.fresh_data {
+                    ui.label(RichText::new("If it is already an MPFree stick, its MPFree settings, files and backups are kept.").color(look::DIM));
+                }
             }
             ui.add_space(8.0);
-            ui.checkbox(&mut self.understood, "Yes, erase this stick");
-            ui.add_space(8.0);
+            if !keep {
+                ui.checkbox(&mut self.understood, "Yes, erase this stick");
+                ui.add_space(8.0);
+            }
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
                     self.confirm = false;
                 }
-                if primary(ui, self.understood, "Erase and make the stick").clicked() {
+                let (ok, label) = if keep {
+                    (true, "Update MPFree")
+                } else {
+                    (self.understood, "Erase and make the stick")
+                };
+                if primary(ui, ok, label).clicked() {
                     go = true;
                 }
             });

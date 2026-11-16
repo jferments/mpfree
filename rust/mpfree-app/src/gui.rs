@@ -1013,6 +1013,9 @@ const CONSOLE_BACKLOG: usize = 600;
 
 pub struct Player {
     pub ui: Ui,
+    /// The project save handed to the library's worker: when, with how many
+    /// sounds and parts (said with the time it took when it lands).
+    save_sent: Option<(Instant, usize, usize)>,
     kits: Vec<KitView>,
     kit: usize,
     midi: u64,
@@ -1388,6 +1391,7 @@ impl Player {
             erase: false,
         };
         let mut p = Player {
+            save_sent: None,
             told: None,
             undo_loop: false,
             song_grab: false,
@@ -4744,7 +4748,15 @@ impl Player {
             A::SaveRequested => self.ask_save(),
             A::NewProject => self.new_project(),
             A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
-            A::ProjectSaved { loc } => self.say(format!("project: saved {}", loc.name())),
+            A::ProjectSaved { loc } => {
+                self.say(format!("project: saved {}", loc.name()));
+                if let Some((at, sounds, parts)) = self.save_sent.take() {
+                    self.say(format!(
+                        "project: the save took {:.1} s ({sounds} sounds, {parts} parts)",
+                        at.elapsed().as_secs_f64()
+                    ));
+                }
+            }
             // Every 2 minutes while editing: the terminal and the system
             // log only, not the Events log.
             A::Autosaved { loc } => {
@@ -5174,6 +5186,7 @@ impl Player {
             b.autosave_with(snap, samples, now_utc());
             return;
         }
+        self.save_sent = Some((Instant::now(), samples.len(), snap.parts.len()));
         b.save_with(snap, samples, now_utc());
         mpfree_browser_ui::show(&mut self.ui, b);
         let line = match b.project() {
@@ -13745,12 +13758,18 @@ mod tests {
         assert_eq!(at_start.what, loc.name());
         assert!(q.browser.as_ref().unwrap().picking().is_some());
         assert!(opens(&mut q).is_none(), "once");
-        // New project (the default) leaves the empty one.
+        // New project leaves the empty one.
         let mut n = sample_sampler(Fonts::embedded());
         n.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), &lists);
         n.take_actions();
+        n.apply(ToUi::Settings(Settings {
+            open_last: false,
+            ..Default::default()
+        }));
         n.apply(ToUi::ProjectDefaults(defaults()));
         assert!(opens(&mut n).is_none());
+        // Last project is the default.
+        assert!(Settings::default().open_last);
         // After a crash (a safe start, crash.rs) the last project does
         // not open, and the screen says so.
         let mut c = sample_sampler(Fonts::embedded());
@@ -13985,6 +14004,10 @@ mod tests {
         let mut s = sample_sampler(Fonts::embedded());
         s.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), lists);
         s.take_actions();
+        s.apply(ToUi::Settings(Settings {
+            open_last: false,
+            ..Default::default()
+        }));
         s.apply(ToUi::ProjectDefaults(defaults()));
         assert!(opens(&mut s).is_none());
         assert!(!events_log(&s).iter().any(|l| l.contains("Unsaved work")));

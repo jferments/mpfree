@@ -710,11 +710,26 @@ def control_key(name):
     return {"-": "minus", "+": "plus"}.get(name) or "-".join(w for w in re.split(r"[^a-z0-9]+", name.lower()) if w)
 
 
-def not_found(checks, map_text):
-    """[(check, control)] for each button a check uses that settings/map.conf has no number for."""
+# Every button the app knows from the start (`ButtonMap::measured` and the measured constants in
+# rust/mpfree-app/src/app/mapper.rs). Since the creator's fifth stick (2026-11-16) that is every button on the
+# panel, so no check needs Map controls first on a build from then on. test_app_checks keeps it in step with
+# the app's list.
+BUILT_IN = frozenset([
+    "REC", "OVERDUB", "STOP", "PLAY", "PLAY START", "UNDO", "TAP TEMPO", "PAD BANK A/E", "PAD BANK B/F",
+    "PAD BANK C/G", "PAD BANK D/H", "FULL LEVEL", "16 LEVEL", "NOTE REPEAT", "ERASE", "COPY", "TC", "SHIFT",
+    "MENU", "MAIN", "BROWSE", "TRACK MIX / PAD MIX", "-", "+", "Q-LINK", "TRACK MUTE", "NEXT SEQ", "STEP SEQ",
+    "SAMPLER", "SAMPLE EDIT", "PROG EDIT", "DATA DIAL PUSH",
+])
+
+
+def not_found(checks, map_text, built_in=BUILT_IN):
+    """[(check, control)] for each button a check uses that the app doesn't have built in and settings/map.conf
+    has no number for (`built_in` empty: as on a build from before every button was built in)."""
     out = []
     for c in checks:
         for name in c.needs:
+            if name in built_in:
+                continue
             value = setting(map_text, control_key(name)) or ""
             if not value.startswith("button "):
                 out.append((c.name, name))

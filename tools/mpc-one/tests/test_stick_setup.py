@@ -254,6 +254,43 @@ class FakeEmmc:
 RO_RULE = 'SUBSYSTEM=="block", KERNEL=="mmcblk*", ENV{DEVTYPE}=="disk", ACTION=="add", ATTR{force_ro}="1"\n'
 
 
+# A stand-in for MPFree's own `mpfree copy-image FROM TO` (rust/mpfree-app/src/imagecopy.rs, tested there):
+# the same holes for MiBs of zeros and the same last line. Every call is logged, with vm.dirty_bytes as the copy
+# sees it (and the kernel's answer to it: dirty_ratio reads 0 once dirty_bytes is set); with FAKE_BUMP, something
+# writes to the eMMC during the copy; with FAKE_SLOW it takes 2 s.
+FAKE_COPY = """#!{python}
+import os, sys, time
+log = open(os.environ["FAKE_LOG"], "a")
+root = os.environ["FAKE_ROOT"]
+log.write("copy: " + " ".join(sys.argv[1:]) + "\\n")
+log.write("dirty_bytes: " + open(root + "/proc/sys/vm/dirty_bytes").read().strip() + "\\n")
+log.close()
+open(root + "/proc/sys/vm/dirty_ratio", "w").write("0\\n")
+if os.environ.get("FAKE_BUMP"):
+    open(root + "/sys/block/mmcblk0/mmcblk0p8/stat", "w").write({bump!r})
+if os.environ.get("FAKE_SLOW"):
+    time.sleep(2)
+cmd, src, dst = sys.argv[1:]
+assert cmd == "copy-image"
+fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+done = written = 0
+with open(src, "rb") as f:
+    while True:
+        b = f.read(1 << 20)
+        if not b:
+            break
+        if b.count(0) == len(b):
+            os.ftruncate(fd, done + len(b))
+        else:
+            os.pwrite(fd, b, done)
+            written += len(b)
+        done += len(b)
+os.ftruncate(fd, done)
+os.close(fd)
+print(f"copied {{done}} bytes: {{written}} written, {{done - written}} left as holes")
+"""
+
+
 class BackupTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -275,15 +312,6 @@ class BackupTests(unittest.TestCase):
             "poweroff": '#!/bin/sh\necho "poweroff: $*" >> "$FAKE_LOG"\n',
             # Owners are not the test's to set; the calls are checked instead.
             "chown": '#!/bin/sh\necho "chown: $*" >> "$FAKE_LOG"\n',
-            # dd as the MPC's BusyBox's, every call logged, with vm.dirty_bytes as the copy sees it (and the
-            # kernel's answer to it: dirty_ratio reads 0 once dirty_bytes is set); with FAKE_BUMP, something
-            # writes to the eMMC during the copy; with FAKE_SLOW it takes 2 s.
-            "dd": f'#!/bin/sh\necho "dd: $*" >> "$FAKE_LOG"\n{DD_REFUSES}'
-                  f'echo "dirty_bytes: $({bb} cat "$FAKE_ROOT/proc/sys/vm/dirty_bytes")" >> "$FAKE_LOG"\n'
-                  f'echo 0 > "$FAKE_ROOT/proc/sys/vm/dirty_ratio"\n'
-                  f'[ -n "${{FAKE_BUMP:-}}" ] && echo "{STAT.format(w=1, ws=8, d=0).strip()}" > '
-                  f'"$FAKE_ROOT/sys/block/mmcblk0/mmcblk0p8/stat"\n'
-                  f'[ -n "${{FAKE_SLOW:-}}" ] && {bb} sleep 2\nexec {bb} dd "$@"\n',
         }
         program_dir(self.bin, bb, needs(BACKUP), fakes, extras=("poweroff",))
         r = self.root
@@ -300,6 +328,8 @@ class BackupTests(unittest.TestCase):
               "mpfree-internal-off: switched off ff0f0000.dwmmc\nmpfree-internal-off: switched off ff0c0000.dwmmc\n"
               "mpfree-internal-off: done: no eMMC or SD card block device is left\n")
         os.makedirs(os.path.join(r, "run/mpfree-data"))
+        write(os.path.join(r, "etc/mpfree-test/mpfree"),
+              FAKE_COPY.format(python=sys.executable, bump=STAT.format(w=1, ws=8, d=0).strip() + "\n"), 0o755)
         self.kernel = None
 
     def tearDown(self):
@@ -353,14 +383,14 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(self.calls("systemctl: ") + self.calls("poweroff: "), [])
 
     def assert_only_reads(self):
-        """dd only ever reads an eMMC disk, into its image in the backup folder on the stick."""
+        """The copy only ever reads an eMMC disk, into its image in the backup folder on the stick."""
         backup = re.escape(os.path.join(self.root, "run/mpfree-data/backup/"))
-        for call in self.calls("dd: "):
-            self.assertRegex(call, rf"^if={re.escape(self.root)}/dev/(mmcblk0(boot[01])?) "
-                                   rf"of={backup}mpc-one-emmc-\d{{8}}T\d{{6}}Z\.part/\1\.img bs=1048576$")
+        for call in self.calls("copy: "):
+            self.assertRegex(call, rf"^copy-image {re.escape(self.root)}/dev/(mmcblk0(boot[01])?) "
+                                   rf"{backup}mpc-one-emmc-\d{{8}}T\d{{6}}Z\.part/\1\.img$")
 
     def assert_dirty_bytes_back(self):
-        """vm.dirty_bytes was 32 MiB while dd copied, and is as it was again (dirty_ratio written back)."""
+        """vm.dirty_bytes was 32 MiB while the copy ran, and is as it was again (dirty_ratio written back)."""
         self.assertEqual(set(self.calls("dirty_bytes: ")), {"33554432"})
         with open(os.path.join(self.root, "proc/sys/vm/dirty_ratio")) as fh:
             self.assertEqual(fh.read(), "20\n")
@@ -380,7 +410,7 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout + self.notes())
         self.assert_closed()
         self.assert_only_reads()
-        self.assertEqual(len(self.calls("dd: ")), 3)
+        self.assertEqual(len(self.calls("copy: ")), 3)
         self.assertEqual(self.kernel.rule, RO_RULE, "the rule is there before the bind")
         self.assertEqual(self.kernel.force_ro_at_unbind, {d: "1\n" for d in self.kernel.images})
         self.assertEqual(self.calls("udevadm: "), ["control --reload", "control --reload"])
@@ -421,7 +451,7 @@ class BackupTests(unittest.TestCase):
         with open(os.path.join(self.root, "run/mpfree-setup/verify.txt")) as fh:
             self.assertEqual(fh.read(), "".join(sums), "every image read back from the stick and hashed again")
         self.assert_dirty_bytes_back()
-        self.assertRegex(notes, r"copy took \d+ s \(\d+ KB/s\)\n")
+        self.assertRegex(notes, r"copy took \d+ s \(\d+ KB/s; \d+ MiB written to the stick, \d+ KB/s\)\n")
         self.assertRegex(notes, r"read back and checked in \d+ s \(\d+ KB/s\)\n")
         # Once per boot: a second request does nothing, and is taken away too.
         request = self.request()
@@ -432,6 +462,63 @@ class BackupTests(unittest.TestCase):
         self.assertIn("already run this boot", self.notes())
         self.assertEqual(self.backups(), [name])
 
+    def test_a_half_copy_from_an_earlier_try_is_removed_first(self):
+        """The power went mid-copy once: that .part folder goes before the room is checked; finished backups,
+        other files and a link named like a half copy stay."""
+        self.kernel = FakeEmmc(self.root)
+        backup = os.path.join(self.root, "run/mpfree-data/backup")
+        done = os.path.join(backup, "mpc-one-emmc-20261116T014409Z")
+        half = os.path.join(backup, "mpc-one-emmc-20261116T024543Z.part")
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        for d in (done, half, elsewhere):
+            os.makedirs(d)
+        for f in (os.path.join(done, "mmcblk0.img"), os.path.join(half, "mmcblk0.img"),
+                  os.path.join(elsewhere, "keep"), os.path.join(backup, "notes.part")):
+            write(f, "x")
+        os.symlink(elsewhere, os.path.join(backup, "mpc-one-emmc-20261116T030000Z.part"))
+        res = self.run_backup()
+        self.assertEqual(res.returncode, 0, res.stdout + self.notes())
+        self.assertFalse(os.path.exists(half))
+        self.assertIn("removed mpc-one-emmc-20261116T024543Z.part, a half copy from an earlier try", self.notes())
+        self.assertTrue(os.path.exists(os.path.join(done, "mmcblk0.img")))
+        self.assertTrue(os.path.exists(os.path.join(elsewhere, "keep")))
+        self.assertTrue(os.path.exists(os.path.join(backup, "notes.part")))
+        names = self.backups()
+        self.assertEqual(len([n for n in names if re.fullmatch(r"mpc-one-emmc-\d{8}T\d{6}Z", n)]), 2, names)
+
+    def test_zeros_are_left_as_holes_and_read_back_the_same(self):
+        """A disk of zeros costs the stick no writes: its image is a hole that reads back as the disk."""
+        self.kernel = FakeEmmc(self.root)
+        self.kernel.images["mmcblk0boot1"] = bytes(BOOT_SECTORS * 512)
+        res = self.run_backup()
+        self.assertEqual(res.returncode, 0, res.stdout + self.notes())
+        (name,) = self.backups()
+        image = os.path.join(self.root, "run/mpfree-data/backup", name, "mmcblk0boot1.img")
+        with open(image, "rb") as fh:
+            self.assertEqual(fh.read(), bytes(BOOT_SECTORS * 512))
+        notes = self.notes()
+        self.assertIn("copied mmcblk0boot1: 8192 bytes, 0 MiB written (the rest is zeros, left as holes)", notes)
+        self.assertRegex(notes, r"copied mmcblk0: 1048576 bytes, 1 MiB written ")
+        with open(os.path.join(self.root, "run/mpfree-setup/verify.txt")) as fh:
+            self.assertIn(f"{hashlib.sha256(bytes(BOOT_SECTORS * 512)).hexdigest()}  mmcblk0boot1.img\n", fh.read())
+
+    def test_a_copy_that_does_not_say_what_it_wrote_fails(self):
+        self.kernel = FakeEmmc(self.root)
+        write(os.path.join(self.root, "etc/mpfree-test/mpfree"),
+              f'#!/bin/sh\n{self.busybox} cp "$2" "$3"\n', 0o755)
+        res = self.run_backup()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertEqual(self.status()["message"], "mmcblk0: the copy did not say what it wrote")
+        self.assertEqual(self.backups(), [])
+
+    def test_stops_first_without_mpfrees_program(self):
+        self.kernel = FakeEmmc(self.root)
+        os.unlink(os.path.join(self.root, "etc/mpfree-test/mpfree"))
+        res = self.run_backup()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("MPFree's program is missing from the stick", self.status()["message"])
+        self.assertEqual(self.kernel.bound, [], "the window never opened")
+
     def test_a_slow_copy_says_how_it_goes(self):
         """Every 30 status updates the kernel log gets the copy's pace and the block layer's counters."""
         self.kernel = FakeEmmc(self.root)
@@ -440,8 +527,8 @@ class BackupTests(unittest.TestCase):
               "     120        0     4000      30 99 0 409600 0        0       40       30 0 0 0 0 0\n")
         res = self.run_backup(FAKE_SLOW="1")
         self.assertEqual(res.returncode, 0, res.stdout + self.notes())
-        self.assertRegex(self.notes(), r"copying mmcblk0: 0 MiB, 0 KB/s; eMMC read 1 MiB, stick written 200 MiB, "
-                                       r"waiting in memory 102 MiB\n")
+        self.assertRegex(self.notes(), r"copying mmcblk0: 0 MiB, 0 KB/s; eMMC read 1 MiB, partition 4 written 200 MiB, "
+                                       r"whole stick written \? MiB, stick busy 0%, waiting in memory 102 MiB\n")
 
     def test_marks_the_disks_read_only_itself_too(self):
         """Should udev not apply the rule, the script's own force_ro writes make every disk read-only."""
@@ -460,7 +547,7 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertEqual(self.kernel.bound, [], "nothing is bound")
         self.assertEqual(self.status()["message"], "this system lacks programs the backup needs: sha256sum stat")
-        self.assertEqual(self.calls("dd: ") + self.calls("df: "), [])
+        self.assertEqual(self.calls("copy: ") + self.calls("df: "), [])
 
     def test_checks_before_the_window_opens(self):
         cases = {
@@ -492,7 +579,7 @@ class BackupTests(unittest.TestCase):
                 self.assertEqual(self.status()["state"], "failed")
                 self.assertEqual(self.status()["message"], message)
                 self.assertEqual(self.backups(), [])
-                self.assertEqual(self.calls("dd: "), [])
+                self.assertEqual(self.calls("copy: "), [])
                 self.assertFalse(os.path.exists(os.path.join(self.root, "run/udev/rules.d/00-mpfree-setup-ro.rules")))
 
     def test_stops_and_closes_the_window_on_any_surprise(self):
@@ -515,7 +602,7 @@ class BackupTests(unittest.TestCase):
                 self.assert_closed()
                 status = self.status()
                 self.assertEqual((status["state"], status["step"], status["message"]), ("failed", "checking", message))
-                self.assertEqual(self.calls("dd: "), [], "nothing is copied")
+                self.assertEqual(self.calls("copy: "), [], "nothing is copied")
                 self.assertEqual(self.backups(), [])
 
     def test_writes_during_the_copy_fail_it(self):
@@ -557,7 +644,7 @@ class BackupTests(unittest.TestCase):
         try:
             for _ in range(200):
                 if os.path.exists(os.path.join(self.root, "run/mpfree-setup/status")) and \
-                        self.status().get("step") == "copying" and self.calls("dd: "):
+                        self.status().get("step") == "copying" and self.calls("copy: "):
                     break
                 threading.Event().wait(0.05)
             else:
@@ -620,8 +707,14 @@ class StaticTests(unittest.TestCase):
         text = self.read(BACKUP)
         code = "\n".join(line for line in text.splitlines()
                          if not line.lstrip().startswith("#") and not line.startswith("NEEDS="))
-        # dd's one output is its image in the backup folder on the stick's partition 4.
-        self.assertEqual(re.findall(r"\bof=\S+", code), ['of="$out"'])
+        # The copy's one output is its image in the backup folder on the stick's partition 4; no dd.
+        self.assertEqual(re.findall(r'"\$COPY" copy-image[^\n]*', code),
+                         ['"$COPY" copy-image "$R/dev/$b" "$out" > "$S/copy-$b.out" 2> "$S/copy-$b.err" &'])
+        self.assertIn('COPY="$R/etc/mpfree-test/mpfree"\n', code)
+        self.assertEqual(re.findall(r"\bof=\S+", code), [])
+        # Deletes: the copy's own half folder, and a half copy an earlier try left (only .part folders in backup/).
+        self.assertEqual(re.findall(r"rm -rf \S+", code), ['rm -rf "$dir.part"', 'rm -rf "$p"'])
+        self.assertIn('for p in "$R$DATA"/backup/mpc-one-emmc-*.part; do\n  [ -d "$p" ] && [ ! -L "$p" ] || continue', code)
         self.assertEqual(re.findall(r"\bout=\S+", code), ['out="$dir.part/$b.img"'])
         self.assertEqual(re.findall(r"\bdir=\S+", code), ["dir=''", 'dir="$R$DATA/backup/mpc-one-emmc-$stamp"'])
         self.assertIn("DATA=/run/mpfree-data\n", code)
@@ -633,7 +726,7 @@ class StaticTests(unittest.TestCase):
         self.assertNotIn("blockdev", code, "Akai's system has none")
         self.assertEqual(re.findall(r'echo (\S+) > "\$R/sys/block/\$b/force_ro"', code), ["1"])
         self.assertEqual(re.findall(r"ATTR\{[^}]*\}=\S*", code), ['ATTR{force_ro}="1"\''])
-        self.assertEqual(re.findall(r"\bdd\b[^\n|]*", code), ['dd if="$R/dev/$b" of="$out" bs=1048576 2> "$S/copy-$b.err" &'])
+        self.assertEqual(re.findall(r"(?:^|[\s;|&(])dd\s[^\n|]*", code), [])
         self.assertEqual(sorted(set(re.findall(r'>\s*"?\$R/proc/[^\s;"]+', code))),
                          ['> "$R/proc/sys/vm/dirty_bytes', '> "$R/proc/sys/vm/dirty_ratio', '> "$R/proc/sys/vm/drop_caches'])
         self.assertEqual(re.findall(r'>\s*"?\$R/dev/[^\s;]+', code), ['> "$R/dev/kmsg"'])
@@ -741,7 +834,7 @@ class FormatTests(unittest.TestCase):
         res = self.run_format()
         self.assertEqual(res.returncode, 0, res.stdout + self.notes())
         self.assertEqual(self.calls("mke2fs: "),
-                         [f"-q -F -t ext4 -m 0 -J size=64 -L MPFREE-DATA -E root_owner=0:0 {self.dev}"])
+                         [f"-q -F -t ext4 -m 0 -i 131072 -J size=64 -L MPFREE-DATA -E root_owner=0:0 {self.dev}"])
         self.assertEqual(self.report(), {"state": "done", "done": str(64 << 20), "total": str(64 << 20)})
         data = self.after()
         self.assertEqual(data[:512], bytes(512), "the mark is gone")
