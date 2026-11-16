@@ -130,6 +130,21 @@ pub struct Notes {
     physical: NoteSet,
     active: NoteSet,
     mode: LatchMode,
+    /// Each note's velocity when it was struck. A latched note keeps it
+    /// once let go: the pad's pressure falls to almost nothing as the
+    /// finger lifts, and a latched note that kept that last pressure
+    /// repeated very quietly (Jay's final round, 16 Nov).
+    struck: Struck,
+}
+
+/// The velocity each of the 128 notes was struck with.
+#[derive(Clone, Debug)]
+struct Struck([u8; 128]);
+
+impl Default for Struck {
+    fn default() -> Self {
+        Struck([0; 128])
+    }
 }
 
 impl Notes {
@@ -150,6 +165,7 @@ impl Notes {
     }
 
     pub fn press(&mut self, note: u8, velocity: u8) {
+        self.struck.0[usize::from(note & 0x7F)] = velocity;
         let nothing_held = self.physical.is_empty();
         self.physical.insert(note, velocity);
         match self.mode {
@@ -174,6 +190,11 @@ impl Notes {
         self.physical.remove(note);
         if self.mode == LatchMode::Off {
             self.active.remove(note);
+        } else if self.active.contains(note) {
+            // Latched: back to the velocity it was struck with, not the
+            // pressure of the lifting finger.
+            let v = self.struck.0[usize::from(note & 0x7F)].max(1);
+            self.active.set_velocity(note, v);
         }
     }
 
@@ -211,6 +232,33 @@ mod tests {
 
     fn notes(s: &NoteSet) -> Vec<u8> {
         s.as_slice().iter().map(|h| h.note).collect()
+    }
+
+    /// The pad's pressure falls as the finger lifts; a latched note goes
+    /// back to the velocity it was struck with, so it doesn't repeat
+    /// almost silently (Jay's final round, 16 Nov). While held, pressure
+    /// still sets it.
+    #[test]
+    fn a_latched_note_keeps_the_velocity_it_was_struck_with() {
+        for mode in [LatchMode::Replace, LatchMode::Toggle] {
+            let mut n = Notes::new();
+            n.set_mode(mode);
+            n.press(36, 100);
+            n.pressure(36, 70);
+            assert_eq!(n.active().velocity(36), Some(70), "pressure while held");
+            n.pressure(36, 3);
+            n.release(36);
+            assert_eq!(
+                n.active().velocity(36),
+                Some(100),
+                "{mode:?}: struck, not 3"
+            );
+        }
+        // Without Latch the note just goes.
+        let mut n = Notes::new();
+        n.press(36, 100);
+        n.release(36);
+        assert_eq!(n.active().velocity(36), None);
     }
 
     #[test]
@@ -290,7 +338,10 @@ mod tests {
         n.pressure(1, 40);
         assert_eq!(n.active().velocity(1), Some(40));
         n.release(1);
+        // Let go: back to the velocity it was struck with (the lifting
+        // finger's pressure is not what the player meant).
+        assert_eq!(n.active().velocity(1), Some(100));
         n.pressure(1, 10); // released: ignored
-        assert_eq!(n.active().velocity(1), Some(40));
+        assert_eq!(n.active().velocity(1), Some(100));
     }
 }
