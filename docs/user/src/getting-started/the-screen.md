@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-16 a994ab4
 -->
 
 # The screen
@@ -65,7 +65,7 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 {{shot: options | Play's options, opened with MENU. Turn the wheel or tap to pick a row; – and + change it.}}
 
-In a list of settings like this one, turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. Or push the data wheel: the row's value is outlined, the wheel now changes it, and a second push sets it so the wheel moves between rows again. The panel on the right explains the row you picked.
+In a list of settings like this one, turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. Or push the data wheel: the row's value is outlined, the wheel now changes it, and a second push sets it so the wheel moves between rows again. The panel on the right explains the row you picked. A list longer than its panel scrolls a row at a time as you pick, and a finger can drag it up or down; the thin bar at its right shows where you are.
 
 The settings beside the Sample tab's pages and the Pads tab's Pad view, the Synth tab's tiles and Arrange's Record settings work the same way: the wheel picks, **–** and **+** change, and the push lets the wheel change it. Holding **SHIFT** gives the wheel its other job on that page (the next pad, the next page, scrolling).
 
