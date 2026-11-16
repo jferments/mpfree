@@ -301,6 +301,27 @@ impl ChainHost {
                 }
                 self.selected = Some(slot);
             }
+            ChainAction::Preset {
+                slot,
+                id,
+                ref values,
+            } => {
+                // A preset from the header's list: each value set as a
+                // tap on a button sets it (through the engine when it
+                // holds the control), then let go. Its ids are its
+                // engine's: refused if the slot holds another by now.
+                let chain = h.mixer.chain(sid);
+                let here = chain.and_then(|c| c.node(slot)).map(|n| n.info().id);
+                let (Some(uid), true) = (chain.and_then(|c| c.uid(slot)), here == Some(id)) else {
+                    return ChainOut::Refused("That effect has changed");
+                };
+                for &(param, v) in values {
+                    let addr = ParamAddr::new(Owner::Insert(self.strip(), uid), param);
+                    set(h, addr, v, recording);
+                    h.modu.release(addr);
+                }
+                self.selected = Some(slot);
+            }
             ChainAction::OpenPage(slot) => return ChainOut::OpenPage { strip: sid, slot },
             ChainAction::Group(g) => {
                 self.group = g;
@@ -1318,6 +1339,59 @@ mod tests {
         );
         assert_eq!(r.h.shelf.recent, ["mpfree.fx.room"]);
         assert!(!r.h.shelf_dirty);
+    }
+
+    /// A preset from the header's list sets the effect to it, all but its
+    /// Mix, and the header then names it.
+    #[test]
+    fn a_preset_from_the_header_loads_and_keeps_the_mix() {
+        let mut r = Rig::new();
+        let mut c = ChainHost::from_mixer(drums(), Some(0)).unwrap();
+        c.action(&mut r.h, &ChainAction::Add("mpfree.fx.plate"), false);
+        r.run(20);
+        let st = c.state(&r.h);
+        let slot = st.selected.unwrap();
+        let mix = st
+            .params
+            .iter()
+            .find(|p| p.info.name == "Mix")
+            .unwrap()
+            .addr;
+        c.action(
+            &mut r.h,
+            &ChainAction::Set {
+                addr: mix,
+                value: 40.0,
+            },
+            false,
+        );
+        c.action(&mut r.h, &ChainAction::Release(mix), false);
+        r.run(2);
+        let st = c.state(&r.h);
+        assert_eq!(st.preset, Some(0), "a new plate is at its defaults");
+        let k = st
+            .presets
+            .iter()
+            .position(|p| p.name == "Vocal plate")
+            .unwrap();
+        let values = st.presets[k].values.clone();
+        // Not for the engine in the slot (a mode switch on its way): refused.
+        let other = ChainAction::Preset {
+            slot,
+            id: "mpfree.fx.room",
+            values: values.clone(),
+        };
+        assert_eq!(
+            c.action(&mut r.h, &other, false),
+            ChainOut::Refused("That effect has changed")
+        );
+        let id = st.presets[k].id;
+        let out = c.action(&mut r.h, &ChainAction::Preset { slot, id, values }, false);
+        assert_eq!(out, ChainOut::Shown);
+        r.run(2);
+        let st = c.state(&r.h);
+        assert_eq!(st.preset, Some(k));
+        assert!((r.param(mix) - 40.0).abs() < 1e-3, "its Mix stays");
     }
 
     #[test]
