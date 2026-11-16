@@ -104,7 +104,7 @@ use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
 
 use crate::app::bank_letter;
 use crate::gui::FromUi;
-use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap, CENTRE_DB};
+use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
 use mpfree_fx::{CapturePoint, StripId};
 
 /// The Wave tab's page.
@@ -2958,7 +2958,10 @@ impl SamplePage {
             .map(|w| format!(", warped at {:.1} BPM", w.bpm));
         match project.put_source_as(pad, src, |name, mut layer, old| {
             layer.region.warp = warp;
-            Pad::replacing(name, layer, old)
+            match old {
+                Some(_) => Pad::replacing(name, layer, old),
+                None => crate::sampler::kit_pad_with(name, layer),
+            }
         }) {
             Ok(_) => {
                 self.edits += 1;
@@ -3433,8 +3436,7 @@ impl SamplePage {
                 let (frames, rate) = (src.frames(), src.rate());
                 let put = self.projects.get_mut(kit).map(|p| {
                     p.put_source_as(pad, src, |name, layer, old| {
-                        let mut new = Pad::new(name, layer);
-                        new.level_db = CENTRE_DB;
+                        let mut new = crate::sampler::kit_pad_with(name, layer);
                         if let Some(old) = old {
                             new.mute_group = old.mute_group;
                             new.chokes = old.chokes.clone();

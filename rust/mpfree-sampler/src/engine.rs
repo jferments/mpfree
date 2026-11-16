@@ -2071,13 +2071,26 @@ impl Engine {
             }
             None => None,
         };
-        // A free voice, else the oldest releasing one, else the oldest.
+        // A free voice, else the oldest releasing one, else the oldest of
+        // the pad holding the most voices: a pad hit over and over (Note
+        // Repeat on a long sound) gives up its own voices before another
+        // pad's sound is cut short.
         let slot = self.pool.free_slot().unwrap_or_else(|| {
             let rel =
                 |x: &Voice| x.kill_left > 0 || x.amp.as_ref().is_some_and(|a| a.is_releasing());
-            let mut best: Option<(usize, (bool, std::cmp::Reverse<u64>))> = None;
+            let mut held = [0u16; crate::model::PADS];
+            for (v, _) in self.pool.iter() {
+                if v.active && !rel(v) {
+                    if let Some(n) = held.get_mut(usize::from(v.pad)) {
+                        *n += 1;
+                    }
+                }
+            }
+            let count = |x: &Voice| held.get(usize::from(x.pad)).copied().unwrap_or(0);
+            type Key = (bool, u16, std::cmp::Reverse<u64>);
+            let mut best: Option<(usize, Key)> = None;
             for (i, (v, _)) in self.pool.iter().enumerate() {
-                let key = (rel(v), std::cmp::Reverse(v.age));
+                let key = (rel(v), count(v), std::cmp::Reverse(v.age));
                 if best.is_none_or(|(_, b)| key > b) {
                     best = Some((i, key));
                 }
