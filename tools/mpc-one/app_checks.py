@@ -497,6 +497,18 @@ CHECKS = (
          "the_monitor_gets_each_value_sent"],
         needs=['TRACK MIX / PAD MIX']),
     Check(
+        "midi-now", "The MIDI monitor's Now view and Save log",
+        "new: Now says what a keyboard holds this moment, and Save log keeps the list on the stick", "hands",
+        ["1. With a keyboard's MIDI OUT in the MPC's MIDI IN, press TRACK MIX, tap I/O, then Monitor, then Now.",
+         "2. Hold a chord on the keyboard, move its mod wheel and its pitch bend, then let go.",
+         "3. Tap List, then Save log: the line under the list says which file it wrote. Change nothing else."],
+        [("Save log kept a file on the stick", seen(r"^midi log: Saved \d+ lines to files/midi-logs/midi-log-"))],
+        "Did Now show the keys you held, the mod wheel and the bend while you played them?",
+        ["a_saved_log_is_a_new_file_in_the_stores_folder",
+         "without_a_data_folder_nothing_is_saved_and_the_monitor_hears_why",
+         "the_monitors_note_offs_are_taken_once"],
+        needs=['TRACK MIX / PAD MIX']),
+    Check(
         "map-controls", "Map controls: find buttons the app does not know yet",
         "only when a round needs a button that has no number yet", "hands",
         ["1. SHIFT + MENU for Prefs, the wheel to Map controls, +. Tap a control still to find (or pick it",

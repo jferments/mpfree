@@ -106,6 +106,7 @@ mod looper_tab;
 mod looping;
 mod memory;
 mod midi_in;
+mod midi_log;
 mod midi_out;
 mod midi_saved;
 mod mixing;
@@ -4161,6 +4162,22 @@ fn player_session(
         out.note(&format!("midi: setting not read: {w}"));
     }
     let mut midi_saver = midi_saved::Saver::new(&io_model);
+    // The Monitor's Save log (through the store, files/midi-logs/) and its
+    // lines in RAM for the workstation console while the developer tools
+    // are on (midi_log.rs): one thread, stopped when the session ends.
+    io_model
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .live
+        .saves_logs = store.saves();
+    let _midi_log =
+        match midi_log::Writer::start(Path::new(REPORT_DIR), io_model.clone(), store.clone()) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                out.note(&e);
+                None
+            }
+        };
     out.show(gui::ToUi::IoModel(io_model.clone()));
     // MIDI Out (midi_out.rs): tracks whose "Plays on" is the 5-pin jacks play
     // there. State-changing on the MPC (note bytes on cable 2, never SysEx),
@@ -4872,6 +4889,12 @@ fn player_session(
         }
         cv_out.tick(&mut |l| out.midi(&l));
         music.sync(&io_model, mt);
+        // The Monitor's "Send note-offs to MIDI out": only the notes MPFree
+        // left on there, as STOP's panic sends them.
+        if music.take_note_offs() {
+            midi_out.all_off(0);
+            out.midi("midi out: note-offs sent for the notes still on (the Monitor asked)");
+        }
         // MIDI Learn (M5): a control that took the armed knob ends the
         // chain editor's learn; a learned control sets its parameter as a
         // chain editor knob does.
