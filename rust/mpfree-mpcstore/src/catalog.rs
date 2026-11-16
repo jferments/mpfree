@@ -101,6 +101,7 @@ fn release(v: &Json) -> Option<Release> {
     let url = a.at("url").str_or_empty();
     let sha = a.at("sha256").str_or_empty().to_ascii_lowercase();
     if !url.starts_with("https://")
+        || !plain(v.at("version").str_or_empty())
         || sha.len() != 64
         || !sha.bytes().all(|b| b.is_ascii_hexdigit())
     {
@@ -132,8 +133,19 @@ fn release(v: &Json) -> Option<Release> {
     })
 }
 
+/// A catalog id or version MPFree uses in a file's name or its install
+/// record: letters, digits and `-_.+`, not starting with a dot. Every
+/// entry in the catalog of 16 Nov 2026 is one; any other is left out.
+pub fn plain(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 100
+        && !s.starts_with('.')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.+".contains(&b))
+}
+
 fn plugin(p: &Json) -> Option<Plugin> {
-    let id = p.at("id").as_str()?.to_string();
+    let id = p.at("id").as_str().filter(|s| plain(s))?.to_string();
     let kind = p.at("kind").str_or_empty().to_string();
     let latest = p.at("latest").str_or_empty();
     let stable = |v: &&Json| v.at("channel").str_or_empty() != "beta";
@@ -283,5 +295,32 @@ pub(crate) mod tests {
         let sum = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
         assert_eq!(c.by_sha256(sum).unwrap().0.id, "density2");
         assert!(parse("{}").is_err());
+    }
+
+    #[test]
+    fn an_id_or_version_that_could_name_another_file_is_left_out() {
+        let sum = "a".repeat(64);
+        let entry = |id: &str, version: &str| {
+            format!(
+                r#"{{"id": "{id}", "kind": "effect", "latest": "{version}", "versions": [{{"version": "{version}",
+                "assets": {{"armv7": {{"url": "https://e/x.zip", "sha256": "{sum}"}}}}}}]}}"#
+            )
+        };
+        let text = format!(
+            r#"{{"plugins": [{}, {}, {}, {}]}}"#,
+            entry("fine-1.0_x+y", "v1.6.0"),
+            entry("../../etc", "1.0"),
+            entry("odd", "1.0\\nfile=x"),
+            entry(".hidden", "1.0")
+        );
+        let c = parse(&text).unwrap();
+        let ids: Vec<_> = c.plugins.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["fine-1.0_x+y", "odd"]);
+        assert!(c.get("fine-1.0_x+y").unwrap().release.is_some());
+        assert!(
+            c.get("odd").unwrap().release.is_none(),
+            "its version has a new line"
+        );
+        assert!(!plain("a/b") && !plain("") && !plain("a b") && plain("6W6"));
     }
 }

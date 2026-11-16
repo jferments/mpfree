@@ -30,7 +30,7 @@ The catalog is kept as `files/plugins/.catalog.json`, so the list is there witho
 
 ## Downloading
 
-`fetch` opens `libcurl.so.4` with `dlopen` (no new build dependency, nothing to cross-compile) and refuses anything but `https://` to `open-mpc.github.io`, `sd88me.github.io`, `github.com`, `raw.githubusercontent.com` and `objects.githubusercontent.com`. Redirects (GitHub's release downloads go through two) must stay on HTTPS and are capped at 8. It fails on an HTTP error, gives up on a stalled transfer (under 1 KB/s for 30 s), caps the size (512 MB for a zip, 32 MB for the catalog, 16 MB for a picture) and removes a partial file. Downloads land in `files/plugins/.downloads/` and are removed once installed. No libcurl: Install is not offered and the place says to copy zips instead.
+`fetch` opens `libcurl.so.4` with `dlopen` (no new build dependency, nothing to cross-compile) and refuses anything but `https://` to `open-mpc.github.io`, `sd88me.github.io`, `github.com`, `raw.githubusercontent.com` and `objects.githubusercontent.com`. Redirects (GitHub's release downloads go through two) must stay on HTTPS and are capped at 8. It fails on an HTTP error, gives up on a stalled transfer (under 1 KB/s for 30 s), caps the size (512 MB for a zip, 32 MB for the catalog, 16 MB for a picture) and removes a partial file. Downloads land in `files/plugins/.downloads/`, named by their SHA-256, and are removed once installed. A catalog entry whose id or version isn't a plain name (letters, digits and `-_.+`, not starting with a dot) is left out, so nothing from the catalog can name a file outside the folder or add a line to an install record; every entry on 16 Nov passes. No libcurl: Install is not offered and the place says to copy zips instead.
 
 ## Installing
 
@@ -38,7 +38,7 @@ The catalog is kept as `files/plugins/.catalog.json`, so the list is there witho
 
 - **Checked first.** The SHA-256 is computed every time and must match the catalog's when one is given. A zip on the stick is matched to the catalog by its sum; an unknown one says "Not the catalog's: check where it came from".
 - **What counts as the plugin.** A folder holding `plugin.json`, or a description file and a `.so`; folders inside one belong to it. Releases put it at `<Top>/portable/<Maker - VST - Name>/`. A zip with none is refused.
-- **Nothing escapes the folder.** Every name is checked (no absolute paths, `.` or `..`, backslashes, drive letters, control characters or a trailing dot or space); links are skipped and counted; ZIP64, split zips and more than 20,000 entries are refused; 512 MB unpacked at most.
+- **Nothing escapes the folder.** A link where the plugin's folder goes is refused, and Remove never deletes through a link the musician put inside one. Every name is checked (no absolute paths, `.` or `..`, backslashes, drive letters, control characters or a trailing dot or space); links are skipped and counted; ZIP64, split zips and more than 20,000 entries are refused; 512 MB unpacked at most.
 - **Never half-installed.** Files are written to `.mpfree-installing-<folder>` and synced, then the folder is swapped in by renames. An update moves the old folder aside as `.mpfree-replaced-<folder>`, carries over every file the musician added (anything not in the old record), swaps, and removes the old one.
 - **A record.** `.mpfree-install` in the folder lists the catalog id, version, sum and every file written, so **Remove** deletes only those files and empty folders and leaves the musician's own. A folder without a record (copied by hand) is removed whole, after the same two taps.
 
@@ -52,16 +52,21 @@ As drawn and approved. The rows are name, maker and a tag: **Installed**, **Upda
 
 Controls: the dial moves, its push shows the next picture (a tap on the selected row too, as in the browser), **+** presses Install, Update or Install from zip (or answers Tap again to remove), **-** takes back a Remove or clears the search, Q-Link 2 steps the chips. A tap on the view or chip already on takes the list to its top, so every control does something (the controls sweep). Two things differ from the mockups and want Jay's look: an **Update list** button in the list's head (the mockups had no way to fetch again), and the hint says "push: next picture" where the mockup said "push: details".
 
+## What it writes
+
+Only `files/plugins/` under the data folder, and only when the musician acts (or opens the place, which fetches the catalog once per run). Each write site is listed and explained in `PLUGIN_STORE_NEEDLES` in `tools/mpc-one/tests/test_app_mpc.py`, the static check that every place the program writes is reviewed; that check also scans `mpfree-mpcstore` and `mpfree-mpcskin`, and pins `fetch.rs` (the only unsafe code outside `sys.rs`) to `dlopen`, `dlsym` and six libcurl functions.
+
 ## Tests
 
-- `mpfree-mpcstore`: the zip reader (entry kinds, a damaged entry, unsafe names), SHA-256 against the standard examples, the catalog's release pick, finding a release's plugin folder, install with the sum checked and an update keeping the musician's file, an unsafe name stopping the install, the hosts `fetch` allows, and `fetch` against a local server (progress, the size cap, an HTTP error, cancel). `examples/install.rs` and `examples/fetch.rs` run the real thing by hand; on 15 Nov they installed 6W6 from the live catalog.
-- `plugin_store.rs`: listing, a zip that isn't one refused and deleted, no data folder, the picture fit.
+- `mpfree-mpcstore`: the zip reader (entry kinds, a damaged entry, unsafe names), SHA-256 against the standard examples, the catalog's release pick, finding a release's plugin folder, install with the sum checked and an update keeping the musician's file, an unsafe name stopping the install, links never followed by install or remove, odd catalog ids and versions left out, the hosts `fetch` allows, and `fetch` against a local server (progress, the size cap, an HTTP error, cancel). `examples/install.rs` and `examples/fetch.rs` run the real thing by hand; on 15 Nov they installed 6W6 from the live catalog.
+- `plugin_store.rs`: listing, a zip that isn't one refused and deleted (and Delete zip refusing anything but a zip in the folder), no data folder, the picture fit.
 - `plugin_page.rs`: the catalog view, orders, chips and search, Update and the two-tap Remove, zips on the stick, favourites and the selection kept in view, version order, the sample screen.
 - `gui.rs`: `the_plugins_place_lists_the_stick_and_deletes_a_zip_on_the_second_tap` drives the real browser and worker on a scratch data folder; the sample screen `browser-plugins` is the manual's picture and goes through the controls sweep.
 - `mpfree-plughost/tests/mpc.rs`: `a_plugin_installed_while_running_is_offered_at_once`.
 
 ## Not yet
 
-1. **On the MPC.** Does the soft-boot stick reach HTTPS: libcurl present, CA certificates found, DNS over the Ethernet port. Read-only; folded into Jay's next combined device run.
-2. **A zip's pictures before installing.** Only the catalog's picture shows until it is installed.
-3. **Wi-Fi.** Needs the firmware loaded before the handover, or the opt-in chain route (`loadpin.enforce=0`), and a Wi-Fi page; the stick's owner thread would carry it.
+1. **On the MPC.** Does the soft-boot stick reach HTTPS: libcurl present, CA certificates found, DNS over the Ethernet port. Folded into Jay's next combined device run (check `mpc-plugin-install`).
+2. **Loading from the stick.** The stick mounts the data partition `noexec`, and the kernel won't map a plugin's library from a noexec mount, so a plugin in `files/plugins/` (MPC or CLAP) can't load there until the stick lets that one folder run code. The device rounds thread's stick change (#399) bind-mounts `files/plugins/` with `exec,nosuid,nodev`; without it the check `mpc-plugin` records the error.
+3. **A zip's pictures before installing.** Only the catalog's picture shows until it is installed.
+4. **Wi-Fi.** Needs the firmware loaded before the handover, or the opt-in chain route (`loadpin.enforce=0`), and a Wi-Fi page; the stick's owner thread would carry it.
