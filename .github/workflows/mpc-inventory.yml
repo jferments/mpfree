@@ -76,6 +76,7 @@ jobs:
           sh -n tools/mpc-one/read-only-midi-counters.sh
           sh -n tools/mpc-one/read-only-system-310.sh
           sh -n tools/mpc-one/passive-usbmon-capture.sh
+          sh -n tools/fxprobe/fxprobe.sh
           bash -n tools/mpc-one/lib/neighbor-identity.sh
           bash -n tools/mpc-one/tests/test-neighbor-identity.sh
       - name: Test neighbor MAC extraction against deterministic fixtures
@@ -115,6 +116,7 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_disktest_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_midi_capture.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/fxprobe/test/test_fxprobe_sh.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_factory_kit.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_mpc_projects.py
           python3 tools/mpc-import/tests/test_inspect_xpj.py
@@ -1182,6 +1184,17 @@ jobs:
         # libc/libm/loader only, glibc <= 2.39). The host-contract tests run
         # natively with the workspace tests above.
         run: bash tools/mpc-plugins/build.sh arm32
+      - name: Run five Open MPC catalog plugins in the plugin sandbox as 32-bit ARM under qemu (do not deploy)
+        # rust/mpfree-mpchost: MPC-format (VST 2.4 interface) plugins in
+        # mpfree-plughost. Downloads the five MIT releases pinned by SHA-256 in
+        # tools/mpc-plugins/catalog-check.txt (never committed or shipped), and
+        # runs each in its own plugin process with rack_check. About a minute.
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends qemu-user
+          # Kept between runs beside the cargo targets (the runner's home
+          # isn't writable on the self-hosted runner).
+          MPFREE_CATALOG_CACHE="${RUNNER_WORKSPACE:-$RUNNER_TEMP}/mpfree-catalog" \
+            bash tools/mpc-plugins/catalog-check.sh
       - name: Build and check the static mpfree program for the kexec test boot (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc

@@ -3,7 +3,8 @@
 // writer and a small worker thread.
 //
 // Both plugins are driven from outside the MPC app through plain files in one
-// work folder (by default "FXProbe" beside the drive's "VST2 Plugins" folder):
+// work folder (by default "FXProbe" beside the drive's "VST2 Plugins" folder,
+// or the folder a workfolder.txt pointer names; see workFolder()):
 //
 //   FXProbe/control.txt          written by the controller (fxprobe.py), read by every instance
 //   FXProbe/programmes/*.wav     test programmes the Source plays (fxlab writes them)
@@ -11,8 +12,9 @@
 //   FXProbe/status/<kind>-s<slot>.txt   each instance's state, rewritten when it changes
 //
 // The plugins never create the work folder; with no folder they do nothing at
-// all. A control file present when an instance starts is ignored, so an old
-// command never fires on project load. Nothing here runs on the audio thread
+// all. A control file present when an instance starts, or when the work folder
+// appears (a stick put in), is ignored, so an old command never fires on
+// project load or when a stick goes back in. Nothing here runs on the audio thread
 // except the Ring push and the atomics.
 //
 // SPDX-License-Identifier: MIT
@@ -38,6 +40,7 @@
 #include <thread>
 #include <vector>
 
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -57,27 +60,90 @@ inline std::string parentOf(const std::string& p)
     return p.substr(0, i);
 }
 
-// FXPROBE_DIR if set (tests), else <drive>/FXProbe for a plugin installed at
-// <drive>/VST2 Plugins/<folder>.
-inline std::string workFolder()
-{
-    if (const char* e = std::getenv("FXPROBE_DIR"))
-        if (*e) return mpc::detail::normaliseSlashes(e);
-    std::string drive = parentOf(parentOf(mpc::pluginFolder()));
-    if (drive.empty()) return std::string();
-    return drive + "/FXProbe";
-}
-
 inline bool isDir(const std::string& p)
 {
     struct stat st;
     return !p.empty() && ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+inline bool isFile(const std::string& p)
+{
+    struct stat st;
+    return !p.empty() && ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+// The marker fxprobe.sh setup leaves in a work folder. A pointer with a "*"
+// in it matches only folders that hold one.
+constexpr const char* kMarker = ".fxprobe-work";
+
+// The work folder a pointer file names: its first line, an absolute path of
+// printable characters with no ".." component, in which one whole component
+// may be "*" (such as /media/*/FXProbe: any drive, whatever name Akai's
+// system mounted it under). Anything else names no folder, so a damaged
+// pointer leaves the plugin idle.
+inline std::string pointedFolder(const std::string& text)
+{
+    std::string line = text.substr(0, text.find('\n'));
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+    while (line.size() > 1 && line.back() == '/') line.pop_back();
+    if (line.size() < 2 || line.size() > 400 || line[0] != '/') return std::string();
+    for (char c : line)
+        if ((unsigned char)c < 0x20 || c == 0x7f) return std::string();
+    int stars = 0;
+    size_t start = 1;
+    while (start <= line.size())
+    {
+        size_t end = line.find('/', start);
+        if (end == std::string::npos) end = line.size();
+        std::string part = line.substr(start, end - start);
+        if (part.empty() || part == "." || part == "..") return std::string();
+        if (part.find('*') != std::string::npos && (part != "*" || ++stars > 1 || end == line.size()))
+            return std::string();
+        start = end + 1;
+    }
+    return line;
+}
+
+// Where the work folder is, in this order:
+//   - FXPROBE_DIR, if set (desktop tests);
+//   - the pointer in workfolder.txt in the plugin's own folder, which
+//     fxprobe.sh install writes when it copies the plugins to the MPC's
+//     internal drive, so that the work folder can be on a stick (whose
+//     partitions Akai's system mounts noexec, so plugins don't load from it);
+//   - <drive>/FXProbe for a plugin installed at <drive>/VST2 Plugins/<folder>.
+// The answer may hold a "*" (see pointedFolder); WorkFolder resolves it.
+inline std::string workFolder()
+{
+    if (const char* e = std::getenv("FXPROBE_DIR"))
+        if (*e) return mpc::detail::normaliseSlashes(e);
+    const std::string& plugin = mpc::pluginFolder();
+    if (plugin.empty()) return std::string();
+    std::string pointer;
+    if (mpc::readTextFile(plugin + "/workfolder.txt", pointer)) return pointedFolder(pointer);
+    std::string drive = parentOf(parentOf(plugin));
+    if (drive.empty()) return std::string();
+    return drive + "/FXProbe";
+}
+
+// Folders and files the plugins make are readable by everyone (0755, 0644)
+// whatever the host's umask, which on the MPC is Akai's app's and unknown, so
+// a workstation reads the stick without root.
 inline bool ensureDir(const std::string& p)
 {
     if (isDir(p)) return true;
-    return ::mkdir(p.c_str(), 0755) == 0 || errno == EEXIST;
+    if (::mkdir(p.c_str(), 0755) == 0)
+    {
+        ::chmod(p.c_str(), 0755);
+        return true;
+    }
+    return errno == EEXIST;
+}
+
+inline std::FILE* createFile(const std::string& path)
+{
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (f) ::fchmod(::fileno(f), 0644);
+    return f;
 }
 
 // A file name the controller gave us: no folders, no "..", printable.
@@ -94,7 +160,7 @@ inline bool safeName(const std::string& s)
 inline bool writeAtomically(const std::string& path, const std::string& text)
 {
     std::string tmp = path + ".tmp";
-    std::FILE* f = std::fopen(tmp.c_str(), "wb");
+    std::FILE* f = createFile(tmp);
     if (!f) return false;
     bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
     ok = (std::fclose(f) == 0) && ok;
@@ -112,6 +178,62 @@ inline int64_t monotonicNs()
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
+
+// The folder a work-folder answer names now: the path itself if it is a
+// folder, or, for a path with "*", the one folder that matches it and holds
+// the marker. None, or more than one, is no folder.
+inline std::string resolveWorkFolder(const std::string& spec)
+{
+    size_t star = spec.find("/*/");
+    if (star == std::string::npos) return isDir(spec) ? spec : std::string();
+    const std::string prefix = star == 0 ? std::string("/") : spec.substr(0, star);
+    const std::string suffix = spec.substr(star + 3);
+    std::string found;
+    int matches = 0;
+    if (DIR* d = ::opendir(prefix.c_str()))
+    {
+        while (dirent* e = ::readdir(d))
+        {
+            if (e->d_name[0] == '.') continue;
+            std::string candidate = (prefix == "/" ? std::string() : prefix) + "/" + e->d_name + "/" + suffix;
+            if (isDir(candidate) && isFile(candidate + "/" + kMarker))
+            {
+                found = candidate;
+                ++matches;
+            }
+        }
+        ::closedir(d);
+    }
+    return matches == 1 ? found : std::string();
+}
+
+// An instance's work folder as it comes and goes (a stick taken out and put
+// back, perhaps under another mount name). Worker thread only.
+class WorkFolder
+{
+public:
+    explicit WorkFolder(std::string spec) : spec_(std::move(spec)) {}
+
+    // The folder, or "" while there is none. A missing folder is looked for
+    // again at most once a second.
+    const std::string& current()
+    {
+        if (!path_.empty() && isDir(path_)) return path_;
+        path_.clear();
+        const int64_t now = monotonicNs();
+        if (looked_ && now - lastLook_ < 1000000000LL) return path_;
+        looked_ = true;
+        lastLook_ = now;
+        path_ = resolveWorkFolder(spec_);
+        return path_;
+    }
+
+private:
+    std::string spec_;
+    std::string path_;
+    bool looked_ = false;
+    int64_t lastLook_ = 0;
+};
 
 // ---------------------------------------------------------------------------
 // The control file
@@ -306,7 +428,7 @@ public:
     bool open(const std::string& path, int rate)
     {
         close();
-        f_ = std::fopen(path.c_str(), "wb");
+        f_ = createFile(path);
         if (!f_) return false;
         rate_ = rate;
         frames_ = 0;

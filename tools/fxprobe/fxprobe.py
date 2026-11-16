@@ -24,7 +24,8 @@ installed on (its "VST2 Plugins" folder sits beside FXProbe). The MPC's
 shell is BusyBox: only mkdir, cat, ls, mv and rm are used there.
 
 Status: written for MPC OS 3.10.1 with developer-mode SSH; tested against the
-desktop chain test (test/run_chain_test.py), not yet on a device.
+desktop chain test (test/run_chain_test.py), not yet on a device. On the MPC
+with the kit on the test stick, fxprobe.sh does the same from the stick.
 """
 
 import argparse
@@ -210,6 +211,25 @@ def cmd_capture(dev, args):
     if not taps or not sources:
         sys.exit("fxprobe: no Source/Tap instances reporting (status: %s)" % (", ".join(st) or "none"))
     print("slots: %s; %d capture(s) of %.1f s each" % (", ".join(t[4:] for t in taps), len(gains), seconds))
+    # Each Source loads the programme first, so a slow read can't start it late
+    # into a Tap's fixed-length recording.
+    if any(st[s].get("programme") != args.programme for s in sources):
+        lines = ["seq %d" % next_seq(dev), "action load", "programme " + args.programme]
+        if args.slots:
+            lines.append("slots " + args.slots)
+        dev.write_text("control.txt", "\n".join(lines) + "\n")
+        deadline = time.time() + 60
+        while True:
+            time.sleep(0.5)
+            st = statuses(dev)
+            errs = ["%s: %s" % (k, st[k]["error"]) for k in sources if "error" in st.get(k, {})]
+            if errs:
+                sys.exit("fxprobe: " + "; ".join(errs))
+            if all(st.get(s, {}).get("programme") == args.programme for s in sources):
+                break
+            if time.time() > deadline:
+                sys.exit("fxprobe: the Sources did not load %s within 60 s" % args.programme)
+        print("loaded %s in every Source" % args.programme)
     for gain in gains:
         seq = next_seq(dev)
         tag = ("m%g" % -gain) if gain < 0 else ("%g" % gain)   # names allow only letters, digits, - _ .
@@ -225,7 +245,9 @@ def cmd_capture(dev, args):
         while True:
             time.sleep(0.5)
             st = statuses(dev)
-            done = [t for t in taps if st.get(t, {}).get("capture") == name and st[t].get("state") in ("done", "stopped")]
+            # The seq too: a Tap's done status from an earlier capture of the same name is not this one.
+            done = [t for t in taps if st.get(t, {}).get("capture") == name and st[t].get("seq") == str(seq)
+                    and st[t].get("state") in ("done", "stopped")]
             errs = ["%s: %s" % (k, st[k]["error"]) for k in taps + sources if "error" in st.get(k, {})]
             if errs:
                 sys.exit("fxprobe: " + "; ".join(errs))

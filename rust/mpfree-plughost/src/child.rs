@@ -1,5 +1,6 @@
-//! The plugin process: loads one CLAP plugin with `mpfree-clap` and serves
-//! the host.
+//! The plugin process: loads one plugin and serves the host. A `.clap`
+//! file is loaded with `mpfree-clap`; an MPC plugin (a plugin folder, the
+//! Open MPC catalog's format) with `mpfree-mpchost`.
 //!
 //! Two threads. The **main thread** (the plugin's CLAP main thread) answers
 //! the control channel: prepare, state, a value's text, a preset, quit;
@@ -15,6 +16,7 @@
 use crate::shm::{self, Mapping};
 use crate::wire::{self, Hello, ToChild, ToHost};
 use mpfree_clap::{ClapControl, ClapNode, Library, ParamSpec, Place, Preset};
+use mpfree_mpchost::{MpcControl, MpcNode};
 use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, Timed, MAX_BLOCK};
 use std::ffi::OsString;
 use std::io;
@@ -30,6 +32,132 @@ use std::time::Duration;
 const IDLE: Duration = Duration::from_millis(100);
 /// How often the audio thread looks at the quit flag when no block comes.
 const AUDIO_IDLE: Duration = Duration::from_millis(200);
+
+/// The loaded plugin's audio side, in either format.
+pub enum Plug {
+    Clap(Box<ClapNode>),
+    Mpc(MpcNode),
+}
+
+impl Plug {
+    fn node(&self) -> &dyn Node {
+        match self {
+            Plug::Clap(n) => n.as_ref(),
+            Plug::Mpc(n) => n,
+        }
+    }
+
+    fn node_mut(&mut self) -> &mut dyn Node {
+        match self {
+            Plug::Clap(n) => n.as_mut(),
+            Plug::Mpc(n) => n,
+        }
+    }
+
+    fn kind(&self) -> Kind {
+        self.node().info().kind
+    }
+
+    fn is_active(&self) -> bool {
+        match self {
+            Plug::Clap(n) => n.is_active(),
+            Plug::Mpc(n) => n.is_active(),
+        }
+    }
+
+    /// Blocks the plugin itself failed.
+    fn errors(&self) -> u64 {
+        match self {
+            Plug::Clap(n) => n.stats().errors,
+            Plug::Mpc(_) => 0,
+        }
+    }
+}
+
+/// The loaded plugin's control side, in either format.
+pub enum Control {
+    Clap(ClapControl),
+    Mpc(MpcControl),
+}
+
+impl Control {
+    fn save_state(&self) -> Option<Vec<u8>> {
+        match self {
+            Control::Clap(c) => c.save_state(),
+            Control::Mpc(c) => c.save_state(),
+        }
+    }
+
+    fn load_state(&self, b: &[u8]) -> bool {
+        match self {
+            Control::Clap(c) => c.load_state(b),
+            Control::Mpc(c) => c.load_state(b),
+        }
+    }
+
+    fn param_text(&self, index: u16, value: f32) -> Option<String> {
+        match self {
+            Control::Clap(c) => c.param_text(index, value),
+            Control::Mpc(c) => c.param_text(index, value),
+        }
+    }
+
+    fn load_preset(&self, p: &Preset) -> Result<(), String> {
+        match self {
+            Control::Clap(c) => c.load_preset(p),
+            Control::Mpc(c) => {
+                let n = p
+                    .load_key
+                    .as_deref()
+                    .and_then(program_of_key)
+                    .ok_or_else(|| "that isn't one of the plugin's programs".to_string())?;
+                c.load_program(n)
+            }
+        }
+    }
+
+    fn idle(&self) {
+        if let Control::Clap(c) = self {
+            c.idle();
+        }
+    }
+}
+
+/// An MPC plugin's built-in program as a preset's load key.
+pub fn program_key(n: usize) -> String {
+    format!("program:{n}")
+}
+
+/// The program number in a load key [`program_key`] made.
+pub fn program_of_key(key: &str) -> Option<usize> {
+    key.strip_prefix("program:")?.parse().ok()
+}
+
+/// Loads plugin `id` from `file`: an MPC plugin (a folder, see
+/// [`mpfree_mpchost::is_mpc_plugin`]) or a `.clap` file. An MPC plugin
+/// runs with its folder as the current folder, as on the MPC, and
+/// `MPC_PLUGIN_FOLDER` set to it (the inMusic SDK's plugins look there).
+pub fn open_plugin(file: &std::path::Path, id: &str) -> Result<(Plug, Control), String> {
+    if mpfree_mpchost::is_mpc_plugin(file) {
+        let lib = mpfree_mpchost::Library::open(file)?;
+        let _ = std::env::set_current_dir(&lib.folder.dir);
+        std::env::set_var("MPC_PLUGIN_FOLDER", &lib.folder.dir);
+        let (node, control) = lib.create()?;
+        if control.plugin_id() != id {
+            return Err(format!(
+                "{} holds {}, not {id}",
+                file.display(),
+                control.plugin_id()
+            ));
+        }
+        return Ok((Plug::Mpc(node), Control::Mpc(control)));
+    }
+    let node = Library::open(file)
+        .and_then(|lib| lib.create(id))
+        .map_err(|e| e.to_string())?;
+    let control = node.control();
+    Ok((Plug::Clap(Box::new(node)), Control::Clap(control)))
+}
 
 /// What the process was started with.
 #[derive(Debug, PartialEq)]
@@ -87,21 +215,25 @@ pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
         Ok(m) => Arc::new(m),
         Err(e) => return fail(&mut sock, format!("shared memory: {e}")),
     };
-    let node = match Library::open(&a.plugin).and_then(|lib| lib.create(&a.id)) {
-        Ok(n) => n,
-        Err(e) => return fail(&mut sock, e.to_string()),
+    let (node, control) = match open_plugin(&a.plugin, &a.id) {
+        Ok(p) => p,
+        Err(e) => return fail(&mut sock, e),
     };
     let hello = Hello {
         id: a.id.clone(),
-        name: node.info().name.to_string(),
+        name: node.node().info().name.to_string(),
         kind: node.kind(),
-        params: node.params().iter().map(ParamSpec::from_info).collect(),
+        params: node
+            .node()
+            .params()
+            .iter()
+            .map(ParamSpec::from_info)
+            .collect(),
     };
     if wire::send_to_host(&mut sock, &ToHost::Hello(hello)).is_err() {
         return 2;
     }
-    let control = node.control();
-    let nparams = node.params().len().min(shm::MAX_PARAMS);
+    let nparams = node.node().params().len().min(shm::MAX_PARAMS);
     let node = Arc::new(Mutex::new(node));
     let quit = Arc::new(AtomicBool::new(false));
     let audio = {
@@ -126,6 +258,24 @@ pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
 /// loading it into its own process. Exit 0 with the lines, 2 if the file
 /// won't load (the reason on stderr).
 fn list_main(file: &std::path::Path) -> i32 {
+    if mpfree_mpchost::is_mpc_plugin(file) {
+        return match mpc_tool(file) {
+            Ok((node, control)) => {
+                use std::io::Write;
+                let line = list_line(
+                    control.plugin_id(),
+                    node.info().name,
+                    control.vendor(),
+                    node.kind(),
+                );
+                i32::from(writeln!(io::stdout().lock(), "{line}").is_err()) * 2
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        };
+    }
     match Library::open(file) {
         Ok(lib) => {
             use std::io::Write;
@@ -173,6 +323,25 @@ pub fn list_line(id: &str, name: &str, vendor: &str, kind: Kind) -> String {
 /// load (the reason on stderr).
 fn presets_main(file: &std::path::Path) -> i32 {
     use std::io::Write;
+    if mpfree_mpchost::is_mpc_plugin(file) {
+        let (_node, control) = match mpc_tool(file) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{e}");
+                return 2;
+            }
+        };
+        let mut out = io::stdout().lock();
+        for (i, name) in control.programs().into_iter().enumerate() {
+            let p = mpc_program(&control, i, name);
+            if let Some(l) = preset_line(&p) {
+                if writeln!(out, "{l}").is_err() {
+                    return 2;
+                }
+            }
+        }
+        return 0;
+    }
     let lib = match Library::open(file) {
         Ok(lib) => lib,
         Err(e) => {
@@ -227,6 +396,30 @@ pub fn escape(s: &str) -> String {
     o
 }
 
+/// An MPC plugin made in a tool process (`--list`, `--presets`), with its
+/// folder as the current folder as when it plays.
+fn mpc_tool(file: &std::path::Path) -> Result<(MpcNode, MpcControl), String> {
+    let lib = mpfree_mpchost::Library::open(file)?;
+    let _ = std::env::set_current_dir(&lib.folder.dir);
+    std::env::set_var("MPC_PLUGIN_FOLDER", &lib.folder.dir);
+    lib.create()
+}
+
+/// An MPC plugin's built-in program `n` as a preset: it comes with the
+/// plugin, and loads by number ([`program_key`]).
+pub fn mpc_program(control: &MpcControl, n: usize, name: String) -> Preset {
+    Preset {
+        name,
+        place: Place::Plugin,
+        load_key: Some(program_key(n)),
+        plugins: vec![control.plugin_id().to_string()],
+        collection: String::new(),
+        category: String::new(),
+        creator: control.vendor().to_string(),
+        flags: mpfree_clap::sys::CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
+    }
+}
+
 /// One preset as `--presets` prints it: `preset`, then its name, its place
 /// (`plugin`, or `file:` and the path), its load key (empty for none), its
 /// flags, collection, category and creator, then one field per plugin id
@@ -252,7 +445,7 @@ pub fn preset_line(p: &Preset) -> Option<String> {
 }
 
 /// The main thread: answers the host until it says quit or goes away.
-fn serve(sock: &mut UnixStream, node: &Mutex<ClapNode>, control: &ClapControl) -> io::Result<()> {
+fn serve(sock: &mut UnixStream, node: &Mutex<Plug>, control: &Control) -> io::Result<()> {
     loop {
         let mut pfd = libc::pollfd {
             fd: sock.as_raw_fd(),
@@ -281,11 +474,11 @@ fn serve(sock: &mut UnixStream, node: &Mutex<ClapNode>, control: &ClapControl) -
         let answer = match m {
             ToChild::Prepare { rate, max_block } => {
                 let mut n = node.lock().unwrap_or_else(|e| e.into_inner());
-                n.prepare(rate, max_block as usize);
+                n.node_mut().prepare(rate, max_block as usize);
                 ToHost::Prepared {
                     ok: n.is_active(),
-                    latency: n.latency(),
-                    tail: n.tail_frames(),
+                    latency: n.node().latency(),
+                    tail: n.node().tail_frames(),
                 }
             }
             ToChild::SaveState => ToHost::State(control.save_state()),
@@ -317,7 +510,7 @@ fn serve(sock: &mut UnixStream, node: &Mutex<ClapNode>, control: &ClapControl) -
 }
 
 /// The audio thread: one block per request, until quit.
-fn audio_loop(map: &Mapping, node: &Mutex<ClapNode>, nparams: usize, quit: &AtomicBool) {
+fn audio_loop(map: &Mapping, node: &Mutex<Plug>, nparams: usize, quit: &AtomicBool) {
     let (req, done) = (map.req(), map.done());
     let mut events: Vec<Timed> = Vec::with_capacity(shm::MAX_EVENTS);
     // Start from the last answered request, not the last posted one: the
@@ -379,12 +572,7 @@ fn event_of(e: &shm::ShmEvent) -> Option<NodeEvent> {
 /// # Safety
 /// `p` is the mapped block, and this side owns the request and answer
 /// fields (between the host's `req` and our `done`).
-unsafe fn run_block(
-    p: *mut shm::Shm,
-    node: &Mutex<ClapNode>,
-    events: &mut Vec<Timed>,
-    nparams: usize,
-) {
+unsafe fn run_block(p: *mut shm::Shm, node: &Mutex<Plug>, events: &mut Vec<Timed>, nparams: usize) {
     let n = ((*p).frames as usize).min(MAX_BLOCK);
     let ctx = Ctx {
         rate: (*p).rate,
@@ -407,13 +595,15 @@ unsafe fn run_block(
             });
         }
     }
-    let mut g = node.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = node.lock().unwrap_or_else(|e| e.into_inner());
+    let kind = guard.kind();
+    let g = guard.node_mut();
     if reset {
         g.reset();
     }
     let out_l = &mut (&mut (*p).out_l)[..n];
     let out_r = &mut (&mut (*p).out_r)[..n];
-    if g.kind() == Kind::Effect {
+    if kind == Kind::Effect {
         out_l.copy_from_slice(&(&(*p).in_l)[..n]);
         out_r.copy_from_slice(&(&(*p).in_r)[..n]);
     } else {
@@ -427,7 +617,7 @@ unsafe fn run_block(
         (*p).values[i] = g.param(i as u16);
     }
     (*p).nvalues = nparams as u32;
-    (*p).errors = g.stats().errors.min(u64::from(u32::MAX)) as u32;
+    (*p).errors = guard.errors().min(u64::from(u32::MAX)) as u32;
 }
 
 #[cfg(test)]

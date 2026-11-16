@@ -1,0 +1,17 @@
+[package]
+name = "mpfree-mpchost"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Loads MPC-format plugins (the VST 2.4 binary interface MPC OS uses, as in the Open MPC catalog) as mpfree-node Nodes, for the plugin sandbox"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+mpfree-mpcplug = { path = "../mpfree-mpcplug" }
+libc = "0.2"
+
+[dev-dependencies]
+mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
+mpfree-mpchost-testplug = { path = "../mpfree-mpchost-testplug" }
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-synth = { path = "../mpfree-synth" }
