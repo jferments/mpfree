@@ -990,15 +990,25 @@ type InfoTable = HashMap<(String, String, bool), &'static NodeInfo>;
 /// The `'static` [`NodeInfo`] for plugin `id` (shown as `name`): its node
 /// id is `clap:` and the plugin id. Leaked once per distinct plugin.
 pub fn intern_info(id: &str, name: &str, kind: Kind) -> &'static NodeInfo {
+    intern_node_info(&format!("clap:{id}"), name, kind)
+}
+
+/// [`intern_info`] with the node id given whole (`mpc:` and an MPC
+/// plugin's id, say), for the plugin sandbox's other formats.
+pub fn intern_node_info(node_id: &str, name: &str, kind: Kind) -> &'static NodeInfo {
     static TABLE: OnceLock<Mutex<InfoTable>> = OnceLock::new();
-    let key = (id.to_string(), name.to_string(), kind == Kind::Instrument);
+    let key = (
+        node_id.to_string(),
+        name.to_string(),
+        kind == Kind::Instrument,
+    );
     let table = TABLE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut t = table.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(i) = t.get(&key) {
         return i;
     }
     let info: &'static NodeInfo = Box::leak(Box::new(NodeInfo {
-        id: leak(&format!("clap:{id}")),
+        id: leak(node_id),
         name: leak(name),
         kind,
     }));

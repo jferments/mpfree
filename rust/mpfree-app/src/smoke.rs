@@ -19,6 +19,7 @@ use crate::gui::{self, FromUi, Player};
 use mpfree_ui::{Fonts, Gesture, PageTarget, SoftCanvas, Touch};
 
 mod catalogue;
+mod phases;
 mod session;
 mod song_workflows;
 pub mod songs;

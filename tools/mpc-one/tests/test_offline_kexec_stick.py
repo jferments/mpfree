@@ -783,14 +783,27 @@ class KexecStickTests(unittest.TestCase):
         self.assertIn(f"dev=/dev/disk/by-partuuid/{kits_uuid}\n", script)
         self.assertIn(f"data=/dev/disk/by-partuuid/{data_uuid}\n", script)
         self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen "
-                      "--data /run/mpfree-data\n", script)
+                      "--data /run/mpfree-data --power-request /run/mpfree-app/power-request\n", script)
         self.assertIn('mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits', script)
-        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen\n", script)
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen --power-request /run/mpfree-app/power-request\n", script)
         copy = os.path.join(self.tmp, "app-copy")
         run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree {copy}", root_img])
         self.assertEqual(sha(copy), sha(app))
         self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/mpfree"), r"Type: regular\s+Mode:\s+0755")
         self.assertIn("cp /run/mpfree-app/report.txt", self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
+        # The power card's clean shut down and restart: a root path unit watches the pad player's request.
+        path_unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-power.path")
+        for line in ("DefaultDependencies=no", "PathExists=/run/mpfree-app/power-request",
+                     "Unit=mpfree-test-power.service", "Conflicts=shutdown.target"):
+            self.assertIn(line + "\n", path_unit)
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-power.path"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-power.path"))
+        self.assertIn("ExecStart=/bin/sh /etc/mpfree-test/power.sh\n",
+                      self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-power.service"))
+        for path in ("/etc/mpfree-test/power.sh", "/etc/systemd/system/mpfree-test-power.path",
+                     "/etc/systemd/system/mpfree-test-power.service"):
+            self.assertRegex(self.dfs(root_img, f"stat {path}"), r"User:\s+0\s+Group:\s+0", path)
+        self.assertIn("power button: a short press opens the pad player's power card", res.stdout)
 
     def test_pad_player_without_splash_and_its_checks(self):
         app = os.path.join(self.tmp, "mpfree")
@@ -801,7 +814,7 @@ class KexecStickTests(unittest.TestCase):
         [folder] = self.outputs()
         root_img = os.path.join(self.tmp, "p1.img")
         self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
-        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin\n",
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --power-request /run/mpfree-app/power-request\n",
                       self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh"))
         self.assertIn("After=systemd-journald.service systemd-udevd.service\n",
                       self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service"))
@@ -815,6 +828,105 @@ class KexecStickTests(unittest.TestCase):
                               (("--app", app, "--kits", too_big), "is not a kits file"),
                               (("--app", self.key + ".pub", "--kits", kits), "is not a 32-bit little-endian ELF"),
                               (("--app", os.path.join(self.tmp, "missing"), "--kits", kits), "build the pad player")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+
+    def dev_tools(self):
+        top = os.path.join(self.tmp, "dev")
+        write(os.path.join(top, "fxprobe/fxprobe.sh"), "#!/bin/sh\necho fxprobe\n", 0o755)
+        write(os.path.join(top, "fxprobe/plugins/MPFree - VST - FXProbe Source/plugin.so"), os.urandom(3000))
+        write(os.path.join(top, "fxprobe/programmes/short.wav"), os.urandom(5000))
+        write(os.path.join(top, "README.txt"), "tools\n")
+        return top
+
+    def test_dev_tools_go_on_partition_3(self):
+        """--dev-tools: the folder's files under /mpfree-dev on partition 3, root's, 0644 and 0755, with
+        SHA256SUMS and the marker; the rest of the stick is as without it."""
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        top = self.dev_tools()
+        res = self.build("--app", app, "--kits", kits, "--dev-tools", top)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("developer tools for Akai's system (--dev-tools " + os.path.realpath(top) + "): 4 files, ",
+                      res.stdout)
+        script_sha = hashlib.sha256(b"#!/bin/sh\necho fxprobe\n").hexdigest()
+        self.assertIn(f"  dev tool /mpfree-dev/fxprobe/fxprobe.sh  sha256 {script_sha}\n", res.stdout)
+        self.assertIn("/kits.bin and /mpfree-dev, sha256 ", res.stdout)
+        [folder] = self.outputs()
+        kits_img = os.path.join(self.tmp, "p3.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 3, kits_img)
+        self.assertEqual(run(["e2fsck", "-fn", kits_img]).returncode, 0)
+        self.assertNotIn("has_journal", re.search(r"^Filesystem features:(.*)$", self.dfs(kits_img, "stats"),
+                                                  re.M).group(1))
+        sums = self.dfs(kits_img, "cat /mpfree-dev/SHA256SUMS")
+        want = ""
+        for rel in ("README.txt", "fxprobe/fxprobe.sh", "fxprobe/plugins/MPFree - VST - FXProbe Source/plugin.so",
+                    "fxprobe/programmes/short.wav"):
+            copy = os.path.join(self.tmp, "copy")
+            if os.path.exists(copy):
+                os.unlink(copy)
+            run(["debugfs", "-R", f'dump "/mpfree-dev/{rel}" {copy}', kits_img])
+            self.assertEqual(sha(copy), sha(os.path.join(top, rel)), rel)
+            self.assertRegex(self.dfs(kits_img, f'stat "/mpfree-dev/{rel}"'), r"Type: regular\s+Mode:\s+0644")
+            self.assertRegex(self.dfs(kits_img, f'stat "/mpfree-dev/{rel}"'), r"User:\s+0\s+Group:\s+0")
+            want += f"{sha(os.path.join(top, rel))}  {rel}\n"
+        self.assertEqual(sums, want)
+        for d in ("/mpfree-dev", "/mpfree-dev/fxprobe", "/mpfree-dev/fxprobe/plugins",
+                  "/mpfree-dev/fxprobe/plugins/MPFree - VST - FXProbe Source", "/mpfree-dev/fxprobe/programmes"):
+            self.assertRegex(self.dfs(kits_img, f'stat "{d}"'), r"Type: directory\s+Mode:\s+0755", d)
+            self.assertRegex(self.dfs(kits_img, f'stat "{d}"'), r"User:\s+0\s+Group:\s+0", d)
+        self.assertIn("run a script here with sh", self.dfs(kits_img, "cat /mpfree-dev/MPFREE-DEV.txt"))
+        copy = os.path.join(self.tmp, "kits-copy")
+        run(["debugfs", "-R", f"dump /kits.bin {copy}", kits_img])
+        self.assertEqual(sha(copy), sha(kits), "the kits are as without --dev-tools")
+
+    def test_dev_tools_stops(self):
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        top = self.dev_tools()
+        res = self.build("--app", app, "--kits", kits)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("developer tools: none (no --dev-tools)", res.stdout)
+        linked = os.path.join(self.tmp, "linked")
+        shutil.copytree(top, linked)
+        os.symlink("README.txt", os.path.join(linked, "again.txt"))
+        spaced = os.path.join(self.tmp, "spaced")
+        shutil.copytree(top, spaced)
+        write(os.path.join(spaced, "two  spaces/x.so"), b"x")
+        trailing = os.path.join(self.tmp, "trailing")
+        shutil.copytree(top, trailing)
+        write(os.path.join(trailing, "ends with a space /x.so"), b"x")
+        quoted = os.path.join(self.tmp, "quoted")
+        shutil.copytree(top, quoted)
+        write(os.path.join(quoted, 'say "hi".txt'), b"x")
+        dotted = os.path.join(self.tmp, "dotted")
+        shutil.copytree(top, dotted)
+        write(os.path.join(dotted, ".hidden"), b"x")
+        ours = os.path.join(self.tmp, "ours")
+        shutil.copytree(top, ours)
+        write(os.path.join(ours, "SHA256SUMS"), b"x")
+        empty = os.path.join(self.tmp, "empty")
+        os.makedirs(os.path.join(empty, "only-a-folder"))
+        fifo = os.path.join(self.tmp, "fifo")
+        shutil.copytree(top, fifo)
+        os.mkfifo(os.path.join(fifo, "pipe"))
+        big = os.path.join(self.tmp, "big")
+        write(os.path.join(big, "huge.bin"), b"\0" * ((64 << 20) + 1))
+        for args, problem in ((("--dev-tools", top), "--dev-tools needs --app"),
+                              (("--app", app, "--kits", kits, "--dev-tools", os.path.join(top, "README.txt")),
+                               "is not a folder"),
+                              (("--app", app, "--kits", kits, "--dev-tools", linked), "is a link"),
+                              (("--app", app, "--kits", kits, "--dev-tools", spaced), "has an unusual name"),
+                              (("--app", app, "--kits", kits, "--dev-tools", trailing), "has an unusual name"),
+                              (("--app", app, "--kits", kits, "--dev-tools", quoted), "has an unusual name"),
+                              (("--app", app, "--kits", kits, "--dev-tools", dotted), "has an unusual name"),
+                              (("--app", app, "--kits", kits, "--dev-tools", ours), "a name this tool makes itself"),
+                              (("--app", app, "--kits", kits, "--dev-tools", empty), "holds no files"),
+                              (("--app", app, "--kits", kits, "--dev-tools", fifo), "is not a plain file"),
+                              (("--app", app, "--kits", kits, "--dev-tools", big), "more than 64 MiB")):
             res = self.build(*args)
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn(problem, res.stdout)
@@ -906,7 +1018,7 @@ class KexecStickTests(unittest.TestCase):
         self.assertIn("find /run/mpfree-data -xdev -path /run/mpfree-data/backup -prune -o ! -user 960 -exec chown -h 960:960 {} \\; ||", script)
         start = self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh")
         self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen "
-                      "--data /run/mpfree-data\n", start)
+                      "--data /run/mpfree-data --power-request /run/mpfree-app/power-request\n", start)
         self.assertNotRegex(start, r"(?m)^\s*(mount|mkdir|chown|chgrp|chmod)\b")
         for path in ("/etc/mpfree-test/storage.sh", "/etc/mpfree-test/start-app.sh", "/etc/passwd", "/etc/group",
                      "/etc/systemd/system/mpfree-test-storage.service"):
@@ -1165,7 +1277,7 @@ class StaticTests(unittest.TestCase):
             for script in (tool.ETHERNET_SCRIPT, tool.LOG_SCRIPT.format(log_uuid="00000000-0000-0000-0000-000000000000"),
                            tool.APP_SCRIPT.format(kits_uuid="00000000-0000-0000-0000-000000000000",
                                                   data_uuid="00000000-0000-0000-0000-000000000001", keep="",
-                                                  grow=tool.GROW_PROGRAM)):
+                                                  grow=tool.GROW_PROGRAM, power="")):
                 res = subprocess.run([busybox, "sh", "-n"], input=script, text=True, capture_output=True)
                 self.assertEqual(res.returncode, 0, res.stderr)
         lines = [line.strip() for line in tool.ETHERNET_SCRIPT.splitlines() if not line.lstrip().startswith("#")]
@@ -1220,7 +1332,7 @@ class StaticTests(unittest.TestCase):
         spec.loader.exec_module(tool)
         storage = tool.STORAGE_SCRIPT.format(user="mpfree", uid=960, kits_uuid="00000000-0000-0000-0000-000000000000",
                                              data_uuid="00000000-0000-0000-0000-000000000001", grow=tool.GROW_PROGRAM)
-        start = tool.APP_USER_SCRIPT.format(user="mpfree", keep="")
+        start = tool.APP_USER_SCRIPT.format(user="mpfree", keep="", power="")
         busybox = shutil.which("busybox")
         for script in (storage, start):
             for shell in ([busybox, "sh"] if busybox else [], ["sh"]):
@@ -1878,6 +1990,127 @@ class ChainDoneBusyBoxTests(ChainDoneTests):
 
 class ChainBusyBoxTests(ChainTests):
     busybox = True
+
+
+class PowerTests(unittest.TestCase):
+    """power.sh: the pad player's power card asked for a shut down or a restart (one word in its request
+    file). Run under dash, and BusyBox's sh where it is installed, with fake systemctl and journalctl."""
+
+    shells = ()
+
+    def setUp(self):
+        self.shells = [s for s in ([shutil.which("dash")] +
+                                   ([shutil.which("busybox"), "sh"] if shutil.which("busybox") else [])) if s]
+        if not shutil.which("dash"):
+            self.skipTest("dash not installed")
+        self.tmp = tempfile.mkdtemp(prefix="mpfree-power-test-")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        for name in ("systemctl", "journalctl", "sync"):
+            write(os.path.join(self.bin, name),
+                  f"#!/bin/sh\necho \"{name}: $*\" >> \"$FAKE_LOG\"\necho \"{name} output\"\n", 0o755)
+        for name in ("cat", "rm"):
+            os.symlink(shutil.which(name), os.path.join(self.bin, name))
+        self.log = os.path.join(self.tmp, "log")
+        self.kmsg = os.path.join(self.tmp, "kmsg")
+        self.request = os.path.join(self.tmp, "run/mpfree-app/power-request")
+        os.makedirs(os.path.dirname(self.request))
+        self.logs = os.path.join(self.tmp, "run/mpfree-log")
+        mod = stick_module()
+        self.script = (mod.POWER_SCRIPT.format(request=self.request)
+                       .replace("/dev/kmsg", self.kmsg)
+                       .replace("/run/mpfree-log", self.logs)
+                       .replace("/proc/sys/kernel/random/boot_id", os.path.join(self.tmp, "boot_id")))
+        write(os.path.join(self.tmp, "boot_id"), "0123abcd-0000-4000-8000-00000000c4a1\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_script(self, shell):
+        for f in (self.log, self.kmsg):
+            if os.path.exists(f):
+                os.unlink(f)
+        cmd = [*shell, "-c", self.script] if isinstance(shell, list) else [shell, "-c", self.script]
+        return subprocess.run(cmd, env={"PATH": self.bin, "FAKE_LOG": self.log},
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as fh:
+            return fh.read().splitlines()
+
+    def shell_list(self):
+        out = [shutil.which("dash")]
+        if shutil.which("busybox"):
+            out.append([shutil.which("busybox"), "sh"])
+        return out
+
+    def test_each_word_starts_its_target_and_leaves_a_note(self):
+        boot = os.path.join(self.logs, "boot-0123abcd-0000-4000-8000-00000000c4a1")
+        for shell in self.shell_list():
+            for word, target in (("poweroff", "poweroff.target"), ("restart", "reboot.target")):
+                os.makedirs(boot, exist_ok=True)
+                write(self.request, word + "\n")
+                res = self.run_script(shell)
+                self.assertEqual(res.returncode, 0, res.stdout)
+                self.assertFalse(os.path.exists(self.request), "the request is taken")
+                calls = self.calls()
+                self.assertEqual(calls[-1], f"systemctl: --no-block --job-mode=replace-irreversibly start {target}")
+                if not isinstance(shell, list):
+                    # BusyBox's sh runs its own sync applet, not the fake one, so only dash shows the call;
+                    # test_script_and_units checks the order in the script itself.
+                    self.assertLess(calls.index("sync: "), len(calls) - 1, "synced first")
+                with open(self.kmsg) as fh:
+                    self.assertEqual(fh.read(), f"mpfree-test-power: the pad player asked for {word}\n")
+                with open(os.path.join(boot, "power.txt")) as fh:
+                    self.assertTrue(fh.read().startswith(f"asked: {word}\n"))
+                with open(os.path.join(boot, "journal.txt")) as fh:
+                    self.assertEqual(fh.read(), "journalctl output\n")
+            shutil.rmtree(self.logs)
+            # Without the log partition the shut down still goes ahead.
+            write(self.request, "poweroff\n")
+            self.run_script(shell)
+            self.assertEqual(self.calls()[-1],
+                             "systemctl: --no-block --job-mode=replace-irreversibly start poweroff.target")
+            self.assertFalse(os.path.exists(self.logs))
+
+    def test_anything_else_is_ignored_and_a_link_is_never_followed(self):
+        secret = os.path.join(self.tmp, "secret")
+        write(secret, "poweroff\n")
+        for shell in self.shell_list():
+            for content in ("halt\n", "poweroff now\n", "", "reboot\n", "PowerOff\n"):
+                write(self.request, content)
+                res = self.run_script(shell)
+                self.assertEqual(res.returncode, 0, res.stdout)
+                self.assertFalse(os.path.exists(self.request))
+                self.assertEqual(self.calls(), [], content)
+                with open(self.kmsg) as fh:
+                    self.assertEqual(fh.read(),
+                                     "mpfree-test-power: ignored a request that was not poweroff or restart\n")
+            os.symlink(secret, self.request)
+            self.run_script(shell)
+            self.assertFalse(os.path.lexists(self.request), "the link is removed")
+            self.assertTrue(os.path.exists(secret), "what it pointed at is not")
+            self.assertEqual(self.calls(), [])
+            # No request at all (the path unit fired late): nothing.
+            res = self.run_script(shell)
+            self.assertEqual((res.returncode, self.calls()), (0, []))
+            self.assertFalse(os.path.exists(self.kmsg))
+
+    def test_script_and_units(self):
+        mod = stick_module()
+        code = "\n".join(l for l in mod.POWER_SCRIPT.splitlines() if not l.lstrip().startswith("#"))
+        for forbidden in ("mount", "mmcblk", "/data", "fw_setenv", "kexec", "dd ", "cp ", "$(cat \"$f\")",
+                          "echo \"$word\"", "logind"):
+            self.assertNotIn(forbidden, code)
+        self.assertEqual(code.count("systemctl"), 1)
+        self.assertLess(code.index("\nsync\n"), code.index("systemctl"), "synced before the shut down")
+        unit = mod.POWER_UNIT
+        self.assertIn("Type=oneshot\n", unit)
+        self.assertNotIn("User=", unit)
+        self.assertNotIn("Conflicts=shutdown.target", unit, "it starts the shut down; it must not be stopped by it")
+        self.assertEqual(mod.POWER_REQUEST, "/run/mpfree-app/power-request")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

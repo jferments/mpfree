@@ -96,7 +96,7 @@ These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2
 - [ ] Export stems, MIDI, and project archive. (Built on the workstation, 2026-11-14: the mixdown, stems and a MIDI file from one pass over the song (#335, #337). A project archive is not built. See [Export](../design/export.md).)
 
 ## Phase 5 — Compatibility and distribution
-- [ ] Optional local import of supported user-owned content.
+- [ ] Optional local import of supported user-owned content. (Started, 2026-11-15: MPC keygroup programs become MPFree keygroup kits with a computer tool (#382). Its readings were checked against a real factory program's report, but the result hasn't yet been played side by side with the MPC. See [Importing MPC projects](../design/mpc-import.md).)
 - [ ] Assess factory project import and legally compatible native plugin hosting.
 - [ ] Package signed/reproducible releases with backup/recovery documentation.
 - [ ] Test on MPC One, then separately evaluate One+ and other models.

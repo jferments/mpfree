@@ -1,0 +1,11 @@
+# Open MPC catalog plugins (https://open-mpc.github.io) that CI runs in
+# MPFree's plugin sandbox as their real 32-bit ARM releases, under qemu.
+# All MIT-licensed. They are downloaded at test time, checked against these
+# SHA-256 sums, and never committed or shipped with MPFree.
+#
+# id                  kind        sha256                                                            url
+airwindows-density2   effect      2b913b7379fae29d3a16fe546edc5788fceb6e70ea8a002c3034411bcf40b6f8  https://github.com/mmiroshnikov/mpc-airwindows/releases/download/v1.0.0/Density2-1.0.0-mpc-armv7.zip
+tidal-verb            effect      bec0325c1b2bb742b7705e0a579cca0ed304cc016be91d17f9390b16c0e1ee65  https://github.com/fullbann/tidal-verb/releases/download/v1.6.0/Tidal-Verb-1.6.0-mpc-armv7.zip
+mono-voice            instrument  c9263c1c0389762de82ac376cca020c675487be4c7c7c5d582e33018c5570b9d  https://github.com/saustin2010/mpc-vst-monovoice/releases/download/v1.0.2/SYN-Mono-Voice-1.0.2-mpc-armv7.zip
+elements              instrument  bd60e28e839a37ff56ee0b0269488e7f872020c944b1940168a9b6c45ead704e  https://github.com/saustin2010/mpc-vst-modal-voice/releases/download/v1.2.1/SYN-Modal-Voice-1.2.1-mpc-armv7.zip
+dub-force-siren       instrument  bf12f387e66481c076e5cea5d89de94703c6692f27bfc4589c0f8e3d0da84059  https://github.com/no3z/mpc-dubsiren/releases/download/v2.1.0/Dub-Force-Siren-2.1.0-mpc-armv7.zip

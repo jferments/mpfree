@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
+covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
 checked: 2026-11-14 5c1d2e7
 -->
 
@@ -164,9 +164,14 @@ Each of these costs almost nothing until you use it.
 
 ## Plugins
 
-MPFree can also use **CLAP plugin effects** built for the MPC One's ARM chip. Plugins made for a computer (Windows, macOS or ordinary Linux PCs) won't run on it.
+MPFree can also use plugin effects built for the MPC One's ARM chip, of two kinds:
 
-1. Put the `.clap` files on the MPFREE-DATA partition of your MPFree stick, in the folder `files/plugins/`.
+- **CLAP plugins**, `.clap` files.
+- **MPC plugins**, the kind Akai's own MPC software loads from a `VST2 Plugins` folder, such as the free plugins in the [Open MPC catalog](https://open-mpc.github.io). Each one is a folder named like `Airwindows - VST - Density2`.
+
+Plugins made for a computer (Windows, macOS or ordinary Linux PCs) won't run on it.
+
+1. Put the plugins on the MPFREE-DATA partition of your MPFree stick, in the folder `files/plugins/`. For an MPC plugin, copy its whole folder there. These work too: the folder you unzipped from a catalog download (MPFree looks inside its `portable` folder), or a `VST2 Plugins` folder copied from an MPC drive.
 2. Start MPFree. The plugins' effects join the list you add effects from, under **Plugins** after the built-in ones, each with its maker's name.
 3. Add one to a strip as you would any effect. Its knobs show in the chain editor, in the plugin's own groups, and the Q-Links, macros and MIDI Learn work on them.
 
@@ -180,10 +185,12 @@ Each of these is written in the Events log, so nothing goes wrong without your b
 
 Some plugins keep files of their own: Surge XT its user folder, Dexed its cartridges. MPFree gives them the folder `files/plugin-home/` on the stick, so they never write anywhere else. To reset every plugin's own files, delete that folder from a computer.
 
+An MPC plugin's own screen and Q-Link layout (its skin) isn't drawn yet: its knobs show as a plain list of controls, in the order the plugin gives them. A few kinds of MPC plugin can't work in MPFree: ones made only for the newer 64-bit MPCs, add-ins that change Akai's own app, and ones that rely on parts of Akai's app. A sequencer plugin that sends notes out to other tracks loads, but its notes don't go anywhere yet.
+
 A plugin's settings are saved with your project. If you open the project on a stick without that plugin, the effect is left out and the Events log names the plugin's file. Plugin synths play as a track's own instrument (see [Synths](synths.md#a-synth-for-each-track)).
 
 > [!NOTE]
-> **Not yet:** MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming.
+> **Not yet:** MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming. MPC plugins are never included: you choose and download the ones you want.
 
 ## Coming next
 

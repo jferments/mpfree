@@ -28,6 +28,8 @@ Development happens on one MPC One running firmware 3.6.0, reached over a direct
 - **MIDI:** keyboards on the 5-pin MIDI IN, MIDI Learn, clock in and out, MIDI tracks and CV/gate out (MIDI out and CV out are behind flags until their device round).
 - **Projects:** New, Save and Open from the browser (BROWSE, SHIFT + BROWSE to save), with every engine's state, the samples and the audio takes saved in the project folder and the last ten saves kept; autosave every two minutes, and a safe start after a crash.
 - **Export:** the song as a mixdown, as stems and as a MIDI file.
+- **Import (on a computer):** an MPC keygroup program becomes an MPFree keygroup kit (`mpfree-mpc-import`, stage 1 of [MPC import](docs/dev/design/mpc-import.md)).
+- **Under load:** effects rest on silence, the quietest voices are given up (with a short fade, counted and shown) when the audio falls behind, and a load that would leave less than 256 MB of memory free is refused, with the reason on screen.
 
 The main runs on the device so far are round 7 (2026-11-11: the looper from the pads and the line input with no underruns, about 8.7 ms from pad to sound) and live test 3 (2026-11-13: the app check's first five phases and the benchmarks, with 0 sectors written to the boot partitions). Most of the list above is built and tested on the workstation and in CI (unit tests, golden screens and GUI smoke tests) but not yet tried on the MPC; the [guide to the app on the test build](docs/dev/guides/mpfree-app.md) says what has run where, and each [design page](docs/dev/README.md#design) carries its own status.
 
