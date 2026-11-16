@@ -52,13 +52,24 @@ def run(cmd):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 
+# The stick builds, by the UTC time in the folder's name: offline-kexec-stick.py's kexec-stick-<UTC>-XXXXXX
+# with a stick.img (the rule write-test-stick.py uses), and the USB creator's creator-stick-<UTC>
+# (mpfree-stick write --record) with its report.txt. host_kexec_boot.py picks the same one.
+BUILDS = (("kexec-stick-", "stick.img"), ("creator-stick-", "report.txt"))
+STAMP = re.compile(r"^\d{8}T\d{6}Z")
+
+
 def newest_build(work):
-    """The newest kexec-stick folder with a stick.img (the rule write-test-stick.py uses), and its log PARTUUID."""
-    folders = sorted(d for d in os.listdir(work) if d.startswith("kexec-stick-")) if os.path.isdir(work) else []
-    folders = [d for d in folders if os.path.isfile(os.path.join(work, d, "stick.img"))]
-    if not folders:
-        raise Stop(f"no kexec-stick folder with a stick.img under {work}")
-    folder = os.path.join(work, folders[-1])
+    """The newest stick build folder (BUILDS), and its log PARTUUID."""
+    found = []
+    for d in (os.listdir(work) if os.path.isdir(work) else []):
+        for prefix, needs in BUILDS:
+            stamp = d[len(prefix):len(prefix) + 16]
+            if d.startswith(prefix) and STAMP.match(stamp) and os.path.isfile(os.path.join(work, d, needs)):
+                found.append((stamp, d))
+    if not found:
+        raise Stop(f"no kexec-stick folder with a stick.img, or creator-stick folder with a report.txt, under {work}")
+    folder = os.path.join(work, max(found)[1])
     with open(os.path.join(folder, "report.txt")) as fh:
         found = PARTUUID.findall(fh.read())
     if len(found) != 1:

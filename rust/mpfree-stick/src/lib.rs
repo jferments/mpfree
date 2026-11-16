@@ -19,6 +19,7 @@
 //! Nothing here ever reads or writes the MPC itself.
 
 pub mod cli;
+pub mod dev;
 pub mod disks;
 pub mod dtb;
 pub mod recipe;
