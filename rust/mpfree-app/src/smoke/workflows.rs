@@ -342,6 +342,56 @@ mod tests {
         });
     }
 
+    /// Removing an effect shuts its page (Jay, 16 Nov: "If we delete the
+    /// effect, its configuration page should not remain open", for any
+    /// effect): the chain editor goes back to its list with nothing
+    /// picked, rather than opening the next effect's page.
+    #[test]
+    fn removing_an_effect_shuts_its_page() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "look", "EQ");
+            s.press("mixer", "eq-add", "Drums + EQ").run_for(0.3);
+            s.press("mixer", "look", "Effects");
+            // The EQ's page open (a first tap picks, a second opens).
+            s.press("mixer", "fx", "EQ").run_for(0.2);
+            if s.view() != View::Chain {
+                s.press("mixer", "fx", "EQ").run_for(0.2);
+            }
+            assert_eq!(s.view(), View::Chain);
+            let e = engine(&mut s);
+            assert_eq!((e.selected, e.eq), (Some(1), true), "on the EQ's page");
+
+            // Remove: the EQ's page shuts, and no other effect's opens.
+            s.press("chain", "remove", "Remove");
+            assert_eq!(screen(&s).selected, None, "shut at once");
+            s.run_for(0.3);
+            let (e, v) = (engine(&mut s), screen(&s));
+            assert_eq!(names(&e), ["Filter · DJ"], "the EQ is gone");
+            assert_eq!((e.selected, e.eq), (None, false), "no page in the app");
+            assert_eq!((v.selected, v.eq), (None, false), "no page on screen");
+            assert_eq!(s.view(), View::Chain, "the chain's list stays");
+            assert_eq!(s.hint(), mpfree_chain_ui::CHAIN_HINT, "not the EQ's hint");
+            assert!(
+                s.control("chain", "remove", "Remove").is_none(),
+                "nothing picked to remove"
+            );
+
+            // Any effect alike: the filter's page, then Remove.
+            s.press("chain", "slot", "Filter · DJ").run_for(0.2);
+            assert_eq!(engine(&mut s).selected, Some(0), "on the filter's page");
+            s.press("chain", "remove", "Remove").run_for(0.3);
+            let (e, v) = (engine(&mut s), screen(&s));
+            assert!(names(&e).is_empty(), "the filter is gone");
+            assert_eq!(e.selected, None);
+            assert_eq!(v.selected, None);
+            s.press("chain", "back", "").run_for(0.2);
+            assert_eq!(s.view(), View::Mixer);
+            assert_eq!(strip_inserts(&s, "Drums"), Vec::<String>::new());
+        });
+    }
+
     /// The chain editor's strip button (Jay's card, 14 Nov 07:15Z): the
     /// strip list over the editor, a tap on a strip opens its chain in
     /// place, ‹ still going back to the mixer.

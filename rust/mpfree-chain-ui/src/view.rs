@@ -1313,6 +1313,12 @@ impl ChainView {
         // Show what can be shown at once.
         match &a {
             ChainAction::Select(i) => self.state.selected = Some(*i),
+            // The removed effect's page shuts at once, before the app's
+            // next state: the list, nothing picked.
+            ChainAction::Remove(slot) if self.state.selected == Some(*slot) => {
+                self.state.selected = None;
+                self.state.eq = false;
+            }
             ChainAction::SetOn { slot, on } => {
                 if let Some(s) = self.state.slots.get_mut(*slot) {
                     s.on = *on;
@@ -2507,7 +2513,11 @@ impl ChainView {
                 l.effect,
                 Align::Center,
                 t.text_dim,
-                "No effects yet: tap  + Add effect",
+                if st.slots.is_empty() {
+                    "No effects yet: tap  + Add effect"
+                } else {
+                    "Tap an effect to open its page, or  + Add effect"
+                },
             );
             return;
         }
