@@ -6,7 +6,9 @@
 //!   An envelope's stages and a mix's levels are faders; an organ's
 //!   drawbars are drawbars.
 //! - A choice of a few short names is a row of buttons (two rows when one
-//!   is too narrow); a longer one is a chip with arrows.
+//!   is too narrow); a longer one is a chip with arrows, and so is a
+//!   choice at the trim tier, however short (a setting made once, such as
+//!   a reverb's Mix curve, takes one small line).
 //! - A small whole number (an octave, a voice count) is a stepper.
 //! - A switch is a pill, lit when on.
 //! - In a section of routing rows (a pressure slot's target and depth),
@@ -236,6 +238,16 @@ fn button_w(names: &[String]) -> i32 {
         .max()
         .unwrap_or(44)
         .max(44)
+}
+
+/// How choice `c` lies in width `w`: rows of buttons (1 or 2), or 0 for a
+/// chip (always, at the trim tier).
+fn lie(c: &Control, names: &[String], w: i32) -> i32 {
+    if c.tier == Tier::Trim {
+        0
+    } else {
+        choice_rows(names, w)
+    }
 }
 
 /// How a choice lies in width `w`: rows of buttons (1 or 2), or 0 for a
@@ -508,7 +520,7 @@ fn bar_lines(s: &SectionBox, bars: &[usize], w: i32) -> Vec<Line> {
                 // Two choices share a line when each gets half and still
                 // fits on one row of buttons (or as a chip).
                 let half = (w - 12) / 2;
-                let rows_half = choice_rows(names, half);
+                let rows_half = lie(c, names, half);
                 let can_share = half >= 170 && rows_half <= 1;
                 let prev_shares = lines.last().is_some_and(|l| {
                     l.items.len() == 1
@@ -522,7 +534,7 @@ fn bar_lines(s: &SectionBox, bars: &[usize], w: i32) -> Vec<Line> {
                     l.items.push((k, half, h));
                     continue;
                 }
-                let rows = choice_rows(names, w).max(1);
+                let rows = lie(c, names, w).max(1);
                 let h = label + rows * BAR_H + (rows - 1) * 6;
                 // Room for a second choice beside it later.
                 let width = if can_share && next_choice_shares(s, bars, k, half) {
@@ -574,10 +586,12 @@ fn bar_geom(c: &Control, cell: Rect, section: &str) -> CtlGeom {
                 g.label = l;
                 area = Rect::new(rest.x, rest.y + 4, rest.w, rest.h - 4);
             }
-            let rows = choice_rows(names, area.w);
+            let rows = lie(c, names, area.w);
             if rows == 0 {
                 g.chip = true;
-                let aw = 52.min(area.w / 4);
+                // A trim chip's arrows are smaller, to leave its name room.
+                let most = if c.tier == Tier::Trim { 32 } else { 52 };
+                let aw = most.min(area.w / 4);
                 let h = BAR_H.min(area.h);
                 g.parts = vec![
                     Rect::new(area.x, area.y, aw, h),

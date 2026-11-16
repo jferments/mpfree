@@ -120,12 +120,23 @@ pub struct StepClip {
     /// Every pad (0 to 15), and any other note the clip holds, with its
     /// steps (None: empty).
     pub rows: Vec<(u8, Vec<Option<Step>>)>,
+    /// The same rows' locks: how many each step holds (its row's own and
+    /// the whole step's), for the step pads' lock colour.
+    pub locks: Vec<(u8, Vec<usize>)>,
 }
 
 impl StepClip {
     /// The steps of `pitch` (empty when the clip has no such row).
     pub fn row(&self, pitch: u8) -> &[Option<Step>] {
         self.rows
+            .iter()
+            .find(|(p, _)| *p == pitch)
+            .map_or(&[], |(_, r)| r.as_slice())
+    }
+
+    /// How many locks each step of `pitch` holds (empty with no such row).
+    pub fn locks(&self, pitch: u8) -> &[usize] {
+        self.locks
             .iter()
             .find(|(p, _)| *p == pitch)
             .map_or(&[], |(_, r)| r.as_slice())
@@ -157,6 +168,9 @@ pub enum StepAction {
     },
     /// ERASE + a lane's name: every step of `pad` comes out of the clip.
     ClearPad { pad: u8 },
+    /// ERASE + a step pad (one step) or + a PAD BANK (a page), with STEP
+    /// SEQ on: steps `from` up to `to` of `pad` are cleared, locks too.
+    ClearSteps { pad: u8, from: usize, to: usize },
     /// The pattern's - / + on Play (Jay after live test 3: 32, 64 and 128
     /// steps): make the clip `steps` steps long. With `copy`, new steps
     /// repeat the ones before them; steps that go take their notes along.

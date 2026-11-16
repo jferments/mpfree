@@ -1253,7 +1253,14 @@ class StaticTests(unittest.TestCase):
                     # /run/mpfree-app/power-request, in RAM), synced, then renamed over it for the stick's root
                     # path unit to read.
                     ("mpfree-app/power.rs", "let mut f = fs::File::create(&tmp)?;"),
-                    ("mpfree-app/power.rs", "fs::rename(&tmp, path)")} | set(LIBRARY_NEEDLES) | set(PLUGIN_STORE_NEEDLES)
+                    ("mpfree-app/power.rs", "fs::rename(&tmp, path)"),
+                    # The MIDI monitor's console file (midi_log.rs; the MIDI thread, 16 Nov 2026): while the
+                    # developer tools are on, /run/mpfree-app/midi.log (RAM, beside the report) is renamed to
+                    # midi.log.1 there at 1 MiB, or when an earlier start left one. Its folder is never made.
+                    # Save log goes through mpfree-store (files/midi-logs/ under --data).
+                    ("mpfree-app/midi_log.rs",
+                     "fs::rename(self.dir.join(FILE), self.dir.join(OLD)).map_err(|e| self.say(e))?;")} \
+                   | set(LIBRARY_NEEDLES) | set(PLUGIN_STORE_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
@@ -1305,11 +1312,17 @@ class StaticTests(unittest.TestCase):
             # (read-only), and the service has made every eMMC disk read-only in the kernel first.
             "let out = OpenOptions::new().write(true).create_new(true).mode(0o640).open(to)"
             ".map_err(|e| io::Error::new(e.kind(), format!(\"{}: {e}\", to.display())))?;",
+            # midi_log.rs: the MIDI monitor's console file /run/mpfree-app/midi.log (RAM), only while the developer
+            # tools are on: a file an earlier start left gets its last line, then the new one is made (or emptied)
+            "let mut old = OpenOptions::new().append(true).open(self.dir.join(FILE)).map_err(|e| self.say(e))?;",
+            "let f = OpenOptions::new().create(true).write(true).truncate(true).mode(0o644).open(self.dir.join(FILE))"
+            ".map_err(|e| self.say(e))?;",
         )
         expected += LIBRARY_OPENS + PLUGIN_STORE_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
         self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/crash.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs",
+                                 "mpfree-app/midi_log.rs",
                                  "mpfree-app/setup.rs", "mpfree-app/imagecopy.rs", "mpfree-store/lib.rs",
                                  "mpfree-library/lib.rs", "mpfree-library/project.rs", "mpfree-library/kit.rs",
                                  "mpfree-mpcstore/install.rs"}, files)
@@ -1406,6 +1419,14 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(main.count("crash::note_panics("), 1)
         self.assertEqual(crash.count("panic::set_hook("), 1)
         self.assertIn('Path::new(REPORT_DIR).join("report.txt"), Path::new(REPORT_DIR).join(crash::RUNNING)', main)
+        # The MIDI monitor's console file is only ever in /run/mpfree-app: one start, with REPORT_DIR, and the
+        # file names it writes there.
+        midi_log = dict(self.program_sources())["mpfree-app/midi_log.rs"]
+        self.assertEqual(main.count("midi_log::Writer::start("), 1)
+        self.assertIn("midi_log::Writer::start(Path::new(REPORT_DIR), io_model.clone(), store.clone())", main)
+        self.assertIn('pub const FILE: &str = "midi.log";', midi_log)
+        self.assertIn('pub const OLD: &str = "midi.log.1";', midi_log)
+        self.assertNotIn("create_dir", midi_log)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

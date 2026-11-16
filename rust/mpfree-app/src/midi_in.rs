@@ -212,6 +212,8 @@ pub struct MusicIn {
     /// The armed track (from 0), and whether keys play it by note (a
     /// synth's pad layout) or as the kit pad each note plays.
     armed: (u8, bool),
+    /// The Monitor asked for MIDI Out's note-offs ([`MusicIn::take_note_offs`]).
+    note_offs: bool,
 }
 
 impl Default for MusicIn {
@@ -255,7 +257,14 @@ impl MusicIn {
             leader_dropped: 0,
             feed: Feed::new(),
             armed: (0, true),
+            note_offs: false,
         }
+    }
+
+    /// Whether the Monitor asked for the notes MPFree left on MIDI Out to
+    /// end, since the last call (at most once a sync).
+    pub fn take_note_offs(&mut self) -> bool {
+        std::mem::take(&mut self.note_offs)
     }
 
     /// Once a period, before the bytes: the track keys play (from 0), and
@@ -496,6 +505,14 @@ impl MusicIn {
         self.feed.drain_into(&mut m.monitor, t);
         m.monitor.set_epoch(t);
         m.live.built.monitor = true;
+        m.live.debug = self.feed.debug;
+        // The Monitor's "Send note-offs to MIDI out": the app sends them
+        // (MidiOut::all_off, only the notes it left on); the monitor's out
+        // notes go up now, so the view doesn't wait for them.
+        if std::mem::take(&mut m.asks.note_offs) {
+            m.monitor.out_notes_up();
+            self.note_offs = true;
+        }
         for lp in m.live.ports.iter_mut() {
             if let Some(p) = self.ports.all().iter().find(|p| p.name == lp.name) {
                 lp.last_in = self.last_in[usize::from(p.id.0)].map(Duration::from_secs_f64);
@@ -1293,6 +1310,31 @@ mod tests {
             .find(|(_, l)| matches!(l.what, What::Channel { .. }))
             .unwrap();
         assert_eq!(key.1.to, To::LearnOnly);
+    }
+
+    /// The Monitor's "Send note-offs to MIDI out": taken once, and the
+    /// monitor's out notes go up; the developer tools' switch reaches the
+    /// model.
+    #[test]
+    fn the_monitors_note_offs_are_taken_once() {
+        let mut m = MusicIn::new();
+        let s = following_din();
+        m.feed.sent(DIN, 0.1, &[0x91, 36, 110], To::SentBy(1));
+        m.feed.debug = true;
+        m.sync(&s, 0.2);
+        {
+            let mut v = s.lock().unwrap();
+            assert_eq!(v.monitor.still_on().len(), 1);
+            assert!(v.live.debug);
+            v.asks.note_offs = true;
+        }
+        assert!(!m.take_note_offs());
+        m.sync(&s, 0.3);
+        assert!(m.take_note_offs());
+        assert!(!m.take_note_offs());
+        let v = s.lock().unwrap();
+        assert!(v.monitor.still_on().is_empty());
+        assert!(!v.asks.note_offs);
     }
 
     /// Armed, a knob on a keyboard takes the parameter; the project keeps
