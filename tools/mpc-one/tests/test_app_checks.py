@@ -89,6 +89,17 @@ class CatalogueTests(unittest.TestCase):
         self.assertIn("RESULT: the tests did not run: cargo is not on PATH", res.stdout)
         self.assertNotIn("Traceback", res.stderr)
 
+    def test_a_failed_tests_panic_is_shown_with_its_name(self):
+        out = ("test smoke::phases::looper::layers_x ... FAILED\n\nfailures:\n\n"
+               "---- smoke::phases::looper::layers_x stdout ----\n\n"
+               "thread '<unnamed>' (15472) panicked at mpfree-app/src/smoke/phases.rs:382:13:\n"
+               "assertion `left == right` failed: x deleted layer 2\n  left: 2\n right: 1\n"
+               "stack backtrace:\n   0: __rustc::rust_begin_unwind\n\nfailures:\n    smoke::phases::looper::layers_x\n")
+        why = checks.failure_lines(out)
+        self.assertEqual(why["layers_x"], ["thread '<unnamed>' (15472) panicked at mpfree-app/src/smoke/phases.rs:382:13:",
+                                           "assertion `left == right` failed: x deleted layer 2",
+                                           "left: 2", "right: 1"])
+
 
 class JudgeTests(unittest.TestCase):
     def judge(self, name, window):
@@ -108,6 +119,21 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no line like '^looper: Record' followed", detail)
 
+    def test_power_reads_the_start_and_counts_the_card(self):
+        start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
+        window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]
+        got = checks.judge(checks.BY_NAME["power"], checks.Window(window, [start] + window, 100.0, 120.0))
+        self.assertEqual([ok for ok, _, _ in got], [True, True])
+        self.assertEqual(got[1][2], "2 times")
+        # Not found at the start: it says the line the app wrote instead; one press is not two.
+        start = (5.0, "power button: not found yet (no gpio-keys device with KEY_POWER)")
+        got = checks.judge(checks.BY_NAME["power"], checks.Window(window[:1], [start] + window[:1], 100.0, 120.0))
+        self.assertEqual([ok for ok, _, _ in got], [False, False])
+        self.assertEqual(got[0][2], "power button: not found yet (no gpio-keys device with KEY_POWER)")
+        self.assertEqual(got[1][2], "1 time, 2 expected")
+        got = checks.judge(checks.BY_NAME["power"], checks.Window([], [], 100.0, 120.0))
+        self.assertEqual(got[0][2], "no line like '^power button: ' since power-on")
+
     def test_load_counts_underruns_between_status_lines(self):
         session = [(90.0, "status: 1 hits (0 from the screen), 0 repeats, 3 underruns in 1000 periods, x"),
                    (130.0, "status: 9 hits (0 from the screen), 0 repeats, 3 underruns in 11000 periods, x")]
@@ -118,6 +144,40 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("2 underruns in 10,000 periods", detail)
         self.assertIsNone(test(checks.Window([], session[:1], 100.0, 120.0))[0], "no status after it yet")
+
+    def test_first_start_reads_the_setup_since_power_on(self):
+        start = [(6.0, "first start: setup, try 1 of 3"),
+                 (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),
+                 (900.0, "first start: backup done: /run/mpfree-data/backup/mpc-one-emmc-20261116T031500Z"),
+                 (1500.0, "first start: done: 52 Akai kits, 1630 samples; the backup is in "
+                          "/run/mpfree-data/backup/mpc-one-emmc-20261116T031500Z")]
+        got = checks.judge(checks.BY_NAME["first-start"], checks.Window([], start, 1600.0, 1600.0))
+        self.assertEqual([ok for ok, _, _ in got], [True, True, True])
+        failed = start[:2] + [(700.0, "first start: the backup did not work: the eMMC's write or discard "
+                                      "counters moved during the copy (see /run/mpfree-setup/counters-*.txt)")]
+        got = checks.judge(checks.BY_NAME["first-start"], checks.Window([], failed, 800.0, 800.0))
+        self.assertEqual([ok for ok, _, _ in got], [True, False, False])
+        self.assertIn("counters moved", got[1][2])
+        got = checks.judge(checks.BY_NAME["first-start"], checks.Window([], [], 10.0, 10.0))
+        self.assertEqual([ok for ok, _, _ in got], [False, False, False])
+        self.assertIn("no line like", got[0][2])
+
+    def test_mpc_plugin_install_reads_the_plugins_place_and_the_skin(self):
+        """Lines as the app writes them (plugin_page.rs, main.rs, gui.rs); a direct cable with no route out."""
+        window = lines(
+            "plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found)",
+            "plugins: not done (catalog): The catalog didn't download: no network",
+            "plugins: Installed Tidal Verb 1.6.0: Tidal Verb ready on the Synth tab or in the chain editor",
+            "plugins: 2 offered after an install",
+            "track 7: plays [SYN] Mono Voice",
+            "plugins: [SYN] Mono Voice started in its own process",
+            "screen: mpc:timncox.monovoice: its own screen, 2 tab(s), on the Synth tab")
+        got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(window, window))
+        self.assertEqual([ok for ok, _, _ in got], [True, True, True, True, False, True, True, True, True])
+        self.assertEqual(got[4][1], "Modal Voice installed from the catalog (needs a route out)")
+        refused = window + lines("plugins: [SYN] Modal Voice would not start: failed to map segment")
+        got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(refused, refused))
+        self.assertFalse(got[-1][0])
 
     def test_kept_reads_the_running_value_too(self):
         session = lines("saved settings: pad curve Hard, sound cores two, loop memory 10 min, x",

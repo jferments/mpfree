@@ -137,7 +137,65 @@ pub enum Scratch {
     Character(Box<Character>),
     Comp(Compressor),
     Master(Box<MasterSafety>),
+    /// The Channel strip's EQ and compressor, set from its values as the
+    /// strip sets its own.
+    Strip(Box<StripScratch>),
     None,
+}
+
+/// The Channel strip's stages the page draws: its EQ (a low shelf, a
+/// bell and a high shelf, with the low cut) and its compressor.
+pub struct StripScratch {
+    pub eq: Eq,
+    pub comp: Compressor,
+}
+
+impl StripScratch {
+    fn new() -> StripScratch {
+        use mpfree_fx::ids::eq;
+        let mut eq_ = Eq::new();
+        // The bands as `ChannelStrip::new` sets them: a low shelf, a bell,
+        // an unused bell and a high shelf; no high cut.
+        eq_.set_param(eq::band_type(0), 1.0);
+        eq_.set_param(eq::band_type(1), 0.0);
+        eq_.set_param(eq::gain(2), 0.0);
+        eq_.set_param(eq::band_type(3), 2.0);
+        eq_.set_param(eq::HIGH_SLOPE, 0.0);
+        StripScratch {
+            eq: eq_,
+            comp: Compressor::new(),
+        }
+    }
+
+    /// The strip's values onto its stages, as `ChannelStrip` forwards them.
+    fn sync(&mut self, st: &FxState) {
+        use mpfree_fx::ids::{channel_strip as cs, compressor as comp, eq};
+        let v = |id: u16| st.value(id);
+        let low_cut_off = st.index(cs::LOW_CUT).map_or(20.0, |i| st.params[i].min);
+        let low_cut_on = v(cs::LOW_CUT) > low_cut_off;
+        for (id, to) in [
+            (comp::THRESHOLD, cs::COMP_THRESHOLD),
+            (comp::RATIO, cs::RATIO),
+            (comp::ATTACK, cs::COMP_ATTACK),
+            (comp::RELEASE, cs::COMP_RELEASE),
+            (comp::MAKEUP, cs::MAKEUP),
+        ] {
+            self.comp.set_param(id, v(to));
+        }
+        for (id, value) in [
+            (eq::LOW_CUT, v(cs::LOW_CUT)),
+            (eq::LOW_SLOPE, if low_cut_on { 1.0 } else { 0.0 }),
+            (eq::freq(0), v(cs::LOW_FREQ)),
+            (eq::gain(0), v(cs::LOW_GAIN)),
+            (eq::freq(1), v(cs::MID_FREQ)),
+            (eq::gain(1), v(cs::MID_GAIN)),
+            (eq::q(1), v(cs::MID_Q)),
+            (eq::freq(3), v(cs::HIGH_FREQ)),
+            (eq::gain(3), v(cs::HIGH_GAIN)),
+        ] {
+            self.eq.set_param(id, value);
+        }
+    }
 }
 
 impl Scratch {
@@ -157,10 +215,15 @@ impl Scratch {
             "mpfree.fx.character" => Scratch::Character(Box::new(Character::new())),
             "mpfree.fx.compressor" => Scratch::Comp(Compressor::new()),
             "mpfree.fx.master_safety" => Scratch::Master(Box::new(MasterSafety::new())),
+            "mpfree.fx.channel_strip" => Scratch::Strip(Box::new(StripScratch::new())),
             _ => Scratch::None,
         };
         if let Some(n) = s.node() {
             n.prepare(st.rate.max(1), 64);
+        }
+        if let Scratch::Strip(x) = &mut s {
+            x.eq.prepare(st.rate.max(1), 64);
+            x.comp.prepare(st.rate.max(1), 64);
         }
         s.sync(st);
         s
@@ -181,13 +244,17 @@ impl Scratch {
             Scratch::Character(n) => n.as_mut(),
             Scratch::Comp(n) => n,
             Scratch::Master(n) => n.as_mut(),
-            Scratch::None => return None,
+            Scratch::Strip(_) | Scratch::None => return None,
         })
     }
 
     /// Takes the page's values (cheap: the curve functions read the
     /// values set, not the gliding ones).
     pub fn sync(&mut self, st: &FxState) {
+        if let Scratch::Strip(s) = self {
+            s.sync(st);
+            return;
+        }
         if let Some(n) = self.node() {
             for (p, &v) in st.params.iter().zip(&st.values) {
                 if !p.readonly && n.param(p.id) != v {

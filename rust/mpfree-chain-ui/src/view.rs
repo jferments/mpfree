@@ -73,6 +73,15 @@ pub enum ChainAction {
         slot: usize,
         mode: usize,
     },
+    /// Load one of insert `slot`'s presets from the header's list (an
+    /// entry of [`ChainState::presets`]): every value it sets, as `Set`
+    /// would, on engine `id` (refused if the slot holds another by then:
+    /// a mode switch across engines on its way, a chain edit).
+    Preset {
+        slot: usize,
+        id: &'static str,
+        values: Vec<(u16, f32)>,
+    },
     /// A knob was touched: the modulation column works on it.
     Focus(ParamAddr),
     /// Set a parameter: send it to the mod engine as `ModEvent::hand`
@@ -160,6 +169,8 @@ const ARROW_W: i32 = 44;
 /// of the list it opens.
 const MODE_CHIP_W: i32 = 180;
 const MODE_ROW_H: i32 = 40;
+/// The presets button's padding before its label.
+const PRESET_PAD: i32 = 12;
 /// The Modulate row's buttons.
 const MACRO_W: i32 = 40;
 const LEARN_W: i32 = 108;
@@ -179,6 +190,8 @@ pub struct Open {
     /// The list of modes (the Mode chooser's chip, when the modes don't
     /// fit the header as buttons).
     pub modes: bool,
+    /// The effect's presets (its name in the header).
+    pub presets: bool,
 }
 
 /// Where everything goes, from the widget's rectangle.
@@ -204,6 +217,13 @@ pub struct Layout {
     /// The header's card and the effect's name in it.
     pub header: Rect,
     pub title: Rect,
+    /// The button that opens the effect's presets: its preset's name (or
+    /// the effect's) with a chevron, at the header's left, when it has
+    /// presets; and the list, while it is open: its panel and a row per
+    /// entry of [`ChainState::presets`].
+    pub preset_chip: Option<Rect>,
+    pub preset_list: Option<Rect>,
+    pub preset_rows: Vec<(Rect, usize)>,
     /// The Mode chooser: its group, each place to tap and the mode it
     /// picks (a button per mode, or the two arrows when they don't fit),
     /// and the chip between the arrows (a tap opens the list of modes).
@@ -307,6 +327,27 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
         (tab_group, tabs, tab_arrows) = (Some(g), t, arrows);
     }
     let title = Rect::new(row.x + 8, header.y, (right - row.x - 8).max(0), header.h);
+    let (mut preset_chip, mut preset_list, mut preset_rows) = (None, None, Vec::new());
+    if shown && !st.presets.is_empty() {
+        let label = header_label(st);
+        // Room for the label at the title's size without measuring it: 13
+        // px a letter covers capitals ("EQ", "Amp"); the chevron sits
+        // after the measured text, so a wider chip only adds touch room.
+        let w = (PRESET_PAD + 13 * label.chars().count() as i32 + 26).min(title.w + 8);
+        let chip = Rect::new(row.x, row.y, w, row.h);
+        preset_chip = Some(chip);
+        if open.presets {
+            let n = st.presets.len() as i32;
+            let fit = ((page.h - 16 + 4) / (MODE_ROW_H + 4)).max(1);
+            let h = 16 + n.min(fit) * (MODE_ROW_H + 4) - 4;
+            let panel = Rect::new(chip.x, page.y, chip.w.max(280), h);
+            for k in 0..n.min(fit) as usize {
+                let y = panel.y + 8 + k as i32 * (MODE_ROW_H + 4);
+                preset_rows.push((Rect::new(panel.x + 8, y, panel.w - 16, MODE_ROW_H), k));
+            }
+            preset_list = Some(panel);
+        }
+    }
     let (mut mode_list, mut mode_rows) = (None, Vec::new());
     if let (true, Some(mv), Some(label)) = (open.modes, &st.mode, mode_label) {
         let n = mv.modes.len() as i32;
@@ -377,6 +418,9 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
         effect,
         header,
         title,
+        preset_chip,
+        preset_list,
+        preset_rows,
         mode_group,
         modes,
         mode_label,
@@ -398,6 +442,25 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
         add_follower,
         rows_panel,
         depth_rows,
+    }
+}
+
+/// What the header's name says: the preset the effect's settings are
+/// (not "Defaults"), else the effect's name (a family's: the mode is on
+/// the Mode chooser).
+fn header_label(st: &ChainState) -> &str {
+    match st.preset.filter(|&k| k > 0).and_then(|k| st.presets.get(k)) {
+        Some(p) => p.name,
+        None => effect_name(st),
+    }
+}
+
+/// The selected effect's name: a family's ("Reverb"), else the insert's.
+fn effect_name(st: &ChainState) -> &str {
+    match (&st.mode, st.selected.and_then(|i| st.slots.get(i))) {
+        (Some(m), _) => m.family,
+        (None, Some(s)) => &s.name,
+        (None, None) => "",
     }
 }
 
@@ -710,6 +773,7 @@ impl ChainView {
         };
         if !same_slot(&self.state, &st) {
             self.open.modes = false;
+            self.open.presets = false;
         }
         if st.focus != self.state.focus || st.focus.is_none() {
             self.open.rows = false;
@@ -1408,6 +1472,11 @@ impl ChainView {
             self.open.modes = !self.open.modes;
             return;
         }
+        if l.preset_chip.is_some_and(|r| r.contains(x, y)) {
+            self.open.presets = true;
+            self.open.modes = false;
+            return;
+        }
         let Some(focus) = st.focus else { return };
         if let Some(m) = l.macros.iter().position(|r| macro_hit(*r).contains(x, y)) {
             let now = st.focused().and_then(|p| p.macro_);
@@ -1801,8 +1870,24 @@ impl Widget for ChainView {
             return out;
         }
         // What is open over the page answers alone (a touch anywhere else
-        // only shuts it): the mode list and its chip, or the matrix rows
-        // and the Modulate row under them.
+        // only shuts it): the presets or the mode list and its chip, or
+        // the matrix rows and the Modulate row under them.
+        if l.preset_list.is_some() {
+            out.clear();
+            if let Some(chip) = l.preset_chip {
+                out.push(Target::tap(
+                    "presets-open",
+                    0,
+                    format!("{} presets", effect_name(st)),
+                    chip,
+                ));
+            }
+            for &(r, k) in &l.preset_rows {
+                let name = st.presets.get(k).map_or("", |p| p.name);
+                out.push(Target::tap("preset-load", k, name, r).disabled_if(st.preset == Some(k)));
+            }
+            return out;
+        }
         if let (Some(_), Some(mv)) = (l.mode_list, &st.mode) {
             out.clear();
             if let Some(chip) = l.mode_label {
@@ -1827,7 +1912,15 @@ impl Widget for ChainView {
             self.modulate_targets(&l, &mut out);
             return out;
         }
-        // The header: the page tabs, the Mode chooser.
+        // The header: the presets, the page tabs, the Mode chooser.
+        if let Some(chip) = l.preset_chip {
+            out.push(Target::tap(
+                "presets-open",
+                0,
+                format!("{} presets", effect_name(st)),
+                chip,
+            ));
+        }
         for (g, tr) in l.tabs.iter().enumerate() {
             if tr.is_empty() {
                 continue;
@@ -2011,6 +2104,25 @@ impl ChainView {
                 // What is open over the page takes a touch on it; one
                 // anywhere else only shuts it, but for the Modulate row's
                 // buttons under the rows (a second + LFO, a macro).
+                if let Some(panel) = l.preset_list {
+                    if panel.contains(x, y) {
+                        let hit = l.preset_rows.iter().find(|(r, _)| r.contains(x, y));
+                        if let (Some(&(_, k)), Some(slot)) = (hit, self.state.selected) {
+                            self.open.presets = false;
+                            if let Some(p) = self.state.presets.get(k) {
+                                self.push(ChainAction::Preset {
+                                    slot,
+                                    id: p.id,
+                                    values: p.values.clone(),
+                                });
+                            }
+                        }
+                    } else {
+                        // The chip shuts it too (it toggles).
+                        self.open.presets = false;
+                    }
+                    return;
+                }
                 if let Some(panel) = l.mode_list {
                     if panel.contains(x, y) {
                         let hit = l.mode_rows.iter().find(|(r, _)| r.contains(x, y));
@@ -2387,7 +2499,7 @@ impl ChainView {
     fn paint_effect(&self, cx: &mut PaintCx, l: &Layout) {
         let t = cx.theme.clone();
         let st = &self.state;
-        let Some(s) = st.selected.and_then(|s| st.slots.get(s)) else {
+        if st.selected.and_then(|s| st.slots.get(s)).is_none() {
             cx.canvas.fill_round_rect(l.effect, t.radius, t.surface);
             cx.text(
                 FontId::Sans,
@@ -2398,17 +2510,49 @@ impl ChainView {
                 "No effects yet: tap  + Add effect",
             );
             return;
-        };
+        }
         cx.canvas.fill_round_rect(l.header, t.radius, t.surface);
-        let name = st.mode.as_ref().map_or(s.name.as_str(), |m| m.family);
-        cx.text(
-            FontId::Bold,
-            t.size_title,
-            l.title,
-            Align::Left,
-            t.text,
-            name,
-        );
+        match l.preset_chip {
+            // The presets button: the preset's name (or the effect's) and
+            // a chevron; after a preset's name, the effect's, dimmer.
+            Some(chip) => {
+                if l.preset_list.is_some() {
+                    cx.canvas.fill_round_rect(chip, 10, t.raised);
+                }
+                let label = header_label(st);
+                let room = Rect::new(
+                    chip.x + PRESET_PAD,
+                    l.title.y,
+                    chip.w - PRESET_PAD - 26,
+                    l.title.h,
+                );
+                let w = cx.measure(FontId::Bold, t.size_title, label).min(room.w);
+                cx.text(FontId::Bold, t.size_title, room, Align::Left, t.text, label);
+                chevron(cx, room.x + w + 8, chip.y + chip.h / 2 - 3, t.text_dim);
+                if header_label(st) != effect_name(st) {
+                    let x = room.x + w + 30;
+                    let after = Rect::new(x, l.title.y, (l.title.right() - x).max(0), l.title.h);
+                    cx.text(
+                        FontId::Sans,
+                        t.size_small,
+                        after,
+                        Align::Left,
+                        t.text_dim,
+                        effect_name(st),
+                    );
+                }
+            }
+            None => {
+                cx.text(
+                    FontId::Bold,
+                    t.size_title,
+                    l.title,
+                    Align::Left,
+                    t.text,
+                    effect_name(st),
+                );
+            }
+        }
         let lit = self.job_of(false).map_or(t.accent, |j| j.fill(&t));
         if let Some(mv) = &st.mode {
             paint_modes(cx, l, mv, lit);
@@ -2478,6 +2622,23 @@ impl ChainView {
                     Align::Right,
                     if on { t.on_accent } else { t.text_dim },
                     &format!("{} of {}", m + 1, mv.modes.len()),
+                );
+            }
+        }
+        if let Some(panel) = l.preset_list {
+            cx.canvas.fill_round_rect(panel, t.radius, t.surface);
+            cx.canvas.stroke_round_rect(panel, t.radius, 1, t.outline);
+            for &(r, k) in &l.preset_rows {
+                let on = st.preset == Some(k);
+                cx.canvas
+                    .fill_round_rect(r, 8, if on { lit } else { t.raised });
+                cx.text(
+                    if on { FontId::Bold } else { FontId::Sans },
+                    t.size_small + 1.0,
+                    r.inset_xy(14, 0),
+                    Align::Left,
+                    if on { t.on_accent } else { t.text },
+                    st.presets[k].name,
                 );
             }
         }

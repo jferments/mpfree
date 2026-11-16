@@ -222,22 +222,11 @@ pub fn ids(names: &[&str], params: &[ParamInfo]) -> Vec<u16> {
         .collect()
 }
 
-/// Drawings the plans place that the effect pages do not draw yet: they
-/// come with the new pages (the reverbs' tails, the tape's heads, the
-/// Channel strip's stages, as the mockups show them).
-pub static TO_DRAW: &[(&str, &str)] = &[
-    ("mpfree.fx.plate", "Decay · 60 dB"),
-    ("mpfree.fx.plate", "Tone"),
-    ("mpfree.fx.room", "Decay · 60 dB"),
-    ("mpfree.fx.room", "Tone"),
-    ("mpfree.fx.spring", "Decay · 60 dB"),
-    ("mpfree.fx.tape_delay", "Repeats"),
-    ("mpfree.fx.tape_delay", "Tone"),
-    ("mpfree.fx.multitap", "Repeats"),
-    ("mpfree.fx.channel_strip", "Curve"),
-    ("mpfree.fx.channel_strip", "Response"),
-    ("mpfree.fx.channel_strip", "Signal path"),
-];
+/// Drawings the plans place that the effect pages do not draw yet (none
+/// now: the reverbs' tails, the tape's heads and the Channel strip's
+/// stages came with the new pages). A plan may name a drawing before it
+/// exists by listing it here.
+pub static TO_DRAW: &[(&str, &str)] = &[];
 
 const fn s(
     key: &'static str,
@@ -402,7 +391,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.ducker",
         qlinks: &["Depth", "Release", "Shape", "Mix"],
         pages: &[page(
-            "row(duck:520, col(trigger:300, output))",
+            "row(duck:520, col(trigger:*, output:200))",
             &[
                 Section {
                     hero: &["Depth"],
@@ -598,7 +587,7 @@ pub static PLANS: &[Plan] = &[
         qlinks: &["Comp thresh", "Makeup", "Low cut", "High gain"],
         pages: &[
             page(
-                "col(row(gate:220, comp:300, eq):*, path:198)",
+                "col(row(gate:220, comp:300, eq):*, row(path, output:220):198)",
                 &[
                     Section {
                         switch: Some("Gate"),
@@ -629,10 +618,12 @@ pub static PLANS: &[Plan] = &[
                         ..s("eq", "EQ", Tone, &["Low cut", "Mid gain", "High gain"])
                     },
                     Section {
-                        rows: &["Order"],
-                        main: &["Output"],
                         drawings: &["Signal path"],
-                        ..s("path", "Signal path", Voice, &["Order", "Output"])
+                        ..s("path", "Signal path", Voice, &["Order"])
+                    },
+                    Section {
+                        main: &["Output"],
+                        ..s("output", "Output", Voice, &["Output"])
                     },
                 ],
             ),
@@ -1222,7 +1213,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.tape_delay",
         qlinks: &["Time", "Feedback", "Tone", "Mix"],
         pages: &[page(
-            "row(echo:520, col(tape:252, row(wow, output)))",
+            "row(echo:520, col(tape:290, row(wow, output)))",
             &[
                 Section {
                     hero: &["Time", "Feedback"],
@@ -1250,7 +1241,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.multitap",
         qlinks: &["Feedback", "Tone", "Low cut", "Mix"],
         pages: &[page(
-            "col(row(repeats:300, tone, output:150):220, row(t1, t2, t3, t4):*)",
+            "col(row(repeats, tone:240, output:140):230, row(t1, t2, t3, t4):*)",
             &[
                 Section {
                     drawings: &["Repeats"],
@@ -1259,7 +1250,6 @@ pub static PLANS: &[Plan] = &[
                 s("tone", "Tone", Tone, &["Tone", "Low cut"]),
                 s("output", "Output", Voice, &["Mix"]),
                 Section {
-                    faders: &["Tap 1 level"],
                     labels: &[
                         ("Tap 1 time", "Time"),
                         ("Tap 1 level", "Level"),
@@ -1273,7 +1263,6 @@ pub static PLANS: &[Plan] = &[
                     )
                 },
                 Section {
-                    faders: &["Tap 2 level"],
                     labels: &[
                         ("Tap 2 time", "Time"),
                         ("Tap 2 level", "Level"),
@@ -1287,7 +1276,6 @@ pub static PLANS: &[Plan] = &[
                     )
                 },
                 Section {
-                    faders: &["Tap 3 level"],
                     labels: &[
                         ("Tap 3 time", "Time"),
                         ("Tap 3 level", "Level"),
@@ -1301,7 +1289,6 @@ pub static PLANS: &[Plan] = &[
                     )
                 },
                 Section {
-                    faders: &["Tap 4 level"],
                     labels: &[
                         ("Tap 4 time", "Time"),
                         ("Tap 4 level", "Level"),
@@ -1322,7 +1309,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.cloud",
         qlinks: &["Decay", "Size", "Pre-delay", "Mix"],
         pages: &[page(
-            "row(reverb:520, col(tone:252, row(movement:140, output)))",
+            "row(reverb:520, col(tone:236, row(movement:110, output)))",
             &[
                 Section {
                     hero: &["Decay", "Size"],
@@ -1445,7 +1432,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.granulator",
         qlinks: &["Size", "Density", "Pitch", "Mix"],
         pages: &[page(
-            "col(row(grains:520, pitch):*, row(time, output:200):220)",
+            "col(row(grains:520, pitch):*, row(time, output:200):270)",
             &[
                 Section {
                     hero: &["Size", "Density"],
@@ -1624,32 +1611,24 @@ pub static PLANS: &[Plan] = &[
                 ],
             ),
             Page {
-                name: "Slots 1-8",
-                spec: "col(row(s1, s2, s3, s4), row(s5, s6, s7, s8))",
-                sections: &[
-                    slot!(1),
-                    slot!(2),
-                    slot!(3),
-                    slot!(4),
-                    slot!(5),
-                    slot!(6),
-                    slot!(7),
-                    slot!(8),
-                ],
+                name: "Slots 1-4",
+                spec: "row(s1, s2, s3, s4)",
+                sections: &[slot!(1), slot!(2), slot!(3), slot!(4)],
             },
             Page {
-                name: "Slots 9-16",
-                spec: "col(row(s9, s10, s11, s12), row(s13, s14, s15, s16))",
-                sections: &[
-                    slot!(9),
-                    slot!(10),
-                    slot!(11),
-                    slot!(12),
-                    slot!(13),
-                    slot!(14),
-                    slot!(15),
-                    slot!(16),
-                ],
+                name: "Slots 5-8",
+                spec: "row(s5, s6, s7, s8)",
+                sections: &[slot!(5), slot!(6), slot!(7), slot!(8)],
+            },
+            Page {
+                name: "Slots 9-12",
+                spec: "row(s9, s10, s11, s12)",
+                sections: &[slot!(9), slot!(10), slot!(11), slot!(12)],
+            },
+            Page {
+                name: "Slots 13-16",
+                spec: "row(s13, s14, s15, s16)",
+                sections: &[slot!(13), slot!(14), slot!(15), slot!(16)],
             },
         ],
         dims: &[
