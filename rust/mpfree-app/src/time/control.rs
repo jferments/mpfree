@@ -673,6 +673,7 @@ impl TimeControl {
                 song_length: c.speed.to_song(c.length as f64),
                 song_step: c.speed.to_song(STEP_TICKS as f64),
                 origin,
+                locks: pitches.iter().map(|&p| (p, grid.lock_row(c, p))).collect(),
                 rows: pitches.into_iter().map(|p| (p, grid.row(c, p))).collect(),
             })
         });
@@ -735,6 +736,15 @@ impl TimeControl {
                 None,
                 format!("pad {}'s steps", pad + 1),
             ),
+            StepAction::ClearSteps { pad, from, to } => (
+                grid.clear_steps(clip, pad, from, to),
+                None,
+                if to == from + 1 {
+                    format!("step {} of pad {}", from + 1, pad + 1)
+                } else {
+                    format!("steps {} to {to} of pad {}", from + 1, pad + 1)
+                },
+            ),
             StepAction::Length { steps, copy } => {
                 (grid.resize(clip, steps, copy), None, clip.name.clone())
             }
@@ -760,7 +770,9 @@ impl TimeControl {
                 self.project.tracks[track].name
             ),
             (None, StepAction::Tap { .. }) => format!("steps: {what} {on}"),
-            (None, StepAction::ClearPad { .. }) => format!("steps: {what} erased"),
+            (None, StepAction::ClearPad { .. } | StepAction::ClearSteps { .. }) => {
+                format!("steps: {what} erased")
+            }
             (None, StepAction::Length { steps, copy }) => {
                 let bars = steps.div_ceil(16);
                 let s = if bars == 1 { "" } else { "s" };
