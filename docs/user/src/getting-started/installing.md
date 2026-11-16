@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-creator rust/mpfree-stick tools/mpc-one/stick rust/mpfree-app/src/setup.rs
-checked: 2026-11-15 e171b65
+checked: 2026-11-16 14e8184
 -->
 
 # Installing MPFree

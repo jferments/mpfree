@@ -2,6 +2,7 @@
 //! The `mpfree-stick` program is this, and the creator's window runs itself
 //! as this (`mpfree-creator --cli ...`) with the rights to write a disk.
 
+use crate::dev::DevTools;
 use crate::stick::{self, Build, Disk, Programs};
 use crate::{disks, recipe, ssh, update, Msg, CREATOR};
 use mpfree_diskimage::ext4::Ext4;
@@ -22,7 +23,8 @@ MPFree has only been tested on the MPC One (Gen 1). Nothing here reads or writes
       Makes the stick. Erases partitions 1, 2, 3 and 5 and the partition table. Partition 4 (your
       settings, files and backups) is kept if the stick already has MPFree on it, unless --fresh-data.
       With --keep-data, nothing is written if partition 4 holds data this version can't keep.
-      DISK may be an image file of 16 GB or more, for trying it out.
+      DISK may be an image file of 16 GB or more, for trying it out, or mpfree (twice) to make the one
+      MPFree stick that is in again: it says which disk that is before it writes.
   mpfree-stick build UPDATE --out FILE [OPTIONS]
       Makes a small stick image file (partition 4 only 64 MiB), for tests.
   mpfree-stick inspect --device DISK
@@ -41,7 +43,7 @@ MPFree has only been tested on the MPC One (Gen 1). Nothing here reads or writes
       Makes an SSH key pair for developer SSH (NAME defaults to mpfree_ed25519).
 
 UPDATE may be a folder: the supported update in it is used. DISK may be mpfree for the one MPFree
-stick that is in (not for write). Reading or writing a disk needs root or an administrator.
+stick that is in. Reading or writing a disk needs root or an administrator.
 
 Options for write and build:
   --programs FOLDER  mpfree, mpfree-screen-log and mpfree-startup built for the MPC (default:
@@ -52,6 +54,11 @@ Options for write and build:
   --any-update       developer option: take an Akai update MPFree does not know
   --work FOLDER      where Akai's system is unpacked while the stick is made (default: the temporary
                      folder; needs about 1.5 GB)
+  --dev-tools FOLDER developer tools for Akai's system, on partition 5 under /mpfree-dev with SHA256SUMS
+                     and MPFREE-DEV.txt (plain files and folders, no links, at most 64 MiB and 512
+                     files). MPFree never reads them; Akai's system mounts them noexec (run with sh)
+  --record FOLDER    also saves this run's report as report.txt and, with --ssh-key, the stick's host
+                     key as known_hosts, in a new FOLDER/creator-stick-<UTC>/ (for the device rounds)
 
   --status FILE      (before the command) also writes each progress line to FILE, for the window
 ";
@@ -59,11 +66,14 @@ Options for write and build:
 /// Progress and notes: to stdout, and to the status file if there is one.
 struct Out {
     status: Option<File>,
+    /// Every line, for `--record`'s report.
+    log: Vec<String>,
 }
 
 impl Out {
     fn line(&mut self, line: &str) {
         println!("{line}");
+        self.log.push(line.to_string());
         if let Some(f) = &mut self.status {
             let _ = writeln!(f, "{line}");
             let _ = f.flush();
@@ -235,6 +245,8 @@ struct Inputs {
     programs: Programs,
     kits: Vec<u8>,
     ssh: Option<stick::Ssh>,
+    ssh_fingerprint: Option<String>,
+    dev: Option<DevTools>,
     work: PathBuf,
 }
 
@@ -266,6 +278,7 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
         None => mpfree_factory::drums::kits_file(),
     };
     let ssh_key = a.value("--ssh-key")?;
+    let dev_dir = a.value("--dev-tools")?;
     let any_update = a.flag("--any-update");
     let update_path = update_path(&given, any_update, out)?;
     let work = a
@@ -278,7 +291,7 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
         "programs for the MPC: {}",
         programs_dir.display()
     )));
-    let ssh = match ssh_key {
+    let (ssh, ssh_fingerprint) = match ssh_key {
         Some(p) => {
             let text = std::fs::read_to_string(&p)
                 .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))?;
@@ -286,8 +299,12 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
             out.say(Msg::Note(format!(
                 "developer SSH on: root, key only, port 2222; the stick's host key is {fingerprint}"
             )));
-            Some(s)
+            (Some(s), Some(fingerprint))
         }
+        None => (None, None),
+    };
+    let dev = match dev_dir {
+        Some(d) => Some(DevTools::from_dir(Path::new(&d))?),
         None => None,
     };
     let source = stick::open_update(&update_path, &work, any_update, &mut |m| out.say(m))?;
@@ -296,6 +313,8 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
         programs,
         kits,
         ssh,
+        ssh_fingerprint,
+        dev,
         work,
     })
 }
@@ -359,6 +378,18 @@ fn inspect(disk: &Target, out: &mut Out) -> io::Result<()> {
             "setup mode: {}",
             String::from_utf8_lossy(&mode).trim()
         ));
+        let sums = match stick::setup_read(&mut img, "mpfree-dev/SHA256SUMS") {
+            Ok(s) => s,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        out.line(&match sums {
+            Some(s) => format!(
+                "developer tools: {} files under /mpfree-dev (SHA256SUMS)",
+                String::from_utf8_lossy(&s).lines().count()
+            ),
+            None => "developer tools: none".into(),
+        });
         let log = stick::setup_read(&mut img, "setup-log.txt")?;
         out.line(&format!(
             "setup log: {}",
@@ -552,6 +583,88 @@ pub fn redact(line: &str) -> String {
     out
 }
 
+/// `YYYYMMDDTHHMMSSZ` for seconds since 1970 (UTC), as the Python
+/// builder names its folders.
+pub fn utc_stamp(secs: u32) -> String {
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z",
+        rem / 3600,
+        rem / 60 % 60,
+        rem % 60
+    )
+}
+
+/// `--record FOLDER`: a new `FOLDER/creator-stick-<UTC>/` (the stick's
+/// time) holding report.txt, every line this run printed and then the lines
+/// the device round's tools read (the kernel release, the log partition's
+/// PARTUUID), and, with developer SSH, known_hosts: the stick's host key
+/// under the name the tools check it by (`mpfree-kexec-test`). The folder
+/// and its files belong to the owner of the folder it is made in, not root.
+fn record(
+    base: &Path,
+    made: &stick::Made,
+    i: &Inputs,
+    target: &str,
+    out: &mut Out,
+    done: &str,
+) -> io::Result<()> {
+    let dir = base.join(format!("creator-stick-{}", utc_stamp(made.values.time)));
+    let owner = Owner::of(&dir);
+    std::fs::create_dir_all(base)?;
+    std::fs::create_dir(&dir)
+        .map_err(|e| io::Error::new(e.kind(), format!("--record: {}: {e}", dir.display())))?;
+    let v = &made.values;
+    let mut text = format!(
+        "{CREATOR}: mpfree-stick, the stick {target}\nfrom {} (Akai build {})\n\n",
+        i.source.path.display(),
+        i.source.update.build
+    );
+    for l in &out.log {
+        text.push_str(l);
+        text.push('\n');
+    }
+    text.push_str(&format!("done {done}\n\n"));
+    text.push_str(&format!("its kernel release: {}\n", v.release));
+    text.push_str(&format!("partition 2 logs PARTUUID {}\n", v.log_uuid));
+    text.push_str(&format!("partition 3 kits PARTUUID {}\n", v.kits_uuid));
+    text.push_str(&format!("partition 4 data PARTUUID {}\n", v.data_uuid));
+    text.push_str("pad player user: mpfree (the creator's recipe, --app-user)\n");
+    text.push_str(&match &i.ssh_fingerprint {
+        Some(f) => format!("developer SSH: on (root, key only, port 2222); host key {f}\n"),
+        None => "developer SSH: off (no --ssh-key)\n".into(),
+    });
+    std::fs::write(dir.join("report.txt"), text)?;
+    if let Some(s) = &i.ssh {
+        let mut f = s.host_public.split_whitespace();
+        let (Some(kind), Some(key)) = (f.next(), f.next()) else {
+            return Err(crate::bad("the stick's host key line is not a public key"));
+        };
+        std::fs::write(
+            dir.join("known_hosts"),
+            format!("mpfree-kexec-test {kind} {key}\n"),
+        )?;
+    }
+    if let Err(e) = owner.give(&dir) {
+        out.say(Msg::Note(format!(
+            "the record could not be given to the folder's owner ({e})"
+        )));
+    }
+    out.say(Msg::Note(format!("recorded in {}", dir.display())));
+    Ok(())
+}
+
 /// The status file the window reads. The window makes it, as the person
 /// using the computer, in the temporary folder, and this runs as root
 /// (pkexec): opening it with O_CREAT there is refused, even to root, where
@@ -625,6 +738,7 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
         }
         "build" => {
             let out_path = PathBuf::from(a.need("--out")?);
+            let record_in = a.value("--record")?.map(PathBuf::from);
             let i = inputs(&mut a, out)?;
             a.done()?;
             let b = Build {
@@ -632,28 +746,42 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
                 programs: &i.programs,
                 kits: &i.kits,
                 ssh: i.ssh.as_ref(),
+                dev: i.dev.as_ref(),
                 creator: CREATOR,
             };
             let made = stick::build_image(&b, &out_path, &mut |m| out.say(m))?;
             report(&made, out);
-            Ok(format!("made {}", out_path.display()))
+            let done = format!("made {}", out_path.display());
+            if let Some(base) = record_in {
+                record(
+                    &base,
+                    &made,
+                    &i,
+                    &out_path.display().to_string(),
+                    out,
+                    &done,
+                )?;
+            }
+            Ok(done)
         }
         "write" => {
-            let dev = a.need("--device")?;
-            if dev == "mpfree" {
-                return Err(usage(
-                    "write needs the disk named (see mpfree-stick disks), not mpfree",
-                ));
-            }
+            let mut dev = a.need("--device")?;
             let yes = a.need("--yes-erase")?;
             if yes != dev {
                 return Err(usage("--yes-erase must name the same disk as --device"));
+            }
+            // mpfree: the one USB disk that holds an MPFree stick already, found
+            // before anything is unpacked, and said before it is written.
+            if dev == "mpfree" {
+                dev = disks::find_mpfree()?;
+                out.say(Msg::Note(format!("the one MPFree stick that is in: {dev}")));
             }
             let fresh = a.flag("--fresh-data");
             let keep = a.flag("--keep-data");
             if fresh && keep {
                 return Err(usage("--fresh-data and --keep-data: choose one"));
             }
+            let record_in = a.value("--record")?.map(PathBuf::from);
             let i = inputs(&mut a, out)?;
             a.done()?;
             let target = Target::open(&dev, true)?;
@@ -675,6 +803,7 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
                 programs: &i.programs,
                 kits: &i.kits,
                 ssh: i.ssh.as_ref(),
+                dev: i.dev.as_ref(),
                 creator: CREATOR,
             };
             let made = stick::write_disk(&b, &target, target.bytes(), &i.work, fresh, &mut |m| {
@@ -682,7 +811,12 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
             })?;
             report(&made, out);
             target.finish()?;
-            Ok("the stick is ready: put it in the MPC and follow the creator's next steps".into())
+            let done = "the stick is ready: put it in the MPC and follow the creator's next steps"
+                .to_string();
+            if let Some(base) = record_in {
+                record(&base, &made, &i, &dev, out, &done)?;
+            }
+            Ok(done)
         }
         "inspect" => {
             let dev = a.need("--device")?;
@@ -749,7 +883,10 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
 
 /// Runs one command; the exit status (0: done, 1: an error, said as `error ...`).
 pub fn main(args: Vec<String>) -> i32 {
-    let mut out = Out { status: None };
+    let mut out = Out {
+        status: None,
+        log: Vec::new(),
+    };
     match main_inner(args, &mut out) {
         Ok(msg) => {
             if !msg.is_empty() {
@@ -797,6 +934,14 @@ mod tests {
             assert_eq!((m.uid(), m.gid()), (4321, 4321), "{}", p.display());
         }
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn utc_stamps_name_folders_as_the_python_builder_does() {
+        assert_eq!(super::utc_stamp(0), "19700101T000000Z");
+        assert_eq!(super::utc_stamp(951_782_400), "20000229T000000Z");
+        assert_eq!(super::utc_stamp(1_794_791_045), "20261116T010405Z");
+        assert_eq!(super::utc_stamp(4_102_444_799), "20991231T235959Z");
     }
 
     #[test]

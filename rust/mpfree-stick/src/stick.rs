@@ -14,6 +14,7 @@
 //! the ext4 at its first start (`setup-format.sh`). A stick that already
 //! has an MPFree data partition at 1 GiB keeps it, untouched.
 
+use crate::dev::{self, DevTools};
 use crate::recipe::{self, Content, Recipe};
 use crate::update::{self, Supported, Unpacked, Update};
 use crate::{bad, Msg};
@@ -752,8 +753,9 @@ pub fn kits_tree(kits: &[u8], time: u32) -> io::Result<Tree<'static>> {
     Ok(t)
 }
 
-/// The setup partition (FAT32), whole, in memory.
-pub fn setup_partition(release: &str, mode: &str) -> io::Result<Vec<u8>> {
+/// The setup partition (FAT32), whole, in memory, with the developer tools
+/// under `mpfree-dev/` if there are any.
+pub fn setup_partition(release: &str, mode: &str, dev: Option<&DevTools>) -> io::Result<Vec<u8>> {
     let mut img = vec![0u8; SETUP_SIZE as usize];
     let mut label = [b' '; 11];
     label[..SETUP_LABEL.len()].copy_from_slice(SETUP_LABEL.as_bytes());
@@ -777,6 +779,22 @@ pub fn setup_partition(release: &str, mode: &str) -> io::Result<Vec<u8>> {
             f.truncate()?;
             f.write_all(text.as_bytes())?;
             f.flush()?;
+        }
+        if let Some(dev) = dev {
+            root.create_dir(dev::DIR)?;
+            for folder in &dev.folders {
+                root.create_dir(&format!("{}/{folder}", dev::DIR))?;
+            }
+            let made = [
+                ("SHA256SUMS".to_string(), dev.sums().into_bytes()),
+                (dev::MARK.to_string(), dev::MARK_TEXT.as_bytes().to_vec()),
+            ];
+            for (path, data) in dev.files.iter().chain(made.iter()) {
+                let mut f = root.create_file(&format!("{}/{path}", dev::DIR))?;
+                f.truncate()?;
+                f.write_all(data)?;
+                f.flush()?;
+            }
         }
     }
     Ok(img)
@@ -905,6 +923,8 @@ pub struct Build<'a> {
     pub programs: &'a Programs,
     pub kits: &'a [u8],
     pub ssh: Option<&'a Ssh>,
+    /// Developer tools for Akai's system, on partition 5 (`--dev-tools`).
+    pub dev: Option<&'a DevTools>,
     /// A line for made-by.txt and the report: the creator's version.
     pub creator: &'a str,
 }
@@ -1009,7 +1029,11 @@ pub fn write_head<W: WriteAt + ReadAt>(
     )?;
     ext2w::write(&kits, &kits_opts, &window(3))?;
     say(Msg::Progress(0.85, "Writing the setup partition".into()));
-    let setup = setup_partition(&src.release, "install")?;
+    match b.dev {
+        Some(d) => notes.extend(d.report()),
+        None => notes.push("developer tools: none (no --dev-tools)".into()),
+    }
+    let setup = setup_partition(&src.release, "install", b.dev)?;
     window(5).write_at(&setup, 0)?;
     // Hash what is in the head now, for the read-back.
     say(Msg::Progress(0.9, "Checking what was written".into()));
@@ -1438,7 +1462,7 @@ mod tests {
 
     #[test]
     fn the_setup_partition_holds_the_scripts() {
-        let mut img = setup_partition("6.18.44-test", "install").unwrap();
+        let mut img = setup_partition("6.18.44-test", "install", None).unwrap();
         let autorun =
             String::from_utf8(setup_read(&mut img, "autorun.sh").unwrap().unwrap()).unwrap();
         assert!(autorun.contains("RELEASE='6.18.44-test'"));

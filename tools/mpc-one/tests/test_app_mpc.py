@@ -821,6 +821,20 @@ class AppTests(unittest.TestCase):
         # The app step copies, starts and stops nothing.
         self.assertEqual(self.log_lines("program: "), [])
 
+    def test_a_stick_the_usb_creator_wrote_is_found_by_its_record(self):
+        """mpfree-stick write --record's creator-stick-<UTC> folder (report.txt and known_hosts, no stick.img)
+        is the test build when it is newer than the last kexec-stick folder (its known_hosts is then the one used)."""
+        folder = os.path.join(self.work, "creator-stick-20261116T030000Z")
+        write(os.path.join(folder, "known_hosts"), "mpfree-kexec-test ssh-ed25519 AAAAcreator\n")
+        write(os.path.join(folder, "report.txt"),
+              "MPFree USB creator 0.1.0: mpfree-stick, the stick /dev/sdb\nnote partition 1: mpfree-test-root\n\n"
+              f"its kernel release: {NEW}\npartition 2 logs PARTUUID a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d\n")
+        write(self.app, "active\n")
+        res = self.run_helper("", MPFREE_APP_STEPS="app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"test build: {folder}", res.stdout)
+        self.assertIn("CHECKS-OK", res.stdout)
+
     def test_app_step_reads_partition_4_and_its_grow(self):
         """Read-only: partition 4's size and free space, and what the online grow at power-on said."""
         write(self.app, "active\n")

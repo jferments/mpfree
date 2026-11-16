@@ -37,9 +37,15 @@ A round's runbook has a table of its checks: the check, why it's in this round, 
 | `note-repeat` | hands | NOTE REPEAT, Latch and the arp in real time | button 11, an arp mode, Latch on and off |
 | `looper` | hands | The wave drawing as you play, and STOP stopping the loop at once | the loop armed, STOP |
 | `console` | hands | The console chord, TAP TEMPO and STOP on the real panel | a tapped tempo, STOP's silence |
+| `fx-add` | hands | Adding an effect on the Mix tab and hearing it, which live test 3 couldn't (#275, #287, #353) | the touchscreen used, no refusal line, the app kept running |
+| `eq` | hands | The parametric EQ on the real panel (#388): a dot following a finger, UNDO, and Listen on the MPC's outputs | UNDO, its `Undid … EQ Band N` line, no underrun while it played |
 | `midi-in` | hands | A keyboard on the MPC's MIDI IN, and its port in the I/O view | `MIDI in:` lines |
+| `mpc-plugin` | hands | An Open MPC plugin instrument in its own process on the MPC's cores (#385); the round puts the release on the stick first (`stick-plugin.py`) | the plugin found at the start, a track playing it, its process started, a status line with it running and none down, no underrun |
+| `mpc-plugin-install` | hands | BROWSE's Plugins place on the MPC (#398): a zip from the stick and, with a route out, the Open MPC catalog over HTTPS through the system's libcurl; then the plugin's own screen on the Synth tab. The round puts the zip on the stick first (`stick-plugin.py add tidal-verb --as-zip`) | the Plugins place's first line (libcurl found or not), the catalog fetched or why not, the zip installed, the catalog install, a track playing the plugin in its own process, its own screen drawn, no refusal |
 | `map-controls` | hands | Buttons the app has no number for yet | `map:` lines and the summary |
 | `sample-warp` | hands | The Warp crash retest | no PANIC and no restart |
+| `power` | hands | A short press of the power button opens the power card (#389); its Shut down and Restart end the boot, so a runbook block after the check uses them and the stick logs judge them | the button found at the start, the card opened twice |
+| `first-start` | auto | The USB creator's first-start setup on the MPC (#386): the eMMC backup through the read-only window, then the MPC's own kits and samples | the setup's try at this start, `backup done` (the backup script reports it only after the eMMC's write and discard counters were found unchanged and the copy read back), and the kits and samples it made |
 | `kept` | auto | Prefs saved in one boot come back in the next (Sound cores, Loop memory) | the start's `saved settings:` line and the running Sound cores agree with `settings/app.conf` |
 | `hour` | auto | An hour of play with no underrun (#273) | more than 1,240,312 periods, 0 underruns, no restart |
 

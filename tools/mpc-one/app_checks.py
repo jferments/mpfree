@@ -85,6 +85,38 @@ def seen(*patterns):
     return test
 
 
+def seen_times(pattern, least):
+    """Passes when at least `least` lines of the check's time match `pattern`."""
+    regex = re.compile(pattern)
+
+    def test(w):
+        n = sum(1 for m in w.messages() if regex.search(m))
+        return n >= least, f"{n} time{'s' if n != 1 else ''}" + ("" if n >= least else f", {least} expected")
+    return test
+
+
+def not_seen(pattern):
+    """Passes when no line of the check's time matches `pattern`; if one does, says it."""
+    regex = re.compile(pattern)
+
+    def test(w):
+        bad = [m for m in w.messages() if regex.search(m)]
+        return not bad, bad[0] if bad else "none"
+    return test
+
+
+def at_start(pattern, about):
+    """Passes when a line since power-on matches `pattern`; if not, says the last line that matches `about`."""
+    regex, near = re.compile(pattern), re.compile(about)
+
+    def test(w):
+        if any(regex.search(m) for _, m in w.session):
+            return True, ""
+        last = [m for _, m in w.session if near.search(m)]
+        return False, last[-1] if last else f"no line like {about!r} since power-on"
+    return test
+
+
 def pressed(number, then=None):
     """Button `number` reached the app, and (if given) a line matching `then` came after it."""
     after = re.compile(then) if then else None
@@ -321,7 +353,9 @@ CHECKS = (
         ["track_mute_turns_the_pads_into_mute_keys_over_any_page",
          "track_mute_banks_pick_which_16_tracks_the_pads_mute",
          "track_mute_turns_the_pads_into_track_mutes_and_back",
-         "track_mute_takes_the_perc_out_of_the_hook_and_back"],
+         "track_mute_takes_the_perc_out_of_the_hook_and_back",
+         "track_mute_banks_reach_past_16_tracks_and_shift_mutes_the_kits_pads",
+         "track_mute_writes_its_mutes_and_its_bank"],
         needs=['TRACK MUTE', 'PAD BANK A/E', 'PAD BANK B/F']),
     Check(
         "wheel", "The data wheel and its push on the real wheel",
@@ -339,7 +373,8 @@ CHECKS = (
         ["the_wheel_moves_an_outline_and_its_push_does_what_a_finger_does",
          "the_wheel_picks_rows_and_its_push_opens_one_on_every_page_with_rows",
          "the_wheels_push_opens_a_row_for_the_wheel_and_a_second_push_sets_it",
-         "song_drags_copy_with_shift_and_the_wheel_moves_the_pick"],
+         "song_drags_copy_with_shift_and_the_wheel_moves_the_pick",
+         "clip_and_block_moves_write_their_lines"],
         needs=['DATA DIAL PUSH']),
     Check(
         "touch", "Touch: Touch lab, Calibrate touch, two fingers and a real drag",
@@ -358,7 +393,8 @@ CHECKS = (
          "calibrate_touch_opens_from_prefs_and_takes_every_finger",
          "four_targets_on_the_built_in_mapping_match",
          "two_fingers_hold_two_throws_at_once",
-         "a_dropped_clip_keeps_playing_where_it_lands_and_undo_takes_it_back"],
+         "a_dropped_clip_keeps_playing_where_it_lands_and_undo_takes_it_back",
+         "clip_and_block_moves_write_their_lines"],
         needs=['MAIN']),
     Check(
         "note-repeat", "NOTE REPEAT, Latch and the arp",
@@ -375,7 +411,8 @@ CHECKS = (
          "latch_keeps_pads_repeating_until_it_goes_off_or_stop",
          "note_repeat_pressed_twice_latches_like_shift_and_note_repeat",
          "note_repeat_and_menu_open_the_arp_panel",
-         "stop_silences_a_latched_arp_and_keeps_the_latch_until_stop_again"]),
+         "stop_silences_a_latched_arp_and_keeps_the_latch_until_stop_again",
+         "note_repeat_latch_stop_and_the_looper_write_their_lines"]),
     Check(
         "looper", "The Looper tab records and STOP stops it at once",
         "live test 3's loop that kept playing after STOP", "hands",
@@ -388,7 +425,9 @@ CHECKS = (
         ["the_loop_strips_buttons_carry_their_symbols_and_play_and_stop_the_transport",
          "the_first_pass_shows_as_it_records",
          "presses_and_changes_log_and_the_wave_is_built",
-         "the_looper_tab_picks_loops_and_works_layers"],
+         "the_looper_tab_picks_loops_and_works_layers",
+         "rec_records_two_bars_and_stop_stops_the_loop_at_once",
+         "note_repeat_latch_stop_and_the_looper_write_their_lines"],
         needs=['SAMPLER']),
     Check(
         "console", "The console chord, TAP TEMPO and STOP",
@@ -401,7 +440,8 @@ CHECKS = (
         "Did the Console open and close, and did STOP silence everything?",
         ["shift_erase_tap_tempo_toggles_the_console_and_nothing_else_does",
          "tap_tempo_sets_the_tempo_and_blinks",
-         "shift_stop_goes_back_to_bar_1_and_shift_rec_captures"],
+         "shift_stop_goes_back_to_bar_1_and_shift_rec_captures",
+         "note_repeat_latch_stop_and_the_looper_write_their_lines"],
         needs=['ERASE']),
     Check(
         "midi-in", "A MIDI keyboard on MIDI IN (only with a keyboard and a 5-pin cable)",
@@ -439,6 +479,121 @@ CHECKS = (
         None,
         ["the_warp_tab_pins_the_hits_and_the_copy_goes_through_them",
          "a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready"]),
+    Check(
+        "fx-add", "Add an effect on the Mix tab and hear it",
+        "live test 3's + Add effect did nothing (#275, #287, #353); never run on the MPC since", "hands",
+        ["1. On Play with kit 1, hit a few pads. Press TRACK MIX, tap Effects, then the Drums row's + FX:",
+         "   the effect picker opens.",
+         "2. Tap Delay and reverb, then Reverb. \"Reverb \u00b7 Room\" goes in after \"Filter \u00b7 DJ\". Hit pads: they ring.",
+         "3. Tap Reverb \u00b7 Room's ON pill: the pads go dry. Tap it again: the reverb comes back.",
+         "4. Tap Reverb \u00b7 Room, then Remove (UNDO doesn't take back chain edits). Press MAIN."],
+        [("the touchscreen was used", touch_rose()),
+         ("no refusal", not_seen(r"^(mixer|chain): (The chain is full|The mixer is busy"
+                                 r"|the chain editor asked for an effect that has no maker)")),
+         ("the app kept running", stayed_up())],
+        "Did the pads ring once the reverb was in, go dry with its ON pill off, and ring again with it on?",
+        ["the_chain_editors_taps_reach_the_app",
+         "the_effects_look_adds_picks_turns_and_moves_an_effect",
+         "an_insert_added_on_the_mixer_is_turned_bypassed_moved_and_removed",
+         "the_effect_pickers_cancel_adds_nothing",
+         "the_mixer_opens_the_editor_on_a_strip_and_adds_an_effect_from_the_picker",
+         "room_to_plate_keeps_the_shared_knobs_and_learned_q_links_follow"],
+        needs=['TRACK MIX / PAD MIX', 'MAIN']),
+    Check(
+        "eq", "The Mix tab's EQ: a dot follows a finger, UNDO and Listen",
+        "#388: the parametric EQ (the EQ look on the Mix tab, the EQ page in the chain editor)", "hands",
+        ["1. Press TRACK MIX, tap EQ at the top right of the Mix tab, and tap \"+ EQ\" on the Drums row.",
+         "   Play pads, drag the second dot of the new curve up, down and sideways, and let go.",
+         "2. Press UNDO: the curve goes back and the hint line says \"Undid Drums EQ Band 2\".",
+         "3. Tap the Drums curve twice to open the EQ page, tap Listen, and play pads (you hear only",
+         "   band 2's slice). Press MAIN to go back to Play."],
+        [("UNDO (67) reached the app", pressed(UNDO)),
+         ("UNDO took back the EQ drag", seen(r"^Undid .+ EQ Band \d$")),
+         ("no underrun while it played", no_underruns_while())],
+        "Did the sound follow the dot while you dragged it, and did Listen play only a thin slice of the sound?",
+        ["the_eq_look_adds_picks_and_shapes_an_eq"],
+        needs=['TRACK MIX / PAD MIX', 'MAIN'], wait_status=True),
+    Check(
+        "mpc-plugin", "An Open MPC plugin instrument plays on the MPC",
+        "#385: MPC-format plugins in the plugin sandbox; CI runs them as ARM only under qemu", "hands",
+        ["1. Open the Synth tab. On the Instrument row, step past the built-in engines to [SYN] Mono Voice.",
+         "2. Play pads 1 to 8 for about 10 s, soft and hard.",
+         "3. Hold a pad for 30 s, so a status line counts the plugin."],
+        [("the app found the plugin at its start",
+          at_start(r"^plugins: \d+ effect\(s\) and [1-9]\d* instrument\(s\) in \S*files/plugins/?; "
+                   r"each runs in its own process", r"^plugins: \d+ effect")),
+         ("a track plays it", seen(r"^track \d+: plays \[SYN\] Mono Voice")),
+         ("it started in its own process", seen(r"^plugins: \[SYN\] Mono Voice started in its own process")),
+         ("a status line counts it running, none down",
+          seen(r"^status: plugins: \d+ found \u00b7 [1-9]\d* running \u00b7 0 down \u00b7 0 crashes")),
+         ("it did not refuse to start", not_seen(r"^plugins: .* would not start")),
+         ("no underrun while it played", no_underruns_while())],
+        "Did the pads play a synth sound from the MPC's outputs, following how hard you hit?",
+        ["a_plugin_made_with_the_app_as_its_process_plays",
+         "plugins_live_in_the_data_folder_or_else_a_temp_folder_never_the_real_home"],
+        wait_status=True),
+    Check(
+        "mpc-plugin-install", "Install a plugin from the stick and over Ethernet, and see its own screen",
+        "#398: BROWSE's Plugins place (zips on the stick, the Open MPC catalog over HTTPS through the system's "
+        "libcurl) and MPC plugin skins on the Synth tab", "hands",
+        ["1. Press BROWSE. Hold SHIFT and turn the wheel to Plugins (it sits after Recordings).",
+         "2. Tap On the stick, pick Tidal-Verb-1.6.0-mpc-armv7.zip, then tap Install from zip.",
+         "3. Tap Catalog, then Instruments. Pick Modal Voice and tap Install: the bar shows the download.",
+         "   If the catalog says there is no network, go on: its line in the log says why.",
+         "4. Open the Synth tab. On the Instrument row, pick [SYN] Modal Voice, or [SYN] Mono Voice if step 3",
+         "   could not run. The plugin's own screen fills the page under the top bar. Play a few pads."],
+        [("the Plugins place says what is there and whether downloads can work",
+          seen(r"^plugins: \d+ installed, [1-9]\d* zip\(s\) on the stick, .*, "
+               r"downloads (possible \(libcurl found\)|off \(no libcurl\))")),
+         ("the catalog came over the network, or the line says why not",
+          seen(r"^plugins: (The catalog lists \d+ plugins; \d+ run on this MPC|not done \(catalog\): )")),
+         ("the zip on the stick installed", seen(r"^plugins: (Installed|Updated) .*Tidal")),
+         ("the Synth tab offers the plugins again after the install", seen(r"^plugins: \d+ offered after an install")),
+         ("Modal Voice installed from the catalog (needs a route out)", seen(r"^plugins: Installed .*Modal Voice")),
+         ("a track plays the plugin", seen(r"^track \d+: plays \[SYN\] (Modal|Mono) Voice")),
+         ("it started in its own process", seen(r"^plugins: \[SYN\] (Modal|Mono) Voice started in its own process")),
+         ("its own screen is drawn on the Synth tab",
+          seen(r"^screen: mpc:.*: its own screen, \d+ tab\(s\), on the Synth tab")),
+         ("it did not refuse to start", not_seen(r"^plugins: .* would not start"))],
+        "Did the plugin's own screen (its knobs and pictures, not MPFree's list) show, and did the pads play it?",
+        ["the_plugins_place_lists_the_stick_and_deletes_a_zip_on_the_second_tap",
+         "an_mpc_plugins_skin_fills_the_synth_tab_and_mpfree_page_is_one_tap_away",
+         "lists_a_zip_on_the_stick_and_refuses_one_that_is_not_a_plugin",
+         "installed_and_older_says_update_and_remove_asks_twice",
+         "the_log_says_what_is_there_and_what_was_done"],
+        needs=['BROWSE']),
+    Check(
+        "power", "The power button opens the power card",
+        "#389: a short press opens the card; Shut down and Restart end the boot, so the stick logs judge them",
+        "hands",
+        ["1. Press the power button briefly (don't hold it): \"Shut down the MPC?\" opens over the page.",
+         "   Tap Cancel: back on the page.",
+         "2. Press it briefly again, then briefly once more: the second press closes the card."],
+        [("the app reads the power button",
+          at_start(r"^power button: .*read-only, not grabbed; a short press opens the power card", r"^power button: ")),
+         ("the card opened twice", seen_times(r"^power: the power card is open", 2))],
+        "Did the card open over the page each time, and close with Cancel and with the second press?",
+        ["a_short_press_of_the_power_button_opens_the_power_card",
+         "a_press_is_short_only_when_the_button_comes_back_up_in_time",
+         "the_power_key_is_found_by_name_and_key_not_by_number",
+         "shut_down_and_restart_go_to_the_systems_file",
+         "a_request_is_one_word_in_a_whole_file"]),
+    Check(
+        "first-start", "The USB creator's first-start setup: the backup, then the MPC's kits and samples",
+        "#386: the read-only eMMC window was approved on condition that it runs on the reference MPC first",
+        "auto",
+        looks=[("the setup ran at this start",
+                at_start(r"^first start: setup, try [1-3] of 3$", r"^first start: ")),
+               ("the backup was copied, read back and checked, with no write to the eMMC",
+                at_start(r"^first start: (backup done|using the backup made before): \S*/backup/"
+                         r"mpc-one-emmc-\d{8}T\d{6}Z$", r"^first start: ")),
+               ("the MPC's own kits and samples came in",
+                at_start(r"^first start: done: [1-9]\d* Akai kits, [1-9]\d* samples; the backup is in ",
+                         r"^first start: "))],
+        smoke=["needed_only_with_the_service_and_until_done",
+               "kits_and_samples_from_the_backup",
+               "a_failed_or_missing_backup_is_tried_again_later",
+               "one_bar_for_the_whole_first_start"]),
     Check(
         "kept", "The settings partition 4 kept came back at this start",
         "Prefs saved in one boot and used in the next (Sound cores, Loop memory)", "auto",
@@ -480,7 +635,7 @@ AREAS = (
       "play_held_while_rolling_is_a_fill_and_twice_latches_it",
       "fill_held_plays_the_fill_notes_and_only_then",
       "the_master_bar_and_the_mixer_master_are_one_level"]),
-    ("Mix: strips, effect chains, modes, learn, macros and I/O",
+    ("Mix: strips, effect chains, the EQ, modes, learn, macros and I/O",
      ["the_mix_tab_holds_the_mixer_and_its_chains_and_track_mix_goes_back",
       "the_mixer_strip_controls_set_the_mixer",
       "the_effects_look_adds_picks_turns_and_moves_an_effect",
@@ -489,7 +644,10 @@ AREAS = (
       "a_mode_across_engines_swaps_in_place_and_switching_back_restores",
       "a_knob_given_to_a_macro_moves_with_the_macro",
       "q_link_steps_plays_column_through_the_macro_banks",
-      "the_io_view_follows_its_section_and_says_why_a_setting_stays"]),
+      "the_io_view_follows_its_section_and_says_why_a_setting_stays",
+      "track_mix_comes_and_goes_and_undo_takes_back_strip_changes",
+      "room_to_plate_keeps_the_shared_knobs_and_learned_q_links_follow",
+      "the_eq_look_adds_picks_and_shapes_an_eq"]),
     ("Looper tab: layers, tools, undo history, trim and drags",
      ["the_looper_tab_picks_loops_and_works_layers",
       "a_layer_dragged_onto_a_loop_moves_or_copies_and_another_length_says_why",
@@ -498,7 +656,9 @@ AREAS = (
       "the_trim_handles_keep_a_range_by_sixteenths",
       "resample_goes_into_an_empty_loop_and_picks_it",
       "the_last_layers_x_clears_and_a_loop_mutes_without_being_picked",
-      "working_tools_act_and_faint_ones_say_why"]),
+      "working_tools_act_and_faint_ones_say_why",
+      "the_tools_the_undo_history_and_trim_work_while_the_loop_plays",
+      "layers_move_between_loops_and_speakers_clear_and_x_work"]),
     ("Pads tab and Sample tab: Browse, Pad, Chop, Stops, scenes and FX",
      ["the_pads_tab_picks_copies_and_clears_pads_and_undo_takes_it_back",
       "the_pads_tab_follows_play_and_its_browser_takes_the_wheel_push_minus_plus_and_play",
@@ -631,6 +791,23 @@ def cmd_show(text):
 
 
 TEST_LINE = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)")
+FAILURE_HEAD = re.compile(r"^---- (\S+) stdout ----$")
+
+
+def failure_lines(output, most=6):
+    """{test name: the first lines of what it printed when it failed (the panic and its values)}."""
+    out, name = {}, None
+    for line in output.splitlines():
+        m = FAILURE_HEAD.match(line)
+        if m:
+            name = m.group(1).rsplit("::", 1)[-1]
+            out[name] = []
+        elif name is not None:
+            if line.startswith("stack backtrace:") or line in ("failures:", "successes:"):
+                name = None
+            elif line.strip() and len(out[name]) < most:
+                out[name].append(line.strip())
+    return out
 
 
 def cmd_smoke():
@@ -642,7 +819,8 @@ def cmd_smoke():
         head = ""
     print(f"commit: {head.strip() or '(not a git checkout)'}")
     # Release: it builds for longer but runs the smoke workflows several times faster (about 6 minutes in all).
-    cmd = ["cargo", "test", "-p", "mpfree-app", "--release", "--locked"]
+    # --no-fail-fast: one failing test program doesn't keep the others (tests/*.rs) from running.
+    cmd = ["cargo", "test", "-p", "mpfree-app", "--release", "--locked", "--no-fail-fast"]
     print(f"running: (cd rust && {' '.join(cmd)})", flush=True)
     if not shutil.which("cargo"):
         print("RESULT: the tests did not run: cargo is not on PATH (the Rust toolchain that builds the stick's programs)")
@@ -677,8 +855,11 @@ def cmd_smoke():
     good = all([report(title, tests) for title, tests in AREAS]) and good
     if failed:
         print("\nFailed:")
+        why = failure_lines(proc.stdout + "\n" + proc.stderr)
         for n in failed:
             print(f"  {n}")
+            for line in why.get(n, []):
+                print(f"      {line}")
     print("\nRESULT: " + ("every test passed." if proc.returncode == 0 and good else "some tests failed (above)."))
     return 0 if proc.returncode == 0 and good else 1
 

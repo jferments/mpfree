@@ -1307,8 +1307,14 @@ class StaticTests(unittest.TestCase):
             "mkdir -p /run/mpfree-data",
             # Partition 4, by its own PARTUUID: the only thing mounted read-write (storage-spec.md).
             'mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then',
+            # Only files/plugins may hold a library the app loads (a plugin): a bind of it over itself,
+            # remounted exec, still nosuid and nodev. The rest of partition 4 stays noexec.
+            "mkdir -p /run/mpfree-data/files/plugins",
+            '{{ mount --bind "$p" "$p" && mount -o remount,bind,exec,nosuid,nodev "$p"; }} ||',
             'echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg',
         ])
+        self.assertEqual(re.findall(r"(?m)^\s*p=.*$", tool.APP_SCRIPT), ["  p=/run/mpfree-data/files/plugins"])
+        self.assertLess(tool.APP_SCRIPT.index("/run/mpfree-data; then"), tool.APP_SCRIPT.index("mount --bind"))
         self.assertEqual(tool.APP_SCRIPT.count("rw"), 1)
         self.assertIn("data=/dev/disk/by-partuuid/{data_uuid}\n", tool.APP_SCRIPT)
         # Growing partition 4's filesystem to fill the partition, online, after it is mounted: the only
@@ -1321,8 +1327,9 @@ class StaticTests(unittest.TestCase):
         for line in lines:
             for target in re.findall(r">\s*(\S+)", line.replace("2>&1", "")):
                 self.assertIn(target, ("/dev/kmsg", "/run/mpfree-data-grow.txt"), line)
-        for forbidden in ("/dev/mmc", "/dev/sd", "remount"):
+        for forbidden in ("/dev/mmc", "/dev/sd"):
             self.assertNotIn(forbidden, tool.APP_SCRIPT)
+        self.assertEqual(tool.APP_SCRIPT.count("remount,"), 1)
 
     def test_app_user_scripts_and_unit(self):
         """--app-user: storage.sh changes only what start-app.sh did, plus partition 4's owners and the pan
@@ -1348,8 +1355,12 @@ class StaticTests(unittest.TestCase):
             'echo "mpfree-test-storage: the kit partition did not mount" > /dev/kmsg',
             "mkdir -p /run/mpfree-data",
             'mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then',
+            # Made before the owners are set, so it is mpfree's.
+            "mkdir -p /run/mpfree-data/files/plugins",
             # Only on partition 4, only files not yet mpfree's; -h never follows a link.
             "find /run/mpfree-data -xdev -path /run/mpfree-data/backup -prune -o ! -user 960 -exec chown -h 960:960 {} \\; ||",
+            # Only files/plugins may hold a library the app loads (a plugin), as in start-app.sh.
+            '{ mount --bind "$p" "$p" && mount -o remount,bind,exec,nosuid,nodev "$p"; } ||',
             'echo "mpfree-test-storage: the data partition did not mount, so nothing is saved" > /dev/kmsg',
             'chgrp 960 "$p" && chmod g+w "$p" ||',
         ])
@@ -1362,8 +1373,10 @@ class StaticTests(unittest.TestCase):
         for line in lines:
             for target in re.findall(r">\s*(\S+)", line.replace("2>&1", "")):
                 self.assertIn(target, ("/dev/kmsg", "/run/mpfree-data-grow.txt"), line)
-        for forbidden in ("/dev/mmc", "/dev/sd", "remount", "/bind", "/unbind", "chown -R", "-L "):
+        for forbidden in ("/dev/mmc", "/dev/sd", "/bind", "/unbind", "chown -R", "-L "):
             self.assertNotIn(forbidden, storage)
+        self.assertEqual(storage.count("remount,"), 1)
+        self.assertLess(storage.index("find /run/mpfree-data"), storage.index("mount --bind"))
         self.assertTrue(storage.rstrip().endswith("exit 0"), "storage.sh never fails the boot")
         # The new start-app.sh only starts the program.
         start_lines = [line.strip() for line in start.splitlines() if line.strip() and not line.lstrip().startswith("#")]
