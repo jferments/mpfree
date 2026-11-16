@@ -567,6 +567,18 @@ impl Library {
     /// named `name` or `name 2` ... if taken. Written to a `.part` file,
     /// synced and renamed, so it is there whole or not at all.
     pub fn write_new(&self, folder: &Loc, name: &str, bytes: &[u8]) -> io::Result<Loc> {
+        self.write_part(folder, name, bytes, true)
+    }
+
+    /// Like [`Library::write_new`], but not synced: for many files written
+    /// in one go (the first-start setup's samples), which then sync once
+    /// (`sync(2)`). Until then a power cut can leave such a file short or
+    /// empty, so the writer checks sizes when it starts again.
+    pub fn write_new_unsynced(&self, folder: &Loc, name: &str, bytes: &[u8]) -> io::Result<Loc> {
+        self.write_part(folder, name, bytes, false)
+    }
+
+    fn write_part(&self, folder: &Loc, name: &str, bytes: &[u8], sync: bool) -> io::Result<Loc> {
         self.check_writable(folder)?;
         if bytes.len() as u64 > MAX_FILE {
             return Err(err(io::ErrorKind::InvalidInput, "file too big".into()));
@@ -575,7 +587,7 @@ impl Library {
         let name = unique_name(name, |n| folder.join(n).is_ok_and(|l| self.exists(&l)));
         let loc = folder.join(&name)?;
         let part = fp.join(format!("{name}.part"));
-        let r = (|| {
+        let write = || -> io::Result<()> {
             let mut f = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -584,10 +596,16 @@ impl Library {
                 .custom_flags(0x20000) // O_NOFOLLOW
                 .open(&part)?;
             f.write_all(bytes)?;
-            f.sync_all()?;
+            if sync {
+                f.sync_all()?;
+            }
             fs::rename(&part, fp.join(&name))?;
-            sync_dir(&fp)
-        })();
+            if sync {
+                sync_dir(&fp)?;
+            }
+            Ok(())
+        };
+        let r = write();
         if r.is_err() {
             let _ = fs::remove_file(&part);
         }
@@ -1100,6 +1118,30 @@ pub(crate) mod tests {
         }
         // Opening it again changes nothing.
         Library::at(&d).unwrap();
+    }
+
+    #[test]
+    fn unsynced_writes_land_the_same_way() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let s = Loc::top(Place::Samples);
+        let a = lib.write_new_unsynced(&s, "Kick.wav", b"abc").unwrap();
+        let b = lib.write_new_unsynced(&s, "Kick.wav", b"de").unwrap();
+        assert_eq!(
+            (a.name(), b.name()),
+            ("Kick.wav", "Kick 2.wav"),
+            "never over a file"
+        );
+        assert_eq!(lib.read(&b, 10).unwrap(), b"de");
+        let raw = lib.root().join("Samples");
+        assert!(!raw.join("Kick.wav.part").exists());
+        assert!(lib
+            .write_new_unsynced(
+                &Loc::top(Place::Samples).join("missing").unwrap(),
+                "x.wav",
+                b"x"
+            )
+            .is_err());
     }
 
     #[test]

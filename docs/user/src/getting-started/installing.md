@@ -93,13 +93,20 @@ The backup on the stick is the way back if anything ever goes wrong with your MP
 
 The creator copies the newest backup and checks every byte of the copy against the stick. It doesn't change anything on the stick. The backup holds your own projects and your MPC's serial numbers: keep it safe, and don't share it.
 
-## Making the stick again
+## Updating MPFree on the stick
 
-When there is a new version of MPFree, make the stick again with the creator, with the same stick. Your settings, work and backups on it are kept. You don't need developer mode again: the helper is already on the MPC.
+When there is a new version of MPFree, put it on the same stick with the new creator. Your backup, settings, work and the Akai kits and samples stay on the stick, so there is no long first start again.
 
-After an update of the MPC's factory software, the MPC starts the factory software even with the stick in: it only starts MPFree from a stick made for the version it runs. Make the stick again from the new update file, once MPFree supports it.
+1. Put the stick into the computer and open the creator. Step 1 finds Akai's update file as before.
+2. In step **2, Your USB stick**, choose the stick. The creator sees that it already has MPFree, and step 3 becomes **Update MPFree on this stick**.
+3. Leave **Keep my backup, settings and files** chosen, and click **Update MPFree**. Approve your computer's password prompt.
+4. When the creator says **MPFree is updated**, put the stick back into the MPC and turn it on. MPFree starts with your settings and files.
 
-To start a stick's MPFree data afresh (erasing its settings, work and backups), tick **Start the stick's data fresh** in the creator's **Preferences** before making it.
+You don't need developer mode again: the helper is already on the MPC. If the creator can't keep what is on the stick (a stick from a much older or newer MPFree), it stops before writing anything and says so: copy the backup to your computer first, then choose **Erase everything and start over**.
+
+To start the stick afresh instead, choose **Erase everything and start over** in step 3. That erases the backup on the stick, your MPFree settings and work too, and the next start backs up your MPC again. (For a stick the creator doesn't recognise as MPFree's, the same choice is **Start the stick's data fresh** in **Preferences**.)
+
+After an update of the MPC's factory software, the MPC starts the factory software even with the stick in: it only starts MPFree from a stick made for the version it runs. Make the stick again from the new update file, once MPFree supports it. If MPFree still doesn't start, do step 3 again: Akai's update may have removed the helper.
 
 ## Removing MPFree
 

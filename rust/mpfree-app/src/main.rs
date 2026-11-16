@@ -97,6 +97,7 @@ mod engines;
 mod export;
 mod fxmodes;
 mod gui;
+mod imagecopy;
 mod instruments;
 mod kit;
 mod looper_page;
@@ -2268,23 +2269,26 @@ const STEPS: usize = 6;
 
 /// The first start on a stick the USB creator made ([`setup`]): only with
 /// `--data`, never in `play`, and only where the stick has the backup
-/// service. Returns the settings to save (when it ran) and the MPC's own
-/// kits file (when there is one, from this start or an earlier one).
+/// service and the store saves there. What it does is saved through
+/// `store` as each step ends. Returns the MPC's own kits file (when there
+/// is one, from this start or an earlier one).
 fn first_start(
     o: &Options,
     out: &mut Out,
     timed: bool,
-) -> (Option<mpfree_store::Settings>, Option<PathBuf>) {
-    let Some(data) = o.data.as_deref().filter(|_| !timed) else {
-        return (None, None);
-    };
+    store: &mpfree_store::Store,
+) -> Option<PathBuf> {
+    let data = o.data.as_deref().filter(|_| !timed)?;
     let paths = setup::Paths::on_the_stick(data, Path::new(REPORT_DIR));
-    // The store opens later (step 6); its setup.conf is only read here.
     let conf = data.join("settings").join(format!("{}.conf", setup::OWNER));
     let saved = mpfree_store::Settings::parse(&fs::read_to_string(conf).unwrap_or_default());
-    let (mut to_save, mut made) = (None, None);
-    if setup::needed(&paths, &saved) {
+    let mut made = None;
+    if setup::needed(&paths, &saved) && !store.saves() {
+        // Nothing it did would be kept, so it would run again at every start.
+        out.say("first start: not run: saving is off on the data folder (see the storage line)");
+    } else if setup::needed(&paths, &saved) {
         let mut lines = Vec::new();
+        let mut not_saved = None;
         let outcome = setup::run(
             &paths,
             &saved,
@@ -2297,10 +2301,24 @@ fn first_start(
                 })
             },
             &mut |line| lines.push(line),
+            // Each step is on the stick before the next one starts.
+            &mut |s| match store.save_settings(setup::OWNER, s) {
+                Ok(()) => store.flush(),
+                Err(e) => not_saved = Some(e),
+            },
         );
         for line in lines {
             out.say(&line);
         }
+        if let Some(e) = not_saved {
+            out.say(&format!("first start: a step was not saved ({e})"));
+        }
+        if let Err(e) = store.save_settings(setup::OWNER, &outcome.saved) {
+            out.say(&format!(
+                "first start: not saved ({e}); it runs again at the next start"
+            ));
+        }
+        store.flush();
         if let Some(why) = &outcome.failed {
             out.show(gui::ToUi::Progress {
                 message: "The first-start setup did not finish".into(),
@@ -2309,16 +2327,14 @@ fn first_start(
             });
             thread::sleep(Duration::from_secs(5));
         }
-        to_save = Some(outcome.saved);
         made = outcome.kits;
     }
-    let kits = made.or_else(|| {
+    made.or_else(|| {
         let lib = mpfree_library::Library::at(data).ok()?;
         let loc =
             mpfree_library::Loc::new(mpfree_library::Place::Kits, &[setup::KITS_FILE]).ok()?;
         lib.file_path(&loc).ok()
-    });
-    (to_save, kits)
+    })
 }
 
 /// One loading step on the screen (and in the log).
@@ -3483,10 +3499,30 @@ fn player_session(
     timed: bool,
     from_ui: &Receiver<gui::FromUi>,
 ) -> Result<(), String> {
+    // The store (--data: the stick's partition 4) opens first, before the
+    // first start writes anything there: it marks a new, empty data folder as
+    // MPFree's (FORMAT), and uses no folder that is neither empty nor marked.
+    // (The third creator stick's first start wrote its backup and library
+    // before the store opened, 16 Nov, and the store then refused the
+    // folder.) It saves on its own thread and reports each save as a line;
+    // the settings are read at step 6, before the sound starts.
+    let store = match &o.data {
+        Some(dir) => {
+            let sink = out.sink.clone();
+            mpfree_store::Store::at(dir, move |line| match &sink {
+                Some(s) => {
+                    let _ = s.try_send(gui::ToUi::Line(line));
+                }
+                None => println!("{line}"),
+            })
+        }
+        None => mpfree_store::Store::none(),
+    };
+    store.flush();
     // 0. The first start on a stick the USB creator made: the eMMC backup,
-    // then the MPC's own kits and samples from it (setup.rs). What it did is
-    // saved once the store is open (step 6).
-    let (setup_saved, akai_kits) = first_start(o, out, timed);
+    // then the MPC's own kits and samples from it (setup.rs), saved as each
+    // step ends.
+    let akai_kits = first_start(o, out, timed, &store);
     // 1. Kits: the MPC's own (from the first start), then MPFree's.
     progress(out, 1, "Loading drum kits", "Reading the kits file", 0.02);
     let own = load_kits(&o.kits, &mut |done, total| {
@@ -3658,28 +3694,9 @@ fn player_session(
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut app = app::App::new(RATE, timed);
-    // Saved settings and found buttons (--data: the stick's partition 4), read
-    // now, before the sound starts with the saved audio buffer. The store
-    // saves on its own thread and reports each save as a line.
-    let store = match &o.data {
-        Some(dir) => {
-            let sink = out.sink.clone();
-            mpfree_store::Store::at(dir, move |line| match &sink {
-                Some(s) => {
-                    let _ = s.try_send(gui::ToUi::Line(line));
-                }
-                None => println!("{line}"),
-            })
-        }
-        None => mpfree_store::Store::none(),
-    };
-    if let Some(saved) = setup_saved {
-        if let Err(e) = store.save_settings(setup::OWNER, &saved) {
-            out.say(&format!(
-                "first start: not saved ({e}); it runs again at the next start"
-            ));
-        }
-    }
+    // Saved settings and found buttons, read now from the store (opened
+    // before the first start), before the sound starts with the saved audio
+    // buffer.
     // The themes folder: theme files the user put in files/themes/ (read
     // only), offered in Prefs > Appearance after the built-in themes. Listed
     // before restore so a saved theme file comes back.
@@ -6772,8 +6789,12 @@ fn main() {
     // `mpfree plughost ...`: this program serving as one plugin's process
     // for the plugin sandbox (plugins.rs), before anything else starts.
     let mut raw = std::env::args_os().skip(1);
-    if raw.next().is_some_and(|a| a == plugins::SUBCOMMAND) {
-        std::process::exit(plugins::serve(raw));
+    match raw.next() {
+        Some(a) if a == plugins::SUBCOMMAND => std::process::exit(plugins::serve(raw)),
+        // `mpfree copy-image FROM TO`: a creator stick's backup copy, run by
+        // its root service (imagecopy.rs), before anything else starts.
+        Some(a) if a == imagecopy::SUBCOMMAND => std::process::exit(imagecopy::main(raw)),
+        _ => {}
     }
     // A panic says where and why in the report before the program ends
     // (crash.rs): from here on, for every command.

@@ -51,7 +51,7 @@ library/
 ```
 
 - A location is a place plus checked names (`Loc`), never a typed path. Every folder on the way must be a real folder; links are never followed for reads or writes.
-- Whole or nothing: a new or copied file is written to `NAME.part`, synced and renamed; a copied folder is built under a hidden name and renamed.
+- Whole or nothing: a new or copied file is written to `NAME.part`, synced and renamed; a copied folder is built under a hidden name and renamed. `Library::write_new_unsynced` is the same without the sync, for thousands of files synced once at the end (the creator stick's first start copies Akai's samples that way: two flushes of the stick per file had it crawling).
 - Every file operation runs on the `mpfree-library` worker thread, never on the UI or audio thread.
 
 ## Instrument presets

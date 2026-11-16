@@ -290,6 +290,71 @@ fn makes_and_looks_after_a_stick() {
         "{}",
         text(&o)
     );
+    // --keep-data (the window's "Keep my backup, settings and files"): a stick
+    // whose partition 4 never started holds nothing, so it is written. (The
+    // MPC's programs again first: the last check spoilt them.)
+    programs_dir(&t.0);
+    let keep_write = |extra: &[&str]| {
+        let mut args = vec![
+            "write",
+            &upd,
+            "--device",
+            &d,
+            "--yes-erase",
+            &d,
+            "--programs",
+            &progs,
+            "--any-update",
+            "--work",
+            &work,
+        ];
+        args.extend_from_slice(extra);
+        stick(&args)
+    };
+    let o = keep_write(&["--keep-data", "--fresh-data"]);
+    assert!(text(&o).contains("choose one"), "{}", text(&o));
+    let o = keep_write(&["--keep-data"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("partition 4: new and empty"),
+        "{}",
+        text(&o)
+    );
+    // A filesystem there that this version can't keep (another label): nothing
+    // is written, not even the partition table.
+    let p4 = 1024u64 << 20;
+    let plant = |label: &[u8]| {
+        use std::os::unix::fs::FileExt;
+        let f = std::fs::OpenOptions::new().write(true).open(&disk).unwrap();
+        let mut sb = [0u8; 1024];
+        sb[56..58].copy_from_slice(&0xEF53u16.to_le_bytes());
+        sb[120..120 + label.len()].copy_from_slice(label);
+        f.write_all_at(&sb, p4 + 1024).unwrap();
+    };
+    plant(b"SOMETHING-ELSE");
+    let head = |len: usize| {
+        use std::os::unix::fs::FileExt;
+        let mut b = vec![0u8; len];
+        std::fs::File::open(&disk)
+            .unwrap()
+            .read_exact_at(&mut b, 0)
+            .unwrap();
+        b
+    };
+    let before = head(4 << 20);
+    let o = keep_write(&["--keep-data"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("so nothing was written"), "{}", text(&o));
+    assert_eq!(head(4 << 20), before);
+    // MPFree's own data partition is kept.
+    plant(b"MPFREE-DATA\0\0\0");
+    let o = keep_write(&["--keep-data"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains(mpfree_stick::stick::KEPT_NOTE),
+        "{}",
+        text(&o)
+    );
     assert!(text(&stick(&["help"])).contains("only been tested on the MPC One (Gen 1)"));
     assert!(!stick(&["frobnicate"]).status.success());
 }
