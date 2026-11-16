@@ -1,0 +1,235 @@
+{
+ "about": "Written by tools/mpc-one/creator-recipe.py from offline-kexec-stick.py's build_rootfs (--app --app-user --splash, soft-reboot); do not edit by hand.",
+ "app_user": {
+  "gecos": "MPFree pad player",
+  "groups": [
+   "audio",
+   "video",
+   "input"
+  ],
+  "home": "/run/mpfree-app",
+  "name": "mpfree",
+  "optional_groups": [
+   "systemd-journal"
+  ],
+  "programs": [
+   "find",
+   "chown",
+   "chgrp",
+   "chmod"
+  ],
+  "shell": "/sbin/nologin",
+  "uid": 960
+ },
+ "data_name": "mpfree-test-data",
+ "data_start_sectors": 2097152,
+ "files": {
+  "/boot/mpfree-softreboot/PROTOCOL": {
+   "mode": 420,
+   "text": "mpfree-softreboot-1\n"
+  },
+  "/boot/mpfree-softreboot/SHA256SUMS": {
+   "mode": 420,
+   "text": "804e06578b243b9eeebed0ac1957b30451c251e11f8678c181b09419bd0788f3  /etc/mpfree-test/internal-off.sh\ndb48de34bba99840a299431ad1ad9aee17a58bb12c23a18df2ff33716a5d195f  /etc/systemd/system/mpfree-test-internal-off.service\ncc0e3d79266ab9824779ac793033e6f03a63b969d66e0fcfcd5145e8e87e6ac5  /etc/udev/rules.d/00-mpfree-internal-off.rules\n5f4fbe24b2450145f826c7cd1eb50ea5edc51ef900295012cf2fffcc16c3fb7a  /boot/mpfree-softreboot/PROTOCOL\n05771433a3e6bfdf3b7a0cbb8b3380a80dcc1b509a501003c28ebee8fe55988b  /boot/mpfree-softreboot/release\n"
+  },
+  "/boot/mpfree-softreboot/release": {
+   "mode": 420,
+   "text": "@RELEASE@\n"
+  },
+  "/etc/mpfree-test/authorized_keys": {
+   "mode": 384,
+   "text": "@AUTHORIZED_KEYS@\n"
+  },
+  "/etc/mpfree-test/ethernet-details.sh": {
+   "mode": 493,
+   "text": "#!/bin/sh\n# MPFree Ethernet details - STRICTLY READ-ONLY.\n# Streamed over SSH stdin by collect-over-ssh.sh --ethernet (on the running\n# stock system), and run by the kexec test build to record the same details on\n# the USB stick, so the two can be compared line by line.\n#\n# Answers: was the Ethernet PHY found, and is the kernel holding it in reset;\n# which clocks feed the Ethernet controller and are they running; how are the\n# PHY's reset and interrupt pins set; and what did the kernel say about the\n# controller, its MDIO bus and the PHY.\n#\n# It reads procfs, sysfs, debugfs (only if it is already mounted) and the\n# kernel log, and asks ethtool (only if installed) for its query output. It\n# never mounts, never changes an interface or a service, never writes a file or\n# a register, and never prints a MAC address.\nset -u\nR=\"${MPFREE_FAKE_ROOT:-}\"\nprintf 'MPFREE ETHERNET DETAILS - READ ONLY\\n'\nprintf 'MAC addresses are replaced with <MAC>.\\n'\n\nsection() { printf '\\n=== %s ===\\n' \"$1\"; }\nredact() { sed -e 's/[0-9A-Fa-f][0-9A-Fa-f]\\(:[0-9A-Fa-f][0-9A-Fa-f]\\)\\{5\\}/<MAC>/g'; }\nvalue() { [ -r \"$1\" ] && cat \"$1\" 2>/dev/null | head -n 1; return 0; }\nshow() { [ -r \"$1\" ] && printf '  %s: %s\\n' \"$2\" \"$(value \"$1\")\"; return 0; }\nlink_name() { [ -L \"$1\" ] && basename \"$(readlink \"$1\")\"; return 0; }\n# The tests run this against a fake tree, whose kernel log is a file in it.\nkernel_log() { if [ -n \"$R\" ]; then cat \"$R/kernel-log\" 2>/dev/null; else dmesg 2>/dev/null; fi; }\n\nsection 'Kernel'\nprintf 'release: %s\\n' \"$(value \"$R/proc/sys/kernel/osrelease\")\"\nprintf 'uptime: %s s\\n' \"$(cut -d' ' -f1 \"$R/proc/uptime\" 2>/dev/null)\"\n\nsection 'Network interfaces (not lo)'\nfor d in \"$R\"/sys/class/net/*; do\n  [ -d \"$d\" ] || continue\n  name=${d##*/}\n  [ \"$name\" = lo ] && continue\n  printf '%s\\n' \"$name\"\n  show \"$d/operstate\" operstate\n  show \"$d/flags\" flags\n  show \"$d/carrier\" carrier\n  show \"$d/mtu\" mtu\n  printf '  driver: %s\\n' \"$(link_name \"$d/device/driver\")\"\n  if [ -L \"$d/phydev\" ]; then\n    printf '  phy: %s\\n' \"$(link_name \"$d/phydev\")\"\n    show \"$d/phydev/phy_id\" '  phy_id'\n    show \"$d/phydev/phy_interface\" '  phy_interface'\n    printf '    phy driver: %s\\n' \"$(link_name \"$d/phydev/driver\")\"\n  else\n    printf '  phy: none attached\\n'\n  fi\ndone\n\nsection 'MDIO buses'\nfor b in \"$R\"/sys/class/mdio_bus/*; do\n  [ -d \"$b\" ] || continue\n  printf '%s\\n' \"${b##*/}\"\n  for f in transfers errors reads writes transfers_1 errors_1 reads_1 writes_1; do\n    show \"$b/statistics/$f\" \"$f\"\n  done\ndone\n\nsection 'MDIO devices'\nfor m in \"$R\"/sys/bus/mdio_bus/devices/*; do\n  [ -d \"$m\" ] || continue\n  printf '%s\\n' \"${m##*/}\"\n  show \"$m/phy_id\" phy_id\n  show \"$m/phy_interface\" phy_interface\n  show \"$m/phy_has_fixups\" phy_has_fixups\n  printf '  driver: %s\\n' \"$(link_name \"$m/driver\")\"\n  printf '  attached to: %s\\n' \"$(link_name \"$m/attached_dev\")\"\ndone\n\nsection 'Interrupts of the Ethernet controller and PHY'\ngrep -i -E 'eth[0-9]|end[0-9]|stmmac|mdio|ff290000|macirq' \"$R/proc/interrupts\" 2>/dev/null || printf '(none listed)\\n'\n\nsection 'PHY supply (VCCIO_PMU) and other Ethernet regulators'\nfor r in \"$R\"/sys/class/regulator/regulator.*; do\n  [ -r \"$r/name\" ] || continue\n  rname=$(value \"$r/name\")\n  case \"$rname\" in\n    VCCIO_PMU|*[Gg][Mm][Aa][Cc]*|*[Ll][Aa][Nn]*|*[Pp][Hh][Yy]*)\n      printf '%s (%s)\\n' \"$rname\" \"${r##*/}\"\n      show \"$r/state\" state\n      show \"$r/microvolts\" microvolts\n      show \"$r/num_users\" num_users\n      ;;\n  esac\ndone\n\nsection 'debugfs'\nif grep -q ' /sys/kernel/debug debugfs ' \"$R/proc/mounts\" 2>/dev/null; then\n  printf 'mounted at /sys/kernel/debug\\n'\n\n  section 'GPIO lines in use (debugfs gpio; the PHY reset is gpio4 B0, its interrupt gpio3 B7)'\n  cat \"$R/sys/kernel/debug/gpio\" 2>/dev/null || printf '(unreadable)\\n'\n\n  section 'Clocks of the Ethernet controller (debugfs clk_summary)'\n  if [ -r \"$R/sys/kernel/debug/clk/clk_summary\" ]; then\n    head -n 3 \"$R/sys/kernel/debug/clk/clk_summary\"\n    grep -E 'mac|gmac|_peri' \"$R/sys/kernel/debug/clk/clk_summary\"\n  else\n    printf '(unreadable)\\n'\n  fi\n\n  section 'Ethernet pins (debugfs pinctrl)'\n  for p in \"$R\"/sys/kernel/debug/pinctrl/*; do\n    [ -r \"$p/pinmux-pins\" ] || continue\n    printf '%s pinmux-pins:\\n' \"${p##*/}\"\n    grep -E 'ff290000|\\(gpio4-8\\)|\\(gpio3-15\\)' \"$p/pinmux-pins\" 2>/dev/null\n    if [ -r \"$p/pinconf-pins\" ]; then\n      printf '%s pinconf-pins:\\n' \"${p##*/}\"\n      grep -E '\\(gpio4-8\\)|\\(gpio3-15\\)' \"$p/pinconf-pins\" 2>/dev/null\n    fi\n  done\n\n  section 'Devices waiting for a driver (debugfs devices_deferred)'\n  cat \"$R/sys/kernel/debug/devices_deferred\" 2>/dev/null || printf '(unreadable)\\n'\nelse\n  printf 'debugfs is not mounted; this script does not mount it\\n'\nfi\n\nsection 'Kernel messages about the Ethernet controller, MDIO bus and PHY'\nkernel_log | grep -i -E 'ff290000|stmmac|dwmac|mdio|rtl82|eth0|end0' | redact\n\nsection 'ethtool (queries only)'\nif command -v ethtool >/dev/null 2>&1; then\n  for d in \"$R\"/sys/class/net/*; do\n    name=${d##*/}\n    [ \"$name\" = lo ] && continue\n    [ -d \"$d\" ] || continue\n    printf -- '--- ethtool -i %s ---\\n' \"$name\"\n    ethtool -i \"$name\" 2>&1 | redact\n    printf -- '--- ethtool %s ---\\n' \"$name\"\n    ethtool \"$name\" 2>&1 | redact\n  done\nelse\n  printf 'ethtool is not installed\\n'\nfi\nprintf '\\nEND OF ETHERNET DETAILS\\n'\n"
+  },
+  "/etc/mpfree-test/ethernet-retry.sh": {
+   "mode": 493,
+   "text": "#!/bin/sh\n# MPFree kexec test boot: record the Ethernet details; start eth0 again if it failed to start.\nout=/run/mpfree-test-eth\nmkdir -p \"$out\"\nsay() { echo \"mpfree-test-ethernet: $*\"; }\ngrep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug\nuptime_s() { cut -d. -f1 /proc/uptime; }\nwait_until() { while [ \"$(uptime_s)\" -lt \"$1\" ]; do sleep 1; done; }\ndetails() { sh /etc/mpfree-test/ethernet-details.sh > \"$out/ethernet-$1.txt\" 2>&1; say \"recorded ethernet-$1.txt\"; }\neth0_up() { f=$(cat /sys/class/net/eth0/flags 2>/dev/null) || return 1; [ $((f & 1)) = 1 ]; }\ndetails \"1-early-$(uptime_s)s\"\nwait_until 15\ndetails 2-at-15s\nn=3\nfor at in 20 45 90; do\n  wait_until \"$at\"\n  if eth0_up; then\n    say \"eth0 is up at $at s (operstate $(cat /sys/class/net/eth0/operstate)); no retry needed\"\n    details \"$n-at-${at}s-eth0-up\"\n    exit 0\n  fi\n  say \"eth0 is not up at $at s; starting it again\"\n  ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'\n  sleep 3\n  details \"$n-at-${at}s-after-retry\"\n  n=$((n + 1))\ndone\nsay \"eth0 retries done\"\n"
+  },
+  "/etc/mpfree-test/host_ed25519": {
+   "mode": 384,
+   "placeholder": "@HOST_KEY@"
+  },
+  "/etc/mpfree-test/internal-off.sh": {
+   "mode": 493,
+   "text": "R=''\n# MPFree: switch the MPC's internal eMMC and SD card off, before anything can touch them.\n# (The R='' line is an empty root prefix; only tests change it.)\n# Run first thing at boot (mpfree-test-internal-off.service, before udev and every mount). After MPFree's\n# soft-reboot hook, this system runs on Akai's kernel with Akai's device tree, where both controllers are on;\n# after a kexec jump they are already hidden and there is nothing to do. It\n#   1. waits up to 10 s for the old system's writable filesystems on the eMMC to be let go (the soft-reboot\n#      detaches Akai's /data; systemd synced it first). Akai's root is read-only (dm-verity), not waited for;\n#   2. marks every eMMC and SD block device read-only;\n#   3. unbinds the two controllers' driver (the eMMC's at ff0f0000, the SD card's at ff0c0000), so the\n#      kernel removes their block devices; nothing is written to them, before or after;\n#   4. checks that no eMMC or SD block device is left, and removes stale /dev/disk links to them.\n# If any step fails it keeps its notes and the kernel log on the stick's own log partition (partition 2,\n# \"mpfree-test-log\", MPFree's; never anything of the MPC's), exits 1, and the unit's FailureAction powers the\n# MPC off: MPFree never runs with the internal storage reachable. Taking the stick out gives Akai's system at\n# the next power-on. Otherwise it writes only /run (RAM), /dev links (RAM), the controllers' sysfs unbind\n# files and the kernel log.\n[ -n \"$R\" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin\nHOSTS=\"ff0f0000 ff0c0000\"\nsay() { echo \"mpfree-internal-off: $*\" > \"$R/dev/kmsg\" 2>/dev/null; echo \"mpfree-internal-off: $*\" >> \"$R/run/mpfree-internal-off.txt\"; }\nstop() {\n  say \"STOP: $1; powering off\"\n  log=''\n  for u in \"$R\"/sys/class/block/sd*/uevent; do\n    grep -qx 'PARTNAME=mpfree-test-log' \"$u\" 2>/dev/null || continue\n    p=${u%/uevent}\n    case \"$(readlink -f \"$p\")\" in */usb*) log=${p##*/} ;; esac\n  done\n  m=\"$R/run/mpfree-internal-off-log\"\n  if [ -n \"$log\" ] && [ -b \"$R/dev/$log\" ] && mkdir -p \"$m\" &&\n      mount -t ext4 -o rw,nosuid,nodev,noexec,sync \"$R/dev/$log\" \"$m\"; then\n    d=\"$m/boot-$(cat \"$R/proc/sys/kernel/random/boot_id\")\"\n    mkdir -p \"$d\" && { cat \"$R/run/mpfree-internal-off.txt\"; dmesg; } > \"$d/internal-off.txt\" 2>&1\n    umount \"$m\"\n  fi\n  exit 1\n}\nhow=kexec\n[ -e \"$R/run/mpfree-hook/soft-reboot\" ] && how=soft-reboot\nsay \"started at $(cut -d' ' -f1 \"$R/proc/uptime\") s (after $how)\"\nheld() {   # prints a writable filesystem still mounted from the eMMC or SD card, even a detached one\n  for f in \"$R\"/sys/fs/ext4/* \"$R\"/sys/fs/f2fs/*; do\n    [ -e \"$f\" ] || continue\n    n=${f##*/}\n    case \"$n\" in\n      mmcblk*) echo \"$n\"; return 0 ;;\n      dm-*) for s in \"$R\"/sys/block/\"$n\"/slaves/*; do\n              case \"${s##*/}\" in mmcblk*) [ \"$(cat \"$R/sys/block/$n/ro\" 2>/dev/null)\" = 1 ] || { echo \"$n\"; return 0; } ;; esac\n            done ;;\n    esac\n  done\n  return 1\n}\nn=0\nwhile busy=$(held); do\n  [ \"$n\" -ge 10 ] && { sync; stop \"$busy is still mounted after 10 s\"; }\n  sleep 1; n=$((n + 1))\ndone\nif command -v blockdev > /dev/null 2>&1; then\n  for b in \"$R\"/sys/block/mmcblk*; do\n    [ -e \"$b\" ] || continue\n    for d in \"$R/dev/${b##*/}\" \"$R/dev/${b##*/}\"p*; do\n      [ -b \"$d\" ] && blockdev --setro \"$d\" 2>/dev/null\n    done\n  done\nfi\nfor a in $HOSTS; do\n  for dev in \"$R\"/sys/bus/platform/devices/\"$a\".*; do\n    [ -e \"$dev/driver\" ] || continue\n    name=${dev##*/}\n    echo \"$name\" > \"$dev/driver/unbind\" || stop \"could not unbind $name\"\n    say \"switched off $name\"\n  done\ndone\nleft() {   # prints a controller still bound, or an eMMC or SD block device still there\n  for a in $HOSTS; do\n    for dev in \"$R\"/sys/bus/platform/devices/\"$a\".*; do\n      [ -e \"$dev/driver\" ] && { echo \"${dev##*/} still has its driver\"; return 0; }\n    done\n  done\n  for b in \"$R\"/sys/block/mmcblk*; do\n    [ -e \"$b\" ] && { echo \"${b##*/} is still there\"; return 0; }\n  done\n  return 1\n}\nn=0\nwhile what=$(left); do   # the kernel removes them as it unbinds; allow it a moment\n  [ \"$n\" -ge 5 ] && stop \"$what\"\n  sleep 1; n=$((n + 1))\ndone\nfor l in \"$R\"/dev/disk/by-*/*; do\n  case \"$(readlink \"$l\" 2>/dev/null)\" in *mmcblk*) rm -f \"$l\" ;; esac\ndone\nsay \"done at $(cut -d' ' -f1 \"$R/proc/uptime\") s: no eMMC or SD card block device is left\"\n"
+  },
+  "/etc/mpfree-test/mpfree": {
+   "mode": 493,
+   "placeholder": "@PAD_PLAYER@"
+  },
+  "/etc/mpfree-test/mpfree-screen-log": {
+   "mode": 493,
+   "placeholder": "@SCREEN_LOG@"
+  },
+  "/etc/mpfree-test/mpfree-splash": {
+   "mode": 493,
+   "placeholder": "@STARTUP@"
+  },
+  "/etc/mpfree-test/power.sh": {
+   "mode": 493,
+   "text": "#!/bin/sh\n# MPFree test boot: shut down or restart, as the pad player's power card asked (one word in /run/mpfree-app/power-request).\n# Only `poweroff` and `restart` are acted on. The file is in the pad player's own folder, so it is never\n# followed if it is a link, and its content is never printed.\nf=/run/mpfree-app/power-request\n[ -e \"$f\" ] || [ -L \"$f\" ] || exit 0\nword=\nif [ -f \"$f\" ] && [ ! -L \"$f\" ]; then\n  IFS= read -r word < \"$f\" || :\nfi\nrm -f \"$f\"\ncase \"$word\" in\n  poweroff) target=poweroff.target ;;\n  restart) target=reboot.target ;;\n  *)\n    echo \"mpfree-test-power: ignored a request that was not poweroff or restart\" > /dev/kmsg\n    exit 0\n    ;;\nesac\necho \"mpfree-test-power: the pad player asked for $word\" > /dev/kmsg\n# A note on the stick's log partition, where the log service keeps this boot's logs, so the next boot can\n# show how this one ended. Nothing else is written.\nd=/run/mpfree-log/boot-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\nif [ -d \"$d\" ]; then\n  { echo \"asked: $word\"; cat /proc/uptime; } > \"$d/power.txt\" 2>&1\n  journalctl -b --no-pager -o short-monotonic > \"$d/journal.txt\" 2>&1\nfi\nsync\nexec systemctl --no-block --job-mode=replace-irreversibly start \"$target\"\n"
+  },
+  "/etc/mpfree-test/save-logs.sh": {
+   "mode": 493,
+   "text": "#!/bin/sh\n# MPFree kexec test boot: copy logs to the stick's log partition (and nothing else).\ndev=/dev/disk/by-partuuid/@LOG_UUID@\ni=0\nwhile [ ! -e \"$dev\" ] && [ \"$i\" -lt 60 ]; do sleep 1; i=$((i + 1)); done\n[ -e \"$dev\" ] || { echo \"mpfree-test: log partition not found\" > /dev/kmsg; exit 1; }\nmkdir -p /run/mpfree-log\nmount -t ext4 -o rw,nosuid,nodev,noexec,sync \"$dev\" /run/mpfree-log || exit 1\nd=/run/mpfree-log/boot-$(cat /proc/sys/kernel/random/boot_id)\nmkdir -p \"$d\"\nwhile :; do\n  dmesg > \"$d/dmesg.txt\" 2>&1\n  journalctl -b --no-pager -o short-monotonic > \"$d/journal.txt\" 2>&1\n  systemctl --failed --no-pager > \"$d/failed-units.txt\" 2>&1\n  systemctl list-units --no-pager > \"$d/units.txt\" 2>&1\n  { ip addr; ip route; } > \"$d/network.txt\" 2>&1\n  cat /proc/cmdline > \"$d/cmdline.txt\" 2>&1\n  cp /run/mpfree-test-eth/*.txt \"$d/\" 2>/dev/null\n  cp /run/mpfree-app/report.txt \"$d/\" 2>/dev/null\n  sync\n  sleep 10\ndone\n"
+  },
+  "/etc/mpfree-test/sshd_config": {
+   "mode": 384,
+   "text": "# MPFree kexec test boot: key-only root SSH, as the 3.6.0 USB autorun set it up.\nPort 2222\nAddressFamily inet\nListenAddress 0.0.0.0\nHostKey /etc/mpfree-test/host_ed25519\nPidFile /run/mpfree-test-sshd.pid\nAuthorizedKeysFile /etc/mpfree-test/authorized_keys\nPermitRootLogin prohibit-password\nPubkeyAuthentication yes\nPasswordAuthentication no\nPermitEmptyPasswords no\nChallengeResponseAuthentication no\nUsePAM no\nAllowUsers root\nStrictModes yes\nLogLevel VERBOSE\nX11Forwarding no\nAllowTcpForwarding no\nAllowAgentForwarding no\nPermitTunnel no\nSubsystem sftp internal-sftp\n"
+  },
+  "/etc/mpfree-test/start-app.sh": {
+   "mode": 493,
+   "text": "#!/bin/sh\n# MPFree test boot (--app-user): start the pad player, as the mpfree user. mpfree-test-storage.service\n# mounted its drum kits (partition 3, read-only) and its saved settings and files (partition 4) as root.\n# This script changes nothing.\nif grep -q ' /run/mpfree-data ' /proc/mounts; then\n  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen --data /run/mpfree-data --power-request /run/mpfree-app/power-request\nfi\necho \"mpfree-test-app: the data partition is not mounted, so nothing is saved\"\nexec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen --power-request /run/mpfree-app/power-request\n"
+  },
+  "/etc/mpfree-test/storage.sh": {
+   "mode": 493,
+   "text": "#!/bin/sh\n# MPFree test boot (--app-user): get the pad player's storage ready, as root, before it starts as the\n# mpfree user (uid 960). Its drum kits are on the stick's partition 3, mounted read-only. Partition 4 holds\n# its saved settings and files, mounted read-write; files there that are not yet the mpfree user's are given\n# to it (find -xdev stays on partition 4), except the eMMC backups in backup/, which stay root's (the pad player\n# only reads them, through its group). This runs before the pad player starts and not again when it\n# restarts, so no process of the mpfree user can change those folders while they are walked.\n# The framebuffer's sysfs `pan` file is opened to the mpfree group (in RAM, until power-off), so the pad\n# player can ask the kernel to show the screen.\n# It writes nothing else and never fails the boot: a step that does not work is noted in the kernel log,\n# and the pad player starts without it, as it did when start-app.sh did this.\ndev=/dev/disk/by-partuuid/@KITS_UUID@\ni=0\nwhile [ ! -e \"$dev\" ] && [ \"$i\" -lt 30 ]; do sleep 1; i=$((i + 1)); done\nmkdir -p /run/mpfree-kits\nif ! grep -q ' /run/mpfree-kits ' /proc/mounts; then\n  mount -t ext4 -o ro,nosuid,nodev,noexec \"$dev\" /run/mpfree-kits ||\n    echo \"mpfree-test-storage: the kit partition did not mount\" > /dev/kmsg\nfi\ndata=/dev/disk/by-partuuid/@DATA_UUID@\ni=0\nwhile [ ! -e \"$data\" ] && [ \"$i\" -lt 5 ]; do sleep 1; i=$((i + 1)); done\nmkdir -p /run/mpfree-data\nif grep -q ' /run/mpfree-data ' /proc/mounts ||\n    mount -t ext4 -o rw,nosuid,nodev,noexec,noatime \"$data\" /run/mpfree-data; then\n  mkdir -p /run/mpfree-data/files/plugins\n  find /run/mpfree-data -xdev -path /run/mpfree-data/backup -prune -o ! -user 960 -exec chown -h 960:960 {} \\; ||\n    echo \"mpfree-test-storage: some files on partition 4 could not be given to mpfree\" > /dev/kmsg\n  # Plugins in files/plugins are libraries the pad player loads, and a library can't be loaded from a noexec\n  # mount. So only that folder allows it: a bind of it over itself, remounted exec (still nosuid and nodev).\n  # The rest of partition 4 stays noexec.\n  p=/run/mpfree-data/files/plugins\n  if ! grep -q \" $p \" /proc/mounts; then\n    { mount --bind \"$p\" \"$p\" && mount -o remount,bind,exec,nosuid,nodev \"$p\"; } ||\n      echo \"mpfree-test-storage: files/plugins could not be made loadable, so plugins there will not start\" > /dev/kmsg\n  fi\n  # Partition 4 fills the stick but its filesystem may be smaller: grow it to fill the partition, online\n  # (the kernel does it while mounted, and writes only partition 4). When it already fills it, nothing changes.\n  if [ -x /usr/sbin/resize2fs ]; then\n    ( /usr/sbin/resize2fs \"$data\" > /run/mpfree-data-grow.txt 2>&1 ||\n        echo \"mpfree-test-storage: partition 4's filesystem did not grow; see /run/mpfree-data-grow.txt\" > /dev/kmsg ) &\n  fi\nelse\n  echo \"mpfree-test-storage: the data partition did not mount, so nothing is saved\" > /dev/kmsg\nfi\nfor p in /sys/class/graphics/fb*/pan; do\n  [ -e \"$p\" ] || continue\n  chgrp 960 \"$p\" && chmod g+w \"$p\" ||\n    echo \"mpfree-test-storage: could not open $p to mpfree\" > /dev/kmsg\ndone\nexit 0\n"
+  },
+  "/etc/sysctl.d/90-mpfree-test.conf": {
+   "mode": 420,
+   "text": "# MPFree kexec test boot: no further kexec from this kernel.\nkernel.kexec_load_disabled = 1\n"
+  },
+  "/etc/systemd/system/data.mount": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: /data in RAM (tmpfs), never the eMMC\nConflicts=umount.target\nBefore=local-fs.target umount.target\n\n[Mount]\nWhat=tmpfs\nWhere=/data\nType=tmpfs\nOptions=mode=0755,size=256M\n\n[Install]\nWantedBy=local-fs.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-app.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: the pad player, from power-on, as the mpfree user\nDefaultDependencies=no\nWants=mpfree-test-storage.service\nAfter=systemd-journald.service systemd-udevd.service mpfree-test-storage.service mpfree-test-splash.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\nOnFailure=mpfree-test-screen.service\nStartLimitIntervalSec=60\nStartLimitBurst=4\n\n[Service]\nType=simple\nUser=mpfree\nGroup=mpfree\nExecStart=/bin/sh /etc/mpfree-test/start-app.sh\nRestart=on-failure\nRestartSec=2\nLimitRTPRIO=70\nLimitMEMLOCK=infinity\nNoNewPrivileges=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\nRuntimeDirectory=mpfree-app\nRuntimeDirectoryPreserve=yes\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-ethernet.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: record the Ethernet details, and start eth0 again if it failed\nDefaultDependencies=no\nAfter=systemd-journald.service sys-kernel-debug.mount\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\n\n[Service]\nType=simple\nExecStart=/bin/sh /etc/mpfree-test/ethernet-retry.sh\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-internal-off.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree: switch the MPC's eMMC and SD card off before anything touches them\nDefaultDependencies=no\nBefore=sysinit.target local-fs-pre.target local-fs.target systemd-udevd.service systemd-udev-trigger.service\nBefore=systemd-udev-settle.service systemd-remount-fs.service systemd-fsck-root.service data.mount swap.target\nBefore=mpfree-test-logs.service mpfree-test-app.service mpfree-test-sshd.service\nWants=local-fs-pre.target\nFailureAction=poweroff\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/sh /etc/mpfree-test/internal-off.sh\nTimeoutStartSec=30\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-logs.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: copy logs to the USB stick's log partition\nDefaultDependencies=no\nAfter=systemd-journald.service systemd-udevd.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\n\n[Service]\nType=simple\nExecStart=/bin/sh /etc/mpfree-test/save-logs.sh\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-power.path": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: watch for the pad player's shut down or restart\nDefaultDependencies=no\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\n\n[Path]\nPathExists=/run/mpfree-app/power-request\nUnit=mpfree-test-power.service\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-power.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: shut down or restart, as the pad player asked\nDefaultDependencies=no\nIgnoreOnIsolate=yes\n\n[Service]\nType=oneshot\nExecStart=/bin/sh /etc/mpfree-test/power.sh\n"
+  },
+  "/etc/systemd/system/mpfree-test-screen.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: show the live log on the MPC's screen\nDefaultDependencies=no\nAfter=systemd-journald.service mpfree-test-splash.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart=/bin/sh -c 'journalctl -b -f -n 100 --no-pager --no-hostname -o short-monotonic 2>&1 | /etc/mpfree-test/mpfree-screen-log --rotation @ROTATION@'\nRestart=always\nRestartSec=5\nNice=10\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-splash.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: startup screen before the live log\nDefaultDependencies=no\nConflicts=shutdown.target\nBefore=shutdown.target mpfree-test-screen.service\nIgnoreOnIsolate=yes\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/etc/mpfree-test/mpfree-splash --framebuffer --rotation @ROTATION@ --seconds 6\nTimeoutStartSec=20\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-sshd.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: key-only root SSH on port 2222\nAfter=network.target\n\n[Service]\nType=simple\nRuntimeDirectory=sshd\nRuntimeDirectoryMode=0755\nExecStartPre=/usr/sbin/sshd -t -f /etc/mpfree-test/sshd_config\nExecStart=/usr/sbin/sshd -D -e -f /etc/mpfree-test/sshd_config\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-storage.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: mount the pad player's kits and saved files, as root, before it starts\nDefaultDependencies=no\nAfter=systemd-journald.service systemd-udevd.service mpfree-test-internal-off.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/sh /etc/mpfree-test/storage.sh\nTimeoutStartSec=90\n"
+  },
+  "/etc/udev/rules.d/00-mpfree-internal-off.rules": {
+   "mode": 420,
+   "text": "# MPFree: the MPC's internal eMMC and SD card are not MPFree's. mpfree-test-internal-off.service removes\n# them before udev starts; should one appear anyway, systemd and udisks leave it alone.\nSUBSYSTEM==\"block\", KERNEL==\"mmcblk*\", ENV{SYSTEMD_READY}=\"0\", ENV{UDISKS_IGNORE}=\"1\", ENV{UDISKS_AUTO}=\"0\"\n"
+  }
+ },
+ "kits_max": 50331648,
+ "links": {
+  "/etc/systemd/system-generators/acva-emmc-content-generator": "/dev/null",
+  "/etc/systemd/system/acvs-content-resize.service": "/dev/null",
+  "/etc/systemd/system/acvs.service": "/dev/null",
+  "/etc/systemd/system/az01-script-runner.service": "/dev/null",
+  "/etc/systemd/system/az01-usbsata-fixer.service": "/dev/null",
+  "/etc/systemd/system/az0x-data-mkfs.service": "/dev/null",
+  "/etc/systemd/system/az0x-webserver.service": "/dev/null",
+  "/etc/systemd/system/ip6tables.service": "/dev/null",
+  "/etc/systemd/system/iptables.service": "/dev/null",
+  "/etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service": "/etc/systemd/system/mpfree-test-sshd.service",
+  "/etc/systemd/system/no-reserved-blocks@.service": "/dev/null",
+  "/etc/systemd/system/sysinit.target.wants/mpfree-test-app.service": "/etc/systemd/system/mpfree-test-app.service",
+  "/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service": "/etc/systemd/system/mpfree-test-ethernet.service",
+  "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service": "/etc/systemd/system/mpfree-test-internal-off.service",
+  "/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service": "/etc/systemd/system/mpfree-test-logs.service",
+  "/etc/systemd/system/sysinit.target.wants/mpfree-test-power.path": "/etc/systemd/system/mpfree-test-power.path",
+  "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service": "/etc/systemd/system/mpfree-test-splash.service",
+  "/etc/systemd/system/touch-fw-update.service": "/dev/null",
+  "/etc/systemd/system/xmos-update.service": "/dev/null"
+ },
+ "log_size": 33554432,
+ "made_if_missing": [
+  "/etc/systemd/system-generators",
+  "/etc/sysctl.d",
+  "/etc/systemd/system/sysinit.target.wants",
+  "/etc/udev",
+  "/etc/udev/rules.d"
+ ],
+ "mkdirs": [
+  "/etc/mpfree-test",
+  "/boot/mpfree-softreboot"
+ ],
+ "only_with_ssh": [
+  "/etc/mpfree-test/authorized_keys",
+  "/etc/mpfree-test/ethernet-details.sh",
+  "/etc/mpfree-test/ethernet-retry.sh",
+  "/etc/mpfree-test/host_ed25519",
+  "/etc/mpfree-test/sshd_config",
+  "/etc/systemd/system/mpfree-test-ethernet.service",
+  "/etc/systemd/system/mpfree-test-sshd.service",
+  "/etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service",
+  "/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service"
+ ],
+ "placeholders": {
+  "authorized_keys": "@AUTHORIZED_KEYS@",
+  "data_uuid": "@DATA_UUID@",
+  "host_key": "@HOST_KEY@",
+  "kits_uuid": "@KITS_UUID@",
+  "log_uuid": "@LOG_UUID@",
+  "pad_player": "@PAD_PLAYER@",
+  "release": "@RELEASE@",
+  "rotation": "@ROTATION@",
+  "screen_log": "@SCREEN_LOG@",
+  "startup": "@STARTUP@"
+ },
+ "required": {
+  "/bin/sh": null,
+  "/etc/shadow": "regular",
+  "/etc/systemd/system": "directory",
+  "/etc/systemd/system/multi-user.target.wants": "directory",
+  "/usr/lib/systemd/system/data.mount": "regular",
+  "/usr/sbin/sshd": "regular"
+ },
+ "softreboot_listed": [
+  "/etc/mpfree-test/internal-off.sh",
+  "/etc/systemd/system/mpfree-test-internal-off.service",
+  "/etc/udev/rules.d/00-mpfree-internal-off.rules",
+  "/boot/mpfree-softreboot/PROTOCOL",
+  "/boot/mpfree-softreboot/release"
+ ],
+ "softreboot_protocol": "mpfree-softreboot-1",
+ "softreboot_sums": "/boot/mpfree-softreboot/SHA256SUMS",
+ "stub": "#!/bin/sh\n# MPFree kexec test boot: this program is disabled on the test stick.\necho \"mpfree-test: blocked $0 $*\" > /dev/kmsg 2>/dev/null\necho \"mpfree-test: $0 is disabled on this test boot\" >&2\nexit 1\n",
+ "stub_programs": [
+  "/usr/sbin/az01-update",
+  "/usr/sbin/az01config",
+  "/usr/sbin/midifirmup",
+  "/usr/sbin/az0x-data-mkfs",
+  "/usr/sbin/acvs-content-resize",
+  "/usr/sbin/kexec",
+  "/usr/bin/dfu-util",
+  "/usr/bin/touch-fw-upd",
+  "/usr/bin/xmosdfu",
+  "/usr/bin/fw_setenv",
+  "/usr/bin/az01-usbsata-fixer",
+  "/usr/bin/az0x-webserver",
+  "/usr/bin/az01-launch-MPC",
+  "/usr/bin/kexec"
+ ]
+}
