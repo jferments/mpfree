@@ -4009,6 +4009,9 @@ impl Player {
             }
             ToUi::Menu(m) => {
                 if let Some(o) = self.ui.get_mut::<OptionList>("options") {
+                    if o.title != m.title {
+                        o.reset_view();
+                    }
                     o.title = m.title;
                     o.rows = m
                         .rows

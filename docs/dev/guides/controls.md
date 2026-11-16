@@ -199,7 +199,7 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 ## Prefs, options and the debug pages
 
-- **`options/row`**, **`options/row-less`**, **`options/row-more`**: a row of Prefs or a page's options (MENU): tap to pick it, ‹ › to change it. *Test:* `appearance_switches_the_theme_live`.
+- **`options/row`**, **`options/row-less`**, **`options/row-more`**: a row of Prefs or a page's options (MENU): tap to pick it (on the lift), ‹ › to change it (at once). A finger dragged up or down a long list scrolls it and picks nothing; the view follows the picked row a row at a time, with a scroll bar (`OptionList`, every option list alike). *Tests:* `appearance_switches_the_theme_live`, `a_long_option_list_scrolls_a_row_at_a_time_and_with_a_finger` (mpfree-ui).
 - **`controls/row`**: Map controls: a hardware button's row; tap it to learn that button again. **`mapcard/button`**: Stop listening, Skip, Clear.
 - **`dtabs/segment`**: the debug pages' tabs (MIDI, Performance, CPU by engine, Processes, ...).
 - **`calibrate/mark`**, **`calibrate/button`**: touch calibration: tap each mark; Start again, Exit. *Test:* `calibrate_touch_opens_from_prefs_and_takes_every_finger`.
