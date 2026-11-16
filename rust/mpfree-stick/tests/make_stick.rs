@@ -205,8 +205,22 @@ fn makes_a_stick_the_hook_takes() {
             "{path}"
         );
     }
+    // No download helper in the programs folder: none on the stick, and the
+    // report says so.
+    assert!(root
+        .lookup("/etc/mpfree-test/mpfree-fetch")
+        .unwrap()
+        .is_none());
+    assert!(made
+        .notes
+        .iter()
+        .any(|n| n.starts_with("download helper: none (no mpfree-fetch")));
     // No placeholder is left anywhere.
-    for path in r.files.keys().filter(|p| !r.only_with_ssh.contains(p)) {
+    for path in r
+        .files
+        .keys()
+        .filter(|p| !r.only_with_ssh.contains(p) && *p != "/etc/mpfree-test/mpfree-fetch")
+    {
         let text = read(&root, path);
         for v in r.placeholders.values() {
             assert!(
@@ -275,6 +289,65 @@ fn makes_a_stick_the_hook_takes() {
     for n in [1, 2, 3] {
         fsck(&img, p(n), &t.0);
     }
+}
+
+#[test]
+fn the_download_helper_goes_beside_the_pad_player() {
+    let t = tmp("fetch");
+    let upd = update_file(&t.0);
+    let src = stick::open_update(&upd, &t.0, true, &mut |_| {}).unwrap();
+    // From a programs folder: checked, and only when it is there.
+    let dir = t.0.join("programs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let progs = programs();
+    for (name, b) in
+        stick::PROGRAM_FILES
+            .iter()
+            .zip([&progs.pad_player, &progs.screen_log, &progs.startup])
+    {
+        std::fs::write(dir.join(name), b).unwrap();
+    }
+    assert!(stick::Programs::from_dir(&dir).unwrap().fetch.is_none());
+    for (bad, why) in [
+        (progs.startup.clone(), "not linked dynamically"),
+        (
+            dynamic_arm_program("GLIBC_2.43"),
+            "built against glibc 2.43, newer than the MPC's 2.39",
+        ),
+        (b"#!/bin/sh\n".to_vec(), "not a program for the MPC"),
+    ] {
+        std::fs::write(dir.join(stick::FETCH_FILE), bad).unwrap();
+        let e = stick::Programs::from_dir(&dir).err().unwrap().to_string();
+        assert!(e.contains(why) && e.contains("cargo zigbuild"), "{e}");
+    }
+    let helper = dynamic_arm_program("GLIBC_2.34");
+    std::fs::write(dir.join(stick::FETCH_FILE), &helper).unwrap();
+    let progs = stick::Programs::from_dir(&dir).unwrap();
+    assert_eq!(progs.fetch.as_deref(), Some(&helper[..]));
+    let b = Build {
+        source: &src,
+        programs: &progs,
+        kits: b"k",
+        ssh: None,
+        dev: None,
+        creator: "test",
+        choices: Default::default(),
+    };
+    let out = t.0.join("stick.img");
+    let made = stick::build_image(&b, &out, &mut |_| {}).unwrap();
+    let img = File::open(&out).unwrap();
+    let table = gpt::read(&img).unwrap();
+    let root = part_fs(&img, table.part(1).unwrap());
+    assert_eq!(read(&root, "/etc/mpfree-test/mpfree-fetch"), helper);
+    let node = root
+        .lookup("/etc/mpfree-test/mpfree-fetch")
+        .unwrap()
+        .unwrap();
+    assert_eq!(node.perm(), 0o755);
+    assert!(made
+        .notes
+        .iter()
+        .any(|n| n.starts_with("download helper: mpfree-fetch (")));
 }
 
 #[test]

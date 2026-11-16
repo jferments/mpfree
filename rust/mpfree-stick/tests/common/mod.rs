@@ -164,11 +164,33 @@ pub fn arm_program(tag: &[u8]) -> Vec<u8> {
     b
 }
 
+/// A made-up download helper: an ARM program with the MPC's loader as its
+/// interpreter, asking for `glibc` (GLIBC_2.34, say).
+pub fn dynamic_arm_program(glibc: &str) -> Vec<u8> {
+    let interp = b"/lib/ld-linux-armhf.so.3\0";
+    let mut b = vec![0u8; 84];
+    b[..7].copy_from_slice(b"\x7fELF\x01\x01\x01");
+    b[16] = 3; // a position-independent executable
+    b[18] = 40;
+    b[28..32].copy_from_slice(&52u32.to_le_bytes());
+    b[42..44].copy_from_slice(&32u16.to_le_bytes());
+    b[44..46].copy_from_slice(&1u16.to_le_bytes());
+    b[52..56].copy_from_slice(&3u32.to_le_bytes()); // PT_INTERP
+    b[56..60].copy_from_slice(&84u32.to_le_bytes());
+    b[68..72].copy_from_slice(&(interp.len() as u32).to_le_bytes());
+    b.extend_from_slice(interp);
+    b.extend_from_slice(b"GLIBC_2.4\0");
+    b.extend_from_slice(glibc.as_bytes());
+    b.push(0);
+    b
+}
+
 pub fn programs() -> Programs {
     Programs {
         pad_player: arm_program(b"pad player"),
         screen_log: arm_program(b"screen log"),
         startup: arm_program(b"startup screen"),
+        fetch: None,
     }
 }
 

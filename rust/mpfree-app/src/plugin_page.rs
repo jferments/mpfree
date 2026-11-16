@@ -157,12 +157,15 @@ fn listing_line(l: &Listing) -> String {
         ),
         None => "no catalog kept yet".into(),
     };
+    // What downloads go through: the system's libcurl, or on the MPC (a
+    // static build) the helper beside the program (mpfree-mpcstore's fetch).
+    let means = mpfree_mpcstore::fetch::means();
     let downloads = if l.no_folder {
-        "downloads off (no data folder)"
+        "downloads off (no data folder)".to_string()
     } else if l.can_download {
-        "downloads possible (libcurl found)"
+        format!("downloads possible ({means} found)")
     } else {
-        "downloads off (no libcurl)"
+        format!("downloads off (no {means})")
     };
     format!(
         "plugins: {} installed, {} zip(s) on the stick, {catalog}, {downloads}",
