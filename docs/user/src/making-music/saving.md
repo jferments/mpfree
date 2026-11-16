@@ -92,7 +92,7 @@ If you have changed anything since you last saved or opened, opening a project o
 
 ### At start
 
-MPFree starts with a new, empty project. To have it open the project you last saved or opened instead, set **At start** in [Prefs](../reference/prefs.md) to **Last project**: once the sound is going, the project opens as if you had opened it from the browser. If it has been deleted since, the Events log says so and the new project stays.
+MPFree opens the project you last saved or opened: once the sound is going, it opens as if you had opened it from the browser. If it has been deleted since, the Events log says so and you start with a new, empty project. To always start with a new project instead, set **At start** in [Prefs](../reference/prefs.md) to **New project**.
 
 **After a crash**, MPFree starts again by itself a few seconds later, and this time it opens nothing: the new, empty project stays even if At start says **Last project**, and for a few seconds the hint line at the bottom of the screen says which project wasn't opened, and where your unsaved work is if autosave had any (the Events log keeps it). Open it from **BROWSE** when you're ready. This way a project that makes MPFree crash as it opens can't do it again at every start. Switching the MPC off and on starts as usual.
 
@@ -116,7 +116,7 @@ Moving onto a sound plays it once, so you can audition as you scroll. Delete alw
 
 **Load** puts a sound on the pad you are editing, and **Load to pad** on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Exporting a pad as files](sampling.md#exporting-a-pad-as-files)).
 
-The data wheel moves through the list and its push opens or loads; the other buttons are in [Buttons and controls](../reference/controls.md#the-browser). On the test build, BROWSE works once **Map controls** in [Prefs](../reference/prefs.md) has learned it.
+The data wheel moves through the list and its push opens or loads; the other buttons are in [Buttons and controls](../reference/controls.md#the-browser).
 
 ### Pickers
 

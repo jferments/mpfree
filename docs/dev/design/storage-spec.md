@@ -13,7 +13,7 @@
   - If the mount fails, the app runs without saving and logs why.
 - **Kept across rounds:** `write-test-stick.py` leaves partition 4 where it is when the stick already has it at 1 GiB, and rewrites only partitions 1 to 3 and the partition table. A stick with the old 64 MiB layout has its partition 4 saved to the build folder first, then moved. `--fresh-data` starts empty; `--data-from FILE` writes a saved copy.
 - **A plugin for a device round:** `tools/mpc-one/stick-plugin.py add ID` (workstation, sudo, the stick in the workstation) puts one Open MPC release that CI pins in `tools/mpc-plugins/catalog-check.txt` into `files/plugins/` on partition 4, unzipped, or as the zip with `--as-zip`. It finds the one `mpfree-test-data` partition with an ext4 `MPFREE-DATA` on a removable USB disk, checks the release's SHA-256, and unmounts after. `remove ID` deletes that one folder or zip. The release is never committed or shipped.
-- **On a stick the USB creator made** ([usb-creator.md](usb-creator.md#as-built-2026-11-15)), partition 4 is not built on the computer: the creator marks it (`MPFREE-FORMAT-ME <token>`) and the stick's `setup-format.sh` makes the ext4 (`MPFREE-DATA`, whole partition) with Akai's own `mke2fs` at the first start. Rewriting the stick with the creator keeps partition 4 unless **Start the stick's data fresh** is ticked.
+- **On a stick the USB creator made** ([usb-creator.md](usb-creator.md#as-built-2026-11-15)), partition 4 is not built on the computer: the creator marks it (`MPFREE-FORMAT-ME <token>`) and the stick's `setup-format.sh` makes the ext4 (`MPFREE-DATA`, whole partition) with Akai's own `mke2fs` at the first start. Rewriting the stick with the creator keeps partition 4 (**Update MPFree on this stick**, **Keep my backup, settings and files**) unless the musician chooses **Erase everything and start over** (or **Start the stick's data fresh** in Preferences, for a stick the creator doesn't recognise).
 - **Undo:** rewrite the stick with `--fresh-data`, write a saved copy back with `--data-from`, or delete files on partition 4 from the workstation.
 - **If a write is cut off:** each file is written whole to `NAME.part`, synced, then renamed over the old one. A cut-off write leaves the old file.
 
@@ -34,6 +34,8 @@
 
 `storage.sh` gives files on partition 4 to the pad player's user before it starts, except `backup/`, which stays root's.
 
+**FORMAT.** The store uses a folder only when it holds `FORMAT` with the right line, or nothing yet (it then writes `FORMAT` first), so it never writes into a folder that isn't MPFree's. `lost+found` doesn't count, and neither do the folders `backup/` and `library/`: a creator stick's first start made those before the store had written `FORMAT` (third creator stick, 2026-11-16), and the store then refused partition 4, so nothing was saved and the browser had no library. The pad player now opens the store before the first start, so a new partition 4 gets `FORMAT` before anything else.
+
 ## API: crate `mpfree-store`
 
 - `Store::at(dir)` on the MPC; `Store::none()` in tests and previews (nothing is written).
@@ -49,7 +51,7 @@
 
 ## What is saved (first version)
 
-- **Prefs:** pad velocity curve, screen pad velocity, latch mode, audio buffer, show developer tools, theme (Appearance), sound cores, loop memory and At start (`at-start = new | last`). With them in the "app" settings, the system's other settings (Jay, 13 Nov: the system's, not the project's): the metronome (`metronome` and `metronome-level`, from SHIFT + PLAY START and the Play page's options, live test 3 fixes), the Looper's level (`loop-level`, whole dB) and the line input's latency once set by hand (`loop-latency`, frames). Line input is never saved and is Off at every start, so what the Looper records from isn't kept either (it follows the line input).
+- **Prefs:** pad velocity curve, screen pad velocity, latch mode, audio buffer, show developer tools, theme (Appearance), sound cores, loop memory and At start (`start-with = last | new`, Last project by default; an older `at-start = last` is still read). With them in the "app" settings, the system's other settings (Jay, 13 Nov: the system's, not the project's): the metronome (`metronome` and `metronome-level`, from SHIFT + PLAY START and the Play page's options, live test 3 fixes), the Looper's level (`loop-level`, whole dB) and the line input's latency once set by hand (`loop-latency`, frames). Line input is never saved and is Off at every start, so what the Looper records from isn't kept either (it follows the line input).
 - **The buttons found with Map controls and the guide,** so the MPC is mapped once.
 - **Touch tuning** (the touch thread, #145): `settings/touch.conf`, written by Save on Dev > Touch. Keys are `mpfree_touch::tuning::Param::key` (offset-x, offset-y, scale-x, scale-y, hold-filter-px, tap-slop-px, tap-max-ms, long-press-ms, swipe-min-px, swipe-min-speed). Each value is clamped to its bounds when read, so a damaged file can't make touch unusable ([M17](../milestones/m17-touch-tuning.md)).
 - **MIDI settings** (the app): `files/midi/rig.txt`, each port's input and thru, kept for every project. The song's MIDI settings are the project's `midi` part, saved with the project (docs/dev/design/midi-io.md). A `files/midi/project.txt` left by an older build is no longer read.

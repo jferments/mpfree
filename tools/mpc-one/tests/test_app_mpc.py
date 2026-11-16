@@ -61,6 +61,11 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/lib.rs", "let _ = fs::remove_dir_all(&tmp);"),                     # copy: a cut-off temp folder
     ("mpfree-library/lib.rs", "let r = copy_file(&src, &part).and_then(|_| fs::rename(&part, &dst));"),  # copy a file
     ("mpfree-library/lib.rs", "fs::rename(&src, dst_dir.join(&name))?;"),               # move_to
+    # The first-start setup's kit folders (setup.rs, Samples/Akai factory only): move_file_unsynced moves a file
+    # (not a folder or link) the setup put there before into a kit folder; link_file_unsynced gives a sound a
+    # second name in another kit folder (a hard link). Both refuse a name that is taken and the Trash.
+    ("mpfree-library/lib.rs", "fs::rename(&src, &dst)?;"),                              # move_file_unsynced
+    ("mpfree-library/lib.rs", "fs::hard_link(&src, &dst)?;"),                           # link_file_unsynced
     ("mpfree-library/lib.rs", "fs::rename(&src, slot.join(loc.name()))?;"),             # delete: into a Trash slot
     ("mpfree-library/lib.rs", "let _ = fs::remove_dir_all(&slot);"),                    # delete: a slot left half made
     ("mpfree-library/lib.rs", "fs::rename(slot.join(&item.name), dst_dir.join(&name))?;"),  # restore from the Trash
@@ -78,6 +83,13 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)?;"),                          # project samples copied in
     ("mpfree-library/project.rs", "fs::remove_file(&tmp)?;"),
     ("mpfree-library/project.rs", "let _ = fs::remove_file(&tmp);"),
+    # project save, the sounds (write_samples, place_samples): each new sound written to
+    # samples/.incoming-<pid>-<n>.part, all made durable with one flush, then renamed to its name; on a failure
+    # the hidden files are removed, and the next save removes any a power cut left (files, never links).
+    ("mpfree-library/project.rs", "let _ = fs::remove_file(tmp);"),
+    ("mpfree-library/project.rs", "if let Err(e) = fs::rename(tmp, dst) {"),
+    ("mpfree-library/project.rs", "let _ = fs::remove_file(t);"),
+    ("mpfree-library/project.rs", "let _ = fs::remove_file(e.path());"),
     ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)"),                            # a part file written
     # Kit files (kit.rs; the browser thread, 16 Nov 2026): Save kit in BROWSE's Kits place or the Pads tab's
     # picker builds the kit in a hidden .kit-<id>-<name> folder beside where it goes (in Kits, Samples ...;
@@ -703,28 +715,19 @@ class AppTests(unittest.TestCase):
         self.assertIn("NOT SEEN  an hour, no underrun, no restart (0 underruns in 3,000 periods (0 min); the period "
                       "count went back, so the pad player restarted)", res.stdout)
 
-    def test_a_check_says_which_buttons_map_controls_has_not_found(self):
+    def test_a_check_needs_no_map_controls_now_every_button_is_built_in(self):
+        """Not found by Map controls (a new stick, or a skip) no longer matters: the app has every button built in,
+        so nothing is said and map-controls isn't added (app_checks' own tests keep the older-build case)."""
         write(self.app, "active\n")
         write(f"{self.root}/run/mpfree-data/settings/map.conf", "pad-bank-a-e = button 35\ntrack-mute = skipped\n")
-        res = self.run_helper("s\ns\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
+        res = self.run_helper("s\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
         self.assertEqual(res.returncode, 0, res.stdout)
-        out = res.stdout
-        for text in ("Map controls has not found these buttons yet, and a step uses them",
-                     "    TRACK MUTE (check track-mute)", "    PAD BANK B/F (check track-mute)",
-                     "So map-controls runs first, to find them.", "Checks: map-controls, track-mute",
-                     "Check 1 of 2: Map controls", "map-controls: skipped", "track-mute: skipped"):
-            self.assertIn(text, out)
-        self.assertNotIn("PAD BANK A/E (check", out)
-        # Named already: it stays where the round put it, and nothing is added.
+        self.assertNotIn("Map controls has not found", res.stdout)
+        self.assertNotIn("So map-controls runs first", res.stdout)
+        self.assertIn("Checks: track-mute\n", res.stdout)
+        # Named by the round: it still runs where the round put it.
         res = self.run_helper("s\ns\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute,map-controls")
         self.assertIn("Checks: track-mute, map-controls", res.stdout)
-        self.assertNotIn("So map-controls runs first", res.stdout)
-        # Every button found: nothing is said and nothing added.
-        write(f"{self.root}/run/mpfree-data/settings/map.conf",
-              "pad-bank-a-e = button 35\npad-bank-b-f = button 36\ntrack-mute = button 43\n")
-        res = self.run_helper("s\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
-        self.assertNotIn("Map controls has not found", res.stdout)
-        self.assertIn("Checks: track-mute\n", res.stdout)
 
     def test_a_check_stops_when_the_input_ends(self):
         """No more input (the terminal closed) stops at the next question, as q does, and does not go on."""
@@ -1240,7 +1243,8 @@ class StaticTests(unittest.TestCase):
                     continue
                 for needle in ("mmcblk", "/dev/sd", "/boot", "mount(", "reboot", "fw_setenv", "/dev/mtd",
                                "/sbin/kexec", "/sys/class/block", "EVIOCGRAB", "remove_file", "remove_dir",
-                               "fs::write", "File::create", "fs::rename", "fs::copy", "set_permissions"):
+                               "fs::write", "File::create", "fs::rename", "fs::copy", "set_permissions",
+                               "hard_link", "fs::symlink("):
                     self.assertNotIn(needle, line, f"{name}: {line.strip()}")
         with open(os.path.join(HERE, "..", "offline-kexec-stick.py")) as fh:
             stick = fh.read()
@@ -1276,12 +1280,18 @@ class StaticTests(unittest.TestCase):
             # setup.rs: the first start's request for the eMMC backup, an empty file made new in /run/mpfree-app
             # (RAM), which the stick's mpfree-setup-backup.path watches (Paths::on_the_stick, with REPORT_DIR)
             "match OpenOptions::new().write(true).create_new(true).mode(0o644).open(&paths.request) {",
+            # imagecopy.rs: `mpfree copy-image FROM TO`, run only by the stick's root service setup-backup.sh
+            # (never by the pad player). TO is the backup's image file on partition 4, made new: create_new
+            # neither overwrites a file nor follows a link. FROM, the eMMC disk, is opened with File::open
+            # (read-only), and the service has made every eMMC disk read-only in the kernel first.
+            "let out = OpenOptions::new().write(true).create_new(true).mode(0o640).open(to)"
+            ".map_err(|e| io::Error::new(e.kind(), format!(\"{}: {e}\", to.display())))?;",
         )
         expected += LIBRARY_OPENS + PLUGIN_STORE_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
         self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/crash.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs",
-                                 "mpfree-app/setup.rs", "mpfree-store/lib.rs",
+                                 "mpfree-app/setup.rs", "mpfree-app/imagecopy.rs", "mpfree-store/lib.rs",
                                  "mpfree-library/lib.rs", "mpfree-library/project.rs", "mpfree-library/kit.rs",
                                  "mpfree-mpcstore/install.rs"}, files)
         # The plugin store's folder is files/plugins/ beside the library, in the --data folder.

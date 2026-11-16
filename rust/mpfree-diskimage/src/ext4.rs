@@ -45,8 +45,39 @@ pub const S_IFIFO: u16 = 0o010000;
 
 /// The largest file this reader hands back whole ([`Ext4::read_file`]).
 pub const MAX_WHOLE_FILE: u64 = 1 << 30;
+/// The largest file [`Ext4::copy_file`] streams: well over the MPC One's
+/// whole eMMC, whose image the creator copies off the stick.
+pub const MAX_STREAMED_FILE: u64 = 1 << 40;
+/// How many blocks of a file [`Ext4::copy_file`] maps at a time.
+const WINDOW_BLOCKS: u64 = 1 << 16;
 const MAX_EXTENT_DEPTH: u16 = 5;
 const MAX_DIR_BYTES: u64 = 256 << 20;
+
+/// Where [`Ext4`]'s block mapping writes: logical blocks `first..` into
+/// `out`, ignoring any outside it.
+struct Window<'a> {
+    first: u64,
+    out: &'a mut [u64],
+}
+
+impl Window<'_> {
+    fn end(&self) -> u64 {
+        self.first + self.out.len() as u64
+    }
+
+    fn set(&mut self, logical: u64, physical: u64) {
+        if logical >= self.first && logical < self.end() {
+            self.out[(logical - self.first) as usize] = physical;
+        }
+    }
+
+    fn reborrow(&mut self) -> Window<'_> {
+        Window {
+            first: self.first,
+            out: self.out,
+        }
+    }
+}
 
 /// What kind of thing an inode is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -329,61 +360,62 @@ impl<R: ReadAt> Ext4<R> {
         })
     }
 
-    /// The physical block of every logical block `0..count` (0 for a hole
-    /// or an unwritten extent), in order.
-    fn map(&self, ino: &Inode, count: u64) -> io::Result<Vec<u64>> {
-        if count > (MAX_WHOLE_FILE * 4) / self.block_size + 4 {
-            return Err(bad(format!("inode {} is implausibly large", ino.ino)));
-        }
+    /// The physical block of each logical block `first..first + count` (0
+    /// for a hole or an unwritten extent), in order: a window of the file,
+    /// so a file of any size can be streamed with bounded memory.
+    fn map_window(&self, ino: &Inode, first: u64, count: u64) -> io::Result<Vec<u64>> {
         let mut out = vec![0u64; count as usize];
+        let win = Window {
+            first,
+            out: &mut out,
+        };
         if ino.flags & FLAG_EXTENTS != 0 {
-            self.extents(&ino.block, MAX_EXTENT_DEPTH, &mut out)?;
+            self.extents(&ino.block, MAX_EXTENT_DEPTH, win)?;
         } else {
+            let mut win = win;
             let p = |i: usize| le32(&ino.block, i * 4) as u64;
             let per = self.block_size / 4;
-            let mut l = 0u64;
-            for i in 0..12 {
-                if l >= count {
-                    return Ok(out);
-                }
-                out[l as usize] = p(i);
-                l += 1;
+            for i in 0..12u64 {
+                win.set(i, p(i as usize));
             }
+            let mut l = 12u64;
             for (slot, depth) in [(12usize, 1u32), (13, 2), (14, 3)] {
-                if l >= count {
+                if l >= win.end() {
                     break;
                 }
                 let span = per.pow(depth);
-                self.indirect(p(slot), depth, &mut out, l)?;
+                self.indirect(p(slot), depth, &mut win, l)?;
                 l += span;
             }
         }
         Ok(out)
     }
 
-    fn indirect(&self, blk: u64, depth: u32, out: &mut [u64], first: u64) -> io::Result<()> {
-        if blk == 0 || first >= out.len() as u64 {
+    /// The blocks under an indirect block whose first logical block is
+    /// `l0`, for the part of them inside the window.
+    fn indirect(&self, blk: u64, depth: u32, win: &mut Window<'_>, l0: u64) -> io::Result<()> {
+        let per = self.block_size / 4;
+        if blk == 0 || l0 >= win.end() || l0 + per.pow(depth) <= win.first {
             return Ok(());
         }
         let b = self.block(blk)?;
-        let per = self.block_size / 4;
         let span = per.pow(depth - 1);
         for i in 0..per {
-            let l = first + i * span;
-            if l >= out.len() as u64 {
+            let l = l0 + i * span;
+            if l >= win.end() {
                 break;
             }
             let child = le32(&b, (i * 4) as usize) as u64;
             if depth == 1 {
-                out[l as usize] = child;
+                win.set(l, child);
             } else {
-                self.indirect(child, depth - 1, out, l)?;
+                self.indirect(child, depth - 1, win, l)?;
             }
         }
         Ok(())
     }
 
-    fn extents(&self, node: &[u8], depth_left: u16, out: &mut [u64]) -> io::Result<()> {
+    fn extents(&self, node: &[u8], depth_left: u16, mut win: Window<'_>) -> io::Result<()> {
         if le16(node, 0) != 0xF30A {
             return Err(bad("bad extent header"));
         }
@@ -403,17 +435,29 @@ impl<R: ReadAt> Ext4<R> {
                     (raw_len, false)
                 };
                 let start = (le16(x, 6) as u64) << 32 | le32(x, 8) as u64;
-                for k in 0..len {
-                    let l = lblk + k;
-                    if l >= out.len() as u64 {
-                        break;
-                    }
-                    out[l as usize] = if unwritten { 0 } else { start + k };
+                // Only the part of the extent inside the window.
+                let from = lblk.max(win.first);
+                let to = (lblk + len).min(win.end());
+                for l in from..to {
+                    win.set(l, if unwritten { 0 } else { start + (l - lblk) });
                 }
             } else {
+                // An index entry covers from its first block up to the next
+                // entry's; skip a subtree that ends before the window or
+                // starts after it.
+                let lblk = le32(x, 0) as u64;
+                if lblk >= win.end() {
+                    break;
+                }
+                if e + 1 < entries {
+                    let next = le32(&node[12 + (e + 1) * 12..], 0) as u64;
+                    if next <= win.first {
+                        continue;
+                    }
+                }
                 let leaf = (le16(x, 8) as u64) << 32 | le32(x, 4) as u64;
                 let child = self.block(leaf)?;
-                self.extents(&child, depth - 1, out)?;
+                self.extents(&child, depth - 1, win.reborrow())?;
             }
         }
         Ok(())
@@ -439,8 +483,19 @@ impl<R: ReadAt> Ext4<R> {
         Ok(data)
     }
 
-    /// Streams a regular file's contents into `w`.
+    /// Streams a regular file's contents into `w`, a window of the file at
+    /// a time, so a file of any size (to [`MAX_STREAMED_FILE`]) needs only
+    /// a bounded map.
     pub fn copy_file<W: Write + ?Sized>(&self, ino: &Inode, w: &mut W) -> io::Result<u64> {
+        self.copy_file_by(ino, w, WINDOW_BLOCKS)
+    }
+
+    fn copy_file_by<W: Write + ?Sized>(
+        &self,
+        ino: &Inode,
+        w: &mut W,
+        window: u64,
+    ) -> io::Result<u64> {
         if ino.flags & FLAG_INLINE_DATA != 0 && self.feature_incompat & INCOMPAT_INLINE_DATA != 0 {
             let d = self.inline(ino)?;
             w.write_all(&d)?;
@@ -448,37 +503,47 @@ impl<R: ReadAt> Ext4<R> {
         }
         let bs = self.block_size;
         let count = ino.size.div_ceil(bs);
-        let map = self.map(ino, count)?;
+        if count > MAX_STREAMED_FILE / bs + 4 {
+            return Err(bad(format!("inode {} is implausibly large", ino.ino)));
+        }
         let mut left = ino.size;
         let zero = vec![0u8; bs as usize];
         let mut buf = vec![0u8; bs as usize];
-        let mut i = 0usize;
-        while i < map.len() {
-            // Read runs of consecutive blocks at once.
-            let mut run = 1usize;
-            if map[i] != 0 {
-                while i + run < map.len() && map[i + run] == map[i] + run as u64 && run < 256 {
-                    run += 1;
+        // A window of the file at a time (a 7.8 GB backup image is about
+        // two million blocks), so the map never holds the whole file.
+        let mut first = 0u64;
+        while first < count {
+            let n = (count - first).min(window.max(1));
+            let map = self.map_window(ino, first, n)?;
+            let mut i = 0usize;
+            while i < map.len() {
+                // Read runs of consecutive blocks at once.
+                let mut run = 1usize;
+                if map[i] != 0 {
+                    while i + run < map.len() && map[i + run] == map[i] + run as u64 && run < 256 {
+                        run += 1;
+                    }
+                    let bytes = (run as u64 * bs).min(left) as usize;
+                    if buf.len() < run * bs as usize {
+                        buf.resize(run * bs as usize, 0);
+                    }
+                    if map[i] + run as u64 > self.blocks_count {
+                        return Err(bad(format!(
+                            "inode {}: data outside the filesystem",
+                            ino.ino
+                        )));
+                    }
+                    self.read(&mut buf[..run * bs as usize], map[i] * bs)?;
+                    w.write_all(&buf[..bytes])?;
+                    left -= bytes as u64;
+                } else {
+                    let bytes = bs.min(left) as usize;
+                    w.write_all(&zero[..bytes])?;
+                    left -= bytes as u64;
                 }
-                let bytes = (run as u64 * bs).min(left) as usize;
-                if buf.len() < run * bs as usize {
-                    buf.resize(run * bs as usize, 0);
-                }
-                if map[i] + run as u64 > self.blocks_count {
-                    return Err(bad(format!(
-                        "inode {}: data outside the filesystem",
-                        ino.ino
-                    )));
-                }
-                self.read(&mut buf[..run * bs as usize], map[i] * bs)?;
-                w.write_all(&buf[..bytes])?;
-                left -= bytes as u64;
-            } else {
-                let bytes = bs.min(left) as usize;
-                w.write_all(&zero[..bytes])?;
-                left -= bytes as u64;
+                i += run;
             }
-            i += run;
+            first += n;
         }
         Ok(ino.size)
     }
@@ -825,10 +890,15 @@ mod tests {
             } else {
                 assert_eq!(ino.kind(), Some(Kind::File));
                 assert_eq!(ino.size, meta.len(), "{path}");
-                assert!(
-                    fs.read_file(ino)? == std::fs::read(&local).unwrap(),
-                    "{path}: contents differ"
-                );
+                let want = std::fs::read(&local).unwrap();
+                assert!(fs.read_file(ino)? == want, "{path}: contents differ");
+                // Streamed a few blocks at a time, windows cutting through
+                // extents, indirect blocks and holes, it is the same.
+                for window in [1, 3, 7] {
+                    let mut got = Vec::new();
+                    fs.copy_file_by(ino, &mut got, window)?;
+                    assert!(got == want, "{path}: differs with a window of {window}");
+                }
             }
             Ok(())
         })
@@ -888,6 +958,93 @@ mod tests {
             }
             compare(&src, &fs);
         }
+    }
+
+    /// A file over 4 GiB (the MPC One's eMMC image is 7.8 GB) streams
+    /// whole. Mostly hole, so the image stays small.
+    #[test]
+    fn streams_a_file_over_4_gib() {
+        let Some(tool) = mke2fs() else {
+            eprintln!("mke2fs not installed; skipping");
+            return;
+        };
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("mpfree-ext4-big-{}", std::process::id())));
+        let src = scratch.0.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let len: u64 = (4 << 30) + (300 << 20) + 5;
+        let marks: [(u64, &[u8]); 3] = [
+            (0, b"start"),
+            ((4 << 30) + 123, b"past four GiB"),
+            (len - 3, b"end"),
+        ];
+        {
+            use std::io::{Seek, SeekFrom};
+            let mut f = std::fs::File::create(src.join("image")).unwrap();
+            for (at, bytes) in marks {
+                f.seek(SeekFrom::Start(at)).unwrap();
+                f.write_all(bytes).unwrap();
+            }
+            assert_eq!(f.metadata().unwrap().len(), len);
+        }
+        let img = scratch.0.join("big.img");
+        std::fs::File::create(&img)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        let out = Command::new(tool)
+            .args(["-q", "-F", "-t", "ext4", "-E", "root_owner=0:0", "-d"])
+            .arg(&src)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "mke2fs: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let fs = Ext4::open(std::fs::File::open(&img).unwrap()).unwrap();
+        let ino = fs.lookup("/image").unwrap().unwrap();
+        assert_eq!(ino.size, len);
+        // Each write checked where a mark falls in it, and its ends
+        // elsewhere (a full zero check of 4 GiB is slow in a debug build).
+        struct Check<'a> {
+            at: u64,
+            marks: &'a [(u64, &'a [u8])],
+            seen: usize,
+        }
+        impl Write for Check<'_> {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                let (start, end) = (self.at, self.at + b.len() as u64);
+                let mut marked = false;
+                for (at, bytes) in self.marks {
+                    if *at >= start && at + bytes.len() as u64 <= end {
+                        let i = (at - start) as usize;
+                        assert_eq!(&b[i..i + bytes.len()], *bytes, "at {at}");
+                        self.seen += 1;
+                        marked = true;
+                    }
+                }
+                if !marked && !b.is_empty() {
+                    assert!(b[0] == 0 && b[b.len() - 1] == 0, "stray data at {start}");
+                }
+                self.at = end;
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut check = Check {
+            at: 0,
+            marks: &marks,
+            seen: 0,
+        };
+        assert_eq!(fs.copy_file(&ino, &mut check).unwrap(), len);
+        assert_eq!(check.at, len);
+        assert_eq!(check.seen, marks.len());
+        // Reading it whole into memory is still refused.
+        assert!(fs.read_file(&ino).is_err());
     }
 
     #[test]

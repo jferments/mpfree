@@ -56,6 +56,9 @@ pub const AUTOSAVE_KEY: &str = "autosave";
 
 const PARTS: &str = "parts";
 const NEW_PARTS: &str = ".parts-new";
+/// The start of a sound's name in a project's samples folder while a save
+/// writes it ([`write_samples`]).
+const INCOMING: &str = ".incoming-";
 const SAMPLES: &str = "samples";
 const VERSIONS: &str = "versions";
 
@@ -330,6 +333,13 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_unsynced(path, bytes)?.sync_all()
+}
+
+/// Writes a file without waiting for the disk: a save writes all its files
+/// this way, then makes them durable together with [`sync_files`] before
+/// anything is renamed into place.
+fn write_unsynced(path: &Path, bytes: &[u8]) -> io::Result<File> {
     let mut f = OpenOptions::new()
         .write(true)
         .create(true)
@@ -338,7 +348,24 @@ fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .custom_flags(0x20000) // O_NOFOLLOW
         .open(path)?;
     f.write_all(bytes)?;
-    f.sync_all()
+    Ok(f)
+}
+
+/// Makes every file written so far durable, with as few flushes of the disk
+/// as the program allows: one call of the flush set with
+/// [`crate::set_flush`] (the pad player sets the system's `sync`, which
+/// writes everything out and commits once, where a sync of each file
+/// commits once per file: on the MPC's USB stick, about a second each), or
+/// else a sync of each file.
+fn sync_files(files: &[File]) -> io::Result<()> {
+    if let Some(flush) = crate::flush() {
+        flush();
+        return Ok(());
+    }
+    for f in files {
+        f.sync_all()?;
+    }
+    Ok(())
 }
 
 fn real_dir(p: &Path) -> bool {
@@ -529,18 +556,33 @@ impl Library {
                 fs::create_dir(dir.join(sub))?;
             }
         }
-        // 0. The sounds the parts name that aren't there yet.
-        put_samples(&dir.join(SAMPLES), samples)?;
-        // 1. The new parts, whole, in a hidden folder.
+        // 0. The sounds the parts name that aren't there yet, and 1. the new
+        // parts in a hidden folder: all written first, then made durable
+        // together (one flush, not one per file), and only then the sounds
+        // renamed into place, so a sound's name never holds half a file.
+        let incoming = write_samples(&dir.join(SAMPLES), samples)?;
         let new = dir.join(NEW_PARTS);
-        if real_dir(&new) {
-            fs::remove_dir_all(&new)?;
+        let written = (|| {
+            if real_dir(&new) {
+                fs::remove_dir_all(&new)?;
+            }
+            fs::create_dir(&new)?;
+            let mut files = Vec::with_capacity(snap.parts.len() + 2);
+            for (o, t) in &snap.parts {
+                files.push(write_unsynced(&new.join(format!("{o}.txt")), t.as_bytes())?);
+            }
+            files.push(File::open(&new)?);
+            sync_files(&files)?;
+            // What syncfs doesn't promise elsewhere: the folder itself.
+            sync_dir(&new)
+        })();
+        if let Err(e) = written {
+            for (tmp, _) in &incoming {
+                let _ = fs::remove_file(tmp);
+            }
+            return Err(e);
         }
-        fs::create_dir(&new)?;
-        for (o, t) in &snap.parts {
-            write_synced(&new.join(format!("{o}.txt")), t.as_bytes())?;
-        }
-        sync_dir(&new)?;
+        place_samples(&dir.join(SAMPLES), &incoming)?;
         // 2. The old save into versions/, with its project.txt.
         let parts = dir.join(PARTS);
         if real_dir(&parts) {
@@ -581,6 +623,20 @@ impl Library {
             sync_dir(dir)?;
         }
         let _ = fs::remove_file(dir.join(format!("{PROJECT_FILE}.part")));
+        // Sounds a cut-off save wrote but never named (write_samples):
+        // files only, never a link.
+        if let Ok(rd) = fs::read_dir(dir.join(SAMPLES)) {
+            for e in rd.filter_map(Result::ok) {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(INCOMING)
+                    && name.ends_with(".part")
+                    && e.file_type().is_ok_and(|t| t.is_file())
+                {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -738,23 +794,31 @@ impl Library {
     }
 }
 
-/// Writes each of `samples` that `dir` doesn't hold yet.
-fn put_samples(dir: &Path, samples: &[NewSample]) -> io::Result<()> {
-    let tmp = dir.join(format!(".incoming-{}.part", std::process::id()));
-    let mut wrote = false;
-    for s in samples {
-        let dst = dir.join(&s.file);
-        match fs::symlink_metadata(&dst) {
-            Ok(m) if m.is_file() => continue,
-            Ok(_) => {
-                return Err(bad(
-                    io::ErrorKind::AlreadyExists,
-                    format!("{} is not a file", s.file),
-                ))
+/// Writes each of `samples` that `dir` doesn't have yet to a hidden file
+/// of its own, without waiting for the disk; returns each hidden file with
+/// the name it goes to ([`place_samples`], once they are durable). If one
+/// can't be written, none is kept.
+fn write_samples(dir: &Path, samples: &[NewSample]) -> io::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut out: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut files = Vec::new();
+    let r = (|| {
+        for (i, s) in samples.iter().enumerate() {
+            let dst = dir.join(&s.file);
+            match fs::symlink_metadata(&dst) {
+                Ok(m) if m.is_file() => continue,
+                Ok(_) => {
+                    return Err(bad(
+                        io::ErrorKind::AlreadyExists,
+                        format!("{} is not a file", s.file),
+                    ))
+                }
+                Err(_) => {}
             }
-            Err(_) => {}
-        }
-        let r = (|| {
+            if out.iter().any(|(_, d)| *d == dst) {
+                continue;
+            }
+            let tmp = dir.join(format!("{INCOMING}{}-{i}.part", std::process::id()));
+            out.push((tmp.clone(), dst));
             let mut f = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -767,16 +831,30 @@ fn put_samples(dir: &Path, samples: &[NewSample]) -> io::Result<()> {
                 s.data.write_to(&mut w)?;
                 w.flush()?;
             }
-            f.sync_all()?;
-            fs::rename(&tmp, &dst)
-        })();
-        if r.is_err() {
-            let _ = fs::remove_file(&tmp);
-            return r;
+            files.push(f);
         }
-        wrote = true;
+        sync_files(&files)
+    })();
+    if let Err(e) = r {
+        for (tmp, _) in &out {
+            let _ = fs::remove_file(tmp);
+        }
+        return Err(e);
     }
-    if wrote {
+    Ok(out)
+}
+
+/// Renames the durable hidden files [`write_samples`] made to their names.
+fn place_samples(dir: &Path, incoming: &[(PathBuf, PathBuf)]) -> io::Result<()> {
+    for (i, (tmp, dst)) in incoming.iter().enumerate() {
+        if let Err(e) = fs::rename(tmp, dst) {
+            for (t, _) in &incoming[i..] {
+                let _ = fs::remove_file(t);
+            }
+            return Err(e);
+        }
+    }
+    if !incoming.is_empty() {
         sync_dir(dir)?;
     }
     Ok(())
@@ -1195,6 +1273,66 @@ mod tests {
             fs::read(lib.sample_path(&p, "closure.wav").unwrap()).unwrap(),
             b"RIFF a closure"
         );
+    }
+
+    /// With the program's flush set, a save with many sounds and parts
+    /// flushes the disk twice (sounds and parts together, then the project
+    /// file), not once per file: on the MPC's stick each flush costs about
+    /// a second.
+    #[test]
+    fn a_save_flushes_the_disk_a_few_times_not_once_per_file() {
+        // Counted per thread: other tests save at the same time.
+        thread_local! {
+            static FLUSHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        fn count() {
+            FLUSHES.with(|n| n.set(n.get() + 1));
+        }
+        // The only test in this crate that sets one.
+        crate::set_flush(count);
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let p = Loc::top(Place::Projects).join("Song").unwrap();
+        let sounds: Vec<NewSample> = (0..16)
+            .map(|i| {
+                NewSample::new(
+                    format!("pad-{i}.wav"),
+                    sound(format!("RIFF pad {i}").as_bytes(), false) as Arc<dyn SampleData>,
+                )
+            })
+            .collect();
+        let snap = Snapshot {
+            meta: meta("Song", 1),
+            parts: (0..12)
+                .map(|i| (format!("part{i}"), format!("text {i}")))
+                .collect(),
+        };
+        let before = FLUSHES.with(|n| n.get());
+        lib.save_project_with(&p, &snap, 10, &sounds).unwrap();
+        let flushes = FLUSHES.with(|n| n.get()) - before;
+        assert!(flushes <= 2, "{flushes} flushes");
+        for i in 0..16 {
+            let path = lib.sample_path(&p, &format!("pad-{i}.wav")).unwrap();
+            assert_eq!(fs::read(path).unwrap(), format!("RIFF pad {i}").as_bytes());
+        }
+        let names: Vec<String> = fs::read_dir(lib.root().join("Projects/Song/samples"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names.len(), 16, "nothing hidden left: {names:?}");
+        assert_eq!(lib.open_project(&p).unwrap().parts.len(), 12);
+        // A sound a cut-off save left half written goes at the next save;
+        // a link with such a name is left alone.
+        let samples = lib.root().join("Projects/Song/samples");
+        fs::write(samples.join(".incoming-77-3.part"), b"RIFF half").unwrap();
+        std::os::unix::fs::symlink(
+            samples.join("pad-0.wav"),
+            samples.join(".incoming-77-4.part"),
+        )
+        .unwrap();
+        lib.save_project_with(&p, &snap, 10, &sounds).unwrap();
+        assert!(!samples.join(".incoming-77-3.part").exists());
+        assert!(fs::symlink_metadata(samples.join(".incoming-77-4.part")).is_ok());
     }
 
     #[test]

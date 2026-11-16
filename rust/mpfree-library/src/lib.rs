@@ -323,6 +323,23 @@ fn modified(m: &fs::Metadata) -> u64 {
 }
 
 /// Syncs a folder, so a rename in it is on the disk.
+/// The program's way to make every write so far durable at once, if it set
+/// one ([`set_flush`]).
+static FLUSH: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// Sets how a save makes its files durable together: a function that
+/// returns once everything written so far is on the disk (the pad player
+/// gives the system's `sync`; this crate has no unsafe code to call it
+/// itself). Without one, each file is synced on its own, which costs a
+/// commit per file. Set once; a second call is ignored.
+pub fn set_flush(flush: fn()) {
+    let _ = FLUSH.set(flush);
+}
+
+pub(crate) fn flush() -> Option<fn()> {
+    FLUSH.get().copied()
+}
+
 fn sync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
@@ -642,19 +659,101 @@ impl Library {
 
     /// A new folder in `parent`, named `name` or `name 2` ... if taken.
     pub fn new_folder(&self, parent: &Loc, name: &str) -> io::Result<Loc> {
+        self.make_folder(parent, name, true)
+    }
+
+    /// Like [`Library::new_folder`], but not synced: for the first-start
+    /// setup's hundreds of kit folders, which sync once at the end.
+    pub fn new_folder_unsynced(&self, parent: &Loc, name: &str) -> io::Result<Loc> {
+        self.make_folder(parent, name, false)
+    }
+
+    fn make_folder(&self, parent: &Loc, name: &str, sync: bool) -> io::Result<Loc> {
         self.check_writable(parent)?;
         let (pp, _) = self.existing(parent)?;
         let name = unique_folder_name(name, |n| parent.join(n).is_ok_and(|l| self.exists(&l)));
         let loc = parent.join(&name)?;
         mkdir(&pp.join(&name))?;
-        sync_dir(&pp)?;
+        if sync {
+            sync_dir(&pp)?;
+        }
         Ok(loc)
+    }
+
+    /// Moves the file `from` into `folder` as `name`, not synced, for the
+    /// first-start setup putting thousands of its own samples into kit
+    /// folders (it syncs once at the end; until then a power cut can undo
+    /// a move, never lose the file). Fails if `name` is taken there; never
+    /// moves a folder or a link.
+    pub fn move_file_unsynced(&self, from: &Loc, folder: &Loc, name: &str) -> io::Result<Loc> {
+        self.check_writable(from)?;
+        self.check_writable(folder)?;
+        let (src, m) = self.existing(from)?;
+        if !m.is_file() {
+            return Err(err(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a file", from.display()),
+            ));
+        }
+        let (dst, loc) = self.new_slot(folder, name)?;
+        fs::rename(&src, &dst)?;
+        Ok(loc)
+    }
+
+    /// A second name for the file `from`, in `folder` (a hard link: the
+    /// same sound stored once, as in two kit folders), not synced; fails if
+    /// `name` is taken there or the file system has no links (FAT: the
+    /// caller copies instead). The library never changes a file in place
+    /// (new files are written whole and renamed in), so a change through
+    /// one name never shows through the other.
+    pub fn link_file_unsynced(&self, from: &Loc, folder: &Loc, name: &str) -> io::Result<Loc> {
+        self.check_writable(from)?;
+        self.check_writable(folder)?;
+        let (src, m) = self.existing(from)?;
+        if !m.is_file() {
+            return Err(err(
+                io::ErrorKind::InvalidInput,
+                format!("{} is not a file", from.display()),
+            ));
+        }
+        let (dst, loc) = self.new_slot(folder, name)?;
+        fs::hard_link(&src, &dst)?;
+        Ok(loc)
+    }
+
+    /// The path and place of a new item `name` in the existing folder
+    /// `folder`; an error if `name` is taken.
+    fn new_slot(&self, folder: &Loc, name: &str) -> io::Result<(PathBuf, Loc)> {
+        let (dir, dm) = self.existing(folder)?;
+        if !dm.is_dir() {
+            return Err(err(io::ErrorKind::InvalidInput, "not a folder".into()));
+        }
+        let loc = folder.join(name)?;
+        if self.exists(&loc) {
+            return Err(err(
+                io::ErrorKind::AlreadyExists,
+                format!("{} is already there", loc.display()),
+            ));
+        }
+        Ok((dir.join(name), loc))
     }
 
     /// A new file in `folder` from whole bytes (a recording, a saved kit),
     /// named `name` or `name 2` ... if taken. Written to a `.part` file,
     /// synced and renamed, so it is there whole or not at all.
     pub fn write_new(&self, folder: &Loc, name: &str, bytes: &[u8]) -> io::Result<Loc> {
+        self.write_part(folder, name, bytes, true)
+    }
+
+    /// Like [`Library::write_new`], but not synced: for many files written
+    /// in one go (the first-start setup's samples), which then sync once
+    /// (`sync(2)`). Until then a power cut can leave such a file short or
+    /// empty, so the writer checks sizes when it starts again.
+    pub fn write_new_unsynced(&self, folder: &Loc, name: &str, bytes: &[u8]) -> io::Result<Loc> {
+        self.write_part(folder, name, bytes, false)
+    }
+
+    fn write_part(&self, folder: &Loc, name: &str, bytes: &[u8], sync: bool) -> io::Result<Loc> {
         self.check_writable(folder)?;
         if bytes.len() as u64 > MAX_FILE {
             return Err(err(io::ErrorKind::InvalidInput, "file too big".into()));
@@ -663,7 +762,7 @@ impl Library {
         let name = unique_name(name, |n| folder.join(n).is_ok_and(|l| self.exists(&l)));
         let loc = folder.join(&name)?;
         let part = fp.join(format!("{name}.part"));
-        let r = (|| {
+        let write = || -> io::Result<()> {
             let mut f = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -672,10 +771,16 @@ impl Library {
                 .custom_flags(0x20000) // O_NOFOLLOW
                 .open(&part)?;
             f.write_all(bytes)?;
-            f.sync_all()?;
+            if sync {
+                f.sync_all()?;
+            }
             fs::rename(&part, fp.join(&name))?;
-            sync_dir(&fp)
-        })();
+            if sync {
+                sync_dir(&fp)?;
+            }
+            Ok(())
+        };
+        let r = write();
         if r.is_err() {
             let _ = fs::remove_file(&part);
         }
@@ -1208,6 +1313,78 @@ pub(crate) mod tests {
         }
         // Opening it again changes nothing.
         Library::at(&d).unwrap();
+    }
+
+    #[test]
+    fn unsynced_writes_land_the_same_way() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let s = Loc::top(Place::Samples);
+        let a = lib.write_new_unsynced(&s, "Kick.wav", b"abc").unwrap();
+        let b = lib.write_new_unsynced(&s, "Kick.wav", b"de").unwrap();
+        assert_eq!(
+            (a.name(), b.name()),
+            ("Kick.wav", "Kick 2.wav"),
+            "never over a file"
+        );
+        assert_eq!(lib.read(&b, 10).unwrap(), b"de");
+        let raw = lib.root().join("Samples");
+        assert!(!raw.join("Kick.wav.part").exists());
+        assert!(lib
+            .write_new_unsynced(
+                &Loc::top(Place::Samples).join("missing").unwrap(),
+                "x.wav",
+                b"x"
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn unsynced_folders_moves_and_links() {
+        use std::os::unix::fs::MetadataExt;
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let s = Loc::top(Place::Samples);
+        let kit = lib.new_folder_unsynced(&s, "Kit").unwrap();
+        assert_eq!(lib.new_folder_unsynced(&s, "Kit").unwrap().name(), "Kit 2");
+        let other = s.join("Kit 2").unwrap();
+        let a = lib.write_new_unsynced(&s, "Kick.wav", b"abc").unwrap();
+        // A move keeps the bytes and takes a new name; never over a file.
+        let moved = lib.move_file_unsynced(&a, &kit, "Kick 1.wav").unwrap();
+        assert_eq!(lib.read(&moved, 10).unwrap(), b"abc");
+        assert!(lib.file_path(&a).is_err());
+        let b = lib.write_new_unsynced(&s, "Snare.wav", b"x").unwrap();
+        let e = lib.move_file_unsynced(&b, &kit, "Kick 1.wav").unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(lib.read(&moved, 10).unwrap(), b"abc", "untouched");
+        assert!(
+            lib.move_file_unsynced(&other, &kit, "Folder").is_err(),
+            "files only"
+        );
+        // A link: the same file under a second name, stored once.
+        let linked = lib
+            .link_file_unsynced(&moved, &other, "Kick 1.wav")
+            .unwrap();
+        assert_eq!(lib.read(&linked, 10).unwrap(), b"abc");
+        let (pm, pl) = (
+            lib.file_path(&moved).unwrap(),
+            lib.file_path(&linked).unwrap(),
+        );
+        assert_eq!(
+            fs::metadata(&pm).unwrap().ino(),
+            fs::metadata(&pl).unwrap().ino()
+        );
+        assert!(lib
+            .link_file_unsynced(&moved, &other, "Kick 1.wav")
+            .is_err());
+        // Deleting one name leaves the other.
+        lib.delete(&moved).unwrap();
+        assert_eq!(lib.read(&linked, 10).unwrap(), b"abc");
+        // Not into the Trash, and no bad names.
+        let t = Loc::top(Place::Trash);
+        assert!(lib.link_file_unsynced(&linked, &t, "x.wav").is_err());
+        assert!(lib.link_file_unsynced(&linked, &kit, "../x.wav").is_err());
+        assert!(lib.move_file_unsynced(&b, &kit, ".hidden").is_err());
     }
 
     #[test]
