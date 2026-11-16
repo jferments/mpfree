@@ -27,6 +27,7 @@ use crate::app::{
     outlined, tabs, ArpView, GuideView, MapView, MenuView, MuteKeys, Nav, PadLevel, Settings,
     Status, View, WorkspaceView,
 };
+use crate::bundled;
 use crate::calibrate_page::CalibrateView;
 use crate::chain_page::{ChainPage, Turned};
 use crate::debug_page::{AudioNumbers, DebugPages};
@@ -1061,7 +1062,7 @@ pub struct Player {
     pub sample: SamplePage,
     /// The browser, once the app has a library (--data): the Pads tab's
     /// picker, and the whole library over every page (BROWSE).
-    browser: Option<mpfree_browser_ui::Browser>,
+    browser: Option<Box<mpfree_browser_ui::Browser>>,
     /// The I/O view's model (its MIDI setup is the project's `midi` part).
     io_model: Option<mpfree_midi_ui::Shared>,
     /// The parts New project goes back to, once the audio loop sent them.
@@ -1120,6 +1121,10 @@ pub struct Player {
     preview_db: f32,
     /// A sound file being read for the preview.
     preview_load: Option<std::sync::mpsc::Receiver<sample_page::Loaded>>,
+    /// MPFree's own kits being written into the library (bundled.rs), and
+    /// whether this run has looked whether they need to be.
+    bundling: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
+    bundle_looked: bool,
     /// The widget of the touch page on screen (Touch lab, Calibrate touch),
     /// over `view`, which it returns to.
     touch_page: Option<&'static str>,
@@ -1453,6 +1458,8 @@ impl Player {
             audio_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
+            bundling: None,
+            bundle_looked: false,
             arp_panel,
             // 16 Levels start off: the app hears only a change.
             levels: LevelsUi {
@@ -4660,7 +4667,7 @@ impl Player {
     pub(crate) fn set_browser(&mut self, mut b: mpfree_browser_ui::Browser, lists: &str) {
         b.load_lists(lists);
         b.open_picker(mpfree_browser_ui::Pick::Pads);
-        self.browser = Some(b);
+        self.browser = Some(Box::new(b));
         // The start's own news (the empty song, the first states) is not
         // an edit.
         self.opened_at = Some(Instant::now());
@@ -4728,6 +4735,11 @@ impl Player {
             }
             A::SaveLists(text) => self.outbox.push(FromUi::SaveBrowserLists(text)),
             A::PickerClosed { .. } => {}
+            // Kit files (mpfree_library::kit): a kit loads in place of the
+            // kit the pads play; Save kit saves that kit as a kit folder.
+            A::LoadKit { path, .. } => self.sample.open_kit(path),
+            A::SaveKitRequested => self.save_kit(),
+            A::Note(line) => self.say(line),
             // Projects (project.rs).
             A::SaveRequested => self.ask_save(),
             A::NewProject => self.new_project(),
@@ -4773,11 +4785,80 @@ impl Player {
             other => self.say(format!(
                 "browser: {} is not wired on the Pads tab",
                 match other {
-                    A::LoadKit { .. } | A::LoadFactoryKit { .. } => "a kit",
+                    A::LoadFactoryKit { .. } => "a factory kit",
                     A::LoadPreset { .. } | A::TryPreset { .. } | A::RevertPreset => "a preset",
                     _ => "a project",
                 }
             )),
+        }
+    }
+
+    /// Once a run, with the library and the kits there: MPFree's own kits
+    /// into `Kits/MPFree/` as kit folders, if the library hasn't had them
+    /// (bundled.rs). Then the answer, when it comes.
+    fn bundle_tick(&mut self) {
+        if let Some(rx) = &self.bundling {
+            let Ok(r) = rx.try_recv() else { return };
+            self.bundling = None;
+            match r {
+                Ok(n) => {
+                    if let Some(b) = self.browser.as_mut() {
+                        b.set_bundled(bundled::TAG);
+                    }
+                    self.say(format!(
+                        "browser: MPFree's own kits are in Kits > {} ({n} new)",
+                        bundled::FOLDER
+                    ));
+                    self.step_browser();
+                }
+                Err(e) => self.say(format!(
+                    "browser: MPFree's own kits weren't put in the library ({e}); the next start tries again"
+                )),
+            }
+            return;
+        }
+        if self.bundle_looked {
+            return;
+        }
+        let Some(b) = self.browser.as_ref() else {
+            return;
+        };
+        let Some(names) = self.sample.factory_names() else {
+            return;
+        };
+        self.bundle_looked = true;
+        if b.bundled() == Some(bundled::TAG) || !names.iter().any(|n| bundled::own_kit(n)) {
+            return;
+        }
+        let kits = self.sample.factory_kit_files(&bundled::own_kit);
+        match bundled::start(b.library().clone(), kits) {
+            Ok(rx) => self.bundling = Some(rx),
+            Err(e) => self.say(format!("browser: MPFree's own kits not written ({e})")),
+        }
+    }
+
+    /// Save kit in the browser: the kit the pads play, as a kit folder.
+    fn save_kit(&mut self) {
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        match self.sample.kit_file() {
+            Some((name, text, sounds)) => {
+                let sounds = sounds
+                    .into_iter()
+                    .map(|(file, s)| {
+                        mpfree_library::NewSample::new(
+                            file,
+                            std::sync::Arc::new(move |w: &mut dyn io::Write| {
+                                mpfree_sampler::wav::write(&s, w)
+                            }),
+                        )
+                    })
+                    .collect();
+                b.save_kit(&name, text, sounds);
+                self.say(format!("browser: saving the kit {name}"));
+            }
+            None => b.kit_not_saved("the pads play the synth, not a drum kit"),
         }
     }
 
@@ -6815,6 +6896,7 @@ impl Player {
         self.poll_loops();
         self.poll_audio();
         self.open_at_start();
+        self.bundle_tick();
         self.autosave_tick(dt);
         if let Some(k) = self.sample.take_wanted_kit() {
             // An opened project's kit: the audio thread switches and says so.
@@ -13237,6 +13319,93 @@ mod tests {
             p.ui.get::<Label>("hint").unwrap().text,
             mpfree_browser_ui::BROWSER_HINT
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Save kit writes the kit the pads play as a kit folder (kit.txt and
+    /// its sounds, named for them); loading that folder puts the kit back,
+    /// pads and names, in place of the kit the pads play.
+    #[test]
+    fn a_kit_saves_as_a_folder_and_loads_back() {
+        use mpfree_browser_ui::BrowseAction as A;
+        use mpfree_library::{Loc, Place};
+        let dir = std::env::temp_dir().join(format!("mpfree-kit-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        let pads = |p: &Player, k: usize| -> Vec<Option<String>> {
+            (0..16)
+                .map(|i| {
+                    p.sample
+                        .project(k)
+                        .and_then(|pr| pr.pad(i))
+                        .filter(|pd| !pd.layers.is_empty())
+                        .map(|pd| pd.name.clone())
+                })
+                .collect()
+        };
+        let before = pads(&p, 0);
+        assert!(before.iter().any(Option::is_some));
+        // Save kit (from the top of Kits, where the browser sends it).
+        p.browse_action(A::SaveKitRequested);
+        let kits = lib.list(&Loc::top(Place::Kits)).unwrap();
+        assert_eq!(kits.len(), 1, "{kits:?}");
+        assert_eq!(kits[0].kind, mpfree_library::Kind::Kit);
+        assert_eq!(kits[0].name, "Breaks");
+        let kit = Loc::new(Place::Kits, &["Breaks"]).unwrap();
+        let text = lib.kit_text(&kit).unwrap();
+        assert!(text.starts_with("mpfree-sampler 1\nkits = 1\n"), "{text}");
+        let inside = lib.list(&kit).unwrap();
+        assert!(inside.iter().filter(|e| e.name.ends_with(".wav")).count() >= 1);
+        assert!(inside
+            .iter()
+            .all(|e| e.name == "kit.txt" || e.name.ends_with(".wav")));
+        // A kit made by hand, one pad playing one sound: loading it puts it
+        // in place of the kit the pads play, named for its folder.
+        let solo =
+            mpfree_sampler::model::Source::new("Solo", 44_100, 1, vec![0.25; 4_410]).unwrap();
+        let bytes = mpfree_sampler::wav::bytes(&solo);
+        lib.save_kit(
+            &Loc::top(Place::Kits),
+            "One pad",
+            "mpfree-sampler 1\nkits = 1\nkit.0.name = One pad\nkit.0.sources = 1\n\
+             kit.0.source.0.file = Solo.wav\nkit.0.pad.0.name = Solo\nkit.0.pad.0.layers = 1\n\
+             kit.0.pad.0.layer.0.source = 0\nkit.0.pad.0.layer.0.region.end = 4410\n",
+            &[mpfree_library::NewSample::new(
+                "Solo.wav",
+                std::sync::Arc::new(move |w: &mut dyn io::Write| w.write_all(&bytes)),
+            )],
+        )
+        .unwrap();
+        let one = Loc::new(Place::Kits, &["One pad"]).unwrap();
+        p.browse_action(A::LoadKit {
+            loc: one.clone(),
+            path: lib.kit_path(&one).unwrap(),
+        });
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l == "sample: kit 1 is now One pad")
+        });
+        let mut want = vec![None; 16];
+        want[0] = Some("Solo".to_string());
+        assert_eq!(pads(&p, 0), want);
+        // And the saved kit back: pad for pad as it was.
+        p.browse_action(A::LoadKit {
+            loc: kit.clone(),
+            path: lib.kit_path(&kit).unwrap(),
+        });
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l == "sample: kit 1 is now Breaks")
+        });
+        assert_eq!(pads(&p, 0), before);
+        // Loading changed the work.
+        assert!(p.sample.edits > 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

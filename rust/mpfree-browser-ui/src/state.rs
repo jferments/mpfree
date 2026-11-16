@@ -5,6 +5,7 @@
 //! (or runs at once, for previews and tests), so nothing here blocks.
 
 use mpfree_library::audio::duration;
+use mpfree_library::worker::Lane;
 use mpfree_library::{
     valid_name, AudioFormat, AudioInfo, Done, Entry, Job, Kind, Library, Loc, Meta, NewSample,
     Outcome, Place, Snapshot, TrashItem, Version, Worker,
@@ -84,7 +85,10 @@ impl Pick {
     pub fn sources(&self) -> Vec<usize> {
         let places: &[Place] = match self {
             Pick::Preset { .. } => &[Place::Instruments],
-            Pick::Sample | Pick::Pads => &[Place::Samples, Place::Recordings],
+            Pick::Sample => &[Place::Samples, Place::Recordings],
+            // The Pads tab's picker loads whole kits too, and saves the
+            // kit the pads play (Save kit, in Kits).
+            Pick::Pads => &[Place::Samples, Place::Kits, Place::Recordings],
             Pick::Project => &[Place::Projects],
         };
         SOURCES
@@ -130,9 +134,13 @@ impl Pick {
                     && loc.place == Place::Instruments
                     && (engine.is_empty() || preset_engine(loc) == *engine)
             }
-            Pick::Sample | Pick::Pads => {
+            Pick::Sample => {
                 matches!(r.kind, Kind::Folder | Kind::Audio(_))
                     && matches!(loc.place, Place::Samples | Place::Recordings)
+            }
+            Pick::Pads => {
+                matches!(r.kind, Kind::Folder | Kind::Audio(_) | Kind::Kit)
+                    && matches!(loc.place, Place::Samples | Place::Kits | Place::Recordings)
             }
             Pick::Project => r.kind == Kind::Project,
         }
@@ -148,6 +156,7 @@ impl Pick {
                     | Button::Open
                     | Button::Audition
                     | Button::Favourite
+                    | Button::SaveKit
             ),
             _ => matches!(
                 b,
@@ -243,6 +252,8 @@ pub enum Button {
     NewProject,
     /// Opens the Export panel: the song to WAV files and a MIDI file.
     Export,
+    /// Saves the kit the pads play as a kit folder here (Kits place).
+    SaveKit,
 }
 
 impl Button {
@@ -267,6 +278,7 @@ impl Button {
             Button::SaveAs => "Save as",
             Button::NewProject => "New project",
             Button::Export => "Export",
+            Button::SaveKit => "Save kit",
         }
     }
 }
@@ -286,8 +298,11 @@ pub enum Key {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Input {
     Source(usize),
-    /// A tap on a row: selects it, or opens it if it was selected.
+    /// A tap on a row: opens a folder; selects anything else, or opens or
+    /// loads it if it was selected.
     Row(usize),
+    /// A tap on a row's star: makes it a favourite, or not.
+    Star(usize),
     /// The list dragged by this many rows (positive: further down).
     Scroll(i32),
     Back,
@@ -345,11 +360,18 @@ pub enum BrowseAction {
         loc: Loc,
         path: PathBuf,
     },
-    /// A kit file from the library.
+    /// A kit from the library: `path` is its folder, holding `kit.txt`
+    /// (`mpfree_library::kit`) and its sounds. The app puts it in place of
+    /// the kit the pads play.
     LoadKit {
         loc: Loc,
         path: PathBuf,
     },
+    /// Save kit was pressed: call [`Browser::save_kit`] with the kit the
+    /// pads play (its name, its `kit.txt` text and its sounds).
+    SaveKitRequested,
+    /// Something for the log only (a slow listing, with how long it took).
+    Note(String),
     /// An instrument preset from the library, for the synth thread's
     /// `mpfree-instruments` to read. `engine` is the folder under
     /// Instruments it is in (`FM`, `Poly` ...), empty if none.
@@ -552,6 +574,8 @@ pub type Overview = Vec<(f32, f32)>;
 pub const RECENT: usize = 20;
 /// Earlier saves kept per project.
 pub const KEEP_VERSIONS: usize = mpfree_library::project::KEEP_VERSIONS;
+/// A listing that took longer than this on the worker is said in the log.
+const SLOW_MS: u64 = 1500;
 /// Overview columns asked of the worker.
 pub const OVERVIEW_COLUMNS: usize = 360;
 /// The most search results shown.
@@ -635,6 +659,11 @@ pub struct Browser {
     plugins: PluginsScreen,
     /// The rows the Plugins place's list has room for.
     plugin_rows: usize,
+    /// Where Save kit was pressed: the folder [`Browser::save_kit`] saves into.
+    kit_into: Option<Loc>,
+    /// The sounds MPFree has put in the library, by their version
+    /// (`bundled = ...` in the lists): the app adds them once.
+    bundled: Option<String>,
 }
 
 impl Browser {
@@ -690,6 +719,8 @@ impl Browser {
             export_last: None,
             plugins: PluginsScreen::default(),
             plugin_rows: 8,
+            kit_into: None,
+            bundled: None,
         };
         b.refresh();
         b
@@ -707,10 +738,29 @@ impl Browser {
         match &mut self.exec {
             Exec::Inline(lib) => {
                 let result = mpfree_library::worker::run(lib, job).map_err(|e| e.to_string());
-                self.apply(Done { id: 0, result });
+                self.apply(Done {
+                    id: 0,
+                    result,
+                    took_ms: 0,
+                });
             }
             Exec::Thread(w, _) => {
                 if w.send(job) != 0 {
+                    self.pending += 1;
+                } else {
+                    self.status = Some(("The library is not running".into(), true));
+                }
+            }
+        }
+    }
+
+    /// Like `send`, in a lane: a newer job of the same lane makes the worker
+    /// skip this one if it hasn't started.
+    fn send_in(&mut self, lane: Lane, job: Job) {
+        match &mut self.exec {
+            Exec::Inline(_) => self.send(job),
+            Exec::Thread(w, _) => {
+                if w.send_in(lane, job) != 0 {
                     self.pending += 1;
                 } else {
                     self.status = Some(("The library is not running".into(), true));
@@ -753,11 +803,56 @@ impl Browser {
                 }
                 self.status = Some((e, true))
             }
+            Ok(Outcome::Skipped) => {}
             Ok(Outcome::Listed(loc, entries)) => {
+                if d.took_ms >= SLOW_MS {
+                    self.actions.push(BrowseAction::Note(format!(
+                        "browser: listed {} ({} items) in {:.1} s",
+                        loc.display(),
+                        entries.len(),
+                        d.took_ms as f64 / 1000.0
+                    )));
+                }
                 if loc == self.folder && self.current_source().is_place() {
+                    let need_sizes = entries.iter().any(|e| !e.sized);
                     self.entries = entries;
                     self.rebuild();
+                    if need_sizes {
+                        self.send_in(Lane::List, Job::Sizes(loc, mpfree_library::MAX_LIST));
+                    }
                 }
+            }
+            Ok(Outcome::Sizes(loc, sizes)) => {
+                if d.took_ms >= SLOW_MS {
+                    self.actions.push(BrowseAction::Note(format!(
+                        "browser: read the sizes in {} ({} items) in {:.1} s",
+                        loc.display(),
+                        sizes.len(),
+                        d.took_ms as f64 / 1000.0
+                    )));
+                }
+                if loc == self.folder && self.current_source().is_place() {
+                    let by_name: std::collections::HashMap<&str, (u64, u64)> = sizes
+                        .iter()
+                        .map(|(n, b, m)| (n.as_str(), (*b, *m)))
+                        .collect();
+                    for e in &mut self.entries {
+                        if let Some(&(b, m)) = by_name.get(e.name.as_str()) {
+                            e.bytes = b;
+                            e.modified = m;
+                            e.sized = true;
+                        }
+                    }
+                    self.rebuild();
+                }
+            }
+            Ok(Outcome::KitSaved(loc)) => {
+                self.status = Some((format!("Saved the kit as {}", loc.display()), false));
+                if loc.parent().as_ref() == Some(&self.folder) {
+                    self.select_name = Some(loc.name().to_string());
+                }
+                self.remember(loc);
+                self.refresh();
             }
             Ok(Outcome::Trash(items)) => {
                 if self.current() == Source::Place(Place::Trash) {
@@ -891,7 +986,7 @@ impl Browser {
         }
         match self.current() {
             Source::Place(Place::Trash) => self.send(Job::Trash),
-            Source::Place(_) => self.send(Job::List(self.folder.clone())),
+            Source::Place(_) => self.send_in(Lane::List, Job::List(self.folder.clone())),
             _ => self.rebuild(),
         }
     }
@@ -1074,8 +1169,10 @@ impl Browser {
             Kind::Audio(_) if row.trash_id.is_none() => {
                 let have = self.detail_info.as_ref().is_some_and(|(l, _)| *l == loc);
                 if !have {
+                    // The header is quick; the picture reads more, so only
+                    // the newest selection's is drawn.
                     self.send(Job::Info(loc.clone()));
-                    self.send(Job::Overview(loc.clone(), OVERVIEW_COLUMNS));
+                    self.send_in(Lane::Detail, Job::Overview(loc.clone(), OVERVIEW_COLUMNS));
                 }
                 if self.audition && by_hand {
                     if let Ok(path) = self.library().file_path(&loc) {
@@ -1085,7 +1182,7 @@ impl Browser {
             }
             Kind::Project => {
                 if let Ok(f) = loc.join(mpfree_library::PROJECT_FILE) {
-                    self.send(Job::Read(f, 64 * 1024));
+                    self.send_in(Lane::Detail, Job::Read(f, 64 * 1024));
                 }
             }
             Kind::Preset if by_hand && matches!(self.pick, Some(Pick::Preset { .. })) => {
@@ -1122,8 +1219,11 @@ impl Browser {
         self.recent.clear();
         self.favourites.clear();
         self.last = None;
+        self.bundled = None;
         for line in text.lines() {
-            if let Some(l) = line.strip_prefix("project = ").and_then(Loc::from_line) {
+            if let Some(b) = line.strip_prefix("bundled = ") {
+                self.bundled = Some(b.trim().to_string());
+            } else if let Some(l) = line.strip_prefix("project = ").and_then(Loc::from_line) {
                 self.last = Some(l);
             } else if let Some(l) = line.strip_prefix("recent = ").and_then(Loc::from_line) {
                 if self.recent.len() < RECENT && !self.recent.contains(&l) {
@@ -1140,9 +1240,13 @@ impl Browser {
 
     /// Recent and Favourites as text, one `recent = Samples/Drums/Kick.wav`
     /// or `favourite = ...` line each, after the last project's
-    /// (`project = Projects/Night drive`).
+    /// (`project = Projects/Night drive`) and MPFree's own sounds' version
+    /// (`bundled = mpfree-kits 1`).
     pub fn lists_text(&self) -> String {
         let mut s = String::new();
+        if let Some(b) = &self.bundled {
+            s.push_str(&format!("bundled = {b}\n"));
+        }
         if let Some(l) = &self.last {
             s.push_str(&format!("project = {}\n", l.to_line()));
         }
@@ -1153,6 +1257,23 @@ impl Browser {
             s.push_str(&format!("favourite = {}\n", l.to_line()));
         }
         s
+    }
+
+    /// Which of MPFree's own sounds were put in the library, as the app
+    /// last said ([`Browser::set_bundled`]).
+    pub fn bundled(&self) -> Option<&str> {
+        self.bundled.as_deref()
+    }
+
+    /// MPFree's own sounds (version `tag`) are in the library now: kept with
+    /// the lists, so they are added once, and not again after the musician
+    /// deletes them.
+    pub fn set_bundled(&mut self, tag: &str) {
+        if self.bundled.as_deref() != Some(tag) {
+            self.bundled = Some(tag.to_string());
+            self.actions
+                .push(BrowseAction::SaveLists(self.lists_text()));
+        }
     }
 
     fn remember(&mut self, l: Loc) {
@@ -1293,7 +1414,8 @@ impl Browser {
             return;
         }
         if let Some(r) = self.selected_row().cloned() {
-            if r.kind == Kind::Folder {
+            // A kit is a folder too: + shows its sounds one by one.
+            if matches!(r.kind, Kind::Folder | Kind::Kit) && r.trash_id.is_none() {
                 if let Some(l) = r.loc {
                     self.go_folder(l);
                 }
@@ -1433,10 +1555,39 @@ impl Browser {
             return;
         };
         match r.kind {
-            Kind::Folder | Kind::Project => self.button(Button::Open),
             _ if r.trash_id.is_some() => {}
+            Kind::Folder | Kind::Project => self.button(Button::Open),
             _ => self.button(Button::Load),
         }
+    }
+
+    /// A tap on row `r`'s star: a favourite, or no longer one.
+    fn toggle_star(&mut self, r: usize) {
+        let Some(loc) = self.rows.get(r).and_then(|row| {
+            (row.trash_id.is_none() && row.version.is_none())
+                .then(|| row.loc.clone())
+                .flatten()
+        }) else {
+            return;
+        };
+        let now = if let Some(i) = self.favourites.iter().position(|f| *f == loc) {
+            self.favourites.remove(i);
+            false
+        } else {
+            self.favourites.push(loc.clone());
+            true
+        };
+        self.status = Some((
+            if now {
+                format!("Starred {}: it is in Favourites", loc.name())
+            } else {
+                format!("{} is no longer in Favourites", loc.name())
+            },
+            false,
+        ));
+        self.actions
+            .push(BrowseAction::SaveLists(self.lists_text()));
+        self.rebuild();
     }
 
     /// PLAY while the browser is open: hear the selected sound.
@@ -1486,7 +1637,12 @@ impl Browser {
         match i {
             Input::Source(s) => self.go_source(s),
             Input::Row(r) if r < self.rows.len() => {
-                if self.selected == Some(r) {
+                // A folder opens with one tap (Jay, 16 Nov: no Open button);
+                // anything else is picked first (heard, if a sound) and a
+                // second tap opens or loads it, as the dial's push does.
+                let folder = self.rows[r].kind == Kind::Folder && self.rows[r].trash_id.is_none();
+                if self.selected == Some(r) || folder {
+                    self.selected = Some(r);
                     self.push();
                 } else {
                     self.selected = Some(r);
@@ -1495,6 +1651,7 @@ impl Browser {
                 }
             }
             Input::Row(_) => {}
+            Input::Star(r) => self.toggle_star(r),
             Input::Scroll(d) => {
                 let max = self.rows.len().saturating_sub(self.visible.max(1)) as i32;
                 self.top = (self.top as i32 + d).clamp(0, max.max(0)) as usize;
@@ -1578,6 +1735,13 @@ impl Browser {
         match b {
             Button::Cancel => self.cancel_picker(),
             Button::Save => self.actions.push(BrowseAction::SaveRequested),
+            Button::SaveKit => {
+                if self.folder.place == Place::Kits && self.current_source().is_place() {
+                    self.actions.push(BrowseAction::SaveKitRequested);
+                    self.kit_into = Some(self.folder.clone());
+                    self.status = Some(("Saving the kit…".into(), false));
+                }
+            }
             Button::Export => self.actions.push(BrowseAction::ExportAsked),
             Button::SaveAs => self.save_as(now_utc()),
             Button::NewProject => {
@@ -1618,7 +1782,12 @@ impl Browser {
                 match r.kind {
                     Kind::Project | Kind::Folder => self.button(Button::Open),
                     Kind::Audio(_) | Kind::Kit | Kind::Preset => {
-                        let Ok(path) = self.library().file_path(&loc) else {
+                        let path = if r.kind == Kind::Kit {
+                            self.library().kit_path(&loc)
+                        } else {
+                            self.library().file_path(&loc)
+                        };
+                        let Ok(path) = path else {
                             // Which button asked, so Load to pad after Load
                             // says something new.
                             self.status =
@@ -1645,7 +1814,9 @@ impl Browser {
                             },
                         });
                         self.status = Some((
-                            if to_pad {
+                            if r.kind == Kind::Kit {
+                                format!("Loading the kit {}", r.name)
+                            } else if to_pad {
                                 format!("{}: hit a pad to put it there", r.name)
                             } else {
                                 format!("Loaded {}", r.name)
@@ -1917,6 +2088,30 @@ impl Browser {
         self.opening_last = true;
         self.send(Job::OpenProject(loc));
         true
+    }
+
+    /// The answer to [`BrowseAction::SaveKitRequested`]: saves the kit the
+    /// pads play as a kit folder named `name` (or `name 2` ...) where Save
+    /// kit was pressed (the top of Kits if it wasn't). `text` is the
+    /// sampler's part for that one kit and `sounds` the files it names.
+    pub fn save_kit(&mut self, name: &str, text: String, sounds: Vec<NewSample>) {
+        let folder = self
+            .kit_into
+            .take()
+            .unwrap_or_else(|| Loc::top(Place::Kits));
+        let name = mpfree_library::clean_name(name, "Kit");
+        self.send(Job::SaveKit {
+            folder,
+            name,
+            text,
+            sounds,
+        });
+    }
+
+    /// The kit couldn't be gathered for saving (why).
+    pub fn kit_not_saved(&mut self, why: &str) {
+        self.kit_into = None;
+        self.status = Some((format!("The kit wasn't saved: {why}"), true));
     }
 
     /// SHIFT + BROWSE: saves `snap` as the current project, or, the first
@@ -2193,7 +2388,13 @@ impl Browser {
             filter: self.filter,
             detail: self.detail(),
             list_buttons: match src {
-                // The Pads tab's stays open: nothing to cancel.
+                // The Pads tab's stays open: nothing to cancel. In Kits it
+                // saves the kit the pads play.
+                Source::Place(Place::Kits)
+                    if self.pick == Some(Pick::Pads) && self.mode == Mode::Folder =>
+                {
+                    vec![Button::SaveKit]
+                }
                 _ if self.pick == Some(Pick::Pads) => Vec::new(),
                 _ if self.pick.is_some() => vec![Button::Cancel],
                 // Nothing to make or paste in a search or a project's saves.
@@ -2209,6 +2410,8 @@ impl Browser {
                             Button::Save,
                             Button::Export,
                         ]
+                    } else if p == Place::Kits {
+                        vec![Button::SaveKit, Button::NewFolder]
                     } else {
                         vec![Button::NewFolder]
                     };
@@ -2295,7 +2498,7 @@ impl Browser {
             d.lines.push(("Project".into(), l.name().into()));
             d.lines
                 .push(("Kept".into(), format!("The last {KEEP_VERSIONS} saves")));
-            d.buttons = vec![Button::Open];
+            d.lines.push(("".into(), "Tap it again to open it".into()));
             return d;
         }
         if r.factory.is_some() {
@@ -2345,7 +2548,6 @@ impl Browser {
                     Button::Load,
                     Button::LoadToPad,
                     Button::Audition,
-                    Button::Favourite,
                     Button::Rename,
                     Button::Copy,
                     Button::Cut,
@@ -2364,23 +2566,14 @@ impl Browser {
                     d.lines.push(("".into(), "Open now".into()));
                 }
                 d.buttons = vec![
-                    Button::Open,
                     Button::Versions,
-                    Button::Favourite,
                     Button::Rename,
                     Button::Copy,
                     Button::Delete,
                 ];
             }
             Kind::Folder => {
-                d.buttons = vec![
-                    Button::Open,
-                    Button::Favourite,
-                    Button::Rename,
-                    Button::Copy,
-                    Button::Cut,
-                    Button::Delete,
-                ];
+                d.buttons = vec![Button::Rename, Button::Copy, Button::Cut, Button::Delete];
             }
             Kind::Preset => {
                 if let Some(e) = loc.map(preset_engine).filter(|e| !e.is_empty()) {
@@ -2389,7 +2582,6 @@ impl Browser {
                 d.lines.push(("Size".into(), r.detail.clone()));
                 d.buttons = vec![
                     Button::Load,
-                    Button::Favourite,
                     Button::Rename,
                     Button::Copy,
                     Button::Cut,
@@ -2397,10 +2589,12 @@ impl Browser {
                 ];
             }
             Kind::Kit => {
-                d.lines.push(("Size".into(), r.detail.clone()));
+                d.lines
+                    .push(("Load".into(), "In place of the kit the pads play".into()));
+                d.lines
+                    .push(("Sounds".into(), "+ shows them one by one".into()));
                 d.buttons = vec![
                     Button::Load,
-                    Button::Favourite,
                     Button::Rename,
                     Button::Copy,
                     Button::Cut,

@@ -82,7 +82,7 @@ A short press of the power button asks whether to save before the MPC switches o
 
 ### Opening a project
 
-Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or press **Open**). Playback stops, and the project's clips, kits, synth sounds, tracks' instruments and mixer come in together. A plugin the project used that isn't in `files/plugins/` on this stick is left out, and the Events log names its file so you can put it back: a missing plugin effect leaves its strip without it, and a track whose plugin synth is missing plays the kit. The loops you had fade out, and the project's loops come in a moment later. The same goes for the audio tracks: a recording ends, and the project's takes come in a moment later. If the project's takes don't all fit in **Audio track memory** ([Prefs](../reference/prefs.md)), the Events log says which were left out. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
+Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or tap it again). Playback stops, and the project's clips, kits, synth sounds, tracks' instruments and mixer come in together. A plugin the project used that isn't in `files/plugins/` on this stick is left out, and the Events log names its file so you can put it back: a missing plugin effect leaves its strip without it, and a track whose plugin synth is missing plays the kit. The loops you had fade out, and the project's loops come in a moment later. The same goes for the audio tracks: a recording ends, and the project's takes come in a moment later. If the project's takes don't all fit in **Audio track memory** ([Prefs](../reference/prefs.md)), the Events log says which were left out. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
 
 ### Starting a new project
 
@@ -98,13 +98,19 @@ MPFree starts with a new, empty project. To have it open the project you last sa
 
 ## The browser
 
-{{shot: browser | The browser in Projects, with Night drive picked: its tempo and when it was saved on the right, with Open and Earlier saves.}}
+{{shot: browser | The browser in Projects, with Night drive picked: its tempo and when it was saved on the right, with Earlier saves.}}
 
 **BROWSE** opens the browser over the page you are on, and pressing it again goes back to that page. It is a full file manager for MPFree's stick:
 
 - **Places** on the left: Projects, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, and Factory (read-only kits). **Plugins** finds and installs MPC plugins (see [Getting plugins](plugins.md)).
-- **The list** in the middle, folders first, in natural order (Kick 2 before Kick 10), with filters for audio, projects and kits.
-- **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load, Load to pad, Audition, Favourite, Rename, Copy, Cut and Delete.
+- **The list** in the middle, folders first, in natural order (Kick 2 before Kick 10), with filters for audio, projects and kits. Each row has a **star** at its right end: tap it to add the item to Favourites, and again to take it out.
+- **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load, Load to pad, Audition, Rename, Copy, Cut and Delete.
+
+**Opening things.** Tap a folder to open it. Tap anything else to pick it (a sound plays once), and tap it again to open it (a project) or load it (a sound, a kit, a preset). Pushing the data wheel does the same as that second tap.
+
+**Kits.** A kit is kept as a folder with its sounds and a `kit.txt` file listing every pad and its settings, so it reads on any computer. Kits show with a green icon wherever they are. Loading one puts it in place of the kit the pads play; **+** opens it to show its sounds. **Save kit** at the top of the **Kits** place saves the kit the pads play there, named after it. MPFree's own drum kits are in **Kits > MPFree**.
+
+A folder with thousands of sounds lists straight away; the sizes fill in a moment later.
 
 Moving onto a sound plays it once, so you can audition as you scroll. Delete always asks first and moves things to the Trash, which you empty yourself (that asks again).
 
@@ -116,7 +122,7 @@ The data wheel moves through the list and its push opens or loads; the other but
 
 Where you need one kind of file, a narrower **picker** shows the same browser with only what fits. A picker only loads; renaming and deleting are in the full browser.
 
-The Pads tab's sound picker stays open beside the pads, with Load, Load to pad, Audition and Favourite. See [Sampling](sampling.md#the-pads-tab-sounds-onto-pads). A preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it) comes later.
+The Pads tab's sound picker stays open beside the pads, with Load, Load to pad and Audition, the stars, and the Kits place with **Save kit**. See [Sampling](sampling.md#the-pads-tab-sounds-onto-pads). A preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it) comes later.
 
 ### Your own synth presets
 
