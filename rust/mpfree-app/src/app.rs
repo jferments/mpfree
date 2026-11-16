@@ -439,11 +439,21 @@ impl ButtonMap {
             // Every button is the developers' job, never the musician's
             // (Jay, 16 Nov): BROWSE and MAIN from the fourth creator stick's
             // presses, the data dial's push from the Map controls live test
-            // of 12 Nov; the rest from round 5's Map controls pass.
+            // of 12 Nov, the rest from the fifth stick's Map controls pass.
             browse: Some(button::BROWSE),
             main: Some(button::MAIN),
             data_push: Some(button::DATA_PUSH),
-            ..ButtonMap::default()
+            bank: button::PAD_BANK.map(Some),
+            track_mix: Some(button::TRACK_MIX),
+            erase: Some(button::ERASE),
+            sixteen_level: Some(button::SIXTEEN_LEVEL),
+            next_seq: Some(button::NEXT_SEQ),
+            step_seq: Some(button::STEP_SEQ),
+            sampler: Some(button::SAMPLER),
+            sample_edit: Some(button::SAMPLE_EDIT),
+            prog_edit: Some(button::PROG_EDIT),
+            q_link: Some(button::Q_LINK),
+            track_mute: Some(button::TRACK_MUTE),
         }
     }
 
@@ -4458,9 +4468,6 @@ mod tests {
     #[test]
     fn the_wheel_picks_rows_and_its_push_opens_one_on_every_page_with_rows() {
         let mut app = ready();
-        app.map.minus = Some(40);
-        app.map.plus = Some(41);
-        app.map.data_push = Some(42);
         let pick = |d| vec![Effect::Rows(RowKey::Pick(d))];
         let step = |d| vec![Effect::Rows(RowKey::Step(d))];
         app.set_pads_browse(false);
@@ -4469,18 +4476,18 @@ mod tests {
             assert_eq!(app.view(), v);
             assert_eq!(app.wheel(1), pick(1), "{v:?}");
             assert_eq!(app.wheel(-3), pick(-3), "{v:?}");
-            assert_eq!(press(&mut app, 41), step(1), "{v:?}");
-            assert_eq!(press(&mut app, 40), step(-1), "{v:?}");
+            assert_eq!(press(&mut app, button::PLUS), step(1), "{v:?}");
+            assert_eq!(press(&mut app, button::MINUS), step(-1), "{v:?}");
             // The push opens the row: the wheel changes it, - / + still do.
             assert_eq!(
-                press(&mut app, 42),
+                press(&mut app, button::DATA_PUSH),
                 vec![Effect::Rows(RowKey::Editing(true))]
             );
             assert_eq!(app.wheel(2), step(2), "{v:?}");
-            assert_eq!(press(&mut app, 40), step(-1), "{v:?}");
+            assert_eq!(press(&mut app, button::MINUS), step(-1), "{v:?}");
             // The next push gives the wheel back to the rows.
             assert_eq!(
-                press(&mut app, 42),
+                press(&mut app, button::DATA_PUSH),
                 vec![Effect::Rows(RowKey::Editing(false))]
             );
             assert_eq!(app.wheel(1), pick(1), "{v:?}");
@@ -4489,10 +4496,10 @@ mod tests {
         app.open_tab(View::Sample);
         app.button(button::SHIFT, true, 0.0);
         assert_eq!(app.wheel(2), vec![Effect::SamplePad(1)]);
-        assert_eq!(press(&mut app, 41), vec![Effect::SampleWheel(1)]);
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::SampleWheel(1)]);
         app.button(button::SHIFT, false, 0.0);
         // A row left open closes with its page.
-        press(&mut app, 42);
+        press(&mut app, button::DATA_PUSH);
         let fx = app.open_tab(View::Play);
         assert!(fx.contains(&Effect::Rows(RowKey::Editing(false))), "{fx:?}");
         assert_eq!(app.wheel(1), vec![Effect::Nav(Nav::Turn(1))]);
@@ -4528,13 +4535,11 @@ mod tests {
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
         app.button(button::SHIFT, true, 0.0);
         assert_eq!(app.wheel(-4), vec![Effect::SynthPage(-1)]);
-        // SHIFT + - and + step pages once the guide knows them.
-        app.map.minus = Some(40);
-        app.map.plus = Some(41);
-        assert_eq!(press(&mut app, 41), vec![Effect::SynthPage(1)]);
-        assert_eq!(press(&mut app, 40), vec![Effect::SynthPage(-1)]);
+        // SHIFT + - and + step pages.
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::SynthPage(1)]);
+        assert_eq!(press(&mut app, button::MINUS), vec![Effect::SynthPage(-1)]);
         app.button(button::SHIFT, false, 0.0);
-        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Rows(RowKey::Step(1))]);
         // MENU on the Synth page opens its options and goes back to it.
         let fx = press(&mut app, MENU);
         assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Synth options"));
@@ -4990,14 +4995,12 @@ mod tests {
     fn an_overlay_takes_the_wheel_and_undo_says_when_it_goes_down_and_up() {
         let mut app = ready();
         app.open_tab(View::Play);
-        app.map.minus = Some(40);
-        app.map.plus = Some(41);
         assert_eq!(app.wheel(1), vec![Effect::Nav(Nav::Turn(1))]);
         app.set_overlay(true);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
         assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
-        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
-        assert_eq!(press(&mut app, 40), vec![Effect::Rows(RowKey::Step(-1))]);
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(press(&mut app, button::MINUS), vec![Effect::Rows(RowKey::Step(-1))]);
         // Another page: the screen closes it, so the wheel is the page's.
         app.open_tab(View::Arrange);
         app.open_tab(View::Play);
@@ -5089,10 +5092,8 @@ mod tests {
             vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
         );
         // - / + step the row picked.
-        app.map.minus = Some(40);
-        app.map.plus = Some(41);
-        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
-        assert_eq!(press(&mut app, 40), vec![Effect::Rows(RowKey::Step(-1))]);
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(press(&mut app, button::MINUS), vec![Effect::Rows(RowKey::Step(-1))]);
         // MENU opens the options and goes back to the Sample page.
         let fx = press(&mut app, MENU);
         assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Sample options"));
@@ -5112,8 +5113,6 @@ mod tests {
         assert_eq!(View::Pads.tab_index(false), Some(1));
         assert_eq!(app.tab(1), vec![Effect::Show(View::Pads)]);
         assert!(View::Pads.sampler() && View::Sample.sampler() && !View::Play.sampler());
-        app.map.minus = Some(40);
-        app.map.plus = Some(41);
         app.map.data_push = Some(111);
         // Browse (the view it opens on): the browser's.
         assert_eq!(app.wheel(2), vec![Effect::Browse(BrowseKey::Wheel(2))]);
@@ -5121,8 +5120,8 @@ mod tests {
         assert_eq!(app.wheel(-3), vec![Effect::Browse(BrowseKey::Places(-1))]);
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
-        assert_eq!(press(&mut app, 41), vec![Effect::Browse(BrowseKey::Enter)]);
-        assert_eq!(press(&mut app, 40), vec![Effect::Browse(BrowseKey::Back)]);
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Browse(BrowseKey::Enter)]);
+        assert_eq!(press(&mut app, button::MINUS), vec![Effect::Browse(BrowseKey::Back)]);
         assert_eq!(
             press(&mut app, button::PLAY),
             vec![Effect::Browse(BrowseKey::Play)]
@@ -5135,7 +5134,7 @@ mod tests {
         // The Pad view: the Sample tab's controls.
         app.set_pads_browse(false);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
-        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::Rows(RowKey::Step(1))]);
         assert!(press(&mut app, button::PLAY)
             .contains(&Effect::Time(TimeAction::Transport(Command::Play))));
         // Elsewhere PLAY is the transport's again.
@@ -5270,9 +5269,9 @@ mod tests {
         assert!(app.settings.debug_mode);
         assert_eq!(app.view(), View::Map);
         assert!(fx.contains(&Effect::Note("developer tools: on".into())));
-        assert!(fx
-            .iter()
-            .any(|e| matches!(e, Effect::Map(m) if m.rows[2].value == "button 81" && m.left > 20)));
+        // Every button is built in: only the ten spare Other rows are left.
+        assert!(fx.iter().any(|e| matches!(e, Effect::Map(m)
+            if m.rows[2].value == "button 81" && m.found == 32 && m.left == 10)));
         // Tap REC: MPFree listens; STOP stops listening without silencing.
         app.map_row(0);
         let fx = press(&mut app, button::STOP);
@@ -5291,12 +5290,15 @@ mod tests {
             "{fx:?}"
         );
         assert_eq!(app.map.rec, Some(73));
-        // The wheel picks PAD BANK A/E, + listens, and it works at once.
+        // The wheel picks PAD BANK A/E and Clear forgets it; + listens, and
+        // found again it works at once.
         let at = mapper::CONTROLS
             .iter()
             .position(|c| c.name == "PAD BANK A/E")
             .unwrap() as i32;
         app.wheel(at - app.mapper.selected as i32);
+        app.map_button(2);
+        assert_eq!(app.map.bank[0], None);
         press(&mut app, button::PLUS);
         let fx = press(&mut app, 35);
         assert!(

@@ -37,7 +37,8 @@ impl Code {
 pub enum Job {
     /// Nothing yet: the number is only written down.
     None,
-    /// A measured constant in the code (SHIFT, FULL LEVEL, STOP, PLAY).
+    /// A measured constant in the code (SHIFT, FULL LEVEL, STOP, PLAY, and
+    /// COPY and TC, which have no job yet).
     Fixed(u8),
     Menu,
     NoteRepeat,
@@ -110,15 +111,16 @@ pub const CONTROLS: [Control; 42] = [
     c("16 LEVEL", Job::SixteenLevel),
     c("NOTE REPEAT", Job::NoteRepeat),
     c("ERASE", Job::Erase),
-    c("COPY", Job::None),
-    c("TC", Job::None),
+    // No job yet; built in so the list starts with them found.
+    c("COPY", Job::Fixed(button::COPY)),
+    c("TC", Job::Fixed(button::TC)),
     c("SHIFT", Job::Fixed(button::SHIFT)),
     c("MENU", Job::Menu),
     c("MAIN", Job::Main),
     c("BROWSE", Job::Browse),
     // Opens the mixer. Named after the MPC 3.6 guide's MPC One top panel
-    // (p. 348, item 17, as the FX thread cites it); not yet seen by the pad
-    // player, so it works once found with the mapper.
+    // (p. 348, item 17, as the FX thread cites it); button 116, built in
+    // (`button::TRACK_MIX`).
     c("TRACK MIX / PAD MIX", Job::TrackMix),
     c("-", Job::Minus),
     c("+", Job::Plus),

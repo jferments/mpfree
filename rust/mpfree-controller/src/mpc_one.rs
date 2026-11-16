@@ -71,6 +71,23 @@ pub mod button {
     /// The data dial's push: found with Map controls in the live test of
     /// 2026-11-12 (`app/mapper.rs`).
     pub const DATA_PUSH: u8 = 111;
+    /// The rest of the panel, each pressed on its own in Map controls on the
+    /// creator's fifth stick (2026-11-16), which found all 32 buttons and
+    /// confirmed every number above.
+    pub const PAD_BANK: [u8; 4] = [35, 36, 37, 38];
+    pub const SIXTEEN_LEVEL: u8 = 40;
+    pub const ERASE: u8 = 9;
+    pub const COPY: u8 = 122;
+    pub const TC: u8 = 12;
+    /// TRACK MIX (SHIFT: PAD MIX).
+    pub const TRACK_MIX: u8 = 116;
+    pub const Q_LINK: u8 = 0;
+    pub const TRACK_MUTE: u8 = 43;
+    pub const NEXT_SEQ: u8 = 42;
+    pub const STEP_SEQ: u8 = 41;
+    pub const SAMPLER: u8 = 125;
+    pub const SAMPLE_EDIT: u8 = 6;
+    pub const PROG_EDIT: u8 = 2;
 }
 
 const PAD_CHANNEL: u8 = 9; // MIDI channel 10, zero-based

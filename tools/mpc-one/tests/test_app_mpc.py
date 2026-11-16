@@ -705,28 +705,19 @@ class AppTests(unittest.TestCase):
         self.assertIn("NOT SEEN  an hour, no underrun, no restart (0 underruns in 3,000 periods (0 min); the period "
                       "count went back, so the pad player restarted)", res.stdout)
 
-    def test_a_check_says_which_buttons_map_controls_has_not_found(self):
+    def test_a_check_needs_no_map_controls_now_every_button_is_built_in(self):
+        """Not found by Map controls (a new stick, or a skip) no longer matters: the app has every button built in,
+        so nothing is said and map-controls isn't added (app_checks' own tests keep the older-build case)."""
         write(self.app, "active\n")
         write(f"{self.root}/run/mpfree-data/settings/map.conf", "pad-bank-a-e = button 35\ntrack-mute = skipped\n")
-        res = self.run_helper("s\ns\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
+        res = self.run_helper("s\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
         self.assertEqual(res.returncode, 0, res.stdout)
-        out = res.stdout
-        for text in ("Map controls has not found these buttons yet, and a step uses them",
-                     "    TRACK MUTE (check track-mute)", "    PAD BANK B/F (check track-mute)",
-                     "So map-controls runs first, to find them.", "Checks: map-controls, track-mute",
-                     "Check 1 of 2: Map controls", "map-controls: skipped", "track-mute: skipped"):
-            self.assertIn(text, out)
-        self.assertNotIn("PAD BANK A/E (check", out)
-        # Named already: it stays where the round put it, and nothing is added.
+        self.assertNotIn("Map controls has not found", res.stdout)
+        self.assertNotIn("So map-controls runs first", res.stdout)
+        self.assertIn("Checks: track-mute\n", res.stdout)
+        # Named by the round: it still runs where the round put it.
         res = self.run_helper("s\ns\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute,map-controls")
         self.assertIn("Checks: track-mute, map-controls", res.stdout)
-        self.assertNotIn("So map-controls runs first", res.stdout)
-        # Every button found: nothing is said and nothing added.
-        write(f"{self.root}/run/mpfree-data/settings/map.conf",
-              "pad-bank-a-e = button 35\npad-bank-b-f = button 36\ntrack-mute = button 43\n")
-        res = self.run_helper("s\n", MPFREE_APP_STEPS="app", MPFREE_APP_CHECKS="track-mute")
-        self.assertNotIn("Map controls has not found", res.stdout)
-        self.assertIn("Checks: track-mute\n", res.stdout)
 
     def test_a_check_stops_when_the_input_ends(self):
         """No more input (the terminal closed) stops at the next question, as q does, and does not go on."""

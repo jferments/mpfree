@@ -286,14 +286,20 @@ impl App {
         }
         let (mut found, mut gone) = (0, 0);
         for (k, v) in map.iter() {
-            let Some(i) = CONTROLS
-                .iter()
-                .position(|c| control_key(c.name) == k && !matches!(c.job, Job::Fixed(_)))
-            else {
+            let Some(i) = CONTROLS.iter().position(|c| control_key(c.name) == k) else {
                 skipped.push(format!("{k} = {v}"));
                 continue;
             };
             let job = CONTROLS[i].job;
+            // A control built in since it was saved (COPY and TC, found
+            // with Map controls before): its own number, or a skip, changes
+            // nothing, and the next save leaves it out.
+            if let Job::Fixed(n) = job {
+                if v != "skipped" && parse_code(v) != Some(Code::Button(n)) {
+                    skipped.push(format!("{k} = {v}"));
+                }
+                continue;
+            }
             match (v, parse_code(v)) {
                 // A known button (REC, MENU...) is on every MPC One: a skip
                 // kept from before it was known must not turn it off.
@@ -367,7 +373,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Item;
+    use crate::app::{ButtonMap, Item, View};
     use mpfree_controller::mpc_one::button;
 
     #[test]
@@ -415,10 +421,11 @@ mod tests {
         a.looper_setting(Item::LoopLevel, -1);
         a.looper_setting(Item::LoopLatency, 1);
         a.map.learn(Job::Rec, Some(73));
-        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "COPY").unwrap()] =
+        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "Other 1").unwrap()] =
             Mark::Found(Code::Button(52));
         a.map.learn(Job::Sampler, Some(56));
-        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "TC").unwrap()] = Mark::Skipped;
+        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "Other 2").unwrap()] =
+            Mark::Skipped;
         a.save_dirty = true;
         let saves = a.take_saves();
         assert_eq!(
@@ -443,9 +450,10 @@ mod tests {
             "the line input is off at start"
         );
         assert_eq!(map.get_str("rec"), Some("button 73"));
-        assert_eq!(map.get_str("copy"), Some("button 52"));
+        assert_eq!(map.get_str("other-1"), Some("button 52"));
         assert_eq!(map.get_str("sampler"), Some("button 56"));
-        assert_eq!(map.get_str("tc"), Some("skipped"));
+        assert_eq!(map.get_str("other-2"), Some("skipped"));
+        assert_eq!(map.get_str("copy"), None, "COPY is built in");
         assert_eq!(
             map.get_str("menu"),
             Some(&*format!("button {}", button::MENU))
@@ -520,14 +528,55 @@ mod tests {
         let mut a = App::new(44_100, false);
         a.restore(
             &Settings::default(),
-            &Settings::parse("rec = skipped\noverdub = skipped\nundo = button 99\ntc = skipped\n"),
+            &Settings::parse(
+                "rec = skipped\noverdub = skipped\nundo = button 99\nother-1 = skipped\n",
+            ),
         );
         assert_eq!(a.map.rec, Some(button::REC));
         assert_eq!(a.map.overdub, Some(button::OVERDUB));
         assert_eq!(a.map.undo, Some(99), "Map controls' own number wins");
         let map = a.map_settings();
         assert_eq!(map.get_str("rec"), Some("button 73"));
-        assert_eq!(map.get_str("tc"), Some("skipped"), "other skips are kept");
+        assert_eq!(map.get_str("other-1"), Some("skipped"), "other skips are kept");
+    }
+
+    #[test]
+    fn every_button_is_built_in_and_a_saved_map_from_before_changes_nothing() {
+        // A new stick: every button works with no saved map.
+        let a = App::new(44_100, false);
+        for c in CONTROLS.iter() {
+            if !c.name.starts_with("Other ") {
+                assert!(a.map.of(c.job).is_some(), "{} is built in", c.name);
+            }
+        }
+        // The fifth creator stick's map, found with Map controls before the
+        // numbers were built in: the same numbers, so nothing changes, and
+        // nothing is "not understood".
+        let saved = "rec = button 73\noverdub = button 80\nplay-start = button 83\n\
+                     undo = button 67\ntap-tempo = button 53\npad-bank-a-e = button 35\n\
+                     pad-bank-b-f = button 36\npad-bank-c-g = button 37\n\
+                     pad-bank-d-h = button 38\n16-level = button 40\n\
+                     note-repeat = button 11\nerase = button 9\ncopy = button 122\n\
+                     tc = button 12\nmenu = button 123\nmain = button 52\n\
+                     browse = button 50\ntrack-mix-pad-mix = button 116\n\
+                     minus = button 55\nplus = button 54\nq-link = button 0\n\
+                     track-mute = button 43\nnext-seq = button 42\nstep-seq = button 41\n\
+                     sampler = button 125\nsample-edit = button 6\nprog-edit = button 2\n\
+                     data-dial-push = button 111\n";
+        let mut b = App::new(44_100, false);
+        let notes = b.restore(&Settings::default(), &Settings::parse(saved));
+        assert_eq!(b.map, ButtonMap::measured());
+        assert!(
+            notes.iter().all(|n| !n.contains("not understood")),
+            "{notes:?}"
+        );
+        let map = b.map_settings();
+        assert_eq!((map.get_str("copy"), map.get_str("tc")), (None, None));
+        assert_eq!(map.get_str("q-link"), Some("button 0"));
+        // Map controls' list starts with every button found.
+        b.show(View::Map);
+        let view = b.mapper.view();
+        assert_eq!((view.found, view.skipped), (32, 0), "{:?}", view.rows);
     }
 
     #[test]
