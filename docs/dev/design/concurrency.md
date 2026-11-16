@@ -29,6 +29,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-screen` | Touch, the raster, the framebuffer. Ticks the pages every 33 ms and sleeps between ([profiling.md](profiling.md#the-screens-cost)) |
 | `mpfree-touch-bell` | The touchscreen's doorbell: sleeps in read(2) on a second read-only handle on the panel and wakes `mpfree-screen` when it sends something |
 | `mpfree-store` | Saved settings and patterns |
+| `mpfree-midilog` | The MIDI monitor's Save log (handed to `mpfree-store`) and, while the developer tools are on, its lines in `/run/mpfree-app/midi.log` for the workstation console; four times a second, holding the I/O model's lock only to take an ask or word new lines (the audio loop only `try_lock`s it) |
 | `mpfree-journal` | The console's log |
 | `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs, at idle priority |
 | `autosample` | An auto-sample: at idle priority for one of MPFree's instruments, at normal priority for external gear |

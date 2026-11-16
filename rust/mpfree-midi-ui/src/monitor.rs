@@ -37,6 +37,7 @@ use mpfree_mixer_ui::{IoInput, IoReply, IoSection};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Theme, Touch, Widget};
 
 use crate::form::{BANNER_H, GAP};
+use crate::now::{self, NowData};
 use crate::{note_name, IoModel, Shared};
 
 /// A chip: its label, its width, and the kinds it shows or hides.
@@ -127,7 +128,10 @@ pub(crate) const DEBUG_HINT: &str =
     "Tap a chip: show or hide a source  ·  Hold stops the list  ·  the I/O view's Monitor has the wheel";
 
 /// The hint line while the Monitor shows.
-pub(crate) const HINT: &str = "Tap a light: only that port and channel  ·  wheel: scroll back  ·  Hold stops the list  ·  the I/O icon or TRACK MIX closes";
+pub(crate) const HINT: &str = "Tap a light: only that port and channel  ·  wheel: scroll back  ·  Hold stops the list  ·  Save log: to the stick";
+
+/// The hint line while the Now view shows.
+pub(crate) const NOW_HINT: &str = "Tap a port: what it holds now  ·  wheel or ‹ ›: channel  ·  Hold freezes the view  ·  the I/O icon or TRACK MIX closes";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hit {
@@ -139,6 +143,16 @@ enum Hit {
     Port(PortId, Dir),
     Light(PortId, Dir, u8),
     List,
+    /// List (false) or Now (true).
+    View(bool),
+    /// Save log.
+    Save,
+    /// The Now view's port and way, by its place in [`now::streams`].
+    Stream(usize),
+    /// The Now view's channel, one down (-1) or up (1).
+    Channel(i32),
+    /// Send note-offs to MIDI out.
+    NoteOffs,
 }
 
 struct Layout {
@@ -149,6 +163,22 @@ struct Layout {
     ports: Vec<(PortId, Rect)>,
     list_head: Rect,
     list: Rect,
+    /// The Now view's cards and its channel's label, while it shows.
+    now: Option<(now::Cards, Rect)>,
+}
+
+/// List | Now: each half's width.
+const SEG_W: i32 = 72;
+/// The Now view's channel arrows and label.
+const ARROW_W: i32 = 44;
+const CH_W: i32 = 70;
+
+/// The Save log button's width.
+const SAVE_W: i32 = 100;
+
+/// A Now view port chip's width for `text` (laid out before it is drawn).
+fn chip_w(text: &str) -> i32 {
+    28 + 9 * text.chars().count() as i32
 }
 
 fn halves(row: Rect) -> [(Dir, Rect); 2] {
@@ -171,13 +201,13 @@ fn cells(row: Rect) -> ([Rect; 16], Rect) {
 }
 
 /// `t` seconds on the app's clock as minutes, seconds and milliseconds.
-fn clock_text(t: f64) -> String {
+pub(crate) fn clock_text(t: f64) -> String {
     let t = t.max(0.0);
     let m = (t / 60.0) as u64;
     format!("{m}:{:06.3}", t - m as f64 * 60.0)
 }
 
-fn way(d: Dir) -> &'static str {
+pub(crate) fn way(d: Dir) -> &'static str {
     match d {
         Dir::In => "in",
         Dir::Out => "out",
@@ -185,7 +215,7 @@ fn way(d: Dir) -> &'static str {
 }
 
 /// A port's name and way, as the list says it ("Keystep 37 in").
-fn port_text(m: &Monitor, port: PortId, d: Dir) -> String {
+pub(crate) fn port_text(m: &Monitor, port: PortId, d: Dir) -> String {
     if port == MPC {
         return format!("MPC {}", way(d));
     }
@@ -199,7 +229,7 @@ fn port_text(m: &Monitor, port: PortId, d: Dir) -> String {
 }
 
 /// The controllers most gear agrees on.
-fn cc_name(cc: u8) -> Option<&'static str> {
+pub(crate) fn cc_name(cc: u8) -> Option<&'static str> {
     Some(match cc {
         0 => "Bank select",
         1 => "Mod wheel",
@@ -397,7 +427,7 @@ fn event_words(e: Event, name: impl Fn(PortId) -> String) -> String {
 }
 
 /// A line's message in words, naming the ports an event is about.
-fn line_words(mon: &Monitor, s: &Seen) -> String {
+pub(crate) fn line_words(mon: &Monitor, s: &Seen) -> String {
     match s.what {
         What::Event(e) => event_words(e, |p| match mon.port_name(p) {
             Some(n) if p == mpfree_midi::DIN => format!("{n} (5-pin jacks)"),
@@ -410,7 +440,7 @@ fn line_words(mon: &Monitor, s: &Seen) -> String {
 
 /// How a line's "went to" is coloured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Went {
+pub(crate) enum Went {
     /// Played or moved something.
     Took,
     /// MIDI Learn.
@@ -424,7 +454,7 @@ enum Went {
 }
 
 /// Where a line's message went, in words ([`To`]); empty while unsaid.
-fn went_to(m: &IoModel, to: To) -> (String, Went) {
+pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
     let track = |t: u8| {
         m.live
             .tracks
@@ -464,7 +494,7 @@ fn went_to(m: &IoModel, to: To) -> (String, Went) {
     }
 }
 
-fn went_ink(t: &Theme, w: Went) -> Color {
+pub(crate) fn went_ink(t: &Theme, w: Went) -> Color {
     match w {
         Went::Took => t.text,
         Went::Learn => t.accent2,
@@ -475,7 +505,7 @@ fn went_ink(t: &Theme, w: Went) -> Color {
 }
 
 /// The bytes a line shows: a channel message's own, a SysEx's start.
-fn bytes_text(w: &What) -> String {
+pub(crate) fn bytes_text(w: &What) -> String {
     let (b, n) = w.bytes();
     let mut s = b[..n]
         .iter()
@@ -506,6 +536,18 @@ pub(crate) struct MonitorSection {
     down: Option<(u64, Option<Hit>)>,
     /// Lines that fit, from the last paint.
     fit: Cell<usize>,
+    /// The Now view shows (not in debug mode).
+    now_view: bool,
+    /// The Now view's port and way, and channel, as picked; `None`: the
+    /// newest.
+    pick: Option<(PortId, Dir)>,
+    pick_ch: Option<u8>,
+    /// The Now view as Hold froze it.
+    frozen: Option<Box<NowData>>,
+    /// What the last tap did, for the hint line (Save log's file).
+    note: Option<String>,
+    /// Save log asked; the app's answer is still to come.
+    saving: bool,
 }
 
 impl MonitorSection {
@@ -520,7 +562,76 @@ impl MonitorSection {
             live: u64::MAX,
             down: None,
             fit: Cell::new(10),
+            now_view: false,
+            pick: None,
+            pick_ch: None,
+            frozen: None,
+            note: None,
+            saving: false,
         }
+    }
+
+    /// Whether the Now view shows.
+    fn now_shows(&self) -> bool {
+        self.now_view && !self.debug
+    }
+
+    /// The Now view's port and way, and channel.
+    fn now_pick(&self, m: &IoModel) -> ((PortId, Dir), u8) {
+        let s = self
+            .pick
+            .filter(|s| now::streams(&m.monitor).contains(s))
+            .unwrap_or_else(|| now::auto_stream(&m.monitor));
+        let c = self
+            .pick_ch
+            .unwrap_or_else(|| now::auto_channel(&m.monitor, s));
+        (s, c)
+    }
+
+    /// What the Now view shows: as Hold froze it, or now.
+    fn now_data(&self, m: &IoModel) -> NowData {
+        if let Some(f) = &self.frozen {
+            return (**f).clone();
+        }
+        let (s, c) = self.now_pick(m);
+        now::data(m, s, c, self.clock(m))
+    }
+
+    /// Save log: asks the app to keep the list as shown in a new file in
+    /// the data folder's `files/midi-logs/`. The app's answer comes to the
+    /// hint line ([`MonitorSection::tick`]).
+    fn save(&mut self) {
+        let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        if !m.live.saves_logs {
+            self.note = Some("Save log: no data folder to keep it in this run".into());
+            return;
+        }
+        if self.saving {
+            self.note = Some("Save log: still saving the last one".into());
+            return;
+        }
+        let lines: Vec<(u64, Seen)> = m
+            .monitor
+            .newest()
+            .filter(|(_, s)| self.shows(s))
+            .map(|(n, s)| (n, *s))
+            .collect();
+        if lines.is_empty() {
+            self.note = Some("Save log: nothing listed to save".into());
+            return;
+        }
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let (stamp, when) = crate::log::stamp(secs);
+        let text = crate::log::saved(&m, &lines, &when, &self.filter_text(&m.monitor));
+        m.live.log_saved = None;
+        m.asks.save_log = Some(crate::LogToSave {
+            stamp,
+            text,
+            lines: lines.len(),
+        });
+        self.saving = true;
     }
 
     /// Whether a line is listed: the filter's, and the debug sources only
@@ -555,16 +666,55 @@ impl MonitorSection {
         });
         let mut chips = Vec::new();
         let mut x = r.x;
+        let right = r.x + r.w;
+        // List | Now (the I/O view's Monitor only).
+        if !self.debug {
+            chips.push((Hit::View(false), Rect::new(x, y, SEG_W, CHIP_H)));
+            chips.push((Hit::View(true), Rect::new(x + SEG_W, y, SEG_W, CHIP_H)));
+            x += 2 * SEG_W + 14;
+        }
+        if self.now_shows() {
+            // The ports and ways, then the channel and Hold on the right.
+            let hold = Rect::new(right - BUTTON_W, y, BUTTON_W, CHIP_H);
+            let up = Rect::new(hold.x - 14 - ARROW_W, y, ARROW_W, CHIP_H);
+            let label = Rect::new(up.x - CH_W, y, CH_W, CHIP_H);
+            let down = Rect::new(label.x - ARROW_W, y, ARROW_W, CHIP_H);
+            for (i, &(p, d)) in now::streams(&m.monitor).iter().enumerate() {
+                let w = chip_w(&port_text(&m.monitor, p, d));
+                if x + w > down.x - 14 {
+                    break;
+                }
+                chips.push((Hit::Stream(i), Rect::new(x, y, w, CHIP_H)));
+                x += w + CHIP_GAP;
+            }
+            chips.push((Hit::Channel(-1), down));
+            chips.push((Hit::Channel(1), up));
+            chips.push((Hit::Hold, hold));
+            y += CHIP_H + 12;
+            let cards = now::cards(Rect::new(r.x, y, r.w, (r.y + r.h - y).max(0)));
+            chips.push((Hit::NoteOffs, cards.note_offs));
+            let none = Rect::new(r.x, y, 0, 0);
+            return Layout {
+                banner,
+                chips,
+                grid_head: none,
+                ports: Vec::new(),
+                list_head: none,
+                list: none,
+                now: Some((cards, label)),
+            };
+        }
         for (i, &(_, w, _)) in self.chip_set().iter().enumerate() {
             chips.push((Hit::Chip(i), Rect::new(x, y, w, CHIP_H)));
             x += w + CHIP_GAP;
         }
-        // The ways, Hold and Clear follow on the same line when they fit
-        // (a full-width section), otherwise on a line of their own (beside
-        // the mixer's master strip).
+        // The ways and the buttons (Hold, Clear and, on the I/O view, Save
+        // log) follow on the same line when they fit, otherwise on a line
+        // of their own.
         let dirs_w: i32 = DIR_CHIPS.iter().map(|c| c.1 + CHIP_GAP).sum();
-        let buttons_w = 2 * BUTTON_W + CHIP_GAP;
-        if x + 14 + dirs_w + buttons_w > r.x + r.w {
+        let save_w = if self.debug { 0 } else { SAVE_W + CHIP_GAP };
+        let buttons_w = 2 * BUTTON_W + CHIP_GAP + save_w;
+        if x + 14 + dirs_w + buttons_w > right {
             y += CHIP_H + 8;
             x = r.x;
         } else {
@@ -574,11 +724,16 @@ impl MonitorSection {
             chips.push((Hit::Dir(d), Rect::new(x, y, w, CHIP_H)));
             x += w + CHIP_GAP;
         }
-        let right = r.x + r.w;
-        chips.push((Hit::Clear, Rect::new(right - BUTTON_W, y, BUTTON_W, CHIP_H)));
+        let mut bx = right;
+        if !self.debug {
+            bx -= SAVE_W;
+            chips.push((Hit::Save, Rect::new(bx, y, SAVE_W, CHIP_H)));
+            bx -= CHIP_GAP;
+        }
+        chips.push((Hit::Clear, Rect::new(bx - BUTTON_W, y, BUTTON_W, CHIP_H)));
         chips.push((
             Hit::Hold,
-            Rect::new(right - 2 * BUTTON_W - CHIP_GAP, y, BUTTON_W, CHIP_H),
+            Rect::new(bx - 2 * BUTTON_W - CHIP_GAP, y, BUTTON_W, CHIP_H),
         ));
         y += CHIP_H + 12;
         let grid_head = Rect::new(r.x, y, r.w, GRID_HEAD_H);
@@ -599,6 +754,7 @@ impl MonitorSection {
             ports,
             list_head,
             list,
+            now: None,
         }
     }
 
@@ -685,6 +841,60 @@ impl MonitorSection {
     }
 
     fn tap(&mut self, h: Hit) -> IoReply {
+        match h {
+            Hit::View(now) => {
+                if self.now_view == now {
+                    return IoReply::Handled;
+                }
+                self.now_view = now;
+                self.frozen = None;
+                return IoReply::Redraw;
+            }
+            Hit::Save => {
+                self.save();
+                return IoReply::Redraw;
+            }
+            Hit::Stream(i) => {
+                let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+                let s = now::streams(&m.monitor).get(i).copied();
+                drop(m);
+                if s.is_none() || self.pick == s {
+                    return IoReply::Handled;
+                }
+                self.pick = s;
+                self.pick_ch = None;
+                self.frozen = None;
+                return IoReply::Redraw;
+            }
+            Hit::Channel(d) => return self.step_channel(d),
+            Hit::NoteOffs => {
+                let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+                let d = {
+                    let (s, c) = self.now_pick(&m);
+                    now::data(&m, s, c, self.clock(&m))
+                };
+                if !now::can_end(&d) {
+                    self.note = Some(if d.out_on {
+                        "No notes are still on going out of MIDI out".into()
+                    } else {
+                        "MIDI out is off in this run: no notes to end".into()
+                    });
+                    return IoReply::Handled;
+                }
+                m.asks.note_offs = true;
+                self.frozen = None;
+                self.note = Some("Note-offs sent for the notes MPFree left on".into());
+                return IoReply::Redraw;
+            }
+            Hit::Hold if self.now_shows() => {
+                if self.frozen.take().is_none() {
+                    let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+                    self.frozen = Some(Box::new(self.now_data(&m)));
+                }
+                return IoReply::Redraw;
+            }
+            _ => {}
+        }
         let f = &mut self.filter;
         match h {
             Hit::Chip(i) => {
@@ -729,12 +939,32 @@ impl MonitorSection {
                 }
             }
             Hit::List => return IoReply::Handled,
+            Hit::View(_) | Hit::Save | Hit::Stream(_) | Hit::Channel(_) | Hit::NoteOffs => {
+                return IoReply::Handled
+            }
         }
+        IoReply::Redraw
+    }
+
+    /// The Now view's channel, `d` up or down (round from 16 to 1).
+    fn step_channel(&mut self, d: i32) -> IoReply {
+        let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        let (_, c) = self.now_pick(&m);
+        drop(m);
+        self.pick_ch = Some((i32::from(c) + d).rem_euclid(16) as u8);
+        self.frozen = None;
         IoReply::Redraw
     }
 
     /// A number that changes when anything the screen shows changes.
     fn live_now(&self, m: &IoModel, now: f64) -> u64 {
+        if self.now_shows() {
+            if self.frozen.is_some() {
+                return 1;
+            }
+            let (s, c) = self.now_pick(m);
+            return now::live(&now::data(m, s, c, now)) ^ m.monitor.total();
+        }
         let mon = &m.monitor;
         let mut h = mon.total() ^ (mon.len() as u64) << 32 ^ mon.lost << 48;
         for p in mon.shown_ports() {
@@ -1044,7 +1274,13 @@ impl IoSection for MonitorSection {
     }
 
     fn hint(&self) -> Option<&str> {
-        Some(if self.debug { DEBUG_HINT } else { HINT })
+        Some(if self.debug {
+            DEBUG_HINT
+        } else if self.now_shows() {
+            NOW_HINT
+        } else {
+            HINT
+        })
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -1067,6 +1303,37 @@ impl IoSection for MonitorSection {
                 }
                 Hit::Hold => Target::tap("monitor-hold", 0, "Hold", cr),
                 Hit::Clear => Target::tap("monitor-clear", 0, "Clear", cr),
+                // The other view (the one showing is no control).
+                Hit::View(now) if now != self.now_view => Target::tap(
+                    "monitor-view",
+                    usize::from(now),
+                    if now { "Now" } else { "List" },
+                    cr,
+                ),
+                Hit::Save => {
+                    Target::tap("monitor-save", 0, "Save log", cr).disabled_if(!m.live.saves_logs)
+                }
+                Hit::Stream(i) => {
+                    let label = now::streams(&m.monitor)
+                        .get(i)
+                        .map_or(String::new(), |&(p, d)| port_text(&m.monitor, p, d));
+                    Target::tap("monitor-stream", i, label, cr)
+                }
+                Hit::Channel(d) => Target::tap(
+                    "monitor-channel",
+                    usize::from(d > 0),
+                    if d > 0 {
+                        "Next channel"
+                    } else {
+                        "Channel before"
+                    },
+                    cr,
+                ),
+                Hit::NoteOffs => {
+                    let d = self.now_data(&m);
+                    Target::tap("monitor-note-offs", 0, "Send note-offs to MIDI out", cr)
+                        .disabled_if(!now::can_end(&d))
+                }
                 _ => continue,
             };
             out.push(t);
@@ -1123,6 +1390,64 @@ impl IoSection for MonitorSection {
                     let name = DIR_CHIPS.iter().find(|c| c.2 == d).map_or("", |c| c.0);
                     Self::chip(cx, cr, name, self.filter.shows_dir(d));
                 }
+                Hit::View(now) => {
+                    if !now {
+                        let seg = Rect::new(cr.x, cr.y, 2 * SEG_W, CHIP_H);
+                        cx.canvas.fill_round_rect(seg, 10, t.surface);
+                    }
+                    let on = now == self.now_view;
+                    if on {
+                        cx.canvas.fill_round_rect(cr.inset(3), 8, t.accent);
+                    }
+                    cx.text(
+                        FontId::Bold,
+                        t.size_small,
+                        cr,
+                        Align::Center,
+                        if on { t.on_accent } else { t.text_dim },
+                        if now { "Now" } else { "List" },
+                    );
+                }
+                Hit::Save => {
+                    let on = m.live.saves_logs;
+                    cx.canvas
+                        .fill_round_rect(cr, 10, if on { t.raised } else { t.surface });
+                    cx.text(
+                        FontId::Bold,
+                        t.size_small,
+                        cr,
+                        Align::Center,
+                        if on { t.text } else { t.text_faint },
+                        "Save log",
+                    );
+                }
+                Hit::Stream(i) => {
+                    if let Some(&(p, d)) = now::streams(&m.monitor).get(i) {
+                        let picked = self.now_pick(&m).0 == (p, d);
+                        Self::chip(cx, cr, &port_text(&m.monitor, p, d), picked);
+                    }
+                }
+                Hit::Channel(d) => {
+                    cx.canvas.fill_round_rect(cr, 10, t.raised);
+                    cx.text(
+                        FontId::Bold,
+                        t.size_body,
+                        cr,
+                        Align::Center,
+                        t.text,
+                        if d > 0 { "›" } else { "‹" },
+                    );
+                }
+                Hit::Hold if self.now_shows() => {
+                    let on = self.frozen.is_some();
+                    let (fill, ink) = if on {
+                        (t.warn, t.bg)
+                    } else {
+                        (t.raised, t.text)
+                    };
+                    cx.canvas.fill_round_rect(cr, 10, fill);
+                    cx.text(FontId::Bold, t.size_small, cr, Align::Center, ink, "Hold");
+                }
                 Hit::Hold => {
                     let on = self.anchor.is_some();
                     let (fill, ink) = if on {
@@ -1146,6 +1471,19 @@ impl IoSection for MonitorSection {
                 }
                 _ => {}
             }
+        }
+        if let Some((cards, label)) = l.now {
+            let d = self.now_data(&m);
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                label,
+                Align::Center,
+                t.text,
+                &format!("Ch {}", d.channel + 1),
+            );
+            now::paint(cx, &d, &cards);
+            return;
         }
         let now = self.clock(&m);
         self.paint_lights(cx, &m, &l, now);
@@ -1177,6 +1515,13 @@ impl IoSection for MonitorSection {
     }
 
     fn input(&mut self, ev: IoInput) -> IoReply {
+        if self.now_shows() {
+            // The wheel and - / + pick the channel.
+            return match ev {
+                IoInput::Wheel(d) | IoInput::Step(d) if d != 0 => self.step_channel(d.signum()),
+                _ => IoReply::Ignored,
+            };
+        }
         match ev {
             IoInput::Wheel(d) => self.scroll(d),
             IoInput::Page(d) => self.scroll(d * self.fit.get() as i32),
@@ -1187,7 +1532,14 @@ impl IoSection for MonitorSection {
     fn tick(&mut self, now: Duration) -> IoReply {
         self.now = now;
         let live = {
-            let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+            let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+            // The app's answer to this section's Save log.
+            if self.saving {
+                if let Some(said) = m.live.log_saved.take() {
+                    self.note = Some(said);
+                    self.saving = false;
+                }
+            }
             self.live_now(&m, self.clock(&m))
         };
         if live != self.live {
@@ -1202,6 +1554,10 @@ impl IoSection for MonitorSection {
         if !on {
             self.down = None;
         }
+    }
+
+    fn take_note(&mut self) -> Option<String> {
+        self.note.take()
     }
 }
 
@@ -1372,6 +1728,49 @@ mod tests {
         let row = l.ports.iter().find(|p| p.0 == DIN).unwrap().1;
         tap(&mut s, row.x + 20, row.y + row.h - 6);
         assert_eq!(shown(&s), ["MIDI out | CC 74 Cutoff · 64"]);
+    }
+
+    /// Save log asks the app for the list as shown; the app's answer comes
+    /// to the hint line once. Without a data folder it is greyed and says
+    /// why.
+    #[test]
+    fn save_log_asks_the_app_and_says_its_answer() {
+        let mut s = MonitorSection::new(model());
+        let (x, y) = chip(&s, Hit::Save);
+        tap(&mut s, x, y);
+        assert!(s.model.lock().unwrap().asks.save_log.is_none());
+        assert!(s.take_note().unwrap().contains("no data folder"));
+        s.model.lock().unwrap().live.saves_logs = true;
+        // Only what the list shows: the keyboard's notes.
+        let (lx, ly) = light(&s, KEYS, Dir::In, 0);
+        tap(&mut s, lx, ly);
+        tap(&mut s, x, y);
+        let ask = s.model.lock().unwrap().asks.save_log.clone().unwrap();
+        assert_eq!(ask.lines, 4);
+        assert!(
+            ask.text.starts_with("MPFree MIDI log, saved "),
+            "{}",
+            ask.text
+        );
+        assert!(ask.text.contains("Showing: Keystep 37 in"), "{}", ask.text);
+        assert_eq!(ask.stamp.len(), "2026-11-16-1958".len());
+        // A second tap before the answer saves nothing more.
+        tap(&mut s, x, y);
+        assert!(s.take_note().unwrap().contains("still saving"));
+        // The app answers; the next tick says it, once.
+        {
+            let mut m = s.model.lock().unwrap();
+            m.asks.save_log = None;
+            m.live.log_saved = Some("Saved 4 lines to files/midi-logs/x.txt".into());
+        }
+        s.tick(Duration::from_secs(3));
+        assert_eq!(
+            s.take_note().as_deref(),
+            Some("Saved 4 lines to files/midi-logs/x.txt")
+        );
+        s.tick(Duration::from_secs(4));
+        assert_eq!(s.take_note(), None);
+        assert!(s.model.lock().unwrap().live.log_saved.is_none());
     }
 
     #[test]

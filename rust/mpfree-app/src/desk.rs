@@ -179,6 +179,8 @@ impl Desk<'_> {
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
             gui::FromUi::PadLevelOff => fx.extend(app.pad_level_off()),
+            gui::FromUi::StepsOff => fx.extend(app.steps_off()),
+            gui::FromUi::StepPage(page) => fx.extend(app.set_step_page(page)),
             gui::FromUi::Levels { on, open } => fx.extend(app.levels_shown(on, open)),
             gui::FromUi::Time(a) => {
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a))
@@ -326,6 +328,18 @@ impl Desk<'_> {
             }
             app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
             app::Effect::LevelsWheel(d) => out.show(gui::ToUi::LevelsWheel(d)),
+            // ERASE + PAD BANK with STEP SEQ on: said in place of the hint.
+            app::Effect::Steps(a) => {
+                let line = match time.step_action(a) {
+                    Ok(line) if line.is_empty() => {
+                        "STEP SEQ: no steps on that page to clear".to_string()
+                    }
+                    Ok(line) => format!("{line} (UNDO brings them back)"),
+                    Err(e) => format!("steps: {e}"),
+                };
+                out.note(&line);
+                out.show(gui::ToUi::Tell(line));
+            }
             app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
             app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
             app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),

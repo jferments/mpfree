@@ -170,6 +170,20 @@ pub static MAIN_PAGES: &[MainPage] = &[
         ["Amount", "Saturation", "High cut", "Mix"],
     ),
     main(
+        "mpfree.fx.delay",
+        &[
+            "Time",
+            "Feedback",
+            "Tone",
+            "Mix",
+            "Sync",
+            "Ping-pong",
+            "Saturation",
+            "Freeze",
+        ],
+        ["Time", "Feedback", "Tone", "Mix"],
+    ),
+    main(
         "mpfree.fx.tape_delay",
         &[
             "Time",

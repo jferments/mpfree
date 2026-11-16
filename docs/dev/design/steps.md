@@ -2,7 +2,7 @@
 
 **Status:** roadmap step T7, the model only, 2026-11-11. The code is [`rust/mpfree-seq/src/steps.rs`](../../../rust/mpfree-seq/src/steps.rs) (the grid), chance in [`rust/mpfree-play`](../../../rust/mpfree-play)'s player, and step edits as takes in `Takes::edit`. It is tested on the host. Its screens are the Play page's step grid (the app thread's, in `rust/mpfree-app/src/play_page.rs`) and the note editor's tracker lens and Euclidean fill ([note-editor.md](note-editor.md)). Nothing here has run on the MPC yet.
 
-This builds on [playback](playback.md): clips, the player and take undo.
+This builds on [playback](playback.md): clips, the player and take undo. STEP SEQ puts one sound's steps on the pads: [STEP SEQ: the pads as steps](step-pads.md).
 
 ## Steps are a view of a clip
 

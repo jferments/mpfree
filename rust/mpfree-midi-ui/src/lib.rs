@@ -45,8 +45,10 @@ pub use mpfree_midi::setup::MidiSetup;
 mod cv;
 mod form;
 mod learn;
+pub mod log;
 mod midi;
 mod monitor;
+mod now;
 mod sync;
 
 pub mod sample;
@@ -99,6 +101,16 @@ pub struct Live {
     /// its address.
     pub learn_names: Vec<String>,
     pub built: Built,
+    /// The developer tools are on (Prefs › Show developer tools): the app
+    /// lists the MPC's own controller and its events, and writes the
+    /// monitor's lines to its log in RAM for the workstation console.
+    pub debug: bool,
+    /// The Monitor's Save log can write: the store saves to a data folder
+    /// (its `files/midi-logs/`).
+    pub saves_logs: bool,
+    /// The app's word on the last Save log ("Saved 42 lines to ..."), for
+    /// the Monitor that asked to say once.
+    pub log_saved: Option<String>,
 }
 
 impl Default for Live {
@@ -116,6 +128,9 @@ impl Default for Live {
             cv_volts: [0.0; CV_OUTS],
             learn_names: Vec::new(),
             built: Built::default(),
+            debug: false,
+            saves_logs: false,
+            log_saved: None,
         }
     }
 }
@@ -143,6 +158,32 @@ pub struct IoModel {
     /// copies its port table in when ports come and go
     /// ([`Monitor::set_ports`]). Not part of the setup: `gen` doesn't move.
     pub monitor: Monitor,
+    /// What the sections asked the app to do, taken by the app at its next
+    /// look at the model.
+    pub asks: Asks,
+}
+
+/// What a section asks the app for (each is taken once).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Asks {
+    /// The Monitor's "Send note-offs to MIDI out": end every note MPFree
+    /// left on there (only those it sent; never a blind All notes off).
+    pub note_offs: bool,
+    /// The Monitor's Save log: a log for the store to keep as a new file
+    /// in `files/midi-logs/` ([`log::file_name`]). The app answers in
+    /// [`Live::log_saved`].
+    pub save_log: Option<LogToSave>,
+}
+
+/// A log the Monitor asks to be saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogToSave {
+    /// When it was saved, as its file is named ("2026-11-16-1958").
+    pub stamp: String,
+    /// The file's text ([`log::saved`]).
+    pub text: String,
+    /// How many lines it lists.
+    pub lines: usize,
 }
 
 /// The project's `midi` part (`parts/midi.txt`): the song's share of the
