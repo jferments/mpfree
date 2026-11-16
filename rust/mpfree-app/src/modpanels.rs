@@ -1471,7 +1471,7 @@ mod tests {
         assert_eq!(m.state(&r.h).macros[1].targets.len(), 0);
         let st = c.state(&r.h);
         assert_eq!(st.slots.len(), 1);
-        assert_eq!(st.selected, Some(0));
+        assert_eq!(st.selected, None, "the removed effect's page shut");
         m.action(&mut r.h, &MacroAction::Macro { m: 1, value: 1.0 }, false);
         r.run(4);
         assert_eq!(r.h.modu.unrouted(), 0);
