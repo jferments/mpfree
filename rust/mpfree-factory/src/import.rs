@@ -132,16 +132,9 @@ impl<F: ReadAt> Content<F> {
         self.fs.copy_file(&self.fs.inode(ino)?, w)
     }
 
-    /// Drum kits from the factory programs, as a kits file, or None when
-    /// there is nothing to make kits from. `say` gets the report's lines,
-    /// `step(done, total)` the progress over the kits.
-    pub fn kits(
-        &self,
-        count: usize,
-        say: &mut dyn FnMut(String),
-        step: &mut dyn FnMut(usize, usize),
-    ) -> io::Result<Option<Vec<u8>>> {
-        let count = count.clamp(1, kitfile::MAX_KITS);
+    /// Every file's size by path, and every path by lower-case file name
+    /// (what [`xpm::resolve`] looks samples up in).
+    fn index(&self) -> (BTreeMap<String, u64>, BTreeMap<String, Vec<String>>) {
         let sizes: BTreeMap<String, u64> = self
             .files
             .iter()
@@ -154,6 +147,69 @@ impl<F: ReadAt> Content<F> {
                 .or_default()
                 .push(p.clone());
         }
+        (sizes, by_name)
+    }
+
+    /// Every program (.xpm) for which `keep(path)` says yes, by path, with
+    /// the sample files its layers play that are found in the partition
+    /// and that the pad player plays. A program that can't be read is left
+    /// out.
+    pub fn programs(&self, keep: &dyn Fn(&str) -> bool) -> Vec<ProgramFiles> {
+        let (sizes, by_name) = self.index();
+        let mut out = Vec::new();
+        for (path, size) in &sizes {
+            if !path.to_ascii_lowercase().ends_with(".xpm")
+                || *size == 0
+                || *size > MAX_XPM
+                || !keep(path)
+            {
+                continue;
+            }
+            let Ok(data) = self.read(path, MAX_XPM) else {
+                continue;
+            };
+            let Some(prog) = xpm::samples(&String::from_utf8_lossy(&data)) else {
+                continue;
+            };
+            let dir = match path.rfind('/') {
+                Some(0) => "/",
+                Some(i) => &path[..i],
+                None => "",
+            };
+            let mut samples: Vec<String> = Vec::new();
+            for r in &prog.samples {
+                if let Some(f) = xpm::resolve(r, dir, &sizes, &by_name) {
+                    if is_sample(&f) && !samples.contains(&f) {
+                        samples.push(f);
+                    }
+                }
+            }
+            let name = if prog.name.is_empty() {
+                program_stem(path).to_string()
+            } else {
+                prog.name
+            };
+            out.push(ProgramFiles {
+                path: path.clone(),
+                kind: prog.kind,
+                name,
+                samples,
+            });
+        }
+        out
+    }
+
+    /// Drum kits from the factory programs, as a kits file, or None when
+    /// there is nothing to make kits from. `say` gets the report's lines,
+    /// `step(done, total)` the progress over the kits.
+    pub fn kits(
+        &self,
+        count: usize,
+        say: &mut dyn FnMut(String),
+        step: &mut dyn FnMut(usize, usize),
+    ) -> io::Result<Option<Vec<u8>>> {
+        let count = count.clamp(1, kitfile::MAX_KITS);
+        let (sizes, by_name) = self.index();
         let xpms: Vec<&String> = sizes
             .iter()
             .filter(|(p, s)| p.to_ascii_lowercase().ends_with(".xpm") && **s > 0 && **s <= MAX_XPM)
@@ -338,6 +394,30 @@ impl<F: ReadAt> Content<F> {
     }
 }
 
+/// A program and the sample files it plays ([`Content::programs`]).
+pub struct ProgramFiles {
+    /// The .xpm file's path in the partition.
+    pub path: String,
+    pub kind: xpm::Kind,
+    /// The program's own name, or its file's name without `.xpm` (and
+    /// without `.Drum` or `.Keygroup`, as Akai names them).
+    pub name: String,
+    /// The sample files' paths, each once, in the program's order.
+    pub samples: Vec<String>,
+}
+
+/// `Kit` for `/a/Kit.Drum.xpm`.
+fn program_stem(path: &str) -> &str {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let base = base.rsplit_once('.').map_or(base, |(b, _)| b);
+    for kind in [".drum", ".keygroup"] {
+        if base.to_ascii_lowercase().ends_with(kind) && base.len() > kind.len() {
+            return &base[..base.len() - kind.len()];
+        }
+    }
+    base
+}
+
 #[derive(Clone)]
 struct Candidate {
     path: String,
@@ -405,7 +485,9 @@ pub mod testdisk {
     }
 
     /// The disk's bytes. Kits "Alpha Kit" (16 pads), "Alpha-Kit 2" (same
-    /// family, left out), "Beta Kit" (12 pads) and "Gamma" (4 pads, too few).
+    /// family, left out), "Beta Kit" (12 pads) and "Gamma" (4 pads, too few);
+    /// a loop; a keygroup program "Soft Keys" (2 samples); a demo project's
+    /// stem; and in MPC Documents, "Mine Kit" (1 pad).
     pub fn disk() -> Vec<u8> {
         let t = 1_763_200_000;
         let m = |perm| Meta::new(perm, 0, 0, t);
@@ -438,6 +520,33 @@ pub mod testdisk {
             wav_bytes(44_100, 2, 24, &[1000; 800]),
         ));
         files.push(("/Loops/readme.txt".into(), b"not a sample".to_vec()));
+        // A keygroup program and its two samples.
+        files.push((
+            "/Instruments/Keys/Soft Keys.Keygroup.xpm".into(),
+            program("Soft Keys", &["Keys C3", "Keys C4"])
+                .replace("type=\"Drum\"", "type=\"Keygroup\"")
+                .into_bytes(),
+        ));
+        for (i, s) in ["Keys C3", "Keys C4"].iter().enumerate() {
+            files.push((
+                format!("/Instruments/Keys/{s}.wav"),
+                wav_bytes(44_100, 1, 16, &[100 * (i as i32 + 1); 500]),
+            ));
+        }
+        // A demo project's own sound, in no program.
+        files.push((
+            "/Expansions/Demos/Demo One_[ProjectData]/Stem.wav".into(),
+            wav_bytes(44_100, 1, 16, &[7; 300]),
+        ));
+        // The musician's documents: a drum program of one pad and its sound.
+        files.push((
+            "/MPC Documents/Mine Kit.xpm".into(),
+            program("Mine Kit", &["Mine"]).into_bytes(),
+        ));
+        files.push((
+            "/MPC Documents/Mine.wav".into(),
+            wav_bytes(44_100, 1, 16, &[9; 300]),
+        ));
         for (path, data) in files {
             let (dir, name) = path.rsplit_once('/').unwrap();
             let d = tree.mkdir_all(dir, m(0o755)).unwrap();
@@ -517,13 +626,42 @@ mod tests {
         assert_eq!(kits[0].1[0].audio.len() / 2, 1837);
         assert_eq!(steps.last(), Some(&(2, 2)));
         let samples = c.samples();
-        assert_eq!(samples.len(), 16 + 16 + 12 + 4 + 1 - 16); // Alpha-Kit 2 shares Alpha's WAVs
+        // Alpha-Kit 2 shares Alpha's WAVs; then the keys, the stem and Mine.
+        assert_eq!(samples.len(), 16 + 16 + 12 + 4 + 1 - 16 + 2 + 1 + 1);
         assert!(samples.iter().any(|(p, _)| p == "/Loops/Groove 90.wav"));
         assert!(!samples.iter().any(|(p, _)| p.ends_with(".txt")));
         let mut out = Vec::new();
         let n = c.copy("/Loops/Groove 90.wav", &mut out).unwrap();
         assert_eq!(n as usize, out.len());
         assert_eq!(&out[..4], b"RIFF");
+    }
+
+    #[test]
+    fn every_program_with_its_samples() {
+        let c = Content::from_disk(testdisk::disk()).unwrap();
+        let all = c.programs(&|_| true);
+        let names: Vec<(&str, xpm::Kind, usize)> = all
+            .iter()
+            .map(|p| (p.name.as_str(), p.kind, p.samples.len()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Alpha Kit", xpm::Kind::Drum, 16),
+                ("Alpha-Kit 2", xpm::Kind::Drum, 16),
+                ("Beta Kit", xpm::Kind::Drum, 12),
+                ("Gamma", xpm::Kind::Drum, 4),
+                ("Soft Keys", xpm::Kind::Keygroup, 2),
+                ("Mine Kit", xpm::Kind::Drum, 1),
+            ]
+        );
+        assert_eq!(all[0].samples[0], "/Drums/Alpha/Hit 01.wav");
+        assert_eq!(all[0].samples, all[1].samples, "the same sounds");
+        let kept = c.programs(&|p| !p.starts_with("/MPC Documents/"));
+        assert_eq!(kept.len(), 5);
+        assert_eq!(program_stem("/a/Trap Kit.Drum.xpm"), "Trap Kit");
+        assert_eq!(program_stem("/a/Keys.Keygroup.XPM"), "Keys");
+        assert_eq!(program_stem("/a/Plain.xpm"), "Plain");
     }
 
     #[test]

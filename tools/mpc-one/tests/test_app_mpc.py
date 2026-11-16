@@ -61,6 +61,11 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/lib.rs", "let _ = fs::remove_dir_all(&tmp);"),                     # copy: a cut-off temp folder
     ("mpfree-library/lib.rs", "let r = copy_file(&src, &part).and_then(|_| fs::rename(&part, &dst));"),  # copy a file
     ("mpfree-library/lib.rs", "fs::rename(&src, dst_dir.join(&name))?;"),               # move_to
+    # The first-start setup's kit folders (setup.rs, Samples/Akai factory only): move_file_unsynced moves a file
+    # (not a folder or link) the setup put there before into a kit folder; link_file_unsynced gives a sound a
+    # second name in another kit folder (a hard link). Both refuse a name that is taken and the Trash.
+    ("mpfree-library/lib.rs", "fs::rename(&src, &dst)?;"),                              # move_file_unsynced
+    ("mpfree-library/lib.rs", "fs::hard_link(&src, &dst)?;"),                           # link_file_unsynced
     ("mpfree-library/lib.rs", "fs::rename(&src, slot.join(loc.name()))?;"),             # delete: into a Trash slot
     ("mpfree-library/lib.rs", "let _ = fs::remove_dir_all(&slot);"),                    # delete: a slot left half made
     ("mpfree-library/lib.rs", "fs::rename(slot.join(&item.name), dst_dir.join(&name))?;"),  # restore from the Trash
@@ -78,7 +83,13 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)?;"),                          # project samples copied in
     ("mpfree-library/project.rs", "fs::remove_file(&tmp)?;"),
     ("mpfree-library/project.rs", "let _ = fs::remove_file(&tmp);"),
-    ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)"),                            # a part file written
+    # project save, the sounds (write_samples, place_samples): each new sound written to
+    # samples/.incoming-<pid>-<n>.part, all made durable with one flush, then renamed to its name; on a failure
+    # the hidden files are removed, and the next save removes any a power cut left (files, never links).
+    ("mpfree-library/project.rs", "let _ = fs::remove_file(tmp);"),
+    ("mpfree-library/project.rs", "if let Err(e) = fs::rename(tmp, dst) {"),
+    ("mpfree-library/project.rs", "let _ = fs::remove_file(t);"),
+    ("mpfree-library/project.rs", "let _ = fs::remove_file(e.path());"),
 )
 # The Plugins place (BROWSE, Jay 15 Nov 23:34Z and 23:36Z): the app's plugin worker (plugin_store.rs) and
 # mpfree-mpcstore write only in files/plugins/ under the --data folder (the plugin home, plugins.rs), and
@@ -1217,7 +1228,8 @@ class StaticTests(unittest.TestCase):
                     continue
                 for needle in ("mmcblk", "/dev/sd", "/boot", "mount(", "reboot", "fw_setenv", "/dev/mtd",
                                "/sbin/kexec", "/sys/class/block", "EVIOCGRAB", "remove_file", "remove_dir",
-                               "fs::write", "File::create", "fs::rename", "fs::copy", "set_permissions"):
+                               "fs::write", "File::create", "fs::rename", "fs::copy", "set_permissions",
+                               "hard_link", "fs::symlink("):
                     self.assertNotIn(needle, line, f"{name}: {line.strip()}")
         with open(os.path.join(HERE, "..", "offline-kexec-stick.py")) as fh:
             stick = fh.read()

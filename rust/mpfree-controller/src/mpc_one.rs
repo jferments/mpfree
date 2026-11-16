@@ -61,6 +61,16 @@ pub mod button {
     pub const OVERDUB: u8 = 80;
     pub const PLAY_START: u8 = 83;
     pub const UNDO: u8 = 67;
+    /// BROWSE and MAIN, each pressed on its own on the creator's fourth
+    /// stick (2026-11-16): 50 on the Play page, where the owner pressed
+    /// BROWSE, and 52 twice in Prefs, where he tried to leave it with MAIN
+    /// before SHIFT + MENU. Round 5's Map controls pass confirms them with
+    /// the rest of the panel.
+    pub const BROWSE: u8 = 50;
+    pub const MAIN: u8 = 52;
+    /// The data dial's push: found with Map controls in the live test of
+    /// 2026-11-12 (`app/mapper.rs`).
+    pub const DATA_PUSH: u8 = 111;
 }
 
 const PAD_CHANNEL: u8 = 9; // MIDI channel 10, zero-based
