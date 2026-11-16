@@ -701,6 +701,12 @@ impl BrowserView {
         Geo::new(r, &Screen::empty()).visible()
     }
 
+    /// The rows that fit in the Plugins place's list in a browser drawn
+    /// in `r`.
+    pub fn plugin_rows_in(r: Rect) -> usize {
+        crate::plugins::rows_in(Geo::new(r, &Screen::empty()).list)
+    }
+
     fn hit(&self, r: Rect, x: i32, y: i32) -> Option<Input> {
         let s = &self.screen;
         if let Some(p) = &s.export {
@@ -730,6 +736,9 @@ impl BrowserView {
         let g = Geo::new(r, s);
         if let Some(k) = g.place_rows.iter().position(|pr| pr.contains(x, y)) {
             return Some(Input::Source(s.sources[k]));
+        }
+        if let Some(p) = &s.plugins {
+            return crate::plugins::hit(g.list, g.detail, p, x, y).map(Input::Plugins);
         }
         if s.can_go_back && g.back.contains(x, y) {
             return Some(Input::Back);
@@ -786,228 +795,12 @@ impl Widget for BrowserView {
                 src.label(),
             );
         }
-        // List.
-        cx.panel(g.list);
-        if s.can_go_back {
-            let b = g.back.inset_xy(0, 6);
-            cx.canvas.fill_round_rect(b, 10, t.raised);
-            cx.text(
-                FontId::Bold,
-                t.size_title,
-                b,
-                Align::Center,
-                t.text,
-                "\u{2039}",
-            );
+        if let Some(p) = &s.plugins {
+            crate::plugins::paint(cx, g.list, g.detail, p);
+        } else {
+            paint_files(cx, &g, s);
         }
-        cx.text(
-            FontId::Bold,
-            t.size_title,
-            g.path,
-            Align::Left,
-            t.text,
-            &s.path,
-        );
-        for (b, br) in &g.list_buttons {
-            button(cx, *br, b.label(), false, matches!(b, Button::EmptyTrash));
-        }
-        cx.canvas.fill_rect(
-            Rect::new(g.head.x, g.head.bottom() - 1, g.head.w, 1),
-            t.outline,
-        );
-        let vis = g.visible();
-        if s.rows.is_empty() {
-            let msg = if s.busy {
-                "Reading…"
-            } else {
-                "Nothing here yet"
-            };
-            cx.text(
-                FontId::Sans,
-                t.size_body,
-                g.rows,
-                Align::Center,
-                t.text_faint,
-                msg,
-            );
-        }
-        for (k, row) in s.rows.iter().enumerate().skip(s.top).take(vis) {
-            let rr = g.row_rect(k - s.top);
-            paint_row(cx, rr, row, s.selected == Some(k));
-        }
-        if s.rows.len() > vis {
-            // A thin scroll bar.
-            let track = Rect::new(g.rows.right() - 4, g.rows.y, 4, vis as i32 * ROW_H);
-            cx.canvas.fill_round_rect(track, 2, t.outline);
-            let h = (track.h * vis as i32 / s.rows.len() as i32).max(24);
-            let y = track.y + (track.h - h) * s.top as i32 / (s.rows.len() - vis) as i32;
-            cx.canvas
-                .fill_round_rect(Rect::new(track.x, y, 4, h), 2, t.text_dim);
-        }
-        for (f, fr) in &g.filters {
-            chip(cx, *fr, f.label(), *f == s.filter);
-        }
-        chip(cx, g.search, "Search", s.path.starts_with("Search: "));
-        chip(cx, g.sort, s.sort.label(), s.sort == Sort::Newest);
-        let clip = s.clipboard.as_deref().unwrap_or("");
-        if !clip.is_empty() {
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                g.status.inset_xy(4, 0),
-                Align::Right,
-                t.text_dim,
-                clip,
-            );
-        }
-        if let Some((msg, bad)) = &s.status {
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                g.status.inset_xy(4, 0),
-                Align::Left,
-                if *bad { t.bad } else { t.text_dim },
-                msg,
-            );
-        }
-        // Detail.
-        let head = if s.busy { "working…" } else { "" };
-        draw::card(cx, g.detail, "Selected", head);
-        let d = &s.detail;
-        let mut body = g.detail_body;
-        let (title, rest) = body.take_top(38);
-        cx.text(
-            FontId::Bold,
-            t.size_title,
-            title,
-            Align::Left,
-            t.text,
-            &d.title,
-        );
-        let (kind, rest) = rest.take_top(28);
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            kind,
-            Align::Left,
-            t.text_dim,
-            &d.kind,
-        );
-        body = rest;
-        if let Some(o) = &d.overview {
-            let (wave, rest) = body.take_top(130);
-            paint_overview(cx, wave.inset_xy(0, 8), o, t.accent);
-            body = rest;
-        }
-        for (label, value) in &d.lines {
-            if body.h < 30 {
-                break;
-            }
-            let (line, rest) = body.take_top(32);
-            let (l, v) = line.take_left(110);
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                l,
-                Align::Left,
-                t.text_dim,
-                label,
-            );
-            cx.text(FontId::Sans, t.size_body, v, Align::Left, t.text, value);
-            body = rest;
-        }
-        for (b, br) in &g.detail_buttons {
-            let lit = match b {
-                Button::Audition => s.audition,
-                Button::Favourite => s
-                    .selected
-                    .and_then(|i| s.rows.get(i))
-                    .is_some_and(|r| r.favourite),
-                _ => false,
-            };
-            let label = match b {
-                Button::Audition => {
-                    if s.audition {
-                        "Audition on"
-                    } else {
-                        "Audition off"
-                    }
-                }
-                _ => b.label(),
-            };
-            button(cx, *br, label, lit, *b == Button::Delete);
-        }
-        // Over everything: the keyboard or a question.
-        match &s.modal {
-            Modal::None => {}
-            Modal::Keyboard {
-                title, text, shift, ..
-            } => {
-                cx.canvas.fill_rect(r, t.bg.with_alpha(200));
-                let k = keyboard_geo(r);
-                cx.canvas.fill_round_rect(k.card, t.radius, t.surface);
-                cx.canvas.stroke_round_rect(k.card, t.radius, 1, t.outline);
-                cx.text(
-                    FontId::Bold,
-                    t.size_body,
-                    k.title,
-                    Align::Left,
-                    t.text_dim,
-                    title,
-                );
-                cx.canvas.fill_round_rect(k.field, 10, t.raised);
-                let tw = cx.text(
-                    FontId::Sans,
-                    t.size_title,
-                    k.field.inset_xy(18, 0),
-                    Align::Left,
-                    t.text,
-                    text,
-                );
-                let cx0 = k.field.x + 18 + tw + 2;
-                cx.canvas.fill_rect(
-                    Rect::new(
-                        cx0.min(k.field.right() - 12),
-                        k.field.y + 16,
-                        2,
-                        k.field.h - 32,
-                    ),
-                    t.accent,
-                );
-                for (key, kr) in &k.keys {
-                    let lit = *key == Key::Shift && *shift || *key == Key::Done;
-                    button(cx, *kr, &key_label(*key, *shift), lit, false);
-                }
-            }
-            Modal::Confirm { text, what } => {
-                cx.canvas.fill_rect(r, t.bg.with_alpha(200));
-                let a = confirm_geo(r);
-                cx.canvas.fill_round_rect(a.card, t.radius, t.surface);
-                cx.canvas.stroke_round_rect(a.card, t.radius, 1, t.outline);
-                cx.text(
-                    FontId::Bold,
-                    t.size_title,
-                    a.text,
-                    Align::Center,
-                    t.text,
-                    text,
-                );
-                button(cx, a.no, "Cancel", false, false);
-                let yes = match what {
-                    crate::state::Confirm::Delete(_) => "Move to Trash",
-                    crate::state::Confirm::EmptyTrash => "Delete for good",
-                    crate::state::Confirm::Open(_) | crate::state::Confirm::OpenVersion(..) => {
-                        "Open"
-                    }
-                    crate::state::Confirm::NewProject => "New project",
-                };
-                button(cx, a.yes, yes, false, true);
-            }
-        }
-        // The Export panel, over everything.
-        if let Some(p) = &s.export {
-            paint_export(cx, r, p);
-        }
+        paint_over(cx, r, s);
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -1043,6 +836,10 @@ impl Widget for BrowserView {
             let label = s.sources.get(k).map_or("", |&i| SOURCES[i].label());
             out.push(Target::tap("place", k, label, *pr));
         }
+        if let Some(p) = &s.plugins {
+            out.extend(crate::plugins::targets(g.list, g.detail, p));
+            return out;
+        }
         if s.can_go_back {
             out.push(Target::tap("back", 0, "‹ Back", g.back));
         }
@@ -1070,9 +867,13 @@ impl Widget for BrowserView {
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let g = Geo::new(r, &self.screen);
         self.visible = g.visible();
+        let rows = match &self.screen.plugins {
+            Some(p) => crate::plugins::rows_rect(g.list, g.detail, p),
+            None => g.rows,
+        };
         let on_list = matches!(self.screen.modal, Modal::None)
             && self.screen.export.is_none()
-            && g.rows.contains(x, y);
+            && rows.contains(x, y);
         match phase {
             Touch::Down => {
                 self.drag = Some((finger, y, 0, false));
@@ -1093,7 +894,11 @@ impl Widget for BrowserView {
                 let want = dy / ROW_H;
                 self.drag = Some((f, y0, want, true));
                 if want != done {
-                    self.inputs.push(Input::Scroll(want - done));
+                    self.inputs.push(if self.screen.plugins.is_some() {
+                        Input::Plugins(crate::plugins::PluginInput::Scroll(want - done))
+                    } else {
+                        Input::Scroll(want - done)
+                    });
                     return Some(EventKind::Value(0.0));
                 }
                 None
@@ -1306,13 +1111,22 @@ fn source_icon(cx: &mut PaintCx, r: Rect, s: Source, c: Color) {
             cx.canvas.fill_rect(Rect::new(x - 1, y - 1, 6, 2), c);
         }
         Source::Favourites => star_shape(cx, r.x + r.w / 2, r.y + r.h / 2, 11, c),
+        Source::Plugins => {
+            // A plug: two prongs, the body, the cable.
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            cx.canvas.fill_rect(Rect::new(x - 5, y - 12, 3, 6), c);
+            cx.canvas.fill_rect(Rect::new(x + 2, y - 12, 3, 6), c);
+            cx.canvas
+                .fill_round_rect(Rect::new(x - 9, y - 6, 18, 12), 3, c);
+            cx.canvas.fill_rect(Rect::new(x - 1, y + 6, 3, 7), c);
+        }
     }
 }
 
 /// A five-pointed star of outer radius `rad` centred on (x, y), drawn
 /// through a coverage mask (4 x 4 samples a pixel), so no font needs the
 /// star character.
-fn star_shape(cx: &mut PaintCx, x: i32, y: i32, rad: i32, c: Color) {
+pub(crate) fn star_shape(cx: &mut PaintCx, x: i32, y: i32, rad: i32, c: Color) {
     let n = (2 * rad + 1) as usize;
     let pts: Vec<(f32, f32)> = (0..10)
         .map(|i| {
@@ -1355,4 +1169,234 @@ fn star_shape(cx: &mut PaintCx, x: i32, y: i32, rad: i32, c: Color) {
         }
     }
     cx.canvas.blend_mask(x - rad, y - rad, n, n, &mask, c);
+}
+
+/// The files places' list and selected item.
+fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
+    let t = cx.theme.clone();
+    // List.
+    cx.panel(g.list);
+    if s.can_go_back {
+        let b = g.back.inset_xy(0, 6);
+        cx.canvas.fill_round_rect(b, 10, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_title,
+            b,
+            Align::Center,
+            t.text,
+            "\u{2039}",
+        );
+    }
+    cx.text(
+        FontId::Bold,
+        t.size_title,
+        g.path,
+        Align::Left,
+        t.text,
+        &s.path,
+    );
+    for (b, br) in &g.list_buttons {
+        button(cx, *br, b.label(), false, matches!(b, Button::EmptyTrash));
+    }
+    cx.canvas.fill_rect(
+        Rect::new(g.head.x, g.head.bottom() - 1, g.head.w, 1),
+        t.outline,
+    );
+    let vis = g.visible();
+    if s.rows.is_empty() {
+        let msg = if s.busy {
+            "Reading…"
+        } else {
+            "Nothing here yet"
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_body,
+            g.rows,
+            Align::Center,
+            t.text_faint,
+            msg,
+        );
+    }
+    for (k, row) in s.rows.iter().enumerate().skip(s.top).take(vis) {
+        let rr = g.row_rect(k - s.top);
+        paint_row(cx, rr, row, s.selected == Some(k));
+    }
+    if s.rows.len() > vis {
+        // A thin scroll bar.
+        let track = Rect::new(g.rows.right() - 4, g.rows.y, 4, vis as i32 * ROW_H);
+        cx.canvas.fill_round_rect(track, 2, t.outline);
+        let h = (track.h * vis as i32 / s.rows.len() as i32).max(24);
+        let y = track.y + (track.h - h) * s.top as i32 / (s.rows.len() - vis) as i32;
+        cx.canvas
+            .fill_round_rect(Rect::new(track.x, y, 4, h), 2, t.text_dim);
+    }
+    for (f, fr) in &g.filters {
+        chip(cx, *fr, f.label(), *f == s.filter);
+    }
+    chip(cx, g.search, "Search", s.path.starts_with("Search: "));
+    chip(cx, g.sort, s.sort.label(), s.sort == Sort::Newest);
+    let clip = s.clipboard.as_deref().unwrap_or("");
+    if !clip.is_empty() {
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            g.status.inset_xy(4, 0),
+            Align::Right,
+            t.text_dim,
+            clip,
+        );
+    }
+    if let Some((msg, bad)) = &s.status {
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            g.status.inset_xy(4, 0),
+            Align::Left,
+            if *bad { t.bad } else { t.text_dim },
+            msg,
+        );
+    }
+    // Detail.
+    let head = if s.busy { "working…" } else { "" };
+    draw::card(cx, g.detail, "Selected", head);
+    let d = &s.detail;
+    let mut body = g.detail_body;
+    let (title, rest) = body.take_top(38);
+    cx.text(
+        FontId::Bold,
+        t.size_title,
+        title,
+        Align::Left,
+        t.text,
+        &d.title,
+    );
+    let (kind, rest) = rest.take_top(28);
+    cx.text(
+        FontId::Sans,
+        t.size_small,
+        kind,
+        Align::Left,
+        t.text_dim,
+        &d.kind,
+    );
+    body = rest;
+    if let Some(o) = &d.overview {
+        let (wave, rest) = body.take_top(130);
+        paint_overview(cx, wave.inset_xy(0, 8), o, t.accent);
+        body = rest;
+    }
+    for (label, value) in &d.lines {
+        if body.h < 30 {
+            break;
+        }
+        let (line, rest) = body.take_top(32);
+        let (l, v) = line.take_left(110);
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            l,
+            Align::Left,
+            t.text_dim,
+            label,
+        );
+        cx.text(FontId::Sans, t.size_body, v, Align::Left, t.text, value);
+        body = rest;
+    }
+    for (b, br) in &g.detail_buttons {
+        let lit = match b {
+            Button::Audition => s.audition,
+            Button::Favourite => s
+                .selected
+                .and_then(|i| s.rows.get(i))
+                .is_some_and(|r| r.favourite),
+            _ => false,
+        };
+        let label = match b {
+            Button::Audition => {
+                if s.audition {
+                    "Audition on"
+                } else {
+                    "Audition off"
+                }
+            }
+            _ => b.label(),
+        };
+        button(cx, *br, label, lit, *b == Button::Delete);
+    }
+}
+
+/// Over everything: the keyboard, a question, the Export panel.
+fn paint_over(cx: &mut PaintCx, r: Rect, s: &Screen) {
+    let t = cx.theme.clone();
+    // Over everything: the keyboard or a question.
+    match &s.modal {
+        Modal::None => {}
+        Modal::Keyboard {
+            title, text, shift, ..
+        } => {
+            cx.canvas.fill_rect(r, t.bg.with_alpha(200));
+            let k = keyboard_geo(r);
+            cx.canvas.fill_round_rect(k.card, t.radius, t.surface);
+            cx.canvas.stroke_round_rect(k.card, t.radius, 1, t.outline);
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                k.title,
+                Align::Left,
+                t.text_dim,
+                title,
+            );
+            cx.canvas.fill_round_rect(k.field, 10, t.raised);
+            let tw = cx.text(
+                FontId::Sans,
+                t.size_title,
+                k.field.inset_xy(18, 0),
+                Align::Left,
+                t.text,
+                text,
+            );
+            let cx0 = k.field.x + 18 + tw + 2;
+            cx.canvas.fill_rect(
+                Rect::new(
+                    cx0.min(k.field.right() - 12),
+                    k.field.y + 16,
+                    2,
+                    k.field.h - 32,
+                ),
+                t.accent,
+            );
+            for (key, kr) in &k.keys {
+                let lit = *key == Key::Shift && *shift || *key == Key::Done;
+                button(cx, *kr, &key_label(*key, *shift), lit, false);
+            }
+        }
+        Modal::Confirm { text, what } => {
+            cx.canvas.fill_rect(r, t.bg.with_alpha(200));
+            let a = confirm_geo(r);
+            cx.canvas.fill_round_rect(a.card, t.radius, t.surface);
+            cx.canvas.stroke_round_rect(a.card, t.radius, 1, t.outline);
+            cx.text(
+                FontId::Bold,
+                t.size_title,
+                a.text,
+                Align::Center,
+                t.text,
+                text,
+            );
+            button(cx, a.no, "Cancel", false, false);
+            let yes = match what {
+                crate::state::Confirm::Delete(_) => "Move to Trash",
+                crate::state::Confirm::EmptyTrash => "Delete for good",
+                crate::state::Confirm::Open(_) | crate::state::Confirm::OpenVersion(..) => "Open",
+                crate::state::Confirm::NewProject => "New project",
+            };
+            button(cx, a.yes, yes, false, true);
+        }
+    }
+    // The Export panel, over everything.
+    if let Some(p) = &s.export {
+        paint_export(cx, r, p);
+    }
 }

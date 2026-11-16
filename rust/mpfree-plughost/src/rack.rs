@@ -107,6 +107,9 @@ pub struct Rack {
     program: Option<Program>,
     deadline: Deadline,
     entries: Vec<Entry>,
+    /// Plugins added while running ([`Rack::add`]), kept for the
+    /// program's life like the names.
+    added: Mutex<Vec<&'static Entry>>,
     rack: Mutex<Vec<Racked>>,
     lines: Mutex<VecDeque<String>>,
     /// Lines wait in `lines`: [`Rack::take_lines`] touches no lock without.
@@ -133,6 +136,7 @@ impl Rack {
             program: None,
             deadline: Deadline::Fraction(0.5),
             entries: Vec::new(),
+            added: Mutex::new(Vec::new()),
             rack: Mutex::new(Vec::new()),
             lines: Mutex::new(VecDeque::new()),
             said: AtomicBool::new(false),
@@ -153,6 +157,7 @@ impl Rack {
         let mut notes = Vec::new();
         let mut p = Rack::none();
         let Ok(rd) = std::fs::read_dir(dir) else {
+            p.program = Some(program);
             return (p, notes);
         };
         let mut files: Vec<PathBuf> = rd
@@ -163,54 +168,32 @@ impl Rack {
         files.sort();
         files.extend(mpfree_mpchost::find(dir));
         if files.is_empty() {
+            p.program = Some(program);
             return (p, notes);
         }
         for file in &files {
             let short = file
                 .strip_prefix(dir)
                 .map_or_else(|_| file.display().to_string(), |p| p.display().to_string());
-            match crate::list(&program, file) {
-                Err(e) => notes.push(format!("plugins: {short} left out: {e}")),
-                Ok(list) if list.is_empty() => {
-                    notes.push(format!("plugins: {short} left out: it holds no plugins"))
-                }
-                Ok(list) => {
-                    for l in list {
+            match listed(&program, file, &short, &mut notes) {
+                Some(list) => {
+                    for e in list {
                         if p.entries.len() == MAX_PLUGINS {
                             notes
                                 .push(format!("plugins: only the first {MAX_PLUGINS} are offered"));
                             break;
                         }
-                        let node_id = crate::node_id(file, &l.id);
-                        if p.entries.iter().any(|e| e.node_id == node_id) {
+                        if p.entries.iter().any(|x| x.node_id == e.node_id) {
                             notes.push(format!(
                                 "plugins: {} in {short} left out: another file has the same id",
-                                l.id
+                                e.plugin_id
                             ));
                             continue;
                         }
-                        let about = if l.vendor.is_empty() {
-                            "Plugin".to_string()
-                        } else {
-                            format!("Plugin · {}", l.vendor)
-                        };
-                        let name = if l.name.is_empty() {
-                            l.id.clone()
-                        } else {
-                            l.name.clone()
-                        };
-                        // Kept for the program's life, like the nodes'
-                        // own descriptions (mpfree_clap::intern_info).
-                        p.entries.push(Entry {
-                            node_id: Box::leak(node_id.into_boxed_str()),
-                            plugin_id: l.id,
-                            name: Box::leak(name.into_boxed_str()),
-                            about: Box::leak(about.into_boxed_str()),
-                            kind: l.kind,
-                            file: file.clone(),
-                        });
+                        p.entries.push(e);
                     }
                 }
+                None => continue,
             }
         }
         let (fx, inst) = (p.effects().count(), p.entries.len() - p.effects().count());
@@ -221,6 +204,61 @@ impl Rack {
         (p, notes)
     }
 
+    /// Lists `file` (a `.clap` file or an MPC plugin folder, such as one
+    /// just installed) and offers its plugins from now on, as a scan at
+    /// start would. A plugin already offered keeps its entry: its file was
+    /// replaced in place, so the next process started gets the new one.
+    /// Control thread only: it starts a process and waits for it. Returns
+    /// the plugins in the file, new or not, and the lines for the report.
+    pub fn add(&self, file: &Path) -> Result<(Vec<&Entry>, Vec<String>), String> {
+        let program = self
+            .program
+            .as_ref()
+            .ok_or("no plugin process to list it with")?;
+        let mut notes = Vec::new();
+        let short = file.file_name().map_or_else(
+            || file.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let Some(list) = listed(program, file, &short, &mut notes) else {
+            return Err(notes
+                .pop()
+                .unwrap_or_else(|| format!("{short} holds no plugins")));
+        };
+        let mut added = self.added.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<&Entry> = Vec::new();
+        for e in list {
+            let known = self
+                .entries
+                .iter()
+                .chain(added.iter().copied())
+                .find(|x| x.node_id == e.node_id);
+            if let Some(k) = known {
+                if k.file != e.file {
+                    notes.push(format!(
+                        "plugins: {} in {short} left out: another file has the same id",
+                        e.plugin_id
+                    ));
+                    continue;
+                }
+                out.push(k);
+                continue;
+            }
+            if self.entries.len() + added.len() >= MAX_PLUGINS {
+                notes.push(format!("plugins: only the first {MAX_PLUGINS} are offered"));
+                break;
+            }
+            notes.push(format!("plugins: {} added from {short}", e.name));
+            let leaked: &'static Entry = Box::leak(Box::new(e));
+            added.push(leaked);
+            out.push(leaked);
+        }
+        for l in &notes {
+            self.say(l.clone());
+        }
+        Ok((out, notes))
+    }
+
     /// The deadline each node made from now on waits for its process
     /// (half the block by default; a fixed time for tests and offline
     /// renders).
@@ -228,23 +266,32 @@ impl Rack {
         self.deadline = d;
     }
 
-    /// Every plugin found.
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
+    /// Every plugin found, then the ones added while running.
+    pub fn entries(&self) -> Vec<&Entry> {
+        let added = self.added.lock().unwrap_or_else(|e| e.into_inner());
+        self.entries.iter().chain(added.iter().copied()).collect()
     }
 
     /// The effects, in the order found.
     pub fn effects(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| e.kind == Kind::Effect)
+        self.entries()
+            .into_iter()
+            .filter(|e| e.kind == Kind::Effect)
     }
 
     /// The instruments, in the order found.
     pub fn instruments(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| e.kind == Kind::Instrument)
+        self.entries()
+            .into_iter()
+            .filter(|e| e.kind == Kind::Instrument)
     }
 
     pub fn find(&self, node_id: &str) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.node_id == node_id)
+        if let Some(e) = self.entries.iter().find(|e| e.node_id == node_id) {
+            return Some(e);
+        }
+        let added = self.added.lock().unwrap_or_else(|e| e.into_inner());
+        added.iter().copied().find(|e| e.node_id == node_id)
     }
 
     /// True for a plugin's node id (`clap:`... or `mpc:`...).
@@ -432,6 +479,17 @@ impl Rack {
         Ok(())
     }
 
+    /// Plugin instance `instance`'s parameter values and texts now
+    /// ([`crate::Sandbox::values`]), for an MPC plugin's skin. Waits for
+    /// the process: not on the audio thread.
+    pub fn values(&self, instance: u64) -> Option<(Vec<f32>, Vec<String>)> {
+        let rack = self.rack.lock().unwrap_or_else(|e| e.into_inner());
+        let r = rack
+            .iter()
+            .find(|r| r.instance == instance && !r.given_up)?;
+        r.sandbox.values()
+    }
+
     /// Reads every running plugin's state now (before a project save).
     /// Waits for each process: not on the audio thread.
     pub fn refresh_states(&self) {
@@ -449,7 +507,7 @@ impl Rack {
         let rack = self.rack.try_lock().ok()?;
         let down = rack.iter().filter(|r| r.given_up).count();
         Some(Summary {
-            found: self.entries.len(),
+            found: self.entries().len(),
             running: rack.len() - down,
             down,
             crashes: self.crashes.load(Ordering::Relaxed),
@@ -480,5 +538,52 @@ impl Rack {
             return None;
         }
         Some(l.drain(..).collect())
+    }
+}
+
+/// The plugins in `file` as rack entries (names kept for the program's
+/// life), or None with a line in `notes` saying why it was left out.
+fn listed(
+    program: &Program,
+    file: &Path,
+    short: &str,
+    notes: &mut Vec<String>,
+) -> Option<Vec<Entry>> {
+    match crate::list(program, file) {
+        Err(e) => {
+            notes.push(format!("plugins: {short} left out: {e}"));
+            None
+        }
+        Ok(list) if list.is_empty() => {
+            notes.push(format!("plugins: {short} left out: it holds no plugins"));
+            None
+        }
+        Ok(list) => Some(
+            list.into_iter()
+                .map(|l| {
+                    let node_id = crate::node_id(file, &l.id);
+                    let about = if l.vendor.is_empty() {
+                        "Plugin".to_string()
+                    } else {
+                        format!("Plugin · {}", l.vendor)
+                    };
+                    let name = if l.name.is_empty() {
+                        l.id.clone()
+                    } else {
+                        l.name.clone()
+                    };
+                    // Kept for the program's life, like the nodes' own
+                    // descriptions (mpfree_clap::intern_info).
+                    Entry {
+                        node_id: Box::leak(node_id.into_boxed_str()),
+                        plugin_id: l.id,
+                        name: Box::leak(name.into_boxed_str()),
+                        about: Box::leak(about.into_boxed_str()),
+                        kind: l.kind,
+                        file: file.to_path_buf(),
+                    }
+                })
+                .collect(),
+        ),
     }
 }
