@@ -97,7 +97,7 @@ On any problem the jump logs `STOP: <reason>` to the kernel log and `/run/mpfree
 
 ### The opt-in kexec-file route
 
-A stick built with `offline-kexec-stick.py --kexec-file` carries three more files in `/boot/mpfree-softreboot/`, all in its `SHA256SUMS`:
+A stick built with `offline-kexec-stick.py --kexec-file`, or by the USB creator with the same flag ([developer routes](../design/usb-creator.md#developer-routes-kexec-file-loadpin-off-the-chain); `--loadpin-off` and `--chain` too), carries three more files in `/boot/mpfree-softreboot/`, all in its `SHA256SUMS`:
 - `jump`: `kexec-file`;
 - `cmdline`: the kernel command line, with `root=` this stick's partition 1; `--loadpin-off` adds `loadpin.enforce=0`;
 - `kernel.sha256`: the hash of Akai's `/boot/zImage-<release>`.
