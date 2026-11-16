@@ -396,12 +396,26 @@ class FxprobeShTests(unittest.TestCase):
         with open(f"{self.root}/proc/mounts") as fh:
             mounts = fh.read()
         write(f"{self.root}/proc/mounts", "".join(l + "\n" for l in mounts.splitlines() if "sdz4" not in l))
-        self.stopped(self.sh("setup"), "the stick's data partition (/dev/sdz4, the one after the kit's /dev/sdz3) is not mounted")
+        self.stopped(self.sh("setup"), "the stick's data partition (/dev/sdz4, partition 4 of the kit's disk, /dev/sdz3) is not mounted")
         other = os.path.join(self.tmp, "elsewhere", "FXProbe")
         os.makedirs(os.path.dirname(other))
         res = self.sh("--work", other, "setup")
         self.ok(res, "SETUP-OK")
         self.assertTrue(os.path.isfile(os.path.join(other, ".fxprobe-work")))
+
+    def test_a_kit_on_the_creators_setup_partition_finds_partition_4(self):
+        # The USB creator puts the dev tools on partition 5 (FAT32, which Akai mounts at /media/MPFREE).
+        with open(f"{self.root}/proc/mounts") as fh:
+            mounts = fh.read().replace("/dev/sdz3 /media/MPFREE-KITS ext4",
+                                       "/dev/sdz5 /media/MPFREE vfat")
+        write(f"{self.root}/proc/mounts", mounts)
+        self.kit = f"{self.root}/media/MPFREE/mpfree-dev/fxprobe"
+        os.makedirs(os.path.dirname(self.kit))
+        res = self.stage(self.kit)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        res = self.sh("setup")
+        self.ok(res, "SETUP-OK")
+        self.assertTrue(os.path.isfile(os.path.join(self.work, ".fxprobe-work")))
 
     def test_capture_without_setup_or_instances_stops(self):
         self.stopped(self.sh("capture", "x"), f"{self.work} is not set up (run setup)")
