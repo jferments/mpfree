@@ -165,7 +165,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
     - It adds your public key (`/home/jesse/.ssh/mpc_one_autorun_ed25519.pub`) to `/data/ssh/authorized_keys` and empties `allow-access.conf`.
     - It runs `systemctl reload sshd.service`, the step Akai's login banner gives.
     - It writes nothing else, and only under `/data/ssh`.
-- **Before it changes anything,** it checks that this is an installed MPC OS with developer mode on: `/data` comes from the eMMC's p8, developer mode's overlay is on `/etc`, and no earlier lock of ours is there.
+- **Before it changes anything,** it checks on the workstation that your key can be used without a question: it has no passphrase, or it is in your SSH agent. If it isn't, it stops and asks you to run `ssh-add /home/jesse/.ssh/mpc_one_autorun_ed25519` first. Then it checks that this is an installed MPC OS with developer mode on: `/data` comes from the eMMC's p8, developer mode's overlay is on `/etc`, and no earlier lock of ours is there.
 - **Passes when** it ends with `LOCKED: the login with no key is refused and your key gets in`. It also checks that the SSH server no longer accepts empty passwords.
 - **If it fails halfway:** it keeps one SSH connection open for the whole step. If the new logins don't come out as expected, it puts both files back over that connection, reloads the server and checks that the open login works again. The lock was rehearsed against a real OpenSSH 9.6 server set up with Akai's files: no-key login refused after the reload, the key got in, the kept connection survived the reload, and the undo reopened it.
 - **Undo:** block Q2-undo below.

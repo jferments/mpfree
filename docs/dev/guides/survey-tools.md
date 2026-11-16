@@ -73,6 +73,7 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 - `--devmode-lock`, **state-changing on `/data`, after a typed `LOCK`:** Akai's own lock-down.
     - It copies both files to `/data/ssh/mpfree-lock-backup`, adds your public key to `/data/ssh/authorized_keys`, empties `allow-access.conf` and reloads the server.
     - It keeps one connection open throughout. If the login with no key is not refused afterwards, or your key does not get in, or the server still accepts empty passwords, it puts both files back over that connection.
+    - Before anything else, it checks on the workstation that your key has no passphrase or is in your SSH agent (`ssh-add -L`), and stops, changing nothing, if not. The logins with your key offer that key only, from the agent when it has a passphrase, like every other mode; the logins with no key turn the agent off. `--devmode-unlock` makes the same check, and `--devmode-status` says what it found.
 - `--devmode-unlock`, **state-changing on `/data`, after a typed `UNLOCK`:** the undo of the lock.
 
 See [the 3.10.1 qualification runbook](../hardware/firmware-3.10.1-qualification.md) for when to run them and the undo by hand from the developer panel's terminal.

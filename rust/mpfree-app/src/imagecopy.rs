@@ -164,7 +164,19 @@ mod tests {
         );
         assert_eq!(std::fs::read(&to).unwrap(), disk, "reads back as the disk");
         let m = std::fs::metadata(&to).unwrap();
-        assert_eq!(m.mode() & 0o777, 0o640);
+        // The file is made with mode 0640, less what the umask takes away: under a
+        // workstation shell's umask 077 that is 0600 (root's 022 on the MPC keeps 0640).
+        let umask = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("Umask:").map(|v| v.trim().to_string()))
+            })
+            .and_then(|v| u32::from_str_radix(&v, 8).ok());
+        match umask {
+            Some(u) => assert_eq!(m.mode() & 0o777, 0o640 & !u),
+            None => assert_eq!(m.mode() & 0o777 & !0o640, 0, "never more than 0640"),
+        }
         // Where the filesystem keeps holes (ext4, tmpfs), fewer blocks than the size.
         assert!(m.blocks() * 512 <= disk.len() as u64);
         let _ = std::fs::remove_dir_all(&d);
