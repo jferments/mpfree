@@ -132,7 +132,7 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-monitor",
-            about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo; lights per port and channel, in on top and out below",
+            about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo, each line with where it went; lights per port and channel, in on top and out below",
             section: 4,
             model: sample::monitored(built.clone()),
             wheel: 0,

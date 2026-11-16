@@ -37,6 +37,7 @@ use std::time::Duration;
 
 pub use learn::control_text;
 pub use monitor::words as monitor_words;
+pub use monitor::DevMonitor;
 use mpfree_midi::cv::CV_OUTS;
 pub use mpfree_midi::monitor::Monitor;
 pub use mpfree_midi::setup::MidiSetup;
