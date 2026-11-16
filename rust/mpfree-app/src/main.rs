@@ -3522,6 +3522,10 @@ fn player_session(
         None => mpfree_store::Store::none(),
     };
     store.flush();
+    // A project save makes its sounds and parts durable with one sync of
+    // the disks, not a sync per file (a save took 64 s on the stick in the
+    // fourth creator round, 16 Nov).
+    mpfree_library::set_flush(sys::sync_disks);
     // 0. The first start on a stick the USB creator made: the eMMC backup,
     // then the MPC's own kits and samples from it (setup.rs), saved as each
     // step ends.

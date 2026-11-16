@@ -20,7 +20,7 @@
 | Q-Link 1–4 turn | CC 16, 17, 18, 19 (channel 1) | **Relative**: 1, 2 = clockwise steps; 127, 126 = counter-clockwise steps |
 | Q-Link 1–4 touch | Note on 84–87 (`0x54`–`0x57`) velocity 127 (channel 1); release = note off `0x80` | Capacitive touch |
 | Data wheel turn | CC 100 (channel 1) | Relative: 1 = clockwise, 127 = counter-clockwise |
-| Buttons | Note on `0x90` (channel 1): velocity 127 = press, **velocity 0 = release** (not `0x80`) | SHIFT 49, FULL LEVEL 39, PLAY 82, STOP 81; NOTE REPEAT 11, TAP TEMPO 53, + 54, − 55, MENU 123 (Hello MPC round 5 button guide, 2026-11-11). REC 73 (heard in round 2, named 2026-11-13). OVERDUB 80, PLAY START 83 and UNDO 67 are taken from Akai's lights for them (live test 3's transport capture, below), as every measured button's note equals its light's CC; `mpc_one::button` has all four and the app knows them from the start (`ButtonMap::measured`). 52 is a real button, not yet named. Others not yet captured |
+| Buttons | Note on `0x90` (channel 1): velocity 127 = press, **velocity 0 = release** (not `0x80`) | SHIFT 49, FULL LEVEL 39, PLAY 82, STOP 81; NOTE REPEAT 11, TAP TEMPO 53, + 54, − 55, MENU 123 (Hello MPC round 5 button guide, 2026-11-11). REC 73 (heard in round 2, named 2026-11-13). OVERDUB 80, PLAY START 83 and UNDO 67 are taken from Akai's lights for them (live test 3's transport capture, below), as every measured button's note equals its light's CC; `mpc_one::button` has all four and the app knows them from the start (`ButtonMap::measured`). BROWSE 50 and MAIN 52, each pressed alone on the creator's fourth stick (2026-11-16: 50 on the Play page where the owner pressed BROWSE, 52 twice in Prefs where he tried MAIN), are built in too, to confirm with the rest of the panel in round 5's Map controls pass, and so is the data dial's push, 111 (Map controls, 2026-11-12). Others not yet captured |
 | Master volume | No MIDI | Inferred analog |
 
 ## Output (host → controller)
@@ -39,7 +39,7 @@ TheKikGen's MPCLiveXplore-libs lists the same device ID (0x46), the same pad not
 
 ## Still unknown
 
-- Remaining button numbers (52 seen but not named; 73 is REC, 2026-11-13; OVERDUB 80, PLAY START 83 and UNDO 67 inferred from their lights, to confirm by a press in the next device run) and LED color/brightness meaning of values 0–4 (capture each button once).
+- Remaining button numbers (73 is REC, 2026-11-13; OVERDUB 80, PLAY START 83 and UNDO 67 inferred from their lights, and BROWSE 50 and MAIN 52 from single presses, to confirm in round 5's Map controls pass, which measures every button once so they all ship built in: the owner, 2026-11-16, "ALL of the buttons should always be mapped by default") and LED color/brightness meaning of values 0–4 (capture each button once).
 - Data wheel push, any display/screen messages, and what each setup message (`41`, `5A`, `62`–`6A`) means.
 - Which of the setup messages switches the controls to cable 1, and what happens to that mode when the session lapses.
 

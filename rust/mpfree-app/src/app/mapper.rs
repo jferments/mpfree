@@ -131,7 +131,8 @@ pub const CONTROLS: [Control; 42] = [
     c("SAMPLE EDIT", Job::SampleEdit),
     c("PROG EDIT", Job::ProgEdit),
     // The data dial's push (Enter), a button like the others; button 111 on
-    // Jay's MPC One (Map controls, live test of 12 Nov).
+    // Jay's MPC One (Map controls, live test of 12 Nov), built in since
+    // (`button::DATA_PUSH`).
     c("DATA DIAL PUSH", Job::DataPush),
     c("Other 1", Job::None),
     c("Other 2", Job::None),

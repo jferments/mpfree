@@ -436,6 +436,13 @@ impl ButtonMap {
             overdub: Some(button::OVERDUB),
             undo: Some(button::UNDO),
             play_start: Some(button::PLAY_START),
+            // Every button is the developers' job, never the musician's
+            // (Jay, 16 Nov): BROWSE and MAIN from the fourth creator stick's
+            // presses, the data dial's push from the Map controls live test
+            // of 12 Nov; the rest from round 5's Map controls pass.
+            browse: Some(button::BROWSE),
+            main: Some(button::MAIN),
+            data_push: Some(button::DATA_PUSH),
             ..ButtonMap::default()
         }
     }
@@ -639,8 +646,10 @@ pub struct Settings {
     /// Prefs "Audio track memory": the audio tracks' size from the next
     /// start.
     pub audio_memory: crate::audiotracks::AudioMemory,
-    /// Prefs "At start": open the last project (true) or start with a new
-    /// one (the default). The screen opens it once the sound is going.
+    /// Prefs "At start": open the last project (true, the default since
+    /// round 4 of the creator run: a restart lost the pads the owner had
+    /// set) or start with a new one. The screen opens it once the sound is
+    /// going.
     pub open_last: bool,
     /// Prefs "Export": Fast, quiet (the default) or Listen (Jay, 14 Nov
     /// 01:32Z). An export that needs outside gear listens anyway.
@@ -697,7 +706,7 @@ impl Default for Settings {
             metronome_db: crate::time::CLICK_DB as i8,
             timing_strip: true,
             audio_memory: crate::audiotracks::AudioMemory::default(),
-            open_last: false,
+            open_last: true,
             export_mode: mpfree_export::Mode::Fast,
             export_bits: mpfree_fx::Bits::I24,
             export_rate: EXPORT_RATES[0],
@@ -3229,9 +3238,9 @@ impl App {
             ],
             Item::AtStart => vec![
                 "What MPFree opens when it starts.",
-                "New project: an empty song (the default).",
-                "Last project: the project you last saved",
-                "or opened, once the sound is going.",
+                "Last project (the default): the project",
+                "you last saved or opened, once the sound",
+                "is going. New project: an empty song.",
             ],
             Item::Export => vec![
                 "How Export (BROWSE, Projects) plays the song.",
@@ -6739,6 +6748,31 @@ mod tests {
         app.open_tab(View::Synth);
         assert_eq!(app.wheel(1), vec![Effect::Rows(RowKey::Pick(1))]);
         assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
+    }
+
+    /// BROWSE and MAIN work on a new stick, with no saved map, and a
+    /// page's button leaves Prefs for that page (Jay, round 4); SHIFT +
+    /// MENU still opens and closes it.
+    #[test]
+    fn a_page_button_leaves_prefs() {
+        let mut app = ready();
+        assert_eq!(app.map.browse, Some(button::BROWSE));
+        assert_eq!(app.map.main, Some(button::MAIN));
+        assert_eq!(app.map.data_push, Some(button::DATA_PUSH));
+        for section in [PrefsSection::Main, PrefsSection::Touch] {
+            app.open_tab(View::Prefs);
+            app.prefs_section = section;
+            assert!(press(&mut app, button::BROWSE).contains(&Effect::Show(View::Browser)));
+            assert_eq!(app.view(), View::Browser, "{section:?}");
+            app.open_tab(View::Prefs);
+            app.prefs_section = section;
+            assert!(press(&mut app, button::MAIN).contains(&Effect::Show(View::Play)));
+            assert_eq!(app.view(), View::Play, "{section:?}");
+        }
+        app.map.learn(mapper::Job::Sampler, Some(65));
+        app.open_tab(View::Prefs);
+        assert!(press(&mut app, 65).contains(&Effect::Show(View::Sample)));
+        assert!(!app.in_menu());
     }
 
     /// The mode buttons, ERASE and the SHIFT combos from the hardware

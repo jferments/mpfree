@@ -94,7 +94,7 @@ impl App {
         out.set_i64("metronome-level", i64::from(s.metronome_db));
         out.set_bool("timing-strip", s.timing_strip);
         out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
-        out.set_str("at-start", if s.open_last { "last" } else { "new" });
+        out.set_str("start-with", if s.open_last { "last" } else { "new" });
         out.set_str("export", s.export_mode.key());
         out.set_str(
             "export-file",
@@ -193,13 +193,26 @@ impl App {
                 "audio-memory" => crate::audiotracks::AudioMemory::parse(v)
                     .map(|m| s.audio_memory = m)
                     .is_some(),
-                "at-start" => match v {
+                "start-with" => match v {
                     "new" => Some(false),
                     "last" => Some(true),
                     _ => None,
                 }
                 .map(|b| s.open_last = b)
                 .is_some(),
+                // Before 16 Nov the key was at-start, and a new project was
+                // the default, so every save wrote "new" whether or not it
+                // was chosen. Last project is the default now (Jay, round 4:
+                // the pads he set were gone after a restart), so only an
+                // old "last" is kept.
+                "at-start" => match v {
+                    "last" => {
+                        s.open_last = true;
+                        true
+                    }
+                    "new" => true,
+                    _ => false,
+                },
                 "export" => mpfree_export::Mode::from_key(v)
                     .map(|m| s.export_mode = m)
                     .is_some(),
@@ -417,7 +430,7 @@ mod tests {
         assert_eq!(app.get_str("audio-buffer"), Some("2"));
         assert_eq!(app.get_bool("developer-tools"), Some(true));
         assert_eq!(app.get_bool("metronome"), Some(true));
-        assert_eq!(app.get_str("at-start"), Some("last"));
+        assert_eq!(app.get_str("start-with"), Some("last"));
         assert_eq!(app.get_str("export"), Some("listen"));
         assert_eq!(app.get_str("export-file"), Some("16"));
         assert_eq!(app.get_i64("export-rate"), Some(48_000));
