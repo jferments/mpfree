@@ -29,7 +29,9 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     touch, XMOS and USB-SATA firmware updaters, the network update server,
     the USB script runner, the /data and content formatters, the firewall and
     the tool that zeroes ext4 reserved blocks (tune2fs), and for the generator
-    that mounts the eMMC content partition
+    that mounts the eMMC content partition; on a soft-reboot stick (no
+    --kexec-file) also Akai's LoadPin trust-points unit, which fails there on
+    every power-on
   - /data becomes a RAM disk, so the /etc and /var overlays live in RAM
   - Akai's update, flashing and U-Boot-environment programs and kexec are
     replaced by a stub that refuses and notes the call in the kernel log
@@ -256,6 +258,12 @@ MASK_UNITS = (
     # off and read it. The mask covers every instance.
     "no-reserved-blocks@.service",
 )
+# Masked only on a soft-reboot stick (no --kexec-file): Akai's unit that hands LoadPin its trusted verity
+# digests. After a soft-reboot LoadPin's pinned root (Akai's verity root) is gone and it refuses every load, so
+# the unit fails on every power-on and does nothing (the final round, 16 Nov: the one failed unit), and "no
+# failed units" could not be a pass rule. On the kexec-file route and the chain it exits 0, and its read of
+# its policy file is what pins the stick's root for LoadPin (step 6, 3.78 s), so it stays there.
+SOFTREBOOT_MASK_UNITS = ("az0x-loadpin-trustpoints.service",)
 MASK_GENERATORS = ("acva-emmc-content-generator",)
 # With --akai-app these two stay as Akai ships them: the app's unit and its launcher, which runs
 # `dfu-util -l` (a stub that finds nothing) and then the app.
@@ -747,6 +755,9 @@ fi
 echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg
 exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}{power}
 """
+# SyslogIdentifier: the unit starts `/bin/sh start-app.sh`, which execs the app, and journald names a stream by
+# the process that opened it, so without it every line of the pad player's log was `sh[pid]:` (the final
+# round's creator stick, 16 Nov), and any tool that reads the journal by name had to know that.
 # A crash (a panic, a crash outside Rust, the out-of-memory killer) restarts the app after 2 s; it then
 # makes a safe start (the app's crash.rs): a new project even if Prefs > At start says Last project, and
 # the screen says why. A stop (systemctl stop) is not a failure, so the app stays stopped. A fourth
@@ -765,6 +776,7 @@ StartLimitBurst=4
 [Service]
 Type=simple
 ExecStart=/bin/sh /etc/mpfree-test/start-app.sh
+SyslogIdentifier=mpfree
 Restart=on-failure
 RestartSec=2
 
@@ -885,6 +897,7 @@ Type=simple
 User={user}
 Group={user}
 ExecStart=/bin/sh /etc/mpfree-test/start-app.sh
+SyslogIdentifier=mpfree
 Restart=on-failure
 RestartSec=2
 LimitRTPRIO=70
@@ -1657,7 +1670,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
             raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
     elif not ((app is None) == (kits_uuid is None) == (data_uuid is None)):
         raise Stop("the pad player needs its kits and data partitions, and the other way round")
-    mask_units = tuple(u for u in MASK_UNITS if not (akai_app and u == AKAI_APP_UNIT))
+    mask_units = tuple(u for u in MASK_UNITS if not (akai_app and u == AKAI_APP_UNIT)) + \
+        (SOFTREBOOT_MASK_UNITS if softreboot and not softreboot[2] else ())
     stub_programs = tuple(p for p in STUB_PROGRAMS if not (akai_app and p == AKAI_APP_LAUNCHER) and
                           not (chain and p == KEXEC_PROGRAM))
     for top in ("/bin", "/sbin", "/lib"):

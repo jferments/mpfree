@@ -408,6 +408,13 @@ class KexecStickTests(unittest.TestCase):
         else:
             for name in ("jump", "cmdline", "kernel.sha256"):
                 self.assertIn("File not found", self.dfs(root_img, f"stat /boot/mpfree-softreboot/{name}"))
+        # Akai's LoadPin trust-points unit fails on every soft-reboot, so a soft-reboot stick masks it; on the
+        # kexec-file route its read pins the stick's root, so it stays.
+        loadpin = self.dfs(root_img, "stat /etc/systemd/system/az0x-loadpin-trustpoints.service")
+        if kexec_file:
+            self.assertIn("File not found", loadpin)
+        else:
+            self.assertIn('Fast link dest: "/dev/null"', loadpin)
         if chain:
             listed += ["/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service",
                        "/etc/mpfree-test/chain-done.sh", "/etc/systemd/system/mpfree-test-chain-done.service",
@@ -1390,6 +1397,10 @@ class StaticTests(unittest.TestCase):
             self.assertNotIn(word, unit)
         self.assertEqual(re.findall(r"(?m)^ExecStart\S*=.*$", unit), ["ExecStart=/bin/sh /etc/mpfree-test/start-app.sh"])
         self.assertEqual(tool.APP_UID, 960)
+        # The unit runs `sh start-app.sh`, which execs the app: without SyslogIdentifier journald names every
+        # pad player line `sh[pid]` (the final round, 16 Nov).
+        for unit in (tool.APP_USER_UNIT.format(user="mpfree", after=""), tool.APP_UNIT.format(after="")):
+            self.assertEqual(re.findall(r"(?m)^SyslogIdentifier=.*$", unit), ["SyslogIdentifier=mpfree"])
 
     def test_busybox_find_takes_the_storage_scripts_expression(self):
         """The MPC's shell tools may be BusyBox: its find must understand -xdev, -path ... -prune, ! -user and
