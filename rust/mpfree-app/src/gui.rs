@@ -3916,6 +3916,11 @@ impl Player {
                 if self.chain_page.drives(self.view) {
                     self.refresh_qlinks();
                 }
+                // The hint follows the page shown (the EQ's, another
+                // effect's, or none after a Remove).
+                if self.view == View::Chain {
+                    self.refresh_hint();
+                }
             }
             ToUi::ParamsMoved(landed) => {
                 self.chain_page.bind.retarget(|a| landed.target(a));
@@ -4004,6 +4009,9 @@ impl Player {
             }
             ToUi::Menu(m) => {
                 if let Some(o) = self.ui.get_mut::<OptionList>("options") {
+                    if o.title != m.title {
+                        o.reset_view();
+                    }
                     o.title = m.title;
                     o.rows = m
                         .rows
@@ -6234,7 +6242,26 @@ impl Player {
 
     /// A touch: what it means for the app, if anything. Before the app is
     /// ready, the pages are switched here (loading and console only).
+    ///
+    /// The actions reach the app in the order the touches made them. A
+    /// touch hands back its first action and leaves the rest for
+    /// [`Self::take_actions`]; when several touches come in one read (a
+    /// fast drag), a later touch's first action would overtake an earlier
+    /// one's rest (an EQ dot's frequency set again by an older move). So
+    /// while actions wait, this touch's first waits behind them too.
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
+        let waiting = self.outbox.len();
+        let action = self.touch_unordered(finger, phase, x, y);
+        match action {
+            Some(a) if waiting > 0 => {
+                self.outbox.insert(waiting.min(self.outbox.len()), a);
+                None
+            }
+            a => a,
+        }
+    }
+
+    fn touch_unordered(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
         // The Touch page measures every finger before the tuning.
         if self.ready && self.touch_page.is_none() && self.view == View::Touch {
             let area = self
@@ -11855,6 +11882,9 @@ mod tests {
         p.touch(1, Touch::Up, x, y);
         p.tick(1.0);
         assert_ne!(p.page(), NUMPAD_PAGE);
+        // What the tap left goes out, as after every read of the
+        // touchscreen (a touch's action waits behind any still waiting).
+        let _ = p.take_actions();
         // Held: the number pad, for the tempo.
         assert_eq!(p.touch(2, Touch::Down, x, y), Some(FromUi::TapTempo));
         p.tick(0.4);

@@ -3336,6 +3336,12 @@ fn looper_action(
             out.note(&looper.toggle_mute(n));
             Vec::new()
         }
+        looping::LoopAction::StopWaiting => {
+            if let Some(line) = looper.stop_waiting() {
+                out.note(&line);
+            }
+            Vec::new()
+        }
         // A dragged layer says what it did (or why not) in place of the
         // hint.
         looping::LoopAction::CopyLayer { from, id, to, keep } => {
