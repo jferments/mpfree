@@ -198,7 +198,13 @@ with `--quick`) at 128 frames and 44.1 kHz:
 - **synth:** every Poly preset with 8-note chords changing every half
   second, and Init at 16 voices with unison 4.
 - **sampler:** a pad hit every 4 blocks over 20 pads with 24 voices, with
-  and without the master grain effect.
+  and without the master grain effect; and the pad player's drum kits
+  ("Sampler, drum kit"): 16 plain one-shot pads with every voice of a 24
+  or 64-voice pool playing, which is what plain voices
+  ([sampler architecture](sampler-architecture.md), voice allocation) cost.
+  Counted in instructions on the workstation, 24 plain voices took 408,000
+  a block through the full voice loop and take 39,000 through the plain
+  path; 64 take 74,000.
 - **fx:** every effect, Grains FX and a 4-slot insert chain, on a tone under
   noise bursts, and the mixer with a song's inserts.
 - **time:** the transport looping 4 bars at 128 BPM with 8 clips playing
