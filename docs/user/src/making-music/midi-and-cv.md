@@ -92,5 +92,18 @@ The mixer's I/O view has a **Monitor** section: open the mixer with the I/O icon
   - Going out: *sent by Bass* names the track that played it, and *MPFree's clock* marks the clock MPFree sends.
 - **Picking what is listed.** The chips along the top switch each kind of message on and off (Notes, CC, Program, Bend & pressure, Clock, SysEx) and each way (In, Out). Tap a channel's light to list only that port, way and channel, or a port's name to list only that port and way; tap it again to list everything.
 - **Looking back.** Turn the data wheel (or use the page arrows) to scroll back; the list holds still while you look. Scroll back to the top and it follows again. **Hold** stops the list until you tap it again, and **Clear** empties it.
+- **Save log** keeps the list as it shows now (only what the chips and lights let through) in a text file on the stick's data partition, in `files/midi-logs/`, named by the date and time (`midi-log-2026-11-16-1958.txt`). The line under the screen says which file it wrote; a second save in the same minute gets `-2`, so a save never replaces a file. It is greyed when MPFree has no data partition to write to.
+
+### Now: what each port holds this moment
+
+**List | Now** at the top left switches the Monitor between the list and **Now**, which shows the state a port and channel are in rather than the messages that put them there. It picks the port and channel that sent something last; tap a port's chip to pick another, and turn the data wheel or tap ‹ › to change the channel.
+
+- **Keys down:** a keyboard with each key held lit and its velocity on it, the notes with velocity and any key pressure, how long they have been held, whether the sustain pedal is down, and where they went.
+- **Controls that moved:** each controller's last value, newest first, by its common name (*CC 74 Cutoff*), with how long ago it moved. A learned control says what it moves, in purple. The bank and program last chosen are at the top.
+- **Clock:** the port's clock tempo, the gap between pulses and how much it wanders, the worst gap in the last minute, and how many pulses came late or were lost. Each bar is one second's worst gap; a late one is yellow.
+- **Bend and pressure:** the pitch bend and channel pressure where they are now.
+- **Notes still on:** the notes MPFree sent out of the 5-pin jacks that have not ended yet, how long each has been on and which track sent it. One left on for 30 seconds or more is marked stuck. **Send note-offs to MIDI out** ends only those notes (never an "all notes off" to the whole synth). It is greyed while MIDI out is off or no note is on.
+
+**Hold** freezes the Now view so you can read it; tap it again to follow.
 
 The Monitor shows the external ports only. With **Show developer tools** on in [Prefs](../reference/prefs.md), the Dev tab's MIDI page is the same monitor with more sources: the MPC's own pads, buttons, Q-Links and data wheel as MPFree read them, the button lights, pad colours, CV values and keep-alive MPFree sends to the MPC, and MPFree's own events (a USB device plugged in or unplugged, MIDI out stopping). Its chips pick sources instead of kinds of message: Ports, MPC controls, Lights & colours, CV out, System, Clock and Keep-alive. Pad pressure is listed there only while **Pad pressure in the MIDI log** is on (MENU on the Dev tab).

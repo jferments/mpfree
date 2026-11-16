@@ -824,6 +824,80 @@ mod track_mute {
 }
 
 #[cfg(test)]
+mod step_seq {
+    //! STEP SEQ: the pads as steps (sequencer decision 2, Jay 16 Nov).
+
+    use super::super::{on_big_stack, Session};
+    use crate::app::{MuteKeys, View, LIGHT_OFF, LIGHT_ON};
+    use mpfree_controller::mpc_one::button;
+
+    /// The pad played last is the sound; STEP SEQ makes the pads its
+    /// steps on Beats and on any tab; a tap adds a note (making the clip),
+    /// a lit step comes off on the release, PAD BANK B is page 2, ERASE +
+    /// a step clears it, TRACK MUTE takes the pads and STEP SEQ gives
+    /// them back.
+    #[test]
+    fn step_seq_makes_the_pads_the_steps_of_the_sound_played_last() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.pad(2, 100, 0.05);
+            s.press("header", "tab", "Looper");
+            s.button("STEP SEQ");
+            assert!(s.app.pads_are_steps());
+            assert_eq!(s.view(), View::Play, "STEP SEQ shows Beats");
+            assert_eq!(s.sent_lights[button::STEP_SEQ as usize], LIGHT_ON);
+            assert!(s
+                .lines
+                .iter()
+                .any(|l| l == "STEP SEQ: the pads are pad 3's steps, page 1"));
+            let row = |s: &Session| -> Vec<bool> {
+                let d = s.time.steps();
+                d.clip
+                    .map_or(vec![], |c| c.row(2).iter().map(Option::is_some).collect())
+            };
+            // Pad 1 is step 1: a one-bar clip with pad 3's note there.
+            s.pad(0, 100, 0.05);
+            assert_eq!(row(&s).len(), 16);
+            assert!(row(&s)[0]);
+            // On another tab too; a lit step comes off on the release.
+            s.press("header", "tab", "Looper");
+            s.pad(4, 90, 0.05);
+            assert!(row(&s)[4]);
+            s.pad(4, 90, 0.05);
+            assert!(!row(&s)[4]);
+            assert_eq!(
+                s.time.steps().clip.unwrap().row(0).iter().flatten().count(),
+                0,
+                "pad 1's own row is untouched"
+            );
+            // PAD BANK B: page 2, past this clip's end; nothing changes.
+            s.button("PAD BANK B/F");
+            assert_eq!(s.app.step_pads().unwrap().page, 1);
+            s.pad(0, 100, 0.05);
+            assert_eq!(row(&s).len(), 16);
+            s.button("PAD BANK A/E");
+            // ERASE + a step: cleared.
+            s.button_edge("ERASE", true);
+            s.pad(0, 100, 0.05);
+            assert!(s.hint().contains("UNDO brings it back"), "{}", s.hint());
+            s.button_edge("ERASE", false);
+            assert!(!row(&s)[0]);
+            // TRACK MUTE takes the pads; STEP SEQ takes them back.
+            s.button("TRACK MUTE");
+            assert_eq!(s.app.mute_keys(), MuteKeys::Tracks);
+            assert!(!s.app.pads_are_steps());
+            s.button("STEP SEQ");
+            assert_eq!(s.app.mute_keys(), MuteKeys::Off);
+            assert!(s.app.pads_are_steps());
+            s.button("STEP SEQ");
+            assert!(s.app.step_pads().is_none(), "the pads play again");
+            assert_eq!(s.sent_lights[button::STEP_SEQ as usize], LIGHT_OFF);
+        });
+    }
+}
+
+#[cfg(test)]
 mod device_log {
     //! The log lines the device checks are judged on
     //! (`tools/mpc-one/app_checks.py`): each step done here as on the MPC,

@@ -86,9 +86,10 @@ pub fn presets(id: &str) -> &'static [Preset] {
 }
 
 /// What loading preset `i` sends to the node: every parameter's default
-/// with the preset's values over them, except the Mix and Quality the
-/// effect has now (a preset sets the sound, not how much of it is heard or
-/// what it costs) and the meters. Empty for a preset that isn't there.
+/// with the preset's values over them, except the Mix, Mix curve and
+/// Quality the effect has now ([`mpfree_fx::page_keeps`]: a preset sets
+/// the sound, not how much of it is heard, how it is blended or what it
+/// costs) and the meters. Empty for a preset that isn't there.
 pub fn preset_values(st: &FxState, i: usize) -> Vec<(u16, f32)> {
     let Some(preset) = presets(st.info.id).get(i) else {
         return Vec::new();
@@ -98,7 +99,7 @@ pub fn preset_values(st: &FxState, i: usize) -> Vec<(u16, f32)> {
         .enumerate()
         .filter(|(_, p)| !p.readonly)
         .map(|(k, p)| {
-            let keep = matches!(p.name, "Mix" | "Quality");
+            let keep = mpfree_fx::page_keeps(p.name);
             let v = if keep {
                 st.values[k]
             } else {

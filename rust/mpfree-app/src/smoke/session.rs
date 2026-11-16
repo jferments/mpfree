@@ -186,6 +186,8 @@ pub struct Session {
     /// Messages for the screen that found it gone (none expected).
     pub quit: bool,
     kits: usize,
+    /// STEP SEQ's pads held as steps (step_keys.rs).
+    step_keys: crate::step_keys::StepKeys,
     out: Out,
     to_screen: Receiver<ToUi>,
     fx: Vec<Effect>,
@@ -286,6 +288,7 @@ impl Session {
             synth_on: false,
             quit: false,
             kits: n,
+            step_keys: crate::step_keys::StepKeys::default(),
             out,
             to_screen,
             fx: Vec::new(),
@@ -630,6 +633,16 @@ impl Session {
         self.run_periods(4)
     }
 
+    /// A hardware button pressed (`down`) or let go, for chords with the
+    /// pads (ERASE + a pad).
+    pub fn button_edge(&mut self, name: &str, down: bool) -> &mut Session {
+        let note = self.button_note(name);
+        let t = self.t();
+        let fx = self.app.button(note, down, t);
+        self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
     /// Hit a pad on the controller (down, then up after `hold` seconds).
     pub fn pad(&mut self, pad: usize, velocity: u8, hold: f64) -> &mut Session {
         self.pad_edge(pad, velocity, true);
@@ -639,8 +652,35 @@ impl Session {
     }
 
     /// A pad pressed or let go on the controller, as `player_session` hands
-    /// it over (the mute keys first).
+    /// it over (the step pads, then the mute keys first).
     pub fn pad_edge(&mut self, pad: usize, velocity: u8, down: bool) {
+        if down && self.app.pads_are_steps() {
+            let v = self.app.velocity(velocity);
+            let rolling = self.time.info().state.rolling();
+            let p = crate::step_press(
+                &self.app,
+                &mut self.step_keys,
+                &mut self.time,
+                pad,
+                v,
+                rolling,
+            );
+            if !p.log.is_empty() {
+                self.out.note(&p.log);
+            }
+            if let Some(t) = p.tell {
+                self.fx.push(Effect::Tell(t));
+            }
+            return;
+        }
+        if !down && self.step_keys.held(pad) {
+            let r = self.step_keys.release(pad, &mut self.time);
+            if !r.log.is_empty() {
+                self.out.note(&r.log);
+            }
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
         if self.app.mute_keys() != app::MuteKeys::Off {
             if down {
                 let line = crate::mute_key(

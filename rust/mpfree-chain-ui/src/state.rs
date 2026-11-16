@@ -195,9 +195,10 @@ pub struct ChainState {
 }
 
 /// One entry of the header's presets list: its name and every value
-/// loading it sets (each settable control but Mix and Quality, which
-/// stay as they are: a preset sets the sound, not how much of it is
-/// heard or what it costs).
+/// loading it sets (each settable control but Mix, Mix curve and Quality,
+/// which stay as they are ([`mpfree_fx::page_keeps`]): a preset sets the
+/// sound, not how much of it is heard, how it is blended or what it
+/// costs).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PresetPick {
     pub name: &'static str,
@@ -233,7 +234,7 @@ fn preset_picks(
     let values = |preset: Option<&mpfree_fx::Preset>| -> Vec<(u16, f32)> {
         n.params()
             .iter()
-            .filter(|p| !p.readonly && !matches!(p.name, "Mix" | "Quality"))
+            .filter(|p| !p.readonly && !mpfree_fx::page_keeps(p.name))
             .map(|p| {
                 let set = |vals: &[(u16, f32)]| vals.iter().find(|(q, _)| *q == p.id).map(|v| v.1);
                 let v = set(fixed)
@@ -328,15 +329,16 @@ pub fn source_name(s: Source) -> String {
     }
 }
 
-/// A one-line summary of a node's settings: its first choice and its first
-/// two continuous parameters ("Tube · +9.5 dB · 3.2 kHz").
+/// A one-line summary of a node's settings: its first choice of sound
+/// (not a Mix curve or a Quality, which [`mpfree_fx::page_keeps`] says are
+/// not the sound) and its first two continuous parameters ("Tube · +9.5 dB
+/// · 3.2 kHz").
 fn summary(n: &dyn Node) -> String {
     let ps = n.params();
     let mut parts: Vec<String> = Vec::new();
-    if let Some(p) = ps
-        .iter()
-        .find(|p| matches!(p.curve, Curve::Choice(_)) && !p.readonly)
-    {
+    if let Some(p) = ps.iter().find(|p| {
+        matches!(p.curve, Curve::Choice(_)) && !p.readonly && !mpfree_fx::page_keeps(p.name)
+    }) {
         parts.push(value_text(p, n.param(p.id)));
     }
     for p in ps
