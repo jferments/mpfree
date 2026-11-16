@@ -264,7 +264,9 @@ pub fn io_qlink_turn(ui: &mut Ui, knob: usize, detents: i32, fine: bool) -> IoRe
 /// What the I/O section's last touch, key or Q-Link couldn't do, and why,
 /// once: say it on the hint line ([`IoSection::take_note`]).
 pub fn take_io_note(ui: &mut Ui) -> Option<String> {
-    ui.get_mut::<MixerView>(MIXER)
+    // Taking the note changes nothing the view draws (the app says it on
+    // its hint line), and the app asks every frame: no redraw for it.
+    ui.get_mut_quiet::<MixerView>(MIXER)
         .and_then(|v| v.take_io_note())
 }
 

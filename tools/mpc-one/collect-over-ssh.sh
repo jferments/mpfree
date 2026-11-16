@@ -46,6 +46,7 @@ case "${1:-}" in
   "--hook-report") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-hook-report.sh"; REPORT_KIND="mpc-one-hook-report" ;;
   "--kexec-boot") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-kexec-boot" ;;
   "--app") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-app" ;;
+  "--midi-console") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-midi-console" ;;
   "--devmode-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-check" ;;
   "--app-start-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-app-start-capture" ;;
   "--backup") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-emmc-backup" ;;
@@ -66,7 +67,7 @@ case "${1:-}" in
   "--devmode-lock") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-lock" ;;
   "--devmode-unlock") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-unlock" ;;
   "--system-survey") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-system-310.sh"; REPORT_KIND="mpc-one-system-survey" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --plugin-host (read-only 3.10.1 developer SSH, Akai app limits/threads and external plugin setup), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --hook-canary (STATE-CHANGING, data partition only, port 22 only: three small files, a udev rule and a modprobe line in Akai'"'"'s writable /etc layer and the script they run, which only log at power-on and start a short service that logs too; needs MPFREE_ACCEPT_HOOK_CANARY=YES), --hook-canary-remove (its undo: deletes them), --hook-canary-report (read-only: did the canary run at power-on, and when), --hook-install (STATE-CHANGING, data partition only, port 22 only: MPFree'"'"'s boot hook, three small files in the same places as the canary'"'"'s, which it replaces; from the next power-on, with MPFree'"'"'s stick in, the MPC soft-reboots into MPFree on the stick before Akai'"'"'s app draws; then a read-only check of the stick; needs MPFREE_ACCEPT_HOOK=YES), --hook-remove (its undo: deletes them), --hook-report (read-only: what the hook did at this power-on), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec, from 3.6.0; on the installed 3.10.1 LoadPin refuses kexec and the boot hook starts it instead; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --devmode-check (read-only on the 3.10.1 test build made with --akai-app: what Akai'"'"'s developer mode opens on port 22; only after you type LOCK, Akai'"'"'s own lock-down to your key, RAM only), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load), --devmode-trust (read-only on the MPC: records developer mode'"'"'s SSH host key in ~/.ssh/known_hosts after you type TRUST), --devmode-status (read-only: developer mode'"'"'s SSH settings and who can log in), --devmode-lock (STATE-CHANGING on /data: Akai'"'"'s own lock-down of developer mode'"'"'s SSH to your key, after you type LOCK; undoes itself if the new logins fail), --devmode-unlock (STATE-CHANGING on /data: the undo of --devmode-lock, after you type UNLOCK), --system-survey (read-only 3.10.1 facts: version, CPU, kexec, network, sound and MIDI, input, drives, screen, controller scripts).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --plugin-host (read-only 3.10.1 developer SSH, Akai app limits/threads and external plugin setup), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --hook-canary (STATE-CHANGING, data partition only, port 22 only: three small files, a udev rule and a modprobe line in Akai'"'"'s writable /etc layer and the script they run, which only log at power-on and start a short service that logs too; needs MPFREE_ACCEPT_HOOK_CANARY=YES), --hook-canary-remove (its undo: deletes them), --hook-canary-report (read-only: did the canary run at power-on, and when), --hook-install (STATE-CHANGING, data partition only, port 22 only: MPFree'"'"'s boot hook, three small files in the same places as the canary'"'"'s, which it replaces; from the next power-on, with MPFree'"'"'s stick in, the MPC soft-reboots into MPFree on the stick before Akai'"'"'s app draws; then a read-only check of the stick; needs MPFREE_ACCEPT_HOOK=YES), --hook-remove (its undo: deletes them), --hook-report (read-only: what the hook did at this power-on), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec, from 3.6.0; on the installed 3.10.1 LoadPin refuses kexec and the boot hook starts it instead; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --midi-console (read-only on the test build: MPFree'"'"'s MIDI monitor live in the terminal while Prefs > Show developer tools is on, until Ctrl-C; filters in MPFREE_MIDI_CONSOLE, e.g. "--notes --ch=10 --hex", and a port in MPFREE_MIDI_PORT), --devmode-check (read-only on the 3.10.1 test build made with --akai-app: what Akai'"'"'s developer mode opens on port 22; only after you type LOCK, Akai'"'"'s own lock-down to your key, RAM only), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load), --devmode-trust (read-only on the MPC: records developer mode'"'"'s SSH host key in ~/.ssh/known_hosts after you type TRUST), --devmode-status (read-only: developer mode'"'"'s SSH settings and who can log in), --devmode-lock (STATE-CHANGING on /data: Akai'"'"'s own lock-down of developer mode'"'"'s SSH to your key, after you type LOCK; undoes itself if the new logins fail), --devmode-unlock (STATE-CHANGING on /data: the undo of --devmode-lock, after you type UNLOCK), --system-survey (read-only 3.10.1 facts: version, CPU, kexec, network, sound and MIDI, input, drives, screen, controller scripts).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -122,12 +123,29 @@ elif [[ "${1:-}" == "--backup" ]]; then
       ;;
   esac
 elif [[ "${1:-}" == "--kexec-preflight" || "${1:-}" == "--kexec-boot" || "${1:-}" == "--app" ||
-        "${1:-}" == "--devmode-check" ]]; then
+        "${1:-}" == "--devmode-check" || "${1:-}" == "--midi-console" ]]; then
   command -v python3 >/dev/null 2>&1 || die "python3 is required for ${1:-} on workstation"
   for helper in read-only-kexec-preflight.sh offline-dtb.py host_kexec_boot.py host_app_mpc.py \
-                host_devmode_check.py; do
+                host_devmode_check.py midi_console.py; do
     [[ -r "$SCRIPT_DIR/$helper" ]] || die "missing kexec helper: $helper"
   done
+  if [[ "${1:-}" == "--midi-console" ]]; then
+    # The console's filters: each word from a fixed list, so nothing else reaches the tool's command line.
+    console_args=()
+    read -r -a console_words <<< "${MPFREE_MIDI_CONSOLE:-}"
+    for word in "${console_words[@]}"; do
+      case "$word" in
+        --notes|--cc|--program|--bend|--clock|--sysex|--mpc|--lights|--keepalive|--cv|--system|--in|--out|\
+        --hex|--from-start|--no-colour|--ch=[1-9]|--ch=1[0-6]) console_args+=("$word") ;;
+        *) die "MPFREE_MIDI_CONSOLE: $word is not a filter (--notes --cc --program --bend --clock --sysex --mpc --lights --keepalive --cv --system --in --out --ch=1..16 --hex --from-start --no-colour)" ;;
+      esac
+    done
+    if [[ -n "${MPFREE_MIDI_PORT:-}" ]]; then
+      [[ "$MPFREE_MIDI_PORT" =~ ^[A-Za-z0-9\ ._-]{1,40}$ ]] ||
+        die "MPFREE_MIDI_PORT: a port's name as the Monitor shows it (MIDI for the 5-pin jacks), letters, digits, spaces, . _ -"
+      console_args+=(--midi-port "$MPFREE_MIDI_PORT")
+    fi
+  fi
   if [[ "${1:-}" == "--kexec-boot" ]]; then
     [[ -t 0 ]] || die '--kexec-boot asks you to confirm: run it from a terminal'
     [[ "${MPFREE_ACCEPT_KEXEC_BOOT:-}" == 'YES' ]] ||
@@ -335,6 +353,8 @@ elif [[ "${1:-}" == "--kexec-boot" ]]; then
   echo "OWNER OPT-IN: kexec test boot from the USB stick (RAM only on the MPC). Log: $REPORT"
 elif [[ "${1:-}" == "--app" ]]; then
   echo "OWNER OPT-IN: mpfree on the test build (RAM only on the MPC). Log: $REPORT"
+elif [[ "${1:-}" == "--midi-console" ]]; then
+  echo "READ-ONLY on the test build: MPFree's MIDI monitor, live (Ctrl-C stops). Log: $REPORT"
 elif [[ "${1:-}" == "--hook-canary" ]]; then
   echo "OWNER OPT-IN, STATE-CHANGING on the data partition only: the boot-hook canary (three small files). Log: $REPORT"
 elif [[ "${1:-}" == "--hook-canary-remove" ]]; then
@@ -447,6 +467,15 @@ elif [[ "${1:-}" == "--app" ]]; then
       --ip "$MPC_IP" --port "$MPC_TEST_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
       --work "$work_abs" --report "$REPORT"; then
     echo "mpfree stopped early or a step failed; log: $REPORT" >&2
+    exit 1
+  fi
+elif [[ "${1:-}" == "--midi-console" ]]; then
+  # Not redirected: the lines go to the terminal as they come. The helper writes the same lines to $REPORT.
+  # It runs until Ctrl-C, at most twelve hours.
+  if ! timeout --foreground 43200 python3 -I "$SCRIPT_DIR/midi_console.py" \
+      --ip "$MPC_IP" --port "$MPC_TEST_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
+      --work "$work_abs" --report "$REPORT" "${console_args[@]}"; then
+    echo "The MIDI console stopped; log: $REPORT" >&2
     exit 1
   fi
 elif [[ "${1:-}" == "--devmode-check" ]]; then

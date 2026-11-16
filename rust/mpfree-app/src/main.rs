@@ -106,6 +106,7 @@ mod looper_tab;
 mod looping;
 mod memory;
 mod midi_in;
+mod midi_log;
 mod midi_out;
 mod midi_saved;
 mod mixing;
@@ -135,6 +136,7 @@ mod shed;
 mod skin_page;
 #[cfg(test)]
 mod smoke;
+mod step_keys;
 mod synth;
 mod sys;
 mod sysinfo;
@@ -2135,6 +2137,63 @@ fn mute_key(
     }
 }
 
+/// STEP SEQ: pad `pad` pressed as a step, `velocity` loud as it plays
+/// (step_keys.rs). ERASE held clears the step.
+fn step_press(
+    app: &app::App,
+    keys: &mut step_keys::StepKeys,
+    time: &mut time::TimeHost,
+    pad: usize,
+    velocity: u8,
+    rolling: bool,
+) -> step_keys::Pressed {
+    let Some(s) = app.step_pads() else {
+        return step_keys::Pressed::default();
+    };
+    keys.press(s, pad, velocity, app.erase_held(), rolling, time)
+}
+
+/// What a step press did: its lines, and its sound once while stopped.
+fn sound_step(
+    p: step_keys::Pressed,
+    out: &mut Out,
+    player: &mut sampler::Player,
+    synth: &mut synth::Synth,
+    synth_on: bool,
+) -> Option<app::Effect> {
+    if !p.log.is_empty() {
+        out.note(&p.log);
+    }
+    if let Some((sound, v)) = p.sound {
+        if synth_on {
+            synth.note_on(usize::from(sound), v, 0);
+        } else {
+            player.hit_at(usize::from(sound), v, 0);
+        }
+    }
+    p.tell.map(app::Effect::Tell)
+}
+
+/// A step pad let go: its line, and the sound its press played stops.
+fn let_go_of_step(
+    r: step_keys::Released,
+    out: &mut Out,
+    player: &mut sampler::Player,
+    synth: &mut synth::Synth,
+    synth_on: bool,
+) {
+    if !r.log.is_empty() {
+        out.note(&r.log);
+    }
+    if let Some(sound) = r.silence {
+        if synth_on {
+            synth.note_off(usize::from(sound), 0);
+        } else {
+            player.release_at(usize::from(sound), 0);
+        }
+    }
+}
+
 /// Resting pad colours for kit number `k` from which pads have a sound
 /// (`sampler::Player::sounds`, which follows the Sample tab's chops).
 fn sound_colours(has: [bool; 16], k: usize) -> [[u8; 3]; 16] {
@@ -4063,6 +4122,12 @@ fn player_session(
     // and the colours the mute keys show (None: the pads show as usual).
     let mut mute_pressed = [false; 16];
     let mut mute_shown: Option<[[u8; 3]; 16]> = None;
+    // STEP SEQ (step_keys.rs): the pads held as steps, the steps the pads
+    // show (kept from the last change), and the PAD BANK lights sent while
+    // they are pages.
+    let mut step_keys = step_keys::StepKeys::default();
+    let mut step_view: Option<time::StepsData> = None;
+    let mut pages_shown: Option<[u8; 4]> = None;
     // Buttons whose light is never sent, noted once each.
     let mut unlit = [false; 128];
     // Repeats per second, for the log (the paced Latch check reads these).
@@ -4097,6 +4162,22 @@ fn player_session(
         out.note(&format!("midi: setting not read: {w}"));
     }
     let mut midi_saver = midi_saved::Saver::new(&io_model);
+    // The Monitor's Save log (through the store, files/midi-logs/) and its
+    // lines in RAM for the workstation console while the developer tools
+    // are on (midi_log.rs): one thread, stopped when the session ends.
+    io_model
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .live
+        .saves_logs = store.saves();
+    let _midi_log =
+        match midi_log::Writer::start(Path::new(REPORT_DIR), io_model.clone(), store.clone()) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                out.note(&e);
+                None
+            }
+        };
     out.show(gui::ToUi::IoModel(io_model.clone()));
     // MIDI Out (midi_out.rs): tracks whose "Plays on" is the 5-pin jacks play
     // there. State-changing on the MPC (note bytes on cable 2, never SysEx),
@@ -4201,6 +4282,17 @@ fn player_session(
                 continue;
             };
             match a {
+                gui::FromUi::Pad { pad, down: true } if pad < 16 && app.pads_are_steps() => {
+                    let v = app.velocity(app.settings.screen_velocity);
+                    let rolling = time.info().state.rolling();
+                    let p = step_press(&app, &mut step_keys, &mut time, pad, v, rolling);
+                    fx.extend(sound_step(p, out, &mut player, &mut synth, synth_on));
+                }
+                gui::FromUi::Pad { pad, down: false } if pad < 16 && step_keys.held(pad) => {
+                    let r = step_keys.release(pad, &mut time);
+                    let_go_of_step(r, out, &mut player, &mut synth, synth_on);
+                    out.show(gui::ToUi::PadUp(pad));
+                }
                 gui::FromUi::Pad { pad, down: true }
                     if pad < 16 && app.mute_keys() != app::MuteKeys::Off =>
                 {
@@ -4797,6 +4889,12 @@ fn player_session(
         }
         cv_out.tick(&mut |l| out.midi(&l));
         music.sync(&io_model, mt);
+        // The Monitor's "Send note-offs to MIDI out": only the notes MPFree
+        // left on there, as STOP's panic sends them.
+        if music.take_note_offs() {
+            midi_out.all_off(0);
+            out.midi("midi out: note-offs sent for the notes still on (the Monitor asked)");
+        }
         // MIDI Learn (M5): a control that took the armed knob ends the
         // chain editor's learn; a learned control sets its parameter as a
         // chain editor knob does.
@@ -4900,6 +4998,19 @@ fn player_session(
                 }
             }
             match m.event {
+                Some(ControlEvent::PadDown { pad, velocity })
+                    if (pad as usize) < 16 && app.pads_are_steps() =>
+                {
+                    let v = app.velocity(velocity);
+                    let rolling = time.info().state.rolling();
+                    let p = step_press(&app, &mut step_keys, &mut time, pad as usize, v, rolling);
+                    fx.extend(sound_step(p, out, &mut player, &mut synth, synth_on));
+                }
+                Some(ControlEvent::PadUp { pad }) if step_keys.held(pad as usize) => {
+                    let r = step_keys.release(pad as usize, &mut time);
+                    let_go_of_step(r, out, &mut player, &mut synth, synth_on);
+                    out.show(gui::ToUi::PadUp(pad as usize));
+                }
                 Some(ControlEvent::PadDown { pad, .. })
                     if (pad as usize) < 16 && app.mute_keys() != app::MuteKeys::Off =>
                 {
@@ -5370,7 +5481,10 @@ fn player_session(
         }
         // The PAD BANK buttons found so far: the bank playing is lit, or
         // TRACK MUTE's bank while the pads mute tracks.
-        if bank_lights {
+        if bank_lights && app.pads_are_steps() {
+            // STEP SEQ's pages: sent with the step pads' lights below.
+            pages_shown = None;
+        } else if bank_lights {
             let bank = Some(if app.mute_keys() == app::MuteKeys::Tracks {
                 app.mute_bank() % 4
             } else if synth_on {
@@ -5667,7 +5781,14 @@ fn player_session(
         }
         time.clear_hits();
         if time.take_steps_changed() {
-            out.show(gui::ToUi::Steps(Box::new(time.steps())));
+            let steps = time.steps();
+            if app.step_pads().is_some() {
+                // The step pads' lights read them too.
+                step_view = Some(steps.clone());
+            } else {
+                step_view = None;
+            }
+            out.show(gui::ToUi::Steps(Box::new(steps)));
         }
         for (pad, &v) in seq_flashes.iter().enumerate().filter(|(_, v)| **v > 0) {
             out.show(gui::ToUi::PadFlash { pad, velocity: v });
@@ -5725,9 +5846,55 @@ fn player_session(
                 }
             }
         }
-        // TRACK MUTE: the pads show the mute keys in place of the sounds.
+        // STEP SEQ: the pads show the steps of the sound on them, and with
+        // Follow on, turn the page with the playhead.
         let keys = app.mute_keys();
-        if keys != app::MuteKeys::Off {
+        let step_pads = app.step_pads().filter(|_| app.pads_are_steps());
+        if app.step_pads().is_none() {
+            // Off: fetched again when they come back.
+            step_view = None;
+        }
+        if let Some(s) = step_pads {
+            let steps = step_view.get_or_insert_with(|| time.steps());
+            let playing = step_keys::playing(steps, time.info().position);
+            if let Some(p) = playing.filter(|_| s.follow) {
+                fx.extend(app.follow_page(p / app::step_pads::PAGE));
+            }
+            let sound = usize::from(s.sound);
+            let colour = akai::hit_colour(if rest[sound] == [0; 3] {
+                akai::kit_colour(player.kit())
+            } else {
+                rest[sound]
+            });
+            let want = step_keys::colours(steps.clip.as_ref(), s, colour, playing);
+            for pad in 0..16 {
+                if mute_shown.is_none_or(|s| s[pad] != want[pad]) {
+                    ports.send(false, &akai::pad_colour(pad as u8, want[pad]))?;
+                }
+            }
+            mute_shown = Some(want);
+            // The PAD BANK lights: the page shown, and the page playing
+            // blinks (twice a second).
+            let playing_page = playing.map(|p| p / app::step_pads::PAGE);
+            let blink = ((t * 4.0) as u64).is_multiple_of(2);
+            let pages = step_keys::bank_lights(s.page, playing_page, blink);
+            if pages_shown != Some(pages) {
+                for (b, note) in app.map.bank.iter().enumerate() {
+                    let Some(note) = *note else { continue };
+                    if pages_shown.is_some_and(|w| w[b] == pages[b]) || !akai::app_lights(note) {
+                        continue;
+                    }
+                    let light = akai::button_light(note, pages[b]);
+                    if cv_out.light(&light) {
+                        ports.tap(true, &light);
+                    } else {
+                        ports.send(true, &light)?;
+                    }
+                }
+                pages_shown = Some(pages);
+            }
+        } else if keys != app::MuteKeys::Off {
+            pages_shown = None;
             let kit = player.kit();
             let first = app.mute_bank() * 16;
             let track = |t: usize| time.muted(first + t).map(|m| (m, time.launched(first + t)));
@@ -5744,6 +5911,7 @@ fn player_session(
             }
             mute_shown = Some(want);
         } else if mute_shown.take().is_some() {
+            pages_shown = None;
             // Left: the pads' own colours again, lit below where they play.
             ports.send_batch(
                 out,

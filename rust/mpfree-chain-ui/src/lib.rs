@@ -154,20 +154,29 @@ pub fn chain_picking(ui: &Ui) -> bool {
 
 /// The chain editor's hint line: [`PICKER_HINT`] while the effect picker
 /// is open, [`STRIPS_HINT`] while the strip list is, [`EQ_SOLO_HINT`] on
-/// the EQ's page while Solo band is on, [`EQ_HINT`] on it otherwise, else
-/// [`CHAIN_HINT`].
+/// the EQ's page while Solo band is on, [`EQ_HINT`] on it otherwise, what
+/// the choice means while a control that explains its choices is the one
+/// touched (a delay's or reverb's Mix curve: [`mpfree_fx::control_hint`]),
+/// else [`CHAIN_HINT`].
 pub fn chain_hint(ui: &Ui) -> &'static str {
-    match ui.get::<ChainView>(CHAIN) {
-        Some(v) if v.state().picking => PICKER_HINT,
-        Some(v) if v.state().list.is_some() => STRIPS_HINT,
-        Some(v) if v.state().eq && v.state().selected.is_some() => {
-            if v.eq_page().listening().is_some() {
-                EQ_SOLO_HINT
-            } else {
-                EQ_HINT
-            }
+    let Some(v) = ui.get::<ChainView>(CHAIN) else {
+        return CHAIN_HINT;
+    };
+    let st = v.state();
+    if st.picking {
+        PICKER_HINT
+    } else if st.list.is_some() {
+        STRIPS_HINT
+    } else if st.eq && st.selected.is_some() {
+        if v.eq_page().listening().is_some() {
+            EQ_SOLO_HINT
+        } else {
+            EQ_HINT
         }
-        _ => CHAIN_HINT,
+    } else {
+        st.focused()
+            .and_then(|p| mpfree_fx::control_hint(p.info.name, p.value))
+            .unwrap_or(CHAIN_HINT)
     }
 }
 

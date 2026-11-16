@@ -479,6 +479,8 @@ pub struct PlayPage {
     /// The XY pad's logic: the Perform FX pad (the DJ filter across, the
     /// echo up), gliding home when the finger lifts.
     pub xy: mpfree_fx::XyPad,
+    /// STEP SEQ: the sound whose steps the pads are, and their page.
+    pub on_pads: Option<crate::app::StepPads>,
 }
 
 impl Default for PlayPage {
@@ -505,6 +507,7 @@ impl Default for PlayPage {
             hits: VecDeque::new(),
             throws: [false; 8],
             xy: mpfree_fx::XyPad::perform(),
+            on_pads: None,
         }
     }
 }
@@ -916,7 +919,11 @@ impl PlayPage {
         self.steps = s;
         let n = self.steps.clip.as_ref().map_or(16, |c| c.steps);
         let pages = n.div_ceil(PAGE).max(1);
-        self.page = self.page.min(pages - 1);
+        self.page = match self.on_pads {
+            // A clip grown to reach the pads' page shows it.
+            Some(p) => p.page.min(pages - 1),
+            None => self.page.min(pages - 1),
+        };
     }
 
     pub fn hit(&mut self, h: HitInfo) {
@@ -945,12 +952,21 @@ impl PlayPage {
         let clip = self.steps.clip.as_ref();
         let has_notes = |p: usize| clip.is_some_and(|c| c.row(p as u8).iter().any(Option::is_some));
         let has_sound = |p: usize| self.pads.get(p).is_some_and(|i| i.label.is_some());
-        let mut order: Vec<usize> = (0..16).filter(|&p| has_notes(p)).collect();
-        if !order.contains(&self.last_pad) && has_sound(self.last_pad) {
-            order.push(self.last_pad);
+        // The lane on the pads comes first, so it always shows.
+        let on_pads = self.on_pads.map(|s| usize::from(s.sound));
+        let mut wanted: Vec<usize> = on_pads.into_iter().collect();
+        wanted.extend((0..16).filter(|&p| has_notes(p)));
+        if has_sound(self.last_pad) {
+            wanted.push(self.last_pad);
         }
-        order.extend((0..16).filter(|&p| has_sound(p) && !has_notes(p) && p != self.last_pad));
-        order.extend((0..16).filter(|&p| !has_sound(p) && !has_notes(p) && p != self.last_pad));
+        wanted.extend((0..16).filter(|&p| has_sound(p) && !has_notes(p) && p != self.last_pad));
+        wanted.extend((0..16).filter(|&p| !has_sound(p) && !has_notes(p) && p != self.last_pad));
+        let mut order: Vec<usize> = Vec::with_capacity(16);
+        for p in wanted {
+            if !order.contains(&p) {
+                order.push(p);
+            }
+        }
         let from = self.page * PAGE;
         order
             .into_iter()
@@ -981,7 +997,11 @@ impl PlayPage {
         let bars = clip.map_or(1, |c| c.steps.div_ceil(16).max(1));
         let pages = clip.map_or(1, |c| c.steps.div_ceil(PAGE).max(1));
         let mut right = format!("1/16 · {bars} bar{}", if bars == 1 { "" } else { "s" });
-        if clip.is_none() {
+        if let Some(s) = self.on_pads {
+            // STEP SEQ: which page the pads are, and its PAD BANK.
+            let letter = (b'A' + (s.page % 4) as u8) as char;
+            right.push_str(&format!(" · pads: page {} · BANK {letter}", s.page + 1));
+        } else if clip.is_none() {
             right.push_str(" · tap a step to start one");
         } else if self.view == PlayView::Beats {
             right.push_str(" · tap a step to edit it");
@@ -1021,6 +1041,26 @@ impl PlayPage {
         if (g.page, g.pages, g.length) != (self.page, pages, length) {
             (g.page, g.pages, g.length) = (self.page, pages, length);
         }
+        let on_pads = self.on_pads.map(|s| usize::from(s.sound));
+        if g.on_pads != on_pads {
+            g.on_pads = on_pads;
+        }
+    }
+
+    /// STEP SEQ turned on or off, or its sound or page changed: Beats
+    /// shows the page the pads are, as far as the clip goes. True when
+    /// the page shown moved.
+    pub fn set_on_pads(&mut self, s: Option<crate::app::StepPads>) -> bool {
+        self.on_pads = s;
+        let Some(s) = s else { return false };
+        let n = self.steps.clip.as_ref().map_or(PAGE, |c| c.steps);
+        let to = s.page.min(n.div_ceil(PAGE).max(1) - 1);
+        let moved = to != self.page;
+        if moved {
+            self.page = to;
+            self.selected = None;
+        }
+        moved
     }
 
     /// The pattern head's ‹ or › (`delta` -1 or 1): the page before or
