@@ -46,6 +46,35 @@ pub const MPC_ONE: Unit = Unit {
     layout: "1by4",
 };
 
+/// The highest `Parameter N` any of a plugin folder's skin files names,
+/// plus one (at least 16): how many parameters to draw a skin with when
+/// the plugin itself isn't loaded (a preview).
+pub fn guess_params(dir: &Path) -> usize {
+    let mut n = 16;
+    let Ok(rd) = std::fs::read_dir(dir.join("Plugin Skins")) else {
+        return n;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(s) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        for (i, _) in s.match_indices("Parameter ") {
+            let d: String = s[i + 10..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(k) = d.parse::<usize>() {
+                n = n.max(k + 1);
+            }
+        }
+    }
+    n
+}
+
 /// A plugin folder's skin, read for `unit`. `Ok(None)`: the folder has no
 /// skin (no `Plugin Skins/` or no `TUI.json`), and the MPC would show its
 /// default pages. `Err`: a `TUI.json` that doesn't parse (the MPC then shows

@@ -114,6 +114,8 @@ mod parts;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod plugin_page;
+mod plugin_store;
 mod plugins;
 mod port_writer;
 mod power;
@@ -4440,6 +4442,19 @@ fn player_session(
                         drop(old);
                         out.note("project: two opens going back; one freed on the audio thread");
                     }
+                }
+                // A plugin installed from BROWSE's Plugins place: the Synth
+                // tab offers the rack's plugin synths again, and their skins.
+                gui::FromUi::PluginsChanged => {
+                    app.plugin_synths = found_plugins
+                        .instruments()
+                        .map(|e| (e.node_id, e.name))
+                        .collect();
+                    out.show(gui::ToUi::PluginFolders(skin_page::folders(&found_plugins)));
+                    out.note(&format!(
+                        "plugins: {} offered after an install",
+                        found_plugins.entries().len()
+                    ));
                 }
                 gui::FromUi::SaveBrowserLists(text) => {
                     if !store.saves() {

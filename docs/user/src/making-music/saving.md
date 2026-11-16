@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-store rust/mpfree-library rust/mpfree-browser-ui rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/arp/part.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-16 d653b57
 -->
 
 # Saving your work
@@ -102,7 +102,7 @@ MPFree starts with a new, empty project. To have it open the project you last sa
 
 **BROWSE** opens the browser over the page you are on, and pressing it again goes back to that page. It is a full file manager for MPFree's stick:
 
-- **Places** on the left: Projects, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, and Factory (read-only kits).
+- **Places** on the left: Projects, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, and Factory (read-only kits). **Plugins** finds and installs MPC plugins (see [Getting plugins](plugins.md)).
 - **The list** in the middle, folders first, in natural order (Kick 2 before Kick 10), with filters for audio, projects and kits.
 - **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load, Load to pad, Audition, Favourite, Rename, Copy, Cut and Delete.
 

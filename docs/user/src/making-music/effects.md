@@ -171,9 +171,10 @@ MPFree can also use plugin effects built for the MPC One's ARM chip, of two kind
 
 Plugins made for a computer (Windows, macOS or ordinary Linux PCs) won't run on it.
 
-1. Put the plugins on the MPFREE-DATA partition of your MPFree stick, in the folder `files/plugins/`. For an MPC plugin, copy its whole folder there. These work too: the folder you unzipped from a catalog download (MPFree looks inside its `portable` folder), or a `VST2 Plugins` folder copied from an MPC drive.
-2. Start MPFree. The plugins' effects join the list you add effects from, under **Plugins** after the built-in ones, each with its maker's name.
-3. Add one to a strip as you would any effect. Its knobs show in the chain editor, in the plugin's own groups, and the Q-Links, macros and MIDI Learn work on them.
+1. For an MPC plugin from the Open MPC catalog, the easiest way is the **Plugins** place in BROWSE, which downloads and installs it for you, or installs a zip you copied to the stick (see [Getting plugins](plugins.md)).
+2. Or put the plugins on the MPFREE-DATA partition of your MPFree stick yourself, in the folder `files/plugins/`, and start MPFree. For an MPC plugin, copy its whole folder there. These work too: the folder you unzipped from a catalog download (MPFree looks inside its `portable` folder), or a `VST2 Plugins` folder copied from an MPC drive.
+3. The plugins' effects join the list you add effects from, under **Plugins** after the built-in ones, each with its maker's name.
+4. Add one to a strip as you would any effect. Its knobs show in the chain editor, in the plugin's own groups, and the Q-Links, macros and MIDI Learn work on them.
 
 Each plugin runs on its own, apart from the rest of MPFree, so a plugin that crashes or freezes can't stop the music:
 
@@ -190,7 +191,7 @@ An MPC plugin effect's own screen (its skin) isn't drawn in the chain editor yet
 A plugin's settings are saved with your project. If you open the project on a stick without that plugin, the effect is left out and the Events log names the plugin's file. Plugin synths play as a track's own instrument (see [Synths](synths.md#a-synth-for-each-track)).
 
 > [!NOTE]
-> **Not yet:** MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming. MPC plugins are never included: you choose and download the ones you want.
+> **Not yet:** MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming. MPC plugins are never included: you choose the ones you want, in [Getting plugins](plugins.md).
 
 ## Coming next
 
