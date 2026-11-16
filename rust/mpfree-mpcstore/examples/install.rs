@@ -48,7 +48,11 @@ fn main() {
             ),
             None => println!("{z}: not in the catalog (SHA-256 {sum})"),
         }
-        match install::install(&bytes, dest, known.map(|(_, r)| r.sha256.as_str())) {
+        let from = known.map_or(install::Origin::default(), |(p, r)| install::Origin {
+            id: &p.id,
+            version: &r.version,
+        });
+        match install::install(&bytes, dest, known.map(|(_, r)| r.sha256.as_str()), from) {
             Ok(done) => {
                 for d in done {
                     println!(

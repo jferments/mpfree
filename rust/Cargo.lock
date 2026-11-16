@@ -388,6 +388,7 @@ dependencies = [
  "mpfree-mixer-ui",
  "mpfree-mod",
  "mpfree-mpcskin",
+ "mpfree-mpcstore",
  "mpfree-node",
  "mpfree-perform",
  "mpfree-play",

@@ -7,7 +7,7 @@
 //! publish. Prints each file with the skin's warnings.
 
 use mpfree_mpcskin::handle::Params;
-use mpfree_mpcskin::view::{load, View, MPC_ONE, TAB_H, TAB_W};
+use mpfree_mpcskin::view::{guess_params, load, View, MPC_ONE, TAB_H, TAB_W};
 use mpfree_ui::{Rect, SoftCanvas};
 use std::path::Path;
 
@@ -29,33 +29,6 @@ impl Params for Middle {
     fn text(&self, _: usize) -> String {
         format!("{:.2}", self.v)
     }
-}
-
-/// The highest `Parameter N` any skin file names, plus one.
-fn guess_params(dir: &Path) -> usize {
-    let mut n = 16;
-    let Ok(rd) = std::fs::read_dir(dir.join("Plugin Skins")) else {
-        return n;
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(s) = std::fs::read_to_string(&p) else {
-            continue;
-        };
-        for (i, _) in s.match_indices("Parameter ") {
-            let d: String = s[i + 10..]
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(k) = d.parse::<usize>() {
-                n = n.max(k + 1);
-            }
-        }
-    }
-    n
 }
 
 fn main() {

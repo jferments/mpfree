@@ -235,3 +235,33 @@ fn the_rack_finds_mpc_plugins_where_people_unpack_them() {
     assert!(!values.is_empty() && texts.len() == values.len());
     let _ = std::fs::remove_dir_all(&r);
 }
+
+#[test]
+fn a_plugin_installed_while_running_is_offered_at_once() {
+    let r = root("add");
+    // No plugins at start: the rack still keeps the plugin process.
+    let (mut rack, notes) = Rack::scan(Program::new(&exe()), &r, "plugins/");
+    rack.set_deadline(PATIENT);
+    assert!(rack.entries().is_empty() && notes.is_empty(), "{notes:?}");
+    let d = portable(&r, "MPFree Tests - VST - Test Delay", false);
+    let (found, lines) = rack.add(&d).expect("add");
+    assert_eq!(found.len(), 1, "{lines:?}");
+    assert_eq!(found[0].node_id, "mpc:MTdl.test-delay");
+    assert!(lines.iter().any(|l| l.contains("added from")), "{lines:?}");
+    assert_eq!(rack.effects().count(), 1);
+    assert!(rack.find("mpc:MTdl.test-delay").is_some());
+    let mut fx = rack.make("mpc:MTdl.test-delay").expect("make");
+    fx.prepare(RATE, 128);
+    assert!(render(fx.as_mut(), &[], 4).iter().any(|v| v.abs() > 1e-3));
+    // Installed again (an update in place): the same entry, not a second.
+    let (again, _) = rack.add(&d).expect("add again");
+    assert_eq!(again[0].node_id, "mpc:MTdl.test-delay");
+    assert_eq!(rack.entries().len(), 1);
+    // Not a plugin: refused with the reason.
+    let bad = r.join("Broken - VST - Nope");
+    std::fs::create_dir_all(&bad).unwrap();
+    std::fs::write(bad.join("nope.so"), b"not ELF").unwrap();
+    assert!(rack.add(&bad).unwrap_err().contains("left out"));
+    assert_eq!(rack.entries().len(), 1);
+    let _ = std::fs::remove_dir_all(&r);
+}

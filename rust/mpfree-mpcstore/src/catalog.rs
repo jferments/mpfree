@@ -55,6 +55,11 @@ pub struct Release {
     pub depends: Vec<String>,
     /// The catalog's CPU bench verdict (`PASS`, `WARN`, `FAIL`) or empty.
     pub cpu: String,
+    /// Its share of a core at the 99th percentile, in the catalog's bench.
+    pub cpu_pct: Option<f32>,
+    /// The name of the plugin folder in the zip (the folder it gets in
+    /// `files/plugins/`), or empty when the catalog doesn't say.
+    pub folder: String,
 }
 
 /// Whether MPFree on an MPC One can run a plugin.
@@ -115,6 +120,15 @@ fn release(v: &Json) -> Option<Release> {
             .filter_map(|d| d.at("id").as_str().map(str::to_string))
             .collect(),
         cpu: v.at("cpu").at("verdict").str_or_empty().to_string(),
+        cpu_pct: v.at("cpu").at("p99_pct").as_f64().map(|p| p as f32),
+        folder: v
+            .at("manifest")
+            .at("folder")
+            .str_or_empty()
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
@@ -189,6 +203,15 @@ impl Catalog {
         })
     }
 
+    /// The plugin whose release unpacks to this folder name.
+    pub fn by_folder(&self, folder: &str) -> Option<&Plugin> {
+        self.plugins.iter().find(|p| {
+            p.release
+                .as_ref()
+                .is_some_and(|r| !r.folder.is_empty() && r.folder == folder)
+        })
+    }
+
     pub fn get(&self, id: &str) -> Option<&Plugin> {
         self.plugins.iter().find(|p| p.id == id)
     }
@@ -212,7 +235,8 @@ pub(crate) mod tests {
          "latest": "1.0.0", "versions": [
            {"version": "1.1.0-beta", "channel": "beta", "assets": {"armv7": {"url": "https://e/b.zip", "sha256": "bb", "size": 1}}},
            {"version": "1.0.0", "channel": "stable", "date": "2026-10-01", "requires": "",
-            "cpu": {"verdict": "PASS"}, "depends": [{"id": "helper", "rules": []}],
+            "cpu": {"verdict": "PASS", "p99_pct": 4.5}, "depends": [{"id": "helper", "rules": []}],
+            "manifest": {"folder": "portable/Airwindows - VST - Density2"},
             "assets": {"armv7": {"url": "https://e/d.zip", "sha256": "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789", "size": 92100},
                        "aarch64": {"url": "https://e/d64.zip", "sha256": "00", "size": 2}}}
          ]},
@@ -244,6 +268,8 @@ pub(crate) mod tests {
         assert_eq!(r.size, 92100);
         assert_eq!(r.depends, ["helper"]);
         assert_eq!(r.cpu, "PASS");
+        assert_eq!(r.cpu_pct, Some(4.5));
+        assert_eq!(r.folder, "Airwindows - VST - Density2");
         assert_eq!(c.get("big").unwrap().fit, Fit::Gen2Only);
         assert_eq!(c.get("link").unwrap().fit, Fit::AddIn);
         assert!(c.get("link").unwrap().release.is_none());

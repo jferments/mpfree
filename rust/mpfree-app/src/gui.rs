@@ -798,6 +798,9 @@ pub enum FromUi {
     /// The browser's Recent and Favourites changed: keep this text in the
     /// store.
     SaveBrowserLists(String),
+    /// A plugin was installed from BROWSE's Plugins place: offer the rack's
+    /// plugin synths and skins again.
+    PluginsChanged,
     Kit(usize),
     /// The master bar dragged: the master fader, dB.
     LevelDb(f32),
@@ -1066,6 +1069,11 @@ pub struct Player {
     /// The plugins an open makes a project's plugin effects and synths
     /// with ([`ToUi::Plugins`]; none until then).
     project_plugins: std::sync::Arc<crate::plugins::Plugins>,
+    /// BROWSE's Plugins place: the Open MPC catalog, installed plugins and
+    /// zips on the stick (plugin_page.rs).
+    plugin_page: crate::plugin_page::PluginPage,
+    /// The hint line shows the Plugins place's.
+    plugins_hinted: bool,
     /// What each track plays ([`ToUi::TrackSounds`]), written under its
     /// name on Arrange.
     track_sounds: TrackSounds,
@@ -1425,6 +1433,8 @@ impl Player {
             io_model: None,
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
+            plugin_page: crate::plugin_page::PluginPage::new(),
+            plugins_hinted: false,
             track_sounds: [None; crate::instruments::TRACKS],
             start_checked: false,
             crashed: false,
@@ -2626,6 +2636,9 @@ impl Player {
                         .is_some_and(|b| b.export_panel().is_some() && b.picking().is_none()) =>
                 {
                     mpfree_browser_ui::EXPORT_HINT.to_string()
+                }
+                View::Browser if self.browser.as_ref().is_some_and(|b| b.plugins_shown()) => {
+                    mpfree_browser_ui::PLUGINS_HINT.to_string()
                 }
                 View::Browser => mpfree_browser_ui::BROWSER_HINT.to_string(),
             }
@@ -4685,6 +4698,12 @@ impl Player {
         for a in mpfree_browser_ui::step(&mut self.ui, b) {
             self.browse_action(a);
         }
+        // The Plugins place has its own hint line.
+        let plugins = self.browser.as_ref().is_some_and(|b| b.plugins_shown());
+        if plugins != self.plugins_hinted {
+            self.plugins_hinted = plugins;
+            self.refresh_hint();
+        }
     }
 
     fn browse_action(&mut self, a: mpfree_browser_ui::BrowseAction) {
@@ -4725,6 +4744,24 @@ impl Player {
                     job.cancel();
                 }
             }
+            // BROWSE's Plugins place (plugin_page.rs).
+            A::Plugins(pi) => {
+                let Some(b) = self.browser.as_ref() else {
+                    return;
+                };
+                let rows = b.plugin_rows();
+                if pi == mpfree_browser_ui::PluginInput::Shown {
+                    // `files/plugins/` beside the library in the data folder.
+                    self.plugin_page.set_dir(
+                        b.library()
+                            .root()
+                            .parent()
+                            .map(|d| d.join("files").join(crate::plugins::PLUGINS_FOLDER)),
+                    );
+                }
+                self.plugin_page.input(pi, rows, &self.project_plugins);
+                self.show_plugins();
+            }
             // The Pads tab's browser offers sounds only; anything else
             // is said, never dropped quietly.
             other => self.say(format!(
@@ -4735,6 +4772,27 @@ impl Player {
                     _ => "a project",
                 }
             )),
+        }
+    }
+
+    /// The Plugins place as it stands, to the browser.
+    fn show_plugins(&mut self) {
+        if let Some(b) = self.browser.as_mut() {
+            b.set_plugins(self.plugin_page.screen());
+            if b.plugins_shown() {
+                mpfree_browser_ui::show(&mut self.ui, b);
+            }
+        }
+    }
+
+    /// The Plugins place's worker: a download's progress, an install done
+    /// (the app then offers the new plugin).
+    fn poll_plugins(&mut self) {
+        if self.plugin_page.poll() {
+            self.show_plugins();
+        }
+        if self.plugin_page.take_changed() {
+            self.outbox.push(FromUi::PluginsChanged);
         }
     }
 
@@ -5830,6 +5888,7 @@ impl Player {
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
                 | FromUi::SaveBrowserLists(_)
+                | FromUi::PluginsChanged
                 | FromUi::SaveProject
                 | FromUi::OpenProject(_)
                 | FromUi::OpenLoops(_)
@@ -6731,6 +6790,7 @@ impl Player {
         }
         self.poll_export();
         self.poll_prints();
+        self.poll_plugins();
         self.poll_preview();
         self.poll_loops();
         self.poll_audio();
@@ -8364,6 +8424,39 @@ fn browser_projects(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The whole browser (BROWSE) in its Plugins place: a made-up catalog
+/// with two plugins installed and a zip on the stick, Mono Bass picked
+/// (installed, an update out), its own screen drawn from the test skin. Nothing is fetched or written. For
+/// the manual's plugins chapter.
+fn browser_plugins(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-plugins-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let folder = mpfree_mpcskin::testing::write_plugin(&dir).map_err(|e| e.to_string())?;
+        let picture = crate::plugin_store::draw_tab(&folder, 0)
+            .ok()
+            .map(std::sync::Arc::new);
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.plugin_page = crate::plugin_page::PluginPage::sample(picture);
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("Plugins"));
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The I/O view's Sync section's title.
 const IO_SYNC: &str = mpfree_midi_ui::SYNC;
 
@@ -9123,6 +9216,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_projects(fonts()) {
         Ok(browser) => out.push(("browser", browser)),
         Err(e) => eprintln!("browser: not drawn ({e})"),
+    }
+    // The browser's Plugins place over a made-up catalog.
+    match browser_plugins(fonts()) {
+        Ok(plugins) => out.push(("browser-plugins", plugins)),
+        Err(e) => eprintln!("browser-plugins: not drawn ({e})"),
     }
     // The Chop tab on the same pad: chopped at its hits, slice 3 picked.
     let mut chop = sample_sampler(fonts());
@@ -13064,6 +13162,62 @@ mod tests {
                 .any(|l| l.starts_with("sample: the project's kits weren't opened"))
         });
         assert!(q.sample.project(0).unwrap().pad(pad).is_some());
+    }
+
+    /// BROWSE's Plugins place through the browser and the worker, on a
+    /// scratch data folder: its own hint line, a zip on the stick that is
+    /// not a plugin flagged, and Delete zip asked twice.
+    #[test]
+    fn the_plugins_place_lists_the_stick_and_deletes_a_zip_on_the_second_tap() {
+        use mpfree_browser_ui::sample::source;
+        use mpfree_browser_ui::{Input, PluginButton, PluginInput, PluginsView};
+        let dir = std::env::temp_dir().join(format!("mpfree-plugins-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let plugins = dir.join("files").join(crate::plugins::PLUGINS_FOLDER);
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join("notes.zip"), b"not a zip").unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.plugin_page = crate::plugin_page::PluginPage::without_fetching();
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        p.browser.as_mut().unwrap().go_source(source("Plugins"));
+        p.step_browser();
+        assert_eq!(
+            p.ui.get::<Label>("hint").unwrap().text,
+            mpfree_browser_ui::PLUGINS_HINT
+        );
+        let send = |p: &mut Player, i: PluginInput| {
+            p.browser.as_mut().unwrap().input(Input::Plugins(i));
+            p.step_browser();
+        };
+        let shown = |p: &Player| p.browser.as_ref().unwrap().screen().plugins.unwrap();
+        send(&mut p, PluginInput::View(PluginsView::OnStick));
+        tick_until(&mut p, |p| !shown(p).rows.is_empty());
+        let s = shown(&p);
+        assert_eq!(s.rows[0].name, "notes.zip");
+        assert_eq!(s.rows[0].tag, "Can't install");
+        assert!(s.detail.note.contains("not a zip"), "{}", s.detail.note);
+        assert!(!s.detail.buttons.contains(&PluginButton::InstallZip));
+        send(&mut p, PluginInput::Button(PluginButton::DeleteZip));
+        assert!(shown(&p)
+            .detail
+            .buttons
+            .contains(&PluginButton::ConfirmDeleteZip));
+        assert!(plugins.join("notes.zip").exists(), "not on the first tap");
+        send(&mut p, PluginInput::Button(PluginButton::ConfirmDeleteZip));
+        tick_until(&mut p, |p| shown(p).rows.is_empty());
+        assert!(!plugins.join("notes.zip").exists());
+        assert_eq!(shown(&p).status, "Deleted notes.zip");
+        // Another place: the browser's own hint line again.
+        p.browser.as_mut().unwrap().go_source(source("Samples"));
+        p.step_browser();
+        assert_eq!(
+            p.ui.get::<Label>("hint").unwrap().text,
+            mpfree_browser_ui::BROWSER_HINT
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// BROWSE, SHIFT + BROWSE, Open and New project through the screen, on

@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-mpchost rust/mpfree-mpchost-testplug rust/mpfree-plughost/src/child.rs rust/mpfree-plughost/src/rack.rs tools/mpc-plugins/catalog-check.sh tools/mpc-plugins/catalog-check.txt
-checked: 2026-11-15 d58eb51
+checked: 2026-11-16 d653b57
 -->
 
 # MPC plugins in MPFree
@@ -9,7 +9,7 @@ checked: 2026-11-15 d58eb51
 
 MPC OS 3.10.1 loads third-party instruments and effects: Linux shared libraries that speak the VST 2.4 binary interface and export one symbol, `VSTPluginMain`, each in a plugin folder with its skins. The [Open MPC catalog](https://open-mpc.github.io) lists a few hundred of them, most with source. [`rust/mpfree-mpchost`](../../../rust/mpfree-mpchost) loads them as `mpfree_node::Node`s, and the [sandbox](plugins.md#p2-the-sandbox) runs each in its own process, as it runs CLAP plugins. Nothing is ported or rebuilt: the same `.so` an MPC loads is what MPFree loads. This is the other direction from [MPFree engines as MPC plugins](../guides/mpc-plugins.md) (`rust/mpfree-mpcplug`), and both use the same clean-room description of the interface (`mpfree_mpcplug::abi`, written from the inMusic SDK's MIT `mpc_vst2_abi.h`; no Steinberg header).
 
-MPFree never bundles these plugins. People download the ones they want and copy them to `files/plugins/` (Jay, 15 Nov). Hosting a binary the user installed puts no licence duty on MPFree.
+MPFree never bundles these plugins. People pick the ones they want: BROWSE's Plugins place downloads and installs them from the catalog, or from zips copied to the stick ([Installing MPC plugins](mpc-plugin-store.md)), or they copy folders to `files/plugins/` by hand (Jay, 15 Nov). Hosting a binary the user installed puts no licence duty on MPFree.
 
 ## Finding plugins
 
@@ -23,7 +23,7 @@ MPFree never bundles these plugins. People download the ones they want and copy 
 
 With none of them, a folder holding exactly one `.so` is that plugin. MPC plugins are always folders: a loose `.so` could be a CLAP plugin (MPFree's own CLAP test plugin is one), so it is left to CLAP. The library's path must stay inside the folder, as the MPC requires. A JSON reader of our own ([`json.rs`](../../../rust/mpfree-mpchost/src/json.rs)) reads the top-level strings, numbers and booleans; no new dependency.
 
-`find(dir)` looks where people unpack plugins: plugin folders straight in `files/plugins/`, the folders inside a copied `VST2 Plugins/` or `Synths/` folder, and a catalog release folder's `portable/`. Nothing deeper. The rack ([`rack.rs`](../../../rust/mpfree-plughost/src/rack.rs)) lists them after the `.clap` files, each through `mpfree-plughost --list` so a plugin that crashes on load costs only that process.
+`find(dir)` looks where people unpack plugins: plugin folders straight in `files/plugins/`, the folders inside a copied `VST2 Plugins/` or `Synths/` folder, and a catalog release folder's `portable/`. Nothing deeper. The rack ([`rack.rs`](../../../rust/mpfree-plughost/src/rack.rs)) lists them after the `.clap` files, each through `mpfree-plughost --list` so a plugin that crashes on load costs only that process. `Rack::add` lists a folder installed while MPFree runs the same way and offers it at once (the Plugins place calls it after an install).
 
 ## Ids
 
