@@ -22,8 +22,8 @@ Each step is shown on screen with its instruction. Jay taps **Start** on the scr
 | `drag_stop` | 10 s | Drags slowly, stops a second, lifts; twice | At least 2 drags, no swipes |
 | `swipes` | 12 s | Swipes quickly left, right, up, down | At least one swipe each way |
 | `fling` | 10 s | Flicks the list up and down | At least 2 releases at swipe speed or faster |
-| `hold_centre` | 12 s | Holds the centre dot 10 s | One contact held at least 5 s; jitter recorded |
-| `hold_corner` | 12 s | Holds the top-left dot 10 s | As above |
+| `hold_centre` | 15 s | Holds the centre dot 10 s | One contact held at least 5 s; jitter recorded |
+| `hold_corner` | 15 s | Holds the top-left dot 10 s | As above |
 | `pad_and_swipe` | 10 s | Holds a screen pad and swipes the page with the other hand | At least one swipe and no two-finger gesture |
 
 A "fail" isn't a device problem. It says the gesture settings and Jay's hand disagreed, and the gesture lines show by how much.
