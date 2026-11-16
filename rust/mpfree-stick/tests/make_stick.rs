@@ -129,7 +129,15 @@ fn makes_a_stick_the_hook_takes() {
         .unwrap()
         .is_some());
     let start = String::from_utf8(read(&root, "/etc/mpfree-test/start-app.sh")).unwrap();
-    assert!(start.contains(" --keep-screen --data /run/mpfree-data\n"));
+    assert!(start.contains(
+        " --keep-screen --data /run/mpfree-data --power-request /run/mpfree-app/power-request\n"
+    ));
+    assert!(
+        root.lookup("/etc/systemd/system/sysinit.target.wants/mpfree-test-power.path")
+            .unwrap()
+            .is_some(),
+        "the power card's shut down and restart work on creator sticks too"
+    );
     assert_eq!(read(&root, "/usr/bin/tool-too"), b"tool");
     let tool = root.lookup("/usr/bin/tool").unwrap().unwrap();
     assert_eq!(tool.links, 2, "the hard link stays one file");

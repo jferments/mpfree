@@ -1951,6 +1951,12 @@ impl Browser {
         self.actions.push(BrowseAction::NewProject);
     }
 
+    /// The status line now, and whether it is an error: what a save that
+    /// didn't land said, say.
+    pub fn status_line(&self) -> Option<(&str, bool)> {
+        self.status.as_ref().map(|(t, bad)| (t.as_str(), *bad))
+    }
+
     /// Whether the work has changed since it was last saved or opened.
     pub fn unsaved(&self) -> bool {
         self.unsaved

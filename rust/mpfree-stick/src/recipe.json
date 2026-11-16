@@ -68,6 +68,10 @@
    "mode": 493,
    "placeholder": "@STARTUP@"
   },
+  "/etc/mpfree-test/power.sh": {
+   "mode": 493,
+   "text": "#!/bin/sh\n# MPFree test boot: shut down or restart, as the pad player's power card asked (one word in /run/mpfree-app/power-request).\n# Only `poweroff` and `restart` are acted on. The file is in the pad player's own folder, so it is never\n# followed if it is a link, and its content is never printed.\nf=/run/mpfree-app/power-request\n[ -e \"$f\" ] || [ -L \"$f\" ] || exit 0\nword=\nif [ -f \"$f\" ] && [ ! -L \"$f\" ]; then\n  IFS= read -r word < \"$f\" || :\nfi\nrm -f \"$f\"\ncase \"$word\" in\n  poweroff) target=poweroff.target ;;\n  restart) target=reboot.target ;;\n  *)\n    echo \"mpfree-test-power: ignored a request that was not poweroff or restart\" > /dev/kmsg\n    exit 0\n    ;;\nesac\necho \"mpfree-test-power: the pad player asked for $word\" > /dev/kmsg\n# A note on the stick's log partition, where the log service keeps this boot's logs, so the next boot can\n# show how this one ended. Nothing else is written.\nd=/run/mpfree-log/boot-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\nif [ -d \"$d\" ]; then\n  { echo \"asked: $word\"; cat /proc/uptime; } > \"$d/power.txt\" 2>&1\n  journalctl -b --no-pager -o short-monotonic > \"$d/journal.txt\" 2>&1\nfi\nsync\nexec systemctl --no-block --job-mode=replace-irreversibly start \"$target\"\n"
+  },
   "/etc/mpfree-test/save-logs.sh": {
    "mode": 493,
    "text": "#!/bin/sh\n# MPFree kexec test boot: copy logs to the stick's log partition (and nothing else).\ndev=/dev/disk/by-partuuid/@LOG_UUID@\ni=0\nwhile [ ! -e \"$dev\" ] && [ \"$i\" -lt 60 ]; do sleep 1; i=$((i + 1)); done\n[ -e \"$dev\" ] || { echo \"mpfree-test: log partition not found\" > /dev/kmsg; exit 1; }\nmkdir -p /run/mpfree-log\nmount -t ext4 -o rw,nosuid,nodev,noexec,sync \"$dev\" /run/mpfree-log || exit 1\nd=/run/mpfree-log/boot-$(cat /proc/sys/kernel/random/boot_id)\nmkdir -p \"$d\"\nwhile :; do\n  dmesg > \"$d/dmesg.txt\" 2>&1\n  journalctl -b --no-pager -o short-monotonic > \"$d/journal.txt\" 2>&1\n  systemctl --failed --no-pager > \"$d/failed-units.txt\" 2>&1\n  systemctl list-units --no-pager > \"$d/units.txt\" 2>&1\n  { ip addr; ip route; } > \"$d/network.txt\" 2>&1\n  cat /proc/cmdline > \"$d/cmdline.txt\" 2>&1\n  cp /run/mpfree-test-eth/*.txt \"$d/\" 2>/dev/null\n  cp /run/mpfree-app/report.txt \"$d/\" 2>/dev/null\n  sync\n  sleep 10\ndone\n"
@@ -78,7 +82,7 @@
   },
   "/etc/mpfree-test/start-app.sh": {
    "mode": 493,
-   "text": "#!/bin/sh\n# MPFree test boot (--app-user): start the pad player, as the mpfree user. mpfree-test-storage.service\n# mounted its drum kits (partition 3, read-only) and its saved settings and files (partition 4) as root.\n# This script changes nothing.\nif grep -q ' /run/mpfree-data ' /proc/mounts; then\n  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen --data /run/mpfree-data\nfi\necho \"mpfree-test-app: the data partition is not mounted, so nothing is saved\"\nexec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen\n"
+   "text": "#!/bin/sh\n# MPFree test boot (--app-user): start the pad player, as the mpfree user. mpfree-test-storage.service\n# mounted its drum kits (partition 3, read-only) and its saved settings and files (partition 4) as root.\n# This script changes nothing.\nif grep -q ' /run/mpfree-data ' /proc/mounts; then\n  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen --data /run/mpfree-data --power-request /run/mpfree-app/power-request\nfi\necho \"mpfree-test-app: the data partition is not mounted, so nothing is saved\"\nexec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen --power-request /run/mpfree-app/power-request\n"
   },
   "/etc/mpfree-test/storage.sh": {
    "mode": 493,
@@ -107,6 +111,14 @@
   "/etc/systemd/system/mpfree-test-logs.service": {
    "mode": 420,
    "text": "[Unit]\nDescription=MPFree test boot: copy logs to the USB stick's log partition\nDefaultDependencies=no\nAfter=systemd-journald.service systemd-udevd.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\n\n[Service]\nType=simple\nExecStart=/bin/sh /etc/mpfree-test/save-logs.sh\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-power.path": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: watch for the pad player's shut down or restart\nDefaultDependencies=no\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\n\n[Path]\nPathExists=/run/mpfree-app/power-request\nUnit=mpfree-test-power.service\n\n[Install]\nWantedBy=sysinit.target\n"
+  },
+  "/etc/systemd/system/mpfree-test-power.service": {
+   "mode": 420,
+   "text": "[Unit]\nDescription=MPFree test boot: shut down or restart, as the pad player asked\nDefaultDependencies=no\nIgnoreOnIsolate=yes\n\n[Service]\nType=oneshot\nExecStart=/bin/sh /etc/mpfree-test/power.sh\n"
   },
   "/etc/systemd/system/mpfree-test-screen.service": {
    "mode": 420,
@@ -146,6 +158,7 @@
   "/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service": "/etc/systemd/system/mpfree-test-ethernet.service",
   "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service": "/etc/systemd/system/mpfree-test-internal-off.service",
   "/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service": "/etc/systemd/system/mpfree-test-logs.service",
+  "/etc/systemd/system/sysinit.target.wants/mpfree-test-power.path": "/etc/systemd/system/mpfree-test-power.path",
   "/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service": "/etc/systemd/system/mpfree-test-splash.service",
   "/etc/systemd/system/touch-fw-update.service": "/dev/null",
   "/etc/systemd/system/xmos-update.service": "/dev/null"

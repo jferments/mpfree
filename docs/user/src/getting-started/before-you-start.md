@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/main.rs tools/mpc-one/offline-kexec-stick.py tools/mpc-one/hook-install.sh
+covers: rust/mpfree-app/src/main.rs rust/mpfree-app/src/power.rs tools/mpc-one/offline-kexec-stick.py tools/mpc-one/hook-install.sh
 checked: 2026-11-15 b9400e4
 -->
 
@@ -24,6 +24,25 @@ Once a small start-up helper is on the MPC, switching on with the stick in start
 - **If the factory software starts even though the stick is in,** the MPC didn't accept the stick. That happens after an update of the MPC's own software, until the stick is made again for the new version. Nothing has been changed; the factory software works as normal.
 - **If the MPC switches itself off while starting MPFree,** it is a safety stop: MPFree refuses to run unless the MPC's own storage is safely switched off first. Take the stick out and switch on to use the factory software.
 - **Never switch the MPC off while it shows an update screen,** with or without the stick. MPFree never interrupts an update: if one is running when you switch on, the factory software starts instead.
+
+## Switching off and restarting
+
+Press the **power button** briefly (let go within about a second) and MPFree asks **Shut down the MPC?** over whatever page you are on. The card says whether your project has changes that aren't saved.
+
+{{shot: power-ask | A short press of the power button: Shut down, Restart or Cancel.}}
+
+- **Shut down** switches the MPC off cleanly: MPFree stops, everything on the stick is written and closed, and the screen goes dark.
+- **Restart** starts the MPC again from the beginning, as when you switch it on: with the stick in, MPFree starts again; with the stick out, the factory software starts.
+- **Cancel**, or another short press of the power button, closes the card.
+
+If the project has unsaved changes, MPFree asks next whether to save it first. **Save and shut down** (or **Save and restart**) saves it as **SHIFT + BROWSE** does, and the MPC only goes off once the save is on the stick. If the save can't be done (a full stick, say), the card says why and offers to go on without saving. **Don't save** goes on and loses the changes since the last save (see [Saving your work](../making-music/saving.md)).
+
+Tap a button, or turn the data wheel to it and push the wheel.
+
+**Holding the power button down** for a few seconds still switches the MPC off at once, without asking and without saving. Use it only if MPFree stops answering, or if the card says it can't shut down from here.
+
+> [!MPC]
+> As on the MPC: a short press of the power button asks before switching off, and holding it switches off at once.
 
 > [!WARNING]
 > MPFree is early test software. The stick is made with the MPFree USB creator from your own copy of Akai's update file: [Installing MPFree](installing.md) shows how. There are no downloads for musicians yet; that page will say where to get the creator when there is a release.

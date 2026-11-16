@@ -119,6 +119,14 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     kernel; if the mark is still there at the next power-on, MPFree starts
     on the first kernel instead of trying again (no restart loop).
     Without --chain none of this is made
+  - only with --dev-tools DIR (with --app; opt-in): developer tools for
+    Akai's own system, beside the drum kits on partition 3 under /mpfree-dev:
+    DIR's plain files and folders (plain names, single spaces allowed, no
+    links; at most 64 MiB and 512 files), owned by root, files 0644 and folders 0755, with SHA256SUMS
+    and MPFREE-DEV.txt made here. MPFree never reads them. Akai's system
+    mounts the stick's partitions noexec when the stick goes in while it
+    runs, so a tool there is run with sh, never directly. Without
+    --dev-tools partition 3 holds only kits.bin, as before
   - only with --akai-app (phase 3 of the 3.10.1 stick test, for developer
     mode): Akai's app is NOT masked and its launcher is NOT stubbed, so it
     starts at power-on and draws the screen; the log display is installed but
@@ -163,6 +171,8 @@ Optional inputs:
                       folder. They are Akai's sounds: the stick stays private
   --app-user          with --app: run the pad player as the mpfree user, not
                       root (see above)
+  --dev-tools DIR     with --app: developer tools for Akai's system, on
+                      partition 3 under /mpfree-dev (see above)
   --akai-app          start Akai's app at power-on instead (see above); not
                       with --app, --splash or --splash-font
   --kexec-file        ask the hook for its opt-in route (see above)
@@ -188,6 +198,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -717,10 +728,10 @@ if grep -q ' /run/mpfree-data ' /proc/mounts ||
     ( {grow} "$data" > /run/mpfree-data-grow.txt 2>&1 ||
         echo "mpfree-test-app: partition 4's filesystem did not grow; see /run/mpfree-data-grow.txt" > /dev/kmsg ) &
   fi
-  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
+  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data{power}
 fi
 echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg
-exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}
+exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}{power}
 """
 # A crash (a panic, a crash outside Rust, the out-of-memory killer) restarts the app after 2 s; it then
 # makes a safe start (the app's crash.rs): a new project even if Prefs > At start says Last project, and
@@ -825,10 +836,10 @@ APP_USER_SCRIPT = """#!/bin/sh
 # mounted its drum kits (partition 3, read-only) and its saved settings and files (partition 4) as root.
 # This script changes nothing.
 if grep -q ' /run/mpfree-data ' /proc/mounts; then
-  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
+  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data{power}
 fi
 echo "mpfree-test-app: the data partition is not mounted, so nothing is saved"
-exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}
+exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}{power}
 """
 # As APP_UNIT, plus the user and its limits. LimitRTPRIO and LimitMEMLOCK let it take real-time priority
 # (SCHED_FIFO up to 70, as the audio thread and lanes ask) and lock its memory without root or a capability.
@@ -865,7 +876,90 @@ RuntimeDirectoryPreserve=yes
 WantedBy=sysinit.target
 """
 APP_USER_MARK = "pad player user: mpfree (--app-user)"
+
+# With the pad player: a clean shut down or restart from its power card (a short press of the power button;
+# holding the button is still the hard power-off). The pad player runs without root (with --app-user), so it
+# never shuts down itself: it writes one word, `poweroff` or `restart`, to POWER_REQUEST (start-app.sh passes
+# `--power-request`), synced, by a rename. This root path unit sees the file, and power.sh takes the word,
+# removes the file and asks systemd for poweroff.target or reboot.target, as `systemctl poweroff` or
+# `systemctl reboot` would, without asking logind. Any other content is ignored. systemd then stops the pad
+# player and every other service and unmounts partition 4 cleanly before the MPC goes off or restarts.
+# A restart is a full one, through Akai's boot as at power-on: with the stick in, the soft-reboot hook starts
+# this system again; without it, Akai's system starts.
+POWER_REQUEST = "/run/mpfree-app/power-request"
+POWER_FILES = ("/etc/mpfree-test/power.sh", "/etc/systemd/system/mpfree-test-power.path",
+               "/etc/systemd/system/mpfree-test-power.service")
+POWER_WANTS = "/etc/systemd/system/sysinit.target.wants/mpfree-test-power.path"
+POWER_SCRIPT = """#!/bin/sh
+# MPFree test boot: shut down or restart, as the pad player's power card asked (one word in {request}).
+# Only `poweroff` and `restart` are acted on. The file is in the pad player's own folder, so it is never
+# followed if it is a link, and its content is never printed.
+f={request}
+[ -e "$f" ] || [ -L "$f" ] || exit 0
+word=
+if [ -f "$f" ] && [ ! -L "$f" ]; then
+  IFS= read -r word < "$f" || :
+fi
+rm -f "$f"
+case "$word" in
+  poweroff) target=poweroff.target ;;
+  restart) target=reboot.target ;;
+  *)
+    echo "mpfree-test-power: ignored a request that was not poweroff or restart" > /dev/kmsg
+    exit 0
+    ;;
+esac
+echo "mpfree-test-power: the pad player asked for $word" > /dev/kmsg
+# A note on the stick's log partition, where the log service keeps this boot's logs, so the next boot can
+# show how this one ended. Nothing else is written.
+d=/run/mpfree-log/boot-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+if [ -d "$d" ]; then
+  {{ echo "asked: $word"; cat /proc/uptime; }} > "$d/power.txt" 2>&1
+  journalctl -b --no-pager -o short-monotonic > "$d/journal.txt" 2>&1
+fi
+sync
+exec systemctl --no-block --job-mode=replace-irreversibly start "$target"
+"""
+POWER_PATH_UNIT = """[Unit]
+Description=MPFree test boot: watch for the pad player's shut down or restart
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Path]
+PathExists={request}
+Unit=mpfree-test-power.service
+
+[Install]
+WantedBy=sysinit.target
+"""
+POWER_UNIT = """[Unit]
+Description=MPFree test boot: shut down or restart, as the pad player asked
+DefaultDependencies=no
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /etc/mpfree-test/power.sh
+"""
 KITS_MAX = 48 << 20
+# --dev-tools (with --app): a folder of developer tools for Akai's own system (developer mode), copied to
+# partition 3 under DEV_DIR, beside the drum kits. MPFree never reads them. Akai's disk service mounts every
+# partition of the stick noexec, so nothing there runs as a program: a tool there is a shell script run with
+# `sh`, or files a step copies elsewhere first. Only plain files and folders, with plain names; SHA256SUMS and
+# DEV_MARK are made here.
+DEV_DIR = "/mpfree-dev"
+DEV_MAX = 64 << 20
+DEV_FILES_MAX = 512
+DEV_DEPTH_MAX = 6
+# Letters, digits, ".", "_", "-" and single spaces between them (the plugin folders Akai's app loads are named
+# like "MPFree - VST - FXProbe Source"); no leading or trailing space, at most 100 characters.
+DEV_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]| (?! |$)){0,99}$")
+DEV_MARK = "MPFREE-DEV.txt"
+DEV_MARK_TEXT = ("MPFree developer tools for Akai's system (offline-kexec-stick.py --dev-tools).\n"
+                 "Akai's system mounts this partition noexec: run a script here with sh, never directly.\n"
+                 "SHA256SUMS lists every file. MPFree itself does not read this folder.\n")
 KITS_MAGIC = b"MPFKITS1"
 # Started early and kept through a switch to emergency mode, so a boot that goes wrong still leaves logs.
 LOG_UNIT = """[Unit]
@@ -978,8 +1072,9 @@ def run(cmd, **kw):
 
 
 def quote(path):
-    """A path for a debugfs command line. Names are checked first, so quotes suffice."""
-    if '"' in path or "\n" in path or " " in path:
+    """A path for a debugfs command line. Names are checked first, so quotes suffice: debugfs reads a
+    double-quoted argument as one, spaces included."""
+    if '"' in path or "\n" in path:
         raise Stop(f"refusing an unusual path: {path!r}")
     return f'"{path}"'
 
@@ -1135,11 +1230,64 @@ def kits_input(args, work):
     return kits, data
 
 
-def make_kits_fs(kits, scratch):
-    """A small ext4 filesystem (no journal, so a read-only mount never writes) holding only /kits.bin,
-    owned by root and read back. Returns its path."""
+def dev_tools_input(args):
+    """--dev-tools: (folders, [(path, bytes)]) to put under DEV_DIR, in order, after checking every name and
+    kind; None without it."""
+    if not args.dev_tools:
+        return None
+    if not args.app:
+        raise Stop("--dev-tools needs --app: the tools go on partition 3, which only --app makes")
+    top = os.path.realpath(args.dev_tools)
+    if not os.path.isdir(top):
+        raise Stop(f"--dev-tools: {top} is not a folder")
+    folders, files, total = [], [], 0
+    for here, subdirs, names in os.walk(top):
+        subdirs.sort()
+        names.sort()
+        rel = os.path.relpath(here, top)
+        rel = "" if rel == "." else rel.replace(os.sep, "/")
+        if rel.count("/") + 1 > DEV_DEPTH_MAX:
+            raise Stop(f"--dev-tools: {here} is more than {DEV_DEPTH_MAX} folders deep")
+        for name in subdirs + names:
+            path = os.path.join(here, name)
+            if not DEV_NAME.match(name):
+                raise Stop(f"--dev-tools: {path!r} has an unusual name (letters, digits, '.', '_', '-' and single "
+                           "spaces only, not starting with '.', '_', '-' or a space, not ending with a space)")
+            if not rel and name in (DEV_MARK, "SHA256SUMS"):
+                raise Stop(f"--dev-tools: {path} is a name this tool makes itself")
+            if os.path.islink(path):
+                raise Stop(f"--dev-tools: {path} is a link; only plain files and folders go on the stick")
+        folders += [f"{rel}/{name}".lstrip("/") for name in subdirs]
+        for name in names:
+            path = os.path.join(here, name)
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                raise Stop(f"--dev-tools: {path} is not a plain file")
+            with open(path, "rb") as fh:
+                data = fh.read(DEV_MAX + 1)
+            total += len(data)
+            files.append((f"{rel}/{name}".lstrip("/"), data))
+            if total > DEV_MAX or len(files) > DEV_FILES_MAX:
+                raise Stop(f"--dev-tools: more than {DEV_MAX >> 20} MiB or {DEV_FILES_MAX} files")
+    if not files:
+        raise Stop(f"--dev-tools: {top} holds no files")
+    return folders, files
+
+
+def dev_tools_sums(files):
+    """SHA256SUMS for the tools, paths relative to DEV_DIR (sha256sum -c works from there)."""
+    return "".join(f"{hashlib.sha256(data).hexdigest()}  {path}\n" for path, data in files)
+
+
+def make_kits_fs(kits, scratch, dev=None):
+    """A small ext4 filesystem (no journal, so a read-only mount never writes) holding /kits.bin and, with
+    --dev-tools, DEV_DIR (folders 0755, files 0644, SHA256SUMS and DEV_MARK), all owned by root and read back.
+    Returns its path."""
     path = os.path.join(scratch, "kits.img")
-    size_k = (len(kits) + (8 << 20)) // (1 << 20) * 1024
+    folders, files = dev or ([], [])
+    if dev:
+        files = files + [("SHA256SUMS", dev_tools_sums(files).encode()), (DEV_MARK, DEV_MARK_TEXT.encode())]
+    room = sum(len(data) + 4096 for _, data in files) + 4096 * len(folders)
+    size_k = (len(kits) + room + (8 << 20)) // (1 << 20) * 1024
     res = run(["mke2fs", "-q", "-F", "-t", "ext4", "-O", "^has_journal", "-L", "MPFREE-KITS",
                "-E", "root_owner=0:0", path, f"{size_k}k"])
     if res.returncode != 0:
@@ -1149,6 +1297,19 @@ def make_kits_fs(kits, scratch):
         fh.write(kits)
     commands = [f"write {quote(local)} /kits.bin", "sif /kits.bin mode 0100644", "sif /kits.bin uid 0",
                 "sif /kits.bin gid 0"]
+    locals_ = []
+    if dev:
+        for folder in [""] + folders:
+            target = quote(f"{DEV_DIR}/{folder}".rstrip("/"))
+            commands += [f"mkdir {target}", f"sif {target} mode 040755", f"sif {target} uid 0", f"sif {target} gid 0"]
+        for n, (name, data) in enumerate(files):
+            source = os.path.join(scratch, f"dev-{n}")
+            with open(source, "wb") as fh:
+                fh.write(data)
+            locals_.append(source)
+            target = quote(f"{DEV_DIR}/{name}")
+            commands += [f"write {quote(source)} {target}", f"sif {target} mode 0100644", f"sif {target} uid 0",
+                         f"sif {target} gid 0"]
     script = os.path.join(scratch, "debugfs-kits.txt")
     with open(script, "w") as fh:
         fh.write("\n".join(commands) + "\n")
@@ -1163,6 +1324,17 @@ def make_kits_fs(kits, scratch):
     if res.returncode != 0 or fs.kind("/kits.bin") != "regular" or fs.read("/kits.bin", scratch) != kits or \
             fs.stat("/kits.bin") != (0o644, (0, 0)):
         raise Stop("the kits partition did not read back as written")
+    if dev:
+        for folder in [""] + folders:
+            target = f"{DEV_DIR}/{folder}".rstrip("/")
+            if fs.kind(target) != "directory" or fs.stat(target) != (0o755, (0, 0)):
+                raise Stop(f"the kits partition's {target} did not read back as written")
+        for name, data in files:
+            target = f"{DEV_DIR}/{name}"
+            if fs.kind(target) != "regular" or fs.read(target, scratch) != data or fs.stat(target) != (0o644, (0, 0)):
+                raise Stop(f"the kits partition's {target} did not read back as written")
+        for source in locals_:
+            os.unlink(source)
     fsck = run(["e2fsck", "-fn", path])
     if fsck.returncode != 0:
         raise Stop("e2fsck found problems in the kits partition:\n" + fsck.stdout)
@@ -1500,6 +1672,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                  ([SOFTREBOOT_DIR, *INTERNAL_OFF_FILES,
                    "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] if softreboot else []) +
                  (["/etc/systemd/system/mpfree-test-storage.service"] if app_user else []) +
+                 ([*POWER_FILES[1:], POWER_WANTS] if app is not None else []) +
                  ([*CHAIN_FILES, CHAIN_WANTS, CHAIN_DONE_WANTS] if chain else []))
     for path in new_paths:
         if img.kind(path) is not None:
@@ -1539,7 +1712,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
             STORAGE_SCRIPT.format(user=APP_USER, uid=APP_UID, kits_uuid=kits_uuid, data_uuid=data_uuid,
                                   grow=GROW_PROGRAM), 0o755)
         add("/etc/systemd/system/mpfree-test-storage.service", STORAGE_UNIT, 0o644)
-        add("/etc/mpfree-test/start-app.sh", APP_USER_SCRIPT.format(user=APP_USER, keep=keep), 0o755)
+        add("/etc/mpfree-test/start-app.sh",
+            APP_USER_SCRIPT.format(user=APP_USER, keep=keep, power=f" --power-request {POWER_REQUEST}"), 0o755)
         add("/etc/systemd/system/mpfree-test-app.service", APP_USER_UNIT.format(user=APP_USER, after=after), 0o644)
         for path, (data, mode) in user_edits.items():
             add(path, data, mode)
@@ -1547,9 +1721,14 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
         add("/etc/mpfree-test/mpfree", app, 0o755)
         add("/etc/mpfree-test/start-app.sh",
             APP_SCRIPT.format(kits_uuid=kits_uuid, data_uuid=data_uuid, grow=GROW_PROGRAM,
-                              keep=" --keep-screen" if splash_program else ""), 0o755)
+                              keep=" --keep-screen" if splash_program else "",
+                              power=f" --power-request {POWER_REQUEST}"), 0o755)
         add("/etc/systemd/system/mpfree-test-app.service",
             APP_UNIT.format(after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
+    if app is not None:
+        add(POWER_FILES[0], POWER_SCRIPT.format(request=POWER_REQUEST), 0o755)
+        add(POWER_FILES[1], POWER_PATH_UNIT.format(request=POWER_REQUEST), 0o644)
+        add(POWER_FILES[2], POWER_UNIT, 0o644)
     with open(ETHERNET_DETAILS, "rb") as fh:
         add("/etc/mpfree-test/ethernet-details.sh", fh.read(), 0o755)
     add("/etc/mpfree-test/ethernet-retry.sh", ETHERNET_SCRIPT, 0o755)
@@ -1630,6 +1809,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     else:
         links["/etc/systemd/system/sysinit.target.wants/mpfree-test-app.service"] = \
             "/etc/systemd/system/mpfree-test-app.service"
+        links[POWER_WANTS] = POWER_FILES[1]
     links["/etc/systemd/system/sysinit.target.wants/mpfree-test-ethernet.service"] = \
         "/etc/systemd/system/mpfree-test-ethernet.service"
     if splash_program:
@@ -1766,6 +1946,9 @@ def main(argv):
                     help="start Akai's app at power-on (for developer mode); every flasher stays a stub")
     ap.add_argument("--app-user", action="store_true",
                     help="with --app: run the pad player as the mpfree user, without root (opt-in)")
+    ap.add_argument("--dev-tools", metavar="DIR",
+                    help="with --app: a folder of developer tools for Akai's system, copied to partition 3 under "
+                         "/mpfree-dev (see above)")
     ap.add_argument("--preload-module", action="append", default=[], metavar="NAME",
                     help="a kernel module the soft-reboot hook loads from Akai's system first (repeatable)")
     ap.add_argument("--kexec-file", action="store_true",
@@ -1807,6 +1990,7 @@ def main(argv):
     screen_path, screen_log = screen_log_program()
     splash = splash_inputs(args)
     app_path, app, kits_path, kits = app_inputs(args, work)
+    dev = dev_tools_input(args)
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     os.makedirs(work, exist_ok=True)
@@ -1817,7 +2001,8 @@ def main(argv):
     try:
         OUT.say("MPFree kexec test-boot builder (workstation only, no MPC contact, no device writes)")
         OUT.say(f"output folder: {outdir}")
-        need = 2 * os.path.getsize(image) + 3 * len(kits or b"") + (256 << 20)
+        need = 2 * os.path.getsize(image) + 3 * len(kits or b"") + 3 * sum(len(d) for _, d in (dev or ([], []))[1]) \
+            + (256 << 20)
         parts34 = app is not None or args.akai_app
         if shutil.disk_usage(outdir).free < need:
             raise Stop(f"not enough free space in {work}: {need >> 20} MiB needed")
@@ -1925,6 +2110,16 @@ def main(argv):
                     + (", over the startup screen" if splash[0] else ""))
             OUT.say(f"drum kits: {kits_path} ({struct.unpack_from('<I', kits, 8)[0]} kits, {len(kits)} bytes, "
                     f"sha256 {hashlib.sha256(kits).hexdigest()}), on partition 3, mounted read-only")
+            if dev:
+                OUT.say(f"developer tools for Akai's system (--dev-tools {os.path.realpath(args.dev_tools)}): "
+                        f"{len(dev[1])} files, {sum(len(d) for _, d in dev[1])} bytes, on partition 3 under {DEV_DIR} "
+                        f"with SHA256SUMS and {DEV_MARK}; MPFree never reads them, and Akai's system mounts them "
+                        "noexec (run with sh)")
+                for line in dev_tools_sums(dev[1]).splitlines():
+                    digest, path = line.split("  ", 1)
+                    OUT.say(f"  dev tool {DEV_DIR}/{path}  sha256 {digest}")
+            else:
+                OUT.say("developer tools: none (no --dev-tools)")
             OUT.say(f"saved settings and files: partition 4 (at {DATA_START * SECTOR >> 20} MiB, {DATA_SIZE >> 20} MiB "
                     "and empty here), mounted read-write at /run/mpfree-data; write-test-stick.py leaves the old "
                     "stick's in place or carries it over, and makes the partition fill the stick")
@@ -1936,6 +2131,9 @@ def main(argv):
                         f"{APP_USER}. A build without --app-user runs it as root again; partition 4 works with both")
             else:
                 OUT.say("pad player user: root (no --app-user)")
+            OUT.say(f"power button: a short press opens the pad player's power card; its Shut down or Restart "
+                    f"writes {POWER_REQUEST}, and mpfree-test-power.path (root) asks systemd for a clean power-off "
+                    "or a full restart. Holding the button is still the hard power-off")
         else:
             OUT.say("pad player: none (no --app); the log display starts at power-on")
         OUT.say(f"for MPFree's boot hook: {KEXEC_DIR} on partition 1, with a link to the kernel, kexec.dtb, "
@@ -2009,14 +2207,14 @@ def main(argv):
 
         OUT.say("=== Stick image ===")
         stick = os.path.join(outdir, "stick.img")
-        kits_image = make_kits_fs(kits, scratch) if parts34 else None
+        kits_image = make_kits_fs(kits, scratch, dev) if parts34 else None
         data_image = make_data_fs(scratch) if parts34 else None
         size = make_stick(copy, stick, root_uuid, log_uuid, scratch, kits_image, kits_uuid, data_image, data_uuid)
         OUT.say(f"stick.img: {size} bytes ({-(-size // (1 << 20))} MiB); partition 1 root PARTUUID {root_uuid}, "
                 f"partition 2 logs PARTUUID {log_uuid}")
         if kits_image:
-            OUT.say(f"partition 3 kits PARTUUID {kits_uuid} (ext4 without a journal, only /kits.bin, "
-                    f"sha256 {sha256(kits_image)})")
+            OUT.say(f"partition 3 kits PARTUUID {kits_uuid} (ext4 without a journal, "
+                    + (f"/kits.bin and {DEV_DIR}" if dev else "only /kits.bin") + f", sha256 {sha256(kits_image)})")
             OUT.say(f"partition 4 data PARTUUID {data_uuid} ({DATA_NAME}, ext4 with a journal, label "
                     f"MPFREE-DATA, at {DATA_START * SECTOR >> 20} MiB, {DATA_SIZE >> 20} MiB, empty)")
         shutil.copyfile(zimage, os.path.join(outdir, "zImage"))
