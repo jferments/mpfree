@@ -2,6 +2,8 @@
 
 **Status:** 2026-11-14. Steps P1 (the host) and P2 (the sandbox) of the plugin plan are built and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../../rust/mpfree-clap) and [`rust/mpfree-plughost`](../../../rust/mpfree-plughost). The app uses them for **plugin effects as mixer inserts** and **plugin synths as track instruments**, with the plugin's own presets on the Synth tab ([In the app](#in-the-app)). The plugin pack's Surge XT lists and loads its factory presets on ARMv7 under qemu; no third-party plugin has been tried on the MPC yet. The plan for plugins is in the synth skill tree (P1 to P6). The first plugin pack (P3) is Airwindows, Surge XT and Dexed (Jay, 13 Nov), CLAP only until P5: [the plugin pack](../guides/plugin-pack.md) builds them (14 Nov).
 
+MPC-format plugins (the Open MPC catalog's) run in the same sandbox: see [MPC plugins in MPFree](mpc-plugin-host.md) (15 Nov).
+
 MPFree runs native engines first (Poly, FM, the drum, pluck and wavetable synths). Plugins add what we don't build, which means CLAP, LV2 and VST3 plugins built for ARM Linux. Desktop builds can't run on the MPC's ARM chip, and Akai's own plugins aren't a path. CLAP comes first: it is MIT-licensed, plain C, and made for hosts like ours (sample-exact events, per-note expression, a clear threading model).
 
 ## What P1 does

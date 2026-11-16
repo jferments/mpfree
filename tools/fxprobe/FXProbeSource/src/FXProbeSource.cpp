@@ -52,7 +52,6 @@ public:
         addParam(mpc::choiceParam("slot", "Slot", slotChoices(), 0));
         addParam(mpc::choiceParam("trigger", "Trigger", {"Command", "Cmd+Note", "Cmd+Play"}, kCommandOrNote));
         autoSlot_ = claimSlot();
-        folder_ = workFolder();
         worker_.start([this] { tick(); }, 20);
     }
 
@@ -170,7 +169,16 @@ private:
     // ---- worker -------------------------------------------------------------
     void tick()
     {
-        if (!isDir(folder_)) return;
+        const std::string& f = work_.current();
+        if (f != folder_)
+        {
+            // A new folder (or none): a command already there is old, and
+            // the status is written again.
+            folder_ = f;
+            watcher_.reset();
+            lastStatus_.clear();
+        }
+        if (folder_.empty()) return;
         if (!watcher_) watcher_.reset(new ControlWatcher(folder_));
         Command c;
         if (watcher_->poll(c) && c.forSlot(slot())) handle(c);
@@ -283,6 +291,7 @@ private:
     bool wasPlaying_ = false;
 
     // Worker only.
+    WorkFolder work_{workFolder()};
     std::string folder_;
     std::unique_ptr<ControlWatcher> watcher_;
     std::string loadedName_;

@@ -103,10 +103,30 @@ pub const EFF_GET_VENDOR_VERSION: VstInt32 = 49;
 pub const EFF_CAN_DO: VstInt32 = 51;
 pub const EFF_GET_TAIL_SIZE: VstInt32 = 52;
 pub const EFF_GET_VST_VERSION: VstInt32 = 58;
+pub const EFF_START_PROCESS: VstInt32 = 71;
+pub const EFF_STOP_PROCESS: VstInt32 = 72;
 
 // Plugin -> host opcodes.
+pub const AUDIO_MASTER_AUTOMATE: VstInt32 = 0;
 pub const AUDIO_MASTER_VERSION: VstInt32 = 1;
+pub const AUDIO_MASTER_CURRENT_ID: VstInt32 = 2;
+pub const AUDIO_MASTER_IDLE: VstInt32 = 3;
 pub const AUDIO_MASTER_GET_TIME: VstInt32 = 7;
+pub const AUDIO_MASTER_PROCESS_EVENTS: VstInt32 = 8;
+pub const AUDIO_MASTER_IO_CHANGED: VstInt32 = 13;
+pub const AUDIO_MASTER_SIZE_WINDOW: VstInt32 = 15;
+pub const AUDIO_MASTER_GET_SAMPLE_RATE: VstInt32 = 16;
+pub const AUDIO_MASTER_GET_BLOCK_SIZE: VstInt32 = 17;
+pub const AUDIO_MASTER_GET_CURRENT_PROCESS_LEVEL: VstInt32 = 23;
+pub const AUDIO_MASTER_GET_VENDOR_STRING: VstInt32 = 32;
+pub const AUDIO_MASTER_GET_PRODUCT_STRING: VstInt32 = 33;
+pub const AUDIO_MASTER_GET_VENDOR_VERSION: VstInt32 = 34;
+pub const AUDIO_MASTER_CAN_DO: VstInt32 = 37;
+pub const AUDIO_MASTER_GET_LANGUAGE: VstInt32 = 38;
+pub const AUDIO_MASTER_GET_DIRECTORY: VstInt32 = 41;
+pub const AUDIO_MASTER_UPDATE_DISPLAY: VstInt32 = 42;
+pub const AUDIO_MASTER_BEGIN_EDIT: VstInt32 = 43;
+pub const AUDIO_MASTER_END_EDIT: VstInt32 = 44;
 
 pub const VST_VERSION: VstIntPtr = 2400;
 pub const MAX_PROG_NAME_LEN: usize = 24;
@@ -172,6 +192,9 @@ pub struct VstTimeInfo {
     pub flags: VstInt32,
 }
 
+pub const TRANSPORT_CHANGED: VstInt32 = 1;
 pub const TRANSPORT_PLAYING: VstInt32 = 1 << 1;
 pub const PPQ_POS_VALID: VstInt32 = 1 << 9;
 pub const TEMPO_VALID: VstInt32 = 1 << 10;
+pub const BARS_VALID: VstInt32 = 1 << 11;
+pub const TIME_SIG_VALID: VstInt32 = 1 << 13;

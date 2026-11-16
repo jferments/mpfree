@@ -68,7 +68,6 @@ public:
         ring_.allocate(kRingFrames * 2);
         ticks_.allocate(kTickCapacity);
         autoSlot_ = claimSlot();
-        folder_ = workFolder();
         worker_.start([this] { tick(); }, 10);
     }
 
@@ -217,7 +216,18 @@ private:
     void tick()
     {
         drain();
-        if (!isDir(folder_)) return;
+        const std::string& f = work_.current();
+        if (f != folder_)
+        {
+            // The folder went (a stick taken out) or a new one came: a
+            // capture in progress ends, a command already there is old, and
+            // the status is written again.
+            if (capturing_) stopCapture();
+            folder_ = f;
+            watcher_.reset();
+            lastStatus_.clear();
+        }
+        if (folder_.empty()) return;
         if (!watcher_) watcher_.reset(new ControlWatcher(folder_));
         Command c;
         if (watcher_->poll(c) && c.forSlot(slot())) handle(c);
@@ -255,7 +265,7 @@ private:
         timingThis_ = c.timing || getInt(kTiming) == 1;
         if (timingThis_)
         {
-            timingFile_ = std::fopen((base_ + ".timing.tsv").c_str(), "wb");
+            timingFile_ = createFile(base_ + ".timing.tsv");
             timingHeader_ = false;
         }
         timingOn_.store(timingThis_);
@@ -446,6 +456,7 @@ private:
     bool schedRead_ = false;
 
     // Worker only.
+    WorkFolder work_{workFolder()};
     std::string folder_;
     std::unique_ptr<ControlWatcher> watcher_;
     WavWriter wav_;
