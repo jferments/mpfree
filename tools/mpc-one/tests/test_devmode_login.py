@@ -23,7 +23,7 @@ HELPER = os.path.join(TOOLS, "host_devmode_login.py")
 WRAPPER = os.path.join(TOOLS, "collect-over-ssh.sh")
 TEST_IP = "192.0.2.141"
 APPLETS = ("sh", "cat", "grep", "ls", "head", "sed", "cut", "sort", "tr", "cp", "mkdir", "rm", "chmod", "wc",
-           "sync")
+           "sync", "date")
 OPEN_CONF = "AuthenticationMethods none\nPermitEmptyPasswords yes\n"
 
 FAKE_SSH = r'''#!/usr/bin/env python3

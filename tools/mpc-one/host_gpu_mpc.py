@@ -249,7 +249,7 @@ def check_program(out, path):
         data = fh.read(app.PROGRAM_MAX + 1)
     problem = arm_dynamic_problem(data)
     if problem:
-        raise Stop(f"{path} is {problem}; rebuild it as rust/mpfree-gpu/README.md shows")
+        raise Stop(f"{path}: {problem}; rebuild it as rust/mpfree-gpu/README.md shows (pinned to glibc 2.34)")
     digest = hashlib.sha256(data).hexdigest()
     out.say(f"  benchmark: {path}")
     out.say(f"    {len(data)} bytes, sha256 {digest}")

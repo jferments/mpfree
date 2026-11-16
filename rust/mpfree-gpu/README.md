@@ -197,18 +197,31 @@ cargo run --release --manifest-path rust/mpfree-gpu/Cargo.toml --bin mpfree-gpu-
   `pan`, it runs on any workstation.
 
 For the MPC it is built for ARM against the MPC's C library (dynamically
-linked: it opens the MPC's `libEGL.so.1` and `libGLESv2.so.2` itself):
+linked: it opens the MPC's `libEGL.so.1` and `libGLESv2.so.2` itself). The
+build is pinned to glibc 2.34 with
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), which links
+through zig against glibc's 2.34 symbol versions whatever the workstation's
+own cross toolchain has. A plain `cargo build` with the distribution's
+`arm-linux-gnueabihf-gcc` takes that toolchain's glibc: on a current
+distribution that is 2.43, newer than the MPC's 2.39, and the program
+won't start there (the final round of 16 Nov 2026 stopped on exactly this).
 
 ```bash
-sudo apt-get install gcc-arm-linux-gnueabihf                  # once
-CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
-  cargo build --release --manifest-path rust/mpfree-gpu/Cargo.toml \
-  --target armv7-unknown-linux-gnueabihf --bins
+# once: cargo-zigbuild, and zig from PyPI in a folder of its own
+rustup target add armv7-unknown-linux-gnueabihf
+cargo install --locked cargo-zigbuild
+python3 -m venv ~/.local/share/mpfree-zig && ~/.local/share/mpfree-zig/bin/pip install ziglang==0.17.1
+# each build
+CARGO_ZIGBUILD_PYTHON_PATH=~/.local/share/mpfree-zig/bin/python3 \
+  cargo zigbuild --release --locked --manifest-path rust/mpfree-gpu/Cargo.toml \
+  --target armv7-unknown-linux-gnueabihf.2.34 --bins
 ```
 
-Both programs (`mpfree-gpu-bench` and `mpfree-gpu-screen`) load with
-`/lib/ld-linux-armhf.so.3`, link only `libc.so.6` and `libgcc_s.so.1`, and
-ask for nothing newer than glibc 2.34 (the MPC has 2.39).
+The programs land in `rust/mpfree-gpu/target/armv7-unknown-linux-gnueabihf/release/`
+(the `.2.34` is not part of the folder's name). Both (`mpfree-gpu-bench`
+and `mpfree-gpu-screen`) load with `/lib/ld-linux-armhf.so.3`, link only
+`libc.so.6` and `libm.so.6`, and ask for nothing newer than glibc 2.34
+(the MPC has 2.39).
 `tools/mpc-one/host_gpu_mpc.py` checks all that, copies the benchmark and
 the pages into the test build's RAM, and runs it there: offscreen, then
 (step 6) on the panel, then, only with `--flip` and when no program has the
@@ -216,6 +229,10 @@ display open, `flip` (step 7). On 2026-11-12 the ARM build ran every step under 
 with Ubuntu's ARM Mesa (llvmpipe), with the GPU's pictures within 2 levels
 of software and, for the panel step, a fake framebuffer that read back what
 was written; the times there are an emulator's and mean nothing.
+On 2026-11-16 the pinned build (zig 0.17.1, cargo-zigbuild 0.24.1) ran
+`describe`, `screens` over all 84 sample pages and `compute` the same way:
+at most 2 levels from software, 94 shapes on the GPU, the atlas never
+cleared, and `host_gpu_mpc.py`'s step-1 check passes both programs.
 
 ## Not yet
 

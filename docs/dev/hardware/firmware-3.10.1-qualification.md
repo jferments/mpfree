@@ -344,13 +344,21 @@ cd /home/jesse/code/mpfree-hardware-survey && git status --short --branch | head
 
 Expect three lines: `## qual-3101`, Q0's commit line, and `1`.
 
+**Block G1a: the tools for the pinned build, once** (workstation only; it installs `cargo-zigbuild` into `~/.cargo/bin` and zig into `~/.local/share/mpfree-zig`, and changes nothing else). The GPU programs are linked dynamically against the MPC's C library, so they must not ask for a newer glibc than the MPC's 2.39. Your distribution's ARM cross compiler links against its own glibc (2.43 on 16 Nov), which is why Q9 stopped in the final round. cargo-zigbuild links through zig against glibc 2.34's symbols instead, whatever the distribution has:
+
+```bash
+rustup target add armv7-unknown-linux-gnueabihf && cargo install --locked cargo-zigbuild && python3 -m venv /home/jesse/.local/share/mpfree-zig && /home/jesse/.local/share/mpfree-zig/bin/pip install ziglang==0.17.1 && /home/jesse/.local/share/mpfree-zig/bin/python3 -m ziglang version
+```
+
+Expect `0.17.1` last. If `python3 -m venv` says `ensurepip is not available`, install your distribution's `python3-venv` package and run the block again. Undo: `cargo uninstall cargo-zigbuild && rm -r /home/jesse/.local/share/mpfree-zig`.
+
 **Block G1: build the benchmark and the page writer** (workstation only):
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc cargo build --release --locked --manifest-path rust/mpfree-gpu/Cargo.toml --target armv7-unknown-linux-gnueabihf --bins && cargo build --release --locked --manifest-path rust/Cargo.toml -p mpfree-app
+cd /home/jesse/code/mpfree-hardware-survey && CARGO_ZIGBUILD_PYTHON_PATH=/home/jesse/.local/share/mpfree-zig/bin/python3 cargo zigbuild --release --locked --manifest-path rust/mpfree-gpu/Cargo.toml --target armv7-unknown-linux-gnueabihf.2.34 --bins && cargo build --release --locked --manifest-path rust/Cargo.toml -p mpfree-app
 ```
 
-Expect `Finished` twice. The ARM benchmark and the workstation's `mpfree`, which writes the sample pages, must come from one build, because the page lists' format is versioned. This block builds both from the round's commit.
+Expect `Finished` twice. G2's step 1 checks that the benchmark asks for nothing newer than glibc 2.34. The ARM benchmark and the workstation's `mpfree`, which writes the sample pages, must come from one build, because the page lists' format is versioned. This block builds both from the round's commit.
 
 **Block G2: the GPU on the MPC, ending with page flips** (**state-changing, RAM only**, at step 7; press Enter at each of steps 3 to 7; about 10 minutes):
 
