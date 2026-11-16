@@ -285,13 +285,25 @@ def sha256(path):
     return h.hexdigest()
 
 
+# The stick builds the tools read, by the UTC time in the folder's name (%Y%m%dT%H%M%SZ, 16 characters):
+# offline-kexec-stick.py's kexec-stick-<UTC>-XXXXXX with the stick.img write-test-stick.py writes, and
+# mpfree-stick write --record's creator-stick-<UTC> (the USB creator) with its report.txt.
+BUILDS = (("kexec-stick-", "stick.img"), ("creator-stick-", "report.txt"))
+STAMP = re.compile(r"^\d{8}T\d{6}Z")
+
+
 def newest_build(work):
-    """The folder write-test-stick.py writes: the newest kexec-stick-* with a stick.img."""
-    folders = sorted(d for d in os.listdir(work) if d.startswith("kexec-stick-")) if os.path.isdir(work) else []
-    folders = [d for d in folders if os.path.isfile(os.path.join(work, d, "stick.img"))]
-    if not folders:
-        raise Stop(f"no kexec-stick-* folder with a stick.img under {work}")
-    return os.path.join(work, folders[-1])
+    """The newest stick build folder under work: kexec-stick-* or creator-stick-* (BUILDS)."""
+    found = []
+    for d in (os.listdir(work) if os.path.isdir(work) else []):
+        for prefix, needs in BUILDS:
+            stamp = d[len(prefix):len(prefix) + 16]
+            if d.startswith(prefix) and STAMP.match(stamp) and os.path.isfile(os.path.join(work, d, needs)):
+                found.append((stamp, d))
+    if not found:
+        raise Stop(f"no kexec-stick-* folder with a stick.img, or creator-stick-* folder with a report.txt, "
+                   f"under {work}")
+    return os.path.join(work, max(found)[1])
 
 
 def check_build(folder, out):

@@ -673,12 +673,12 @@ class FormatTests(unittest.TestCase):
             "dd": f'#!/bin/sh\n{DD_REFUSES}exec {{bb}} dd "$@"\n',
             # mke2fs: logged, and it leaves an ext2/3/4 magic number where the superblock has it. It "writes"
             # 1 MiB (the partition's block layer counter), then logs the step's report as the startup screen
-            # would read it while it runs.
+            # would read it while it runs, in one write: the script's loop logs its sleeps meanwhile.
             "mke2fs": f'#!/bin/sh\necho "mke2fs: $*" >> "$FAKE_LOG"\n[ -n "${{FAKE_MKE2FS_FAIL:-}}" ] && exit 1\n'
                       f'stat="$FAKE_ROOT/sys/class/block/sda4/stat"\n'
                       f'[ -e "$stat" ] && echo "{STAT.format(w=2, ws=2048 + 64, d=0).strip()}" > "$stat" && '
-                      f'{bb} sleep 1 && {bb} tr "\\n" " " < "$FAKE_ROOT/run/mpfree-setup/format-status" >> "$FAKE_LOG" '
-                      f'&& echo >> "$FAKE_LOG"\n'
+                      f'{bb} sleep 1 && s=$({bb} tr "\\n" " " < "$FAKE_ROOT/run/mpfree-setup/format-status") && '
+                      f'echo "$s" >> "$FAKE_LOG"\n'
                       f'for dev; do :; done\n{bb} printf "\\123\\357" | {bb} dd of="$dev" bs=1 seek=1080 '
                       f'conv=notrunc 2>/dev/null\n',
         }

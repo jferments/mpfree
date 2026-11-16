@@ -143,15 +143,11 @@ fn drawings_are_the_effects_own_and_none_is_left_out() {
                 plan.id
             );
         }
+        // Every drawing the effect has is on one of its pages.
         for h in &have {
-            let first: Vec<&str> = plan.pages[0]
-                .sections
-                .iter()
-                .flat_map(|s| s.drawings.iter().copied())
-                .collect();
             assert!(
-                first.contains(&h.as_str()),
-                "{}: {h} isn't on its page",
+                placed.contains(&h.as_str()),
+                "{}: {h} isn't on any page",
                 plan.id
             );
         }

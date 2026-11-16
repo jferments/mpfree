@@ -8,8 +8,8 @@
 # test programmes and this script. Akai's system mounts every partition of a
 # USB stick noexec, so plugins can't load from the stick: install copies them
 # to the MPC's internal drive once. The work folder, where commands, status
-# and captures go, is FXProbe/ on the same stick's data partition (the
-# partition after the kit's), found by device, whatever name it is mounted
+# and captures go, is FXProbe/ on the same stick's data partition (its
+# partition 4), found by device, whatever name it is mounted
 # under. Each installed plugin holds a pointer (workfolder.txt) that finds the
 # work folder by its marker on any drive under /media.
 #
@@ -93,8 +93,9 @@ has_opt() {  # has_opt OPTIONS NAME
   return 1
 }
 
-# The stick's data partition: the partition after the kit's on the same disk
-# (partition 4 for a kit on partition 3). Sets DATA_LINE and DATA_MNT.
+# The stick's data partition: partition 4 of the kit's disk (the kit is on partition 3
+# of a stick offline-kexec-stick.py made, on partition 5 of one the USB creator made).
+# Sets DATA_LINE and DATA_MNT.
 find_data() {
   kl=$(mount_of "$KIT")
   [ -n "$kl" ] || stop "the kit at $KIT is on no mount"
@@ -105,10 +106,10 @@ find_data() {
     *) stop "the kit is on $kdev, not a partition of a disk" ;;
   esac
   num=${kdev##*[!0-9]}
-  ddev=${kdev%"$num"}$((num + 1))
+  ddev=${kdev%"$num"}4
   DATA_LINE=$(mounts | while read -r dev mnt type opts rest; do
     [ "$dev" = "$ddev" ] && { echo "$dev $mnt $type $opts"; break; }; done)
-  [ -n "$DATA_LINE" ] || stop "the stick's data partition ($ddev, the one after the kit's $kdev) is not mounted"
+  [ -n "$DATA_LINE" ] || stop "the stick's data partition ($ddev, partition 4 of the kit's disk, $kdev) is not mounted"
   set -- $DATA_LINE
   DATA_MNT="$R$2"
 }

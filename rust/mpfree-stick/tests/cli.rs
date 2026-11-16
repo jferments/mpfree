@@ -111,7 +111,8 @@ fn makes_and_looks_after_a_stick() {
     ]);
     assert!(!o.status.success());
     assert!(text(&o).contains("--yes-erase must name the same disk as --device"));
-    // write never takes "the MPFree stick that is in": the disk must be named.
+    // write to "mpfree": the one USB disk holding an MPFree stick, found before anything is
+    // unpacked (none here).
     let o = stick(&[
         "write",
         &upd,
@@ -124,7 +125,12 @@ fn makes_and_looks_after_a_stick() {
         "--any-update",
     ]);
     assert!(!o.status.success());
-    assert!(text(&o).contains("not mpfree"), "{}", text(&o));
+    assert!(
+        text(&o).contains("error no MPFree stick found among the USB disks"),
+        "{}",
+        text(&o)
+    );
+    assert!(!text(&o).contains("programs for the MPC"), "{}", text(&o));
     // A disk that is neither a file nor a USB disk is never opened.
     let o = stick(&[
         "write",
@@ -233,8 +239,13 @@ fn makes_and_looks_after_a_stick() {
         &work,
     ]);
     assert!(o.status.success(), "{}", text(&o));
-    // make-ssh-key, then a stick with developer SSH.
+    // make-ssh-key, then a stick with developer SSH, developer tools and a record.
     let keys = t.0.join("keys").display().to_string();
+    let tools_dir = t.0.join("dev-tools");
+    std::fs::create_dir_all(tools_dir.join("fxprobe")).unwrap();
+    std::fs::write(tools_dir.join("fxprobe/fxprobe.sh"), b"#!/bin/sh\n").unwrap();
+    let tools = tools_dir.display().to_string();
+    let rounds = t.0.join("mpfree-work").display().to_string();
     assert!(stick(&["make-ssh-key", &keys]).status.success());
     let o = stick(&[
         "write",
@@ -250,11 +261,55 @@ fn makes_and_looks_after_a_stick() {
         &work,
         "--ssh-key",
         &format!("{keys}/mpfree_ed25519.pub"),
+        "--dev-tools",
+        &tools,
+        "--record",
+        &rounds,
     ]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(text(&o)
         .contains("developer SSH on: root, key only, port 2222; the stick's host key is SHA256:"));
-    assert!(text(&stick(&["inspect", "--device", &d])).contains("developer SSH: on"));
+    let out = text(&stick(&["inspect", "--device", &d]));
+    assert!(out.contains("developer SSH: on"), "{out}");
+    assert!(
+        out.contains("developer tools: 1 files under /mpfree-dev"),
+        "{out}"
+    );
+    assert!(
+        text(&o).contains("note   dev tool /mpfree-dev/fxprobe/fxprobe.sh  sha256 "),
+        "{}",
+        text(&o)
+    );
+    // The record, for the device round's tools.
+    let rec: Vec<_> = std::fs::read_dir(&rounds)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(rec.len(), 1);
+    let name = rec[0].file_name().unwrap().to_str().unwrap().to_string();
+    assert!(
+        name.starts_with("creator-stick-20") && name.ends_with('Z') && name.len() == 30,
+        "{name}"
+    );
+    let report = std::fs::read_to_string(rec[0].join("report.txt")).unwrap();
+    assert!(
+        report.contains(&format!("\nits kernel release: {RELEASE}\n")),
+        "{report}"
+    );
+    assert!(report.contains("\npartition 2 logs PARTUUID "), "{report}");
+    assert!(report.contains("developer SSH: on (root, key only, port 2222); host key SHA256:"));
+    assert!(report.contains("done the stick is ready"), "{report}");
+    assert!(
+        report.contains("dev tool /mpfree-dev/fxprobe/fxprobe.sh"),
+        "{report}"
+    );
+    let known = std::fs::read_to_string(rec[0].join("known_hosts")).unwrap();
+    assert!(
+        known.starts_with("mpfree-kexec-test ssh-ed25519 AAAA"),
+        "{known}"
+    );
+    assert_eq!(known.split_whitespace().count(), 3, "{known}");
+    assert!(known.ends_with('\n'));
     // A private key given by mistake is refused before anything is written.
     let o = stick(&[
         "write",

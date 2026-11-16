@@ -744,3 +744,254 @@ fn the_tuner_needle_sits_on_the_cents() {
     assert_eq!(needle.color, theme.warn);
     assert!(c.caption.starts_with("A2 · -7.0 c"), "{}", c.caption);
 }
+
+/// Every card the effect draws for state `st`, by title.
+fn drawn(st: &FxState, title: &str) -> mpfree_synth_ui::widgets::Card {
+    let theme = mpfree_ui::Theme::dark();
+    let scratch = mpfree_fx_ui::Scratch::new(st);
+    mpfree_fx_ui::visual::strip(st, "", None, &scratch, &theme)
+        .cards
+        .into_iter()
+        .find(|c| c.title == title)
+        .unwrap_or_else(|| panic!("{}: no {title}", st.info.id))
+}
+
+#[test]
+fn the_reverb_tails_fall_to_60_db_at_their_decay() {
+    use mpfree_fx::ids::{plate, room, spring};
+    // The plate: silent for the pre-delay, then down to -60 dB at Decay,
+    // on a span of the pre-delay and 1.15 decays, with a line each 500 ms.
+    let c = drawn(
+        &state(
+            "mpfree.fx.plate",
+            &[(plate::PREDELAY, 40.0), (plate::DECAY, 1800.0)],
+        ),
+        "Decay · 60 dB",
+    );
+    let span = 40.0 + 1800.0 * 1.15;
+    let tail = &c.traces[0].pts;
+    assert!((tail[1].0 * span - 40.0).abs() < 0.5, "{:?}", tail);
+    assert!((tail[3].0 * span - 1840.0).abs() < 0.5 && tail[3].1 < 1e-5);
+    let labels: Vec<&str> = c.grid.iter().map(|g| g.1.as_str()).collect();
+    assert_eq!(labels, ["500 ms", "1 s", "1.5 s", "2 s"]);
+    // The room's gate cuts the tail short, part way down.
+    let c = drawn(
+        &state(
+            "mpfree.fx.room",
+            &[
+                (room::PREDELAY, 0.0),
+                (room::DECAY, 800.0),
+                (room::GATE, 200.0),
+            ],
+        ),
+        "Decay · 60 dB",
+    );
+    let tail = &c.traces[0].pts;
+    assert!((tail[3].0 * 200.0 * 1.15 - 200.0).abs() < 0.5);
+    assert!((tail[3].1 - 0.9 * 0.75).abs() < 1e-4, "{:?}", tail[3]);
+    assert!(c.caption.contains("gated at 200 ms"), "{}", c.caption);
+    // The spring comes back every Length: two dozen returns at most.
+    let returns = |length: f32, decay: f32| {
+        let c = drawn(
+            &state(
+                "mpfree.fx.spring",
+                &[(spring::LENGTH, length), (spring::DECAY, decay)],
+            ),
+            "Decay · 60 dB",
+        );
+        c.traces.len() - 1
+    };
+    assert_eq!(returns(60.0, 500.0), 8);
+    assert_eq!(returns(30.0, 4000.0), 24);
+}
+
+#[test]
+fn the_delays_draw_their_heads_and_taps() {
+    use mpfree_fx::ids::{multitap as mt, tape};
+    let bars = |c: &mpfree_synth_ui::widgets::Card| -> Vec<(f32, f32)> {
+        c.traces[1..]
+            .iter()
+            .map(|t| (t.pts[0].0, t.pts[1].1))
+            .collect()
+    };
+    // Three heads with no feedback: three echoes, at 1, 1.95 and 2.9 times
+    // Time, each a third as loud as the hit.
+    let c = drawn(
+        &state(
+            "mpfree.fx.tape_delay",
+            &[
+                (tape::SYNC, 0.0),
+                (tape::TIME, 200.0),
+                (tape::HEADS, 2.0),
+                (tape::FEEDBACK, 0.0),
+            ],
+        ),
+        "Repeats",
+    );
+    let span = 200.0 * (2.9 + 6.0);
+    let x = |ms: f32| 0.01 + 0.98 * ms / span;
+    let got = bars(&c);
+    assert_eq!(got.len(), 3, "{got:?}");
+    for (&(gx, gy), at) in got.iter().zip([1.0, 1.95, 2.9]) {
+        assert!((gx - x(200.0 * at)).abs() < 1e-5 && (gy - 0.92 / 3.0).abs() < 1e-4);
+    }
+    // Feedback brings each head's echo round again from all three.
+    let fb = drawn(
+        &state(
+            "mpfree.fx.tape_delay",
+            &[
+                (tape::SYNC, 0.0),
+                (tape::TIME, 200.0),
+                (tape::HEADS, 2.0),
+                (tape::FEEDBACK, 60.0),
+            ],
+        ),
+        "Repeats",
+    );
+    assert!(bars(&fb).len() > 9);
+    // A synced echo reads its time from the tempo: a 1/8 at 120 BPM.
+    let sync = drawn(
+        &state("mpfree.fx.tape_delay", &[(tape::SYNC, 3.0)]),
+        "Repeats",
+    );
+    assert!(sync.caption.starts_with("1/8 · 250 ms"), "{}", sync.caption);
+    // Less Tone keeps less top each pass.
+    let top = |tone: f32| {
+        let c = drawn(
+            &state("mpfree.fx.tape_delay", &[(tape::TONE, tone)]),
+            "Tone",
+        );
+        c.traces[1].pts[160].1
+    };
+    assert!(top(2000.0) < top(10_000.0) - 0.1);
+    // The multi-tap: each tap at its sixteenths, as loud as its level.
+    let mut set = vec![(mt::FEEDBACK, 0.0)];
+    for (k, (at, level)) in [(2.0, 100.0), (4.0, 50.0), (6.0, 0.0), (8.0, 25.0)]
+        .into_iter()
+        .enumerate()
+    {
+        set.extend([(mt::time(k), at), (mt::level(k), level)]);
+    }
+    let c = drawn(&state("mpfree.fx.multitap", &set), "Repeats");
+    let sixteenth = 125.0;
+    let span = 8.0 * sixteenth * 3.0 + sixteenth;
+    let x = |ms: f32| 0.01 + 0.98 * ms / span;
+    let got = bars(&c);
+    assert_eq!(got.len(), 3, "the silent tap draws nothing: {got:?}");
+    for (&(gx, gy), (at, level)) in got.iter().zip([(2.0, 1.0), (4.0, 0.5), (8.0, 0.25)]) {
+        assert!((gx - x(at * sixteenth)).abs() < 1e-5 && (gy - 0.92 * level).abs() < 1e-4);
+    }
+}
+
+#[test]
+fn the_channel_strip_draws_its_curve_path_and_eq() {
+    use mpfree_fx::ids::channel_strip as cs;
+    let y = |db: f32| ((db + 60.0) / 72.0).clamp(0.0, 1.0);
+    let curve_at = |c: &mpfree_synth_ui::widgets::Card, db_in: f32| {
+        let pts = &c.traces[1].pts;
+        let k = (((db_in + 60.0) / 60.0) * (pts.len() - 1) as f32).round() as usize;
+        pts[k].1
+    };
+    // The compressor alone: 4:1 over -20 dB, 3 dB of makeup.
+    let comp = drawn(
+        &state(
+            "mpfree.fx.channel_strip",
+            &[
+                (cs::GATE, 0.0),
+                (cs::COMP, 1.0),
+                (cs::COMP_THRESHOLD, -20.0),
+                (cs::RATIO, 4.0),
+                (cs::MAKEUP, 3.0),
+            ],
+        ),
+        "Curve",
+    );
+    assert!((curve_at(&comp, -40.0) - y(-37.0)).abs() < 0.5 / 72.0);
+    assert!((curve_at(&comp, 0.0) - y(-12.0)).abs() < 1.5 / 72.0);
+    // The gate drops what is under its threshold by Range.
+    let gate = drawn(
+        &state(
+            "mpfree.fx.channel_strip",
+            &[
+                (cs::GATE, 1.0),
+                (cs::GATE_THRESHOLD, -40.0),
+                (cs::GATE_RANGE, -12.0),
+                (cs::COMP, 0.0),
+            ],
+        ),
+        "Curve",
+    );
+    assert!((curve_at(&gate, -50.0) - y(-62.0)).abs() < 1e-4);
+    assert!((curve_at(&gate, -20.0) - y(-20.0)).abs() < 0.5 / 72.0);
+    assert_eq!(gate.grid[0].1, "gate");
+    // The signal path follows Order, a stage dim while it is off.
+    let path = |order: f32| {
+        drawn(
+            &state(
+                "mpfree.fx.channel_strip",
+                &[(cs::ORDER, order), (cs::GATE, 0.0)],
+            ),
+            "Signal path",
+        )
+    };
+    let after = path(0.0);
+    let labels = |c: &mpfree_synth_ui::widgets::Card| -> Vec<(String, bool)> {
+        c.nodes.iter().map(|n| (n.label.clone(), n.dim)).collect()
+    };
+    assert_eq!(
+        labels(&after),
+        [
+            ("G".into(), true),
+            ("C".into(), false),
+            ("EQ".into(), false)
+        ]
+    );
+    assert_eq!(labels(&path(1.0))[0].0, "EQ");
+    // The EQ's response is what a sine through the strip measures, with
+    // the gate and compressor off.
+    let values = [
+        (cs::GATE, 0.0),
+        (cs::COMP, 0.0),
+        (cs::EQ, 1.0),
+        (cs::LOW_CUT, 60.0),
+        (cs::LOW_GAIN, 6.0),
+        (cs::MID_FREQ, 1500.0),
+        (cs::MID_GAIN, -8.0),
+        (cs::HIGH_GAIN, 4.0),
+    ];
+    let eq = drawn(&state("mpfree.fx.channel_strip", &values), "Response");
+    let mut n = make("mpfree.fx.channel_strip").unwrap();
+    for &(id, v) in &values {
+        n.set_param(id, v);
+    }
+    n.prepare(RATE, 512);
+    let pts = &eq.traces[0].pts;
+    for k in [12, 40, 70, 100, 125, 150, 170] {
+        let x = k as f32 / (pts.len() - 1) as f32;
+        let hz = mpfree_fx_ui::visual::x_freq(x);
+        let shown = -18.0 + 36.0 * pts[k].1;
+        let heard = measure(n.as_mut(), hz);
+        assert!(
+            (shown - heard).abs() < 0.5,
+            "{hz:.0} Hz: drawn {shown:.2} dB, heard {heard:.2} dB"
+        );
+    }
+}
+
+/// The gain in dB a steady sine at `hz` gets through `n`, from the last
+/// quarter of a second and a half.
+fn measure(n: &mut dyn Node, hz: f32) -> f32 {
+    n.reset();
+    let frames = 3 * RATE as usize / 2;
+    let x: Vec<f32> = (0..frames)
+        .map(|i| 0.1 * (std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin())
+        .collect();
+    let (mut l, mut r) = (x.clone(), x.clone());
+    let ctx = Ctx::new(RATE, 0);
+    for (a, b) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+        n.process(&ctx, &[] as &[Timed], a, b);
+    }
+    let tail = frames / 4 * 3;
+    let rms = |v: &[f32]| (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
+    20.0 * (rms(&l[tail..]) / rms(&x[tail..])).log10()
+}
