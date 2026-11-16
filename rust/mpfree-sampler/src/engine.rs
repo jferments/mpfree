@@ -816,6 +816,9 @@ struct Voice {
     follow: Follow,
     /// The program tune (cents) its grains were last set for.
     grain_cents: f32,
+    /// Started as a plain one-shot ([`Engine::set_full_voices`]): it may
+    /// take a voice past the full-voice limit.
+    light: bool,
 }
 
 impl Voice {
@@ -944,13 +947,22 @@ struct Pool {
 /// envelope, filter) costs about as much as 8 to 16 live grains; the
 /// device bench may move it.
 const VOICE_COST: usize = 8;
+/// What a plain one-shot costs in the same units: the drum kit bench
+/// cases put a plain voice at about a fifth of a full one.
+const LIGHT_COST: usize = 2;
 
 impl Pool {
     /// About what this share costs to render now: its playing voices and
     /// their live grains. A new voice goes to the share that costs less, so
     /// two granular clouds don't pile up on one core.
     fn cost(&self) -> usize {
-        VOICE_COST * self.voices.iter().filter(|v| v.active).count() + self.budget.live()
+        let cost = |v: &Voice| if v.light { LIGHT_COST } else { VOICE_COST };
+        self.voices
+            .iter()
+            .filter(|v| v.active)
+            .map(cost)
+            .sum::<usize>()
+            + self.budget.live()
     }
 
     /// `n` voices, the first of them slot `first` of the whole pool (it
@@ -1269,6 +1281,9 @@ pub struct Engine {
     /// Live chop's cuts, in source frames: cut `i` at `marks[i % MAX_MARKS]`.
     marks: [u64; MAX_MARKS],
     marks_made: u64,
+    /// How many voices may be full voices (not plain one-shots) at once
+    /// ([`Engine::set_full_voices`]); the whole pool unless set.
+    full_limit: usize,
 }
 
 /// Wow and flutter at full depth: cents and cycles a second of each
@@ -1314,7 +1329,47 @@ impl Engine {
             chop_pad: None,
             marks: [0; MAX_MARKS],
             marks_made: 0,
+            full_limit: voices.max(1),
         }
+    }
+
+    /// At most `n` of the pool's voices play as full voices (any setting:
+    /// filters, envelopes, loops, grains, pitch); the rest of the pool is
+    /// for plain one-shots, which cost a fraction as much ([`plain_now`]).
+    /// A full voice past the limit takes the place of another full voice,
+    /// as a voice past a full pool does. The pad player keeps its full
+    /// voices at the 24 it has always had and gives the drum hits more.
+    pub fn set_full_voices(&mut self, n: usize) {
+        self.full_limit = n.max(1);
+    }
+
+    /// The voice slot a new voice takes when there is no free one (or no
+    /// free full voice, with `full_only`): a releasing voice first, then
+    /// the oldest voice of the pad holding the most voices. Never
+    /// allocates.
+    fn victim(&self, full_only: bool) -> usize {
+        let rel = |x: &Voice| x.kill_left > 0 || x.amp.as_ref().is_some_and(|a| a.is_releasing());
+        let mut held = [0u16; crate::model::PADS];
+        for (v, _) in self.pool.iter() {
+            if v.active && !rel(v) {
+                if let Some(n) = held.get_mut(usize::from(v.pad)) {
+                    *n += 1;
+                }
+            }
+        }
+        let count = |x: &Voice| held.get(usize::from(x.pad)).copied().unwrap_or(0);
+        type Key = (bool, u16, std::cmp::Reverse<u64>);
+        let mut best: Option<(usize, Key)> = None;
+        for (i, (v, _)) in self.pool.iter().enumerate() {
+            if full_only && (!v.active || v.light) {
+                continue;
+            }
+            let key = (rel(v), count(v), std::cmp::Reverse(v.age));
+            if best.is_none_or(|(_, b)| key > b) {
+                best = Some((i, key));
+            }
+        }
+        best.map_or(0, |(i, _)| i)
     }
 
     /// The project tempo, in BPM, for warped layers: they play `tempo /
@@ -2071,45 +2126,6 @@ impl Engine {
             }
             None => None,
         };
-        // A free voice, else the oldest releasing one, else the oldest of
-        // the pad holding the most voices: a pad hit over and over (Note
-        // Repeat on a long sound) gives up its own voices before another
-        // pad's sound is cut short.
-        let slot = self.pool.free_slot().unwrap_or_else(|| {
-            let rel =
-                |x: &Voice| x.kill_left > 0 || x.amp.as_ref().is_some_and(|a| a.is_releasing());
-            let mut held = [0u16; crate::model::PADS];
-            for (v, _) in self.pool.iter() {
-                if v.active && !rel(v) {
-                    if let Some(n) = held.get_mut(usize::from(v.pad)) {
-                        *n += 1;
-                    }
-                }
-            }
-            let count = |x: &Voice| held.get(usize::from(x.pad)).copied().unwrap_or(0);
-            type Key = (bool, u16, std::cmp::Reverse<u64>);
-            let mut best: Option<(usize, Key)> = None;
-            for (i, (v, _)) in self.pool.iter().enumerate() {
-                let key = (rel(v), count(v), std::cmp::Reverse(v.age));
-                if best.is_none_or(|(_, b)| key > b) {
-                    best = Some((i, key));
-                }
-            }
-            best.map_or(0, |(i, _)| i)
-        });
-        let Some(old) = self.pool.voice(slot) else {
-            return;
-        };
-        let (stolen, was_granular, last) = (old.active, old.granular, (old.last_l, old.last_r));
-        if was_granular {
-            self.pool.kill_grain(slot);
-        }
-        let (tail_l, tail_r) = if stolen {
-            self.stats.steals += 1;
-            last
-        } else {
-            (0.0, 0.0)
-        };
         // What the voice reads: the layer's region, or the slice once.
         let (start, end, reverse, mode) = match slice {
             Some((a, b)) => (a, b, false, PlayMode::OneShot),
@@ -2240,6 +2256,53 @@ impl Engine {
         } else {
             plain
         };
+        // A plain one-shot (as a kit's drum hits are) can take one of the
+        // voices past the full-voice limit: it costs a fraction of a full
+        // voice once it plays (`plain_now`, `render_plain`).
+        let light = !granular
+            && mode == PlayMode::OneShot
+            && step == ONE
+            && !reverse
+            && fade_in.is_none()
+            && fade_out.is_none()
+            && filter.is_none()
+            && vp.pressure.target == PressureTarget::Off
+            && vp.wow == 0.0
+            && cents == 0.0
+            && self.tape == 1.0
+            && amp_holds(&amp, self.rate)
+            && (!l.stereo || (pick_l, pick_r) == (0, 1));
+        // A free voice, else the oldest releasing one, else the oldest of
+        // the pad holding the most voices: a pad hit over and over (Note
+        // Repeat on a long sound) gives up its own voices before another
+        // pad's sound is cut short. A full voice past the full-voice limit
+        // takes one of the full voices the same way.
+        let full_now = if light {
+            0
+        } else {
+            self.pool
+                .iter()
+                .filter(|(v, _)| v.active && !v.light)
+                .count()
+        };
+        let slot = if !light && full_now >= self.full_limit {
+            self.victim(true)
+        } else {
+            self.pool.free_slot().unwrap_or_else(|| self.victim(false))
+        };
+        let Some(old) = self.pool.voice(slot) else {
+            return;
+        };
+        let (stolen, was_granular, last) = (old.active, old.granular, (old.last_l, old.last_r));
+        if was_granular {
+            self.pool.kill_grain(slot);
+        }
+        let (tail_l, tail_r) = if stolen {
+            self.stats.steals += 1;
+            last
+        } else {
+            (0.0, 0.0)
+        };
         self.clock += 1;
         let Some(v) = self.pool.voice_mut(slot) else {
             return;
@@ -2320,6 +2383,7 @@ impl Engine {
             tape_gain: 1.0,
             follow,
             grain_cents: cents,
+            light,
         };
         if self.tape != 1.0 {
             // A hit on a stopped (or slowing) tape plays at its speed.
@@ -3010,10 +3074,98 @@ fn finish<const FOLLOW: bool>(
 fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
     if v.follow.moving {
         render_voice_as::<true>(v, rate, left, right);
+    } else if plain_now(v) {
+        render_plain(v, left, right);
     } else {
         render_voice_as::<false>(v, rate, left, right);
     }
     v.heard = (v.heard * HEARD_FALL).max(v.last_l.abs().max(v.last_r.abs()));
+}
+
+/// Whether an amp envelope with these settings soon holds a level (its
+/// sustain, reached within a couple of frames) until a release, so a voice
+/// with it plays plain ([`plain_now`]) after its first frames.
+fn amp_holds(a: &Ahdsr, rate: f32) -> bool {
+    let frames = |ms: f32| ms.max(0.0) * 0.001 * rate;
+    frames(a.attack_ms) < 1.0
+        && frames(a.hold_ms) < 1.0
+        && a.sustain > 0.0
+        && (a.sustain >= 1.0 || frames(a.decay_ms) < 1.0)
+}
+
+/// Whether the voice's next frames are a plain copy of its sound at a
+/// fixed gain, so [`render_plain`] gives exactly what the full loop would:
+/// forward at the sound's own speed from a whole frame (no Hermite
+/// blend), no loop, fades, filter or pressure, its envelope holding a
+/// level, and no kill fade or stolen voice's tail under way. A kit's
+/// drum hits are like this from their second frame to their last.
+#[inline]
+fn plain_now(v: &Voice) -> bool {
+    v.step == ONE
+        && !v.backwards
+        && !v.looping
+        && v.pos & (ONE - 1) == 0
+        && v.fade_in.is_none()
+        && v.fade_out.is_none()
+        && v.filter.is_none()
+        && v.route.target == PressureTarget::Off
+        && v.kill_left == 0
+        && v.tail_left == 0
+        && v.amp.as_ref().is_none_or(|a| a.is_steady())
+        && (!v.stereo || (v.pick_l == 0 && v.pick_r == 1))
+}
+
+/// A plain voice's next frames ([`plain_now`]): each frame of its sound
+/// times its gain, added in. Bit for bit what [`render_voice_as`] gives
+/// for such a voice (`a_plain_voice_renders_as_the_full_loop_does`), at a
+/// fraction of the cost: the loop is a multiply and an add a sample.
+fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
+    let Some(data) = v.data.take() else {
+        v.active = false;
+        return;
+    };
+    let i = v.pos >> 32;
+    let n = if i < v.start {
+        0
+    } else {
+        left.len().min((v.end - i).max(0) as usize)
+    };
+    // The full loop's gain: the envelope's level (its `g`), times the
+    // voice's gain on each side.
+    let g = v.amp.as_ref().map_or(1.0, |a| a.level());
+    let (gl, gr) = (g * v.gain_l, g * v.gain_r);
+    if n > 0 {
+        let k = i as usize;
+        let (left, right) = (&mut left[..n], &mut right[..n]);
+        if v.stereo {
+            let src = &data[2 * k..2 * (k + n)];
+            for ((ol, or), f) in left
+                .iter_mut()
+                .zip(right.iter_mut())
+                .zip(src.chunks_exact(2))
+            {
+                *ol += f[0] * gl;
+                *or += f[1] * gr;
+            }
+            v.last_l = src[2 * n - 2] * gl;
+            v.last_r = src[2 * n - 1] * gr;
+        } else {
+            let src = &data[k..k + n];
+            for ((ol, or), x) in left.iter_mut().zip(right.iter_mut()).zip(src) {
+                *ol += x * gl;
+                *or += x * gr;
+            }
+            v.last_l = src[n - 1] * gl;
+            v.last_r = src[n - 1] * gr;
+        }
+        v.pos += (n as i64) << 32;
+    }
+    if n < left.len() {
+        // It reached its end within the block, as the full loop finds.
+        v.active = false;
+    } else {
+        v.data = Some(data);
+    }
 }
 
 /// How much a voice's [`Voice::heard`] level falls each render it is not
@@ -3153,6 +3305,131 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A plain voice gives the same samples, bit for bit, from
+    /// `render_plain` as from the full loop: stereo and mono, from the
+    /// start and from part way in, at full and at a held sustain level,
+    /// running out within a block and exactly at its end; and it ends
+    /// (or plays on) on the same frame.
+    #[test]
+    fn a_plain_voice_renders_as_the_full_loop_does() {
+        let rate = 44_100.0;
+        let frames = 300usize;
+        let stereo: Arc<[f32]> = (0..frames * 2)
+            .map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0)
+            .collect::<Vec<_>>()
+            .into();
+        let mono: Arc<[f32]> = (0..frames)
+            .map(|i| ((i * 104_729) % 977) as f32 / 488.5 - 1.0)
+            .collect::<Vec<_>>()
+            .into();
+        for (data, is_stereo) in [(&stereo, true), (&mono, false)] {
+            for sustain in [1.0f32, 0.7] {
+                for (start, end, from) in [(0i64, 300i64, 0i64), (10, 256, 30), (3, 131, 3)] {
+                    let mut amp = Envelope::start(
+                        &Ahdsr {
+                            sustain,
+                            ..Ahdsr::OPEN
+                        },
+                        rate,
+                    );
+                    for _ in 0..4 {
+                        amp.next();
+                    }
+                    assert!(amp.is_steady());
+                    let (pick_l, pick_r) = picks(is_stereo, ChannelPick::Stereo);
+                    let v = Voice {
+                        active: true,
+                        data: Some(Arc::clone(data)),
+                        stereo: is_stereo,
+                        pick_l,
+                        pick_r,
+                        pos: from << 32,
+                        step: ONE,
+                        start,
+                        end,
+                        gain_l: 0.83,
+                        gain_r: -0.41,
+                        amp: Some(amp),
+                        ..Voice::default()
+                    };
+                    assert!(plain_now(&v));
+                    let (mut a, mut b) = (v.clone(), v);
+                    for block in 0..4 {
+                        let (mut al, mut ar) = ([0.25f32; 128], [-0.5f32; 128]);
+                        let (mut bl, mut br) = (al, ar);
+                        render_plain(&mut a, &mut al, &mut ar);
+                        render_voice_as::<false>(&mut b, rate, &mut bl, &mut br);
+                        let what = format!("stereo {is_stereo}, sustain {sustain}, {start}..{end} from {from}, block {block}");
+                        assert_eq!(al.map(f32::to_bits), bl.map(f32::to_bits), "{what}");
+                        assert_eq!(ar.map(f32::to_bits), br.map(f32::to_bits), "{what}");
+                        assert_eq!((a.active, a.pos), (b.active, b.pos), "{what}");
+                        assert_eq!(
+                            (a.last_l.to_bits(), a.last_r.to_bits()),
+                            (b.last_l.to_bits(), b.last_r.to_bits()),
+                            "{what}"
+                        );
+                        if !a.active {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// What isn't plain goes through the full loop: a filter, a fade, a
+    /// loop, pitch, a blend between frames, a kill fade, a stolen voice's
+    /// tail, an envelope still moving, a channel pick.
+    #[test]
+    fn only_plain_voices_take_the_plain_path() {
+        let mut amp = Envelope::start(&Ahdsr::OPEN, 44_100.0);
+        for _ in 0..4 {
+            amp.next();
+        }
+        let plain = Voice {
+            active: true,
+            stereo: true,
+            pick_l: 0,
+            pick_r: 1,
+            step: ONE,
+            end: 100,
+            amp: Some(amp),
+            ..Voice::default()
+        };
+        assert!(plain_now(&plain));
+        type Change = (&'static str, fn(&mut Voice));
+        let not: [Change; 10] = [
+            ("filter", |v| v.filter = Some(OPEN_FILTER)),
+            ("fade", |v| {
+                v.fade_out = Some(Fade {
+                    frames: 10,
+                    ..Fade::NONE
+                })
+            }),
+            ("loop", |v| v.looping = true),
+            ("pitch", |v| v.step = ONE + 1),
+            ("blend", |v| v.pos = 1),
+            ("kill", |v| v.kill_left = 3),
+            ("tail", |v| v.tail_left = 3),
+            ("attack", |v| {
+                v.amp = Some(Envelope::start(
+                    &Ahdsr {
+                        attack_ms: 5.0,
+                        ..Ahdsr::OPEN
+                    },
+                    44_100.0,
+                ))
+            }),
+            ("release", |v| v.amp.as_mut().unwrap().release()),
+            ("left only", |v| v.pick_r = 0),
+        ];
+        for (what, change) in not {
+            let mut v = plain.clone();
+            change(&mut v);
+            assert!(!plain_now(&v), "{what}");
         }
     }
 
