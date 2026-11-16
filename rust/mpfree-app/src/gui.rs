@@ -3916,6 +3916,11 @@ impl Player {
                 if self.chain_page.drives(self.view) {
                     self.refresh_qlinks();
                 }
+                // The hint follows the page shown (the EQ's, another
+                // effect's, or none after a Remove).
+                if self.view == View::Chain {
+                    self.refresh_hint();
+                }
             }
             ToUi::ParamsMoved(landed) => {
                 self.chain_page.bind.retarget(|a| landed.target(a));

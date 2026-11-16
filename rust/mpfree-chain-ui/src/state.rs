@@ -614,6 +614,28 @@ impl ChainState {
         }
     }
 
+    /// The chain's list with no effect picked and no page: what the editor
+    /// shows after the open effect was removed (its page shuts with it,
+    /// rather than the next effect's opening).
+    pub fn without_page(self) -> ChainState {
+        ChainState {
+            selected: None,
+            groups: Vec::new(),
+            group: 0,
+            params: Vec::new(),
+            main_four: Vec::new(),
+            sections: Vec::new(),
+            spec: String::new(),
+            focus: None,
+            rows: Vec::new(),
+            mode: None,
+            eq: false,
+            presets: Vec::new(),
+            preset: None,
+            ..self
+        }
+    }
+
     pub fn focused(&self) -> Option<&ParamView> {
         self.focus
             .and_then(|f| self.params.iter().find(|p| p.addr == f))
