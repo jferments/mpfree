@@ -1539,9 +1539,14 @@ mod tests {
     fn the_log_says_what_is_there_and_what_was_done() {
         let mut p = page_with(Vec::new(), Vec::new(), true);
         let lines = p.take_lines();
+        // A static build (the MPC's, or a host built with +crt-static)
+        // downloads through the helper, any other through libcurl.
         assert_eq!(
             lines,
-            vec!["plugins: 0 installed, 0 zip(s) on the stick, catalog of 2026-11-10 kept (3 plugins), downloads possible (libcurl found)"]
+            vec![format!(
+                "plugins: 0 installed, 0 zip(s) on the stick, catalog of 2026-11-10 kept (3 plugins), downloads possible ({} found)",
+                mpfree_mpcstore::fetch::means()
+            )]
         );
         p.take(News::Done {
             key: "maker.echo".into(),
