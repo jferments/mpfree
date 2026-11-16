@@ -28,6 +28,11 @@ pub struct DiskInfo {
     pub sector: u64,
     /// What the system has mounted from it.
     pub mounted: Vec<String>,
+    /// It looks like an MPFree stick already, as far as the system shows
+    /// without administrator rights: Linux names its partitions, macOS and
+    /// Windows its setup partition's label. A guess for the window's
+    /// wording; what a write keeps is decided on the disk itself.
+    pub mpfree: bool,
 }
 
 impl DiskInfo {
@@ -294,6 +299,19 @@ mod imp {
             if sectors == 0 {
                 continue; // a card reader with no card
             }
+            // Its partitions' names (sysfs, readable by anyone).
+            let mpfree = std::fs::read_dir(&sys)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&name))
+                .any(|e| {
+                    let u = read(&format!("{}/uevent", e.path().display()));
+                    u.lines().any(|l| {
+                        l == format!("PARTNAME={}", crate::stick::ROOT_NAME)
+                            || l == format!("PARTNAME={}", crate::stick::ROOT_OFF_NAME)
+                    })
+                });
             out.push(DiskInfo {
                 id,
                 name: format!(
@@ -309,6 +327,7 @@ mod imp {
                     .into_iter()
                     .map(|(d, m)| format!("{d} on {m}"))
                     .collect(),
+                mpfree,
             });
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -366,6 +385,10 @@ mod imp {
             {
                 continue;
             }
+            // The setup partition's FAT label, MPFREE, among its volumes.
+            let mpfree = run("diskutil", &["list", "-plist", &disk]).is_ok_and(|l| {
+                l.contains(&format!("<string>{}</string>", crate::stick::SETUP_LABEL))
+            });
             out.push(DiskInfo {
                 id: format!("/dev/{disk}"),
                 name: plist_value(&info, "MediaName").unwrap_or_default(),
@@ -376,6 +399,7 @@ mod imp {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(512),
                 mounted: Vec::new(),
+                mpfree,
             });
         }
         Ok(out)
@@ -421,17 +445,20 @@ mod imp {
     pub fn list() -> io::Result<Vec<DiskInfo>> {
         let text = powershell(
             "Get-Disk | Where-Object { $_.BusType -eq 'USB' -and -not $_.IsBoot -and -not $_.IsSystem } | \
-             ForEach-Object { '{0}|{1}|{2}|{3}' -f $_.Number, $_.Size, $_.LogicalSectorSize, $_.FriendlyName }",
+             ForEach-Object { $m = [bool](Get-Partition -DiskNumber $_.Number -ErrorAction SilentlyContinue | \
+             Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystemLabel -eq 'MPFREE' }); \
+             '{0}|{1}|{2}|{3}|{4}' -f $_.Number, $_.Size, $_.LogicalSectorSize, $m, $_.FriendlyName }",
         )?;
         Ok(text
             .lines()
             .filter_map(|l| {
-                let mut f = l.trim().splitn(4, '|');
+                let mut f = l.trim().splitn(5, '|');
                 let n: u32 = f.next()?.parse().ok()?;
                 Some(DiskInfo {
                     id: format!(r"\\.\PhysicalDrive{n}"),
                     bytes: f.next()?.parse().ok()?,
                     sector: f.next()?.parse().unwrap_or(512),
+                    mpfree: f.next() == Some("True"),
                     name: f.next().unwrap_or("").to_string(),
                     mounted: Vec::new(),
                 })
@@ -578,6 +605,7 @@ mod tests {
                 bytes: 4096,
                 sector: 512,
                 mounted: Vec::new(),
+                mpfree: false,
             },
             file: f,
             align: 512,

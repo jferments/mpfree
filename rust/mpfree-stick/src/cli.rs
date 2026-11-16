@@ -18,9 +18,10 @@ MPFree has only been tested on the MPC One (Gen 1). Nothing here reads or writes
       Checks Akai's update file (read-only).
   mpfree-stick disks
       Lists the USB disks (read-only).
-  mpfree-stick write UPDATE --device DISK --yes-erase DISK [OPTIONS] [--fresh-data]
+  mpfree-stick write UPDATE --device DISK --yes-erase DISK [OPTIONS] [--fresh-data | --keep-data]
       Makes the stick. Erases partitions 1, 2, 3 and 5 and the partition table. Partition 4 (your
       settings, files and backups) is kept if the stick already has MPFree on it, unless --fresh-data.
+      With --keep-data, nothing is written if partition 4 holds data this version can't keep.
       DISK may be an image file of 16 GB or more, for trying it out.
   mpfree-stick build UPDATE --out FILE [OPTIONS]
       Makes a small stick image file (partition 4 only 64 MiB), for tests.
@@ -649,9 +650,22 @@ fn main_inner(words: Vec<String>, out: &mut Out) -> io::Result<String> {
                 return Err(usage("--yes-erase must name the same disk as --device"));
             }
             let fresh = a.flag("--fresh-data");
+            let keep = a.flag("--keep-data");
+            if fresh && keep {
+                return Err(usage("--fresh-data and --keep-data: choose one"));
+            }
             let i = inputs(&mut a, out)?;
             a.done()?;
             let target = Target::open(&dev, true)?;
+            // An update that must keep the backup never erases it: a partition 4
+            // that holds a filesystem this version can't keep stops it here.
+            if keep && stick::existing_data(&target).is_none() && stick::holds_data(&target) {
+                return Err(io::Error::other(
+                    "this stick's saved data (partition 4) is not in a form this version of MPFree \
+                     can keep, so nothing was written. Copy the backup to this computer first, \
+                     then make the stick again with \"Erase everything and start over\"",
+                ));
+            }
             out.say(Msg::Note(format!(
                 "writing {dev} ({:.1} GB)",
                 target.bytes() as f64 / 1e9

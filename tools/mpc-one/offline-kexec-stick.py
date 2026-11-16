@@ -643,7 +643,10 @@ i=0
 while [ ! -e "$dev" ] && [ "$i" -lt 60 ]; do sleep 1; i=$((i + 1)); done
 [ -e "$dev" ] || {{ echo "mpfree-test: log partition not found" > /dev/kmsg; exit 1; }}
 mkdir -p /run/mpfree-log
-mount -t ext4 -o rw,nosuid,nodev,noexec,sync "$dev" /run/mpfree-log || exit 1
+# No "sync" mount option: with it every write of the copies below waited for the stick (about a hundred
+# small writes every 10 s, among the first start's backup on the same stick). The sync at the end of each
+# round puts them all on the stick at once instead.
+mount -t ext4 -o rw,nosuid,nodev,noexec "$dev" /run/mpfree-log || exit 1
 d=/run/mpfree-log/boot-$(cat /proc/sys/kernel/random/boot_id)
 mkdir -p "$d"
 while :; do

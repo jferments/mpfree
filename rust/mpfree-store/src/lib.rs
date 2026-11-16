@@ -414,9 +414,19 @@ fn check_folder(dir: &Path) -> Result<bool, String> {
         }
         Ok(_) => Err(format!("{shown}/FORMAT is not a plain file")),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Folders (not links) that only MPFree's first start on a creator
+            // stick makes: the eMMC backup and the library. The third creator
+            // stick (16 Nov) made them before the store had written FORMAT,
+            // so a partition 4 holding only these is MPFree's.
+            let first_start = |e: &fs::DirEntry| {
+                ["backup", "library"].contains(&e.file_name().to_string_lossy().as_ref())
+                    && e.file_type().is_ok_and(|t| t.is_dir())
+            };
             let others: Vec<String> = fs::read_dir(dir)
                 .map_err(|e| format!("{shown}: {e}"))?
-                .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+                .filter_map(|e| e.ok())
+                .filter(|e| !first_start(e))
+                .map(|e| e.file_name().to_string_lossy().into_owned())
                 .filter(|n| n != "lost+found")
                 .collect();
             if others.is_empty() {
@@ -725,8 +735,42 @@ mod tests {
         let (st3, lines3) = store(&dir.join("missing"));
         assert!(!st3.saves() && st3.settings("app").is_empty());
         assert!(lines3.lock().unwrap()[0].contains("missing"));
+
+        // A file named like the first start's folders is not one of them.
+        let dir4 = temp();
+        fs::write(dir4.join("library"), "a file").unwrap();
+        let (st4, _) = store(&dir4);
+        assert!(!st4.saves());
+        assert!(!dir4.join("FORMAT").exists());
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
+        let _ = fs::remove_dir_all(&dir4);
+    }
+
+    #[test]
+    fn a_partition_the_first_start_used_before_the_store_is_taken() {
+        // What the third creator stick's partition 4 held after its first
+        // start: lost+found, the backup and the library, and no FORMAT.
+        let dir = temp();
+        for d in [
+            "lost+found",
+            "backup/mpc-one-emmc-20261116T014409Z",
+            "library/Samples",
+        ] {
+            fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        let (st, _) = store(&dir);
+        assert!(st.saves());
+        st.save_settings("setup", &Settings::parse("done=backup\n"))
+            .unwrap();
+        st.flush();
+        assert_eq!(
+            fs::read_to_string(dir.join("FORMAT")).unwrap(),
+            format!("{FORMAT}\n")
+        );
+        assert_eq!(st.settings("setup").get_str("done"), Some("backup"));
+        assert!(dir.join("backup/mpc-one-emmc-20261116T014409Z").is_dir());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

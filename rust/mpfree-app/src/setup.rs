@@ -17,7 +17,8 @@
 //!    in Akai's folders, where BROWSE finds them. Both are written only
 //!    through `mpfree-library`.
 //! 3. **Done** is kept in the store (`settings/setup.conf`), step by step
-//!    ([`STEPS`]), so each step runs once. A failed attempt is tried again
+//!    ([`STEPS`]), saved as each step ends (and the try's number as it
+//!    starts), so each step runs once even when a later one is cut off. A failed attempt is tried again
 //!    at the next start, at most [`MAX_TRIES`] times; the pad player works
 //!    either way. A later version can add a step (the MPC's instruments,
 //!    say): a stick set up before runs only that step, from the backup it
@@ -37,6 +38,7 @@ use mpfree_diskimage::Offset;
 use mpfree_factory::import::{Content, DEFAULT_KITS};
 use mpfree_library::{clean_name, Library, Loc, Place};
 use mpfree_store::Settings;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::os::unix::fs::OpenOptionsExt;
@@ -62,6 +64,8 @@ pub const MAX_TRIES: i64 = 3;
 pub const STEPS: &[&str] = &["backup", "kits", "samples"];
 /// The largest sample copied (the library's own limit is higher).
 const MAX_SAMPLE: u64 = 512 << 20;
+/// Samples that fail one after another before the samples step stops.
+const GIVE_UP_AFTER: usize = 20;
 
 /// Where things are; tests point them at a temporary folder.
 pub struct Paths {
@@ -261,12 +265,17 @@ impl Estimate {
             took: None,
         };
         let b = bytes as f64;
+        // Guesses until a rate is measured, from the MPC One with a USB 3
+        // stick on its USB 2 port (about 7 MB/s written, 25 MB/s read): the
+        // copy writes only the eMMC's used half and reads the rest; the
+        // read-back reads only what was written; Akai's samples are about
+        // 3 GB, read and written on the same stick.
         Estimate {
             parts: [
-                part(b, 10e6),
-                part(b, 25e6),
+                part(b, 12e6),
+                part(b, 35e6),
                 part(24.0, 2.0),
-                part(1.5e9, 6e6),
+                part(3.0e9, 5e6),
             ],
             shown: 0.0,
         }
@@ -408,29 +417,62 @@ fn image_in(folder: &Path) -> PathBuf {
     folder.join("mmcblk0.img")
 }
 
-/// The backup an earlier start made, if the store names one that is still
-/// on partition 4.
+/// The backup an earlier start made: the one the store names, if it is
+/// still on partition 4, or else the newest finished one there.
 fn earlier_backup(paths: &Paths, saved: &Settings) -> Option<PathBuf> {
-    if !done_steps(saved).iter().any(|d| d == "backup") {
-        return None;
-    }
-    let folder = PathBuf::from(saved.get_str("backup")?);
-    (folder.parent() == Some(&paths.data.join("backup")) && image_in(&folder).is_file())
-        .then_some(folder)
+    let named = done_steps(saved)
+        .iter()
+        .any(|d| d == "backup")
+        .then(|| saved.get_str("backup").map(PathBuf::from))
+        .flatten()
+        .filter(|f| f.parent() == Some(&paths.data.join("backup")) && image_in(f).is_file());
+    named.or_else(|| finished_backup(paths))
+}
+
+/// The newest finished backup in partition 4's `backup/`, for a start whose
+/// record of it was never saved (the third creator stick's, 16 Nov, whose
+/// store refused the folder). The root service gives a backup folder its
+/// name only once it has read every image back and checked it against the
+/// eMMC's hash, and writes SHA256SUMS and MANIFEST.txt first; a cut-off one
+/// keeps its `.part` name.
+fn finished_backup(paths: &Paths) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(paths.data.join("backup"))
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.starts_with("mpc-one-emmc-") && !n.ends_with(".part")
+        })
+        .map(|e| e.path())
+        .filter(|f| {
+            image_in(f).is_file()
+                && f.join("SHA256SUMS").is_file()
+                && f.join("MANIFEST.txt").is_file()
+        })
+        .collect();
+    found.sort();
+    found.pop()
 }
 
 /// Runs the steps not done yet. `saved` is what the store holds now.
+/// `save` keeps the settings on the stick as they change: the try's number
+/// before anything runs, and each step as it ends. (The third creator stick
+/// kept them only at the end: its pad player went before then, and the next
+/// start backed the MPC up again.) The caller saves the outcome too.
 pub fn run(
     paths: &Paths,
     saved: &Settings,
     timing: &Timing,
     show_f: &mut dyn FnMut(Show),
     say: &mut dyn FnMut(String),
+    save: &mut dyn FnMut(&Settings),
 ) -> Outcome {
     let mut out = saved.clone();
     let tries = saved.get_i64("tries").unwrap_or(0) + 1;
     out.set_i64("tries", tries);
     say(format!("first start: setup, try {tries} of {MAX_TRIES}"));
+    save(&out);
     let mut done = done_steps(saved);
     let mark = |out: &mut Settings, done: &mut Vec<String>, step: &str| {
         if !done.iter().any(|d| d == step) {
@@ -469,6 +511,7 @@ pub fn run(
     };
     out.set_str("backup", &folder.display().to_string());
     mark(&mut out, &mut done, "backup");
+    save(&out);
     let v = bar.value();
     show(show_f, EXTRACTING, "Reading the backup".into(), v);
     // The backup's copy of the eMMC's user area: a file on partition 4, read only.
@@ -492,6 +535,7 @@ pub fn run(
         Ok((kits, made)) => {
             out.set_i64("akai-kits", made as i64);
             mark(&mut out, &mut done, "kits");
+            save(&out);
             kits
         }
         Err(why) => {
@@ -503,6 +547,7 @@ pub fn run(
         Ok(samples) => {
             out.set_i64("akai-samples", samples as i64);
             mark(&mut out, &mut done, "samples");
+            save(&out);
         }
         Err(why) => failed.push(why),
     }
@@ -709,6 +754,14 @@ fn extract_kits(
 }
 
 /// Akai's samples from the backup, in Akai's folders: how many are in the library.
+///
+/// Thousands of files: each is written without its own sync and the whole
+/// lot synced once at the end (a sync per file cost two flushes of the
+/// stick each, and the copy crawled at about 1 MB/s on the MPC, 16 Nov).
+/// Folders are looked up once each, not listed again for every file. A
+/// file kept from an earlier try that was cut off counts only if its size
+/// is right; a short one (the power went before the sync) goes to the Trash
+/// and is copied again.
 fn extract_samples(
     content: &Content<Offset<File>>,
     lib: &Library,
@@ -725,6 +778,12 @@ fn extract_samples(
     bar.est.work(Stage::Samples, total);
     let mut moved = 0u64;
     let mut last_show: Option<Instant> = None;
+    // Folders made or found so far, by their path under the samples folder.
+    let mut folders: HashMap<String, Loc> = HashMap::new();
+    // Samples that could not be copied, one after another: past
+    // GIVE_UP_AFTER the stick has most likely stopped taking writes, and the
+    // step stops instead of trying thousands more.
+    let mut in_a_row = 0usize;
     for (path, size) in samples.iter() {
         if last_show.is_none_or(|t| t.elapsed() >= Duration::from_millis(250)) {
             bar.at(Stage::Samples, moved);
@@ -749,12 +808,25 @@ fn extract_samples(
             .collect();
         let Some(name) = parts.pop() else { continue };
         let mut at = top.clone();
+        let mut key = String::new();
         let mut ok = true;
         for p in &parts {
+            key.push('/');
+            key.push_str(p);
+            if let Some(l) = folders.get(&key) {
+                at = l.clone();
+                continue;
+            }
             match folder_in(lib, &at, p) {
-                Ok(l) => at = l,
+                Ok(l) => {
+                    folders.insert(key.clone(), l.clone());
+                    at = l;
+                }
                 Err(e) => {
-                    say(format!("first start: {path}: folder {p}: {e}"));
+                    if let Some(why) = give_up(&mut in_a_row, path, format!("folder {p}: {e}"), say)
+                    {
+                        return Err(why);
+                    }
                     ok = false;
                     break;
                 }
@@ -763,21 +835,58 @@ fn extract_samples(
         if !ok {
             continue;
         }
-        // Kept from an earlier try that was cut off.
-        if at.join(&name).is_ok_and(|l| lib.file_path(&l).is_ok()) {
-            copied += 1;
-            continue;
+        // Kept from an earlier try that was cut off, if it is whole.
+        if let Ok(l) = at.join(&name) {
+            if let Ok(p) = lib.file_path(&l) {
+                if std::fs::metadata(&p).is_ok_and(|m| m.len() == *size) {
+                    copied += 1;
+                    continue;
+                }
+                if let Err(e) = lib.delete(&l) {
+                    say(format!(
+                        "first start: {path}: a short copy from before stays: {e}"
+                    ));
+                }
+            }
         }
         match content
             .read(path, MAX_SAMPLE)
-            .and_then(|b| lib.write_new(&at, &name, &b))
+            .and_then(|b| lib.write_new_unsynced(&at, &name, &b))
         {
-            Ok(_) => copied += 1,
-            Err(e) => say(format!("first start: {path}: {e}")),
+            Ok(_) => {
+                copied += 1;
+                in_a_row = 0;
+            }
+            Err(e) => {
+                if let Some(why) = give_up(&mut in_a_row, path, e.to_string(), say) {
+                    return Err(why);
+                }
+            }
         }
     }
+    // Everything written above reaches the stick before the step counts as done.
+    crate::sys::sync_disks();
     bar.finish(Stage::Samples);
     Ok(copied)
+}
+
+/// Says why a sample was not copied; past [`GIVE_UP_AFTER`] failures in a
+/// row, why the samples step stops.
+fn give_up(
+    in_a_row: &mut usize,
+    path: &str,
+    e: String,
+    say: &mut dyn FnMut(String),
+) -> Option<String> {
+    say(format!("first start: {path}: {e}"));
+    *in_a_row += 1;
+    (*in_a_row >= GIVE_UP_AFTER).then(|| {
+        format!(
+            "{} samples in a row could not be copied (the last: {path}: {e}); \
+             the stick may have stopped taking writes",
+            *in_a_row
+        )
+    })
 }
 
 /// The kits to play: the Akai kits first, then MPFree's own, at most
@@ -831,11 +940,38 @@ mod tests {
     }
 
     fn run_it(p: &Paths, saved: &Settings) -> (Outcome, Vec<Show>, Vec<String>) {
-        let (mut shown, mut said) = (Vec::new(), Vec::new());
-        let o = run(p, saved, &quick(), &mut |s| shown.push(s), &mut |l| {
-            said.push(l)
-        });
+        let (o, shown, said, _) = run_saving(p, saved);
         (o, shown, said)
+    }
+
+    /// `run`, and every save it made along the way.
+    fn run_saving(p: &Paths, saved: &Settings) -> (Outcome, Vec<Show>, Vec<String>, Vec<Settings>) {
+        let (mut shown, mut said) = (Vec::new(), Vec::new());
+        let mut saves = Vec::new();
+        let o = run(
+            p,
+            saved,
+            &quick(),
+            &mut |s| shown.push(s),
+            &mut |l| said.push(l),
+            &mut |s| saves.push(s.clone()),
+        );
+        // The try's number is kept before anything runs, and every save
+        // after it keeps what the one before it had.
+        assert_eq!(
+            saves.first().and_then(|s| s.get_i64("tries")),
+            Some(saved.get_i64("tries").unwrap_or(0) + 1)
+        );
+        for w in saves.windows(2) {
+            let (a, b) = (done_steps(&w[0]), done_steps(&w[1]));
+            assert!(a.iter().all(|d| b.contains(d)), "{a:?} then {b:?}");
+        }
+        assert_eq!(
+            saves.last().map(done_steps),
+            Some(done_steps(&o.saved)),
+            "the last save has every step done"
+        );
+        (o, shown, said, saves)
     }
 
     #[test]
@@ -945,6 +1081,25 @@ mod tests {
             .iter()
             .any(|l| l.contains("using the backup made before")));
         assert_eq!(o.saved.get_str("done"), Some("backup,kits,samples"));
+        // A sample cut short (the power went before the one sync at the end) is
+        // copied again, and the short one goes to the Trash.
+        let mut one = p.data.join("library/Samples").join(SAMPLES_FOLDER);
+        while one.is_dir() {
+            let mut names: Vec<_> = std::fs::read_dir(&one)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            names.sort();
+            one = names.remove(0);
+        }
+        let whole = std::fs::read(&one).unwrap();
+        std::fs::write(&one, &whole[..whole.len() / 2]).unwrap();
+        let (o, _, said) = run_it(&p, &older);
+        assert_eq!(o.failed, None, "{said:?}");
+        assert_eq!(o.saved.get_i64("akai-samples"), Some(samples));
+        assert_eq!(std::fs::read(&one).unwrap(), whole);
+        let lib = Library::at(&p.data).unwrap();
+        assert_eq!(lib.trash().unwrap().len(), 1);
     }
 
     #[test]
@@ -999,8 +1154,10 @@ mod tests {
 
     #[test]
     fn one_bar_for_the_whole_first_start() {
-        // 1 GB to back up: guesses of 100 s copying, 40 s reading back, 12 s
-        // of kits and 250 s of samples.
+        // 1 GB to back up: guesses of 83.3 s copying, 28.6 s reading back,
+        // 12 s of kits and 600 s of samples.
+        let (copy, verify): (f64, f64) = (1e9 / 12e6, 1e9 / 35e6);
+        let rest = verify + 12.0 + 600.0;
         let mut e = Estimate::new(1_000_000_000);
         assert_eq!(e.value(0.0), 0.0);
         assert_eq!(e.left(5.0), None, "no time left before a rate is measured");
@@ -1008,15 +1165,15 @@ mod tests {
         e.at(Stage::Copy, 100_000_000, 5.0);
         let v = e.value(5.0);
         assert!(
-            (v - 10.0 / 402.0).abs() < 1e-3,
+            (v as f64 - copy / 10.0 / (copy + rest)).abs() < 1e-4,
             "{v}: a tenth of the copy's share"
         );
         // Measured after 10 s: 20 MB/s, so the copy's share shrinks to 50 s.
         e.at(Stage::Copy, 200_000_000, 10.0);
         let v = e.value(10.0);
-        assert!((v - 10.0 / 352.0).abs() < 1e-3, "{v}");
+        assert!((v as f64 - 10.0 / (50.0 + rest)).abs() < 1e-4, "{v}");
         let left = e.left(10.0).unwrap();
-        assert!((left - (40.0 + 40.0 + 12.0 + 250.0)).abs() < 1e-6, "{left}");
+        assert!((left - (40.0 + rest)).abs() < 1e-3, "{left}");
         // A slower stretch never takes the bar back.
         e.at(Stage::Copy, 210_000_000, 30.0);
         assert!(e.value(30.0) >= v);
@@ -1040,6 +1197,63 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_backup_on_the_stick_is_used_when_the_store_names_none() {
+        // The third creator stick: its backup was made and checked, but the
+        // store never saved that, and a later start was cut off mid-copy.
+        let t = tmp("found");
+        let p = paths(&t);
+        let folder = p.data.join("backup/mpc-one-emmc-20261116T014409Z");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("mmcblk0.img"),
+            mpfree_factory::import::testdisk::disk(),
+        )
+        .unwrap();
+        let half = p.data.join("backup/mpc-one-emmc-20261116T024543Z.part");
+        std::fs::create_dir_all(&half).unwrap();
+        std::fs::write(half.join("mmcblk0.img"), b"cut off").unwrap();
+        // Not finished without its checksums and manifest: a backup is asked for.
+        assert_eq!(finished_backup(&p), None);
+        for f in ["SHA256SUMS", "MANIFEST.txt"] {
+            std::fs::write(folder.join(f), b"").unwrap();
+        }
+        std::fs::write(half.join("SHA256SUMS"), b"").unwrap();
+        std::fs::write(half.join("MANIFEST.txt"), b"").unwrap();
+        assert_eq!(finished_backup(&p), Some(folder.clone()));
+        let (o, _, said, saves) = run_saving(&p, &Settings::default());
+        assert_eq!(o.failed, None, "{said:?}");
+        assert!(!p.request.exists(), "no new backup");
+        assert!(said
+            .iter()
+            .any(|l| l.contains("using the backup made before")));
+        assert_eq!(o.saved.get_str("backup"), Some(folder.to_str().unwrap()));
+        assert_eq!(o.saved.get_str("done"), Some("backup,kits,samples"));
+        // Saved as it went: the try, then the backup before the kits ran.
+        assert_eq!(done_steps(&saves[0]), Vec::<String>::new());
+        assert_eq!(done_steps(&saves[1]), vec!["backup".to_string()]);
+    }
+
+    #[test]
+    fn the_samples_step_stops_after_many_failures_in_a_row() {
+        let (mut n, mut said) = (0, Vec::new());
+        for i in 1..GIVE_UP_AFTER {
+            assert_eq!(
+                give_up(&mut n, "/a.wav", "no".into(), &mut |l| said.push(l)),
+                None,
+                "{i}"
+            );
+        }
+        let why = give_up(&mut n, "/b.wav", "Read-only file system".into(), &mut |l| {
+            said.push(l)
+        })
+        .unwrap();
+        assert!(
+            why.starts_with("20 samples in a row could not be copied (the last: /b.wav: Read-only")
+        );
+        assert_eq!(said.len(), GIVE_UP_AFTER);
+    }
+
+    #[test]
     fn a_backup_made_before_counts_for_nothing() {
         let mut e = Estimate::new(1_000_000_000);
         e.finish(Stage::Copy, 0.0);
@@ -1049,8 +1263,8 @@ mod tests {
         e.at(Stage::Kits, 0, 0.0);
         e.at(Stage::Kits, 12, 6.0);
         assert!(
-            (e.value(6.0) - 6.0 / 262.0).abs() < 1e-4,
-            "half the kits: 6 of 262 s"
+            (e.value(6.0) - 6.0 / 612.0).abs() < 1e-4,
+            "half the kits: 6 of 612 s"
         );
     }
 

@@ -1201,12 +1201,18 @@ class StaticTests(unittest.TestCase):
             # setup.rs: the first start's request for the eMMC backup, an empty file made new in /run/mpfree-app
             # (RAM), which the stick's mpfree-setup-backup.path watches (Paths::on_the_stick, with REPORT_DIR)
             "match OpenOptions::new().write(true).create_new(true).mode(0o644).open(&paths.request) {",
+            # imagecopy.rs: `mpfree copy-image FROM TO`, run only by the stick's root service setup-backup.sh
+            # (never by the pad player). TO is the backup's image file on partition 4, made new: create_new
+            # neither overwrites a file nor follows a link. FROM, the eMMC disk, is opened with File::open
+            # (read-only), and the service has made every eMMC disk read-only in the kernel first.
+            "let out = OpenOptions::new().write(true).create_new(true).mode(0o640).open(to)"
+            ".map_err(|e| io::Error::new(e.kind(), format!(\"{}: {e}\", to.display())))?;",
         )
         expected += LIBRARY_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
         self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/crash.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs",
-                                 "mpfree-app/setup.rs", "mpfree-store/lib.rs",
+                                 "mpfree-app/setup.rs", "mpfree-app/imagecopy.rs", "mpfree-store/lib.rs",
                                  "mpfree-library/lib.rs", "mpfree-library/project.rs"}, files)
         # Folders are made only by the store and the library, and only start-app.sh names the folder they are given.
         for name, code in self.program_sources():

@@ -52,6 +52,9 @@ pub const MARK: &str = "MPFREE-FORMAT-ME ";
 pub const BOARD_DTB: &str = "/boot/rk3288-az01-acva.dtb";
 pub const TOKEN_FILE: &str = "/etc/mpfree-test/format-token";
 pub const ABOUT_FILE: &str = "/etc/mpfree-test/made-by.txt";
+/// What a write says when the stick's partition 4 (its backups, settings and
+/// files) is kept; the window reads it back to tell an update from a new stick.
+pub const KEPT_NOTE: &str = "partition 4: this stick's saved settings, files and backups are kept";
 
 /// MPFree's own programs for the stick, built for the MPC (ARM).
 pub struct Programs {
@@ -1052,6 +1055,20 @@ pub fn existing_data<R: ReadAt + ?Sized>(disk: &R) -> Option<u64> {
     (magic == 0xEF53 && label == DATA_LABEL).then_some(p.last)
 }
 
+/// Whether the stick's partition 4, wherever the table puts it, starts with
+/// an ext2/3/4 filesystem: saved data that a remake keeping partition 4
+/// must not lose when [`existing_data`] can't keep it (another place or
+/// label, from another version).
+pub fn holds_data<R: ReadAt + ?Sized>(disk: &R) -> bool {
+    let Some(p) = gpt::read(disk).ok().and_then(|t| t.part(4).cloned()) else {
+        return false;
+    };
+    let mut magic = [0u8; 2];
+    disk.read_at(&mut magic, p.start_bytes() + 1024 + 56)
+        .is_ok()
+        && u16::from_le_bytes(magic) == 0xEF53
+}
+
 /// Marks partition 4 for the stick's first start: zeros its first MiB and
 /// writes MPFREE-FORMAT-ME and the token at its start.
 pub fn mark_data<W: WriteAt + ?Sized>(disk: &W, lay: &Layout, token: &str) -> io::Result<()> {
@@ -1118,7 +1135,7 @@ pub fn write_disk<D: Disk + ?Sized>(
         existing_data(disk)
     };
     say(Msg::Note(match keep {
-        Some(_) => "partition 4: this stick's saved settings, files and backups are kept".into(),
+        Some(_) => KEPT_NOTE.into(),
         None => {
             "partition 4: new and empty (MPFree makes its filesystem at the first start)".into()
         }
