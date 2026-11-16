@@ -75,6 +75,10 @@ look at the jobs of each run, not the run's status.
 If the account's artifact storage is full, the coverage job's lcov upload
 fails without failing the run (the table is in the run summary anyway).
 
+### The USB creator's release workflow
+
+[`.github/workflows/release-creator.yml`](../../../.github/workflows/release-creator.yml) is not CI: it runs only by hand (**Run workflow**) or on a `creator-vX.Y.Z` tag, and makes a draft release of the USB creator for Linux, Windows and macOS ([Releases](../design/usb-creator.md#releases)). MPFree's programs for the MPC and the draft itself use the self-hosted runners; the creator is built on GitHub's own Ubuntu 22.04, Windows and macOS runners, which count against the account's Actions minutes (about 180 counted minutes a release). Each build runs the creator's tests on its own system and lists that machine's USB disks, the only place the Windows and macOS disk code runs before a real stick.
+
 ## Running it locally
 
 On a Linux workstation with stable Rust and CMake (see the

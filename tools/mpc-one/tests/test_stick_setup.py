@@ -930,6 +930,11 @@ class FormatTests(unittest.TestCase):
 
 
 AUTORUN_SYSTEMCTL = FAKE_SYSTEMCTL.replace('  *) echo "systemctl stand-in', '  reboot) ;;\n  *) echo "systemctl stand-in')
+# Akai's "developer mode off", as the offline survey of 3.10.1 read it: rm -rf /data/root /data/ssh, then a
+# restart (which a real MPC begins at once, so autorun.sh's own restart after it never comes).
+DEVMODE_OFF = "usr/lib/az0x/user-access/disable.sh"
+FAKE_DEVMODE_OFF = ('#!/bin/sh\necho "disable.sh" >> "$FAKE_LOG"\n'
+                    'rm -rf "$FAKE_ROOT/data/root" "$FAKE_ROOT/data/ssh"\nsystemctl reboot\n')
 
 
 class AutorunTests(HookFixture):
@@ -970,6 +975,8 @@ class AutorunTests(HookFixture):
         self.assertIn("board: MPC One (inmusic,acva)", out)
         self.assertIn("CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it", out)
         self.assertIn("RESULT: MPFree's startup hook is installed. Restarting the MPC in 5 s; leave the stick in.", out)
+        self.assertIn("Akai's /usr/lib/az0x/user-access/disable.sh is missing, so developer mode stays on. Restarting.",
+                      out)
         self.assertTrue(self.read(SCRIPT).startswith("R=''\n"))
         self.assertEqual(self.calls("systemctl: reboot"), ["systemctl: reboot"])
         self.assertEqual(self.calls("sleep: 5"), ["sleep: 5"])
@@ -1006,6 +1013,8 @@ class AutorunTests(HookFixture):
             "not root": (self.plug_in, {"FAKE_UID": "1000"}, "STOP: this must run as root"),
             "no mode": (lambda: write(os.path.join(self.drive, "mode.txt"), "maybe?\n"), {},
                         "STOP: mode.txt must say install or remove."),
+            "a system at /run/nextroot": (lambda: (self.plug_in(), os.makedirs(os.path.join(self.root, "run/nextroot"))),
+                                          {}, "STOP: /run/nextroot exists, so a restart now would not be a plain one."),
         }
         for label, (change, env, message) in cases.items():
             with self.subTest(label):
@@ -1017,6 +1026,54 @@ class AutorunTests(HookFixture):
                 self.assertIn(message, out)
                 self.assertEqual(self.tree(), self.before, "nothing on the MPC changed")
                 self.assertEqual(self.calls("systemctl: reboot"), [])
+
+    def developer_mode_on(self):
+        """Akai's off script, and what developer mode on put in /data (enable.sh's skeleton)."""
+        write(os.path.join(self.root, DEVMODE_OFF), FAKE_DEVMODE_OFF, 0o755)
+        write(os.path.join(self.root, "data/ssh/sshd_config.d/allow-access.conf"), "AuthenticationMethods none\n")
+        write(os.path.join(self.root, "data/root/.profile"), "\n")
+
+    def restarts(self):
+        return [line for line in self.calls("") if line.split(":")[0] in ("disable.sh", "systemctl", "sleep")]
+
+    def test_switches_developer_mode_off_as_it_restarts(self):
+        self.developer_mode_on()
+        self.plug_in()
+        out = self.autorun(0)
+        self.assertIn("RESULT: MPFree's startup hook is installed.", out)
+        self.assertIn("switching developer mode off with Akai's /usr/lib/az0x/user-access/disable.sh, "
+                      "which restarts the MPC", out)
+        self.assertTrue(self.read(SCRIPT).startswith("R=''\n"), "the hook stays")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "data/ssh")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "data/root")))
+        # Akai's script restarts; the plain restart after it is only a fallback.
+        self.assertEqual(self.restarts()[-5:],
+                         ["sleep: 5", "disable.sh", "systemctl: reboot", "sleep: 20", "systemctl: reboot"])
+        # Removing the hook switches it off again too (the musician switched it on to run the removal).
+        self.developer_mode_on()
+        write(os.path.join(self.drive, "mode.txt"), "remove\n")
+        os.unlink(os.path.join(self.drive, "setup-log.txt"))
+        out = self.autorun(0)
+        self.assertIn("RESULT: MPFree's startup hook is removed.", out)
+        self.assertIn("switching developer mode off", out)
+        self.assertFalse(os.path.exists(os.path.join(self.root, SCRIPT)))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "data/ssh")))
+
+    def test_keeps_developer_mode_for_a_developer_stick(self):
+        for label, make in (("developer tools", lambda: os.makedirs(os.path.join(self.drive, "mpfree-dev"))),
+                            ("keep-developer-mode", lambda: write(os.path.join(self.drive, "keep-developer-mode"), ""))):
+            with self.subTest(label):
+                self.tearDown()
+                self.setUp()
+                self.developer_mode_on()
+                make()
+                self.plug_in()
+                out = self.autorun(0)
+                self.assertIn("developer mode stays on: this stick has developer tools (mpfree-dev) or "
+                              "keep-developer-mode. Restarting.", out)
+                self.assertTrue(os.path.exists(os.path.join(self.root, "data/ssh/sshd_config.d/allow-access.conf")))
+                self.assertEqual(self.calls("disable.sh"), [])
+                self.assertEqual(self.restarts()[-2:], ["sleep: 5", "systemctl: reboot"])
 
 
 if __name__ == "__main__":
