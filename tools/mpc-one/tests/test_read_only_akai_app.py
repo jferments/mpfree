@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for read-only-akai-app.sh: it runs against a stand-in "MPC" process (a copy
+"""Tests for read-only-akai-app.sh: it runs against a stand-in for Akai's app (a copy
 of sleep) with the shell it will meet on the MPC, finds it, prints every section,
 and stops cleanly when the app is not running. It also checks the script never
 reads a process's environment or writes anything.
@@ -22,11 +22,16 @@ if not BUSYBOX and os.environ.get("MPFREE_REQUIRE_BUSYBOX") == "1":
     raise SystemExit("busybox is required (MPFREE_REQUIRE_BUSYBOX=1)")
 SHELL = [BUSYBOX, "sh"] if BUSYBOX else ["/bin/sh"]
 
+# The stand-in is never called "MPC": CI runners are shared, and other tests (the boot-hook
+# canary's) look for a process of that name with pidof. The script takes the name to look
+# for from MPFREE_APP_COMM, so the tests pass this one.
+STUB = "akai-app-stub"
+
 
 class ReadOnlyAkaiAppTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.fake = os.path.join(self.tmp, "MPC")
+        self.fake = os.path.join(self.tmp, STUB)
         shutil.copy(shutil.which("sleep"), self.fake)
         self.proc = subprocess.Popen([self.fake, "60"])
         time.sleep(0.2)
@@ -44,7 +49,7 @@ class ReadOnlyAkaiAppTests(unittest.TestCase):
         return res
 
     def test_finds_the_app_and_prints_every_section(self):
-        res = self.run_script(MPFREE_APP_EXE=self.fake)
+        res = self.run_script(MPFREE_APP_EXE=self.fake, MPFREE_APP_COMM=STUB)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         out = res.stdout
         self.assertIn(f"pid {self.proc.pid}, executable {self.fake}", out)
@@ -56,11 +61,11 @@ class ReadOnlyAkaiAppTests(unittest.TestCase):
         self.assertRegex(out, r"VmRSS:\s+\d+ kB")
         self.assertRegex(out, r"Max locked memory")
         self.assertRegex(out, r"app CPU so far: user \d+ ticks")
-        self.assertRegex(out, r"\n  MPC \| \d+ \| \d+ \| \d+\n")
+        self.assertRegex(out, r"\n  " + STUB + r" \| \d+ \| \d+ \| \d+\n")
         self.assertIn(self.fake + "\n", out)  # the executable is among the mapped files
 
     def test_finds_the_app_by_its_name(self):
-        res = self.run_script(MPFREE_APP_EXE="/nonexistent/MPC")
+        res = self.run_script(MPFREE_APP_EXE="/nonexistent/MPC", MPFREE_APP_COMM=STUB)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn(f"pid {self.proc.pid}", res.stdout)
 
