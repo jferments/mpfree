@@ -96,6 +96,8 @@ jobs:
           python3 tools/mpc-one/tests/test_offline_rk3288_rom.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_rootfs_survey.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_firmware_compare.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_akai_scan.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_akai_app.py
           MPFREE_REQUIRE_DTC=1 python3 tools/mpc-one/tests/test_offline_dtb.py
           python3 tools/mpc-one/tests/test_offline_kexec_details.py
           MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
@@ -396,8 +398,13 @@ jobs:
                   if not x.lstrip().startswith("//")) + "\n"
           assert app_code.count('Command::new(') == 1 and 'Command::new("journalctl")' in app_code
           assert flat('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])') in flat(app_code)
-          for needle in ('/dev/mmc', '/dev/sd', 'systemctl', 'std::net', 'fw_setenv', 'remove_file', 'kexec'):
+          for needle in ('/dev/mmc', '/dev/sd', 'systemctl', 'std::net', 'fw_setenv', 'kexec'):
               assert needle not in app_code, needle
+          # It deletes files only in the Plugins place's worker (Delete zip, a used download, a
+          # catalog or picture that doesn't read), all in files/plugins/ under --data; each line is
+          # reviewed in tools/mpc-one/tests/test_app_mpc.py (PLUGIN_STORE_NEEDLES).
+          removes = sorted(f.name for f in Path("rust/mpfree-app/src").glob("*.rs") if "remove_file" in f.read_text())
+          assert removes == ["plugin_store.rs"], removes
           ui_fb = Path("rust/mpfree-ui/src/fb.rs").read_text()
           assert 'pub fn capture(' in ui_fb
           # M13 live reader: read-only, never grabs, and its only unsafe code
