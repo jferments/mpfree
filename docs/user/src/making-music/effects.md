@@ -49,7 +49,7 @@ Touch a control on the page and the **Modulate** row under the page names it. Th
 **+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor. The line at its top says where the effect will go: which strip, and which slot of its chain.
 
 - Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, Plugins, and Utility), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
-- **Tap an effect** to add it with its usual settings.
+- **Tap an effect** to add it with its usual settings. On a send return (A to D), a delay or reverb starts fully wet, **Mix** at 100 %: the strips' own sound already reaches the master, so the return adds only the echo or reverb, and each strip's send sets how much you hear. On any other strip it starts at its usual Mix (25 or 30 %).
 - **Hold an effect** (half a second: its presets open while your finger is still down), or tap its **presets** line, to see its presets: tap one to add the effect already set that way, or **Defaults** for its usual settings. **‹ Effects** goes back.
 - **Tap the star** on an effect to add it to Favourites, and again to take it off. Favourites and Recent are kept when you turn the MPC off, for every project.
 - **With the data wheel:** turn it to move through the effects, **SHIFT + turn** to move through the groups, and **push** it to open the effect's presets; push again to add the preset that is lit. The hint line reminds you.

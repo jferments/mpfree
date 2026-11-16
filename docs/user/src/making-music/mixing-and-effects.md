@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx/src/mixer.rs rust/mpfree-fx/src/master.rs rust/mpfree-mixer-ui rust/mpfree-app/src/mixing.rs rust/mpfree-app/src/takes.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-16 d7c844c
 -->
 
 # Mixing
@@ -35,7 +35,7 @@ The **< >** buttons page through the strips when there are more than fit.
 From top to bottom, each strip has:
 
 - **Inserts**: up to eight effects that the sound goes through, in order. Tap **+ FX** to add one, or an effect's name to open it (see [Effects](effects.md#adding-an-effect-the-chain-editor)).
-- **Sends A to D**: how much of the sound goes to each send return. A return holds a shared effect, so several strips can use one reverb or delay.
+- **Sends A to D**: how much of the sound goes to each send return. A return holds a shared effect, so several strips can use one reverb or delay. The strip's own sound still goes on to the master, and the return adds the effect alongside it, so a delay or reverb you add to a return starts fully wet (see [Choosing an effect](effects.md#choosing-an-effect)).
 - **Pan**: where the sound sits between left and right.
 - **The fader** (from silent up to +6 dB) and the **meter** beside it.
 - **M** (mute) and **S** (solo). Solo keeps the strip and everything it feeds or is fed by, so soloing the snare's pad still lets you hear it through the Drums track.
