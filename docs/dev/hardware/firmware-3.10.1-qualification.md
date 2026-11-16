@@ -314,7 +314,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 - **`power`:** press the power button briefly, never hold it: a hold is still the hard power-off. The card's Shut down and Restart wait for S2 and Q10, because they end the boot.
 - **`midi-in`:** type `s` at its prompt if no keyboard and 5-pin cable are at hand.
 - **`mpc-plugin`** is last, because it changes the synth track's instrument. Type `s` at its prompt if you skipped Q6b.
-- **At the end** it lists each check with how many of its lines were seen and your answer, then the session summary since power-on and the app's latest status.
+- **At the end** it lists each check with how many of its lines were seen and your answer, then the session summary since power-on and the app's latest status. It ends `RESULT: all steps ran` and a `NEXT:` line about switching the MPC off and running the boot-map block: that line is for a round of its own, so leave the MPC on and the stick in, and go on to Q8b. Q10 switches it off.
 - **If it says `the test build did not answer on port 2222`,** note what the screen shows. The pad player can still be played by hand. Go to Q10: the stick logs show the network state.
 - **Undo:** none needed. The loops are in RAM, and the power-off in Q10 clears them. Buttons that Map controls finds stay in `settings/map.conf` on partition 4, where they are meant to be.
 
