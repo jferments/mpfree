@@ -125,6 +125,12 @@ pub struct CvOut {
     lost: bool,
     /// The engine knows the song plays (run is up).
     playing: bool,
+    /// The last period's values the writer took, for the MIDI monitor in
+    /// debug mode ([`CvOut::sent`]): frame, output and 14-bit value; and
+    /// when frame 0 is heard.
+    sent: [(u32, u8, u16); CHANGES],
+    n_sent: usize,
+    sent_at: Instant,
 }
 
 impl CvOut {
@@ -157,7 +163,22 @@ impl CvOut {
             overran: 0,
             lost: false,
             playing: false,
+            sent: [(0, 0, 0); CHANGES],
+            n_sent: 0,
+            sent_at: Instant::now(),
         }
+    }
+
+    /// The last period's values the writer took: when each is due to
+    /// leave, the output (0 to 3) and its 14-bit value.
+    pub fn sent(&self) -> impl Iterator<Item = (Instant, u8, u16)> + '_ {
+        let rate = f64::from(self.rate);
+        self.sent[..self.n_sent]
+            .iter()
+            .map(move |&(offset, out, value)| {
+                let due = self.sent_at + Duration::from_secs_f64(f64::from(offset) / rate);
+                (due, out, value)
+            })
     }
 
     /// Starts the writer thread on the Private port (`w`, a copy of the
@@ -306,6 +327,7 @@ impl CvOut {
     /// the period was made (the loop's start); the sound is heard `lead`
     /// later.
     pub fn period_end(&mut self, frames: u32, t0: Instant) {
+        self.n_sent = 0;
         let Some(w) = &self.writer else {
             self.changes.clear();
             return;
@@ -327,6 +349,7 @@ impl CvOut {
         }
         changes.sort();
         let at = t0 + self.lead;
+        self.sent_at = at;
         let rate = f64::from(self.rate);
         for i in 0..changes.n {
             let c = changes.list[i];
@@ -341,6 +364,10 @@ impl CvOut {
             let due = at + Duration::from_secs_f64(f64::from(c.offset) / rate);
             if w.send(Wire::new(due, &pair)) {
                 self.queued += 1;
+                if self.n_sent < CHANGES {
+                    self.sent[self.n_sent] = (c.offset, c.out, counts);
+                    self.n_sent += 1;
+                }
             } else {
                 self.full += 1;
             }
@@ -578,6 +605,25 @@ mod tests {
         want.push(pair(1, 0));
         want.push(pair(0, 0));
         assert_eq!(w, want);
+    }
+
+    /// The MIDI monitor (debug mode) gets each value the writer took, with
+    /// its output and when it is due; the next period starts empty.
+    #[test]
+    fn the_monitor_gets_each_value_sent() {
+        let (mut cv, _sink) = open();
+        let m = model(&[(0, PITCH), (1, GATE)]);
+        cv.sync(&m);
+        cv.period_end(PERIOD, Instant::now());
+        cv.send(&ev(0, 0, on(48)), NoteIs::Note);
+        let t0 = Instant::now();
+        cv.period_end(PERIOD, t0);
+        let sent: Vec<(u8, u16)> = cv.sent().map(|(_, out, v)| (out, v)).collect();
+        assert_eq!(sent, [(0, 3277), (1, cv_wire::FULL_SCALE)]);
+        assert!(cv.sent().all(|(due, ..)| due >= t0));
+        cv.period_end(PERIOD, Instant::now());
+        assert_eq!(cv.sent().count(), 0);
+        assert!(cv.close());
     }
 
     /// CV 5 to 8 are never sent, though the engine follows them and the
