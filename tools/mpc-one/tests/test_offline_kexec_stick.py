@@ -1015,7 +1015,7 @@ class KexecStickTests(unittest.TestCase):
         script = self.dfs(root_img, "cat /etc/mpfree-test/storage.sh")
         self.assertIn(f"dev=/dev/disk/by-partuuid/{kits_uuid}\n", script)
         self.assertIn(f"data=/dev/disk/by-partuuid/{data_uuid}\n", script)
-        self.assertIn("find /run/mpfree-data -xdev ! -user 960 -exec chown -h 960:960 {} \\; ||", script)
+        self.assertIn("find /run/mpfree-data -xdev -path /run/mpfree-data/backup -prune -o ! -user 960 -exec chown -h 960:960 {} \\; ||", script)
         start = self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh")
         self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen "
                       "--data /run/mpfree-data --power-request /run/mpfree-app/power-request\n", start)
@@ -1358,7 +1358,7 @@ class StaticTests(unittest.TestCase):
             # Made before the owners are set, so it is mpfree's.
             "mkdir -p /run/mpfree-data/files/plugins",
             # Only on partition 4, only files not yet mpfree's; -h never follows a link.
-            "find /run/mpfree-data -xdev ! -user 960 -exec chown -h 960:960 {} \\; ||",
+            "find /run/mpfree-data -xdev -path /run/mpfree-data/backup -prune -o ! -user 960 -exec chown -h 960:960 {} \\; ||",
             # Only files/plugins may hold a library the app loads (a plugin), as in start-app.sh.
             '{ mount --bind "$p" "$p" && mount -o remount,bind,exec,nosuid,nodev "$p"; } ||',
             'echo "mpfree-test-storage: the data partition did not mount, so nothing is saved" > /dev/kmsg',
@@ -1392,7 +1392,8 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(tool.APP_UID, 960)
 
     def test_busybox_find_takes_the_storage_scripts_expression(self):
-        """The MPC's shell tools may be BusyBox: its find must understand -xdev, ! -user and -exec ... (semicolon)."""
+        """The MPC's shell tools may be BusyBox: its find must understand -xdev, -path ... -prune, ! -user and
+        -exec ... (semicolon). The eMMC backups in backup/ are left alone."""
         busybox = shutil.which("busybox")
         if not busybox:
             self.skipTest("no busybox")
@@ -1401,8 +1402,9 @@ class StaticTests(unittest.TestCase):
             os.makedirs(os.path.join(d, "settings"))
             write(os.path.join(d, "settings", "prefs"), "x")
             os.symlink("/etc/passwd", os.path.join(d, "link"))
-            res = subprocess.run([busybox, "find", d, "-xdev", "!", "-user", "960", "-exec", "echo", "X", "{}", ";"],
-                                 capture_output=True, text=True)
+            write(os.path.join(d, "backup", "mpc-one-emmc-20261115T120000Z", "SHA256SUMS"), "x")
+            res = subprocess.run([busybox, "find", d, "-xdev", "-path", f"{d}/backup", "-prune", "-o", "!", "-user",
+                                  "960", "-exec", "echo", "X", "{}", ";"], capture_output=True, text=True)
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(sorted(res.stdout.splitlines()),
                              sorted(f"X {p}" for p in (d, f"{d}/settings", f"{d}/settings/prefs", f"{d}/link")))

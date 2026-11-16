@@ -789,7 +789,8 @@ STORAGE_SCRIPT = """#!/bin/sh
 # MPFree test boot (--app-user): get the pad player's storage ready, as root, before it starts as the
 # {user} user (uid {uid}). Its drum kits are on the stick's partition 3, mounted read-only. Partition 4 holds
 # its saved settings and files, mounted read-write; files there that are not yet the {user} user's are given
-# to it (find -xdev stays on partition 4). This runs before the pad player starts and not again when it
+# to it (find -xdev stays on partition 4), except the eMMC backups in backup/, which stay root's (the pad player
+# only reads them, through its group). This runs before the pad player starts and not again when it
 # restarts, so no process of the {user} user can change those folders while they are walked.
 # The framebuffer's sysfs `pan` file is opened to the {user} group (in RAM, until power-off), so the pad
 # player can ask the kernel to show the screen.
@@ -810,7 +811,7 @@ mkdir -p /run/mpfree-data
 if grep -q ' /run/mpfree-data ' /proc/mounts ||
     mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then
   mkdir -p /run/mpfree-data/files/plugins
-  find /run/mpfree-data -xdev ! -user {uid} -exec chown -h {uid}:{uid} {{}} \\; ||
+  find /run/mpfree-data -xdev -path /run/mpfree-data/backup -prune -o ! -user {uid} -exec chown -h {uid}:{uid} {{}} \\; ||
     echo "mpfree-test-storage: some files on partition 4 could not be given to {user}" > /dev/kmsg
   # Plugins in files/plugins are libraries the pad player loads, and a library can't be loaded from a noexec
   # mount. So only that folder allows it: a bind of it over itself, remounted exec (still nosuid and nodev).
