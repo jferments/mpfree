@@ -57,7 +57,9 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     the system log on the screen. Its drum kits (kits.bin from offline-factory-kit.py)
     go on partition 3, which it mounts read-only. Partition 4 is mounted
     read-write (nosuid, nodev, noexec) at /run/mpfree-data and passed with
-    --data; the pad player saves its settings and files only there
+    --data. Only its files/plugins folder allows loading a library (a bind
+    of it over itself, remounted exec, still nosuid and nodev), so plugins
+    there can start; the pad player saves its settings and files only there
     (docs/dev/design/storage-spec.md), and if it does not mount, nothing is
     saved. If the program stops with an error, the log display starts
     instead. Besides the screen, the controller, the sound card and
@@ -722,6 +724,15 @@ while [ ! -e "$data" ] && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
 mkdir -p /run/mpfree-data
 if grep -q ' /run/mpfree-data ' /proc/mounts ||
     mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then
+  mkdir -p /run/mpfree-data/files/plugins
+  # Plugins in files/plugins are libraries the pad player loads, and a library can't be loaded from a noexec
+  # mount. So only that folder allows it: a bind of it over itself, remounted exec (still nosuid and nodev).
+  # The rest of partition 4 stays noexec.
+  p=/run/mpfree-data/files/plugins
+  if ! grep -q " $p " /proc/mounts; then
+    {{ mount --bind "$p" "$p" && mount -o remount,bind,exec,nosuid,nodev "$p"; }} ||
+      echo "mpfree-test-app: files/plugins could not be made loadable, so plugins there will not start" > /dev/kmsg
+  fi
   # Partition 4 fills the stick but its filesystem may be smaller: grow it to fill the partition, online
   # (the kernel does it while mounted, and writes only partition 4). When it already fills it, nothing changes.
   if [ -x {grow} ]; then
@@ -798,8 +809,17 @@ while [ ! -e "$data" ] && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
 mkdir -p /run/mpfree-data
 if grep -q ' /run/mpfree-data ' /proc/mounts ||
     mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then
+  mkdir -p /run/mpfree-data/files/plugins
   find /run/mpfree-data -xdev ! -user {uid} -exec chown -h {uid}:{uid} {{}} \\; ||
     echo "mpfree-test-storage: some files on partition 4 could not be given to {user}" > /dev/kmsg
+  # Plugins in files/plugins are libraries the pad player loads, and a library can't be loaded from a noexec
+  # mount. So only that folder allows it: a bind of it over itself, remounted exec (still nosuid and nodev).
+  # The rest of partition 4 stays noexec.
+  p=/run/mpfree-data/files/plugins
+  if ! grep -q " $p " /proc/mounts; then
+    {{ mount --bind "$p" "$p" && mount -o remount,bind,exec,nosuid,nodev "$p"; }} ||
+      echo "mpfree-test-storage: files/plugins could not be made loadable, so plugins there will not start" > /dev/kmsg
+  fi
   # Partition 4 fills the stick but its filesystem may be smaller: grow it to fill the partition, online
   # (the kernel does it while mounted, and writes only partition 4). When it already fills it, nothing changes.
   if [ -x {grow} ]; then
