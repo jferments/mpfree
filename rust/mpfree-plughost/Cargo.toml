@@ -8,9 +8,11 @@ description = "The plugin sandbox: each CLAP plugin in its own process, so a cra
 [dependencies]
 mpfree-node = { path = "../mpfree-node" }
 mpfree-clap = { path = "../mpfree-clap" }
+mpfree-mpchost = { path = "../mpfree-mpchost" }
 libc = "0.2"
 
 [dev-dependencies]
 mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
 mpfree-clap-testplug = { path = "../mpfree-clap-testplug" }
+mpfree-mpchost-testplug = { path = "../mpfree-mpchost-testplug" }
 mpfree-track = { path = "../mpfree-track" }

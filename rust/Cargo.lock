@@ -678,6 +678,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-mpchost"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-fx",
+ "mpfree-mpchost-testplug",
+ "mpfree-mpcplug",
+ "mpfree-node",
+ "mpfree-prof",
+ "mpfree-synth",
+]
+
+[[package]]
+name = "mpfree-mpchost-testplug"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-mpcplug",
+ "mpfree-node",
+ "mpfree-synth",
+]
+
+[[package]]
 name = "mpfree-mpcplug"
 version = "0.1.0"
 dependencies = [
@@ -740,6 +763,8 @@ dependencies = [
  "libc",
  "mpfree-clap",
  "mpfree-clap-testplug",
+ "mpfree-mpchost",
+ "mpfree-mpchost-testplug",
  "mpfree-node",
  "mpfree-prof",
  "mpfree-track",

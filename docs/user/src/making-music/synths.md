@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs
+covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost
 checked: 2026-11-14 b76c3c7
 -->
 
@@ -42,7 +42,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch** and **Analog**, then any plugin synths you have put in `files/plugins/` on the stick.
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch** and **Analog**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -53,6 +53,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 - **Its own mixer channel.** A track with an instrument gets a channel named after it (**Track 1**, **Track 2**) in the mixer's Tracks view, with its own fader, inserts and sends. The channel only shows while the track has an instrument, and its settings stay with the track: set it to Kit and give it an instrument again later, and the channel is as you left it. See [Mixing and effects](mixing-and-effects.md).
 - **Shared options.** The scale, pad layouts, tuning and octave on the Synth tab's options are the same for every track's instrument.
 - **A plugin synth** runs in a process of its own, as plugin effects do. If it crashes, the track goes quiet and the plugin restarts on its own, while the rest of MPFree plays on. If it can't be started at all, the line along the bottom of the screen says so for a few seconds and the track keeps what it had. Its controls show on the Synth tab like a built-in synth's.
+- **An MPC plugin instrument's presets** are the programs built into it, listed on the Synth tab in the plugin's own order. Its controls show as a plain list until MPFree draws MPC plugin skins.
 - **A plugin synth's own presets** are listed on the Synth tab, as "Category / Name" (Surge XT's factory presets read "Bass / Attacky", "Pads / ..."). The first time a plugin's presets are asked for, the plugin reads them all, which takes a few seconds; the list appears when it is done. Tap one to load it into the track's plugin. Some plugins load a preset in the background: Surge XT goes quiet for a moment, and notes you play in that moment aren't heard. If a plugin can't load a preset, the line along the bottom of the screen gives its reason. A plugin without presets of its own, such as Dexed, lists none. The project keeps the plugin's sound, but not which preset it came from.
 
 {{shot: synth-track | The Synth tab editing track 2's own FM, with the Glass Keys preset.}}
@@ -208,4 +209,4 @@ How hard you hit a pad sets how loud the note plays, as with drums. **FULL LEVEL
 Note Repeat, Latch and the arpeggiator all play the synth too: see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own five synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays the kit on the pads. The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
+> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own five synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays the kit on the pads. The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.

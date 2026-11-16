@@ -1,6 +1,7 @@
 //! Plays the plugins in a folder the way the app does: the rack scans the
 //! folder, and each plugin runs in its own process. A check for the plugin
-//! pack (docs/dev/guides/plugin-pack.md) and for any folder of `.clap` files.
+//! pack (docs/dev/guides/plugin-pack.md) and for any folder of `.clap` files
+//! or MPC plugins (docs/dev/guides/mpc-plugins-in-mpfree.md).
 //!
 //! ```text
 //! cargo run --release -p mpfree-plughost --example rack_check -- DIR [--exe FILE [WORD ...] --]
@@ -15,7 +16,9 @@
 //! blocks and played for two seconds (a chord for an instrument, a tone for an
 //! effect), with a 5-second deadline per block so an emulator doesn't count as
 //! late. Then its state is read back from its process and loaded into a second
-//! one. A plugin fails when the rack can't make it, a block's output isn't a
+//! one. For an effect it also says how far its output is from the dry tone
+//! and how loud its tail is after the tone stops (information, not a
+//! failure: an effect may be dry at its defaults). A plugin fails when the rack can't make it, a block's output isn't a
 //! finite number, an instrument stays silent, its state can't be read or
 //! loaded, or its process crashes. The exit code is 1 if any failed. Touches
 //! nothing outside its own processes.
@@ -91,6 +94,10 @@ fn main() -> ExitCode {
         let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
         let blocks = 2 * RATE as usize / BLOCK;
         let (mut peak, mut bad, mut phase) = (0.0f32, 0usize, 0.0f32);
+        // For an effect: how far the output is from the dry tone, and what
+        // rings on after the tone stops.
+        let (mut dry_e, mut diff_e, mut tail) = (0.0f64, 0.0f64, 0.0f32);
+        let mut dry = vec![0.0f32; BLOCK];
         let started = Instant::now();
         for b in 0..blocks {
             let mut events = Vec::new();
@@ -120,6 +127,7 @@ fn main() -> ExitCode {
                     phase = (phase + 220.0 / RATE as f32).fract();
                     l[i] = v;
                     r[i] = v;
+                    dry[i] = v;
                 }
             }
             node.process(&Ctx::new(RATE, (b * BLOCK) as u64), &events, &mut l, &mut r);
@@ -128,6 +136,17 @@ fn main() -> ExitCode {
                     peak = peak.max(v.abs());
                 } else {
                     bad += 1;
+                }
+            }
+            if e.kind == Kind::Effect {
+                for i in 0..BLOCK {
+                    if b < blocks / 2 {
+                        dry_e += f64::from(dry[i] * dry[i]) * 2.0;
+                        let (dl, dr) = (l[i] - dry[i], r[i] - dry[i]);
+                        diff_e += f64::from(dl * dl + dr * dr);
+                    } else if l[i].is_finite() && r[i].is_finite() {
+                        tail = tail.max(l[i].abs().max(r[i].abs()));
+                    }
                 }
             }
         }
@@ -157,9 +176,24 @@ fn main() -> ExitCode {
             why.push(format!("{crashes} crashes so far"));
         }
         let what = if e.kind == Kind::Instrument {
-            "instrument"
+            "instrument".to_string()
         } else {
-            "effect"
+            let db = |x: f64| {
+                if x > 0.0 {
+                    format!("{:.1} dB", 10.0 * x.log10())
+                } else {
+                    "none".to_string()
+                }
+            };
+            let tail = if tail > 0.0 {
+                format!("{:.1} dBFS", 20.0 * tail.log10())
+            } else {
+                "none".to_string()
+            };
+            format!(
+                "effect, change from the dry tone {}, tail {tail}",
+                db(diff_e / dry_e.max(1e-12))
+            )
         };
         let line = format!(
             "{} ({what}, {}): peak {}, state {} bytes, 2 s played in {:.1} s",
