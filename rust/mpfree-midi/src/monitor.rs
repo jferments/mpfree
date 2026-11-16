@@ -28,6 +28,11 @@
 //! out stopping, notes ended). A [`Feed`] lists them only while
 //! [`Feed::debug`] is on (Prefs › Show developer tools).
 //!
+//! **The Now view** ([`now`]): the monitor also keeps what each port's
+//! channels hold now (notes down, the last value of each controller, bend,
+//! pressure, program) from the lines it lists, and the feed measures how
+//! steady each clock's pulses come.
+//!
 //! Times are seconds on the app's clock, the one the I/O view's tick gets.
 
 use std::time::{Duration, Instant};
@@ -38,6 +43,10 @@ use mpfree_param::ParamAddr;
 
 use crate::msg::{Channel, Msg};
 use crate::port::{PortId, PortInfo, PortKind, DIN, MAX_PORTS};
+
+pub mod now;
+
+use now::{Held, Pulses};
 
 /// The MPC's own controller, as a source in debug mode (not a port).
 pub const MPC: PortId = PortId(0xFE);
@@ -398,6 +407,7 @@ struct Stream {
     sysex: u32,
     steady: [SteadyState; 3],
     tempo: Tempo,
+    pulses: Pulses,
 }
 
 impl Stream {
@@ -407,6 +417,7 @@ impl Stream {
             sysex: 0,
             steady: [SteadyState::default(); 3],
             tempo: Tempo::default(),
+            pulses: Pulses::new(),
         }
     }
 }
@@ -557,6 +568,7 @@ impl Feed {
             Some(Message::RealTime(r)) => match r {
                 0xF8 => {
                     st.tempo.tick(t);
+                    st.pulses.tick(t);
                     self.steady(s, t, Steady::Clock)
                 }
                 0xFE => self.steady(s, t, Steady::Sensing),
@@ -605,6 +617,7 @@ impl Feed {
         k.count = 1;
         if kind == Steady::Clock {
             st.tempo.start(t);
+            st.pulses.start(t);
         }
         Some(What::Arriving(kind))
     }
@@ -650,6 +663,7 @@ impl Feed {
             let st = &self.streams[s];
             let running = st.steady[Steady::Clock as usize].running;
             m.bpm[s] = (running && st.tempo.bpm > 0.0).then_some(st.tempo.bpm);
+            m.pulses[s] = running.then_some(st.pulses);
         }
     }
 }
@@ -717,6 +731,10 @@ pub struct Monitor {
     /// When each port last had a message with no channel, each way.
     sys: [f64; STREAMS],
     bpm: [Option<f32>; STREAMS],
+    /// Each clock's pulses while it arrives (or leaves).
+    pulses: [Option<Pulses>; STREAMS],
+    /// What each port's channels hold now, each way: 16 a stream.
+    held: Box<[Held]>,
     ports: Vec<PortInfo>,
     /// Messages a [`Feed`] had no room for between two drains.
     pub lost: u64,
@@ -743,6 +761,8 @@ impl Monitor {
             last: [[f64::NEG_INFINITY; 16]; STREAMS],
             sys: [f64::NEG_INFINITY; STREAMS],
             bpm: [None; STREAMS],
+            pulses: [None; STREAMS],
+            held: vec![Held::new(); STREAMS * 16].into_boxed_slice(),
             ports: crate::port::Ports::new().all().to_vec(),
             lost: 0,
             epoch: None,
@@ -806,6 +826,10 @@ impl Monitor {
                 Some(c) => self.last[i][usize::from(c & 0x0F)] = s.t,
                 None => self.sys[i] = s.t,
             }
+            if let What::Channel { msg, .. } = &s.what {
+                let c = usize::from(msg.channel() & 0x0F);
+                self.held[i * 16 + c].take(msg, s.t, s.to);
+            }
         }
         if self.ring.len() < KEEP {
             self.ring.push(s);
@@ -816,7 +840,7 @@ impl Monitor {
         self.total += 1;
     }
 
-    /// Empties the list (the lights and tempos stay).
+    /// Empties the list (the lights, tempos and what is held stay).
     pub fn clear(&mut self) {
         self.ring.clear();
         self.head = 0;
@@ -871,6 +895,44 @@ impl Monitor {
     /// beat and half a second of it have come.
     pub fn bpm(&self, port: PortId, dir: Dir) -> Option<f32> {
         self.bpm[stream(port, dir)?]
+    }
+
+    /// How steady the clock arriving on (or leaving) `port` is, while it
+    /// comes.
+    pub fn pulses(&self, port: PortId, dir: Dir) -> Option<&Pulses> {
+        self.pulses[stream(port, dir)?].as_ref()
+    }
+
+    /// What `port`'s `channel` holds now, going `dir`.
+    pub fn held(&self, port: PortId, dir: Dir, channel: Channel) -> Option<&Held> {
+        let i = stream(port, dir)?;
+        Some(&self.held[i * 16 + usize::from(channel & 0x0F)])
+    }
+
+    /// The notes going out that are still on: each port, channel, note
+    /// and what holds it, the longest held first. Not for the audio loop:
+    /// it allocates.
+    pub fn still_on(&self) -> Vec<(PortId, Channel, u8, &Held)> {
+        let mut v = Vec::new();
+        for p in 0..MAX_PORTS {
+            let i = MAX_PORTS + p;
+            for c in 0..16 {
+                let h = &self.held[i * 16 + c];
+                for n in h.down() {
+                    v.push((PortId(p as u8), c as Channel, n, h));
+                }
+            }
+        }
+        v.sort_by(|a, b| a.3.down_at[usize::from(a.2)].total_cmp(&b.3.down_at[usize::from(b.2)]));
+        v
+    }
+
+    /// Forgets the notes going out (the app sent their note-offs, or
+    /// MIDI Out stopped).
+    pub fn out_notes_up(&mut self) {
+        for h in &mut self.held[MAX_PORTS * 16..] {
+            h.all_up();
+        }
     }
 }
 
@@ -1240,5 +1302,55 @@ mod tests {
             ..Filter::ALL
         };
         assert_eq!(m.newest().filter(|(_, s)| ports_only.matches(s)).count(), 0);
+    }
+
+    /// The Now view: what each port's channels hold, each way, from the
+    /// lines listed; the notes still going out; a clock's pulses while it
+    /// comes.
+    #[test]
+    fn the_monitor_holds_each_channel_and_times_each_clock() {
+        let usb = PortId(1);
+        let mut f = Feed::new();
+        let mut m = Monitor::new();
+        let armed = To::Track {
+            track: 1,
+            pad: None,
+        };
+        for (t, b) in [(0.10, [0x90u8, 60, 96]), (0.11, [0x90, 64, 88])] {
+            assert!(f.bytes(usb, Dir::In, t, &b));
+            f.to(armed);
+        }
+        f.bytes(usb, Dir::In, 0.2, &[0xB0, 74, 88]);
+        f.sent(DIN, 0.3, &[0x91, 36, 110], To::SentBy(1));
+        f.sent(DIN, 0.4, &[0x91, 40, 100], To::SentBy(2));
+        f.sent(DIN, 0.5, &[0x81, 40, 0], To::SentBy(2));
+        // 120 BPM on the jacks for two seconds.
+        for k in 0..96 {
+            f.bytes(DIN, Dir::In, 0.5 + f64::from(k) / 48.0, &[0xF8]);
+        }
+        f.drain_into(&mut m, 2.5);
+        let keys = m.held(usb, Dir::In, 0).unwrap();
+        assert_eq!(keys.down().collect::<Vec<_>>(), [60, 64]);
+        assert_eq!((keys.vel[60], keys.note_to), (96, armed));
+        assert_eq!(keys.moved(), [(74, 88, 0.2)]);
+        // Out: one note still on, with the track that sent it.
+        let on = m.still_on();
+        assert_eq!(on.len(), 1);
+        let (port, ch, note, h) = on[0];
+        assert_eq!((port, ch, note, h.by[36]), (DIN, 1, 36, 1));
+        assert!(m.held(DIN, Dir::In, 1).unwrap().is_empty());
+        let p = m.pulses(DIN, Dir::In).unwrap();
+        assert!((p.gap_ms - 20.83).abs() < 0.1, "{}", p.gap_ms);
+        assert_eq!(p.late, 0);
+        assert!(m.pulses(usb, Dir::In).is_none());
+        // Clear empties the list, not what is held; the out notes go up
+        // when the app has sent their note-offs.
+        m.clear();
+        assert_eq!(m.held(usb, Dir::In, 0).unwrap().count(), 2);
+        m.out_notes_up();
+        assert!(m.still_on().is_empty());
+        // The clock stops: no pulses to show.
+        f.drain_into(&mut m, 5.0);
+        assert!(m.pulses(DIN, Dir::In).is_none());
     }
 }
