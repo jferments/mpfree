@@ -65,7 +65,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 
 ### Performance
 
-- [Profiling and performance budgets](design/profiling.md): the shared profiling API, the ARM cost model, per-engine budgets and the bench (`rust/mpfree-prof`, `rust/mpfree-bench`).
+- [Profiling and performance budgets](design/profiling.md): the shared profiling API, the ARM cost model, per-engine budgets and the bench; the 14 Nov stability review, what it built and what is left; load shedding, the memory floor, the screen's cost and the CI gates, the soak among them (`rust/mpfree-prof`, `rust/mpfree-bench`).
 - [The time engine on two threads](design/time-threads.md): the time engine's edits and compiles off the audio thread: a control half and an audio half with bounded queues, how recording and cues stay exact, and the tests with the control half late (halves built behind one facade, 2026-11-12; the control thread is next).
 - [Concurrency](design/concurrency.md): using every core of the MPC One: where threads run today, the core plan, and lanes, which run part of each audio period on another core with a deadline (`rust/mpfree-lanes`, 2026-11-11).
 - [Offload](design/offload.md): render partitions on another computer over UDP, answered L periods later with the MPC as the only clock: the datagram, the server, the client, `mpfree-offload measure`, and the offloaded node that falls back to a local Eco stand-in when the link drops (`rust/mpfree-offload`, desktop prototype, 2026-11-12).

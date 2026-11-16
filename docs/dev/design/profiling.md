@@ -54,6 +54,55 @@ worst 20 to 24 %, so the worst is a spike such as voice starts, a page fault
 or preemption, not steady cost), and new engines must come with device
 numbers before they are turned on by default.
 
+## The stability and capacity review (2026-11-14)
+
+A review on 14 Nov looked for what could still lose a musician's work or
+click under load, from the code at main 3b416fa, round 7, live tests 2 and
+3 and the 12 Nov bench (whose busy song took 105 % of a period on one core).
+It ranked eight items. The five that needed only code are built, each with
+its tests:
+
+| Item | Built | Where |
+| --- | --- | --- |
+| 1. Safety nets: a panic's line in the report, a safe start after a crash, autosave | #324 | [the app guide](../guides/mpfree-app.md), [the browser and projects](browser.md) |
+| 2. Effects sleep on silence | #333 | [FX](fx.md) ("Sleep on silence") |
+| 3. Giving up the quietest voices under load | #344 | below |
+| 6. A memory floor for loads, and the soak | #350, #357 | [Memory floor](#memory-floor-refuse-a-load-rather-than-be-killed), [the soak](#the-soak-the-soak-ci-job) |
+
+Left, in the review's order, none started:
+
+- **4. A read-only device run:** the Sound cores A/B boots (one core against
+  two and three), the CPU's idle states and the interrupt threads'
+  priorities as they are, the cost of a decaying voice (the synths and the
+  sampler don't flush denormals, and the CPU's flush-to-zero bit is never
+  set), and whether the temperature and clock files exist on the MPC (if
+  they do, °C and MHz go on the 30 s status line). It decides which of 5,
+  7 and 8 pays most.
+- **5. Cheaper engines:** 16-bit sample storage (the MPC is 8 to 13 times
+  slower than the workstation where an engine reads memory), hand-written
+  NEON kernels (see [NEON](#neon)), and a cheaper default reverb than Cloud
+  (12 to 56 % of a period in round 7).
+- **6, the rest. Fuzzing the file readers** (projects, kits, WAV, AIFF,
+  FLAC, MIDI files and the plug-in wire) with cargo-fuzz, beside the
+  mutation tests. It needs the owner's OK to install cargo-fuzz, and a
+  by-hand CI job like the soak's.
+- **7. Kernel requests while playing:** low wake-up latency through
+  `/dev/cpu_dma_latency` (PM QoS, held while the file is open) and the sound
+  card's interrupt thread ahead of the others (as rtirq orders them). Both
+  change state in RAM only, undone on quit or reboot, and need the owner's
+  go after item 4's read-only look.
+- **8. Compute ahead what nobody plays live**, as ASIO-Guard and REAPER's
+  render ahead do: tracks that only play back run in a bigger buffer on the
+  helper cores, and move to the live path the moment they are touched. The
+  biggest lever (the 105 % song would fit), and the largest change; Sound
+  cores' lanes are its base.
+
+Smaller ideas from the same review: a voice priority per sound, so culling
+spares the kick and bass (a setting, so a layout question for its owner);
+loading a track's plug-ins and instruments only once it has something to
+play; and the part of round 7's period that no engine's probe covers
+(about 15 %).
+
 ## Load shedding: giving up voices nobody hears
 
 When the periods fall behind, the pad player gives up the quietest voices
