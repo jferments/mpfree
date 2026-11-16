@@ -360,7 +360,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 It talks only to the test build that the boot hook started at Q7c: port 2222, with the stick's own host key.
 
 What it changes, step by step:
-- **1:** workstation only. It checks the benchmark (ARM, the MPC's C library) and writes the sample pages (83 at `a8b585bf`, with #389's three power-card screens) into a new folder under `~/mpfree-work`.
+- **1:** workstation only. It checks the benchmark (ARM, the MPC's C library) and writes the sample pages (84 at `2a40587b`, with #389's three power-card screens and #398's Plugins place) into a new folder under `~/mpfree-work`.
 - **2:** read-only on the MPC. The test build's checks (they include `started by: the boot hook's soft-reboot …`), then the GPU's render node and libraries, and who holds `/dev/dri`. After the soft-reboot no driver can be loaded, so the GPU's must already be. If step 2 stops on `no /dev/dri/renderD*`, nothing was changed: go on to Q10 and tell the GPU thread (the likely fix is a stick built with `--preload-module panfrost`).
 - **3:** RAM. It copies the benchmark and the pages into `/run/mpfree-gpu` and checks their hashes. It stops the pad player (it prints `pad player: was active, now inactive`), and starts it again at the end, even on a failure or Ctrl-C.
 - **4 and 5:** these only read and compute; the screen keeps what it shows. Step 4 stops if Mesa answers with anything but the Mali (Panfrost).
@@ -378,19 +378,19 @@ What it changes, step by step:
 
 ```
 [2/7] ... started by: the boot hook's soft-reboot (asked at N s after power-on) ... CHECKS-OK ... GPU-OK
-[3/7] ... copied the benchmark and 83 pages; every hash on the MPC matches
+[3/7] ... copied the benchmark and 84 pages; every hash on the MPC matches
       pad player: was active, now inactive
 [4/7] gpu: Mali-T760 (Panfrost) ...
       gpu: draws into screen buffers (dma-buf import): yes
-[5/7] summary: pages 83; gpu whole page median ... ; gpu tick median ...
+[5/7] summary: pages 84; gpu whole page median ... ; gpu tick median ...
       summary: gpu draw calls per whole page median N worst N; atlas cleared N times, N masks drawn alone; N shapes worked out on the GPU, their atlas cleared N times
       summary: gpu against software: at most N levels apart in any channel; ... s in all
 [6/7] summary: panel gpu: draw p50 ..., read back p50 ..., copy p50 ...; whole p50 ...
-      summary: panel showed 83 pages from the GPU; atlas cleared N times, N masks drawn alone
+      summary: panel showed 84 pages from the GPU; atlas cleared N times, N masks drawn alone
 [7/7] display: /dev/dri/card0
       CARD-FREE
       flip: /dev/dri/card0: connector N on CRTC N, mode 800x1280 at 60 Hz
-      flip: SCREEN CHANGES NOW: 83 pages drawn on the GPU straight into the buffers the panel shows, 1500 ms each
+      flip: SCREEN CHANGES NOW: 84 pages drawn on the GPU straight into the buffers the panel shows, 1500 ms each
       summary: flip gpu ...: wait for the flip p50 ..., draw p50 ..., gpu finish p50 ...; whole p50 ... ; CPU ... % of one core
       summary: flip software ...: draw p50 ..., turn p50 ..., copy into the screen buffer p50 ... (whole frame); whole p50 ...; CPU ... % of one core
       flip: the screen is back as it was (CRTC N showing framebuffer N); N page flips in all
