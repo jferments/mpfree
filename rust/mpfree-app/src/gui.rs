@@ -13940,6 +13940,7 @@ mod tests {
             .any(|l| l.starts_with("sample: loaded: Clap 2, ") && l.contains("mono on pad A")));
         assert_eq!(p.kits[0].pads[pad].as_deref(), Some("Clap 2"));
         // Load to pad: held until a pad is hit, then it lands there.
+        assert!(p.sample.project(0).unwrap().pad(9).is_none(), "pad 9 empty");
         p.sample.load_file(wav_of("Rim.WAV", 2_000), true);
         tick_until(&mut p, |p| p.sample.assigning().is_some());
         assert_eq!(p.sample.assigning(), Some("Rim"));
@@ -13953,7 +13954,12 @@ mod tests {
         p.apply(ToUi::PadUp(9));
         p.tick(0.033);
         assert_eq!(p.sample.assigning(), None);
-        assert_eq!(p.sample.project(0).unwrap().pad(9).unwrap().name, "Rim");
+        let rim = p.sample.project(0).unwrap().pad(9).unwrap();
+        assert_eq!(rim.name, "Rim");
+        // On an empty pad it plays as a kit's pads do: as loud (centred)
+        // and with as many voices.
+        assert_eq!(rim.level_db, crate::sampler::CENTRE_DB);
+        assert_eq!(rim.polyphony, crate::sampler::KIT_POLYPHONY);
         assert_eq!(p.kits[0].pads[9].as_deref(), Some("Rim"));
         // A FLAC loads too, onto the pad shown (now the one just hit),
         // known by what it holds; one cut short says so.
