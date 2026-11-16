@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-14 5c1d2e7
+checked: 2026-11-15 365d0f7
 -->
 
 # Effects
@@ -71,7 +71,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs. |
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Strip**, switches each one on or off and holds **Order** (the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
-| **EQ** | Shapes the tone with shelves and bands: cut mud, add air, thin out a sound. |
+| **EQ** | Shapes the tone with up to eight bands (each a bell, a shelf or a notch) and low and high cuts: cut mud, add air, take out a ring, thin out a sound. Its page is a graph with a dot for each band (see [The EQ's page](#the-eqs-page)); each band can be on (**ON**), switched off with its settings kept (**OFF**), or removed. Bands 1 to 4 start on and bands 5 to 8 start removed. |
 | **Filter** | **Multi**: low-pass, high-pass, band-pass and more, with resonance. **DJ**: one knob, turn left for a low-pass, right for a high-pass. |
 | **Comb** | Short tuned delays for metallic, resonant tones. |
 | **Auto wah** | A wah that follows your playing: louder notes open it further. It can also sweep in time (**Source** LFO) or stay where you put it (**Source** Pedal: turn **Center** with a Q-Link, like rocking a pedal). |
@@ -97,6 +97,20 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Tuner** | Tunes a guitar, a bass, a voice or a synth: put it on the strip the instrument comes in on (an input, usually) and play one note at a time. It shows the note, how many cents sharp or flat (the needle is green when you're within 3 cents) and the frequency. **Reference** sets the pitch of A, 440 Hz unless your band tunes to something else; **Mute** silences the strip while you tune. It doesn't change the sound and adds no delay. |
 | **Stereo width** | Makes the sound narrower or wider, with the lows, mids and highs set apart: put the bass in the middle and open up the top. **Delay** widens a mono sound and still sounds right when the mix is played in mono. |
 | **Sample delay** | Delays the left or the right side by a few samples, and flips either side's polarity: for lining up two microphones, or a quick stereo spread. |
+
+### The EQ's page
+
+{{shot: chain-mixer-drums-eq | The EQ on the drum bus: its curve with a dot for each band and the cuts, band 2 picked in the panel underneath.}}
+
+The EQ's page in the chain editor is a graph of what the EQ does, from 20 Hz on the left to 20 kHz on the right and from -18 to +18 dB, with a dot for each band (numbered 1 to 8) and for the low and high cuts (**LC**, **HC**). The white line is what you hear; each band's shape is shaded in its colour.
+
+- **Drag a dot** to move its band: sideways for its frequency, up and down for its gain. While you hold it, a bubble shows its values.
+- **Turn the data wheel** on a dot, or put a **second finger** on the screen while you hold one, to make the band narrower or wider (its Q). On a cut, the wheel switches between 12 and 24 dB.
+- **Tap the graph twice** where there is no dot to add a band there.
+- Under the graph, tap a band's chip to pick it, **+ Band** to add one, and a type to change it: **Low cut**, **Low shelf**, **Bell**, **Notch**, **High shelf** or **High cut**. **ON** switches the band off and on again (it keeps its settings), **Remove** takes it away, and **Listen** plays only what that band touches, to help you find a ring or a boom; Listen follows the band you pick and stops when you leave the page.
+- The Q-Links turn the picked band's frequency, gain and Q, and the EQ's output.
+
+The Mix tab's **EQ** look shows every strip's EQ at once (see [Mixing](mixing-and-effects.md#every-eq-at-once-eq)).
 
 ### Pitch correct and the Harmonizer
 

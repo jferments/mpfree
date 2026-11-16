@@ -689,8 +689,60 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     // A long effect on one page (the drum bus EQ), and an effect of
     // several pages: a Channel strip with the Vocal preset on its first
     // (its stages as sections, with their switches).
-    let mut eq = from_mixer(song.chain_state(DRUMS, 3, 0, None));
-    eq.slots[3].on = false;
+    // The drum bus EQ shaped as on the approved mockups: a low cut, a
+    // low bump, a mud cut (band 3, picked), presence and a high cut.
+    {
+        use mpfree_fx::ids::eq as q;
+        let e = song.drums.node_mut(3).ok_or("the drum bus EQ")?;
+        for (id, v) in [
+            (q::LOW_CUT, 35.0),
+            (q::LOW_SLOPE, 1.0),
+            (q::HIGH_CUT, 9_000.0),
+            (q::HIGH_SLOPE, 1.0),
+            (q::band_type(0), 0.0),
+            (q::freq(0), 90.0),
+            (q::gain(0), 3.0),
+            (q::q(0), 1.0),
+            (q::band_type(1), 0.0),
+            (q::freq(1), 320.0),
+            (q::gain(1), -3.5),
+            (q::q(1), 1.4),
+            (q::band_type(2), 0.0),
+            (q::freq(2), 1_200.0),
+            (q::gain(2), 2.0),
+            (q::q(2), 2.0),
+            (q::band_use(3), q::USE_UNUSED),
+        ] {
+            e.set_param(id, v);
+        }
+    }
+    let eq_uid = song.drums.uid(3).ok_or("the drum bus EQ")?;
+    let mud = ParamAddr::new(Owner::Insert(DRUMS, eq_uid), mpfree_fx::ids::eq::gain(1));
+    let eq = from_mixer(song.chain_state(DRUMS, 3, 0, Some(mud)));
+    // A band held: band 2's dot dragged down and left (board C).
+    let mut held = screen(fonts(), &mut song, Place::Mixer, Some(eq.clone()), None)?;
+    {
+        let r = held.rect_of(crate::CHAIN).ok_or("the chain editor")?;
+        let v = held
+            .get::<crate::ChainView>(crate::CHAIN)
+            .ok_or("the chain editor")?;
+        let page = v.layout(r).page;
+        let el = crate::eq_page::layout(page, v.eq_page());
+        let (fx, fy) = v.eq_page().dot(crate::eq_page::Band::Band(1));
+        let x = el.plot.x + (fx * el.plot.w as f32) as i32;
+        let y = el.plot.bottom() - (fy * el.plot.h as f32) as i32;
+        held.touch(1, mpfree_ui::Touch::Down, x, y);
+        held.touch(1, mpfree_ui::Touch::Move, x - 30, y + 20);
+        held.touch(1, mpfree_ui::Touch::Move, x - 40, y + 30);
+        let _ = crate::take_chain_actions(&mut held);
+    }
+    let mut eq_ui = screen(fonts(), &mut song, Place::Mixer, Some(eq), None)?;
+    for ui in [&mut held, &mut eq_ui] {
+        let text = crate::chain_hint(ui).to_string();
+        if let Some(h) = ui.get_mut::<Label>("hint") {
+            h.text = text;
+        }
+    }
     let mut strip =
         mpfree_fx::registry::make("mpfree.fx.channel_strip").ok_or("no channel strip")?;
     if let Some(p) = mpfree_fx::picker::presets("mpfree.fx.channel_strip")
@@ -731,7 +783,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-drums-filter", about: "From the mixer: the drum bus filter, its response drawn in its section; Cutoff swept by LFO 2 scaled by the mod wheel, Resonance on Air (macro 4)", ui: screen(fonts(), &mut song, Place::Mixer, Some(filter), None)? },
         Sample { name: "chain-mixer-keys-delay", about: "From the mixer: the keys chain's Delay, all its controls on one page; Mix touched: it is on Wash (macro 1) and ducked by follower 1 (a negative row), which the Modulate row's line says", ui: screen(fonts(), &mut song, Place::Mixer, Some(delay), None)? },
         Sample { name: "chain-mixer-keys-delay-rows", about: "The line under Mix tapped: its mod rows over the page (drag a bar for the depth, x takes a row off; + LFO and + Follower add one); the Modulate row still works under it", ui: rows },
-        Sample { name: "chain-mixer-drums-eq", about: "A long effect on one page: the drum bus EQ (bypassed), its curve over the cuts, the four bands and the output; the Q-Links are the bands' gains", ui: screen(fonts(), &mut song, Place::Mixer, Some(eq), None)? },
+        Sample { name: "chain-mixer-drums-eq", about: "The EQ's page: its whole curve over each band's own shape, a dot per band in use (LC and HC for the cuts), band 2 picked (ringed, its shape stronger). Under the graph: a chip per band and + Band, then band 2's type, Freq, Gain, Q, On and Remove. The Q-Links turn its Freq, Gain and Q, and the Output", ui: eq_ui },
+        Sample { name: "chain-mixer-drums-eq-held", about: "Band 2's dot held and dragged down and left: it follows the finger, frequency across and gain up, with a readout over it", ui: held },
         Sample { name: "chain-mixer-keys-strip", about: "An effect of several pages: a Channel strip (Vocal preset) on its first page, a tab per page beside its name. Its stages are sections with their switches (the gate off here, so its controls are dim) and Open › to each stage's page. The Q-Links are the strip's four on every page: Comp thresh, Makeup, Low cut, High gain", ui: screen(fonts(), &mut song, Place::Mixer, Some(strip_st), None)? },
         Sample { name: "chain-sample-fx-pad", about: "In the Sample tab's FX sub-tab, under the pad bar: pad 1's own chain, with a switch to the drum track's (to agree with the sampler thread)", ui: screen(fonts(), &mut song, Place::SampleFx, Some(kick), None)? },
         Sample { name: "chain-mixer-empty", about: "From the mixer: a track with no effects yet, + Add effect; the Q-Links have nothing of the page's, so they show free", ui: screen(fonts(), &mut song, Place::Mixer, Some(empty), None)? },
@@ -760,7 +813,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 16);
+        assert_eq!(s.len(), 17);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -2020,5 +2073,103 @@ mod tests {
             (back.from, back.to, back.curve),
             (1.0, map.from, MapCurve::Exp)
         );
+    }
+
+    /// The drum bus EQ (slot 3) on an EQ editor page.
+    fn eq_editor() -> (crate::eq_page::EqPage, Rect) {
+        let song = Song::new();
+        let st = song.chain_state(DRUMS, 3, 0, None);
+        assert!(st.eq);
+        let mut page = crate::eq_page::EqPage::default();
+        page.update(&st.params, None);
+        (page, Rect::new(244, 146, 844, 540))
+    }
+
+    fn sets(out: &[ChainAction]) -> Vec<(u16, f32)> {
+        out.iter()
+            .filter_map(|a| match a {
+                ChainAction::Set { addr, value } => Some((addr.param, *value)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A dot dragged past the lift moves its band's frequency and gain,
+    /// and the finger's lift releases them.
+    #[test]
+    fn dragging_a_dot_sets_frequency_and_gain() {
+        use crate::eq_page::{layout, Band};
+        use mpfree_fx::ids::eq::{freq, gain};
+        let (mut page, r) = eq_editor();
+        let l = layout(r, &page);
+        let (fx, fy) = page.dot(Band::Band(0));
+        let x = l.plot.x + (fx * l.plot.w as f32) as i32;
+        let y = l.plot.bottom() - (fy * l.plot.h as f32) as i32;
+        let mut out = Vec::new();
+        page.down(1, x, y, r, &mut out);
+        page.moved(1, x + 4, y - 4, r, &mut out);
+        assert!(sets(&out).is_empty(), "under the lift nothing moves");
+        page.moved(1, x + 60, y - 60, r, &mut out);
+        page.up(1, x + 60, y - 60, r, false, &mut out);
+        let set = sets(&out);
+        assert!(
+            set.iter().any(|&(id, v)| id == freq(0) && v > 100.0),
+            "{set:?}"
+        );
+        assert!(
+            set.iter().any(|&(id, v)| id == gain(0) && v > 1.0),
+            "{set:?}"
+        );
+        assert!(matches!(out.last(), Some(ChainAction::Release(_))));
+        assert_eq!(page.picked(), Some(Band::Band(0)));
+    }
+
+    /// Two taps on an empty part of the graph put a bell there in the
+    /// first Unused band.
+    #[test]
+    fn a_double_tap_adds_a_band() {
+        use crate::eq_page::{layout, Band};
+        use mpfree_fx::ids::eq::{band_use, USE_ON};
+        let (mut page, r) = eq_editor();
+        let l = layout(r, &page);
+        let free = page.free().expect("bands 5 to 8 are free");
+        let (x, y) = (l.plot.x + l.plot.w * 3 / 4, l.plot.y + l.plot.h / 5);
+        let mut out = Vec::new();
+        for _ in 0..2 {
+            page.down(1, x, y, r, &mut out);
+            page.up(1, x, y, r, false, &mut out);
+        }
+        assert!(sets(&out).contains(&(band_use(free), USE_ON)), "{out:?}");
+        assert_eq!(page.picked(), Some(Band::Band(free)));
+    }
+
+    /// Listen plays the picked band, follows the pick, and stops when the
+    /// page lets it go.
+    #[test]
+    fn listen_follows_the_pick_and_stops() {
+        use crate::eq_page::{Band, Button};
+        use mpfree_fx::ids::eq::LISTEN;
+        let (mut page, _) = eq_editor();
+        let mut out = Vec::new();
+        page.press(Button::Chip(Band::Band(1)), &mut out);
+        page.press(Button::Listen, &mut out);
+        assert_eq!(page.listening(), Some(1));
+        page.press(Button::Chip(Band::Band(2)), &mut out);
+        assert_eq!(page.listening(), Some(2));
+        page.press(Button::Chip(Band::Low), &mut out);
+        assert_eq!(page.listening(), None, "a cut has nothing to hear");
+        page.press(Button::Chip(Band::Band(0)), &mut out);
+        page.press(Button::Listen, &mut out);
+        assert_eq!(
+            sets(&out)
+                .iter()
+                .filter(|s| s.0 == LISTEN)
+                .copied()
+                .collect::<Vec<_>>(),
+            [(LISTEN, 2.0), (LISTEN, 3.0), (LISTEN, 0.0), (LISTEN, 1.0)]
+        );
+        let stop = page.stop_listening();
+        assert_eq!(sets(&stop), [(LISTEN, 0.0)]);
+        assert!(page.stop_listening().is_empty());
     }
 }

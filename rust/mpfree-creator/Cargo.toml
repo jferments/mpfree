@@ -1,0 +1,18 @@
+[package]
+name = "mpfree-creator"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The MPFree USB creator: makes an MPFree boot stick for the MPC One (Gen 1) from the owner's own Akai update file"
+
+# Its own workspace: the window toolkit is large, and only the creator needs it.
+[workspace]
+
+[dependencies]
+mpfree-stick = { path = "../mpfree-stick" }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

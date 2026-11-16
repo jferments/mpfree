@@ -217,3 +217,167 @@ fn a_band_at_zero_db_is_exactly_flat_whatever_its_type_and_q() {
         assert!(l == x, "type {kind}");
     }
 }
+
+/// Projects saved with the four-band EQ keep their ids and their sound:
+/// bands 1 to 4 sit where they were and start On, bands 5 to 8 and the
+/// Use params come after Output and start Unused, and Unused is flat.
+#[test]
+fn the_four_band_ids_and_sound_are_kept() {
+    assert_eq!(BANDS, 8);
+    assert_eq!(
+        (band_type(0), freq(0), gain(3), q(3), OUTPUT),
+        (4, 5, 18, 19, 20)
+    );
+    assert_eq!(
+        (band_type(4), q(7), band_use(0), band_use(7)),
+        (21, 36, 37, 44)
+    );
+    let e = Eq::new();
+    let p = e.params();
+    assert_eq!(p.len(), 46);
+    for (i, info) in p.iter().enumerate() {
+        assert_eq!(info.id as usize, i);
+        if let Some((b, what)) = band_of(info.id) {
+            assert_eq!(info.group, format!("Band {}", b + 1));
+            let name = ["Type", "Freq", "Gain", "Q", "Use"][what as usize];
+            assert_eq!(info.name, name, "id {i}");
+        }
+    }
+    for b in 0..BANDS {
+        let want = if b < 4 { USE_ON } else { USE_UNUSED };
+        assert_eq!(e.param(band_use(b)), want, "band {}", b + 1);
+    }
+    // A band 5 to 8 set up but Unused is not heard, and the default EQ is
+    // still exactly the input.
+    let mut quiet = eq(48_000, &[(gain(5), 12.0), (freq(5), 1000.0)]);
+    assert!(measure(&mut quiet, 48_000, 1000.0).abs() < 0.001);
+    let x = sine(997.0, 0.3, 48_000, 4096);
+    let (mut l, mut r) = (x.clone(), x.clone());
+    let mut flat = eq(48_000, &[]);
+    run(&mut flat, 48_000, &mut l, &mut r, &[]);
+    assert_eq!(l, x);
+}
+
+/// Bands 5 to 8 are full bands: what they draw is what a sine measures.
+#[test]
+fn the_new_bands_measure_as_drawn() {
+    let set = [
+        (band_use(4), USE_ON),
+        (freq(4), 180.0),
+        (gain(4), -9.0),
+        (q(4), 2.5),
+        (band_use(6), USE_ON),
+        (band_type(6), 2.0),
+        (freq(6), 6000.0),
+        (gain(6), 6.0),
+        (band_use(7), USE_ON),
+        (band_type(7), 3.0),
+        (freq(7), 2500.0),
+        (q(7), 4.0),
+    ];
+    let probes = [
+        60.0f32, 180.0, 400.0, 1000.0, 2000.0, 3000.0, 6000.0, 12_000.0,
+    ];
+    let mut e = eq(48_000, &set);
+    let mut want = vec![0.0; probes.len()];
+    e.response_db(&probes, &mut want);
+    assert!(want[1] < -8.5, "the bell cuts at 180 Hz: {}", want[1]);
+    for (&hz, &w) in probes.iter().zip(&want) {
+        let got = measure(&mut e, 48_000, hz);
+        assert!(
+            (got - w).abs() < 0.05,
+            "{hz} Hz: measured {got:.3}, curve {w:.3}"
+        );
+    }
+}
+
+/// A notch takes out its frequency whatever its Gain says, and leaves an
+/// octave away nearly untouched.
+#[test]
+fn a_notch_cuts_deep_and_narrow() {
+    let mut e = eq(
+        48_000,
+        &[
+            (band_type(2), 3.0),
+            (freq(2), 1000.0),
+            (q(2), 8.0),
+            (gain(2), 0.0),
+        ],
+    );
+    let mut out = [0.0f32; 3];
+    e.response_db(&[1000.0, 500.0, 2000.0], &mut out);
+    assert!(out[0] < -50.0, "deep at 1 kHz: {}", out[0]);
+    assert!(out[1].abs() < 0.3 && out[2].abs() < 0.3, "{out:?}");
+    assert!(measure(&mut e, 48_000, 1000.0) < -45.0);
+}
+
+/// Bypassing a band glides it flat without a click, and On brings it back
+/// the same way.
+#[test]
+fn bypass_glides_and_is_flat() {
+    let rate = 48_000;
+    let set = [(freq(1), 1000.0), (gain(1), 18.0), (q(1), 4.0)];
+    let mut e = eq(rate, &set);
+    assert!(measure(&mut e, rate, 1000.0) > 17.0);
+    let n = rate as usize / 2;
+    let x = sine(1000.0, 0.05, rate, n);
+    let jumps = |e: &mut Eq, events: &[(usize, u16, f32)]| {
+        e.reset();
+        let (mut l, mut r) = (x.clone(), x.clone());
+        run(e, rate, &mut l, &mut r, events);
+        // Past the start-up ring, the biggest step from one sample to the next.
+        l[n / 8..]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    };
+    let steady = jumps(&mut e, &[]);
+    let switched = jumps(
+        &mut e,
+        &[
+            (n / 4, band_use(1), USE_BYPASSED),
+            (3 * n / 4, band_use(1), USE_ON),
+        ],
+    );
+    assert!(
+        switched <= steady * 1.01,
+        "switching steps {switched} a sample, the boosted sine only {steady}"
+    );
+    let mut off = eq(rate, &[set[0], set[1], set[2], (band_use(1), USE_BYPASSED)]);
+    assert!(measure(&mut off, rate, 1000.0).abs() < 0.001);
+    let mut want = [0.0f32];
+    off.response_db(&[1000.0], &mut want);
+    assert!(want[0].abs() < 1e-6);
+}
+
+/// Listen plays the band alone: its frequency comes through, frequencies
+/// far from it fade away, and Off brings back the full EQ.
+#[test]
+fn listen_plays_the_band_alone() {
+    let rate = 48_000;
+    let mut e = eq(
+        rate,
+        &[
+            (freq(1), 1000.0),
+            (gain(1), 6.0),
+            (q(1), 4.0),
+            (LISTEN, 2.0),
+        ],
+    );
+    assert!(
+        measure(&mut e, rate, 1000.0).abs() < 0.5,
+        "the band's own frequency"
+    );
+    assert!(measure(&mut e, rate, 100.0) < -20.0, "far below the band");
+    assert!(
+        measure(&mut e, rate, 10_000.0) < -20.0,
+        "far above the band"
+    );
+    e.set_param(LISTEN, 0.0);
+    e.reset();
+    assert!(
+        measure(&mut e, rate, 100.0).abs() < 0.5,
+        "Off: the EQ again"
+    );
+    assert!((measure(&mut e, rate, 1000.0) - 6.0).abs() < 0.5);
+}

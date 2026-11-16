@@ -24,7 +24,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Layout spec](design/layout-spec.md): the approved screen layout: top bar, tabs, the Play page and its views, the Looper tab, Prefs, and what every hardware button does. Changes need the owner's approval.
 - [UI themes and modular layouts](design/ui-themes.md): themes, effects and layout files in `mpfree-ui`, and the themed startup screens (`mpfree-startup`).
 - [The browser and projects](design/browser.md): BROWSE over every page, the library, the Pads tab's picker, and whole projects: New, Save, Save as and Open, each engine's part, the samples and audio takes in the project folder, and the last ten saves (`rust/mpfree-library`, `rust/mpfree-browser-ui`, `rust/mpfree-app/src/project.rs`, 2026-11-13).
-- [Importing MPC projects](design/mpc-import.md): what MPC project files hold, how confidently each part maps onto MPFree, the staged importer, the inspector (`tools/mpc-import/inspect-xpj.py`), the workstation tool that copies your own projects out of the eMMC backup (`tools/mpc-one/offline-mpc-projects.py`, 2026-11-12), and stage 1's keygroup program converter (`rust/mpfree-mpc-import`, 2026-11-15).
+- [Importing MPC projects](design/mpc-import.md): what MPC project files hold, how confidently each part maps onto MPFree, the staged importer, the inspector (`tools/mpc-import/inspect-xpj.py`), the workstation tool that copies your own projects out of the eMMC backup (`tools/mpc-one/offline-mpc-projects.py`, 2026-11-12), stage 1's keygroup program converter (`rust/mpfree-mpc-import`, 2026-11-15), reading projects straight from the owner's card, and the plan for expansions, factory content in place and Akai's instruments (2026-11-16).
 - [Storage](design/storage-spec.md): where settings and user files are saved (the test stick's fourth partition; the eMMC and SD card are never written).
 
 ### Time: transport, sequencer, looper
@@ -75,7 +75,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 ### Installing
 
 - [USB installer architecture](design/usb-installer.md): design for a future one-USB, owner-consented installer with rollback.
-- [The MPFree USB creator](design/usb-creator.md): plan for a desktop app (Linux, macOS, Windows) that builds the boot stick from the musician's own Akai 3.10.1 update file, and a one-tap, terminal-free hook install through Akai's script runner (proposal, 2026-11-15).
+- [The MPFree USB creator](design/usb-creator.md): the desktop app (Linux, macOS, Windows; `rust/mpfree-creator`, core and command line in `rust/mpfree-stick`) that builds the boot stick from the musician's own Akai 3.10.1 update file, the one-tap, terminal-free hook install through Akai's script runner, and the first-start backup and Akai kits and samples (built 2026-11-15; not yet run on the MPC).
 
 ## Decisions
 
