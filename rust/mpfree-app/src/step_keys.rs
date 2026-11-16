@@ -8,9 +8,17 @@
 //! - **An empty step** gets a note at the pad's velocity (127 with FULL
 //!   LEVEL) as the press lands, and sounds once while the transport is
 //!   stopped, so a beat can be built without playing it.
-//! - **A lit step** comes off, with its locks, when the pad is let go
-//!   (holding it will set it, in the next pull request).
+//! - **A lit step** comes off, with its locks, when the pad is let go, if
+//!   it was the only step held and nothing was done while it was.
+//! - **A step held** is the Q-Links' on Play ([`StepKeys::held_steps`]);
+//!   held together, several steps are set together.
+//! - **A later step tapped while one is held**, with no Q-Link turned yet,
+//!   is a tie: the held step's note lasts to the end of it (or ends there,
+//!   inside the note). A lit step, an earlier one, or any step after a
+//!   turn joins the steps held instead.
 //! - **ERASE + a step** clears it, locks included.
+//! - **COPY + a step** picks it; each step tapped after it, COPY still
+//!   held, gets a copy, locks included.
 //!
 //! No clip yet: the first tap on page 1 makes a one-bar clip and launches
 //! it, as a tap on Beats does. Each edit is a take: UNDO takes it back.
@@ -21,7 +29,8 @@
 //! on the first step of each beat; dark past the clip's end.
 
 use crate::app::StepPads;
-use crate::time::{StepAction, StepClip, StepsData, TimeHost};
+use crate::time::{StepAction, StepClip, StepsData, TimeHost, STEP_TICKS};
+use mpfree_seq::steps::Change;
 
 /// What a press did.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -29,11 +38,36 @@ pub struct Pressed {
     /// A line for the log (empty: nothing to say).
     pub log: String,
     /// A line for the screen, in place of the hint: why nothing happened,
-    /// or what ERASE cleared.
+    /// or what ERASE, COPY or a tie did.
     pub tell: Option<String>,
     /// Sound the step's sound (a pad) once at this velocity: the
     /// transport is stopped and a note went on.
     pub sound: Option<(u8, u8)>,
+}
+
+/// How a pad was pressed: its velocity (after Full or Half Level and the
+/// curve), the buttons held with it, and whether the transport rolls (a
+/// new note is heard when it comes round).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Press {
+    pub velocity: u8,
+    /// ERASE held: the step is cleared.
+    pub erase: bool,
+    /// COPY held: the step is picked to copy, or gets the copy.
+    pub copy: bool,
+    pub rolling: bool,
+}
+
+/// What a held step pad is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// A step the Q-Links set while it is held. `remove`: it was lit and
+    /// pressed alone, so it comes off on the release, unless a turn, a tie
+    /// or another step comes first.
+    Set { remove: bool },
+    /// Pressed for ERASE, COPY, a tie's end or past the clip's end: the
+    /// release does nothing.
+    Done,
 }
 
 /// A step pad held.
@@ -41,16 +75,25 @@ pub struct Pressed {
 struct Down {
     sound: u8,
     step: usize,
-    /// It was lit: its notes come off on the release.
-    remove: bool,
+    kind: Kind,
     /// The press sounded the step: the release lets it go.
     sounding: bool,
+    /// When it went down, to find the step held first.
+    order: u32,
 }
 
 /// The step pads held, from press to release.
 #[derive(Debug, Default)]
 pub struct StepKeys {
     down: [Option<Down>; 16],
+    /// A Q-Link set the steps held since the first of them went down.
+    turned: bool,
+    /// COPY: the step picked to copy (its sound and step), while COPY is
+    /// held.
+    copy_from: Option<(u8, usize)>,
+    presses: u32,
+    /// The steps held as the screen was last told.
+    shown: Option<(u8, Vec<usize>)>,
 }
 
 /// What a release did: a log line, and whether to let go of the sound the
@@ -68,34 +111,100 @@ impl StepKeys {
         self.down.get(pad).is_some_and(Option::is_some)
     }
 
-    /// Pad `pad` pressed as a step of `s`, `velocity` loud (after Full or
-    /// Half Level and the curve). With `erase` (ERASE held) the step is
-    /// cleared. `rolling`: the transport plays, so a new note is heard
-    /// when it comes round.
-    pub fn press(
-        &mut self,
-        s: StepPads,
-        pad: usize,
-        velocity: u8,
-        erase: bool,
-        rolling: bool,
-        time: &mut TimeHost,
-    ) -> Pressed {
+    /// The steps held to be set, the first held first, and their sound:
+    /// what the Q-Links turn on Play. None while none is.
+    pub fn held_steps(&self) -> Option<(u8, Vec<usize>)> {
+        let mut set: Vec<&Down> = self
+            .down
+            .iter()
+            .flatten()
+            .filter(|d| matches!(d.kind, Kind::Set { .. }))
+            .collect();
+        set.sort_by_key(|d| d.order);
+        let sound = set.first()?.sound;
+        let mut steps: Vec<usize> = Vec::new();
+        for d in set.into_iter().filter(|d| d.sound == sound) {
+            if !steps.contains(&d.step) {
+                steps.push(d.step);
+            }
+        }
+        Some((sound, steps))
+    }
+
+    /// The steps held, when they changed since the screen was last told
+    /// (`ToUi::StepsHeld`).
+    pub fn held_news(&mut self) -> Option<Option<(u8, Vec<usize>)>> {
+        let now = self.held_steps();
+        (now != self.shown).then(|| {
+            self.shown.clone_from(&now);
+            now
+        })
+    }
+
+    /// A Q-Link set the steps held: none of them comes off on its
+    /// release, and a later step tapped joins them rather than tying.
+    pub fn turned(&mut self) {
+        if self.held_steps().is_some() {
+            self.turned = true;
+            self.keep_all();
+        }
+    }
+
+    /// COPY was let go: the step picked is forgotten.
+    pub fn forget_copy(&mut self) {
+        self.copy_from = None;
+    }
+
+    /// Something happened while steps were held: none comes off.
+    fn keep_all(&mut self) {
+        for d in self.down.iter_mut().flatten() {
+            if let Kind::Set { remove } = &mut d.kind {
+                *remove = false;
+            }
+        }
+    }
+
+    /// The step held first, of sound `sound`, to be set.
+    fn lead(&self, sound: u8) -> Option<Down> {
+        self.down
+            .iter()
+            .flatten()
+            .filter(|d| d.sound == sound && matches!(d.kind, Kind::Set { .. }))
+            .min_by_key(|d| d.order)
+            .copied()
+    }
+
+    fn hold(&mut self, pad: usize, sound: u8, step: usize, kind: Kind, sounding: bool) {
+        self.presses = self.presses.wrapping_add(1);
+        self.down[pad] = Some(Down {
+            sound,
+            step,
+            kind,
+            sounding,
+            order: self.presses,
+        });
+    }
+
+    /// Pad `pad` pressed as a step of `s`, as `p` says (ERASE or COPY
+    /// held, the velocity, whether the transport rolls).
+    pub fn press(&mut self, s: StepPads, pad: usize, p: Press, time: &mut TimeHost) -> Pressed {
         if pad >= 16 {
             return Pressed::default();
+        }
+        if !p.copy {
+            self.copy_from = None;
         }
         let step = s.first() + pad;
         let steps = time.steps();
         let clip = steps.clip.as_ref();
         let name = sound_name(s.sound);
-        if erase {
+        let alone = self.down.iter().all(Option::is_none);
+        let lead = self.lead(s.sound).filter(|_| !self.turned);
+        // Anything pressed while steps are held keeps them.
+        self.keep_all();
+        if p.erase {
             // Held as a step, so its release plays nothing.
-            self.down[pad] = Some(Down {
-                sound: s.sound,
-                step,
-                remove: false,
-                sounding: false,
-            });
+            self.hold(pad, s.sound, step, Kind::Done, false);
             let tell = match time.step_action(StepAction::ClearSteps {
                 pad: s.sound,
                 from: step,
@@ -114,44 +223,68 @@ impl StepKeys {
             };
         }
         if let Some(why) = past_the_end(clip, step) {
-            self.down[pad] = Some(Down {
-                sound: s.sound,
-                step,
-                remove: false,
-                sounding: false,
-            });
+            self.hold(pad, s.sound, step, Kind::Done, false);
             return Pressed {
                 tell: Some(why),
                 ..Pressed::default()
             };
         }
-        let lit = clip.is_some_and(|c| c.row(s.sound).get(step).copied().flatten().is_some());
+        let row = clip.map(|c| c.row(s.sound)).unwrap_or_default();
+        let lit = row.get(step).copied().flatten().is_some();
+        if p.copy {
+            self.hold(pad, s.sound, step, Kind::Done, false);
+            return self.copy(s.sound, step, lit, time);
+        }
+        // A later step tapped while one is held, nothing turned yet: the
+        // held step's note lasts to the end of it.
+        if let Some((lead, note)) =
+            lead.and_then(|d| Some((d, row.get(d.step).copied().flatten()?)))
+        {
+            if step > lead.step && !lit {
+                self.hold(pad, s.sound, step, Kind::Done, false);
+                let len = (step - lead.step + 1) as i64 * STEP_TICKS - note.nudge;
+                let r = time.step_action(StepAction::Change {
+                    pad: s.sound,
+                    step: lead.step,
+                    change: Change::Length(len.max(1)),
+                });
+                return match r {
+                    Ok(_) => Pressed {
+                        log: format!(
+                            "steps: step {} of {name} lasts to the end of step {}",
+                            lead.step + 1,
+                            step + 1
+                        ),
+                        tell: Some(format!(
+                            "Step {} lasts to the end of step {} (UNDO takes it back)",
+                            lead.step + 1,
+                            step + 1
+                        )),
+                        sound: None,
+                    },
+                    Err(e) => Pressed {
+                        tell: Some(format!("steps: {e}")),
+                        ..Pressed::default()
+                    },
+                };
+            }
+        }
         if lit {
-            self.down[pad] = Some(Down {
-                sound: s.sound,
-                step,
-                remove: true,
-                sounding: false,
-            });
+            self.hold(pad, s.sound, step, Kind::Set { remove: alone }, false);
             return Pressed::default();
         }
         let r = time.step_action(StepAction::Tap {
             pad: s.sound,
             step,
-            velocity: velocity.max(1),
+            velocity: p.velocity.max(1),
         });
-        let sounding = !rolling && r.as_ref().is_ok_and(|l| !l.is_empty());
-        self.down[pad] = Some(Down {
-            sound: s.sound,
-            step,
-            remove: false,
-            sounding,
-        });
+        let sounding = !p.rolling && r.as_ref().is_ok_and(|l| !l.is_empty());
+        self.hold(pad, s.sound, step, Kind::Set { remove: false }, sounding);
         match r {
             Ok(log) => Pressed {
                 log,
                 tell: None,
-                sound: sounding.then_some((s.sound, velocity.max(1))),
+                sound: sounding.then_some((s.sound, p.velocity.max(1))),
             },
             Err(e) => Pressed {
                 log: String::new(),
@@ -161,16 +294,80 @@ impl StepKeys {
         }
     }
 
-    /// Pad `pad` let go: a lit step pressed comes off now.
+    /// COPY + step `step` of `sound`: the first picks it, each one after
+    /// gets a copy.
+    fn copy(&mut self, sound: u8, step: usize, lit: bool, time: &mut TimeHost) -> Pressed {
+        let from = match self.copy_from {
+            Some((was, from)) if was == sound && from != step => from,
+            Some((was, from)) if was == sound && from == step => {
+                return Pressed {
+                    tell: Some(format!(
+                        "COPY: step {} is the one picked; tap the steps it goes to",
+                        step + 1
+                    )),
+                    ..Pressed::default()
+                };
+            }
+            _ => {
+                self.copy_from = Some((sound, step));
+                let tell = if lit {
+                    format!("COPY: step {} picked; tap the steps it goes to", step + 1)
+                } else {
+                    format!(
+                        "COPY: step {} picked (it's empty: the steps you tap are cleared)",
+                        step + 1
+                    )
+                };
+                return Pressed {
+                    tell: Some(tell),
+                    ..Pressed::default()
+                };
+            }
+        };
+        match time.step_action(StepAction::CopySteps {
+            pad: sound,
+            from,
+            to: step,
+            count: 1,
+        }) {
+            Ok(log) if log.is_empty() => Pressed {
+                tell: Some(format!(
+                    "COPY: step {} is already the same as step {}",
+                    step + 1,
+                    from + 1
+                )),
+                ..Pressed::default()
+            },
+            Ok(log) => Pressed {
+                log,
+                tell: Some(format!(
+                    "COPY: step {} to step {} (UNDO takes it back)",
+                    from + 1,
+                    step + 1
+                )),
+                sound: None,
+            },
+            Err(e) => Pressed {
+                tell: Some(format!("steps: {e}")),
+                ..Pressed::default()
+            },
+        }
+    }
+
+    /// Pad `pad` let go: a lit step pressed alone comes off now, if
+    /// nothing happened while it was held.
     pub fn release(&mut self, pad: usize, time: &mut TimeHost) -> Released {
         let Some(d) = self.down.get_mut(pad).and_then(Option::take) else {
             return Released::default();
         };
+        if self.down.iter().all(Option::is_none) {
+            self.turned = false;
+        }
         let mut out = Released {
             log: String::new(),
             silence: d.sounding.then_some(d.sound),
         };
-        if d.remove {
+        if d.kind == (Kind::Set { remove: true }) {
             // Only if it is still lit: a recording may have changed it.
             let steps = time.steps();
             let lit = steps
@@ -327,6 +524,18 @@ mod tests {
             page,
             follow: false,
             picking: false,
+            copying: false,
+            copy_page: None,
+        }
+    }
+
+    /// A press `velocity` loud, with ERASE held or not, rolling or not.
+    fn at(velocity: u8, erase: bool, rolling: bool) -> Press {
+        Press {
+            velocity,
+            erase,
+            copy: false,
+            rolling,
         }
     }
 
@@ -421,37 +630,156 @@ mod tests {
             c.row(2).iter().map(|st| st.map(|st| st.velocity)).collect()
         };
         // Page 2 with no clip: nothing, and why.
-        let p = keys.press(view(2, 1), 3, 90, false, false, &mut time);
+        let p = keys.press(view(2, 1), 3, at(90, false, false), &mut time);
         assert!(p.tell.is_some_and(|t| t.contains("no clip yet")));
         assert!(keys.held(3));
         assert_eq!(keys.release(3, &mut time), Released::default());
         assert!(time.steps().clip.is_none());
         // Pad 5 is step 5: a new clip, the note at 90, heard once.
-        let p = keys.press(s, 4, 90, false, false, &mut time);
+        let p = keys.press(s, 4, at(90, false, false), &mut time);
         assert_eq!(p.sound, Some((2, 90)));
         assert!(p.log.contains("new clip"), "{}", p.log);
         assert_eq!(row(&time)[4], Some(90));
         assert_eq!(keys.release(4, &mut time).silence, Some(2));
         // Pressed again while playing: it stays until the release, and
         // nothing sounds.
-        let p = keys.press(s, 4, 90, false, true, &mut time);
+        let p = keys.press(s, 4, at(90, false, true), &mut time);
         assert_eq!(p, Pressed::default());
         assert_eq!(row(&time)[4], Some(90));
         let r = keys.release(4, &mut time);
         assert_eq!(r.silence, None);
         assert_eq!(row(&time)[4], None);
         // ERASE + a step clears it; an empty one says so.
-        keys.press(s, 8, 64, false, true, &mut time);
+        keys.press(s, 8, at(64, false, true), &mut time);
         keys.release(8, &mut time);
-        let p = keys.press(s, 8, 0, true, true, &mut time);
+        let p = keys.press(s, 8, at(0, true, true), &mut time);
         assert!(p.tell.is_some_and(|t| t.contains("UNDO")));
         keys.release(8, &mut time);
         assert_eq!(row(&time)[8], None);
-        let p = keys.press(s, 8, 0, true, true, &mut time);
+        let p = keys.press(s, 8, at(0, true, true), &mut time);
         assert!(p.tell.is_some_and(|t| t.contains("is empty")));
         keys.release(8, &mut time);
         // Past the end of the one-bar clip.
-        let p = keys.press(view(2, 1), 0, 90, false, true, &mut time);
+        let p = keys.press(view(2, 1), 0, at(90, false, true), &mut time);
         assert!(p.tell.is_some_and(|t| t.contains("16 steps (1 page)")));
+    }
+
+    /// The steps of sound 2 in the clip Beats shows: (step, velocity,
+    /// length).
+    fn notes(time: &TimeHost) -> Vec<(usize, u8, i64)> {
+        let d = time.steps();
+        let Some(c) = d.clip else { return Vec::new() };
+        c.row(2)
+            .iter()
+            .enumerate()
+            .filter_map(|(i, st)| st.map(|st| (i, st.velocity, st.len)))
+            .collect()
+    }
+
+    /// A lit step held and set by a Q-Link stays on its release; held
+    /// with a later empty step tapped, its note lasts to the end of that
+    /// step (and ends inside it); a lit step or an earlier one joins the
+    /// steps held, and a step after a turn joins too.
+    #[test]
+    fn holding_steps_sets_them_ties_them_and_keeps_them() {
+        let Ok(mut time) = TimeHost::new(44_100, 120.0) else {
+            return;
+        };
+        let mut keys = StepKeys::default();
+        let s = view(2, 0);
+        for pad in [0, 4, 8] {
+            keys.press(s, pad, at(100, false, true), &mut time);
+            keys.release(pad, &mut time);
+        }
+        assert_eq!(notes(&time).len(), 3);
+        // Held alone, step 1 is the Q-Links'; turned, it stays.
+        keys.press(s, 0, at(100, false, true), &mut time);
+        assert_eq!(keys.held_steps(), Some((2, vec![0])));
+        keys.turned();
+        keys.release(0, &mut time);
+        assert_eq!(keys.held_steps(), None);
+        assert_eq!(notes(&time).len(), 3, "turned: it stays");
+        // Hold step 1, tap step 3: step 1 lasts to the end of step 3.
+        keys.press(s, 0, at(100, false, true), &mut time);
+        let p = keys.press(s, 2, at(100, false, true), &mut time);
+        assert!(p
+            .tell
+            .is_some_and(|t| t.contains("lasts to the end of step 3")));
+        assert_eq!(notes(&time)[0], (0, 100, 3 * 240));
+        assert_eq!(
+            keys.held_steps(),
+            Some((2, vec![0])),
+            "a tie's end is not held"
+        );
+        keys.release(2, &mut time);
+        // Inside the note: it ends there.
+        keys.press(s, 1, at(100, false, true), &mut time);
+        assert_eq!(notes(&time)[0], (0, 100, 2 * 240));
+        keys.release(1, &mut time);
+        keys.release(0, &mut time);
+        assert_eq!(notes(&time).len(), 3, "a tie keeps the held step");
+        // Hold step 5, then the lit step 9: both are held, nothing ties.
+        keys.press(s, 4, at(100, false, true), &mut time);
+        keys.press(s, 8, at(100, false, true), &mut time);
+        assert_eq!(keys.held_steps(), Some((2, vec![4, 8])));
+        assert_eq!(notes(&time)[1], (4, 100, 240));
+        keys.release(8, &mut time);
+        keys.release(4, &mut time);
+        assert_eq!(notes(&time).len(), 3, "held together, neither comes off");
+        // After a turn, a later empty step joins (with a note of its own).
+        keys.press(s, 4, at(100, false, true), &mut time);
+        keys.turned();
+        keys.press(s, 6, at(80, false, true), &mut time);
+        assert_eq!(keys.held_steps(), Some((2, vec![4, 6])));
+        assert_eq!(notes(&time)[2], (6, 80, 240));
+        keys.release(6, &mut time);
+        keys.release(4, &mut time);
+        // An earlier step joins too.
+        keys.press(s, 8, at(100, false, true), &mut time);
+        keys.press(s, 6, at(100, false, true), &mut time);
+        assert_eq!(keys.held_steps(), Some((2, vec![8, 6])));
+        keys.release(6, &mut time);
+        keys.release(8, &mut time);
+        assert_eq!(notes(&time).len(), 4);
+        // A lit step tapped alone still comes off.
+        keys.press(s, 6, at(100, false, true), &mut time);
+        keys.release(6, &mut time);
+        assert_eq!(notes(&time).len(), 3);
+    }
+
+    /// COPY + a step picks it; each step after gets a copy; COPY let go
+    /// forgets the step.
+    #[test]
+    fn copy_puts_the_step_picked_on_each_step_tapped() {
+        let Ok(mut time) = TimeHost::new(44_100, 120.0) else {
+            return;
+        };
+        let mut keys = StepKeys::default();
+        let s = view(2, 0);
+        keys.press(s, 0, at(70, false, true), &mut time);
+        keys.release(0, &mut time);
+        let copy = Press {
+            copy: true,
+            ..at(100, false, true)
+        };
+        let p = keys.press(s, 0, copy, &mut time);
+        assert!(p.tell.is_some_and(|t| t.contains("step 1 picked")));
+        keys.release(0, &mut time);
+        assert_eq!(keys.held_steps(), None, "COPY's steps are not the Q-Links'");
+        for pad in [4, 12] {
+            let p = keys.press(s, pad, copy, &mut time);
+            assert!(p.tell.is_some_and(|t| t.contains("UNDO")), "pad {pad}");
+            keys.release(pad, &mut time);
+        }
+        let got: Vec<(usize, u8)> = notes(&time).iter().map(|n| (n.0, n.1)).collect();
+        assert_eq!(got, vec![(0, 70), (4, 70), (12, 70)]);
+        // COPY let go: the next COPY + a step picks again.
+        keys.forget_copy();
+        let p = keys.press(s, 8, copy, &mut time);
+        assert!(p.tell.is_some_and(|t| t.contains("it's empty")));
+        keys.release(8, &mut time);
+        keys.press(s, 4, copy, &mut time);
+        keys.release(4, &mut time);
+        assert_eq!(notes(&time).len(), 2, "the empty step 9 cleared step 5");
     }
 }
