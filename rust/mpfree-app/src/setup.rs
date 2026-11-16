@@ -14,8 +14,9 @@
 //!    area, read with the read-only ext4 reader (`mpfree-factory`). The kits
 //!    go to `library/Kits/Akai factory kits.mpfkits`, loaded at every start
 //!    before MPFree's own; the samples to `library/Samples/Akai factory/`,
-//!    a folder per kit ([`akai_layout`]), where BROWSE finds them. Both are
-//!    written only through `mpfree-library`.
+//!    a folder per kit ([`akai_layout`]), where BROWSE finds them, and each
+//!    drum kit's folder gets its `kit.txt` ([`kit_text`]), so BROWSE loads
+//!    the kit whole. All of it is written only through `mpfree-library`.
 //! 3. **Done** is kept in the store (`settings/setup.conf`), step by step
 //!    ([`STEPS`]), saved as each step ends (and the try's number as it
 //!    starts), so each step runs once even when a later one is cut off. A failed attempt is tried again
@@ -35,9 +36,9 @@
 //! sticks), only with `--data`, and never in `play`.
 
 use mpfree_diskimage::{Offset, ReadAt};
-use mpfree_factory::import::{Content, DEFAULT_KITS};
+use mpfree_factory::import::{Content, PadFile, DEFAULT_KITS};
 use mpfree_factory::xpm::Kind;
-use mpfree_library::{clean_name, unique_folder_name, unique_name, Library, Loc, Place};
+use mpfree_library::{clean_name, unique_folder_name, unique_name, Library, Loc, Place, KIT_FILE};
 use mpfree_store::Settings;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -73,7 +74,9 @@ pub const MAX_TRIES: i64 = 3;
 /// "kit folders" took the place of "samples" (Akai's samples in Akai's own
 /// folders, round 4, 16 Nov), so a stick set up before sorts them into kit
 /// folders at its next start, moving what it has rather than copying again.
-pub const STEPS: &[&str] = &["backup", "kits", "kit folders"];
+/// "kit files" gives each drum kit's folder its `kit.txt`, so BROWSE loads
+/// the kit whole ([`kit_text`]).
+pub const STEPS: &[&str] = &["backup", "kits", "kit folders", "kit files"];
 /// The largest sample copied (the library's own limit is higher).
 const MAX_SAMPLE: u64 = 512 << 20;
 /// Samples that fail one after another before the samples step stops.
@@ -561,10 +564,24 @@ pub fn run(
         }
     };
     match extract_samples(&content, &lib, &mut bar, show_f, say) {
-        Ok(samples) => {
+        Ok((samples, kit_texts)) => {
             out.set_i64("akai-samples", samples as i64);
             mark(&mut out, &mut done, "kit folders");
             save(&out);
+            show(
+                show_f,
+                EXTRACTING,
+                "Making the kit files".into(),
+                bar.value(),
+            );
+            match write_kit_files(&lib, &kit_texts, say) {
+                Ok(n) => {
+                    out.set_i64("akai-kit-files", n as i64);
+                    mark(&mut out, &mut done, "kit files");
+                    save(&out);
+                }
+                Err(why) => failed.push(why),
+            }
         }
         Err(why) => failed.push(why),
     }
@@ -793,6 +810,73 @@ pub struct Placement {
     pub size: u64,
 }
 
+/// A drum kit's folder in Akai factory and the `kit.txt` it is given.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KitText {
+    pub folder: String,
+    pub text: String,
+}
+
+/// What the kit folders step does: where each sound goes, and the drum
+/// kits' `kit.txt` files.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Layout {
+    pub places: Vec<Placement>,
+    pub kits: Vec<KitText>,
+}
+
+/// The `kit.txt` for a drum program's kit folder named `name`: the
+/// sampler's part for one kit (`mpfree-sampler 1`, `kits = 1`), pads 1-16
+/// each playing its sound from the folder (`file_of` gives a sound's name
+/// there from its path in the partition), every other setting as a new pad
+/// has it. None when no pad has a sound in the folder.
+pub fn kit_text(
+    name: &str,
+    pads: &[Option<PadFile>],
+    file_of: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let line = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    let mut sources: Vec<(String, String)> = Vec::new();
+    let mut pad_lines = String::new();
+    for (i, pad) in pads.iter().enumerate().take(16) {
+        let Some(pad) = pad else { continue };
+        let Some(file) = file_of(&pad.file) else {
+            continue;
+        };
+        let k = match sources.iter().position(|(f, _)| *f == file) {
+            Some(k) => k,
+            None => {
+                sources.push((file, line(&pad.name)));
+                sources.len() - 1
+            }
+        };
+        pad_lines += &format!(
+            "kit.0.pad.{i}.name = {}\nkit.0.pad.{i}.layers = 1\nkit.0.pad.{i}.layer.0.source = {k}\n",
+            line(&pad.name)
+        );
+    }
+    if sources.is_empty() {
+        return None;
+    }
+    let mut out = format!(
+        "{}\nkits = 1\nkit = 0\nkit.0.name = {}\nkit.0.sources = {}\n",
+        mpfree_sampler::save::FORMAT,
+        line(name),
+        sources.len()
+    );
+    for (k, (file, sound)) in sources.iter().enumerate() {
+        out += &format!("kit.0.source.{k}.file = {file}\nkit.0.source.{k}.name = {sound}\n");
+    }
+    out += &pad_lines;
+    Some(out)
+}
+
 /// Is this path in MPC Documents?
 fn in_documents(path: &str) -> bool {
     path.trim_start_matches('/')
@@ -826,9 +910,10 @@ fn take(name: &str, folder: bool, taken: &mut HashSet<String>) -> String {
 /// the same name and sounds as one before it is left out; other names
 /// taken get ` 2`. A sound in two kits is in both. The same content always
 /// gives the same layout, so a later step can find each pad's file.
-pub fn akai_layout<F: ReadAt>(content: &Content<F>, say: &mut dyn FnMut(String)) -> Vec<Placement> {
+pub fn akai_layout<F: ReadAt>(content: &Content<F>, say: &mut dyn FnMut(String)) -> Layout {
     let sizes: HashMap<&str, u64> = content.files().collect();
     let mut out = Vec::new();
+    let mut kit_texts = Vec::new();
     let mut in_a_program: HashSet<String> = HashSet::new();
     let mut top: HashSet<String> = [INSTRUMENTS, OTHER_SOUNDS]
         .iter()
@@ -861,15 +946,26 @@ pub fn akai_layout<F: ReadAt>(content: &Content<F>, say: &mut dyn FnMut(String))
             vec![INSTRUMENTS.to_string(), take(&base, true, &mut instruments)]
         };
         let mut names = HashSet::new();
+        let mut named: HashMap<String, String> = HashMap::new();
         for src in sounds {
             let base = src.rsplit('/').next().unwrap_or(&src);
+            let name = take(&clean_name(base, "sample"), false, &mut names);
+            named.insert(src.clone(), name.clone());
             out.push(Placement {
                 folder: folder.clone(),
-                name: take(&clean_name(base, "sample"), false, &mut names),
+                name,
                 size: sizes.get(src.as_str()).copied().unwrap_or(0),
                 source: src.clone(),
             });
             in_a_program.insert(src);
+        }
+        if p.kind == Kind::Drum {
+            if let Some(text) = kit_text(&folder[0], &p.pads, &|f| named.get(f).cloned()) {
+                kit_texts.push(KitText {
+                    folder: folder[0].clone(),
+                    text,
+                });
+            }
         }
     }
     // The rest, by Akai's folder: (its name, the file names taken in it).
@@ -910,7 +1006,10 @@ pub fn akai_layout<F: ReadAt>(content: &Content<F>, say: &mut dyn FnMut(String))
         "{kits} kits, {insts} instruments, {loose} sounds in no program; \
          {same} programs the same as one before; {left_out} sounds in {DOCUMENTS} left out"
     ));
-    out
+    Layout {
+        places: out,
+        kits: kit_texts,
+    }
 }
 
 /// A whole file at `loc`: there, and `size` bytes long.
@@ -938,8 +1037,11 @@ fn extract_samples<F: ReadAt>(
     bar: &mut Bar,
     show_f: &mut dyn FnMut(Show),
     say: &mut dyn FnMut(String),
-) -> Result<usize, String> {
-    let layout = akai_layout(content, &mut |l| {
+) -> Result<(usize, Vec<KitText>), String> {
+    let Layout {
+        places: layout,
+        kits: kit_texts,
+    } = akai_layout(content, &mut |l| {
         say(format!("first start: kit folders: {l}"))
     });
     let top = folder_in(lib, &Loc::top(Place::Samples), SAMPLES_FOLDER)
@@ -1124,7 +1226,75 @@ fn extract_samples<F: ReadAt>(
         }
     }
     bar.finish(Stage::Samples);
-    Ok(kept + moved + linked + copied)
+    Ok((kept + moved + linked + copied, kit_texts))
+}
+
+/// Each drum kit's folder in Akai factory gets its `kit.txt` ([`kit_text`]),
+/// so BROWSE loads the kit whole. Written without a sync each and synced
+/// once. A folder that isn't there (renamed or deleted since) is left out.
+/// A `kit.txt` already there stays, unless it is a cut-off copy of this one
+/// (a power cut before the sync: empty, part of it, or zeros), which goes to
+/// the Trash and is written again. Returns how many kits have theirs.
+fn write_kit_files(
+    lib: &Library,
+    kits: &[KitText],
+    say: &mut dyn FnMut(String),
+) -> Result<usize, String> {
+    let top = folder_in(lib, &Loc::top(Place::Samples), SAMPLES_FOLDER)
+        .map_err(|e| format!("the samples folder: {e}"))?;
+    let (mut kept, mut written, mut missing) = (0usize, 0usize, 0usize);
+    let mut in_a_row = 0usize;
+    for k in kits {
+        let Ok(folder) = top.join(&k.folder) else {
+            continue;
+        };
+        if lib.list(&folder).is_err() {
+            missing += 1;
+            continue;
+        }
+        let Ok(at) = folder.join(KIT_FILE) else {
+            continue;
+        };
+        if let Ok(p) = lib.file_path(&at) {
+            let mut have = Vec::new();
+            let read = File::open(&p)
+                .and_then(|f| f.take(k.text.len() as u64 + 1).read_to_end(&mut have))
+                .is_ok();
+            let cut_off = read
+                && (have.len() < k.text.len() && k.text.as_bytes().starts_with(&have)
+                    || have.contains(&0));
+            if !cut_off {
+                kept += 1;
+                in_a_row = 0;
+                continue;
+            }
+            if let Err(e) = lib.delete(&at) {
+                say(format!(
+                    "first start: kit files: {}: a cut-off kit.txt stays: {e}",
+                    k.folder
+                ));
+                continue;
+            }
+        }
+        match lib.write_new_unsynced(&folder, KIT_FILE, k.text.as_bytes()) {
+            Ok(_) => {
+                written += 1;
+                in_a_row = 0;
+            }
+            Err(e) => {
+                let what = format!("{} / {KIT_FILE}", k.folder);
+                if let Some(why) = give_up(&mut in_a_row, &what, e.to_string(), say) {
+                    return Err(why);
+                }
+            }
+        }
+    }
+    crate::sys::sync_disks();
+    say(format!(
+        "first start: kit files: {written} written, {kept} there already, \
+         {missing} kit folders gone"
+    ));
+    Ok(written + kept)
 }
 
 /// Says why a sample was not copied; past [`GIVE_UP_AFTER`] failures in a
@@ -1255,8 +1425,10 @@ mod tests {
         s.set_i64("tries", MAX_TRIES);
         assert!(!needed(&p, &s), "gives up after {MAX_TRIES} tries");
         let mut s = Settings::default();
-        s.set_str("done", "backup,kits,kit folders");
+        s.set_str("done", "backup,kits,kit folders,kit files");
         assert!(!needed(&p, &s));
+        s.set_str("done", "backup,kits,kit folders");
+        assert!(needed(&p, &s), "set up before kit files");
         s.set_str("done", "backup,kits");
         assert!(needed(&p, &s), "a step not done yet");
         s.set_str("done", "backup,kits,samples");
@@ -1288,7 +1460,10 @@ mod tests {
         assert_eq!(o.failed, None, "{said:?}");
         assert!(p.request.exists(), "the backup was asked for");
         assert_eq!(o.saved.get_str("state"), Some("done"));
-        assert_eq!(o.saved.get_str("done"), Some("backup,kits,kit folders"));
+        assert_eq!(
+            o.saved.get_str("done"),
+            Some("backup,kits,kit folders,kit files")
+        );
         assert_eq!(
             o.saved.get_i64("tries"),
             Some(0),
@@ -1305,19 +1480,32 @@ mod tests {
         // The test disk's kits (16 + 16 + 12 + 4), keys (2), loop and stem.
         assert_eq!(samples, 52);
         let top = p.data.join("library/Samples").join(SAMPLES_FOLDER);
-        let mut found = 0;
-        let mut stack = vec![top];
+        let (mut found, mut kit_files) = (0, Vec::new());
+        let mut stack = vec![top.clone()];
         while let Some(d) = stack.pop() {
             for e in std::fs::read_dir(&d).unwrap() {
                 let e = e.unwrap();
                 if e.file_type().unwrap().is_dir() {
                     stack.push(e.path());
+                } else if e.file_name() == KIT_FILE {
+                    kit_files.push(d.file_name().unwrap().to_string_lossy().to_string());
                 } else {
                     found += 1;
                 }
             }
         }
         assert_eq!(found as i64, samples);
+        // Each drum kit's folder has its kit.txt, so BROWSE loads it whole.
+        kit_files.sort();
+        assert_eq!(kit_files, ["Alpha Kit", "Alpha-Kit 2", "Beta Kit", "Gamma"]);
+        assert_eq!(o.saved.get_i64("akai-kit-files"), Some(4));
+        let lib = Library::at(&p.data).unwrap();
+        let gamma = Loc::new(Place::Samples, &[SAMPLES_FOLDER, "Gamma"]).unwrap();
+        assert!(lib.is_kit(&gamma));
+        assert!(lib
+            .kit_text(&gamma)
+            .unwrap()
+            .contains("kit.0.name = Gamma\n"));
         assert!(shown.iter().any(|s| s.message == EXTRACTING));
         assert_eq!(shown.last().unwrap().message, "Setup done");
         // Run again (as if the store had not saved): nothing is copied twice.
@@ -1340,7 +1528,10 @@ mod tests {
         assert!(said
             .iter()
             .any(|l| l.contains("using the backup made before")));
-        assert_eq!(o.saved.get_str("done"), Some("backup,kits,kit folders"));
+        assert_eq!(
+            o.saved.get_str("done"),
+            Some("backup,kits,kit folders,kit files")
+        );
         // A sample cut short (the power went before the one sync at the end) is
         // copied again, and the short one goes to the Trash: twice, as Alpha
         // Kit's sounds are Alpha-Kit 2's too.
@@ -1369,8 +1560,28 @@ mod tests {
             .with_file_name("Alpha-Kit 2")
             .join("Hit 01.wav");
         assert_eq!(std::fs::read(&twin).unwrap(), whole);
-        let lib = Library::at(&p.data).unwrap();
         assert_eq!(lib.trash().unwrap().len(), 2);
+        // A kit.txt cut off by a power cut is written again (the cut one to
+        // the Trash); one that isn't this one's stays as it is.
+        let alpha = top.join("Alpha Kit").join(KIT_FILE);
+        let text = std::fs::read(&alpha).unwrap();
+        std::fs::write(&alpha, &text[..text.len() / 2]).unwrap();
+        let own = top.join("Gamma").join(KIT_FILE);
+        std::fs::write(&own, "mpfree-sampler 1\nkits = 1\n# mine\n").unwrap();
+        let (o, _, said) = run_it(&p, &older);
+        assert_eq!(o.failed, None, "{said:?}");
+        assert_eq!(std::fs::read(&alpha).unwrap(), text);
+        assert_eq!(
+            std::fs::read_to_string(&own).unwrap(),
+            "mpfree-sampler 1\nkits = 1\n# mine\n"
+        );
+        assert_eq!(lib.trash().unwrap().len(), 3);
+        assert!(
+            said.iter()
+                .any(|l| l
+                    == "first start: kit files: 1 written, 3 there already, 0 kit folders gone"),
+            "{said:#?}"
+        );
     }
 
     /// The test disk's backup in a temporary stick's backup folder; the store's settings after the backup step.
@@ -1392,7 +1603,8 @@ mod tests {
     fn each_kit_in_a_folder_of_its_own() {
         let c = Content::from_disk(mpfree_factory::import::testdisk::disk()).unwrap();
         let mut said = Vec::new();
-        let layout = akai_layout(&c, &mut |l| said.push(l));
+        let all = akai_layout(&c, &mut |l| said.push(l));
+        let layout = &all.places;
         let mut folders: Vec<String> = layout.iter().map(|p| p.folder.join("/")).collect();
         folders.dedup();
         assert_eq!(
@@ -1423,7 +1635,53 @@ mod tests {
               1 sounds in MPC Documents left out"]
         );
         // The same disk, the same layout.
-        assert_eq!(akai_layout(&c, &mut |_| {}), layout);
+        assert_eq!(akai_layout(&c, &mut |_| {}), all);
+        // Each drum kit's folder gets a kit.txt naming its own sounds; the
+        // instruments and the loose sounds don't.
+        let kits: Vec<&str> = all.kits.iter().map(|k| k.folder.as_str()).collect();
+        assert_eq!(kits, ["Alpha Kit", "Alpha-Kit 2", "Beta Kit", "Gamma"]);
+        for k in &all.kits {
+            let names: HashSet<&str> = layout
+                .iter()
+                .filter(|p| p.folder == [k.folder.clone()])
+                .map(|p| p.name.as_str())
+                .collect();
+            let mut asked = Vec::new();
+            let opened = mpfree_sampler::save::from_text(&k.text, &mut |f| {
+                asked.push(f.to_string());
+                mpfree_sampler::model::Source::new(f, 44_100, 1, vec![0.25; 441])
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+            assert!(opened.notes.is_empty(), "{:?}", opened.notes);
+            assert_eq!(opened.kits.len(), 1);
+            assert_eq!(opened.kits[0].0, k.folder);
+            assert!(
+                asked.iter().all(|f| names.contains(f.as_str())),
+                "{asked:?}"
+            );
+            let pads = (0..16)
+                .filter(|&i| opened.kits[0].1.pad(i).is_some())
+                .count();
+            let want = if k.folder == "Gamma" {
+                4
+            } else if k.folder == "Beta Kit" {
+                12
+            } else {
+                16
+            };
+            assert_eq!(pads, want, "{}", k.folder);
+        }
+        let alpha = &all.kits[0].text;
+        assert!(alpha.starts_with("mpfree-sampler 1\nkits = 1\nkit = 0\nkit.0.name = Alpha Kit\n"));
+        assert!(
+            alpha.contains("kit.0.source.0.file = Hit 01.wav\n"),
+            "{alpha}"
+        );
+        assert!(
+            alpha.contains("kit.0.pad.0.layer.0.source = 0\n"),
+            "{alpha}"
+        );
     }
 
     #[test]
@@ -1450,7 +1708,10 @@ mod tests {
         let (o, _, said) = run_it(&p, &older);
         assert_eq!(o.failed, None, "{said:?}");
         assert!(!p.request.exists(), "no new backup");
-        assert_eq!(o.saved.get_str("done"), Some("backup,kits,kit folders"));
+        assert_eq!(
+            o.saved.get_str("done"),
+            Some("backup,kits,kit folders,kit files")
+        );
         assert_eq!(o.saved.get_i64("akai-samples"), Some(52));
         let kits = o.saved.get_i64("akai-kits").unwrap();
         assert!(kits > 0);
@@ -1645,7 +1906,10 @@ mod tests {
             .iter()
             .any(|l| l.contains("using the backup made before")));
         assert_eq!(o.saved.get_str("backup"), Some(folder.to_str().unwrap()));
-        assert_eq!(o.saved.get_str("done"), Some("backup,kits,kit folders"));
+        assert_eq!(
+            o.saved.get_str("done"),
+            Some("backup,kits,kit folders,kit files")
+        );
         // Saved as it went: the try, then the backup before the kits ran.
         assert_eq!(done_steps(&saves[0]), Vec::<String>::new());
         assert_eq!(done_steps(&saves[1]), vec!["backup".to_string()]);
