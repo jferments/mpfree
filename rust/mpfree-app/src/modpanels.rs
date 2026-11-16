@@ -1313,6 +1313,50 @@ mod tests {
         );
     }
 
+    /// Jay, 16 Nov: a reverb or delay added on a send return starts at
+    /// Mix 100 %; the same on a track keeps its default, and a preset from
+    /// the picker leaves the return wet.
+    #[test]
+    fn an_effect_added_on_a_return_starts_wet_and_on_a_track_does_not() {
+        use mpfree_fx::ids::{delay, plate};
+        let mut r = Rig::new();
+        let ret = StripId::Return(1);
+        let mut c = ChainHost::from_mixer(ret, None).expect("Return B's chain");
+        assert_eq!(c.state(&r.h).title, "Return B FX");
+        c.action(&mut r.h, &ChainAction::Add("mpfree.fx.plate"), false);
+        c.action(
+            &mut r.h,
+            &ChainAction::AddPreset {
+                id: "mpfree.fx.delay",
+                preset: 0,
+            },
+            false,
+        );
+        r.run(20);
+        let chain = r.h.mixer.chain(ret).unwrap();
+        let mix = |fx: &str, id: u16| {
+            (0..chain.len())
+                .filter_map(|i| chain.node(i))
+                .find(|n| n.info().id == fx)
+                .unwrap_or_else(|| panic!("{fx} on Return B"))
+                .param(id)
+        };
+        assert_eq!(chain.len(), 2);
+        assert_eq!(mix("mpfree.fx.plate", plate::MIX), 100.0, "the plate");
+        assert_eq!(
+            mix("mpfree.fx.delay", delay::MIX),
+            100.0,
+            "the delay's preset"
+        );
+        let mut c = ChainHost::from_mixer(drums(), None).unwrap();
+        c.action(&mut r.h, &ChainAction::Add("mpfree.fx.plate"), false);
+        r.run(20);
+        let chain = r.h.mixer.chain(drums()).unwrap();
+        let plate_on_drums = chain.node(chain.len() - 1).unwrap();
+        assert_eq!(plate_on_drums.info().id, "mpfree.fx.plate");
+        assert_eq!(plate_on_drums.param(plate::MIX), 25.0, "a track keeps it");
+    }
+
     #[test]
     fn the_picker_adds_with_a_preset_and_keeps_favourites_and_recents() {
         let mut r = Rig::new();
