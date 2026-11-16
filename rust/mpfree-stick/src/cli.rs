@@ -63,6 +63,16 @@ Options for write and build:
                      (from an earlier first start), keeping the backups it has. Without it, a backup of
                      this MPC already there is used, and the first start shows when it was made
 
+Developer options for how the MPC's startup hook starts the stick (without them, the soft-reboot):
+  --kexec-file       the hook restarts into Akai's own kernel from the MPC (file-based kexec) with this
+                     stick as its root, and soft-reboots if that is refused
+  --loadpin-off      with --kexec-file: that kernel's command line also has loadpin.enforce=0
+  --chain            with --kexec-file --loadpin-off: on that kernel the stick's system restarts once
+                     more, into its own kernel and a device tree made for this MPC (its eMMC and SD card
+                     controllers disabled, Ethernet's PHY ID). One try per power-on
+  --live-dtb FILE    with --chain: the MPC's running tree, read on its installed system
+                     (collect-over-ssh.sh --kexec-preflight's live.dtb, with its release.txt beside it)
+
   --status FILE      (before the command) also writes each progress line to FILE, for the window
 ";
 
@@ -254,6 +264,72 @@ struct Inputs {
     choices: stick::Choices,
 }
 
+/// The developer routes, as offline-kexec-stick.py takes them, and the
+/// running tree's path with --chain.
+fn route(a: &mut Args) -> io::Result<(stick::Route, Option<PathBuf>)> {
+    let kexec_file = a.flag("--kexec-file");
+    let loadpin_off = a.flag("--loadpin-off");
+    let chain = a.flag("--chain");
+    let live = a.value("--live-dtb")?.map(PathBuf::from);
+    if loadpin_off && !kexec_file {
+        return Err(usage(
+            "--loadpin-off goes with --kexec-file (it changes only that route's command line)",
+        ));
+    }
+    if chain && !(kexec_file && loadpin_off) {
+        return Err(usage("--chain goes with --kexec-file and --loadpin-off: only a kernel with LoadPin not enforcing lets the stick's system load its own kernel and device tree"));
+    }
+    if live.is_some() != chain {
+        return Err(usage(
+            "--chain needs --live-dtb FILE (the MPC's running tree, for the chain's device tree), and --live-dtb goes only with --chain",
+        ));
+    }
+    Ok(match (kexec_file, live) {
+        (false, _) => (stick::Route::SoftReboot, None),
+        (true, None) => (stick::Route::KexecFile { loadpin_off }, None),
+        (true, Some(path)) => {
+            let live_dtb = read_small(&path, crate::dtb::MAX_SIZE)?;
+            (stick::Route::Chain { live_dtb }, Some(path))
+        }
+    })
+}
+
+fn read_small(path: &Path, max: usize) -> io::Result<Vec<u8>> {
+    let named = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
+    let len = std::fs::metadata(path).map_err(named)?.len();
+    if len > max as u64 {
+        return Err(usage(&format!(
+            "{} is larger than {max} bytes",
+            path.display()
+        )));
+    }
+    std::fs::read(path).map_err(named)
+}
+
+/// The running tree must have been read on an MPC running the update's own
+/// release: the pre-flight's release.txt beside it says which.
+fn check_live_release(live: &Path, release: &str, out: &mut Out) -> io::Result<()> {
+    let beside = live.with_file_name("release.txt");
+    match std::fs::read_to_string(&beside) {
+        Ok(t) if t.trim() == release => out.say(Msg::Note(format!(
+            "chain: the running tree {} was read on the MPC running {release}, the update's release",
+            live.display()
+        ))),
+        Ok(t) => {
+            return Err(usage(&format!(
+                "--live-dtb: {} says the MPC ran {}, not the update's {release}; read the tree again on the MPC's installed {release}",
+                beside.display(),
+                t.trim()
+            )))
+        }
+        Err(_) => out.say(Msg::Note(format!(
+            "chain: no release.txt beside {}; it must be read on the MPC running {release}, the update's release",
+            live.display()
+        ))),
+    }
+    Ok(())
+}
+
 /// The update file: the path given, or the update to use in a folder.
 fn update_path(given: &str, any_update: bool, out: &mut Out) -> io::Result<PathBuf> {
     let p = PathBuf::from(given);
@@ -284,8 +360,10 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
     let ssh_key = a.value("--ssh-key")?;
     let dev_dir = a.value("--dev-tools")?;
     let any_update = a.flag("--any-update");
+    let (route, live_path) = route(a)?;
     let choices = stick::Choices {
         new_backup: a.flag("--new-backup"),
+        route,
     };
     let update_path = update_path(&given, any_update, out)?;
     let work = a
@@ -315,6 +393,9 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
         None => None,
     };
     let source = stick::open_update(&update_path, &work, any_update, &mut |m| out.say(m))?;
+    if let Some(p) = &live_path {
+        check_live_release(p, &source.release, out)?;
+    }
     Ok(Inputs {
         source,
         programs,

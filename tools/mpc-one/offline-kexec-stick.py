@@ -3,6 +3,16 @@
 firmware version (such as 3.10.0) by kexec, with its root filesystem on a USB
 stick and the MPC's eMMC and SD card hidden from it.
 
+For development only. Sticks for the MPC are made with the USB creator
+(rust/mpfree-stick, rust/mpfree-creator): it makes the same changes, since
+its recipe is recorded from build_rootfs here (creator-recipe.py), and has
+the soft-reboot, --kexec-file, --loadpin-off and --chain routes (the last
+three as developer options). This tool stays for trying a change to the
+stick before the recipe is written again, and for what only it makes: the
+build folder's files for a kexec jump from 3.6.0, --akai-app, --preload-module,
+--splash-font, a stick without --app or --app-user, and a stick for an MPC
+running another release than the stick's.
+
 It never contacts the MPC and never writes a device. It reads Akai's files
 from ~/mpfree-work and writes one new private folder there:
 
@@ -243,6 +253,8 @@ ETHERNET = "/ethernet@ff290000"
 # The PHY's ID as 3.6.0 reads it on the reference unit (/sys/bus/mdio_bus/devices/stmmac-0:01/phy_id
 # 0x001cc915, Realtek RTL8211E; docs/dev/hardware/ethernet-usb.md).
 PHY_ID_COMPATIBLE = "ethernet-phy-id001c.c915"
+# U-Boot's flag that tells Akai's units the content partition is on the eMMC; dropped from kexec.dtb.
+EMMC_CONTENT = "/chosen/inmusic,acvs-emmc-content"
 PANEL = "/mipi@ff960000/panel@0"
 SCREEN_LOG_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release",
                                 "mpfree-screen-log")
@@ -1199,6 +1211,43 @@ def phy_node(tree):
     return path
 
 
+def build_kexec_dtb(target, reference, live_path, dtb_out):
+    """kexec.dtb (offline-dtb.py kexec-dtb): the board file `target` plus what U-Boot added at boot (`reference`
+    to the running tree), the eMMC and SD controllers disabled, /chosen's eMMC-content flag dropped and the
+    Ethernet PHY's ID first in its compatible list. Returns the PHY's path. The USB creator builds the same
+    tree (rust/mpfree-stick/src/dtb.rs), checked against this by creator-recipe.py's example."""
+    target_tree = dtb.load(target)
+    chosen = target_tree.find(parent_of(EMMC_CONTENT))
+    drops = []
+    if chosen is not None and chosen.prop(EMMC_CONTENT.rsplit("/", 1)[1]) is not None:
+        drops = ["--drop", EMMC_CONTENT]  # tells Akai's units the content is on eMMC
+    phy = phy_node(target_tree)
+    rc = dtb.kexec_dtb_main(["--target", target, "--reference", reference, "--live", live_path,
+                             "--out", dtb_out, *drops, "--add-compatible", f"{phy}={PHY_ID_COMPATIBLE}"], OUT)
+    if rc != 0:
+        raise Stop("offline-dtb.py kexec-dtb stopped; see above")
+    if dtb.strings_of(dtb.load(dtb_out).find(phy).prop("compatible"))[:1] != [PHY_ID_COMPATIBLE]:
+        raise Stop(f"{phy} in kexec.dtb does not start with {PHY_ID_COMPATIBLE}")
+    return phy
+
+
+def parent_of(path):
+    return path.rsplit("/", 1)[0] or "/"
+
+
+def command_lines(root_uuid, kexec_file=False, loadpin_off=False, chain=False):
+    """(cmdline.txt's command line, the kexec-file route's or None). cmdline.txt's is for the stick's own
+    kernel (the kexec jump, and the chain's second restart); the kexec-file route's starts Akai's kernel,
+    with LOADPIN_OFF if asked, and with --chain CHAIN_WORD in place of KEXEC_OFF_WORD."""
+    cmdline = f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 {KEXEC_OFF_WORD}"
+    if not kexec_file:
+        return cmdline, None
+    words = cmdline.split() + ([LOADPIN_OFF] if loadpin_off else [])
+    if chain:
+        words = [w for w in words if w != KEXEC_OFF_WORD] + [CHAIN_WORD]
+    return cmdline, " ".join(words)
+
+
 def panel_rotation(tree):
     """The panel's rotation property (degrees counter-clockwise), or 0 without one."""
     node = tree.find(PANEL)
@@ -2150,20 +2199,9 @@ def main(argv):
         OUT.say()
 
         OUT.say("=== Device tree for the kexec boot (names only, no values) ===")
-        drops = []
-        target_tree = dtb.load(target)
-        chosen = target_tree.find("/chosen")
-        if chosen is not None and chosen.prop("inmusic,acvs-emmc-content") is not None:
-            drops = ["--drop", "/chosen/inmusic,acvs-emmc-content"]  # tells Akai's units the content is on eMMC
-        phy = phy_node(target_tree)
-        rotation = panel_rotation(target_tree)
+        rotation = panel_rotation(dtb.load(target))
         dtb_out = os.path.join(outdir, "kexec.dtb")
-        rc = dtb.kexec_dtb_main(["--target", target, "--reference", reference, "--live", live_path,
-                                 "--out", dtb_out, *drops, "--add-compatible", f"{phy}={PHY_ID_COMPATIBLE}"], OUT)
-        if rc != 0:
-            raise Stop("offline-dtb.py kexec-dtb stopped; see above")
-        if dtb.strings_of(dtb.load(dtb_out).find(phy).prop("compatible"))[:1] != [PHY_ID_COMPATIBLE]:
-            raise Stop(f"{phy} in kexec.dtb does not start with {PHY_ID_COMPATIBLE}")
+        phy = build_kexec_dtb(target, reference, live_path, dtb_out)
         OUT.say(f"Ethernet PHY {phy}: the kernel takes its ID ({PHY_ID_COMPATIBLE}) from the tree, then resets it")
         OUT.say(f"panel rotation (from {PANEL}): {rotation} degrees; the screen log is drawn to match")
         OUT.say()
@@ -2190,13 +2228,9 @@ def main(argv):
             OUT.say("startup screen: none (no --splash)")
         kits_uuid = str(uuid.uuid4()) if parts34 else None
         data_uuid = str(uuid.uuid4()) if parts34 else None
-        cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
-                   "sysctl.kernel.kexec_load_disabled=1")
+        cmdline, kexec_file_cmdline = command_lines(root_uuid, args.kexec_file, args.loadpin_off, args.chain)
         with open(dtb_out, "rb") as fh:
             kexec_files = (release, fh.read(), (cmdline + "\n").encode())
-        kexec_file_cmdline = (cmdline + (" " + LOADPIN_OFF if args.loadpin_off else "")) if args.kexec_file else None
-        if args.chain:
-            kexec_file_cmdline = " ".join(w for w in kexec_file_cmdline.split() if w != KEXEC_OFF_WORD) + " " + CHAIN_WORD
         if args.akai_app:
             OUT.say(AKAI_APP_MARK)
             OUT.say(f"  {AKAI_APP_UNIT} and {AKAI_APP_LAUNCHER} are left as Akai ships them: Akai's app starts at "

@@ -6,10 +6,25 @@ use mpfree_diskimage::ext2w::{self, Body, Data, Meta, Options, Size, Tree};
 use mpfree_diskimage::Mem;
 use mpfree_stick::recipe::Recipe;
 use mpfree_stick::stick::{self, Programs};
-use mpfree_stick::{dtb, update};
+use mpfree_stick::update;
 use std::path::{Path, PathBuf};
 
 pub const RELEASE: &str = "6.18.44-test";
+/// What systemd-shutdown says about kexec in the fake root filesystem.
+pub const SHUTDOWN: &[u8] = b"\x7fELF fake\0/usr/sbin/kexec\0--exec\0";
+
+/// The builder's device-tree example (tests/data/kexec-dtb-example.json):
+/// a made-up board file, a running tree, and the kexec.dtb the builder
+/// makes of them. The fake root filesystem's board file is this one.
+pub fn example(key: &str) -> Vec<u8> {
+    let v: serde_json::Value =
+        serde_json::from_str(include_str!("../data/kexec-dtb-example.json")).unwrap();
+    let t = v[key].as_str().unwrap();
+    (0..t.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&t[i..i + 2], 16).unwrap())
+        .collect()
+}
 
 pub struct Tmp(pub PathBuf);
 impl Drop for Tmp {
@@ -42,6 +57,11 @@ pub fn fake_rootfs() -> Vec<u8> {
 /// The fake root filesystem without some of the programs the stick's setup
 /// scripts need.
 pub fn fake_rootfs_without(left_out: &[&str]) -> Vec<u8> {
+    fake_rootfs_with(left_out, SHUTDOWN)
+}
+
+/// The fake root filesystem, with `shutdown` as systemd-shutdown.
+pub fn fake_rootfs_with(left_out: &[&str], shutdown: &[u8]) -> Vec<u8> {
     let r = Recipe::load();
     let m = |perm| Meta::new(perm, 0, 0, 1_700_000_000);
     let mut t = Tree::new(m(0o755));
@@ -71,10 +91,13 @@ pub fn fake_rootfs_without(left_out: &[&str]) -> Vec<u8> {
     for p in [
         "/usr/sbin/az01-update",
         "/usr/bin/kexec",
+        "/usr/sbin/kexec",
         "/usr/sbin/mke2fs",
     ] {
         file(&mut t, p, b"#!/bin/sh\n# Akai's program\n", 0o755);
     }
+    t.mkdir_all("/usr/lib/systemd", m(0o755)).unwrap();
+    file(&mut t, "/usr/lib/systemd/systemd-shutdown", shutdown, 0o755);
     // BusyBox's applets are links to it.
     file(&mut t, "/usr/bin/busybox", b"#!/bin/sh\n# BusyBox\n", 0o755);
     for p in mpfree_stick::recipe::setup_programs() {
@@ -99,12 +122,7 @@ pub fn fake_rootfs_without(left_out: &[&str]) -> Vec<u8> {
     );
     file(&mut t, "/etc/shadow", b"root:!:19000:0:99999:7:::\n", 0o600);
     file(&mut t, &format!("/boot/zImage-{RELEASE}"), b"kernel", 0o644);
-    file(
-        &mut t,
-        stick::BOARD_DTB,
-        &dtb::testtree::make(&["inmusic,acva", "rockchip,rk3288"], Some(270)),
-        0o644,
-    );
+    file(&mut t, stick::BOARD_DTB, &example("board"), 0o644);
     // A hard link, a device, a fifo and an extended attribute, to see they come across.
     let a = t
         .put(
