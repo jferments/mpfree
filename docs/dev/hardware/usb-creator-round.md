@@ -16,7 +16,7 @@ The USB creator's earlier rounds made sticks on Linux, installed the boot hook w
 | Does developer mode stay off at the next start of Akai's system, or does Akai's app switch it on again? | C8 |
 | Does the window offer to copy the backup when the stick comes back to the computer? | C9 |
 | Do the free CC0 kits (Big Rusty Drums, Swirly Drums, VCSL Percussion) play on every pad, start on time and sound right, and are they in BROWSE? | C6 |
-| Optional: do the Windows and macOS writers make a stick that works? | W1, W2 |
+| Optional: do the Windows and macOS writers make a stick that works? Does a Windows creator built and signed on the workstation run on Windows? | W0, W1a, W1, W2 |
 
 ## The round at a glance
 
@@ -24,7 +24,7 @@ The USB creator's earlier rounds made sticks on Linux, installed the boot hook w
 |---|---|---|---|
 | Builds and the setup script's tests | C0 | Workstation | 15 min |
 | Make the MPC a new musician's: the hook off, developer mode off | C1, C2, C3 | MPC on 3.10.1, the stick out | 10 min |
-| The stick, made in the window | C4 (or W1, W2) | Workstation | 10 min |
+| The stick, made in the window | C4 (or W0, W1a and W1; or W2) | Workstation (W1 and W2 on a Windows PC or a Mac) | 10 min (W0's first run adds 15) |
 | One tap, and the first start | C5, C6 | MPC | 35 min |
 | A second power-on, then Akai's system | C7, C8 | MPC | 5 min |
 | The window's reminder, the logs, the backup and the zip | C9 | Workstation | 20 min |
@@ -53,7 +53,7 @@ cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes
 - `results.py status` lists what is already in the results folder. If an earlier round left files there, run `python3 tools/mpc-one/results.py zip` first, so this round gets its own zip.
 - `test_stick_setup.py` runs the setup script's tests, among them the new ending: Akai's off script, the restart if it returns, and a developer's stick keeping developer mode on. It ends `LOCAL-CHECKS-OK`.
 - `build-kits` makes the free CC0 kits as a release does: it fetches about 15 MB of samples from GitHub at the commits `rust/mpfree-factory/free-kits.txt` pins (once; they are kept in `~/.cache/mpfree-free-kits`), checks every file's SHA-256 and each library's CC0 licence, and lists each pad with its length. It ends with the kits file's hash.
-- Then seven hashes: the three programs for the MPC, `mpfree-fetch` (the Plugins place's download helper, linked dynamically with `cargo zigbuild`; it needs the 3.10.1 round's block G1a tools, installed on 16 Nov), the free kits, `mpfree-stick` (the creator's command line, for C9) and the window. A developer's build of the window carries no programs inside it; it finds the four just built, and the free kits, in `rust/target/armv7-unknown-linux-gnueabihf/release`.
+- Then seven hashes: the three programs for the MPC, `mpfree-fetch` (the Plugins place's download helper, linked dynamically with `cargo zigbuild`; it needs the 3.10.1 round's [block G1a](firmware-3.10.1-qualification.md) tools, installed on the workstation on 17 Nov. If C0 stops at `build-fetch` with `no such command: zigbuild`, run G1a, then C0 again), the free kits, `mpfree-stick` (the creator's command line, for C9) and the window. A developer's build of the window carries no programs inside it; it finds the four just built, and the free kits, in `rust/target/armv7-unknown-linux-gnueabihf/release`.
 - **Undo:** none needed. The builds stay in the clone, and the fetched samples in `~/.cache/mpfree-free-kits` (about 15 MB; delete the folder if you like, and the next build fetches them again).
 
 **Block C1: Akai's system as the last round left it** (read-only; the stick out; Akai's app up, developer mode on):
@@ -190,9 +190,60 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 ## Optional: the Windows and macOS writers
 
-These replace C4 when you have a Windows PC or a Mac to hand: the stick they make goes through C5 to C9 like the window's, which tests that writer to the end. They need a draft release from the [release workflow](../design/usb-creator.md#releases): on GitHub, **Actions > USB creator release > Run workflow** on `main`, with the Windows and macOS boxes ticked. That uses GitHub's hosted runners, about 180 counted minutes of the account's monthly allowance, which ran out on 2026-11-11 and returns with the next billing month. The draft, `creator-v0.1.0`, is under **Releases**. Copy Akai's 3.10.1 update file from `~/mpfree-work/akai-update-files` to that computer first.
+These replace C4 when you have a Windows PC or a Mac to hand: the stick they make goes through C5 to C9 like the window's, which tests that writer to the end. Copy Akai's 3.10.1 update file from `~/mpfree-work/akai-update-files` into that computer's **Downloads** first, any way but on the stick you're about to erase.
 
-**Block W1: Windows** (**state-changing, on the stick only**: erases it; one "Do you want to allow this app to make changes?" prompt). Download `MPFree-USB-Creator-0.1.0-windows-x64.exe` and open it. Windows shows "Windows protected your PC": click **More info**, then **Run anyway**. Follow C4's steps 1 to 4, with the update file where you copied it. Note any console window that flashes up, and anything that stops. Then **Eject** the stick in Explorer.
+The creators come from one of two places:
+
+- **The draft release**, from the [release workflow](../design/usb-creator.md#releases): on GitHub, **Actions > USB creator release > Run workflow** on `main`, with the Windows and macOS boxes ticked. That uses GitHub's hosted runners, about 180 counted minutes of the account's monthly allowance, which ran out on 2026-11-11 and returns with the next billing month. The draft, `creator-v0.1.0`, is under **Releases**. Its Windows creator is unsigned.
+- **For Windows, block W0 on the workstation**, with no GitHub minutes. It cross-builds the Windows creator with zig and signs it with a test certificate. It is the same Rust code as the release's, linked with zig's MinGW C runtime instead of Microsoft's, so it tests the creator, not the release job. There is no such route for the Mac: it needs the draft release.
+
+**Block W0a: the signing tools and a test certificate, once** (workstation only; one sudo prompt). It installs `osslsigncode`, adds Rust's Windows target and makes a self-signed code-signing certificate in `~/.local/share/mpfree-signing`, unless one is there already. openssl asks twice for a passphrase, which locks the key. The key never leaves the workstation. The build also needs the 3.10.1 round's [block G1a](firmware-3.10.1-qualification.md) tools, as C0 does.
+
+```bash
+sudo apt install osslsigncode && rustup target add x86_64-pc-windows-gnu && mkdir -p -m 700 /home/jesse/.local/share/mpfree-signing && cd /home/jesse/.local/share/mpfree-signing && (test -e test-signing.key || openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -keyout test-signing.key -out test-signing.crt -subj "/CN=MPFree test signing" -addext "extendedKeyUsage=codeSigning" -addext "keyUsage=critical,digitalSignature" -addext "basicConstraints=critical,CA:FALSE") && openssl x509 -in test-signing.crt -noout -subject -enddate -ext extendedKeyUsage
+```
+
+Expect `subject=CN=MPFree test signing`, an end date a year after the certificate was made, and `Code Signing`.
+
+**Block W0b: build the Windows creator** (workstation only; no sudo; a few minutes). Run it after C0, which builds the programs it carries:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run build-windows -- bash -c 'set -e; rel=rust/target/armv7-unknown-linux-gnueabihf/release; progs=/home/jesse/mpfree-work/windows-creator/stick-programs; mkdir -p "$progs" && cp -f "$rel/mpfree" "$rel/mpfree-startup" "$rel/mpfree-screen-log" "$rel/mpfree-fetch" "$rel/free-kits" "$progs/" && sha256sum "$progs"/* && CARGO_ZIGBUILD_PYTHON_PATH=/home/jesse/.local/share/mpfree-zig/bin/python3 MPFREE_CREATOR_PROGRAMS="$progs" RUSTFLAGS="-C target-feature=+crt-static" cargo zigbuild --manifest-path rust/mpfree-creator/Cargo.toml --release --locked --target x86_64-pc-windows-gnu && exe=rust/mpfree-creator/target/x86_64-pc-windows-gnu/release/mpfree-creator.exe && file "$exe" && objdump -p "$exe" | grep "DLL Name" | sort -u && sha256sum "$exe"'
+```
+
+- Expect five hashes that match C0's, then `PE32+ executable for MS Windows 6.00 (GUI), x86-64`.
+- The DLL list should be all Windows' own, such as kernel32, user32, opengl32 and `api-ms-win-crt-…`, with no libgcc or libwinpthread.
+- The `.exe`'s hash comes last.
+
+**Block W0c: sign it** (workstation only; asks for the key's passphrase):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && out=/home/jesse/mpfree-work/windows-creator/MPFree-USB-Creator-0.1.0-windows-x64.exe && tmp=$(mktemp -u /home/jesse/mpfree-work/windows-creator/signing-XXXXXX.exe) && osslsigncode sign -certs /home/jesse/.local/share/mpfree-signing/test-signing.crt -key /home/jesse/.local/share/mpfree-signing/test-signing.key -askpass -h sha256 -n "MPFree USB Creator" -i https://github.com/jferments/mpfree -in rust/mpfree-creator/target/x86_64-pc-windows-gnu/release/mpfree-creator.exe -out "$tmp" && mv -f "$tmp" "$out" && python3 tools/mpc-one/results.py run sign-windows -- bash -c "osslsigncode verify -CAfile /home/jesse/.local/share/mpfree-signing/test-signing.crt -in $out && sha256sum $out"
+```
+
+Expect `Succeeded`, then `Signature verification: ok`, then the signed file's hash, which W1a checks on Windows. osslsigncode won't write over a file, hence the temporary name. A wrong passphrase stops it with nothing written: run it again. Copy `~/mpfree-work/windows-creator/MPFree-USB-Creator-0.1.0-windows-x64.exe` into the PC's **Downloads**.
+
+**W0 outside a round.** When the clone is on another round's branch, build in a separate folder at `main`, with its own results folder, so that branch and its results stay as they are. Start with:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && (test -d /home/jesse/code/mpfree-windows-test || git worktree add --detach /home/jesse/code/mpfree-windows-test origin/main) && cd /home/jesse/code/mpfree-windows-test && git switch --detach origin/main && git log --oneline -1 && export MPFREE_RESULTS_DIR=/home/jesse/mpfree-results-windows
+```
+
+Then, in the same terminal, run C0's `build-arm`, `build-fetch`, `build-kits` and `build-creator` steps, W0b, W0c and, after W1, the inspect step below, each with `cd /home/jesse/code/mpfree-windows-test` in place of the clone's folder. The results go to `~/mpfree-results-windows`, and `results.py zip` packs them there. Undo: `cd /home/jesse/code/mpfree-hardware-survey && git worktree remove --force /home/jesse/code/mpfree-windows-test`.
+
+**Block W1a: check the file on Windows** (read-only; PowerShell):
+
+```powershell
+cd $HOME\Downloads; Get-FileHash .\MPFree-USB-Creator-0.1.0-windows-x64.exe; Get-AuthenticodeSignature .\MPFree-USB-Creator-0.1.0-windows-x64.exe | Format-List Status, StatusMessage, SignerCertificate
+```
+
+- The hash should be W0c's, or the draft's `SHA256SUMS` line.
+- W0's file: `Status: UnknownError`, with "…root certificate which is not trusted", signer `CN=MPFree test signing`. Windows read the signature and found it intact, but doesn't trust a test certificate. `NotSigned` or `HashMismatch` means the file changed on the way: stop there.
+- The draft release's file: `NotSigned`, until the release is signed.
+
+Then put the stick in and run `& .\MPFree-USB-Creator-0.1.0-windows-x64.exe --cli disks 2>&1 | Out-String`. The creator is a windowed program, so PowerShell shows its output only through `Out-String`. Expect the stick with its size, then `done 1 USB disk(s)`.
+
+**Block W1: Windows** (**state-changing, on the stick only**: erases it; one "Do you want to allow this app to make changes?" prompt). Double-click `MPFree-USB-Creator-0.1.0-windows-x64.exe`. Windows shows "Windows protected your PC": click **More info**, then **Run anyway**. Follow C4's steps 1 to 4; step 1 should find the update in Downloads by itself. Note any console window that flashes up, and anything that stops. Then **Eject** the stick in Explorer.
 
 **Block W2: macOS** (**state-changing, on the stick only**: erases it; one password prompt). Download `MPFree-USB-Creator-0.1.0-macos.zip`, open it, and move **MPFree USB Creator** to Applications. Open it; macOS refuses the first time. Open **System Settings > Privacy & Security**, click **Open Anyway** next to its name and enter your password. Follow C4's steps 1 to 4. If it says it could not unmount the stick, close any Finder window showing it and try again. Then eject the stick in Finder.
 
@@ -224,6 +275,8 @@ It should list partitions 1 to 5, `made: MPFree stick, made by MPFree USB creato
 | C0 | Build output in the clone; a new `~/mpfree-results/current` | Delete them |
 | C2 | The hook's three files on `/data`, deleted | C5 puts them back; or the 3.10.1 round's Q7b-ssh |
 | C3 | Akai's switch: `/data/ssh` (your lock and key) and `/data/root` deleted, developer mode off | Switch developer mode on in the menu; C10 locks it again |
+| W0a | `osslsigncode`; Rust's Windows target; the test certificate and its key in `~/.local/share/mpfree-signing` | `sudo apt remove osslsigncode && rustup target remove x86_64-pc-windows-gnu && rm -r /home/jesse/.local/share/mpfree-signing` |
+| W0b, W0c | `~/mpfree-work/windows-creator`; build output in `rust/mpfree-creator/target/x86_64-pc-windows-gnu` | Delete them; on Windows, delete the `.exe` from Downloads |
 | C4, W1, W2 | The whole stick | Make it again, or erase it |
 | C5 | The hook's three files on `/data`; developer mode off again; `setup-log.txt` on the stick's `MPFREE` drive | The hook stays: it is how MPFree starts. To take it off, the 3.10.1 round's Q7b-undo, or a removal stick from the window's **Take MPFree off my MPC** tab |
 | C6 | `backup/mpc-one-emmc-<UTC>/` (about 7.3 GiB), the Akai kits and samples, and `settings/setup.conf` on the stick's partition 4. Nothing on the MPC | Keep them: the backup is the MPC's |
@@ -236,4 +289,4 @@ It should list partitions 1 to 5, `made: MPFree stick, made by MPFree USB creato
 - Other MPC Ones, or another release of Akai's software: the stick, the hook and the setup script refuse anything but 3.10.1 on an MPC One.
 - Whether the hook's files survive Akai's next update. Either way the hook refuses a stick made for another release, and Akai's system starts.
 - What a musician's MPC on Wi-Fi does while developer mode is on: this one is on the direct cable only.
-- The Windows and macOS writers, unless W1 or W2 ran.
+- The Windows and macOS writers, unless W1 or W2 ran. A W0 build doesn't show the release's own Windows build, which is linked with Microsoft's compiler on GitHub, or how Windows treats a trusted signature.
