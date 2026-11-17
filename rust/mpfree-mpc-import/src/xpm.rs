@@ -17,6 +17,8 @@
 //! to 127 knob positions (`VolumeRelease` 0.377953 is 48), so its times
 //! are still unknown.
 
+use std::collections::HashMap;
+
 use crate::xml::{self, Element};
 
 /// One sample of a keygroup, as the file has it.
@@ -45,6 +47,8 @@ pub struct XpmLayer {
     pub loop_start: u64,
     pub loop_end: u64,
     pub key_track: bool,
+    /// `Direction` 1: the sample plays backwards.
+    pub reverse: bool,
 }
 
 /// One keygroup: its notes and its sampled layers.
@@ -158,36 +162,12 @@ pub fn read_keygroup(bytes: &[u8]) -> Result<KeygroupProgram, String> {
         let Some(number) = inst.attr("number").and_then(|n| n.parse().ok()) else {
             continue;
         };
-        let mut layers = Vec::new();
-        for l in inst.descendants().into_iter().filter(|e| e.name == "Layer") {
-            if !flag(l, "Active", true) {
-                continue;
-            }
-            let (sample, file) = (text(l, "SampleName"), text(l, "SampleFile"));
-            if sample.is_empty() && file.is_empty() {
-                continue;
-            }
-            let (a, b) = (note(num(l, "VelStart", 0.0)), note(num(l, "VelEnd", 127.0)));
-            layers.push(XpmLayer {
-                number: l.attr("number").and_then(|n| n.parse().ok()).unwrap_or(0),
-                sample: sample.to_string(),
-                file: file.to_string(),
-                vel_lo: a.min(b),
-                vel_hi: a.max(b),
-                root_raw: num(l, "RootNote", 0.0).round().clamp(0.0, 128.0) as i32,
-                coarse: num(l, "TuneCoarse", 0.0).round().clamp(-48.0, 48.0) as i32,
-                fine: num(l, "TuneFine", 0.0).round().clamp(-100.0, 100.0) as i32,
-                pitch: num(l, "Pitch", 0.0).clamp(-48.0, 48.0) as f32,
-                volume: num(l, "Volume", 1.0).clamp(0.0, 16.0) as f32,
-                pan: num(l, "Pan", 0.5).clamp(0.0, 1.0) as f32,
-                start: frames(num(l, "SampleStart", 0.0)),
-                end: frames(num(l, "SampleEnd", 0.0)),
-                looped: flag(l, "Loop", false),
-                loop_start: frames(num(l, "LoopStart", 0.0)),
-                loop_end: frames(num(l, "LoopEnd", 0.0)),
-                key_track: flag(l, "KeyTrack", true),
-            });
-        }
+        let layers: Vec<XpmLayer> = inst
+            .descendants()
+            .into_iter()
+            .filter(|e| e.name == "Layer")
+            .filter_map(|l| layer(l, false))
+            .collect();
         if layers.is_empty() {
             continue;
         }
@@ -234,6 +214,53 @@ pub fn read_keygroup(bytes: &[u8]) -> Result<KeygroupProgram, String> {
         keygroups,
         vel_to_level,
         inserts,
+    })
+}
+
+/// One `<Layer>` that is active and names a sample. With `slices`, the
+/// start and end fall back to `SliceStart` and `SliceEnd` (inclusive)
+/// when `SampleStart` and `SampleEnd` aren't written, as drum programs
+/// keep them.
+fn layer(l: &Element, slices: bool) -> Option<XpmLayer> {
+    if !flag(l, "Active", true) {
+        return None;
+    }
+    let (sample, file) = (text(l, "SampleName"), text(l, "SampleFile"));
+    if sample.is_empty() && file.is_empty() {
+        return None;
+    }
+    let (a, b) = (note(num(l, "VelStart", 0.0)), note(num(l, "VelEnd", 127.0)));
+    let (mut start, mut end) = (
+        frames(num(l, "SampleStart", 0.0)),
+        frames(num(l, "SampleEnd", 0.0)),
+    );
+    if slices && l.child("SampleStart").is_none() && l.child("SampleEnd").is_none() {
+        start = frames(num(l, "SliceStart", 0.0));
+        // SliceEnd is the last frame played, so the end is one past it.
+        end = match frames(num(l, "SliceEnd", 0.0)) {
+            0 => 0,
+            e => e + 1,
+        };
+    }
+    Some(XpmLayer {
+        number: l.attr("number").and_then(|n| n.parse().ok()).unwrap_or(0),
+        sample: sample.to_string(),
+        file: file.to_string(),
+        vel_lo: a.min(b),
+        vel_hi: a.max(b),
+        root_raw: num(l, "RootNote", 0.0).round().clamp(0.0, 128.0) as i32,
+        coarse: num(l, "TuneCoarse", 0.0).round().clamp(-48.0, 48.0) as i32,
+        fine: num(l, "TuneFine", 0.0).round().clamp(-100.0, 100.0) as i32,
+        pitch: num(l, "Pitch", 0.0).clamp(-48.0, 48.0) as f32,
+        volume: num(l, "Volume", 1.0).clamp(0.0, 16.0) as f32,
+        pan: num(l, "Pan", 0.5).clamp(0.0, 1.0) as f32,
+        start,
+        end,
+        looped: flag(l, "Loop", false),
+        loop_start: frames(num(l, "LoopStart", 0.0)),
+        loop_end: frames(num(l, "LoopEnd", 0.0)),
+        key_track: flag(l, "KeyTrack", true),
+        reverse: matches!(text(l, "Direction").trim(), "1" | "Reverse" | "reverse"),
     })
 }
 
@@ -297,4 +324,193 @@ pub fn root_offset(p: &KeygroupProgram) -> (i32, String) {
             )
         }
     }
+}
+
+/// One pad of a drum program, as the file has it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrumPad {
+    /// The MPC's pad, 1 to 128 (A01 is 1, B01 is 17).
+    pub pad: u32,
+    /// The note the pad plays, from `PadNoteMap` (what a sequence or an
+    /// exported MIDI file holds for it); None when the map doesn't say.
+    pub note: Option<u8>,
+    pub layers: Vec<XpmLayer>,
+    /// The pad's own `Volume` (linear gain) and `Pan` (0.5 the centre).
+    pub volume: f32,
+    pub pan: f32,
+    /// `TuneCoarse` (semitones) and `TuneFine` (cents).
+    pub coarse: i32,
+    pub fine: i32,
+    /// `MuteGroup`: 0 is none.
+    pub mute_group: u32,
+    /// `MuteTarget1` to `4`: the notes a hit on this pad stops (0 is none).
+    pub mute_targets: Vec<u8>,
+    /// `SimultTarget1` to `4`: the notes a hit on this pad also plays.
+    pub simult_targets: Vec<u8>,
+    /// `Polyphony`, when written; `Mono` True makes it 1.
+    pub polyphony: Option<u32>,
+    pub mono: bool,
+    /// `OneShot` (or `TriggerMode`) as written, when written.
+    pub one_shot: Option<bool>,
+    /// `ZonePlay` as written: how the pad picks among its layers.
+    pub zone_play: Option<i32>,
+    /// `VelocitySensitivity`, when written: 0 to 1.
+    pub vel_to_level: Option<f32>,
+    /// Envelope fields as written (`VolumeAttack` and the like).
+    pub raw: Vec<(String, String)>,
+    /// The filter as written when `FilterType` isn't 0 (off).
+    pub filter: Vec<(String, String)>,
+}
+
+/// A drum program: its name and the pads that have a sample.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrumProgram {
+    pub name: String,
+    pub pads: Vec<DrumPad>,
+    /// How `<Instrument number>` was read: from 1 (pad 1 is number 1, as
+    /// community notes for OS 2.15 say) or from 0.
+    pub numbered_from: u32,
+    /// Whether the file had a `PadNoteMap`.
+    pub has_note_map: bool,
+    /// The program's switched-on effects, by name.
+    pub inserts: Vec<String>,
+}
+
+/// The MPC's default notes for pads 1 to 16 (bank A), used when a
+/// program has no `PadNoteMap`. Banks after A have no default here.
+pub const DEFAULT_BANK_A_NOTES: [u8; 16] = [
+    37, 36, 42, 82, 40, 38, 46, 44, 48, 47, 45, 43, 49, 55, 51, 53,
+];
+
+/// `PadNoteMap`: the MPC pad (1 to 128) to its note.
+fn pad_notes(prog: &Element) -> Option<HashMap<u32, u8>> {
+    let map = prog
+        .descendants()
+        .into_iter()
+        .find(|e| e.name == "PadNoteMap")?;
+    Some(
+        map.children
+            .iter()
+            .filter(|c| c.name == "PadNote")
+            .filter_map(|c| {
+                let pad = c.attr("number")?.parse::<u32>().ok()?;
+                let n = c.child_text("Note")?.trim().parse::<f64>().ok()?;
+                (0.0..=127.0).contains(&n).then_some((pad, n.round() as u8))
+            })
+            .collect(),
+    )
+}
+
+fn notes_of(e: &Element, tag: &str) -> Vec<u8> {
+    (1..=4)
+        .filter_map(|n| {
+            let v = num(e, &format!("{tag}{n}"), 0.0).round();
+            (1.0..=127.0).contains(&v).then_some(v as u8)
+        })
+        .collect()
+}
+
+/// Reads a drum program. A program of another type is an error that
+/// names its type. Each `<Instrument>` is a pad; one with no sample is
+/// skipped.
+pub fn read_drum(bytes: &[u8]) -> Result<DrumProgram, String> {
+    let root = xml::parse(bytes)?;
+    let prog = program(&root).ok_or("no <Program> in the file")?;
+    let kind = prog.attr("type").unwrap_or("");
+    if !kind.eq_ignore_ascii_case("drum") {
+        return Err(format!("a {kind:?} program, not a drum program"));
+    }
+    let name = [text(prog, "ProgramName"), text(prog, "Name")]
+        .into_iter()
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let inserts = (1..=8)
+        .filter(|n| flag(prog, &format!("InsertEnable{n}"), false))
+        .filter_map(|n| prog.child(&format!("Insert{n}")))
+        .map(|i| text(i, "Name").trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
+    let map = pad_notes(prog);
+    let insts: Vec<(u32, &Element)> = prog
+        .descendants()
+        .into_iter()
+        .filter(|e| e.name == "Instrument")
+        .filter_map(|e| Some((e.attr("number")?.parse::<u32>().ok()?, e)))
+        .collect();
+    let numbered_from = if insts.iter().any(|&(n, _)| n == 0) {
+        0
+    } else {
+        1
+    };
+    let mut pads = Vec::new();
+    for (number, inst) in insts {
+        let pad = number + 1 - numbered_from;
+        if !(1..=128).contains(&pad) {
+            continue;
+        }
+        let layers: Vec<XpmLayer> = inst
+            .descendants()
+            .into_iter()
+            .filter(|e| e.name == "Layer")
+            .filter_map(|l| layer(l, true))
+            .collect();
+        if layers.is_empty() {
+            continue;
+        }
+        let note = match &map {
+            Some(m) => m.get(&pad).copied(),
+            None => DEFAULT_BANK_A_NOTES.get(pad as usize - 1).copied(),
+        };
+        let raw = inst
+            .children
+            .iter()
+            .filter(|c| c.children.is_empty() && c.name.starts_with("Volume") && c.name != "Volume")
+            .map(|c| (c.name.clone(), c.text.clone()))
+            .collect();
+        let filter = match num(inst, "FilterType", 0.0).round() as i32 {
+            0 => Vec::new(),
+            t => std::iter::once(("FilterType".to_string(), t.to_string()))
+                .chain(
+                    ["Cutoff", "Resonance", "VelocityToFilter"]
+                        .into_iter()
+                        .filter_map(|f| inst.child_text(f).map(|v| (f.to_string(), v.to_string()))),
+                )
+                .collect(),
+        };
+        let one_shot = match text(inst, "OneShot") {
+            "" => match text(inst, "TriggerMode").trim() {
+                "" => None,
+                // Inferred: 0 plays to the end, anything else while held.
+                t => Some(t == "0"),
+            },
+            _ => Some(flag(inst, "OneShot", true)),
+        };
+        pads.push(DrumPad {
+            pad,
+            note,
+            layers,
+            volume: num(inst, "Volume", 1.0).clamp(0.0, 16.0) as f32,
+            pan: num(inst, "Pan", 0.5).clamp(0.0, 1.0) as f32,
+            coarse: num(inst, "TuneCoarse", 0.0).round().clamp(-48.0, 48.0) as i32,
+            fine: num(inst, "TuneFine", 0.0).round().clamp(-100.0, 100.0) as i32,
+            mute_group: num(inst, "MuteGroup", 0.0).round().clamp(0.0, 1000.0) as u32,
+            mute_targets: notes_of(inst, "MuteTarget"),
+            simult_targets: notes_of(inst, "SimultTarget"),
+            polyphony: text(inst, "Polyphony").trim().parse().ok(),
+            mono: flag(inst, "Mono", false),
+            one_shot,
+            zone_play: text(inst, "ZonePlay").trim().parse().ok(),
+            vel_to_level: sensitivity(inst),
+            raw,
+            filter,
+        });
+    }
+    Ok(DrumProgram {
+        name,
+        pads,
+        numbered_from,
+        has_note_map: map.is_some(),
+        inserts,
+    })
 }

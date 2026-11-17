@@ -133,4 +133,4 @@ Synth presets you save go in **Instruments**, in a folder for each synth, and sh
 Later versions will share MPFree's library over the network cable and by USB, so you can copy samples in and projects out from a computer. Until then, the files are on a Linux-format part of the stick that Windows and macOS can't open without extra software.
 
 > [!MPC]
-> On the MPC, projects are saved to the internal drive, an SD card or a USB drive, with the samples in a folder beside the project file. MPFree saves only to its own stick, keeps every sample inside the project folder, and keeps the last ten versions of each project. MPFree can't open MPC projects (`.xpj`) yet; a tool to bring them across is being looked at.
+> On the MPC, projects are saved to the internal drive, an SD card or a USB drive, with the samples in a folder beside the project file. MPFree saves only to its own stick, keeps every sample inside the project folder, and keeps the last ten versions of each project. MPFree doesn't open MPC projects (`.xpj`): bring your kits and patterns across as [Moving your beats from the MPC](moving-from-the-mpc.md) says.
