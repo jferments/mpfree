@@ -503,6 +503,10 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::SentBy(t) => (format!("sent by {}", track(t)), Went::Sent),
         To::Clock => ("MPFree's clock".to_string(), Went::Clock),
         To::PortPage => ("sent from its page".to_string(), Went::Sent),
+        To::Sampler => (
+            "sent by the Sample tab's auto-sample".to_string(),
+            Went::Sent,
+        ),
         To::ThruFrom(p) => (
             format!("thru from {}", port_text(&m.monitor, p, Dir::In)),
             Went::Sent,
