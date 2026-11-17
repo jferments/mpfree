@@ -194,6 +194,32 @@ def no_underruns_while():
     return test
 
 
+# The time engine's costs on the status line, totals since the start: "compiles: N (slowest X ms, N notes and
+# locks); step edits: N in place (slowest X ms), M compiled (slowest Y ms)".
+TIME_COSTS = re.compile(r"compiles: (\d+) \(slowest ([\d.]+) ms, (\d+) notes and locks\); "
+                        r"step edits: (\d+) in place \(slowest ([\d.]+) ms\), (\d+) compiled \(slowest ([\d.]+) ms\)")
+# A step edit made in place may cost the audio thread a tenth of a 128-frame period (2.9 ms) at most.
+IN_PLACE_MS = 0.29
+
+
+def step_edits_in_place():
+    """Step edits went into the playing clip in place, each within IN_PLACE_MS, by the first status line after
+    the check against the last before it; says what they and a compile cost on the MPC (Gate 0's numbers)."""
+    def test(w):
+        costs = [(t, TIME_COSTS.search(m)) for t, m in w.session]
+        before = [c for t, c in costs if c and t <= w.start]
+        after = [c for t, c in costs if c and t >= w.end]
+        if not after:
+            return None, "no status line after the check yet (they come every 30 s)"
+        a, b = (before[-1] if before else None), after[0]
+        was = (lambda g: int(a.group(g)) if a else 0)
+        in_place, compiled = int(b.group(4)) - was(4), int(b.group(6)) - was(6)
+        text = (f"{in_place} step edits in place (slowest {b.group(5)} ms), {compiled} compiled (slowest "
+                f"{b.group(7)} ms); the slowest compile {b.group(2)} ms, with {b.group(3)} notes and locks playing")
+        return in_place > 0 and float(b.group(5)) <= IN_PLACE_MS, text
+    return test
+
+
 def hour_long():
     """The pad player has played for an hour with no underrun and no restart."""
     def test(w):
@@ -426,6 +452,27 @@ CHECKS = (
          "shift_holds_an_empty_step_and_erase_takes_the_held_steps_locks_off",
          "held_step_locks_reach_the_pads_before_their_note_and_end_at_the_next"],
         needs=['STEP SEQ', 'ERASE', 'Q-LINK']),
+    Check(
+        "step-speed", "STEP SEQ: taps and turns go into the playing clip, and what they cost the MPC",
+        "S1: step edits in place, no compile per tap or turn; Gate 0 for the time engine's own thread", "hands",
+        ["1. On Play, hit pad 1 (the kick) and press STEP SEQ. Hit pads 1, 5, 9 and 13 if they are dark,",
+         "   then press PLAY.",
+         "2. For about 20 s, hit step pads on and off all over, as fast as you like; leave a few lit.",
+         "3. Hold two lit pads, press Q-LINK twice (the cards say Sound) and turn Q-Link 1 back and forth",
+         "   for about 10 s. Let go.",
+         "4. Press STOP, then STEP SEQ."],
+        [("step pads tapped", seen_times(r"^steps: step \d+ of pad \d+ (on|off)$", 10)),
+         ("a turn locked held steps", seen(r"^steps: steps? .* of pad \d+: lock ")),
+         ("the edits went in place, each quick", step_edits_in_place()),
+         ("no slow period from the pads or the screen",
+          not_seen(r"^control: slow period .* most in (screen actions|MIDI in and buttons)")),
+         ("no underrun while it played", no_underruns_while())],
+        "Did each step you lit play on the next pass, and the turn follow the knob, with no click?",
+        ["step_edits_go_into_the_playing_view_in_place_as_a_compile_would",
+         "step_edits_that_need_more_than_the_playing_view_compile",
+         "a_step_edit_the_view_cannot_take_compiles_once_and_is_counted",
+         "steps_tapped_on_beats_play_in_time"],
+        needs=['STEP SEQ', 'Q-LINK'], wait_status=True),
     Check(
         "wheel", "The data wheel and its push on the real wheel",
         "#339 and #355: the outline, the push, and the Song view's picked block", "hands",

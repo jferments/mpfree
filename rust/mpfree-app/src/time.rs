@@ -553,10 +553,24 @@ impl TimeHost {
     }
 
     /// A touch on the Play page's pattern, as one undoable edit (a
-    /// Q-Link turned through many values joins one). A line for the log.
+    /// Q-Link turned through many values joins one), made to the playing
+    /// clip in place when it can be (`TimeControl::in_place`). A line for
+    /// the log.
     pub fn step_action(&mut self, a: StepAction) -> Result<String, String> {
+        let at = std::time::Instant::now();
+        let was = self.control.costs;
         let r = self.control.step_action(a);
-        self.sent(r)
+        let r = self.sent(r);
+        // From the action to the audio half having made it: what a tap
+        // or a turn costs the audio thread while both halves run on it.
+        let took = at.elapsed();
+        let c = &mut self.control.costs;
+        if c.steps_in_place > was.steps_in_place {
+            c.slowest_in_place = c.slowest_in_place.max(took);
+        } else if c.steps_compiled > was.steps_compiled {
+            c.slowest_step_compiled = c.slowest_step_compiled.max(took);
+        }
+        r
     }
 
     /// The pad hits of the last period that fell while the transport
@@ -1204,6 +1218,203 @@ mod tests {
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(lock(&h), None, "UNDO: the whole turn");
         assert_eq!(h.steps().clip.unwrap().row(2).iter().flatten().count(), 2);
+    }
+
+    /// Taps, turns and locks on the pattern playing go into the view the
+    /// audio half plays, in place: no compile, nothing allocated or freed
+    /// on the audio half, and the view is just what a compile of the
+    /// project gives, each time (the order of notes on one tick too).
+    #[test]
+    fn step_edits_go_into_the_playing_view_in_place_as_a_compile_would() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::steps::Change;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        // The first tap makes the pattern and launches it: that compiles.
+        let tap = |pad, step, velocity| StepAction::Tap {
+            pad,
+            step,
+            velocity,
+        };
+        h.step_action(tap(0, 0, 100)).unwrap();
+        assert_eq!(h.control.costs.steps_compiled, 1);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let compiles = h.control.costs.compiles;
+        let tune = RelAddr::new(OnTrack::Pad(2), 2);
+        let (s5, s9, s13) = (1u128 << 4, 1u128 << 8, 1u128 << 12);
+        let edits = [
+            tap(2, 4, 100),
+            tap(2, 8, 90),
+            // On the tick of pad 3's step 9: after it, as a compile puts it.
+            tap(0, 8, 80),
+            StepAction::Change {
+                pad: 2,
+                step: 4,
+                change: Change::Velocity(60),
+            },
+            StepAction::Change {
+                pad: 2,
+                step: 8,
+                change: Change::Nudge(30),
+            },
+            StepAction::ChangeSteps {
+                pad: 2,
+                steps: s5 | s9,
+                change: Change::Chance(50),
+            },
+            // Step 13 has no note: a lock with no note.
+            StepAction::Lock {
+                pad: 2,
+                steps: s5 | s13,
+                addr: tune,
+                value: Some(300.0),
+            },
+            StepAction::Lock {
+                pad: 2,
+                steps: s5 | s13,
+                addr: tune,
+                value: Some(500.0),
+            },
+            StepAction::CopySteps {
+                pad: 2,
+                from: 4,
+                to: 6,
+                count: 1,
+            },
+            StepAction::ClearLocks { pad: 2, steps: s5 },
+            StepAction::ClearSteps {
+                pad: 2,
+                from: 8,
+                to: 9,
+            },
+            tap(2, 4, 100),
+        ];
+        for (i, a) in edits.into_iter().enumerate() {
+            // The control half alone, then the audio half takes what it sent.
+            let line = h.control.step_action(a);
+            assert!(line.is_ok(), "{a:?}: {line:?}");
+            let ((), allocs) = crate::sys::alloc_count::calls(|| h.audio.receive());
+            assert_eq!(allocs, 0, "{a:?}: the audio half allocated or freed");
+            assert_eq!(
+                *h.audio.view,
+                h.control.view().unwrap(),
+                "{a:?}: the view in place is what a compile gives"
+            );
+            // A little play between the edits.
+            run(&mut h, &mut pads, BAR / 2 + (i as u64 + 1) * BAR / 8, &[]);
+        }
+        assert_eq!(h.control.costs.compiles, compiles, "nothing compiled");
+        assert_eq!(h.control.costs.steps_in_place, edits.len() as u64);
+        assert_eq!(h.audio.counts().missed, 0);
+        // Through the facade too, timed for the status line.
+        h.step_action(tap(5, 0, 100)).unwrap();
+        let c = h.control.costs;
+        assert_eq!((c.compiles, c.steps_in_place), (compiles, 13));
+        assert!(c.slowest_in_place > std::time::Duration::ZERO);
+        assert!(
+            h.describe().contains("; step edits: 13 in place (slowest "),
+            "{}",
+            h.describe()
+        );
+    }
+
+    /// A step edit the view can't take in place compiles, as before: a new
+    /// pattern, the pattern's length, a big erase, and any edit while
+    /// recording, when the audio half edits the view itself.
+    #[test]
+    fn step_edits_that_need_more_than_the_playing_view_compile() {
+        use mpfree_seq::Note;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut clip = Clip::new("busy", 128 * STEP_TICKS);
+        clip.notes = (0..128)
+            .map(|i| Note::new(i * STEP_TICKS, 100, 1, 100))
+            .collect();
+        h.control.project.tracks[0].slots[0] = Some(clip);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let ways = |h: &TimeHost| {
+            (
+                h.control.costs.steps_in_place,
+                h.control.costs.steps_compiled,
+            )
+        };
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 3,
+            velocity: 100,
+        })
+        .unwrap();
+        assert_eq!(ways(&h), (1, 0), "a tap");
+        h.step_action(StepAction::Length {
+            steps: 16,
+            copy: false,
+        })
+        .unwrap();
+        assert_eq!(ways(&h), (1, 1), "the length");
+        h.act(TimeAction::Undo).unwrap();
+        // Pad 2's 128 steps: past `MAX_IN_PLACE`.
+        h.step_action(StepAction::ClearPad { pad: 1 }).unwrap();
+        assert_eq!(ways(&h), (1, 2), "a big erase");
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        assert_eq!(h.info().state, State::Recording);
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 5,
+            velocity: 100,
+        })
+        .unwrap();
+        assert_eq!(ways(&h), (1, 3), "while recording");
+        let mut fresh = h.control.view().unwrap();
+        fresh.set_armed(h.control.armed);
+        assert_eq!(*h.audio.view, fresh);
+    }
+
+    /// A change the view can't make in place (here, a note it erases that
+    /// the project changed behind its back) asks for one compile, which brings it and
+    /// the changes after it; the status line counts it.
+    #[test]
+    fn a_step_edit_the_view_cannot_take_compiles_once_and_is_counted() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        let slot = h.control.launches[0].slot;
+        // Step 1's note, softer in the project than in the view.
+        let clip = h.control.project.tracks[0].slots[slot].as_mut().unwrap();
+        clip.notes[0].velocity = 50;
+        let compiles = h.control.costs.compiles;
+        let edits = [
+            StepAction::Change {
+                pad: 0,
+                step: 0,
+                change: mpfree_seq::steps::Change::Velocity(60),
+            },
+            StepAction::Tap {
+                pad: 0,
+                step: 8,
+                velocity: 100,
+            },
+        ];
+        for a in edits {
+            h.control.step_action(a).unwrap();
+        }
+        h.audio.receive();
+        assert_eq!(h.audio.counts().missed, 1, "step 1's erase");
+        assert_ne!(*h.audio.view, h.control.view().unwrap());
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        assert_eq!(h.control.costs.compiles, compiles + 1, "one compile");
+        assert_eq!(*h.audio.view, h.control.view().unwrap());
+        assert!(
+            h.describe().contains(", 1 step edits compiled again"),
+            "{}",
+            h.describe()
+        );
     }
 
     #[test]
