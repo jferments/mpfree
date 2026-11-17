@@ -75,6 +75,12 @@ class Window:
         return [m for _, m in self.lines]
 
 
+# A note from a keyboard or controller on any port, as the app logs each message it reads: "+3.210 s MIDI In:
+# 90 25 64 = note on ..." (MusicIn::bytes, rust/mpfree-app/src/midi_in.rs). The session's "MIDI in: ..." lines
+# are summaries at the end, so they never fall in a check's time.
+NOTE_IN = r"^\+\d+\.\d+ s .+: [0-9A-F]{2}( [0-9A-F]{2})* = note on "
+
+
 def seen(*patterns):
     """Passes when each pattern matches a line of the check's time (any order)."""
     regexes = [re.compile(p) for p in patterns]
@@ -579,7 +585,7 @@ CHECKS = (
          "   C#2 is pad 1, C2 is pad 2.",
          "2. Turn the wheel to \"Synth: Poly\" and play single keys and a chord, softly and loudly.",
          "3. Press TRACK MIX, tap I/O, then MIDI: the keyboard's port is listed. Change nothing. Back to kit 1."],
-        [("notes came in", seen(r"^MIDI in: "))],
+        [("notes came in", seen(NOTE_IN))],
         "Did the keys play in time, at the right loudness, with nothing stuck?",
         ["notes_on_any_channel_play_and_are_named",
          "keys_play_notes_and_share_holds_with_pads",
@@ -594,7 +600,7 @@ CHECKS = (
          "2. Turn a knob or the mod wheel on the keyboard.",
          "3. SHIFT + MENU for Prefs, turn Show developer tools on, open the Dev tab's MIDI page, hit pad 1,",
          "   press PLAY and STOP, and turn Q-Link 1. Turn Show developer tools off again. Change nothing else."],
-        [("notes came in", seen(r"^MIDI in: "))],
+        [("notes came in", seen(NOTE_IN))],
         "Did Went to name each key's pad (no pad for E3) and the knob, and Dev list your presses?",
         ["the_monitor_says_where_each_message_went",
          "the_monitor_gets_what_went_out_and_who_sent_it",
@@ -619,11 +625,26 @@ CHECKS = (
          "   on the MIDI row. Play a key, read What it does, then tap < MIDI. Change nothing.",
          "2. Only with a USB MIDI interface that has two or more MIDI ports: plug it into the USB socket,",
          "   wait 5 s, look at the MIDI section's ports, and unplug it."],
-        [("notes came in", seen(r"^MIDI in: "))],
+        [("notes came in", seen(NOTE_IN))],
         "Did the page's Now card show the key you played as you played it?",
         ["each_port_of_a_usb_device_is_a_port_of_its_own",
          "a_port_that_ignores_clock_and_programs_follows_none",
          "every_sample_screen_draws"],
+        needs=['TRACK MIX / PAD MIX']),
+    Check(
+        "midi-routing", "Routing: a keyboard's channel playing a track that isn't armed",
+        "new (#449): a route sends one channel of a port to a track, whichever track is armed", "hands",
+        ["1. With a keyboard's MIDI OUT in the MPC's MIDI IN, press TRACK MIX, tap I/O, then Routing.",
+         "2. Tap the square in the MIDI in row under Tracks (by channel): the card shows the new route, ch 1 to",
+         "   Track 1. Turn the Q-Link labelled Track one step right, to Track 2. If the keyboard sends on",
+         "   another channel, turn the Q-Link labelled Channel to it.",
+         "3. Tap Monitor and play C#2 and C2.",
+         "4. Tap Routing, tap the same square, then Remove route. Change nothing else, and don't save."],
+        [("notes came in", seen(NOTE_IN))],
+        "Did Went to say Track 2, by its route, for the keys you played?",
+        ["a_route_plays_its_track_whatever_the_ports_input_and_the_rest_play_the_armed_one",
+         "a_routed_keys_note_off_follows_its_note_on_when_the_armed_track_changes",
+         "routed_keys_play_their_track_where_its_clips_play"],
         needs=['TRACK MIX / PAD MIX']),
     Check(
         "map-controls", "Map controls: find buttons the app does not know yet",

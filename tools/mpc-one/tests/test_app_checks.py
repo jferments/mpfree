@@ -190,6 +190,21 @@ class JudgeTests(unittest.TestCase):
         self.assertTrue(got["Latch kept the chord repeating"])
         self.assertFalse(got["Latch went off"])
 
+    def test_the_midi_checks_see_a_note_read_from_any_port(self):
+        """midi-in, midi-monitor, midi-port and midi-routing pass on a note the app read (MusicIn::bytes' line), from
+        the jacks or a USB port; the session's summary at the end and a knob alone don't count."""
+        notes = ("+3.210 s MIDI In: 90 25 64 = note on · ch 1 · C#2 · vel 100",
+                 "+4.002 s Keystep 37: 99 24 40 = note on · ch 10 · C2 · vel 64")
+        others = ("MIDI in: 3 keys had no pad in the kit",
+                  "+5.000 s MIDI In: B0 4A 40 = CC 74 · ch 1 · 64")
+        for name in ("midi-in", "midi-monitor", "midi-port", "midi-routing"):
+            for line in notes:
+                got = dict((what, ok) for ok, what in self.judge(name, checks.Window(lines(line))))
+                self.assertTrue(got["notes came in"], f"{name}: {line}")
+            for line in others:
+                got = dict((what, ok) for ok, what in self.judge(name, checks.Window(lines(line))))
+                self.assertFalse(got["notes came in"], f"{name}: {line}")
+
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
                  (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),
