@@ -952,6 +952,13 @@ pub enum Effect {
     StopSounds,
     /// The wheel, its push, - or + for the outline ([`Nav`]).
     Nav(Nav),
+    /// The wheel or - / + while a finger rests on a control with a value
+    /// (Jay, 17 Nov: hold a control and turn the wheel): turn that control
+    /// by `delta` detents, `fine` with SHIFT held.
+    Held {
+        delta: i32,
+        fine: bool,
+    },
     /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
     /// before, when a drum kit is playing).
     Octave(i32),
@@ -1305,6 +1312,9 @@ pub struct App {
     /// A list or pad over the page is open (the number pad, the undo
     /// history): the wheel, its push and - / + go to it.
     overlay: bool,
+    /// A finger rests on a control with a value: the wheel and - / + turn
+    /// it, and the push does nothing ([`crate::gui::FromUi::Held`]).
+    held: bool,
     /// The screen shows the wheel's outline on a control ([`Nav`]).
     outline: bool,
     /// The synth's pad layout while the synth is on the pads
@@ -1455,6 +1465,7 @@ impl App {
             lights_shown: Self::startup_transport_lights(),
             undo_ready: false,
             overlay: false,
+            held: false,
             outline: false,
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
@@ -1599,6 +1610,20 @@ impl App {
     /// ([`crate::gui::FromUi::Overlay`]).
     pub fn set_overlay(&mut self, on: bool) {
         self.overlay = on;
+    }
+
+    /// The screen says whether a finger rests on a control with a value
+    /// ([`crate::gui::FromUi::Held`]): until it lifts the wheel and - / +
+    /// turn that control.
+    pub fn set_held(&mut self, on: bool) {
+        self.held = on;
+    }
+
+    /// The wheel, or - / +, goes to the control a finger rests on: not
+    /// while a list or pad covers the page (no finger can be on the page
+    /// under it then).
+    fn wheel_to_held(&self) -> bool {
+        self.held && !self.overlay && !matches!(self.view, View::Guide | View::System)
     }
 
     /// The screen says whether the wheel's outline is on a control: on the
@@ -2160,6 +2185,14 @@ impl App {
             fx.push(Effect::BankLights);
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
+        } else if Some(note) == self.map.data_push && self.wheel_to_held() {
+            // A finger on a control: the push does nothing.
+        } else if (Some(note) == self.map.minus || Some(note) == self.map.plus)
+            && self.wheel_to_held()
+        {
+            // A finger on a control: - / + step it, one detent each.
+            let delta = if Some(note) == self.map.plus { 1 } else { -1 };
+            fx.push(Effect::Held { delta, fine: false });
         } else if Some(note) == self.map.data_push && self.browsing() {
             fx.push(Effect::Browse(BrowseKey::Push));
         } else if Some(note) == self.map.data_push {
@@ -2490,6 +2523,13 @@ impl App {
     /// The data wheel: rows in a menu or on a page with rows, the outline
     /// on the pages [`outlined`] names ([`Nav`]), each other page's own job.
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
+        if self.wheel_to_held() {
+            // A finger on a control: the wheel turns it (SHIFT: finer).
+            return vec![Effect::Held {
+                delta,
+                fine: self.shift,
+            }];
+        }
         match self.view {
             View::Guide | View::System => Vec::new(),
             // A list or pad over the page: the wheel moves in it.
@@ -3683,6 +3723,11 @@ impl App {
     /// 12 Nov 08:11Z). On a page with rows, the same for the row
     /// highlighted ([`RowKey`]). Elsewhere it does nothing yet.
     pub fn wheel_push(&mut self) -> Vec<Effect> {
+        if self.wheel_to_held() {
+            // A finger on a control: the push does nothing, so a thumb
+            // that slips presses nothing.
+            return Vec::new();
+        }
         if self.overlay {
             // A list or pad over the page: the push is its Enter.
             return vec![Effect::Rows(RowKey::Editing(true))];
@@ -4466,6 +4511,43 @@ mod tests {
         let mut next = App::new(44_100, false);
         next.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(next.settings.theme, "synthwave");
+    }
+
+    /// Jay, 17 Nov: while a finger rests on a control with a value, the
+    /// wheel and - / + turn it on every page (SHIFT + wheel finer), the
+    /// push does nothing, and on the lift each goes back to its own job.
+    /// A list or pad over the page keeps them.
+    #[test]
+    fn a_held_control_takes_the_wheel_and_minus_plus_until_it_lifts() {
+        let mut app = ready();
+        let held = |delta, fine| vec![Effect::Held { delta, fine }];
+        for v in [
+            View::Play,
+            View::Sample,
+            View::Synth,
+            View::Mixer,
+            View::Arrange,
+        ] {
+            app.show(v);
+            let before = app.wheel(1);
+            app.set_held(true);
+            assert_eq!(app.wheel(2), held(2, false), "{v:?}");
+            assert_eq!(press(&mut app, button::PLUS), held(1, false), "{v:?}");
+            assert_eq!(press(&mut app, button::MINUS), held(-1, false), "{v:?}");
+            assert!(
+                app.wheel_push().is_empty(),
+                "{v:?}: the push presses nothing"
+            );
+            app.button(button::SHIFT, true, 0.0);
+            assert_eq!(app.wheel(-3), held(-3, true), "{v:?}: SHIFT is finer");
+            app.button(button::SHIFT, false, 0.0);
+            app.set_held(false);
+            assert_eq!(app.wheel(1), before, "{v:?}: let go, the page's own job");
+        }
+        // A list or pad over the page has them, finger or not.
+        app.set_held(true);
+        app.set_overlay(true);
+        assert_eq!(app.wheel(1), vec![Effect::Rows(RowKey::Pick(1))]);
     }
 
     /// Jay, 12 Nov 08:11Z: in Prefs, a push of the wheel opens a row, the

@@ -382,6 +382,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         let ch = usize::from(s.channels());
         let (l, r): (Vec<f32>, Vec<f32>) = s
             .data()
+            .all_f32()
             .chunks(ch)
             .map(|f| (f[0] * g, f[ch - 1] * g))
             .unzip();

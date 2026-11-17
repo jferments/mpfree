@@ -136,7 +136,7 @@ fn a_slice_tap_on_a_stretched_pad_plays_that_slice_of_its_copy() {
     // A second of 220 Hz, then a second of 440 Hz, warped from 100 to 120
     // BPM: the copy is 1/1.2 as long, so each second is 36750 frames of it.
     let mut v = sine(1.0, 220.0).data().to_vec();
-    v.extend_from_slice(&sine(1.0, 440.0).data()[..]);
+    v.extend_from_slice(&sine(1.0, 440.0).data().to_vec());
     let s = Source::new("two", RATE, 2, v).unwrap();
     let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
     let mut warps = Warps::new(120.0);

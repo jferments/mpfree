@@ -401,6 +401,29 @@ pub trait Widget: Any + Send {
         None
     }
 
+    /// The control a finger resting at (`x`, `y`) puts under the data wheel
+    /// (Jay, 17 Nov: hold a control and turn the wheel): while the finger
+    /// stays down the wheel and - / + turn it through [`Widget::held_step`],
+    /// and when it lifts the wheel goes back to its own job. None where
+    /// the finger is on nothing with a value (a button, a pad, a row that
+    /// only picks). By default the value under the finger that the wheel
+    /// can turn (a drag the widget [`Widget::steps`], not one it moves).
+    fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        self.targets(r)
+            .into_iter()
+            .filter(|t| t.rect.contains(x, y) && t.enabled)
+            .filter(|t| t.gesture == Gesture::Drag && !t.moves && self.steps(t))
+            .min_by_key(|t| t.rect.w as i64 * t.rect.h as i64)
+    }
+
+    /// The wheel turned the held control `t` (from [`Widget::held`]) by
+    /// `delta` detents; `fine` with SHIFT held, for a finer step where the
+    /// control has one. By default as [`Widget::step`], fine or not.
+    fn held_step(&mut self, t: &Target, delta: i32, fine: bool, r: Rect) -> Option<EventKind> {
+        let _ = fine;
+        self.step(t, delta, r)
+    }
+
     /// Where control `t` is now listed, after [`Widget::step`] moved it:
     /// the `index` its target has in the next [`Widget::targets`], so the
     /// wheel's outline goes with it. Most controls stay where they are.
@@ -444,7 +467,31 @@ pub struct Ui {
     /// went, while its widget paints only some parts), that widget is
     /// drawn whole, so no old outline stays in the parts it left alone.
     drawn: Option<(usize, Rect, i32, Color)>,
+    /// The controls fingers rest on that the wheel turns while they stay
+    /// down ([`Widget::held`]), oldest first: the wheel takes the newest.
+    held: Vec<Held>,
 }
+
+/// A finger resting on a control with a value: the wheel turns it until
+/// the finger lifts ([`Ui::held_step`]).
+#[derive(Clone, Debug, PartialEq)]
+struct Held {
+    finger: u64,
+    widget: usize,
+    target: Target,
+    /// Where the finger went down: a list row's hold ends when the finger
+    /// moves off as a scroll ([`HOLD_SLOP`]).
+    at: (i32, i32),
+    /// The wheel has turned it: the lift is no tap.
+    turned: bool,
+}
+
+/// How far a finger on a control that is not a value of its own (a list's
+/// row) may move before it is a scroll and the wheel lets the row go.
+const HOLD_SLOP: i32 = 12;
+
+/// The finger the app's wheel push touches with: its touches never hold.
+pub const WHEEL_FINGER: u64 = u64::MAX - 1;
 
 /// The control the wheel's outline is on: its widget (by index) and its
 /// [`Target`]'s `id` and `index`, found again in each new list, so the
@@ -516,6 +563,7 @@ impl Ui {
             focus: None,
             refocus: Vec::new(),
             drawn: None,
+            held: Vec::new(),
         }
     }
 
@@ -714,6 +762,7 @@ impl Ui {
             self.fingers.clear();
             self.focus = None;
             self.refocus.clear();
+            self.held.clear();
         }
         Ok(())
     }
@@ -979,6 +1028,82 @@ impl Ui {
         self.nav_order().into_iter().find(|(wi, t)| f.is(*wi, t))
     }
 
+    /// Drop finger `finger`'s hold, if it had one; the widget is drawn
+    /// again without the held outline.
+    fn let_go(&mut self, finger: u64) -> Option<Held> {
+        let k = self.held.iter().position(|h| h.finger == finger)?;
+        let h = self.held.remove(k);
+        if !self.refocus.contains(&h.widget) {
+            self.refocus.push(h.widget);
+        }
+        Some(h)
+    }
+
+    /// The control the wheel turns while a finger rests on it (the newest
+    /// such finger still down), as its widget lists it, with the widget's
+    /// name. None when no finger holds one.
+    pub fn held(&self) -> Option<PageTarget> {
+        let h = self.held.last()?;
+        Some(PageTarget {
+            widget: self.widgets[h.widget].0.clone(),
+            target: h.target.clone(),
+        })
+    }
+
+    /// True while a finger rests on a control the wheel turns. Cheap.
+    pub fn holding(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// Mark the held control turned without stepping it (a page that
+    /// turns it its own way): the finger's lift is then no tap.
+    pub fn held_turned(&mut self) {
+        if let Some(h) = self.held.last_mut() {
+            h.turned = true;
+        }
+    }
+
+    /// The finger holding the control the wheel turns now.
+    pub fn held_finger(&self) -> Option<u64> {
+        self.held.last().map(|h| h.finger)
+    }
+
+    /// The wheel (or - / +) turned the held control by `delta` detents,
+    /// `fine` with SHIFT: what it said, as a touch would. Once turned, the
+    /// finger's lift is no tap.
+    pub fn held_step(&mut self, delta: i32, fine: bool) -> Option<UiEvent> {
+        let h = self.held.last_mut()?;
+        h.turned = true;
+        let (wi, t) = (h.widget, h.target.clone());
+        let r = self.pages[self.current]
+            .slots
+            .iter()
+            .find(|(w, _)| *w == wi)?
+            .1;
+        let (name, w, dirty) = &mut self.widgets[wi];
+        let kind = w.held_step(&t, delta, fine, r);
+        *dirty = true;
+        // The outline goes with a control the turn moved (a marker's tab).
+        let moved = w
+            .targets(r)
+            .into_iter()
+            .find(|n| n.id == t.id && n.index == t.index)
+            .map(|n| n.rect);
+        let name = name.clone();
+        if let (Some(rect), Some(h)) = (moved, self.held.last_mut()) {
+            if h.target.rect != rect {
+                h.target.rect = rect;
+                if !self.refocus.contains(&wi) {
+                    self.refocus.push(wi);
+                }
+            }
+        }
+        Some(UiEvent {
+            widget: name,
+            kind: kind?,
+        })
+    }
+
     /// Route a touch. A finger belongs to the widget it first touched until it
     /// lifts, even if it slides off.
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<UiEvent> {
@@ -986,9 +1111,11 @@ impl Ui {
         if cur >= self.pages.len() {
             return None;
         }
+        let mut phase = phase;
         let owner = match phase {
             Touch::Down => {
                 self.fingers.retain(|(f, _)| *f != finger);
+                self.let_go(finger);
                 let hit = self.pages[cur]
                     .slots
                     .iter()
@@ -1003,13 +1130,44 @@ impl Ui {
                 let w = self.fingers[i].1;
                 if matches!(phase, Touch::Up | Touch::Cancel) {
                     self.fingers.remove(i);
+                    // Turned by the wheel while held: the lift is no tap
+                    // (no button fires, no number pad opens).
+                    if self.let_go(finger).is_some_and(|h| h.turned) {
+                        phase = Touch::Cancel;
+                    }
+                } else if let Some(k) = self.held.iter().position(|h| h.finger == finger) {
+                    let h = &self.held[k];
+                    let far = (x - h.at.0).abs().max((y - h.at.1).abs()) > HOLD_SLOP;
+                    // A value dragged keeps the wheel; a row dragged is a
+                    // scroll, and the wheel lets it go.
+                    if far && h.target.gesture != Gesture::Drag {
+                        self.let_go(finger);
+                    }
                 }
                 *self.pages[cur].slots.iter().find(|(wi, _)| *wi == w)?
             }
         };
         let (wi, r) = owner;
-        let (name, w, dirty) = &mut self.widgets[wi];
+        let w = &mut self.widgets[wi].1;
+        // Found before the widget sees the touch, which may scroll it (a
+        // list keeps the row it picks in sight).
+        let held = (phase == Touch::Down && finger != WHEEL_FINGER)
+            .then(|| w.held(x, y, r))
+            .flatten();
         let kind = w.touch(finger, phase, x, y, r);
+        if let Some(t) = held {
+            self.held.push(Held {
+                finger,
+                widget: wi,
+                target: t,
+                at: (x, y),
+                turned: false,
+            });
+            if !self.refocus.contains(&wi) {
+                self.refocus.push(wi);
+            }
+        }
+        let (name, _, dirty) = &mut self.widgets[wi];
         *dirty = true;
         kind.map(|kind| UiEvent {
             widget: name.clone(),
@@ -1048,6 +1206,9 @@ impl Ui {
         }
         let refocus = std::mem::take(&mut self.refocus);
         let focus = self.focus.clone();
+        // A held control shows the grabbed outline, where its finger went
+        // down, while the wheel is its.
+        let held = self.held.last().map(|h| (h.widget, h.target.rect));
         let last = if self.full { None } else { self.drawn };
         let mut drawn = last;
         let (fonts, widgets, full) = (&mut self.fonts, &mut self.widgets, &mut self.full);
@@ -1062,15 +1223,21 @@ impl Ui {
             // each part the widget paints, clipped to that part, so a part
             // painted alone gets it back and the rest keeps the one it has
             // (drawing it twice would darken its blended corners).
-            let outline = focus.as_ref().filter(|f| f.widget == wi).and_then(|f| {
-                let t = w.targets(r).into_iter().find(|t| f.is(wi, t))?;
-                let o = t.rect.intersect(r);
-                let (width, colour) = if f.grabbed {
-                    (GRABBED_W, theme.accent2)
-                } else {
-                    (OUTLINE_W, theme.accent)
-                };
-                (!o.is_empty()).then_some((o, width, colour))
+            let held_here = held
+                .filter(|(hw, _)| *hw == wi)
+                .map(|(_, hr)| (hr.intersect(r), GRABBED_W, theme.accent2))
+                .filter(|(o, _, _)| !o.is_empty());
+            let outline = held_here.or_else(|| {
+                focus.as_ref().filter(|f| f.widget == wi).and_then(|f| {
+                    let t = w.targets(r).into_iter().find(|t| f.is(wi, t))?;
+                    let o = t.rect.intersect(r);
+                    let (width, colour) = if f.grabbed {
+                        (GRABBED_W, theme.accent2)
+                    } else {
+                        (OUTLINE_W, theme.accent)
+                    };
+                    (!o.is_empty()).then_some((o, width, colour))
+                })
             });
             let was = last.filter(|d| d.0 == wi).map(|(_, o, w, c)| (o, w, c));
             if was != outline {
@@ -1224,6 +1391,163 @@ mod tests {
         ui.add_page("other", "col(plain)").unwrap();
         ui.show("nav").unwrap();
         ui
+    }
+
+    /// One knob over the whole widget that the wheel turns, keeping every
+    /// phase its fingers send (Jay, 17 Nov: hold a control and turn the
+    /// wheel).
+    struct Knob {
+        value: i32,
+        phases: Vec<Touch>,
+    }
+
+    impl Widget for Knob {
+        fn paint(&self, cx: &mut PaintCx, r: Rect) {
+            cx.canvas.fill_rect(r, Color::rgb(0x101010));
+        }
+
+        fn touch(
+            &mut self,
+            _f: u64,
+            phase: Touch,
+            _x: i32,
+            _y: i32,
+            _r: Rect,
+        ) -> Option<EventKind> {
+            self.phases.push(phase);
+            (phase == Touch::Up).then_some(EventKind::Tab(0))
+        }
+
+        fn targets(&self, r: Rect) -> Vec<Target> {
+            vec![Target::drag("knob", 0, "knob", r)]
+        }
+
+        fn steps(&self, _t: &Target) -> bool {
+            true
+        }
+
+        fn step(&mut self, _t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+            self.value += delta;
+            Some(EventKind::Value(self.value as f32))
+        }
+
+        fn held_step(&mut self, t: &Target, delta: i32, fine: bool, r: Rect) -> Option<EventKind> {
+            self.step(t, if fine { delta * 100 } else { delta }, r)
+        }
+    }
+
+    fn knobs_ui() -> Ui {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 400, 200);
+        for name in ["a", "b"] {
+            ui.add(
+                name,
+                Knob {
+                    value: 0,
+                    phases: Vec::new(),
+                },
+            );
+        }
+        ui.add("plain", probe());
+        ui.add_page("knobs", "row(a, b)").unwrap();
+        ui.add_page("other", "col(plain)").unwrap();
+        ui.show("knobs").unwrap();
+        ui
+    }
+
+    fn knob(ui: &Ui, name: &str) -> (i32, Vec<Touch>) {
+        let k = ui.get::<Knob>(name).unwrap();
+        (k.value, k.phases.clone())
+    }
+
+    #[test]
+    fn a_held_value_takes_the_wheel_until_its_finger_lifts() {
+        let mut ui = square_ui();
+        assert!(!ui.holding());
+        assert_eq!(ui.held_step(1, false), None);
+        // Slider 1 is the left widget's bottom left cell.
+        ui.touch(1, Touch::Down, 50, 150);
+        let h = ui.held().unwrap();
+        assert_eq!(
+            (h.widget.as_str(), h.target.label.as_str()),
+            ("left", "slider 1")
+        );
+        let ev = ui.held_step(1, false).unwrap();
+        assert_eq!(
+            (ev.widget.as_str(), ev.kind),
+            ("left", EventKind::Value(0.75))
+        );
+        ui.touch(1, Touch::Up, 50, 150);
+        assert!(!ui.holding());
+        assert_eq!(ui.held_step(1, false), None);
+    }
+
+    #[test]
+    fn a_button_or_a_finger_of_the_wheel_holds_nothing() {
+        let mut ui = square_ui();
+        ui.touch(1, Touch::Down, 50, 50);
+        assert!(!ui.holding(), "a button has no value");
+        ui.touch(1, Touch::Up, 50, 50);
+        ui.touch(WHEEL_FINGER, Touch::Down, 50, 150);
+        assert!(!ui.holding(), "the wheel's own push is no finger");
+    }
+
+    #[test]
+    fn a_turn_makes_the_lift_no_tap_and_an_untouched_hold_stays_a_tap() {
+        let mut ui = knobs_ui();
+        ui.touch(1, Touch::Down, 50, 100);
+        assert_eq!(
+            ui.touch(1, Touch::Up, 50, 100).map(|e| e.kind),
+            Some(EventKind::Tab(0))
+        );
+        ui.touch(2, Touch::Down, 50, 100);
+        ui.held_step(-2, false);
+        assert_eq!(ui.touch(2, Touch::Up, 50, 100), None);
+        let (value, phases) = knob(&ui, "a");
+        assert_eq!(value, -2);
+        assert_eq!(phases, [Touch::Down, Touch::Up, Touch::Down, Touch::Cancel]);
+    }
+
+    #[test]
+    fn the_newest_finger_has_the_wheel_and_the_older_gets_it_back() {
+        let mut ui = knobs_ui();
+        ui.touch(1, Touch::Down, 50, 100);
+        ui.touch(2, Touch::Down, 300, 100);
+        ui.held_step(1, false);
+        ui.touch(2, Touch::Up, 300, 100);
+        ui.held_step(1, false);
+        ui.held_step(1, true);
+        assert_eq!(knob(&ui, "b").0, 1);
+        assert_eq!(knob(&ui, "a").0, 101, "SHIFT's fine steps reach the widget");
+        ui.touch(1, Touch::Up, 50, 100);
+        assert!(!ui.holding());
+    }
+
+    #[test]
+    fn a_value_dragged_keeps_the_wheel_and_a_page_change_drops_it() {
+        let mut ui = knobs_ui();
+        ui.touch(1, Touch::Down, 50, 100);
+        ui.touch(1, Touch::Move, 50, 20);
+        assert!(ui.holding(), "a value's own drag keeps it under the wheel");
+        ui.show("other").unwrap();
+        assert!(!ui.holding());
+        assert_eq!(ui.held_step(1, false), None);
+    }
+
+    #[test]
+    fn a_held_control_is_drawn_with_the_grabbed_outline() {
+        let mut ui = knobs_ui();
+        // One screen painted on, as the app paints only what changed.
+        let mut c = SoftCanvas::new(400, 200);
+        ui.paint(&mut c);
+        let r = ui.rect_of("a").unwrap();
+        let (x, y) = (r.x + 1, r.y + r.h / 2);
+        let plain = c.pixel(x, y);
+        ui.touch(1, Touch::Down, x + 40, y);
+        ui.paint(&mut c);
+        assert_ne!(c.pixel(x, y), plain, "the outline is drawn");
+        ui.touch(1, Touch::Up, x + 40, y);
+        ui.paint(&mut c);
+        assert_eq!(c.pixel(x, y), plain, "and taken away");
     }
 
     fn label(ui: &Ui) -> Option<String> {
