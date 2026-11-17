@@ -11,10 +11,8 @@ mpfree-controller = { path = "../mpfree-controller" }
 mpfree-library = { path = "../mpfree-library" }
 mpfree-midi = { path = "../mpfree-midi" }
 mpfree-mixer-ui = { path = "../mpfree-mixer-ui" }
-mpfree-ui = { path = "../mpfree-ui" }
-
-[dev-dependencies]
 mpfree-param = { path = "../mpfree-param" }
+mpfree-ui = { path = "../mpfree-ui" }
 
 [[bin]]
 name = "mpfree-midi-preview"

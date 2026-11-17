@@ -1432,6 +1432,17 @@ impl Synth {
         self.node().param(id)
     }
 
+    /// Every parameter of the engine on the pads.
+    #[cfg(test)]
+    pub fn param_info_list(&self) -> Vec<ParamInfo> {
+        self.node().params().to_vec()
+    }
+
+    /// The engine on the pads' name ("Poly"), for MIDI Learn's names.
+    pub fn engine_name(&self) -> &'static str {
+        self.node().info().name
+    }
+
     /// How many presets the engine on the pads has.
     pub fn preset_count(&self) -> usize {
         match self.settings.engine {

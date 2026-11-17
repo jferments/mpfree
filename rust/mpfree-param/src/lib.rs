@@ -36,6 +36,7 @@
 //! | macro 2's value | `macro2.0` |
 //! | mod source 4's parameter 1 (an LFO's rate) | `mod4.1` |
 //! | morph 0's position | `morph0.0` |
+//! | the transport's tempo (MIDI Learn) | `transport.7` |
 //!
 //! A [`RelAddr`] leaves the track out: `inst.12`, `pad5.2`, `mix.0`,
 //! `fx7.4`, `arp.1`, `seq.0`.
@@ -84,6 +85,53 @@ pub enum Owner {
     Mod(u8),
     /// A morph between two scenes. Parameter 0 is its position, 0 to 1.
     Morph(u8),
+    /// The transport and the tempo, for MIDI Learn's remote control: a
+    /// learned button presses PLAY, STOP and the rest, and a learned knob
+    /// sets the tempo. Its parameter ids are in [`transport`]. Locks,
+    /// macros and the mod matrix never target it.
+    Transport,
+}
+
+/// [`Owner::Transport`]'s parameters.
+pub mod transport {
+    /// PLAY and STOP on one button: on plays (as PLAY), off stops (as
+    /// STOP). A learned key flips it on each press.
+    pub const PLAYING: u16 = 0;
+    /// The MPC's PLAY, pressed while the control is.
+    pub const PLAY: u16 = 1;
+    /// STOP.
+    pub const STOP: u16 = 2;
+    /// PLAY START.
+    pub const PLAY_START: u16 = 3;
+    /// REC.
+    pub const REC: u16 = 4;
+    /// OVERDUB.
+    pub const OVERDUB: u16 = 5;
+    /// TAP TEMPO.
+    pub const TAP_TEMPO: u16 = 6;
+    /// The tempo, in BPM over the app's range.
+    pub const TEMPO: u16 = 7;
+    /// Every one, in the order screens list them, with its name.
+    pub const ALL: [(u16, &str); 8] = [
+        (PLAYING, "PLAY and STOP"),
+        (PLAY, "PLAY"),
+        (STOP, "STOP"),
+        (PLAY_START, "PLAY START"),
+        (REC, "REC"),
+        (OVERDUB, "OVERDUB"),
+        (TAP_TEMPO, "TAP TEMPO"),
+        (TEMPO, "Tempo"),
+    ];
+
+    /// The name of parameter `id`, if it is one.
+    pub fn name(id: u16) -> Option<&'static str> {
+        ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
+    }
+
+    /// Whether `id` is a press (a button of the MPC's), not a value.
+    pub const fn is_press(id: u16) -> bool {
+        matches!(id, PLAY | STOP | PLAY_START | REC | OVERDUB | TAP_TEMPO)
+    }
 }
 
 /// What on a track a [`RelAddr`] names, without the track.
@@ -253,6 +301,7 @@ impl fmt::Display for Owner {
             Owner::Macro(n) => write!(f, "macro{n}"),
             Owner::Mod(n) => write!(f, "mod{n}"),
             Owner::Morph(n) => write!(f, "morph{n}"),
+            Owner::Transport => f.write_str("transport"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -331,6 +380,7 @@ fn on_track(word: &str) -> Option<OnTrack> {
 /// dots).
 fn owner(words: &[&str]) -> Option<Owner> {
     match *words {
+        ["transport"] => Some(Owner::Transport),
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
@@ -399,6 +449,7 @@ mod tests {
             Owner::Macro(7),
             Owner::Mod(4),
             Owner::Morph(0),
+            Owner::Transport,
         ];
         for s in strips {
             v.push(Owner::Strip(s));
@@ -441,6 +492,10 @@ mod tests {
             (ParamAddr::macro_value(2), "macro2.0"),
             (ParamAddr::new(Owner::Mod(4), 1), "mod4.1"),
             (ParamAddr::morph_pos(0), "morph0.0"),
+            (
+                ParamAddr::new(Owner::Transport, transport::TEMPO),
+                "transport.7",
+            ),
         ];
         for (a, s) in cases {
             assert_eq!(a.to_string(), s);
@@ -478,6 +533,8 @@ mod tests {
             "t3.mix.0.1",
             "t.mix.0",
             "T3.mix.0",
+            "transport0.1",
+            "t1.transport.0",
         ] {
             assert!(s.parse::<ParamAddr>().is_err(), "{s:?} should not parse");
         }

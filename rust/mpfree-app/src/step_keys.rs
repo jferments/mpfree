@@ -24,6 +24,11 @@
 //! - **COPY + a step** picks it; each step tapped after it, COPY still
 //!   held, gets a copy, locks included.
 //!
+//! **On the synth** the pads are the steps of the whole line
+//! ([`crate::time::LINE`]): an empty step gets the pen (the pad or chord
+//! picked with STEP SEQ held) and sounds it once while stopped; a lit step
+//! comes off whole; ties, ERASE, COPY and locks take the whole step.
+//!
 //! No clip yet: the first tap on page 1 makes a one-bar clip and launches
 //! it, as a tap on Beats does. Each edit is a take: UNDO takes it back.
 //!
@@ -32,8 +37,9 @@
 //! for the rest of a note held over; white for the playhead; a faint glow
 //! on the first step of each beat; dark past the clip's end.
 
+use crate::app::step_pads::Pen;
 use crate::app::StepPads;
-use crate::time::{StepAction, StepClip, StepsData, TimeHost, STEP_TICKS};
+use crate::time::{StepAction, StepClip, StepsData, TimeHost, LINE, STEP_TICKS};
 use mpfree_seq::steps::Change;
 
 /// What a press did.
@@ -44,9 +50,9 @@ pub struct Pressed {
     /// A line for the screen, in place of the hint: why nothing happened,
     /// or what ERASE, COPY or a tie did.
     pub tell: Option<String>,
-    /// Sound the step's sound (a pad) once at this velocity: the
-    /// transport is stopped and a note went on.
-    pub sound: Option<(u8, u8)>,
+    /// Sound these pads once (pad, velocity): the transport is stopped
+    /// and a note went on (the step's sound, or on the synth the pen).
+    pub sound: Vec<(u8, u8)>,
 }
 
 /// How a pad was pressed: its velocity (after Full or Half Level and the
@@ -83,8 +89,8 @@ struct Down {
     sound: u8,
     step: usize,
     kind: Kind,
-    /// The press sounded the step: the release lets it go.
-    sounding: bool,
+    /// The pads the press sounded: the release lets them go.
+    sounding: Pen,
     /// When it went down, to find the step held first.
     order: u32,
 }
@@ -108,8 +114,8 @@ pub struct StepKeys {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Released {
     pub log: String,
-    /// The sound (a pad) the press sounded.
-    pub silence: Option<u8>,
+    /// The pads the press sounded.
+    pub silence: Vec<u8>,
 }
 
 impl StepKeys {
@@ -210,7 +216,7 @@ impl StepKeys {
             .copied()
     }
 
-    fn hold(&mut self, pad: usize, sound: u8, step: usize, kind: Kind, sounding: bool) {
+    fn hold(&mut self, pad: usize, sound: u8, step: usize, kind: Kind, sounding: Pen) {
         self.presses = self.presses.wrapping_add(1);
         self.down[pad] = Some(Down {
             sound,
@@ -240,7 +246,7 @@ impl StepKeys {
         self.keep_all();
         if p.erase {
             // Held as a step, so its release plays nothing.
-            self.hold(pad, s.sound, step, Kind::Done, false);
+            self.hold(pad, s.sound, step, Kind::Done, Pen::default());
             let tell = match time.step_action(StepAction::ClearSteps {
                 pad: s.sound,
                 from: step,
@@ -255,11 +261,11 @@ impl StepKeys {
             return Pressed {
                 log: String::new(),
                 tell: Some(tell),
-                sound: None,
+                sound: Vec::new(),
             };
         }
         if let Some(why) = past_the_end(clip, step) {
-            self.hold(pad, s.sound, step, Kind::Done, false);
+            self.hold(pad, s.sound, step, Kind::Done, Pen::default());
             return Pressed {
                 tell: Some(why),
                 ..Pressed::default()
@@ -268,13 +274,19 @@ impl StepKeys {
         let row = clip.map(|c| c.row(s.sound)).unwrap_or_default();
         let lit = row.get(step).copied().flatten().is_some();
         if p.copy {
-            self.hold(pad, s.sound, step, Kind::Done, false);
+            self.hold(pad, s.sound, step, Kind::Done, Pen::default());
             return self.copy(s.sound, step, lit, time);
         }
         if p.shift && !lit {
             // SHIFT + an empty step: held with no note, for a lock with no
             // note.
-            self.hold(pad, s.sound, step, Kind::Set { remove: false }, false);
+            self.hold(
+                pad,
+                s.sound,
+                step,
+                Kind::Set { remove: false },
+                Pen::default(),
+            );
             return Pressed {
                 log: format!(
                     "steps: step {} of {name} held for a lock with no note",
@@ -289,7 +301,7 @@ impl StepKeys {
             lead.and_then(|d| Some((d, row.get(d.step).copied().flatten()?)))
         {
             if step > lead.step && !lit {
-                self.hold(pad, s.sound, step, Kind::Done, false);
+                self.hold(pad, s.sound, step, Kind::Done, Pen::default());
                 let len = (step - lead.step + 1) as i64 * STEP_TICKS - note.nudge;
                 let r = time.step_action(StepAction::Change {
                     pad: s.sound,
@@ -308,7 +320,7 @@ impl StepKeys {
                             lead.step + 1,
                             step + 1
                         )),
-                        sound: None,
+                        sound: Vec::new(),
                     },
                     Err(e) => Pressed {
                         tell: Some(format!("steps: {e}")),
@@ -318,26 +330,51 @@ impl StepKeys {
             }
         }
         if lit {
-            self.hold(pad, s.sound, step, Kind::Set { remove: alone }, false);
+            self.hold(
+                pad,
+                s.sound,
+                step,
+                Kind::Set { remove: alone },
+                Pen::default(),
+            );
             return Pressed::default();
         }
-        let r = time.step_action(StepAction::Tap {
-            pad: s.sound,
-            step,
-            velocity: p.velocity.max(1),
+        let velocity = p.velocity.max(1);
+        // The step's sound, or on the synth the pen.
+        let pen = if s.line() { s.pen } else { Pen::of(s.sound) };
+        if pen.is_empty() {
+            self.hold(pad, s.sound, step, Kind::Done, Pen::default());
+            return Pressed {
+                tell: Some(
+                    "STEP SEQ: hold STEP SEQ and play a pad of the synth: new steps play it"
+                        .to_string(),
+                ),
+                ..Pressed::default()
+            };
+        }
+        let r = time.step_action(if s.line() {
+            let (keys, n) = pen.keys(velocity);
+            StepAction::Enter { step, keys, n }
+        } else {
+            StepAction::Tap {
+                pad: s.sound,
+                step,
+                velocity,
+            }
         });
         let sounding = !p.rolling && r.as_ref().is_ok_and(|l| !l.is_empty());
-        self.hold(pad, s.sound, step, Kind::Set { remove: false }, sounding);
+        let sounded = if sounding { pen } else { Pen::default() };
+        self.hold(pad, s.sound, step, Kind::Set { remove: false }, sounded);
         match r {
             Ok(log) => Pressed {
                 log,
                 tell: None,
-                sound: sounding.then_some((s.sound, p.velocity.max(1))),
+                sound: sounded.pads().iter().map(|&p| (p, velocity)).collect(),
             },
             Err(e) => Pressed {
                 log: String::new(),
                 tell: Some(format!("steps: {e}")),
-                sound: None,
+                sound: Vec::new(),
             },
         }
     }
@@ -393,7 +430,7 @@ impl StepKeys {
                     from + 1,
                     step + 1
                 )),
-                sound: None,
+                sound: Vec::new(),
             },
             Err(e) => Pressed {
                 tell: Some(format!("steps: {e}")),
@@ -413,7 +450,7 @@ impl StepKeys {
         }
         let mut out = Released {
             log: String::new(),
-            silence: d.sounding.then_some(d.sound),
+            silence: d.sounding.pads().to_vec(),
         };
         if d.kind == (Kind::Set { remove: true }) {
             // Only if it is still lit: a recording may have changed it.
@@ -423,12 +460,22 @@ impl StepKeys {
                 .as_ref()
                 .is_some_and(|c| c.row(d.sound).get(d.step).copied().flatten().is_some());
             if lit {
-                out.log = time
-                    .step_action(StepAction::Tap {
+                // The whole step, on the synth's line.
+                let off = if d.sound == LINE {
+                    StepAction::ClearSteps {
+                        pad: LINE,
+                        from: d.step,
+                        to: d.step + 1,
+                    }
+                } else {
+                    StepAction::Tap {
                         pad: d.sound,
                         step: d.step,
                         velocity: 1,
-                    })
+                    }
+                };
+                out.log = time
+                    .step_action(off)
                     .unwrap_or_else(|e| format!("steps: {e}"));
             }
         }
@@ -439,7 +486,11 @@ impl StepKeys {
 /// A sound's name for the lines: the pad's number, as the kit's names are
 /// the screen's.
 fn sound_name(sound: u8) -> String {
-    format!("pad {}", sound + 1)
+    if sound == LINE {
+        "the line".to_string()
+    } else {
+        format!("pad {}", sound + 1)
+    }
 }
 
 /// Why a press on step `step` changes nothing: it is past the clip's end,
@@ -569,6 +620,7 @@ mod tests {
     fn view(sound: u8, page: usize) -> StepPads {
         StepPads {
             sound,
+            pen: Pen::default(),
             page,
             follow: false,
             picking: false,
@@ -687,17 +739,17 @@ mod tests {
         assert!(time.steps().clip.is_none());
         // Pad 5 is step 5: a new clip, the note at 90, heard once.
         let p = keys.press(s, 4, at(90, false, false), &mut time);
-        assert_eq!(p.sound, Some((2, 90)));
+        assert_eq!(p.sound, [(2, 90)]);
         assert!(p.log.contains("new clip"), "{}", p.log);
         assert_eq!(row(&time)[4], Some(90));
-        assert_eq!(keys.release(4, &mut time).silence, Some(2));
+        assert_eq!(keys.release(4, &mut time).silence, [2]);
         // Pressed again while playing: it stays until the release, and
         // nothing sounds.
         let p = keys.press(s, 4, at(90, false, true), &mut time);
         assert_eq!(p, Pressed::default());
         assert_eq!(row(&time)[4], Some(90));
         let r = keys.release(4, &mut time);
-        assert_eq!(r.silence, None);
+        assert!(r.silence.is_empty());
         assert_eq!(row(&time)[4], None);
         // ERASE + a step clears it; an empty one says so.
         keys.press(s, 8, at(64, false, true), &mut time);
@@ -712,6 +764,69 @@ mod tests {
         // Past the end of the one-bar clip.
         let p = keys.press(view(2, 1), 0, at(90, false, true), &mut time);
         assert!(p.tell.is_some_and(|t| t.contains("16 steps (1 page)")));
+    }
+
+    /// On the synth the pads are the whole line's steps: an empty step
+    /// gets the pen (a chord here) at the press's velocity and sounds each
+    /// of its pads once while stopped; a tie lasts every note; a lit step
+    /// pressed alone comes off whole on its release; ERASE clears the
+    /// whole step; with no pen, a press says how to pick one.
+    #[test]
+    fn on_the_synth_a_step_takes_the_pen_and_comes_off_whole() {
+        let Ok(mut time) = TimeHost::new(44_100, 120.0) else {
+            return;
+        };
+        let mut keys = StepKeys::default();
+        let mut pen = Pen::of(0);
+        pen.add(4);
+        pen.add(7);
+        pen.add(4);
+        let s = StepPads {
+            pen,
+            ..view(LINE, 0)
+        };
+        let line = |time: &TimeHost| -> Vec<Option<usize>> {
+            let c = time.steps().clip.expect("a clip");
+            c.row(LINE).iter().map(|st| st.map(|st| st.notes)).collect()
+        };
+        // Step 1: a new clip with the chord at 90, each pad heard once.
+        let p = keys.press(s, 0, at(90, false, false), &mut time);
+        assert_eq!(p.sound, [(0, 90), (4, 90), (7, 90)]);
+        assert!(p.log.contains("new clip"), "{}", p.log);
+        assert_eq!(line(&time)[0], Some(3));
+        assert_eq!(keys.release(0, &mut time).silence, [0, 4, 7]);
+        let c = time.steps().clip.unwrap();
+        for pad in [0, 4, 7] {
+            assert_eq!(c.row(pad)[0].map(|st| st.velocity), Some(90), "pad {pad}");
+        }
+        // Held, then step 4 tapped: every note lasts to its end.
+        keys.press(s, 0, at(90, false, true), &mut time);
+        keys.press(s, 3, at(90, false, true), &mut time);
+        keys.release(3, &mut time);
+        keys.release(0, &mut time);
+        let c = time.steps().clip.unwrap();
+        for pad in [0, 4, 7] {
+            assert_eq!(c.row(pad)[0].map(|st| st.len), Some(4 * STEP_TICKS));
+        }
+        assert_eq!(line(&time)[0], Some(3), "the tie kept the step");
+        // Lit and pressed alone: the whole step comes off on the release.
+        keys.press(s, 0, at(90, false, true), &mut time);
+        assert_eq!(line(&time)[0], Some(3));
+        assert!(keys.release(0, &mut time).silence.is_empty());
+        assert_eq!(line(&time)[0], None);
+        // ERASE + a step clears the whole step.
+        keys.press(s, 8, at(64, false, true), &mut time);
+        keys.release(8, &mut time);
+        assert_eq!(line(&time)[8], Some(3));
+        let p = keys.press(s, 8, at(0, true, true), &mut time);
+        assert!(p.tell.is_some_and(|t| t.contains("UNDO")));
+        keys.release(8, &mut time);
+        assert_eq!(line(&time)[8], None);
+        // No pen: a press says how to pick one, and adds nothing.
+        let p = keys.press(view(LINE, 0), 2, at(90, false, true), &mut time);
+        assert!(p.tell.is_some_and(|t| t.contains("hold STEP SEQ")));
+        keys.release(2, &mut time);
+        assert_eq!(line(&time)[2], None);
     }
 
     /// The steps of sound 2 in the clip Beats shows: (step, velocity,
@@ -826,7 +941,7 @@ mod tests {
             &mut time,
         );
         assert!(p.log.contains("lock with no note"), "{}", p.log);
-        assert_eq!(p.sound, None);
+        assert!(p.sound.is_empty());
         assert_eq!(keys.held_steps(), Some((2, vec![4])));
         assert_eq!(notes(&time).len(), 1, "no note");
         time.step_action(StepAction::Lock {

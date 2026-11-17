@@ -69,6 +69,8 @@ The chip at the top of the screen says what the pads are ("Pads: steps · Kick")
 
 **Clearing.** Hold **ERASE** and hit a step to clear it, or press a **PAD BANK** button to clear that whole page of the sound's steps. **UNDO** brings them back.
 
+**On the synth.** With a synth on the pads, **STEP SEQ** makes the pads the steps of the whole line, every note at once, as on a one-lane step sequencer. Hold **STEP SEQ** and play a pad, or hold a chord, and let go: new steps play that (the chip says which, "Pads: steps · Poly · C3 + G3"). Hit an empty step and it plays the note or chord; hit a lit step and let go to take the whole step off. Locks, long notes, copying and clearing work as on a drum's steps. See [Steps on the synth](../making-music/synths.md#steps-on-the-synth).
+
 **TRACK MUTE** and **16 LEVEL** take the pads over too: only one of the three has them at a time, and the lit button tells you which.
 
 > [!MPC]

@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-fx/src/rooms.rs rust/mpfree-fx/src/cloud.rs rust/mpfree-fx/src/oversample.rs
-checked: 2026-11-17 c87022f
+checked: 2026-11-17 60bf82e
 -->
 # Reverbs: Room, Plate, Spring and the Cloud engine
 
-**Status:** built; FX quality PR B (16 Nov: the Mix curve, the Room's level) and PR E1 (17 Nov: the Room rebuilt) are in. The rebuilt Plate and Spring (PRs E2 and E3) and the reworked Cloud engine (PR E4) are written, measured and in review: each engine's section below describes the rebuilt design and says which PR brings it; until that PR merges, `main` runs the older engine described under [History and next](#10-history-and-next). With all four: 113 of 113 measured reverb targets met (87 of 114 on `main` with PR E1).
+**Status:** built; FX quality PR B (16 Nov: the Mix curve, the Room's level) and PRs E1 and E2 (17 Nov: the Room and the Plate rebuilt) are in. The rebuilt Spring (PR E3) and the reworked Cloud engine (PR E4) are written, measured and in review: each engine's section below describes the rebuilt design and says which PR brings it; until that PR merges, `main` runs the older engine described under [History and next](#10-history-and-next). With all four: 113 of 113 measured reverb targets met (98 of 114 on `main` with PRs E1 and E2).
 
 This page is the design of MPFree's reverbs as one effect type: what a reverb is for, the ideas underneath it, the research behind ours, which algorithms each engine uses and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter-by-parameter summary lives in [fx.md](fx.md) (the Room, Plate, Spring and Cloud reverb entries); the measured targets and their history in [fx-quality.md](fx-quality.md#reverb). The research notes, plan and baselines are in jferments/mpfree-claude `fx/quality/` (research-reverb.md, plan.md section 7, baseline-2026-11-16.md).
 
@@ -90,7 +90,7 @@ Why this design: the old Room's eight short lines fed directly could not be dens
 
 ### Plate
 
-From PR E2 (until it merges, `main` has Dattorro's tank, section 10).
+Since PR E2 (17 Nov); Dattorro's tank it replaced is in section 10.
 
 A plate has no walls, so it has no distinct early reflections; what it has is a dense onset that is there at once. The Plate's voice:
 
@@ -279,14 +279,15 @@ PR E4 adds 7 to 11 % to every Cloud character and quality: each diffuser stage's
 ## 10. History and next
 
 - **Built:** the Cloud reverb (Cloud Seed port, F2; Eco, Light and Full; Eco's polyphase IIR half-bands, 11 Nov). The Room, Plate and Spring with the MPC coverage effects (14 Nov), and the Reverb family's modes (14 Nov).
-- **The engines before PRs E1 to E3** (the Room's until PR E1 on 17 Nov; the Plate's and the Spring's on `main` until E2 and E3 merge):
+- **The engines before PRs E1 to E3** (the Room's and the Plate's until PRs E1 and E2 on 17 Nov; the Spring's on `main` until E3 merges):
   - *Room:* eight early reflections panned around the listener, then an eight-line feedback delay network of 19 to 48 ms at the default size, mixed by a Householder matrix and fed directly with no input diffusion, each line damped by a one-pole from Decay and Damping (Jot), with a slow modulation on a 16-frame grid. It summed the input to mono, sounded like a slap and a faint tail and took 220 to 314 ms to turn dense.
   - *Plate:* Dattorro's figure-eight tank (1997): four input diffusers, two tank halves (a modulated all-pass, a delay, damping and an all-pass) feeding each other, seven output taps a side, at his 29.761 kHz lengths scaled to the rate. Size moved its reads by whole frames, so it zipped.
   - *Spring:* the same chirp chains with the input summed to mono, Drip feeding each fresh chirp straight back outside the loss (so it changed Decay), Tone darkening every trip, an echo every Length plus the chirp's 9 ms, and a stretch fixed at one value.
 - **16 Nov:** measuring built (fxlab quality, the ratchet); baseline 68 of 114 reverb targets.
 - **PR B** (#423, 16 Nov): the Mix curve, equal power by default; the Room's wet signal +4 dB. 78 of 114.
 - **PR E1** (17 Nov): the Room rebuilt, 87 of 114.
-- **PRs E2 to E4** (17 Nov, in review): the Plate on its network (98), the Spring (102), the Cloud engine's decay, level and crossfades (113 of 113, Echoes' R3 reported only).
+- **PR E2** (17 Nov): the Plate on the Room's network, 98 of 114.
+- **PRs E3 and E4** (17 Nov, in review): the Spring (102), the Cloud engine's decay, level and crossfades (113 of 113, Echoes' R3 reported only).
 - **Next** (plan section 7.2, P2, each its own pull request): measure R2 (Damping's ratio) and R13 (Freeze, spillover); **Ducking** (Amount, Release) on every reverb; **Pre-delay sync** (Free, 1/64, 1/32, 1/16); **Diffusion** on the Plate; a **bass multiplier** and crossover on the Room and Hall; **Freeze** on the Room and Plate; the wobble at Full quality; and the MPC's own numbers from the next device round.
 
 ## 11. Sources

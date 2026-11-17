@@ -1,7 +1,8 @@
 //! Three classic reverbs, lighter than the Cloud reverb: [`Room`] (diffused
 //! early reflections and a sixteen-line feedback delay network), [`Plate`]
-//! (Dattorro's figure-eight tank) and [`Spring`] (chirping stretched
-//! all-pass chains in a feedback loop).
+//! (the same network at a plate's lengths, with a dense onset instead of
+//! reflections) and [`Spring`] (chirping stretched all-pass chains in a
+//! feedback loop).
 //!
 //! All three read their delay lines with cubic interpolation where the
 //! length moves (Size, modulation) and whole frames elsewhere, flush
@@ -15,55 +16,6 @@ use crate::kit::{
 use crate::svf::{Svf, SvfMode};
 use crate::{defaults, flush, lerp, Preset};
 
-/// A Schroeder all-pass around a delay line, in Dattorro's form:
-/// `w = x + g z`, `y = z - g w`, where `z` is the line's output.
-#[derive(Clone, Debug, Default)]
-struct Allpass {
-    line: Line,
-}
-
-impl Allpass {
-    fn new(frames: usize) -> Allpass {
-        Allpass {
-            line: Line::new(frames + 2),
-        }
-    }
-    /// One frame through `d` whole frames of delay.
-    #[inline]
-    fn run(&mut self, x: f32, g: f32, d: usize) -> f32 {
-        let z = self.line.tap(d);
-        let w = flush(x + g * z);
-        self.line.push(w);
-        z - g * w
-    }
-    /// One frame through a fractional, moving delay of `d` frames (at
-    /// least 2).
-    #[inline]
-    fn run_frac(&mut self, x: f32, g: f32, d: f32) -> f32 {
-        let z = self.line.read(d - 1.0);
-        let w = flush(x + g * z);
-        self.line.push(w);
-        z - g * w
-    }
-    fn clear(&mut self) {
-        self.line.clear();
-    }
-}
-
-/// A one-pole low-pass for damping: `y += (x - y) * k`.
-#[derive(Clone, Copy, Debug, Default)]
-struct Damp {
-    y: f32,
-}
-
-impl Damp {
-    #[inline]
-    fn run(&mut self, x: f32, k: f32) -> f32 {
-        self.y = flush(self.y + (x - self.y) * k);
-        self.y
-    }
-}
-
 /// The one-pole coefficient for a corner at `hz`.
 fn pole(hz: f32, rate: u32) -> f32 {
     1.0 - (-std::f32::consts::TAU * hz / rate as f32).exp()
@@ -74,7 +26,7 @@ fn pole(hz: f32, rate: u32) -> f32 {
 /// The lines of the late network.
 const LINES: usize = 16;
 /// The most first echoes a side.
-const TAPS: usize = 12;
+const TAPS: usize = 20;
 /// The diffusers' gain at Diffusion 100 %.
 const DIFF_MAX: f32 = 0.75;
 /// Decay is the time to fall 60 dB at this frequency, the middle of the
@@ -105,6 +57,9 @@ trait Voice {
     /// right: (ms at size 1, gain on the source's own side, gain on the
     /// other side).
     const EARLY: [&'static [(f32, f32, f32)]; 2];
+    /// Whether the first echoes follow the size (a room's walls) or keep
+    /// their times (a plate's onset).
+    const EARLY_SIZED: bool;
     /// The smallest and largest size, as a share of the lengths above.
     const SIZE_MIN: f32;
     const SIZE_MAX: f32;
@@ -284,7 +239,7 @@ fn cubic_back(buf: &[f32], m: usize, p: usize, t: f32) -> f32 {
 }
 
 /// The reverb under [`Room`] and [`Plate`]: each side's input through a
-/// pre-delay and four all-passes, twelve first echoes a
+/// pre-delay, a tone filter and four all-passes, twelve first echoes a
 /// side from a stereo pattern scaled by the size (a source keeps its
 /// side), then a sixteen-line feedback delay network mixed by a Hadamard
 /// matrix, each line damped by a one-pole set from its length, the decay
@@ -319,6 +274,10 @@ struct Net<V: Voice> {
     pre_step: f32,
     /// The pre-delay wanted, frames.
     pre_want: usize,
+    /// The input's tone filter, a one-pole low-pass (1: off), and its
+    /// state each side.
+    tone_k: f32,
+    tone: [f32; 2],
     early: [Ring; 2],
     /// The early taps for the size `placed`, whole frames (a moving
     /// size reads fractions, worked out a frame at a time).
@@ -403,6 +362,8 @@ impl<V: Voice> Net<V> {
             pre_k: 0.0,
             pre_step: 1.0,
             pre_want: 0,
+            tone_k: 1.0,
+            tone: [0.0; 2],
             early: Default::default(),
             taps_i: [[2; TAPS]; 2],
             diff: Default::default(),
@@ -487,6 +448,7 @@ impl<V: Voice> Net<V> {
     fn place(&mut self, size: f32) {
         let ms = self.rate as f32 * 0.001;
         for side in 0..2 {
+            let size = if V::EARLY_SIZED { size } else { 1.0 };
             for (k, &(t, _, _)) in V::EARLY[side].iter().enumerate() {
                 self.taps_i[side][k] = (t * ms * size).round() as usize;
             }
@@ -631,6 +593,19 @@ impl<V: Voice> Net<V> {
                 }
             }
         }
+        // The tone filter, where there is one.
+        if self.tone_k < 1.0 {
+            let k = self.tone_k;
+            for (side, ds) in d.iter_mut().enumerate() {
+                let mut y = self.tone[side];
+                for x in &mut ds[..n] {
+                    y = flush(y + (*x - y) * k);
+                    *x = y;
+                }
+                self.tone[side] = y;
+            }
+        }
+
         // Each side's input, diffused: the network's input, and what the
         // early echoes repeat, so each is a cluster rather than a click
         // (the echoes themselves stay out of the network: their comb
@@ -679,7 +654,7 @@ impl<V: Voice> Net<V> {
             } else {
                 (&mut b_side[0], &mut a_side[0])
             };
-            if still {
+            if still || !V::EARLY_SIZED {
                 for (&at, &(_, a, b)) in self.taps_i[src].iter().zip(V::EARLY[src]) {
                     let (x0, x1) = line.runs(w1.wrapping_sub(at), n);
                     let (o0, o1) = own[..n].split_at_mut(x0.len());
@@ -889,7 +864,7 @@ impl<V: Voice> Net<V> {
         self.pre = [Ring::new(pre), Ring::new(pre)];
         let last = |side: usize| V::EARLY[side].last().map_or(0.0, |e| e.0);
         let longest = last(0).max(last(1));
-        let early = (longest * V::SIZE_MAX * ms) as usize + 8 + CHUNK;
+        let early = (longest * V::SIZE_MAX.max(1.0) * ms) as usize + 8 + CHUNK;
         self.early = [Ring::new(early), Ring::new(early)];
         self.mod_frames = V::MOD_FRAMES * rate as f32 / 48_000.0;
         // A chunk's reads from the network come from before it (with the
@@ -957,6 +932,7 @@ impl<V: Voice> Net<V> {
         self.w = 0;
         self.cell = 0;
         self.ramp = false;
+        self.tone = [0.0; 2];
         self.state = [0.0; LINES];
         for (k, p) in self.phase.iter_mut().enumerate() {
             *p = (k as f32 * 0.618_034).fract();
@@ -1069,68 +1045,92 @@ pub static PLATE_PRESETS: &[Preset] = &[
     },
 ];
 
-/// The reference rate of Dattorro's published lengths.
-const DATTORRO_RATE: f32 = 29_761.0;
-const PLATE_IN: [usize; 4] = [142, 107, 379, 277];
-/// Tank: [modulated all-pass, delay, all-pass, delay] for each half.
-const PLATE_TANK: [[usize; 4]; 2] = [[672, 4453, 1800, 3720], [908, 4217, 2656, 3163]];
-/// Output taps: (half, element 1 delay / 2 all-pass / 3 delay, frames,
-/// sign), left then right, from the paper's table.
-const PLATE_TAPS: [[(usize, usize, usize, f32); 7]; 2] = [
-    [
-        (1, 1, 266, 1.0),
-        (1, 1, 2974, 1.0),
-        (1, 2, 1913, -1.0),
-        (1, 3, 1996, 1.0),
-        (0, 1, 1990, -1.0),
-        (0, 2, 187, -1.0),
-        (0, 3, 1066, -1.0),
-    ],
-    [
-        (0, 1, 353, 1.0),
-        (0, 1, 3627, 1.0),
-        (0, 2, 1228, -1.0),
-        (0, 3, 2673, 1.0),
-        (1, 1, 2111, -1.0),
-        (1, 2, 335, -1.0),
-        (1, 3, 121, -1.0),
-    ],
-];
-/// The tank's modulation: Dattorro's 16 frames at his rate, at about 1 Hz.
-const PLATE_EXCURSION: f32 = 16.0;
+/// The plate's voice.
+struct PlateVoice;
 
-/// A plate reverb after Jon Dattorro's 1997 design: four input diffusers,
-/// then a figure-eight tank of two halves that feed each other, each a
-/// modulated all-pass, a delay, damping and a second all-pass. The output
-/// is taken from seven points per side, so the two sides are dense and
-/// different. The modulation keeps the tank from ringing; Decay is the
-/// time to fall 60 dB.
+impl Voice for PlateVoice {
+    /// About geometric from 32 to 153 ms at size 1, nudged off simple
+    /// ratios: long lines, so many modes that none rings out.
+    const LINES_MS: [f32; LINES] = [
+        32.2, 35.4, 39.2, 43.6, 48.6, 53.8, 59.6, 66.2, 73.6, 81.8, 90.6, 100.4, 111.8, 124.0,
+        137.8, 152.6,
+    ];
+    const DIFF_MS: [[f32; 4]; 2] = [[1.49, 2.41, 3.97, 5.79], [1.67, 2.63, 4.19, 6.01]];
+    /// No walls: the plate's onset, dense from the first ms and on the
+    /// source's side, fading into the tail, the same at every Size.
+    const EARLY: [&'static [(f32, f32, f32)]; 2] = [
+        &[
+            (0.90, 0.90, 0.31),
+            (1.92, 0.95, 0.30),
+            (3.00, 0.63, 0.23),
+            (4.12, 0.79, 0.20),
+            (5.30, 0.69, 0.26),
+            (6.53, 0.52, 0.32),
+            (7.80, 0.66, 0.30),
+            (9.12, 0.49, 0.22),
+            (10.50, 0.45, 0.20),
+            (11.93, 0.53, 0.27),
+            (13.40, 0.35, 0.32),
+            (14.93, 0.40, 0.28),
+            (16.50, 0.40, 0.21),
+            (18.12, 0.27, 0.21),
+            (19.80, 0.35, 0.28),
+            (21.52, 0.29, 0.32),
+            (23.30, 0.23, 0.27),
+            (25.12, 0.29, 0.21),
+            (27.00, 0.20, 0.22),
+            (28.92, 0.20, 0.29),
+        ],
+        &[
+            (1.21, 1.03, 0.32),
+            (2.21, 0.82, 0.26),
+            (3.18, 0.67, 0.20),
+            (4.35, 0.84, 0.23),
+            (5.62, 0.59, 0.30),
+            (6.78, 0.59, 0.31),
+            (7.98, 0.65, 0.24),
+            (9.39, 0.43, 0.20),
+            (10.82, 0.52, 0.24),
+            (12.14, 0.48, 0.31),
+            (13.59, 0.35, 0.30),
+            (15.23, 0.45, 0.23),
+            (16.80, 0.34, 0.20),
+            (18.31, 0.30, 0.26),
+            (20.02, 0.36, 0.32),
+            (21.85, 0.25, 0.29),
+            (23.56, 0.26, 0.22),
+            (25.30, 0.28, 0.21),
+            (27.26, 0.19, 0.27),
+            (29.25, 0.23, 0.32),
+        ],
+    ];
+    const EARLY_SIZED: bool = false;
+    const SIZE_MIN: f32 = 0.55;
+    const SIZE_MAX: f32 = 1.05;
+    const PRE_MAX_MS: f32 = 250.0;
+    /// 16 frames at the default Mod (40 %).
+    const MOD_FRAMES: f32 = 40.0;
+    const MOD_HZ: f32 = 0.43;
+    const TRIM: f32 = 0.392;
+}
+
+/// The Plate's Size, 50 to 150 %, as a share of its lengths at size 1.
+fn plate_size(v: f32) -> f32 {
+    0.3 + 0.5 * v / 100.0
+}
+
+/// How loud the plate's onset is against its tail.
+const PLATE_EARLY: f32 = 0.5;
+
+/// A plate reverb: no walls, so no separate early reflections; each
+/// side's input through a bandwidth filter (Tone) and Dattorro's four
+/// input diffusers, a dense onset on the source's side, then the
+/// sixteen-line network of [`Room`] at a plate's lengths, bright and
+/// smooth. Size scales the lines (and the onset); Decay is the time to
+/// fall 60 dB in the mids and Damping how much sooner the top dies.
 pub struct Plate {
     v: [f32; 10],
-    rate: u32,
-    /// Frames per Dattorro frame at this rate.
-    scale: f32,
-    pre: Line,
-    bw: Damp,
-    input: [Allpass; 4],
-    mod_ap: [Allpass; 2],
-    delay1: [Line; 2],
-    ap2: [Allpass; 2],
-    delay2: [Line; 2],
-    damp: [Damp; 2],
-    /// The value each half last sent to the other.
-    feed: [f32; 2],
-    lfo: f32,
-    lfo_inc: f32,
-    low_cut: Svf,
-    size: Smooth,
-    decay_g: Smooth,
-    damping: Smooth,
-    pre_frames: Smooth,
-    modd: Smooth,
-    width: Smooth,
-    blend: Blend,
-    tone_k: f32,
+    net: Net<PlateVoice>,
 }
 
 impl Default for Plate {
@@ -1141,162 +1141,42 @@ impl Default for Plate {
 
 impl Plate {
     pub fn new() -> Plate {
-        let v = defaults(&PLATE_PARAMS);
         let mut p = Plate {
-            v,
-            rate: 48_000,
-            scale: 1.0,
-            pre: Line::default(),
-            bw: Damp::default(),
-            input: Default::default(),
-            mod_ap: Default::default(),
-            delay1: Default::default(),
-            ap2: Default::default(),
-            delay2: Default::default(),
-            damp: [Damp::default(); 2],
-            feed: [0.0; 2],
-            lfo: 0.0,
-            lfo_inc: 0.0,
-            low_cut: Svf::default(),
-            size: Smooth::new(1.0),
-            decay_g: Smooth::new(0.5),
-            damping: Smooth::new(0.5),
-            pre_frames: Smooth::new(0.0),
-            modd: Smooth::new(0.0),
-            width: Smooth::new(1.0),
-            blend: Blend::new(0.25, 0),
-            tone_k: 1.0,
+            v: defaults(&PLATE_PARAMS),
+            net: Net::new(),
         };
         p.setup(48_000);
         p
     }
 
-    /// The per-pass decay gain for Decay seconds at the size now: each
-    /// half of the loop passes two decay gains, so a full trip of
-    /// `half` seconds multiplies by g squared.
-    fn decay_gain(&self) -> f32 {
-        let half: usize = PLATE_TANK[0].iter().sum();
-        let secs = half as f32 / DATTORRO_RATE * (self.v[plate::SIZE as usize] / 100.0);
-        let rt = self.v[plate::DECAY as usize] * 0.001;
-        10f32.powf(-3.0 * secs / (2.0 * rt)).min(0.9995)
-    }
-
     fn apply(&mut self, id: u16, v: f32) {
+        let net = &mut self.net;
         match id {
-            plate::PREDELAY => self.pre_frames.target = v * 0.001 * self.rate as f32,
-            plate::SIZE => {
-                self.size.target = v / 100.0;
-                self.decay_g.target = self.decay_gain();
-            }
-            plate::DECAY => self.decay_g.target = self.decay_gain(),
-            plate::DAMPING => self.damping.target = 1.0 - 0.85 * v / 100.0,
-            plate::TONE => self.tone_k = pole(v, self.rate).min(1.0),
-            plate::MOD => self.modd.target = v / 100.0,
-            plate::LOW_CUT => self
-                .low_cut
-                .set(SvfMode::HighPass, v, 0.707, 0.0, self.rate),
-            plate::WIDTH => self.width.target = v / 100.0,
-            plate::MIX => self.blend.set_mix(v / 100.0),
-            plate::MIX_CURVE => self.blend.set_curve(v),
+            plate::PREDELAY => net.set_predelay_ms(v),
+            plate::SIZE => net.size.target = plate_size(v),
+            plate::DECAY | plate::DAMPING => net.set_decay(
+                self.v[plate::DECAY as usize] * 0.001,
+                self.v[plate::DAMPING as usize] / 100.0,
+            ),
+            plate::TONE => net.tone_k = pole(v, net.rate).min(1.0),
+            plate::MOD => net.modd.target = v / 100.0,
+            plate::LOW_CUT => net.low_cut.set(SvfMode::HighPass, v, 0.707, 0.0, net.rate),
+            plate::WIDTH => net.width.target = v / 100.0,
+            plate::MIX => net.blend.set_mix(v / 100.0),
+            plate::MIX_CURVE => net.blend.set_curve(v),
             _ => {}
         }
     }
 
     fn begin(&mut self, _ctx: &Ctx) {}
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
-        let sc = self.scale;
-        for i in 0..l.len() {
-            let size = self.size.glide();
-            let g = self.decay_g.glide();
-            let damping = self.damping.glide();
-            let modd = self.modd.glide();
-            let pre = self.pre_frames.glide();
-            let s = sc * size;
-            let x = 0.5 * (l[i] + r[i]);
-            self.pre.push(x);
-            let mut d = if pre >= 2.0 {
-                self.pre.read(pre - 1.0)
-            } else {
-                x
-            };
-            d = self.bw.run(d, self.tone_k);
-            for (k, ap) in self.input.iter_mut().enumerate() {
-                let gain = if k < 2 { 0.75 } else { 0.625 };
-                d = ap.run(d, gain, ((PLATE_IN[k] as f32 * s) as usize).max(1));
-            }
-            self.lfo = kit::wrap(self.lfo + self.lfo_inc);
-            let exc = PLATE_EXCURSION * sc * modd;
-            let diff2 = (g + 0.15).clamp(0.25, 0.5);
-            let mut out_half = [0.0f32; 2];
-            for h in 0..2 {
-                let len = &PLATE_TANK[h];
-                let m = if h == 0 {
-                    kit::sine(self.lfo)
-                } else {
-                    kit::cosine(self.lfo)
-                };
-                let into = d + self.feed[1 - h];
-                let a = self.mod_ap[h].run_frac(
-                    into,
-                    -0.7,
-                    (len[0] as f32 * s + exc * m).max(2.0 + exc),
-                );
-                let z1 = self.delay1[h].tap(((len[1] as f32 * s) as usize).max(1));
-                self.delay1[h].push(a);
-                let b = self.damp[h].run(z1, damping) * g;
-                let c = self.ap2[h].run(b, diff2, ((len[2] as f32 * s) as usize).max(1));
-                let z2 = self.delay2[h].tap(((len[3] as f32 * s) as usize).max(1));
-                self.delay2[h].push(c);
-                out_half[h] = z2 * g;
-            }
-            self.feed = out_half;
-            let mut y = [0.0f32; 2];
-            for (side, taps) in PLATE_TAPS.iter().enumerate() {
-                for &(h, el, at, sign) in taps {
-                    let at = ((at as f32 * s) as usize).max(1);
-                    let v = match el {
-                        1 => self.delay1[h].tap(at),
-                        2 => self.ap2[h].line.tap(at),
-                        _ => self.delay2[h].tap(at),
-                    };
-                    y[side] += sign * v;
-                }
-                y[side] = self.low_cut.run(side, 0.6 * y[side]);
-            }
-            let w = self.width.glide();
-            let mid = 0.5 * (y[0] + y[1]);
-            let (wl, wr) = (lerp(mid, y[0], w), lerp(mid, y[1], w));
-            let g = self.blend.next();
-            l[i] = kit::blend(l[i], wl, g);
-            r[i] = kit::blend(r[i], wr, g);
-        }
+        self.net.run(l, r);
     }
 
     fn setup(&mut self, rate: u32) {
-        self.rate = rate;
-        self.scale = rate as f32 / DATTORRO_RATE;
-        // Room for Size 150 % and the excursion.
-        let room = |n: usize| (n as f32 * self.scale * 1.5) as usize + 64;
-        self.pre = Line::new((0.26 * rate as f32) as usize);
-        self.input = PLATE_IN.map(|n| Allpass::new(room(n)));
-        for h in 0..2 {
-            self.mod_ap[h] = Allpass::new(room(PLATE_TANK[h][0]));
-            self.delay1[h] = Line::new(room(PLATE_TANK[h][1]));
-            self.ap2[h] = Allpass::new(room(PLATE_TANK[h][2]));
-            self.delay2[h] = Line::new(room(PLATE_TANK[h][3]));
-        }
-        self.lfo_inc = 1.0 / rate as f32;
-        for s in [
-            &mut self.size,
-            &mut self.decay_g,
-            &mut self.damping,
-            &mut self.modd,
-            &mut self.width,
-        ] {
-            s.set_time(rate, 50.0);
-        }
-        self.blend.set_time(rate, 50.0);
-        self.pre_frames.set_time(rate, 100.0);
+        self.net.setup(rate);
+        self.net.early_gain.target = PLATE_EARLY;
+        self.net.diff_g.target = DIFF_MAX;
         for id in 0..PLATE_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
         }
@@ -1304,50 +1184,23 @@ impl Plate {
     }
 
     fn clear(&mut self) {
-        self.pre.clear();
-        self.bw = Damp::default();
-        for a in self
-            .input
-            .iter_mut()
-            .chain(&mut self.mod_ap)
-            .chain(&mut self.ap2)
-        {
-            a.clear();
-        }
-        for d in self.delay1.iter_mut().chain(&mut self.delay2) {
-            d.clear();
-        }
-        self.damp = [Damp::default(); 2];
-        self.feed = [0.0; 2];
-        self.lfo = 0.0;
-        self.low_cut.reset();
-        for s in [
-            &mut self.size,
-            &mut self.decay_g,
-            &mut self.damping,
-            &mut self.pre_frames,
-            &mut self.modd,
-            &mut self.width,
-        ] {
-            s.snap(s.target);
-        }
-        self.blend.snap();
+        self.net.clear();
     }
 
     fn tail(&self) -> u32 {
-        ((self.v[plate::DECAY as usize] * 0.0012 + 0.3) * self.rate as f32) as u32
+        ((self.v[plate::DECAY as usize] * 0.0012 + 0.3) * self.net.rate as f32) as u32
     }
     fn rest(&self) -> u32 {
         // Its modulation keeps time across silence (reset, the wobble
         // would start again elsewhere); without it, what it holds is its
         // tail, here to 100 dB down (Decay is the time to fall 60).
-        if self.v[plate::MOD as usize] > 0.0 || self.modd.value > 0.0 {
+        if self.v[plate::MOD as usize] > 0.0 || self.net.modd.value > 0.0 {
             return u32::MAX;
         }
         let secs = self.v[plate::DECAY as usize] * 0.001 * 100.0 / 60.0
             + self.v[plate::PREDELAY as usize] * 0.001
             + 0.3;
-        (secs * self.rate as f32) as u32
+        (secs * self.net.rate as f32) as u32
     }
     fn lat(&self) -> u32 {
         0
@@ -1419,6 +1272,7 @@ impl Voice for RoomVoice {
             (45.1, 0.24, 0.22),
         ],
     ];
+    const EARLY_SIZED: bool = true;
     const SIZE_MIN: f32 = 0.25;
     const SIZE_MAX: f32 = 1.5;
     const PRE_MAX_MS: f32 = 100.0;
@@ -1905,6 +1759,13 @@ mod tests {
                 let wob = if k >= MOD_FROM { r.net.mod_frames } else { 0.0 };
                 let shortest = RoomVoice::LINES_MS[k] * RoomVoice::SIZE_MIN * ms - wob;
                 assert!(shortest >= r.net.chunk as f32 + 2.0, "{rate} {k}");
+            }
+            let mut p = Plate::new();
+            p.setup(rate);
+            for k in 0..LINES {
+                let wob = if k >= MOD_FROM { p.net.mod_frames } else { 0.0 };
+                let shortest = PlateVoice::LINES_MS[k] * PlateVoice::SIZE_MIN * ms - wob;
+                assert!(shortest >= p.net.chunk as f32 + 2.0, "plate {rate} {k}");
             }
         }
     }

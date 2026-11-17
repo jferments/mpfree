@@ -41,7 +41,7 @@ use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
 use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
-use super::{StepAction, StepClip, StepsData, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
+use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
@@ -802,15 +802,25 @@ impl TimeControl {
                 song_length: c.speed.to_song(c.length as f64),
                 song_step: c.speed.to_song(STEP_TICKS as f64),
                 origin,
-                locks: pitches.iter().map(|&p| (p, grid.lock_row(c, p))).collect(),
+                locks: pitches
+                    .iter()
+                    .map(|&p| (p, grid.lock_row(c, p)))
+                    .chain(std::iter::once((LINE, grid.lock_line(c))))
+                    .collect(),
+                // A whole step's lock (a chord's) is the line's.
                 lock_values: c
                     .locks
                     .iter()
-                    .filter_map(|l| {
-                        Some((l.sound?, grid.place(c.length, l.tick).0, l.addr, l.value))
+                    .map(|l| {
+                        let row = l.sound.unwrap_or(LINE);
+                        (row, grid.place(c.length, l.tick).0, l.addr, l.value)
                     })
                     .collect(),
-                rows: pitches.into_iter().map(|p| (p, grid.row(c, p))).collect(),
+                rows: pitches
+                    .into_iter()
+                    .map(|p| (p, grid.row(c, p)))
+                    .chain(std::iter::once((LINE, grid.line(c))))
+                    .collect(),
             })
         });
         StepsData {
@@ -833,7 +843,7 @@ impl TimeControl {
         let (slot, made) = match slot {
             Some(s) => (s, None),
             None => {
-                let StepAction::Tap { .. } = a else {
+                let (StepAction::Tap { .. } | StepAction::Enter { n: 1.., .. }) = a else {
                     return Ok(String::new());
                 };
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
@@ -862,6 +872,24 @@ impl TimeControl {
                 None,
                 format!("step {} of pad {}", step + 1, pad + 1),
             ),
+            StepAction::Enter { step, keys, n } => {
+                let keys = &keys[..usize::from(n).min(keys.len())];
+                let pads: Vec<String> = keys.iter().map(|k| (k.0 + 1).to_string()).collect();
+                (
+                    grid.enter(clip, step, keys),
+                    None,
+                    if keys.is_empty() {
+                        format!("step {} of the line", step + 1)
+                    } else {
+                        format!("step {} of the line: pads {}", step + 1, pads.join(", "))
+                    },
+                )
+            }
+            StepAction::Change { pad, step, change } if pad == LINE => (
+                grid.change_all(clip, step, change),
+                Some(change.key_all(step)),
+                format!("step {} of the line: {change:?}", step + 1),
+            ),
             StepAction::Change { pad, step, change } => (
                 grid.change(clip, pad, step, change),
                 Some(change.key(pad, step)),
@@ -870,15 +898,19 @@ impl TimeControl {
             StepAction::ChangeSteps { pad, steps, change } => {
                 let held: Vec<usize> = (0..128).filter(|i| steps & (1u128 << i) != 0).collect();
                 (
-                    grid.change_steps(clip, pad, &held, change),
+                    if pad == LINE {
+                        grid.change_line(clip, &held, change)
+                    } else {
+                        grid.change_steps(clip, pad, &held, change)
+                    },
                     Some(change.key_steps(pad, steps)),
                     format!(
-                        "steps {} of pad {}: {change:?}",
+                        "steps {} of {}: {change:?}",
                         held.iter()
                             .map(|i| (i + 1).to_string())
                             .collect::<Vec<_>>()
                             .join(", "),
-                        pad + 1
+                        row_name(pad)
                     ),
                 )
             }
@@ -889,16 +921,17 @@ impl TimeControl {
                 value,
             } => {
                 let held = step_list(steps);
+                let sound = (pad != LINE).then_some(pad);
                 (
-                    grid.lock_steps(clip, Some(pad), &held, addr, value),
+                    grid.lock_steps(clip, sound, &held, addr, value),
                     // A turn's detents join one take; a lock taken off
                     // (the step inspector's ×) is a take of its own, so
                     // UNDO brings the lock back rather than the sound.
-                    value.map(|_| mpfree_seq::steps::lock_key_steps(Some(pad), steps, addr)),
+                    value.map(|_| mpfree_seq::steps::lock_key_steps(sound, steps, addr)),
                     format!(
-                        "{} of pad {}: lock {addr} {}",
+                        "{} of {}: lock {addr} {}",
                         steps_text(&held),
-                        pad + 1,
+                        row_name(pad),
                         value.map_or("off".to_string(), |v| format!("{v}"))
                     ),
                 )
@@ -906,9 +939,9 @@ impl TimeControl {
             StepAction::ClearLocks { pad, steps } => {
                 let held = step_list(steps);
                 (
-                    grid.clear_step_locks(clip, Some(pad), &held),
+                    grid.clear_step_locks(clip, (pad != LINE).then_some(pad), &held),
                     None,
-                    format!("{} of pad {}", steps_text(&held), pad + 1),
+                    format!("{} of {}", steps_text(&held), row_name(pad)),
                 )
             }
             StepAction::ClearPad { pad } => (
@@ -917,12 +950,16 @@ impl TimeControl {
                 format!("pad {}'s steps", pad + 1),
             ),
             StepAction::ClearSteps { pad, from, to } => (
-                grid.clear_steps(clip, pad, from, to),
+                if pad == LINE {
+                    grid.clear_line(clip, from, to)
+                } else {
+                    grid.clear_steps(clip, pad, from, to)
+                },
                 None,
                 if to == from + 1 {
-                    format!("step {} of pad {}", from + 1, pad + 1)
+                    format!("step {} of {}", from + 1, row_name(pad))
                 } else {
-                    format!("steps {} to {to} of pad {}", from + 1, pad + 1)
+                    format!("steps {} to {to} of {}", from + 1, row_name(pad))
                 },
             ),
             StepAction::CopySteps {
@@ -931,16 +968,20 @@ impl TimeControl {
                 to,
                 count,
             } => (
-                grid.copy_steps(clip, pad, from, to, count),
+                if pad == LINE {
+                    grid.copy_line(clip, from, to, count)
+                } else {
+                    grid.copy_steps(clip, pad, from, to, count)
+                },
                 None,
                 if count == 1 {
-                    format!("step {} of pad {} to step {}", from + 1, pad + 1, to + 1)
+                    format!("step {} of {} to step {}", from + 1, row_name(pad), to + 1)
                 } else {
                     format!(
-                        "steps {} to {} of pad {} to steps {} to {}",
+                        "steps {} to {} of {} to steps {} to {}",
                         from + 1,
                         from + count,
-                        pad + 1,
+                        row_name(pad),
                         to + 1,
                         to + count
                     )
@@ -980,7 +1021,9 @@ impl TimeControl {
                 "steps: new clip {name} in {}, {what} {on}",
                 self.project.tracks[track].name
             ),
-            (None, StepAction::Tap { .. }) => format!("steps: {what} {on}"),
+            (None, StepAction::Tap { .. } | StepAction::Enter { .. }) => {
+                format!("steps: {what} {on}")
+            }
             (None, StepAction::ClearPad { .. } | StepAction::ClearSteps { .. }) => {
                 format!("steps: {what} erased")
             }
@@ -2047,6 +2090,15 @@ fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String {
 }
 
 /// The steps whose bits are set (step 0 the lowest).
+/// A step row as the log names it: "pad 5", or "the line".
+fn row_name(pad: u8) -> String {
+    if pad == LINE {
+        "the line".to_string()
+    } else {
+        format!("pad {}", pad + 1)
+    }
+}
+
 fn step_list(steps: u128) -> Vec<usize> {
     (0..128).filter(|i| steps & (1u128 << i) != 0).collect()
 }
