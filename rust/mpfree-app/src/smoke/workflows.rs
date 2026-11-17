@@ -1477,18 +1477,71 @@ mod tests {
         });
     }
 
-    /// The Synth tab puts the synth on the pads, and it stays there after
-    /// leaving (the header says so) until a kit is picked from the chip's
-    /// list. The wheel alone moves the outline and keeps the synth.
+    /// A kit for each track (the sampler review's decision 1): a kit
+    /// picked in the chip's list is the armed track's, arming another
+    /// track moves the pads to what that one plays, and Arrange says what
+    /// each plays. Track 1 keeps kit 1 throughout.
     #[test]
-    fn the_synth_stays_on_the_pads_until_a_kit_is_picked() {
+    fn each_track_keeps_the_kit_picked_for_it() {
+        use crate::gui::FromUi;
+        use mpfree_time_ui::TimeAction;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            assert!(s.kits() >= 2, "{} kits", s.kits());
+            s.route(FromUi::Time(TimeAction::Arm(Some(1))));
+            // The arm reaches the app with the next periods.
+            s.run_for(0.05);
+            assert_eq!(s.app.track(), 1);
+            let chip = s.control("header", "chip", "").unwrap().target;
+            s.press_target(&chip);
+            let rows: Vec<_> = s
+                .controls()
+                .into_iter()
+                .filter(|c| c.widget == "kits" && c.target.id == "row")
+                .collect();
+            s.press_target(&rows[1].target).run_for(0.2);
+            assert_eq!(
+                (s.kit, s.track_kits.entry(1)),
+                (1, 1),
+                "track 2 plays kit 2"
+            );
+            assert_eq!(s.track_kits.entry(0), 0, "track 1 keeps kit 1");
+            s.route(FromUi::Time(TimeAction::Arm(Some(0))));
+            // The arm reaches the app with the next periods.
+            s.run_for(0.05);
+            assert_eq!(s.kit, 0, "the pads follow track 1 to kit 1");
+            s.route(FromUi::Time(TimeAction::Arm(Some(1))));
+            // The arm reaches the app with the next periods.
+            s.run_for(0.05);
+            assert_eq!(s.kit, 1, "and track 2 back to kit 2");
+            s.press("header", "tab", "Arrange").settle();
+            let sounds: Vec<&str> = s.screen.time.tracks[..2]
+                .iter()
+                .map(|t| t.sound.as_str())
+                .collect();
+            assert_eq!(sounds, ["Kit", "Kit 2"]);
+        });
+    }
+
+    /// Opening the Synth tab changes what no track plays (the sequencer
+    /// thread's point, 17 Nov 17:43Z): the armed track keeps its kit, and
+    /// the hint says how to play the synth on it. Picked from the kit
+    /// chip's list, the synth is the track's, and stays after leaving the
+    /// tab (the header says so) until a kit is picked there. The wheel
+    /// alone moves the outline and keeps the synth.
+    #[test]
+    fn the_synth_plays_on_a_track_once_picked_until_a_kit_is() {
         on_big_stack(|| {
             let mut s = Session::new();
             let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
             assert!(!s.synth_on);
             s.press("header", "tab", "Synth");
             assert_eq!(s.view(), View::Synth);
-            assert!(s.synth_on, "the pads play the synth on its tab");
+            assert!(!s.synth_on, "opening the tab leaves the track on its kit");
+            assert!(s.hint().contains("pick Synth"), "{}", s.hint());
+            s.pick_synth();
+            assert!(s.synth_on, "picked, the pads play the synth");
+            assert!(s.track_kits.plays_synth(s.app.track()), "the armed track's");
             s.press("header", "tab", "Play");
             assert!(s.synth_on, "and still on Play");
             assert!(chip(&mut s).starts_with("Poly"), "{}", chip(&mut s));
@@ -3013,6 +3066,161 @@ mod tests {
             assert_eq!(s.time.muted(0), Some(false), "STOP landed it");
             assert!(s.time.mute_wait().is_none());
             s.button("TRACK MUTE");
+        });
+    }
+
+    /// Save state and Reload clip (sequencer S4): the clip card keeps the
+    /// pattern, two more steps change it, and Reload clip on the morph
+    /// bar brings it back on the next bar line; UNDO takes the reload
+    /// back.
+    #[test]
+    fn reload_clip_brings_a_saved_pattern_back_on_the_bar() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.press("header", "tab", "Arrange").settle();
+            let tab = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == "record" && o.target.id == "tab" && o.target.index == 1)
+                .expect("the Record panel's Clip tab")
+                .target;
+            s.press_target(&tab);
+            s.settle();
+            assert!(
+                s.control("morph", "button", "Reload clip")
+                    .is_some_and(|c| !c.target.enabled),
+                "nothing saved yet"
+            );
+            s.press("clip-card", "button", "Save state").settle();
+            let (t, slot) = s.time.state().focus().unwrap();
+            let notes = |s: &Session| s.time.project().clip(t, slot).unwrap().notes.len();
+            let saved = notes(&s);
+            assert_eq!(saved, 4);
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l.contains("save state: ") && l.contains(" kept")));
+            // Two more steps.
+            s.press("header", "tab", "Play").settle();
+            s.press("steps", "step", "Kick step 3");
+            s.press("steps", "step", "Kick step 7");
+            assert_eq!(notes(&s), 6);
+            s.press("header", "tab", "Arrange").settle();
+            s.button("PLAY").run_for(0.3);
+            let n = s.lines.len();
+            s.press("morph", "button", "Reload clip").settle();
+            assert_eq!(s.time.state().reloads.len(), 1, "it waits for the bar");
+            assert_eq!(notes(&s), 6);
+            s.run_for(2.0);
+            assert_eq!(notes(&s), saved, "back on the line");
+            let lines = s.lines[n..].to_vec();
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("reload: ") && l.contains(" back as saved on bar 2")),
+                "{lines:#?}"
+            );
+            s.button("UNDO").settle();
+            assert_eq!(notes(&s), 6, "UNDO takes the reload back");
+            s.button("STOP");
+        });
+    }
+
+    /// The song list (sequencer S4, mockup D): in Perform MAIN goes
+    /// Clips, Song, List; scenes added to the list, a step's times, and
+    /// Play from here plays it from the next bar line, the step lit with
+    /// its pass.
+    #[test]
+    fn the_song_list_plays_from_a_step_in_perform() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button_with("SHIFT", "MAIN").settle();
+            assert!(s.time.project().perform);
+            s.button("MAIN").settle();
+            s.button("MAIN").settle();
+            assert!(s.time.state().song_view);
+            s.button("MAIN").settle();
+            let st = s.time.state();
+            assert!(st.list_view && !st.song_view);
+            assert!(s.control("song-list", "add", "+ Add a scene").is_some());
+            s.press("song-list", "add", "+ Add a scene").settle();
+            s.press("song-list", "add", "+ Add a scene").settle();
+            s.press("song-list", "times-more", "Step 1 +").settle();
+            let list = &s.time.project().arrangement.list;
+            assert_eq!(list.steps.len(), 2);
+            assert_eq!(list.steps[0].times, 2);
+            s.press("song-list", "step", "Step 1").settle();
+            assert_eq!(s.time.state().list_pick, Some(0));
+            s.button("PLAY").run_for(0.3);
+            s.press("song-list", "button", "Play from here").settle();
+            assert!(
+                s.time.state().list[0].waiting,
+                "it waits for the next bar line"
+            );
+            s.run_for(2.2);
+            let st = s.time.state();
+            assert_eq!(st.list[0].playing.map(|p| p.0), Some(1), "pass 1");
+            assert!(s.said().iter().any(|l| l.contains("song list from step 1")));
+            s.button("STOP");
+        });
+    }
+
+    /// Rec song with REC (sequencer S4): in Perform the take REC records
+    /// brings Rec song with it, and the REC chip says "+ Rec song"; what
+    /// the grid played goes into the song when the take ends. The target
+    /// list's switch takes it off for the next take.
+    #[test]
+    fn in_perform_rec_brings_rec_song_with_the_take() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button_with("SHIFT", "MAIN").settle();
+            assert!(s.time.project().perform);
+            let chip = |s: &mut Session| {
+                s.control("play-transport", "rec", "")
+                    .map(|c| c.target.label)
+                    .unwrap_or_default()
+            };
+            assert!(chip(&mut s).ends_with(" + Rec song"), "{}", chip(&mut s));
+            s.button("REC").button("PLAY");
+            s.run_for(2.5);
+            assert!(s.time.state().song_rec, "the take turned Rec song on");
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "time: rec song: on with REC (Perform)"),
+                "{:?}",
+                s.said()
+            );
+            s.pad(2, 100, 0.05);
+            s.run_for(2.0);
+            s.button("STOP").run_for(0.3);
+            assert!(!s.time.state().song_rec, "off with the take");
+            assert!(
+                !s.time.state().placements.is_empty(),
+                "what the grid played is in the song"
+            );
+            // The list's switch: off for the next take.
+            let c = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&c);
+            s.settle();
+            s.press("rec-list", "switch", "Rec song").settle();
+            assert!(!s.time.state().song_with_take);
+            assert!(!chip(&mut s).ends_with(" + Rec song"), "{}", chip(&mut s));
+            s.press("rec-list", "switch", "Rec song").settle();
+            assert!(s.time.state().song_with_take, "and back");
+            s.press("rec-list", "close", "Close").settle();
         });
     }
 }

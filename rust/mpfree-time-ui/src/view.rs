@@ -31,6 +31,10 @@ use crate::editor::{
     drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox, NoteGrid,
     PEN, STEP_FALLBACK,
 };
+use crate::list::{
+    ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
+    LIST_TO_SONG, SCENE_STEP,
+};
 use crate::song::{
     AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
@@ -38,21 +42,22 @@ use crate::song::{
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
-    TakeList, TransportBar, ADD_TRACK, GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
+    TakeList, TransportBar, ADD_TRACK, BACK_TO_SONG, GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK,
+    ROWS_ON, ROW_DROP,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
 use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
-    Clip, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise, Source, Speed,
-    LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS, SLOTS,
+    Clip, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise, SceneSettings, Source,
+    Speed, LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
 use mpfree_ui::qlink::QLinkColumn;
-use mpfree_ui::widgets::{Chip, OptionList, OptionRow};
+use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
 
 /// Widget names the page adds. The app's own are `header` and `hint`.
@@ -61,9 +66,13 @@ pub const CLIPS: &str = "clips";
 pub const RECORD: &str = "record";
 /// The clip settings card: the Record panel's Clip tab (sequencer S3).
 pub const CLIP_CARD: &str = "clip-card";
+/// The scene editor: the Record panel's Scene tab (sequencer S4).
+pub const SCENE_CARD: &str = "scene-card";
 pub const TAKES: &str = "takes";
 pub const MORPH: &str = "morph";
 pub const SONG: &str = "song";
+/// The song list (sequencer S4): Arrange's third view.
+pub const SONG_LIST: &str = "song-list";
 /// Play's Q-Link column, at Arrange's right edge too: the app's
 /// `QLinkColumn` (its `play_page::QLINKS`), one widget on both pages.
 pub const QLINKS: &str = "qlinks";
@@ -86,6 +95,26 @@ pub const CLIPS_LAYOUT: &str =
 /// The same page in its Song view: the timeline in place of the grid.
 pub const SONG_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+/// The Clips view, the Song view and the song list with the Record panel
+/// on its Scene tab: the scene editor in the record settings' place.
+pub const CLIPS_SCENE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+pub const SONG_SCENE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+pub const LIST_SCENE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(song-list:*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+/// The hint line with the Record panel's Scene tab.
+pub const SCENE_HINT: &str =
+    "Scene: the one playing, or pick one on its first row   ·   wheel: pick a row, - / +: change it   ·   Mutes now: the mutes as they are now   ·   UNDO takes a change back";
+/// The same page with the song list in place of the grid and the morph
+/// (mockup D), and with the Record panel on its Clip tab.
+pub const LIST_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(song-list:*, col(record:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+pub const LIST_CARD_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(song-list:*, col(clip-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+/// The hint line under the song list.
+pub const LIST_HINT: &str =
+    "Tap a step to pick it   ·   ‹ ›: its scene   ·   – / +: times   ·   + Add a scene: after the pick   ·   Play from here: on the next launch line   ·   List → song: onto the timeline";
 /// The Clips view and the Song view with the Record panel on its Clip tab:
 /// the clip settings card in the record settings' place.
 pub const CLIPS_CARD_LAYOUT: &str =
@@ -155,10 +184,44 @@ pub fn edit_hint(lens: Lens) -> &'static str {
 pub const RECORD_ROWS: [&str; 8] = [
     "Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure", "Quantise", "Launch",
 ];
+/// The scene editor's rows, top to bottom.
+pub const SCENE_ROWS: [&str; 6] = ["Scene", "Follow", "After", "Chance", "Or", "Mutes"];
+/// `TimeAction::SceneSettings`'s card row for a rename.
+pub const SCENE_NAME: u8 = SCENE_ROWS.len() as u8;
+/// The scene editor's buttons, under its rows: `Toggle(k)`.
+pub const SCENE_RENAME: usize = 0;
+pub const SCENE_MUTES_NOW: usize = 1;
+/// The other actions the scene editor's Or row steps through: Stay,
+/// then the follow actions.
+pub const OTHERS: [FollowAction; 9] = [
+    FollowAction::Stay,
+    FollowAction::Next,
+    FollowAction::Previous,
+    FollowAction::First,
+    FollowAction::Last,
+    FollowAction::Any,
+    FollowAction::Other,
+    FollowAction::Again,
+    FollowAction::Stop,
+];
 /// The clip settings card's rows, top to bottom.
 pub const CLIP_ROWS: [&str; 9] = [
     "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After", "Launch", "Mode",
 ];
+/// The clip card's Mode row: Restart, Legato (takes over the playing
+/// clip's place), Once (a one-shot: one pass, then the track stops).
+pub const MODES: [&str; 3] = ["Restart", "Legato", "Once"];
+
+/// A clip's settings' place in [`MODES`] (one-shot over legato).
+pub fn mode_of(s: &ClipSettings) -> usize {
+    if s.once {
+        2
+    } else if s.legato {
+        1
+    } else {
+        0
+    }
+}
 /// The speeds the card's Speed row steps through, slowest first, as
 /// (clip ticks, song ticks): x1/8 to x4.
 pub const SPEEDS: [(u8, u8); 12] = [
@@ -363,6 +426,11 @@ pub struct TakeRow {
     pub settings: bool,
     /// COPY + an empty slot pasted a clip there.
     pub pasted: bool,
+    /// Reload clip put a clip's saved state back (sequencer S4).
+    pub reloaded: bool,
+    /// The scene editor changed this row's scene (its name, mutes or
+    /// follow action).
+    pub scene: Option<usize>,
 }
 
 impl TakeRow {
@@ -400,13 +468,16 @@ impl TakeRow {
             song: t.song.as_ref().map(|e| e.change),
             settings: t.settings.is_some(),
             pasted: t.pasted,
+            reloaded: t.reloaded,
+            scene: t.scene.as_ref().map(|e| e.row),
         }
     }
 
     /// What it is: "take", "capture", "edit", "delete", "paste",
-    /// "settings", for a drop "move",
+    /// "settings", "reload", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
-    /// "length", "delete", "unique" or "scenes".
+    /// "length", "delete", "unique" or "scenes", "list" for the song
+    /// list and "scene" for the scene editor.
     pub fn word(&self) -> &'static str {
         if let Some(c) = self.song {
             return match c {
@@ -416,6 +487,7 @@ impl TakeRow {
                 SongChange::Deleted { .. } => "delete",
                 SongChange::Unique { .. } => "unique",
                 SongChange::Scenes { .. } => "scenes",
+                SongChange::List | SongChange::ListToSong { .. } => "list",
             };
         }
         if let Some(d) = self.dropped {
@@ -425,7 +497,11 @@ impl TakeRow {
                 ClipDrop::Copied(..) | ClipDrop::RowCopied { .. } => "copy",
             };
         }
-        if self.deleted {
+        if self.scene.is_some() {
+            "scene"
+        } else if self.reloaded {
+            "reload"
+        } else if self.deleted {
             "delete"
         } else if self.pasted {
             "paste"
@@ -489,9 +565,25 @@ pub struct TimeState {
     pub scenes: Vec<String>,
     /// The scene morph. The app sets it.
     pub morph: MorphInfo,
+    /// The scene editor's row (the Record panel's Scene tab, S4), and
+    /// its name, mutes and follow action. The app sets them.
+    pub scene_focus: usize,
+    pub scene: SceneSettings,
     /// The page shows the song (the timeline) in place of the grid. The
     /// app sets it.
     pub song_view: bool,
+    /// The page shows the song list in place of the grid (it wins over
+    /// `song_view`). The app sets it.
+    pub list_view: bool,
+    /// The song list's steps as it shows them, the step picked, and
+    /// whether it goes round. The app sets them.
+    pub list: Vec<ListRow>,
+    pub list_pick: Option<usize>,
+    pub list_looped: bool,
+    /// While the list plays: the step after the one playing (None: it
+    /// stops) and the line it comes in on, for Perform's NEXT. The app
+    /// sets it.
+    pub list_next: Option<(Option<usize>, Tick)>,
     /// Song mode: the song plays on tracks with no clip launched. The app
     /// sets it.
     pub song_on: bool,
@@ -507,6 +599,15 @@ pub struct TimeState {
     /// Mute and solo changes waiting for their line (the mute queue). The
     /// app sets it.
     pub mute_wait: Option<MuteWait>,
+    /// The clips with a saved state (Save state on the clip card, S4), as
+    /// (track, slot): Reload clip brings it back.
+    pub saved: Vec<(usize, usize)>,
+    /// Reloads waiting for their launch line, as (track, slot, the line's
+    /// song tick).
+    pub reloads: Vec<(usize, usize, Tick)>,
+    /// The scene playing's follow action, for Perform's NEXT (S4). The
+    /// app sets it.
+    pub follow_next: Option<FollowNext>,
     /// The arrangement's placements and markers.
     pub placements: Vec<PlacementInfo>,
     pub markers: Vec<(Tick, String)>,
@@ -518,6 +619,9 @@ pub struct TimeState {
     /// Live to song armed: what the grid plays goes into the song. The app
     /// sets it.
     pub song_rec: bool,
+    /// Perform (sequencer S4): the take recording, or the next one, turns
+    /// Rec song on for its length; the REC chip says "+ Rec song".
+    pub song_with_take: bool,
     /// The note editor, when it is open. The app sets it.
     pub edit: Option<Box<EditInfo>>,
     /// The audio tracks' lanes on the Song view (layout spec 4c), under
@@ -665,12 +769,21 @@ impl TimeState {
             loop_cell: None,
             scenes: project.scenes.iter().map(|s| s.name.clone()).collect(),
             morph: MorphInfo::default(),
+            scene_focus: 0,
+            scene: SceneSettings::default(),
             song_view: false,
+            list_view: false,
+            list: Vec::new(),
+            list_pick: None,
+            list_looped: false,
+            list_next: None,
             song_on: false,
             perform: project.perform,
             launch: project.launch,
             cue_lines: Vec::new(),
             mute_wait: None,
+            saved: Vec::new(),
+            reloads: Vec::new(),
             placements: project
                 .arrangement
                 .placements
@@ -694,6 +807,8 @@ impl TimeState {
             selected: None,
             section: None,
             song_rec: false,
+            song_with_take: false,
+            follow_next: None,
             edit: None,
             audio: Vec::new(),
             waves: Vec::new(),
@@ -751,7 +866,8 @@ impl TimeState {
 // ---------------------------------------------------------------- actions
 
 /// What a touch on the time engine's screens asks for. The app applies it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Not `Copy`: the scene editor's settings carry a name.
+#[derive(Clone, Debug, PartialEq)]
 pub enum TimeAction {
     /// For the audio thread's command queue.
     Transport(Command),
@@ -851,6 +967,23 @@ pub enum TimeAction {
     LaunchScene(usize),
     /// Stop every track on the next bar line.
     StopAll,
+    /// Every track back to the arrangement on the launch line: song mode
+    /// on, and every clip launched over the song stopped there (sequencer
+    /// S4, "Back to song", Ableton's Back to Arrangement).
+    BackToSong,
+    /// Keep the clip as it is now (sequencer S4, Elektron's temp save):
+    /// Reload clip brings this state back.
+    SaveState {
+        track: usize,
+        slot: usize,
+    },
+    /// Put the clip's saved state back, on its launch line while it plays
+    /// (at once otherwise), as an edit UNDO takes back. Asked again while
+    /// it waits, the reload is taken back.
+    Reload {
+        track: usize,
+        slot: usize,
+    },
     /// Put these rows on the morph's A and B (loaded again if it is on).
     MorphRows {
         a: usize,
@@ -867,6 +1000,45 @@ pub enum TimeAction {
     SaveScene(usize),
     /// Show the Song view (the timeline) or the grid.
     SongView(bool),
+    /// The scene editor's row (its Scene row's ‹ ›).
+    SceneFocus(usize),
+    /// The scene editor: row `row` given `settings` (its name, mutes and
+    /// follow action), card row `card_row` turned (`SCENE_NAME` for a
+    /// rename). One take a row: turning the same row again joins it.
+    SceneSettings {
+        row: usize,
+        card_row: u8,
+        settings: SceneSettings,
+    },
+    /// Show the song list (Arrange's third view, sequencer S4), or (false)
+    /// the grid.
+    ListView(bool),
+    /// Pick a step of the song list, or none.
+    ListPick(Option<usize>),
+    /// Play the song list from this step: its scene as a scene launch
+    /// does, then each step after it in turn
+    /// (`mpfree_perform::Perform::play_list`).
+    ListPlay(usize),
+    /// Step `step`'s times one more or fewer (1 to 99).
+    ListTimes {
+        step: usize,
+        delta: i32,
+    },
+    /// Step `step`'s scene the next or the previous row with a clip.
+    ListScene {
+        step: usize,
+        delta: i32,
+    },
+    /// A step after the one picked (at the end with none): the next row
+    /// with a clip after its scene, two times.
+    ListAdd,
+    /// Take this step out of the list.
+    ListRemove(usize),
+    /// The list goes round after its last step, or stops.
+    ListLoop(bool),
+    /// The list onto the end of the song, each step its scene's clips its
+    /// times (`mpfree_seq::Arrangement::list_to_song`).
+    ListToSong,
     /// Song mode on or off: the song plays on tracks with no clip launched.
     SongMode(bool),
     /// Make (false) or Perform (true): the top bar's chip, or SHIFT + MAIN
@@ -914,6 +1086,9 @@ pub enum TimeAction {
     /// grid plays is recorded into the song
     /// (`mpfree_perform::SongRecorder`).
     RecSong(bool),
+    /// Perform's Rec song with REC (sequencer S4): a take turns Rec song
+    /// on for its length, or (false) not this take.
+    RecSongWithTake(bool),
     /// The clip settings card: clip `slot` of `track` given `settings`
     /// (its speed, swing, quantise and follow action), card row `row`
     /// turned. One take a row: turning the same row again joins it.
@@ -1183,6 +1358,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         } else {
             st.morph.b
         })),
+        (MORPH, EventKind::Tab(3)) => st
+            .focus()
+            .filter(|f| st.saved.contains(f))
+            .map(|(track, slot)| TimeAction::Reload { track, slot }),
         (CLIPS, EventKind::Toggle(row)) => Some(match *row {
             r if r < SLOTS => TimeAction::LaunchScene(r),
             SLOTS => TimeAction::StopAll,
@@ -1190,6 +1369,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             r if r == SLOTS + 2 => TimeAction::RecSong(!st.song_rec),
             r if r == SLOTS + 3 => TimeAction::Edit(EditAction::Open),
             r if r == SLOTS + ADD_TRACK => TimeAction::AddTrack,
+            r if r == SLOTS + BACK_TO_SONG => TimeAction::BackToSong,
             // The pager and the drag's edges are the page's own:
             // TimePage::page_tracks.
             _ => return None,
@@ -1262,6 +1442,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         }),
         (SONG, EventKind::Tab(ADD_AUDIO)) => Some(TimeAction::Audio(AudioAction::Add)),
         (SONG, EventKind::Tab(crate::song::ADD_TRACK)) => Some(TimeAction::AddTrack),
+        (SONG, EventKind::Tab(crate::song::LIST)) => Some(TimeAction::ListView(true)),
         (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
             let track = st.audio_panel?;
             let lane = st.audio.iter().find(|l| l.track == track);
@@ -1327,6 +1508,38 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 track: *row,
                 index: *col,
             }))))
+        }
+        (SONG_LIST, EventKind::Toggle(k)) => match *k {
+            LIST_LOOP => Some(TimeAction::ListLoop(!st.list_looped)),
+            LIST_CLIPS => Some(TimeAction::SongView(false)),
+            LIST_SONG => Some(TimeAction::SongView(true)),
+            LIST_ADD => {
+                (st.list.len() < mpfree_seq::scenes::MAX_LIST_STEPS).then_some(TimeAction::ListAdd)
+            }
+            LIST_TO_SONG => (!st.list.is_empty()).then_some(TimeAction::ListToSong),
+            LIST_PLAY => st.list_pick.map(TimeAction::ListPlay),
+            LIST_REMOVE => st.list_pick.map(TimeAction::ListRemove),
+            _ => None,
+        },
+        (SONG_LIST, EventKind::Step { index, delta }) if *index >= SCENE_STEP => {
+            let step = index - SCENE_STEP;
+            (step < st.list.len()).then_some(TimeAction::ListScene {
+                step,
+                delta: *delta,
+            })
+        }
+        (SONG_LIST, EventKind::Step { index, delta }) => {
+            let r = st.list.get(*index)?;
+            let to = i32::from(r.times) + delta;
+            (1..=mpfree_seq::scenes::MAX_TIMES as i32)
+                .contains(&to)
+                .then_some(TimeAction::ListTimes {
+                    step: *index,
+                    delta: *delta,
+                })
+        }
+        (SONG_LIST, EventKind::Select(k)) => {
+            (*k < st.list.len()).then_some(TimeAction::ListPick(Some(*k)))
         }
         (SONG, EventKind::Tab(k)) => match k {
             0 => Some(TimeAction::SongView(false)),
@@ -1447,6 +1660,20 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }
         }
         (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).ok(),
+        (SCENE_CARD, EventKind::Step { index, delta }) => scene_step(st, *index, *delta).ok(),
+        // Rename is the app's: the text keyboard.
+        (SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)) => scene_mutes_now(st).ok(),
+        (CLIP_CARD, EventKind::Toggle(b)) => {
+            let (track, slot) = st.focus()?;
+            match b {
+                0 => Some(TimeAction::SaveState { track, slot }),
+                1 => st
+                    .saved
+                    .contains(&(track, slot))
+                    .then_some(TimeAction::Reload { track, slot }),
+                _ => None,
+            }
+        }
         // Each only while it has something to do (it is faint otherwise).
         (TAKES, EventKind::Tab(0)) => (!st.done.is_empty()).then_some(TimeAction::Undo),
         (TAKES, EventKind::Tab(1)) => (!st.undone.is_empty()).then_some(TimeAction::Redo),
@@ -1470,6 +1697,27 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         (MORPH, EventKind::Tab(0 | 1)) if !st.morph.on => {
             Some("Move the crossfader first: Snap back and Keep work on a morph".to_string())
         }
+        (MORPH, EventKind::Tab(3)) | (CLIP_CARD, EventKind::Toggle(1)) => Some(match st.focus() {
+            None => "Arm a track with a clip: Reload clip reloads its clip".to_string(),
+            Some(_) => {
+                "Save state on the Clip card first: Reload clip brings that state back".to_string()
+            }
+        }),
+        (SONG_LIST, EventKind::Toggle(LIST_PLAY | LIST_REMOVE)) if st.list_pick.is_none() => {
+            Some("Tap a step first".to_string())
+        }
+        (SONG_LIST, EventKind::Toggle(LIST_TO_SONG)) => {
+            Some("Add a scene to the list first".to_string())
+        }
+        (SONG_LIST, EventKind::Toggle(LIST_ADD)) => Some(format!(
+            "The list is full: {} steps",
+            mpfree_seq::scenes::MAX_LIST_STEPS
+        )),
+        (SONG_LIST, EventKind::Step { index, delta }) if *index < SCENE_STEP => Some(end(
+            *delta,
+            "Once is the fewest",
+            &format!("{} times is the most", mpfree_seq::scenes::MAX_TIMES),
+        )),
         (TAKES, EventKind::Tab(0)) => Some("Nothing to undo yet".to_string()),
         (TAKES, EventKind::Tab(1)) => Some("Nothing to redo: Undo something first".to_string()),
         (TAKES, EventKind::Tab(2)) => {
@@ -1516,6 +1764,8 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
             "Launch is at its longest, 8 bars",
         )),
         (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).err(),
+        (SCENE_CARD, EventKind::Step { index, delta }) => scene_step(st, *index, *delta).err(),
+        (SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)) => scene_mutes_now(st).err(),
         _ => None,
     }
 }
@@ -1556,14 +1806,259 @@ fn follow_name(a: FollowAction) -> &'static str {
     }
 }
 
-/// The Record panel's tabs: Record, and Clip with the focused clip's
-/// name ("Clip · Verse B"; its track is the armed one, lit on the grid).
+/// The Record panel's tabs: Record, Clip with the focused clip's name
+/// ("Clip · Verse B"; its track is the armed one, lit on the grid), and
+/// Scene (the scene editor, S4).
 pub fn panel_tabs(st: &TimeState) -> Vec<String> {
     let clip = match st.focus().and_then(|(t, s)| st.clip(t, s)) {
         Some(c) => format!("Clip · {}", c.name),
         None => "Clip".to_string(),
     };
-    vec!["Record".to_string(), clip]
+    vec!["Record".to_string(), clip, "Scene".to_string()]
+}
+
+/// The Record panel's tab widths but the last's (Scene): Record, Clip.
+pub const PANEL_TAB_WIDTHS: [i32; 2] = [66, 104];
+
+/// The scene editor's rows for the scene in focus.
+pub fn scene_rows(st: &TimeState) -> Vec<OptionRow> {
+    let row = |k: usize, value: String| OptionRow {
+        name: SCENE_ROWS[k].to_string(),
+        value,
+    };
+    let s = &st.scene;
+    let dash = || "—".to_string();
+    let r = st.scene_focus;
+    vec![
+        row(
+            0,
+            if s.name.is_empty() {
+                format!("{}", r + 1)
+            } else {
+                format!("{} · {}", r + 1, s.name)
+            },
+        ),
+        row(
+            1,
+            s.follow
+                .map_or_else(|| "off".to_string(), |f| follow_name(f.action).to_string()),
+        ),
+        row(
+            2,
+            s.follow
+                .map_or_else(dash, |f| bars_label(i64::from(f.bars))),
+        ),
+        row(3, s.follow.map_or_else(dash, |f| format!("{} %", f.chance))),
+        row(
+            4,
+            s.follow
+                .filter(|f| f.chance < 100)
+                .map_or_else(dash, |f| follow_name(f.other).to_string()),
+        ),
+        row(5, mutes_words(st, s.mutes)),
+    ]
+}
+
+/// A scene's mutes as its Mutes row says them: "as they are" (it leaves
+/// them), "none", "Keys, Bass", "Keys +2".
+fn mutes_words(st: &TimeState, mutes: Option<u128>) -> String {
+    let Some(m) = mutes else {
+        return "as they are".to_string();
+    };
+    let names: Vec<String> = (0..st.tracks.len().min(MAX_TRACKS))
+        .filter(|&t| m & (1 << t) != 0)
+        .map(|t| st.track_name(t))
+        .collect();
+    match names.len() {
+        0 => "none".to_string(),
+        1 | 2 => names.join(", "),
+        n => format!("{} +{}", names[0], n - 1),
+    }
+}
+
+/// The scene editor's buttons: Rename and Mutes now.
+pub fn scene_buttons(_st: &TimeState) -> Vec<OptionButton> {
+    vec![
+        OptionButton::new("Rename", true),
+        OptionButton::new("Mutes now", true),
+    ]
+}
+
+/// The tracks muted now, as a scene's mutes.
+fn mutes_now(st: &TimeState) -> u128 {
+    st.tracks
+        .iter()
+        .take(MAX_TRACKS)
+        .enumerate()
+        .filter(|(_, t)| t.mute)
+        .fold(0, |m, (k, _)| m | 1 << k)
+}
+
+/// Mutes now: the scene in focus mutes the tracks muted now, and plays
+/// the others, when it starts.
+fn scene_mutes_now(st: &TimeState) -> Result<TimeAction, String> {
+    let m = mutes_now(st);
+    if st.scene.mutes == Some(m) {
+        return Err(format!(
+            "Scene {} mutes these tracks already",
+            st.scene_focus + 1
+        ));
+    }
+    Ok(TimeAction::SceneSettings {
+        row: st.scene_focus,
+        card_row: 5,
+        settings: SceneSettings {
+            mutes: Some(m),
+            ..st.scene.clone()
+        },
+    })
+}
+
+/// How long the scene in focus plays in whole bars: its longest clip
+/// (one bar at least), for a follow turned on.
+fn scene_bars(st: &TimeState) -> u16 {
+    let bar = st.transport.meter.bar_ticks().max(1) as f64;
+    let longest = st
+        .tracks
+        .iter()
+        .filter_map(|t| t.slots.get(st.scene_focus)?.as_ref())
+        .map(|c| c.song_len())
+        .fold(0.0, f64::max);
+    ((longest / bar).ceil() as u16).clamp(1, MAX_FOLLOW_BARS)
+}
+
+/// What a step of the scene editor's row `index` asks for, or why it
+/// asks for nothing (a setting at its end, or off).
+fn scene_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, String> {
+    let d = delta.signum();
+    let step = |now: usize, n: usize| {
+        let next = now as i64 + i64::from(d);
+        (0..n as i64).contains(&next).then_some(next as usize)
+    };
+    let end = |low: String, high: String| Err(if d < 0 { low } else { high });
+    let row = st.scene_focus;
+    let mut s = st.scene.clone();
+    let set = |s: SceneSettings| {
+        Ok(TimeAction::SceneSettings {
+            row,
+            card_row: index as u8,
+            settings: s,
+        })
+    };
+    let off = || {
+        format!(
+            "Turn Follow on first: scene {} plays until another starts",
+            row + 1
+        )
+    };
+    match index {
+        0 => match step(row, SLOTS) {
+            Some(k) => Ok(TimeAction::SceneFocus(k)),
+            None => end(
+                "Scene 1 is the first".into(),
+                format!("Scene {SLOTS} is the last"),
+            ),
+        },
+        1 => {
+            let now = s.follow.map_or(0, |f| {
+                FOLLOWS
+                    .iter()
+                    .position(|&a| a == f.action)
+                    .map_or(0, |k| k + 1)
+            });
+            match step(now, FOLLOWS.len() + 1) {
+                Some(0) => {
+                    s.follow = None;
+                    set(s)
+                }
+                Some(k) => {
+                    let action = FOLLOWS[k - 1];
+                    s.follow = Some(match s.follow {
+                        Some(f) => Follow { action, ..f },
+                        // After one pass of the scene, to begin with.
+                        None => Follow::after(scene_bars(st), action),
+                    });
+                    set(s)
+                }
+                None => end(
+                    "Follow is off already".into(),
+                    "Follow is at its last action, Stop".into(),
+                ),
+            }
+        }
+        2 => {
+            let f = s.follow.ok_or_else(off)?;
+            match step(usize::from(f.bars) - 1, usize::from(MAX_FOLLOW_BARS)) {
+                Some(k) => {
+                    s.follow = Some(Follow {
+                        bars: k as u16 + 1,
+                        ..f
+                    });
+                    set(s)
+                }
+                None => end(
+                    "Follow is at its soonest, after 1 bar".into(),
+                    format!("Follow is at its latest, after {MAX_FOLLOW_BARS} bars"),
+                ),
+            }
+        }
+        3 => {
+            let f = s.follow.ok_or_else(off)?;
+            let next = if d > 0 {
+                (f.chance / 10 + 1) * 10
+            } else {
+                f.chance.div_ceil(10).saturating_sub(1) * 10
+            };
+            if next > 100 || (d < 0 && f.chance == 0) {
+                return end(
+                    "Chance is at its least, 0 %: the Or action always plays".into(),
+                    "Chance is full already, 100 %".into(),
+                );
+            }
+            s.follow = Some(Follow {
+                chance: next.min(100),
+                ..f
+            });
+            set(s)
+        }
+        4 => {
+            let f = s.follow.ok_or_else(off)?;
+            if f.chance >= 100 {
+                return Err(
+                    "Set Chance under 100 % first: then Or plays the rest of the time".into(),
+                );
+            }
+            let now = OTHERS.iter().position(|&a| a == f.other).unwrap_or(0);
+            match step(now, OTHERS.len()) {
+                Some(k) => {
+                    s.follow = Some(Follow {
+                        other: OTHERS[k],
+                        ..f
+                    });
+                    set(s)
+                }
+                None => end(
+                    "Or is at its first, Stay".into(),
+                    "Or is at its last action, Stop".into(),
+                ),
+            }
+        }
+        5 => match (s.mutes, d > 0) {
+            (Some(_), false) => {
+                s.mutes = None;
+                set(s)
+            }
+            (None, true) => {
+                s.mutes = Some(mutes_now(st));
+                set(s)
+            }
+            (None, false) => {
+                Err("Mutes is at its first: the scene leaves the mutes as they are".into())
+            }
+            (Some(_), true) => Err("Mutes now takes the tracks muted now".into()),
+        },
+        _ => Err(String::new()),
+    }
 }
 
 /// The clip settings card's rows, for the focused clip; none without one.
@@ -1572,6 +2067,20 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
         Some(c) => card_rows(c.length, c.settings),
         None => Vec::new(),
     }
+}
+
+/// The clip card's buttons, under its rows (S4): Save state, and Reload
+/// while the focused clip has a saved state, outlined while its reload
+/// waits. None without a clip; Save state is off on a loop's cell (its
+/// layers have the looper's undo).
+pub fn card_buttons(st: &TimeState) -> Vec<OptionButton> {
+    let Some((track, slot)) = st.focus() else {
+        return Vec::new();
+    };
+    let looped = st.clip(track, slot).is_some_and(|c| c.looped.is_some());
+    let mut reload = OptionButton::new("Reload", st.saved.contains(&(track, slot)));
+    reload.waiting = st.reload_waiting((track, slot));
+    vec![OptionButton::new("Save state", !looped), reload]
 }
 
 /// The card's rows for a clip `length` ticks long (its own ticks) with
@@ -1631,7 +2140,7 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
             7,
             s.launch.map_or_else(|| "project".to_string(), launch_name),
         ),
-        row(8, if s.legato { "Legato" } else { "Restart" }.to_string()),
+        row(8, MODES[mode_of(&s)].to_string()),
     ]
 }
 
@@ -1919,11 +2428,18 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
                 ),
             }
         }
-        // Either way flips it.
-        8 => {
-            s.legato = !s.legato;
-            set(s)
-        }
+        // Restart, Legato, Once.
+        8 => match step(mode_of(&s), MODES.len()) {
+            Some(k) => {
+                s.legato = k == 1;
+                s.once = k == 2;
+                set(s)
+            }
+            None => end(
+                "Mode is at its first, Restart".into(),
+                "Mode is at its last, Once: the clip plays one pass, then its track stops".into(),
+            ),
+        },
         _ => Err(String::new()),
     }
 }
@@ -2005,7 +2521,11 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
                 .map_or("section", |m| m.1.as_str());
             return format!("{word} {} · {name}", row.number);
         }
-        Some(SongChange::Scenes { .. }) | None => {}
+        Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
+        | None => {}
+    }
+    if let Some(r) = row.scene {
+        return format!("{word} {} · row {}", row.number, r + 1);
     }
     match (row.at, row.dropped) {
         (Some((track, slot)), _) => format!(
@@ -2042,6 +2562,8 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
             return format!("{:.1} bars", length as f64 / bar as f64)
         }
         Some(SongChange::Scenes { rows }) => return format!("{rows} rows"),
+        Some(SongChange::List) => return "song list".into(),
+        Some(SongChange::ListToSong { steps }) => return format!("{steps} steps → song"),
         None => {}
     }
     match row.dropped {
@@ -2052,6 +2574,12 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         }
         Some(ClipDrop::RowCopied { to, .. }) => return format!("to row {}", to + 1),
         None => {}
+    }
+    if row.scene.is_some() {
+        return "scene settings".into();
+    }
+    if row.reloaded {
+        return "saved state".into();
     }
     if row.deleted {
         return "clip".into();
@@ -2092,6 +2620,10 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
     // The mute queue first, so it shows whatever else fits (S4).
     if let Some(w) = st.waiting_reading() {
         bar.items.push(BarItem::new("WAITING", w, Tone::Warn));
+    }
+    // Perform's NEXT: what comes next, and when (S4).
+    if let Some(n) = st.next_reading() {
+        bar.items.push(BarItem::new("NEXT", n, Tone::Accent));
     }
     bar.items.extend([
         BarItem::new("BPM", format!("{:.1}", t.bpm), Tone::Normal),
@@ -2235,10 +2767,9 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     let cue = st.cue(track);
     if cue.is_some_and(|c| c.slot == Some(slot)) {
         cell.state = CellState::Queued;
-        cell.foot = format!(
-            "from {}",
-            bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
-        );
+        let line = st.cue_line(track);
+        let at = cue_tick(t, line);
+        st.queued_foot(&mut cell, at, line.line(t.meter.bar_ticks()));
         return cell;
     }
     let Some(l) = st.launch(track).filter(|l| l.slot == slot) else {
@@ -2246,7 +2777,7 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     };
     if l.origin > t.position {
         cell.state = CellState::Queued;
-        cell.foot = format!("from {}", bar_beat(l.origin, t.meter));
+        st.queued_foot(&mut cell, l.origin, t.meter.bar_ticks());
         return cell;
     }
     // In steps of 1/64 of a pass, so the ring is not redrawn every frame.
@@ -2272,6 +2803,188 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         );
     }
     cell
+}
+
+/// How long `left` ticks are, as Perform's countdowns say it: whole
+/// beats, rounded up, under a bar ("1 beat", "3 beats"), whole bars past
+/// one ("2 bars").
+pub fn countdown(left: Tick, meter: Meter) -> String {
+    let left = left.max(1);
+    let beat = meter.beat_ticks().max(1);
+    let bar = meter.bar_ticks().max(1);
+    let (n, one, many) = if left >= bar {
+        ((left + bar - 1) / bar, "bar", "bars")
+    } else {
+        ((left + beat - 1) / beat, "beat", "beats")
+    };
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// The song list's title line: "Song list · 7 steps · 76 bars · 2:27"
+/// (the time at the tempo now), or "Song list" while it is empty.
+pub fn list_title(st: &TimeState) -> String {
+    if st.list.is_empty() {
+        return "Song list".to_string();
+    }
+    let n = st.list.len();
+    let bars: i64 = st.list.iter().map(|r| r.bars).sum();
+    let t = &st.transport;
+    let quarters = (bars * t.meter.bar_ticks()) as f64 / PPQ as f64;
+    let secs = (quarters * 60.0 / t.bpm.max(1.0)).round() as i64;
+    format!(
+        "Song list · {n} {} · {bars} {} · {}:{:02}",
+        if n == 1 { "step" } else { "steps" },
+        if bars == 1 { "bar" } else { "bars" },
+        secs / 60,
+        secs % 60
+    )
+}
+
+/// The scene playing's follow action, for Perform's NEXT (S4): on song
+/// tick `at` it plays `follow` from row `row`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FollowNext {
+    pub at: Tick,
+    pub row: usize,
+    pub follow: Follow,
+}
+
+impl TimeState {
+    /// The reload of clip `at` (track, slot) waits for its line.
+    pub fn reload_waiting(&self, at: (usize, usize)) -> bool {
+        self.reloads.iter().any(|r| (r.0, r.1) == at)
+    }
+
+    /// Clips play over the song: song mode is on and a clip is launched,
+    /// or waits to be (the grid's "Back to song", S4).
+    pub fn over_song(&self) -> bool {
+        self.song_on && (!self.launches.is_empty() || self.cues.iter().any(|c| c.slot.is_some()))
+    }
+
+    /// A queued cell's foot: where it starts ("from 7.1"); in Perform also
+    /// its countdown, filling over the `span` ticks before the line (its
+    /// launch grid's).
+    fn queued_foot(&self, cell: &mut GridCell, at: Tick, span: Tick) {
+        let t = &self.transport;
+        cell.foot = format!("from {}", bar_beat(at, t.meter));
+        if self.perform && t.state.rolling() {
+            let left = (at - t.position).max(0);
+            let span = span.max(1);
+            let frac = 1.0 - (left.min(span) as f64 / span as f64);
+            // In steps of 1/64, as a playing clip's ring; never empty, so
+            // the countdown shows from the tap.
+            cell.progress = ((frac * 64.0).floor().max(1.0) / 64.0) as f32;
+        }
+    }
+
+    /// What Perform's NEXT says comes next, and when: a scene launched
+    /// ("Drop in 2 beats"), else the clips cued ("Drop bass in 1 bar",
+    /// "Bass stops in 3 beats", "Drop bass +2 in 1 bar"), else the
+    /// scene playing's follow action ("Verse in 3 bars"), else in song
+    /// mode the next marker ("Chorus in 4 bars"). None with nothing
+    /// coming, in Make, or stopped.
+    pub fn next_reading(&self) -> Option<String> {
+        let t = &self.transport;
+        if !self.perform || !t.state.rolling() {
+            return None;
+        }
+        let cue_at = |c: &Cue| cue_tick(t, self.cue_line(c.track));
+        let soonest = self.cues.iter().map(cue_at).min();
+        let what = if let Some(row) = self.scene_cued {
+            let at = soonest.unwrap_or_else(|| cue_tick(t, self.launch));
+            Some((row_name(self, row), at))
+        } else if let Some(at) = soonest {
+            let names: Vec<String> = self
+                .cues
+                .iter()
+                .filter(|c| cue_at(c) == at)
+                .map(|c| match c.slot.and_then(|s| self.clip(c.track, s)) {
+                    Some(clip) => clip.name.clone(),
+                    None => format!("{} stops", self.track_name(c.track)),
+                })
+                .collect();
+            let shown = match names.len() {
+                0 | 1 => names.join(""),
+                n => format!("{} +{}", names[0], n - 1),
+            };
+            Some((shown, at))
+        } else if let Some(&(track, slot, at)) = self
+            .reloads
+            .iter()
+            .filter(|r| r.2 > t.position)
+            .min_by_key(|r| r.2)
+        {
+            let name = self
+                .clip(track, slot)
+                .map_or_else(|| self.track_name(track), |c| c.name.clone());
+            Some((format!("{name} reloads"), at))
+        } else if let Some((step, at)) = self.list_next.filter(|n| n.1 > t.position) {
+            // The song list's next step, or its end (a list that goes
+            // round names its first step).
+            Some((
+                match step.and_then(|k| self.list.get(k)) {
+                    Some(r) => r.name.clone(),
+                    None => "Stop all".to_string(),
+                },
+                at,
+            ))
+        } else if let Some(f) = self.follow_next.filter(|f| f.at > t.position) {
+            self.follow_words(f).map(|w| (w, f.at))
+        } else if self.song_on {
+            self.markers
+                .iter()
+                .filter(|(at, _)| *at > t.position)
+                .min_by_key(|(at, _)| *at)
+                .map(|(at, name)| (name.clone(), *at))
+        } else {
+            None
+        };
+        let (name, at) = what?;
+        Some(format!("{name} in {}", countdown(at - t.position, t.meter)))
+    }
+
+    /// What a scene's follow action plays, as NEXT names it: the row
+    /// ("Drop"), "Verse again", "Stop all", "Any scene", "Another scene";
+    /// with a chance, both ("Drop or stay"). None when it stays.
+    fn follow_words(&self, f: FollowNext) -> Option<String> {
+        let filled: Vec<bool> = (0..SLOTS)
+            .map(|r| {
+                self.tracks
+                    .iter()
+                    .any(|tr| tr.slots.get(r).is_some_and(Option::is_some))
+            })
+            .collect();
+        let words = |a: FollowAction| -> Option<String> {
+            Some(match a {
+                FollowAction::Stay => return None,
+                FollowAction::Again => format!("{} again", row_name(self, f.row)),
+                FollowAction::Stop => "Stop all".to_string(),
+                FollowAction::Any => "Any scene".to_string(),
+                FollowAction::Other => "Another scene".to_string(),
+                _ => row_name(
+                    self,
+                    mpfree_seq::scenes::follow_target(a, f.row, &filled, 0)?,
+                ),
+            })
+        };
+        let fw = f.follow;
+        if fw.chance >= 100 || fw.action == fw.other {
+            words(fw.action)
+        } else if fw.chance == 0 {
+            words(fw.other)
+        } else {
+            let one = |a| words(a).unwrap_or_else(|| "stay".to_string());
+            Some(format!(
+                "{} or {}",
+                one(fw.action),
+                one(fw.other).to_lowercase()
+            ))
+        }
+    }
 }
 
 /// Mute and solo changes waiting for one launch line (sequencer S4's mute
@@ -2304,25 +3017,8 @@ impl TimeState {
             "plays"
         };
         let tp = &self.transport;
-        let left = (cue_tick(tp, q.line) - tp.position).max(1);
-        let beat = tp.meter.beat_ticks().max(1);
-        let bar = tp.meter.bar_ticks().max(1);
-        let when = if left >= bar {
-            let n = (left + bar - 1) / bar;
-            if n == 1 {
-                "1 bar".to_string()
-            } else {
-                format!("{n} bars")
-            }
-        } else {
-            let n = (left + beat - 1) / beat;
-            if n == 1 {
-                "1 beat".to_string()
-            } else {
-                format!("{n} beats")
-            }
-        };
-        Some(format!("{what} in {when}"))
+        let left = cue_tick(tp, q.line) - tp.position;
+        Some(format!("{what} in {}", countdown(left, tp.meter)))
     }
 
     /// The transport bar's WAITING reading: the tracks waiting and where
@@ -2412,6 +3108,7 @@ pub fn launch_name(g: LaunchGrid) -> String {
         LaunchGrid::Ticks(t) => grid_name(t),
         LaunchGrid::Bars(1) => "1 bar".to_string(),
         LaunchGrid::Bars(n) => format!("{n} bars"),
+        LaunchGrid::At(_) => "its end".to_string(),
     }
 }
 
@@ -2592,6 +3289,8 @@ pub struct TimePage {
     rows_seen: usize,
     /// The Record panel shows its Clip tab: the clip settings card.
     pub clip_card: bool,
+    /// The Record panel shows its Scene tab: the scene editor.
+    pub scene_card: bool,
 }
 
 impl TimePage {
@@ -2607,17 +3306,30 @@ impl TimePage {
         ui.add(TRANSPORT, TransportBar::new());
         ui.add(CLIPS, ClipGrid::new("Clips", SLOTS));
         let mut record = OptionList::new("Record");
-        record.tabs = vec!["Record".to_string(), "Clip".to_string()];
+        record.tabs = vec![
+            "Record".to_string(),
+            "Clip".to_string(),
+            "Scene".to_string(),
+        ];
+        record.tab_widths = PANEL_TAB_WIDTHS.to_vec();
         let mut card = OptionList::new("Clip");
         card.tabs = record.tabs.clone();
+        card.tab_widths = record.tab_widths.clone();
         card.tab = 1;
         card.right = "wheel or arrows".to_string();
         card.empty = "Arm a track with a clip".to_string();
+        let mut scene = OptionList::new("Scene");
+        scene.tabs = record.tabs.clone();
+        scene.tab_widths = record.tab_widths.clone();
+        scene.tab = 2;
+        scene.right = "wheel or arrows".to_string();
         ui.add(RECORD, record);
         ui.add(CLIP_CARD, card);
+        ui.add(SCENE_CARD, scene);
         ui.add(TAKES, TakeList::new("Takes"));
         ui.add(MORPH, MorphBar::new());
         ui.add(SONG, SongLanes::new());
+        ui.add(SONG_LIST, SongListView::new());
         ui.add(NOTES, NoteGrid::new());
         ui.add(EDIT_OPTIONS, OptionList::new("Edit"));
         ui.add_page(CLIPS_PAGE, CLIPS_LAYOUT)?;
@@ -2645,10 +3357,11 @@ impl TimePage {
                 self.first_bar = (self.first_bar + d).max(0);
                 return true;
             }
-            (RECORD | CLIP_CARD, EventKind::Tab(k)) => {
-                // The Record panel's tabs: the record settings or the
-                // clip settings card.
+            (RECORD | CLIP_CARD | SCENE_CARD, EventKind::Tab(k)) => {
+                // The Record panel's tabs: the record settings, the clip
+                // settings card or the scene editor.
                 self.clip_card = *k == 1;
+                self.scene_card = *k == 2;
                 return true;
             }
             (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_BACK => -1,
@@ -2694,6 +3407,13 @@ impl TimePage {
             self.first_bar = (self.first_bar + i64::from(delta)).max(0);
             return None;
         }
+        if matches!(
+            ui.layout_of(CLIPS_PAGE),
+            Some(LIST_LAYOUT | LIST_CARD_LAYOUT)
+        ) {
+            // The list scrolls with a drag.
+            return None;
+        }
         let rows = self.visible_rows(ui).max(1);
         let last = SLOTS.saturating_sub(rows) as i64;
         self.first_row = (self.first_row as i64 + i64::from(delta)).clamp(0, last) as usize;
@@ -2706,7 +3426,8 @@ impl TimePage {
     pub fn wheel_list(&self, ui: &Ui) -> &'static str {
         match ui.layout_of(CLIPS_PAGE) {
             Some(EDIT_LAYOUT) => EDIT_OPTIONS,
-            Some(CLIPS_CARD_LAYOUT | SONG_CARD_LAYOUT) => CLIP_CARD,
+            Some(CLIPS_CARD_LAYOUT | SONG_CARD_LAYOUT | LIST_CARD_LAYOUT) => CLIP_CARD,
+            Some(CLIPS_SCENE_LAYOUT | SONG_SCENE_LAYOUT | LIST_SCENE_LAYOUT) => SCENE_CARD,
             _ => RECORD,
         }
     }
@@ -2745,7 +3466,19 @@ impl TimePage {
             }
         }
         let tracks = grid_tracks(st);
+        // Perform's big rows, Make's compact ones (S4): the rows in view
+        // follow, kept within the slots.
+        // (A look first: `get_mut` marks the grid for a paint.)
+        if ui
+            .get::<ClipGrid>(CLIPS)
+            .is_some_and(|g| g.big != st.perform)
+        {
+            if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
+                g.big = st.perform;
+            }
+        }
         let rows = self.visible_rows(ui).max(1);
+        self.first_row = self.first_row.min(SLOTS.saturating_sub(rows));
         self.rows_seen = rows;
         // With Loop tracks, the title is the loops' gauge: how many of the
         // looper's loops hold one, and the share of its memory in use (the
@@ -2777,6 +3510,7 @@ impl TimePage {
                 && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
                 && g.song_rec == st.song_rec
                 && g.can_add == can_add
+                && g.back_to_song == st.over_song()
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -2789,11 +3523,17 @@ impl TimePage {
                 g.scene_cued = st.scene_cued;
                 g.song_rec = st.song_rec;
                 g.can_add = can_add;
+                g.back_to_song = st.over_song();
             }
         }
         // The grid, the song or the note editor, as the app has it.
         let want = match (st.edit.is_some(), st.song_view, self.clip_card) {
             (true, ..) => EDIT_LAYOUT,
+            _ if st.list_view && self.scene_card => LIST_SCENE_LAYOUT,
+            _ if st.list_view && self.clip_card => LIST_CARD_LAYOUT,
+            _ if st.list_view => LIST_LAYOUT,
+            (false, true, _) if self.scene_card => SONG_SCENE_LAYOUT,
+            (false, false, _) if self.scene_card => CLIPS_SCENE_LAYOUT,
             (false, true, false) => SONG_LAYOUT,
             (false, true, true) => SONG_CARD_LAYOUT,
             (false, false, false) => CLIPS_LAYOUT,
@@ -2801,6 +3541,25 @@ impl TimePage {
         };
         if ui.layout_of(CLIPS_PAGE).is_some_and(|l| l != want) {
             let _ = ui.set_layout(CLIPS_PAGE, want);
+        }
+        // The song list.
+        let title = list_title(st);
+        let can_add = st.list.len() < mpfree_seq::scenes::MAX_LIST_STEPS;
+        let same_list = ui.get::<SongListView>(SONG_LIST).is_some_and(|l| {
+            l.rows == st.list
+                && l.title == title
+                && l.picked == st.list_pick
+                && l.looped == st.list_looped
+                && l.can_add == can_add
+        });
+        if !same_list {
+            if let Some(l) = ui.get_mut::<SongListView>(SONG_LIST) {
+                l.rows = st.list.clone();
+                l.title = title;
+                l.picked = st.list_pick;
+                l.looped = st.list_looped;
+                l.can_add = can_add;
+            }
         }
         let mut lanes = song_lanes(st, self.first_bar);
         let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
@@ -2819,12 +3578,15 @@ impl TimePage {
             }
         }
         let m = st.morph;
+        let focus = st.focus();
         let bar = MorphBar {
             a: m.a,
             b: m.b,
             pos: m.pos,
             on: m.on,
             params: m.params,
+            reload: focus.is_some_and(|f| st.saved.contains(&f)),
+            reload_waiting: focus.is_some_and(|f| st.reload_waiting(f)),
         };
         if ui.get::<MorphBar>(MORPH).is_some_and(|b| *b != bar) {
             if let Some(b) = ui.get_mut::<MorphBar>(MORPH) {
@@ -2860,9 +3622,10 @@ impl TimePage {
             }
         }
         let rows = clip_rows(st);
+        let buttons = card_buttons(st);
         if ui
             .get::<OptionList>(CLIP_CARD)
-            .is_some_and(|l| l.rows != rows || l.tabs != tabs)
+            .is_some_and(|l| l.rows != rows || l.tabs != tabs || l.buttons != buttons)
         {
             if let Some(l) = ui.get_mut::<OptionList>(CLIP_CARD) {
                 // Another clip: its card starts at the top.
@@ -2870,7 +3633,20 @@ impl TimePage {
                     l.reset_view();
                 }
                 l.rows = rows;
+                l.tabs = tabs.clone();
+                l.buttons = buttons;
+            }
+        }
+        let rows = scene_rows(st);
+        let buttons = scene_buttons(st);
+        if ui
+            .get::<OptionList>(SCENE_CARD)
+            .is_some_and(|l| l.rows != rows || l.tabs != tabs || l.buttons != buttons)
+        {
+            if let Some(l) = ui.get_mut::<OptionList>(SCENE_CARD) {
+                l.rows = rows;
                 l.tabs = tabs;
+                l.buttons = buttons;
             }
         }
         let (items, current) = take_items(st);
@@ -3082,6 +3858,7 @@ mod tests {
             }),
             launch: None,
             legato: true,
+            once: false,
         };
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
         values.extend(
@@ -3105,6 +3882,7 @@ mod tests {
         card.swing = None;
         card.follow = None;
         card.legato = false;
+        card.once = true;
         values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
         // Every launch quantise, the project's and a clip's own.
         for g in LAUNCH_GRIDS {
@@ -3376,6 +4154,10 @@ mod tests {
             Some(TimeAction::AddTrack)
         );
         assert!(song_lanes(&st, 0).can_add_track);
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS + BACK_TO_SONG)), &st),
+            Some(TimeAction::BackToSong)
+        );
     }
 
     #[test]
@@ -3452,6 +4234,156 @@ mod tests {
             action(&ev(CLIPS, EventKind::Toggle(SLOTS + 2)), &st),
             Some(TimeAction::RecSong(false))
         );
+    }
+
+    /// The song list (S4): List on the Song view shows it in place of the
+    /// grid and the morph; its title counts the steps, bars and time;
+    /// each touch is its action or says why not; NEXT names the next
+    /// step.
+    #[test]
+    fn the_song_list_swaps_in_and_its_touches_act() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        assert_eq!(
+            action(&ev(SONG, EventKind::Tab(crate::song::LIST)), &st),
+            Some(TimeAction::ListView(true))
+        );
+        st.list_view = true;
+        page.update(&mut ui, &st);
+        assert!(ui.rect_of(SONG_LIST).is_some());
+        assert!(ui.rect_of(SONG).is_none() && ui.rect_of(MORPH).is_none());
+        assert_eq!(
+            ui.get::<SongListView>(SONG_LIST).unwrap().title,
+            "Song list"
+        );
+        let list = |k: EventKind, st: &TimeState| action(&ev(SONG_LIST, k), st);
+        let why = |k: EventKind, st: &TimeState| why_not(&ev(SONG_LIST, k), st);
+        assert_eq!(
+            list(EventKind::Toggle(LIST_ADD), &st),
+            Some(TimeAction::ListAdd)
+        );
+        assert_eq!(list(EventKind::Toggle(LIST_TO_SONG), &st), None);
+        assert_eq!(
+            why(EventKind::Toggle(LIST_TO_SONG), &st).as_deref(),
+            Some("Add a scene to the list first")
+        );
+        // Two steps: 2 × 4 bars and 1 × 2 bars at 120 BPM.
+        st.list = vec![
+            ListRow {
+                name: "Intro".into(),
+                row: 0,
+                times: 2,
+                bars: 8,
+                starts: 1,
+                ..ListRow::default()
+            },
+            ListRow {
+                name: "Drop".into(),
+                row: 3,
+                times: 1,
+                bars: 2,
+                starts: 9,
+                ..ListRow::default()
+            },
+        ];
+        page.update(&mut ui, &st);
+        assert_eq!(
+            ui.get::<SongListView>(SONG_LIST).unwrap().title,
+            "Song list · 2 steps · 10 bars · 0:20"
+        );
+        assert_eq!(list(EventKind::Toggle(LIST_PLAY), &st), None);
+        assert_eq!(
+            why(EventKind::Toggle(LIST_REMOVE), &st).as_deref(),
+            Some("Tap a step first")
+        );
+        assert_eq!(
+            list(EventKind::Select(1), &st),
+            Some(TimeAction::ListPick(Some(1)))
+        );
+        st.list_pick = Some(1);
+        assert_eq!(
+            list(EventKind::Toggle(LIST_PLAY), &st),
+            Some(TimeAction::ListPlay(1))
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_REMOVE), &st),
+            Some(TimeAction::ListRemove(1))
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_TO_SONG), &st),
+            Some(TimeAction::ListToSong)
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_LOOP), &st),
+            Some(TimeAction::ListLoop(true))
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_CLIPS), &st),
+            Some(TimeAction::SongView(false))
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_SONG), &st),
+            Some(TimeAction::SongView(true))
+        );
+        assert_eq!(
+            list(EventKind::Step { index: 0, delta: 1 }, &st),
+            Some(TimeAction::ListTimes { step: 0, delta: 1 })
+        );
+        assert_eq!(
+            list(
+                EventKind::Step {
+                    index: 1,
+                    delta: -1
+                },
+                &st
+            ),
+            None
+        );
+        assert_eq!(
+            why(
+                EventKind::Step {
+                    index: 1,
+                    delta: -1
+                },
+                &st
+            )
+            .as_deref(),
+            Some("Once is the fewest")
+        );
+        assert_eq!(
+            list(
+                EventKind::Step {
+                    index: SCENE_STEP + 1,
+                    delta: -1
+                },
+                &st
+            ),
+            Some(TimeAction::ListScene { step: 1, delta: -1 })
+        );
+        // The Clip tab keeps the list.
+        page.clip_card = true;
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(LIST_CARD_LAYOUT));
+        assert_eq!(page.wheel_list(&ui), CLIP_CARD);
+        page.clip_card = false;
+        // NEXT: the step after the one playing, then the list's end.
+        st.perform = true;
+        st.transport.state = State::Playing;
+        let bar = st.transport.meter.bar_ticks();
+        st.transport.position = 3 * bar;
+        st.list_next = Some((Some(1), 4 * bar));
+        assert_eq!(st.next_reading().as_deref(), Some("Drop in 1 bar"));
+        st.list_next = Some((None, 4 * bar));
+        assert_eq!(st.next_reading().as_deref(), Some("Stop all in 1 bar"));
+        st.list_view = false;
+        st.song_view = false;
+        page.update(&mut ui, &st);
+        assert!(ui.rect_of(CLIPS).is_some() && ui.rect_of(SONG_LIST).is_none());
     }
 
     /// Jay, 14 Nov: drag and drop on the Song view. Blocks, their ends
@@ -3967,6 +4899,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
+            scene: None,
         };
         let mut st = st;
         st.done = vec![take];
@@ -4137,7 +5071,7 @@ mod tests {
         assert_eq!(st.focus(), Some((0, 0)));
         st.armed = Some(1);
         assert_eq!(st.focus(), Some((1, 1)));
-        assert_eq!(panel_tabs(&st), ["Record", "Clip · B"]);
+        assert_eq!(panel_tabs(&st), ["Record", "Clip · B", "Scene"]);
         let rows: Vec<String> = clip_rows(&st)
             .iter()
             .map(|r| format!("{} {}", r.name, r.value))
@@ -4303,11 +5237,31 @@ mod tests {
         cs(&mut st).launch = Some(LaunchGrid::Bars(8));
         assert_eq!(clip_rows(&st)[7].value, "8 bars");
         ends(step(&st, 7, 1), "longest, 8 bars");
-        // Mode: either arrow flips Restart and Legato.
+        // Mode: Restart, Legato, Once.
+        ends(step(&st, 8, -1), "first, Restart");
         assert_eq!(step(&st, 8, 1), set(&st, 8, |s| s.legato = true));
         cs(&mut st).legato = true;
         assert_eq!(clip_rows(&st)[8].value, "Legato");
         assert_eq!(step(&st, 8, -1), set(&st, 8, |s| s.legato = false));
+        assert_eq!(
+            step(&st, 8, 1),
+            set(&st, 8, |s| {
+                s.legato = false;
+                s.once = true;
+            })
+        );
+        cs(&mut st).legato = false;
+        cs(&mut st).once = true;
+        assert_eq!(clip_rows(&st)[8].value, "Once");
+        ends(step(&st, 8, 1), "last, Once: the clip plays one pass");
+        assert_eq!(
+            step(&st, 8, -1),
+            set(&st, 8, |s| {
+                s.once = false;
+                s.legato = true;
+            })
+        );
+        cs(&mut st).once = false;
         // A loop cell: only Follow, After and Launch.
         st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
         ends(step(&st, 1, 1), "loop cell");
@@ -4446,6 +5400,171 @@ mod tests {
         page.update(&mut ui, &st);
         assert_eq!(ui.layout_of(CLIPS_PAGE), Some(SONG_LAYOUT));
         assert_eq!(page.wheel_list(&ui), RECORD);
+    }
+
+    /// The scene editor (S4, part 7): the Record panel's third tab, its
+    /// rows for the scene in focus, and what each row's – / + asks for.
+    #[test]
+    fn the_scene_tab_steps_the_scene_in_focus() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Arrange"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.scene_focus = 1;
+        page.update(&mut ui, &st);
+        assert!(page.page_tracks(&ev(RECORD, EventKind::Tab(2)), &st));
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_SCENE_LAYOUT));
+        assert_eq!(page.wheel_list(&ui), SCENE_CARD);
+        let card = ui.get::<OptionList>(SCENE_CARD).unwrap();
+        assert_eq!((card.tab, card.tabs[2].as_str()), (2, "Scene"));
+        let shown = |st: &TimeState| -> Vec<String> {
+            scene_rows(st)
+                .iter()
+                .map(|r| format!("{} {}", r.name, r.value))
+                .collect()
+        };
+        assert_eq!(
+            shown(&st),
+            [
+                "Scene 2",
+                "Follow off",
+                "After —",
+                "Chance —",
+                "Or —",
+                "Mutes as they are"
+            ]
+        );
+        let step = |st: &TimeState, row: usize, delta: i32| {
+            action(&ev(SCENE_CARD, EventKind::Step { index: row, delta }), st)
+        };
+        let set = |a: Option<TimeAction>| match a {
+            Some(TimeAction::SceneSettings {
+                row: 1, settings, ..
+            }) => settings,
+            other => panic!("{other:?}"),
+        };
+        // ‹ › on the Scene row: the scene in focus.
+        assert_eq!(step(&st, 0, -1), Some(TimeAction::SceneFocus(0)));
+        st.scene_focus = 0;
+        assert_eq!(step(&st, 0, -1), None);
+        assert_eq!(
+            why_not(
+                &ev(
+                    SCENE_CARD,
+                    EventKind::Step {
+                        index: 0,
+                        delta: -1
+                    }
+                ),
+                &st
+            )
+            .as_deref(),
+            Some("Scene 1 is the first")
+        );
+        st.scene_focus = 1;
+        // Follow on: Next, after the scene's longest clip (B, under a
+        // bar: 1 bar).
+        st.scene = set(step(&st, 1, 1));
+        assert_eq!(st.scene.follow, Some(Follow::after(1, FollowAction::Next)));
+        assert_eq!(
+            shown(&st)[1..5],
+            ["Follow Next", "After 1 bar", "Chance 100 %", "Or —"]
+        );
+        // Or waits for a chance under 100 %.
+        assert_eq!(step(&st, 4, 1), None);
+        st.scene = set(step(&st, 3, -1));
+        assert_eq!(st.scene.follow.map(|f| f.chance), Some(90));
+        st.scene = set(step(&st, 4, 1));
+        assert_eq!(st.scene.follow.map(|f| f.other), Some(OTHERS[1]));
+        // Mutes: none to begin with, then – takes them off again.
+        st.scene = set(step(&st, 5, 1));
+        assert_eq!(st.scene.mutes, Some(0));
+        assert_eq!(shown(&st)[5], "Mutes none");
+        st.tracks[0].mute = true;
+        st.tracks[2].mute = true;
+        assert_eq!(
+            action(&ev(SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)), &st)
+                .map(|a| set(Some(a)).mutes),
+            Some(Some(0b101))
+        );
+        st.scene.mutes = Some(0b101);
+        assert_eq!(shown(&st)[5], "Mutes Drums, Stab");
+        st.scene = set(step(&st, 5, -1));
+        assert_eq!(st.scene.mutes, None);
+        // Follow off again.
+        st.scene = set(step(&st, 1, -1));
+        assert_eq!(st.scene.follow, None);
+        // A name shows by the number.
+        st.scene.name = "Drop".into();
+        assert_eq!(shown(&st)[0], "Scene 2 · Drop");
+        // The Record tab again.
+        assert!(page.page_tracks(&ev(SCENE_CARD, EventKind::Tab(0)), &st));
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_LAYOUT));
+    }
+
+    /// Save state and Reload on the clip card, Reload clip on the morph
+    /// bar (S4): lit once the focused clip has a saved state, outlined
+    /// while it waits, and NEXT names it in Perform.
+    #[test]
+    fn save_state_and_reload_show_on_the_card_and_the_morph_bar() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Arrange"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        let (track, slot) = st.focus().unwrap();
+        let focus = (track, slot);
+        page.update(&mut ui, &st);
+        let card = ui.get::<OptionList>(CLIP_CARD).unwrap();
+        assert_eq!(
+            card.buttons,
+            [
+                OptionButton::new("Save state", true),
+                OptionButton::new("Reload", false)
+            ]
+        );
+        let morph = ui.get::<MorphBar>(MORPH).unwrap();
+        assert!(!morph.reload && !morph.reload_waiting);
+        let save = ev(CLIP_CARD, EventKind::Toggle(0));
+        let card_reload = ev(CLIP_CARD, EventKind::Toggle(1));
+        let morph_reload = ev(MORPH, EventKind::Tab(3));
+        assert_eq!(
+            action(&save, &st),
+            Some(TimeAction::SaveState { track, slot })
+        );
+        assert_eq!(action(&card_reload, &st), None);
+        assert_eq!(action(&morph_reload, &st), None);
+        assert!(why_not(&morph_reload, &st)
+            .unwrap()
+            .starts_with("Save state on the Clip card first"));
+        // Saved: both reloads are lit.
+        st.saved = vec![focus];
+        page.update(&mut ui, &st);
+        assert!(ui.get::<OptionList>(CLIP_CARD).unwrap().buttons[1].enabled);
+        assert!(ui.get::<MorphBar>(MORPH).unwrap().reload);
+        let reload = Some(TimeAction::Reload { track, slot });
+        assert_eq!(action(&card_reload, &st), reload);
+        assert_eq!(action(&morph_reload, &st), reload);
+        // Waiting for bar 3: outlined, and NEXT says so in Perform.
+        st.reloads = vec![(track, slot, 2 * BAR)];
+        st.transport.state = State::Playing;
+        st.transport.position = 2 * BAR - 480;
+        st.cues.clear();
+        st.scene_cued = None;
+        page.update(&mut ui, &st);
+        assert!(ui.get::<OptionList>(CLIP_CARD).unwrap().buttons[1].waiting);
+        assert!(ui.get::<MorphBar>(MORPH).unwrap().reload_waiting);
+        assert_eq!(st.next_reading(), None, "Make");
+        st.perform = true;
+        assert_eq!(st.next_reading().as_deref(), Some("A reloads in 1 beat"));
+        // No clip in focus: no buttons.
+        st.armed = Some(9);
+        assert!(card_buttons(&st).is_empty());
     }
 
     fn project() -> Project {
@@ -4623,6 +5742,9 @@ mod tests {
         st.launch = LaunchGrid::Bars(4);
         assert_eq!(st.cue_line(2), LaunchGrid::Bars(4), "a stop: the project's");
         assert_eq!(cell_of(&st, 2, 0).detail, "stops 9.1");
+        // A one-shot's stop lands where its pass ends, on no bar line.
+        st.cue_lines = vec![(2, LaunchGrid::At(5 * BAR + 3 * Tick::from(PPQ)))];
+        assert_eq!(cell_of(&st, 2, 0).detail, "stops 6.4");
         st.cue_lines.clear();
         st.launch = LaunchGrid::Bars(1);
         let tap = |track: usize, slot: usize| {
@@ -4679,6 +5801,122 @@ mod tests {
         st.tracks[0].silent = true;
         let g = grid_tracks(&st);
         assert!(g[2].solo && !g[2].mute && g[0].mute);
+    }
+
+    #[test]
+    fn perform_shows_big_rows_countdowns_and_what_comes_next() {
+        // Make: eight compact rows; Perform: five big ones.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        page.update(&mut ui, &st);
+        assert_eq!(page.visible_rows(&ui), 8);
+        st.perform = true;
+        page.update(&mut ui, &st);
+        assert_eq!(page.visible_rows(&ui), 5);
+        // A queued clip says where it starts; in Perform it counts down
+        // too: at 5.2, a quarter of the bar to 6.1 has gone.
+        st.perform = false;
+        let c = cell_of(&st, 1, 1);
+        assert_eq!(
+            (c.state, c.foot.as_str(), c.progress),
+            (CellState::Queued, "from 6.1", 0.0)
+        );
+        st.perform = true;
+        let c = cell_of(&st, 1, 1);
+        assert_eq!((c.foot.as_str(), c.progress), ("from 6.1", 0.25));
+        // NEXT: nothing coming.
+        assert_eq!(st.next_reading(), None);
+        // Clips cued: the first by name and how many more.
+        st.cues = vec![Cue {
+            track: 2,
+            slot: Some(1),
+        }];
+        assert_eq!(st.next_reading().as_deref(), Some("B in 3 beats"));
+        let c = cell_of(&st, 2, 1);
+        assert_eq!((c.foot.as_str(), c.progress), ("from 6.1", 0.25));
+        st.cues.push(Cue {
+            track: 0,
+            slot: None,
+        });
+        assert_eq!(st.next_reading().as_deref(), Some("B +1 in 3 beats"));
+        st.cues = vec![Cue {
+            track: 0,
+            slot: None,
+        }];
+        assert_eq!(st.next_reading().as_deref(), Some("Drums stops in 3 beats"));
+        // A scene launched names the scene.
+        st.scenes = vec![String::new(), "Drop".into()];
+        st.scene_cued = Some(1);
+        assert_eq!(st.next_reading().as_deref(), Some("Drop in 3 beats"));
+        let item = &bar_of(&st).items[0];
+        assert_eq!(
+            (item.label.as_str(), item.value.as_str(), item.tone),
+            ("NEXT", "Drop in 3 beats", Tone::Accent)
+        );
+        // The scene playing's follow action, bars rounded up.
+        st.cues.clear();
+        st.scene_cued = None;
+        let follow = |action, other, chance| FollowNext {
+            at: 8 * BAR,
+            row: 0,
+            follow: Follow {
+                bars: 4,
+                action,
+                other,
+                chance,
+            },
+        };
+        st.follow_next = Some(follow(FollowAction::Next, FollowAction::Stay, 100));
+        assert_eq!(st.next_reading().as_deref(), Some("Drop in 4 bars"));
+        st.follow_next = Some(follow(FollowAction::Next, FollowAction::Stay, 70));
+        assert_eq!(st.next_reading().as_deref(), Some("Drop or stay in 4 bars"));
+        st.follow_next = Some(follow(FollowAction::Again, FollowAction::Stay, 100));
+        assert_eq!(st.next_reading().as_deref(), Some("row 1 again in 4 bars"));
+        st.follow_next = Some(follow(FollowAction::Other, FollowAction::Stay, 100));
+        assert_eq!(
+            st.next_reading().as_deref(),
+            Some("Another scene in 4 bars")
+        );
+        st.follow_next = Some(follow(FollowAction::Stay, FollowAction::Next, 100));
+        assert_eq!(st.next_reading(), None);
+        // Song mode: the next marker.
+        st.follow_next = None;
+        st.song_on = true;
+        st.markers = vec![(2 * BAR, "Intro".into()), (6 * BAR, "Chorus".into())];
+        assert_eq!(st.next_reading().as_deref(), Some("Chorus in 2 bars"));
+        // WAITING goes before NEXT.
+        st.mute_wait = Some(MuteWait {
+            line: LaunchGrid::Bars(1),
+            want: vec![(1, true, false)],
+        });
+        let items = bar_of(&st).items;
+        assert_eq!(
+            (items[0].label.as_str(), items[1].label.as_str()),
+            ("WAITING", "NEXT")
+        );
+        // Nothing in Make, or stopped.
+        st.perform = false;
+        assert_eq!(st.next_reading(), None);
+        st.perform = true;
+        st.transport.state = State::Stopped;
+        assert_eq!(st.next_reading(), None);
+    }
+
+    #[test]
+    fn countdowns_round_up_to_beats_then_bars() {
+        let m = Meter::default();
+        let beat = m.beat_ticks();
+        let bar = m.bar_ticks();
+        assert_eq!(countdown(1, m), "1 beat");
+        assert_eq!(countdown(beat + 1, m), "2 beats");
+        assert_eq!(countdown(bar - 1, m), "4 beats");
+        assert_eq!(countdown(bar, m), "1 bar");
+        assert_eq!(countdown(bar + 1, m), "2 bars");
+        assert_eq!(countdown(0, m), "1 beat");
     }
 
     #[test]
@@ -4755,6 +5993,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
+            scene: None,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -4789,6 +6029,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
+            scene: None,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -4813,6 +6055,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
+            scene: None,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");

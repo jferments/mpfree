@@ -907,7 +907,7 @@ mod step_seq {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             assert!(s.synth_on, "the pads play the synth");
             s.button("STEP SEQ");
             assert!(s.app.step_pads().is_some_and(|p| p.line()));
@@ -1015,7 +1015,7 @@ mod step_seq {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             s.button("STEP SEQ");
             // The pen: pad 1 (C3), then steps 1 and 5.
             s.button_edge("STEP SEQ", true);
@@ -1334,7 +1334,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             let n = s.lines.len();
             s.button("STEP SEQ");
             wrote(&s, n, "STEP SEQ: the pads are the line's steps", "");
@@ -1368,7 +1368,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             s.button("STEP SEQ");
             s.button_edge("STEP SEQ", true);
             s.pad(0, 100, 0.05);
@@ -1776,6 +1776,46 @@ mod device_log {
             s.run_for(2.2);
             wrote(&s, n, "time: track mute: at ", " solo");
             s.button("TRACK MUTE");
+            s.button("STOP");
+        });
+    }
+
+    /// Reload clip on the bar (`^time: save state: .* kept`, `^time:
+    /// reload: .* reloads at `, `^time: (.*; )?reload: .* back as saved on
+    /// bar \d+`):
+    /// Save state keeps the clip, Reload clip waits for the bar line and
+    /// the saved pattern comes back on it.
+    #[test]
+    fn reload_on_the_bar_writes_its_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.press("header", "tab", "Arrange").settle();
+            let tab = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == "record" && o.target.id == "tab" && o.target.index == 1)
+                .expect("the Record panel's Clip tab")
+                .target;
+            s.press_target(&tab);
+            s.settle();
+            let n = s.lines.len();
+            s.press("clip-card", "button", "Save state").settle();
+            wrote(&s, n, "time: save state: ", " kept");
+            s.press("header", "tab", "Play").settle();
+            s.press("steps", "step", "Kick step 3");
+            s.press("steps", "step", "Kick step 7");
+            s.press("header", "tab", "Arrange").settle();
+            s.button("PLAY").run_for(0.3);
+            let n = s.lines.len();
+            s.press("morph", "button", "Reload clip").settle();
+            wrote(&s, n, "time: reload: ", " reloads at ");
+            s.run_for(2.0);
+            let l = wrote(&s, n, "time: ", " back as saved on bar ");
+            assert!(l.contains("reload: "), "{l}");
             s.button("STOP");
         });
     }

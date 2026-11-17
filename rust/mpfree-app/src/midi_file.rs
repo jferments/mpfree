@@ -302,8 +302,8 @@ pub fn clips(
 
 /// The pad that plays `note` alone on track `track`, as its clips play
 /// (`SeqPads` in main.rs): a track's own instrument through its pad map;
-/// else the synth's pad layout while the synth has the pads (`synth`), or
-/// the kit's pads by the MPC's own pad notes (`midi_out::kit_notes`).
+/// else the synth's pad layout if the track plays the synth (`synth`), or
+/// its kit's pads by the MPC's own pad notes (`midi_out::kit_notes`).
 pub fn pad_on_track(
     own: &crate::instruments::Instruments,
     synth: Option<&crate::synth::Synth>,

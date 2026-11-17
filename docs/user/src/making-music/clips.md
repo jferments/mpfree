@@ -12,7 +12,7 @@ A **clip** is a piece of music you recorded or programmed: a drum pattern, a bas
 
 ## Tracks and slots
 
-The grid has a column per **track** and a row per **slot**. Each track plays one clip at a time, so a column might hold four different drum patterns, and you pick which one plays.
+The grid has a column per **track** and a row per **slot**. Each track plays one clip at a time, so a column might hold four different drum patterns, and you pick which one plays. In Make the grid shows 8 rows at a time, each clip with its name and length (and a small ring going round once a pass while it plays); in Perform it shows 5 bigger rows (see [Make and Perform](playing-live.md#make-and-perform)). SHIFT + the wheel scrolls the rest.
 
 - **Tap a clip** to launch it. It starts on the next bar line (or the line **Launch** sets, below), so it always lands in time. Tap a playing clip to stop it at the next bar. A clip launches when you lift your finger, because you can also drag it.
 - **Tap +** in an empty slot to record a new clip there.
@@ -93,7 +93,7 @@ The pads feel how hard you keep pressing after you hit them. While you record, t
 
 ## Clip settings
 
-The Record panel has two tabs at its top: **Record**, the record settings, and **Clip**, the settings of one clip. The Clip tab names the clip it sets, such as "Clip · Verse B": the armed track's playing clip, or its first clip when none is playing, the same clip the Play page's Beats and the note editor show.
+The Record panel has three tabs at its top: **Record**, the record settings, **Clip**, the settings of one clip, and **Scene**, a scene's name, follow action and mutes (see [Setting up a scene](arranging.md#setting-up-a-scene)). The Clip tab names the clip it sets, such as "Clip · Verse B": the armed track's playing clip, or its first clip when none is playing, the same clip the Play page's Beats and the note editor show.
 
 {{shot: clips-card | The Record panel's Clip tab: the settings of Bass's clip beside the grid.}}
 
@@ -105,13 +105,19 @@ The Record panel has two tabs at its top: **Record**, the record settings, and *
 - **Follow:** what the track plays after this clip. **Next**, **Previous**, **First** and **Last** pick from the track's clips; **Any** picks one at random, this one included, and **Other** any but this one; **Again** plays it from its start; **Stop** stops the track.
 - **After:** after how many bars, counted from where the clip started. Turning **Follow** on starts it at one pass of the clip.
 - **Launch:** **project** starts this clip on the Record tab's **Launch** line. Or give it its own, from **at once** to **8 bars**: a fill on **1/4** comes in on the next beat while the rest of the set changes on the bar.
-- **Mode:** **Restart** starts the clip from its top. **Legato** takes over from the clip the track is playing at the same place in its pass, so a variation slides in mid-phrase: with **Verse A** two bars long, a legato **Verse B** that starts on the bar line halfway through it plays on from its own second bar. With nothing playing, it starts from its top.
+- **Mode:** **Restart** starts the clip from its top. **Legato** takes over from the clip the track is playing at the same place in its pass, so a variation slides in mid-phrase: with **Verse A** two bars long, a legato **Verse B** that starts on the bar line halfway through it plays on from its own second bar. With nothing playing, it starts from its top. **Once** makes it a one-shot: it plays one pass and then its track stops, right where the pass ends, whatever the Launch line (in song mode the song carries on). A fill of three beats stops after three beats. From its last bar its cell says where it stops ("stops 3.4"). A **Follow** set on it waits.
 
 Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **+**, as on the Record tab. Hold **SHIFT** as you tap **Length**'s arrows to **double** the clip (its notes play again in the new half) or **halve** it, and **Speed**'s to play it twice as fast or half as fast. Each change plays at once. A row you change is one take ("Settings 4 · Bass / 2"), however far you turn it, so **UNDO** puts it back in one go.
 
 A Loop track's cell plays its loop as you recorded it, so only **Follow**, **After** and **Launch** apply to it.
 
-Coming: the clip's name and colour, its step size, a one-shot mode, and playing it backwards.
+### Save state and Reload
+
+Under the rows, **Save state** keeps the clip as it is now: its notes, locks, knob moves, length and settings. Change the clip as much as you like, then tap **Reload** (or **Reload clip** on the morph bar under the grid) to bring the saved state back. While the clip plays, the reload waits for the clip's Launch line, so the saved pattern starts on the beat, and the button is outlined in amber until then; tap it again to take the reload back. With the music stopped it happens at once. A reload is a take ("Reload 3 · saved state"), so **UNDO** brings back what you had before it.
+
+A clip keeps one saved state, and a new Save state replaces it. Saved states last while the project is open; they are not saved with it. Deleting, moving or copying a clip, or moving a row, forgets the saved states of the slots it touches. A Loop track's cell has no Save state: the Looper's **UNDO** takes layers back.
+
+Coming: the clip's name and colour, its step size, and playing it backwards.
 
 ## Takes
 

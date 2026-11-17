@@ -233,7 +233,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 ```
 
 - Expect five hashes that match C0's, then `PE32+ executable for MS Windows 6.00 (GUI), x86-64`.
-- The DLL list should be all Windows' own, such as kernel32, user32, opengl32 and `api-ms-win-crt-…`, with no libgcc or libwinpthread.
+- The DLL list should be all Windows' own, with no libgcc or libwinpthread. On 17 Nov it was kernel32, ntdll, ole32, opengl32, shell32, user32 and uxtheme: the C runtime is linked in (`crt-static`), so no `api-ms-win-crt-…` either.
 - The `.exe`'s hash comes last.
 
 **Block W0c: sign it** (workstation only; asks for the key's passphrase):
@@ -242,7 +242,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 cd /home/jesse/code/mpfree-hardware-survey && out=/home/jesse/mpfree-work/windows-creator/MPFree-USB-Creator-0.1.0-windows-x64.exe && tmp=$(mktemp -u /home/jesse/mpfree-work/windows-creator/signing-XXXXXX.exe) && osslsigncode sign -certs /home/jesse/.local/share/mpfree-signing/test-signing.crt -key /home/jesse/.local/share/mpfree-signing/test-signing.key -askpass -h sha256 -n "MPFree USB Creator" -i https://github.com/jferments/mpfree -in rust/mpfree-creator/target/x86_64-pc-windows-gnu/release/mpfree-creator.exe -out "$tmp" && mv -f "$tmp" "$out" && python3 tools/mpc-one/results.py run sign-windows -- bash -c "osslsigncode verify -CAfile /home/jesse/.local/share/mpfree-signing/test-signing.crt -in $out && sha256sum $out"
 ```
 
-Expect `Succeeded`, then `Signature verification: ok`, then the signed file's hash, which W1a checks on Windows. osslsigncode won't write over a file, hence the temporary name. A wrong passphrase stops it with nothing written: run it again. Copy `~/mpfree-work/windows-creator/MPFree-USB-Creator-0.1.0-windows-x64.exe` into the PC's **Downloads**.
+Expect `Signature verification: ok`, `Number of verified signatures: 1` and `Succeeded`, then the signed file's hash, which W1a checks on Windows. `Timestamp is not available` is expected too: the test signature has no timestamp, so Windows treats it as valid only while the certificate is (a year). osslsigncode won't write over a file, hence the temporary name. A wrong passphrase stops it with nothing written: run it again. Copy `~/mpfree-work/windows-creator/MPFree-USB-Creator-0.1.0-windows-x64.exe` into the PC's **Downloads**.
 
 **W0 outside a round.** When the clone is on another round's branch, build in a separate folder at `main`, with its own results folder, so that branch and its results stay as they are. Start with:
 
@@ -275,6 +275,8 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 ```
 
 It should list partitions 1 to 5, `made: MPFree stick, made by MPFree USB creator 0.1.0; …; developer SSH: off` and `setup mode: install`. A stick that inspects cleanly here goes on to C5.
+
+**Seen on 2026-11-17** (W0 outside a round, at `main` `a96a6f5`, then W1 on the owner's Windows 11 Home PC, 64-bit, AMD Ryzen 5). C0's `build-fetch` first stopped at `no such command: zigbuild`, as its note says; G1a's tools (cargo-zigbuild 0.24.1, ziglang 0.17.1) fixed it. W0b's five programs matched C0's hashes, the creator was `PE32+ … (GUI), x86-64` with only Windows' own DLLs, and W0c's signature verified against the test certificate. W1 made the stick on Windows with no other step; `stick-made-on-windows` (the inspect step) showed the creator, developer SSH off and `setup mode: install`; and the stick's first start backed the MPC up (`mpc-one-emmc-20261117T173519Z`) and started MPFree. W1a's PowerShell output wasn't kept. Not tried yet: a release draft's own Windows build, and the Mac (W2).
 
 ## Passes when
 

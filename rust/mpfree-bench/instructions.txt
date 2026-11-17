@@ -57,7 +57,7 @@
 55287	Frequency shifter
 386476	Fuzz
 17437	Gate
-472729	Grains FX (dense)
+473617	Grains FX (dense)
 99325	Harmonizer
 188538	Keys Dusty Keys, 16 voices
 169967	Keys Init, 16 voices
@@ -115,14 +115,15 @@
 1515282	Sampler x16 held up
 1774420	Sampler x16 held up, 16-bit sound
 548284	Sampler x16 held, 16-bit sound
-1435093	Sampler, 20 pads
-2017919	Sampler, 20 pads + master grains
+1056436	Sampler, 20 pads
+1621665	Sampler, 20 pads + master grains
+75022	Sampler, 4 drum kits, 64 voices
 39166	Sampler, drum kit, 24 voices
 41183	Sampler, drum kit, 24 voices, 16-bit sounds
 74456	Sampler, drum kit, 64 voices
 823688	Sampler, the 16 sample pads alone
-630784	Sampler, the 4 granular pads alone
-4085282	Song: sampler, 2 synths, mixer+FX, time, looper
+263916	Sampler, the 4 granular pads alone
+3689033	Song: sampler, 2 synths, mixer+FX, time, looper
 137967	Spring reverb
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
