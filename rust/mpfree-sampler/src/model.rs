@@ -451,6 +451,11 @@ pub enum GrainMode {
     /// Repeats of the spot under the position, locked to the tempo: a
     /// stutter.
     Repeat,
+    /// The sound as an oscillator: short grains of one spot, regular, so
+    /// the grain rate (the density) is the note heard, and the keys and
+    /// tune move it (with the grains' size, so each keeps as many cycles);
+    /// the grains' own pitch colours it.
+    Tone,
 }
 
 /// What a pad hit does with a region.

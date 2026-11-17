@@ -31,6 +31,7 @@
 
 use std::sync::Arc;
 
+use mpfree_analysis::pitch::note_name;
 use mpfree_sampler::engine::GrainView;
 use mpfree_sampler::model::{
     GrainMode, GrainParams, GrainSprayShape, GrainWindow, ModelError, Pad, PlayMode, Project,
@@ -224,6 +225,7 @@ impl Row {
             GrainMode::Cloud => &Row::ALL,
             GrainMode::Stretch => &STRETCH_ROWS,
             GrainMode::Repeat => &REPEAT_ROWS,
+            GrainMode::Tone => &TONE_ROWS,
         }
     }
 
@@ -261,12 +263,35 @@ const REPEAT_ROWS: [Row; 10] = [
     Row::Spray,
     Row::Level,
 ];
+/// A tone's rows: its note (the density), how many cycles a grain holds
+/// (the size), where in the sound and at what pitch it reads (its
+/// colour), and what moves or widens it.
+const TONE_ROWS: [Row; 12] = [
+    Row::Mode,
+    Row::GrainMode,
+    Row::Density,
+    Row::Size,
+    Row::Position,
+    Row::Pitch,
+    Row::Shape,
+    Row::Scan,
+    Row::Spray,
+    Row::PitchSpray,
+    Row::Spread,
+    Row::Level,
+];
 /// The Grain mode row's words, in the order it steps.
-const GRAIN_MODES: [(&str, GrainMode); 3] = [
+const GRAIN_MODES: [(&str, GrainMode); 4] = [
     ("Cloud", GrainMode::Cloud),
     ("Stretch", GrainMode::Stretch),
     ("Repeat", GrainMode::Repeat),
+    ("Tone", GrainMode::Tone),
 ];
+/// A tone's notes: A0 to B5 (the grain voice plays up to 1,000 grains a
+/// second), as MIDI notes.
+const TONE_NOTES: (f32, f32) = (21.0, 83.0);
+/// How many cycles of its note a tone's grain may hold.
+const TONE_CYCLES: (f32, f32) = (1.0, 16.0);
 
 /// The rows the Q-Links turn, in knob order.
 pub const QLINK_ROWS: [Row; 4] = [Row::Position, Row::Size, Row::Density, Row::Pitch];
@@ -745,6 +770,18 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
         }
         Row::Density if dsync => step_sync(g, &PER_BEAT, delta, true),
         Row::Size if ssync => step_sync(g, &BEATS, delta, false),
+        // A tone's note, a semitone a step; its grains keep their cycles.
+        Row::Density if r.grain_mode == GrainMode::Tone => {
+            let cycles = tone_cycles(g);
+            let note = (tone_note(g.density).round() + d).clamp(TONE_NOTES.0, TONE_NOTES.1);
+            g.density = note_hz(note);
+            g.size_ms = cycles * 1000.0 / g.density;
+        }
+        Row::Size if r.grain_mode == GrainMode::Tone => {
+            let cycles =
+                (round_to(tone_cycles(g), 0.5) + d * 0.5).clamp(TONE_CYCLES.0, TONE_CYCLES.1);
+            g.size_ms = cycles * 1000.0 / g.density;
+        }
         Row::Level => g.gain = level_gain(level_db(g.gain) + d * 0.5),
         Row::Mode => {
             let i = MODES.iter().position(|m| *m == r.mode).unwrap_or(0);
@@ -977,7 +1014,9 @@ fn per_beat_text(g: f32) -> String {
 /// random timing); a stretch reads at the sound's speed with regular
 /// grains overlapping four times, nothing random, so its grains stay in
 /// step; a repeat replays the spot under the position every sixteenth,
-/// a sixteenth long, with short fades.
+/// a sixteenth long, with short fades; a tone plays A2 (110 Hz, the
+/// density) with grains four cycles long, regular and frozen, so it holds
+/// one spot's colour at that note.
 pub fn mode_settings(g: &GrainParams, mode: GrainMode, bpm: f64) -> GrainParams {
     let kept = GrainParams {
         position: g.position,
@@ -995,6 +1034,12 @@ pub fn mode_settings(g: &GrainParams, mode: GrainMode, bpm: f64) -> GrainParams 
             scan: 1.0,
             size_ms: 90.0,
             density: 45.0,
+            timing: 0.0,
+            ..kept
+        },
+        GrainMode::Tone => GrainParams {
+            density: note_hz(45.0),
+            size_ms: 4.0 * 1000.0 / note_hz(45.0),
             timing: 0.0,
             ..kept
         },
@@ -1087,6 +1132,13 @@ pub fn value_text(r: &Region, row: Row) -> String {
                 .into()
         }
         Row::Position => format!("{:.1} %", g.position * 100.0),
+        Row::Size if r.grain_mode == GrainMode::Tone => {
+            format!("{} · {:.1} cycles", ms_text(g.size_ms), tone_cycles(g))
+        }
+        Row::Density if r.grain_mode == GrainMode::Tone => {
+            let note = tone_note(g.density).round().clamp(0.0, 127.0) as u8;
+            format!("{} · {}", note_name(note), hz_text(g.density))
+        }
         Row::Size => match g.sync.and_then(|t| t.size_beats) {
             Some(b) => beats_text(b),
             None => ms_text(g.size_ms),
@@ -1125,6 +1177,32 @@ pub fn ms_text(ms: f32) -> String {
     } else {
         format!("{:.2} s", ms / 1000.0)
     }
+}
+
+/// A frequency: 27.5 Hz, 110 Hz, 1.05 kHz.
+fn hz_text(hz: f32) -> String {
+    if hz < 100.0 {
+        format!("{hz:.1} Hz")
+    } else if hz < 1000.0 {
+        format!("{hz:.0} Hz")
+    } else {
+        format!("{:.2} kHz", hz / 1000.0)
+    }
+}
+
+/// The MIDI note (fractional) a frequency is.
+fn tone_note(hz: f32) -> f32 {
+    69.0 + 12.0 * (hz.max(1.0) / 440.0).log2()
+}
+
+/// MIDI note `n`'s frequency.
+fn note_hz(n: f32) -> f32 {
+    440.0 * ((n - 69.0) / 12.0).exp2()
+}
+
+/// How many cycles of a tone's note each grain holds.
+fn tone_cycles(g: &GrainParams) -> f32 {
+    g.size_ms * g.density / 1000.0
 }
 
 pub fn density_text(d: f32) -> String {

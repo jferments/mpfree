@@ -84,8 +84,8 @@ use crate::dsp::{
 };
 use crate::grain_clip::GrainClip;
 use crate::model::{
-    edge_gain, ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx,
-    PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LoopMode,
+    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -274,6 +274,9 @@ pub struct ViewLayer {
     src_rate: u32,
     /// Grain settings with the layer's tune and reverse folded in.
     grain: mpfree_grain::Params,
+    /// A Tone region: tune moves its density, not its grains' pitch
+    /// ([`pitched_grain`]).
+    tone: bool,
     /// The tempo the layer's audio is at, when it is warped (0 if not):
     /// the voice plays it `tempo / warp_bpm` times as fast.
     warp_bpm: f64,
@@ -426,8 +429,8 @@ impl EngineView {
                         let g = unit_gain * pad_gain;
                         let cents = f64::from(r.tune_cents + l.tune_cents + p.tune_cents);
                         let ratio = f64::from(s.rate()) / f64::from(rate) * (cents / 1200.0).exp2();
-                        let mut grain = r.grain;
-                        grain.pitch += (cents / 100.0) as f32;
+                        let tone = r.grain_mode == GrainMode::Tone;
+                        let mut grain = pitched_grain(r.grain, (cents / 100.0) as f32, tone);
                         if r.reverse {
                             grain.reverse = 1.0;
                         }
@@ -456,6 +459,7 @@ impl EngineView {
                             vel_hi: l.vel_hi,
                             src_rate: s.rate(),
                             grain,
+                            tone,
                             warp_bpm: 0.0,
                             copy: false,
                             source_at: None,
@@ -905,6 +909,10 @@ struct Voice {
     src_rate: u32,
     /// Grain settings before pressure moves them.
     grain_base: GrainParams,
+    /// A Tone voice ([`ViewLayer::tone`]), and the semitones its hit added
+    /// (a keygroup's, a live tune's), kept for a live edit.
+    grain_tone: bool,
+    grain_hit: f32,
     route: PressureRoute,
     /// Pressure asked for and the smoothed value in use, 0 to 1.
     press_target: f32,
@@ -2453,10 +2461,9 @@ impl Engine {
                 program[ProgramField::Tune as usize],
             )
         };
-        let mut grain = l.grain;
-        grain.pitch += semis as f32;
+        let mut grain = pitched_grain(l.grain, semis as f32, l.tone);
         if tune != 0.0 {
-            grain.pitch += tune / 100.0;
+            grain = pitched_grain(grain, tune / 100.0, l.tone);
         }
         if let Some(at) = vary.start {
             grain.position = (at * 16.0 / 15.0).min(1.0);
@@ -2597,6 +2604,8 @@ impl Engine {
             granular,
             src_rate: l.src_rate,
             grain_base: grain,
+            grain_tone: l.tone,
+            grain_hit: semis as f32 + tune / 100.0,
             route: vp.pressure,
             press_target: 0.0,
             press: 0.0,
@@ -2666,7 +2675,7 @@ impl Engine {
         let beat = self.frames_per_beat();
         if let Some(g) = self.pool.grain_mut(slot).filter(|_| granular) {
             g.set_tempo(beat);
-            g.set_params(tuned_grain(grain, cents));
+            g.set_params(tuned_grain(grain, cents, l.tone));
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
             g.start();
@@ -3018,6 +3027,7 @@ fn grains<C: GrainSource>(
             g.set_params(tuned_grain(
                 pressed_grain(v.grain_base, v.route, v.press),
                 cents,
+                v.grain_tone,
             ));
             v.grain_cents = cents;
         }
@@ -3040,9 +3050,24 @@ fn grains<C: GrainSource>(
 }
 
 /// Grain settings `cents` higher (the program's tune).
-fn tuned_grain(mut g: GrainParams, cents: f32) -> GrainParams {
+fn tuned_grain(g: GrainParams, cents: f32, tone: bool) -> GrainParams {
     if cents != 0.0 {
-        g.pitch += cents / 100.0;
+        pitched_grain(g, cents / 100.0, tone)
+    } else {
+        g
+    }
+}
+
+/// Grain settings `semis` higher: the grains' pitch, or for a Tone region
+/// (`tone`) the density, with the size shortened as much so each grain
+/// keeps as many cycles of the note.
+fn pitched_grain(mut g: GrainParams, semis: f32, tone: bool) -> GrainParams {
+    if tone {
+        let k = (semis / 12.0).exp2();
+        g.density *= k;
+        g.size_ms /= k;
+    } else {
+        g.pitch += semis;
     }
     g
 }
@@ -3234,7 +3259,11 @@ fn follow_edit(
     // added (a keygroup's semitones, 16 Levels' position) kept.
     if v.granular && l.mode == PlayMode::Granular && l.grain != v.layer_grain {
         let mut p = l.grain;
-        p.pitch += v.grain_base.pitch - v.layer_grain.pitch;
+        if v.grain_tone {
+            p = pitched_grain(p, v.grain_hit, true);
+        } else {
+            p.pitch += v.grain_base.pitch - v.layer_grain.pitch;
+        }
         if v.grain_base.position != v.layer_grain.position {
             p.position = v.grain_base.position;
         }
@@ -3243,6 +3272,7 @@ fn follow_edit(
         g.set_params(tuned_grain(
             pressed_grain(p, v.route, v.press),
             v.follow.cents,
+            v.grain_tone,
         ));
         v.grain_cents = v.follow.cents;
     }

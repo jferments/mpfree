@@ -579,6 +579,7 @@ const GRAIN_MODES: &[(&str, GrainMode)] = &[
     ("cloud", GrainMode::Cloud),
     ("stretch", GrainMode::Stretch),
     ("repeat", GrainMode::Repeat),
+    ("tone", GrainMode::Tone),
 ];
 const PLAY_MODES: &[(&str, PlayMode)] = &[
     ("one-shot", PlayMode::OneShot),

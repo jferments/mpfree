@@ -109,7 +109,9 @@ pub struct Params {
     /// How the gaps between grains vary, 0 to 1: 0 regular (every gap one
     /// density period: grains in lockstep, which buzzes at the grain rate
     /// and makes a frozen cloud comb, its level rising and falling with
-    /// the density), up to 1 random (each gap anywhere from none to two
+    /// the density; each grain starts at its exact time, between two
+    /// frames if it falls there, so the rate is exact and a cloud of short
+    /// grains can play a tone at the density), up to 1 random (each gap anywhere from none to two
     /// periods). The density on average is the same at any setting.
     /// Synced density keeps its grains on the beat grid and ignores it.
     pub timing: f32,
@@ -208,6 +210,9 @@ struct Grain {
     age: u32,
     len: u32,
     dphase: f32,
+    /// Where the window was at its first frame: a grain due between two
+    /// frames starts that part of a frame in (0 for most grains).
+    phase0: f32,
     /// The grain's own level, before its pan.
     lvl: f32,
     /// Left and right pan gains.
@@ -562,6 +567,12 @@ impl GrainVoice {
     /// How much longer than the size the varied grains are on average:
     /// the mean of 2^(s·u) for u even in −1 to 1, which is 1.08 at full
     /// variation.
+    /// Free-running grains at regular times (timing 0), which keep their
+    /// exact times.
+    fn exact(&self) -> bool {
+        self.params.timing <= 0.0 && self.sync_interval().is_none()
+    }
+
     fn size_spray_mean(&self) -> f64 {
         let s = f64::from(self.params.size_spray.clamp(0.0, 1.0));
         if s < 1e-6 {
@@ -727,11 +738,21 @@ impl GrainVoice {
                         self.prefill = false;
                         self.prefill_grains(src, budget, src_ratio, scan);
                     }
-                    self.spawn(src, budget, src_ratio, 0, scan);
                     let now = self.clock as f64 + off as f64;
-                    self.last_spawn = now;
+                    // Regular grains keep their exact times, between frames
+                    // when the period isn't a whole number of frames, so
+                    // their rate is exact (a tone's pitch); others start
+                    // on the frame.
+                    let due = now - self.next_at;
+                    let born = if self.exact() && (0.0..1.0).contains(&due) {
+                        self.next_at
+                    } else {
+                        now
+                    };
+                    self.spawn(src, budget, src_ratio, 0, scan, now - born);
+                    self.last_spawn = born;
                     self.gap = gap_factor(self.params.timing, self.trng.unit());
-                    self.next_at = now + self.period() * self.gap;
+                    self.next_at = born + self.period() * self.gap;
                     search = off + 1;
                 }
             }
@@ -777,7 +798,7 @@ impl GrainVoice {
             if age >= size - 1.0 {
                 break;
             }
-            self.spawn(src, budget, src_ratio, age as u32, scan);
+            self.spawn(src, budget, src_ratio, age as u32, scan, 0.0);
             made = true;
         }
         if made {
@@ -841,6 +862,7 @@ impl GrainVoice {
         src_ratio: f64,
         age: u32,
         scan: f64,
+        frac: f64,
     ) {
         // Draw the same random numbers every time, used or not, so changing
         // one parameter doesn't reshuffle the others.
@@ -883,7 +905,7 @@ impl GrainVoice {
             return;
         }
         let size = size.floor();
-        let extent = (size - 1.0) * speed;
+        let extent = (size - 1.0 + frac) * speed;
         if age as f64 >= size - 1.0 {
             return;
         }
@@ -915,11 +937,12 @@ impl GrainVoice {
             1.0
         };
         self.grains[self.active] = Grain {
-            pos: pos + inc * f64::from(age),
+            pos: pos + inc * (f64::from(age) + frac),
             inc,
             age,
             len: size as u32,
             dphase: 1.0 / (size as f32 - 1.0),
+            phase0: frac as f32 / (size as f32 - 1.0),
             lvl,
             pl: angle.cos() * std::f32::consts::SQRT_2,
             pr: angle.sin() * std::f32::consts::SQRT_2,
@@ -961,7 +984,7 @@ fn mix<S: GrainSource>(
         let g = &mut grains[i];
         let m = ((g.len - g.age) as usize).min(n);
         let (mut pos, mut age) = (g.pos, g.age);
-        let (lvl, pl, pr) = (g.lvl, g.pl, g.pr);
+        let (lvl, pl, pr, ph0) = (g.lvl, g.pl, g.pr, g.phase0);
         // Grains are kept inside the span, which never starts below
         // frame 0, so truncation is floor (and avoids a libm call).
         // Below 2^31 frames (13 hours at 44.1 kHz, so every sample and
@@ -974,7 +997,7 @@ fn mix<S: GrainSource>(
         macro_rules! frame {
             ($k:expr, $read:expr, $measure:expr) => {{
                 let [a_l, a_r] = $read;
-                let a = window.at(age as f32 * g.dphase) * lvl;
+                let a = window.at(age as f32 * g.dphase + ph0) * lvl;
                 let (vl, vr) = (a_l * a * pl, a_r * a * pr);
                 sl_[$k] += vl;
                 sr_[$k] += vr;
