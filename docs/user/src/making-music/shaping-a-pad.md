@@ -12,7 +12,7 @@ As everywhere on the Sample tab, **hit a pad** to pick the one you are shaping.
 
 ## Play: layers, envelope and filter
 
-{{shot: sample-play | The Play page on its Amp section: velocity layers, the volume envelope drawn over the sound, and the filter.}}
+{{shot: sample-play | The Play page on its Amp section: the volume envelope drawn across the page over the sound, and under it the Level and Envelope knobs beside the scenes.}}
 
 The **Play** page shapes how the picked pad sounds each time you hit it:
 
@@ -20,20 +20,24 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
 - **Filter:** darken or thin out the sound. Drag the dot.
 
-Its settings come in six **sections**, a button each across the top of the page, with what is in each one written under its name: **Layers**, **Amp**, **Filter**, **Pitch**, **Mod** and **Pad**. Tap one and the list on the right shows its rows (never more than eight, so nothing scrolls), and **Q-Links 1 to 4** turn that section's four main settings. The hint line names them.
+Its settings come in six **sections**, a button each across the top of the page, with what is in each one written under its name: **Layers**, **Amp**, **Filter**, **Pitch**, **Mod** and **Pad**. Tap one and the page shows that section:
 
-| Section | Its rows | Q-Links 1 to 4 |
+- **Its picture, across the page:** the layer map on Layers, Mod and Pad; the volume envelope over the sound on Amp and Pitch; the filter beside its envelope on Filter; and the keyboard on Pitch and Pad while the pad is a keygroup or the pads play notes.
+- **Its controls, in the panel under the picture:** knobs (drag up or down), buttons for a choice, ‹ › selectors, − + steppers and switches, in labelled groups as on a hardware sampler. A finger on a control gives it the wheel and **–** / **+**. The scenes sit beside them on every section.
+- **Q-Links 1 to 4** turn that section's four main settings. The hint line names them.
+
+| Section | Its controls | Q-Links 1 to 4 |
 | --- | --- | --- |
-| **Layers** | how a hit picks layers, Vel fade, and the picked layer's Sound, Vel low, Vel high, Level, Pan and Tune | the layer's level, pan, tune and lowest velocity |
+| **Layers** | how a hit picks layers, Vel fade, the picked layer's Sound, Vel low, Vel high, Level, Pan and Tune, and Add layer and Remove layer | the layer's level, pan, tune and lowest velocity |
 | **Amp** | the pad's Level and Pan, Attack, Hold, Decay, Sustain and Release | attack, decay, sustain, release |
 | **Filter** | the filter's type, Cutoff, Resonance, and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
 | **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade | tune, wow, low key, high key |
 | **Mod** | Vel → level, Vel → start, Pressure and its Depth | all four |
 | **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
 
-On a Q-Link, SHIFT turns finer. A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its card faint, and says why.
+On a Q-Link, SHIFT turns finer. A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its control and its card faint, and a tap on it says why.
 
-On the **Filter** section the drawing shows the filter's own envelope instead of the volume's: how far and how fast the cutoff moves on each hit. **Env depth** says how far, up to 4 octaves up or down; drag the points for its times, or use the rows.
+On the **Filter** section the drawing shows the filter's own envelope instead of the volume's: how far and how fast the cutoff moves on each hit. **Env depth** says how far, up to 4 octaves up or down; drag the points for its times, or turn their knobs.
 
 A cutoff or resonance change reaches a sound that is still playing, gliding there; a new envelope or filter type plays from the next hit.
 
@@ -43,10 +47,10 @@ A cutoff or resonance change reaches a sound that is still playing, gliding ther
 
 A pad can hold up to 16 sounds, its **layers**: soft and hard hits of a snare, a kick with a click on top, round robins that take turns.
 
-- **Add layer**, under the layer map, adds a copy of the picked layer just after it. The copy takes the upper half of its velocities, so a soft hit plays the first and a hard hit the new one. Change its sound on the **Sound** row: it steps through the kit's sounds, and the new sound plays from start to end, keeping the layer's play mode.
-- **Tap a layer** on the map to pick it. The Layers section's rows then set that layer alone: **Sound**, **Vel low** and **Vel high** (the velocities it plays; dragging its edges on the map does the same), and its own **Level**, **Pan** and **Tune**, on top of the pad's. The **Wave**, **Warp**, **Chop** and **Grain** pages then work on that layer too: its trim, loop, warp, slices and grains.
+- **Add layer**, in the Layers section's panel, adds a copy of the picked layer just after it. The copy takes the upper half of its velocities, so a soft hit plays the first and a hard hit the new one. Change its sound with the **Sound** selector: it steps through the kit's sounds, and the new sound plays from start to end, keeping the layer's play mode.
+- **Tap a layer** on the map to pick it. The Layers section's controls then set that layer alone: **Sound**, **Vel low** and **Vel high** (the velocities it plays; dragging its edges on the map does the same), and its own **Level**, **Pan** and **Tune**, on top of the pad's. The **Wave**, **Warp**, **Chop** and **Grain** pages then work on that layer too: its trim, loop, warp, slices and grains.
 - **Remove layer** takes the picked layer out. A pad keeps one layer at least.
-- The **Layers** row says how the layers that match a hit play: all together (**Stacked**), in turn (**Cycle**), or one at random (**Random**).
+- The **Layers** buttons say how the layers that match a hit play: all together (**Stacked**), in turn (**Cycle**), or one at random (**Random**).
 
 Each add, remove and change is one step for **UNDO**.
 
@@ -54,13 +58,13 @@ Each add, remove and change is one step for **UNDO**.
 
 {{shot: sample-play-links | The Play page's Pad section with Also plays picked: hits on A1 and A3 put them on it, so a hit on A5 plays all three, and A5 latches.}}
 
-Three rows of the Play page's **Pad** section set how a pad works with the others, and with your hands:
+Three controls of the Play page's **Pad** section set how a pad works with the others, and with your hands:
 
 - **Stops:** the pads this one cuts off when you hit it. It works one way: the closed hi-hat stops the open one, and the open one leaves the closed one alone. (A **mute group** cuts both ways.)
 - **Also plays:** the pads that play whenever you hit this one, at the same strength, as the MPC's Simultaneous Play does: a kick with its own sub, a stab with a noise burst, a chord from three pads. Each plays as a hit on it would, with its own layers, stops and latch, and lets go when you let go of this pad. The pads it plays don't play their own Also plays pads in turn. While the pads play notes or 16 Levels, Also plays does nothing.
 - **Latch:** at **On**, a hit starts the pad and it plays on after you let go; the next hit stops it. A loop keeps looping and plays its tail when it stops, a grain cloud keeps going, a long pad or a drone holds, and your hands are free for the rest. A latched pad stays lit on the MPC.
 
-To fill in **Stops** or **Also plays**, tap the row, then hit the pads you want: each hit adds a pad, and a second hit takes it out again. Every hit is one step for **UNDO**. Tap another row when you are done, and hits pick the pad to edit again. The arrows and **–** and **+** work too (and the wheel, once you push it): a step up adds the next pad, a step down takes the last one out.
+To fill in **Stops** or **Also plays**, tap its selector, then hit the pads you want: each hit adds a pad, and a second hit takes it out again. Every hit is one step for **UNDO**. Tap another control when you are done, and hits pick the pad to edit again. The arrows and **–** and **+** work too (and the wheel, once you push it): a step up adds the next pad, a step down takes the last one out.
 
 > [!TIP]
 > Note Repeat plays a pad again on every step, so a latched pad would turn on and off with each one. Keep Latch for pads you hold, and Note Repeat for pads you roll.
@@ -71,18 +75,18 @@ To fill in **Stops** or **Also plays**, tap the row, then hit the pads you want:
 
 Play a sound higher than it was recorded (**Tune** up, a key above a keygroup's root, pressure on pitch) and its top end moves up past what the MPC can play. On old samplers that part folds back down as harsh, metallic tones that were never in the sound (aliasing): a hi-hat pitched up an octave gains a whine. MPFree filters it out as it plays, so pitched-up hats, breaks and keys stay clean. A sound recorded at a higher rate, such as a 96 kHz file, plays clean too.
 
-The **Vintage** row of the Pitch section turns that off for one pad. At **On** the pad plays pitched up the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
+The **Vintage** switch of the Pitch section turns that off for one pad. At **On** the pad plays pitched up the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
 
 Up to two semitones up, clean and Vintage sound exactly the same: what folds back there is above hearing. Past that, a clean pad takes a little more of the MPC's power for each sound it plays, and a Vintage one doesn't.
 
 ### Scenes: mangle, morph and go back
 
-{{shot: sample-play-scenes | The scene strip on the Play page: scenes A and B stored, the crossfader 40 % of the way to B.}}
+{{shot: sample-play-scenes | The scenes on the Play page: A and B stored, the crossfader 40 % of the way to B.}}
 
-The strip under the layer map on the **Play** page holds two **scenes** of the whole kit, as on the Octatrack:
+The **Scenes** group, on the right of the **Play** page's panel on every section, holds two **scenes** of the whole kit, as on the Octatrack:
 
 - **Store A** keeps every pad of the kit as it is now: its sound, trim, level, tune, filter, envelope, everything. **Store B** keeps a second version. Make A, change some pads (tune the snare down, close the hats' filter, push the kick), then make B.
-- The **crossfader** morphs the kit from A to B as it plays: each pad's level, pan, tune, filter and envelope times move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
+- The **crossfader** (touch or drag it; it moves once A and B are both stored) morphs the kit from A to B as it plays: each pad's level, pan, tune, filter and envelope times move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
 - **Return to A** puts every pad back exactly as A stored it and sets the crossfader to A. Mangle the kit as much as you like, then return. **UNDO** takes the return back.
 
 The scenes are saved with the kit.
@@ -118,19 +122,19 @@ Notes are named with middle C as C4. Some libraries call middle C "C3"; when a n
 
 {{shot: sample-keys-mapped | The Play page's keyboard after Map to keys: five keygroups, with pad A5's zone picked.}}
 
-While the pad is a keygroup, or the pads play notes, the Play page shows a keyboard:
+While the pad is a keygroup, or the pads play notes, the Play page's Pitch and Pad sections show a keyboard across the page:
 
 - Each keygroup is a bar over the keys it plays, in its pad's colour, with a dot on its root.
 - Tap a bar to pick its pad. Drag the picked pad's ends to set its lowest and highest keys, and its dot to move the root.
 - Press the keys to hear the kit. The line under the keys shows the 16 notes the pads play.
 
-The Pitch section's Keys rows do the same with numbers: Keys makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
+The Pitch section's Keys controls do the same with numbers: the Keys switch makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
 
 ### Crossfades
 
 Where one zone ends and the next begins, the sound can switch at a hard edge or blend from one sample into the other. The same goes for a pad's velocity layers, from soft to hard.
 
-- **Key fade**, a row of the Pitch section, sets the blend for the whole kit: every keygroup fades in and out over that many notes, and where two zones meet they are moved to overlap by as much, so one fades out while the next fades in. The level stays even across the blend.
+- **Key fade**, a stepper in the Pitch section, sets the blend for the whole kit: every keygroup fades in and out over that many notes, and where two zones meet they are moved to overlap by as much, so one fades out while the next fades in. The level stays even across the blend.
 - **Vel fade**, in the Layers section, does the same for the picked pad's velocity layers. Round robins keep taking turns while their layers blend.
 - Set either one back to Off and the edges go back to where they met. Each change is one UNDO.
 

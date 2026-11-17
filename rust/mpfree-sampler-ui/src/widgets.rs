@@ -475,6 +475,9 @@ pub struct SettingList {
     /// events are the list's own.
     pub panel: Option<Panel>,
     pub controls: Vec<Control>,
+    /// Whether the panel outlines the control picked (not on a panel the
+    /// wheel doesn't walk, such as the Play page's scenes).
+    pub outlined: bool,
     /// A knob being dragged on the panel.
     drag: Option<panel::Drag>,
 }
@@ -496,6 +499,7 @@ impl SettingList {
             typing: None,
             panel: None,
             controls: Vec::new(),
+            outlined: true,
             drag: None,
         }
     }
@@ -562,7 +566,11 @@ impl Widget for SettingList {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         if let Some(p) = &self.panel {
             let (names, values) = self.texts();
-            let sel = self.selected;
+            let sel = if self.outlined {
+                self.selected
+            } else {
+                usize::MAX
+            };
             return panel::paint(
                 cx,
                 r,

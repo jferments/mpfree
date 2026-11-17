@@ -126,16 +126,19 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 ### Play
 
-- **`smp-play-sections/chip`**: the Play tab's sections (Layers, Amp, Filter, Pitch, Mod, Pad), each with a line of what it holds: tap one for its rows and its four Q-Links. *Test:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`.
-- **`smp-play-layer-edit/button`**: Add layer (a copy of the picked layer, sharing its velocities) and Remove layer (the picked one). Faint at 16 layers, or with one left. *Test:* `layers_are_added_and_removed_on_the_play_tab_one_undo_step_each`.
-- **`smp-play-list/row`**, **`smp-play-list/row-less`**, **`smp-play-list/row-more`**: the open section's rows: the picked layer's sound, velocities, level, pan and tune; the amp and filter envelopes; filter, keys, pressure, latch, also plays, 16 Levels. *Tests:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`, `hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row`, `sixteen_levels_make_every_pad_play_the_pad_and_hits_pick_it`.
+- **`smp-play-sections/chip`**: the Play tab's sections (Layers, Amp, Filter, Pitch, Mod, Pad), each with a line of what it holds: tap one for its picture across the page, its controls on the panel and its four Q-Links. *Test:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`.
+- **`smp-play-list/choice`**: one option of a choice: how a hit picks layers (Stacked, Cycle, Random) on Layers, and what the kit's pads play (Their sounds, Notes, 16 Levels) on Pad. Tap it to pick it. *Test:* `each_section_shows_its_picture_across_the_page_and_its_controls_on_the_panel`.
+- **`smp-play-list/knob`**: the open section's knobs: the picked layer's level, pan and tune; the pad's level, pan and envelope; cutoff, resonance, env depth and the filter envelope; tune and wow; velocity to level and start, and pressure's depth. Drag up to turn it up, down to turn it down; one drag is one undo step. Faint when it does nothing now (the filter's with the filter off, Depth with pressure off), and a tap says why. *Example:* on Amp, drag Release up for a longer tail. *Tests:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`, `each_section_shows_its_picture_across_the_page_and_its_controls_on_the_panel`.
+- **`smp-play-list/less`**, **`smp-play-list/more`**: the ‹ › of a selector (Sound, Vel fade, Filter, Pressure, Polyphony, Mute group, Stops, Also plays, Levels by) and the − + of a stepper (Vel low and high, Low, High and Root key, Key fade, Pads from). Faint ones say why (no other sound in the kit, the pad no keygroup). *Tests:* `hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row`, `sixteen_levels_make_every_pad_play_the_pad_and_hits_pick_it`.
+- **`smp-play-list/switch`**: Vintage, Keys (the pad a keygroup) and Latch, on or off.
+- **`smp-play-list/button`**: Add layer (a copy of the picked layer, sharing its velocities) and Remove layer (the picked one), on Layers. Faint at 16 layers, or with one left. *Test:* `layers_are_added_and_removed_on_the_play_tab_one_undo_step_each`.
 - **`smp-play-env/point`**: the envelope's points (Attack, Hold, Decay, Sustain, Release): drag one. The Filter section shows the filter envelope instead. *Test:* `the_filter_section_steps_and_drags_the_filter_envelope`.
 - **`smp-play-filter/cutoff`**: the filter's dot: drag for cutoff and resonance. Faint while the filter is off.
 - **`smp-play-layers/layer`**, **`smp-play-layers/layer-low`**, **`smp-play-layers/layer-high`**: the pad's velocity layers: tap one to pick it, drag its edges for the velocities it plays. *Test:* `key_fade_is_the_kits_and_vel_fade_the_pads_each_one_undo_step`.
 - **`smp-play-keys/keys`**: the keyboard: press keys to hear the kit's keygroups. *Test:* `map_to_keys_makes_the_bank_one_instrument_and_the_play_tab_plays_its_keys`.
 - **`smp-play-keys/zone`**, **`smp-play-keys/zone-low`**, **`smp-play-keys/zone-high`**, **`smp-play-keys/zone-root`**: a pad's zone of keys: tap to pick its pad, drag its edges and root dot.
-- **`smp-play-scenes/button`**: Store A, Store B, Return to A: two snapshots of the kit to morph between. *Test:* `scenes_morph_the_playing_kit_and_return_puts_the_pads_back`.
-- **`smp-play-fader/slider`**: Scenes · A to B: drag to morph from scene A to B. *Test:* `scenes_morph_the_playing_kit_and_return_puts_the_pads_back`.
+- **`smp-play-scenes/button`**: Store A, Store B, Return to A, beside the section's controls: two snapshots of the kit to morph between. Return to A is faint until A is stored. *Test:* `scenes_morph_the_playing_kit_and_return_puts_the_pads_back`.
+- **`smp-play-scenes/slider`**: the crossfader, A → B: touch or drag to morph from scene A to B. Faint until both are stored, and a tap says which to store. *Test:* `scenes_morph_the_playing_kit_and_return_puts_the_pads_back`.
 
 ### Grain
 

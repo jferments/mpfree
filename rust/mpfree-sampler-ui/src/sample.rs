@@ -788,8 +788,10 @@ pub fn play_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PlaySample>, String
     let mut s = play_on(fonts(), p, view)?;
     (s.name, s.about) = (
         "play-keys",
-        "A kit mapped to keys: eight keygroups over the keyboard, pad A5's zone picked with its handles, E4 held",
+        "A kit mapped to keys, on the Pitch section: eight keygroups over the keyboard, pad A5's zone picked with its handles, E4 held",
     );
+    let st = s.state.clone();
+    s.tab.open_section(&mut s.ui, &st, play_tab::Section::Pitch);
     if let Some(z) =
         s.ui.get_mut::<crate::keys_widgets::KeyZones>(play_tab::KEYS)
     {
