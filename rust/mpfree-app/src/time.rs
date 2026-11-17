@@ -789,13 +789,37 @@ impl TimeHost {
         self.audio.touch_dropped() + self.control.touch_lost()
     }
 
+    /// Live erase (ERASE held on a pad while recording, the MPC's way):
+    /// from the coming period, while the transport records, the armed
+    /// track's notes of sound `note` (a pad's number) are erased as the
+    /// playhead reaches them, with that sound's locks, into the take being
+    /// recorded, so UNDO brings them back; `on` false stops it.
+    pub fn erase_sound(&mut self, note: u8, on: bool) {
+        self.audio.erase_sound(note, on);
+    }
+
+    /// Live erase off for every sound (ERASE let go).
+    pub fn erase_none(&mut self) {
+        self.audio.erase_none();
+    }
+
+    /// Whether live erase is erasing any sound.
+    pub fn erasing(&self) -> bool {
+        self.audio.erasing() != 0
+    }
+
+    /// Whether live erase is erasing sound `note`.
+    pub fn erases(&self, note: u8) -> bool {
+        1u128
+            .checked_shl(u32::from(note))
+            .is_some_and(|b| self.audio.erasing() & b != 0)
+    }
+
     /// A knob moved in the coming period, at `offset`: parameter `addr` is
     /// now `value`. While the transport records and `addr` is on the armed
     /// track, it becomes a parameter lock on the step it belongs to (see
-    /// `mpfree_play::Recorder`).
-    // No knob is mapped to a parameter in the pad player yet (that needs
-    // the mod resolver); the Q-Links call this once one is.
-    #[allow(dead_code)]
+    /// `mpfree_play::Recorder`). The main loop calls it for the screen's
+    /// knob turns while recording (`record_knob` in main.rs).
     pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {
         self.audio.knob(offset, addr, value);
     }
@@ -832,6 +856,12 @@ impl TimeHost {
     /// pad lights.
     pub fn muted(&self, t: usize) -> Option<bool> {
         self.control.muted(t)
+    }
+
+    /// The project is in Perform, not Make (sequencer S4): the app follows
+    /// it each period (`App::set_perform`).
+    pub fn perform(&self) -> bool {
+        self.control.perform()
     }
 
     /// Which loops the Loop tracks have on, and the bar line each change
@@ -1569,6 +1599,116 @@ mod tests {
         assert!(h.control.project.clip(0, 1).is_some());
     }
 
+    /// The clip settings card (sequencer S3): a row turned is one take
+    /// however far it turns, the clip plays the new settings, UNDO puts
+    /// them back; Length is Beats' length, for the focused clip only.
+    #[test]
+    fn the_clip_card_sets_a_clip_and_undo_takes_it_back() {
+        use mpfree_seq::{ClipSettings, Speed};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.control.project.tracks[0].slots[0] = Some(Clip::new("beat", 3840));
+        h.control.project.tracks[0].slots[1] = Some(Clip::new("fill", 960));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let st = h.state();
+        assert_eq!(st.focus(), Some((0, 0)));
+        let was = st.clip(0, 0).unwrap().settings;
+        let speed = |num, den| TimeAction::ClipSettings {
+            track: 0,
+            slot: 0,
+            row: 1,
+            settings: ClipSettings {
+                speed: Speed::new(num, den).unwrap(),
+                ..was
+            },
+        };
+        let compiles = h.control.costs.compiles;
+        let said = h.act(speed(1, 2)).unwrap();
+        assert!(said.contains("beat · Speed ×1/2"), "{said}");
+        assert_eq!(h.control.costs.compiles, compiles + 1, "it plays at once");
+        h.act(speed(1, 4)).unwrap();
+        let st = h.state();
+        assert_eq!(st.done.len(), 1, "the row turned twice: one take");
+        assert_eq!(st.done[0].short(), "settings 1");
+        assert_eq!(st.clip(0, 0).unwrap().speed, Speed::new(1, 4).unwrap());
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().clip(0, 0).unwrap().settings, was);
+        // Length: Beats' length, the focused clip's.
+        let said = h
+            .act(TimeAction::ClipLength {
+                track: 0,
+                slot: 0,
+                steps: 12,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("12 steps"), "{said}");
+        assert_eq!(h.control.project.clip(0, 0).unwrap().length, 12 * 240);
+        assert!(h
+            .act(TimeAction::ClipLength {
+                track: 0,
+                slot: 1,
+                steps: 4,
+                copy: false,
+            })
+            .unwrap_err()
+            .contains("focused clip changed"));
+        // An empty slot says so.
+        assert!(h
+            .act(TimeAction::ClipSettings {
+                track: 0,
+                slot: 5,
+                row: 1,
+                settings: was,
+            })
+            .unwrap_err()
+            .contains("empty"));
+    }
+
+    /// COPY + a clip, then COPY + an empty slot (sequencer S3): a copy
+    /// goes there as a take UNDO takes away; a full slot, a Loop track or
+    /// nothing copied says why. SHIFT + Length's › doubles the clip with
+    /// its notes repeated.
+    #[test]
+    fn copy_and_paste_a_clip_and_double_it() {
+        use mpfree_seq::Note;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("beat", 3840);
+        beat.notes = vec![Note::new(0, 100, 0, 100), Note::new(960, 100, 2, 100)];
+        h.control.project.tracks[0].slots[0] = Some(beat.clone());
+        assert!(h
+            .act(TimeAction::PasteClip { track: 1, slot: 0 })
+            .unwrap_err()
+            .contains("nothing copied"));
+        let said = h.act(TimeAction::CopyClip { track: 0, slot: 0 }).unwrap();
+        assert!(said.contains("beat copied"), "{said}");
+        assert_eq!(h.state().clipboard.as_deref(), Some("beat"));
+        assert!(h.state().done.is_empty(), "a copy is no take");
+        let said = h.act(TimeAction::PasteClip { track: 1, slot: 2 }).unwrap();
+        assert!(said.contains("a copy of beat in"), "{said}");
+        assert_eq!(h.control.project.clip(1, 2), Some(&beat));
+        assert_eq!(h.state().done.last().unwrap().short(), "paste 1");
+        assert!(h
+            .act(TimeAction::PasteClip { track: 0, slot: 0 })
+            .unwrap_err()
+            .contains("holds a clip"));
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.control.project.clip(1, 2).is_none(), "UNDO takes it away");
+        // Doubled, the notes repeat in the new bar.
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.act(TimeAction::ClipLength {
+            track: 0,
+            slot: 0,
+            steps: 32,
+            copy: true,
+        })
+        .unwrap();
+        let c = h.control.project.clip(0, 0).unwrap();
+        assert_eq!(c.length, 7680);
+        let mut ticks: Vec<_> = c.notes.iter().map(|n| n.tick).collect();
+        ticks.sort();
+        assert_eq!(ticks, [0, 960, 3840, 4800]);
+    }
+
     /// Jay, 14 Nov: drag and drop on the Clips grid. A playing clip
     /// dropped elsewhere keeps playing where it lands; onto another clip
     /// the two change places; a row moves; UNDO takes each back, the
@@ -1894,6 +2034,98 @@ mod tests {
         assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
         assert_eq!(lane(&h), None);
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Live erase (sequencer S1, ERASE held on a pad while recording): the
+    /// pad's notes come out of the clip as the playhead passes them, the
+    /// other pads' stay; let go, nothing more is erased.
+    #[test]
+    fn live_erase_takes_a_pads_notes_out_while_recording() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        run(
+            &mut h,
+            &mut pads,
+            BAR - 1000,
+            &[(22_969, 5, 100, 2000), (26_414, 6, 100, 2000)],
+        );
+        let pads_in = |h: &TimeHost| {
+            let mut n: Vec<u8> = h
+                .control
+                .project
+                .clip(0, 0)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| n.note)
+                .collect();
+            n.sort();
+            n
+        };
+        assert_eq!(pads_in(&h), [5, 6]);
+        assert!(!h.erasing());
+        // The second pass with ERASE + pad 5 held.
+        h.erase_sound(5, true);
+        assert!(h.erasing() && h.erases(5) && !h.erases(6));
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        assert_eq!(pads_in(&h), [6], "pad 5's note came out");
+        h.erase_sound(5, false);
+        assert!(!h.erasing());
+        h.erase_sound(6, true);
+        h.erase_none();
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        assert_eq!(pads_in(&h), [6], "let go: nothing more");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Record quantise (sequencer S3): with the Record list's Quantise at
+    /// 1/16, a note played between two lines goes in on the nearest; off,
+    /// the notes go in as played.
+    #[test]
+    fn record_quantise_puts_the_recorded_notes_on_the_grid() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        let said = h
+            .act(TimeAction::RecordQuantise {
+                track: 0,
+                grid: Some(240),
+            })
+            .unwrap();
+        assert_eq!(
+            said,
+            "record quantise: Track 1 records each note on the nearest 1/16"
+        );
+        assert_eq!(h.state().tracks[0].record_quantise, Some(240));
+        // Ticks 1000 and 1150: nearest 960 and 1200.
+        run(
+            &mut h,
+            &mut pads,
+            BAR - 1000,
+            &[(22_969, 5, 100, 2000), (26_414, 6, 100, 2000)],
+        );
+        let clip = h.control.project.clip(0, 0).unwrap();
+        let mut ticks: Vec<_> = clip.notes.iter().map(|n| (n.note, n.tick)).collect();
+        ticks.sort();
+        assert_eq!(ticks, [(5, 960), (6, 1200)]);
+        assert_eq!(
+            h.act(TimeAction::RecordQuantise {
+                track: 0,
+                grid: None
+            })
+            .unwrap(),
+            "record quantise: Track 1 records the notes as played"
+        );
+        assert_eq!(h.state().tracks[0].record_quantise, None);
+        assert!(h
+            .act(TimeAction::RecordQuantise {
+                track: 0,
+                grid: Some(0)
+            })
+            .is_err());
     }
 
     /// Pad pressure while recording goes on the pad's note in the clip
@@ -2519,6 +2751,79 @@ mod tests {
         for ((f, p), (at, pad)) in hits.iter().zip(want) {
             assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
         }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Launch on the Record tab (S4): a tapped clip waits for the next
+    /// line of the project's launch quantise, a legato clip plays on from
+    /// the place in the bar the one it replaces had reached, and a cue
+    /// waiting when Launch changes keeps the line it had.
+    #[test]
+    fn a_launch_lands_on_the_launch_quantise_and_waiting_cues_keep_their_line() {
+        use mpfree_seq::LaunchGrid;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |name: &str, notes: &[(i64, u8)]| {
+            let mut c = Clip::new(name, 3840);
+            c.notes = notes
+                .iter()
+                .map(|&(tick, note)| mpfree_seq::Note::new(tick, 100, note, 100))
+                .collect();
+            c
+        };
+        h.control.project.tracks[0].slots[0] = Some(one_bar("A", &[(0, 4), (1920, 4)]));
+        let mut b = one_bar("B", &[(0, 9), (1920, 10)]);
+        b.legato = true;
+        h.control.project.tracks[0].slots[1] = Some(b);
+        assert!(h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(0))).is_err());
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+        // A quarter note: B lands on bar 2's second beat, a quarter into
+        // its pass as A was, so its first note is its half-bar one.
+        assert_eq!(
+            h.act(TimeAction::LaunchGrid(LaunchGrid::Ticks(960)))
+                .unwrap(),
+            "launch: a tapped clip, a stop or a scene starts on the next 1/4"
+        );
+        assert_eq!(h.state().launch, LaunchGrid::Ticks(960));
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        assert_eq!(h.state().cue_line(0), LaunchGrid::Ticks(960));
+        run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+        assert_eq!(h.state().launch(0).map(|l| l.slot), Some(1));
+        // Back to a bar: A waits for bar 4. Launch goes to 4 bars while it
+        // waits, and A keeps its bar line.
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(1))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(4))).unwrap();
+        let st = h.state();
+        assert_eq!(st.cue_lines, vec![(0, LaunchGrid::Bars(1))]);
+        assert_eq!(st.cue_line(0), LaunchGrid::Bars(1));
+        run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
+        let st = h.state();
+        assert_eq!((st.launch(0).map(|l| l.slot), st.cues.len()), (Some(0), 0));
+        assert!(st.cue_lines.is_empty());
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        let want = [
+            (0, 4),
+            (BAR / 2, 4),
+            (BAR, 4),
+            (BAR + BAR / 2, 10),
+            (2 * BAR, 9),
+            (2 * BAR + BAR / 2, 10),
+            (3 * BAR, 4),
+            (3 * BAR + BAR / 2, 4),
+        ];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        // A new tap while one waits lands on the line Launch gives now.
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(1))).unwrap();
+        assert_eq!(h.state().cue_line(0), LaunchGrid::Bars(4));
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        assert_eq!(h.state().cue_line(0), LaunchGrid::Bars(1));
         assert_eq!(h.dropped(), 0);
     }
 

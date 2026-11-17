@@ -76,7 +76,8 @@ use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
-    touch_room, Clip, DestId, Lock, ModelError, Note, Project, Touch, TouchPoint, Track, MAX_TRACKS,
+    touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, Touch, TouchPoint,
+    Track, MAX_TRACKS,
 };
 use mpfree_transport::time::Tick;
 
@@ -211,6 +212,12 @@ pub struct Take {
     pub dropped: Option<ClipDrop>,
     /// A Song view edit ([`Takes::song_edit`]).
     pub song: Option<Box<SongEdit>>,
+    /// A clip's settings changed ([`Takes::set_clip`]), as (track, slot,
+    /// before, after).
+    pub settings: Option<(usize, usize, ClipSettings, ClipSettings)>,
+    /// COPY + an empty slot put a copy there ([`Takes::paste_clip`]): the
+    /// clip is in `made`.
+    pub pasted: bool,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -495,6 +502,36 @@ impl Takes {
         Ok(take.number)
     }
 
+    /// COPY + an empty slot (sequencer S3): put `clip`, a copy of one
+    /// copied before, in clip `slot` of `track`, as an edit of its own that
+    /// undo takes away again. The edit's number. `BadSlot` if there is no
+    /// such slot or it holds a clip; the clip's own refusals as they are.
+    /// Nothing changes on an error.
+    pub fn paste_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        clip: Clip,
+    ) -> Result<u32, ModelError> {
+        clip.check()?;
+        let s = slot_mut(project, track, slot).ok_or(ModelError::BadSlot)?;
+        if s.is_some() {
+            return Err(ModelError::BadSlot);
+        }
+        *s = Some(clip.clone());
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            pasted: true,
+            made: vec![(track, slot, clip)],
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
     /// ERASE + a clip (Jay after live test 3): take clip `slot` of
     /// `track` out of its slot, as an edit of its own that undo puts back.
     /// The edit's number. `BadSlot` if there is no clip there; nothing
@@ -575,6 +612,55 @@ impl Takes {
             ..Take::default()
         });
         number
+    }
+
+    /// Change clip `slot` of `track`'s speed, swing, quantise and follow
+    /// action to `to` (the clip settings card), as an edit of its own.
+    /// `join` names what is being turned: a change joins the latest take
+    /// instead when that is a settings change of the same clip with the
+    /// same key and nothing undone since, so the wheel turned through many
+    /// values is one undo. Undo puts the settings back while the clip
+    /// still has the ones it was given, and redo the same way. The edit's
+    /// number; `BadSlot` if the clip is gone, or the clip's own refusal;
+    /// nothing changes on an error, nor when `to` is what it has.
+    pub fn set_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        to: ClipSettings,
+        join: Option<u64>,
+    ) -> Result<u32, ModelError> {
+        let c = clip(project, track, slot).ok_or(ModelError::BadSlot)?;
+        let from = c.settings();
+        if from == to {
+            return Ok(self.edits);
+        }
+        c.set_settings(to)?;
+        let joins = join.is_some()
+            && self.undone.is_empty()
+            && self.done.last().is_some_and(|t| {
+                t.join == join
+                    && t.settings
+                        .is_some_and(|(tr, sl, ..)| (tr, sl) == (track, slot))
+            });
+        if joins {
+            let take = self.done.last_mut().expect("checked");
+            if let Some(s) = take.settings.as_mut() {
+                s.3 = to;
+            }
+            return Ok(take.number);
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            join,
+            settings: Some((track, slot, from, to)),
+            ..Take::default()
+        });
+        Ok(number)
     }
 
     /// CAPTURE into a clip that holds notes already (the one that was
@@ -664,7 +750,11 @@ impl Takes {
             && edit.moves.is_none()
             && self.undone.is_empty()
             && self.done.last().is_some_and(|t| {
-                t.edited && t.join == join && t.resized.is_empty() && same_clip(t)
+                t.edited
+                    && t.join == join
+                    && t.resized.is_empty()
+                    && t.settings.is_none()
+                    && same_clip(t)
             });
         if !joins {
             self.edits += 1;
@@ -802,6 +892,11 @@ impl Takes {
                 project.arrangement = e.before.clone();
             }
         }
+        if let Some((track, slot, before, after)) = take.settings {
+            if let Some(c) = clip(project, track, slot).filter(|c| c.settings() == after) {
+                let _ = c.set_settings(before);
+            }
+        }
         if let Some((index, kept)) = &mut take.track_added {
             // Kept as it is now (its name, its clips), for redo.
             if project.tracks.len() == *index + 1 {
@@ -841,6 +936,11 @@ impl Takes {
         if let Some(e) = take.song.as_deref() {
             if project.arrangement == e.before {
                 project.arrangement = e.after.clone();
+            }
+        }
+        if let Some((track, slot, before, after)) = take.settings {
+            if let Some(c) = clip(project, track, slot).filter(|c| c.settings() == before) {
+                let _ = c.set_settings(after);
             }
         }
         for (track, slot, note) in &take.erased {
@@ -1051,6 +1151,79 @@ mod tests {
             .iter()
             .map(|n| n.tick)
             .collect()
+    }
+
+    /// The clip settings card: a change is an edit of its own, a turn of
+    /// one setting joins one, and undo and redo put the settings back
+    /// while the clip still has the ones they were given.
+    #[test]
+    fn a_clips_settings_change_as_one_take_a_turn_joining_one() {
+        use mpfree_seq::{Follow, FollowAction, Quantise, Speed};
+        let mut p = project();
+        let mut t = Takes::default();
+        let c = |p: &Project| p.tracks[0].slots[0].as_ref().unwrap().settings();
+        let first = c(&p);
+        let mut half = first;
+        half.speed = Speed::new(1, 2).unwrap();
+        assert_eq!(t.set_clip(&mut p, 0, 0, half, Some(1)), Ok(1));
+        assert_eq!(c(&p), half);
+        // The same setting turned on: one take.
+        let mut quarter = half;
+        quarter.speed = Speed::new(1, 4).unwrap();
+        assert_eq!(t.set_clip(&mut p, 0, 0, quarter, Some(1)), Ok(1));
+        assert_eq!(t.done().len(), 1);
+        // Another setting: another take.
+        let mut q = quarter;
+        q.quantise = Quantise::new(240, 60);
+        q.follow = Some(Follow::after(4, FollowAction::Next));
+        assert_eq!(t.set_clip(&mut p, 0, 0, q, Some(2)), Ok(2));
+        // Nothing new: no take.
+        assert_eq!(t.set_clip(&mut p, 0, 0, q, Some(3)), Ok(2));
+        assert_eq!(t.done().len(), 2);
+        // Out of range: refused, the clip as it was.
+        let mut bad = q;
+        bad.quantise = Some(Quantise {
+            grid: 0,
+            strength: 50,
+        });
+        assert_eq!(
+            t.set_clip(&mut p, 0, 0, bad, None),
+            Err(ModelError::BadQuantise)
+        );
+        assert_eq!(t.set_clip(&mut p, 0, 3, q, None), Err(ModelError::BadSlot));
+        assert_eq!(c(&p), q);
+        assert_eq!(t.undo(&mut p), Some(2));
+        assert_eq!(c(&p), quarter);
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(c(&p), first);
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(c(&p), quarter);
+        // Changed since by other means: redo leaves it.
+        p.tracks[0].slots[0].as_mut().unwrap().speed = Speed::NORMAL;
+        assert_eq!(t.redo(&mut p), Some(2));
+        assert_eq!(c(&p).speed, Speed::NORMAL);
+        assert_eq!(c(&p).quantise, None);
+    }
+
+    /// COPY + an empty slot: the copy goes in as an edit of its own, which
+    /// undo takes away and redo puts back; a slot with a clip refuses it.
+    #[test]
+    fn a_pasted_clip_is_an_edit_undo_takes_away() {
+        let mut p = project();
+        let mut t = Takes::default();
+        let copy = p.tracks[0].slots[0].clone().unwrap();
+        assert_eq!(
+            t.paste_clip(&mut p, 0, 0, copy.clone()),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(t.paste_clip(&mut p, 0, 5, copy.clone()), Ok(1));
+        assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
+        assert!(t.done()[0].pasted && t.done()[0].edited);
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert!(p.tracks[0].slots[5].is_none());
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
+        assert_eq!(t.paste_clip(&mut p, 0, 99, copy), Err(ModelError::BadSlot));
     }
 
     #[test]

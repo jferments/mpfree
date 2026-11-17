@@ -43,7 +43,11 @@ use crate::widgets::{
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
 use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
-use mpfree_seq::{Clip, Project, Source, Speed, MAX_TRACKS, SLOTS};
+use mpfree_seq::scenes::MAX_FOLLOW_BARS;
+use mpfree_seq::{
+    Clip, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise, Source, Speed,
+    LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS, SLOTS,
+};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
@@ -55,6 +59,8 @@ use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
 pub const TRANSPORT: &str = "transport";
 pub const CLIPS: &str = "clips";
 pub const RECORD: &str = "record";
+/// The clip settings card: the Record panel's Clip tab (sequencer S3).
+pub const CLIP_CARD: &str = "clip-card";
 pub const TAKES: &str = "takes";
 pub const MORPH: &str = "morph";
 pub const SONG: &str = "song";
@@ -80,8 +86,29 @@ pub const CLIPS_LAYOUT: &str =
 /// The same page in its Song view: the timeline in place of the grid.
 pub const SONG_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+/// The Clips view and the Song view with the Record panel on its Clip tab:
+/// the clip settings card in the record settings' place.
+pub const CLIPS_CARD_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, col(clip-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+pub const SONG_CARD_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(clip-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 pub const CLIPS_HINT: &str =
-    "Tap a clip: it plays from the next bar, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
+    "Tap a clip: it plays from the next Launch line, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
+/// The hint line under the Clips grid with the Record panel's Clip tab.
+pub const CLIPS_CARD_HINT: &str =
+    "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   SHIFT + ‹ ›: Length and Speed halve or double   ·   COPY + a clip, then an empty slot: a copy";
+
+/// The hint line while COPY is held on the Clips grid: what a tap copies
+/// or pastes.
+pub fn copy_hint(st: &TimeState) -> String {
+    match &st.clipboard {
+        Some(name) => format!(
+            "COPY held: tap an empty slot, on any track: a copy of {name} goes there   ·   tap a clip: copy that one instead   ·   UNDO takes a paste back"
+        ),
+        None => "COPY held: tap a clip to copy it   ·   then, COPY held again, an empty slot on any track: the copy goes there".to_string(),
+    }
+}
+
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
     "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   Song on: the song plays where no clip is launched   ·   SHIFT + wheel: bars";
@@ -125,7 +152,48 @@ pub fn edit_hint(lens: Lens) -> &'static str {
     }
 }
 /// The record settings, top to bottom (short, to fit the 250 px panel).
-pub const RECORD_ROWS: [&str; 6] = ["Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure"];
+pub const RECORD_ROWS: [&str; 8] = [
+    "Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure", "Quantise", "Launch",
+];
+/// The clip settings card's rows, top to bottom.
+pub const CLIP_ROWS: [&str; 9] = [
+    "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After", "Launch", "Mode",
+];
+/// The speeds the card's Speed row steps through, slowest first, as
+/// (clip ticks, song ticks): x1/8 to x4.
+pub const SPEEDS: [(u8, u8); 12] = [
+    (1, 8),
+    (1, 4),
+    (1, 3),
+    (1, 2),
+    (2, 3),
+    (3, 4),
+    (1, 1),
+    (4, 3),
+    (3, 2),
+    (2, 1),
+    (3, 1),
+    (4, 1),
+];
+/// The grids the card's Quantise row steps through after off, coarsest
+/// first: 1/4, 1/8, 1/8 triplets, 1/16, 1/16 triplets, 1/32.
+pub const QUANTISE_GRIDS: [u32; 6] = [PPQ, PPQ / 2, PPQ / 3, PPQ / 4, PPQ / 6, PPQ / 8];
+/// The follow actions the card's Follow row steps through after off.
+pub const FOLLOWS: [FollowAction; 8] = [
+    FollowAction::Next,
+    FollowAction::Previous,
+    FollowAction::First,
+    FollowAction::Last,
+    FollowAction::Any,
+    FollowAction::Other,
+    FollowAction::Again,
+    FollowAction::Stop,
+];
+/// The swing the card's Swing row steps through after the track's: 50 %
+/// (straight) to 75 %, on 1/16 notes.
+pub const CLIP_SWING: std::ops::RangeInclusive<u8> = 50..=75;
+/// A step of the card's Length row: a sixteenth, as on Beats.
+pub const CARD_STEP: Tick = PPQ as Tick / 4;
 /// The loop lengths the Loop row steps through, in bars from bar 1 (0 is off).
 pub const LOOP_BARS: [i64; 6] = [0, 1, 2, 4, 8, 16];
 /// Track colours, by track number.
@@ -210,6 +278,9 @@ pub struct ClipInfo {
     pub notes: usize,
     /// A Loop track's cell: the looper's loop it launches (`Clip::looped`).
     pub looped: Option<u8>,
+    /// Its speed, swing, quantise and follow action, for the clip
+    /// settings card.
+    pub settings: ClipSettings,
 }
 
 /// What the looper says of a loop, for its cells on the Clips grid: the
@@ -254,6 +325,8 @@ pub struct TrackInfo {
     pub mute: bool,
     /// It records pad pressure (`Track::record_touch`).
     pub pressure: bool,
+    /// Its record quantise grid (`Track::record_quantise`), or none.
+    pub record_quantise: Option<u32>,
     /// A Loop track, and what its new loops record (`Track::kind`).
     pub loops: Option<mpfree_seq::LoopInput>,
     pub slots: Vec<Option<ClipInfo>>,
@@ -282,6 +355,10 @@ pub struct TakeRow {
     /// A Song view edit: a block moved, copied, made longer or deleted, a
     /// section moved.
     pub song: Option<SongChange>,
+    /// A clip's settings changed (the clip settings card).
+    pub settings: bool,
+    /// COPY + an empty slot pasted a clip there.
+    pub pasted: bool,
 }
 
 impl TakeRow {
@@ -294,12 +371,15 @@ impl TakeRow {
                 Some(a)
             }
             Some(_) => None,
-            None => made.or(removed).or_else(|| {
-                t.added
-                    .first()
-                    .or(t.erased.first())
-                    .map(|&(track, slot, _)| (track, slot))
-            }),
+            None => made
+                .or(removed)
+                .or_else(|| {
+                    t.added
+                        .first()
+                        .or(t.erased.first())
+                        .map(|&(track, slot, _)| (track, slot))
+                })
+                .or_else(|| t.settings.map(|(track, slot, ..)| (track, slot))),
         };
         let added = t.added.len() + t.made.iter().map(|(_, _, c)| c.notes.len()).sum::<usize>();
         TakeRow {
@@ -314,10 +394,13 @@ impl TakeRow {
             new_track: t.track_added.as_ref().map(|(i, _)| *i),
             dropped: t.dropped,
             song: t.song.as_ref().map(|e| e.change),
+            settings: t.settings.is_some(),
+            pasted: t.pasted,
         }
     }
 
-    /// What it is: "take", "capture", "edit", "delete", for a drop "move",
+    /// What it is: "take", "capture", "edit", "delete", "paste",
+    /// "settings", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
     /// "length", "delete", "unique" or "scenes".
     pub fn word(&self) -> &'static str {
@@ -340,6 +423,10 @@ impl TakeRow {
         }
         if self.deleted {
             "delete"
+        } else if self.pasted {
+            "paste"
+        } else if self.settings {
+            "settings"
         } else if self.captured {
             "capture"
         } else if self.edited {
@@ -370,9 +457,13 @@ pub struct TimeState {
     /// The looper's loops, for the Loop tracks' cells. The app sets them.
     pub loops: LoopsInfo,
     pub launches: Vec<Launch>,
-    /// Launches and stops waiting for the next bar line. The app sets them.
+    /// Launches and stops waiting for their launch line (the next bar line
+    /// by default). The app sets them.
     pub cues: Vec<Cue>,
     pub armed: Option<usize>,
+    /// The clip COPY + a clip copied last, by its name, for COPY + an
+    /// empty slot to paste. The app sets it.
+    pub clipboard: Option<String>,
     /// The takes that can be undone, oldest first, and the ones that can be
     /// redone, the next one last (as [`Takes`] keeps them).
     pub done: Vec<TakeRow>,
@@ -400,6 +491,15 @@ pub struct TimeState {
     /// Song mode: the song plays on tracks with no clip launched. The app
     /// sets it.
     pub song_on: bool,
+    /// The project is in Perform, not Make (`Project::perform`, sequencer
+    /// S4).
+    pub perform: bool,
+    /// The project's launch quantise (`Project::launch`, S4).
+    pub launch: LaunchGrid,
+    /// The line each cue lands on, by track, where the time engine set
+    /// it apart from the clip's own and the project's (a scene's, a
+    /// follow's, one kept when Launch changed). The app sets it.
+    pub cue_lines: Vec<(usize, LaunchGrid)>,
     /// The arrangement's placements and markers.
     pub placements: Vec<PlacementInfo>,
     pub markers: Vec<(Tick, String)>,
@@ -520,6 +620,7 @@ impl TimeState {
                 sound: String::new(),
                 mute: t.mute,
                 pressure: t.record_touch,
+                record_quantise: t.record_quantise,
                 loops: t.loops(),
                 slots: t
                     .slots
@@ -531,6 +632,7 @@ impl TimeState {
                             speed: c.speed,
                             notes: c.notes.len(),
                             looped: c.looped,
+                            settings: c.settings(),
                         })
                     })
                     .collect(),
@@ -543,6 +645,7 @@ impl TimeState {
             launches: launches.to_vec(),
             cues: Vec::new(),
             armed,
+            clipboard: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
             undone: takes.undone().iter().map(TakeRow::of).collect(),
             chips: Vec::new(),
@@ -554,6 +657,9 @@ impl TimeState {
             morph: MorphInfo::default(),
             song_view: false,
             song_on: false,
+            perform: project.perform,
+            launch: project.launch,
+            cue_lines: Vec::new(),
             placements: project
                 .arrangement
                 .placements
@@ -610,6 +716,20 @@ impl TimeState {
         self.cues.iter().find(|c| c.track == track)
     }
 
+    /// The focused clip, as (track, slot): the armed track's playing clip,
+    /// else its first (the first track's while none is armed). Beats, the
+    /// note editor and the clip settings card all show it (the app's
+    /// `TimeControl` picks the same one).
+    pub fn focus(&self) -> Option<(usize, usize)> {
+        let track = self.armed.unwrap_or(0);
+        let tr = self.tracks.get(track)?;
+        let slot = self
+            .launch(track)
+            .map(|l| l.slot)
+            .or_else(|| tr.slots.iter().position(Option::is_some))?;
+        self.clip(track, slot).is_some().then_some((track, slot))
+    }
+
     fn track_name(&self, track: usize) -> String {
         self.tracks
             .get(track)
@@ -634,6 +754,15 @@ pub enum TimeAction {
         track: usize,
         on: bool,
     },
+    /// "Quantise" on the record settings (sequencer S3): the grid the
+    /// track's recorded notes go in on (`Track::record_quantise`), or none.
+    RecordQuantise {
+        track: usize,
+        grid: Option<u32>,
+    },
+    /// "Launch" on the record settings (sequencer S4): the project's launch
+    /// quantise, when launches, stops and scenes land.
+    LaunchGrid(LaunchGrid),
     /// Play this clip from the next bar line (see [`clips_after`]).
     Launch {
         track: usize,
@@ -729,6 +858,9 @@ pub enum TimeAction {
     SongView(bool),
     /// Song mode on or off: the song plays on tracks with no clip launched.
     SongMode(bool),
+    /// Make (false) or Perform (true): the top bar's chip, or SHIFT + MAIN
+    /// (sequencer S4). Saved with the project; nothing playing changes.
+    Perform(bool),
     /// The rows with clips, in order, onto the end of the song
     /// (`mpfree_seq::arrange::scenes_to_song`).
     ScenesToSong,
@@ -771,6 +903,36 @@ pub enum TimeAction {
     /// grid plays is recorded into the song
     /// (`mpfree_perform::SongRecorder`).
     RecSong(bool),
+    /// The clip settings card: clip `slot` of `track` given `settings`
+    /// (its speed, swing, quantise and follow action), card row `row`
+    /// turned. One take a row: turning the same row again joins it.
+    ClipSettings {
+        track: usize,
+        slot: usize,
+        row: u8,
+        settings: ClipSettings,
+    },
+    /// The card's Length row: the clip made `steps` sixteenths long, as
+    /// Beats' length does (the notes past the end come back on UNDO); with
+    /// `copy` (SHIFT + its ›, doubling) the new steps repeat the notes
+    /// before them.
+    ClipLength {
+        track: usize,
+        slot: usize,
+        steps: usize,
+        copy: bool,
+    },
+    /// COPY + a clip: keep a copy of it for COPY + an empty slot.
+    CopyClip {
+        track: usize,
+        slot: usize,
+    },
+    /// COPY + an empty slot: the clip copied last goes there, as a take
+    /// UNDO takes away.
+    PasteClip {
+        track: usize,
+        slot: usize,
+    },
     /// A touch on the note editor (`crate::editor`).
     Edit(EditAction),
     /// A touch on the Song view's audio lanes, for the audio tracks
@@ -924,13 +1086,31 @@ pub fn clips_after(
     (launches, cues)
 }
 
-/// Where the cues start: the next bar line the playhead plays. In a loop
-/// whose end comes first, that is the loop start's bar line.
-pub fn cue_tick(t: &TransportInfo) -> Tick {
-    let next = t.meter.next_bar(t.position);
+/// Where a cue landing on `line` starts: its next line the playhead
+/// plays. In a loop whose end comes first, that is the loop start's.
+pub fn cue_tick(t: &TransportInfo, line: LaunchGrid) -> Tick {
+    let bar = t.meter.bar_ticks();
+    let next = line.next(t.position, bar);
     match t.loop_range {
-        Some((a, b)) if t.state.rolling() && t.position < b && next >= b => t.meter.next_bar(a),
+        Some((a, b)) if t.state.rolling() && t.position < b && next >= b => line.next(a, bar),
         _ => next,
+    }
+}
+
+impl TimeState {
+    /// The line the cue on `track` lands on: as the time engine set it
+    /// ([`TimeState::cue_lines`]), else the cued clip's own launch
+    /// quantise, else the project's.
+    pub fn cue_line(&self, track: usize) -> LaunchGrid {
+        if let Some((_, g)) = self.cue_lines.iter().find(|(t, _)| *t == track) {
+            return *g;
+        }
+        let own = self
+            .cue(track)
+            .and_then(|c| c.slot)
+            .and_then(|s| self.clip(track, s))
+            .and_then(|c| c.settings.launch);
+        own.unwrap_or(self.launch)
     }
 }
 
@@ -1230,9 +1410,32 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     let on = st.tracks.get(a)?.pressure;
                     Some(TimeAction::RecordPressure { track: a, on: !on })
                 }),
+                // Off, then the grids from the coarsest.
+                6 => st.armed.and_then(|a| {
+                    let now = st.tracks.get(a)?.record_quantise;
+                    let k = now.map_or(0, |g| {
+                        QUANTISE_GRIDS
+                            .iter()
+                            .position(|&q| q == g)
+                            .map_or(0, |i| i + 1)
+                    });
+                    let next = (k as i32 + d).clamp(0, QUANTISE_GRIDS.len() as i32) as usize;
+                    let grid = (next > 0).then(|| QUANTISE_GRIDS[next - 1]);
+                    (grid != now).then_some(TimeAction::RecordQuantise { track: a, grid })
+                }),
+                // At once, the note grids, then the bars.
+                7 => {
+                    let now = LAUNCH_GRIDS
+                        .iter()
+                        .position(|&g| g == st.launch)
+                        .unwrap_or(5);
+                    let next = (now as i32 + d).clamp(0, LAUNCH_GRIDS.len() as i32 - 1) as usize;
+                    (next != now).then_some(TimeAction::LaunchGrid(LAUNCH_GRIDS[next]))
+                }
                 _ => None,
             }
         }
+        (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).ok(),
         // Each only while it has something to do (it is faint otherwise).
         (TAKES, EventKind::Tab(0)) => (!st.done.is_empty()).then_some(TimeAction::Undo),
         (TAKES, EventKind::Tab(1)) => (!st.undone.is_empty()).then_some(TimeAction::Redo),
@@ -1285,7 +1488,432 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         (RECORD, EventKind::Step { index: 5, .. }) if st.armed.is_none() => {
             Some("Arm a track first: pressure records on the armed track".to_string())
         }
+        (RECORD, EventKind::Step { index: 6, .. }) if st.armed.is_none() => {
+            Some("Arm a track first: quantise is the armed track's".to_string())
+        }
+        (RECORD, EventKind::Step { index: 6, delta }) => Some(end(
+            *delta,
+            "Quantise is off already: the notes go in as played",
+            &format!(
+                "Quantise is at its finest, {}",
+                grid_name(QUANTISE_GRIDS[QUANTISE_GRIDS.len() - 1])
+            ),
+        )),
+        (RECORD, EventKind::Step { index: 7, delta }) => Some(end(
+            *delta,
+            "Launch is at once already: a tapped clip starts on the next tick",
+            "Launch is at its longest, 8 bars",
+        )),
+        (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).err(),
         _ => None,
+    }
+}
+
+/// A note value for a grid of `ticks`: "1/16", "1/8T", or the ticks.
+pub fn grid_name(ticks: u32) -> String {
+    let whole = PPQ * 4;
+    if ticks > 0 && whole.is_multiple_of(ticks) {
+        let n = whole / ticks;
+        if n.is_multiple_of(3) && (n / 3).is_power_of_two() {
+            return format!("1/{}T", n * 2 / 3);
+        }
+        return format!("1/{n}");
+    }
+    format!("{ticks} ticks")
+}
+
+/// A speed as the card shows it: "x1", "x1/2", "x3/2".
+pub fn speed_name(s: Speed) -> String {
+    if s.den == 1 {
+        format!("×{}", s.num)
+    } else {
+        format!("×{}/{}", s.num, s.den)
+    }
+}
+
+fn follow_name(a: FollowAction) -> &'static str {
+    match a {
+        FollowAction::Stay => "Stay",
+        FollowAction::Again => "Again",
+        FollowAction::Next => "Next",
+        FollowAction::Previous => "Previous",
+        FollowAction::First => "First",
+        FollowAction::Last => "Last",
+        FollowAction::Any => "Any",
+        FollowAction::Other => "Other",
+        FollowAction::Stop => "Stop",
+    }
+}
+
+/// The Record panel's tabs: Record, and Clip with the focused clip's
+/// name ("Clip · Verse B"; its track is the armed one, lit on the grid).
+pub fn panel_tabs(st: &TimeState) -> Vec<String> {
+    let clip = match st.focus().and_then(|(t, s)| st.clip(t, s)) {
+        Some(c) => format!("Clip · {}", c.name),
+        None => "Clip".to_string(),
+    };
+    vec!["Record".to_string(), clip]
+}
+
+/// The clip settings card's rows, for the focused clip; none without one.
+pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
+    match st.focus().and_then(|(t, s)| st.clip(t, s)) {
+        Some(c) => card_rows(c.length, c.settings),
+        None => Vec::new(),
+    }
+}
+
+/// The card's rows for a clip `length` ticks long (its own ticks) with
+/// `s`.
+pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
+    let row = |k: usize, value: String| OptionRow {
+        name: CLIP_ROWS[k].to_string(),
+        value,
+    };
+    let steps = (length + CARD_STEP - 1) / CARD_STEP;
+    let dash = "—".to_string();
+    vec![
+        row(
+            0,
+            match steps {
+                1 => "1 step".to_string(),
+                // Past 999 the word does not fit: whole bars as bars.
+                ..=999 => format!("{steps} steps"),
+                _ if steps % 16 == 0 => format!("{} bars", steps / 16),
+                _ => format!("{steps} st"),
+            },
+        ),
+        row(1, speed_name(s.speed)),
+        row(
+            2,
+            s.swing.map_or_else(
+                || "track".to_string(),
+                |w| {
+                    if w.grid == PPQ / 4 {
+                        format!("{} %", w.amount)
+                    } else {
+                        format!("{}% {}", w.amount, grid_name(w.grid))
+                    }
+                },
+            ),
+        ),
+        row(
+            3,
+            s.quantise
+                .map_or_else(|| "off".to_string(), |q| grid_name(q.grid)),
+        ),
+        row(
+            4,
+            s.quantise
+                .map_or_else(|| dash.clone(), |q| format!("{} %", q.strength)),
+        ),
+        row(
+            5,
+            // Its chance and other action (set by an import) are kept, not
+            // shown: the box has no room.
+            s.follow
+                .map_or_else(|| "off".to_string(), |f| follow_name(f.action).to_string()),
+        ),
+        row(6, s.follow.map_or(dash, |f| bars_label(i64::from(f.bars)))),
+        // The project's launch quantise unless it has its own.
+        row(
+            7,
+            s.launch.map_or_else(|| "project".to_string(), launch_name),
+        ),
+        row(8, if s.legato { "Legato" } else { "Restart" }.to_string()),
+    ]
+}
+
+/// What a step of the card's row `index` asks for, with SHIFT held or
+/// not, or why it asks for nothing (empty when there is nothing to say).
+/// With SHIFT, Length doubles (the notes repeated) or halves, and Speed
+/// doubles or halves; the other rows step as without it.
+pub fn card_action(
+    st: &TimeState,
+    index: usize,
+    delta: i32,
+    shift: bool,
+) -> Result<TimeAction, String> {
+    if !shift || index > 1 {
+        return card_step(st, index, delta);
+    }
+    let (track, slot) = st
+        .focus()
+        .ok_or("No clip to set: arm a track with a clip, or make one")?;
+    let c = st.clip(track, slot).ok_or("No clip to set")?;
+    if c.looped.is_some() {
+        return Err("A loop cell plays its loop as recorded: only Follow and After apply".into());
+    }
+    let up = delta > 0;
+    if index == 0 {
+        let max = (MAX_CLIP_TICKS / CARD_STEP) as usize;
+        let now = ((c.length + CARD_STEP - 1) / CARD_STEP) as usize;
+        let steps = if up { now * 2 } else { now / 2 };
+        if steps == 0 || steps > max {
+            return Err(if up {
+                format!("The clip can't double: {max} steps at most")
+            } else {
+                "The clip can't halve: it is 1 step long".to_string()
+            });
+        }
+        return Ok(TimeAction::ClipLength {
+            track,
+            slot,
+            steps,
+            copy: up,
+        });
+    }
+    let sp = c.settings.speed;
+    let (num, den) = if up {
+        (u16::from(sp.num) * 2, u16::from(sp.den))
+    } else {
+        (u16::from(sp.num), u16::from(sp.den) * 2)
+    };
+    let g = gcd(num, den);
+    let speed = u8::try_from(num / g)
+        .ok()
+        .zip(u8::try_from(den / g).ok())
+        .and_then(|(n, d)| Speed::new(n, d))
+        .ok_or_else(|| {
+            let ratio = f64::from(num) / f64::from(den);
+            let way = if up { "double" } else { "halve" };
+            match ratio {
+                r if r > 4.0 => format!("{} can't double: ×4 is the fastest", speed_name(sp)),
+                r if r < 0.125 => format!("{} can't halve: ×1/8 is the slowest", speed_name(sp)),
+                _ => format!(
+                    "{} can't {way}: ×{}/{} is not a speed (the Speed row's arrows step it)",
+                    speed_name(sp),
+                    num / g,
+                    den / g
+                ),
+            }
+        })?;
+    Ok(TimeAction::ClipSettings {
+        track,
+        slot,
+        row: 1,
+        settings: ClipSettings {
+            speed,
+            ..c.settings
+        },
+    })
+}
+
+fn gcd(a: u16, b: u16) -> u16 {
+    if b == 0 {
+        a.max(1)
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+/// What a step of the card's row `index` asks for, or why it asks for
+/// nothing (no clip, a loop cell, a setting at its end).
+fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, String> {
+    let (track, slot) = st
+        .focus()
+        .ok_or("No clip to set: arm a track with a clip, or make one")?;
+    let c = st.clip(track, slot).ok_or("No clip to set")?;
+    if c.looped.is_some() && (index < 5 || index == 8) {
+        return Err(
+            "A loop cell plays its loop as recorded: only Follow, After and Launch apply".into(),
+        );
+    }
+    let d = delta.signum();
+    // Within 0..n from `now`, or None at the end it is pushed past.
+    let step = |now: usize, n: usize| {
+        let next = now as i64 + i64::from(d);
+        (0..n as i64).contains(&next).then_some(next as usize)
+    };
+    let mut s = c.settings;
+    let set = |s: ClipSettings| {
+        Ok(TimeAction::ClipSettings {
+            track,
+            slot,
+            row: index as u8,
+            settings: s,
+        })
+    };
+    let end = |low: String, high: String| Err(if d < 0 { low } else { high });
+    match index {
+        0 => {
+            let max = (MAX_CLIP_TICKS / CARD_STEP) as usize;
+            let now = ((c.length + CARD_STEP - 1) / CARD_STEP) as usize;
+            match step(now - 1, max) {
+                Some(k) => Ok(TimeAction::ClipLength {
+                    track,
+                    slot,
+                    steps: k + 1,
+                    copy: false,
+                }),
+                None => end(
+                    "The clip is at its shortest, 1 step".into(),
+                    format!("The clip is at its longest, {max} steps"),
+                ),
+            }
+        }
+        1 => {
+            let ratio = |(n, d): (u8, u8)| f64::from(n) / f64::from(d);
+            let at = ratio((s.speed.num, s.speed.den));
+            // A speed set elsewhere steps from the nearest.
+            let now = SPEEDS
+                .iter()
+                .position(|&(n, d)| (n, d) == (s.speed.num, s.speed.den))
+                .unwrap_or_else(|| SPEEDS.iter().rposition(|&p| ratio(p) <= at).unwrap_or(0));
+            match step(now, SPEEDS.len()) {
+                Some(k) => {
+                    s.speed = Speed::new(SPEEDS[k].0, SPEEDS[k].1).ok_or("speed")?;
+                    set(s)
+                }
+                None => end(
+                    "The clip is at its slowest, ×1/8".into(),
+                    "The clip is at its fastest, ×4".into(),
+                ),
+            }
+        }
+        2 => {
+            let lo = *CLIP_SWING.start();
+            let n = usize::from(CLIP_SWING.end() - lo) + 2;
+            let now = s
+                .swing
+                .map_or(0, |w| usize::from(w.amount.saturating_sub(lo)) + 1);
+            match step(now, n) {
+                Some(0) => {
+                    s.swing = None;
+                    set(s)
+                }
+                Some(k) => {
+                    let grid = s.swing.map_or(PPQ / 4, |w| w.grid);
+                    s.swing = Some(Swing::new(grid, lo + k as u8 - 1).ok_or("swing")?);
+                    set(s)
+                }
+                None => end(
+                    "Swing is the track's already".into(),
+                    format!("Swing is at its most, {} %", CLIP_SWING.end()),
+                ),
+            }
+        }
+        3 => {
+            let now = s.quantise.map_or(0, |q| {
+                QUANTISE_GRIDS
+                    .iter()
+                    .position(|&g| g == q.grid)
+                    .unwrap_or_else(|| {
+                        QUANTISE_GRIDS
+                            .iter()
+                            .rposition(|&g| g >= q.grid)
+                            .unwrap_or(0)
+                    })
+                    + 1
+            });
+            match step(now, QUANTISE_GRIDS.len() + 1) {
+                Some(0) => {
+                    s.quantise = None;
+                    set(s)
+                }
+                Some(k) => {
+                    let strength = s.quantise.map_or(100, |q| q.strength);
+                    s.quantise =
+                        Some(Quantise::new(QUANTISE_GRIDS[k - 1], strength).ok_or("quantise")?);
+                    set(s)
+                }
+                None => end(
+                    "Quantise is off already".into(),
+                    "Quantise is at its finest, 1/32".into(),
+                ),
+            }
+        }
+        4 => {
+            let q = s.quantise.ok_or("Turn Quantise on first")?;
+            let next = if d > 0 {
+                (q.strength / 10 + 1) * 10
+            } else {
+                (q.strength.div_ceil(10).saturating_sub(1)) * 10
+            };
+            if !(10..=100).contains(&next) {
+                return end(
+                    "Strength is at its least, 10 %".into(),
+                    "Strength is full already, 100 %".into(),
+                );
+            }
+            s.quantise = Some(Quantise::new(q.grid, next).ok_or("strength")?);
+            set(s)
+        }
+        5 => {
+            let now = s.follow.map_or(0, |f| {
+                FOLLOWS
+                    .iter()
+                    .position(|&a| a == f.action)
+                    .map_or(0, |k| k + 1)
+            });
+            match step(now, FOLLOWS.len() + 1) {
+                Some(0) => {
+                    s.follow = None;
+                    set(s)
+                }
+                Some(k) => {
+                    let action = FOLLOWS[k - 1];
+                    s.follow = Some(match s.follow {
+                        Some(f) => Follow { action, ..f },
+                        // After one pass of the clip, to begin with.
+                        None => {
+                            let bar = st.transport.meter.bar_ticks() as f64;
+                            let bars = (c.song_len() / bar).ceil() as i64;
+                            Follow::after(bars.clamp(1, i64::from(MAX_FOLLOW_BARS)) as u16, action)
+                        }
+                    });
+                    set(s)
+                }
+                None => end(
+                    "Follow is off already".into(),
+                    "Follow is at its last action, Stop".into(),
+                ),
+            }
+        }
+        6 => {
+            let f = s.follow.ok_or("Turn Follow on first")?;
+            match step(usize::from(f.bars) - 1, usize::from(MAX_FOLLOW_BARS)) {
+                Some(k) => {
+                    s.follow = Some(Follow {
+                        bars: k as u16 + 1,
+                        ..f
+                    });
+                    set(s)
+                }
+                None => end(
+                    "Follow is at its soonest, after 1 bar".into(),
+                    format!("Follow is at its latest, after {MAX_FOLLOW_BARS} bars"),
+                ),
+            }
+        }
+        // The project's, then its own: at once, the note grids, the bars.
+        7 => {
+            let now = s.launch.map_or(0, |g| {
+                LAUNCH_GRIDS
+                    .iter()
+                    .position(|&x| x == g)
+                    .map_or(0, |k| k + 1)
+            });
+            match step(now, LAUNCH_GRIDS.len() + 1) {
+                Some(k) => {
+                    s.launch = k.checked_sub(1).map(|k| LAUNCH_GRIDS[k]);
+                    set(s)
+                }
+                None => end(
+                    format!(
+                        "Launch is the project's already ({})",
+                        launch_name(st.launch)
+                    ),
+                    "Launch is at its longest, 8 bars".into(),
+                ),
+            }
+        }
+        // Either way flips it.
+        8 => {
+            s.legato = !s.legato;
+            set(s)
+        }
+        _ => Err(String::new()),
     }
 }
 
@@ -1417,6 +2045,12 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
     if row.deleted {
         return "clip".into();
     }
+    if row.settings {
+        return "clip settings".into();
+    }
+    if row.pasted {
+        return "a copy".into();
+    }
     let new = if row.made { "new " } else { "" };
     if row.erased > 0 {
         format!("{new}+{} −{}", row.added, row.erased)
@@ -1450,6 +2084,9 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
             format!("{}/{}", t.meter.beats, t.meter.unit),
             Tone::Normal,
         ),
+        // When a tapped clip, a stop or a scene lands (S4; the Record
+        // tab's Launch row sets it).
+        BarItem::new("Launch", launch_name(st.launch), Tone::Normal),
         BarItem::new("Swing", swing, Tone::Normal),
         BarItem::new(
             "Loop",
@@ -1582,7 +2219,10 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     let cue = st.cue(track);
     if cue.is_some_and(|c| c.slot == Some(slot)) {
         cell.state = CellState::Queued;
-        cell.foot = format!("from {}", bar_beat(cue_tick(t), t.meter));
+        cell.foot = format!(
+            "from {}",
+            bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
+        );
         return cell;
     }
     let Some(l) = st.launch(track).filter(|l| l.slot == slot) else {
@@ -1610,7 +2250,10 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     if let Some(c) = cue {
         // It plays until the cue starts.
         let word = if c.slot.is_none() { "stops" } else { "until" };
-        cell.detail = format!("{word} {}", bar_beat(cue_tick(t), t.meter));
+        cell.detail = format!(
+            "{word} {}",
+            bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
+        );
     }
     cell
 }
@@ -1664,7 +2307,28 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
                 Some(_) => "Off".to_string(),
             },
         ),
+        row(
+            RECORD_ROWS[6],
+            match st.armed.and_then(|a| st.tracks.get(a)) {
+                None => "–".to_string(),
+                Some(tr) => tr
+                    .record_quantise
+                    .map_or_else(|| "Off".to_string(), grid_name),
+            },
+        ),
+        row(RECORD_ROWS[7], launch_name(st.launch)),
     ]
+}
+
+/// A launch quantise as the screens say it: "at once", "1/16", "1 bar",
+/// "4 bars".
+pub fn launch_name(g: LaunchGrid) -> String {
+    match g {
+        LaunchGrid::Now => "at once".to_string(),
+        LaunchGrid::Ticks(t) => grid_name(t),
+        LaunchGrid::Bars(1) => "1 bar".to_string(),
+        LaunchGrid::Bars(n) => format!("{n} bars"),
+    }
 }
 
 /// The takes newest first: the undone ones (dimmed), then the ones Undo
@@ -1842,6 +2506,8 @@ pub struct TimePage {
     armed_seen: Option<usize>,
     /// The grid's rows in view, as of the last update.
     rows_seen: usize,
+    /// The Record panel shows its Clip tab: the clip settings card.
+    pub clip_card: bool,
 }
 
 impl TimePage {
@@ -1856,7 +2522,15 @@ impl TimePage {
         }
         ui.add(TRANSPORT, TransportBar::new());
         ui.add(CLIPS, ClipGrid::new("Clips", SLOTS));
-        ui.add(RECORD, OptionList::new("Record"));
+        let mut record = OptionList::new("Record");
+        record.tabs = vec!["Record".to_string(), "Clip".to_string()];
+        let mut card = OptionList::new("Clip");
+        card.tabs = record.tabs.clone();
+        card.tab = 1;
+        card.right = "wheel or arrows".to_string();
+        card.empty = "Arm a track with a clip".to_string();
+        ui.add(RECORD, record);
+        ui.add(CLIP_CARD, card);
         ui.add(TAKES, TakeList::new("Takes"));
         ui.add(MORPH, MorphBar::new());
         ui.add(SONG, SongLanes::new());
@@ -1885,6 +2559,12 @@ impl TimePage {
                 // edge.
                 let d = if *k == BARS_ON { 1 } else { -1 };
                 self.first_bar = (self.first_bar + d).max(0);
+                return true;
+            }
+            (RECORD | CLIP_CARD, EventKind::Tab(k)) => {
+                // The Record panel's tabs: the record settings or the
+                // clip settings card.
+                self.clip_card = *k == 1;
                 return true;
             }
             (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_BACK => -1,
@@ -1923,7 +2603,10 @@ impl TimePage {
         if ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT) {
             return Some(TimeAction::Edit(EditAction::Scroll(delta)));
         }
-        if ui.layout_of(CLIPS_PAGE) == Some(SONG_LAYOUT) {
+        if matches!(
+            ui.layout_of(CLIPS_PAGE),
+            Some(SONG_LAYOUT | SONG_CARD_LAYOUT)
+        ) {
             self.first_bar = (self.first_bar + i64::from(delta)).max(0);
             return None;
         }
@@ -1934,12 +2617,13 @@ impl TimePage {
     }
 
     /// The options list the wheel steps: the Edit options in the note
-    /// editor, else the record settings.
+    /// editor, the clip settings card on the Record panel's Clip tab, else
+    /// the record settings.
     pub fn wheel_list(&self, ui: &Ui) -> &'static str {
-        if ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT) {
-            EDIT_OPTIONS
-        } else {
-            RECORD
+        match ui.layout_of(CLIPS_PAGE) {
+            Some(EDIT_LAYOUT) => EDIT_OPTIONS,
+            Some(CLIPS_CARD_LAYOUT | SONG_CARD_LAYOUT) => CLIP_CARD,
+            _ => RECORD,
         }
     }
 
@@ -1998,7 +2682,7 @@ impl TimePage {
                 (self.first_row + rows).min(SLOTS)
             )
         };
-        let legend = "ring: one pass   ·   amber: next bar   ·   red: recording".to_string();
+        let legend = "ring: one pass   ·   amber: waiting   ·   red: recording".to_string();
         let can_add = st.tracks.len() < MAX_TRACKS;
         let same_grid = ui.get::<ClipGrid>(CLIPS).is_some_and(|g| {
             g.tracks == tracks
@@ -2024,12 +2708,12 @@ impl TimePage {
             }
         }
         // The grid, the song or the note editor, as the app has it.
-        let want = if st.edit.is_some() {
-            EDIT_LAYOUT
-        } else if st.song_view {
-            SONG_LAYOUT
-        } else {
-            CLIPS_LAYOUT
+        let want = match (st.edit.is_some(), st.song_view, self.clip_card) {
+            (true, ..) => EDIT_LAYOUT,
+            (false, true, false) => SONG_LAYOUT,
+            (false, true, true) => SONG_CARD_LAYOUT,
+            (false, false, false) => CLIPS_LAYOUT,
+            (false, false, true) => CLIPS_CARD_LAYOUT,
         };
         if ui.layout_of(CLIPS_PAGE).is_some_and(|l| l != want) {
             let _ = ui.set_layout(CLIPS_PAGE, want);
@@ -2080,10 +2764,29 @@ impl TimePage {
             }
         }
         let rows = record_rows(st);
-        if ui.get::<OptionList>(RECORD).is_some_and(|l| l.rows != rows) {
+        let tabs = panel_tabs(st);
+        if ui
+            .get::<OptionList>(RECORD)
+            .is_some_and(|l| l.rows != rows || l.tabs != tabs)
+        {
             if let Some(l) = ui.get_mut::<OptionList>(RECORD) {
                 l.rows = rows;
+                l.tabs = tabs.clone();
                 l.right = "wheel or arrows".to_string();
+            }
+        }
+        let rows = clip_rows(st);
+        if ui
+            .get::<OptionList>(CLIP_CARD)
+            .is_some_and(|l| l.rows != rows || l.tabs != tabs)
+        {
+            if let Some(l) = ui.get_mut::<OptionList>(CLIP_CARD) {
+                // Another clip: its card starts at the top.
+                if l.tabs != tabs {
+                    l.reset_view();
+                }
+                l.rows = rows;
+                l.tabs = tabs;
             }
         }
         let (items, current) = take_items(st);
@@ -2239,6 +2942,8 @@ mod tests {
         for (layout, body, side) in [
             (CLIPS_LAYOUT, CLIPS, RECORD),
             (SONG_LAYOUT, SONG, RECORD),
+            (CLIPS_CARD_LAYOUT, CLIPS, CLIP_CARD),
+            (SONG_CARD_LAYOUT, SONG, CLIP_CARD),
             (EDIT_LAYOUT, NOTES, EDIT_OPTIONS),
         ] {
             ui.set_layout(CLIPS_PAGE, layout).unwrap();
@@ -2280,7 +2985,53 @@ mod tests {
         values.extend(edit_rows(&ed, &keys).into_iter().map(|r| r.value));
         ed.sel = vec![0, 1];
         values.extend(edit_rows(&ed, &keys).into_iter().map(|r| r.value));
-        for name in RECORD_ROWS.iter().chain(crate::editor::EDIT_ROWS.iter()) {
+        // The clip settings card, at its longest words.
+        let mut card = ClipSettings {
+            speed: Speed::new(1, 8).unwrap(),
+            swing: Swing::new(PPQ / 2, 75),
+            quantise: Quantise::new(PPQ / 6, 100),
+            follow: Some(Follow {
+                bars: MAX_FOLLOW_BARS,
+                action: FollowAction::Previous,
+                other: FollowAction::Stop,
+                chance: 75,
+            }),
+            launch: None,
+            legato: true,
+        };
+        values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
+        values.extend(
+            card_rows(999 * CARD_STEP, card)
+                .into_iter()
+                .map(|r| r.value),
+        );
+        values.extend(
+            card_rows(MAX_CLIP_TICKS - 1, card)
+                .into_iter()
+                .map(|r| r.value),
+        );
+        card.swing = Swing::new(PPQ / 6, 75);
+        values.extend(
+            card_rows(1001 * CARD_STEP, card)
+                .into_iter()
+                .map(|r| r.value),
+        );
+        card.speed = Speed::new(4, 3).unwrap();
+        card.quantise = Quantise::new(PPQ / 3, 100);
+        card.swing = None;
+        card.follow = None;
+        card.legato = false;
+        values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
+        // Every launch quantise, the project's and a clip's own.
+        for g in LAUNCH_GRIDS {
+            card.launch = Some(g);
+            values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
+        }
+        for name in RECORD_ROWS
+            .iter()
+            .chain(crate::editor::EDIT_ROWS.iter())
+            .chain(CLIP_ROWS.iter())
+        {
             let w = fonts.measure(FontId::Bold, px, name);
             assert!(w <= name_w, "{name}: {w} > {name_w}");
         }
@@ -3130,6 +3881,8 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
+            pasted: false,
         };
         let mut st = st;
         st.done = vec![take];
@@ -3217,6 +3970,398 @@ mod tests {
         st.armed = None;
         assert_eq!(record_rows(&st)[5].value, "–");
         assert_eq!(step(&st, 5, 1), None);
+        // Record quantise steps off, 1/4 ... 1/32 for the armed track, and
+        // says why at its ends or with none armed.
+        let why = |st: &TimeState, delta| {
+            why_not(&ev(RECORD, EventKind::Step { index: 6, delta }), st).unwrap_or_default()
+        };
+        assert_eq!(record_rows(&st)[6].value, "–");
+        assert_eq!(step(&st, 6, 1), None);
+        assert!(why(&st, 1).starts_with("Arm a track first"));
+        st.armed = Some(1);
+        assert_eq!(record_rows(&st)[6].value, "Off");
+        assert_eq!(step(&st, 6, -1), None);
+        assert!(why(&st, -1).contains("off already"));
+        assert_eq!(
+            step(&st, 6, 1),
+            Some(TimeAction::RecordQuantise {
+                track: 1,
+                grid: Some(PPQ)
+            })
+        );
+        st.tracks[1].record_quantise = Some(PPQ / 4);
+        assert_eq!(record_rows(&st)[6].value, "1/16");
+        assert_eq!(
+            step(&st, 6, 1),
+            Some(TimeAction::RecordQuantise {
+                track: 1,
+                grid: Some(PPQ / 6)
+            })
+        );
+        st.tracks[1].record_quantise = Some(PPQ);
+        assert_eq!(
+            step(&st, 6, -1),
+            Some(TimeAction::RecordQuantise {
+                track: 1,
+                grid: None
+            })
+        );
+        st.tracks[1].record_quantise = Some(PPQ / 8);
+        assert_eq!(step(&st, 6, 1), None);
+        assert!(why(&st, 1).contains("finest, 1/32"));
+        // Launch: the project's line for tapped clips, stops and scenes,
+        // from at once to 8 bars, whatever is armed.
+        let why = |st: &TimeState, delta| {
+            why_not(&ev(RECORD, EventKind::Step { index: 7, delta }), st).unwrap_or_default()
+        };
+        st.armed = None;
+        assert_eq!(record_rows(&st)[7].value, "1 bar");
+        assert_eq!(
+            step(&st, 7, 1),
+            Some(TimeAction::LaunchGrid(LaunchGrid::Bars(2)))
+        );
+        assert_eq!(
+            step(&st, 7, -1),
+            Some(TimeAction::LaunchGrid(LaunchGrid::Ticks(PPQ * 2)))
+        );
+        st.launch = LaunchGrid::Now;
+        assert_eq!(record_rows(&st)[7].value, "at once");
+        assert_eq!(step(&st, 7, -1), None);
+        assert!(why(&st, -1).contains("at once already"));
+        st.launch = LaunchGrid::Bars(8);
+        assert_eq!(record_rows(&st)[7].value, "8 bars");
+        assert_eq!(step(&st, 7, 1), None);
+        assert!(why(&st, 1).contains("longest, 8 bars"));
+        // One set in the file (3 bars) shows as it is and steps from 1 bar.
+        st.launch = LaunchGrid::Bars(3);
+        assert_eq!(record_rows(&st)[7].value, "3 bars");
+        assert_eq!(
+            step(&st, 7, 1),
+            Some(TimeAction::LaunchGrid(LaunchGrid::Bars(2)))
+        );
+    }
+
+    /// The clip settings card: the focused clip's settings, each row
+    /// stepping within its range and saying why at its ends.
+    #[test]
+    fn the_clip_card_steps_the_focused_clips_settings() {
+        let mut st = state();
+        // The armed track's playing clip, else its first; the first
+        // track's while none is armed.
+        assert_eq!(st.focus(), Some((2, 0)));
+        st.armed = None;
+        assert_eq!(st.focus(), Some((0, 0)));
+        st.armed = Some(1);
+        assert_eq!(st.focus(), Some((1, 1)));
+        assert_eq!(panel_tabs(&st), ["Record", "Clip · B"]);
+        let rows: Vec<String> = clip_rows(&st)
+            .iter()
+            .map(|r| format!("{} {}", r.name, r.value))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "Length 7 steps",
+                "Speed ×1",
+                "Swing track",
+                "Quantise off",
+                "Strength —",
+                "Follow off",
+                "After —",
+                "Launch project",
+                "Mode Restart"
+            ]
+        );
+        let step = |st: &TimeState, index: usize, delta: i32| {
+            let e = ev(CLIP_CARD, EventKind::Step { index, delta });
+            (action(&e, st), why_not(&e, st))
+        };
+        let set = |st: &TimeState, row: u8, f: fn(&mut ClipSettings)| {
+            let mut s = st.clip(1, 1).unwrap().settings;
+            f(&mut s);
+            (
+                Some(TimeAction::ClipSettings {
+                    track: 1,
+                    slot: 1,
+                    row,
+                    settings: s,
+                }),
+                None,
+            )
+        };
+        fn cs(st: &mut TimeState) -> &mut ClipSettings {
+            &mut st.tracks[1].slots[1].as_mut().unwrap().settings
+        }
+        let ends = |got: (Option<TimeAction>, Option<String>), says: &str| {
+            assert_eq!(got.0, None);
+            assert!(
+                got.1.as_deref().is_some_and(|w| w.contains(says)),
+                "{got:?}"
+            );
+        };
+        // Length, a sixteenth at a time.
+        let length = |steps| {
+            (
+                Some(TimeAction::ClipLength {
+                    track: 1,
+                    slot: 1,
+                    steps,
+                    copy: false,
+                }),
+                None,
+            )
+        };
+        assert_eq!(step(&st, 0, 1), length(8));
+        assert_eq!(step(&st, 0, -1), length(6));
+        st.tracks[1].slots[1].as_mut().unwrap().length = CARD_STEP;
+        ends(step(&st, 0, -1), "shortest, 1 step");
+        // Speed, from x1/8 to x4; one set elsewhere steps from the nearest.
+        assert_eq!(
+            step(&st, 1, 1),
+            set(&st, 1, |s| s.speed = Speed::new(4, 3).unwrap())
+        );
+        assert_eq!(
+            step(&st, 1, -1),
+            set(&st, 1, |s| s.speed = Speed::new(3, 4).unwrap())
+        );
+        cs(&mut st).speed = Speed::new(3, 8).unwrap();
+        assert_eq!(
+            step(&st, 1, 1),
+            set(&st, 1, |s| s.speed = Speed::new(1, 2).unwrap())
+        );
+        cs(&mut st).speed = Speed::new(1, 8).unwrap();
+        ends(step(&st, 1, -1), "slowest");
+        // Swing: the track's, then 50 to 75 %.
+        ends(step(&st, 2, -1), "the track's already");
+        assert_eq!(
+            step(&st, 2, 1),
+            set(&st, 2, |s| s.swing = Swing::new(240, 50))
+        );
+        cs(&mut st).swing = Swing::new(480, 75);
+        assert_eq!(clip_rows(&st)[2].value, "75% 1/8");
+        ends(step(&st, 2, 1), "at its most, 75 %");
+        assert_eq!(
+            step(&st, 2, -1),
+            set(&st, 2, |s| s.swing = Swing::new(480, 74))
+        );
+        // Quantise: off, then 1/4 to 1/32 at full strength; strength only
+        // while it is on, in tens.
+        ends(step(&st, 4, 1), "Turn Quantise on first");
+        ends(step(&st, 3, -1), "off already");
+        assert_eq!(
+            step(&st, 3, 1),
+            set(&st, 3, |s| s.quantise = Quantise::new(960, 100))
+        );
+        cs(&mut st).quantise = Quantise::new(240, 75);
+        assert_eq!(clip_rows(&st)[3].value, "1/16");
+        assert_eq!(clip_rows(&st)[4].value, "75 %");
+        assert_eq!(
+            step(&st, 3, -1),
+            set(&st, 3, |s| s.quantise = Quantise::new(320, 75))
+        );
+        assert_eq!(
+            step(&st, 4, 1),
+            set(&st, 4, |s| s.quantise = Quantise::new(240, 80))
+        );
+        assert_eq!(
+            step(&st, 4, -1),
+            set(&st, 4, |s| s.quantise = Quantise::new(240, 70))
+        );
+        cs(&mut st).quantise = Quantise::new(120, 100);
+        ends(step(&st, 3, 1), "finest, 1/32");
+        ends(step(&st, 4, 1), "full already");
+        // Follow: off, then an action after one pass of the clip (7
+        // sixteenths: 1 bar); After only while it is on.
+        ends(step(&st, 6, 1), "Turn Follow on first");
+        ends(step(&st, 5, -1), "off already");
+        cs(&mut st).speed = Speed::NORMAL;
+        st.tracks[1].slots[1].as_mut().unwrap().length = 1680;
+        assert_eq!(
+            step(&st, 5, 1),
+            set(&st, 5, |s| s.follow =
+                Some(Follow::after(1, FollowAction::Next)))
+        );
+        cs(&mut st).follow = Some(Follow::after(4, FollowAction::Next));
+        assert_eq!(clip_rows(&st)[5].value, "Next");
+        assert_eq!(clip_rows(&st)[6].value, "4 bars");
+        assert_eq!(
+            step(&st, 5, 1),
+            set(&st, 5, |s| s.follow =
+                Some(Follow::after(4, FollowAction::Previous)))
+        );
+        assert_eq!(
+            step(&st, 6, 1),
+            set(&st, 6, |s| s.follow =
+                Some(Follow::after(5, FollowAction::Next)))
+        );
+        cs(&mut st).follow = Some(Follow::after(1, FollowAction::Stop));
+        ends(step(&st, 5, 1), "last action, Stop");
+        ends(step(&st, 6, -1), "soonest");
+        // Launch: the project's, then the clip's own, at once to 8 bars.
+        ends(step(&st, 7, -1), "the project's already (1 bar)");
+        assert_eq!(
+            step(&st, 7, 1),
+            set(&st, 7, |s| s.launch = Some(LaunchGrid::Now))
+        );
+        cs(&mut st).launch = Some(LaunchGrid::Ticks(PPQ));
+        assert_eq!(clip_rows(&st)[7].value, "1/4");
+        assert_eq!(
+            step(&st, 7, 1),
+            set(&st, 7, |s| s.launch = Some(LaunchGrid::Ticks(PPQ * 2)))
+        );
+        assert_eq!(
+            step(&st, 7, -1),
+            set(&st, 7, |s| s.launch = Some(LaunchGrid::Ticks(PPQ / 2)))
+        );
+        cs(&mut st).launch = Some(LaunchGrid::Now);
+        assert_eq!(clip_rows(&st)[7].value, "at once");
+        assert_eq!(step(&st, 7, -1), set(&st, 7, |s| s.launch = None));
+        cs(&mut st).launch = Some(LaunchGrid::Bars(8));
+        assert_eq!(clip_rows(&st)[7].value, "8 bars");
+        ends(step(&st, 7, 1), "longest, 8 bars");
+        // Mode: either arrow flips Restart and Legato.
+        assert_eq!(step(&st, 8, 1), set(&st, 8, |s| s.legato = true));
+        cs(&mut st).legato = true;
+        assert_eq!(clip_rows(&st)[8].value, "Legato");
+        assert_eq!(step(&st, 8, -1), set(&st, 8, |s| s.legato = false));
+        // A loop cell: only Follow, After and Launch.
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        ends(step(&st, 1, 1), "loop cell");
+        ends(step(&st, 8, 1), "loop cell");
+        assert!(step(&st, 6, 1).0.is_some());
+        assert!(step(&st, 7, -1).0.is_some());
+        // A settings take in the Takes list.
+        let row = TakeRow {
+            number: 4,
+            at: Some((1, 1)),
+            settings: true,
+            ..TakeRow::of(&Take::default())
+        };
+        assert_eq!(row.short(), "settings 4");
+        assert_eq!(take_title(&st, &row), "Settings 4 · Bass / 2");
+        assert_eq!(take_detail(&st, &row), "clip settings");
+        // No clip on the armed track: no rows, and it says so.
+        st.tracks[1].slots = vec![None; SLOTS];
+        assert_eq!(st.focus(), None);
+        assert!(clip_rows(&st).is_empty());
+        assert_eq!(panel_tabs(&st)[1], "Clip");
+        ends(step(&st, 0, 1), "No clip to set");
+    }
+
+    /// SHIFT + the card's arrows: Length doubles with its notes repeated or
+    /// halves, Speed doubles or halves; the other rows step as without it.
+    #[test]
+    fn shift_doubles_or_halves_the_cards_length_and_speed() {
+        let mut st = state();
+        st.armed = Some(1);
+        // Bass's clip B: 7 sixteenths, at x1.
+        let act = |st: &TimeState, index, delta| card_action(st, index, delta, true);
+        assert_eq!(
+            act(&st, 0, 1),
+            Ok(TimeAction::ClipLength {
+                track: 1,
+                slot: 1,
+                steps: 14,
+                copy: true
+            })
+        );
+        assert_eq!(
+            act(&st, 0, -1),
+            Ok(TimeAction::ClipLength {
+                track: 1,
+                slot: 1,
+                steps: 3,
+                copy: false
+            })
+        );
+        let speed = |st: &TimeState, delta| match act(st, 1, delta) {
+            Ok(TimeAction::ClipSettings {
+                row: 1, settings, ..
+            }) => Ok(speed_name(settings.speed)),
+            other => Err(format!("{other:?}")),
+        };
+        assert_eq!(speed(&st, 1).as_deref(), Ok("×2"));
+        assert_eq!(speed(&st, -1).as_deref(), Ok("×1/2"));
+        let set = |st: &mut TimeState, n, d| {
+            st.tracks[1].slots[1].as_mut().unwrap().settings.speed = Speed::new(n, d).unwrap();
+        };
+        set(&mut st, 3, 4);
+        assert_eq!(speed(&st, 1).as_deref(), Ok("×3/2"));
+        set(&mut st, 3, 1);
+        assert!(speed(&st, 1).unwrap_err().contains("fastest"));
+        set(&mut st, 1, 8);
+        assert!(speed(&st, -1).unwrap_err().contains("slowest"));
+        set(&mut st, 1, 3);
+        assert!(speed(&st, -1).unwrap_err().contains("not a speed"));
+        // The other rows as without SHIFT.
+        assert_eq!(act(&st, 3, 1), card_step(&st, 3, 1));
+        // A clip a sixteenth long can't halve.
+        st.tracks[1].slots[1].as_mut().unwrap().length = CARD_STEP;
+        assert!(act(&st, 0, -1).unwrap_err().contains("can't halve"));
+        // A loop cell: neither.
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert!(act(&st, 1, 1).unwrap_err().contains("loop cell"));
+    }
+
+    /// COPY held: the hint says what a tap copies or pastes, and a paste
+    /// is named in the takes list.
+    #[test]
+    fn copy_says_what_a_tap_copies_or_pastes() {
+        let mut st = state();
+        assert!(copy_hint(&st).starts_with("COPY held: tap a clip to copy it"));
+        st.clipboard = Some("Verse B".into());
+        assert!(copy_hint(&st).contains("a copy of Verse B goes there"));
+        let row = TakeRow {
+            number: 5,
+            at: Some((1, 2)),
+            made: true,
+            pasted: true,
+            ..TakeRow::of(&Take::default())
+        };
+        assert_eq!(row.short(), "paste 5");
+        assert_eq!(take_title(&st, &row), "Paste 5 · Bass / 3");
+        assert_eq!(take_detail(&st, &row), "a copy");
+    }
+
+    /// The Record panel's Clip tab swaps the clip settings card in for the
+    /// record settings, on the grid and the song alike, and the wheel
+    /// steps it.
+    #[test]
+    fn the_record_panels_tabs_swap_in_the_clip_card() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Arrange"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        page.update(&mut ui, &st);
+        assert_eq!(page.wheel_list(&ui), RECORD);
+        let record = ui.get::<OptionList>(RECORD).unwrap();
+        assert_eq!((record.tab, record.tabs.clone()), (0, panel_tabs(&st)));
+        // The Clip tab.
+        assert!(page.page_tracks(&ev(RECORD, EventKind::Tab(1)), &st));
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_CARD_LAYOUT));
+        assert_eq!(page.wheel_list(&ui), CLIP_CARD);
+        let card = ui.get::<OptionList>(CLIP_CARD).unwrap();
+        assert_eq!(card.tab, 1);
+        assert_eq!(card.tabs[1], "Clip · A");
+        assert_eq!(card.rows, clip_rows(&st));
+        // The Song view keeps it, and its wheel still scrolls the song.
+        st.song_view = true;
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(SONG_CARD_LAYOUT));
+        assert_eq!(page.scroll(&ui, 2), None);
+        assert_eq!(page.first_bar, 2);
+        // Another clip focused: the card follows.
+        st.armed = Some(1);
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<OptionList>(CLIP_CARD).unwrap().tabs[1], "Clip · B");
+        // The Record tab again.
+        assert!(page.page_tracks(&ev(CLIP_CARD, EventKind::Tab(0)), &st));
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(SONG_LAYOUT));
+        assert_eq!(page.wheel_list(&ui), RECORD);
     }
 
     fn project() -> Project {
@@ -3381,7 +4526,21 @@ mod tests {
         // In a loop of bars 4 and 5, the next bar line played is bar 4's.
         st.transport.loop_range = Some((3 * BAR, 5 * BAR));
         assert_eq!(cell_of(&st, 0, 1).foot, "from 4.1");
-        assert_eq!(cue_tick(&st.transport), 3 * BAR);
+        assert_eq!(cue_tick(&st.transport, LaunchGrid::Bars(1)), 3 * BAR);
+        st.transport.loop_range = None;
+        // The cued clip's own launch quantise moves its label; the time
+        // engine's line for a cue (one kept when Launch changed) wins.
+        st.tracks[0].slots[1].as_mut().unwrap().settings.launch = Some(LaunchGrid::Ticks(PPQ * 2));
+        assert_eq!(st.cue_line(0), LaunchGrid::Ticks(PPQ * 2));
+        assert_eq!(cell_of(&st, 0, 1).foot, "from 5.3");
+        st.cue_lines = vec![(0, LaunchGrid::Bars(2))];
+        assert_eq!(cell_of(&st, 0, 1).foot, "from 7.1");
+        assert_eq!(cell_of(&st, 0, 0).detail, "until 7.1");
+        st.launch = LaunchGrid::Bars(4);
+        assert_eq!(st.cue_line(2), LaunchGrid::Bars(4), "a stop: the project's");
+        assert_eq!(cell_of(&st, 2, 0).detail, "stops 9.1");
+        st.cue_lines.clear();
+        st.launch = LaunchGrid::Bars(1);
         let tap = |track: usize, slot: usize| {
             action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st)
         };
@@ -3467,6 +4626,8 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
+            pasted: false,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -3499,6 +4660,8 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
+            pasted: false,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -3521,6 +4684,8 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
+            pasted: false,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");
@@ -3531,6 +4696,7 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
             at: Some((1, 0)),
             ..st.done[1]
         };

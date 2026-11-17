@@ -226,6 +226,7 @@ fn a_launch_waits_for_the_bar_line_and_starts_the_clip_from_its_top() {
             at: BAR,
             origin,
             mute: None,
+            from: BAR,
         }]
     );
     assert_eq!(
@@ -318,6 +319,7 @@ fn a_stop_waits_for_the_bar_line_too() {
             at: BAR,
             origin: BAR,
             mute: None,
+            from: BAR,
         }]
     );
     assert_eq!((r.launches, r.cues), (vec![], vec![]));
@@ -609,4 +611,79 @@ fn a_view_that_says_its_switches_starts_the_same_clip_cued_again() {
         "B starts again from its top on the next bar line"
     );
     assert_eq!(run(false), vec![(BAR, Some(1))], "the old rule never does");
+}
+
+/// Launch quantise (S4): a cue lands on the next line of the project's
+/// grid, or of its clip's own; legato takes over the playing clip's place
+/// in its pass.
+#[test]
+fn a_cue_lands_on_its_launch_quantise_and_legato_keeps_the_place() {
+    use mpfree_seq::LaunchGrid;
+    let cue = |tick: i64| {
+        vec![(
+            at(tick),
+            Cue {
+                track: 0,
+                slot: Some(1),
+            },
+        )]
+    };
+    // The project's quarter-note grid: B starts on the next beat.
+    let mut s = session(at(3 * BAR));
+    s.project.launch = LaunchGrid::Ticks(960);
+    s.cues = cue(1500);
+    let r = same_everywhere(&s);
+    assert_eq!(r.started[0].at, 1920);
+    assert_eq!(
+        ons(&r),
+        vec![
+            (0, 1),
+            (960, 1),
+            (1920, 20),
+            (BAR + 1920 + 480, 21),
+            (2 * BAR + 1920, 20)
+        ]
+    );
+    // A clip's own grid wins: 2 bars.
+    s.project.tracks[0].slots[1].as_mut().unwrap().launch = Some(LaunchGrid::Bars(2));
+    s.frames = at(5 * BAR);
+    let r = same_everywhere(&s);
+    assert_eq!(r.started[0].at, 2 * BAR);
+    // Legato on the beat grid: B takes over half a bar into A's pass, as
+    // if it had started with that pass, so its second bar's note comes
+    // where it would have.
+    s.project.tracks[0].slots[1].as_mut().unwrap().launch = None;
+    s.project.tracks[0].slots[1].as_mut().unwrap().legato = true;
+    s.frames = at(4 * BAR);
+    let r = same_everywhere(&s);
+    let st = r.started[0];
+    assert_eq!((st.at, st.from), (1920, 0));
+    assert_eq!(st.origin, anchored(0, 2 * BAR, Speed::NORMAL));
+    assert_eq!(
+        ons(&r),
+        vec![
+            (0, 1),
+            (960, 1),
+            (BAR + 480, 21),
+            (2 * BAR, 20),
+            (3 * BAR + 480, 21)
+        ]
+    );
+    assert_eq!(r.launches[0].start, 0, "its passes count from A's");
+    // Legato on the bar: nothing to take over, it starts from its top.
+    s.project.launch = LaunchGrid::Bars(1);
+    let r = same_everywhere(&s);
+    assert_eq!((r.started[0].at, r.started[0].from), (BAR, BAR));
+    // At once: the first tick of the period the cue is compiled in.
+    s.project.launch = LaunchGrid::Now;
+    s.project.tracks[0].slots[1].as_mut().unwrap().legato = false;
+    for period in [64, 128, 1000] {
+        let r = run(&s, period, Some(0));
+        let at = r.started[0].at;
+        assert!(
+            (1500..=1500 + i64::from(period) / TICK as i64 + 1).contains(&at),
+            "period {period}: {at}"
+        );
+        assert_eq!(ons(&r)[2], (at, 20), "period {period}");
+    }
 }

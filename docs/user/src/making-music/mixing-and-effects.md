@@ -130,7 +130,7 @@ The last thing on the master is **Master safety**, a limiter that keeps the outp
 
 ## Coming next
 
-- **Automation**: fader and knob moves recorded into clips.
+- **Automation lanes**: fader and knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)).
 
 > [!MPC]
 > The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, and the master always ends in a safety limiter. Freeze is the MPC's track freeze, but it records a loop rather than the whole sequence and follows the song's tempo; Print is like the MPC's bounce to sample.
