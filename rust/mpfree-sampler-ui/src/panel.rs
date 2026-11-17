@@ -18,6 +18,9 @@
 //!   of a typed one, [`EventKind::Type`] when the finger lifts.
 //! - **A switch**: a step up (the page flips it).
 //! - **A button**: [`EventKind::Tab`] with the row.
+//! - **A slider** (the Play page's crossfader) touched or dragged:
+//!   [`EventKind::Value`] with the place under the finger, 0 to 1 (so a
+//!   panel has one slider at most).
 //!
 //! A finger on any control picks its row ([`EventKind::Select`] when the
 //! touch changes nothing else), so the data wheel and - / + work on the
@@ -54,6 +57,8 @@ pub enum Look {
     Button(String),
     /// The page's main button, big and lit (Chop to pads).
     Primary(String),
+    /// A slider with its handle at `pos` (0 to 1): a crossfader.
+    Slider { pos: f32 },
 }
 
 /// One row's control: its look, and whether it does anything now (a faint
@@ -191,6 +196,8 @@ const KNOB_VALUE_H: i32 = 20;
 const KNOB_H: i32 = LABEL_H + 5 + KNOB_D + 5 + KNOB_VALUE_H;
 /// The page's main button.
 const PRIMARY_H: i32 = 84;
+/// A slider's handle.
+const HANDLE_D: i32 = 22;
 /// A switch.
 const SWITCH_W: i32 = 46;
 const SWITCH_H: i32 = 27;
@@ -230,6 +237,24 @@ impl Placed {
         let (less, mid) = self.control.take_left(w);
         let (more, mid) = mid.take_right(w);
         (less, mid, more)
+    }
+
+    /// Where a slider's handle is at `pos`: its centre's x.
+    fn handle_x(&self, pos: f32) -> i32 {
+        let (x0, x1) = self.slide();
+        x0 + ((x1 - x0) as f32 * pos.clamp(0.0, 1.0)).round() as i32
+    }
+
+    /// The x a slider's handle centre moves between.
+    fn slide(&self) -> (i32, i32) {
+        let c = self.control;
+        (c.x + HANDLE_D / 2, c.right() - HANDLE_D / 2)
+    }
+
+    /// The place on a slider under `x`, 0 to 1.
+    fn slide_at(&self, x: i32) -> f32 {
+        let (x0, x1) = self.slide();
+        ((x - x0) as f32 / (x1 - x0).max(1) as f32).clamp(0.0, 1.0)
     }
 
     /// A switch's track, on the item's right.
@@ -425,10 +450,19 @@ pub fn touch(
         Touch::Down => {}
         Touch::Move => {
             let d = drag.as_mut().filter(|d| d.finger == finger && !d.typing)?;
-            let Some(Look::Knob { steps, .. }) = controls.get(d.row).map(|c| &c.look) else {
-                return None;
+            let steps = match controls.get(d.row).map(|c| &c.look) {
+                Some(Look::Knob { steps, .. }) => *steps,
+                Some(Look::Slider { .. }) => {
+                    let row = d.row;
+                    let p = panel
+                        .place(r, controls)
+                        .into_iter()
+                        .find(|p| p.row == row)?;
+                    return Some(EventKind::Value(p.slide_at(x)));
+                }
+                _ => return None,
             };
-            let px = step_px(*steps);
+            let px = step_px(steps);
             let steps = (d.from - y) / px;
             if steps == 0 {
                 return None;
@@ -497,6 +531,18 @@ pub fn touch(
             }
         }
         Look::Toggle(_) => Some(EventKind::Step { index: k, delta: 1 }),
+        Look::Slider { .. } => {
+            if !p.control.contains(x, y) {
+                return Some(EventKind::Select(k));
+            }
+            *drag = Some(Drag {
+                finger,
+                row: k,
+                from: x,
+                typing: false,
+            });
+            Some(EventKind::Value(p.slide_at(x)))
+        }
         Look::Button(_) | Look::Primary(_) => {
             if p.control.contains(x, y) {
                 Some(EventKind::Tab(k))
@@ -551,6 +597,15 @@ pub fn targets(
             }
             Look::Button(text) | Look::Primary(text) => {
                 out.push(Target::tap("button", k, text.clone(), p.control).disabled_if(c.faint));
+            }
+            Look::Slider { pos } => {
+                // Dragged right from the middle; a handle at the right
+                // end has nowhere to go.
+                out.push(
+                    Target::drag("slider", k, name.clone(), p.control)
+                        .towards(p.control.w / 3, 0)
+                        .disabled_if(c.faint || *pos >= 1.0),
+                );
             }
         }
     }
@@ -779,6 +834,34 @@ pub fn paint(
                     Align::Center,
                     fg,
                     text,
+                );
+            }
+            Look::Slider { pos } => {
+                if p.control != p.rect {
+                    let (name_r, value_r) = (
+                        label.take_left(label.w / 2).0,
+                        label.take_right(label.w / 2).0,
+                    );
+                    cx.text(FontId::Sans, 13.0, name_r, Align::Left, dim, name);
+                    cx.text(FontId::Bold, 13.0, value_r, Align::Right, ink, value);
+                }
+                let (x0, x1) = p.slide();
+                let cy = p.control.y + p.control.h / 2;
+                cx.canvas
+                    .fill_round_rect(Rect::new(x0 - 3, cy - 3, x1 - x0 + 6, 6), 3, ctrl);
+                let hx = p.handle_x(*pos);
+                if hx > x0 {
+                    cx.canvas
+                        .fill_round_rect(Rect::new(x0 - 3, cy - 3, hx - x0 + 3, 6), 3, lit);
+                }
+                cx.canvas.fill_round_rect(
+                    Rect::new(hx - HANDLE_D / 2, cy - HANDLE_D / 2, HANDLE_D, HANDLE_D),
+                    HANDLE_D / 2,
+                    if c.faint {
+                        t.text_faint
+                    } else {
+                        Color::rgb(0xFFFFFF)
+                    },
                 );
             }
         }

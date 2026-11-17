@@ -3655,7 +3655,7 @@ impl Player {
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
-                    format!("Hit a pad: its velocity shows on the layers   ·   tap a section for its rows   ·   \
+                    format!("Hit a pad: its velocity shows on the layers   ·   tap a section for its controls   ·   \
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
                 }
                 View::Sample if self.sample.page() == sample_page::GRAIN_PAGE => {
@@ -11495,15 +11495,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // The Layers section: a layer added (the upper half of the velocities),
     // picked, turned down 3 dB and panned left, a hit at 100 on it.
     {
-        use mpfree_sampler_ui::play_tab::{Row, LAYER_EDIT, LIST};
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut layers = sample_sampler(fonts());
         layers.on_event(UiEvent {
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
             kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
         });
         layers.on_event(UiEvent {
-            widget: LAYER_EDIT.into(),
-            kind: EventKind::Tab(0),
+            widget: LIST.into(),
+            kind: EventKind::Tab(Row::AddLayer.place()),
         });
         for (row, delta) in [(Row::LayerLevel, -6), (Row::LayerPan, -4)] {
             let index = play_row(&mut layers, row);
@@ -11524,7 +11524,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // The scene strip: A stored, the pad turned down, B stored, and the
     // crossfader 40 % of the way to B.
     {
-        use mpfree_sampler_ui::play_tab::{Row, FADER, LIST, SCENES, SECTIONS};
+        use mpfree_sampler_ui::play_tab::{Row, LIST, SCENES, SECTIONS};
         let mut scenes = sample_sampler(fonts());
         scenes.on_event(UiEvent {
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
@@ -11551,10 +11551,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         scenes.apply(ToUi::SampleLift);
         tap(&mut scenes, SCENES, EventKind::Tab(1));
-        if let Some(f) = scenes.ui.get_mut::<mpfree_ui::widgets::Fader>(FADER) {
-            f.value = 0.4;
-        }
-        tap(&mut scenes, FADER, EventKind::Value(0.4));
+        tap(&mut scenes, SCENES, EventKind::Value(0.4));
         scenes.take_actions();
         out.push(("sample-play-scenes", scenes));
     }
@@ -18101,7 +18098,7 @@ mod tests {
     #[test]
     fn scenes_morph_the_playing_kit_and_return_puts_the_pads_back() {
         use mpfree_sampler::engine::PadField;
-        use mpfree_sampler_ui::play_tab::{Row, FADER, LIST, SCENES};
+        use mpfree_sampler_ui::play_tab::{Row, LIST, SCENES};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
@@ -18141,7 +18138,7 @@ mod tests {
         assert_eq!(sent.len(), 1);
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
         // Half way: the pad's level between A's and B's, for the playing kit.
-        ev(&mut p, FADER, EventKind::Value(0.5));
+        ev(&mut p, SCENES, EventKind::Value(0.5));
         let (sent, rest) = views(p.take_actions());
         assert!(sent.is_empty(), "the kit doesn't change");
         assert_eq!(
@@ -19064,7 +19061,7 @@ mod tests {
 
     #[test]
     fn layers_are_added_and_removed_on_the_play_tab_one_undo_step_each() {
-        use mpfree_sampler_ui::play_tab::{self, Row, LAYER_EDIT, LIST};
+        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
@@ -19092,7 +19089,8 @@ mod tests {
         };
         // Add layer: a copy taking the upper velocities, a line, and the
         // kit goes to the audio thread with it.
-        ev(&mut p, LAYER_EDIT, EventKind::Tab(0));
+        let add = play_row(&mut p, Row::AddLayer);
+        ev(&mut p, LIST, EventKind::Tab(add));
         assert_eq!(layers(&p), vec![(1, 63, 0.0), (64, 127, 0.0)]);
         assert!(
             events_log(&p).iter().any(|l| l
@@ -19117,7 +19115,8 @@ mod tests {
             events_log(&p)
         );
         // Remove layer, then UNDO brings it back as it was.
-        ev(&mut p, LAYER_EDIT, EventKind::Tab(1));
+        let remove = play_row(&mut p, Row::RemoveLayer);
+        ev(&mut p, LIST, EventKind::Tab(remove));
         assert_eq!(layers(&p), vec![(1, 63, 0.0)]);
         assert!(
             events_log(&p).iter().any(|l| l
@@ -19135,7 +19134,7 @@ mod tests {
     #[test]
     fn the_wave_and_grain_tabs_edit_the_layer_picked_on_play() {
         use mpfree_sampler::model::PlayMode;
-        use mpfree_sampler_ui::play_tab::{self, LAYERS, LAYER_EDIT};
+        use mpfree_sampler_ui::play_tab::{self, Row, LAYERS, LIST};
         use mpfree_sampler_ui::widgets::PadBar;
         use mpfree_sampler_ui::{grain_tab, wave_tab};
         let pad = mpfree_sampler_ui::sample::PAD;
@@ -19154,7 +19153,8 @@ mod tests {
         };
         ev(&mut p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
         // Add layer picks the new layer 2.
-        ev(&mut p, LAYER_EDIT, EventKind::Tab(0));
+        let add = play_row(&mut p, Row::AddLayer);
+        ev(&mut p, LIST, EventKind::Tab(add));
         back(&mut p);
         ev(&mut p, play_tab::BAR, EventKind::Tab(grain_tab::TAB));
         assert_eq!(
@@ -20535,10 +20535,15 @@ mod tests {
         let (sent, _) = views(p.take_actions());
         assert_eq!(sent.len(), 1);
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
-        // The Sample tab's Play tab shows the kit's keyboard, with its own
-        // hint.
+        // The Sample tab's Play tab shows the kit's keyboard on its Pitch
+        // section, with its own hint.
         open_sample(&mut p, sample_page::Editor::Play);
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        let pitch = play_tab::Section::ALL
+            .iter()
+            .position(|&s| s == play_tab::Section::Pitch)
+            .unwrap();
+        ev(&mut p, play_tab::SECTIONS, EventKind::Tab(pitch));
         assert!(p.sample.play_keys_shown());
         assert!(p
             .ui
