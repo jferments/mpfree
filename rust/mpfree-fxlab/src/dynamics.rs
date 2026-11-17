@@ -45,30 +45,79 @@ pub struct Timing {
     pub release90_ms: Option<f64>,
 }
 
-/// Gain in dB every millisecond (2 ms windows, so two cycles of 1 kHz).
-fn gain_track(input: &[f64], output: &[f64], rate: u32) -> Vec<f64> {
-    let win = (0.002 * rate as f64) as usize;
-    let hop = (rate as usize / 1000).max(1);
-    let mut g = Vec::new();
-    let mut at = 0;
-    while at + win <= input.len().min(output.len()) {
-        g.push(sine_db(&output[at..at + win]) - sine_db(&input[at..at + win]));
-        at += hop;
+/// The tone the level steps are made of.
+const TONE_HZ: f64 = 1000.0;
+
+/// Gain in dB at frame `centre`: the tone's amplitude out over in, each
+/// read through a 1 ms Hann window (a cycle of the tone) at the tone's
+/// frequency, or `None` past either end. Reading the tone itself rather
+/// than the power in a window keeps a fast attack from being smeared or
+/// pulled toward the louder end of the window (2 ms of power read a 1 ms
+/// attack as 1.5 ms); the Hann window's nulls fall on the tone's second
+/// harmonic, where a changing gain's ripple sits.
+fn gain_at(input: &[f64], output: &[f64], centre: f64, rate: u32) -> Option<f64> {
+    let half = 0.0005 * rate as f64;
+    let from = (centre - half).round();
+    let to = (centre + half).round();
+    if from < 0.0 || to as usize > input.len().min(output.len()) {
+        return None;
     }
-    g
+    let (from, to) = (from as usize, to as usize);
+    let n = (to - from) as f64;
+    let w = std::f64::consts::TAU * TONE_HZ / rate as f64;
+    let (mut x, mut y) = ((0.0, 0.0), (0.0, 0.0));
+    for k in from..to {
+        let h = 0.5 - 0.5 * (std::f64::consts::TAU * ((k - from) as f64 + 0.5) / n).cos();
+        let (s, c) = (w * k as f64).sin_cos();
+        x.0 += h * c * input[k];
+        x.1 += h * s * input[k];
+        y.0 += h * c * output[k];
+        y.1 += h * s * output[k];
+    }
+    let power = |(a, b): (f64, f64)| (a * a + b * b).max(1e-300);
+    Some(10.0 * (power(y) / power(x)).log10())
 }
 
-fn time_to(track: &[f64], from: f64, to: f64, share: f64) -> Option<f64> {
+/// The gain every millisecond from frame `start` on, each window centred
+/// on its millisecond (frames at the exact rate, so the times don't drift
+/// at 44.1 kHz).
+fn gain_track(input: &[f64], output: &[f64], start: usize, rate: u32) -> Vec<f64> {
+    let per_ms = 0.001 * rate as f64;
+    (0..)
+        .map_while(|i| gain_at(input, output, start as f64 + i as f64 * per_ms, rate))
+        .collect()
+}
+
+/// Milliseconds until `track` (one value a millisecond, from the step)
+/// has covered `share` of the way from `from` to `to`, found between the
+/// milliseconds by halving with `at` (the gain that many milliseconds
+/// after the step).
+fn time_to(
+    track: &[f64],
+    at: impl Fn(f64) -> Option<f64>,
+    from: f64,
+    to: f64,
+    share: f64,
+) -> Option<f64> {
     if (to - from).abs() < 0.1 {
         return None;
     }
     let goal = from + share * (to - from);
-    let i = if to < from {
-        track.iter().position(|g| *g <= goal)?
-    } else {
-        track.iter().position(|g| *g >= goal)?
-    };
-    Some(i as f64)
+    let past = |g: f64| if to < from { g <= goal } else { g >= goal };
+    let i = track.iter().position(|g| past(*g))?;
+    if i == 0 {
+        return Some(0.0);
+    }
+    let (mut lo, mut hi) = (i as f64 - 1.0, i as f64);
+    for _ in 0..12 {
+        let mid = 0.5 * (lo + hi);
+        if at(mid).is_some_and(past) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(0.5 * (lo + hi))
 }
 
 /// Steps between `low_db` and `high_db` every `secs` seconds (low, high,
@@ -77,7 +126,7 @@ pub fn timing(dut: &mut dyn Dut, low_db: f64, high_db: f64, secs: f64) -> Timing
     let rate = dut.rate();
     let step = (secs * rate as f64) as usize;
     let lat = dut.latency();
-    let x = level_steps(1000.0, low_db, high_db, step, 3, rate);
+    let x = level_steps(TONE_HZ, low_db, high_db, step, 3, rate);
     let out = dut.render(&Stereo::mono(x.clone(), rate), lat);
     timing_of(&x, &out.left[lat..], step, rate)
 }
@@ -85,24 +134,70 @@ pub fn timing(dut: &mut dyn Dut, low_db: f64, high_db: f64, secs: f64) -> Timing
 /// The same from a recording: `x` is the stepped stimulus, `y` the output
 /// lined up with it (latency removed), `step` frames per level.
 pub fn timing_of(x: &[f64], y: &[f64], step: usize, rate: u32) -> Timing {
-    let g = gain_track(x, y, rate);
-    let ms = step * 1000 / rate as usize;
-    let settled = |at: usize| -> f64 {
-        let at = at.min(g.len());
-        let s = &g[at.saturating_sub(20)..at];
-        s.iter().sum::<f64>() / s.len().max(1) as f64
+    let per_ms = 0.001 * rate as f64;
+    // Steady gain over the 20 ms before frame `end`.
+    let settled = |end: usize| -> f64 {
+        let g: Vec<f64> = (1..=20)
+            .filter_map(|k| gain_at(x, y, end as f64 - (k as f64 + 1.0) * per_ms, rate))
+            .collect();
+        g.iter().sum::<f64>() / g.len().max(1) as f64
     };
     // Steady gain at the end of the quiet, the loud and the quiet again.
-    let (g_low, g_high) = (settled(ms - 2), settled(2 * ms - 2));
-    let up = &g[(ms + 1).min(g.len())..(2 * ms).min(g.len())];
-    let down = &g[(2 * ms + 1).min(g.len())..];
+    let (g_low, g_high) = (settled(step), settled(2 * step));
+    let up = gain_track(x, y, step, rate);
+    let up = &up[..up.len().min((step as f64 / per_ms) as usize)];
+    let down = gain_track(x, y, 2 * step, rate);
+    let after = |from: usize| move |ms: f64| gain_at(x, y, from as f64 + ms * per_ms, rate);
     Timing {
         depth_db: g_high - g_low,
-        attack_ms: time_to(up, g_low, g_high, 0.63),
-        attack90_ms: time_to(up, g_low, g_high, 0.9),
-        release_ms: time_to(down, g_high, g_low, 0.63),
-        release90_ms: time_to(down, g_high, g_low, 0.9),
+        attack_ms: time_to(up, after(step), g_low, g_high, 0.63),
+        attack90_ms: time_to(up, after(step), g_low, g_high, 0.9),
+        release_ms: time_to(&down, after(2 * step), g_high, g_low, 0.63),
+        release90_ms: time_to(&down, after(2 * step), g_high, g_low, 0.9),
     }
+}
+
+/// How the gain comes back after `loud_secs` of a 1 kHz tone at
+/// `high_db` (half a second at `low_db` before, `quiet_secs` after):
+/// milliseconds to 63 % and to 90 % of the way from the gain at the end of
+/// the loud part to the gain at the end. A program-dependent release comes
+/// back slower after a long loud part than after a short one.
+pub fn release_after(
+    dut: &mut dyn Dut,
+    low_db: f64,
+    high_db: f64,
+    loud_secs: f64,
+    quiet_secs: f64,
+) -> (Option<f64>, Option<f64>) {
+    let rate = dut.rate();
+    let per_ms = 0.001 * rate as f64;
+    let (lead, loud) = (rate as usize / 2, (loud_secs * rate as f64) as usize);
+    let n = lead + loud + (quiet_secs * rate as f64) as usize;
+    let x: Vec<f64> = sine(TONE_HZ, 1.0, n, rate)
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let high = i >= lead && i < lead + loud;
+            v * db_to_amp(if high { high_db } else { low_db })
+        })
+        .collect();
+    let lat = dut.latency();
+    let y = dut.render(&Stereo::mono(x.clone(), rate), lat);
+    let y = &y.left[lat..];
+    let down = lead + loud;
+    let Some(from) = gain_at(&x, y, down as f64 - 1.5 * per_ms, rate) else {
+        return (None, None);
+    };
+    let ends: Vec<f64> = (1..=20)
+        .filter_map(|k| gain_at(&x, y, n as f64 - (k as f64 + 1.0) * per_ms, rate))
+        .collect();
+    let to = ends.iter().sum::<f64>() / ends.len().max(1) as f64;
+    let track = gain_track(&x, y, down, rate);
+    let at = |ms: f64| gain_at(&x, y, down as f64 + ms * per_ms, rate);
+    (
+        time_to(&track, at, from, to, 0.63),
+        time_to(&track, at, from, to, 0.9),
+    )
 }
 
 #[cfg(test)]

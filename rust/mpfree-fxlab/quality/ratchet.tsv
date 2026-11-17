@@ -101,36 +101,90 @@ amp/lead/model_change_db	0
 amp/lead/power_chord_sub70_db_gain10_nocab_tight	-27.871
 amp/lead/silence_out_dbfs_gain10	-140
 amp/lead/treble_jump_db	0
-compressor/compressor/attack_ratio_100ms	1.86
-compressor/compressor/attack_ratio_10ms	1.6
-compressor/compressor/attack_ratio_1ms	1
-compressor/compressor/attack_ratio_30ms	1.7333
-compressor/compressor/curve_error_peak	0.9546
-compressor/compressor/curve_error_peak_knee0	0.9563
-compressor/compressor/curve_error_rms	0.0187
+compressor/bus/attack_ratio_10ms	1.0013
+compressor/bus/attack_ratio_1ms	1.0782
+compressor/bus/attack_ratio_30ms	0.9974
+compressor/bus/curve_error_peak	0.0126
+compressor/bus/release_ratio_after_burst_150ms	0.9843
+compressor/bus/release_ratio_after_burst_500ms	0.9579
+compressor/bus/release_ratio_after_burst_50ms	0.9871
+compressor/bus/release_slowdown	2.3294
+compressor/bus/style_change_db	0
+compressor/bus/thd_100hz_gr10	-69.3451
+compressor/bus/thd_50hz_gr10	-57.7177
+compressor/compressor/attack_ratio_100ms	0.9951
+compressor/compressor/attack_ratio_10ms	1.0013
+compressor/compressor/attack_ratio_1ms	1.0782
+compressor/compressor/attack_ratio_30ms	0.9974
+compressor/compressor/curve_error_peak	0.0126
+compressor/compressor/curve_error_peak_knee0	0.0126
+compressor/compressor/curve_error_range6	0.0097
+compressor/compressor/curve_error_rms	0.0259
+compressor/compressor/half_link_error_db	0
 compressor/compressor/link_error	0
-compressor/compressor/meter_error	0.0003
+compressor/compressor/lu_pink18_auto	-0.5456
+compressor/compressor/meter_error	0.0001
 compressor/compressor/null_below_knee_dbfs	-140
 compressor/compressor/null_mix0_dbfs	-140
-compressor/compressor/null_ratio1_dbfs	-132.4532
-compressor/compressor/release_ratio_150ms	1.02
-compressor/compressor/release_ratio_2000ms	1.0335
-compressor/compressor/release_ratio_500ms	1.03
-compressor/compressor/release_ratio_50ms	1.02
-compressor/compressor/thd_100hz_gr10_peak_0.1ms_10ms	-25.7226
-compressor/compressor/thd_100hz_gr10_peak_10ms_150ms	-49.7507
-compressor/compressor/thd_100hz_gr10_peak_1ms_50ms	-38.508
-compressor/compressor/thd_100hz_gr10_rms_10ms_150ms	-74.1049
-compressor/compressor/thd_50hz_gr10_peak_0.1ms_10ms	-21.8824
-compressor/compressor/thd_50hz_gr10_peak_10ms_150ms	-43.7957
-compressor/compressor/thd_50hz_gr10_peak_1ms_50ms	-32.7399
-compressor/compressor/thd_50hz_gr10_rms_10ms_150ms	-62.174
-compressor/compressor/zipper_db	0.3378
-compressor/compressor[Drum punch]/zipper_db	0.115
-compressor/compressor[Gentle glue]/zipper_db	0.5765
-compressor/compressor[Sidechain pump]/zipper_db	0.6346
-compressor/compressor[Smash]/zipper_db	0.966
-compressor/compressor[Vocal level]/zipper_db	0.1984
+compressor/compressor/null_ratio1_dbfs	-140
+compressor/compressor/release_ratio_150ms	0.9951
+compressor/compressor/release_ratio_2000ms	0.9926
+compressor/compressor/release_ratio_500ms	0.9951
+compressor/compressor/release_ratio_50ms	0.9943
+compressor/compressor/release_slowdown	0.9967
+compressor/compressor/thd_100hz_gr10_peak_0.1ms_10ms	-25.7533
+compressor/compressor/thd_100hz_gr10_peak_10ms_150ms	-69.3451
+compressor/compressor/thd_100hz_gr10_peak_1ms_50ms	-42.4255
+compressor/compressor/thd_100hz_gr10_rms_10ms_150ms	-93.5588
+compressor/compressor/thd_50hz_gr10_peak_0.1ms_10ms	-21.8943
+compressor/compressor/thd_50hz_gr10_peak_10ms_150ms	-57.7177
+compressor/compressor/thd_50hz_gr10_peak_1ms_50ms	-33.9685
+compressor/compressor/thd_50hz_gr10_rms_10ms_150ms	-75.8281
+compressor/compressor/unlinked_quiet_side_db	0
+compressor/compressor/zipper_db	0.3262
+compressor/compressor[Drum punch]/lu_pink18	-0.0993
+compressor/compressor[Drum punch]/lu_pink18_auto	-0.0993
+compressor/compressor[Drum punch]/zipper_db	0.4947
+compressor/compressor[FET vocal]/lu_pink18	0.1318
+compressor/compressor[FET vocal]/lu_pink18_auto	-0.0348
+compressor/compressor[FET vocal]/zipper_db	0.5157
+compressor/compressor[Gentle glue]/lu_pink18	0.2828
+compressor/compressor[Gentle glue]/lu_pink18_auto	0.289
+compressor/compressor[Gentle glue]/zipper_db	0.2049
+compressor/compressor[Opto bass]/lu_pink18	0.1198
+compressor/compressor[Opto bass]/lu_pink18_auto	0.1198
+compressor/compressor[Opto bass]/zipper_db	0.2045
+compressor/compressor[Sidechain pump]/lu_pink18_auto	-0.4449
+compressor/compressor[Sidechain pump]/zipper_db	0.6385
+compressor/compressor[Smash]/lu_pink18	-0.1447
+compressor/compressor[Smash]/lu_pink18_auto	0.3553
+compressor/compressor[Smash]/zipper_db	0.7548
+compressor/compressor[Vocal level]/lu_pink18	-0.1164
+compressor/compressor[Vocal level]/lu_pink18_auto	-0.7593
+compressor/compressor[Vocal level]/zipper_db	0.644
+compressor/fet/alias_5k_0dbfs_gr15	-84.6096
+compressor/fet/attack_ratio_10ms	0.992
+compressor/fet/attack_ratio_1ms	1.076
+compressor/fet/attack_ratio_30ms	0.9845
+compressor/fet/curve_error_peak	0.0148
+compressor/fet/release_ratio_after_burst_150ms	0.9863
+compressor/fet/release_ratio_after_burst_500ms	0.9399
+compressor/fet/release_ratio_after_burst_50ms	0.9807
+compressor/fet/release_slowdown	2.6586
+compressor/fet/style_change_db	0
+compressor/fet/thd_100hz_gr10	-42.9668
+compressor/fet/thd_50hz_gr10	-42.435
+compressor/opto/attack_ratio_10ms	1.0033
+compressor/opto/attack_ratio_1ms	1.0782
+compressor/opto/attack_ratio_30ms	0.9988
+compressor/opto/curve_error_peak	0.0125
+compressor/opto/release_ratio_after_burst_150ms	0.9422
+compressor/opto/release_ratio_after_burst_500ms	0.86
+compressor/opto/release_ratio_after_burst_50ms	0.9817
+compressor/opto/release_slowdown	7.4054
+compressor/opto/style_change_db	0
+compressor/opto/thd_100hz_gr10	-79.1364
+compressor/opto/thd_50hz_gr10	-62.0727
 crush/crush/dither_noise_rise_bits8	4.5933
 crush/crush/filters_drawn_vs_heard_db	0.0012
 crush/crush/image_error_quarter_rate	0.0015
