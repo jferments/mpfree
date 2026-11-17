@@ -152,7 +152,7 @@ pub use pitch::PitchShifter;
 pub use presets::{page_keeps, presets};
 pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
 pub use registry::{Category, FxEntry, EFFECTS};
-pub use rooms::{Plate, Room, Spring};
+pub use rooms::{room_early_taps, room_loss, room_size, Plate, Room, Spring};
 pub use shift::FreqShifter;
 pub use stereo::{SampleDelay, StereoWidth};
 pub use strip::ChannelStrip;
