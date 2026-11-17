@@ -15,7 +15,7 @@
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
-333910	Chain: drive, filter, delay, comp
+339781	Chain: drive, filter, delay, comp
 104245	Character (Console)
 120120	Character (Iron)
 97075	Character (Soften)
@@ -69,8 +69,8 @@
 52828	Mixer, idle (63 strips, nothing playing)
 107876	Mod: 8 macros x 8, 16 rows, morph, locks
 9033	Moves: 16 lanes playing, the move log taking 3 controls
-11308	Multi filter (LP 12)
-33708	Multi filter (LP 24, drive)
+8536	Multi filter (LP 12)
+139789	Multi filter (LP 24, drive)
 95212	Multi-tap delay
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
