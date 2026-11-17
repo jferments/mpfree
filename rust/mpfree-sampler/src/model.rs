@@ -435,6 +435,24 @@ pub enum ChannelPick {
     Right,
 }
 
+/// How a granular region's Grain page starts and which of its controls it
+/// shows (the granular engine plan's decision 1). The grains underneath
+/// are the same in every mode: a mode is a starting point and a set of
+/// controls, and its settings stay when another mode is picked until that
+/// mode's own are put in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GrainMode {
+    /// A scattered cloud: every control.
+    #[default]
+    Cloud,
+    /// A time stretch and freeze: grains in step reading at a speed of
+    /// their own, the pitch apart.
+    Stretch,
+    /// Repeats of the spot under the position, locked to the tempo: a
+    /// stutter.
+    Repeat,
+}
+
 /// What a pad hit does with a region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayMode {
@@ -866,6 +884,9 @@ pub struct Region {
     /// Grain settings, used when `mode` is [`PlayMode::Granular`]. Kept
     /// with the region in every mode, so switching modes loses nothing.
     pub grain: GrainParams,
+    /// Which controls the Grain page shows for `grain`, and where it
+    /// started them.
+    pub grain_mode: GrainMode,
     /// Plays at the project tempo (not in granular mode, whose grains have
     /// their own tempo sync).
     pub warp: Option<Warp>,
@@ -927,6 +948,7 @@ impl Region {
             tune_cents: 0,
             mode: PlayMode::OneShot,
             grain: GrainParams::default(),
+            grain_mode: GrainMode::Cloud,
             warp: None,
         }
     }

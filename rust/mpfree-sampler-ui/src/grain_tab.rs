@@ -33,8 +33,8 @@ use std::sync::Arc;
 
 use mpfree_sampler::engine::GrainView;
 use mpfree_sampler::model::{
-    GrainParams, GrainSprayShape, GrainWindow, ModelError, Pad, PlayMode, Project, Region, Source,
-    TempoSync,
+    GrainMode, GrainParams, GrainSprayShape, GrainWindow, ModelError, Pad, PlayMode, Project,
+    Region, Source, TempoSync,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -149,6 +149,7 @@ const GESTURE_BASE: u64 = 0x4752_4149_0000_0000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Mode,
+    GrainMode,
     Scan,
     Spray,
     SprayShape,
@@ -169,8 +170,9 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 18] = [
+    pub const ALL: [Row; 19] = [
         Row::Mode,
+        Row::GrainMode,
         Row::Scan,
         Row::Spray,
         Row::SprayShape,
@@ -193,6 +195,7 @@ impl Row {
     pub fn label(self) -> &'static str {
         match self {
             Row::Mode => "Mode",
+            Row::GrainMode => "Grain mode",
             Row::Scan => "Scan speed",
             Row::Spray => "Spray",
             Row::SprayShape => "Spray shape",
@@ -213,10 +216,57 @@ impl Row {
         }
     }
 
-    fn index(self) -> usize {
-        Row::ALL.iter().position(|r| *r == self).unwrap_or(0)
+    /// The rows a grain mode shows, in order: every row for a cloud;
+    /// for a stretch, what moves it (no randomness, so its grains stay in
+    /// step); for a repeat, its tempo-locked rate and length.
+    pub fn shown(mode: GrainMode) -> &'static [Row] {
+        match mode {
+            GrainMode::Cloud => &Row::ALL,
+            GrainMode::Stretch => &STRETCH_ROWS,
+            GrainMode::Repeat => &REPEAT_ROWS,
+        }
+    }
+
+    /// Where this row is in `mode`'s list, if it shows there.
+    pub fn index_in(self, mode: GrainMode) -> Option<usize> {
+        Row::shown(mode).iter().position(|r| *r == self)
     }
 }
+
+/// A stretch's rows: how fast it moves through the sound (Scan speed),
+/// where, its grains' size, overlap and shape, its pitch and its width.
+const STRETCH_ROWS: [Row; 10] = [
+    Row::Mode,
+    Row::GrainMode,
+    Row::Scan,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+    Row::Shape,
+    Row::Spread,
+    Row::Level,
+];
+/// A repeat's rows: where, how often (a beat division) and how long, the
+/// edges, pitch, a chance of playing backwards and a little spray.
+const REPEAT_ROWS: [Row; 10] = [
+    Row::Mode,
+    Row::GrainMode,
+    Row::Position,
+    Row::Density,
+    Row::Size,
+    Row::Shape,
+    Row::Pitch,
+    Row::Reverse,
+    Row::Spray,
+    Row::Level,
+];
+/// The Grain mode row's words, in the order it steps.
+const GRAIN_MODES: [(&str, GrainMode); 3] = [
+    ("Cloud", GrainMode::Cloud),
+    ("Stretch", GrainMode::Stretch),
+    ("Repeat", GrainMode::Repeat),
+];
 
 /// The rows the Q-Links turn, in knob order.
 pub const QLINK_ROWS: [Row; 4] = [Row::Position, Row::Size, Row::Density, Row::Pitch];
@@ -333,6 +383,8 @@ pub struct GrainTab {
     /// The bank letter shown in pad names, as [`wave_tab::WaveTab::bank`].
     pub bank: Option<char>,
     shown: Option<(usize, usize)>,
+    /// The grain mode whose rows the list shows.
+    mode: GrainMode,
     gesture: Option<(Key, u64)>,
     next_gesture: u64,
 }
@@ -352,7 +404,7 @@ impl GrainTab {
         ui.add(XY, XyPad::new("Touch: position × size", "position", "size"));
         let mut list = SettingList::new("Grain");
         list.right = "this layer".into();
-        list.selected = Row::Scan.index();
+        list.selected = Row::Scan.index_in(GrainMode::Cloud).unwrap_or(0);
         ui.add(LIST, list);
         let t = ui.theme.clone();
         let colors = [Color::rgb(GRAIN_COLOR), t.accent, t.good, t.warn];
@@ -369,6 +421,7 @@ impl GrainTab {
             name: name.to_string(),
             bank: None,
             shown: None,
+            mode: GrainMode::Cloud,
             gesture: None,
             next_gesture: GESTURE_BASE,
         };
@@ -379,7 +432,7 @@ impl GrainTab {
     /// The row picked in the Grain list.
     pub fn row(&self, ui: &Ui) -> Row {
         ui.get::<SettingList>(LIST)
-            .and_then(|l| Row::ALL.get(l.selected).copied())
+            .and_then(|l| Row::shown(self.mode).get(l.selected).copied())
             .unwrap_or(Row::Scan)
     }
 
@@ -395,6 +448,20 @@ impl GrainTab {
         if self.shown != Some((st.pad, st.layer)) {
             self.shown = Some((st.pad, st.layer));
             self.set_cloud(ui, st, &[], None, 0);
+        }
+        let mode = st.region.grain_mode;
+        if mode != self.mode {
+            // The same row stays picked if the new mode shows it, else the
+            // Grain mode row, which changed it.
+            let row = self.row(ui);
+            self.mode = mode;
+            let i = row
+                .index_in(mode)
+                .or(Row::GrainMode.index_in(mode))
+                .unwrap_or(0);
+            if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+                list.selected = i;
+            }
         }
         self.show(ui, st);
     }
@@ -496,7 +563,7 @@ impl GrainTab {
                 value_text(&st.region, Row::Size)
             );
         }
-        let rows = Row::ALL
+        let rows = Row::shown(self.mode)
             .iter()
             .map(|r| Setting {
                 name: r.label().into(),
@@ -566,7 +633,7 @@ impl GrainTab {
                 self.edit(st, Key::Touch, r)
             }
             (LIST, EventKind::Step { index, delta }) => {
-                let row = *Row::ALL.get(*index)?;
+                let row = *Row::shown(self.mode).get(*index)?;
                 let a = self.step(st, row, *delta);
                 self.show_cards(ui, st);
                 a
@@ -586,8 +653,8 @@ impl GrainTab {
     }
 
     fn pick_row(&self, ui: &mut Ui, row: Row) {
-        if let Some(list) = ui.get_mut::<SettingList>(LIST) {
-            list.selected = row.index();
+        if let (Some(list), Some(i)) = (ui.get_mut::<SettingList>(LIST), row.index_in(self.mode)) {
+            list.selected = i;
         }
     }
 
@@ -686,6 +753,17 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
             // the row stops there (live test 3); as the Wave tab does.
             if r.mode == PlayMode::Loop && r.sustain_loop.is_none() {
                 r.sustain_loop = Some(crate::wave_tab::default_loop(&r));
+            }
+        }
+        Row::GrainMode => {
+            let i = GRAIN_MODES
+                .iter()
+                .position(|m| m.1 == r.grain_mode)
+                .unwrap_or(0);
+            let mode = GRAIN_MODES[shift(i, delta, GRAIN_MODES.len())].1;
+            if mode != r.grain_mode {
+                r.grain_mode = mode;
+                r.grain = mode_settings(&r.grain, mode, bpm);
             }
         }
         Row::Scan => g.scan = step_list(&SCANS, g.scan, delta),
@@ -894,6 +972,47 @@ fn per_beat_text(g: f32) -> String {
     format!("{} /beat", trim(g))
 }
 
+/// Where grain mode `mode` starts from `g`: its own settings, keeping the
+/// position and the level. A cloud scatters a little (spray, spread,
+/// random timing); a stretch reads at the sound's speed with regular
+/// grains overlapping four times, nothing random, so its grains stay in
+/// step; a repeat replays the spot under the position every sixteenth,
+/// a sixteenth long, with short fades.
+pub fn mode_settings(g: &GrainParams, mode: GrainMode, bpm: f64) -> GrainParams {
+    let kept = GrainParams {
+        position: g.position,
+        gain: g.gain,
+        ..GrainParams::default()
+    };
+    match mode {
+        GrainMode::Cloud => GrainParams {
+            spray: 0.1,
+            spread: 0.5,
+            size_ms: 100.0,
+            ..kept
+        },
+        GrainMode::Stretch => GrainParams {
+            scan: 1.0,
+            size_ms: 90.0,
+            density: 45.0,
+            timing: 0.0,
+            ..kept
+        },
+        GrainMode::Repeat => {
+            let mut r = GrainParams {
+                timing: 0.0,
+                window: GrainWindow::Shape { shape: 0.1 },
+                ..kept
+            };
+            set_sync(&mut r, true, true, bpm);
+            if let Some(t) = r.sync.as_mut() {
+                (t.grains_per_beat, t.size_beats) = (Some(4.0), Some(0.25));
+            }
+            r
+        }
+    }
+}
+
 /// How Spray spreads grains: the row's words.
 const SPRAY_SHAPES: [(&str, GrainSprayShape); 2] = [
     ("Even", GrainSprayShape::Even),
@@ -939,6 +1058,11 @@ pub fn value_text(r: &Region, row: Row) -> String {
     let g = &r.grain;
     match row {
         Row::Mode => mode_label(r.mode).into(),
+        Row::GrainMode => GRAIN_MODES
+            .iter()
+            .find(|m| m.1 == r.grain_mode)
+            .map_or("Cloud", |m| m.0)
+            .into(),
         Row::Scan => scan_text(g.scan),
         Row::Spray => format!("{} %", percent(g.spray)),
         Row::SprayShape => SPRAY_SHAPES
