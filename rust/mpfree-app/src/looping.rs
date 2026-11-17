@@ -2081,6 +2081,16 @@ impl LoopHost {
         (rec, dub)
     }
 
+    /// For the arm ([`crate::rec_arm::Now`]): whether a loop records its
+    /// first pass or overdubs, and whether the picked loop is armed (its
+    /// first pass waits for PLAY or the bar line).
+    pub fn rec_now(&self) -> (bool, bool) {
+        let taking = (0..MAX_LOOPS)
+            .filter_map(|n| self.looper.loop_status(n))
+            .any(|s| matches!(s.phase, Phase::Recording | Phase::Overdubbing));
+        (taking, self.looper.status().phase == Phase::Armed)
+    }
+
     /// What the picked loop is doing (armed, recording, overdubbing...).
     #[cfg(test)]
     pub fn phase(&self) -> Phase {

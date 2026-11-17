@@ -56,6 +56,17 @@ pub enum Rec {
 }
 
 impl Rec {
+    /// The take it belongs to.
+    pub fn take(&self) -> u32 {
+        match self {
+            Rec::Note(k) => k.take,
+            Rec::Erase(e) => e.take,
+            Rec::Lock(k) => k.take,
+            Rec::EraseLock(e) => e.take,
+            Rec::Move(k) => k.take,
+        }
+    }
+
     /// The track and clip slot it changes.
     pub fn clip(&self) -> (usize, usize) {
         match self {

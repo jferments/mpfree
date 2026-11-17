@@ -43,6 +43,228 @@ pub struct TransportLook {
     pub bars: usize,
     /// The view lit in the switch.
     pub view: usize,
+    /// The REC chip: what REC records ([`crate::rec_arm`]).
+    pub rec: Option<RecChip>,
+}
+
+/// Where a take stands, for the REC chip; ordered by how far along it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecState {
+    /// REC would record it: grey, with a red dot.
+    Armed,
+    /// PLAY starts the take: outlined in red.
+    Ready,
+    /// Recording (or counting in): solid red.
+    Recording,
+}
+
+/// The REC chip on the transport bars: what REC records and where its take
+/// stands (sequencer decision 1, mockups F and G).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecChip {
+    pub state: RecState,
+    /// "Drums · Clip 1", "Loop 1".
+    pub what: String,
+    /// The take adds (OVERDUB) rather than replaces.
+    pub add: bool,
+    /// Only a tap on Arm moves the arm (the target list's Pin the arm).
+    pub pinned: bool,
+}
+
+impl RecChip {
+    /// Its first line: "REC" ("REC · PINNED"), "READY · PLAY starts",
+    /// "● REC", "● OVERDUB".
+    pub fn head(&self) -> String {
+        match (self.state, self.add) {
+            (RecState::Armed, _) if self.pinned => "REC · PINNED".into(),
+            (RecState::Armed, _) => "REC".into(),
+            (RecState::Ready, false) => "READY · PLAY starts".into(),
+            (RecState::Ready, true) => "READY TO ADD · PLAY starts".into(),
+            (RecState::Recording, false) => "● REC".into(),
+            (RecState::Recording, true) => "● OVERDUB".into(),
+        }
+    }
+
+    /// The chip as one line, for the Arrange bar and the log: "REC → Loop 1".
+    pub fn line(&self) -> String {
+        format!("{} → {}", self.head(), self.what)
+    }
+}
+
+/// An Arm pill at the left of a panel's heading (the loop strip, the
+/// pattern; mockups F and G): grey "Arm" on what REC doesn't record, red
+/// on what it does. A tap gives `Select(0)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmPill {
+    /// Not armed: a tap arms it.
+    Arm,
+    /// Armed: REC records it. The panel has a red edge.
+    Armed,
+    /// Ready: PLAY starts its take. The panel has a dashed red outline.
+    Ready,
+    /// Recording. The panel has a solid red outline.
+    Rec,
+}
+
+impl ArmPill {
+    pub fn label(self) -> &'static str {
+        match self {
+            ArmPill::Arm => "Arm",
+            ArmPill::Armed => "Armed",
+            ArmPill::Ready => "Ready",
+            ArmPill::Rec => "Rec",
+        }
+    }
+
+    /// The pill of what REC records, as its chip stands.
+    pub fn of(state: RecState) -> ArmPill {
+        match state {
+            RecState::Armed => ArmPill::Armed,
+            RecState::Ready => ArmPill::Ready,
+            RecState::Recording => ArmPill::Rec,
+        }
+    }
+}
+
+/// The Arm pill's width, and the room the heading's title moves right by.
+pub const ARM_PILL_W: i32 = 92;
+const ARM_PILL_H: i32 = 28;
+
+/// Where the Arm pill sits in a card `r`.
+pub fn arm_pill_rect(r: Rect) -> Rect {
+    let (h, _) = card_head(r);
+    Rect::new(
+        h.x - 2,
+        h.y + h.h / 2 - ARM_PILL_H / 2,
+        ARM_PILL_W,
+        ARM_PILL_H,
+    )
+}
+
+/// The Arm pill's tap area: the pill and the heading band round it.
+pub fn arm_pill_hit(r: Rect) -> Rect {
+    let p = arm_pill_rect(r);
+    Rect::new(p.x - 6, r.y, p.w + 12, p.bottom() + 6 - r.y)
+}
+
+/// Paint card `r`'s Arm pill and its edge or outline (over the card
+/// already painted).
+pub fn paint_arm(cx: &mut PaintCx, r: Rect, pill: ArmPill) {
+    let t = cx.theme.clone();
+    paint_pill(cx, arm_pill_rect(r), pill);
+    // The panel: a red edge while armed, a dashed outline while ready, a
+    // solid one while recording.
+    match pill {
+        ArmPill::Arm => {}
+        ArmPill::Armed => {
+            cx.canvas
+                .fill_round_rect(Rect::new(r.x, r.y + 12, 3, r.h - 24), 1, t.bad)
+        }
+        ArmPill::Ready => dashed_outline(cx, r, t.bad),
+        ArmPill::Rec => cx.canvas.stroke_round_rect(r, t.radius, 2, t.bad),
+    }
+}
+
+/// A dashed outline just inside `r`, 2 px wide.
+pub fn dashed_outline(cx: &mut PaintCx, r: Rect, c: Color) {
+    let o = r.inset(1);
+    let (x0, y0, x1, y1) = (
+        o.x as f32,
+        o.y as f32,
+        o.right() as f32 - 1.0,
+        o.bottom() as f32 - 1.0,
+    );
+    let mut sh = mpfree_ui::Shape::new(r);
+    sh.dashed(
+        &[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)],
+        2.0,
+        8.0,
+    );
+    cx.canvas.blend_shape(&sh, c);
+}
+
+/// The Arm pill itself in `p`.
+pub fn paint_pill(cx: &mut PaintCx, p: Rect, pill: ArmPill) {
+    let t = cx.theme.clone();
+    let rad = p.h / 2;
+    let (fill, line, dot_c, ink) = match pill {
+        ArmPill::Arm => (t.surface, Some((1, t.outline)), None, t.text_dim),
+        ArmPill::Armed => (
+            t.bad.mix(t.surface, 0.8),
+            Some((2, t.bad)),
+            Some(t.bad),
+            t.text,
+        ),
+        ArmPill::Ready => (
+            t.bad.mix(t.surface, 0.85),
+            Some((2, t.bad)),
+            Some(t.bad),
+            t.bad,
+        ),
+        ArmPill::Rec => (t.bad, None, Some(t.bg), t.bg),
+    };
+    cx.canvas.fill_round_rect(p, rad, fill);
+    if let Some((w, c)) = line {
+        cx.canvas.stroke_round_rect(p, rad, w, c);
+    }
+    let (dx, dy) = (p.x + 16, p.y + p.h / 2);
+    match dot_c {
+        Some(c) => dot(cx, dx, dy, 5, c),
+        None => cx
+            .canvas
+            .stroke_round_rect(Rect::new(dx - 5, dy - 5, 10, 10), 5, 2, t.text_dim),
+    }
+    cx.text(
+        FontId::Bold,
+        13.0,
+        Rect::new(p.x + 28, p.y, p.w - 32, p.h),
+        Align::Left,
+        ink,
+        pill.label(),
+    );
+}
+
+/// The chip's height on the Play transport card.
+const REC_CHIP_H: i32 = 52;
+/// A 16th's dot on the transport card, and the room between the dots and
+/// the view switch (narrowed for the REC chip).
+const DOT_CELL: i32 = 8;
+const DOTS_GAP: i32 = 16;
+
+pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
+    let t = cx.theme.clone();
+    let (fill, head_ink, ink) = match c.state {
+        RecState::Armed => (t.raised, t.text_dim, t.text),
+        RecState::Ready => (t.bad.mix(t.surface, 0.82), t.bad, t.text),
+        RecState::Recording => (t.bad, t.bg, t.bg),
+    };
+    cx.canvas.fill_round_rect(r, 10, fill);
+    if c.state == RecState::Ready {
+        cx.canvas.stroke_round_rect(r, 10, 2, t.bad);
+    }
+    let mut x = r.x + 12;
+    if c.state == RecState::Armed {
+        cx.canvas
+            .fill_round_rect(Rect::new(x, r.y + 13, 8, 8), 4, t.bad);
+        x += 14;
+    }
+    let half = r.h / 2;
+    cx.text(
+        FontId::Bold,
+        12.0,
+        Rect::new(x, r.y + 4, r.right() - 10 - x, half - 2),
+        Align::Left,
+        head_ink,
+        &c.head(),
+    );
+    cx.text(
+        FontId::Bold,
+        14.0,
+        Rect::new(r.x + 12, r.y + half - 2, r.w - 20, half),
+        Align::Left,
+        ink,
+        &format!("→ {}", c.what),
+    );
 }
 
 impl Default for TransportLook {
@@ -56,6 +278,7 @@ impl Default for TransportLook {
             bar: 0,
             bars: 4,
             view: 0,
+            rec: None,
         }
     }
 }
@@ -67,12 +290,17 @@ struct TransportAreas {
     dots: Rect,
     /// The tempo and its "BPM": a tap there is a tap of the tempo.
     bpm: Rect,
+    /// The REC chip, if it was drawn.
+    rec: Rect,
 }
 
 /// [`PlayTransport`]'s event for a tap on the tempo
 /// ([`EventKind::Select`] with this index): a tap of the tempo, as TAP
 /// TEMPO (live test 3: Jay wants the BPM tappable).
 pub const TAP_BPM: usize = 0;
+/// [`PlayTransport`]'s event for a tap on the REC chip: what REC records
+/// and how to change it is said.
+pub const TAP_REC: usize = 1;
 
 /// The transport card. A tap on the switch gives `Tab(view)`.
 #[derive(Default)]
@@ -144,7 +372,7 @@ impl PlayTransport {
             };
             cx.canvas.fill_round_rect(br, 3, c);
         }
-        let cell = 9;
+        let cell = DOT_CELL;
         let sy = a.y + 18;
         for s in 0..16 {
             let sx = a.x + s as i32 * cell + (s as i32 / 4) * 6;
@@ -239,7 +467,7 @@ impl Widget for PlayTransport {
             t.text,
             &self.look.bpm,
         );
-        cx.text(
+        let bpm_word = cx.text(
             FontId::Bold,
             12.0,
             Rect::new(x + bw + 6, inner.y + 6, 40, inner.h),
@@ -249,6 +477,19 @@ impl Widget for PlayTransport {
         );
         // The view switch at the right end: one tap each.
         let (b, segs) = PlayTransport::switch(r);
+        // The REC chip between the tempo and where the bar is.
+        let gw = 16 * DOT_CELL + 3 * 6;
+        let mut rec = Rect::default();
+        if let Some(c) = &self.look.rec {
+            let left = x + bw + 6 + bpm_word + 14;
+            let right = b.x - DOTS_GAP - gw - 14;
+            if right - left >= 96 {
+                let h = REC_CHIP_H.min(inner.h);
+                let cr = Rect::new(left, inner.y + (inner.h - h) / 2, right - left, h);
+                paint_rec_chip(cx, cr, c);
+                rec = cr;
+            }
+        }
         cx.canvas.fill_round_rect(b, 12, t.bg.mix(t.surface, 0.3));
         for (i, (sr, name)) in segs.iter().zip(VIEWS).enumerate() {
             let on = i == self.look.view;
@@ -265,14 +506,21 @@ impl Widget for PlayTransport {
             );
         }
         // Where the bar is: the loop's bars above, the 16ths of this bar below.
-        let gw = 16 * 9 + 3 * 6;
-        let dots = Rect::new(b.x - 22 - gw, inner.y + 6, gw, 18 + 26);
+        let dots = Rect::new(b.x - DOTS_GAP - gw, inner.y + 6, gw, 18 + 26);
         self.paint_dots(cx, dots);
         // The tempo's tap area: its number and "BPM", the card's full height
         // (at least 64 px wide for a finger).
         let bpm = Rect::new(x - 8, r.y, (bw + 52).max(64), r.h);
-        *self.painted.borrow_mut() =
-            Some((r, self.look.clone(), TransportAreas { pos, dots, bpm }));
+        *self.painted.borrow_mut() = Some((
+            r,
+            self.look.clone(),
+            TransportAreas {
+                pos,
+                dots,
+                bpm,
+                rec,
+            },
+        ));
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -291,6 +539,9 @@ impl Widget for PlayTransport {
                     a.bpm,
                 ));
             }
+            if let (true, false, Some(c)) = (*pr == r, a.rec.is_empty(), &self.look.rec) {
+                out.push(Target::tap("rec", 0, c.line(), a.rec));
+            }
         }
         out
     }
@@ -303,12 +554,18 @@ impl Widget for PlayTransport {
         if let Some(i) = segs.iter().position(|s| s.contains(x, y)) {
             return Some(EventKind::Tab(i));
         }
-        let on_bpm = self
-            .painted
-            .borrow()
-            .as_ref()
-            .is_some_and(|(pr, _, a)| *pr == r && a.bpm.contains(x, y));
-        on_bpm.then_some(EventKind::Select(TAP_BPM))
+        let painted = self.painted.borrow();
+        let (pr, _, a) = painted.as_ref()?;
+        if *pr != r {
+            return None;
+        }
+        if a.bpm.contains(x, y) {
+            Some(EventKind::Select(TAP_BPM))
+        } else if !a.rec.is_empty() && a.rec.contains(x, y) {
+            Some(EventKind::Select(TAP_REC))
+        } else {
+            None
+        }
     }
 }
 
@@ -662,6 +919,8 @@ pub struct StepGrid {
     /// STEP SEQ: the step pads held, (pad, step on the page), outlined as
     /// the step picked is.
     pub held: Vec<(usize, usize)>,
+    /// The Arm pill at the left of the heading: the notes as a REC target.
+    pub arm: Option<ArmPill>,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
 
@@ -686,6 +945,7 @@ struct StepLook {
     page: (usize, usize, usize),
     on_pads: Option<usize>,
     held: Vec<(usize, usize)>,
+    arm: Option<ArmPill>,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
@@ -829,6 +1089,7 @@ impl StepGrid {
             page: (self.page, self.pages, self.length),
             on_pads: self.on_pads,
             held: self.held.clone(),
+            arm: self.arm,
         }
     }
 
@@ -1063,7 +1324,26 @@ impl Widget for StepGrid {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        card(cx, r, &self.title, "");
+        match self.arm {
+            // The Arm pill takes the heading's left, the title after it.
+            Some(pill) => {
+                card(cx, r, "", "");
+                let (h, _) = card_head(r);
+                let x = h.x + ARM_PILL_W + 10;
+                cx.text(
+                    FontId::Bold,
+                    draw::HEAD_PX,
+                    Rect::new(x, h.y, Head::of(r).title.right() - x, h.h),
+                    Align::Left,
+                    t.text_dim,
+                    &self.title.to_uppercase(),
+                );
+                paint_arm(cx, r, pill);
+            }
+            None => {
+                card(cx, r, &self.title, "");
+            }
+        }
         self.paint_head(cx, r);
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
@@ -1148,6 +1428,9 @@ impl Widget for StepGrid {
         ] {
             out.push(Target::tap("head", k, label, rect).disabled_if(!can));
         }
+        if let Some(pill) = self.arm {
+            out.push(Target::tap("arm", 0, pill.label(), arm_pill_hit(r)));
+        }
         for (k, lane) in self.shown(g.rows).iter().enumerate() {
             // The lane's whole name is its mute button (bigger mutes).
             out.push(Target::tap(
@@ -1174,6 +1457,9 @@ impl Widget for StepGrid {
         }
         if let Some(i) = Head::of(r).at(x, y) {
             return Some(EventKind::Tab(i));
+        }
+        if self.arm.is_some() && arm_pill_hit(r).contains(x, y) {
+            return Some(EventKind::Select(0));
         }
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
