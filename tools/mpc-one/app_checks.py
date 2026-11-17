@@ -80,6 +80,10 @@ class Window:
 # are summaries at the end, so they never fall in a check's time.
 NOTE_IN = r"^\+\d+\.\d+ s .+: [0-9A-F]{2}( [0-9A-F]{2})* = note on "
 
+# A control MIDI Learn took, as MusicIn::bytes logs it: "+3.210 s Keystep 37: MIDI Learn: CC 74 . ch 1 . Keystep 37
+# takes t1.inst.12" (its target as a ParamAddr; the transport's are "transport.N").
+LEARNED = r"^\+\d+\.\d+ s .+: MIDI Learn: "
+
 
 def seen(*patterns):
     """Passes when each pattern matches a line of the check's time (any order)."""
@@ -646,6 +650,27 @@ CHECKS = (
          "a_routed_keys_note_off_follows_its_note_on_when_the_armed_track_changes",
          "routed_keys_play_their_track_where_its_clips_play"],
         needs=['TRACK MIX / PAD MIX']),
+    Check(
+        "midi-learn", "MIDI Learn: SHIFT + a touch, the Learn section, and PLAY and STOP from a key",
+        "new (MIDI powerhouse PR 4): SHIFT + a touch learns the next control moved; a key can play and stop",
+        "hands",
+        ["1. With a keyboard or controller that has a knob in the MPC's MIDI IN, press TRACK MIX. On the Faders",
+         "   look, hold SHIFT, touch the first strip's fader and let go of SHIFT: the hint line says LEARNING.",
+         "   Turn the knob: the fader follows it.",
+         "2. Tap I/O, then Learn: the knob's row says what it moves. Tap Transport and tempo, then PLAY and",
+         "   STOP, and press a key on the keyboard. Press the key again: MPFree plays. Once more: it stops.",
+         "3. Pick each row in the list and tap Remove, so the key plays notes again. Change nothing else."],
+        [("Learn took the knob", seen(LEARNED + r"CC \d+ .* takes (?!transport\.)")),
+         ("Learn took the key for PLAY and STOP", seen(LEARNED + r".+ takes transport\.\d+")),
+         ("the key played and stopped MPFree", seen(r"^time: transport: Play\b", r"^time: transport: Stop\b"))],
+        "Did the fader follow the knob, and did the key play and stop MPFree?",
+        ["shift_and_a_touch_on_a_value_arms_midi_learn",
+         "a_touch_arms_learn_until_a_control_takes_it",
+         "a_key_on_play_and_stop_or_a_mute_flips_it_and_the_transport_is_the_rigs",
+         "a_learned_control_presses_the_mpcs_transport_buttons",
+         "shift_and_a_touch_on_the_tempo_or_a_mute_arms_midi_learn",
+         "learn_again_replaces_a_control_and_the_rigs_work_in_every_song"],
+        needs=['TRACK MIX / PAD MIX', 'SHIFT']),
     Check(
         "map-controls", "Map controls: find buttons the app does not know yet",
         "only when a round needs a button that has no number yet", "hands",
