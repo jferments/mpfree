@@ -582,3 +582,32 @@ fn peaks_worked_out_later_come_in_where_the_wave_is_zoomed() {
     let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
     s.ui.paint(&mut c);
 }
+
+#[test]
+fn normalize_is_a_button_that_asks_the_app_to_set_the_gain() {
+    let mut s = sample();
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert_eq!(list.buttons, vec![Row::Normalize.index()]);
+    assert_eq!(row_value(&s, Row::Normalize), wave_tab::NORMALIZE_TEXT);
+    // Stepped, it does nothing; pressed (a tap, or the wheel's push), it
+    // asks for Normalize as a step of its own.
+    assert_eq!(step(&mut s, Row::Normalize, 1), None);
+    let a = step(&mut s, Row::Gain, 1).unwrap();
+    let WaveAction::Region { gesture, .. } = a else {
+        panic!("{a:?}")
+    };
+    let st = s.state.clone();
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Tab(Row::Normalize.index()),
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Normalize { pad: PAD, layer: 0 })
+    );
+    // The turn before it was ended: the next one is a new step.
+    let Some(WaveAction::Region { gesture: next, .. }) = step(&mut s, Row::Gain, 1) else {
+        panic!()
+    };
+    assert_ne!(gesture, next);
+}

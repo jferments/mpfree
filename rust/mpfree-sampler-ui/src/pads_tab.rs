@@ -285,48 +285,55 @@ impl PadsAction {
 /// layer. Its other settings, and the old sound's gain, tune, channels and
 /// play mode, stay; it takes the sound's name.
 pub fn with_sound(pad: Option<&Pad>, sound: &Sound) -> Pad {
-    let whole = |old: Option<&Region>| {
-        let mut r = match old {
-            Some(o) => Region {
-                source: sound.id,
-                start: 0,
-                end: sound.frames,
-                sustain_loop: None,
-                ..o.clone()
-            },
-            None => Region {
-                source: sound.id,
-                start: 0,
-                end: sound.frames,
-                sustain_loop: None,
-                fade_in: Fade::NONE,
-                fade_out: Fade::NONE,
-                gain_db: 0.0,
-                reverse: false,
-                channels: ChannelPick::Stereo,
-                tune_cents: 0,
-                mode: PlayMode::OneShot,
-                grain: GrainParams::default(),
-                warp: None,
-            },
-        };
-        (r.fade_in, r.fade_out) = (Fade::NONE, Fade::NONE);
-        if r.mode == PlayMode::Loop {
-            r.sustain_loop = Some(default_loop(&r));
-        }
-        r
-    };
     match pad {
         Some(p) => {
             let mut p = p.clone();
             if let Some(l) = p.layers.first_mut() {
-                l.region = whole(Some(&l.region));
+                l.region = sound_region(Some(&l.region), sound.id, sound.frames);
             }
             p.name = sound.name.clone();
             p
         }
-        None => Pad::new(&sound.name, Layer::new(whole(None))),
+        None => Pad::new(
+            &sound.name,
+            Layer::new(sound_region(None, sound.id, sound.frames)),
+        ),
     }
+}
+
+/// Source `id`, `frames` long, from start to end, in place of `old`: the
+/// old region's gain, tune, channels, play mode and grain settings stay,
+/// its fades and loop don't (a loop is made afresh where Loop needs one).
+pub fn sound_region(old: Option<&Region>, id: SourceId, frames: u64) -> Region {
+    let mut r = match old {
+        Some(o) => Region {
+            source: id,
+            start: 0,
+            end: frames,
+            sustain_loop: None,
+            ..o.clone()
+        },
+        None => Region {
+            source: id,
+            start: 0,
+            end: frames,
+            sustain_loop: None,
+            fade_in: Fade::NONE,
+            fade_out: Fade::NONE,
+            gain_db: 0.0,
+            reverse: false,
+            channels: ChannelPick::Stereo,
+            tune_cents: 0,
+            mode: PlayMode::OneShot,
+            grain: GrainParams::default(),
+            warp: None,
+        },
+    };
+    (r.fade_in, r.fade_out) = (Fade::NONE, Fade::NONE);
+    if r.mode == PlayMode::Loop {
+        r.sustain_loop = Some(default_loop(&r));
+    }
+    r
 }
 
 /// `p` with every layer in play mode `mode` (a loop added where Loop needs

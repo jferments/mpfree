@@ -168,6 +168,9 @@ fn busy_kit() -> Project {
     p.add_chop_set(chop.unwrap()).unwrap();
     p.add_chop_set(ChopSet::grid("Even", &c, 4).unwrap())
         .unwrap();
+    // The Chop tab's slices on the break, kept as last left.
+    let kept = ChopSet::from_markers(KEPT_CHOP, &a, ChopMode::Beat, [2_000, 9_000, 15_500]);
+    p.keep_chop(kept.unwrap()).unwrap();
     let mut m = *p.master();
     m.mix = 0.35;
     m.grain.window = GrainWindow::Exponential { decay: 6.0 };
@@ -199,6 +202,7 @@ fn assert_same(a: &Project, b: &Project) {
         assert_eq!(a.pad(i), b.pad(i), "pad {i}");
     }
     assert_eq!(a.chop_sets, b.chop_sets);
+    assert_eq!(a.kept_chops(), b.kept_chops());
     assert_eq!(a.master(), b.master());
     assert_eq!(a.pads_play(), b.pads_play());
     let ids = |p: &Project| p.sources().iter().map(Source::id).collect::<Vec<_>>();
