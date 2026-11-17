@@ -155,14 +155,14 @@ MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap a
 
 ## Warp: put the hits on the beat
 
-{{shot: sample-warp | The Warp page: a break at 92 BPM with 14 hits pinned to the 1/16 grid, pin 4 picked.}}
+{{shot: sample-warp | The Warp page: a break at 92 BPM with 14 hits pinned to the 1/16 grid, pin 4 picked, and its settings in the panel under it.}}
 
 The **Warp** page is for a warped sound whose hits don't sit quite on the beat, such as a loop played by hand. It draws the sound against the bars and beats of its warp tempo, with the hits MPFree finds marked along the bottom.
 
 - **Tap near a hit** to pin it to the nearest grid line. A pin is a numbered flag; the sound between two pins stretches to fit.
 - **Drag a pin's handle** to move it along the grid.
 - **Pin hits** pins every hit near a grid line onto it, which tightens a loose loop in one go. **Remove pin** takes the picked pin off, and **Clear pins** all of them.
-- The list on the right holds **Warp** and **Warp tempo** (as on the Wave page), the **Grid** (1/4 to 1/32), which **Hits** it finds (**Strongest**, **Most** or **All**), and the picked **Pin** and its **Pin beat**.
+- The panel under the sound holds **Warp** and **Warp tempo** (as on the Wave page) with the **Grid** (1/4 to 1/32); which **Hits** it finds (**Strongest**, **Most** or **All**) with **Pin hits**; the picked **Pin** and its **Pin beat** with **Remove pin** and **Clear pins**; and **Shift** and **Process**. A grey button says why when you tap it, such as "Tap a pin first".
 - **Process** makes a new sound from the region. With Warp on, the new sound is at the project's tempo, its pinned hits right on their beats, so it plays without stretching. **Shift** first moves it up or down, in semitones (–24 to +24), keeping its length and its hits sharp; with Warp off, Shift alone is what changes. Tap **New sound**: it is made in the background while you work, the button shows how far it has got, and tapping it again stops it. The new sound takes the region's place; **UNDO** brings the old one back.
 - The Q-Links pick a pin, nudge its beat, fine-tune the warp tempo and scroll. Hold **SHIFT** for finer steps.
 
@@ -172,14 +172,14 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 
 ## Chop: slice across the pads
 
-{{shot: sample-chop | The Chop page: the break cut into 15 slices at its hits, ready to put on pads A2 to A16.}}
+{{shot: sample-chop | The Chop page: the break cut into 15 slices at its hits, with the method, the slice, the pads and the Chop button in the panel under it, ready to put on pads A2 to A16.}}
 
 **Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits.
 
-1. Pick a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
-2. Turn **Sensitivity** up for more slices, down for fewer.
+1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
+2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid and Silence the knob sets the slice length, the number of slices or the threshold).
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; drag a cut's tab, or turn the Q-Links, to move it. The first marker and **END** are the pad's own start and end, so they stay put here: move them on the Wave page.
-4. Tap **Chop to** to put the slices on the pads, starting at the first pad you chose.
+4. Tap the big **Chop to** button to put the slices on the pads, starting at the first pad you chose under **Pads**. **Put on** picks where they go: the pads, the pads and **Keys**, the pads and a **Phrase** that plays them in time, or **Files**.
 
 **Your chop stays with the sound.** Once you change the cuts (a method, a split, a cut moved, a live take), MPFree keeps them for that sound: pick another pad and come back, or open the project tomorrow, and the Chop page shows your slices as you left them, not a fresh chop. Keeping them isn't an edit, so **UNDO** leaves them be; they go on pads only when you tap **Chop to**.
 

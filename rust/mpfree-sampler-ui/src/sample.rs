@@ -204,7 +204,10 @@ pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String
             delta: -1,
         },
     )?;
-    s.event(warp_tab::BUTTONS, mpfree_ui::EventKind::Tab(0))?;
+    s.event(
+        warp_tab::LIST,
+        mpfree_ui::EventKind::Tab(warp_tab::Row::PinHits.index()),
+    )?;
     s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
     s.tab
         .set_playheads(&mut s.ui, &[(f64::from(RATE) * 60.0 / BPM * 3.3) as u64]);
@@ -215,7 +218,10 @@ pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String
     s.name = "warp-zoomed";
     s.about =
         "Zoomed round the fifth pin (wheel), nudged 2/64 of a beat late by Q-Link 2, 1/16 grid";
-    s.event(warp_tab::BUTTONS, mpfree_ui::EventKind::Tab(0))?;
+    s.event(
+        warp_tab::LIST,
+        mpfree_ui::EventKind::Tab(warp_tab::Row::PinHits.index()),
+    )?;
     s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
     let st = s.state.clone();
     for _ in 0..6 {

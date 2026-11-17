@@ -4,7 +4,11 @@
 //! - The tab chops what the pad plays: its region, from Start to End. The
 //!   **waveform** shows the region bright, a marker at the start of every
 //!   slice (numbered from 1) and END, and shades the slice picked.
-//! - The **Chop** list holds the method and its setting: **Transient**
+//! - The **panel** under the wave ([`crate::panel`]) has four sections:
+//!   **Method**, **Slice** (the slice picked, Split and Merge), **Pads**
+//!   (the first pad and Put on) and **Chop** (the button that puts the
+//!   slices on the pads). The methods, with their setting's knob:
+//!   **Transient**
 //!   (where the hits start, at a sensitivity), **Beat** (on the source's
 //!   beat grid, a slice every 16th, 8th, beat, two beats or bar), **Grid**
 //!   (equal slices), **Silence** (one slice per sound, below a threshold)
@@ -64,26 +68,26 @@ use mpfree_ui::layout;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{EventKind, Rect, Ui, UiEvent};
 
+use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::source::SourceView;
 use crate::wave_tab::{
     self, duration_text, next_zero_crossing, pad_color, pad_label, position_text, TABS,
 };
-use crate::widgets::{ButtonRow, InfoCard, KnobCard, PadBar, Setting, SettingList};
+use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-chop-bar";
 pub const OVERVIEW: &str = "smp-chop-overview";
 pub const WAVE: &str = "smp-chop-wave";
 pub const LIST: &str = "smp-chop-list";
-pub const BUTTONS: &str = "smp-chop-buttons";
 pub const QLINKS: [&str; 4] = ["smp-chop-q1", "smp-chop-q2", "smp-chop-q3", "smp-chop-q4"];
 pub const WHEEL: &str = "smp-chop-wheel";
 
 /// The tab's page: as the Wave tab's, with the Chop list and its buttons
 /// beside the waveform.
 pub const LAYOUT: &str = "col(header:60, row(smp-chop-bar:*, smp-send:330):60, \
-                          row(col(smp-chop-overview:56, row(smp-chop-wave:*, \
-                          col(smp-chop-list:*, smp-chop-buttons:64, smp-chop-wheel:56):360):*):*, \
+                          row(col(row(smp-chop-overview:*, smp-chop-wheel:240):56, smp-chop-wave:*, \
+                          smp-chop-list:242):*, \
                           col(smp-chop-q1, smp-chop-q2, smp-chop-q3, smp-chop-q4):128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
@@ -187,10 +191,15 @@ pub enum Row {
     Amount,
     Snap,
     Slice,
+    /// The buttons ([`Button`]), as rows the wheel walks and its push
+    /// presses.
+    Split,
+    Merge,
     Pads,
     /// The slices go on the pads, on notes as well, or on the pads with a
     /// phrase that plays them in time.
     Put,
+    Chop,
 }
 
 /// Where the Put row puts the slices.
@@ -208,14 +217,33 @@ enum Put {
 }
 
 impl Row {
-    pub const ALL: [Row; 6] = [
+    /// The panel's order, which the wheel walks.
+    pub const ALL: [Row; 9] = [
         Row::Method,
         Row::Amount,
         Row::Snap,
         Row::Slice,
+        Row::Split,
+        Row::Merge,
         Row::Pads,
         Row::Put,
+        Row::Chop,
     ];
+
+    /// Its place in [`Row::ALL`], the list's row.
+    pub fn index(self) -> usize {
+        Row::ALL.iter().position(|r| *r == self).unwrap_or(0)
+    }
+
+    /// The button it is, if it is one.
+    pub fn button(self) -> Option<Button> {
+        match self {
+            Row::Split => Some(Button::Split),
+            Row::Merge => Some(Button::Merge),
+            Row::Chop => Some(Button::ToPads),
+            _ => None,
+        }
+    }
 }
 
 /// The buttons, in order.
@@ -229,6 +257,15 @@ pub enum Button {
 
 impl Button {
     pub const ALL: [Button; 3] = [Button::Split, Button::Merge, Button::ToPads];
+
+    /// Its row in the list.
+    pub fn row(self) -> Row {
+        match self {
+            Button::Split => Row::Split,
+            Button::Merge => Row::Merge,
+            Button::ToPads => Row::Chop,
+        }
+    }
 }
 
 /// Everything the tab chops: one layer of one pad, its source, and which
@@ -507,9 +544,6 @@ impl ChopTab {
         ui.add(OVERVIEW, WaveOverview::new());
         ui.add(WAVE, Waveform::new());
         ui.add(LIST, SettingList::new("Chop"));
-        let mut buttons = ButtonRow::new(&["Split", "Merge", "Chop to pads"]);
-        buttons.primary = Some(2);
-        ui.add(BUTTONS, buttons);
         let t = ui.theme.clone();
         let cards = [
             ("Slice", t.accent),
@@ -908,33 +942,28 @@ impl ChopTab {
             };
             list.rows = rows;
         }
-        let range = pads.clone().map(|p| self.range_text(&p));
-        if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
-            let (s0, s1) = (bounds[self.selected], bounds[self.selected + 1]);
-            let files = self.put(st) == Put::Files;
-            let live = self.method == Method::Live;
-            b.enabled = vec![
-                live || s1 - s0 >= 2 * wave_tab::MIN_FRAMES && n < MAX_CUT_SLICES,
-                n > 1,
-                pads.is_some() || files,
-            ];
-            b.why = vec![
-                if n >= MAX_CUT_SLICES {
-                    format!("{MAX_CUT_SLICES} slices is the most")
-                } else {
-                    "This slice is too short to split".to_string()
-                },
-                "One slice: nothing to merge".to_string(),
-                "The slices don't fit on the pads from the first pad: fewer slices, or an earlier First pad"
-                    .to_string(),
-            ];
-            b.labels[0] = match (live, self.live.is_some()) {
+        let controls = self.controls(st);
+        let panel = self.panel(st);
+        if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+            list.buttons = [Row::Split, Row::Merge, Row::Chop].map(Row::index).to_vec();
+            list.controls = controls;
+            list.panel = Some(panel);
+        }
+        self.show_cards(ui, st);
+    }
+
+    /// What button `b` says.
+    fn button_text(&self, st: &ChopState, b: Button) -> String {
+        let n = self.slices();
+        match b {
+            Button::Split => match (self.method == Method::Live, self.live.is_some()) {
                 (false, _) => "Split",
                 (true, false) => "Start",
                 (true, true) => "Stop",
             }
-            .into();
-            b.labels[2] = match (&range, self.put(st)) {
+            .into(),
+            Button::Merge => "Merge".into(),
+            Button::ToPads => match (self.pads(st).map(|p| self.range_text(&p)), self.put(st)) {
                 (_, Put::Files) if n == 1 => "Export the pad".to_string(),
                 (_, Put::Files) => format!("Export {n} slices"),
                 (None, _) => format!("Max {BANK} slices"),
@@ -948,9 +977,147 @@ impl ChopTab {
                         note_name(k.saturating_add(n as u8 - 1).min(127))
                     )
                 }
-            };
+            },
         }
-        self.show_cards(ui, st);
+    }
+
+    /// Why button `b` can't be pressed now, or None when it can.
+    fn button_why(&self, st: &ChopState, b: Button) -> Option<String> {
+        let bounds = self.bounds(st);
+        let n = self.slices();
+        let (s0, s1) = (bounds[self.selected], bounds[self.selected + 1]);
+        let live = self.method == Method::Live;
+        match b {
+            Button::Split if live || s1 - s0 >= 2 * wave_tab::MIN_FRAMES && n < MAX_CUT_SLICES => {
+                None
+            }
+            Button::Split if n >= MAX_CUT_SLICES => Some(format!("{MAX_CUT_SLICES} slices is the most")),
+            Button::Split => Some("This slice is too short to split".to_string()),
+            Button::Merge if n > 1 => None,
+            Button::Merge => Some("One slice: nothing to merge".to_string()),
+            Button::ToPads if self.pads(st).is_some() || self.put(st) == Put::Files => None,
+            Button::ToPads => Some(
+                "The slices don't fit on the pads from the first pad: fewer slices, or an earlier First pad"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// How each row looks on the panel, in [`Row::ALL`]'s order.
+    fn controls(&self, st: &ChopState) -> Vec<Control> {
+        let (_, _, pos) = self.amount();
+        let steps = match self.method {
+            Method::Transient => 100 / u32::from(SENSITIVITY_STEP),
+            Method::Beat => BEAT_LENGTHS.len() as u32 - 1,
+            Method::Grid => MAX_CUT_SLICES as u32 - 2,
+            Method::Silence => {
+                ((THRESHOLD_RANGE_DB.1 - THRESHOLD_RANGE_DB.0) / THRESHOLD_STEP_DB) as u32
+            }
+            Method::Manual => 1,
+            Method::Live => HIT_WINDOWS_MS.len() as u32 - 1,
+        };
+        let methods = Self::methods(st);
+        let puts = Self::puts(st);
+        Row::ALL
+            .iter()
+            .map(|row| match row {
+                Row::Method => Control::new(Look::Choice {
+                    options: methods.iter().map(|m| m.label().to_string()).collect(),
+                    on: methods.iter().position(|m| *m == self.method).unwrap_or(0),
+                    off: Vec::new(),
+                }),
+                Row::Amount => Control::new(Look::Knob {
+                    pos,
+                    steps,
+                    bipolar: false,
+                })
+                .faint_if(self.method == Method::Manual),
+                Row::Snap | Row::Slice | Row::Pads => Control::new(Look::Chip),
+                Row::Put => Control::new(Look::Choice {
+                    options: puts
+                        .iter()
+                        .map(|p| {
+                            match p {
+                                Put::Pads => "Pads",
+                                Put::Keys => "Keys",
+                                Put::Phrase => "Phrase",
+                                Put::Files => "Files",
+                            }
+                            .to_string()
+                        })
+                        .collect(),
+                    on: puts.iter().position(|p| *p == self.put(st)).unwrap_or(0),
+                    off: Vec::new(),
+                }),
+                Row::Split | Row::Merge | Row::Chop => {
+                    let b = row.button().unwrap_or(Button::Split);
+                    let text = self.button_text(st, b);
+                    let look = if b == Button::ToPads {
+                        Look::Primary(text)
+                    } else {
+                        Look::Button(text)
+                    };
+                    let why = self.button_why(st, b);
+                    Control::new(look).faint_because(why.is_some(), &why.unwrap_or_default())
+                }
+            })
+            .collect()
+    }
+
+    /// The panel: Method, Slice, Pads and Chop across the band under the
+    /// wave, at the widths of the mockup Jay approved (17 Nov).
+    fn panel(&self, st: &ChopState) -> Panel {
+        let it = |k: Row| Item::new(k.index());
+        let replaced = self.replaced(st);
+        let note = match (self.pads(st).is_some(), replaced.len()) {
+            (false, _) => String::new(),
+            (true, 0) => "no pad replaced".into(),
+            (true, 1..=3) => {
+                let names: Vec<String> = replaced.iter().map(|&p| pad_text(self.bank, p)).collect();
+                format!("replaces {}", names.join(", "))
+            }
+            (true, k) => format!("replaces {k} pads"),
+        };
+        Panel {
+            sections: vec![
+                Section::new(
+                    "Method",
+                    400,
+                    vec![
+                        vec![it(Row::Method)],
+                        vec![it(Row::Amount).wide(90), it(Row::Snap).labelled()],
+                    ],
+                )
+                .note("find the slices"),
+                Section::new(
+                    "Slice",
+                    230,
+                    vec![
+                        vec![it(Row::Slice).labelled()],
+                        vec![it(Row::Split), it(Row::Merge)],
+                    ],
+                )
+                .note(&format!("{} of {}", self.selected + 1, self.slices())),
+                Section::new(
+                    "Pads",
+                    240,
+                    vec![
+                        vec![it(Row::Pads).labelled()],
+                        vec![it(Row::Put).labelled()],
+                    ],
+                ),
+                Section::new("Chop", 206, vec![vec![it(Row::Chop)]]).note(&note),
+            ],
+        }
+    }
+
+    /// The methods offered: Beat only for a sound with a tempo.
+    fn methods(st: &ChopState) -> Vec<Method> {
+        Method::ALL
+            .iter()
+            .copied()
+            .filter(|m| *m != Method::Beat || st.frames_per_beat().is_some())
+            .collect()
     }
 
     /// Pads `p` as "A6–A13".
@@ -1028,6 +1195,15 @@ impl ChopTab {
                         Some(p) => self.range_text(&p),
                         None => "Too many".into(),
                     },
+                },
+                Row::Split | Row::Merge | Row::Chop => Setting {
+                    name: match row {
+                        Row::Split => "Split",
+                        Row::Merge => "Merge",
+                        _ => "Chop",
+                    }
+                    .into(),
+                    value: self.button_text(st, row.button().unwrap_or(Button::Split)),
                 },
                 Row::Put => Setting {
                     name: "Put on".into(),
@@ -1182,7 +1358,10 @@ impl ChopTab {
                 self.show(ui, st);
                 self.take_stop(st)
             }
-            (BUTTONS, EventKind::Tab(i)) => self.press(ui, st, *Button::ALL.get(*i)?),
+            (LIST, EventKind::Tab(i)) => {
+                let b = Row::ALL.get(*i)?.button()?;
+                self.press(ui, st, b)
+            }
             _ => None,
         }
     }
@@ -1283,16 +1462,17 @@ impl ChopTab {
         }
     }
 
-    /// An arrow on a row of the Chop list.
+    /// A setting stepped `delta` steps: an arrow or - / + (one), the
+    /// setting's knob dragged (as many as it passed), or a Method or Put on
+    /// button tapped (from the one on to that one).
     fn step(&mut self, st: &ChopState, row: Row, delta: i32) {
-        let d = delta.signum();
+        let d = delta;
+        if d == 0 {
+            return;
+        }
         match row {
             Row::Method => {
-                let all: Vec<Method> = Method::ALL
-                    .iter()
-                    .copied()
-                    .filter(|m| *m != Method::Beat || st.frames_per_beat().is_some())
-                    .collect();
+                let all = Self::methods(st);
                 let i = all.iter().position(|m| *m == self.method).unwrap_or(0) as i32;
                 self.method = all[(i + d).rem_euclid(all.len() as i32) as usize];
                 if self.live.take().is_some() {
@@ -1302,7 +1482,7 @@ impl ChopTab {
             }
             Row::Amount => self.turn_amount(st, d),
             Row::Snap => {
-                self.snap = !self.snap;
+                self.snap ^= d % 2 != 0;
                 if matches!(self.method, Method::Beat | Method::Grid) {
                     self.rechop(st);
                 }
@@ -1316,6 +1496,8 @@ impl ChopTab {
                 let i = all.iter().position(|p| *p == self.put(st)).unwrap_or(0) as i32;
                 self.put = all[(i + d).rem_euclid(all.len() as i32) as usize];
             }
+            // Buttons: pressed, not stepped.
+            Row::Split | Row::Merge | Row::Chop => {}
         }
     }
 

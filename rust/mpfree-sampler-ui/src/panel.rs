@@ -52,23 +52,44 @@ pub enum Look {
     Stepper,
     /// A button with this text.
     Button(String),
+    /// The page's main button, big and lit (Chop to pads).
+    Primary(String),
 }
 
 /// One row's control: its look, and whether it does anything now (a faint
-/// control is drawn grey and takes no touches).
+/// control is drawn grey and changes nothing). A faint control with a
+/// reason in `why` answers a tap with [`EventKind::Select`] of its row,
+/// without picking it, for the page to say why
+/// ([`crate::widgets::SettingList::why_faint`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Control {
     pub look: Look,
     pub faint: bool,
+    pub why: String,
 }
 
 impl Control {
     pub fn new(look: Look) -> Control {
-        Control { look, faint: false }
+        Control {
+            look,
+            faint: false,
+            why: String::new(),
+        }
     }
 
     pub fn faint_if(mut self, faint: bool) -> Control {
         self.faint = faint;
+        self
+    }
+
+    /// Faint when `faint`, saying `why` when tapped.
+    pub fn faint_because(mut self, faint: bool, why: &str) -> Control {
+        self.faint = faint;
+        self.why = if faint {
+            why.to_string()
+        } else {
+            String::new()
+        };
         self
     }
 }
@@ -80,8 +101,8 @@ pub struct Item {
     pub row: usize,
     /// Its width in pixels; 0 shares what the line's fixed items leave.
     pub width: i32,
-    /// The row's name over a choice, selector or stepper (a knob always
-    /// has it; a switch has it beside it; a button shows its own text).
+    /// The row's name over a choice, selector, stepper or button (a knob
+    /// always has it; a switch has it beside it).
     pub label: bool,
 }
 
@@ -168,6 +189,8 @@ const STEP_W: i32 = 40;
 const KNOB_D: i32 = 52;
 const KNOB_VALUE_H: i32 = 20;
 const KNOB_H: i32 = LABEL_H + 5 + KNOB_D + 5 + KNOB_VALUE_H;
+/// The page's main button.
+const PRIMARY_H: i32 = 84;
 /// A switch.
 const SWITCH_W: i32 = 46;
 const SWITCH_H: i32 = 27;
@@ -225,7 +248,7 @@ fn item_h(look: &Look, label: bool) -> i32 {
     match look {
         Look::Knob { .. } => KNOB_H,
         Look::Toggle(_) => SWITCH_H,
-        Look::Button(_) => CTRL_H,
+        Look::Primary(_) => PRIMARY_H + if label { LABEL_H + LABEL_GAP } else { 0 },
         _ => CTRL_H + if label { LABEL_H + LABEL_GAP } else { 0 },
     }
 }
@@ -294,6 +317,14 @@ impl Panel {
         out
     }
 
+    /// Where row `row`'s control is (under its name), if it is on the panel.
+    pub fn control_rect(&self, r: Rect, controls: &[Control], row: usize) -> Option<Rect> {
+        self.place(r, controls)
+            .into_iter()
+            .find(|p| p.row == row)
+            .map(|p| p.control)
+    }
+
     /// Where every row in the panel is drawn and answers a finger.
     pub fn place(&self, r: Rect, controls: &[Control]) -> Vec<Placed> {
         let mut out = Vec::new();
@@ -339,7 +370,7 @@ impl Panel {
                     let ih = item_h(l, it.label);
                     let rect = Rect::new(x, y + (h - ih) / 2, w, ih);
                     let control = match l {
-                        Look::Knob { .. } | Look::Toggle(_) | Look::Button(_) => rect,
+                        Look::Knob { .. } | Look::Toggle(_) => rect,
                         _ if it.label => rect.take_top(LABEL_H + LABEL_GAP).1,
                         _ => rect,
                     };
@@ -421,7 +452,7 @@ pub fn touch(
     let p = panel.at(r, controls, x, y)?;
     let c = controls.get(p.row)?;
     if c.faint {
-        return None;
+        return (!c.why.is_empty()).then_some(EventKind::Select(p.row));
     }
     let k = p.row;
     match &c.look {
@@ -466,7 +497,7 @@ pub fn touch(
             }
         }
         Look::Toggle(_) => Some(EventKind::Step { index: k, delta: 1 }),
-        Look::Button(_) => {
+        Look::Button(_) | Look::Primary(_) => {
             if p.control.contains(x, y) {
                 Some(EventKind::Tab(k))
             } else {
@@ -518,7 +549,7 @@ pub fn targets(
             Look::Toggle(_) => {
                 out.push(Target::tap("switch", k, name.clone(), p.switch()).disabled_if(c.faint));
             }
-            Look::Button(text) => {
+            Look::Button(text) | Look::Primary(text) => {
                 out.push(Target::tap("button", k, text.clone(), p.control).disabled_if(c.faint));
             }
         }
@@ -541,7 +572,7 @@ pub fn held(
     let c = controls.get(p.row).filter(|c| !c.faint)?;
     let name = names.get(p.row).cloned().unwrap_or_default();
     match c.look {
-        Look::Button(_) => None,
+        Look::Button(_) | Look::Primary(_) => None,
         Look::Knob { .. } => Some(Target::drag("knob", p.row, name, p.control)),
         _ => Some(Target::tap("control", p.row, name, p.control)),
     }
@@ -729,15 +760,24 @@ pub fn paint(
                     },
                 );
             }
-            Look::Button(text) => {
-                cx.canvas.fill_round_rect(p.control, 10, ctrl);
-                let px = fit(cx, FontId::Bold, 14.0, 11.0, text, p.control.w - 16);
+            Look::Button(text) | Look::Primary(text) => {
+                if p.control != p.rect {
+                    cx.text(FontId::Sans, 13.0, label, Align::Left, dim, name);
+                }
+                let primary = matches!(c.look, Look::Primary(_));
+                let (fill, fg, px) = match (primary, c.faint) {
+                    (true, false) => (t.accent, t.on_accent, 17.0),
+                    (true, true) => (ctrl, ink, 17.0),
+                    _ => (ctrl, ink, 14.0),
+                };
+                cx.canvas.fill_round_rect(p.control, 10, fill);
+                let px = fit(cx, FontId::Bold, px, 11.0, text, p.control.w - 16);
                 cx.text(
                     FontId::Bold,
                     px,
                     p.control.inset_xy(8, 0),
                     Align::Center,
-                    ink,
+                    fg,
                     text,
                 );
             }
