@@ -67,7 +67,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can be keyed from another strip, for side-chain pumping. **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
 | **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
-| **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches peaks between samples; **Auto release** keeps a loud mix from pumping. |
+| **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
 | **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs. |
@@ -253,9 +253,27 @@ Lo-fi plays about as loud as the sound going in, so switching it on and off comp
 > [!NOTE]
 > Projects saved before this change sound a little different through Lo-fi: high notes no longer fizz through the saturation, the wow wanders instead of wobbling evenly, and it is 1 to 1.5 dB louder than before (as loud as the sound going in). Stereo, Dropouts and Hum start at 0 and Follow at 100 %, so nothing new is added to a saved Lo-fi.
 
+### The Limiter
+
+**Gain** pushes the sound into the Limiter and **Ceiling** is as loud as it can come out. **Release** is how long the level takes to come most of the way back (63 %) after a peak; before it lets go, it holds for a moment (a quarter of Release, at most 5 ms), so a bass note isn't turned up and down inside each wave, which would make it buzz. With **Auto release** on (the default), it comes back in about a third of Release after a single hit and takes about three times Release after a long loud stretch, so a pushed mix doesn't pump. With **True peak** on, it also holds the peaks a converter rebuilds between samples at the ceiling, which is what a streaming service or a mastering engineer measures.
+
+It holds the sound back about 1.8 ms to see the peaks coming, and the mixer holds everything else back to match, so the mix stays in time.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Limiter: pushed hard, it is cleaner on bass and a little quieter (about 0.6 dB on a mix pushed 6 dB), and Auto release now acts.
+
 ### Master safety
 
-The master strip always ends in **Master safety**, a limiter that keeps the output from going past -0.3 dB. It isn't in the list: it is always there. See [The master and Master safety](mixing-and-effects.md#the-master-and-master-safety).
+The master strip always ends in **Master safety**, which keeps the output from going past its **Ceiling** (-0.3 dB), including the peaks a converter rebuilds between samples. It isn't in the list: it is always there. Its **Mode**:
+
+- **Safe limiter** (the default): a limiter that is down before a peak arrives.
+- **Soft clip**: rounds the loudest moments off from 6 dB under the ceiling, a warmer, denser sound, and still never goes past the ceiling.
+- **Raw**: no limiting. Anything over 0 dB clips harshly in the converter. Only for when you want that.
+
+Changing the mode crossfades, so it doesn't click. **Trim** turns the whole mix up or down going in, and **Release** is how long the limiter takes to come back. See [The master and Master safety](mixing-and-effects.md#the-master-and-master-safety).
+
+> [!NOTE]
+> Projects saved before this change sound a little different when the master is pushed into Master safety: a little quieter and cleaner, with no peaks between samples over the ceiling. A Soft clip master no longer makes a gritty fold-back on loud high notes.
 
 ## Effects with modes
 
