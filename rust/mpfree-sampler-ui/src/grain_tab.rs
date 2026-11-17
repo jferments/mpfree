@@ -31,9 +31,11 @@
 
 use std::sync::Arc;
 
+use mpfree_analysis::pitch::note_name;
 use mpfree_sampler::engine::GrainView;
 use mpfree_sampler::model::{
-    GrainParams, GrainWindow, ModelError, Pad, PlayMode, Project, Region, Source, TempoSync,
+    GrainMode, GrainParams, GrainSprayShape, GrainWindow, ModelError, Pad, PlayMode, Project,
+    Region, Source, TempoSync,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -91,16 +93,6 @@ const SCANS: [f32; 13] = [
 pub const SCAN_LIMIT: f32 = 2.0;
 /// Q-Link detents for a doubling of the size or the density.
 const DOUBLING_DETENTS: f32 = 8.0;
-/// Window shapes the Window row steps through.
-const WINDOWS: [GrainWindow; 7] = [
-    GrainWindow::Hann,
-    GrainWindow::Tukey { taper: 0.5 },
-    GrainWindow::Tukey { taper: 0.2 },
-    GrainWindow::Trapezoid { ramp: 0.25 },
-    GrainWindow::Trapezoid { ramp: 0.05 },
-    GrainWindow::Exponential { decay: 4.0 },
-    GrainWindow::Exponential { decay: 10.0 },
-];
 /// Pitch quantise: the notes grains may take, from the sound's own pitch
 /// (bit 0) up (see `mpfree_grain::quantise`).
 const SCALES: [(&str, u16); 7] = [
@@ -158,10 +150,15 @@ const GESTURE_BASE: u64 = 0x4752_4149_0000_0000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Mode,
+    GrainMode,
     Scan,
     Spray,
+    SprayShape,
+    SizeSpray,
     PitchSpray,
-    Window,
+    LevelSpray,
+    Timing,
+    Shape,
     Reverse,
     Spread,
     Quantise,
@@ -174,12 +171,17 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 14] = [
+    pub const ALL: [Row; 19] = [
         Row::Mode,
+        Row::GrainMode,
         Row::Scan,
         Row::Spray,
+        Row::SprayShape,
+        Row::SizeSpray,
         Row::PitchSpray,
-        Row::Window,
+        Row::LevelSpray,
+        Row::Timing,
+        Row::Shape,
         Row::Reverse,
         Row::Spread,
         Row::Quantise,
@@ -194,10 +196,15 @@ impl Row {
     pub fn label(self) -> &'static str {
         match self {
             Row::Mode => "Mode",
+            Row::GrainMode => "Grain mode",
             Row::Scan => "Scan speed",
             Row::Spray => "Spray",
+            Row::SprayShape => "Spray shape",
+            Row::SizeSpray => "Size spray",
             Row::PitchSpray => "Pitch spray",
-            Row::Window => "Window",
+            Row::LevelSpray => "Level spray",
+            Row::Timing => "Timing",
+            Row::Shape => "Shape",
             Row::Reverse => "Reverse chance",
             Row::Spread => "Stereo spread",
             Row::Quantise => "Pitch quantise",
@@ -210,10 +217,81 @@ impl Row {
         }
     }
 
-    fn index(self) -> usize {
-        Row::ALL.iter().position(|r| *r == self).unwrap_or(0)
+    /// The rows a grain mode shows, in order: every row for a cloud;
+    /// for a stretch, what moves it (no randomness, so its grains stay in
+    /// step); for a repeat, its tempo-locked rate and length.
+    pub fn shown(mode: GrainMode) -> &'static [Row] {
+        match mode {
+            GrainMode::Cloud => &Row::ALL,
+            GrainMode::Stretch => &STRETCH_ROWS,
+            GrainMode::Repeat => &REPEAT_ROWS,
+            GrainMode::Tone => &TONE_ROWS,
+        }
+    }
+
+    /// Where this row is in `mode`'s list, if it shows there.
+    pub fn index_in(self, mode: GrainMode) -> Option<usize> {
+        Row::shown(mode).iter().position(|r| *r == self)
     }
 }
+
+/// A stretch's rows: how fast it moves through the sound (Scan speed),
+/// where, its grains' size, overlap and shape, its pitch and its width.
+const STRETCH_ROWS: [Row; 10] = [
+    Row::Mode,
+    Row::GrainMode,
+    Row::Scan,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+    Row::Shape,
+    Row::Spread,
+    Row::Level,
+];
+/// A repeat's rows: where, how often (a beat division) and how long, the
+/// edges, pitch, a chance of playing backwards and a little spray.
+const REPEAT_ROWS: [Row; 10] = [
+    Row::Mode,
+    Row::GrainMode,
+    Row::Position,
+    Row::Density,
+    Row::Size,
+    Row::Shape,
+    Row::Pitch,
+    Row::Reverse,
+    Row::Spray,
+    Row::Level,
+];
+/// A tone's rows: its note (the density), how many cycles a grain holds
+/// (the size), where in the sound and at what pitch it reads (its
+/// colour), and what moves or widens it.
+const TONE_ROWS: [Row; 12] = [
+    Row::Mode,
+    Row::GrainMode,
+    Row::Density,
+    Row::Size,
+    Row::Position,
+    Row::Pitch,
+    Row::Shape,
+    Row::Scan,
+    Row::Spray,
+    Row::PitchSpray,
+    Row::Spread,
+    Row::Level,
+];
+/// The Grain mode row's words, in the order it steps.
+const GRAIN_MODES: [(&str, GrainMode); 4] = [
+    ("Cloud", GrainMode::Cloud),
+    ("Stretch", GrainMode::Stretch),
+    ("Repeat", GrainMode::Repeat),
+    ("Tone", GrainMode::Tone),
+];
+/// A tone's notes: A0 to B5 (the grain voice plays up to 1,000 grains a
+/// second), as MIDI notes.
+const TONE_NOTES: (f32, f32) = (21.0, 83.0);
+/// How many cycles of its note a tone's grain may hold.
+const TONE_CYCLES: (f32, f32) = (1.0, 16.0);
 
 /// The rows the Q-Links turn, in knob order.
 pub const QLINK_ROWS: [Row; 4] = [Row::Position, Row::Size, Row::Density, Row::Pitch];
@@ -330,6 +408,8 @@ pub struct GrainTab {
     /// The bank letter shown in pad names, as [`wave_tab::WaveTab::bank`].
     pub bank: Option<char>,
     shown: Option<(usize, usize)>,
+    /// The grain mode whose rows the list shows.
+    mode: GrainMode,
     gesture: Option<(Key, u64)>,
     next_gesture: u64,
 }
@@ -349,7 +429,7 @@ impl GrainTab {
         ui.add(XY, XyPad::new("Touch: position × size", "position", "size"));
         let mut list = SettingList::new("Grain");
         list.right = "this layer".into();
-        list.selected = Row::Scan.index();
+        list.selected = Row::Scan.index_in(GrainMode::Cloud).unwrap_or(0);
         ui.add(LIST, list);
         let t = ui.theme.clone();
         let colors = [Color::rgb(GRAIN_COLOR), t.accent, t.good, t.warn];
@@ -366,6 +446,7 @@ impl GrainTab {
             name: name.to_string(),
             bank: None,
             shown: None,
+            mode: GrainMode::Cloud,
             gesture: None,
             next_gesture: GESTURE_BASE,
         };
@@ -376,7 +457,7 @@ impl GrainTab {
     /// The row picked in the Grain list.
     pub fn row(&self, ui: &Ui) -> Row {
         ui.get::<SettingList>(LIST)
-            .and_then(|l| Row::ALL.get(l.selected).copied())
+            .and_then(|l| Row::shown(self.mode).get(l.selected).copied())
             .unwrap_or(Row::Scan)
     }
 
@@ -392,6 +473,20 @@ impl GrainTab {
         if self.shown != Some((st.pad, st.layer)) {
             self.shown = Some((st.pad, st.layer));
             self.set_cloud(ui, st, &[], None, 0);
+        }
+        let mode = st.region.grain_mode;
+        if mode != self.mode {
+            // The same row stays picked if the new mode shows it, else the
+            // Grain mode row, which changed it.
+            let row = self.row(ui);
+            self.mode = mode;
+            let i = row
+                .index_in(mode)
+                .or(Row::GrainMode.index_in(mode))
+                .unwrap_or(0);
+            if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+                list.selected = i;
+            }
         }
         self.show(ui, st);
     }
@@ -493,7 +588,7 @@ impl GrainTab {
                 value_text(&st.region, Row::Size)
             );
         }
-        let rows = Row::ALL
+        let rows = Row::shown(self.mode)
             .iter()
             .map(|r| Setting {
                 name: r.label().into(),
@@ -563,7 +658,7 @@ impl GrainTab {
                 self.edit(st, Key::Touch, r)
             }
             (LIST, EventKind::Step { index, delta }) => {
-                let row = *Row::ALL.get(*index)?;
+                let row = *Row::shown(self.mode).get(*index)?;
                 let a = self.step(st, row, *delta);
                 self.show_cards(ui, st);
                 a
@@ -583,8 +678,8 @@ impl GrainTab {
     }
 
     fn pick_row(&self, ui: &mut Ui, row: Row) {
-        if let Some(list) = ui.get_mut::<SettingList>(LIST) {
-            list.selected = row.index();
+        if let (Some(list), Some(i)) = (ui.get_mut::<SettingList>(LIST), row.index_in(self.mode)) {
+            list.selected = i;
         }
     }
 
@@ -675,6 +770,18 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
         }
         Row::Density if dsync => step_sync(g, &PER_BEAT, delta, true),
         Row::Size if ssync => step_sync(g, &BEATS, delta, false),
+        // A tone's note, a semitone a step; its grains keep their cycles.
+        Row::Density if r.grain_mode == GrainMode::Tone => {
+            let cycles = tone_cycles(g);
+            let note = (tone_note(g.density).round() + d).clamp(TONE_NOTES.0, TONE_NOTES.1);
+            g.density = note_hz(note);
+            g.size_ms = cycles * 1000.0 / g.density;
+        }
+        Row::Size if r.grain_mode == GrainMode::Tone => {
+            let cycles =
+                (round_to(tone_cycles(g), 0.5) + d * 0.5).clamp(TONE_CYCLES.0, TONE_CYCLES.1);
+            g.size_ms = cycles * 1000.0 / g.density;
+        }
         Row::Level => g.gain = level_gain(level_db(g.gain) + d * 0.5),
         Row::Mode => {
             let i = MODES.iter().position(|m| *m == r.mode).unwrap_or(0);
@@ -685,15 +792,38 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
                 r.sustain_loop = Some(crate::wave_tab::default_loop(&r));
             }
         }
+        Row::GrainMode => {
+            let i = GRAIN_MODES
+                .iter()
+                .position(|m| m.1 == r.grain_mode)
+                .unwrap_or(0);
+            let mode = GRAIN_MODES[shift(i, delta, GRAIN_MODES.len())].1;
+            if mode != r.grain_mode {
+                r.grain_mode = mode;
+                r.grain = mode_settings(&r.grain, mode, bpm);
+            }
+        }
         Row::Scan => g.scan = step_list(&SCANS, g.scan, delta),
         Row::Spray => g.spray = round_to(g.spray + d * 0.05, 0.01).clamp(0.0, 1.0),
+        Row::SprayShape => {
+            let i = SPRAY_SHAPES
+                .iter()
+                .position(|s| s.1 == g.spray_shape)
+                .unwrap_or(0);
+            g.spray_shape = SPRAY_SHAPES[shift(i, delta, SPRAY_SHAPES.len())].1;
+        }
+        Row::SizeSpray => g.size_spray = round_to(g.size_spray + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::PitchSpray => {
             g.pitch_spray = round_to(g.pitch_spray + d * 0.5, 0.1).clamp(0.0, PITCH_SPRAY_LIMIT)
         }
-        Row::Window => {
-            let i = WINDOWS.iter().position(|w| *w == g.window).unwrap_or(0);
-            g.window = WINDOWS[shift(i, delta, WINDOWS.len())];
+        Row::LevelSpray => g.level_spray = round_to(g.level_spray + d * 0.05, 0.01).clamp(0.0, 1.0),
+        // From any window (a project's older ones too), 5 % a step.
+        Row::Shape => {
+            g.window = GrainWindow::Shape {
+                shape: round_to(g.window.shape_value() + d * 0.05, 0.01).clamp(0.0, 1.0),
+            }
         }
+        Row::Timing => g.timing = round_to(g.timing + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Reverse => g.reverse = round_to(g.reverse + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Spread => g.spread = round_to(g.spread + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Quantise => {
@@ -879,6 +1009,61 @@ fn per_beat_text(g: f32) -> String {
     format!("{} /beat", trim(g))
 }
 
+/// Where grain mode `mode` starts from `g`: its own settings, keeping the
+/// position and the level. A cloud scatters a little (spray, spread,
+/// random timing); a stretch reads at the sound's speed with regular
+/// grains overlapping four times, nothing random, so its grains stay in
+/// step; a repeat replays the spot under the position every sixteenth,
+/// a sixteenth long, with short fades; a tone plays A2 (110 Hz, the
+/// density) with grains four cycles long, regular and frozen, so it holds
+/// one spot's colour at that note.
+pub fn mode_settings(g: &GrainParams, mode: GrainMode, bpm: f64) -> GrainParams {
+    let kept = GrainParams {
+        position: g.position,
+        gain: g.gain,
+        ..GrainParams::default()
+    };
+    match mode {
+        GrainMode::Cloud => GrainParams {
+            spray: 0.1,
+            spread: 0.5,
+            size_ms: 100.0,
+            ..kept
+        },
+        GrainMode::Stretch => GrainParams {
+            scan: 1.0,
+            size_ms: 90.0,
+            density: 45.0,
+            timing: 0.0,
+            ..kept
+        },
+        GrainMode::Tone => GrainParams {
+            density: note_hz(45.0),
+            size_ms: 4.0 * 1000.0 / note_hz(45.0),
+            timing: 0.0,
+            ..kept
+        },
+        GrainMode::Repeat => {
+            let mut r = GrainParams {
+                timing: 0.0,
+                window: GrainWindow::Shape { shape: 0.1 },
+                ..kept
+            };
+            set_sync(&mut r, true, true, bpm);
+            if let Some(t) = r.sync.as_mut() {
+                (t.grains_per_beat, t.size_beats) = (Some(4.0), Some(0.25));
+            }
+            r
+        }
+    }
+}
+
+/// How Spray spreads grains: the row's words.
+const SPRAY_SHAPES: [(&str, GrainSprayShape); 2] = [
+    ("Even", GrainSprayShape::Even),
+    ("Peaked", GrainSprayShape::Peaked),
+];
+
 fn shift(i: usize, delta: i32, len: usize) -> usize {
     (i as i32 + delta).clamp(0, len as i32 - 1) as usize
 }
@@ -903,15 +1088,41 @@ pub fn size_at(y: f32) -> f32 {
 
 // ---------------------------------------------------------------- text
 
+/// How random the gaps between grains are: Regular, a share random, or
+/// Random.
+fn timing_text(t: f32) -> String {
+    match percent(t) {
+        0 => "Regular".into(),
+        100 => "Random".into(),
+        p => format!("{p} % random"),
+    }
+}
+
 /// A row's value as the list shows it.
 pub fn value_text(r: &Region, row: Row) -> String {
     let g = &r.grain;
     match row {
         Row::Mode => mode_label(r.mode).into(),
+        Row::GrainMode => GRAIN_MODES
+            .iter()
+            .find(|m| m.1 == r.grain_mode)
+            .map_or("Cloud", |m| m.0)
+            .into(),
+        Row::Scan if r.grain_mode == GrainMode::Stretch && r.warp.is_some() && g.scan != 0.0 => {
+            format!("{} · in time", scan_text(g.scan))
+        }
         Row::Scan => scan_text(g.scan),
         Row::Spray => format!("{} %", percent(g.spray)),
+        Row::SprayShape => SPRAY_SHAPES
+            .iter()
+            .find(|s| s.1 == g.spray_shape)
+            .map_or("Even", |s| s.0)
+            .into(),
+        Row::SizeSpray => format!("{} %", percent(g.size_spray)),
         Row::PitchSpray => format!("±{:.1} st", g.pitch_spray),
-        Row::Window => window_label(g.window),
+        Row::LevelSpray => format!("{} %", percent(g.level_spray)),
+        Row::Timing => timing_text(g.timing),
+        Row::Shape => window_label(g.window),
         Row::Reverse => format!("{} %", percent(g.reverse)),
         Row::Spread => format!("{} %", percent(g.spread)),
         Row::Quantise => quantise_label(g.scale).into(),
@@ -924,6 +1135,13 @@ pub fn value_text(r: &Region, row: Row) -> String {
                 .into()
         }
         Row::Position => format!("{:.1} %", g.position * 100.0),
+        Row::Size if r.grain_mode == GrainMode::Tone => {
+            format!("{} · {:.1} cycles", ms_text(g.size_ms), tone_cycles(g))
+        }
+        Row::Density if r.grain_mode == GrainMode::Tone => {
+            let note = tone_note(g.density).round().clamp(0.0, 127.0) as u8;
+            format!("{} · {}", note_name(note), hz_text(g.density))
+        }
         Row::Size => match g.sync.and_then(|t| t.size_beats) {
             Some(b) => beats_text(b),
             None => ms_text(g.size_ms),
@@ -964,6 +1182,32 @@ pub fn ms_text(ms: f32) -> String {
     }
 }
 
+/// A frequency: 27.5 Hz, 110 Hz, 1.05 kHz.
+fn hz_text(hz: f32) -> String {
+    if hz < 100.0 {
+        format!("{hz:.1} Hz")
+    } else if hz < 1000.0 {
+        format!("{hz:.0} Hz")
+    } else {
+        format!("{:.2} kHz", hz / 1000.0)
+    }
+}
+
+/// The MIDI note (fractional) a frequency is.
+fn tone_note(hz: f32) -> f32 {
+    69.0 + 12.0 * (hz.max(1.0) / 440.0).log2()
+}
+
+/// MIDI note `n`'s frequency.
+fn note_hz(n: f32) -> f32 {
+    440.0 * ((n - 69.0) / 12.0).exp2()
+}
+
+/// How many cycles of a tone's note each grain holds.
+fn tone_cycles(g: &GrainParams) -> f32 {
+    g.size_ms * g.density / 1000.0
+}
+
 pub fn density_text(d: f32) -> String {
     if d < 10.0 && d.fract() != 0.0 {
         format!("{d:.1} /s")
@@ -972,12 +1216,27 @@ pub fn density_text(d: f32) -> String {
     }
 }
 
+/// The grains' shape: a Shape value as a per cent and what it is near
+/// (Square, Trapezoid, Triangle, Hann, Swell, Pluck); a window from before
+/// the Shape knob by its old name.
 pub fn window_label(w: GrainWindow) -> String {
     match w {
         GrainWindow::Hann => "Hann".into(),
         GrainWindow::Tukey { taper } => format!("Tukey {}", trim(taper)),
         GrainWindow::Trapezoid { ramp } => format!("Trapezoid {}", trim(ramp)),
         GrainWindow::Exponential { decay } => format!("Percussive {}", trim(decay)),
+        GrainWindow::Shape { .. } => {
+            let s = w.shape_value();
+            let name = match s {
+                s if s < 0.1 => "Square",
+                s if s < 0.3 => "Trapezoid",
+                s if s < 0.5 => "Triangle",
+                s if s < 0.7 => "Hann",
+                s if s < 0.9 => "Swell",
+                _ => "Pluck",
+            };
+            format!("{} % · {name}", percent(s))
+        }
     }
 }
 

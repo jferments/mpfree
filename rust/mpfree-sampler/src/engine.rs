@@ -21,8 +21,10 @@
 //! Hermite read whatever its pitch, aliasing and all.
 //!
 //! A region in [`PlayMode::Granular`] plays through the voice's own
-//! [`GrainVoice`] (from `mpfree-grain`) instead of the Hermite read; the
-//! envelope, gain, pan, filter and fades after it are the same. One grain
+//! [`GrainVoice`] (from `mpfree-grain`) instead of the Hermite read; its
+//! grains read the sound through [`GrainClip`], clean when pitched up past
+//! two semitones as a voice is (not on a Vintage pad). The envelope, gain,
+//! pan, filter and fades after it are the same. One grain
 //! [`Budget`] ([`GRAIN_BUDGET`]) caps the grains of all voices together.
 //!
 //! The master effect is a [`GrainFx`] on everything the voices play: grains
@@ -80,7 +82,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mpfree_grain::{Budget, Clip, GrainFx, GrainSource, GrainVoice};
+use mpfree_grain::{Budget, GrainFx, GrainSource, GrainVoice};
 pub use mpfree_grain::{GrainView, MAX_GRAINS};
 /// The lane types [`Engine::split`] takes and reports, so callers need no
 /// dependency of their own on `mpfree-lanes`.
@@ -93,9 +95,10 @@ use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Sample,
     Svf, TINY,
 };
+use crate::grain_clip::GrainClip;
 use crate::model::{
-    edge_gain, ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx,
-    PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LoopMode,
+    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -288,6 +291,9 @@ pub struct ViewLayer {
     src_rate: u32,
     /// Grain settings with the layer's tune and reverse folded in.
     grain: mpfree_grain::Params,
+    /// A Tone region: tune moves its density, not its grains' pitch
+    /// ([`pitched_grain`]).
+    tone: bool,
     /// The tempo the layer's audio is at, when it is warped (0 if not):
     /// the voice plays it `tempo / warp_bpm` times as fast.
     warp_bpm: f64,
@@ -440,8 +446,12 @@ impl EngineView {
                         let g = unit_gain * pad_gain;
                         let cents = f64::from(r.tune_cents + l.tune_cents + p.tune_cents);
                         let ratio = f64::from(s.rate()) / f64::from(rate) * (cents / 1200.0).exp2();
-                        let mut grain = r.grain;
-                        grain.pitch += (cents / 100.0) as f32;
+                        let tone = r.grain_mode == GrainMode::Tone;
+                        let mut grain = pitched_grain(r.grain, (cents / 100.0) as f32, tone);
+                        // A stretch of a sound with a tempo keeps time.
+                        if r.grain_mode == GrainMode::Stretch {
+                            grain.scan_tempo = r.warp.as_ref().map(|w| w.bpm);
+                        }
                         if r.reverse {
                             grain.reverse = 1.0;
                         }
@@ -470,14 +480,24 @@ impl EngineView {
                             vel_hi: l.vel_hi,
                             src_rate: s.rate(),
                             grain,
+                            tone,
                             warp_bpm: 0.0,
                             copy: false,
                             source_at: None,
                             octaves: None,
                         };
-                        if !p.vintage && r.mode != PlayMode::Granular {
+                        if !p.vintage {
                             v.octaves = Some(s.octaves().clone());
-                            if may_pass_an_octave(p, ratio, project.pads_play()) {
+                            // Grains go as far up as their pitch and its
+                            // spray take them.
+                            let up = if r.mode == PlayMode::Granular {
+                                let g = &r.grain;
+                                let semis = g.pitch.max(0.0) + g.pitch_spray.clamp(0.0, 24.0);
+                                ratio * f64::from(semis / 12.0).exp2()
+                            } else {
+                                ratio
+                            };
+                            if may_pass_an_octave(p, up, project.pads_play()) {
                                 bandlimit::prepare(s.octaves(), s.data(), s.channels());
                             }
                         }
@@ -912,6 +932,10 @@ struct Voice {
     src_rate: u32,
     /// Grain settings before pressure moves them.
     grain_base: GrainParams,
+    /// A Tone voice ([`ViewLayer::tone`]), and the semitones its hit added
+    /// (a keygroup's, a live tune's), kept for a live edit.
+    grain_tone: bool,
+    grain_hit: f32,
     route: PressureRoute,
     /// Pressure asked for and the smoothed value in use, 0 to 1.
     press_target: f32,
@@ -967,6 +991,9 @@ struct Voice {
     bl: bool,
     /// Its sound's octave copies, when made by the time it started.
     octaves: Option<Arc<OctaveCell>>,
+    /// A granular voice's grains read band-limited when pitched up
+    /// ([`GrainClip::clean`]): not on a Vintage pad.
+    grain_clean: bool,
     /// The step the band-limited read was last aimed for ([`aim_bl`]),
     /// the octave copy it reads (0: the sound) and the sinc's stretch.
     bl_step: i64,
@@ -2649,10 +2676,9 @@ impl Engine {
                 program[ProgramField::Tune as usize],
             )
         };
-        let mut grain = l.grain;
-        grain.pitch += semis as f32;
+        let mut grain = pitched_grain(l.grain, semis as f32, l.tone);
         if tune != 0.0 {
-            grain.pitch += tune / 100.0;
+            grain = pitched_grain(grain, tune / 100.0, l.tone);
         }
         if let Some(at) = vary.start {
             grain.position = (at * 16.0 / 15.0).min(1.0);
@@ -2797,6 +2823,8 @@ impl Engine {
             granular,
             src_rate: l.src_rate,
             grain_base: grain,
+            grain_tone: l.tone,
+            grain_hit: semis as f32 + tune / 100.0,
             route: vp.pressure,
             press_target: 0.0,
             press: 0.0,
@@ -2842,6 +2870,7 @@ impl Engine {
             } else {
                 l.octaves.as_ref().filter(|c| c.get().is_some()).cloned()
             },
+            grain_clean: !vp.vintage,
             bl_step: 0,
             bl_octave: 0,
             bl_reach: Reach::default(),
@@ -2865,7 +2894,7 @@ impl Engine {
         let beat = self.frames_per_beat();
         if let Some(g) = self.pool.grain_mut(slot).filter(|_| granular) {
             g.set_tempo(beat);
-            g.set_params(tuned_grain(grain, cents));
+            g.set_params(tuned_grain(grain, cents, l.tone));
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
             g.start();
@@ -3163,38 +3192,30 @@ fn render_granular(
     };
     let ch = if v.stereo { 2 } else { 1 };
     let (start, end) = (v.start.max(0) as u64, v.end.max(0) as u64);
+    // Clean pitching unless the pad is Vintage, from the sound's octave
+    // copies when they were made by the time the voice started.
+    let clean = v.grain_clean;
+    let cell = v.octaves.take();
+    let octaves = cell.as_deref().and_then(OctaveCell::get);
     match &data {
-        Pcm::F32(d) => match Clip::new(d, ch, v.src_rate) {
-            Some(c) => grains(
-                v,
-                g,
-                &c.with_range(start, end),
-                budget,
-                frame,
-                rate,
-                left,
-                right,
-                sl,
-                sr,
-            ),
+        Pcm::F32(d) => match GrainClip::new(&d[..], ch, v.src_rate) {
+            Some(c) => {
+                let c = c.with_range(start, end);
+                let c = if clean { c.clean(octaves) } else { c };
+                grains(v, g, &c, budget, frame, rate, left, right, sl, sr)
+            }
             None => v.active = false,
         },
-        Pcm::I16(d) => match Clip16::new(d, ch, v.src_rate) {
-            Some(c) => grains(
-                v,
-                g,
-                &c.with_range(start, end),
-                budget,
-                frame,
-                rate,
-                left,
-                right,
-                sl,
-                sr,
-            ),
+        Pcm::I16(d) => match GrainClip::new(&d[..], ch, v.src_rate) {
+            Some(c) => {
+                let c = c.with_range(start, end);
+                let c = if clean { c.clean(octaves) } else { c };
+                grains(v, g, &c, budget, frame, rate, left, right, sl, sr)
+            }
             None => v.active = false,
         },
     }
+    v.octaves = cell;
     if v.active {
         v.data = Some(data);
     }
@@ -3226,6 +3247,7 @@ fn grains<C: GrainSource>(
             g.set_params(tuned_grain(
                 pressed_grain(v.grain_base, v.route, v.press),
                 cents,
+                v.grain_tone,
             ));
             v.grain_cents = cents;
         }
@@ -3247,97 +3269,25 @@ fn grains<C: GrainSource>(
     }
 }
 
-/// A region of a sound held as 16 bits, for grains: what
-/// [`mpfree_grain::Clip`] is for floats, read the same way, so a 16-bit
-/// sound's grains are the same as its floats' would be, bit for bit.
-#[derive(Clone, Copy)]
-struct Clip16<'a> {
-    data: &'a [i16],
-    channels: usize,
-    rate: u32,
-    start: i64,
-    end: i64,
-}
-
-impl<'a> Clip16<'a> {
-    fn new(data: &'a [i16], channels: usize, rate: u32) -> Option<Self> {
-        if !(1..=2).contains(&channels) || !data.len().is_multiple_of(channels) || rate == 0 {
-            return None;
-        }
-        let end = (data.len() / channels) as i64;
-        Some(Clip16 {
-            data,
-            channels,
-            rate,
-            start: 0,
-            end,
-        })
-    }
-
-    fn with_range(mut self, start: u64, end: u64) -> Self {
-        let frames = (self.data.len() / self.channels) as i64;
-        self.start = (start.min(i64::MAX as u64) as i64).min(frames);
-        self.end = (end.min(i64::MAX as u64) as i64).clamp(self.start, frames);
-        self
-    }
-}
-
-impl GrainSource for Clip16<'_> {
-    fn rate(&self) -> u32 {
-        self.rate
-    }
-    fn channels(&self) -> usize {
-        self.channels
-    }
-    fn span(&self) -> (i64, i64) {
-        (self.start, self.end)
-    }
-    #[inline]
-    fn sample(&self, ch: usize, frame: i64) -> f32 {
-        if frame < self.start || frame >= self.end {
-            return 0.0;
-        }
-        self.data[frame as usize * self.channels + ch.min(self.channels - 1)].f()
-    }
-    #[inline(always)]
-    fn read(&self, frame: i64, t: f32) -> [f32; 2] {
-        if frame - 1 < self.start || frame + 2 >= self.end {
-            // The trait's own read, as the float clip's edges use.
-            let at = |ch| {
-                mpfree_grain::hermite(
-                    self.sample(ch, frame - 1),
-                    self.sample(ch, frame),
-                    self.sample(ch, frame + 1),
-                    self.sample(ch, frame + 2),
-                    t,
-                )
-            };
-            let l = at(0);
-            return [l, if self.channels == 2 { at(1) } else { l }];
-        }
-        let at = (frame - 1) as usize * self.channels;
-        if self.channels == 2 {
-            let w: &[i16; 8] = self.data[at..at + 8]
-                .try_into()
-                .expect("four stereo frames");
-            let w = w.map(Sample::f);
-            [
-                mpfree_grain::hermite(w[0], w[2], w[4], w[6], t),
-                mpfree_grain::hermite(w[1], w[3], w[5], w[7], t),
-            ]
-        } else {
-            let w: &[i16; 4] = self.data[at..at + 4].try_into().expect("four mono frames");
-            let w = w.map(Sample::f);
-            let l = mpfree_grain::hermite(w[0], w[1], w[2], w[3], t);
-            [l, l]
-        }
-    }
-}
-
 /// Grain settings `cents` higher (the program's tune).
-fn tuned_grain(mut g: GrainParams, cents: f32) -> GrainParams {
+fn tuned_grain(g: GrainParams, cents: f32, tone: bool) -> GrainParams {
     if cents != 0.0 {
-        g.pitch += cents / 100.0;
+        pitched_grain(g, cents / 100.0, tone)
+    } else {
+        g
+    }
+}
+
+/// Grain settings `semis` higher: the grains' pitch, or for a Tone region
+/// (`tone`) the density, with the size shortened as much so each grain
+/// keeps as many cycles of the note.
+fn pitched_grain(mut g: GrainParams, semis: f32, tone: bool) -> GrainParams {
+    if tone {
+        let k = (semis / 12.0).exp2();
+        g.density *= k;
+        g.size_ms /= k;
+    } else {
+        g.pitch += semis;
     }
     g
 }
@@ -3529,7 +3479,11 @@ fn follow_edit(
     // added (a keygroup's semitones, 16 Levels' position) kept.
     if v.granular && l.mode == PlayMode::Granular && l.grain != v.layer_grain {
         let mut p = l.grain;
-        p.pitch += v.grain_base.pitch - v.layer_grain.pitch;
+        if v.grain_tone {
+            p = pitched_grain(p, v.grain_hit, true);
+        } else {
+            p.pitch += v.grain_base.pitch - v.layer_grain.pitch;
+        }
         if v.grain_base.position != v.layer_grain.position {
             p.position = v.grain_base.position;
         }
@@ -3538,6 +3492,7 @@ fn follow_edit(
         g.set_params(tuned_grain(
             pressed_grain(p, v.route, v.press),
             v.follow.cents,
+            v.grain_tone,
         ));
         v.grain_cents = v.follow.cents;
     }

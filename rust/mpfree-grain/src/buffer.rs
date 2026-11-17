@@ -5,6 +5,23 @@
 
 use crate::hermite;
 
+/// How a source reads one grain, chosen when the grain is born
+/// ([`GrainSource::aim`]) from how fast it reads. The default is the
+/// Hermite read ([`GrainSource::read`]). A source with a band-limited read
+/// (the sampler's sounds, for grains pitched up) keeps here which copy of
+/// its sound the grain reads and how its filter reaches: the numbers are
+/// the source's own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Aim {
+    /// Read with [`GrainSource::read_aimed`], not [`GrainSource::read`].
+    pub clean: bool,
+    /// The source's own: for the sampler, the octave copy (0: the sound).
+    pub octave: u8,
+    /// The source's own: for the sampler, its filter's step and reach.
+    pub step: u32,
+    pub taps: u32,
+}
+
 /// Audio a grain can read. Frames are absolute; [`GrainSource::span`] says
 /// which ones are readable now. Reads outside the span return 0.
 pub trait GrainSource {
@@ -25,6 +42,25 @@ pub trait GrainSource {
     #[inline]
     fn read(&self, frame: i64, t: f32) -> [f32; 2] {
         read_slow(self, frame, t)
+    }
+
+    /// How to read a grain that moves `speed` source frames an output
+    /// frame (its size, whichever way it goes). The default reads every
+    /// grain with [`GrainSource::read`].
+    #[inline]
+    fn aim(&self, speed: f64) -> Aim {
+        let _ = speed;
+        Aim::default()
+    }
+
+    /// Left and right at `pos` (a frame and its fraction, inside the span)
+    /// for a grain whose [`GrainSource::aim`] was clean. The default is
+    /// [`GrainSource::read`].
+    #[inline]
+    fn read_aimed(&self, pos: f64, aim: Aim) -> [f32; 2] {
+        let _ = aim;
+        let f = pos.floor();
+        self.read(f as i64, (pos - f) as f32)
     }
 }
 

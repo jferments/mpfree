@@ -9,8 +9,8 @@
 //! slightly detuned band-limited saws, -20 dBFS RMS), a 1 kHz sine and a
 //! steady level (DC), which shows the sum of the grains' windows. Unless
 //! a row says otherwise the grains read from 30 % into the source, with
-//! the voice's defaults (80 ms grains, 20 a second, Hann, no spray, no
-//! scan).
+//! the voice's defaults (80 ms grains, 25 a second, Hann, timing 30 %
+//! random, no spray, no scan).
 //!
 //! - **G1, the level holds:** loudness (LU, [`loudness::integrated`])
 //!   against the source's at 40, 80 and 400 ms grains overlapping 2, 4
@@ -18,15 +18,17 @@
 //!   over all of them, and the defaults' offset.
 //! - **G2, coherent clouds:** a granular time stretch (scan 1, no spray)
 //!   against the same cloud sprayed, at overlaps 16 and 64.
-//! - **G3, smooth:** the DC level through regular grains, whose output is
-//!   the window sum: its ripple (largest over smallest) and its
-//!   modulation (RMS of the change against the mean), at the defaults and
-//!   with each window at overlap 2; and the first grain-rate sideband of
-//!   a 1 kHz sine at the defaults.
+//! - **G3, smooth:** the DC level through the grains, whose output is
+//!   the window sum through the level law: its ripple (largest over
+//!   smallest) and its modulation (RMS of the change against the mean),
+//!   at the defaults and with each window at overlap 2; and, for a 1 kHz
+//!   sine at the defaults, the first grain-rate sideband (from a long
+//!   transform) and how much its level flutters (shown, not kept).
 //! - **G4, no comb:** a frozen cloud (no scan, no spray, 80 ms grains) of
 //!   the pad and of the sine: how far its level swings as density moves
 //!   from 15 to 60 a second, one at a time.
-//! - **G5, clean pitching:** a sine pitched by the grains (200 ms, 20 a
+//! - **G5, clean pitching:** (read as a pad reads, through
+//!   `mpfree_sampler::grain_clip::GrainClip`) a sine pitched by the grains (200 ms, 20 a
 //!   second, spray 0.3): the worst spur from 20 Hz to 20 kHz (power within
 //!   60 Hz of the loudest bin at least 200 Hz from the wanted tone, and
 //!   never within 140 Hz of it) against the same
@@ -36,16 +38,27 @@
 //!   density with grains that fit (400 ms), and the share of grains
 //!   skipped.
 //! - **G7, width:** full spread against none on pink: the level change,
-//!   the left/right correlation and what folding to mono loses.
+//!   the left/right correlation and what folding to mono loses. (The
+//!   correlation's target is 0.45, not the plan's 0.3: folding to mono
+//!   keeps `(1 + ρ) / 2` of the power, so 1.5 dB needs ρ ≥ 0.41.)
 //! - **G8, onset:** from the start to the first 10 ms whose RMS is within
 //!   3 dB of the steady level, on the pad, with 200 ms to 1 s grains.
+//! - **G11, a tone's pitch (step B5):** short regular grains of one spot
+//!   of the pad, four cycles long, at A2, A4 and B5: the note heard (the
+//!   spectrum's peak near it, from a long transform) against the note
+//!   asked for, in cents.
+//! - **G1 again, variation (step B1):** full size, level and peaked
+//!   spray, each against the same cloud without it, on pink and the pad:
+//!   the cloud keeps its loudness.
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
 //! device round). Design: `docs/dev/design/fx-quality.md` ("The grain
 //! engine"); plan: mpfree-claude `sampler/granular/plan.md`.
 
-use mpfree_grain::{Budget, Clip, GrainVoice, Params, Stats, Window};
+use mpfree_grain::{Budget, GrainVoice, Params, SprayShape, Stats, Window};
+use mpfree_sampler::bandlimit::Octaves;
+use mpfree_sampler::grain_clip::GrainClip;
 
 use crate::fft::Fft;
 use crate::loudness;
@@ -76,6 +89,8 @@ pub fn report(rate: u32) -> Vec<Row> {
     thinning(&mut rows, &lab);
     width(&mut rows, &lab);
     onsets(&mut rows, &lab);
+    variation(&mut rows, &lab);
+    tone(&mut rows, &lab);
     rows
 }
 
@@ -183,9 +198,15 @@ fn pad_sound(n: usize, rate: u32) -> Vec<f32> {
 }
 
 /// `secs` of `src` (mono) through a voice with `p` from its start, and
-/// the voice's counters.
+/// the voice's counters. The voice reads `src` as a pad does: grains
+/// pitched more than two semitones up read band-limited, from the
+/// sound's octave copies past an octave (made here only for those).
 fn render(src: &[f32], rate: u32, p: Params, secs: f64, seed: u64) -> (Stereo, Stats) {
-    let clip = Clip::new(src, 1, rate).expect("a lab clip");
+    let up = p.pitch.max(0.0) + p.pitch_spray.max(0.0) > 2.0;
+    let octaves = up.then(|| Octaves::make(src, 1));
+    let clip = GrainClip::new(src, 1, rate)
+        .expect("a lab clip")
+        .clean(octaves.as_ref());
     let mut v = GrainVoice::new(rate, seed);
     v.set_params(p);
     v.start();
@@ -353,6 +374,11 @@ fn smooth(rows: &mut Vec<Row>, lab: &Lab) {
         (Window::Trapezoid { ramp: 0.1 }, "trapezoid 0.1", true),
         // Percussive on purpose: shown, not held to the target.
         (Window::Exponential { decay: 5.0 }, "exponential 5", false),
+        // The Shape knob (step B2) at its square, triangle, swell and pluck.
+        (Window::Shape { shape: 0.0 }, "shape 0 %, square", true),
+        (Window::Shape { shape: 0.4 }, "shape 40 %, triangle", true),
+        (Window::Shape { shape: 0.8 }, "shape 80 %, swell", true),
+        (Window::Shape { shape: 1.0 }, "shape 100 %, pluck", true),
     ] {
         cases.push((
             format!("{name}, overlap 2"),
@@ -405,9 +431,12 @@ fn smooth(rows: &mut Vec<Row>, lab: &Lab) {
             0.5,
         );
     }
-    // The first sideband of a held tone at the defaults.
-    let (s, _) = steady(&lab.tone, lab.rate, base(), 3.0, 5);
-    let sp = welch(&s.left, N);
+    // The first sideband of a held tone at the defaults, from a long
+    // transform: its bins (0.7 Hz) keep the tone's own skirt (the window's
+    // main lobe, ±2.7 Hz) out of the sideband's band. A1 and A2 measured
+    // it with 5.4 Hz bins, whose main lobe (±21.5 Hz) reached the band.
+    let (s, _) = steady(&lab.tone, lab.rate, base(), 6.0, 5);
+    let sp = welch(&s.left, N_LONG);
     let tone = band(&sp, lab.rate, 1000.0, 3.0);
     let d = f64::from(base().density);
     let side = band(&sp, lab.rate, 1000.0 + d, 3.0).max(band(&sp, lab.rate, 1000.0 - d, 3.0));
@@ -419,6 +448,26 @@ fn smooth(rows: &mut Vec<Row>, lab: &Lab) {
         (10.0 * (side / tone).max(1e-14).log10()).max(-140.0),
         Better::Lower,
         Some(-40.0),
+        0.5,
+    );
+    // How much its level flutters (10 ms RMS: deviation over mean). Grains
+    // of one spot at random times add with random phases, which a held
+    // sine shows most.
+    let e: Vec<f64> = s
+        .left
+        .chunks((f64::from(lab.rate) / 100.0) as usize)
+        .map(|c| (c.iter().map(|v| v * v).sum::<f64>() / c.len() as f64).sqrt())
+        .collect();
+    let mean = e.iter().sum::<f64>() / e.len() as f64;
+    let dev = (e.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / e.len() as f64).sqrt();
+    put(
+        rows,
+        "G3",
+        "smooth[defaults, 1 kHz]".into(),
+        "flutter_db",
+        (20.0 * (dev / mean.max(1e-12)).max(1e-7).log10()).max(-140.0),
+        Better::Info,
+        None,
         0.5,
     );
 }
@@ -457,6 +506,8 @@ fn comb(rows: &mut Vec<Row>, lab: &Lab) {
 
 /// The analysis length (5.4 Hz bins at 44.1 kHz).
 const N: usize = 8192;
+/// The long transform for a sideband close to its tone.
+const N_LONG: usize = 65536;
 /// How far from the wanted tone a spur is looked for (Hz): clear of its
 /// skirt, which the grains' windows widen.
 const CLEAR: f64 = 200.0;
@@ -668,7 +719,7 @@ fn width(rows: &mut Vec<Row>, lab: &Lab) {
         "correlation",
         corr,
         Better::Lower,
-        Some(0.3),
+        Some(0.45),
         0.02,
     );
     let mono: Vec<f64> = l.iter().zip(r).map(|(a, b)| 0.5 * (a + b)).collect();
@@ -723,6 +774,97 @@ fn onsets(rows: &mut Vec<Row>, lab: &Lab) {
             Better::Lower,
             Some(15.0),
             1.0,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G1 again: variation (step B1).
+
+fn variation(rows: &mut Vec<Row>, lab: &Lab) {
+    let p = Params {
+        density: 40.0,
+        spray: 0.3,
+        ..base()
+    };
+    for (name, src) in [("pink", &lab.pink), ("pad", &lab.pad)] {
+        let (plain, _) = steady(src, lab.rate, p, 2.0, 8);
+        let plain = lufs(&plain);
+        for (what, q) in [
+            (
+                "size spray full",
+                Params {
+                    size_spray: 1.0,
+                    ..p
+                },
+            ),
+            (
+                "level spray full",
+                Params {
+                    level_spray: 1.0,
+                    ..p
+                },
+            ),
+            (
+                "peaked spray",
+                Params {
+                    spray_shape: SprayShape::Peaked,
+                    ..p
+                },
+            ),
+        ] {
+            let (varied, _) = steady(src, lab.rate, q, 2.0, 8);
+            put(
+                rows,
+                "G1",
+                format!("vary[{name}, {what}]"),
+                "level_change_lu",
+                lufs(&varied) - plain,
+                Better::Near(0.0),
+                Some(1.0),
+                0.1,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G11: a tone's pitch (step B5).
+
+fn tone(rows: &mut Vec<Row>, lab: &Lab) {
+    for (name, hz) in [("A2", 110.0f64), ("A4", 440.0), ("B5", 987.767)] {
+        let p = Params {
+            density: hz as f32,
+            size_ms: (4000.0 / hz) as f32,
+            timing: 0.0,
+            ..base()
+        };
+        let (s, _) = steady(&lab.pad, lab.rate, p, 2.0, 11);
+        let sp = welch(&s.left, N_LONG);
+        let bin = f64::from(lab.rate) / N_LONG as f64;
+        // The loudest bin within 60 cents of the note, its place refined
+        // by a parabola through its neighbours' log powers.
+        let lo = (hz * (-0.05f64).exp2() / bin).floor() as usize;
+        let hi = (hz * 0.05f64.exp2() / bin).ceil() as usize;
+        let k = (lo..=hi)
+            .max_by(|&a, &b| sp[a].total_cmp(&sp[b]))
+            .unwrap_or(lo);
+        let (a, b, c) = (
+            sp[k - 1].max(1e-30).ln(),
+            sp[k].max(1e-30).ln(),
+            sp[k + 1].max(1e-30).ln(),
+        );
+        let d = 0.5 * (a - c) / (a - 2.0 * b + c);
+        let heard = (k as f64 + if d.is_finite() { d } else { 0.0 }) * bin;
+        put(
+            rows,
+            "G11",
+            format!("tone[{name}]"),
+            "pitch_cents",
+            1200.0 * (heard / hz).log2(),
+            Better::Near(0.0),
+            Some(5.0),
+            0.5,
         );
     }
 }

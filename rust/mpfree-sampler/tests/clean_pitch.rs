@@ -226,3 +226,61 @@ fn a_voice_two_octaves_up_plays_whether_or_not_its_copies_are_made_yet() {
     }
     assert!(db(level(&l, 4_000.0)) > -10.0);
 }
+
+/// `s` on pad 0 as a grain cloud (200 ms grains, 20 a second), its grains
+/// `semis` up, held.
+fn grain_pad(s: &Source, semis: f32, vintage: bool) -> Project {
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut r = Region::whole(s);
+    r.mode = PlayMode::Granular;
+    r.grain = GrainParams {
+        size_ms: 200.0,
+        density: 20.0,
+        pitch: semis,
+        ..GrainParams::default()
+    };
+    let mut pad = Pad::new("cloud", Layer::new(r));
+    pad.vintage = vintage;
+    p.set_pad(0, Some(pad), None).unwrap();
+    p
+}
+
+#[test]
+fn grains_pitched_past_nyquist_are_gone_not_folded_back() {
+    // As a pad's voice: 15 kHz an octave up folds to 14.1 kHz unless the
+    // grains read band-limited; two octaves up they read the octave copy.
+    let s = sine(RATE, 2.0, 15_000.0);
+    s.make_octaves();
+    for semis in [12.0f32, 24.0] {
+        let clean = play(&grain_pad(&s, semis, false), hit(), 12_000, 128);
+        let vintage = play(&grain_pad(&s, semis, true), hit(), 12_000, 128);
+        // 30 kHz folds to 14.1 kHz, 60 kHz to 15.9 kHz.
+        let up = 15_000.0 * f64::from(semis / 12.0).exp2();
+        let alias = (up - f64::from(RATE)).abs();
+        let (c, v) = (db(level(&clean, alias)), db(level(&vintage, alias)));
+        eprintln!(
+            "grains 15 kHz up {semis}: alias at {alias:.0} Hz {c:.1} dB clean, {v:.1} dB Vintage"
+        );
+        assert!(
+            v > -20.0,
+            "Vintage grains keep the old read's alias: {v:.1} dB"
+        );
+        assert!(c < -50.0, "clean grains: the alias is {c:.1} dB");
+    }
+}
+
+#[test]
+fn grains_up_to_two_semitones_up_sound_exactly_as_vintage_ones() {
+    let s = sine(RATE, 1.0, 3_000.0);
+    for semis in [2.0f32, 1.0, 0.0, -7.0, -12.0] {
+        let clean = play(&grain_pad(&s, semis, false), hit(), 8_000, 128);
+        let vintage = play(&grain_pad(&s, semis, true), hit(), 8_000, 128);
+        assert_eq!(clean, vintage, "{semis} semitones");
+        assert!(clean.iter().any(|x| x.abs() > 0.05));
+    }
+    // A little past two semitones the read changes.
+    let clean = play(&grain_pad(&s, 2.05, false), hit(), 8_000, 128);
+    let vintage = play(&grain_pad(&s, 2.05, true), hit(), 8_000, 128);
+    assert_ne!(clean, vintage);
+}
