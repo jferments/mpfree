@@ -50,6 +50,9 @@ struct Session {
     commands: Vec<(u64, Command)>,
     /// Live notes at absolute frames, in frame order.
     live: Vec<(u64, Event)>,
+    /// Live erase's sounds from absolute frames, in frame order (set
+    /// from the period that frame falls in).
+    erasing: Vec<(u64, u128)>,
     frames: u64,
 }
 
@@ -92,9 +95,17 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
     let mut erased_locks = vec![];
     let mut takes = Takes::default();
     let mut live = s.live.iter().peekable();
+    let mut erasing = s.erasing.iter().peekable();
     while t.frame() < s.frames {
         let n = next().min((s.frames - t.frame()) as u32);
         let start = t.frame();
+        while let Some(&&(f, notes)) = erasing.peek() {
+            if f >= start + u64::from(n) {
+                break;
+            }
+            player.set_erasing(notes);
+            erasing.next();
+        }
         t.process(n, &mut block);
         player.process(&view, &block, &mut log);
         while let Some(&&(f, e)) = live.peek() {
@@ -165,6 +176,7 @@ fn session(clip: Clip, origin: i64) -> Session {
         armed: Some(0),
         commands: vec![(0, Command::Record)],
         live: vec![],
+        erasing: vec![],
         frames: 0,
     }
 }
@@ -394,10 +406,7 @@ fn record_quantise_puts_the_notes_on_the_grid_as_they_are_recorded() {
     ];
     s.frames = 3 * 88_200;
     let r = run(&s, || 128);
-    assert_eq!(
-        notes(&r.taken),
-        vec![(240, 30, 1), (960, 30, 2), (0, 8, 3)]
-    );
+    assert_eq!(notes(&r.taken), vec![(240, 30, 1), (960, 30, 2), (0, 8, 3)]);
     assert_eq!(clip_notes(&r), vec![(0, 3), (240, 1), (960, 2)]);
     // The first pass plays none of them, the second all but the one heard
     // just before it began, the third all three.
@@ -418,6 +427,42 @@ fn record_quantise_puts_the_notes_on_the_grid_as_they_are_recorded() {
         notes(&r.taken),
         vec![(230, 30, 1), (970, 30, 2), (3830, 8, 3)]
     );
+}
+
+/// Live erase (ERASE held on a pad while recording): the armed track's
+/// notes of that sound are erased as the playhead reaches them, on every
+/// pass, and not played; the other sounds play on. They go in the take,
+/// so its undo brings them back. Playing without recording erases
+/// nothing.
+#[test]
+fn live_erase_takes_a_sounds_notes_out_as_the_playhead_reaches_them() {
+    let mut s = four_beats_overdub();
+    // Note 11 (beat 2) erased through the first pass, then let go.
+    s.erasing = vec![(0, 1 << 11), (88_200, 0)];
+    let mut r = run(&s, || 128);
+    let erased: Vec<(i64, u8)> = r
+        .erased
+        .iter()
+        .map(|e| (e.note.tick, e.note.note))
+        .collect();
+    assert_eq!(erased, vec![(960, 11)]);
+    assert_eq!(clip_notes(&r), vec![(0, 10), (1920, 12), (2880, 13)]);
+    let played: Vec<u8> = ons(&r.played).iter().map(|o| o.1).collect();
+    assert_eq!(played, [10, 12, 13, 10, 12, 13], "11 never plays");
+    assert_eq!(r.takes.undo(&mut r.project), Some(1));
+    assert_eq!(
+        clip_notes(&r),
+        vec![(0, 10), (960, 11), (1920, 12), (2880, 13)],
+        "UNDO brings it back"
+    );
+    // Through both passes: one erase, the note is gone after the first.
+    s.erasing = vec![(0, 1 << 11)];
+    assert_eq!(run(&s, || 128).erased.len(), 1);
+    // Only playing: nothing is erased and every note plays.
+    s.commands = vec![(0, Command::Play)];
+    let r = run(&s, || 128);
+    assert!(r.erased.is_empty());
+    assert_eq!(ons(&r.played).len(), 8);
 }
 
 #[test]

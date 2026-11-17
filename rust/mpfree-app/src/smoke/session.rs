@@ -670,6 +670,7 @@ impl Session {
         self.fx.extend(held);
         let fx = self.app.button(note, down, t);
         self.fx.extend(fx);
+        crate::live_erase_let_go(&self.app, &mut self.time);
         self.run_periods(2)
     }
 
@@ -750,6 +751,17 @@ impl Session {
             } else {
                 self.out.show(ToUi::PadUp(pad));
             }
+            return;
+        }
+        // Live erase: ERASE held while recording.
+        if down && crate::live_erase_starts(&self.app, &self.time) {
+            let tell = crate::live_erase(&mut self.time, pad);
+            self.fx.extend(tell);
+            return;
+        }
+        if !down && self.time.erases(pad as u8) {
+            self.time.erase_sound(pad as u8, false);
+            self.out.show(ToUi::PadUp(pad));
             return;
         }
         if let Some(ev) = self.app.pressed_event(pad, velocity, down) {

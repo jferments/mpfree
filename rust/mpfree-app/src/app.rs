@@ -1861,7 +1861,7 @@ impl App {
             mute_bank: self.mute_bank,
             steps: self.step_pads(),
             erase: self.erase_held,
-            copy: self.step_seq.copy_held,
+            copy: self.copy_held(),
         })
     }
 

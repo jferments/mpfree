@@ -1377,7 +1377,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 6 => st.armed.and_then(|a| {
                     let now = st.tracks.get(a)?.record_quantise;
                     let k = now.map_or(0, |g| {
-                        QUANTISE_GRIDS.iter().position(|&q| q == g).map_or(0, |i| i + 1)
+                        QUANTISE_GRIDS
+                            .iter()
+                            .position(|&q| q == g)
+                            .map_or(0, |i| i + 1)
                     });
                     let next = (k as i32 + d).clamp(0, QUANTISE_GRIDS.len() as i32) as usize;
                     let grid = (next > 0).then(|| QUANTISE_GRIDS[next - 1]);
@@ -2213,7 +2216,9 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
             RECORD_ROWS[6],
             match st.armed.and_then(|a| st.tracks.get(a)) {
                 None => "–".to_string(),
-                Some(tr) => tr.record_quantise.map_or_else(|| "Off".to_string(), grid_name),
+                Some(tr) => tr
+                    .record_quantise
+                    .map_or_else(|| "Off".to_string(), grid_name),
             },
         ),
     ]
@@ -3762,6 +3767,7 @@ mod tests {
             dropped: None,
             song: None,
             settings: false,
+            pasted: false,
         };
         let mut st = st;
         st.done = vec![take];
@@ -4093,7 +4099,9 @@ mod tests {
             })
         );
         let speed = |st: &TimeState, delta| match act(st, 1, delta) {
-            Ok(TimeAction::ClipSettings { row: 1, settings, .. }) => Ok(speed_name(settings.speed)),
+            Ok(TimeAction::ClipSettings {
+                row: 1, settings, ..
+            }) => Ok(speed_name(settings.speed)),
             other => Err(format!("{other:?}")),
         };
         assert_eq!(speed(&st, 1).as_deref(), Ok("×2"));
@@ -4429,6 +4437,7 @@ mod tests {
             dropped: None,
             song: None,
             settings: false,
+            pasted: false,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -4462,6 +4471,7 @@ mod tests {
             dropped: None,
             song: None,
             settings: false,
+            pasted: false,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -4485,6 +4495,7 @@ mod tests {
             dropped: None,
             song: None,
             settings: false,
+            pasted: false,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");

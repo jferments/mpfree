@@ -185,6 +185,7 @@ With the transport's overdub on, a take only adds notes. With overdub off (the d
 - **The new notes are safe.** A note recorded in the replace pass is handed over only after the playhead has passed where it plays (see "No double notes"), so the pass never erases it.
 - **Locks too.** The pass erases the old parameter locks it reaches in the same way, trigless ones included, so the new take does not play the old take's locks. `Player::erased_locks()` names them and `Takes::erase_lock` removes them; UNDO puts them back. The control thread applies erased locks before the recorded ones.
 - **Muted tracks.** A muted armed track is still replaced; nothing on it plays.
+- **Live erase** (ERASE held on a pad while recording, sequencer roadmap S1). `Player::set_erasing` names sounds, a bit each by note; while the transport records, the armed track's notes of those sounds are erased as the playhead reaches them, on every pass and in overdub too, with the locks scoped to those sounds, through `erased()` and `erased_locks()` as the replace pass's are, so the take's undo brings them back. The app sets it through `TimeHost::erase_sound` from the main loop and the smoke session (`live_erase_starts`, `live_erase`, `live_erase_let_go` in `main.rs`): ERASE held and a pad pressed while recording, which then neither sounds nor records, until the pad or ERASE is let go. With STEP SEQ on, ERASE + a step pad stays the step pads'.
 - **Real-time safe.** Up to 256 erased notes a period; the rest are counted in `Stats::dropped`. `Stats::erased` counts erased notes.
 
 ### Take undo (`Takes`)
@@ -236,13 +237,14 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
 - `tests/moves.rs` has 8 tests of how FX moves play: a ramp sends a value every 8th tick and an unlock at its end, each pass; a step lock beats the lane on its step and hands back at the next note; a lane ending under a lock leaves the parameter free; a locate into a gesture chases its value; a switch ends the old clip's moves; a fixed target; a muted track lets go and sends none; and every value on the same frame at period sizes 1 to 4096, with a locate, a loop, a tempo change and a 3/4-speed clip.
 - `tests/record_moves.rs` has 7 tests of recording gestures: a gesture becomes a lane and undoes and redoes with its take; a punch out ends a held gesture there; a gesture over the clip's end runs on into the next pass; nothing is recorded while only playing; a parameter off the track gets a fixed lane; a long gesture is handed over in parts, and only a new lane compiles; and the same moves at any period size. The view written in place equals a fresh compile after every period.
 - `tests/locks.rs` has 9 tests of how locks play: a lock comes before its note-on and ends at the track's next note without one; a trigless lock holds until the next note; a pad's lock ends only at that pad's next note; a chord keeps its lock for every note; a note its chance leaves out ends nothing; a stop and a locate unlock everything after the note-offs; a switch ends the old clip's locks before the new one's; a muted track lets its locks go and sends none; a clip locks the track it plays on.
-- `tests/record.rs` has 21 tests:
+- `tests/record.rs` has 22 tests:
   - notes land on the ticks they were played on, with their lengths
   - clip speed, origin and length map song ticks to clip ticks
   - punch out, a loop jump and a stop end held notes, and nothing is recorded between punch out and punch in
   - a pad pressed again ends the held note
   - nothing is recorded unless the track is armed and the transport records (not while playing, not during a count-in, not without a clip)
   - a recorded note that quantise and swing move later is not played again in the pass it was played in. Without the hold-back, it plays twice and the test fails.
+  - live erase (`Player::set_erasing`) takes a sound's notes out of the armed track's clip as the playhead reaches them, on every pass, and they don't play; the take's undo brings them back; only playing, nothing is erased
   - record quantise (`Track::record_quantise`) puts each recorded note on the grid's nearest line, its length kept, one played just before the clip's end at its start in the next pass, and none plays again straight after it was heard; with no grid the notes keep their ticks
   - replace recording erases the old notes the playhead reaches after the punch in, for one pass of the clip, and does not play them; overdub keeps them, and turning overdub on ends the pass
   - a loop jump ends the replace pass, the take goes on as overdub, and a new take replaces again. Without starting a new take on punch in, the test fails.

@@ -178,6 +178,15 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(got["the copy's layers all went in"])
         self.assertFalse(got["the copy came in on a bar line"])
 
+    def test_live_erase_needs_the_erase_line(self):
+        w = checks.Window(lines("rec: ready, PLAY adds to Track 1", "ERASE: pad 1's notes come out of the armed "
+                                "track's clip as the playhead passes them; UNDO brings them back"))
+        self.assertTrue(all(ok for ok, _ in self.judge("live-erase", w)))
+        # ERASE + a step pad (STEP SEQ) is not this one.
+        w = checks.Window(lines("rec: ready, PLAY adds to Track 1", "ERASE: the locks of step 5 are off"))
+        got = dict((what, ok) for ok, what in self.judge("live-erase", w))
+        self.assertFalse(got["ERASE + pad 1 erased while recording"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]

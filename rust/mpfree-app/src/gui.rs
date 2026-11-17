@@ -10454,6 +10454,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         dropped: None,
         song: None,
         settings: false,
+        pasted: false,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -12982,6 +12983,7 @@ mod tests {
             dropped: None,
             song: None,
             settings: false,
+            pasted: false,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -13322,6 +13324,7 @@ mod tests {
             dropped: None,
             song: None,
             settings: false,
+            pasted: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
@@ -13440,11 +13443,12 @@ mod tests {
             (r.x + r.w / 2, r.y + r.h / 2)
         };
         copy(&mut p, true);
-        assert!(hint(&p).starts_with("COPY held: tap a clip"), "{}", hint(&p));
-        // Nothing copied yet: an empty slot says so and records nothing.
+        assert!(
+            hint(&p).starts_with("COPY held: tap a clip"),
+            "{}",
+            hint(&p)
+        );
         let empty = cell(&p, 2, 1);
-        assert_eq!(tap(&mut p, empty), None);
-        assert!(hint(&p).contains("tap a clip first"), "{}", hint(&p));
         let clip = cell(&p, 0, 0);
         assert_eq!(
             tap(&mut p, clip),
@@ -13460,6 +13464,12 @@ mod tests {
             tap(&mut p, empty),
             Some(FromUi::Time(TimeAction::PasteClip { track: 2, slot: 1 }))
         );
+        // Nothing copied: an empty slot says so and asks for nothing.
+        let mut st = p.time.clone();
+        st.clipboard = None;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(tap(&mut p, empty), None);
+        assert!(hint(&p).contains("tap a clip first"), "{}", hint(&p));
         // Let go of COPY: taps are as always.
         copy(&mut p, false);
         assert_eq!(

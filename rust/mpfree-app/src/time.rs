@@ -789,6 +789,32 @@ impl TimeHost {
         self.audio.touch_dropped() + self.control.touch_lost()
     }
 
+    /// Live erase (ERASE held on a pad while recording, the MPC's way):
+    /// from the coming period, while the transport records, the armed
+    /// track's notes of sound `note` (a pad's number) are erased as the
+    /// playhead reaches them, with that sound's locks, into the take being
+    /// recorded, so UNDO brings them back; `on` false stops it.
+    pub fn erase_sound(&mut self, note: u8, on: bool) {
+        self.audio.erase_sound(note, on);
+    }
+
+    /// Live erase off for every sound (ERASE let go).
+    pub fn erase_none(&mut self) {
+        self.audio.erase_none();
+    }
+
+    /// Whether live erase is erasing any sound.
+    pub fn erasing(&self) -> bool {
+        self.audio.erasing() != 0
+    }
+
+    /// Whether live erase is erasing sound `note`.
+    pub fn erases(&self, note: u8) -> bool {
+        1u128
+            .checked_shl(u32::from(note))
+            .is_some_and(|b| self.audio.erasing() & b != 0)
+    }
+
     /// A knob moved in the coming period, at `offset`: parameter `addr` is
     /// now `value`. While the transport records and `addr` is on the armed
     /// track, it becomes a parameter lock on the step it belongs to (see
@@ -2003,6 +2029,50 @@ mod tests {
         assert!(lanes > 20, "{lanes}");
         assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
         assert_eq!(lane(&h), None);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Live erase (sequencer S1, ERASE held on a pad while recording): the
+    /// pad's notes come out of the clip as the playhead passes them, the
+    /// other pads' stay; let go, nothing more is erased.
+    #[test]
+    fn live_erase_takes_a_pads_notes_out_while_recording() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        run(
+            &mut h,
+            &mut pads,
+            BAR - 1000,
+            &[(22_969, 5, 100, 2000), (26_414, 6, 100, 2000)],
+        );
+        let pads_in = |h: &TimeHost| {
+            let mut n: Vec<u8> = h
+                .control
+                .project
+                .clip(0, 0)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| n.note)
+                .collect();
+            n.sort();
+            n
+        };
+        assert_eq!(pads_in(&h), [5, 6]);
+        assert!(!h.erasing());
+        // The second pass with ERASE + pad 5 held.
+        h.erase_sound(5, true);
+        assert!(h.erasing() && h.erases(5) && !h.erases(6));
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        assert_eq!(pads_in(&h), [6], "pad 5's note came out");
+        h.erase_sound(5, false);
+        assert!(!h.erasing());
+        h.erase_sound(6, true);
+        h.erase_none();
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        assert_eq!(pads_in(&h), [6], "let go: nothing more");
         assert_eq!(h.dropped(), 0);
     }
 

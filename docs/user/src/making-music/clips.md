@@ -68,6 +68,10 @@ Tap a row's arrows, or the left or right of its value, to change it. Or turn the
 
 Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into the armed track's clip. Picking a track arms its notes, and the REC chip at the right of the transport bar names the clip REC records into (see [What REC records](../getting-started/first-beat.md#what-rec-records)).
 
+### Erasing while you record
+
+Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its hits come out of the clip as the playhead passes them, on every pass, and the pad makes no sound while you hold it. The other pads play on. Let go of the pad, or of **ERASE**, and it stops. It erases on the armed track only, and the hits it took out are part of the take, so **UNDO** brings them back with it. With **STEP SEQ** on, **ERASE** and a pad clears that step instead.
+
 ### Pad pressure
 
 The pads feel how hard you keep pressing after you hit them. While you record, that pressure goes into the clip with each note, and the clip plays it back the way you played it: a synth swells, opens up or wobbles just as it did live. It works on drum pads too, where a sound's pressure settings use it.

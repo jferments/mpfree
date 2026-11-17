@@ -1223,10 +1223,7 @@ mod tests {
         assert!(p.tracks[0].slots[5].is_none());
         assert_eq!(t.redo(&mut p), Some(1));
         assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
-        assert_eq!(
-            t.paste_clip(&mut p, 0, 99, copy),
-            Err(ModelError::BadSlot)
-        );
+        assert_eq!(t.paste_clip(&mut p, 0, 99, copy), Err(ModelError::BadSlot));
     }
 
     #[test]
