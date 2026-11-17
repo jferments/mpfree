@@ -4,7 +4,7 @@ checked: 2026-11-17 1c113480
 -->
 # Dynamics: design
 
-**Status:** 2026-11-17, FX quality round 4's De-esser PR (after the Limiter and Master safety PR and the Multiband PR). This page covers the dynamics effects other than the Compressor ([fx-compressor.md](fx-compressor.md)): the **Limiter**, **Master safety**, the **Gate**, the **De-esser**, the **Multiband comp**, the **Ducker**, the **Transient shaper** and the **Channel strip**. Round 4 improves them one pull request at a time, in the order of the plan (jferments/mpfree-claude `fx/quality/plan-4.md`, with research-dynamics.md and baseline-dynamics-2026-11-17.md): the Limiter and Master safety first, then the Multiband, the De-esser (this one), the Gate with the Channel strip, the Ducker and the Transient shaper. The sections on the effects not yet reworked say what they are today and what their pull request is planned to change. Their short entries are in [fx.md](fx.md); their measured targets are in [fx-quality.md](fx-quality.md) (ids P, N, S, X, U, T and C).
+**Status:** 2026-11-17, FX quality round 4's Gate and Channel strip PR (after the Limiter and Master safety, Multiband and De-esser PRs). This page covers the dynamics effects other than the Compressor ([fx-compressor.md](fx-compressor.md)): the **Limiter**, **Master safety**, the **Gate**, the **De-esser**, the **Multiband comp**, the **Ducker**, the **Transient shaper** and the **Channel strip**. Round 4 improves them one pull request at a time, in the order of the plan (jferments/mpfree-claude `fx/quality/plan-4.md`, with research-dynamics.md and baseline-dynamics-2026-11-17.md): the Limiter and Master safety first, then the Multiband, the De-esser, the Gate with the Channel strip (this one), the Ducker and the Transient shaper. The sections on the effects not yet reworked say what they are today and what their pull request is planned to change. Their short entries are in [fx.md](fx.md); their measured targets are in [fx-quality.md](fx-quality.md) (ids P, N, S, X, U, T and C).
 
 ## 1. What they are for
 
@@ -88,9 +88,15 @@ Every stage takes the gain at most down to what is needed, never up past it, so 
 
 The soft clip's delay (the half-bands' 2.02 frames at low frequencies and ADAA's 2) is matched in the other modes by a 4-frame pad, so the latency is the core's plus 4 in every mode: 85 frames at 44.1 kHz, 91 at 48 kHz. A mode change glides over 10 ms: the soft clip's share of what the core hears and the core's share of the output each move in a straight line, both paths running meanwhile, and the soft clip starts from a clean state when it fades in from nothing. The meters count overs (frames that came in above the ceiling), frames that leave above 0 dBFS (only Raw can make them) and the limiting.
 
-### Gate (round 4's next PR)
+### Gate
 
-Today: open and close thresholds apart (hysteresis), Range, Attack, Hold, Release, a 1 ms look-ahead, key filters and the strip's side-chain as the key. Its fronts are kept exactly and the fade means its label, but with Hold 0 it rides 40 and 60 Hz, it shuts only 0.2 to 1.1 dB under the threshold under 1 kHz, and a Range move while it is shut waits until it opens. Planned (plan-4 section 5): a detector that holds each peak for at least 20 ms, Range that follows while shut, an expander mode and Key listen.
+Open and close thresholds apart (it shuts 4 dB under where it opens), Range, Attack (a straight ramp in gain), Hold, Release (an even fade in dB to Range), a 1 ms look-ahead, key filters and the strip's side-chain as the key.
+
+- **Hold counts from the last peak.** The gate opens the frame the key reaches the threshold and shuts once the key hasn't reached the shut level (the threshold less 4 dB) for Hold, which is at least 20 ms (the fixed hold of about 20 to 30 ms Sound On Sound describes), so the dips between a bass note's peaks (12.5 ms apart at 40 Hz) never count. The old detector fell 60 dB in 20 ms between peaks: with Hold 0 it rode 40 and 60 Hz (3.7 and 2.3 dB of chatter inside a half cycle) and, under 1 kHz, shut only 0.2 to 1.1 dB under the threshold. Now it shuts within 0.37 to 0.61 dB of the threshold less 4 dB from 40 Hz to 1 kHz, Hold's worth of the falling tone late.
+- **Range while shut.** A Range raised while the gate is shut lifts the gain to it over about 10 ms (a one-pole); a lowered one fades to it at Release's pace. It used to wait until the gate opened again.
+- **Expander** (Mode, id 10; Ratio, id 11, 1.2 to 10, default 2): under the threshold the gain is (level - threshold) × (Ratio - 1) dB, at most down to Range, rising at Attack's pace and falling at Release's. Its level is the key's peak held for Hold (at least 20 ms); a lower peak within 1 dB takes over, so a fading note is followed peak by peak, and with none it falls 60 dB in 20 ms. Soft cleanup is an expander at Ratio 2 (its Range of -12 dB kept).
+- **Listen** (id 9) plays the key as the filters leave it, to set them by ear.
+- For the Channel strip: `feed` keeps the look-ahead filled while the strip has the gate off, and `resume_open` brings it back open (its key filters fresh), so switching it on is seamless.
 
 ### De-esser
 
@@ -119,9 +125,14 @@ Today: a volume envelope from the side-chain key or from every step of the tempo
 
 Today: a held peak and two pairs of dB followers (Attack: fast minus slow-rising; Sustain: slow-falling minus fast-falling) from a -60 dBFS floor, so a hit out of silence gets more than a hit over a quiet bed: its fronts' gain spreads 8.7 dB across levels. Planned (plan-4 section 9): a level-independent front (decision 11.4 on its default).
 
-### Channel strip (with the Gate's PR)
+### Channel strip
 
-Today: MPFree's Gate, Compressor (Clean) and EQ in one insert, with Order and Output. Switching its gate on clicks (it restarts with an empty look-ahead), a boosted EQ switched off clicks (the fade starts at full speed), and an Order change has no crossfade. Planned (plan-4 section 9): click-free switches and order changes, and the Gate's fixes.
+MPFree's Gate, Compressor and EQ in one insert, with Order and Output. The gate and its fixes are the Gate's; the compressor is the Compressor engine.
+
+- **Switches on an S-curve.** Each stage's switch is a straight 20 ms ramp heard through smoothstep (3t² - 2t³), so the fade starts and ends at rest. It was a one-pole, which starts at full speed: a 6 dB EQ boost switched off under a 220 Hz tone bent the wave 9.3 dB more than the tone itself does.
+- **The gate comes back on open.** While the strip has the gate off, the gate's look-ahead keeps filling, and when it comes back on it starts open with its key filters fresh, then shuts over Hold and Release if the key is quiet. It used to start from an empty look-ahead, shut: a 1 ms gap, 12.9 dB over the tone's own bend.
+- **Order dips.** An Order change fades the output to silence over 8 ms (smoothstep), swaps the stages there, stays silent while the gate's look-ahead (which still holds sound from the old order) empties and 2 ms more for the EQ's filters to settle on their new input, then comes back over 8 ms: about 20 ms in all. The fade counts frames, and the stages are run in a piece that ends where the fade reaches silence, so the swap lands on the same frame at any block size. The swap was instant (54.4 dB); with 5 ms fades the dip itself read 2.4 dB, with 8 ms 2.2, with 10 ms 1.8.
+- **Style and Auto makeup** (ids 24 and 25, after the meters) are the compressor's own: Clean, Opto, Bus or FET, and Auto makeup off by default, as on the Compressor. Every preset turns Auto makeup on in place of its Makeup, and takes a style: Vocal and Bass Opto, Snare FET, Gentle glue Bus, Kick Clean.
 
 ## 5. Controls
 
@@ -140,6 +151,10 @@ Today: MPFree's Gate, Compressor (Clean) and EQ in one insert, with Order and Ou
 
 **Multiband comp** (ids unchanged, Auto makeup new): Low | mid (40 Hz to 1 kHz, 200; log, 30 ms glide), Mid | high (1 to 12 kHz, 2.5k; as Low | mid), per band Threshold (-60 to 0 dB, -18; 20 ms glide), Ratio (1 to 20, 2; log, its slope glides 20 ms) and Gain (-24 to +24 dB, 0; 20 ms glide), Attack (0.1 to 100 ms, 10; log), Release (10 ms to 1 s, 150; log), Solo (Off, Low, Mid, High), Mix (0 to 100 %, 100; 20 ms glide), Output (-24 to +24 dB, 0; 20 ms glide), Auto makeup (Off, On; Off), and the three bands' reduction meters.
 
+**Gate** (ids 0 to 8 unchanged; Listen, Mode and Ratio new, appended): Threshold (-80 to 0 dB, -40; it shuts 4 dB under), Range (-80 to 0 dB, -80, silence at the bottom; a raised Range is reached over about 10 ms while shut), Attack (0.1 to 50 ms, 0.5; log), Hold (0 to 500 ms, 30; at least 20 ms in effect), Release (5 ms to 2 s, 120; log, an even fade in dB to Range), Key HP (20 Hz to 2 kHz, off at 20), Key LP (500 Hz to 20 kHz, off at the top), Key (Self, Sidechain), Listen (Off, On), Mode (Gate, Expander), Ratio (1.2 to 10, 2; log; Expander only), and the Gain meter. Latency 1 ms.
+
+**Channel strip** (ids unchanged; Style and Auto makeup new, appended after the meters): the gate's Threshold, Range, Attack and Release; the compressor's Threshold, Ratio, Attack, Release, Makeup, Style (Clean, Opto, Bus, FET; Clean) and Auto makeup (Off, On; Off); the EQ's Low cut, Low freq and gain, Mid freq, gain and Q, High freq and gain; the three stage switches (20 ms on an S-curve), Order (an 8 ms dip either side of the swap), Output; the gate's gain and the compressor's reduction meters. Latency 1 ms, whatever is on.
+
 **Master safety** (ids unchanged): Mode (Safe limiter, Soft clip, Raw; Safe limiter; a 10 ms glide between modes), Trim (-24 to +12 dB, 0; 20 ms glide), Ceiling (-6 to 0 dB, -0.3; 20 ms glide, new), Release (10 ms to 1 s, 80; log, as the Limiter's), and the meters Limiting, Overs and Clipped.
 
 ## 6. Defaults and presets
@@ -147,6 +162,8 @@ Today: MPFree's Gate, Compressor (Clean) and EQ in one insert, with Order and Ou
 The Limiter's defaults (Gain 0, Ceiling -0.3, Release 80, Auto release on, True peak off) catch stray peaks without touching anything under the ceiling. Its presets: **Safe peaks** (Ceiling -1), **Loud master** (Gain 6, Ceiling -1, True peak on) and **Drum smash** (Gain 12, Release 25, Auto release off). Master safety's defaults (Safe limiter at -0.3 dB) are what every output ends in; it has no presets.
 
 The De-esser's defaults (6 kHz, -30 dB Relative, Range 10, Split) and presets (Male vocal at 5 kHz, Female vocal at 7.5 kHz, both -26 dB; Harsh hats at 9 kHz, -20 dB, Range 6) are unchanged.
+
+The Gate's defaults (Threshold -40, Range -80, Attack 0.5, Hold 30, Release 120) and presets (Tight drums, Gated snare, Kick trigger) are unchanged but for **Soft cleanup**, now an expander at Ratio 2 (Threshold -50, Range -12, Release 300): it turns what is under the threshold down gradually instead of switching to Range. The Channel strip's defaults are unchanged (the gate off, Clean, Auto makeup off, so saved projects sound as set); its presets now turn Auto makeup on in place of their own Makeup and each take a style: **Vocal** Opto, **Kick** Clean, **Snare** FET, **Bass** Opto, **Gentle glue** Bus.
 
 The Multiband's defaults (200 Hz and 2.5 kHz, every band at -18 dB and 2:1, Attack 10 ms, Release 150 ms) are gentle glue. Its presets now all turn Auto makeup on: **Master glue**, **Tight low end** (keeps its +2 dB on the low band, a tilt), **Vocal smooth** and **Drum crush**, which drops the +6 dB it gave each band for Auto makeup (it was 5.6 LU quieter than the dry on pink, now 0.8 louder).
 
@@ -196,6 +213,22 @@ The quick gates assert X2 at Mix 25, 50 and 75, and X7 at the defaults and at Dr
 
 S3 and S4 are as before (Relative takes the same 9.95 dB off the s at -6, -18 and -30 dBFS, and 0.04 dB off the voice between). `tests/coverage.rs` checks that the first millisecond of a burst out of silence already comes out turned down (the look-ahead), and `kit`'s unit tests that the split's all-pass is flat, that turning its high band down never lifts anything, and that an octave over the split it is within a dB of the gain.
 
+### Gate and Channel strip
+
+`fxlab quality --class gate` and `--class strip` measure the N and C targets ([fx-quality.md](fx-quality.md#gate-n)). After the Gate and Channel strip PR all 31 gate targets are met (20 of 30 before; N6, the expander, is new) and all 20 strip targets (10 of 14):
+
+| | Before | After |
+|---|---|---|
+| Chatter with Hold 0: 40, 60, 100 Hz | 3.7, 2.3, 0.41 dB | 0 dB |
+| Shut against the threshold less 4 dB, 40 Hz to 1 kHz, Hold 0 and 30 | 0.10 to 3.83 dB | 0.37 to 0.61 dB |
+| Range from -80 to -40 dB while shut | 88 dB off (it didn't move) | 0.001 dB |
+| The expander's curve, Ratio 2 and 4, 40 Hz and 1 kHz | | 0.02 dB |
+| The strip's gate shut: 40 Hz, 1 kHz | 2.75, 0.10 dB | 0.75, 0.72 dB |
+| The strip on pink at -18 dBFS with Auto makeup: defaults, presets | (off: -5.8, -8.0 to -1.8 LU) | -0.44, -0.77 to +0.65 LU |
+| The strip's switches over a 220 Hz tone: gate on, compressor off, 6 dB EQ off, Order | 12.9, 0.30, 9.3, 54.4 dB | 0, 0.35, 0.43, 2.2 dB |
+
+The fronts (N1), the release's label (N4) and the zippers (N5) are as before, all met. `tests/coverage.rs` checks that a 40 Hz note 2 dB over the threshold passes whole at Hold 0, that a Range moved while shut lands, that the expander turns a tone down by its ratio at 40 Hz and 1 kHz, and that Listen plays the filtered key; `strip.rs`'s tests that switching the gate on or changing Order doesn't bend a tone more than about 3 dB past its own.
+
 ## 8. Cost
 
 The instruction gate (rustc 1.97.0, a 128-frame block at 44.1 kHz), before and after:
@@ -211,8 +244,9 @@ The instruction gate (rustc 1.97.0, a 128-frame block at 44.1 kHz), before and a
 | Mixer cases with a song's inserts | 1.02M to 1.54M | +5 to +7 % |
 | Multiband compressor (defaults) | 141.5k | 149.9k (+6.0 %) |
 | De-esser (defaults) | 42.4k | 59.0k (+39.0 %) |
+| Gate (threshold over the program's tone) | 17.4k | 17.3k (-0.8 %) |
 
-The rises are the true peaks: Master safety now always catches them (decision 11.1). In the routing-only mixer cases a dozen loud tracks keep the master limiting nearly all the time, so the detector works out every point between samples for both channels on almost every frame. A mix that isn't pushing the master costs less than before (quiet blocks), and one near the ceiling pays for the near taps on most frames. The x86 host vectorises these sums poorly, so the numbers are a rough guide; on the MPC's ARM, which does floats one at a time, the folding and the near taps cut the detector's multiplies to 18 or 48 a channel from 96. Soft clip costs more than Safe limiter (the half-bands and four ADAA steps a frame); it isn't in the gate. The Multiband's rise is the detector in decibels and the six new glides; taking the dry from the bands kept the Mix fix free (a second pair of all-passes cost 22 %). The De-esser's rise is its split, five stages a side for one, and the look-ahead's delay.
+The rises are the true peaks: Master safety now always catches them (decision 11.1). In the routing-only mixer cases a dozen loud tracks keep the master limiting nearly all the time, so the detector works out every point between samples for both channels on almost every frame. A mix that isn't pushing the master costs less than before (quiet blocks), and one near the ceiling pays for the near taps on most frames. The x86 host vectorises these sums poorly, so the numbers are a rough guide; on the MPC's ARM, which does floats one at a time, the folding and the near taps cut the detector's multiplies to 18 or 48 a channel from 96. Soft clip costs more than Safe limiter (the half-bands and four ADAA steps a frame); it isn't in the gate. The Multiband's rise is the detector in decibels and the six new glides; taking the dry from the bands kept the Mix fix free (a second pair of all-passes cost 22 %). The De-esser's rise is its split, five stages a side for one, and the look-ahead's delay. The Gate costs what it did (the bench's tone now sits just over its shut level, so it stays open, as it should); the expander's held peak and curve run only in Expander mode. The Channel strip has no bench case; with its gate off it now writes two samples a frame into the gate's look-ahead.
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -233,6 +267,12 @@ The rises are the true peaks: Master safety now always catches them (decision 11
 | A split de-esser that boosts the voice under the s | A Linkwitz-Riley split, whose bands are in phase |
 | A de-esser that misses the start of each s | 2 ms of look-ahead |
 | An s panned to one side caught less | Detection from the louder side |
+| A gate that flutters on bass | Hold counts from the last peak over the shut level and is at least 20 ms |
+| A gate that shuts early on a fading note | The same: no falling detector between peaks |
+| A control that does nothing while the gate is shut | A raised Range is reached over about 10 ms |
+| A stage switched on with an empty look-ahead | The gate's look-ahead keeps filling while it is off, and it comes back open |
+| A switch fade that starts at full speed | A straight ramp heard through smoothstep |
+| A stage-order change that jumps | A dip to silence, the swap there, and a wait for the look-ahead and the EQ to settle |
 
 ## 10. History and next
 
@@ -240,6 +280,7 @@ The rises are the true peaks: Master safety now always catches them (decision 11
 - This PR: the shared core, true peaks always caught in Master safety, the hold, release in dB, an Auto release that acts, the soft clip at 2x with ADAA, the mode glide, the Ceiling glide in Master safety.
 - The De-esser PR: the eighth-order Linkwitz-Riley split under Freq, detection from the louder side, 2 ms of look-ahead (decision 11.2).
 - The Multiband PR: Mix in phase, the Compressor's detector in each band, gliding thresholds and ratios, Auto makeup (on in every preset).
+- The Gate and Channel strip PR: Hold from the last peak (at least 20 ms), Range while shut, the Expander mode and Key listen (plan-4 section 5.2's P2s), the Soft cleanup preset as an expander; the strip's S-curve switches, its gate back on open, the Order dip, Style and Auto makeup (on in every preset).
 - Next, from plan-4 section 4.2: styles in the spirit of Pro-L 2's (Transparent, Punchy with a shorter hold, Safe with a longer one) and a channel link amount, if the device round shows the cost allows. Then the rest of round 4 as section 4 says.
 
 ## 11. Sources

@@ -555,6 +555,7 @@ The measures it adds, beside the earlier rounds':
 | N3 | `shut_error_db_<hz>hz_hold<ms>` | Shuts within 1 dB of the threshold less its 4 dB of hysteresis | The stated hysteresis at every pitch |
 | N4 | `release_ratio_<ms>` | Within ±10 %, 50 to 500 ms | The label |
 | N5 | `zipper_<control>`, `range_change_while_shut_error_db` | ≤ 3 dB; Range moved from -80 to -40 dB while shut lands within 1 dB of -40 | Smooth automation, and a control that works while it is shut |
+| N6 | `expander_curve_error_db` | In Expander mode, a steady tone 3, 6 and 12 dB under the threshold (40 Hz and 1 kHz, Ratio 2 and 4) comes out within 0.5 dB of (Ratio - 1) dB down per dB under | The ratio means what it says (added with the mode, by the Gate PR) |
 
 ### De-esser (S)
 
@@ -600,7 +601,7 @@ The measures it adds, beside the earlier rounds':
 | T3 | `hits_peak_change_db`, `hits_lu` | Reported, defaults and presets (decision 11.4) | An insert shouldn't jump unexpectedly |
 | T4 | `zipper_<control>` | ≤ 3 dB | Smooth automation |
 | C1 | `gate_*`, `comp_*` | The strip's gate alone as N1 to N3 (40 Hz and 1 kHz), its compressor alone as K1 to K4 against the compressor engine set as the strip sets it | Each stage as good as on its own |
-| C2 | `lu_pink` | Reported (once Auto makeup is on its page: within ±1.5 LU) | Fair A/B |
+| C2 | `lu_pink_auto`, `lu_pink` | With Auto makeup on, the defaults and presets within ±1.5 LU of the dry on pink at -18 dBFS; off, reported | Fair A/B |
 | C3 | `switch_click_db_<stage>` | ≤ 3 dB: the gate switched on, the compressor off, a 6 dB EQ off and the order changed, under a 220 Hz tone | Switching a stage mid-note |
 | C4 | `latency_spread_frames` | 0 whatever is on | The mixer's compensation |
 
@@ -645,6 +646,14 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#de-esser); decision 11.2):
 - **Reported:** Wide's rows are as before within 0.003 dB.
 - **Blessed worse, and why:** Freq's zipper rose from 0.09 to 0.25 dB (the eighth-order split is re-tuned every 16 frames as Freq glides; far under 3 dB). Wide's lift and range rows moved by 0.002 to 0.003 dB and Absolute's voice reduction at -6 dBFS by 0.0001 dB: the all-pass in the path.
 - **Cost:** De-esser 42.4k to 59.0k instructions a block (1.39): the split's five stages a side (one before) and the look-ahead's delay; run a side at a time it was 87.7k.
+
+### Gate and Channel strip PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#gate) and [Channel strip](fx-dynamics.md#channel-strip)): the gate shuts once the key hasn't reached its shut level for Hold, at least 20 ms, so a bass note's cycles never count as gaps; a Range raised while it is shut is reached over about 10 ms; an Expander mode (Mode, Ratio) and Key listen are new. The Channel strip's switches fade on an S-curve, its gate keeps its look-ahead filled while off and comes back open, an Order change dips to silence and swaps there, and its compressor gains the Compressor's Style and Auto makeup (on in every preset). After it: all 31 gate targets met (20 of 30 before; N6 is new) and all 20 strip targets (10 of 14; C2's six Auto makeup rows are targets now it is on the page); the other classes are unchanged.
+
+- **Met now:** no chatter at 40, 60 or 100 Hz with Hold 0 (3.7, 2.3 and 0.41 dB) (N2); it shuts within 0.37 to 0.61 dB of the threshold less 4 dB from 40 Hz to 1 kHz at Hold 0 and 30 (up to 3.8) (N3); Range moved from -80 to -40 dB while shut lands within 0.001 dB (88: it didn't move) (N5); the expander's curve within 0.02 dB (N6). The strip's gate shuts within 0.75 dB at 40 Hz (2.75) (C1); with Auto makeup the strip is within -0.77 to +0.65 LU of the dry at its defaults and presets (C2); switching its gate on reads 0 dB over the tone (12.9), a 6 dB EQ off 0.43 (9.3) and an Order change 2.2 (54.4) (C3).
+- **Blessed worse, and why:** the gate's 1 kHz shut at Hold 30 went from 0.10 to 0.51 dB and the strip gate's from 0.10 to 0.72 (both under the 1 dB target): the old 0.1 was two errors cancelling, the detector falling 1.1 dB early between peaks and the 30 ms Hold making it up; now Hold counts from the last peak, so it shuts Hold's worth of the falling tone late, as it does at every pitch. Range's zipper went from 0 to 0.05 dB (with the gate shut it used to do nothing at all). The strip's compressor switch went from 0.30 to 0.35 dB (the S-curve fades in 20 ms where the one-pole was 95 % there). The gate's release ratios at 120 and 500 ms moved by 0.004 and 0.0005 from 1.
+- **Cost:** Gate 17.4k to 17.3k instructions a block (-0.8 %; the bench's tone sits just over the shut level, so it now stays open, as it should). The strip has no bench case; its idle gate now writes two samples a frame into its look-ahead.
 
 ## The grain engine
 

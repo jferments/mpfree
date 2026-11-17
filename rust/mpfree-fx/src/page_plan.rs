@@ -490,18 +490,27 @@ pub static PLANS: &[Plan] = &[
             &[
                 Section {
                     hero: &["Threshold"],
+                    rows: &["Mode"],
                     meters: &["Gain"],
                     ..s(
                         "gate",
                         "Gate",
                         Shape,
-                        &["Threshold", "Range", "Attack", "Hold", "Release"],
+                        &[
+                            "Threshold",
+                            "Range",
+                            "Attack",
+                            "Hold",
+                            "Release",
+                            "Mode",
+                            "Ratio",
+                        ],
                     )
                 },
                 Section {
-                    rows: &["Key"],
+                    rows: &["Key", "Listen"],
                     note: Some("what opens it"),
-                    ..s("key", "Key", Tone, &["Key", "Key HP", "Key LP"])
+                    ..s("key", "Key", Tone, &["Key", "Key HP", "Key LP", "Listen"])
                 },
             ],
         )],
@@ -672,6 +681,7 @@ pub static PLANS: &[Plan] = &[
                         ("Comp attack", "Attack"),
                         ("Comp release", "Release"),
                     ],
+                    rows: &["Style", "Auto makeup"],
                     drawings: &["Curve"],
                     meters: &["Reduction"],
                     ..s(
@@ -684,6 +694,8 @@ pub static PLANS: &[Plan] = &[
                             "Comp attack",
                             "Comp release",
                             "Makeup",
+                            "Style",
+                            "Auto makeup",
                         ],
                     )
                 }],

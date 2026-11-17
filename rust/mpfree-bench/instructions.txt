@@ -56,7 +56,7 @@
 92618	Flanger, through zero
 55287	Frequency shifter
 386476	Fuzz
-17437	Gate
+17292	Gate
 472729	Grains FX (dense)
 99325	Harmonizer
 188538	Keys Dusty Keys, 16 voices
