@@ -123,6 +123,20 @@ Changing the curve glides from one blend to the other, so it doesn't click. A pr
 > [!NOTE]
 > Projects saved before this change sound a little different on the Tape delay: the first echo has the tape's tone now, and quiet repeats no longer grow louder at high Saturation, so the Dub echo preset dies away instead of ringing on.
 
+### The Room
+
+The **Room** reverb is a room you put the sound in: its first reflections off the walls, then a tail that thickens fast and dies away evenly.
+
+- **Size** spreads the reflections apart and makes the room bigger; **Decay** is how long the tail takes to fall away (60 dB, to near silence) in the mids; **Damping** makes the highs die sooner, as soft furnishings do.
+- **Early** sets the level of the first reflections. A sound on the left reflects first off the left wall, so it stays on the left in the room.
+- **Diffusion**, a small control under Early and Gate, sets how quickly the reflections blur into a smooth wash: down low you hear separate early echoes, up high they melt together at once. 70 % is a natural room.
+- **Mod** keeps the tail from ringing on a note with a very slow drift, too small to hear as a wobble.
+- **Pre-delay** waits before the room answers. Turning it never bends the pitch: the room fades over to the new time.
+- **Gate** cuts the tail that many milliseconds after the sound stops, for the 1980s gated snare.
+
+> [!NOTE]
+> The Room was rebuilt, so projects saved before it sound different on a Room: denser and smoother, with no slap at the start, and a source keeps its side. Every setting and preset still loads and does what it did; Diffusion starts at 70 %.
+
 ### The EQ's page
 
 {{shot: chain-mixer-drums-eq | The EQ on the drum bus: its curve with a dot for each band and the cuts, band 2 picked in the panel underneath.}}

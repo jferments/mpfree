@@ -8,3 +8,4 @@ description = "Offline measurement of MPFree's effects (and of captured referenc
 [dependencies]
 mpfree-node = { path = "../mpfree-node" }
 mpfree-fx = { path = "../mpfree-fx" }
+mpfree-sampler = { path = "../mpfree-sampler" }
