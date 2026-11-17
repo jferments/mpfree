@@ -1,20 +1,26 @@
 //! Modulation effects: [`Chorus`], [`Flanger`] and [`Phaser`].
 //!
 //! They share an LFO that runs free (in Hz) or synced to the tempo (1/16
-//! to 8 bars a cycle), and restarts in time with the bar when the transport
-//! starts. Width offsets the right side's LFO phase, so 100 % is a wide
-//! stereo sweep and 0 % keeps both sides moving together. Everything that
-//! can move glides, so turning a knob under a loop never clicks or zips;
-//! a change of voice or stage count crossfades.
+//! to 8 bars a cycle). A synced LFO starts on the bar when the transport
+//! starts and follows the song while it plays: after a jump (a loop wrap,
+//! a locate) it glides back onto the bar over 50 ms, so a swept delay
+//! never steps. Width offsets the right side's LFO phase, so 100 % is a
+//! wide stereo sweep and 0 % keeps both sides moving together. Everything
+//! that can move glides, so turning a knob under a loop never clicks or
+//! zips; a change of voice or stage count crossfades.
 //!
-//! The LFO is a polynomial sine and the delay reads are cubic, so a render
-//! is the same on every machine (the phaser's tangent aside) and a swept
-//! delay stays bright.
+//! The LFO is a polynomial sine and the read tables are built at compile
+//! time, so a render is the same on every machine (the phaser's tangent
+//! aside). The chorus reads its delay through an 8-tap windowed sinc that
+//! sounds the same at any fraction of a frame, so a sweep never flutters
+//! the highs; the flanger's read is still cubic (FX quality round 3, M2,
+//! moves it to the sinc).
 
 use std::f32::consts::PI;
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
+use crate::kit::{self, Blend, Glide};
 use crate::svf::Segs;
 use crate::{defaults, flush, lerp};
 
@@ -49,6 +55,13 @@ fn hermite(x0: f32, x1: f32, x2: f32, x3: f32, t: f32) -> f32 {
     ((c3 * t + c2) * t + c1) * t + x1
 }
 
+/// How long a synced LFO takes at least to catch up with the song after a
+/// jump (a loop wrap, a locate): long enough that a delay never steps,
+/// short enough that the sweep is back on the bar within the beat. An
+/// effect can ask for a slower catch-up (the chorus does, so a deep sweep
+/// doesn't chirp).
+const RELOCK_MS: f64 = 50.0;
+
 /// The modulation LFO.
 #[derive(Clone, Copy, Debug)]
 struct Lfo {
@@ -57,6 +70,10 @@ struct Lfo {
     inc: f64,
     bpm: f64,
     playing: bool,
+    /// A catch-up in progress (synced, after a jump): this much more
+    /// phase each frame for `fix_left` more frames.
+    fix_step: f64,
+    fix_left: u32,
 }
 
 impl Default for Lfo {
@@ -66,19 +83,44 @@ impl Default for Lfo {
             inc: 0.0,
             bpm: 120.0,
             playing: false,
+            fix_step: 0.0,
+            fix_left: 0,
         }
     }
 }
 
 impl Lfo {
-    /// At the start of a block: follow the tempo, and when synced, put the
-    /// phase where the bar says as the transport starts.
-    fn begin(&mut self, ctx: &Ctx, sync: usize) {
+    /// At the start of a block: follow the tempo and, when synced, the
+    /// song position. The phase lands on the bar as the transport starts;
+    /// while it plays, a jump in the song (a loop wrap, a locate) is
+    /// caught up over [`RELOCK_MS`], or slower if that would take more
+    /// than `max_fix` cycles of extra phase a frame, so the swept delay
+    /// glides instead of stepping and the sweep stays on the bar.
+    fn begin(&mut self, ctx: &Ctx, sync: usize, max_fix: f64) {
         if ctx.bpm > 0.0 {
             self.bpm = ctx.bpm;
         }
-        if sync > 0 && ctx.playing && !self.playing {
-            self.phase = (ctx.beats / SYNC_BEATS[sync]).rem_euclid(1.0);
+        if sync > 0 && ctx.playing {
+            let want = (ctx.beats / SYNC_BEATS[sync]).rem_euclid(1.0);
+            if !self.playing {
+                self.phase = want;
+                self.fix_left = 0;
+            } else {
+                // How far the song is from the phase, the short way round.
+                let gap = (want - self.phase + 0.5).rem_euclid(1.0) - 0.5;
+                let pending = self.fix_step * f64::from(self.fix_left);
+                if (gap - pending).abs() > 1e-6 {
+                    // A new jump (or one the catch-up in progress doesn't
+                    // cover): catch all of it up over the whole time.
+                    let least = RELOCK_MS * 0.001 * f64::from(ctx.rate);
+                    let frames = least.max(gap.abs() / max_fix).min(f64::from(ctx.rate));
+                    self.fix_left = (frames.ceil() as u32).max(1);
+                    self.fix_step = gap / f64::from(self.fix_left);
+                } else if self.fix_left == 0 {
+                    // Rounding between the tempo and the frame count.
+                    self.phase = want;
+                }
+            }
         }
         self.playing = ctx.playing;
     }
@@ -93,16 +135,157 @@ impl Lfo {
     #[inline]
     fn next(&mut self) -> f32 {
         self.phase += self.inc;
+        if self.fix_left > 0 {
+            self.phase += self.fix_step;
+            self.fix_left -= 1;
+        }
         if self.phase >= 1.0 {
             self.phase -= 1.0;
+        } else if self.phase < 0.0 {
+            self.phase += 1.0;
         }
         self.phase as f32
     }
     fn reset(&mut self) {
         self.phase = 0.0;
         self.playing = false;
+        self.fix_left = 0;
     }
 }
+
+/// Taps in [`FlatLine::read`]: the read point sits between the 4th and
+/// 5th.
+const TAPS: usize = 8;
+/// Fractions of a frame [`READ_TABLE`] holds; reads between them blend
+/// the two nearest rows.
+const PHASES: usize = 64;
+/// The windowed sinc's cutoff (in cycles a frame, Nyquist is 0.5) and its
+/// Kaiser window's beta, chosen so every fraction sounds the same: within
+/// 0.16 dB of each other to 16 kHz at 44.1 kHz, so a sweep never flutters
+/// the highs. The read tilts the top a little, the same at any fraction
+/// (0.3 dB at 14 kHz, about 1 dB at 16; the cubic lost 3.4 dB at 15 kHz
+/// at half a frame). A higher cutoff droops less but varies more.
+const SINC_CUTOFF: f64 = 0.47;
+const KAISER_BETA: f64 = 4.0;
+
+/// `sin(x)`, plain arithmetic (the table is built at compile time).
+const fn const_sin(x: f64) -> f64 {
+    let tau = 2.0 * std::f64::consts::PI;
+    // Into -pi to pi.
+    let mut x = x - tau * ((x / tau + 0.5) as i64 as f64);
+    if x > std::f64::consts::PI {
+        x -= tau;
+    } else if x < -std::f64::consts::PI {
+        x += tau;
+    }
+    let mut term = x;
+    let mut sum = x;
+    let mut k = 1;
+    while k < 30 {
+        term *= -x * x / ((2 * k) as f64 * (2 * k + 1) as f64);
+        sum += term;
+        k += 1;
+    }
+    sum
+}
+
+/// The zeroth-order modified Bessel function, for the Kaiser window.
+const fn const_i0(x: f64) -> f64 {
+    let mut term = 1.0;
+    let mut sum = 1.0;
+    let mut k = 1;
+    while k < 25 {
+        let h = x / (2.0 * k as f64);
+        term *= h * h;
+        sum += term;
+        k += 1;
+    }
+    sum
+}
+
+/// `sqrt(x)` for 0 to 1, by Newton's method.
+const fn const_sqrt(x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut y = 1.0;
+    let mut k = 0;
+    while k < 30 {
+        y = 0.5 * (y + x / y);
+        k += 1;
+    }
+    y
+}
+
+/// The read's taps at a fraction `t` (0 to 1) of a frame past a whole
+/// delay: a Kaiser-windowed sinc, summing to 1 so the lows pass exactly.
+const fn sinc_taps(t: f64) -> [f64; TAPS] {
+    let half = (TAPS / 2) as f64;
+    let mut h = [0.0; TAPS];
+    let mut sum = 0.0;
+    let mut j = 0;
+    while j < TAPS {
+        // Tap j is the sample (j - 3) frames further back than the whole
+        // delay, `tau` frames from the read point.
+        let tau = (j as f64 - (half - 1.0)) - t;
+        let x = tau / half;
+        // Less its value at the ends, so the end taps are zero and the
+        // taps don't jump as the read crosses a whole frame.
+        let w = const_i0(KAISER_BETA * const_sqrt(1.0 - x * x)) - 1.0;
+        let arg = std::f64::consts::PI * 2.0 * SINC_CUTOFF * tau;
+        let s = if arg == 0.0 {
+            1.0
+        } else {
+            const_sin(arg) / arg
+        };
+        h[j] = 2.0 * SINC_CUTOFF * s * w;
+        sum += h[j];
+        j += 1;
+    }
+    let mut j = 0;
+    while j < TAPS {
+        h[j] /= sum;
+        j += 1;
+    }
+    h
+}
+
+/// Each fraction's taps, oldest sample first, and the step to the next
+/// fraction's.
+struct ReadTable {
+    taps: [[f32; TAPS]; PHASES],
+    step: [[f32; TAPS]; PHASES],
+}
+
+const fn read_table() -> ReadTable {
+    let mut rows = [[0.0f64; TAPS]; PHASES + 1];
+    let mut r = 0;
+    while r <= PHASES {
+        rows[r] = sinc_taps(r as f64 / PHASES as f64);
+        r += 1;
+    }
+    let mut t = ReadTable {
+        taps: [[0.0; TAPS]; PHASES],
+        step: [[0.0; TAPS]; PHASES],
+    };
+    let mut r = 0;
+    while r < PHASES {
+        let mut j = 0;
+        while j < TAPS {
+            // Tap j is the (j - 3)th sample past the whole delay, so the
+            // oldest is the last.
+            let k = TAPS - 1 - j;
+            t.taps[r][k] = rows[r][j] as f32;
+            t.step[r][k] = (rows[r + 1][j] - rows[r][j]) as f32;
+            j += 1;
+        }
+        r += 1;
+    }
+    t
+}
+
+/// Built at compile time, so it is the same on every machine.
+static READ_TABLE: ReadTable = read_table();
 
 /// A delay line read at a fractional, moving point.
 #[derive(Clone, Debug, Default)]
@@ -144,6 +327,63 @@ impl ModLine {
     }
 }
 
+/// A delay line read through the windowed sinc: as bright at any fraction
+/// of a frame as at a whole one, so a moving read doesn't flutter the
+/// highs. Every sample is written twice, a line's length apart, so the
+/// taps of any read sit side by side.
+#[derive(Clone, Debug, Default)]
+struct FlatLine {
+    buf: Vec<f32>,
+    /// The line's length, a power of two (`buf` holds two).
+    n: usize,
+    w: usize,
+}
+
+impl FlatLine {
+    /// Room for `frames` of delay (control thread).
+    fn new(frames: usize) -> FlatLine {
+        let n = (frames + TAPS).next_power_of_two();
+        FlatLine {
+            buf: vec![0.0; 2 * n],
+            n,
+            w: 0,
+        }
+    }
+    #[inline]
+    fn push(&mut self, x: f32) {
+        self.buf[self.w] = x;
+        self.buf[self.w + self.n] = x;
+        self.w = (self.w + 1) & (self.n - 1);
+    }
+    /// The signal `d` frames before the last write (0 is the last write),
+    /// `d` at least half of [`TAPS`].
+    #[inline]
+    fn read(&self, d: f32) -> f32 {
+        let d = d.clamp((TAPS / 2) as f32, (self.n - TAPS) as f32);
+        let i = d as usize;
+        let p = (d - i as f32) * PHASES as f32;
+        let r = (p as usize).min(PHASES - 1);
+        let a = p - r as f32;
+        let (taps, step) = (&READ_TABLE.taps[r], &READ_TABLE.step[r]);
+        // The oldest tap is i + 4 frames before the last write.
+        let from = (self.w + self.n - 1 - i - TAPS / 2) & (self.n - 1);
+        let x = &self.buf[from..from + TAPS];
+        // Four lanes, then their sum: the same order everywhere, and one
+        // vector add wide.
+        let mut lane = [0.0f32; 4];
+        for k in 0..4 {
+            let lo = (taps[k] + a * step[k]) * x[k];
+            let hi = (taps[k + 4] + a * step[k + 4]) * x[k + 4];
+            lane[k] = lo + hi;
+        }
+        (lane[0] + lane[2]) + (lane[1] + lane[3])
+    }
+    fn clear(&mut self) {
+        self.buf.fill(0.0);
+        self.w = 0;
+    }
+}
+
 fn smooth_all(list: &mut [&mut Smooth], rate: u32, ms: f32) {
     for s in list {
         s.set_time(rate, ms);
@@ -162,6 +402,9 @@ pub mod chorus {
     pub const WIDTH: u16 = 5;
     pub const TONE: u16 = 6;
     pub const MIX: u16 = 7;
+    /// How Mix blends: Equal (equal power), Dry first or Linear
+    /// ([`crate::kit::MIX_CURVES`]), as on the delays and reverbs.
+    pub const MIX_CURVE: u16 = 8;
 }
 
 static CHORUS_INFO: NodeInfo = NodeInfo {
@@ -169,7 +412,7 @@ static CHORUS_INFO: NodeInfo = NodeInfo {
     name: "Chorus",
     kind: Kind::Effect,
 };
-static CHORUS_PARAMS: [ParamInfo; 8] = [
+static CHORUS_PARAMS: [ParamInfo; 9] = [
     ParamInfo {
         id: 0,
         name: "Rate",
@@ -258,26 +501,61 @@ static CHORUS_PARAMS: [ParamInfo; 8] = [
         curve: Curve::Linear,
         readonly: false,
     },
+    ParamInfo {
+        id: 8,
+        name: "Mix curve",
+        group: "Output",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(kit::MIX_CURVES),
+        readonly: false,
+    },
 ];
 
 /// LFO phase offsets per voice: any count of voices starts from the same
 /// ones, so adding a voice never moves the others.
 const VOICE_PHASE: [f32; 4] = [0.0, 0.5, 0.25, 0.75];
-const MAX_CHORUS_MS: f32 = 61.0;
+/// How far the right side's voices sit from the left's at full Width, in
+/// cycles, by voice count: a quarter for one or two voices, an eighth for
+/// three or four, so the right's voices fall between the left's and the
+/// sides differ at every count.
+const RIGHT_OFFSET: [f32; 4] = [0.25, 0.25, 0.125, 0.125];
+/// How long the right side's voices take to move to their new places
+/// when the voice count changes: slow enough that the pitch barely bends.
+const SPREAD_MS: f32 = 250.0;
+/// The sweep at Depth 100 %, ms either side of the Delay.
+const DEPTH_MS: f32 = 5.0;
+/// The sweep never reaches past this share of the Delay.
+const DEPTH_OF_DELAY: f32 = 0.9;
+/// The steepest the swept delay may change, frames a frame: its pitch
+/// bend stays inside a semitone (a semitone down is 1 - 2^(-1/12), 0.0561,
+/// with a little room for the LFO's shape).
+const PITCH_CEILING: f32 = 0.055;
+const MAX_CHORUS_MS: f32 = 46.0;
 
 /// A lush stereo chorus: up to four voices reading a delay swept by one
-/// LFO at spread phases, the right side a quarter cycle on at full width,
-/// and a tone control to keep the wet signal warm.
+/// LFO at spread phases, the right side's voices between the left's,
+/// and a tone control to keep the wet signal warm. Depth is a sweep in
+/// milliseconds (100 % is 5 ms either way), so the Delay moves where the
+/// copies sit and not how much they wobble, and the bend never passes a
+/// semitone, however fast the Rate.
 pub struct Chorus {
-    v: [f32; 8],
+    v: [f32; 9],
     rate: u32,
     lfo: Lfo,
-    lines: [ModLine; 2],
-    depth: Smooth,
+    lines: [FlatLine; 2],
+    /// The sweep either side of the Delay, frames ([`Chorus::swing_ms`]):
+    /// one glide whatever moved it (Depth, Delay, Rate, the tempo), so the
+    /// swept delay's path never kinks.
+    sweep: Smooth,
     log_delay: Smooth,
     width: Smooth,
     log_tone: Smooth,
-    mix: Smooth,
+    /// [`RIGHT_OFFSET`] at the voice count set.
+    spread: Smooth,
+    blend: Blend,
     gains: [Smooth; 4],
     /// Cached while nothing moves: base delay and swing in frames, the
     /// tone coefficient.
@@ -301,8 +579,37 @@ impl Chorus {
             return None;
         }
         let base = self.v[chorus::DELAY as usize];
-        let swing = 0.5 * self.v[chorus::DEPTH as usize] / 100.0 * base;
-        Some(base + swing * sine(wrap(phase + VOICE_PHASE[voice])))
+        Some(base + self.swing_ms() * sine(wrap(phase + VOICE_PHASE[voice])))
+    }
+
+    /// The sweep either side of the Delay, ms, for the settings set.
+    fn swing_ms(&self) -> f32 {
+        let fs = self.rate as f32;
+        let depth = self.v[chorus::DEPTH as usize] / 100.0 * DEPTH_MS;
+        let ceiling = self.ceiling_frames() / fs * 1000.0;
+        depth
+            .min(DEPTH_OF_DELAY * self.v[chorus::DELAY as usize])
+            .min(ceiling)
+    }
+
+    /// The largest sweep, frames, whose bend stays inside a semitone at
+    /// the LFO's rate: a sine sweep of s frames at f cycles a frame moves
+    /// at most 2 pi f s frames a frame.
+    fn ceiling_frames(&self) -> f32 {
+        let per_frame = (2.0 * std::f64::consts::PI * self.lfo.inc) as f32;
+        (PITCH_CEILING / per_frame.max(1e-9)).min(1e6)
+    }
+
+    /// The most extra LFO phase a frame a synced catch-up may add (cycles):
+    /// as much as bends the sweep by the pitch ceiling again, so a jump is
+    /// caught up within two semitones of bend however deep the sweep.
+    fn catch_up(&self) -> f64 {
+        let swing = f64::from(self.swing);
+        if swing > 0.0 {
+            f64::from(PITCH_CEILING) / (2.0 * std::f64::consts::PI * swing)
+        } else {
+            f64::INFINITY
+        }
     }
 
     pub fn new() -> Chorus {
@@ -311,12 +618,13 @@ impl Chorus {
             v,
             rate: 0,
             lfo: Lfo::default(),
-            lines: [ModLine::default(), ModLine::default()],
-            depth: Smooth::new(v[2] / 100.0),
+            lines: [FlatLine::default(), FlatLine::default()],
+            sweep: Smooth::new(0.0),
             log_delay: Smooth::new(v[3].log2()),
             width: Smooth::new(v[5] / 100.0),
             log_tone: Smooth::new(v[6].log2()),
-            mix: Smooth::new(v[7] / 100.0),
+            spread: Smooth::new(RIGHT_OFFSET[0]),
+            blend: Blend::new(v[7] / 100.0, v[8] as usize),
             gains: [Smooth::new(0.0); 4],
             base: 0.0,
             swing: 0.0,
@@ -335,6 +643,14 @@ impl Chorus {
         for (k, s) in self.gains.iter_mut().enumerate() {
             s.target = if k < n { g } else { 0.0 };
         }
+        self.spread.target = RIGHT_OFFSET[n.clamp(1, 4) - 1];
+    }
+
+    /// Follows the LFO's rate (a Rate change, a tempo change when synced)
+    /// and aims the sweep.
+    fn follow_rate(&mut self) {
+        self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
+        self.sweep.target = self.swing_ms() * 0.001 * self.rate as f32;
     }
 
     fn apply(&mut self, id: u16, value: f32) {
@@ -344,38 +660,39 @@ impl Chorus {
         let v = p.clamp(value);
         self.v[id as usize] = v;
         match id {
-            chorus::DEPTH => self.depth.target = v / 100.0,
             chorus::DELAY => self.log_delay.target = v.log2(),
             chorus::VOICES => self.voices(),
             chorus::WIDTH => self.width.target = v / 100.0,
             chorus::TONE => self.log_tone.target = v.log2(),
-            chorus::MIX => self.mix.target = v / 100.0,
+            chorus::MIX => self.blend.set_mix(v / 100.0),
+            chorus::MIX_CURVE => self.blend.set_curve(v),
             _ => {}
         }
-        self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
+        self.follow_rate();
     }
 
     fn update(&mut self) {
         let fs = self.rate as f32;
         self.base = self.log_delay.value.exp2() * 0.001 * fs;
-        self.swing = 0.5 * self.depth.value * self.base;
+        // The read's shortest delay, in case a long Delay drops fast.
+        self.swing = self.sweep.value.min(self.base - (TAPS / 2) as f32).max(0.0);
         self.tone_a = 1.0 - (-2.0 * PI * self.log_tone.value.exp2() / fs).exp();
     }
 
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
         for i in 0..l.len() {
-            if !(self.depth.settled() && self.log_delay.settled() && self.log_tone.settled()) {
-                self.depth.next();
+            if !(self.sweep.settled() && self.log_delay.settled() && self.log_tone.settled()) {
+                self.sweep.next();
                 self.log_delay.next();
                 self.log_tone.next();
                 self.update();
             }
             let ph = self.lfo.next();
-            let off_r = 0.25 * self.width.next();
-            let mix = self.mix.next();
+            let off_r = self.spread.glide() * self.width.glide();
+            let mix = self.blend.next();
             let mut g = [0.0f32; 4];
             for (g, s) in g.iter_mut().zip(&mut self.gains) {
-                *g = s.next();
+                *g = s.glide();
             }
             let x = [l[i], r[i]];
             let mut y = [0.0f32; 2];
@@ -391,7 +708,7 @@ impl Chorus {
                     wet += g[k] * self.lines[ch].read(d);
                 }
                 self.tone[ch] = flush(self.tone[ch] + self.tone_a * (wet - self.tone[ch]));
-                y[ch] = lerp(x[ch], self.tone[ch], mix);
+                y[ch] = kit::blend(x[ch], self.tone[ch], mix);
             }
             l[i] = y[0];
             r[i] = y[1];
@@ -414,38 +731,45 @@ impl Node for Chorus {
     }
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         let rate = rate.max(1);
-        if rate != self.rate {
+        let new_rate = rate != self.rate;
+        if new_rate {
             let frames = (MAX_CHORUS_MS * 0.001 * rate as f32) as usize + 4;
-            self.lines = [ModLine::new(frames), ModLine::new(frames)];
+            self.lines = [FlatLine::new(frames), FlatLine::new(frames)];
         }
         self.rate = rate;
         smooth_all(
             &mut [
-                &mut self.depth,
+                &mut self.sweep,
                 &mut self.log_delay,
                 &mut self.width,
                 &mut self.log_tone,
-                &mut self.mix,
             ],
             rate,
             30.0,
         );
+        self.spread.set_time(rate, SPREAD_MS);
+        self.blend.set_time(rate, 30.0);
         for s in &mut self.gains {
             s.set_time(rate, 20.0);
         }
-        self.lfo.set(self.v[0], self.v[1] as usize, rate);
+        self.follow_rate();
+        if new_rate {
+            // The sweep is in frames.
+            self.sweep.snap(self.sweep.target);
+        }
         self.update();
     }
     fn reset(&mut self) {
         for s in [
-            &mut self.depth,
+            &mut self.sweep,
             &mut self.log_delay,
             &mut self.width,
             &mut self.log_tone,
-            &mut self.mix,
+            &mut self.spread,
         ] {
             s.snap(s.target);
         }
+        self.blend.snap();
         for s in &mut self.gains {
             s.snap(s.target);
         }
@@ -457,8 +781,8 @@ impl Node for Chorus {
         self.update();
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
-        self.lfo.begin(ctx, self.v[1] as usize);
-        self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
+        self.lfo.begin(ctx, self.v[1] as usize, self.catch_up());
+        self.follow_rate();
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
         while let Some((from, to)) = segs.next(len, |ev| {
@@ -470,7 +794,7 @@ impl Node for Chorus {
         }
     }
     fn tail_frames(&self) -> u32 {
-        let ms = self.v[3] * (1.0 + 0.5 * self.v[2] / 100.0);
+        let ms = self.v[3] + self.swing_ms();
         // The delay, then the tone filter settling.
         (ms * 0.001 * self.rate as f32) as u32 + self.rate / 100
     }
@@ -737,7 +1061,7 @@ impl Node for Flanger {
         self.base = self.log_delay.value.exp2() * 0.001 * self.rate as f32;
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
-        self.lfo.begin(ctx, self.v[1] as usize);
+        self.lfo.begin(ctx, self.v[1] as usize, f64::INFINITY);
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
@@ -1125,7 +1449,7 @@ impl Node for Phaser {
         self.lfo.reset();
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
-        self.lfo.begin(ctx, self.v[1] as usize);
+        self.lfo.begin(ctx, self.v[1] as usize, f64::INFINITY);
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
         let len = left.len().min(right.len());
         let mut segs = Segs::new(events);
@@ -1188,14 +1512,145 @@ mod tests {
             ..Ctx::new(48_000, 0)
         };
         // One cycle a bar, starting two beats into the bar: half a cycle.
-        lfo.begin(&ctx, 5);
+        lfo.begin(&ctx, 5, f64::INFINITY);
         assert!((lfo.phase - 0.5).abs() < 1e-12);
         lfo.set(1.0, 5, 48_000);
         // A bar at 120 BPM is 2 s.
         assert!((lfo.inc * 96_000.0 - 1.0).abs() < 1e-9);
-        // Already playing: no jump.
-        lfo.phase = 0.1;
-        lfo.begin(&ctx, 5);
-        assert_eq!(lfo.phase, 0.1);
+        // Already playing and on the song: nothing to catch up.
+        lfo.begin(&ctx, 5, f64::INFINITY);
+        assert_eq!((lfo.phase, lfo.fix_left), (0.5, 0));
+    }
+
+    #[test]
+    fn a_synced_lfo_glides_back_onto_the_song_after_a_jump() {
+        let mut lfo = Lfo::default();
+        let at = |beats: f64| Ctx {
+            bpm: 120.0,
+            beats,
+            playing: true,
+            ..Ctx::new(48_000, 0)
+        };
+        lfo.begin(&at(0.0), 5, f64::INFINITY);
+        lfo.set(1.0, 5, 48_000);
+        // Play a block, then the song jumps back 1.5 beats (a loop wrap):
+        // the phase doesn't step, it catches up over RELOCK_MS.
+        for _ in 0..128 {
+            lfo.next();
+        }
+        let before = lfo.phase;
+        let song = 128.0 / 24_000.0 - 1.5;
+        lfo.begin(&at(song), 5, f64::INFINITY);
+        assert_eq!(lfo.phase, before, "no step");
+        let frames = (RELOCK_MS * 48.0) as usize;
+        let mut last = lfo.phase;
+        for _ in 0..frames {
+            let p = f64::from(lfo.next());
+            let d = (p - last + 0.5).rem_euclid(1.0) - 0.5;
+            // Never more than the jump spread over the catch-up a frame.
+            assert!(d.abs() < lfo.inc + 0.375 / frames as f64 + 1e-6);
+            last = p;
+        }
+        let want = ((song + frames as f64 / 24_000.0) / 4.0).rem_euclid(1.0);
+        assert!(
+            (lfo.phase - want).abs() < 1e-9,
+            "{} against {want}",
+            lfo.phase
+        );
+        assert_eq!(lfo.fix_left, 0);
+    }
+
+    #[test]
+    fn a_catch_up_can_be_held_to_a_rate() {
+        let mut lfo = Lfo::default();
+        let at = |beats: f64| Ctx {
+            bpm: 120.0,
+            beats,
+            playing: true,
+            ..Ctx::new(48_000, 0)
+        };
+        lfo.begin(&at(0.0), 5, 1e-5);
+        lfo.set(1.0, 5, 48_000);
+        // Half a cycle to catch up at most 1e-5 cycles a frame: 50,000
+        // frames, more than a second, so held to a second.
+        lfo.begin(&at(2.0), 5, 1e-5);
+        assert_eq!(lfo.fix_left, 48_000);
+        // A quarter cycle: 25,000 frames.
+        let mut lfo = Lfo::default();
+        lfo.begin(&at(0.0), 5, 1e-5);
+        lfo.begin(&at(1.0), 5, 1e-5);
+        assert_eq!(lfo.fix_left, 25_000);
+        assert!((lfo.fix_step - 1e-5).abs() < 1e-12);
+    }
+
+    /// The flat read's response at `hz` (rate 44.1 kHz) for a fraction
+    /// `t` of a frame, from the table as `FlatLine::read` blends it.
+    fn flat_db(t: f32, hz: f64) -> f64 {
+        let p = t * PHASES as f32;
+        let r = (p as usize).min(PHASES - 1);
+        let a = p - r as f32;
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for k in 0..TAPS {
+            let h = f64::from(READ_TABLE.taps[r][k] + a * READ_TABLE.step[r][k]);
+            let w = 2.0 * std::f64::consts::PI * hz / 44_100.0 * k as f64;
+            re += h * w.cos();
+            im -= h * w.sin();
+        }
+        10.0 * (re * re + im * im).log10()
+    }
+
+    #[test]
+    fn the_flat_read_is_the_same_at_every_fraction() {
+        // What matters for a moving read is that every fraction sounds
+        // the same, so the highs don't flutter as the sweep crosses
+        // them: within 0.2 dB of each other to 16 kHz. The read itself
+        // tilts a little at the top (0.3 dB at 14 kHz, 1 dB at 16), the
+        // same everywhere, and passes DC exactly.
+        let fractions: Vec<f32> = (0..=200).map(|i| i as f32 / 200.0 * 0.999_9).collect();
+        for &t in &fractions {
+            assert!(flat_db(t, 0.0).abs() < 1e-5, "DC at {t}");
+        }
+        for k in 0..=160 {
+            let hz = 100.0 * k as f64;
+            let dbs: Vec<f64> = fractions.iter().map(|&t| flat_db(t, hz)).collect();
+            let lo = dbs.iter().copied().fold(f64::MAX, f64::min);
+            let hi = dbs.iter().copied().fold(f64::MIN, f64::max);
+            assert!(hi - lo < 0.2, "{hz} Hz: {lo} to {hi} dB across fractions");
+            assert!(hi < 0.1, "{hz} Hz: no gain ({hi} dB)");
+            let floor = if hz <= 14_000.0 { -0.35 } else { -1.1 };
+            assert!(lo > floor, "{hz} Hz: {lo} dB");
+        }
+    }
+
+    #[test]
+    fn the_flat_read_moves_smoothly_through_whole_frames() {
+        let mut m = FlatLine::new(64);
+        let mut s = 7u32;
+        for _ in 0..100 {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            m.push((s >> 9) as f32 / (1u32 << 22) as f32 - 1.0);
+        }
+        // Either side of a whole frame, and either side of a table row,
+        // the read barely moves: no step for a sweep to click on.
+        for d in [10.0f32, 10.5, 11.0, 23.0, 10.0 + 1.0 / PHASES as f32] {
+            let (lo, hi) = (m.read(d - 1e-3), m.read(d + 1e-3));
+            assert!((lo - hi).abs() < 0.01, "{d}: {lo} against {hi}");
+        }
+        // An impulse comes out at its delay, and DC passes exactly.
+        let mut m = FlatLine::new(64);
+        for k in 0..40 {
+            m.push(if k == 20 { 1.0 } else { 0.0 });
+        }
+        let peak = (8..30)
+            .max_by(|&a, &b| m.read(a as f32).total_cmp(&m.read(b as f32)))
+            .unwrap();
+        assert_eq!(peak, 19);
+        let mut m = FlatLine::new(64);
+        for _ in 0..40 {
+            m.push(0.5);
+        }
+        for d in [4.0f32, 9.25, 17.5, 30.999] {
+            assert!((m.read(d) - 0.5).abs() < 1e-6, "{d}: {}", m.read(d));
+        }
     }
 }

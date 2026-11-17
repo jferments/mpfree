@@ -1,5 +1,6 @@
-//! The delays' and reverbs' Mix curve (FX quality plan 8.1.1). Every
-//! engine of the Delay and Reverb families has it, after the controls it
+//! The delays', reverbs' and chorus's Mix curve (FX quality plan 8.1.1,
+//! and round 3's decision 8.1 for the chorus). Every engine of the Delay
+//! and Reverb families, and the Chorus, has it, after the controls it
 //! had (so an effect saved before it loads at its default, Equal), with
 //! the same three choices (so a mode change carries it). Under every curve
 //! Mix 0 is the input bit for bit and Mix 100 % the effect alone; between
@@ -16,7 +17,7 @@ const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
 const CURVES: [&str; 3] = ["Equal", "Dry first", "Linear"];
 
-/// Every engine of the Delay and Reverb families, once.
+/// Every engine of the Delay and Reverb families, once, and the Chorus.
 fn engines() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for f in families::FAMILIES
@@ -29,6 +30,7 @@ fn engines() -> Vec<&'static str> {
             }
         }
     }
+    out.push("mpfree.fx.chorus");
     out
 }
 
@@ -108,7 +110,7 @@ const ADDED_AFTER: [(&str, &str); 1] = [("mpfree.fx.room", "Diffusion")];
 #[test]
 fn every_delay_and_reverb_has_the_mix_curve_after_its_older_controls() {
     let all = engines();
-    assert_eq!(all.len(), 7, "{all:?}");
+    assert_eq!(all.len(), 8, "{all:?}");
     for id in all {
         let n = registry::make(id).unwrap();
         let ps = n.params();

@@ -440,13 +440,15 @@ const L_4: f32 = 3.0;
 const L_BAR: f32 = 5.0;
 const L_2BARS: f32 = 6.0;
 
-/// Chorus: from a touch of width to a big ensemble.
+/// Chorus: from a touch of width to a big ensemble. Depth is a sweep in
+/// ms (100 % is 5 ms either way); each preset keeps the sweep it had when
+/// Depth was a share of the Delay (FX quality round 3, M1).
 pub static CHORUS: &[Preset] = &[
     Preset {
         name: "Subtle widen",
         values: &[
             (chorus::RATE, 0.25),
-            (chorus::DEPTH, 15.0),
+            (chorus::DEPTH, 12.0),
             (chorus::DELAY, 8.0),
             (chorus::VOICES, 2.0),
             (chorus::TONE, 12_000.0),
@@ -456,7 +458,7 @@ pub static CHORUS: &[Preset] = &[
         name: "Lush ensemble",
         values: &[
             (chorus::RATE, 0.35),
-            (chorus::DEPTH, 60.0),
+            (chorus::DEPTH, 100.0),
             (chorus::DELAY, 18.0),
             (chorus::VOICES, 4.0),
             (chorus::TONE, 8000.0),
@@ -466,7 +468,7 @@ pub static CHORUS: &[Preset] = &[
         name: "Dimension",
         values: &[
             (chorus::RATE, 0.8),
-            (chorus::DEPTH, 25.0),
+            (chorus::DEPTH, 15.0),
             (chorus::DELAY, 6.0),
             (chorus::VOICES, 2.0),
         ],
@@ -475,7 +477,7 @@ pub static CHORUS: &[Preset] = &[
         name: "Fast wobble",
         values: &[
             (chorus::RATE, 5.0),
-            (chorus::DEPTH, 50.0),
+            (chorus::DEPTH, 20.0),
             (chorus::DELAY, 4.0),
             (chorus::VOICES, 1.0),
             (chorus::WIDTH, 0.0),
@@ -486,7 +488,7 @@ pub static CHORUS: &[Preset] = &[
         name: "Bar swirl",
         values: &[
             (chorus::SYNC, L_BAR),
-            (chorus::DEPTH, 55.0),
+            (chorus::DEPTH, 77.0),
             (chorus::DELAY, 14.0),
             (chorus::VOICES, 3.0),
         ],
