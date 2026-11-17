@@ -158,6 +158,21 @@ class FragmentTests(unittest.TestCase):
         self.assertIn("isolcpus=2-3", self.frag["CONFIG_CMDLINE"].strip('"').split())
         self.assertIn("loadpin", self.frag["CONFIG_LSM"].strip('"').split(","))
 
+    def test_what_the_built_config_lacked_against_akais(self):
+        # The built config compared with Akai's, symbol by symbol (2026-11-17).
+        for sym in ("CONFIG_ARM_ERRATA_818325_852422", "CONFIG_ARM_ERRATA_821420",
+                    "CONFIG_ARM_ERRATA_825619", "CONFIG_ARM_ERRATA_852421", "CONFIG_ARM_ERRATA_852423",
+                    "CONFIG_ARM_ERRATA_857271", "CONFIG_ARM_ERRATA_857272", "CONFIG_IP_MULTICAST",
+                    "CONFIG_USB_CONFIGFS", "CONFIG_CGROUP_SCHED", "CONFIG_GPIO_SYSFS",
+                    "CONFIG_DM_VERITY", "CONFIG_SECURITY_LOADPIN_VERITY"):
+            self.assertEqual(self.frag.get(sym), "y", sym)
+        # Akai's kernel leaves the SoC's crypto engine alone.
+        self.assertIn("CONFIG_CRYPTO_DEV_ROCKCHIP", self.frag)
+        self.assertIsNone(self.frag["CONFIG_CRYPTO_DEV_ROCKCHIP"])
+        # Devices a musician plugs in are modules, never built in.
+        for sym in ("CONFIG_HFSPLUS_FS", "CONFIG_USB_ACM", "CONFIG_USB_SERIAL", "CONFIG_HID_APPLE"):
+            self.assertEqual(self.frag.get(sym), "m", sym)
+
     def test_the_fragment_passes_against_itself(self):
         self.assertEqual(cc.check(self.text, self.text), [])
 

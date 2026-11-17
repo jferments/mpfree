@@ -1,6 +1,6 @@
 # MPFree's own kernel on the MPC One (plan)
 
-**As of 2026-11-17** · **Status:** step 1's read-only survey ran on 2026-11-17 ([results](#step-1-results-2026-11-17)) and our kernel's settings were corrected from it; step 2's build (script, pinned compiler, CI workflow) is built, and CI built the first kernel on 2026-11-17: `6.18.57-rt9-mpfree` with gcc 14.4.0, all pinned. The owner chose this as the next step on the chain route on 2026-11-15 ("merge #374, then our own kernel"), and made the [three choices](#the-owners-decisions-2026-11-16) on 2026-11-16: 6.18 long-term with the RT patch, no request to inMusic for now, builds on the CI runners in a pinned container. · **Builds on:** the chain to the stick's own device tree ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in), #374) and its one-try guard ([step 7b](stick-autoboot.md#step-7b-round-2026-11-15-zip-215433z-the-guard-passed), #381), both merged and opt-in.
+**As of 2026-11-17** · **Status:** step 1's read-only survey ran on 2026-11-17 ([results](#step-1-results-2026-11-17)) and our kernel's settings were corrected from it, then the built kernel was compared with Akai's symbol by symbol ([what changed](#step-2-the-built-settings-against-akais-2026-11-17)); step 2's build (script, pinned compiler, CI workflow) is built, and CI built the first kernel on 2026-11-17: `6.18.57-rt9-mpfree` with gcc 14.4.0, all pinned. The owner chose this as the next step on the chain route on 2026-11-15 ("merge #374, then our own kernel"), and made the [three choices](#the-owners-decisions-2026-11-16) on 2026-11-16: 6.18 long-term with the RT patch, no request to inMusic for now, builds on the CI runners in a pinned container. · **Builds on:** the chain to the stick's own device tree ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in), #374) and its one-try guard ([step 7b](stick-autoboot.md#step-7b-round-2026-11-15-zip-215433z-the-guard-passed), #381), both merged and opt-in.
 
 ## Goal
 
@@ -19,7 +19,7 @@ Most of the MPC One runs on drivers that are in mainline Linux. The parts that n
 | Sound card (DAC and ADC on Rockchip I2S `ff890000`) | Akai's own machine driver `jp07-audio` (`inmusic,acva-audio`) and codec `inmusic,acva-audio-codec`, set by pins only (enable, mute, reset, MCLK), no I2C | **Needs work:** a small replacement (mainline `simple-audio-card` plus a pin-driven codec driver), or Akai's source |
 | Display (800×1280 DSI panel `urt,umo-p076md-t`, `mipi-backlight`) | Rockchip VOP and DSI (mainline); the panel's driver is Akai's own (`panel-urt-umo-p076md-t`, step 1) | **Needs work (step 4):** not in mainline, and its start-up sequence is in the driver, not the device tree. No picture on our kernel until then |
 | GPU (Mali-T760) | Panfrost | Mainline |
-| Touchscreen (ILI2117 at I2C 4-0026) | Akai's own driver `ili2117` (`CONFIG_TOUCHSCREEN_ILI2117`) | Mainline `ili210x` supports `ilitek,ili2117`, built in; axes to check with the screen (step 4) |
+| Touchscreen (ILI2117 at I2C 4-0026) | Akai's own driver `ili2117` (`CONFIG_TOUCHSCREEN_ILI2117`) | Mainline `ili210x` supports `ilitek,ili2117`, built in; axes to check with the screen (step 4). The image's board file names an ILI2116 at 0x41 instead (`ilitek,ili2116`, Akai's own driver), so step 4 also checks which one our device tree carries |
 | Power chips (step 1) | ACT8846 (`act8865`: most supplies and the power-off), Silergy SYR827 and SYR828 (`fan53555`: the CPU's and the GPU's supply), HYM8563 clock; restart by the `gpio-restart` line and the PMU's reboot mode | Mainline, built in (our first build had a different PMIC's driver instead) |
 | Pads, buttons, lights, controller MIDI | Internal USB (DWC2 at `ff540000`), USB MIDI | Mainline |
 | Ethernet (RTL8211E PHY) | `stmmac` / `rk_gmac` | Mainline; already works on the stick's device tree (step 7) |
@@ -107,6 +107,27 @@ The owner ran blocks K1.1 and K1.2 at cf0941d2 (zip `mpfree-results-20261117T083
 - **Kept as Akai's kernel left it:** our kernel's command line adds `regulator_ignore_unused clk_ignore_unused` for the first power-ons, so the supplies and clocks of the parts whose drivers are Akai's own (the panel, the sound card) are not switched off under them. Step 5 takes the two words away.
 - **Different on purpose:** kexec off, the eMMC and SD card drivers and exFAT as modules (the [plan](sd-card-and-internal-drive.md)), the I2S driver built in, `-mpfree` in the release.
 - **Seen on the MPC (Akai's system, no stick):** the sound card's analog power, mute and reset lines are driven by Akai's codec driver. Our kernel has no driver for them, so they stay as they were at the chain's restart; whether Akai's codec driver had loaded on the first kernel by then is not known yet, so the first power-on with our kernel starts at low volume. Ethernet's PHY is the RTL8211E, and the controller's MIDI is on the internal DWC2 USB, as in the table above.
+
+## Step 2: the built settings against Akai's (2026-11-17)
+
+CI lists every setting of the built kernel in its job log ([`config-digest.py`](../../../tools/kernel/config-digest.py), a hash on each line), and the copy taken from run 44057802626 checked out line by line. Of Akai's 1382 settings, 1126 were the same in our build, 167 were missing and 89 had another value. Our build sets 2764 that Akai's doesn't, nearly all drivers for other ARM boards; apart from the crypto engine (below), none of them matches a node the MPC One's board file enables (checked against step 1's list). What changed in [`mpfree.config`](../../../tools/kernel/mpfree.config):
+
+- **The CPU:** the Cortex-A12/A17 errata fixes (818325/852422, 821420, 825619, 852421, 852423, 857271, 857272, and the A15's 773022, which does nothing here). `multi_v7_defconfig` leaves them off. Akai's kernel runs with them on this unit, so the registers they set can be written.
+- **What Akai's services on the stick use:** the CPU and freezer cgroup controllers, `/sys/class/gpio`, uinput, uhid, hidraw and hiddev, dm-verity with LoadPin's trusted digests (Akai's `az0x-loadpin-trustpoints` sets them at start), per-file encryption, the LED activity trigger, and the user-space thermal and devfreq governors. The USB-B port's gadget functions are built in, as on Akai's.
+- **Multicast**, which Ableton Link and mDNS need.
+- **The screen:** the RGA 2D engine (a module; Akai's binds it) and fbdev's 300 % allocation, as on Akai's.
+- **What a musician plugs in**, as modules: HFS and HFS+, ISO 9660 and UDF, NTFS's compressed files, more FAT code pages; keyboards, mice, game and touch controllers that need their own HID driver; USB serial and ACM devices. Also dynamic debug and usbmon, for bringing up steps 3 and 4.
+- **Off, as on Akai's:** the SoC's crypto engine. Akai's kernel never binds it, and `multi_v7_defconfig` would have udev load its driver.
+
+Left different on purpose:
+
+- kexec and crash dumps off (ours is the chain's last kernel); the eMMC and SD card drivers and exFAT as modules; I2S built in; `-mpfree`; the two command-line words above.
+- Akai's own drivers (steps 3 and 4), and the ones for Akai's other products or for parts this board doesn't have: other panels, touch chips and codecs, a fan, a clock chip, serial MIDI.
+- Akai's debug options (cgroup, DMA, firmware loader, power management and regulator debugging).
+- No netfilter: Akai's has the iptables core but no table, so iptables can do nothing there either. No USB network adapters, modems, Bluetooth HID or the old wireless API: the MPC One has Ethernet, and its board file leaves the SDIO Wi-Fi switched off.
+- Optimised for speed (Akai's for size), with Spectre hardening on (Akai's has it off); step 5 measures both.
+- Modules where Akai builds in (Bluetooth, some crypto, I2C over GPIO, SPI, the PWM fan, simple sound cards, another board's touch chip): none of these devices is on the MPC One, and the crypto API loads its modules when asked.
+- Numbers that change nothing here: `NR_CPUS`, the largest allocation order, the 8250 port count, the mmap floor (4096 against 65536), the SysRq mask, and the panic timeout (the stick's command line says `panic=10`).
 
 ## Risks
 
