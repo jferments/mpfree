@@ -815,6 +815,12 @@ impl Session {
         if self.time.take_steps_changed() {
             self.out.show(ToUi::Steps(Box::new(self.time.steps())));
         }
+        if !self.app.copy_held() {
+            self.step_keys.forget_copy();
+        }
+        if let Some(held) = self.step_keys.held_news() {
+            self.out.show(ToUi::StepsHeld(held));
+        }
         if let Some(line) = self.time.take_song_note() {
             self.out.note(&format!("time: {line}"));
         }
@@ -1117,6 +1123,9 @@ impl Session {
         let t = self.t();
         let now = self.now();
         let mix_turn = crate::mixturns::before_ui(&a, &self.mix, self.app.view() == View::Mixer);
+        if crate::step_turn(&a) {
+            self.step_keys.turned();
+        }
         let mut fx = std::mem::take(&mut self.fx);
         let rest = {
             let (mut d, out) = self.desk();

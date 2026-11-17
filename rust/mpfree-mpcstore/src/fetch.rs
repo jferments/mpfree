@@ -4,14 +4,42 @@
 //! of it. Without libcurl, or without a network, a download fails with a
 //! reason and the musician copies zips to the stick instead.
 //!
+//! **A static program never opens libcurl itself.** The pad player for the
+//! MPC is linked statically (`+crt-static`), and glibc's static `dlopen`
+//! can't host libcurl reliably. Under qemu, a build linked against the
+//! workstation's glibc (2.43, newer than the MPC's 2.39) crashed inside
+//! `dlopen`; one linked against 2.39 got through TLS, but libcurl's resolver
+//! thread crashed in `pthread_create`, since a thread made inside a library
+//! loaded by a static program finds no thread setup of its own. On the MPC
+//! (the 16 Nov live run) the download stopped at curl's "Insufficient
+//! randomness" instead; that exact failure was not reproduced, so it being
+//! the same static `dlopen` is an assumption. So a static build hands each
+//! download to [`HELPER`], a small program linked dynamically against the
+//! MPC's glibc (built with `cargo zigbuild` for glibc 2.34) and installed
+//! beside it, which runs this same code ([`fetch_here`]) and reports on its
+//! standard output ([`helper_main`]). The check of libcurl's OpenSSL
+//! ([`tls`]) runs in the helper too: it starts with libcurl in every
+//! download, and `mpfree-fetch --tls` reports it for the Plugins place's
+//! first line ([`tls_through_helper`]).
+//!
 //! Only `https://` addresses on the catalog's own hosts are fetched, and
 //! redirects may only go to HTTPS.
 
 use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+/// The download helper's file name, beside the program that uses it
+/// (`/etc/mpfree-test/mpfree-fetch` on the stick).
+pub const HELPER: &str = "mpfree-fetch";
+
+/// Whether this program is linked statically, so downloads go through
+/// [`HELPER`].
+const STATIC: bool = cfg!(target_feature = "crt-static");
 
 /// Hosts a download may start at: the catalog's site and GitHub, where the
 /// releases and screenshots are.
@@ -115,15 +143,99 @@ fn curl() -> Result<&'static Curl, String> {
     .map_err(|e| e.clone())
 }
 
-/// Whether downloads can work here at all (libcurl is there).
+/// Whether downloads can work here at all: libcurl is there, or for a
+/// static program, the helper beside it.
 pub fn available() -> bool {
-    curl().is_ok()
+    if STATIC {
+        helper().is_some()
+    } else {
+        curl().is_ok()
+    }
+}
+
+/// What downloads go through, for the Plugins place's line: "libcurl", or
+/// for a static program the helper.
+pub fn means() -> &'static str {
+    if STATIC {
+        HELPER
+    } else {
+        "libcurl"
+    }
+}
+
+/// The helper beside this program, if it is there.
+fn helper() -> Option<PathBuf> {
+    let p = std::env::current_exe().ok()?.with_file_name(HELPER);
+    p.is_file().then_some(p)
 }
 
 /// What libcurl's TLS library said as it started, for the log: for example
-/// "OpenSSL 3.0.13 ready". None without libcurl.
+/// "OpenSSL 3.0.13 ready". None without libcurl. A static program never
+/// opens libcurl, so it asks the helper beside it, once
+/// ([`tls_through_helper`]); None without the helper.
 pub fn tls() -> Option<String> {
+    if STATIC {
+        static ASKED: OnceLock<Option<String>> = OnceLock::new();
+        return ASKED
+            .get_or_init(|| helper().map(|h| tls_through_helper(&h, TLS_WAIT)))
+            .clone();
+    }
     curl().ok().map(|c| c.tls.clone())
+}
+
+/// How long the helper may take to start libcurl and say what its OpenSSL
+/// said.
+pub const TLS_WAIT: Duration = Duration::from_secs(10);
+
+/// Asks the helper at `helper` what its libcurl's OpenSSL said as it
+/// started (`mpfree-fetch --tls`, which downloads nothing): its account, as
+/// [`tls`] gives it in a dynamic program, or "TLS not checked: " and why
+/// (the helper's own reason, it gave no answer within `wait`, or it
+/// stopped). A helper still running after `wait` is stopped.
+pub fn tls_through_helper(helper: &Path, wait: Duration) -> String {
+    let mut child = match Command::new(helper)
+        .arg("--tls")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("TLS not checked: {}: {e}", helper.display()),
+    };
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Ok(s),
+            Ok(None) if start.elapsed() < wait => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return format!(
+                    "TLS not checked: {HELPER} gave no answer in {} s",
+                    wait.as_secs_f32()
+                );
+            }
+            Err(e) => break Err(e),
+        }
+    };
+    // One short line: it fits the pipe, so the helper never waited on it.
+    let mut text = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+    }
+    for line in text.lines() {
+        if let Some(account) = line.strip_prefix("tls ") {
+            return account.to_string();
+        }
+        if let Some(why) = line.strip_prefix("failed ") {
+            return format!("TLS not checked: {why}");
+        }
+    }
+    match status {
+        Ok(s) => format!("TLS not checked: {HELPER} stopped ({s})"),
+        Err(e) => format!("TLS not checked: {HELPER}: {e}"),
+    }
 }
 
 // OpenSSL's numbers (openssl/crypto.h).
@@ -285,7 +397,157 @@ pub fn fetch(
     if !allowed(url) {
         return Err(format!("{url} is not on the catalog's sites"));
     }
+    if STATIC {
+        let helper = helper().ok_or_else(|| {
+            format!("{HELPER} is not beside MPFree's program, so MPFree can't download")
+        })?;
+        return through_helper(&helper, url, out, max, progress);
+    }
     fetch_any(url, out, max, progress, PROTO_HTTPS)
+}
+
+/// [`fetch`] in this process, whatever the build: the helper's own path.
+pub fn fetch_here(
+    url: &str,
+    out: &Path,
+    max: u64,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> Result<u64, String> {
+    if !allowed(url) {
+        return Err(format!("{url} is not on the catalog's sites"));
+    }
+    fetch_any(url, out, max, progress, PROTO_HTTPS)
+}
+
+/// The helper's whole program: `mpfree-fetch URL OUT MAX`. It prints
+/// `progress DONE TOTAL` now and then (at most ten times a second), then
+/// `done BYTES` or `failed WHY`, and exits 0 or 1. When its output is gone
+/// (the program that started it went), it stops the download.
+pub fn helper_main(args: &[String]) -> i32 {
+    let mut stdout = std::io::stdout();
+    if let [flag] = args {
+        if flag == "--tls" {
+            return helper_tls(&mut stdout);
+        }
+    }
+    let (url, out, max) = match args {
+        [url, out, max] => match max.parse::<u64>() {
+            Ok(max) => (url, Path::new(out), max),
+            Err(_) => {
+                let _ = writeln!(stdout, "failed the most to download is not a number");
+                return 2;
+            }
+        },
+        _ => {
+            let _ = writeln!(
+                stdout,
+                "failed usage: {HELPER} URL OUT MAX, or {HELPER} --tls"
+            );
+            return 2;
+        }
+    };
+    if STATIC {
+        let _ = writeln!(
+            stdout,
+            "failed this {HELPER} is linked statically, so it can't open libcurl (build it as the docs say)"
+        );
+        return 1;
+    }
+    let mut last: Option<std::time::Instant> = None;
+    let mut progress = |done: u64, total: u64| {
+        if last.is_some_and(|t| t.elapsed().as_millis() < 100) {
+            return true;
+        }
+        last = Some(std::time::Instant::now());
+        writeln!(stdout, "progress {done} {total}").is_ok() && stdout.flush().is_ok()
+    };
+    let r = fetch_here(url, out, max, &mut progress);
+    let mut stdout = std::io::stdout();
+    match r {
+        Ok(n) => {
+            let _ = writeln!(stdout, "done {n}");
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(stdout, "failed {}", e.replace('\n', " "));
+            1
+        }
+    }
+}
+
+/// `mpfree-fetch --tls`: starts libcurl and prints `tls ` and what its
+/// OpenSSL said ([`tls`]), or `failed ` and why libcurl didn't start.
+fn helper_tls(stdout: &mut std::io::Stdout) -> i32 {
+    if STATIC {
+        let _ = writeln!(
+            stdout,
+            "failed this {HELPER} is linked statically, so it can't open libcurl (build it as the docs say)"
+        );
+        return 1;
+    }
+    match curl() {
+        Ok(c) => {
+            let _ = writeln!(stdout, "tls {}", c.tls.replace('\n', " "));
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(stdout, "failed {}", e.replace('\n', " "));
+            1
+        }
+    }
+}
+
+/// [`fetch`] through the helper at `helper`: its progress lines go to
+/// `progress`, and returning false stops it. On any failure the file is
+/// removed, as [`fetch`] does.
+pub fn through_helper(
+    helper: &Path,
+    url: &str,
+    out: &Path,
+    max: u64,
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> Result<u64, String> {
+    let mut child = Command::new(helper)
+        .arg(url)
+        .arg(out)
+        .arg(max.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", helper.display()))?;
+    let mut result = None;
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            let (word, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+            match word {
+                "progress" => {
+                    let mut n = rest.split(' ').map(|v| v.parse::<u64>().unwrap_or(0));
+                    let (done, total) = (n.next().unwrap_or(0), n.next().unwrap_or(0));
+                    if !progress(done, total) {
+                        let _ = child.kill();
+                        result = Some(Err("cancelled".to_string()));
+                        break;
+                    }
+                }
+                "done" => result = Some(rest.parse::<u64>().map_err(|_| line.clone())),
+                "failed" => result = Some(Err(rest.to_string())),
+                _ => {}
+            }
+        }
+    }
+    let status = child.wait();
+    let result = match (result, status) {
+        (Some(Ok(n)), Ok(s)) if s.success() => Ok(n),
+        (Some(Err(e)), _) => Err(e),
+        (_, Ok(s)) => Err(format!("{HELPER} stopped ({s})")),
+        (_, Err(e)) => Err(format!("{HELPER}: {e}")),
+    };
+    if result.is_err() {
+        let _ = std::fs::remove_file(out);
+    }
+    result
 }
 
 fn fetch_any(
@@ -425,6 +687,103 @@ mod tests {
             }
         });
         format!("http://{addr}/x.zip")
+    }
+
+    /// A stand-in for the helper: a shell script that says `lines` and
+    /// writes `body` to its OUT argument.
+    fn fake_helper(dir: &Path, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("fake-fetch");
+        std::fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_static_build_downloads_through_the_helper() {
+        let dir = std::env::temp_dir().join(format!("mpfree-fetch-helper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("a.zip");
+        let url = "https://github.com/a/b/releases/download/v1/x.zip";
+        // It reports progress and the bytes, and the file is its.
+        let h = fake_helper(
+            &dir,
+            "[ \"$1\" = https://github.com/a/b/releases/download/v1/x.zip ] && [ \"$3\" = 4096 ] || exit 9\n\
+             echo progress 0 0; printf zip > \"$2\"; echo progress 3 3; echo done 3",
+        );
+        let mut seen = Vec::new();
+        let n = through_helper(&h, url, &out, 4096, &mut |d, t| {
+            seen.push((d, t));
+            true
+        })
+        .unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(seen, [(0, 0), (3, 3)]);
+        assert_eq!(std::fs::read(&out).unwrap(), b"zip");
+        // Its reason, and no file left.
+        let h = fake_helper(
+            &dir,
+            "printf half > \"$2\"; echo failed Could not resolve host; exit 1",
+        );
+        let e = through_helper(&h, url, &out, 4096, &mut |_, _| true).unwrap_err();
+        assert_eq!(e, "Could not resolve host");
+        assert!(!out.exists());
+        // Cancelled: the helper is stopped, and no file left.
+        let h = fake_helper(
+            &dir,
+            "printf half > \"$2\"; while :; do echo progress 1 10; sleep 0.05; done",
+        );
+        let e = through_helper(&h, url, &out, 4096, &mut |_, _| false).unwrap_err();
+        assert_eq!(e, "cancelled");
+        assert!(!out.exists());
+        // A helper that dies says so.
+        let h = fake_helper(&dir, "printf half > \"$2\"; kill -SEGV $$");
+        let e = through_helper(&h, url, &out, 4096, &mut |_, _| true).unwrap_err();
+        assert!(e.starts_with("mpfree-fetch stopped ("), "{e}");
+        assert!(!out.exists());
+        let e = through_helper(&dir.join("none"), url, &out, 4096, &mut |_, _| true).unwrap_err();
+        assert!(e.contains("none"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_static_build_asks_the_helper_what_its_openssl_said() {
+        let dir = std::env::temp_dir().join(format!("mpfree-fetch-tls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wait = Duration::from_secs(5);
+        // Its account, asked with --tls.
+        let h = fake_helper(
+            &dir,
+            "[ \"$1\" = --tls ] || exit 9\necho tls OpenSSL 3.5.4 ready",
+        );
+        assert_eq!(tls_through_helper(&h, wait), "OpenSSL 3.5.4 ready");
+        // Its reason when libcurl didn't start.
+        let h = fake_helper(&dir, "echo failed libcurl.so.4 not found; exit 1");
+        assert_eq!(
+            tls_through_helper(&h, wait),
+            "TLS not checked: libcurl.so.4 not found"
+        );
+        // A helper that dies, or says nothing.
+        let h = fake_helper(&dir, "kill -SEGV $$");
+        let said = tls_through_helper(&h, wait);
+        assert!(
+            said.starts_with("TLS not checked: mpfree-fetch stopped ("),
+            "{said}"
+        );
+        // One that takes too long is stopped.
+        let h = fake_helper(&dir, "sleep 5; echo tls late");
+        let start = Instant::now();
+        assert_eq!(
+            tls_through_helper(&h, Duration::from_millis(200)),
+            "TLS not checked: mpfree-fetch gave no answer in 0.2 s"
+        );
+        assert!(start.elapsed() < Duration::from_secs(3));
+        let said = tls_through_helper(&dir.join("none"), wait);
+        assert!(
+            said.starts_with("TLS not checked: ") && said.contains("none"),
+            "{said}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
