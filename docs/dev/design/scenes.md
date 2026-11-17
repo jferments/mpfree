@@ -23,6 +23,7 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
 ## Launching a scene (`Perform::launch_scene`)
 
 - **While the transport rolls**, every track gets a cue for the next bar line: its clip in the row, or a stop when its cell is empty and it is playing something. They all start on the same bar line. A track with nothing playing or cued and an empty cell gets no cue.
+- **On the project's launch quantise** (S4). The "bar line" is the next line of `Project::launch` (one bar by default): `launch_scene` keeps it for each cue it makes (`Perform::cue_line`), and `dress` sets it on every new view (`PlayView::set_cue_line`), so a clip's own Launch can't pull one track of the scene off the others' line. A follow's cue lands on its point, a bar line, whatever Launch says (`Bars(1)`). A cue taken back or started forgets its line.
 - **Mutes switch on the same bar line.** A cue carries its track's mute (`PlayView::set_cue_mute`). The player switches the mute when the cue starts: a muted track's notes end on the bar line and nothing after it sounds. `Started::mute` reports it, and `Perform::started` makes it the track's `mute`. Each compile drops the cue mutes, so `Perform::dress` sets them again on every new view. A track with no cue takes its mute at once. It is silent, so that sounds the same.
 - **While stopped**, it all happens at once: the row's clips become the launches, as if started on the bar line the position is in, and the mutes are set.
 - **Stop all** (`Perform::stop_all`) cues a stop on every track that plays or has a cue, and forgets the scene.
@@ -93,7 +94,8 @@ The project keeps the rows' values (`Project::scenes`), so a saved morph comes b
   - a clip follow, and a cue waiting that wins over it;
   - Stay rolling again;
   - chances picking both ways;
-  - Stop all.
+  - Stop all;
+  - a scene's cues taking the project's launch quantise, a follow's the bar, and a line kept when Launch changes (`scene_cues_take_the_projects_line_and_follows_the_bar`).
 - `mpfree-perform/tests/scenes.rs` plays scenes through the transport and the player at periods of 1, 64, 128, 1000 and 4096 frames. Every period size must give the same events. It checks that:
   - a scene's clips start together on the bar line and its mute silences a track from exactly that tick;
   - clip follow actions chain on their bar lines (Next after 1 bar, Next after 2, then First);

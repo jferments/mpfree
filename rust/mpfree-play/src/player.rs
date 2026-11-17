@@ -586,6 +586,7 @@ impl Player {
                 slot: None,
                 at: 0,
                 origin: 0,
+                from: 0,
             }; MAX_TRACKS],
             n_started: 0,
             lock_starts: [NO_LOCK_START; MAX_LOCK_STARTS],
