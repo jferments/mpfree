@@ -449,3 +449,94 @@ fn writes_a_status_file_the_window_made_in_the_temporary_folder() {
     let lines = std::fs::read_to_string(&status).unwrap();
     assert!(lines.starts_with("done made "), "{lines}");
 }
+
+#[test]
+fn the_developer_routes_from_the_command_line() {
+    let t = tmp("cli-routes");
+    let upd = update_file(&t.0).display().to_string();
+    let work = t.0.display().to_string();
+    let progs = programs_dir(&t.0);
+    let pre = t.0.join("kexec-preflight-20261116T000000Z");
+    std::fs::create_dir_all(&pre).unwrap();
+    std::fs::write(pre.join("live.dtb"), example("live")).unwrap();
+    let live = pre.join("live.dtb").display().to_string();
+    let out = t.0.join("stick.img");
+    let o_ = out.display().to_string();
+    let build = |extra: &[&str]| {
+        let _ = std::fs::remove_file(&out);
+        let mut args = vec![
+            "build",
+            &upd,
+            "--out",
+            &o_,
+            "--programs",
+            &progs,
+            "--any-update",
+            "--work",
+            &work,
+        ];
+        args.extend_from_slice(extra);
+        stick(&args)
+    };
+    for (extra, why) in [
+        (
+            vec!["--loadpin-off"],
+            "--loadpin-off goes with --kexec-file",
+        ),
+        (
+            vec!["--kexec-file", "--chain", "--live-dtb", &live],
+            "--chain goes with --kexec-file and --loadpin-off",
+        ),
+        (
+            vec!["--kexec-file", "--loadpin-off", "--chain"],
+            "--chain needs --live-dtb FILE",
+        ),
+        (
+            vec!["--kexec-file", "--live-dtb", &live],
+            "--live-dtb goes only with --chain",
+        ),
+    ] {
+        let o = build(&extra);
+        assert!(!o.status.success(), "{extra:?}");
+        assert!(text(&o).contains(why), "{}", text(&o));
+        assert!(!out.exists());
+    }
+    let chain = [
+        "--kexec-file",
+        "--loadpin-off",
+        "--chain",
+        "--live-dtb",
+        &live,
+    ];
+    // A tree read on an MPC running another release is refused.
+    std::fs::write(pre.join("release.txt"), "6.1.0-other\n").unwrap();
+    let o = build(&chain);
+    assert!(!o.status.success());
+    assert!(
+        text(&o).contains(&format!(
+            "says the MPC ran 6.1.0-other, not the update's {RELEASE}"
+        )),
+        "{}",
+        text(&o)
+    );
+    assert!(!out.exists());
+    std::fs::write(pre.join("release.txt"), format!("{RELEASE}\n")).unwrap();
+    let o = build(&chain);
+    assert!(o.status.success(), "{}", text(&o));
+    let said = text(&o);
+    assert!(said.contains("was read on the MPC running"), "{said}");
+    assert!(
+        said.contains("route: --kexec-file --loadpin-off --chain (developer option)"),
+        "{said}"
+    );
+    assert!(
+        said.contains("Ethernet") || said.contains("ethernet-phy@1"),
+        "{said}"
+    );
+    assert!(!said.contains("EXAMPLE-SERIAL"), "no values: {said}");
+    let o = build(&["--kexec-file"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("route: --kexec-file (developer option)"));
+    let o = build(&[]);
+    assert!(text(&o).contains("route: soft-reboot"), "{}", text(&o));
+}
