@@ -43,13 +43,16 @@
 //!   keeps `(1 + ρ) / 2` of the power, so 1.5 dB needs ρ ≥ 0.41.)
 //! - **G8, onset:** from the start to the first 10 ms whose RMS is within
 //!   3 dB of the steady level, on the pad, with 200 ms to 1 s grains.
+//! - **G1 again, variation (step B1):** full size, level and peaked
+//!   spray, each against the same cloud without it, on pink and the pad:
+//!   the cloud keeps its loudness.
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
 //! device round). Design: `docs/dev/design/fx-quality.md` ("The grain
 //! engine"); plan: mpfree-claude `sampler/granular/plan.md`.
 
-use mpfree_grain::{Budget, GrainVoice, Params, Stats, Window};
+use mpfree_grain::{Budget, GrainVoice, Params, SprayShape, Stats, Window};
 use mpfree_sampler::bandlimit::Octaves;
 use mpfree_sampler::grain_clip::GrainClip;
 
@@ -82,6 +85,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     thinning(&mut rows, &lab);
     width(&mut rows, &lab);
     onsets(&mut rows, &lab);
+    variation(&mut rows, &lab);
     rows
 }
 
@@ -766,5 +770,55 @@ fn onsets(rows: &mut Vec<Row>, lab: &Lab) {
             Some(15.0),
             1.0,
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G1 again: variation (step B1).
+
+fn variation(rows: &mut Vec<Row>, lab: &Lab) {
+    let p = Params {
+        density: 40.0,
+        spray: 0.3,
+        ..base()
+    };
+    for (name, src) in [("pink", &lab.pink), ("pad", &lab.pad)] {
+        let (plain, _) = steady(src, lab.rate, p, 2.0, 8);
+        let plain = lufs(&plain);
+        for (what, q) in [
+            (
+                "size spray full",
+                Params {
+                    size_spray: 1.0,
+                    ..p
+                },
+            ),
+            (
+                "level spray full",
+                Params {
+                    level_spray: 1.0,
+                    ..p
+                },
+            ),
+            (
+                "peaked spray",
+                Params {
+                    spray_shape: SprayShape::Peaked,
+                    ..p
+                },
+            ),
+        ] {
+            let (varied, _) = steady(src, lab.rate, q, 2.0, 8);
+            put(
+                rows,
+                "G1",
+                format!("vary[{name}, {what}]"),
+                "level_change_lu",
+                lufs(&varied) - plain,
+                Better::Near(0.0),
+                Some(1.0),
+                0.1,
+            );
+        }
     }
 }

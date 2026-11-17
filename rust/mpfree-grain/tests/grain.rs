@@ -325,6 +325,154 @@ fn gaps(p: Params, frames: usize) -> (Vec<usize>, u64) {
     (g, v.stats().spawned)
 }
 
+/// The runs of a sparse cloud's grains (start, frames, peak) on a steady
+/// level: each grain is a run of non-zero frames.
+fn runs(p: Params, frames: usize) -> Vec<(usize, usize, f32)> {
+    let data = vec![0.5; 96_000];
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let mut v = GrainVoice::new(RATE, 4);
+    v.set_params(p);
+    v.start();
+    let (l, _) = run(&mut v, &src, &mut Budget::new(256), 0, frames, 128);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < l.len() {
+        if l[i] == 0.0 {
+            i += 1;
+            continue;
+        }
+        let from = i;
+        let mut peak = 0.0f32;
+        while i < l.len() && l[i] != 0.0 {
+            peak = peak.max(l[i].abs());
+            i += 1;
+        }
+        // A run cut off by the end of the render isn't a whole grain.
+        if i < l.len() {
+            out.push((from, i - from, peak));
+        }
+    }
+    out
+}
+
+#[test]
+fn size_spray_varies_each_grains_length_from_half_to_double() {
+    // 20 ms grains (960 frames), 5 a second, so none overlap.
+    let p = Params {
+        size_ms: 20.0,
+        density: 5.0,
+        timing: 0.0,
+        ..Params::default()
+    };
+    let plain = runs(p, 480_000);
+    assert!(plain.len() >= 45, "{}", plain.len());
+    let first = plain[0].1;
+    assert!(plain.iter().all(|r| r.1 == first), "{plain:?}");
+    let varied = runs(
+        Params {
+            size_spray: 1.0,
+            ..p
+        },
+        480_000,
+    );
+    assert_eq!(varied.len(), plain.len(), "the density is kept");
+    let lens: Vec<usize> = varied.iter().map(|r| r.1).collect();
+    let (lo, hi) = (*lens.iter().min().unwrap(), *lens.iter().max().unwrap());
+    assert!(lo >= 960 / 2 - 4 && hi <= 960 * 2 + 4, "{lo} to {hi}");
+    assert!(lo < 700 && hi > 1400, "{lo} to {hi}: not spread");
+    // The starts don't move: the variation has its own random sequence.
+    let starts = |r: &[(usize, usize, f32)]| r.iter().map(|r| r.0).collect::<Vec<_>>();
+    assert_eq!(starts(&plain), starts(&varied));
+}
+
+#[test]
+fn level_spray_varies_grain_levels_and_a_dense_cloud_keeps_its_level() {
+    let p = Params {
+        size_ms: 20.0,
+        density: 5.0,
+        timing: 0.0,
+        ..Params::default()
+    };
+    let plain = runs(p, 480_000);
+    let varied = runs(
+        Params {
+            level_spray: 1.0,
+            ..p
+        },
+        480_000,
+    );
+    assert_eq!(plain.len(), varied.len());
+    let top = plain[0].2;
+    let db: Vec<f32> = varied.iter().map(|r| 20.0 * (r.2 / top).log10()).collect();
+    let (lo, hi) = db
+        .iter()
+        .fold((0.0f32, -99.0f32), |(a, b), &x| (a.min(x), b.max(x)));
+    assert!(lo >= -24.1 && hi <= 0.01, "{lo} to {hi} dB");
+    assert!(lo < -16.0 && hi > -6.0, "{lo} to {hi} dB: not spread");
+    // Same grains at the same places, only their levels change.
+    for (a, b) in plain.iter().zip(&varied) {
+        assert_eq!((a.0, a.1), (b.0, b.1));
+    }
+
+    // A dense cloud of noise keeps its level within 1 dB.
+    let mut rng = Rng::new(7);
+    let data: Vec<f32> = (0..96_000).map(|_| rng.bipolar() * 0.5).collect();
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let rms = |level_spray: f32| {
+        let mut v = GrainVoice::new(RATE, 5);
+        v.set_params(Params {
+            size_ms: 100.0,
+            density: 80.0,
+            spray: 0.5,
+            position: 0.5,
+            level_spray,
+            ..Params::default()
+        });
+        v.start();
+        let (l, _) = run(&mut v, &src, &mut Budget::new(256), 0, 96_000, 128);
+        let tail = &l[24_000..];
+        (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).sqrt()
+    };
+    let change = 20.0 * (rms(1.0) / rms(0.0)).log10();
+    assert!(change.abs() < 1.0, "{change} dB");
+}
+
+#[test]
+fn peaked_spray_keeps_most_grains_near_the_position() {
+    let data = vec![0.5; 480_000];
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let near = |spray_shape| {
+        let mut v = GrainVoice::new(RATE, 3);
+        v.set_params(Params {
+            position: 0.5,
+            spray: 1.0,
+            spray_shape,
+            size_ms: 50.0,
+            density: 200.0,
+            ..Params::default()
+        });
+        v.start();
+        let mut b = Budget::new(256);
+        let (mut close, mut all) = (0, 0);
+        let mut views = [GrainView::default(); MAX_GRAINS];
+        for k in 0..40 {
+            run(&mut v, &src, &mut b, k * 4800, 4800, 128);
+            let n = v.grains(&mut views);
+            all += n;
+            close += views[..n]
+                .iter()
+                .filter(|g| (g.position - 0.5).abs() < 0.1)
+                .count();
+        }
+        close as f32 / all as f32
+    };
+    let (even, peaked) = (near(SprayShape::Even), near(SprayShape::Peaked));
+    // Within a tenth of the span either side: a fifth of an even spray
+    // (all of it), and |r|³ < 0.2 for 58 % of a peaked one.
+    assert!((0.12..0.3).contains(&even), "even {even}");
+    assert!(peaked > 0.45, "peaked {peaked}");
+}
+
 #[test]
 fn regular_timing_spaces_grains_evenly() {
     // 100 a second at 48 kHz: every 480 frames.

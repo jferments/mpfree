@@ -150,6 +150,9 @@ fn busy_kit() -> Project {
             size_beats: None,
         }),
         timing: 0.65,
+        size_spray: 0.45,
+        level_spray: 0.7,
+        spray_shape: GrainSprayShape::Peaked,
     };
     p.set_pad(5, Some(Pad::new("Cloud", Layer::new(g))), None)
         .unwrap();

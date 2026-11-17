@@ -40,3 +40,9 @@ grain/smooth[trapezoid 0.1, overlap 2]/ripple_db	0.004
 grain/spread[full]/correlation	0.441
 grain/spread[full]/level_change_lu	0.0482
 grain/spread[full]/mono_fold_lu	1.3834
+grain/vary[pad, level spray full]/level_change_lu	-0.0137
+grain/vary[pad, peaked spray]/level_change_lu	-0.2522
+grain/vary[pad, size spray full]/level_change_lu	0.1402
+grain/vary[pink, level spray full]/level_change_lu	-0.0771
+grain/vary[pink, peaked spray]/level_change_lu	0.1088
+grain/vary[pink, size spray full]/level_change_lu	-0.0527
