@@ -13,19 +13,25 @@
 //!   Learn only, Both: the rig's, the same setting as on its row and its
 //!   page). A track's square under a port is its Plays on (the project's).
 //!   Tracks by channel are the project's routes.
+//! - A port's square under a MIDI out port is **thru** ([`ThruRoute`]):
+//!   its messages (all channels, or one) go straight out of that port, as
+//!   they came, and play nothing inside MPFree. The project's, like the
+//!   routes. A USB device's own output is "—": its messages never go back
+//!   to it (the 5-pin jacks are two pieces of gear, so MIDI in to MIDI out
+//!   is fine).
 //! - A tap on an empty square adds that route and picks it; a tap on a
 //!   set one picks it. The card under the grid shows the picked square:
-//!   its On and Off, and for Tracks by channel each route with its channel
-//!   and track. The wheel moves across the squares, - and + take a route
-//!   away or add it, and the Q-Links turn the picked route's channel and
-//!   track.
-//! - Not yet: thru from a port to an output, the pads to an output
-//!   (drum pads out), and each route's blocks. Their squares say so.
+//!   its On and Off, for Tracks by channel each route with its channel
+//!   and track, and for thru each channel it sends. The wheel moves across
+//!   the squares, - and + take a route away or add it, and the Q-Links
+//!   turn the picked route's channel and track.
+//! - Not yet: the pads to an output (drum pads out) and each route's
+//!   blocks. Their squares say so.
 
 use std::cell::Cell;
 
 use mpfree_midi::cv::CvAssign;
-use mpfree_midi::setup::{PortInput, TrackOut, TrackRoute};
+use mpfree_midi::setup::{thru_allowed, PortInput, ThruRoute, TrackOut, TrackRoute};
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target, Touch};
 
@@ -195,6 +201,30 @@ fn routes_from(m: &IoModel, port: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The project's thru from `port` to the output `out`, as indexes into
+/// `setup.thru`.
+fn thru_to(m: &IoModel, port: &str, out: &str) -> Vec<usize> {
+    m.setup
+        .thru
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.from == port && r.to == out)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Why a thru sends nothing now, if it doesn't: its ports aren't both
+/// plugged in, or MIDI out is off.
+fn thru_waits(m: &IoModel, port_plugged: bool, out_plugged: bool) -> Option<&'static str> {
+    if !port_plugged || !out_plugged {
+        Some("waits for it")
+    } else if !m.live.built.notes_out {
+        Some("MIDI out is off")
+    } else {
+        None
+    }
+}
+
 fn channel_text(c: Option<u8>) -> String {
     match c {
         Some(c) => format!("ch {}", c + 1),
@@ -245,7 +275,10 @@ fn square(m: &IoModel, src: &Src, dest: &Dest) -> Square {
             if !plays_armed(m.setup.port(name).input) {
                 return Square::empty();
             }
-            let routed = !routes_from(m, name).is_empty();
+            // Routes and thru take their channels; the armed track gets
+            // the rest.
+            let routed =
+                !routes_from(m, name).is_empty() || m.setup.thru.iter().any(|r| &r.from == name);
             Square::set(
                 if routed { "the rest" } else { "all channels" },
                 if *plugged { "plays it" } else { "waits for it" },
@@ -317,7 +350,34 @@ fn square(m: &IoModel, src: &Src, dest: &Dest) -> Square {
             )
             .waits(!plugged)
         }
-        (Src::Port { .. }, Dest::Out { .. }) => Square::later(),
+        (
+            Src::Port { name, plugged },
+            Dest::Out {
+                name: out,
+                plugged: out_plugged,
+            },
+        ) => {
+            if !thru_allowed(name, out) {
+                return Square::none();
+            }
+            let rs = thru_to(m, name, out);
+            if rs.is_empty() {
+                return Square::empty();
+            }
+            let chans: Vec<Option<u8>> = rs.iter().map(|&i| m.setup.thru[i].channel).collect();
+            let waits = thru_waits(m, *plugged, *out_plugged);
+            let sub = match (waits, chans.as_slice()) {
+                (Some(w), _) => w.to_string(),
+                (None, [None]) => "all channels".to_string(),
+                (None, [Some(c)]) => format!("ch {} only", c + 1),
+                (None, many) => many
+                    .iter()
+                    .map(|&c| channel_text(c))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
+            Square::set("thru", sub).waits(waits.is_some())
+        }
         (Src::Port { .. }, Dest::Cv) => Square::none(),
         (Src::Pads, Dest::Armed) => Square::set("always", "built in"),
         (Src::Pads, Dest::Out { .. }) => Square::later(),
@@ -520,7 +580,7 @@ impl Routing {
         if l.main.contains(x, y) && has_main(src, dest) {
             return Some(Hit::Main);
         }
-        if l.remove.contains(x, y) && *dest == Dest::ByChannel {
+        if l.remove.contains(x, y) && has_lines(src, dest) {
             return Some(Hit::Remove);
         }
         match (src, dest) {
@@ -541,6 +601,24 @@ impl Routing {
                     }
                     if steps[3].contains(x, y) {
                         return Some(Hit::RouteTrack(k, 1));
+                    }
+                    if line.contains(x, y) {
+                        return Some(Hit::Route(k));
+                    }
+                }
+                None
+            }
+            (Src::Port { name, .. }, Dest::Out { name: out, .. }) => {
+                let n = thru_to(&m, name, out).len();
+                let first = self.first_route_shown(n);
+                for i in 0..n.saturating_sub(first).min(ROUTE_LINES) {
+                    let (line, steps) = Self::route_rects(&l, i);
+                    let k = first + i;
+                    if steps[0].contains(x, y) {
+                        return Some(Hit::RouteChannel(k, -1));
+                    }
+                    if steps[1].contains(x, y) {
+                        return Some(Hit::RouteChannel(k, 1));
                     }
                     if line.contains(x, y) {
                         return Some(Hit::Route(k));
@@ -689,6 +767,61 @@ impl Routing {
                     c
                 }
             }
+            (Src::Port { name, .. }, Dest::Out { name: out, .. }) if thru_allowed(name, out) => {
+                let (name, out) = (name.clone(), out.clone());
+                if on {
+                    let mut added = None;
+                    let c = self.edit(|m| {
+                        let mine = thru_to(m, &name, &out);
+                        if m.setup.thru.len() >= mpfree_midi::setup::MAX_THRU_ROUTES {
+                            return Err(format!(
+                                "A project keeps {} thru at most: take one away first",
+                                mpfree_midi::setup::MAX_THRU_ROUTES
+                            ));
+                        }
+                        let chans: Vec<Option<u8>> =
+                            mine.iter().map(|&i| m.setup.thru[i].channel).collect();
+                        // All channels first; then the first channel not
+                        // sent yet, when one is picked.
+                        let channel = if chans.is_empty() {
+                            None
+                        } else if chans.contains(&None) {
+                            return Err(format!(
+                                "Every channel of {name} goes thru to {out} already: \
+                                 pick one with - and + first"
+                            ));
+                        } else {
+                            let Some(c) = (0..16u8).find(|c| !chans.contains(&Some(*c))) else {
+                                return Err(format!("Every channel of {name} goes thru already"));
+                            };
+                            Some(c)
+                        };
+                        m.setup.thru.push(ThruRoute {
+                            from: name.clone(),
+                            channel,
+                            to: out.clone(),
+                        });
+                        added = Some(mine.len());
+                        Ok(())
+                    });
+                    if let Some(k) = added {
+                        self.route = k;
+                    }
+                    c
+                } else {
+                    let k = self.route;
+                    let c = self.edit(|m| {
+                        let mine = thru_to(m, &name, &out);
+                        let Some(&i) = mine.get(k.min(mine.len().saturating_sub(1))) else {
+                            return Err(format!("{name} has no thru to {out} to take away"));
+                        };
+                        m.setup.thru.remove(i);
+                        Ok(())
+                    });
+                    self.route = self.route.saturating_sub(1);
+                    c
+                }
+            }
             (Src::Track(t), Dest::Out { name, .. }) => {
                 let (t, name) = (*t, name.clone());
                 self.edit(|m| {
@@ -725,12 +858,36 @@ impl Routing {
         }
     }
 
-    /// Steps the picked route's channel (all, then 1 to 16).
+    /// Steps the picked route's or thru's channel (all, then 1 to 16).
     fn route_channel(&mut self, k: usize, d: i32) -> IoReply {
-        let Some((Src::Port { name, .. }, Dest::ByChannel)) = self.picked_now() else {
-            return IoReply::Handled;
+        let (name, out) = match self.picked_now() {
+            Some((Src::Port { name, .. }, Dest::ByChannel)) => (name, None),
+            Some((Src::Port { name, .. }, Dest::Out { name: out, .. })) => (name, Some(out)),
+            _ => return IoReply::Handled,
         };
         self.route = k;
+        if let Some(out) = out {
+            let changed = self.edit(|m| {
+                let i = *thru_to(m, &name, &out).get(k).ok_or("No thru picked")?;
+                let r = m.setup.thru[i].clone();
+                let at = r.channel.map_or(0, |c| i32::from(c) + 1);
+                let to = at + d.signum();
+                if !(0..=16).contains(&to) {
+                    return Err(format!(
+                        "The thru's channel is at its {}: {} it",
+                        if d > 0 { "last, 16" } else { "first, all" },
+                        if d > 0 { "- lowers" } else { "+ raises" }
+                    ));
+                }
+                let channel = (to > 0).then(|| (to - 1) as u8);
+                set_thru(m, i, ThruRoute { channel, ..r })
+            });
+            return if changed {
+                IoReply::Redraw
+            } else {
+                IoReply::Handled
+            };
+        }
         let changed = self.edit(|m| {
             let i = *routes_from(m, &name).get(k).ok_or("No route picked")?;
             let r = m.setup.routes[i].clone();
@@ -855,10 +1012,7 @@ impl Routing {
                 let on = {
                     let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
                     match self.picked(&m) {
-                        Some((s, Dest::ByChannel)) => {
-                            let _ = s;
-                            true
-                        }
+                        Some((s, d)) if has_lines(&s, &d) => true,
                         Some((s, d)) => square(&m, &s, &d).kind != Kind::Set,
                         None => true,
                     }
@@ -895,6 +1049,21 @@ fn set_route(m: &mut IoModel, i: usize, r: TrackRoute) -> Result<(), String> {
     Ok(())
 }
 
+/// A thru set again, refused if the port sends that channel there
+/// already.
+fn set_thru(m: &mut IoModel, i: usize, r: ThruRoute) -> Result<(), String> {
+    if m.setup
+        .thru
+        .iter()
+        .enumerate()
+        .any(|(j, o)| j != i && *o == r)
+    {
+        return Err(format!("{} goes thru to {} already", r.source(), r.to));
+    }
+    m.setup.thru[i] = r;
+    Ok(())
+}
+
 /// The track's output channel when it plays on `port`.
 fn plays_on(m: &IoModel, t: u8, port: &str) -> Option<u8> {
     m.setup
@@ -907,20 +1076,28 @@ fn plays_on(m: &IoModel, t: u8, port: &str) -> Option<u8> {
 
 /// Whether the picked square's card has an On, Off or + Route button.
 fn has_main(src: &Src, dest: &Dest) -> bool {
-    matches!(
-        (src, dest),
-        (
-            Src::Port { .. },
-            Dest::Armed | Dest::ByChannel | Dest::Learn
-        ) | (Src::Track(_), Dest::Out { .. })
-    )
+    has_lines(src, dest)
+        || matches!(
+            (src, dest),
+            (Src::Port { .. }, Dest::Armed | Dest::Learn) | (Src::Track(_), Dest::Out { .. })
+        )
+}
+
+/// Whether the picked square's card lists routes, with + Route and Remove
+/// route: Tracks by channel, and thru.
+fn has_lines(src: &Src, dest: &Dest) -> bool {
+    match (src, dest) {
+        (Src::Port { .. }, Dest::ByChannel) => true,
+        (Src::Port { name, .. }, Dest::Out { name: out, .. }) => thru_allowed(name, out),
+        _ => false,
+    }
 }
 
 /// Why nothing can be set on a square, in words.
 fn why_not_here(src: &Src, dest: &Dest) -> String {
     match (src, dest) {
-        (Src::Port { name, .. }, Dest::Out { name: out, .. }) => {
-            format!("Thru from {name} to {out} comes later")
+        (Src::Port { name, .. }, Dest::Out { .. }) => {
+            format!("{name}'s messages never go back to it: thru goes to another output")
         }
         (Src::Port { .. }, Dest::Cv) => {
             "CV outputs follow a track: pick its job and track in the CV section".to_string()
@@ -1208,6 +1385,63 @@ impl Routing {
                     );
                 }
             }
+            (
+                Src::Port { name, plugged },
+                Dest::Out {
+                    name: out,
+                    plugged: out_plugged,
+                },
+            ) if thru_allowed(name, out) => {
+                button(cx, l.main, "+ Route", false);
+                button(cx, l.remove, "Remove route", false);
+                let mine = thru_to(m, name, out);
+                if mine.is_empty() {
+                    let say = [
+                        format!(
+                            "Add thru: what comes in on {s} goes straight out of {d}, as it came."
+                        ),
+                        "Its channels no longer play inside MPFree. Never clock or SysEx."
+                            .to_string(),
+                        "Saved with the project. It sends while Prefs' Send MIDI and CV out is on."
+                            .to_string(),
+                    ];
+                    lines(cx, l.lines, &say, t.text_dim);
+                    return;
+                }
+                let waits = thru_waits(m, *plugged, *out_plugged);
+                let first = self.first_route_shown(mine.len());
+                for (k, &i) in mine.iter().enumerate().skip(first).take(ROUTE_LINES) {
+                    let r = &m.setup.thru[i];
+                    let (line, steps) = Self::route_rects(l, k - first);
+                    let picked = k == self.route.min(mine.len() - 1);
+                    if picked {
+                        cx.canvas.fill_round_rect(line, 8, t.raised);
+                    }
+                    stepper(cx, steps[0], steps[1], &channel_text(r.channel), picked);
+                    let say = Rect::new(
+                        steps[1].right() + 12,
+                        line.y,
+                        line.right() - steps[1].right() - 16,
+                        line.h,
+                    );
+                    let (ink, what) = match waits {
+                        Some(w) => (t.warn, format!("→ {d}: sends nothing now, {w}")),
+                        None => (t.text_dim, format!("→ {d}: sends it as it came")),
+                    };
+                    cx.text(FontId::Sans, t.size_small, say, Align::Left, ink, &what);
+                }
+                if mine.len() > ROUTE_LINES {
+                    let more = Rect::new(l.lines.x, l.lines.bottom() - LINE_H, l.lines.w, LINE_H);
+                    cx.text(
+                        FontId::Sans,
+                        t.size_small,
+                        more,
+                        Align::Right,
+                        t.text_faint,
+                        &format!("{} channels · Q-Link 1 turns the picked one", mine.len()),
+                    );
+                }
+            }
             (Src::Track(tr), Dest::Out { name, .. }) => {
                 let ch = plays_on(m, *tr, name);
                 button(
@@ -1456,6 +1690,25 @@ impl IoSection for Routing {
                         }
                     }
                 }
+                (Src::Port { name, .. }, Dest::Out { name: to, .. }) if thru_allowed(name, to) => {
+                    let n = thru_to(&m, name, to).len();
+                    out.push(
+                        Target::tap("routing-remove", 0, "Remove route", l.remove)
+                            .disabled_if(n == 0),
+                    );
+                    let first = self.first_route_shown(n);
+                    for i in 0..n.saturating_sub(first).min(ROUTE_LINES) {
+                        let (_, steps) = Self::route_rects(&l, i);
+                        for (k, label) in ["Channel −", "Channel +"].into_iter().enumerate() {
+                            out.push(Target::tap(
+                                "routing-channel",
+                                (first + i) * 2 + k,
+                                label,
+                                steps[k],
+                            ));
+                        }
+                    }
+                }
                 (Src::Track(tr), Dest::Out { name, .. }) if plays_on(&m, *tr, name).is_some() => {
                     let [down, up] = Self::channel_rects(&l);
                     out.push(Target::tap("routing-out-channel", 0, "Channel −", down));
@@ -1573,6 +1826,18 @@ impl IoSection for Routing {
                     };
                 }
             }
+            Some((Src::Port { name, .. }, Dest::Out { name: out, .. })) => {
+                let mine = thru_to(&m, &name, &out);
+                if let Some(&i) = mine.get(self.route.min(mine.len().saturating_sub(1))) {
+                    let r = &m.setup.thru[i];
+                    knobs[0] = IoKnob {
+                        label: "Channel".to_string(),
+                        text: channel_text(r.channel),
+                        pos: r.channel.map_or(0, |c| usize::from(c) + 1) as f32 / 16.0,
+                        enabled: true,
+                    };
+                }
+            }
             Some((Src::Track(t), Dest::Out { name, .. })) => {
                 if let Some(c) = plays_on(&m, t, &name) {
                     knobs[0] = IoKnob {
@@ -1598,6 +1863,9 @@ impl IoSection for Routing {
             }
             (Some((Src::Port { .. }, Dest::ByChannel)), 1) => {
                 self.route_track(self.route, detents.signum())
+            }
+            (Some((Src::Port { .. }, Dest::Out { .. })), 0) => {
+                self.route_channel(self.route, detents)
             }
             (Some((Src::Track(_), Dest::Out { .. })), 0) => self.track_channel(detents),
             _ => IoReply::Ignored,
@@ -1786,11 +2054,104 @@ mod tests {
         let m = model();
         let mut s = Routing::new(m.clone());
         let _ = paint(&s);
-        let (x, y) = centre(square_at(&s, "MIDI in", "MIDI out"));
+        let (x, y) = centre(square_at(&s, "The pads", "MIDI out"));
         tap(&mut s, x, y);
-        assert_eq!(s.take_note().unwrap(), "Thru from MIDI to MIDI comes later");
+        assert!(s.take_note().unwrap().contains("comes later"));
         let (x, y) = centre(square_at(&s, "The pads", "CV out"));
         tap(&mut s, x, y);
         assert!(s.take_note().is_some());
+    }
+
+    /// A tap on a port's square under an output sends all its channels
+    /// there; the card narrows it to a channel and adds more, and a USB
+    /// device's own output is never offered.
+    #[test]
+    fn a_tap_under_an_output_sends_the_port_thru_and_the_card_picks_its_channels() {
+        let m = model();
+        let mut s = Routing::new(m.clone());
+        let _ = paint(&s);
+        let (x, y) = centre(square_at(&s, "Keystep 37", "MIDI out"));
+        assert_eq!(tap(&mut s, x, y), IoReply::Redraw);
+        let thru = |m: &Shared| m.lock().unwrap().setup.thru.clone();
+        assert_eq!(
+            thru(&m),
+            vec![ThruRoute {
+                from: "Keystep 37".to_string(),
+                channel: None,
+                to: DIN_NAME.to_string(),
+            }]
+        );
+        // MIDI out is off in the sample rig: the square says so.
+        let _ = paint(&s);
+        assert!(s
+            .targets(AREA)
+            .iter()
+            .any(|t| t.label == "Keystep 37 → MIDI out: thru"));
+        assert_eq!(
+            square(
+                &m.lock().unwrap(),
+                &Src::Port {
+                    name: "Keystep 37".into(),
+                    plugged: true
+                },
+                &Dest::Out {
+                    name: DIN_NAME.into(),
+                    plugged: true
+                }
+            )
+            .sub,
+            "MIDI out is off"
+        );
+        // + on the card while every channel goes is refused; channel 10
+        // only, then + adds channel 1.
+        assert_eq!(s.input(IoInput::Step(1)), IoReply::Handled);
+        assert!(s.take_note().unwrap().contains("already"));
+        let up = target(&s, "routing-channel", 1);
+        for _ in 0..10 {
+            tap(&mut s, up.x + 4, up.y + 4);
+        }
+        assert_eq!(thru(&m)[0].channel, Some(9));
+        assert_eq!(s.input(IoInput::Step(1)), IoReply::Redraw);
+        assert_eq!(thru(&m)[1].channel, Some(0));
+        m.lock().unwrap().live.built.notes_out = true;
+        let sq = square(
+            &m.lock().unwrap(),
+            &Src::Port {
+                name: "Keystep 37".into(),
+                plugged: true,
+            },
+            &Dest::Out {
+                name: DIN_NAME.into(),
+                plugged: true,
+            },
+        );
+        assert_eq!((sq.text.as_str(), sq.sub.as_str()), ("thru", "ch 10, ch 1"));
+        // The Q-Link turns the picked one; the same channel twice is
+        // refused; Remove route takes the picked one away.
+        assert_eq!(s.qlinks().unwrap()[0].text, "ch 1");
+        for _ in 0..9 {
+            s.qlink_turn(0, 1, false);
+        }
+        assert!(s.take_note().unwrap().contains("already"));
+        assert_eq!(thru(&m)[1].channel, Some(8));
+        let rm = target(&s, "routing-remove", 0);
+        tap(&mut s, rm.x + 4, rm.y + 4);
+        assert_eq!(thru(&m).len(), 1);
+        // A device's own output: nothing can go there (its column is past
+        // the grid's room here, as on the MPC's screen).
+        let keys = Src::Port {
+            name: "Keystep 37".into(),
+            plugged: true,
+        };
+        let own = Dest::Out {
+            name: "Keystep 37".into(),
+            plugged: true,
+        };
+        assert_eq!(square(&m.lock().unwrap(), &keys, &own).kind, Kind::None);
+        assert!(why_not_here(&keys, &own).contains("never go back to it"));
+        // MIDI in to MIDI out is two pieces of gear: allowed.
+        let (x, y) = centre(square_at(&s, "MIDI in", "MIDI out"));
+        tap(&mut s, x, y);
+        assert_eq!(thru(&m).len(), 2);
     }
 }

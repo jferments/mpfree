@@ -738,6 +738,55 @@ fn routed_keys_play_their_track_where_its_clips_play() {
     assert_eq!(*sink.0.lock().unwrap(), [0x91, 60, 100, 0x81, 60, 64]);
 }
 
+/// What thru passes on (the I/O view's Routing: a keyboard's channel 10
+/// straight out of the 5-pin jacks) goes out as it came, and a panic ends
+/// the note still on; handing it to MIDI out and the period's end never
+/// allocate. Reading the keyboard is left out, as it is for every test
+/// here.
+#[test]
+fn thru_passes_a_keyboards_channel_out_as_it_came() {
+    use mpfree_midi::setup::{ThruRoute, DIN_NAME};
+    let rig = Rig::new(false);
+    let mut midi = rig.midi;
+    let sink = MidiSink::default();
+    midi.open(sink.clone(), std::time::Instant::now()).unwrap();
+    {
+        let mut v = rig.io.lock().unwrap();
+        v.setup.thru = vec![ThruRoute {
+            from: "Keystep 37".to_string(),
+            channel: Some(9),
+            to: DIN_NAME.to_string(),
+        }];
+        v.gen += 1;
+    }
+    let mut music = midi_in::MusicIn::new();
+    let keys_port = music.plugged("Keystep 37").unwrap();
+    music.sync(&rig.io, 0.0);
+    let mut keys = Vec::new();
+    music.bytes(
+        keys_port,
+        &[0x99, 36, 100, 0x99, 38, 90, 0x89, 38, 0, 0xB9, 1, 64],
+        0.1,
+        &mut keys,
+        &mut |_| {},
+    );
+    assert!(keys.is_empty(), "{keys:?}");
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for p in music.take_thru() {
+            assert!(midi.thru(p.from, p.to, p.msg));
+        }
+        midi.period_end(PERIOD as u32, std::time::Instant::now());
+        midi.all_off(0);
+        midi.period_end(PERIOD as u32, std::time::Instant::now());
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    assert!(midi.close());
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        [0x99, 36, 100, 0x99, 38, 90, 0x89, 38, 0, 0xB9, 1, 64, 0x89, 36, 64]
+    );
+}
+
 /// The pads played live (through track 1's arp) on track 1 with its own
 /// instrument: they play it, not the kit, record as their pad, and
 /// another track's clip still plays the kit.

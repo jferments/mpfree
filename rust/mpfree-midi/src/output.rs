@@ -1,7 +1,8 @@
 //! MIDI out: tracks to ports and channels, and the bytes of one period.
 //!
 //! - [`OutputRouter`] sends each MIDI track's notes to its port and
-//!   channel ([`OutRoute`]) and remembers what is sounding, so that a
+//!   channel ([`OutRoute`]), and what thru passes on from an input port
+//!   ([`OutputRouter::thru`]), and remembers what is sounding, so that a
 //!   changed route, a stop or a panic ends exactly the notes that are on
 //!   ([`OutputRouter::set_route`], [`OutputRouter::all_off`]).
 //! - [`OutQueue`] holds one port's messages for one period, in frame
@@ -37,7 +38,8 @@ pub struct Timed {
     pub offset: u32,
     bytes: [u8; 3],
     len: u8,
-    /// The sending track, or [`NO_TRACK`] or [`PAGE`].
+    /// The sending track, or [`NO_TRACK`] or [`PAGE`], or [`THRU`] with
+    /// the input port it came in on.
     track: u8,
 }
 
@@ -46,6 +48,10 @@ const NO_TRACK: u8 = 0xFF;
 /// [`Timed`]'s track when a port's page sent it (its test note or All
 /// notes off).
 const PAGE: u8 = 0xFE;
+/// [`Timed`]'s track when thru passed it on: this bit, with the input
+/// port's number below it (tracks are below [`MAX_TRACKS`]).
+const THRU: u8 = 0x80;
+const _: () = assert!(MAX_TRACKS <= THRU as usize && MAX_PORTS <= 0x7E);
 
 impl Timed {
     pub fn msg(offset: u32, m: Msg) -> Timed {
@@ -71,9 +77,24 @@ impl Timed {
         }
     }
 
+    /// The same message, passed on by thru from the input `port` (for
+    /// the MIDI monitor).
+    pub fn thru(self, port: PortId) -> Timed {
+        Timed {
+            track: THRU | (port.0 & 0x7F),
+            ..self
+        }
+    }
+
     /// The track that sent it, if one did.
     pub fn track(&self) -> Option<u8> {
-        (self.track != NO_TRACK && self.track != PAGE).then_some(self.track)
+        (self.track < THRU).then_some(self.track)
+    }
+
+    /// The input port thru passed it on from, if it did.
+    pub fn thru_from(&self) -> Option<PortId> {
+        (self.track >= THRU && self.track != NO_TRACK && self.track != PAGE)
+            .then_some(PortId(self.track & 0x7F))
     }
 
     /// A port's page sent it.
@@ -293,6 +314,14 @@ pub struct OutputRouter {
     /// note (a count, as a track may play the same note twice). A route
     /// change ends them all first, so the route is all the rest it needs.
     sounding: Box<[u8]>,
+    /// Thru's note-ons not yet ended, per output port, channel and note.
+    thru_sounding: Box<[u8]>,
+    /// The input port each of thru's notes came in on, for the monitor's
+    /// line when a panic ends it.
+    thru_src: Box<[u8]>,
+    /// Thru's notes on per output port, so a panic skips the ports with
+    /// none.
+    thru_on: [u32; MAX_PORTS],
     pub dropped: u64,
 }
 
@@ -306,11 +335,20 @@ fn idx(track: usize, note: u8) -> usize {
     track * NOTES + usize::from(note & 0x7F)
 }
 
+const CHANNELS: usize = 16;
+
+fn thru_idx(port: usize, ch: Channel, note: u8) -> usize {
+    (port * CHANNELS + usize::from(ch & 0x0F)) * NOTES + usize::from(note & 0x7F)
+}
+
 impl OutputRouter {
     pub fn new() -> OutputRouter {
         OutputRouter {
             routes: [None; MAX_TRACKS],
             sounding: vec![0u8; MAX_TRACKS * NOTES].into_boxed_slice(),
+            thru_sounding: vec![0u8; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
+            thru_src: vec![0u8; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
+            thru_on: [0; MAX_PORTS],
             dropped: 0,
         }
     }
@@ -366,6 +404,67 @@ impl OutputRouter {
         q.push(Timed::msg(offset, m).by(track));
     }
 
+    /// A message thru passes on from the input port `from` to the output
+    /// port `to`, as it came, at `offset`. Its notes are kept, so a panic
+    /// or the port's All notes off ends them; a note-off for a
+    /// note not on there (ended by a panic, or sent while MIDI out was
+    /// off) goes nowhere.
+    pub fn thru(
+        &mut self,
+        from: PortId,
+        to: PortId,
+        msg: Msg,
+        offset: u32,
+        queues: &mut [OutQueue],
+    ) {
+        let p = usize::from(to.0);
+        let Some(q) = queues.get_mut(p).filter(|_| p < MAX_PORTS) else {
+            self.dropped += 1;
+            return;
+        };
+        match msg {
+            Msg::NoteOn { ch, note, .. } => {
+                let i = thru_idx(p, ch, note);
+                self.thru_src[i] = from.0;
+                let c = &mut self.thru_sounding[i];
+                if *c < u8::MAX {
+                    *c += 1;
+                    self.thru_on[p] += 1;
+                }
+            }
+            Msg::NoteOff { ch, note, .. } => {
+                let c = &mut self.thru_sounding[thru_idx(p, ch, note)];
+                if *c == 0 {
+                    return;
+                }
+                *c -= 1;
+                self.thru_on[p] -= 1;
+            }
+            _ => {}
+        }
+        q.push(Timed::msg(offset, msg).thru(from));
+    }
+
+    /// Ends thru's notes on port `p`, at `offset`.
+    fn thru_off(&mut self, p: usize, offset: u32, queues: &mut [OutQueue]) {
+        let Some(q) = queues.get_mut(p).filter(|_| p < MAX_PORTS) else {
+            return;
+        };
+        if std::mem::take(&mut self.thru_on[p]) == 0 {
+            return;
+        }
+        for ch in 0..CHANNELS as Channel {
+            for note in 0..NOTES as u8 {
+                let i = thru_idx(p, ch, note);
+                let n = std::mem::take(&mut self.thru_sounding[i]);
+                for _ in 0..n {
+                    let off = Msg::NoteOff { ch, note, vel: 64 };
+                    q.push(Timed::msg(offset, off).thru(PortId(self.thru_src[i])));
+                }
+            }
+        }
+    }
+
     fn track_off(&mut self, t: usize, offset: u32, queues: &mut [OutQueue]) {
         let Some(r) = self.routes[t] else { return };
         for note in 0..NOTES as u8 {
@@ -384,14 +483,16 @@ impl OutputRouter {
         }
     }
 
-    /// Ends the sounding notes of every track that plays on `port`, at
-    /// `offset`: the port went away, or its page's All notes off.
+    /// Ends the sounding notes of every track that plays on `port`, and
+    /// thru's there, at `offset`: the port went away, or its page's All
+    /// notes off.
     pub fn port_off(&mut self, port: PortId, offset: u32, queues: &mut [OutQueue]) {
         for t in 0..MAX_TRACKS {
             if self.routes[t].is_some_and(|r| r.port == port) {
                 self.track_off(t, offset, queues);
             }
         }
+        self.thru_off(usize::from(port.0), offset, queues);
     }
 
     /// Ends every sounding note of every track (stop, panic), at `offset`.
@@ -401,11 +502,18 @@ impl OutputRouter {
         for t in 0..MAX_TRACKS {
             self.track_off(t, offset, queues);
         }
+        for p in 0..MAX_PORTS {
+            self.thru_off(p, offset, queues);
+        }
     }
 
-    /// Notes on now, over every track.
+    /// Notes on now, over every track and thru.
     pub fn sounding(&self) -> usize {
-        self.sounding.iter().map(|&c| usize::from(c)).sum()
+        self.sounding
+            .iter()
+            .chain(self.thru_sounding.iter())
+            .map(|&c| usize::from(c))
+            .sum()
     }
 }
 

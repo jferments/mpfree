@@ -10,9 +10,10 @@
 //! MPC's own controller or sound card, which the scanner leaves out.
 //! Nothing is stored on the MPC. Only note, pressure, bank and program
 //! messages and clock are ever sent, never SysEx (plus, from a port's
-//! page, its test note and All notes off). The outputs are open only while
-//! Prefs' "Send MIDI and CV out" is on (off until the musician turns it
-//! on; kept across restarts).
+//! page, its test note and All notes off, and what thru passes on: the
+//! channel messages that came in on a port, as they came). The outputs
+//! are open only while Prefs' "Send MIDI and CV out" is on (off until the
+//! musician turns it on; kept across restarts).
 //!
 //! - The sound loop calls [`MidiOut::sync`] once a period before the notes:
 //!   it takes the project's track outputs when they change, and sends each
@@ -28,6 +29,12 @@
 //!   thread, when the device is plugged in while sending is on
 //!   ([`MidiOut::plugged`]) or when sending is switched on
 //!   ([`MidiOut::switch_on`]), so the sound loop never waits for a device.
+//! - **Thru** ([`MidiOut::thru`], the Routing section's squares from a
+//!   port to an output): a message that came in on a port goes out of
+//!   another in this period, as it came, when the armed track's live notes
+//!   would. Its notes are kept with the tracks', so a panic (STOP while
+//!   stopped), the Monitor's Send note-offs or the port's All notes off
+//!   ends them too.
 //! - **The gear's delay** (each port's page): each message leaves that
 //!   much before its frame is heard, but never before its period was made,
 //!   so at most the sound's lead early ([`leave_at`]).
@@ -446,6 +453,8 @@ pub struct MidiOut {
     /// Log lines from the sound loop's side (a writer that couldn't
     /// start), said at the next [`MidiOut::tick`].
     said: Vec<String>,
+    /// Messages thru couldn't send (MIDI out off, or no output there).
+    thru_unsent: u64,
 }
 
 /// The port page's test note: C4, held half a second.
@@ -489,6 +498,7 @@ impl MidiOut {
             sent: Vec::with_capacity(SENT),
             sent_at: Instant::now(),
             said: Vec::new(),
+            thru_unsent: 0,
         }
     }
 
@@ -875,6 +885,20 @@ impl MidiOut {
         true
     }
 
+    /// A message thru passes on from the input `from` to the output `to`
+    /// ([`crate::midi_in::Passed`]), at the start of this period. False
+    /// when nothing can send it: MIDI out is off, or `to` isn't plugged in
+    /// or its output didn't open.
+    pub fn thru(&mut self, from: PortId, to: PortId, msg: Msg) -> bool {
+        let i = usize::from(to.0);
+        if !self.sending || !self.ports.get(i).is_some_and(|p| p.writer.is_some()) {
+            self.thru_unsent += 1;
+            return false;
+        }
+        self.router.thru(from, to, msg, 0, &mut self.queue);
+        true
+    }
+
     fn end_chords(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
         self.chords
@@ -1126,6 +1150,12 @@ impl MidiOut {
             lines.push(format!(
                 "MIDI out: {dropped} messages dropped (more than {} for one port in one period)",
                 mpfree_midi::output::QUEUE
+            ));
+        }
+        if self.thru_unsent > 0 {
+            lines.push(format!(
+                "Thru: {} messages not sent (MIDI out off, or no output to send them to)",
+                self.thru_unsent
             ));
         }
         if self.busy > 0 {
