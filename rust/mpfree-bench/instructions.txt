@@ -59,20 +59,20 @@
 169967	Keys Init, 16 voices
 117314	Keys Init, 8 voices
 219542	Keys Reed, 16 voices
-39515	Limiter
-72624	Limiter (true peak)
+44852	Limiter
+98264	Limiter (true peak)
 221974	Lo-fi
 294259	Looper (60 s), 8 loops of 3 layers playing
 417853	Looper (60 s), 8 loops of 3 layers playing, half edited
 25436	Looper (60 s), overdubbing
-28961	Master safety
-210819	Mixer, 12 tracks and 8 pads, routing only
-1541726	Mixer, 12 tracks and 8 pads, with a song's inserts
-1017757	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
-1123370	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
-370832	Mixer, 16 tracks and 32 pads, routing only
-1367496	Mixer, a song's inserts, 6 tracks frozen, printing a bus
-52828	Mixer, idle (63 strips, nothing playing)
+30334	Master safety
+308489	Mixer, 12 tracks and 8 pads, routing only
+1616279	Mixer, 12 tracks and 8 pads, with a song's inserts
+1092142	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
+1197897	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
+461668	Mixer, 16 tracks and 32 pads, routing only
+1442597	Mixer, a song's inserts, 6 tracks frozen, printing a bus
+44777	Mixer, idle (63 strips, nothing playing)
 107876	Mod: 8 macros x 8, 16 rows, morph, locks
 9033	Moves: 16 lanes playing, the move log taking 3 controls
 8590	Multi filter (LP 12)
@@ -114,7 +114,7 @@
 74456	Sampler, drum kit, 64 voices
 823688	Sampler, the 16 sample pads alone
 235626	Sampler, the 4 granular pads alone
-3482546	Song: sampler, 2 synths, mixer+FX, time, looper
+3614936	Song: sampler, 2 synths, mixer+FX, time, looper
 137967	Spring reverb
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line

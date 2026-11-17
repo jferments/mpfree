@@ -725,7 +725,9 @@ fn master_safety_is_transparent_below_the_ceiling_and_raw_is_raw() {
     let (mut l, mut r) = (x.clone(), x.clone());
     run_once(m.as_mut(), &mut l, &mut r);
     let lat = m.latency() as usize;
-    assert_eq!(lat, 72);
+    // 1.5 ms at 48 kHz, the true-peak detector's 15 frames and the soft
+    // clip's 4 (which every mode keeps).
+    assert_eq!(lat, 72 + 15 + 4);
     // Only the 5 Hz DC blocker touches it (a 0.3 degree phase lead at 1 kHz).
     assert!((gain_to_db(rms(&l[4800..]) / rms(&x[4800..]))).abs() < 0.01);
     assert!((4800..9600).all(|i| (l[i] - x[i - lat]).abs() < 4e-3));
@@ -749,6 +751,35 @@ fn master_safety_is_transparent_below_the_ceiling_and_raw_is_raw() {
     assert!(raw.stats().clipped > 0 && raw.stats().overs > 0);
     raw.clear_stats();
     assert_eq!(raw.stats().clipped, 0);
+}
+
+#[test]
+fn master_safety_switches_modes_without_a_click() {
+    use ids::master::*;
+    // A 200 Hz sine 3.5 dB over the ceiling: limited, soft clipped and
+    // raw, it is three different shapes; each switch glides from one to
+    // the next over 10 ms, so no frame steps further than the sine itself
+    // does (0.039 a frame at its steepest).
+    let mut m = set_up(Box::new(MasterSafety::new()), &[]);
+    let x = sine(200.0, 1.45, 48_000);
+    let (mut l, mut r) = (x.clone(), x.clone());
+    for (i, (a, b)) in l.chunks_mut(128).zip(r.chunks_mut(128)).enumerate() {
+        match i * 128 {
+            9_984 => m.set_param(MODE, 1.0),
+            19_968 => m.set_param(MODE, 2.0),
+            29_952 => m.set_param(MODE, 0.0),
+            39_936 => m.set_param(MODE, 1.0),
+            _ => {}
+        }
+        m.process(&Ctx::new(RATE, (i * 128) as u64), &[], a, b);
+    }
+    let steepest = 2.0 * PI * 200.0 / RATE as f32 * 1.45;
+    let lat = m.latency() as usize;
+    let worst = l[lat + 1..]
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(worst <= 1.05 * steepest, "{worst} against {steepest}");
 }
 
 /// Runs a chain block by block, cutting blocks at the bypass switches.
