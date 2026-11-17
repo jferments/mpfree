@@ -323,6 +323,10 @@ pub struct TrackInfo {
     /// shows only the name.
     pub sound: String,
     pub mute: bool,
+    /// Soloed (`Track::solo`, sequencer S4).
+    pub solo: bool,
+    /// Silent: muted, or not soloed while another track is.
+    pub silent: bool,
     /// It records pad pressure (`Track::record_touch`).
     pub pressure: bool,
     /// Its record quantise grid (`Track::record_quantise`), or none.
@@ -500,6 +504,9 @@ pub struct TimeState {
     /// it apart from the clip's own and the project's (a scene's, a
     /// follow's, one kept when Launch changed). The app sets it.
     pub cue_lines: Vec<(usize, LaunchGrid)>,
+    /// Mute and solo changes waiting for their line (the mute queue). The
+    /// app sets it.
+    pub mute_wait: Option<MuteWait>,
     /// The arrangement's placements and markers.
     pub placements: Vec<PlacementInfo>,
     pub markers: Vec<(Tick, String)>,
@@ -615,10 +622,13 @@ impl TimeState {
         let tracks = project
             .tracks
             .iter()
-            .map(|t| TrackInfo {
+            .enumerate()
+            .map(|(i, t)| TrackInfo {
                 name: t.name.clone(),
                 sound: String::new(),
                 mute: t.mute,
+                solo: t.solo,
+                silent: project.silent(i),
                 pressure: t.record_touch,
                 record_quantise: t.record_quantise,
                 loops: t.loops(),
@@ -660,6 +670,7 @@ impl TimeState {
             perform: project.perform,
             launch: project.launch,
             cue_lines: Vec::new(),
+            mute_wait: None,
             placements: project
                 .arrangement
                 .placements
@@ -2077,7 +2088,12 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
     } else {
         format!("{}%", t.swing.amount)
     };
-    bar.items = vec![
+    bar.items = vec![];
+    // The mute queue first, so it shows whatever else fits (S4).
+    if let Some(w) = st.waiting_reading() {
+        bar.items.push(BarItem::new("WAITING", w, Tone::Warn));
+    }
+    bar.items.extend([
         BarItem::new("BPM", format!("{:.1}", t.bpm), Tone::Normal),
         BarItem::new(
             "",
@@ -2097,7 +2113,7 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
                 Tone::Dim
             },
         ),
-    ];
+    ]);
     if t.state == State::CountIn {
         let bars = if t.count_in == 1 {
             "1 bar".to_string()
@@ -2258,6 +2274,72 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     cell
 }
 
+/// Mute and solo changes waiting for one launch line (sequencer S4's mute
+/// queue): they land together on the line they had when the first one
+/// joined.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MuteWait {
+    pub line: LaunchGrid,
+    /// Each track that changes: its mute and solo once the queue lands.
+    pub want: Vec<(usize, bool, bool)>,
+}
+
+impl TimeState {
+    /// What waits on track `t`'s header, as the grid shows it: "mutes in
+    /// 2 beats", "plays in 1 bar", "solo in 3 beats", "solo off in 1
+    /// beat". None with nothing waiting there.
+    pub fn mute_waiting(&self, t: usize) -> Option<String> {
+        let q = self.mute_wait.as_ref()?;
+        let &(_, mute, solo) = q.want.iter().find(|w| w.0 == t)?;
+        let tr = self.tracks.get(t)?;
+        let what = if solo != tr.solo {
+            if solo {
+                "solo"
+            } else {
+                "solo off"
+            }
+        } else if mute {
+            "mutes"
+        } else {
+            "plays"
+        };
+        let tp = &self.transport;
+        let left = (cue_tick(tp, q.line) - tp.position).max(1);
+        let beat = tp.meter.beat_ticks().max(1);
+        let bar = tp.meter.bar_ticks().max(1);
+        let when = if left >= bar {
+            let n = (left + bar - 1) / bar;
+            if n == 1 {
+                "1 bar".to_string()
+            } else {
+                format!("{n} bars")
+            }
+        } else {
+            let n = (left + beat - 1) / beat;
+            if n == 1 {
+                "1 beat".to_string()
+            } else {
+                format!("{n} beats")
+            }
+        };
+        Some(format!("{what} in {when}"))
+    }
+
+    /// The transport bar's WAITING reading: the tracks waiting and where
+    /// they land ("Hats, Vox at 18.1"). None with nothing waiting.
+    pub fn waiting_reading(&self) -> Option<String> {
+        let q = self.mute_wait.as_ref().filter(|q| !q.want.is_empty())?;
+        let names: Vec<String> = q.want.iter().map(|w| self.track_name(w.0)).collect();
+        let shown = if names.len() > 2 {
+            format!("{}, {} +{}", names[0], names[1], names.len() - 2)
+        } else {
+            names.join(", ")
+        };
+        let at = cue_tick(&self.transport, q.line);
+        Some(format!("{shown} at {}", bar_beat(at, self.transport.meter)))
+    }
+}
+
 /// The grid's tracks for `st`.
 pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
     st.tracks
@@ -2268,7 +2350,9 @@ pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
             sound: tr.sound.clone(),
             color: track_color(i),
             armed: st.armed == Some(i),
-            mute: tr.mute,
+            mute: tr.silent,
+            solo: tr.solo,
+            waiting: st.mute_waiting(i),
             loops: tr.loops.is_some(),
             cells: (0..tr.slots.len()).map(|s| cell_of(st, i, s)).collect(),
         })
@@ -4552,6 +4636,49 @@ mod tests {
         );
         assert_eq!(tap(0, 0), Some(TimeAction::StopClip(0)), "the playing clip");
         assert_eq!(tap(2, 1), Some(TimeAction::Launch { track: 2, slot: 1 }));
+    }
+
+    /// The mute queue (S4): each waiting track's grid header says what
+    /// it does and how soon, and the transport bar's WAITING reading
+    /// names the tracks and their line.
+    #[test]
+    fn mutes_waiting_show_on_the_grid_and_the_transport_bar() {
+        let mut st = state();
+        assert_eq!((st.waiting_reading(), st.mute_waiting(1)), (None, None));
+        assert_ne!(bar_of(&st).items[0].label, "WAITING");
+        st.mute_wait = Some(MuteWait {
+            line: LaunchGrid::Bars(1),
+            want: vec![(1, true, false), (2, false, true)],
+        });
+        // At 5.2: three beats to bar 6.
+        assert_eq!(st.mute_waiting(1).as_deref(), Some("mutes in 3 beats"));
+        assert_eq!(st.mute_waiting(2).as_deref(), Some("solo in 3 beats"));
+        assert_eq!(st.mute_waiting(0), None);
+        assert_eq!(st.waiting_reading().as_deref(), Some("Bass, Stab at 6.1"));
+        let item = &bar_of(&st).items[0];
+        assert_eq!(
+            (item.label.as_str(), item.value.as_str(), item.tone),
+            ("WAITING", "Bass, Stab at 6.1", Tone::Warn)
+        );
+        let g = grid_tracks(&st);
+        assert_eq!(g[1].waiting.as_deref(), Some("mutes in 3 beats"));
+        assert_eq!(g[0].waiting, None);
+        // A longer line counts bars; more than two tracks are counted.
+        st.mute_wait = Some(MuteWait {
+            line: LaunchGrid::Bars(2),
+            want: vec![(0, true, false), (1, true, false), (2, true, false)],
+        });
+        assert_eq!(st.mute_waiting(0).as_deref(), Some("mutes in 2 bars"));
+        assert_eq!(
+            st.waiting_reading().as_deref(),
+            Some("Drums, Bass +1 at 7.1")
+        );
+        // Solo: the soloed track is outlined, the others are silent.
+        st.mute_wait = None;
+        st.tracks[2].solo = true;
+        st.tracks[0].silent = true;
+        let g = grid_tracks(&st);
+        assert!(g[2].solo && !g[2].mute && g[0].mute);
     }
 
     #[test]

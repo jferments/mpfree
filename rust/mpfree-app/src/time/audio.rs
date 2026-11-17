@@ -605,6 +605,12 @@ impl TimeAudio {
             let st = self.player.started()[i];
             self.send(ToControl::Started(st));
         }
+        // Mute cues that landed on their line: the control half applies
+        // the queue.
+        for i in 0..self.player.mutes_landed().len() {
+            let l = self.player.mutes_landed()[i];
+            self.send(ToControl::MuteLanded(l));
+        }
         // Recorded and erased notes, locks and gestures go into the view
         // in place (unless it has no room left), numbered in this order,
         // and on to the control half, which makes them to the clips.

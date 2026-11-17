@@ -46,6 +46,14 @@ Hold **ERASE** and tap a row's name to delete that sound's steps from the patter
 
 **TRACK MUTE** turns the pads into mute buttons over whatever page you are on, so you can drop parts in and out without leaving the screen you are using. Pads 1-16 are tracks 1-16: green while the track plays a clip, dim green when it has nothing playing, red while it is muted, and dark where there is no track. Tap a pad to mute or unmute its track; the track's clip keeps its place, so it comes back in time. With more than 16 tracks, the **PAD BANK** buttons pick which 16 the pads are, as on Akai's MPC: A is tracks 1-16, B is 17-32, and so on up to H, 113-128 (SHIFT or a second press gives E-H, as when you pick kits). The kit playing stays the same, and TRACK MUTE remembers the bank for next time. **SHIFT + TRACK MUTE** does the same for the pads of the kit: a pad lit in the kit's colour plays, a red one is muted. Press the same button again to play the pads as usual. The hint line at the bottom of the screen says which mode the pads are in. **TRACK MUTE**, **STEP SEQ** and **16 LEVEL** each take the pads over, one at a time: pressing one gives the pads up from the others.
 
+**When a mute lands.** In Make a tap mutes or unmutes at once. In Perform it waits for the next launch line (the Record panel's **Launch**, one bar unless you change it), so parts drop out on the beat: the pad blinks amber while it waits, the track's name on the Clips grid is striped amber and says how soon ("mutes in 2 beats"), and the transport bar starts with **WAITING** and the tracks and bar it lands on ("WAITING Hats, Vox at 18.1"). Tap more pads and they all land together on the same line; tap a waiting pad again to take its change back. Hold **SHIFT** while you tap for the other timing: at once in Perform, on the line in Make. With the transport stopped, or Launch at once, a tap acts at once, and **STOP** lands whatever is waiting.
+
+{{shot: clips-mutes | In Perform: Track 2's mute and Track 3's solo wait for bar 4, their names striped amber, and the transport bar says WAITING.}}
+
+**Solo.** Hold **TRACK MUTE** and tap a pad: that track plays alone and the others go quiet. The soloed pad is lit blue, and the tracks it silences are red, like muted ones. Tap more pads while you hold it to solo more tracks, and tap a soloed pad to let go of its solo. A quick press of TRACK MUTE still turns the mute keys on and off; after a hold with a pad tapped, the pads are left as they were before you pressed it. A solo lands at once or on the line, just like a mute, and the project saves it. A soloed track's name on the Clips grid is outlined.
+
+Mutes and solos aren't undo steps, and with **Rec song** on they go into the song: a track muted for a stretch leaves a gap there. The kit's pads (**SHIFT + TRACK MUTE**) always mute at once and have no solo yet.
+
 ## 16 Levels
 
 **16 LEVEL** spreads one sound over all 16 pads: the pad you hit last plays on every pad, each one a step of something else. Press **16 LEVEL** and the 16 Levels panel opens on the Play page, under the transport bar:
@@ -77,10 +85,11 @@ What Perform changes today:
 
 - **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, and again the grid.
 - **The arm is pinned**: opening a page doesn't move what REC records; only a tap on an Arm pill does. The REC chip says PINNED. Back in Make, the arm follows the page again.
+- **TRACK MUTE's pads wait for the launch line** before a mute or solo lands, and SHIFT + a pad acts at once (see [Muting tracks and pads](#muting-tracks-and-pads)).
 
 Clips and scenes start on the line the Record panel's **Launch** sets, in Make and Perform alike (see [Recording a clip](clips.md#recording-a-clip)), and the transport bar shows it.
 
-Coming next: in Perform, mutes and solos land on the bar, buttons that delete need a half-second hold, Rec song goes on with REC, and the Clips grid shows bigger rows with what comes next.
+Coming next: in Perform, buttons that delete need a half-second hold, Rec song goes on with REC, and the Clips grid shows bigger rows with what comes next.
 
 ## The Q-Links on the Play page
 
