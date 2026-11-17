@@ -766,3 +766,44 @@ fn the_panel_answers_a_finger_as_its_controls_look() {
         "{asked:?}"
     );
 }
+
+#[test]
+fn a_finger_resting_on_a_panel_control_puts_it_under_the_wheel() {
+    let mut s = sample();
+    // On Gain's knob: each detent a step of Gain, and the finger may move
+    // on the knob and keep the wheel.
+    let gain = region(&s).gain_db;
+    let (x, y) = control(&s, "knob", "Gain").centre();
+    let down = s.ui.touch(9, Touch::Down, x, y).unwrap();
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &down, &st);
+    assert_eq!(s.ui.held().map(|h| h.widget), Some(wave_tab::REGION.into()));
+    for _ in 0..2 {
+        let ev = s.ui.held_step(1, false).expect("a step");
+        assert_eq!(
+            ev.kind,
+            EventKind::Step {
+                index: Row::Gain.index(),
+                delta: 1
+            }
+        );
+        let st = s.state.clone();
+        let a = s.tab.action(&mut s.ui, &ev, &st).unwrap();
+        apply(&mut s, &a);
+    }
+    s.ui.touch(9, Touch::Up, x, y);
+    s.tab.lift();
+    assert_eq!(region(&s).gain_db, gain + 1.0);
+    assert!(!s.ui.holding(), "let go with the finger");
+    // A choice's button holds its row: the wheel steps Mode.
+    let (x, y) = control(&s, "choice", "Mode: Gate").centre();
+    s.ui.touch(9, Touch::Down, x, y);
+    let ev = s.ui.held_step(-1, false).expect("a step");
+    assert!(matches!(ev.kind, EventKind::Step { index, .. } if index == Row::Mode.index()));
+    s.ui.touch(9, Touch::Cancel, x, y);
+    // A button has no value to turn.
+    let (x, y) = control(&s, "button", "Normalize to 0 dB").centre();
+    s.ui.touch(9, Touch::Down, x, y);
+    assert!(!s.ui.holding());
+    s.ui.touch(9, Touch::Cancel, x, y);
+}

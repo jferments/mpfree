@@ -615,7 +615,9 @@ pub fn targets(
 /// The control a finger resting at (`x`, `y`) puts under the data wheel
 /// (Jay, 17 Nov: hold a control and turn the wheel): one with a value, not
 /// a button or a faint control. The wheel then steps its row as its arrows
-/// do. A knob's is a drag, so the finger may move on it and keep the wheel.
+/// do (a slider moves a hundredth of its travel a detent,
+/// [`EventKind::Value`]). A knob's and a slider's are drags, so the finger
+/// may move on them and keep the wheel.
 pub fn held(
     panel: &Panel,
     controls: &[Control],
@@ -629,6 +631,7 @@ pub fn held(
     match c.look {
         Look::Button(_) | Look::Primary(_) => None,
         Look::Knob { .. } => Some(Target::drag("knob", p.row, name, p.control)),
+        Look::Slider { .. } => Some(Target::drag("slider", p.row, name, p.control)),
         _ => Some(Target::tap("control", p.row, name, p.control)),
     }
 }
