@@ -5,7 +5,7 @@
 
 ## Where (rule zero)
 
-- **On the test stick, never on the MPC.** The eMMC (p1–p6, the U-Boot environment, the rootfs) and the SD card are never written. On the test boot, the eMMC and SD controllers are disabled in the device tree anyway.
+- **On the test stick, never on the MPC.** The eMMC (p1–p6, the U-Boot environment, the rootfs) and the SD card are never written. On the test boot, the eMMC and SD controllers are disabled in the device tree anyway. The owner asked on 2026-11-17 for the SD card to be used and the eMMC to be readable, read-only, when asked; [the plan](../hardware/sd-card-and-internal-drive.md) changes this rule only at its step 2, on the owner's go.
 - **Root file system:** the stick's partition 1 stays read-only, and /data is RAM.
 - **A new partition 4, "MPFREE-DATA":** ext4 with a journal, built by `offline-kexec-stick.py` at 1 GiB. It fills the rest of the stick (plan decision 1, approved 2026-11-12): `stick.img` holds a 64 MiB one, `write-test-stick.py` makes the partition run to the end of the stick, and the filesystem grows to fill it at boot ([how](../hardware/archive/2026-11/kexec-test-boot.md#saved-settings-partition-4)).
   - `start-app.sh` mounts it read-write at `/run/mpfree-data` (nosuid, nodev, noexec) and passes `--data /run/mpfree-data` to the pad player.
