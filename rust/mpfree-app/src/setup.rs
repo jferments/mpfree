@@ -1519,6 +1519,14 @@ fn extract_kits<F: ReadAt>(
             match bytes {
                 Some(b) => {
                     made = kit_count(&b);
+                    // The same Akai content gives the same file, whether it
+                    // came from a backup or straight from the MPC: the
+                    // creator round compares this line (C11).
+                    say(format!(
+                        "first start: kits: {made} made, {} bytes, SHA-256 {}",
+                        b.len(),
+                        short_sha256(&b)
+                    ));
                     let loc = lib
                         .write_new(&Loc::top(Place::Kits), KITS_FILE, &b)
                         .map_err(|e| format!("saving the kits: {e}"))?;
@@ -1543,6 +1551,28 @@ pub struct Placement {
     pub name: String,
     pub source: String,
     pub size: u64,
+}
+
+/// The first 16 hex digits of a SHA-256, for the log.
+fn short_sha256(bytes: &[u8]) -> String {
+    let mut h = mpfree_mpcstore::sha256::Sha256::new();
+    h.update(bytes);
+    mpfree_mpcstore::sha256::to_hex(&h.finish())[..16].to_string()
+}
+
+/// A short fingerprint of where every sound goes, and its size: the same
+/// Akai content gives the same one, from a backup or straight from the MPC.
+pub fn layout_fingerprint(layout: &[Placement]) -> String {
+    let mut text = String::new();
+    for p in layout {
+        text.push_str(&p.folder.join("/"));
+        text.push('/');
+        text.push_str(&p.name);
+        text.push('\t');
+        text.push_str(&p.size.to_string());
+        text.push('\n');
+    }
+    short_sha256(text.as_bytes())
 }
 
 /// A drum kit's folder in Akai factory and the `kit.txt` it is given.
@@ -1779,6 +1809,12 @@ fn extract_samples<F: ReadAt>(
     } = akai_layout(content, &mut |l| {
         say(format!("first start: kit folders: {l}"))
     });
+    say(format!(
+        "first start: kit folders: {} sounds, {} bytes, layout {}",
+        layout.len(),
+        layout.iter().map(|p| p.size).sum::<u64>(),
+        layout_fingerprint(&layout)
+    ));
     let top = folder_in(lib, &Loc::top(Place::Samples), SAMPLES_FOLDER)
         .map_err(|e| format!("the samples folder: {e}"))?;
     // Where the earlier layout put a sound: Akai's own folders.
@@ -3026,6 +3062,20 @@ mod tests {
         assert!(said.last().unwrap().ends_with("; no backup"), "{said:#?}");
         assert!(!shown.iter().any(|s| s.message == BACKING_UP));
         assert_eq!(shown.last().unwrap().message, "Setup done");
+        // The kits file and the sounds' layout are those a backup of the same
+        // disk gives: the lines the creator round's C11 compares.
+        let marks = |said: &[String]| -> Vec<String> {
+            said.iter()
+                .filter(|l| l.contains("SHA-256") || l.contains(", layout "))
+                .cloned()
+                .collect()
+        };
+        let b = tmp("direct-vs-backup");
+        let bp = paths(&b);
+        let (from_backup, _, said_b) = run_it(&bp, &with_backup(&bp));
+        assert_eq!(from_backup.failed, None, "{said_b:#?}");
+        assert_eq!(marks(&said).len(), 2, "{said:#?}");
+        assert_eq!(marks(&said), marks(&said_b));
     }
 
     #[test]

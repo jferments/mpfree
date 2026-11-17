@@ -16,6 +16,7 @@ The USB creator's earlier rounds made sticks on Linux, installed the boot hook w
 | Does developer mode stay off at the next start of Akai's system, or does Akai's app switch it on again? | C8 |
 | Does the window offer to copy the backup when the stick comes back to the computer? | C9 |
 | Do the free CC0 kits (Big Rusty Drums, Swirly Drums, VCSL Percussion) play on every pad, start on time and sound right, and are they in BROWSE? | C6 |
+| With the backup left out in the window, does the first start read Akai's kits and samples straight from the MPC, with the eMMC's write and discard counters still, and are they the kits a backup gives? Do Prefs' new Backup and Akai kits rows show it? | C11 |
 | Optional: do the Windows and macOS writers make a stick that works? Does a Windows creator built and signed on the workstation run on Windows? | W0, W1a, W1, W2 |
 
 ## The round at a glance
@@ -29,6 +30,7 @@ The USB creator's earlier rounds made sticks on Linux, installed the boot hook w
 | A second power-on, then Akai's system | C7, C8 | MPC | 5 min |
 | The window's reminder, the logs, the backup and the zip | C9 | Workstation | 20 min |
 | Only if the next round needs developer mode's SSH | C10 | MPC on 3.10.1 | 5 min |
+| Akai's kits without a backup | C11 | Workstation and MPC | 30 min (50 with its optional backup) |
 
 The round asks for your password twice: once in the window in C4, and once in C9.
 
@@ -188,6 +190,25 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 - The hook report lists the three files C5 wrote, with `MPFree's stick in now: no`.
 - A stick made with developer tools (`--dev-tools`) or with a `keep-developer-mode` file on its `MPFREE` drive leaves developer mode on when its setup script runs; a musician's stick switches it off again.
 
+**Block C11: Akai's kits without a backup, read straight from the MPC** (**state-changing, on the stick only**: erases it. On the MPC, a read-only window on the eMMC like C6's, opened for the content partition alone and checked by its write and discard counters; about 30 minutes; one password prompt in the window, one for the reads). It tries the window's new choice to leave the backup out (Jay, 17 Nov), and the new use of the read-only window that comes with it: MPFree reads Akai's kits and samples from the MPC itself, for about ten minutes, instead of from a backup on the stick ([the design](../design/usb-creator.md#leaving-the-backup-or-akais-kits-out)). Run it after C9, whose `stick-read` holds C6's kits lines for the comparison. The MPC has the hook from C5, so developer mode stays off.
+
+1. **The stick.** A second spare stick of 16 GB or more if you have one. Otherwise the round's stick, but only after C9's `copy-backup` ended `done`: erasing it deletes the backup on it, whose checked copy is in `~/mpfree-backups`.
+2. **In the window,** as in C4: step 1 the update, step 2 the stick, step 3 **Make the stick** (with the round's stick, **Update MPFree on this stick** shows: choose **Erase everything and start over**). Under "On the first start", **untick Back up my MPC** and leave **Bring in Akai's drum kits and samples** ticked. Make it. **Expect** "The stick is ready", with "MPFree copies your MPC's drum kits and samples into MPFree, reading them from the MPC without changing it. It takes about 10 minutes, once." Eject the stick.
+3. **On the MPC:** switched off, put the stick in, switch on. **Expect** MPFree's startup screen, the card for the stick's space (seconds), then the setup: "Switching on the MPC's internal storage, read-only", then "Extracting Akai drum kits and samples" with one bar and the time left, about 10 minutes, and **no** "Backing up your MPC". Note when each started and when the pad player opened. Then play a few pads of two of Akai's kits, and open BROWSE > **Samples** > **Akai factory**.
+4. **Prefs:** SHIFT + MENU, then **Backup and Akai kits**, the row just above Touch screen. **Expect** "Backup of your MPC" to say **Left out** and "Akai's kits and samples" **In BROWSE**. Push the wheel on the backup row: it says **At the next start**, with a line saying so and that the power button's Restart starts it now. Push again: **Left out**. Push the wheel on the Akai row: a line says they are in already.
+5. **Optional, about 20 minutes more: the backup asked for in Prefs** (**state-changing, on the stick only**: a backup on partition 4, through C6's window). On the backup row, push once (**At the next start**), then press the power button briefly and tap **Restart**. **Expect** the setup to run again with "Backing up your MPC" and "Checking the backup on the stick" only, no kits step, then the pad player; Prefs then shows "Made" and today's date. Skip it if C6's backup is enough for today.
+6. Press the power button briefly and tap **Shut down**. Take the stick out, put it into the workstation, and read it:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run stick-read-direct -- sudo sh -c 'C=rust/target/release/mpfree-stick; $C inspect --device mpfree; $C logs --device mpfree' ; grep -H -e 'first start: kits: .*SHA-256' -e 'first start: kit folders: .* layout ' -e 'mpfree-setup-backup: content read' -e 'mpfree-setup-backup: STOP' ~/mpfree-results/*/[0-9]*-stick-read.log ~/mpfree-results/current/[0-9]*-stick-read-direct.log ; python3 tools/mpc-one/results.py zip
+```
+
+- `inspect` shows the stick made by the window with `left out of the first start: the backup`, and `backup: none` (or the one from step 5).
+- **The comparison:** `grep` prints the two lines C6's first start logged (from C9's `stick-read`) and the same two from this one: `first start: kits: N made, B bytes, SHA-256 …` and `first start: kit folders: N sounds, B bytes, layout …`. **They must be the same**, apart from the time at the start of each line: the same Akai content, read straight from the MPC, gives the same kits file and the same sounds in the same folders. Akai's system ran in C8 and C10, but it doesn't change its factory kits. A difference is a finding: send the zip, and the direct read stays off for musicians until it is understood.
+- **The window:** `mpfree-setup-backup: content read in about N s; no write or discard on the eMMC` from this first start (in its `dmesg.txt`, and so in `stick-read-direct`), and no `STOP:` line. With step 5, also the backup's lines, as in C6.
+- **If the setup says it failed,** note its words: with "the MPC's storage could not be read" or "was not opened for reading in time" the window never opened; with "closing the MPC's storage: …" it opened and the service found something wrong when it closed. The pad player still opens, and the next start tries again. Read the stick as in step 6 either way.
+- **Undo:** the stick is the round's; make it again in the window with both boxes ticked, or erase it. Nothing on the MPC changes: the hook stays, as after C5.
+
 ## Optional: the Windows and macOS writers
 
 These replace C4 when you have a Windows PC or a Mac to hand: the stick they make goes through C5 to C9 like the window's, which tests that writer to the end. Copy Akai's 3.10.1 update file from `~/mpfree-work/akai-update-files` into that computer's **Downloads** first, any way but on the stick you're about to erase.
@@ -267,6 +288,7 @@ It should list partitions 1 to 5, `made: MPFree stick, made by MPFree USB creato
 - C7's cold power-on started MPFree with no setup.
 - C9's `setup-log` has the `RESULT: … installed` and `switching developer mode off` lines; `copy-backup` ends `done`; `compare-emmc-backups.py` exits 0; the window showed its **Copy it now** card (or had a copy already).
 - The first start's `dmesg.txt` in the stick logs has the backup's window in order, as the 3.10.1 round lists, with `mpfree copy-image` doing the copy.
+- C11's first start brought Akai's kits in with no backup step, its kits and layout lines match C6's, the kernel log says `content read in about N s; no write or discard on the eMMC` with no `STOP:` line, and Prefs showed **Left out** and **In BROWSE**.
 
 ## Undo, block by block
 
@@ -283,6 +305,7 @@ It should list partitions 1 to 5, `made: MPFree stick, made by MPFree USB creato
 | C6, C7 | RAM on the MPC; the stick's log partition and partition 4 | Switch off, take the stick out, wait 10 s, switch on |
 | C9 | A new folder in `~/mpfree-backups` | Keep it with the others, or delete it: the stick keeps its own |
 | C10 | `/data/ssh` locked to your key again | The 3.10.1 round's Q2-undo |
+| C11 | The whole stick (erased and made again); on its partition 4, Akai's kits and samples, the settings and, with step 5, a backup. Nothing on the MPC | Make the stick again with both boxes ticked, or erase it. A backup of the MPC is in `~/mpfree-backups` from C9 |
 
 ## What this round cannot show
 
