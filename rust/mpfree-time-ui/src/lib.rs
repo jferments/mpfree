@@ -11,6 +11,8 @@
 //!   under the header of any page with [`view::with_transport`].
 //! - [`song`]: the Song view of the Arrange page: the arrangement's
 //!   placements on a timeline ([`song::SongLanes`]).
+//! - [`list`]: the song list, Arrange's third view: scenes and how many
+//!   times each plays ([`list::SongListView`]).
 //! - [`editor`]: the note editor of the Arrange page (a piano roll or a
 //!   list, with Timing Correct): [`editor::Editor`], [`editor::NoteGrid`].
 //! - [`sample`]: sample screens with a real transport, player, recorder and
@@ -23,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod editor;
+pub mod list;
 pub mod sample;
 pub mod song;
 pub mod view;

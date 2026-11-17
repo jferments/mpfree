@@ -19,6 +19,7 @@
 //! speed 1 1
 //! launch ticks 960
 //! legato
+//! once
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! lock 480 36 pad36.4 0.25
@@ -37,6 +38,9 @@
 //! place 0 0 7680 0 slot 0
 //! marker 0 Intro
 //! morph 0 0 1
+//! list 0 2
+//! list 1 4
+//! listloop
 //! ```
 //!
 //! Reading is careful: every number is checked, every clip and the whole
@@ -52,7 +56,7 @@ use mpfree_param::{ParamAddr, RelAddr};
 use mpfree_transport::time::{Swing, Tick};
 
 use crate::arrange::{Marker, MorphRows, Placement, Source};
-use crate::scenes::{Follow, FollowAction, Scene, SCENES};
+use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
 use crate::{
     Clip, Cond, LaunchGrid, Lock, LoopInput, Note, Project, Quantise, Speed, Touch, TouchPoint,
     Track, TrackKind, MAX_TRACKS, SLOTS,
@@ -133,6 +137,12 @@ pub fn to_text(p: &Project) -> String {
     for m in &a.morphs {
         let _ = writeln!(s, "morph {} {} {}", m.at, m.a, m.b);
     }
+    for step in &a.list.steps {
+        let _ = writeln!(s, "list {} {}", step.row, step.times);
+    }
+    if a.list.looped {
+        s.push_str("listloop\n");
+    }
     if !a.lanes.is_empty() {
         s.push_str("songlanes\n");
         lanes_text(&mut s, &a.lanes);
@@ -162,6 +172,9 @@ fn clip_body(s: &mut String, c: &Clip) {
     }
     if c.legato {
         s.push_str("legato\n");
+    }
+    if c.once {
+        s.push_str("once\n");
     }
     // Pressure first: the notes name runs of it.
     for chunk in c.touch.chunks(TOUCH_PER_LINE) {
@@ -278,6 +291,9 @@ fn launch_text(g: LaunchGrid) -> String {
         LaunchGrid::Now => "now".to_string(),
         LaunchGrid::Ticks(t) => format!("ticks {t}"),
         LaunchGrid::Bars(n) => format!("bars {n}"),
+        // Never a setting (`LaunchGrid::ok` refuses it): written as at
+        // once, should one ever reach here.
+        LaunchGrid::At(_) => "now".to_string(),
     }
 }
 
@@ -443,6 +459,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 c.launch = Some(launch(&mut w).ok_or_else(|| bad("launch"))?)
             }
             ("legato", At::Clip(c, _)) => c.legato = true,
+            ("once", At::Clip(c, _)) => c.once = true,
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
                 for x in w {
@@ -590,6 +607,24 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 p.arrangement.morphs.push(m);
                 at = At::Top;
             }
+            ("list", At::Top | At::Track | At::Scene) => {
+                let step = (|| {
+                    Some(ListStep {
+                        row: num(w.next())?,
+                        times: num(w.next())?,
+                    })
+                })()
+                .ok_or_else(|| bad("list"))?;
+                if p.arrangement.list.steps.len() >= MAX_LIST_STEPS {
+                    return Err(bad("list"));
+                }
+                p.arrangement.list.steps.push(step);
+                at = At::Top;
+            }
+            ("listloop", At::Top | At::Track | At::Scene) => {
+                p.arrangement.list.looped = true;
+                at = At::Top;
+            }
             ("songlanes", At::Top | At::Track | At::Scene) => at = At::SongLanes(Moves::new()),
             ("perform", At::Top) => p.perform = true,
             // A newer build's line: skipped.
@@ -730,6 +765,7 @@ mod tests {
         });
         c.launch = Some(crate::LaunchGrid::Ticks(960));
         c.legato = true;
+        c.once = true;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,
@@ -793,6 +829,9 @@ mod tests {
             name: "Intro bit".into(),
         });
         p.arrangement.morphs.push(MorphRows { at: 0, a: 0, b: 1 });
+        p.arrangement.list.steps =
+            vec![ListStep { row: 2, times: 4 }, ListStep { row: 0, times: 1 }];
+        p.arrangement.list.looped = true;
         let song = crate::arrange::MORPH_LANE;
         p.arrangement
             .lanes
@@ -854,6 +893,12 @@ mod tests {
             "launch ticks 99999",
             "launch soon",
         ] {
+            assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
+        }
+        // The song list: an empty one writes nothing; steps out of range
+        // are refused.
+        assert!(!to_text(&Project::new()).contains("list"));
+        for bad in ["list 16 1", "list 0 0", "list 0 100", "list 0", "list x 1"] {
             assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
         }
     }
