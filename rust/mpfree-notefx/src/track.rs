@@ -60,6 +60,120 @@ impl TrackFx {
     }
 }
 
+/// One row of a track's Notes list, top to bottom: an effect in its
+/// place, or the track's arp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Item {
+    Fx(usize),
+    Arp,
+}
+
+#[derive(Clone, Copy)]
+enum Row {
+    /// An effect and its id.
+    Fx(Slot, u16),
+    Arp,
+}
+
+impl TrackFx {
+    /// How many effects it has.
+    pub fn count(&self) -> usize {
+        self.slots.iter().flatten().count()
+    }
+
+    /// The Notes list, top to bottom: the effects above the arp, the arp,
+    /// the effects below it.
+    pub fn items(&self) -> Vec<Item> {
+        let at = self.arp_place();
+        let fx = |r: std::ops::Range<usize>| {
+            r.filter(|&i| self.slots[i].is_some())
+                .map(Item::Fx)
+                .collect::<Vec<_>>()
+        };
+        let mut out = fx(0..at);
+        out.push(Item::Arp);
+        out.extend(fx(at..MAX_FX));
+        out
+    }
+
+    fn rows(&self) -> Vec<Row> {
+        self.items()
+            .into_iter()
+            .map(|i| match i {
+                Item::Fx(p) => Row::Fx(
+                    self.slots[p].unwrap_or(Slot {
+                        fx: Fx::Chance { percent: 100 },
+                        on: false,
+                    }),
+                    self.ids[p],
+                ),
+                Item::Arp => Row::Arp,
+            })
+            .collect()
+    }
+
+    fn from_rows(rows: &[Row]) -> TrackFx {
+        let mut t = TrackFx::default();
+        let mut place = 0;
+        for r in rows {
+            match r {
+                Row::Fx(s, id) if place < MAX_FX => {
+                    t.slots[place] = Some(*s);
+                    t.ids[place] = *id;
+                    place += 1;
+                }
+                Row::Fx(..) => {}
+                Row::Arp => t.arp_at = place as u8,
+            }
+        }
+        t
+    }
+
+    /// The row of the list where `item` is.
+    pub fn row_of(&self, item: Item) -> Option<usize> {
+        self.items().iter().position(|i| *i == item)
+    }
+
+    /// Adds `fx` (on, with a new id) as the last effect above the arp, the
+    /// places packed in order. The row it landed in, or None when every
+    /// place is taken.
+    pub fn add(&mut self, fx: Fx) -> Option<usize> {
+        if self.count() >= MAX_FX {
+            return None;
+        }
+        let mut rows = self.rows();
+        let arp = rows.iter().position(|r| matches!(r, Row::Arp)).unwrap_or(0);
+        rows.insert(arp, Row::Fx(Slot { fx, on: true }, self.new_id()));
+        *self = TrackFx::from_rows(&rows);
+        Some(arp)
+    }
+
+    /// Takes out the effect in row `row` (the arp stays), the places
+    /// packed in order. False when the row is the arp or past the end.
+    pub fn remove(&mut self, row: usize) -> bool {
+        let mut rows = self.rows();
+        if !matches!(rows.get(row), Some(Row::Fx(..))) {
+            return false;
+        }
+        rows.remove(row);
+        *self = TrackFx::from_rows(&rows);
+        true
+    }
+
+    /// Moves row `from` to row `to` (the arp too: the effects it passes
+    /// change side), the places packed in order.
+    pub fn move_row(&mut self, from: usize, to: usize) -> bool {
+        let mut rows = self.rows();
+        if from >= rows.len() || to >= rows.len() || from == to {
+            return false;
+        }
+        let r = rows.remove(from);
+        rows.insert(to, r);
+        *self = TrackFx::from_rows(&rows);
+        true
+    }
+}
+
 const SHAPES: [(Shape, &str); 12] = [
     (Shape::Octave, "octave"),
     (Shape::Fifth, "fifth"),
@@ -371,6 +485,47 @@ mod tests {
         assert!(Slot::from_words("on flanger").is_err());
         assert!(Slot::from_words("maybe chance pct=5").is_err());
         assert!(Slot::from_words("on scale scale=12:1:1").is_err());
+    }
+
+    #[test]
+    fn the_list_adds_above_the_arp_and_moves_effects_past_it() {
+        let all = Fx::all();
+        let mut t = TrackFx::default();
+        assert_eq!(t.items(), [Item::Arp]);
+        assert_eq!(t.add(all[0]), Some(0)); // Scale
+        assert_eq!(t.add(all[1]), Some(1)); // Chord
+        assert_eq!(t.add(all[6]), Some(2)); // Humanize
+        assert_eq!(
+            t.items(),
+            [Item::Fx(0), Item::Fx(1), Item::Fx(2), Item::Arp]
+        );
+        // Humanize goes below the arp: board 7's list.
+        assert!(t.move_row(2, 3));
+        assert_eq!(
+            t.items(),
+            [Item::Fx(0), Item::Fx(1), Item::Arp, Item::Fx(2)]
+        );
+        assert_eq!(t.arp_at, 2);
+        assert_eq!(t.slots[2].unwrap().fx, all[6]);
+        // Each keeps its id when it moves.
+        assert_eq!(t.ids, [1, 2, 3, 0, 0, 0, 0, 0]);
+        // The arp moves to the top: every effect is below it.
+        assert!(t.move_row(2, 0));
+        assert_eq!(t.arp_at, 0);
+        assert_eq!(t.row_of(Item::Fx(1)), Some(2));
+        // Taking one out packs the places; the arp can't be taken out.
+        assert!(!t.remove(0));
+        assert!(t.remove(1));
+        assert_eq!(t.count(), 2);
+        assert_eq!(t.slots[0].unwrap().fx, all[1]);
+        assert_eq!(t.slots[1].unwrap().fx, all[6]);
+        assert_eq!((t.ids[0], t.ids[1], t.ids[2]), (2, 3, 0));
+        assert_eq!(t.place_of(3), Some(1));
+        assert!(!t.move_row(0, 9));
+        for _ in 0..6 {
+            assert!(t.add(all[7]).is_some());
+        }
+        assert_eq!(t.add(all[7]), None, "eight places");
     }
 
     #[test]

@@ -11,6 +11,8 @@ mpfree-fx = { path = "../mpfree-fx" }
 # The effect picker's list, and the effect's drawings above its knobs.
 mpfree-fx-ui = { path = "../mpfree-fx-ui" }
 mpfree-mod = { path = "../mpfree-mod" }
+# A track's MIDI effects: the Notes stage above its sound.
+mpfree-notefx = { path = "../mpfree-notefx" }
 mpfree-param = { path = "../mpfree-param" }
 # The Sample tab's pad bar, for the preview of the chain editor in its FX sub-tab.
 mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }

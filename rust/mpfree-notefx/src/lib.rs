@@ -11,13 +11,15 @@
 pub mod chain;
 pub mod fx;
 pub mod notes;
+pub mod settings;
 pub mod track;
 
 pub use chain::{Chain, Period, Slot, MAX_FX};
 pub use fx::{Chord, Echo, Fx, Shape, Time, Velocity, Voicing, MAX_MAP, NOTE_VALUES};
 pub use mpfree_scale::{Scale, Snap};
 pub use notes::{Ev, Kind, Notes, MAX_EVENTS};
-pub use track::TrackFx;
+pub use settings::Setting;
+pub use track::{Item, TrackFx};
 
 #[cfg(test)]
 mod tests;
