@@ -1196,6 +1196,9 @@ pub struct OptionList {
     pub right: String,
     pub tabs: Vec<String>,
     pub tab: usize,
+    /// Tab `k`'s width, but the last's; [`OPTION_TAB_W`] for those it
+    /// doesn't give. Each name is cut with "…" to its tab.
+    pub tab_widths: Vec<i32>,
     pub rows: Vec<OptionRow>,
     /// The buttons under the rows; none to begin with.
     pub buttons: Vec<OptionButton>,
@@ -1260,7 +1263,7 @@ const NARROW_ARROW_W: i32 = 22;
 /// picking the row.
 const OPTION_DRAG_PX: i32 = 12;
 /// A tab of the title line, but the last (which takes the rest).
-const OPTION_TAB_W: i32 = 84;
+pub const OPTION_TAB_W: i32 = 84;
 
 impl OptionList {
     pub fn new(title: &str) -> OptionList {
@@ -1269,6 +1272,7 @@ impl OptionList {
             right: String::new(),
             tabs: Vec::new(),
             tab: 0,
+            tab_widths: Vec::new(),
             rows: Vec::new(),
             buttons: Vec::new(),
             empty: "nothing here".to_string(),
@@ -1392,11 +1396,12 @@ impl OptionList {
             return None;
         }
         let head = r.inset(14);
-        let x = head.x + k as i32 * OPTION_TAB_W;
+        let pitch = |k: usize| self.tab_widths.get(k).copied().unwrap_or(OPTION_TAB_W);
+        let x = head.x + (0..k).map(pitch).sum::<i32>();
         let w = if k + 1 == self.tabs.len() {
             head.right() - x
         } else {
-            OPTION_TAB_W - 6
+            pitch(k) - 6
         };
         Some(Rect::new(x, r.y, w.max(0), OptionList::inside(r).y - r.y))
     }
@@ -1959,6 +1964,14 @@ mod tests {
         let t = o.targets(r);
         let tabs: Vec<_> = t.iter().filter(|t| t.id == "tab").collect();
         assert_eq!(tabs.len(), 2);
+        // Three tabs with their own widths: each where the ones before
+        // leave it, the last to the right.
+        o.tabs.push("Scene".into());
+        o.tab_widths = vec![66, 104];
+        let c = o.tab_rect(r, 2).unwrap();
+        let b = o.tab_rect(r, 1).unwrap();
+        assert_eq!((b.x, b.w), (a.x + 66, 98));
+        assert_eq!((c.x, c.right()), (b.x + 104, row.right()));
         // Without tabs, nothing on the title line answers.
         o.tabs.clear();
         assert_eq!(o.touch(1, Touch::Down, b.x + 4, b.y + 20, r), None);

@@ -76,8 +76,8 @@ use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
-    touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, Touch, TouchPoint,
-    Track, MAX_TRACKS,
+    touch_room, Clip, ClipSettings, DestId, Lock, ModelError, Note, Project, SceneSettings, Touch,
+    TouchPoint, Track, MAX_TRACKS,
 };
 use mpfree_transport::time::Tick;
 
@@ -229,6 +229,44 @@ pub struct Take {
     /// ([`Takes::reload_clip`]): the clip it replaced is in `removed`, the
     /// saved state in `made`.
     pub reloaded: bool,
+    /// A scene's name, mutes or follow action changed
+    /// ([`Takes::set_scene`]).
+    pub scene: Option<Box<SceneEdit>>,
+}
+
+/// A scene editor change: row `row`'s settings before and after.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneEdit {
+    pub row: usize,
+    pub before: SceneSettings,
+    pub after: SceneSettings,
+}
+
+/// Row `row`'s settings (a plain row's are empty).
+fn scene_settings(project: &Project, row: usize) -> SceneSettings {
+    project
+        .scene(row)
+        .map(mpfree_seq::Scene::settings)
+        .unwrap_or_default()
+}
+
+/// Give row `row` the settings `s`, leaving no plain rows at the end of
+/// the project's scenes. `BadScene` past the last row, or as
+/// [`mpfree_seq::Scene::set_settings`].
+fn put_scene(project: &mut Project, row: usize, s: &SceneSettings) -> Result<(), ModelError> {
+    s.check()?;
+    project
+        .scene_mut(row)
+        .ok_or(ModelError::BadScene)?
+        .set_settings(s)?;
+    while project
+        .scenes
+        .last()
+        .is_some_and(|s| *s == mpfree_seq::Scene::default())
+    {
+        project.scenes.pop();
+    }
+    Ok(())
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -705,6 +743,59 @@ impl Takes {
         Ok(number)
     }
 
+    /// The scene editor (sequencer S4): give row `row` the settings `to`
+    /// (its name, mutes and follow action; its morph values stay), as an
+    /// edit of its own. `join` names what is being turned: a change joins
+    /// the latest take instead when that is a change of the same row with
+    /// the same key and nothing undone since. Undo puts the settings back
+    /// while the row still has the ones it was given, and redo the same
+    /// way. The edit's number; `BadScene` past the last row or for
+    /// settings out of range; nothing changes on an error, nor when `to`
+    /// is what it has.
+    pub fn set_scene(
+        &mut self,
+        project: &mut Project,
+        row: usize,
+        to: SceneSettings,
+        join: Option<u64>,
+    ) -> Result<u32, ModelError> {
+        if row >= mpfree_seq::SCENES {
+            return Err(ModelError::BadScene);
+        }
+        let from = scene_settings(project, row);
+        if from == to {
+            return Ok(self.edits);
+        }
+        put_scene(project, row, &to)?;
+        let joins = join.is_some()
+            && self.undone.is_empty()
+            && self
+                .done
+                .last()
+                .is_some_and(|t| t.join == join && t.scene.as_ref().is_some_and(|e| e.row == row));
+        if joins {
+            let take = self.done.last_mut().expect("checked");
+            if let Some(e) = take.scene.as_mut() {
+                e.after = to;
+            }
+            return Ok(take.number);
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            join,
+            scene: Some(Box::new(SceneEdit {
+                row,
+                before: from,
+                after: to,
+            })),
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
     /// CAPTURE into a clip that holds notes already (the one that was
     /// playing): add `notes` to clip `slot` of `track`, as a take of its
     /// own, with their pressure: each note's `touch` names its run in
@@ -939,6 +1030,11 @@ impl Takes {
                 let _ = c.set_settings(before);
             }
         }
+        if let Some(e) = take.scene.as_deref() {
+            if scene_settings(project, e.row) == e.after {
+                let _ = put_scene(project, e.row, &e.before);
+            }
+        }
         if let Some((index, kept)) = &mut take.track_added {
             // Kept as it is now (its name, its clips), for redo.
             if project.tracks.len() == *index + 1 {
@@ -983,6 +1079,11 @@ impl Takes {
         if let Some((track, slot, before, after)) = take.settings {
             if let Some(c) = clip(project, track, slot).filter(|c| c.settings() == before) {
                 let _ = c.set_settings(after);
+            }
+        }
+        if let Some(e) = take.scene.as_deref() {
+            if scene_settings(project, e.row) == e.before {
+                let _ = put_scene(project, e.row, &e.after);
             }
         }
         for (track, slot, note) in &take.erased {
@@ -1266,6 +1367,50 @@ mod tests {
         assert_eq!(t.redo(&mut p), Some(1));
         assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
         assert_eq!(t.paste_clip(&mut p, 0, 99, copy), Err(ModelError::BadSlot));
+    }
+
+    /// The scene editor: a row's settings as an edit of their own; the
+    /// same row turned again joins; undo and redo; the scenes after the
+    /// last named one are left out; past the last row it refuses.
+    #[test]
+    fn a_scene_edit_is_a_take_and_undo_takes_it_back() {
+        use mpfree_seq::{Follow, FollowAction, SceneSettings};
+        let mut p = project();
+        let mut t = Takes::default();
+        let named = SceneSettings {
+            name: "Drop".into(),
+            ..SceneSettings::default()
+        };
+        let n = t.set_scene(&mut p, 2, named.clone(), Some(1)).unwrap();
+        assert_eq!(p.scenes.len(), 3);
+        assert_eq!(p.scene(2).unwrap().name, "Drop");
+        let follow = |bars| SceneSettings {
+            follow: Some(Follow::after(bars, FollowAction::Next)),
+            ..named.clone()
+        };
+        let m = t.set_scene(&mut p, 2, follow(4), Some(2)).unwrap();
+        assert_eq!(m, n + 1);
+        assert_eq!(
+            t.set_scene(&mut p, 2, follow(5), Some(2)).unwrap(),
+            m,
+            "joins"
+        );
+        assert_eq!(
+            t.set_scene(&mut p, 2, follow(5), Some(2)).unwrap(),
+            m,
+            "no change"
+        );
+        t.undo(&mut p);
+        assert_eq!(p.scene(2).unwrap().settings(), named);
+        t.undo(&mut p);
+        assert!(p.scenes.is_empty(), "a plain row at the end goes");
+        t.redo(&mut p);
+        t.redo(&mut p);
+        assert_eq!(p.scene(2).unwrap().settings(), follow(5));
+        assert_eq!(
+            t.set_scene(&mut p, mpfree_seq::SCENES, named, None),
+            Err(ModelError::BadScene)
+        );
     }
 
     /// Reload clip: the saved state goes in as an edit of its own; undo

@@ -591,12 +591,18 @@ enum TypeTo {
     /// A MIDI port's name, from its page's Name (the port is the ask's
     /// key: [`Player::port_named`]).
     PortName,
+    /// A scene's name, typed on the text keyboard (the scene editor's
+    /// Rename).
+    SceneName(usize),
 }
 
 impl TypeTo {
     /// Typed on the text keyboard, not the number pad.
     fn is_text(self) -> bool {
-        matches!(self, TypeTo::SampleName | TypeTo::PortName)
+        matches!(
+            self,
+            TypeTo::SampleName | TypeTo::PortName | TypeTo::SceneName(_)
+        )
     }
 }
 
@@ -3657,6 +3663,7 @@ impl Player {
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
+                View::Arrange if self.time_page.scene_card => time_view::SCENE_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
@@ -4109,7 +4116,7 @@ impl Player {
                 } else {
                     TimeAction::Undo
                 };
-                self.outbox.extend((0..n).map(|_| FromUi::Time(a)));
+                self.outbox.extend((0..n).map(|_| FromUi::Time(a.clone())));
             }
             HistoryOf::Sample => {
                 let before = self.sample.page();
@@ -4341,7 +4348,8 @@ impl Player {
     }
 
     /// Opens the text keyboard for `asks` over the page showing (the
-    /// Sample tab's pad and its sound, a MIDI port), its names going `to`.
+    /// Sample tab's pad and its sound, a MIDI port, a scene's name), its
+    /// names going `to`.
     fn open_textpad(&mut self, asks: Vec<mpfree_ui::textpad::TextAsk>, to: TypeTo) {
         let back = self.ui.page().to_string();
         if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
@@ -4587,8 +4595,7 @@ impl Player {
     /// nothing typed, it closes.
     fn numpad_enter(&mut self) -> Option<FromUi> {
         if self.typing.as_ref().is_some_and(|t| t.to.is_text()) {
-            self.textpad_enter();
-            return None;
+            return self.textpad_enter();
         }
         let p = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD)?;
         let value = p.entered();
@@ -4611,33 +4618,38 @@ impl Player {
                     mpfree_transport::Command::SetTempo(v),
                 )))
             }
-            TypeTo::SampleName | TypeTo::PortName => None,
+            TypeTo::SampleName | TypeTo::PortName | TypeTo::SceneName(_) => None,
         }
     }
 
     /// Enter on the text keyboard: the names typed go to the pad and its
-    /// sound and the keyboard closes; with a name left empty it stays and
-    /// says so. A port's goes to [`Player::port_named`].
-    fn textpad_enter(&mut self) {
-        if self
-            .typing
-            .as_ref()
-            .is_some_and(|t| t.to == TypeTo::PortName)
-        {
+    /// sound, or the scene, and the keyboard closes; with a name left
+    /// empty it stays and says so. A port's goes to [`Player::port_named`].
+    fn textpad_enter(&mut self) -> Option<FromUi> {
+        let to = self.typing.as_ref().map(|t| t.to);
+        if to == Some(TypeTo::PortName) {
             self.port_named();
-            return;
+            return None;
         }
-        let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) else {
-            return;
-        };
-        let Some(names) = p.entered() else {
-            return;
-        };
+        let p = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD)?;
+        let names = p.entered()?;
         self.close_numpad();
+        if let Some(TypeTo::SceneName(row)) = to {
+            let (_, name) = names.into_iter().next()?;
+            return Some(FromUi::Time(TimeAction::SceneSettings {
+                row,
+                card_row: time_view::SCENE_NAME,
+                settings: mpfree_seq::SceneSettings {
+                    name,
+                    ..self.time.scene.clone()
+                },
+            }));
+        }
         let before = self.sample.page().to_string();
         self.sample.named(&mut self.ui, &names);
         self.print_sample_lines();
         self.sample_after(&before);
+        None
     }
 
     /// The number pad for the tempo (a long press on Play's BPM).
@@ -5681,6 +5693,7 @@ impl Player {
             for list in [
                 time_view::RECORD,
                 time_view::CLIP_CARD,
+                time_view::SCENE_CARD,
                 time_view::EDIT_OPTIONS,
             ] {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
@@ -8125,10 +8138,7 @@ impl Player {
                 None
             }
             (NUMPAD, _) => None,
-            (TEXTPAD, EventKind::Tab(mpfree_ui::textpad::KEY_ENTER)) => {
-                self.textpad_enter();
-                None
-            }
+            (TEXTPAD, EventKind::Tab(mpfree_ui::textpad::KEY_ENTER)) => self.textpad_enter(),
             (TEXTPAD, EventKind::Tab(mpfree_ui::textpad::KEY_CANCEL)) => {
                 self.close_numpad();
                 None
@@ -8485,12 +8495,35 @@ impl Player {
                 }
             }
             (time_view::CLIPS, EventKind::Toggle(_))
-            | (time_view::RECORD | time_view::CLIP_CARD, EventKind::Tab(_))
-                if self.time_page.page_tracks(&ev, &self.time) =>
-            {
+            | (
+                time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
+                EventKind::Tab(_),
+            ) if self.time_page.page_tracks(&ev, &self.time) => {
                 // The grid's pager and the Record panel's tabs: the page's
-                // own, nothing for the app.
+                // own, nothing for the app but the hint line.
                 self.time_page.update(&mut self.ui, &self.time);
+                self.refresh_hint();
+                None
+            }
+            // The scene editor's Rename: the text keyboard, its name typed
+            // over the scene's.
+            (time_view::SCENE_CARD, EventKind::Toggle(time_view::SCENE_RENAME)) => {
+                let row = self.time.scene_focus;
+                let name = &self.time.scene.name;
+                self.open_textpad(
+                    vec![mpfree_ui::textpad::TextAsk {
+                        key: "scene".to_string(),
+                        label: "Scene".to_string(),
+                        title: format!("Name scene {}", row + 1),
+                        value: if name.is_empty() {
+                            format!("Scene {}", row + 1)
+                        } else {
+                            name.clone()
+                        },
+                        max_len: mpfree_seq::MAX_SCENE_NAME,
+                    }],
+                    TypeTo::SceneName(row),
+                );
                 None
             }
             (
@@ -8498,6 +8531,7 @@ impl Player {
                 | time_view::CLIPS
                 | time_view::RECORD
                 | time_view::CLIP_CARD
+                | time_view::SCENE_CARD
                 | time_view::TAKES
                 | time_view::MORPH
                 | time_view::SONG
@@ -10876,6 +10910,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         settings: false,
         pasted: false,
         reloaded: false,
+        scene: None,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -11121,6 +11156,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("clips-card", p));
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
+    }
+    // The Record panel's Scene tab (sequencer S4): scene 2, named Drop,
+    // moves on to the next scene after 4 bars four times in five (else
+    // plays again), and mutes Track 2 when it starts.
+    match sample_clips(fonts()) {
+        Ok(mut p) => {
+            let mut st = p.time.clone();
+            st.scene_focus = 1;
+            st.scenes = vec![String::new(), "Drop".into()];
+            st.scene = mpfree_seq::SceneSettings {
+                name: "Drop".into(),
+                mutes: Some(0b10),
+                follow: Some(mpfree_seq::Follow {
+                    chance: 80,
+                    ..mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next)
+                }),
+            };
+            p.time_page.scene_card = true;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-scene", p));
+        }
+        Err(e) => eprintln!("clips-scene sample: {e}"),
     }
     // The mute queue (sequencer S4): in Perform, Track 2's mute and
     // Track 3's solo wait for the next bar, their headers hatched and the
@@ -12497,6 +12555,109 @@ mod tests {
         p.touch(1, Touch::Up, x, y);
     }
 
+    /// The scene editor (sequencer S4, part 7): the Record panel's Scene
+    /// tab shows the scene in focus; the wheel steps its rows, Mutes now
+    /// takes the mutes as they are, and Rename types the scene's name on
+    /// the text keyboard.
+    #[test]
+    fn the_scene_tab_edits_the_scene_and_rename_types_its_name() {
+        use mpfree_ui::textpad::{char_key, TextPad, KEY_CLEAR, KEY_ENTER};
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let record = p.ui.rect_of(time_view::RECORD).unwrap();
+        let scene_tab =
+            p.ui.get::<OptionList>(time_view::RECORD)
+                .unwrap()
+                .tab_rect(record, 2)
+                .unwrap();
+        assert_eq!(tap(&mut p, (scene_tab.x + 10, scene_tab.y + 20)), None);
+        assert_eq!(
+            p.ui.layout_of(time_view::CLIPS_PAGE),
+            Some(time_view::CLIPS_SCENE_LAYOUT)
+        );
+        assert_eq!(hint(&p), time_view::SCENE_HINT);
+        let rows = |p: &Player| -> Vec<String> {
+            p.ui.get::<OptionList>(time_view::SCENE_CARD)
+                .unwrap()
+                .rows
+                .iter()
+                .map(|r| format!("{} {}", r.name, r.value))
+                .collect()
+        };
+        assert_eq!(
+            rows(&p),
+            [
+                "Scene 1",
+                "Follow off",
+                "After —",
+                "Chance —",
+                "Or —",
+                "Mutes as they are"
+            ]
+        );
+        // The wheel on the Scene row: the next scene.
+        p.apply(ToUi::ClipsWheel {
+            delta: 1,
+            scroll: false,
+        });
+        assert_eq!(p.take_actions(), [FromUi::Time(TimeAction::SceneFocus(1))]);
+        // Mutes now: Bass is muted, so the scene mutes Bass.
+        p.time.tracks[1].mute = true;
+        p.time_page.update(&mut p.ui, &p.time);
+        let card = p.ui.rect_of(time_view::SCENE_CARD).unwrap();
+        let list = p.ui.get::<OptionList>(time_view::SCENE_CARD).unwrap();
+        let mutes = list.button_rect(card, time_view::SCENE_MUTES_NOW).unwrap();
+        let rename = list.button_rect(card, time_view::SCENE_RENAME).unwrap();
+        assert_eq!(
+            tap(&mut p, (mutes.x + mutes.w / 2, mutes.y + mutes.h / 2)),
+            Some(FromUi::Time(TimeAction::SceneSettings {
+                row: 0,
+                card_row: 5,
+                settings: mpfree_seq::SceneSettings {
+                    mutes: Some(0b10),
+                    ..Default::default()
+                },
+            }))
+        );
+        // Rename: the keyboard on "Scene 1"; "Drop" typed over it names
+        // the scene.
+        assert_eq!(
+            tap(&mut p, (rename.x + rename.w / 2, rename.y + rename.h / 2)),
+            None
+        );
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+        let r = p.ui.rect_of(TEXTPAD).unwrap();
+        {
+            let t = p.ui.get::<TextPad>(TEXTPAD).unwrap();
+            assert_eq!(
+                (t.text(), t.asks[0].title.as_str()),
+                ("Scene 1", "Name scene 1")
+            );
+        }
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        for c in "Drop".chars() {
+            tap(&mut p, TextPad::key_at(r, char_key(c).unwrap().0));
+        }
+        assert_eq!(p.ui.get::<TextPad>(TEXTPAD).unwrap().text(), "Drop");
+        let enter = tap(&mut p, TextPad::key_at(r, KEY_ENTER));
+        let named = FromUi::Time(TimeAction::SceneSettings {
+            row: 0,
+            card_row: time_view::SCENE_NAME,
+            settings: mpfree_seq::SceneSettings {
+                name: "Drop".into(),
+                ..Default::default()
+            },
+        });
+        let mut got = p.take_actions();
+        got.extend(enter);
+        assert!(got.contains(&named), "{got:?}");
+        assert_eq!(p.page(), CLIPS_PAGE);
+    }
+
     #[test]
     fn the_clips_page_shows_the_engine_and_turns_taps_into_actions() {
         use mpfree_time_ui::widgets::{BarButton, ClipGrid, TransportBar};
@@ -13848,6 +14009,7 @@ mod tests {
             settings: false,
             pasted: false,
             reloaded: false,
+            scene: None,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -14190,6 +14352,7 @@ mod tests {
             settings: false,
             pasted: false,
             reloaded: false,
+            scene: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));

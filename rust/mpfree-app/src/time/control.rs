@@ -39,8 +39,8 @@ use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_T
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, grid_name, AudioAction, EditInfo, FollowNext, MorphInfo,
-    MuteWait, RegionId, TakeRow, TimeAction, TimeState, TransportInfo,
+    bars_label, card_rows, clips_after, grid_name, scene_rows, AudioAction, EditInfo, FollowNext,
+    MorphInfo, MuteWait, RegionId, TakeRow, TimeAction, TimeState, TransportInfo, SCENE_NAME,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State};
@@ -52,6 +52,10 @@ use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, S
 /// The clip settings card's join keys for its takes, a row each (see
 /// `Takes::set_clip`).
 const CARD_JOIN: u64 = 0xC1_0000;
+
+/// The scene editor's join keys for its takes, a card row each (see
+/// `Takes::set_scene`).
+const SCENE_JOIN: u64 = 0x5C_0000;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
@@ -196,6 +200,9 @@ pub struct TimeControl {
     /// it.
     list_view: bool,
     list_pick: Option<usize>,
+    /// The scene editor's row as picked (its ‹ ›, a scene launched, a
+    /// song list step picked); none follows the scene playing.
+    scene_pick: Option<usize>,
     selected: Option<usize>,
     /// The audio region picked on the Song view; it and `selected` are
     /// never both set (`TimeState::pick`).
@@ -345,6 +352,7 @@ impl TimeControl {
             song_view: false,
             list_view: false,
             list_pick: None,
+            scene_pick: None,
             selected: None,
             region: None,
             section: None,
@@ -1029,6 +1037,9 @@ impl TimeControl {
             Some(SongChange::ListToSong { .. }) => return format!("{} · list → song", r.short()),
             None => {}
         }
+        if let Some(row) = r.scene {
+            return format!("{} · scene {}", r.short(), row + 1);
+        }
         match r.at {
             Some((track, slot)) => {
                 let name = self
@@ -1540,6 +1551,45 @@ impl TimeControl {
                     .map_or_else(String::new, |r| format!("{} {}", r.name, r.value));
                 Ok(format!("clip: {name} · {said} (UNDO takes it back)"))
             }
+            TimeAction::SceneFocus(row) => {
+                if row >= mpfree_seq::SCENES {
+                    return Err(format!("no scene {}", row + 1));
+                }
+                self.scene_pick = Some(row);
+                self.changed = true;
+                Ok(format!("scene editor: scene {}", row + 1))
+            }
+            TimeAction::SceneSettings {
+                row,
+                card_row,
+                settings,
+            } => {
+                // A row turned again joins its take: the wheel through
+                // many values is one undo.
+                self.takes
+                    .set_scene(
+                        &mut self.project,
+                        row,
+                        settings.clone(),
+                        Some(SCENE_JOIN + u64::from(card_row)),
+                    )
+                    .map_err(|e| format!("scene {}: {e:?}", row + 1))?;
+                self.scene_pick = Some(row);
+                self.compile()?;
+                // The settings as the editor now shows them.
+                let st = self.state();
+                let said = if card_row == SCENE_NAME {
+                    match st.scene.name.as_str() {
+                        "" => "name taken off".to_string(),
+                        name => format!("named {name}"),
+                    }
+                } else {
+                    scene_rows(&st)
+                        .get(usize::from(card_row))
+                        .map_or_else(String::new, |r| format!("{} {}", r.name, r.value))
+                };
+                Ok(format!("scene {} · {said} (UNDO takes it back)", row + 1))
+            }
             TimeAction::ClipLength {
                 track,
                 slot,
@@ -1706,6 +1756,7 @@ impl TimeControl {
                     TimeAction::LaunchScene(row) => {
                         // A scene by hand: the song list stops going on.
                         self.perform.end_list();
+                        self.scene_pick = Some(row);
                         if !self
                             .perform
                             .launch_scene(&mut self.project, row, when, launches, cues)
@@ -2084,6 +2135,9 @@ impl TimeControl {
             }
             TimeAction::ListPick(k) => {
                 self.list_pick = k.filter(|&k| k < self.project.arrangement.list.steps.len());
+                if let Some(k) = self.list_pick {
+                    self.scene_pick = Some(self.project.arrangement.list.steps[k].row);
+                }
                 self.changed = true;
                 Ok(match self.list_pick {
                     Some(k) => format!("song list: step {} picked", k + 1),
@@ -3437,6 +3491,12 @@ impl TimeControl {
             .collect();
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();
+        st.scene_focus = self.scene_pick.or(st.scene_playing).unwrap_or(0);
+        st.scene = self
+            .project
+            .scene(st.scene_focus)
+            .map(mpfree_seq::Scene::settings)
+            .unwrap_or_default();
         st.loop_cell = self.loop_cell();
         st.morph = self.morph;
         st.song_view = self.song_view;
