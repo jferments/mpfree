@@ -391,6 +391,9 @@ struct AutoJob {
     /// The notes it samples, low to high, and takes a note.
     notes: Vec<u8>,
     per_note: usize,
+    /// The gear's MIDI out, told (no bytes) when the job is over, so it
+    /// ends every note the job left on.
+    end: Option<MidiSend>,
 }
 
 impl AutoJob {
@@ -807,7 +810,10 @@ impl SamplePage {
             self.lines
                 .push("sample: the take was dropped (the kits were loaded again)".to_string());
         }
-        if self.auto_job.take().is_some() {
+        if let Some(j) = self.auto_job.take() {
+            if let Some(end) = &j.end {
+                end(&[]);
+            }
             // Dropping it cancels it; its thread ends on its own.
             self.lines.push(
                 "sample: the auto-sample was cancelled (the kits were loaded again)".to_string(),
@@ -4404,6 +4410,13 @@ impl SamplePage {
     /// auto-sample already running keeps the one it started with.
     #[allow(dead_code)] // the app's MIDI out wiring calls it, after the MIDI out check
     pub fn set_gear(&mut self, ui: &mut Ui, out: Option<GearOut>) {
+        self.lines.push(match &out {
+            Some(o) => format!("sample: auto-sample can play outside gear on {}", o.name),
+            None => {
+                "sample: auto-sample can't play outside gear now (no MIDI out open and sending)"
+                    .to_string()
+            }
+        });
         self.gear_out = out;
         self.refresh_auto_state(ui);
     }
@@ -4437,12 +4450,26 @@ impl SamplePage {
         };
         let gear = Gear::new(input.audio.clone(), channel);
         let how = format!(" (MIDI channel {} on {})", channel + 1, out.name);
-        let send = out.send;
+        let send = out.send.clone();
         self.begin_auto(ui, plan, how, move |plan| {
-            Job::start_gear(plan, gear, Box::new(move |m: [u8; 3]| send(&m[..])))
+            // The job lets go of the gear with All Notes Off; the MIDI out
+            // takes notes only, and no bytes as the end of a job, which
+            // ends every note the job left on.
+            Job::start_gear(
+                plan,
+                gear,
+                Box::new(move |m: [u8; 3]| {
+                    if m[0] & 0xf0 == 0xb0 && m[1] == 123 {
+                        send(&[]);
+                    } else {
+                        send(&m[..]);
+                    }
+                }),
+            )
         });
         if let Some(j) = self.auto_job.as_mut() {
             j.gear = true;
+            j.end = Some(out.send);
         }
     }
 
@@ -4493,6 +4520,7 @@ impl SamplePage {
                     gear: false,
                     notes,
                     per_note,
+                    end: None,
                 });
             }
             Err(e) => {
@@ -4530,7 +4558,11 @@ impl SamplePage {
             return;
         };
         let (kit, onto, gear) = (j.kit, j.onto, j.gear);
+        let end = j.end.clone();
         let f = j.job.finish();
+        if let Some(end) = end {
+            end(&[]);
+        }
         self.land_auto(ui, kit, onto, gear, f);
     }
 

@@ -111,9 +111,11 @@ Both buttons are faint while the pad picked has no sound.
 
 {{shot: sample-name | The text keyboard: the pad's name with the cursor at its end, Pad and Sound at the top right, and Cancel, Space and Enter along the bottom.}}
 
-The pad's name at the top left of every Sample page has a dotted line under it: tap it to type a new one. The keyboard opens with the name as it is, so **Delete** takes off the last letter and **Clear** the whole name. **Shift** gives one capital (or the symbol shown on the key); an empty name starts with one. Turn the data wheel, or press **–** / **+**, to move the cursor and fix a letter in the middle.
+The pad's name at the top left of every Sample page has a dotted line under it: tap it to type a new one. The keyboard opens with the name as it is, so **Delete** takes off the last letter and **Clear** the whole name. **Shift** gives one capital (or the symbol shown on the key); an empty name starts with one. **#+=** turns the letter keys into symbols (# & + = ( ) [ ] ! ? @ ~ and more) until you press it again (it says **ABC** then). Turn the data wheel, or press **–** / **+**, to move the cursor and fix a letter in the middle.
 
-**Pad** and **Sound** at the top right pick which name you are typing: the pad's, or the name of the sound it plays (a recording's "Take 3", say). A sound's name is the same on every pad that plays it, and the keyboard says how many that is. Tap **Enter** (or push the wheel) to keep both names; **Cancel** leaves them as they were. One **UNDO** takes both back. A name can have up to 32 letters, digits and spaces, and can't be empty.
+{{shot: sample-name-symbols | The keyboard with #+= on: the letter keys type symbols, and the key says ABC to turn them back.}}
+
+**Pad** and **Sound** at the top right pick which name you are typing: the pad's, or the name of the sound it plays (a recording's "Take 3", say). A sound's name is the same on every pad that plays it, and the keyboard says how many that is. Tap **Enter** (or push the wheel) to keep both names; **Cancel** leaves them as they were. One **UNDO** takes both back. A name can have up to 32 characters, and can't be empty.
 
 ## Wave: trim and loop
 
@@ -198,8 +200,7 @@ The **Source** row says what plays:
 - **The Synth tab's patch.** MPFree plays a copy of it, much faster than real time, so a whole instrument takes seconds.
 - **External gear**, on a MIDI channel from 1 to 16. MPFree plays your synth through **MIDI OUT** and records it from the line input, in real time. Connect the synth's audio out to the line input, set it to the channel you picked and turn the line input on. MPFree first plays the middle note twice to hear how loud the synth is and how late it answers, so no note starts late or cut off. If the line input stops or you switch the Rec page to another source while it runs, it stops, lets go of the note and keeps the notes done.
 
-> [!NOTE]
-> **Not yet:** **External gear** needs MIDI OUT, which is still off in this build (see [Playing other gear](midi-and-cv.md)). Until then the Source row offers the Synth tab's patch only.
+The notes go out of the 5-pin **MIDI OUT** jack. MIDI out is built but not yet checked on an MPC One, so it only sends while **Send MIDI and CV out** is on in [Prefs](../reference/prefs.md) (see [Playing other gear](midi-and-cv.md)). Until then the Source row offers the Synth tab's patch only, and with the gear picked the bar says there is no MIDI out for it. Every note it plays is let go when it ends or you cancel it, and the MIDI Monitor shows them as sent by the auto-sample.
 
 > [!MPC]
 > The MPC's Sampler, Sample Edit and Program Edit modes are all on one tab in MPFree, always on the pad you last hit. **SAMPLER** opens the Sample tab, **SAMPLE EDIT** its Wave page, and **PROG EDIT** the Pads tab's Pad view. **UNDO** takes back any edit on the Sample and Pads tabs.
