@@ -3586,7 +3586,7 @@ impl Player {
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
-                View::Looper => format!("Tap: pick   ·   drag a layer to a loop (SHIFT: copy)   ·   REC: record   ·   \
+                View::Looper => format!("Tap: pick   ·   swipe: scroll   ·   hold a layer, drag: to a loop (SHIFT: copy)   ·   REC: record   ·   \
                                          OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
@@ -8478,6 +8478,20 @@ impl Player {
             let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
             self.outbox.extend(acts.into_iter().map(FromUi::Chain));
         }
+        // A finger held still on a Looper layer's row: it can lift out to
+        // drag now (moved sooner, it swiped the rows).
+        // (Only while one waits: taking the editor to change it repaints it.)
+        use crate::looper_tab::{LoopEditor, EDITOR};
+        if self.view == View::Looper
+            && self
+                .ui
+                .get::<LoopEditor>(EDITOR)
+                .is_some_and(|e| e.holding())
+        {
+            if let Some(e) = self.ui.get_mut::<LoopEditor>(EDITOR) {
+                e.held(dt);
+            }
+        }
         // A finger held still on a macro card opens the macros panel.
         if self.chain_page.drives(self.view) && !self.band_showing() {
             if let Some(bank) = self.chain_page.held(dt) {
@@ -12498,6 +12512,10 @@ mod tests {
         let (two, new) = (parts.rows[1], parts.new.unwrap());
         let drag = |p: &mut Player, to: mpfree_ui::Rect| {
             p.touch(1, Touch::Down, at.0, at.1);
+            // Held still first: a move sooner would swipe the rows. What
+            // the wait sent goes out, as after every screen read.
+            p.tick(crate::looper_tab::LIFT_HOLD_S);
+            let _ = p.take_actions();
             p.touch(1, Touch::Move, at.0 - 40, at.1);
             p.touch(1, Touch::Move, to.x + 20, to.y + 20)
         };
@@ -12679,7 +12697,9 @@ mod tests {
         // The hint says what the tab's controls do.
         let hint = &p.ui.get::<Label>("hint").unwrap().text;
         assert!(
-            hint.contains("Tap: pick") && hint.contains("drag a layer to a loop"),
+            hint.contains("Tap: pick")
+                && hint.contains("swipe: scroll")
+                && hint.contains("hold a layer, drag: to a loop"),
             "{hint}"
         );
     }
