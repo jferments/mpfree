@@ -659,16 +659,19 @@ mod tests {
         });
     }
 
-    /// Sample > FX: the pad's chain first, then a tap on the track's scope
-    /// shows the drum track's chain (its DJ filter); an effect added there
-    /// is on the Drums strip in the mixer. The header's Sample tab goes
-    /// back to the sound editor.
+    /// Sample > FX shows the pad's effects as pedals; its Whole chain opens
+    /// the pad's chain first, then a tap on the track's scope shows the
+    /// drum track's chain (its DJ filter); an effect added there is on the
+    /// Drums strip in the mixer. The header's Sample tab goes back to the
+    /// FX page.
     #[test]
     fn the_sample_tabs_fx_shows_the_pad_then_the_track() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Sample");
-            s.press("smp-bar", "tab", "FX");
+            s.press("smp-bar", "tab", "FX").run_for(0.1);
+            assert_eq!(s.view(), View::Sample, "the pedals, on the Sample tab");
+            s.press("smp-fx-list", "button", "Whole chain").run_for(0.1);
             assert_eq!(s.view(), View::Chain);
             let t = engine(&mut s);
             assert_eq!(t.title, "Pad 5 FX", "the pad's chain first");
@@ -695,8 +698,8 @@ mod tests {
             s.press("header", "tab", "Sample");
             assert_eq!(s.view(), View::Sample);
             assert!(
-                s.control("smp-bar", "tab", "FX").is_some(),
-                "the sound editor's bar"
+                s.control("smp-fx-bar", "tab", "FX").is_some(),
+                "back on the FX page's pedals"
             );
 
             s.press("header", "tab", "Mix").run_for(0.1);

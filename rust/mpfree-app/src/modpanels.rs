@@ -900,6 +900,10 @@ pub struct Panels {
     /// The pad channels' effects as last sent for the Pads tab's Effects
     /// row.
     pad_fx: Option<Vec<Vec<String>>>,
+    /// The chain is kit 1's pad channel the Sample tab's FX tab shows as
+    /// pedals ([`Panels::show_pedals`]), not the editor: its effects go to
+    /// the screen while the Sample tab shows.
+    pedals: Option<usize>,
 }
 
 impl Default for Panels {
@@ -917,6 +921,7 @@ impl Panels {
             sent_at: None,
             picked: false,
             pad_fx: None,
+            pedals: None,
         }
     }
 
@@ -972,6 +977,7 @@ impl Panels {
         self.chain = Some(h);
         self.sent_at = None;
         self.picked = false;
+        self.pedals = None;
         app.open_chain()
     }
 
@@ -985,6 +991,7 @@ impl Panels {
         };
         self.chain = Some(h);
         self.picked = true;
+        self.pedals = None;
         self.sent_at = None;
     }
 
@@ -1087,26 +1094,57 @@ impl Panels {
         self.sent_at = None;
     }
 
-    /// The Sample tab's FX sub-tab: the chain editor on the playing kit's
-    /// pad `pad`'s channel, with the track it plays into (`track`) as its
-    /// second scope, in the Sample tab's place; its Back comes back to the
+    /// The Sample tab's FX tab's Whole chain (with `add`, its + Add
+    /// effect): the chain editor on kit 1's pad `pad`'s channel, with the
+    /// track it plays into (`track`) as its second scope, in the Sample
+    /// tab's place, and the picker up for `add`; its Back comes back to the
     /// Sample tab. A pad past the mixer's pad channels opens nothing and
     /// says so.
-    pub fn open_pad(&mut self, app: &mut App, pad: usize, track: usize) -> Vec<Effect> {
+    pub fn open_pad(&mut self, app: &mut App, pad: usize, track: usize, add: bool) -> Vec<Effect> {
         let host = (pad < mixing::PADS)
             .then(|| ChainHost::for_pad(pad, track))
             .flatten();
         self.picked = false;
-        let Some(h) = host else {
+        self.pedals = None;
+        let Some(mut h) = host else {
             return vec![Effect::Tell(format!(
                 "chain: pad {} has no channel of its own in the mixer (only the first {} do)",
                 pad + 1,
                 mixing::PADS
             ))];
         };
+        h.picking = add;
         self.chain = Some(h);
         self.sent_at = None;
         app.open_chain()
+    }
+
+    /// The Sample tab's FX tab shows kit 1's pad `pad` (None: no longer):
+    /// its channel is kept as the editor's would be, without the editor, so
+    /// the pedals' switches and knobs ([`ChainAction::SetOn`],
+    /// [`ChainAction::Set`]) reach it and [`Panels::poll`] sends its
+    /// effects while the Sample tab shows. None lets go only of the
+    /// pedals' own chain (the editor may have taken its place).
+    pub fn show_pedals(&mut self, pad: Option<usize>) {
+        match pad.filter(|p| *p < mixing::PADS) {
+            Some(p) => {
+                let Some(h) = ChainHost::from_mixer(StripId::Pad(p), None) else {
+                    return;
+                };
+                let mut h = h;
+                h.picking = false;
+                h.back = None;
+                self.chain = Some(h);
+                self.picked = false;
+                self.pedals = Some(p);
+                self.sent_at = None;
+            }
+            None => {
+                if self.pedals.take().is_some() {
+                    self.chain = None;
+                }
+            }
+        }
     }
 
     /// The Pads tab's Effects row: pad `pad`'s chain in the Mix tab, on its
@@ -1119,6 +1157,7 @@ impl Panels {
             .then(|| ChainHost::from_mixer(sid, first))
             .flatten();
         self.picked = false;
+        self.pedals = None;
         let Some(mut h) = host else {
             return vec![Effect::Tell(format!(
                 "chain: pad {} has no channel of its own in the mixer (only the first {} do)",
@@ -1195,6 +1234,7 @@ impl Panels {
                 if let Some(mut nh) = ChainHost::from_mixer(sid, first.then_some(0)) {
                     nh.back = back;
                     self.chain = Some(nh);
+                    self.pedals = None;
                 }
                 Vec::new()
             }
@@ -1244,6 +1284,34 @@ impl Panels {
         show: &mut impl FnMut(ToUi),
     ) {
         let picked = view == View::Mixer && self.picked && self.chain.is_some();
+        if view == View::Sample {
+            // The FX tab's pedals: the pad channel's effects, each with its
+            // switch and main knobs.
+            let Some(pad) = self.pedals else {
+                return;
+            };
+            if self
+                .sent_at
+                .is_some_and(|t| now.duration_since(t) < PANELS_EVERY)
+            {
+                return;
+            }
+            self.sent_at = Some(now);
+            let sid = StripId::Pad(pad);
+            let pedals = match (mix.mixer.chain(sid), strip_of(sid)) {
+                (Some(c), Some(strip)) => {
+                    mpfree_chain_ui::state::pedals(c, strip, mix.modu.engine())
+                }
+                _ => Vec::new(),
+            };
+            show(ToUi::Pedals {
+                pad,
+                pedals,
+                into: mixing::name(StripId::Track(mixing::DRUMS)),
+                room: SLOTS,
+            });
+            return;
+        }
         if view == View::Pads {
             if self
                 .sent_at
@@ -1441,7 +1509,7 @@ mod tests {
         app.start();
         app.open_tab(View::Sample);
         let mut p = Panels::new();
-        p.open_pad(&mut app, 4, DRUMS);
+        p.open_pad(&mut app, 4, DRUMS, false);
         assert_eq!(app.view(), View::Chain);
         let mut sent = Vec::new();
         p.poll(
@@ -1506,12 +1574,96 @@ mod tests {
         );
         assert_eq!(app.view(), View::Sample);
         // A pad past the 16 channels opens nothing and says why.
-        let fx = p.open_pad(&mut app, 16, DRUMS);
+        let fx = p.open_pad(&mut app, 16, DRUMS, false);
         assert!(
             matches!(&fx[..], [Effect::Tell(n)] if n.contains("only the first 16")),
             "{fx:?}"
         );
         assert_eq!(app.view(), View::Sample);
+        // + Add effect: the editor with its picker up.
+        p.open_pad(&mut app, 4, DRUMS, true);
+        assert_eq!(app.view(), View::Chain);
+        assert!(p.chain_state(&r.h).is_some_and(|st| st.picking));
+    }
+
+    /// The Sample tab's FX tab: pad 5's channel as pedals while the Sample
+    /// tab shows, its switches and knobs reaching that channel only, and
+    /// nothing more once the tab lets go.
+    #[test]
+    fn the_sample_tabs_pedals_show_the_pads_effects_and_take_their_switches_and_knobs() {
+        let mut r = Rig::new();
+        let mut app = App::new(RATE, false);
+        app.start();
+        app.open_tab(View::Sample);
+        let mut p = Panels::new();
+        p.show_pedals(Some(4));
+        let mut quiet = |_: ToUi| {};
+        for id in ["mpfree.fx.drive", "mpfree.fx.filter"] {
+            p.chain(&mut app, &mut r.h, &ChainAction::Add(id), false, &mut quiet);
+            r.run(20);
+        }
+        assert_eq!(app.view(), View::Sample, "the pedals open no editor");
+        let poll = |p: &mut Panels, r: &Rig, t: Instant| {
+            let mut sent = Vec::new();
+            p.poll(View::Sample, &r.h, 120.0, t, &mut |m| sent.push(m));
+            sent
+        };
+        let t0 = Instant::now();
+        let sent = poll(&mut p, &r, t0);
+        let [ToUi::Pedals {
+            pad,
+            pedals,
+            into,
+            room,
+        }] = &sent[..]
+        else {
+            panic!("{} messages", sent.len());
+        };
+        assert_eq!((*pad, into.as_str(), *room), (4, "Drums", SLOTS));
+        let names: Vec<&str> = pedals.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names[0].starts_with("Drive"), "{names:?}");
+        assert!(pedals.iter().all(|e| e.on && e.knobs.len() >= 3));
+        assert!(
+            poll(&mut p, &r, t0 + PANELS_EVERY / 2).is_empty(),
+            "every 100 ms"
+        );
+        // The switch and a knob reach pad 5's channel.
+        p.chain(
+            &mut app,
+            &mut r.h,
+            &ChainAction::SetOn { slot: 0, on: false },
+            false,
+            &mut quiet,
+        );
+        let k = pedals[1].knobs[0].clone();
+        let value = k.nudged(-10, false);
+        assert_ne!(value, k.value);
+        p.chain(
+            &mut app,
+            &mut r.h,
+            &ChainAction::Set {
+                addr: k.addr,
+                value,
+            },
+            false,
+            &mut quiet,
+        );
+        r.run(20);
+        let chain = r.h.mixer.chain(StripId::Pad(4)).unwrap();
+        assert!(!chain.is_on(0) && chain.is_on(1));
+        assert!((r.param(k.addr) - value).abs() < 1e-3);
+        assert_eq!(r.h.mixer.chain(StripId::Pad(3)).map_or(0, |c| c.len()), 0);
+        let sent = poll(&mut p, &r, t0 + PANELS_EVERY * 2);
+        assert!(
+            matches!(&sent[..], [ToUi::Pedals { pedals, .. }] if !pedals[0].on && (pedals[1].knobs[0].value - value).abs() < 1e-3),
+            "{} messages",
+            sent.len()
+        );
+        // Let go: nothing more, and no chain for a stray touch.
+        p.show_pedals(None);
+        assert!(poll(&mut p, &r, t0 + PANELS_EVERY * 4).is_empty());
+        assert!(p.chain_state(&r.h).is_none());
     }
 
     /// The audio loop's side: the mixer's insert row opens the editor in the

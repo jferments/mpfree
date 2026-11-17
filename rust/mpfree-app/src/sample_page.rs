@@ -68,7 +68,10 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use mpfree_chain_ui::state::Pedal;
+use mpfree_chain_ui::ChainAction;
 use mpfree_node::Node;
+use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::export;
@@ -87,6 +90,7 @@ use mpfree_sampler_ui::auto_tab::{
     self, AutoAction, AutoSettings, AutoState, AutoTab, Onto, Running,
 };
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
+use mpfree_sampler_ui::fx_tab::{self, FxAction, FxKnob, FxPedal, FxState, FxTab};
 use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
@@ -121,6 +125,8 @@ pub const GRAIN_PAGE: &str = "Sample · Grain";
 pub const REC_PAGE: &str = "Sample · Rec";
 /// The Warp tab's page.
 pub const WARP_PAGE: &str = "Sample · Warp";
+/// The FX tab's page.
+pub const FX_PAGE: &str = "Sample · FX";
 /// The Rec tab's Auto-sample mode's page.
 pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 /// The line input the sampler keeps while it is on: enough for the
@@ -134,12 +140,13 @@ pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
 /// `smp-chop-`, the Play tab's with `smp-play-`).
 pub const PREFIX: &str = "smp-";
 /// The editors whose pad bar's title names the pad and its sound.
-const NAMED_BARS: [&str; 5] = [
+const NAMED_BARS: [&str; 6] = [
     wave_tab::BAR,
     warp_tab::BAR,
     chop_tab::BAR,
     play_tab::BAR,
     grain_tab::BAR,
+    fx_tab::BAR,
 ];
 /// The text keyboard's keys for a pad's name and its sound's.
 pub const NAME_PAD: &str = "pad";
@@ -154,6 +161,7 @@ const GRAIN_PREFIX: &str = "smp-grain-";
 const REC_PREFIX: &str = "smp-rec-";
 const WARP_PREFIX: &str = "smp-warp-";
 const AUTO_PREFIX: &str = "smp-auto-";
+const FX_PREFIX: &str = "smp-fx-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
 
@@ -202,9 +210,42 @@ pub enum Editor {
     Chop,
     Play,
     Grain,
+    /// The effects on the pad's channel, as pedals.
+    Fx,
     Rec,
     /// The Rec tab's Auto-sample mode.
     Auto,
+}
+
+/// The effects on a pad's channel as the mixer last said, for the FX tab.
+struct Pedals {
+    pad: usize,
+    list: Vec<Pedal>,
+    /// Where the channel plays into, and how many effects it holds.
+    into: String,
+    room: usize,
+}
+
+/// A pedal as the FX tab shows it: its name, summary, switch and main
+/// knobs (the chain editor's Q-Links for it).
+fn fx_pedal(p: &Pedal) -> FxPedal {
+    FxPedal {
+        name: p.name.clone(),
+        summary: p.summary.clone(),
+        on: p.on,
+        knobs: p
+            .knobs
+            .iter()
+            .take(4)
+            .map(|k| FxKnob {
+                label: k.label.clone(),
+                text: k.text(),
+                pos: k.pos,
+                bipolar: k.bipolar(),
+                steps: k.steps(),
+            })
+            .collect(),
+    }
 }
 
 /// Live chop under way: the pad whose sound plays, the cuts read so far,
@@ -645,8 +686,20 @@ pub struct SamplePage {
     processing: Option<Processing>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
-    /// The FX tab was tapped on this pad: the app opens its chain editor.
-    fx_open: Option<usize>,
+    /// The FX tab, added the first time it is opened.
+    fx: Option<FxTab>,
+    fx_state: Option<FxState>,
+    /// The effects on a pad's channel as the mixer last said, while the
+    /// FX tab shows ([`SamplePage::set_pedals`]).
+    pedals: Option<Pedals>,
+    /// The pad whose effects the app was asked to send
+    /// ([`SamplePage::take_fx`]).
+    pedals_asked: Option<usize>,
+    /// What the FX tab asks of the mixer from a Q-Link, the wheel or a
+    /// lift (a touch's goes out with the touch).
+    fx_out: Vec<FromUi>,
+    /// The effects' knobs turned since the last lift: each is let go then.
+    fx_touched: Vec<ParamAddr>,
     /// The MIDI out external gear is auto-sampled through, when the app
     /// has one open.
     gear_out: Option<GearOut>,
@@ -750,7 +803,12 @@ impl SamplePage {
             auto_job: None,
             processing: None,
             auto_last: String::new(),
-            fx_open: None,
+            fx: None,
+            fx_state: None,
+            pedals: None,
+            pedals_asked: None,
+            fx_out: Vec::new(),
+            fx_touched: Vec::new(),
             gear_out: None,
             opening: None,
             kit_loading: None,
@@ -1151,6 +1209,11 @@ impl SamplePage {
     }
 
     #[cfg(test)]
+    pub fn fx(&self) -> Option<(&FxTab, &FxState)> {
+        self.fx.as_ref().zip(self.fx_state.as_ref())
+    }
+
+    #[cfg(test)]
     pub fn editor(&self) -> Editor {
         self.editor
     }
@@ -1168,6 +1231,7 @@ impl SamplePage {
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
             Editor::Grain if self.grain_state.is_some() && self.grain.is_some() => GRAIN_PAGE,
             Editor::Rec if self.rec_state.is_some() && self.rec.is_some() => REC_PAGE,
+            Editor::Fx if self.fx_state.is_some() && self.fx.is_some() => FX_PAGE,
             Editor::Auto if self.auto_state.is_some() && self.auto.is_some() => AUTO_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
             Editor::Warp if self.state.is_some() && self.warp.is_some() => WARP_PAGE,
@@ -1196,6 +1260,7 @@ impl SamplePage {
             PLAY_PAGE => play_tab::LIST,
             GRAIN_PAGE => grain_tab::LIST,
             REC_PAGE => rec_tab::LIST,
+            FX_PAGE => fx_tab::LIST,
             AUTO_PAGE => auto_tab::LIST,
             PADS_PAGE => pads_tab::LIST,
             _ => return None,
@@ -1332,6 +1397,10 @@ impl SamplePage {
         self.rec_state = None;
         if self.editor == Editor::Rec {
             self.refresh_rec(ui, bank);
+        }
+        self.fx_state = None;
+        if self.editor == Editor::Fx {
+            self.refresh_fx(ui, bank);
         }
         self.auto_state = None;
         if self.editor == Editor::Auto {
@@ -1485,6 +1554,207 @@ impl SamplePage {
                     self.play_state = None;
                 }
             },
+        }
+    }
+
+    /// The FX tab: the layer's sound, and the effects on the pad's channel
+    /// as the mixer last said. Only kit 1's pads A1 to A16 have a channel
+    /// of their own (`mixing::PADS`); the others play through their
+    /// track's.
+    fn refresh_fx(&mut self, ui: &mut Ui, bank: Option<char>) {
+        let Some(ws) = self.state.as_ref() else {
+            return;
+        };
+        let channel = if self.kit == 0 && self.pad < crate::mixing::PADS {
+            Ok(())
+        } else {
+            Err(format!(
+                "No effects of its own: only kit 1's pads A1 to A{} have a channel so far, so it plays \
+                 through its track's",
+                crate::mixing::PADS
+            ))
+        };
+        let mut st = FxState {
+            pad: self.pad,
+            name: ws.pad_name.clone(),
+            sound: mpfree_sampler_ui::play_tab::LayerSound {
+                name: ws.source_name.clone(),
+                rate: ws.rate,
+                view: ws.source.clone(),
+            },
+            start: ws.region.start,
+            end: ws.region.end,
+            channel,
+            pedals: None,
+            room: 0,
+            into: String::new(),
+        };
+        self.fill_pedals(&mut st);
+        match self.fx.as_mut() {
+            Some(tab) => {
+                tab.bank = bank;
+                tab.update(ui, &st);
+            }
+            None => match FxTab::add(ui, FX_PAGE, &st) {
+                Ok(mut tab) => {
+                    tab.bank = bank;
+                    tab.update(ui, &st);
+                    self.fx = Some(tab);
+                }
+                Err(e) => {
+                    self.lines.push(format!("sample: no FX page ({e})"));
+                    return;
+                }
+            },
+        }
+        self.fx_state = Some(st);
+    }
+
+    /// The pedals the mixer said for the FX tab's pad, if they are its.
+    fn fill_pedals(&self, st: &mut FxState) {
+        let ours = self
+            .pedals
+            .as_ref()
+            .filter(|p| p.pad == st.pad && st.channel.is_ok());
+        st.pedals = ours.map(|p| p.list.iter().map(fx_pedal).collect());
+        st.into = ours.map_or_else(String::new, |p| p.into.clone());
+        st.room = ours.map_or(0, |p| p.room);
+    }
+
+    /// The FX tab shows the pedals as they are now.
+    fn show_pedals(&mut self, ui: &mut Ui) {
+        let Some(mut st) = self.fx_state.take() else {
+            return;
+        };
+        self.fill_pedals(&mut st);
+        if let Some(tab) = self.fx.as_mut() {
+            tab.update(ui, &st);
+        }
+        self.fx_state = Some(st);
+    }
+
+    /// The effects on pad `pad`'s channel (kit 1's), as the mixer has them
+    /// now: `into` is where the channel plays into, `room` how many it
+    /// holds. Sent while the FX tab shows, after
+    /// [`FromUi::SamplePedals`].
+    pub fn set_pedals(
+        &mut self,
+        ui: &mut Ui,
+        pad: usize,
+        list: Vec<Pedal>,
+        into: String,
+        room: usize,
+    ) {
+        let same = self
+            .pedals
+            .as_ref()
+            .is_some_and(|p| p.pad == pad && p.list == list && p.into == into && p.room == room);
+        if same {
+            return;
+        }
+        self.pedals = Some(Pedals {
+            pad,
+            list,
+            into,
+            room,
+        });
+        self.show_pedals(ui);
+    }
+
+    /// What the FX tab asks of the mixer: first, while the tab shows on
+    /// the screen (`shows`), which pad's effects to send (or none, once it
+    /// doesn't); then its Q-Links', wheel's and lifts' changes.
+    pub fn take_fx(&mut self, shows: bool) -> Vec<FromUi> {
+        let mut out = Vec::new();
+        let want = self
+            .fx_state
+            .as_ref()
+            .filter(|st| shows && self.page() == FX_PAGE && st.channel.is_ok())
+            .map(|st| st.pad);
+        self.ask_pedals(want, &mut out);
+        out.append(&mut self.fx_out);
+        out
+    }
+
+    /// Asks the mixer for pad `want`'s effects (None: no more), if it
+    /// wasn't asked already.
+    fn ask_pedals(&mut self, want: Option<usize>, out: &mut Vec<FromUi>) {
+        if want != self.pedals_asked {
+            self.pedals_asked = want;
+            out.push(FromUi::SamplePedals(want));
+        }
+    }
+
+    /// Applies what the FX tab asked for: the mixer hears it (as the chain
+    /// editor's own touches), and the tab shows it at once.
+    fn act_fx(&mut self, ui: &mut Ui, a: FxAction, out: &mut Vec<FromUi>) {
+        let pad = self.pad;
+        let name = |p: &Pedals, slot: usize| p.list.get(slot).map(|e| e.name.clone());
+        match a {
+            FxAction::Tab(i) => self.open(ui, i),
+            FxAction::On { slot, on } => {
+                let Some(p) = self.pedals.as_mut().filter(|p| p.pad == pad) else {
+                    return;
+                };
+                let Some(e) = p.list.get_mut(slot) else {
+                    return;
+                };
+                e.on = on;
+                let what = name(p, slot).unwrap_or_default();
+                self.ask_pedals(Some(pad), out);
+                out.push(FromUi::Chain(ChainAction::SetOn { slot, on }));
+                self.lines.push(format!(
+                    "sample: pad {}'s {what} {}",
+                    self.pad_text(self.kit, pad),
+                    if on { "on" } else { "off" }
+                ));
+                self.show_pedals(ui);
+            }
+            FxAction::Turn {
+                slot,
+                knob,
+                detents,
+                fine,
+            } => {
+                let Some(k) = self
+                    .pedals
+                    .as_mut()
+                    .filter(|p| p.pad == pad)
+                    .and_then(|p| p.list.get_mut(slot))
+                    .and_then(|e| e.knobs.get_mut(knob))
+                else {
+                    return;
+                };
+                let v = k.nudged(detents, fine);
+                if v == k.value {
+                    let way = if detents < 0 { "lower" } else { "higher" };
+                    self.told
+                        .push(format!("{} stays {}: it goes no {way}", k.label, k.text()));
+                    return;
+                }
+                k.value = v;
+                k.pos = k.info.to_unit(v);
+                let addr = k.addr;
+                self.ask_pedals(Some(pad), out);
+                out.push(FromUi::Chain(ChainAction::Set { addr, value: v }));
+                if !self.fx_touched.contains(&addr) {
+                    self.fx_touched.push(addr);
+                }
+                self.show_pedals(ui);
+            }
+            FxAction::Add | FxAction::Whole => {
+                let add = a == FxAction::Add;
+                self.lines.push(format!(
+                    "sample: pad {}'s effects: {}",
+                    self.pad_text(self.kit, pad),
+                    if add {
+                        "the chain editor's picker"
+                    } else {
+                        "the chain editor, then the Drums track"
+                    }
+                ));
+                out.push(FromUi::SampleFx { pad, add });
+            }
         }
     }
 
@@ -1765,15 +2035,6 @@ impl SamplePage {
                 ));
             }
         }
-        // The FX tab: the chain editor on the pad's channel, in the page's
-        // place (the audio loop owns the mixer it edits).
-        if let Some(pad) = self.fx_open.take() {
-            self.lines.push(format!(
-                "sample: pad {}'s effects: its own channel, then the Drums track",
-                self.pad_text(self.kit, pad)
-            ));
-            out.push(FromUi::SampleFx { pad });
-        }
     }
 
     fn event_on(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
@@ -1814,6 +2075,16 @@ impl SamplePage {
             let a = tab.action(ui, ev, st);
             if let Some(a) = self.took(a) {
                 self.act_grain(ui, a);
+            }
+            return;
+        }
+        if ev.widget.starts_with(FX_PREFIX) {
+            let (Some(tab), Some(st)) = (self.fx.as_mut(), self.fx_state.as_ref()) else {
+                return;
+            };
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
+                self.act_fx(ui, a, out);
             }
             return;
         }
@@ -1944,8 +2215,7 @@ impl SamplePage {
         ));
     }
 
-    /// Opens the editor's tab `i` (Wave, Warp, Chop, Play, Grain or Rec), or
-    /// for FX asks the app for its chain editor on the pad's channel.
+    /// Opens the editor's tab `i` (Wave, Warp, Chop, Play, Grain, FX or Rec).
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
             wave_tab::TAB => Editor::Wave,
@@ -1954,11 +2224,7 @@ impl SamplePage {
             play_tab::TAB => Editor::Play,
             grain_tab::TAB => Editor::Grain,
             rec_tab::TAB => Editor::Rec,
-            // The pad's effects: the app's chain editor, on its channel.
-            wave_tab::FX_TAB => {
-                self.fx_open = Some(self.pad);
-                return;
-            }
+            fx_tab::TAB => Editor::Fx,
             _ => return,
         };
         self.open_editor(ui, editor);
@@ -2535,6 +2801,19 @@ impl SamplePage {
             }
             return;
         }
+        if self.editor == Editor::Fx {
+            let a = self
+                .fx
+                .as_ref()
+                .zip(self.fx_state.as_ref())
+                .and_then(|(tab, st)| tab.qlink(st, knob, ticks, fine));
+            if let Some(a) = a {
+                let mut out = Vec::new();
+                self.act_fx(ui, a, &mut out);
+                self.fx_out.extend(out);
+            }
+            return;
+        }
         if self.editor == Editor::Chop {
             if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
                 tab.qlink(ui, st, knob, ticks, fine);
@@ -2739,6 +3018,17 @@ impl SamplePage {
             Editor::Warp => {
                 if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
                     tab.wheel(ui, st, delta);
+                }
+            }
+            Editor::Fx => {
+                self.turned();
+                let (Some(tab), Some(st)) = (self.fx.as_mut(), self.fx_state.as_ref()) else {
+                    return;
+                };
+                if let Some(a) = tab.wheel(ui, st, delta) {
+                    let mut out = Vec::new();
+                    self.act_fx(ui, a, &mut out);
+                    self.fx_out.extend(out);
                 }
             }
             Editor::Rec => {
@@ -3206,6 +3496,10 @@ impl SamplePage {
         }
         if let Some(tab) = self.grain.as_mut() {
             tab.lift();
+        }
+        // The effects' knobs turned are let go, as the chain editor's are.
+        for addr in self.fx_touched.drain(..) {
+            self.fx_out.push(FromUi::Chain(ChainAction::Release(addr)));
         }
         self.last_turn = None;
         self.play_turn = None;
@@ -5206,7 +5500,12 @@ impl SamplePage {
             }
             // The Play, Pads and Rec tabs (and Auto-sample) draw no playheads; the Grain
             // tab's come with its cloud.
-            Editor::Play | Editor::Pads | Editor::Grain | Editor::Rec | Editor::Auto => {}
+            Editor::Play
+            | Editor::Pads
+            | Editor::Grain
+            | Editor::Fx
+            | Editor::Rec
+            | Editor::Auto => {}
         }
         self.shown_heads = frames;
     }

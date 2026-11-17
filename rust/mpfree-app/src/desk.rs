@@ -101,7 +101,11 @@ impl Desk<'_> {
                 panels.insert_param(mix, &a, recording)
             }
             // The Sample tab's FX: the chain editor on the pad's channel.
-            gui::FromUi::SampleFx { pad } => fx.extend(panels.open_pad(app, pad, mixing::DRUMS)),
+            gui::FromUi::SampleFx { pad, add } => {
+                fx.extend(panels.open_pad(app, pad, mixing::DRUMS, add))
+            }
+            // The FX tab's pedals: the pad's channel, without the editor.
+            gui::FromUi::SamplePedals(pad) => panels.show_pedals(pad),
             gui::FromUi::PadEffects { pad } => fx.extend(panels.open_pad_mix(app, mix, pad)),
             gui::FromUi::Chain(a) => {
                 let recording = time.info().state == mpfree_transport::State::Recording;
