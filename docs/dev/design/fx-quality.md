@@ -14,7 +14,7 @@ An effect is good when it meets its measured targets, wins or ties in blind, lev
 
 ## The report
 
-`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi` or `amp`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq`, `eq[preset]` and `eq[HQ 2x]` (its Quality at HQ 2x); an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All nine classes take about 38 s in a release build (the round-2 classes 15 s, most of it the Drive's 4x quality).
+`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi` or `amp`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq`, `eq[preset]` and `eq[HQ 2x]` (its Quality at HQ 2x); an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All nine classes take about 62 s in a release build (the round-2 classes 39 s: Lo-fi about 24 s of it, for its minute-long pitch reads, and most of the rest the Drive's 4x quality).
 
 New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known answers:
 
@@ -36,7 +36,7 @@ New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known an
 - A change that improves numbers records them: `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test quality`. The pull request shows the file's diff.
 - A number made worse on purpose (a deliberate change of character) is blessed the same way and explained in the pull request.
 - Levels far below hearing read as -140 dB, and zipper steps below 0 dB as 0, so numerical noise is never held to account.
-- CI runs it in the `rust` job (release, about 20 s). In a debug build the test is ignored: the renders take minutes there.
+- CI runs it in the `rust` job (release, about a minute). In a debug build the test is ignored: the renders take minutes there.
 
 ## Delay
 
@@ -252,11 +252,16 @@ The attack and release times are read from the gain at each millisecond's exact 
 | L3 | `mean_pitch_error_pct_*` | ≤ 0.01 % | The track stays in tune |
 | L4 | `wow_line_share` | The pitch track's strongest line holds at most half its power | A plain sine reads as vibrato |
 | L5 | `sat40_alias_5k_0dbfs` | ≤ -65 dB (Saturation 100 held) | As G1 |
-| L6, L7 | `sat*_h3_minus_h2`, `noise_*` | Reported | Tape's distortion is mostly third harmonic; noise levels |
+| L6, L7 | `sat*_h3_minus_h2`, `noise_*`, `follow0_noise_dbfs`; `follow0_after_vs_alone_db` | Reported; with Follow at 0 the noise within 1 dB from playing to silence | Tape's distortion is mostly third harmonic; noise levels; a noise bed keeps going |
 | L8 | `cuts_heard_vs_drawn_*` | ≤ 0.5 dB | The screen tells the truth |
-| L9 | `lu_pink18` | Within ±1 LU, defaults and presets (Old radio reported) | Fair A/B |
+| L9 | `lu_pink18` (read over 9 s: dropouts are random) | Within ±1 LU, defaults and presets (Old radio reported) | Fair A/B |
 | L10 | `null_amount0_dbfs` | Bit for bit | Inserting it changes nothing |
 | L11 | `zipper_db` | ≤ 3 dB | Smooth automation |
+| L12 | `dropout_depth_error_db`, `dropout_fall_ms`, `dropouts_per_s` | Within 1 dB of the set depth; a fall of at least 5 ms (10 to 90 %); the rate reported | Worn tape, without clicks |
+| L13 | `latency_frames` | Reported (the instruction gate holds the cost) | MPC budget |
+| L14, L15 | `stereo100_pitch_apart_pct`, `hum100_dbfs` | Reported | |
+
+The pitch rows (L1 to L4) listen for 60 s: a random wander needs that long to show its size and to be told from a line. The presets' L1 and L3 rows are read with Dropouts, Hum and Stereo off, since a dip or the sides drifting apart beat in the measure's mid.
 
 ### Amp (A)
 
@@ -353,6 +358,15 @@ What changed (design: [fx-compressor.md](fx-compressor.md); decision 10.3): the 
 - **Reported:** FET's colour at 10 dB of reduction, -42.4 dB THD at 50 Hz, -43.0 at 100 Hz and -43.2 at 1 kHz: the grit it is for. An 8 kHz tone through FET at 0 dBFS: its third harmonic (24 kHz) folds to 20.1 kHz at -42.4 dB. Overshoot on a -40 to 0 dBFS step, 11.4 dB at 1 ms and 13.2 at 10 ms: no look-ahead (the Limiter has it). The defaults without makeup play pink 6.5 LU under the dry (was 3.0): they now reach the reduction drawn.
 - **Blessed worse, and why:** the 1 ms attack reads 1.08 (was 1): the old measure read whole milliseconds, and main's engine reads 1.58 by the fixed one. RMS curve error 0.026 dB (was 0.019), inside 0.25: the hold keeps the top of the RMS level's small ripple on a 1 kHz sine, where the old detector averaged it (the likely cause, not isolated). The zipper on Drum punch, 0.49 dB (was 0.12), Vocal level, 0.64 (0.20), and Sidechain pump, 0.639 (0.635), inside 3 dB: the presets now reach their full reduction and two carry their styles' slow stage, so a sweep moves a larger gain.
 - **Cost** (the instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz): Compressor 21.0k to 27.7k instructions (1.32 times). The cases that carry it rose too: the drive, filter, delay and compressor chain 2.1 %, the mixer with a song's inserts (seven compressors) 3.8 to 5.7 %, the frozen-tracks mixer 2.1 % and the song 5.0 %.
+
+### Lo-fi PR
+
+What changed (design: [fx-lofi.md](fx-lofi.md); decision 10.5): the wow follows a smooth random path at about the new **Rate**, and **Stereo** lets the sides drift apart; wow and flutter grow along a curve that keeps the bottom where it was and reaches 2.2 % and 0.55 %; the saturation runs at twice the rate with first-order ADAA (Drive's helpers); new **Dropouts**, **Hum** with **Mains**, and **Follow** (ids 10 to 15; 0 to 9 unchanged); a fixed makeup of 2.5 dB at Amount 100; Amount's first 2 % fades the effect in, so Amount 0 is bit for bit; the tape centred at 10 ms (latency 445 frames at 44.1 kHz, from 88); Broken machine (the one preset that sets Amount, to 100), VHS and Vinyl bed added. After it: all 38 lo-fi targets met (17 of 26 before; the Follow and dropout targets and the new presets' level and zipper are new); the other classes are unchanged.
+
+- **Met now:** Amount and Wow at 100 bend the pitch 2.15 % (was 0.39), Flutter 0.50 % (0.13), the defaults 0.126 % (0.116) (L1, L2); the wow's strongest line holds 0.19 of its power (0.81) (L4); Saturation 40's 5 kHz alias at 0 dBFS -89.2 dB (-27.6), 100's -49.6 (-16.3) (L5); with Follow at 0 the noise is the same playing and in silence (L7); pink at -18 dBFS: the defaults +0.17 LU (-1.30), Worn tape +0.07, Dusty vinyl +0.26, Cassette -0.50, Broken machine -0.58, VHS -0.41, Vinyl bed +0.67 (L9; the old presets were -1.2 to -1.6); Amount 0 bit for bit (L10); a dropout within 0.005 dB of its depth and falling over 6 ms (L12).
+- **Reported:** Old radio -1.55 LU (from -3.01); the third harmonic 4.4 dB over the second at Saturation 40 and 9.5 at 100; the noise 40.1 dB under a -18 dBFS tone at the defaults, -52.4 dBFS at Follow 0; dropouts about 2.8 a second at full; Stereo 100's sides 3.2 % apart; Hum 100 at -37.5 dBFS; latency 445 frames.
+- **Changed measures:** the pitch rows listen 60 s and the level 9 s (above); a short window can't tell a random wander from a line (two sines read 0.68 over a few seconds, the random path 0.1 to 0.25) and one dropout more or less moves a 1 s level by a dB.
+- **Cost** (the instruction gate's `Lo-fi` case, rustc 1.97.0, a 128-frame block at 44.1 kHz, Amount 100): 117.0k to 222.0k instructions (1.9 times), next to Drive Eco's 202.6k: the saturation at 2x with ADAA is about half of it.
 
 ## The sampler
 

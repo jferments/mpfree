@@ -55,7 +55,7 @@
 169967	Keys Init, 16 voices
 117314	Keys Init, 8 voices
 219542	Keys Reed, 16 voices
-116998	Lo-fi
+221974	Lo-fi
 294259	Looper (60 s), 8 loops of 3 layers playing
 417853	Looper (60 s), 8 loops of 3 layers playing, half edited
 25436	Looper (60 s), overdubbing
