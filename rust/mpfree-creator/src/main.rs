@@ -26,6 +26,16 @@ const MANUAL: &str =
     "https://github.com/jferments/mpfree/blob/main/docs/user/src/getting-started/installing.md";
 
 /// What to do on the MPC with a stick it has not started MPFree from yet.
+/// What the done page says the first start does, from the two boxes.
+fn first_start_text(no_backup: bool, no_akai_kits: bool) -> &'static str {
+    match (no_backup, no_akai_kits) {
+        (false, false) => "MPFree backs up your MPC's internal storage onto the stick, then copies its drum kits and samples into MPFree. It can take 20 to 30 minutes, once. The screen shows how far it is and how long is left. Keep the stick in and the MPC on.",
+        (false, true) => "MPFree backs up your MPC's internal storage onto the stick. It can take 10 to 20 minutes, once. The screen shows how far it is and how long is left. Keep the stick in and the MPC on. Akai's kits and samples can be brought in later, in Prefs > Backup and Akai kits.",
+        (true, false) => "MPFree copies your MPC's drum kits and samples into MPFree, reading them from the MPC without changing it. It takes about 10 minutes, once. The screen shows how far it is and how long is left. Keep the stick in and the MPC on. A backup of your MPC can be made later, in Prefs > Backup and Akai kits.",
+        (true, true) => "MPFree starts about a minute after the MPC restarts. A backup of your MPC and Akai's kits and samples can be brought in later, in Prefs > Backup and Akai kits.",
+    }
+}
+
 const NEW_STICK_STEPS: [&str; 6] = [
     "Eject the stick from this computer.",
     "Turn the MPC on without the stick. Akai's software starts as usual.",
@@ -419,6 +429,15 @@ struct Prefs {
     /// Back the MPC up again at the first start (`--new-backup`), when
     /// updating a stick that keeps its partition 4.
     new_backup: bool,
+    /// A new stick's first start makes no backup (`--no-backup`): its box
+    /// is ticked by default.
+    no_backup: bool,
+    /// A new stick's first start brings in none of Akai's kits and samples
+    /// (`--no-akai-kits`): its box is ticked by default.
+    no_akai_kits: bool,
+    /// An update brings in Akai's kits and samples if they were left out
+    /// (`--akai-kits`).
+    akai_again: bool,
     /// How the MPC's startup hook starts the stick (developer option).
     route: Route,
     /// With the chain: the MPC's running tree (`--live-dtb`).
@@ -699,8 +718,65 @@ impl Creator {
             if self.prefs.new_backup {
                 args.push("--new-backup".into());
             }
+            if self.prefs.akai_again {
+                args.push("--akai-kits".into());
+            }
+        }
+        if self.new_data() {
+            if self.prefs.no_backup {
+                args.push("--no-backup".into());
+            }
+            if self.prefs.no_akai_kits {
+                args.push("--no-akai-kits".into());
+            }
         }
         self.start(JobKind::Make, args);
+    }
+
+    /// Whether the stick gets a new partition 4, so a first start that asks
+    /// what to bring in: a new stick, or one erased and started over.
+    fn new_data(&self) -> bool {
+        self.prefs.fresh_data || !self.chosen_disk().is_some_and(|d| d.mpfree)
+    }
+
+    /// The first start's two boxes, ticked unless the musician leaves one out.
+    fn first_start_boxes(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.label(RichText::new("On the first start").strong());
+        let mut backup = !self.prefs.no_backup;
+        if ui
+            .checkbox(
+                &mut backup,
+                "Back up my MPC (10 to 20 minutes, about 8 GB on the stick)",
+            )
+            .changed()
+        {
+            self.prefs.no_backup = !backup;
+        }
+        ui.indent("backup-box", |ui| {
+            ui.label(RichText::new("A full copy of your MPC as it is now, kept on the stick, so you can always go back. You can make one later in MPFree's Prefs.").color(look::DIM));
+        });
+        let mut akai = !self.prefs.no_akai_kits;
+        if ui
+            .checkbox(
+                &mut akai,
+                "Bring in Akai's drum kits and samples (about 10 minutes)",
+            )
+            .changed()
+        {
+            self.prefs.no_akai_kits = !akai;
+        }
+        ui.indent("akai-box", |ui| {
+            ui.label(RichText::new("The kits and sounds that came with your MPC, ready in MPFree. Leave it off if MPFree's own kits are all you want. You can bring them in later in MPFree's Prefs.").color(look::DIM));
+        });
+        if self.prefs.no_backup && self.prefs.no_akai_kits {
+            ui.label(
+                RichText::new(
+                    "With both off, MPFree is ready to play about a minute after the MPC restarts.",
+                )
+                .color(look::DIM),
+            );
+        }
     }
 
     fn header(&mut self, ui: &mut egui::Ui) {
@@ -940,7 +1016,9 @@ impl Creator {
                     ui.label(RichText::new("The backup of your MPC, your settings, projects and samples, and the Akai kits stay on the stick. The MPC starts straight into MPFree, without the long first start.").color(look::DIM));
                     if !self.prefs.fresh_data {
                         ui.checkbox(&mut self.prefs.new_backup, "Back up my MPC again too");
-                        ui.label(RichText::new("The next start makes a new backup (20 to 30 minutes, about 8 GB on the stick) and keeps the one there. Without it, the MPC says when the backup on the stick was made.").color(look::DIM));
+                        ui.label(RichText::new("The next start makes a new backup (10 to 20 minutes, about 8 GB on the stick) and keeps the one there. Without it, the MPC says when the backup on the stick was made.").color(look::DIM));
+                        ui.checkbox(&mut self.prefs.akai_again, "Bring in Akai's drum kits and samples too");
+                        ui.label(RichText::new("If they were left out of the first start, the next start brings them in (about 10 minutes). If they are on the stick already, nothing changes.").color(look::DIM));
                     }
                 });
                 ui.add_space(4.0);
@@ -950,11 +1028,15 @@ impl Creator {
                     RichText::new("Erase everything and start over").strong(),
                 );
                 ui.indent("fresh", |ui| {
-                    ui.label(RichText::new("Everything on the stick goes, the backup of your MPC too. The first start then backs up your MPC again (20 to 30 minutes).").color(look::DIM));
+                    ui.label(RichText::new("Everything on the stick goes, the backup of your MPC too. The first start then sets it up again, as for a new stick.").color(look::DIM));
                 });
+                if self.prefs.fresh_data {
+                    self.first_start_boxes(ui);
+                }
             } else {
                 step_head(ui, 3, "Make the stick", false);
                 ui.label("Erases the stick and puts MPFree on it. It takes a few minutes, and asks for this computer's administrator password.");
+                self.first_start_boxes(ui);
             }
             if self.prefs.ssh {
                 ui.label(RichText::new("Developer SSH is on (Preferences).").color(look::WARN));
@@ -1042,12 +1124,19 @@ impl Creator {
             ui.add_space(12.0);
             card(ui, |ui| {
                 ui.label(
-                    RichText::new("The first start takes a while")
-                        .size(17.0)
-                        .strong(),
+                    RichText::new(if self.prefs.no_backup && self.prefs.no_akai_kits {
+                        "The first start is quick"
+                    } else {
+                        "The first start takes a while"
+                    })
+                    .size(17.0)
+                    .strong(),
                 );
                 ui.add_space(4.0);
-                ui.label("MPFree backs up your MPC's internal storage onto the stick, then copies its drum kits and samples into MPFree. It can take 20 to 30 minutes, once. The screen shows how far it is and how long is left. Keep the stick in and the MPC on.");
+                ui.label(first_start_text(
+                    self.prefs.no_backup,
+                    self.prefs.no_akai_kits,
+                ));
                 ui.add_space(4.0);
                 ui.label(RichText::new("After that, MPFree starts whenever the stick is in at power-on. Without the stick, Akai's software starts.").color(look::DIM));
             });
@@ -1341,6 +1430,9 @@ impl Creator {
                 ui.label(RichText::new("Kept: the backup of your MPC, your settings and files, and the Akai kits and samples.").color(look::DIM));
                 if self.prefs.new_backup {
                     ui.label(RichText::new("The next start backs up your MPC again.").color(look::DIM));
+                }
+                if self.prefs.akai_again {
+                    ui.label(RichText::new("The next start brings in Akai's kits and samples, if they were left out.").color(look::DIM));
                 }
             } else if has_mpfree {
                 ui.label("Everything on it is erased and replaced by MPFree, including the backup of your MPC and your MPFree settings and files.");

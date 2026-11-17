@@ -410,11 +410,20 @@ jobs:
           # The pad player (test boot only): the one program it starts is a
           # read-only `journalctl -f` for its Console page; it never names a
           # block device, systemctl or the network, and it only reads the
-          # framebuffer it captures as a backdrop.
+          # framebuffer it captures as a backdrop. The one exception is the
+          # eMMC's content partition, for Akai's kits without a backup (setup.rs,
+          # the owner's pick of 17 Nov 2026): named once, as a constant, and
+          # opened only with File::open (read-only), while the stick's root
+          # service holds the disk read-only (setup-backup.sh, step 3c).
           app_code = ""
           for f in sorted(Path("rust/mpfree-app/src").glob("*.rs")):
               app_code += "\n".join(x for x in f.read_text().splitlines()
                   if not x.lstrip().startswith("//")) + "\n"
+          content_device = 'pub const CONTENT_DEVICE: &str = "/dev/mmcblk0p7";'
+          assert app_code.count(content_device) == 1, content_device
+          assert app_code.count('File::open(&paths.content_device)') == 1
+          assert not any('content_device' in x and 'OpenOptions' in x for x in app_code.splitlines())
+          app_code = app_code.replace(content_device, "")
           assert app_code.count('Command::new(') == 1 and 'Command::new("journalctl")' in app_code
           assert flat('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])') in flat(app_code)
           for needle in ('/dev/mmc', '/dev/sd', 'systemctl', 'std::net', 'fw_setenv', 'kexec'):

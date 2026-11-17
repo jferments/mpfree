@@ -1,5 +1,5 @@
 [Unit]
-Description=MPFree first-start setup: back up the MPC's eMMC to the stick, read-only
+Description=MPFree first-start setup: back up the MPC's eMMC to the stick, or open it for reading Akai's content; read-only
 DefaultDependencies=no
 After=mpfree-test-internal-off.service mpfree-test-storage.service
 Requires=mpfree-test-internal-off.service
