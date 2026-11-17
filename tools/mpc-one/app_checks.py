@@ -607,7 +607,8 @@ CHECKS = (
     Check(
         "mpc-plugin-install", "Install a plugin from the stick and over Ethernet, and see its own screen",
         "#398: BROWSE's Plugins place (zips on the stick, the Open MPC catalog over HTTPS through the system's "
-        "libcurl) and MPC plugin skins on the Synth tab", "hands",
+        "libcurl, by the mpfree-fetch helper beside the static pad player) and MPC plugin skins on the Synth tab",
+        "hands",
         ["1. Press BROWSE. Hold SHIFT and turn the wheel to Plugins (it sits after Recordings).",
          "2. Tap On the stick, pick Tidal-Verb-1.6.0-mpc-armv7.zip, then tap Install from zip.",
          "3. Tap Catalog, then Instruments. Pick Modal Voice and tap Install: the bar shows the download.",
@@ -616,7 +617,7 @@ CHECKS = (
          "   could not run. The plugin's own screen fills the page under the top bar. Play a few pads."],
         [("the Plugins place says what is there and whether downloads can work",
           seen(r"^plugins: \d+ installed, [1-9]\d* zip\(s\) on the stick, .*, "
-               r"downloads (possible \(libcurl found\)|off \(no libcurl\))")),
+               r"downloads (possible \((libcurl|mpfree-fetch) found\)|off \(no (libcurl|mpfree-fetch)\))")),
          ("the catalog came over the network, or the line says why not",
           seen(r"^plugins: (The catalog lists \d+ plugins; \d+ run on this MPC|not done \(catalog\): )")),
          ("the zip on the stick installed", seen(r"^plugins: (Installed|Updated) .*Tidal")),

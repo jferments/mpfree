@@ -53,6 +53,11 @@ pub const MARK: &str = "MPFREE-FORMAT-ME ";
 pub const BOARD_DTB: &str = "/boot/rk3288-az01-acva.dtb";
 pub const TOKEN_FILE: &str = "/etc/mpfree-test/format-token";
 pub const ABOUT_FILE: &str = "/etc/mpfree-test/made-by.txt";
+/// `--new-backup`: asks the stick's first start to back the MPC up again
+/// even when partition 4 has a backup. A random token in hex, which the pad
+/// player's setup honours once (mpfree-app's `setup::NEW_BACKUP`, the same
+/// path); readable by the pad player.
+pub const NEW_BACKUP_FILE: &str = "/etc/mpfree-test/new-backup";
 /// What a write says when the stick's partition 4 (its backups, settings and
 /// files) is kept; the window reads it back to tell an update from a new stick.
 pub const KEPT_NOTE: &str = "partition 4: this stick's saved settings, files and backups are kept";
@@ -64,11 +69,72 @@ pub struct Programs {
     /// The startup screen, `mpfree-startup`: it plays once per power-on,
     /// and the pad player keeps its last frame until it draws.
     pub startup: Vec<u8>,
+    /// The Plugins place's download helper, [`FETCH_FILE`], if the folder
+    /// has it: linked dynamically, since the static pad player can't open
+    /// libcurl itself (`mpfree_mpcstore::fetch`). Without it the stick
+    /// installs plugins from zips only.
+    pub fetch: Option<Vec<u8>>,
 }
 
 /// The programs' file names in a programs folder: the pad player, the log
 /// display and the startup screen.
 pub const PROGRAM_FILES: [&str; 3] = ["mpfree", "mpfree-screen-log", "mpfree-startup"];
+/// The download helper's file name in a programs folder (optional).
+pub const FETCH_FILE: &str = "mpfree-fetch";
+/// The newest glibc the MPC One has (3.10.1 reports 2.39).
+pub const MPC_GLIBC: (u32, u32) = (2, 39);
+
+/// Why `b` can't be the download helper: it must be an ARM program linked
+/// dynamically for the MPC's loader, asking for no glibc newer than
+/// [`MPC_GLIBC`] (cargo zigbuild for glibc 2.34 makes one).
+pub fn fetch_problem(b: &[u8]) -> Option<String> {
+    if !arm_elf(b) {
+        return Some("not a program for the MPC (32-bit ARM)".into());
+    }
+    let u32_at = |at: usize| {
+        b.get(at..at + 4)
+            .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize)
+    };
+    let u16_at = |at: usize| {
+        b.get(at..at + 2)
+            .map(|s| u16::from_le_bytes([s[0], s[1]]) as usize)
+    };
+    let (Some(phoff), Some(size), Some(n)) = (u32_at(28), u16_at(42), u16_at(44)) else {
+        return Some("cut short".into());
+    };
+    let interp = (0..n).find_map(|i| {
+        let h = phoff + i * size;
+        (u32_at(h)? == 3).then_some(())?;
+        let (off, len) = (u32_at(h + 4)?, u32_at(h + 16)?);
+        b.get(off..off + len)
+    });
+    if interp.map(|i| i.strip_suffix(b"\0").unwrap_or(i)) != Some(b"/lib/ld-linux-armhf.so.3") {
+        return Some(
+            "not linked dynamically for the MPC's loader (it opens libcurl, so it must not be static)"
+                .into(),
+        );
+    }
+    let mut newest = (0, 0);
+    for (i, w) in b.windows(8).enumerate() {
+        if w != b"GLIBC_2." {
+            continue;
+        }
+        let digits: String = b[i + 8..]
+            .iter()
+            .take_while(|c| c.is_ascii_digit())
+            .map(|&c| c as char)
+            .collect();
+        if let Ok(minor) = digits.parse::<u32>() {
+            newest = newest.max((2, minor));
+        }
+    }
+    (newest > MPC_GLIBC).then(|| {
+        format!(
+            "built against glibc {}.{}, newer than the MPC's {}.{}",
+            newest.0, newest.1, MPC_GLIBC.0, MPC_GLIBC.1
+        )
+    })
+}
 
 /// Is this a 32-bit little-endian ARM ELF executable?
 pub fn arm_elf(b: &[u8]) -> bool {
@@ -95,10 +161,29 @@ impl Programs {
             Ok(b)
         };
         let [pad_player, screen_log, startup] = PROGRAM_FILES;
+        let fetch = match std::fs::read(dir.join(FETCH_FILE)) {
+            Ok(b) => match fetch_problem(&b) {
+                None => Some(b),
+                Some(why) => {
+                    return Err(bad(format!(
+                        "{} is {why}; build it with cargo zigbuild for armv7-unknown-linux-gnueabihf.2.34",
+                        dir.join(FETCH_FILE).display()
+                    )))
+                }
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("{}: {e}", dir.join(FETCH_FILE).display()),
+                ))
+            }
+        };
         Ok(Programs {
             pad_player: read(pad_player)?,
             screen_log: read(screen_log)?,
             startup: read(startup)?,
+            fetch,
         })
     }
 }
@@ -366,6 +451,8 @@ fn copy_dir<'a, R: ReadAt>(
 
 /// What differs from stick to stick.
 pub struct Values {
+    /// Partition 1's: a developer route's command line names it.
+    pub root_uuid: String,
     pub log_uuid: String,
     pub kits_uuid: String,
     pub data_uuid: String,
@@ -379,6 +466,7 @@ impl Values {
     pub fn new(release: &str, rotation: u32) -> Values {
         let uuid = || uuid_text(&gpt::random_guid());
         Values {
+            root_uuid: uuid(),
             log_uuid: uuid(),
             kits_uuid: uuid(),
             data_uuid: uuid(),
@@ -508,9 +596,11 @@ pub fn shadow_edit(shadow: &str) -> io::Result<Option<String>> {
     Ok(Some(lines.join("\n")))
 }
 
-fn fill(text: &str, r: &Recipe, v: &Values, ssh: Option<&Ssh>) -> String {
+fn fill(text: &str, r: &Recipe, v: &Values, ssh: Option<&Ssh>, kernel_sha256: &str) -> String {
     let p = |k: &str| r.placeholders.get(k).cloned().unwrap_or_default();
     let mut t = text
+        .replace(&p("root_uuid"), &v.root_uuid)
+        .replace(&p("kernel_sha256"), kernel_sha256)
         .replace(&p("log_uuid"), &v.log_uuid)
         .replace(&p("kits_uuid"), &v.kits_uuid)
         .replace(&p("data_uuid"), &v.data_uuid)
@@ -531,8 +621,17 @@ pub fn apply<'a>(
     programs: &'a Programs,
     ssh: Option<&'a Ssh>,
     about: &str,
+    choices: &Choices,
 ) -> io::Result<Vec<String>> {
-    let r = Recipe::load();
+    let (r, route) = match choices.route.recipe_name() {
+        None => (Recipe::load(), None),
+        Some(name) => {
+            let (r, route) = Recipe::load()
+                .with_route(name)
+                .ok_or_else(|| bad(format!("the recipe has no route {name}")))?;
+            (r, Some(route))
+        }
+    };
     let mut notes = Vec::new();
     for top in ["/bin", "/sbin", "/lib"] {
         let ok = match tree.lookup(top).map(|id| &tree.node(id).body) {
@@ -594,6 +693,30 @@ pub fn apply<'a>(
             missing.join(", ")
         )));
     }
+    if let Some(c) = route.as_ref().and_then(|x| x.chain_check.as_ref()) {
+        notes.push(chain_check(tree, read, c)?);
+    }
+    // A developer route's hook files name Akai's kernel by its hash, and the
+    // chain's kexec.dtb is built for this MPC.
+    let kernel_sha256 = match &route {
+        Some(_) => update::hex(&Sha256::digest(read(&format!(
+            "/boot/zImage-{}",
+            v.release
+        ))?)),
+        None => String::new(),
+    };
+    let kexec_dtb = match &choices.route {
+        Route::Chain { live_dtb } => {
+            let made = crate::dtb::kexec_tree(&read(BOARD_DTB)?, live_dtb, &r.kexec_dtb)?;
+            notes.push(format!(
+                "chain: kexec.dtb from the update's board file ({BOARD_DTB}) and this MPC's running tree, {} bytes; what changed, by name:",
+                made.blob.len()
+            ));
+            notes.extend(made.notes.iter().map(|n| format!("  {n}")));
+            Some(made.blob)
+        }
+        _ => None,
+    };
     let skip = |p: &str| ssh.is_none() && r.only_with_ssh.iter().any(|s| s == p);
     let mut new_paths: Vec<&str> = r
         .files
@@ -604,6 +727,13 @@ pub fn apply<'a>(
     new_paths.extend(recipe::SETUP_FILES.iter().map(|f| f.0));
     new_paths.extend(recipe::SETUP_LINKS.iter().map(|l| l.0));
     new_paths.extend([TOKEN_FILE, ABOUT_FILE]);
+    if choices.new_backup {
+        new_paths.push(NEW_BACKUP_FILE);
+    }
+    if let Some(x) = &route {
+        new_paths.extend(x.mkdirs.iter().map(String::as_str));
+        new_paths.extend(x.kexec_sums.iter().map(|k| k.path.as_str()));
+    }
     for p in &new_paths {
         if kind_of(tree, p).is_some() {
             return Err(bad(format!(
@@ -630,7 +760,7 @@ pub fn apply<'a>(
             continue;
         }
         let bytes = match &f.content {
-            Content::Text(t) => fill(t, &r, v, ssh).into_bytes(),
+            Content::Text(t) => fill(t, &r, v, ssh, &kernel_sha256).into_bytes(),
             Content::Placeholder(p) if *p == r.placeholders["pad_player"] => {
                 programs.pad_player.clone()
             }
@@ -638,6 +768,14 @@ pub fn apply<'a>(
                 programs.screen_log.clone()
             }
             Content::Placeholder(p) if *p == r.placeholders["startup"] => programs.startup.clone(),
+            // Only when the programs folder has the helper.
+            Content::Placeholder(p) if *p == r.placeholders["fetch"] => match &programs.fetch {
+                Some(b) => b.clone(),
+                None => continue,
+            },
+            Content::Placeholder(p) if *p == r.placeholders["kexec_dtb"] => kexec_dtb
+                .clone()
+                .ok_or_else(|| bad("kexec.dtb is only for the chain"))?,
             Content::Placeholder(p) if *p == r.placeholders["host_key"] => ssh
                 .ok_or_else(|| bad("the host key is only for developer SSH"))?
                 .host_private
@@ -646,6 +784,26 @@ pub fn apply<'a>(
             Content::Placeholder(p) => return Err(bad(format!("unknown placeholder {p}"))),
         };
         written.insert(path.clone(), bytes);
+    }
+    // The chain's own list, which the hook's list hashes in turn.
+    let kexec_sums = route.as_ref().and_then(|x| x.kexec_sums.as_ref());
+    if let Some(k) = kexec_sums {
+        let mut text = String::new();
+        for name in &k.names {
+            let path = format!("{}/{name}", k.dir);
+            let b = match (written.get(&path), r.links.get(&path)) {
+                (Some(b), _) => b.clone(),
+                (None, Some(target)) => read(&link_path(
+                    &k.dir,
+                    &fill(target, &r, v, ssh, &kernel_sha256),
+                ))?,
+                (None, None) => {
+                    return Err(bad(format!("{path} is listed in {} but not made", k.path)))
+                }
+            };
+            text.push_str(&format!("{}  {name}\n", update::hex(&Sha256::digest(&b))));
+        }
+        written.insert(k.path.clone(), text.into_bytes());
     }
     let sums: String = r
         .softreboot_listed
@@ -663,6 +821,33 @@ pub fn apply<'a>(
             tree.put(path, Body::File(Data::Bytes(b)), root_meta(f.mode))?;
         }
     }
+    if let Some(b) = kexec_sums.and_then(|k| written.remove(&k.path)) {
+        let path = &kexec_sums.expect("taken from it").path;
+        tree.put(path, Body::File(Data::Bytes(b)), root_meta(0o644))?;
+    }
+    notes.push(match &choices.route {
+        Route::SoftReboot => "route: soft-reboot (the hook restarts the MPC into this stick's system)".into(),
+        other => {
+            let cmdline = r
+                .files
+                .get(&format!("{}/cmdline", parent_dir(&r.softreboot_sums)))
+                .and_then(|f| match &f.content {
+                    Content::Text(t) => Some(fill(t, &r, v, ssh, &kernel_sha256)),
+                    Content::Placeholder(_) => None,
+                })
+                .unwrap_or_default();
+            format!(
+                "route: {} (developer option): the hook restarts into Akai's own kernel from the MPC (file-based kexec) with this stick as its root, and soft-reboots if that is refused; its command line: {}{}",
+                other.flags(),
+                cmdline.trim_end(),
+                if matches!(other, Route::Chain { .. }) {
+                    "; on that kernel the stick's system restarts once more, into its own kernel and kexec.dtb (once per power-on: a failed try starts MPFree on the first kernel)"
+                } else {
+                    ""
+                }
+            )
+        }
+    });
     let mut stubbed = Vec::new();
     for prog in &r.stub_programs {
         match kind_of(tree, prog) {
@@ -679,6 +864,16 @@ pub fn apply<'a>(
         }
     }
     notes.push(format!("stubbed: {}", stubbed.join(" ")));
+    notes.push(match &programs.fetch {
+        Some(b) => format!(
+            "download helper: {FETCH_FILE} ({} bytes, sha256 {}): the Plugins place downloads through it",
+            b.len(),
+            update::hex(&Sha256::digest(b))
+        ),
+        None => format!(
+            "download helper: none (no {FETCH_FILE} in the programs folder): the Plugins place installs from zips on the stick only"
+        ),
+    });
     if ssh.is_some() {
         let (shadow, perm) = file_text(tree, "/etc/shadow", read)?;
         if let Some(edited) = shadow_edit(&shadow)? {
@@ -724,6 +919,19 @@ pub fn apply<'a>(
         Body::File(Data::Bytes(about.as_bytes().to_vec())),
         root_meta(0o644),
     )?;
+    if choices.new_backup {
+        tree.put(
+            NEW_BACKUP_FILE,
+            Body::File(Data::Bytes(
+                format!("{}\n", update::hex(&gpt::random16())).into_bytes(),
+            )),
+            root_meta(0o644),
+        )?;
+        notes.push(
+            "first start: backs the MPC up again, keeping the backups partition 4 has (--new-backup)"
+                .into(),
+        );
+    }
     let mut links: Vec<(&str, &str)> = r
         .links
         .iter()
@@ -734,11 +942,110 @@ pub fn apply<'a>(
     for (path, target) in links {
         tree.put(
             path,
-            Body::Symlink(target.as_bytes().to_vec()),
+            Body::Symlink(fill(target, &r, v, ssh, &kernel_sha256).into_bytes()),
             root_meta(0o777),
         )?;
     }
     Ok(notes)
+}
+
+fn parent_dir(path: &str) -> &str {
+    path.rsplit_once('/').map_or("/", |(d, _)| d)
+}
+
+/// A link's target as a path from the root: `target` relative to `dir`.
+fn link_path(dir: &str, target: &str) -> String {
+    let mut parts: Vec<&str> = if target.starts_with('/') {
+        Vec::new()
+    } else {
+        dir.split('/').filter(|p| !p.is_empty()).collect()
+    };
+    for part in target.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
+/// The chain loads with Akai's own kexec: it must be there, and be the one
+/// systemd-shutdown runs for kexec.target (the builder's chain_kexec_check).
+fn chain_check(
+    tree: &Tree,
+    read: &dyn Fn(&str) -> io::Result<Vec<u8>>,
+    c: &recipe::ChainCheck,
+) -> io::Result<String> {
+    if kind_of(tree, &c.kexec_program) != Some("regular") {
+        return Err(bad(format!(
+            "--chain: Akai's system has no regular {} (Akai's kexec, which the chain loads with)",
+            c.kexec_program
+        )));
+    }
+    if kind_of(tree, &c.shutdown_program) != Some("regular") {
+        return Err(bad(format!(
+            "--chain: Akai's system has no {}, so it is unknown how systemd starts a loaded kernel",
+            c.shutdown_program
+        )));
+    }
+    let named = kexec_names(&read(&c.shutdown_program)?);
+    let other: Vec<&String> = named
+        .iter()
+        .filter(|p| !c.kexec_paths.contains(p))
+        .collect();
+    if !other.is_empty() {
+        return Err(bad(format!(
+            "--chain: {} names {} for kexec, which the creator does not keep; systemd would not start the loaded kernel",
+            c.shutdown_program,
+            other.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        )));
+    }
+    Ok(format!(
+        "--chain: {} runs {} for kexec.target; {} stays Akai's",
+        c.shutdown_program,
+        if named.is_empty() {
+            "no kexec program (it starts the loaded kernel itself)".to_string()
+        } else {
+            named.join(" or ")
+        },
+        c.kexec_program
+    ))
+}
+
+/// Every path to a program named kexec in `b`, sorted, once each: what the
+/// builder's `/[A-Za-z0-9_./-]*/kexec(?![A-Za-z0-9_.-])` finds.
+pub fn kexec_names(b: &[u8]) -> Vec<String> {
+    let path_char = |c: u8| c.is_ascii_alphanumeric() || b"_./-".contains(&c);
+    let name_char = |c: u8| c.is_ascii_alphanumeric() || b"_.-".contains(&c);
+    let mut found = std::collections::BTreeSet::new();
+    let mut i = 0;
+    while i < b.len() {
+        if !path_char(b[i]) {
+            i += 1;
+            continue;
+        }
+        let end = (i..b.len()).find(|&j| !path_char(b[j])).unwrap_or(b.len());
+        // Within this run of path characters, matches go left to right: each
+        // from a '/', to the last "/kexec" after it that no name character follows.
+        let mut at = i;
+        while let Some(start) = (at..end).find(|&j| b[j] == b'/') {
+            let last = (start + 1..end.saturating_sub(5))
+                .rev()
+                .find(|&j| &b[j..j + 6] == b"/kexec" && (j + 6 == end || !name_char(b[j + 6])));
+            match last {
+                Some(j) => {
+                    found.insert(String::from_utf8_lossy(&b[start..j + 6]).into_owned());
+                    at = j + 6;
+                }
+                None => break,
+            }
+        }
+        i = end;
+    }
+    found.into_iter().collect()
 }
 
 /// The kits partition's tree: `kits.bin`, read-only for everyone.
@@ -882,7 +1189,7 @@ pub fn layout(
         parts: vec![
             Some(part(
                 linux,
-                gpt::random_guid(),
+                guid(&v.root_uuid)?,
                 root_start,
                 root_end,
                 ROOT_NAME,
@@ -927,6 +1234,60 @@ pub struct Build<'a> {
     pub dev: Option<&'a DevTools>,
     /// A line for made-by.txt and the report: the creator's version.
     pub creator: &'a str,
+    pub choices: Choices,
+}
+
+/// What the person making the stick chose beyond the defaults.
+#[derive(Clone, Debug, Default)]
+pub struct Choices {
+    /// `--new-backup`: the first start backs the MPC up again even when
+    /// partition 4 has a backup ([`NEW_BACKUP_FILE`]).
+    pub new_backup: bool,
+    /// How the MPC's hook starts the stick (developer options).
+    pub route: Route,
+}
+
+/// How the MPC's startup hook starts the stick's system. The soft-reboot is
+/// what MPFree supports; the others are developer options, the same routes
+/// as `offline-kexec-stick.py --kexec-file [--loadpin-off [--chain]]`
+/// (docs/dev/design/soft-reboot-boot.md).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Route {
+    /// The hook soft-reboots the MPC into the stick's system.
+    #[default]
+    SoftReboot,
+    /// `--kexec-file`: the hook restarts into Akai's own kernel from the
+    /// MPC (file-based kexec) with the stick as its root, and soft-reboots
+    /// if that is refused. With `--loadpin-off`, that kernel's command line
+    /// also has loadpin.enforce=0.
+    KexecFile { loadpin_off: bool },
+    /// `--chain` (with both): on that kernel the stick's system restarts
+    /// once more, into its own kernel and a device tree built from the
+    /// update's board file and `live_dtb`, the MPC's running tree
+    /// (collect-over-ssh.sh --kexec-preflight's live.dtb).
+    Chain { live_dtb: Vec<u8> },
+}
+
+impl Route {
+    /// Its name in the recipe's routes (None: the soft-reboot recipe itself).
+    pub fn recipe_name(&self) -> Option<&'static str> {
+        match self {
+            Route::SoftReboot => None,
+            Route::KexecFile { loadpin_off: false } => Some("kexec-file"),
+            Route::KexecFile { loadpin_off: true } => Some("kexec-file-loadpin-off"),
+            Route::Chain { .. } => Some("chain"),
+        }
+    }
+
+    /// The command-line flags that ask for it.
+    pub fn flags(&self) -> &'static str {
+        match self {
+            Route::SoftReboot => "",
+            Route::KexecFile { loadpin_off: false } => "--kexec-file",
+            Route::KexecFile { loadpin_off: true } => "--kexec-file --loadpin-off",
+            Route::Chain { .. } => "--kexec-file --loadpin-off --chain",
+        }
+    }
 }
 
 /// What was made.
@@ -960,7 +1321,7 @@ pub fn write_head<W: WriteAt + ReadAt>(
             .ok_or_else(|| bad(format!("Akai's root filesystem has no {p}")))?;
         fs.read_file(&i)
     };
-    let about = format!(
+    let mut about = format!(
         "MPFree stick, made by {}\nfrom Akai build {} (kernel {})\nmade: {} (seconds since 1970)\ndeveloper SSH: {}\n",
         b.creator,
         src.update.build,
@@ -968,7 +1329,16 @@ pub fn write_head<W: WriteAt + ReadAt>(
         v.time,
         if b.ssh.is_some() { "on (port 2222, key only)" } else { "off" }
     );
-    let mut notes = apply(&mut tree, &read, &v, b.programs, b.ssh, &about)?;
+    if b.choices.new_backup {
+        about.push_str("new backup at the first start: asked\n");
+    }
+    if b.choices.route != Route::SoftReboot {
+        about.push_str(&format!(
+            "route: {} (developer option)\n",
+            b.choices.route.flags()
+        ));
+    }
+    let mut notes = apply(&mut tree, &read, &v, b.programs, b.ssh, &about, &b.choices)?;
     let root_opts = Options {
         label: fs.label.clone(),
         uuid: gpt::random16(),
@@ -1424,6 +1794,36 @@ pub fn open_file_disk(path: &Path) -> io::Result<(File, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kexec_paths_are_found_as_the_builder_finds_them() {
+        // The answers of the builder's regular expression for the same bytes.
+        for (b, want) in [
+            (&b"\0/usr/sbin/kexec\0"[..], &["/usr/sbin/kexec"][..]),
+            (
+                b"/sbin/kexec /usr/sbin/kexec",
+                &["/sbin/kexec", "/usr/sbin/kexec"],
+            ),
+            (b"/kexec", &[]),
+            (b"//kexec", &["//kexec"]),
+            (b"/usr/sbin/kexec-tools", &[]),
+            (b"/usr/sbin/kexec/x", &["/usr/sbin/kexec"]),
+            (b"a/b/kexec.x", &[]),
+            (b"/a/kexec/b/kexec", &["/a/kexec/b/kexec"]),
+            (b"no path here", &[]),
+            (
+                b"/usr/local/sbin/kexec;/bin/kexec",
+                &["/bin/kexec", "/usr/local/sbin/kexec"],
+            ),
+        ] {
+            assert_eq!(
+                super::kexec_names(b),
+                want,
+                "{}",
+                String::from_utf8_lossy(b)
+            );
+        }
+    }
 
     #[test]
     fn app_user_lines_as_the_builder_makes_them() {
