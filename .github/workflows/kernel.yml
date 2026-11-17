@@ -37,6 +37,7 @@ jobs:
       - name: Tests for the build script
         run: |
           python3 tools/kernel/tests/test_check_config.py
+          python3 tools/kernel/tests/test_config_digest.py
           python3 tools/kernel/tests/test_build_sources.py
           python3 tools/ci/test_store.py
       # The runners' home is read-only to jobs; the tool cache keeps the downloads between runs.
@@ -48,10 +49,12 @@ jobs:
         run: |
           { echo '### MPFree kernel'; echo '```'; cat "$RUNNER_TEMP/mpfree-kernel/build-info.txt"
             echo; cat "$RUNNER_TEMP/mpfree-kernel/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      # The whole config, in the log: agents compare it with Akai's (own-kernel.md, step 1's
-      # survey) and can't reach the CI VM's store. A job log is not artifact storage.
-      - name: The kernel's settings, in full
-        run: cat "$RUNNER_TEMP/mpfree-kernel/config"
+      # Every setting of the built config, in the log: agents compare it with Akai's
+      # (own-kernel.md, step 1's survey) and can't reach the CI VM's store. Compact, with a hash
+      # on every line, so a copy taken from the log can be checked (config-digest.py read).
+      # A job log is not artifact storage.
+      - name: The kernel's settings
+        run: python3 tools/kernel/config-digest.py print "$RUNNER_TEMP/mpfree-kernel/config"
       # Nothing goes to GitHub's artifact storage (one allowance for the whole account, billed by
       # the hour, and full since 2026-11-11). The kernel is kept on the CI VM, in the folder the
       # mpfree runners share (tools/ci/store.py: /srv/mpfree-store/kernel, for 14 days, the newest
