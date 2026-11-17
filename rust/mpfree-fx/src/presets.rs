@@ -1,15 +1,23 @@
 //! Factory presets for every effect that has a sound to pick, in one place:
 //! [`presets`] by node id. A preset holds the values that differ from the
-//! node's defaults; the effect page keeps the Mix and Quality the effect
-//! has (a preset sets the sound, not how much of it is heard or what it
-//! costs). The DJ filter (one knob), Master safety (a safety stage),
-//! Perform FX (its own pad banks) and the Tuner (a meter) have none.
+//! node's defaults; the effect page keeps the Mix, Mix curve and Quality
+//! the effect has ([`page_keeps`]: a preset sets the sound, not how much of
+//! it is heard, how it is blended or what it costs). The DJ filter (one
+//! knob), Master safety (a safety stage), Perform FX (its own pad banks)
+//! and the Tuner (a meter) have none.
 
 use crate::ids::{
     character, chorus, comb, compressor as comp, crush, delay, drive, ducker, eq, filter, flanger,
     harmonizer as harm, phaser, pitch, pitch_correct as tune, transient,
 };
 use crate::Preset;
+
+/// Whether loading a preset leaves control `name` as the effect has it:
+/// Mix and Mix curve (how much of the sound is heard, and how it is
+/// blended) and Quality (what it costs). A preset sets the sound.
+pub fn page_keeps(name: &str) -> bool {
+    matches!(name, "Mix" | "Mix curve" | "Quality")
+}
 
 /// An effect's factory presets by its node id (empty for one without), as
 /// the [registry](crate::registry) lists them.

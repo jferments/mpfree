@@ -2,7 +2,7 @@
 
 **Status:** roadmap step T7, the model only, 2026-11-11. The code is [`rust/mpfree-seq/src/steps.rs`](../../../rust/mpfree-seq/src/steps.rs) (the grid), chance in [`rust/mpfree-play`](../../../rust/mpfree-play)'s player, and step edits as takes in `Takes::edit`. It is tested on the host. Its screens are the Play page's step grid (the app thread's, in `rust/mpfree-app/src/play_page.rs`) and the note editor's tracker lens and Euclidean fill ([note-editor.md](note-editor.md)). Nothing here has run on the MPC yet.
 
-This builds on [playback](playback.md): clips, the player and take undo.
+This builds on [playback](playback.md): clips, the player and take undo. STEP SEQ puts one sound's steps on the pads: [STEP SEQ: the pads as steps](step-pads.md).
 
 ## Steps are a view of a clip
 
@@ -25,6 +25,7 @@ There is no fixed number of steps. A clip has as many steps as its length holds,
 - **`remove_page(clip)`** takes the last 16 steps off, with their notes. A clip keeps at least one page.
 - **`resize(clip, steps, copy)`** sets any number of steps, such as 13 against a 16-step track for polymeter.
 - **`copy_page(clip, from, to)`** copies one page over another, step for step.
+- **`copy_steps(clip, sound, from, to, count)`** copies one sound's steps over others (COPY with STEP SEQ on: a step, or a page of 16), each keeping its nudge and its row's locks; an empty step copied clears its target.
 - **On the Play page's pattern** (`mpfree-app`, `play_widgets::StepGrid`), the head's ‹ and › turn the pages shown, and its + and – send `StepAction::Length { steps, copy }`: + doubles the steps up to 128 (`MAX_STEPS`) with `copy`, – halves them down to 16 (`MIN_STEPS`) without. `TimeControl` makes it `resize`, one take, so UNDO brings back the steps and notes – took off.
 
 A note that plays early on step 0 (just before the clip comes round) stays just before the end when the clip grows or shrinks.
@@ -51,7 +52,7 @@ Edits never change the clip themselves. They look at the clip and return an `Edi
   - `Cond`, a trig condition (see below). One out of range leaves the step as it is.
   - `Ratchet`, 1 to 8 hits.
 
-  Values out of range are clamped. An empty step, or one already set, gives an empty edit. `change_all(clip, i, Change)` does the same for every sound in the step, so a chord's velocity or nudge changes in one go.
+  Values out of range are clamped. An empty step, or one already set, gives an empty edit. `change_all(clip, i, Change)` does the same for every sound in the step, so a chord's velocity or nudge changes in one go, and `change_steps(clip, sound, steps, Change)` for several steps of one sound (step pads held together), joining one undo for a whole turn under `Change::key_steps`.
 - **`Clip::apply(&Edit)`** applies an edit all or nothing: if a note to take out is not there (`MissingNote`), the clip is not the length the edit expects or a note would be past its new end (`ClipLength`), or a new note does not fit, the clip stays as it was. An edit that changes pages carries the length from and to.
 
 ## Chords (polyphony)

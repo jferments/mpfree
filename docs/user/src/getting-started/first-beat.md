@@ -40,8 +40,33 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 **Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.
 
+## Program a pattern on the pads
+
+You can also build the pattern without touching the screen, with the pads as steps.
+
+1. Hit the pad whose steps you want, the kick say, then press **STEP SEQ**. It lights, the Beats view opens, and the 16 pads are now the kick's 16 steps: pad 1 (bottom left) is step 1, pad 16 is step 16. Pads 1, 5, 9 and 13 glow faintly to mark the beats.
+2. Hit pads to put notes on those steps. A step lights in the kick's colour, brighter the harder you hit (with **FULL LEVEL** on, every step is full). While the transport is stopped you hear each one as you add it.
+3. Hit a lit step and let go to take it off.
+4. Press **PLAY**: a white light walks across the pads as the pattern plays, and you can keep adding and taking off steps.
+5. To program another sound, hold **STEP SEQ**, hit that sound's pad (you hear it), and let go: the pads are its steps now.
+6. Press **STEP SEQ** again and the pads play sounds as usual.
+
+The chip at the top of the screen says what the pads are ("Pads: steps · Kick"); tap it to give the pads back. On the Beats view, the sound on the pads is the first row, outlined and marked "On the pads". The pads stay steps on every page until you press **STEP SEQ** again, so you can keep programming while you look at the mixer or the Synth tab.
+
+**Longer patterns.** **PAD BANK A** to **D** show steps 1–16, 17–32, 33–48 and 49–64 on the pads, and **SHIFT** (or a second press) the four after. The lit **PAD BANK** button is the page on the pads, and the page playing blinks. **SHIFT + STEP SEQ** turns on Follow: the pads turn the page as the pattern plays. **‹** and **›** on the screen turn the pads' page too.
+
+**Changing a step.** Hold a step pad and turn the Q-Links: the cards say "Step 5" and turn its velocity, length, nudge (how early or late it plays) and chance. Press **Q-LINK** while you still hold it for its condition (play only on some passes, or only with FILL), its ratchet (repeats within the step) and a finer nudge. Hold several step pads to change them all at once. A step you turned stays when you let go of it. Touch a Q-Link without turning it to read the step's value.
+
+**Longer notes.** Hold a step and hit a later one: the note lasts to the end of that step, and the steps in between glow dim. Hit a step inside a long note to shorten it to there.
+
+**Copying.** Hold **COPY**, hit a step, then hit each step it should go to. To copy a whole page, hold **COPY**, press its **PAD BANK** button, then the **PAD BANK** button of the page it should go to.
+
+**Clearing.** Hold **ERASE** and hit a step to clear it, or press a **PAD BANK** button to clear that whole page of the sound's steps. **UNDO** brings them back.
+
+**TRACK MUTE** and **16 LEVEL** take the pads over too: only one of the three has them at a time, and the lit button tells you which.
+
 > [!MPC]
-> On the MPC, step sequencing has its own mode (**STEP SEQ**) where the pads become step buttons. In MPFree the pattern is on the screen, and **STEP SEQ** takes you to this Beats view. Velocity, length, nudge and chance live on the Q-Links for the picked step, rather than in an event list.
+> As on the MPC, **STEP SEQ** turns the pads into step buttons lit by velocity, and the Beats view shows the whole pattern on the screen. The differences: the pads stay steps on every page until you press **STEP SEQ** again, you pick the sound by holding **STEP SEQ** and hitting its pad, and **PAD BANK** turns the pages. Velocity, length, nudge and chance live on the Q-Links for the step you hold (or pick on the screen), rather than in an event list, and holding a step then hitting a later one sets the note's length, as on the MPC Live III and XL's step buttons.
 
 ## Record a pattern live
 
