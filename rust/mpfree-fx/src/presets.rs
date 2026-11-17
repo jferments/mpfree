@@ -561,6 +561,19 @@ pub static FLANGER: &[Preset] = &[
             (flanger::FEEDBACK, 60.0),
         ],
     },
+    // Two tape machines, one slowed by a thumb on its reel: the copy
+    // passes the dry and the sound cancels there. No Feedback, so the
+    // crossing is silent at Mix 50.
+    Preset {
+        name: "Tape flange",
+        values: &[
+            (flanger::RATE, 0.12),
+            (flanger::DEPTH, 80.0),
+            (flanger::DELAY, 3.0),
+            (flanger::FEEDBACK, 0.0),
+            (flanger::THROUGH_ZERO, 1.0),
+        ],
+    },
 ];
 
 // Phaser stage choices (2, 4, 6, 8, 12).
