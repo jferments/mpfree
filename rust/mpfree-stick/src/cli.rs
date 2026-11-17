@@ -49,7 +49,8 @@ Options for write and build:
   --programs FOLDER  mpfree, mpfree-screen-log and mpfree-startup built for the MPC (default:
                      $MPFREE_STICK_PROGRAMS, stick-programs/ next to this program, or the clone's armv7
                      release build)
-  --kits FILE        partition 3's kits.bin (default: MPFree's own kits, from the Drums synth)
+  --kits FILE        partition 3's kits.bin (default: MPFree's own kits, from the Drums synth, then
+                     the free kits in the programs folder's free-kits when it has one)
   --ssh-key FILE     developer SSH, off without it: your public key file (key-only root, port 2222)
   --any-update       developer option: take an Akai update MPFree does not know
   --work FOLDER      where Akai's system is unpacked while the stick is made (default: the temporary
@@ -330,6 +331,27 @@ fn check_live_release(live: &Path, release: &str, out: &mut Out) -> io::Result<(
     Ok(())
 }
 
+/// Partition 3's kits when `--kits` isn't given: MPFree's own, then the free
+/// kits from public-domain libraries when the programs folder has them (a
+/// release's does: `mpfree_factory::freekits`).
+fn default_kits(programs: &Path, out: &mut Out) -> io::Result<Vec<u8>> {
+    use mpfree_factory::freekits;
+    let p = programs.join(freekits::STICK_FILE);
+    let free = match std::fs::read(&p) {
+        Ok(b) => Some(b),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", p.display()))),
+    };
+    let kits = freekits::stick_kits(free.as_deref()).map_err(crate::bad)?;
+    if free.is_some() {
+        out.say(Msg::Note(format!(
+            "kits: MPFree's own, then the free kits in {}",
+            p.display()
+        )));
+    }
+    Ok(kits)
+}
+
 /// The update file: the path given, or the update to use in a folder.
 fn update_path(given: &str, any_update: bool, out: &mut Out) -> io::Result<PathBuf> {
     let p = PathBuf::from(given);
@@ -355,7 +377,7 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
     };
     let kits = match a.value("--kits")? {
         Some(p) => std::fs::read(&p).map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))?,
-        None => mpfree_factory::drums::kits_file(),
+        None => default_kits(&programs_dir, out)?,
     };
     let ssh_key = a.value("--ssh-key")?;
     let dev_dir = a.value("--dev-tools")?;
@@ -1025,6 +1047,37 @@ mod tests {
             assert_eq!((m.uid(), m.gid()), (4321, 4321), "{}", p.display());
         }
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_free_kits_follow_mpfrees_own_when_the_programs_folder_has_them() {
+        use mpfree_factory::{freekits, kitfile};
+        let dir = std::env::temp_dir().join(format!("mpfree-free-kits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut out = super::Out {
+            status: None,
+            log: Vec::new(),
+        };
+        // None there: MPFree's own kits only, as before.
+        let own = super::default_kits(&dir, &mut out).unwrap();
+        assert_eq!(own, mpfree_factory::drums::kits_file());
+        assert!(out.log.is_empty());
+        let s = kitfile::Sound {
+            note: 36,
+            name: "Kick".into(),
+            audio: vec![1, -1, 2, -2],
+        };
+        let free = kitfile::kits_bytes(&[("Big Rusty Drums".into(), kitfile::kit_bytes(&[s]))]);
+        std::fs::write(dir.join(freekits::STICK_FILE), &free).unwrap();
+        let kits = kitfile::parse_kits(&super::default_kits(&dir, &mut out).unwrap()).unwrap();
+        assert_eq!(kits.len(), mpfree_factory::drums::kits().len() + 1);
+        assert_eq!(kits.last().unwrap().0, "Big Rusty Drums");
+        assert!(out.log[0].contains("the free kits"));
+        // A damaged file stops the build.
+        std::fs::write(dir.join(freekits::STICK_FILE), &free[..free.len() - 1]).unwrap();
+        assert!(super::default_kits(&dir, &mut out).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

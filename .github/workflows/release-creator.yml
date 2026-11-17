@@ -1,9 +1,10 @@
 name: USB creator release
 
 # Builds the MPFree USB creator for Linux, Windows and macOS, each one file with
-# MPFree's programs for the MPC inside it, and puts them in a DRAFT GitHub
-# release with their SHA-256 sums. Nothing is published until the owner opens
-# the draft and presses Publish. See docs/dev/design/usb-creator.md, "Releases".
+# MPFree's programs for the MPC and its free drum kits inside it, and puts them
+# in a DRAFT GitHub release with their SHA-256 sums. Nothing is published until
+# the owner opens the draft and presses Publish. See
+# docs/dev/design/usb-creator.md, "Releases".
 #
 # Started by hand (Actions > USB creator release > Run workflow), or by pushing
 # a tag creator-vX.Y.Z that matches rust/mpfree-creator/Cargo.toml's version.
@@ -89,6 +90,16 @@ jobs:
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked \
             --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-startup -p mpfree-screen-log
+      - name: Make the free drum kits (CC0) from the files rust/mpfree-factory/free-kits.txt pins
+        run: |
+          # Each file is fetched from raw.githubusercontent.com at its pinned commit and checked
+          # against its SHA-256, and each library's licence against CC0's text. The runner keeps
+          # the fetched files (about 15 MB), so a second release fetches nothing.
+          cache="${XDG_CACHE_HOME:-$HOME/.cache}/mpfree-free-kits"
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || cache="$RUNNER_TEMP/free-kits-cache"
+          kits="$RUNNER_TEMP/free-kits" && rm -rf "$kits" && mkdir -p "$kits"
+          cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-factory --bin mpfree-free-kits -- \
+            --cache "$cache" --out "$kits/free-kits" --credits "$kits/free-kits-credits.txt"
       - name: Build the download helper, mpfree-fetch (linked dynamically)
         # The static pad player can't open the MPC's libcurl itself (the 16 Nov run's "Insufficient
         # randomness"), so the Plugins place downloads through this helper beside it (stick::FETCH_FILE):
@@ -136,11 +147,21 @@ jobs:
           echo "$fetch asks for $newest at most"
           [ "${newest#GLIBC_2.}" -le 39 ] || { echo "$fetch needs a newer glibc than the MPC's 2.39"; exit 1; }
           cp "$f" "$out/$fetch"
-          (cd "$out" && sha256sum $names "$fetch" | tee SHA256SUMS)
+          # The free drum kits (freekits::STICK_FILE): the creator carries them like the
+          # programs, and the stick builder adds them after MPFree's own kits.
+          cp "$RUNNER_TEMP/free-kits/free-kits" "$out/free-kits"
+          (cd "$out" && sha256sum $names "$fetch" free-kits | tee SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: stick-programs
           path: ${{ runner.temp }}/stick-programs
+          if-no-files-found: error
+          retention-days: 7
+      - name: Where the free kits' sounds came from, for the release
+        uses: actions/upload-artifact@v4
+        with:
+          name: creator-free-kits-credits
+          path: ${{ runner.temp }}/free-kits/free-kits-credits.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -365,6 +386,8 @@ jobs:
               '- Linux (x86_64): unpack the .tar.gz and open mpfree-creator.',
               '- Windows (x64): the .exe. It is not signed: on its first run, click More info, then Run anyway.',
               '- macOS (11 or newer, Apple silicon or Intel): unzip, and move the app to Applications. It is not signed by Apple: the first time, macOS refuses to open it; open System Settings > Privacy & Security and click Open Anyway.',
+              '',
+              "It carries MPFree's own drum kits and three free kits of real drums made from public-domain (CC0) libraries: Big Rusty Drums and Swirly Drums by Karoryfer Samples, and VCSL Percussion from Versilian Studios' VCSL. free-kits-credits.txt says which recording each pad comes from.",
               '',
               `Built from ${context.sha} by ${context.workflow} run ${context.runId}.`,
               '',
