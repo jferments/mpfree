@@ -490,6 +490,9 @@ pub struct TimeState {
     /// Song mode: the song plays on tracks with no clip launched. The app
     /// sets it.
     pub song_on: bool,
+    /// The project is in Perform, not Make (`Project::perform`, sequencer
+    /// S4).
+    pub perform: bool,
     /// The arrangement's placements and markers.
     pub placements: Vec<PlacementInfo>,
     pub markers: Vec<(Tick, String)>,
@@ -647,6 +650,7 @@ impl TimeState {
             morph: MorphInfo::default(),
             song_view: false,
             song_on: false,
+            perform: project.perform,
             placements: project
                 .arrangement
                 .placements
@@ -842,6 +846,9 @@ pub enum TimeAction {
     SongView(bool),
     /// Song mode on or off: the song plays on tracks with no clip launched.
     SongMode(bool),
+    /// Make (false) or Perform (true): the top bar's chip, or SHIFT + MAIN
+    /// (sequencer S4). Saved with the project; nothing playing changes.
+    Perform(bool),
     /// The rows with clips, in order, onto the end of the song
     /// (`mpfree_seq::arrange::scenes_to_song`).
     ScenesToSong,

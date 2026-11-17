@@ -857,6 +857,10 @@ pub struct Project {
     pub scenes: Vec<Scene>,
     /// The song: clips on a timeline ([`arrange`]).
     pub arrangement: Arrangement,
+    /// Make (false, a new project's) or Perform (sequencer roadmap S4,
+    /// Jay's decisions 4 and 5): how the app answers the hands, never
+    /// what plays. Saved, so a set opens as it was left.
+    pub perform: bool,
 }
 
 impl Project {

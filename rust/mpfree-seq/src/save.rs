@@ -9,6 +9,7 @@
 //!
 //! ```text
 //! mpfree-clips 1
+//! perform
 //! track Drums
 //! dest 0
 //! swing 240 58
@@ -63,6 +64,9 @@ pub fn to_text(p: &Project) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(FORMAT);
     s.push('\n');
+    if p.perform {
+        s.push_str("perform\n");
+    }
     for t in &p.tracks {
         let _ = writeln!(s, "track {}", one_line(&t.name));
         let _ = writeln!(s, "dest {}", t.dest);
@@ -546,6 +550,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 at = At::Top;
             }
             ("songlanes", At::Top | At::Track | At::Scene) => at = At::SongLanes(Moves::new()),
+            ("perform", At::Top) => p.perform = true,
             // A newer build's line: skipped.
             _ if !matches!(word, "end" | "lane") => {}
             _ => return Err(bad("out of place")),
@@ -781,6 +786,14 @@ mod tests {
             p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
         }
         assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // Perform (S4) is saved; Make, a new project's, writes nothing,
+        // so an older build reads the file as before.
+        assert!(!to_text(&p).contains("perform"));
+        p.perform = true;
+        assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // In a track it is out of place, and skipped.
+        let text = format!("{FORMAT}\ntrack Drums\ndest 0\nperform\n");
+        assert!(!from_text(&text).unwrap().perform);
     }
 
     #[test]

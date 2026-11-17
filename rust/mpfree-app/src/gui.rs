@@ -820,6 +820,9 @@ pub enum ToUi {
     LooperQLink(usize, i32),
     /// MAIN on the Play page (None: the next view), STEP SEQ (Beats).
     PlayView(Option<PlayView>),
+    /// MAIN in Perform: Arrange's Song view (`Some(true)`), its Clips grid
+    /// (`Some(false)`), or the other of the two (`None`).
+    ArrangeView(Option<bool>),
     /// SAMPLE EDIT: the Sample tab's editor to open.
     SampleEditor(sample_page::Editor),
     /// The data folder's library, for the Pads tab's browser, with its
@@ -1379,6 +1382,8 @@ pub struct Player {
     level_chip: Option<usize>,
     /// The "Pads: steps" chip's place: a tap gives the pads back.
     steps_chip: Option<usize>,
+    /// The MAKE or PERFORM chip's place: a tap switches (sequencer S4).
+    perform_chip: Option<usize>,
     /// The list of kits is open over the page (the kit chip); the view
     /// underneath stays `view`.
     kit_list: bool,
@@ -1752,6 +1757,7 @@ impl Player {
             kit_chip: None,
             level_chip: None,
             steps_chip: None,
+            perform_chip: None,
             kit_list: false,
             chip_why: Vec::new(),
             fingers: Vec::new(),
@@ -3339,6 +3345,15 @@ impl Player {
             why.push(format!("{left} s left in this timed run"));
             chips.push(Chip::new(format!("{left} s left"), Tone::Dim));
         }
+        // MAKE or PERFORM, at the left of the chips (sequencer S4, Jay's
+        // decision 5): a tap switches, as SHIFT + MAIN does.
+        why.push(String::new());
+        self.perform_chip = Some(chips.len());
+        chips.push(if self.time.perform {
+            Chip::new("PERFORM", Tone::Accent2)
+        } else {
+            Chip::new("MAKE", Tone::Normal)
+        });
         self.chip_why = why;
         // Only when a chip changed: this runs every second, and the header
         // spans the screen, so redrawing it rewrites nearly every row of the
@@ -4800,6 +4815,12 @@ impl Player {
                 });
                 self.show_play_view(v);
             }
+            ToUi::ArrangeView(v) => {
+                let song = v.unwrap_or(!self.time.song_view);
+                if song != self.time.song_view {
+                    self.outbox.push(FromUi::Time(TimeAction::SongView(song)));
+                }
+            }
             ToUi::Library { dir, lists } => self.open_library(&dir, &lists),
             ToUi::Browse(k) => self.browse_key(k),
             ToUi::PadsView(v) => {
@@ -5331,6 +5352,7 @@ impl Player {
                 // The lens the note editor shows, if it is open.
                 let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
                 let swapped = st.song_view != self.time.song_view || lens(&st) != lens(&self.time);
+                let switched = st.perform != self.time.perform;
                 // A take made, undone or redone: UNDO on All takes the takes.
                 let seen = (st.done.len(), st.undone.len());
                 if seen != self.seen_takes {
@@ -5364,6 +5386,10 @@ impl Player {
                     // The Song view and the note editor have their own
                     // hint lines.
                     self.refresh_hint();
+                }
+                if switched {
+                    // MAKE or PERFORM on the top bar.
+                    self.refresh_chips();
                 }
             }
             ToUi::AudioLevels(levels) => {
@@ -8014,6 +8040,9 @@ impl Player {
             ("header", EventKind::Select(i)) if Some(i) == self.steps_chip => {
                 Some(FromUi::StepsOff)
             }
+            ("header", EventKind::Select(i)) if Some(i) == self.perform_chip => {
+                Some(FromUi::Time(TimeAction::Perform(!self.time.perform)))
+            }
             ("header", EventKind::Select(i))
                 if self.chip_why.get(i).is_some_and(|w| !w.is_empty()) =>
             {
@@ -9579,6 +9608,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::SamplePad(d) => p.apply(ToUi::SamplePad(d)),
             Effect::SampleUndo { redo } => p.apply(ToUi::SampleUndo(redo)),
             Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
+            Effect::ArrangeView(v) => p.apply(ToUi::ArrangeView(v)),
             Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
             Effect::SaveProject => p.ask_save(),

@@ -858,6 +858,12 @@ impl TimeHost {
         self.control.muted(t)
     }
 
+    /// The project is in Perform, not Make (sequencer S4): the app follows
+    /// it each period (`App::set_perform`).
+    pub fn perform(&self) -> bool {
+        self.control.perform()
+    }
+
     /// Which loops the Loop tracks have on, and the bar line each change
     /// lands on ([`TimeControl::loop_plan`]): for the looper, before its
     /// period, so a launch lands on its line's own frame.

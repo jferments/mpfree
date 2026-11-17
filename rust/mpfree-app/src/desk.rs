@@ -473,6 +473,7 @@ impl Desk<'_> {
                 out.show(gui::ToUi::Tell(line));
             }
             app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
+            app::Effect::ArrangeView(v) => out.show(gui::ToUi::ArrangeView(v)),
             app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
             app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
             app::Effect::Fill(on) => time.set_fill(on, 0),
