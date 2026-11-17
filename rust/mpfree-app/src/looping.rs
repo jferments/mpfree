@@ -2287,8 +2287,34 @@ impl LoopHost {
         (taking, self.looper.status().phase == Phase::Armed)
     }
 
+    /// The loop a new one records into, for a Loop cell armed on the
+    /// grid: the picked loop if it is empty, else the first empty one; or
+    /// why there is none, as REC says it. Less than a second of memory
+    /// left is full: a first pass with no memory for it is thrown away.
+    pub fn free_loop(&self) -> Result<usize, String> {
+        let empty = |n: usize| {
+            self.looper
+                .loop_status(n)
+                .is_some_and(|s| s.phase == Phase::Empty)
+        };
+        let n = if empty(self.picked) {
+            self.picked
+        } else {
+            (0..MAX_LOOPS).find(|&n| empty(n)).ok_or_else(|| {
+                format!("{MAX_LOOPS} loops in use: clear one on the Looper tab to record another")
+            })?
+        };
+        let m = self.looper.memory();
+        if m.capacity.saturating_sub(m.used) < self.rate as usize {
+            return Err(
+                "The loops' memory is full: clear a loop on the Looper tab to record another"
+                    .to_string(),
+            );
+        }
+        Ok(n)
+    }
+
     /// What the picked loop is doing (armed, recording, overdubbing...).
-    #[cfg(test)]
     pub fn phase(&self) -> Phase {
         self.looper.status().phase
     }
@@ -2645,6 +2671,61 @@ mod tests {
         assert_eq!(v.selected, 1);
         assert!(v.status.resampling, "{:?}", v.status);
         assert_eq!(v.loops[0].phase, Phase::Playing);
+    }
+
+    /// A Loop cell armed on the grid records into the picked loop if it is
+    /// empty, else the first empty one; with all 8 in use, or the memory
+    /// full, REC says why (loop-tracks.md part 4).
+    #[test]
+    fn a_new_loop_goes_into_a_free_one_or_says_why_not() {
+        fn record(h: &mut LoopHost, n: usize) {
+            let mut t = Transport::new(44_100, 120.0).unwrap();
+            let mut b = Block::new();
+            t.command(0, T::Play);
+            h.select(n);
+            h.command(Command::Record);
+            for _ in 0..2000 {
+                if h.looper.loop_status(n).map(|s| s.phase) == Some(Phase::Playing) {
+                    return;
+                }
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.1; PERIOD], [0.1; PERIOD]);
+                h.take_pads(&l, &r);
+                h.period(&b, &mut l, &mut r);
+            }
+            panic!(
+                "loop {} never played: {:?}, {:?}",
+                n + 1,
+                h.looper.loop_status(n),
+                h.looper.memory()
+            );
+        }
+        let mut h = LoopHost::new(44_100, 60);
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        assert_eq!(h.free_loop(), Ok(0));
+        record(&mut h, 0);
+        assert_eq!(h.free_loop(), Ok(1), "loop 1 holds a loop");
+        h.select(4);
+        assert_eq!(h.free_loop(), Ok(4), "the picked one, empty");
+        for n in 1..MAX_LOOPS {
+            record(&mut h, n);
+        }
+        assert_eq!(
+            h.free_loop().unwrap_err(),
+            "8 loops in use: clear one on the Looper tab to record another"
+        );
+        // Less than a second of memory left: full.
+        let mut h = LoopHost::new(44_100, 2);
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        record(&mut h, 0);
+        let m = h.looper.memory();
+        assert_eq!(
+            h.free_loop().unwrap_err(),
+            "The loops' memory is full: clear a loop on the Looper tab to record another",
+            "{m:?}"
+        );
     }
 
     /// The undo history goes back and forward by as many steps as asked,

@@ -550,6 +550,20 @@ impl TimeHost {
         self.control.armed()
     }
 
+    /// The Loop cell armed on the grid, while it is still empty: the next
+    /// loop recorded lands there (loop-tracks.md part 4).
+    pub fn loop_cell(&self) -> Option<(usize, usize)> {
+        self.control.loop_cell()
+    }
+
+    /// The loop playing (or launched) on Loop track `t`, for OVERDUB with
+    /// a cell of it armed.
+    pub fn loop_on(&self, t: usize) -> Option<usize> {
+        let mask = mpfree_seq::loops::on_track(self.project(), t);
+        let plan = self.control.loop_plan();
+        (0..mpfree_seq::LOOPS).find(|&n| plan.on[n] && mask & (1u8 << n) != 0)
+    }
+
     /// The project the clips are in (for a save: `project.rs`).
     pub fn project(&self) -> &Project {
         &self.control.project
@@ -2677,6 +2691,78 @@ mod tests {
         h.act(TimeAction::LaunchScene(0)).unwrap();
         now[2] = pass(7680, 15360);
         assert_eq!(h.loops_are(&now), ["Loop 3 on Loops C, row 1, playing"]);
+        assert_eq!(h.control.project.check(), Ok(()));
+    }
+
+    /// SHIFT + "+ Track" adds an empty Loop track (UNDO takes it away), its
+    /// sound line steps its input, and a tap on an empty cell of it arms
+    /// that cell: the next loop recorded lands there, playing, and the
+    /// loop the track played stops (loop-tracks.md part 4).
+    #[test]
+    fn an_armed_loop_cell_takes_the_next_loop_recorded() {
+        use mpfree_seq::loops::LoopNow;
+        use mpfree_seq::{LoopInput, LOOPS};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.act(TimeAction::Arm(Some(2))).unwrap();
+        let said = h.act(TimeAction::AddLoopTrack).unwrap();
+        assert!(said.starts_with("Loops A added, a Loop track"), "{said}");
+        let st = h.state();
+        assert_eq!(
+            (st.tracks.len(), st.tracks[8].loops),
+            (9, Some(LoopInput::Pads))
+        );
+        assert_eq!(h.armed(), Some(2), "the pads stay where they were");
+        // Its input steps along, and round.
+        let said = h.act(TimeAction::LoopInput(8)).unwrap();
+        assert_eq!(said, "Loops A records Line in");
+        h.act(TimeAction::LoopInput(8)).unwrap();
+        assert_eq!(h.state().tracks[8].loops, Some(LoopInput::Resample));
+        h.act(TimeAction::LoopInput(8)).unwrap();
+        assert_eq!(h.state().tracks[8].loops, Some(LoopInput::Pads));
+        assert!(h.act(TimeAction::LoopInput(0)).is_err(), "a note track");
+        // Only an empty cell of a Loop track arms.
+        assert!(h.act(TimeAction::LoopCell(Some((0, 1)))).is_err());
+        assert!(h.act(TimeAction::LoopCell(Some((8, 99)))).is_err());
+        h.act(TimeAction::LoopCell(Some((8, 2)))).unwrap();
+        let st = h.state();
+        assert_eq!((h.loop_cell(), st.loop_cell), (Some((8, 2)), Some((8, 2))));
+        let name = mpfree_time_ui::view::loop_cell_name(&st);
+        assert_eq!(name.as_deref(), Some("Loops A · row 3"));
+        // The next loop recorded lands there, playing, and the arm goes.
+        let pass = |ticks| LoopNow {
+            pass: true,
+            ticks,
+            origin: 0,
+        };
+        let mut now = [LoopNow::default(); LOOPS];
+        now[0] = pass(7680);
+        assert_eq!(h.loops_are(&now), ["Loop 1 on Loops A, row 3, playing"]);
+        assert_eq!((h.loop_cell(), h.loop_on(8)), (None, Some(0)));
+        // Row 1 armed: the next loop plays there, and loop 1 stops.
+        h.act(TimeAction::LoopCell(Some((8, 0)))).unwrap();
+        let full = h.act(TimeAction::LoopCell(Some((8, 2)))).unwrap_err();
+        assert_eq!(full, "row 3 of Loops A holds a loop");
+        assert_eq!(h.loop_cell(), Some((8, 0)), "the arm stays");
+        now[1] = pass(3840);
+        assert_eq!(h.loops_are(&now), ["Loop 2 on Loops A, row 1, playing"]);
+        assert_eq!(h.loop_on(8), Some(1));
+        assert_eq!(&h.loop_plan().on[..2], &[false, true]);
+        // Let go, the next loop lands as before: Loops A plays, so on a
+        // new Loops B.
+        h.act(TimeAction::LoopCell(Some((8, 1)))).unwrap();
+        h.act(TimeAction::LoopCell(None)).unwrap();
+        assert_eq!(h.loop_cell(), None);
+        now[2] = pass(3840);
+        assert_eq!(h.loops_are(&now), ["Loop 3 on Loops B, row 1, playing"]);
+        // An armed cell that fills (a loop dropped there) arms nothing.
+        h.act(TimeAction::LoopCell(Some((9, 1)))).unwrap();
+        h.act(TimeAction::DropClip {
+            from: (9, 0),
+            to: (9, 1),
+            copy: false,
+        })
+        .unwrap();
+        assert_eq!(h.loop_cell(), None);
         assert_eq!(h.control.project.check(), Ok(()));
     }
 

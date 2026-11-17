@@ -494,14 +494,23 @@ impl Takes {
         project: &mut Project,
         name: &str,
     ) -> Result<(u32, usize), ModelError> {
+        self.add_track_as(project, Track::new(name, 0))
+    }
+
+    /// [`Takes::add_track`] for `track` (a Loop track, say), given the
+    /// lowest destination no track uses.
+    pub fn add_track_as(
+        &mut self,
+        project: &mut Project,
+        mut track: Track,
+    ) -> Result<(u32, usize), ModelError> {
         if project.tracks.len() >= MAX_TRACKS {
             return Err(ModelError::TooManyTracks);
         }
-        let dest = (0..=MAX_TRACKS as DestId)
+        track.dest = (0..=MAX_TRACKS as DestId)
             .find(|d| project.tracks.iter().all(|t| t.dest != *d))
             .unwrap_or(project.tracks.len() as DestId);
         let index = project.tracks.len();
-        let track = Track::new(name, dest);
         project.tracks.push(track.clone());
         self.edits += 1;
         let number = self.edits;

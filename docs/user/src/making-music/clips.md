@@ -38,7 +38,7 @@ Tracks past 16 play the kit for now. They have no MIDI out of their own and can'
 
 ### Loop tracks
 
-The loops you record on the Play page or the Looper tab show on **Loop tracks**, columns named **Loops A**, **Loops B** and on, added at the end of the grid as they are needed, with a little wave and **Pads** under the name (they record the pads and the synth). Each cell names its loop ("Loop 1"), shows its wave and length, and launches like a clip: one loop plays per Loop track, and loops on different Loop tracks play together. The pads don't play a Loop track. See [Loops in the Clips grid](looping.md#loops-in-the-clips-grid).
+The loops you record on the Play page or the Looper tab show on **Loop tracks**, columns named **Loops A**, **Loops B** and on, added at the end of the grid as they are needed, with a little wave and **Pads** under the name (they record the pads and the synth). Each cell names its loop ("Loop 1"), shows its wave and length, and launches like a clip: one loop plays per Loop track, and loops on different Loop tracks play together. The pads don't play a Loop track. **SHIFT + + Track** adds an empty one, and a tap on an empty Loop cell arms it, so REC records a loop there. See [Loops in the Clips grid](looping.md#loops-in-the-clips-grid).
 
 A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits for the next bar, red while recording. A loop's cell has no ring: its wave lights up to where the loop is.
 

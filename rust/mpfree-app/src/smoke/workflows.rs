@@ -2475,4 +2475,124 @@ mod tests {
             assert_eq!(s.time.project().check(), Ok(()));
         });
     }
+
+    /// Loop tracks part 4 (loop-tracks.md): SHIFT + "+ Track" adds Loops A,
+    /// and a tap on its row 2 cell arms it: the loop armed for REC, an
+    /// empty loop picked, the chip naming the cell. REC and PLAY record the
+    /// first pass, REC closes it, and it plays in that cell. With row 1's
+    /// cell armed, OVERDUB layers the loop the track plays. The notes armed
+    /// let go of the cell. Resample, the track's sound line stepped twice,
+    /// records the loops as heard into the next cell armed.
+    #[test]
+    fn a_loop_records_into_the_cell_tapped_on_the_grid() {
+        use crate::gui::FromUi;
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        use mpfree_time_ui::TimeAction;
+        fn until(s: &mut Session, n: usize, phase: Phase) {
+            let end = s.t() + 6.0;
+            while s.looper.loop_status(n).map(|l| l.phase) != Some(phase) && s.t() < end {
+                s.run_periods(4);
+            }
+            assert_eq!(s.looper.loop_status(n).map(|l| l.phase), Some(phase));
+        }
+        fn chip(s: &mut Session) -> String {
+            s.control("transport", "chip", "")
+                .expect("the REC chip on Arrange's bar")
+                .target
+                .label
+        }
+        /// Whether a line from `from` on is `want`, running the session up
+        /// to a second for it.
+        fn said(s: &mut Session, from: usize, want: &str) -> bool {
+            let end = s.t() + 1.0;
+            while !s.lines[from..].iter().any(|l| l == want) && s.t() < end {
+                s.run_periods(4);
+            }
+            s.lines[from..].iter().any(|l| l == want)
+        }
+        fn cell(s: &Session, slot: usize) -> String {
+            let c = mpfree_time_ui::view::cell_of(&s.screen.time, 8, slot);
+            format!("{} / {} / {}", c.name, c.detail, c.foot)
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Arrange").settle();
+            s.button_edge("SHIFT", true);
+            s.press("clips", "add-track", "+ Track").settle();
+            s.button_edge("SHIFT", false);
+            let p = s.time.project();
+            assert_eq!(p.tracks.len(), 9);
+            assert_eq!(p.tracks[8].loops(), Some(mpfree_seq::LoopInput::Pads));
+            assert_eq!(s.time.armed(), Some(0), "the pads stay on Track 1");
+            s.press("clips", "pager", "Tracks after").settle();
+            assert_eq!(s.screen.time.tracks[8].sound, "Pads");
+
+            // Its row 2 cell, tapped: armed.
+            s.press("clips", "slot", "Loops A slot 2").settle();
+            assert_eq!(s.time.loop_cell(), Some((8, 1)));
+            assert_eq!(s.app.rec.target, Target::Loop);
+            assert_eq!(chip(&mut s), "REC → Loops A · row 2");
+            assert_eq!(
+                s.hint(),
+                "REC → Loops A · row 2: REC records a loop there, from pads + synth"
+            );
+            assert_eq!(cell(&s, 1), "Armed / REC here / ");
+            // REC readies it, PLAY starts the first pass.
+            s.button("REC");
+            s.run_periods(12).settle();
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert_eq!(cell(&s, 1), "Ready / bar line / or PLAY");
+            s.button("PLAY");
+            until(&mut s, 0, Phase::Recording);
+            s.pad(0, 120, 0.3);
+            s.run_periods(12).settle();
+            assert_eq!(cell(&s, 1), "REC / REC ends / the pass");
+            s.run_for(1.4);
+            let from = s.lines.len();
+            s.button("REC");
+            until(&mut s, 0, Phase::Playing);
+            let want = "time: Loop 1 on Loops A, row 2, playing";
+            assert!(said(&mut s, from, want), "{:?}", &s.lines[from..]);
+            assert_eq!(s.time.loop_cell(), None);
+            assert_eq!(s.time.loop_on(8), Some(0));
+            s.run_periods(12).settle();
+            assert_eq!(chip(&mut s), "REC → Loops A · Loop 1 · row 2");
+
+            // Row 1 armed: OVERDUB layers the loop Loops A plays.
+            s.press("clips", "slot", "Loops A slot 1").settle();
+            assert_eq!(s.time.loop_cell(), Some((8, 0)));
+            s.button("OVERDUB");
+            until(&mut s, 0, Phase::Overdubbing);
+            s.run_for(1.0);
+            s.button("OVERDUB");
+            until(&mut s, 0, Phase::Playing);
+            assert_eq!(s.looper.loop_status(0).map(|l| l.layers), Some(2));
+            assert_eq!(s.looper.loop_status(1).map(|l| l.phase), Some(Phase::Empty));
+            // The notes armed: the cell lets go.
+            s.route(FromUi::ArmTap(Target::Notes));
+            s.run_periods(4);
+            assert_eq!(s.time.loop_cell(), None);
+
+            // Resample: its first pass records the loops as heard.
+            s.route(FromUi::Time(TimeAction::LoopInput(8)));
+            s.route(FromUi::Time(TimeAction::LoopInput(8)));
+            s.run_periods(4).settle();
+            assert_eq!(s.screen.time.tracks[8].sound, "Resample");
+            s.press("clips", "slot", "Loops A slot 3").settle();
+            assert_eq!(s.time.loop_cell(), Some((8, 2)));
+            s.button("REC");
+            until(&mut s, 1, Phase::Recording);
+            assert!(s.looper.loop_status(1).is_some_and(|l| l.resampling));
+            s.run_for(1.5);
+            let from = s.lines.len();
+            s.button("REC");
+            until(&mut s, 1, Phase::Playing);
+            let want = "time: Loop 2 on Loops A, row 3, playing";
+            assert!(said(&mut s, from, want), "{:?}", &s.lines[from..]);
+            assert_eq!(s.time.loop_on(8), Some(1), "one loop plays on Loops A");
+            assert_eq!(s.time.project().check(), Ok(()));
+        });
+    }
 }
