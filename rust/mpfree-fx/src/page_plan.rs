@@ -1014,6 +1014,30 @@ pub static PLANS: &[Plan] = &[
         dims: &[],
     },
     Plan {
+        id: "mpfree.fx.fuzz",
+        qlinks: &["Fuzz", "Tone", "Gate", "Level"],
+        pages: &[page(
+            "row(fuzz:520, col(gate:252, output))",
+            &[
+                Section {
+                    hero: &["Fuzz", "Tone"],
+                    rows: &["Model"],
+                    ..s("fuzz", "Fuzz", Tone, &["Model", "Fuzz", "Tone"])
+                },
+                Section {
+                    note: Some("quiet notes sputter and cut out"),
+                    ..s("gate", "Gate", Shape, &["Gate"])
+                },
+                Section {
+                    rows: &["Low keep"],
+                    note: Some("the lows under it stay clean"),
+                    ..s("output", "Output", Voice, &["Low keep", "Level"])
+                },
+            ],
+        )],
+        dims: &[],
+    },
+    Plan {
         id: "mpfree.fx.exciter",
         qlinks: &["Freq", "Drive", "Colour", "Amount"],
         pages: &[page(
