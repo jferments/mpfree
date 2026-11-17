@@ -21,7 +21,7 @@ Along the top are the mixer's five views:
 | View | Shows |
 |---|---|
 | **Tracks** | One strip per instrument: **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each track that has its own instrument (**Track 1**, **Track 2** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). A kit other than kit 1 plays into the strip of the first track that plays it, so it shows there too (see [A kit for each track](sampling.md#a-kit-for-each-track)). |
-| **Pads** | A strip for each of the kit's 16 pads, so you can set the kick's level or put an effect on just the snare. |
+| **Pads** | A strip for each of kit 1's pads A1 to A16, so you can set the kick's level or put an effect on just the snare, then one for each other pad that has effects of its own, named by its pad and kit ("B5 · Kit 2"; see [FX](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)). |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
 | **I/O** | Where everything goes, as a list: see [The I/O view](#the-io-view). |

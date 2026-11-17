@@ -472,6 +472,49 @@ mod tests {
         });
     }
 
+    /// A pad past A16 has no channel of its own (R3 part 4a): its + FX
+    /// lends it one, named by its pad and kit; an effect on it keeps it
+    /// (the Pads row names the effect); taken off again, ‹ gives the
+    /// channel back.
+    #[test]
+    fn a_pad_past_a16_is_lent_a_channel_and_gives_it_back_plain() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Pads");
+            s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank B")
+                .run_for(0.1);
+            s.press("smp-pads-bar", "tab", "Pad").run_for(0.3);
+            s.pad(4, 100, 0.05);
+            s.run_for(0.2);
+            assert_eq!(s.screen.sample.pad(), 20, "B5");
+            assert_eq!(s.mix.pad_channels.channel(0, 20), None, "none yet");
+            s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
+            assert_eq!(s.view(), View::Chain);
+            let lent = s.mix.pad_channels.channel(0, 20);
+            assert_eq!(lent, Some(StripId::Pad(crate::mixing::PADS)));
+            let t = engine(&mut s);
+            assert!(t.picking);
+            assert_eq!(t.title, "B5 · Kit 1 FX");
+            s.press("chain", "pick", "Compressor").run_for(0.2);
+            s.press("chain", "back", "").run_for(0.3);
+            assert_eq!(s.view(), View::Pads);
+            assert_eq!(s.mix.pad_channels.channel(0, 20), lent, "kept");
+            assert!(
+                s.control("smp-pads-list", "row-button", "Compressor")
+                    .is_some(),
+                "the row names the pad's effect"
+            );
+            // Taken off: plain again, and ‹ gives the channel back.
+            s.press("smp-pads-list", "row-button", "Compressor")
+                .run_for(0.2);
+            assert_eq!(s.view(), View::Chain);
+            s.press("chain", "remove", "Remove").run_for(0.3);
+            s.press("chain", "back", "").run_for(0.3);
+            assert_eq!(s.mix.pad_channels.channel(0, 20), None, "given back");
+            assert!(s.control("smp-pads-list", "row-button", "+ FX").is_some());
+        });
+    }
+
     #[test]
     fn an_insert_added_on_the_mixer_is_turned_bypassed_moved_and_removed() {
         on_big_stack(|| {

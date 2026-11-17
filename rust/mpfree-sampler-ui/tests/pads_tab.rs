@@ -503,7 +503,7 @@ fn the_effects_row_names_the_pads_effects_and_opens_its_chain() {
     // No effects yet: + FX.
     let mut e = pads(10);
     assert_eq!(row_value(&e, Row::Effects), "+ FX");
-    // No channel of its own (the app leaves it None): a dash, no button.
+    // Before the mixer says (the app leaves it None): a dash, no button.
     e.state.effects = None;
     let st = e.state.clone();
     e.tab.update(&mut e.ui, &st);

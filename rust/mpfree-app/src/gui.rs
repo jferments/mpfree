@@ -876,18 +876,13 @@ pub enum ToUi {
     MixerQLink(usize, i32),
     /// TRACK MIX opened the Mix tab: it shows Faders.
     MixerFaders,
-    /// The effects on the mixer's pad channels changed, by pad: the Pads
-    /// tab's Effects row names them.
-    PadFx(Vec<Vec<String>>),
-    /// The effects on kit 1's pad `pad`'s channel as pedals, while the
-    /// Sample tab's FX tab shows it ([`FromUi::SamplePedals`]): `into` is
-    /// where the channel plays into, `room` how many effects it holds.
-    Pedals {
-        pad: usize,
-        pedals: Vec<mpfree_chain_ui::state::Pedal>,
-        into: String,
-        room: usize,
-    },
+    /// The effects on the mixer's pad channels changed (each pad with a
+    /// channel of its own, by kit and pad): the Pads tab's Effects row
+    /// names them.
+    PadFx(Vec<crate::modpanels::PadFx>),
+    /// The effects on a kit's pad's channel as pedals, while the Sample
+    /// tab's FX tab shows it ([`FromUi::SamplePedals`]).
+    Pedals(crate::sample_page::PadPedals),
     /// While the mixer's I/O view shows: the data wheel, - or +, for the
     /// section showing.
     IoInput(mpfree_mixer_ui::IoInput),
@@ -1379,22 +1374,24 @@ pub enum FromUi {
     /// sampler capture point at it and starts the buffer afresh.
     SampleSource(crate::sampler::RecSource),
     /// The Sample tab's FX tab's Whole chain (or, with `add`, its + Add
-    /// effect) on kit 1's pad `pad`: the chain editor on its channel, then
-    /// the Drums track, with the picker up for `add`
-    /// ([`crate::modpanels::Panels::open_pad`]).
+    /// effect) on kit `kit`'s pad `pad`: the chain editor on its channel
+    /// (lent one if it has none), then its kit's track, with the picker up
+    /// for `add` ([`crate::modpanels::Panels::open_pad`]).
     SampleFx {
+        kit: usize,
         pad: usize,
         add: bool,
     },
-    /// The Sample tab's FX tab shows kit 1's pad `pad` (None: no longer):
-    /// its channel's effects come as [`ToUi::Pedals`], and its pedals'
-    /// [`FromUi::Chain`] touches reach that channel
+    /// The Sample tab's FX tab shows a kit's pad, as (kit, pad) (None: no
+    /// longer): its channel's effects come as [`ToUi::Pedals`], and its
+    /// pedals' [`FromUi::Chain`] touches reach that channel
     /// ([`crate::modpanels::Panels::show_pedals`]).
-    SamplePedals(Option<usize>),
-    /// The Pads tab's Effects row on pad `pad`: its chain in the Mix tab,
-    /// with ‹ back to the Pads tab
-    /// ([`crate::modpanels::Panels::open_pad_mix`]).
+    SamplePedals(Option<(usize, usize)>),
+    /// The Pads tab's Effects row on kit `kit`'s pad `pad`: its chain in
+    /// the Mix tab (lent a channel if it has none), with ‹ back to the
+    /// Pads tab ([`crate::modpanels::Panels::open_pad_mix`]).
     PadEffects {
+        kit: usize,
         pad: usize,
     },
     /// A phrase chopped on the Sample page, for the armed track's first
@@ -5584,14 +5581,8 @@ impl Player {
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
             ToUi::PadFx(fx) => self.sample.set_pad_fx(&mut self.ui, fx),
-            ToUi::Pedals {
-                pad,
-                pedals,
-                into,
-                room,
-            } => {
-                self.sample
-                    .set_pedals(&mut self.ui, pad, pedals, into, room);
+            ToUi::Pedals(pedals) => {
+                self.sample.set_pedals(&mut self.ui, pedals);
                 if self.view == View::Sample {
                     self.refresh_hint();
                 }
@@ -12464,11 +12455,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     pads.apply(ToUi::PadFx(
         (0..crate::mixing::PADS)
             .map(|i| {
-                if i == mpfree_sampler_ui::sample::PAD {
+                let fx = if i == mpfree_sampler_ui::sample::PAD {
                     vec!["Compressor".to_string()]
                 } else {
                     Vec::new()
-                }
+                };
+                (0, i, fx)
             })
             .collect(),
     ));
@@ -12697,12 +12689,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         kind: EventKind::Tab(mpfree_sampler_ui::fx_tab::TAB),
     });
     fx.take_actions();
-    fx.apply(ToUi::Pedals {
+    fx.apply(ToUi::Pedals(crate::sample_page::PadPedals {
+        kit: 0,
         pad: mpfree_sampler_ui::sample::PAD,
-        pedals: mpfree_chain_ui::sample::Song::new().pedals(),
+        list: mpfree_chain_ui::sample::Song::new().pedals(),
+        own: true,
+        spare: true,
         into: "Drums".into(),
         room: crate::mixing::SLOTS,
-    });
+    }));
     fx.on_event(UiEvent {
         widget: mpfree_sampler_ui::fx_tab::LIST.into(),
         kind: EventKind::Select(4),
@@ -21920,16 +21915,11 @@ mod tests {
         assert_eq!(p.page(), sample_page::FX_PAGE);
         // The tab asks for the pad's effects, once.
         let (_, rest) = views(p.take_actions());
-        assert_eq!(rest, [FromUi::SamplePedals(Some(pad))]);
+        assert_eq!(rest, [FromUi::SamplePedals(Some((0, pad)))]);
         assert!(views(p.take_actions()).1.is_empty());
         let song = mpfree_chain_ui::sample::Song::new();
         let pedals = song.pedals();
-        p.apply(ToUi::Pedals {
-            pad,
-            pedals: pedals.clone(),
-            into: "Drums".into(),
-            room: crate::mixing::SLOTS,
-        });
+        p.apply(ToUi::Pedals(pad_pedals(0, pad, pedals.clone(), true, true)));
         let (_, st) = p.sample.fx().unwrap();
         let shown = st.pedals.as_ref().unwrap();
         assert_eq!(shown.len(), 4);
@@ -21995,7 +21985,7 @@ mod tests {
                 kind: EventKind::Tab(i),
             });
             let (_, rest) = views(p.take_actions());
-            assert_eq!(rest, [FromUi::SampleFx { pad, add }]);
+            assert_eq!(rest, [FromUi::SampleFx { kit: 0, pad, add }]);
         }
         // Off the tab, the mixer stops sending.
         p.on_event(UiEvent {
@@ -22006,6 +21996,25 @@ mod tests {
         assert_eq!(rest, [FromUi::SamplePedals(None)]);
     }
 
+    /// The mixer's word on kit `kit`'s pad `pad`'s channel, into Drums.
+    fn pad_pedals(
+        kit: usize,
+        pad: usize,
+        list: Vec<mpfree_chain_ui::state::Pedal>,
+        own: bool,
+        spare: bool,
+    ) -> sample_page::PadPedals {
+        sample_page::PadPedals {
+            kit,
+            pad,
+            list,
+            own,
+            spare,
+            into: "Drums".into(),
+            room: crate::mixing::SLOTS,
+        }
+    }
+
     fn value_text_of(k: &mpfree_chain_ui::state::ParamView, v: f32) -> String {
         mpfree_chain_ui::state::ParamView {
             value: v,
@@ -22014,11 +22023,13 @@ mod tests {
         .text()
     }
 
-    /// A pad past A16 has no channel of its own yet (R3 part 4 gives every
-    /// pad one): the FX tab says so, asks the mixer for nothing, and its
+    /// A pad past A16 has no channel of its own until it is given an
+    /// effect (R3 part 4a): the FX tab asks the mixer for it all the same,
+    /// shows no effects yet, and + Add effect asks for one (the mixer lends
+    /// it a channel). With every channel lent, the tab says why and its
     /// buttons are faint.
     #[test]
-    fn the_fx_tab_on_a_pad_with_no_channel_says_why_and_asks_for_nothing() {
+    fn the_fx_tab_on_a_pad_with_no_channel_lends_one_or_says_why_not() {
         use mpfree_sampler_ui::fx_tab;
         use mpfree_sampler_ui::wave_tab::{BAR, FX_TAB};
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
@@ -22034,7 +22045,8 @@ mod tests {
         p.apply(ToUi::PadPage(1));
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         p.apply(ToUi::PadUp(pad));
-        assert_eq!(p.sample.pad(), 16 + pad);
+        let b5 = 16 + pad;
+        assert_eq!(p.sample.pad(), b5);
         p.take_actions();
         p.on_event(UiEvent {
             widget: BAR.into(),
@@ -22042,18 +22054,41 @@ mod tests {
         });
         assert_eq!(p.page(), sample_page::FX_PAGE);
         let (_, rest) = views(p.take_actions());
-        assert!(
-            !rest.iter().any(|a| matches!(a, FromUi::SamplePedals(_))),
-            "{rest:?}"
+        assert_eq!(rest, [FromUi::SamplePedals(Some((0, b5)))]);
+        // No channel yet, one free: no effects yet, + Add effect lends one.
+        p.apply(ToUi::Pedals(pad_pedals(0, b5, Vec::new(), false, true)));
+        let bar = p.ui.get::<PadBar>(fx_tab::BAR).unwrap();
+        assert_eq!(bar.subtitle, "No effects yet · into Drums");
+        let list = p.ui.get::<SettingList>(fx_tab::LIST).unwrap();
+        let buttons = list.buttons.clone();
+        assert!(buttons.iter().all(|&b| !list.controls[b].faint));
+        p.on_event(UiEvent {
+            widget: fx_tab::LIST.into(),
+            kind: EventKind::Tab(buttons[0]),
+        });
+        let (_, rest) = views(p.take_actions());
+        assert_eq!(
+            rest,
+            [FromUi::SampleFx {
+                kit: 0,
+                pad: b5,
+                add: true
+            }]
         );
+        // Every channel lent: it says why, and its buttons are faint.
+        p.apply(ToUi::Pedals(pad_pedals(0, b5, Vec::new(), false, false)));
         let bar = p.ui.get::<PadBar>(fx_tab::BAR).unwrap();
         assert!(
-            bar.subtitle.contains("No effects of its own"),
+            bar.subtitle.starts_with("No channel free"),
             "{}",
             bar.subtitle
         );
         let list = p.ui.get::<SettingList>(fx_tab::LIST).unwrap();
         assert!(list.buttons.iter().all(|&b| list.controls[b].faint));
+        // Another kit's pad's word is not this pad's.
+        p.apply(ToUi::Pedals(pad_pedals(1, b5, Vec::new(), true, true)));
+        let bar = p.ui.get::<PadBar>(fx_tab::BAR).unwrap();
+        assert_eq!(bar.subtitle, "Reading its channel");
     }
 
     #[test]
