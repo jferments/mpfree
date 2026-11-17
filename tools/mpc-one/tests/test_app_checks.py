@@ -219,6 +219,17 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("midi-learn", checks.Window(lines(key))))
         self.assertFalse(got["Learn took the knob"])
 
+    def test_midi_thru_needs_sending_on_a_note_in_and_out_and_sending_off(self):
+        """midi-thru passes on Prefs' switch on, a note read, the same note out of MIDI OUT (the writer's line) and
+        the switch off again; without the note out it fails."""
+        note_in = "+3.210 s MIDI In: 90 3C 64 = note on \u00b7 ch 1 \u00b7 C4 \u00b7 vel 100"
+        note_out = "+3.219 s MIDI Out: 90 3C 64 = note on, ch 1, C4, velocity 100"
+        on, off = "MIDI and CV out: on (the MIDI Out jack and the CV jacks send)", "MIDI and CV out: off (nothing is sent)"
+        self.assertTrue(all(ok for ok, _ in self.judge("midi-thru", checks.Window(lines(on, note_in, note_out, off)))))
+        got = dict((what, ok) for ok, what in self.judge("midi-thru", checks.Window(lines(on, note_in, off))))
+        self.assertFalse(got["thru sent them out of MIDI OUT"])
+        self.assertTrue(got["notes came in"])
+
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
                  (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),
