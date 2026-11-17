@@ -66,7 +66,7 @@ use mpfree_store::Settings;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -1247,18 +1247,35 @@ impl ContentWindow {
         }
         // From here the window is open: dropping this says the reading is over.
         let stop = Arc::new(AtomicBool::new(false));
+        // The counter's file, made new, never through a link: the service
+        // removed any earlier one before it opened the window. Without it the
+        // counter stands still, and the service closes the window after its
+        // QUIET seconds.
+        let alive = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&paths.content_alive);
+        if let Err(e) = &alive {
+            say(format!(
+                "first start: no counter for the service ({}: {e}); it closes the window when it hears nothing",
+                paths.content_alive.display()
+            ));
+        }
         let beat = {
             let stop = Arc::clone(&stop);
-            let alive = paths.content_alive.clone();
             let every = timing.poll.min(BEAT);
             thread::spawn(move || {
                 let mut n: u64 = 0;
-                let mut last = Instant::now() - BEAT;
+                let mut last: Option<Instant> = None;
                 while !stop.load(Ordering::Relaxed) {
-                    if last.elapsed() >= BEAT {
+                    if last.is_none_or(|t| t.elapsed() >= BEAT) {
                         n += 1;
-                        let _ = std::fs::write(&alive, format!("{n}\n"));
-                        last = Instant::now();
+                        // Fixed width: each count overwrites the last.
+                        if let Ok(f) = &alive {
+                            let _ = f.write_at(format!("{n:020}\n").as_bytes(), 0);
+                        }
+                        last = Some(Instant::now());
                     }
                     thread::sleep(every);
                 }
