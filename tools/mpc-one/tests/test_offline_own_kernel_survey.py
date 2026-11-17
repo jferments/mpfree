@@ -94,8 +94,10 @@ def noise(n, seed):
 
 
 def zimage(config=CONFIG):
-    inner = noise(50000, 1) + b"IKCFG_ST" + gzip.compress(config) + b"IKCFG_ED" + noise(20000, 2)
-    return noise(4000, 3) + gzip.compress(inner) + noise(64, 4)
+    # mtime=0: gzip stamps the current second into its header, so two calls a second apart
+    # (the image, then the hash the test expects) would make different files.
+    inner = noise(50000, 1) + b"IKCFG_ST" + gzip.compress(config, mtime=0) + b"IKCFG_ED" + noise(20000, 2)
+    return noise(4000, 3) + gzip.compress(inner, mtime=0) + noise(64, 4)
 
 
 def sha_file(path):
