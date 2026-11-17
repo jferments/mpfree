@@ -569,15 +569,24 @@ fn de_esser_turns_down_sibilance_and_leaves_the_rest() {
     let mut d = make("mpfree.fx.deesser");
     d.reset();
     let (l, _) = render(&mut *d, &(x.clone(), x.clone()), &[], 128);
-    // What the de-esser did to the hiss: the output less the low tone
-    // (which split mode passes untouched).
-    let hiss_out: Vec<f32> = l.iter().zip(&low).map(|(a, b)| a - b).collect();
+    // What the de-esser did to the hiss: the output less the low tone on
+    // its own (which split mode passes through its all-pass, unchanged in
+    // level, and as late as the look-ahead).
+    d.reset();
+    let (low_out, _) = render(&mut *d, &(low.clone(), low.clone()), &[], 128);
+    let lat = d.latency() as usize;
+    let hiss_out: Vec<f32> = l[lat..]
+        .iter()
+        .zip(&low_out[lat..])
+        .map(|(a, b)| a - b)
+        .collect();
+    let hiss = &hiss[..hiss.len() - lat];
     let burst = |y: &[f32]| rms(&y[6500..11_900]);
     let quiet = |y: &[f32]| rms(&y[1000..5900]);
     assert!(
-        db(burst(&hiss_out)) < db(burst(&hiss)) - 3.0,
+        db(burst(&hiss_out)) < db(burst(hiss)) - 3.0,
         "sibilance down: {} to {}, reduction {}",
-        db(burst(&hiss)),
+        db(burst(hiss)),
         db(burst(&hiss_out)),
         d.param(ids::deesser::REDUCTION)
     );
@@ -586,6 +595,32 @@ fn de_esser_turns_down_sibilance_and_leaves_the_rest() {
         "the low tone untouched"
     );
     assert!(d.param(ids::deesser::REDUCTION) >= 0.0);
+}
+
+#[test]
+fn de_esser_catches_an_s_from_its_start() {
+    // A burst of bright noise out of silence, at full reduction: with the
+    // look-ahead its first millisecond already comes out turned down.
+    let mut rng = Lcg(5);
+    let mut x = vec![0.0f32; 24_000];
+    let mut hp = 0.0f32;
+    for v in x[12_000..].iter_mut() {
+        let n = rng.unit() - 0.5;
+        *v = 0.5 * (n - hp);
+        hp = n;
+    }
+    let mut d = make("mpfree.fx.deesser");
+    d.set_param(ids::deesser::DETECT, 1.0);
+    d.set_param(ids::deesser::THRESHOLD, -60.0);
+    d.set_param(ids::deesser::RANGE, 12.0);
+    d.set_param(ids::deesser::MODE, 1.0);
+    d.reset();
+    let (l, _) = render(&mut *d, &(x.clone(), x.clone()), &[], 64);
+    let lat = d.latency() as usize;
+    assert!(lat > 0, "it looks ahead");
+    let ms = RATE as usize / 1000;
+    let first = db(rms(&l[12_000 + lat..12_000 + lat + ms])) - db(rms(&x[12_000..12_000 + ms]));
+    assert!(first < -9.0, "the first ms came out {first:.1} dB");
 }
 
 #[test]

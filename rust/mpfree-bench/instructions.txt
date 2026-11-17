@@ -38,7 +38,7 @@
 27650	Compressor
 36221	Crush
 13406	DJ filter
-42431	De-esser
+58964	De-esser
 70889	Delay
 129473	Drawbar Church, 8 keys
 173856	Drawbar Full Organ, 8 keys

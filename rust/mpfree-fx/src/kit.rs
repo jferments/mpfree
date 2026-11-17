@@ -628,8 +628,13 @@ const BUTTER_K: f32 = std::f32::consts::SQRT_2;
 
 impl Stage {
     fn set(&mut self, hz: f32, rate: u32) {
+        self.set_k(hz, BUTTER_K, rate);
+    }
+    /// Tunes the stage with damping `k` (1 / Q); its high-pass is then
+    /// `x - k * band - low` and its all-pass `x - 2 k * band`.
+    fn set_k(&mut self, hz: f32, k: f32, rate: u32) {
         let g = (std::f32::consts::PI * hz.clamp(1.0, 0.45 * rate as f32) / rate as f32).tan();
-        self.a1 = 1.0 / (1.0 + g * (g + BUTTER_K));
+        self.a1 = 1.0 / (1.0 + g * (g + k));
         self.a2 = g * self.a1;
         self.a3 = g * self.a2;
     }
@@ -643,6 +648,22 @@ impl Stage {
         self.ic1[ch] = flush(2.0 * v1 - ic1);
         self.ic2[ch] = flush(2.0 * v2 - ic2);
         (v2, v1)
+    }
+    /// [`Stage::run`] on both channels at once: `(low, band)` per side.
+    #[inline(always)]
+    fn run2(&mut self, v0: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+        let (mut low, mut band) = ([0.0; 2], [0.0; 2]);
+        for ch in 0..2 {
+            let (ic1, ic2) = (self.ic1[ch], self.ic2[ch]);
+            let v3 = v0[ch] - ic2;
+            let v1 = self.a1 * ic1 + self.a2 * v3;
+            let v2 = ic2 + self.a2 * ic1 + self.a3 * v3;
+            self.ic1[ch] = flush(2.0 * v1 - ic1);
+            self.ic2[ch] = flush(2.0 * v2 - ic2);
+            low[ch] = v2;
+            band[ch] = v1;
+        }
+        (low, band)
     }
     fn reset(&mut self) {
         self.ic1 = [0.0; 2];
@@ -701,6 +722,72 @@ impl CrossoverPhase {
     }
     pub(crate) fn reset(&mut self) {
         self.stage.reset();
+    }
+}
+
+/// A second-order Butterworth high-pass on both channels at once.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct HighPass2 {
+    stage: Stage,
+}
+
+impl HighPass2 {
+    pub(crate) fn set(&mut self, hz: f32, rate: u32) {
+        self.stage.set(hz, rate);
+    }
+    #[inline]
+    pub(crate) fn run(&mut self, x: [f32; 2]) -> [f32; 2] {
+        let (l, b) = self.stage.run2(x);
+        [0, 1].map(|c| x[c] - BUTTER_K * b[c] - l[c])
+    }
+    pub(crate) fn reset(&mut self) {
+        self.stage.reset();
+    }
+}
+
+/// The fourth-order Butterworth's two stages' damping (1 / Q): 2 cos 3π/8
+/// and 2 cos π/8.
+const B4_K: [f32; 2] = [0.765_366_9, 1.847_759];
+
+/// An eighth-order Linkwitz-Riley split (a fourth-order Butterworth,
+/// squared) of one channel, as `(all-pass, low)`: the high band is their
+/// difference. The low and high bands are in phase, so `low + g * high`
+/// (that is `g * all-pass + (1 - g) * low`) is |low| + g |high| in level,
+/// never over 1 for a gain `g` up to 1, and falls 48 dB an octave into
+/// the high band. One stage on the input gives the first low-pass and the
+/// all-pass's first half together: five stages, not six.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Split8 {
+    first: Stage,
+    ap: Stage,
+    lo: [Stage; 3],
+}
+
+impl Split8 {
+    pub(crate) fn set(&mut self, hz: f32, rate: u32) {
+        self.first.set_k(hz, B4_K[0], rate);
+        self.ap.set_k(hz, B4_K[1], rate);
+        self.lo[0].set_k(hz, B4_K[1], rate);
+        self.lo[1].set_k(hz, B4_K[0], rate);
+        self.lo[2].set_k(hz, B4_K[1], rate);
+    }
+    /// `(all-pass, low)` for one frame, both channels.
+    #[inline]
+    pub(crate) fn split(&mut self, x: [f32; 2]) -> ([f32; 2], [f32; 2]) {
+        let (l1, b1) = self.first.run2(x);
+        let ap1 = [0, 1].map(|c| x[c] - 2.0 * B4_K[0] * b1[c]);
+        let (_, b2) = self.ap.run2(ap1);
+        let (l2, _) = self.lo[0].run2(l1);
+        let (l3, _) = self.lo[1].run2(l2);
+        let (lo, _) = self.lo[2].run2(l3);
+        ([0, 1].map(|c| ap1[c] - 2.0 * B4_K[1] * b2[c]), lo)
+    }
+    pub(crate) fn reset(&mut self) {
+        self.first.reset();
+        self.ap.reset();
+        for s in &mut self.lo {
+            s.reset();
+        }
     }
 }
 
@@ -869,6 +956,43 @@ mod tests {
             let (l, h) = x.split(1, s);
             let a = p.run(1, s);
             assert!((l + h - a).abs() < 1e-4, "{n}: {} {a}", l + h);
+        }
+    }
+
+    #[test]
+    fn split8_never_lifts_and_reaches_the_gain_an_octave_up() {
+        // The all-pass is flat; turning the high band down to `g` never
+        // lifts anything, and an octave over the split the level is
+        // within 1 dB of `g`.
+        let g = 0.063f32; // -24 dB
+        let mut x = Split8::default();
+        x.set(1000.0, 48_000);
+        for hz in [
+            125.0f32, 500.0, 800.0, 1000.0, 1300.0, 2000.0, 4000.0, 12_000.0,
+        ] {
+            x.reset();
+            let (mut ap, mut cut) = (0.0f64, 0.0f64);
+            for n in 0..48_000 {
+                let s = (n as f32 * hz / 48_000.0 * std::f32::consts::TAU).sin();
+                let (a, lo) = x.split([s, s]);
+                let (a, lo) = (a[0], lo[0]);
+                let y = g * a + (1.0 - g) * lo;
+                if n >= 24_000 {
+                    ap += f64::from(a * a);
+                    cut += f64::from(y * y);
+                }
+            }
+            let level = |e: f64| (e / 24_000.0).sqrt() * std::f64::consts::SQRT_2;
+            assert!(
+                (level(ap) - 1.0).abs() < 0.005,
+                "{hz}: all-pass {}",
+                level(ap)
+            );
+            assert!(level(cut) < 1.0 + 0.005, "{hz}: lifted to {}", level(cut));
+            if hz >= 2000.0 {
+                let db = 20.0 * (level(cut) / f64::from(g)).log10();
+                assert!(db.abs() < 1.0, "{hz}: {db} dB from the gain");
+            }
         }
     }
 
