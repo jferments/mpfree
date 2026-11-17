@@ -101,6 +101,7 @@ mod gui;
 mod imagecopy;
 mod instruments;
 mod kit;
+mod locks;
 mod looper_page;
 mod looper_tab;
 mod looping;
@@ -2155,9 +2156,25 @@ fn step_press(
         velocity,
         erase: app.erase_held(),
         copy: app.copy_held(),
+        shift: app.shift_held(),
         rolling,
     };
     keys.press(s, pad, p, time)
+}
+
+/// STEP SEQ: ERASE pressed while step pads are held takes their locks
+/// off (step_keys.rs); what to tell.
+fn erase_held_steps(
+    app: &app::App,
+    keys: &mut step_keys::StepKeys,
+    time: &mut time::TimeHost,
+    note: u8,
+    pressed: bool,
+) -> Option<app::Effect> {
+    if !(pressed && app.pads_are_steps() && app.is_erase(note)) {
+        return None;
+    }
+    keys.erase_locks(time).map(app::Effect::Tell)
 }
 
 /// A Q-Link turn of the steps held on the step pads (or of the step
@@ -2165,7 +2182,11 @@ fn step_press(
 fn step_turn(a: &gui::FromUi) -> bool {
     matches!(
         a,
-        gui::FromUi::Steps(time::StepAction::Change { .. } | time::StepAction::ChangeSteps { .. })
+        gui::FromUi::Steps(
+            time::StepAction::Change { .. }
+                | time::StepAction::ChangeSteps { .. }
+                | time::StepAction::Lock { .. }
+        )
     )
 }
 
@@ -3154,6 +3175,39 @@ impl time::Pads for SeqPads<'_> {
                 None
             }
             Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
+        }
+    }
+
+    /// A clip's lock on a sound: a track's own instrument, the synth while
+    /// it has the pads, or the playing kit's pad. A track that plays MIDI
+    /// Out has none of these (its locks go on to the mixer).
+    fn lock_at(
+        &mut self,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        value: Option<f32>,
+        offset: u32,
+    ) -> bool {
+        use mpfree_play::mpfree_param::Owner;
+        if addr
+            .owner
+            .track()
+            .is_some_and(|t| self.midi.takes(u16::from(t)))
+        {
+            return false;
+        }
+        match addr.owner {
+            Owner::Inst(t) if self.own.holds(usize::from(t)) => {
+                self.own.lock(usize::from(t), addr.param, value, offset)
+            }
+            Owner::Inst(_) => self
+                .synth
+                .as_mut()
+                .is_some_and(|s| s.lock(addr.param, value, offset)),
+            Owner::Pad(t, pad) if !self.own.holds(usize::from(t)) && self.synth.is_none() => {
+                sampler::pad_field(addr.param)
+                    .is_some_and(|f| self.player.pad_lock(usize::from(pad), f, value, offset))
+            }
+            _ => false,
         }
     }
 
@@ -5147,6 +5201,13 @@ fn player_session(
                     }
                 }
                 Some(ControlEvent::Button { note, pressed }) => {
+                    fx.extend(erase_held_steps(
+                        &app,
+                        &mut step_keys,
+                        &mut time,
+                        note,
+                        pressed,
+                    ));
                     fx.extend(app.button(note, pressed, t))
                 }
                 // A finger on a Q-Link lights its card. The control mapper names the
