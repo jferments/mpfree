@@ -17982,11 +17982,10 @@ mod tests {
     #[test]
     fn every_sample_screen_draws() {
         // sample_screens builds every screen's Player in one frame, which in
-        // a debug build outgrows the 2 MiB test thread (the binary's
-        // --screens runs on the 8 MiB main thread), so draw them on a thread
-        // with the main thread's stack.
+        // a debug build outgrows the 2 MiB test thread, so draw them on a
+        // thread with smoke::SCREENS_STACK.
         std::thread::Builder::new()
-            .stack_size(8 << 20)
+            .stack_size(crate::smoke::SCREENS_STACK)
             .spawn(|| {
                 for (name, mut p) in sample_screens(Fonts::embedded) {
                     let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
@@ -18014,7 +18013,7 @@ mod tests {
     #[test]
     fn every_sample_screen_plays_back_the_same_from_its_display_list() {
         std::thread::Builder::new()
-            .stack_size(8 << 20)
+            .stack_size(crate::smoke::SCREENS_STACK)
             .spawn(|| {
                 let direct = sample_screens(Fonts::embedded);
                 let recorded = sample_screens(Fonts::embedded);
@@ -18237,7 +18236,7 @@ mod tests {
         // The sample screens outgrow the 2 MiB test thread in a debug build
         // (as above).
         std::thread::Builder::new()
-            .stack_size(8 << 20)
+            .stack_size(crate::smoke::SCREENS_STACK)
             .spawn(idle_pages_stay_still)
             .unwrap()
             .join()
