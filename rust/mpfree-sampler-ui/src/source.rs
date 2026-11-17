@@ -67,8 +67,13 @@ pub struct SourceView {
     /// The same note as a MIDI note (60 is C4), for a keygroup's root.
     pub root_note: Option<u8>,
     /// Where its hits start, for chopping by transients (None if it
-    /// couldn't be analysed).
+    /// couldn't be analysed, or isn't yet).
     pub onsets: Option<Arc<OnsetAnalysis>>,
+    /// Whether the hits, tempo and root note are worked out. A view made
+    /// off the screen thread comes in steps: [`SourceView::pending`] (a
+    /// flat line of the right length), then [`SourceView::quick`] (the
+    /// peaks and mono mix), then [`SourceView::finish`] (the rest).
+    pub ready: bool,
 }
 
 /// Root notes less certain than this aren't shown.
@@ -76,9 +81,36 @@ const ROOT_CONFIDENCE: f32 = 0.5;
 
 impl SourceView {
     /// Analyses a source: peaks, mono mix, onsets, tempo and root note. Takes a
-    /// moment for a long source, so run it on a worker or the UI thread
-    /// when the source arrives, never on the audio thread.
+    /// moment for a long source (about 0.2 s a minute of stereo on the
+    /// workstation, several times that on the MPC), so run it on a worker,
+    /// never on the audio thread; [`SourceView::quick`] and
+    /// [`SourceView::finish`] are its two steps.
     pub fn analyse(s: &Source) -> SourceView {
+        SourceView::quick(s).finish(s)
+    }
+
+    /// A source before anything is worked out: a flat line of its length,
+    /// for the screen to show at once.
+    pub fn pending(s: &Source) -> SourceView {
+        SourceView {
+            id: s.id(),
+            peaks: Arc::new(Flat {
+                frames: s.frames(),
+                channels: usize::from(s.channels()),
+            }),
+            mono: Arc::from([]),
+            tempo: None,
+            root: None,
+            root_note: None,
+            onsets: None,
+            ready: false,
+        }
+    }
+
+    /// The first step: the peaks and the mono mix, about a seventh of the
+    /// whole analysis, so the waveform shows long before the hits, tempo
+    /// and root note are known.
+    pub fn quick(s: &Source) -> SourceView {
         let ch = usize::from(s.channels());
         let data = s.data();
         let peaks: Arc<dyn Peaks> = match PyramidPeaks::new(data.clone(), ch) {
@@ -86,6 +118,18 @@ impl SourceView {
             None => Arc::new(Silent),
         };
         let mono: Arc<[f32]> = mpfree_analysis::mono(data, ch).unwrap_or_default().into();
+        SourceView {
+            mono,
+            peaks,
+            ..SourceView::pending(s)
+        }
+    }
+
+    /// The second step: the hits, tempo and root note of `s`, with this
+    /// view's peaks and mono mix.
+    pub fn finish(&self, s: &Source) -> SourceView {
+        let ch = usize::from(s.channels());
+        let data = s.data();
         let onsets = OnsetAnalysis::analyse(data, ch, s.rate())
             .ok()
             .map(Arc::new);
@@ -105,13 +149,34 @@ impl SourceView {
         let root = root_note.map(note_name);
         SourceView {
             id: s.id(),
-            peaks,
-            mono,
+            peaks: self.peaks.clone(),
+            mono: self.mono.clone(),
             tempo,
             root,
             root_note,
             onsets,
+            ready: true,
         }
+    }
+}
+
+/// Not worked out yet: a flat line, of the sound's length.
+struct Flat {
+    frames: u64,
+    channels: usize,
+}
+
+impl Peaks for Flat {
+    fn frames(&self) -> u64 {
+        self.frames
+    }
+
+    fn channels(&self) -> usize {
+        self.channels
+    }
+
+    fn column(&self, _ch: usize, _f0: f64, _f1: f64) -> WaveColumn {
+        WaveColumn::default()
     }
 }
 

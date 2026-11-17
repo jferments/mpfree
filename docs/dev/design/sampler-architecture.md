@@ -451,7 +451,9 @@ Jay, 2026-11-12: stutter and bus FX on pads. Worked out with the FX thread (no r
 | Zero crossings | On demand within ±N frames of a marker | nearest crossing with matching slope |
 | Loudness | Peak, RMS; integrated LUFS later | numbers for normalise |
 
-Analysis results go in the source's cache file with a version number; a newer analyser re-runs old caches in the background.
+**Built: off the screen thread** (`mpfree-app/src/views.rs`, the sampler review's engine item 3). The Sample tab asks `Views` for a sound's `SourceView` each time it shows one. The first time, it gets `SourceView::pending` at once (a flat line of the sound's length, `ready` false) and the sound goes first in the `mpfree-analyse` thread's queue; the worker sends `SourceView::quick` (the peak pyramid and mono mix) and then `SourceView::finish` (onsets, tempo, root note; `ready` true), and the page is built again as each lands (`SamplePage::tick`). Measured on the workstation, release build, a minute of stereo: peaks and mono 27 ms, the rest 170 ms (onsets 127 ms, root note 37 ms, tempo 6 ms); three minutes: 83 ms and 470 ms. The MPC is several times slower (not measured). What waits on the analysis: the Chop tab chops again and the Warp tab finds its hits once it is ready, and the Wave tab's 16ths snap isn't dropped for want of a tempo before then. Map to keys needs the note heard at once, so it works out any view not ready itself (`Views::full`). Views are kept by source id (the hash of the audio) while the sound is in a kit, so a kit loaded again or a sound in two kits is analysed once; the rest are forgotten when the kits change.
+
+Still to come: the results in the source's cache file with a version number (below), so a project opened again needs no analysis, and a newer analyser re-runs old caches in the background.
 
 ## Files
 

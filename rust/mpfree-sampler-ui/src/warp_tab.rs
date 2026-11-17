@@ -288,7 +288,8 @@ impl WarpTab {
     }
 
     /// The hits found in the layer's sound, in source frames (worked out
-    /// once per source and setting).
+    /// once per source and setting; none while the sound's analysis is
+    /// still under way).
     pub fn hits_of(&mut self, st: &WaveState) -> Arc<[u64]> {
         match &self.found {
             Some((id, h, hits)) if *id == st.source.id && *h == self.hits => hits.clone(),
@@ -300,7 +301,11 @@ impl WarpTab {
                     .map(|o| o.pick(self.hits.sensitivity()))
                     .unwrap_or_default()
                     .into();
-                self.found = Some((st.source.id, self.hits, hits.clone()));
+                // Kept only once the hits are worked out: until then the
+                // view has none, and the next one will.
+                if st.source.ready {
+                    self.found = Some((st.source.id, self.hits, hits.clone()));
+                }
                 hits
             }
         }
