@@ -25,10 +25,10 @@ fn sources(m: &IoModel) -> Vec<TempoSource> {
     v
 }
 
-fn source_text(s: &TempoSource) -> &str {
+fn source_text<'a>(m: &'a IoModel, s: &'a TempoSource) -> &'a str {
     match s {
         TempoSource::Internal => OWN,
-        TempoSource::Port(p) => p,
+        TempoSource::Port(p) => m.setup.shown(p),
     }
 }
 
@@ -65,14 +65,14 @@ impl Form for Sync {
         let mut rows = vec![Row::heading("Tempo", vec!["From", ""])];
         let tempo = Row::item("tempo", "Tempo from").field(Field::choice(
             "Tempo from",
-            source_text(&s.tempo),
+            source_text(m, &s.tempo),
             at,
             src.len(),
         ));
         rows.push(match &s.tempo {
             TempoSource::Internal => tempo.note("MPFree's own tempo", Tone::Faint),
             TempoSource::Port(p) if m.live.port(p).is_none() => tempo.note(
-                format!("follows nothing: {p} is not plugged in"),
+                format!("follows nothing: {} is not plugged in", s.shown(p)),
                 Tone::Warn,
             ),
             TempoSource::Port(_) if !built.clock_in => {
@@ -80,9 +80,9 @@ impl Form for Sync {
             }
             TempoSource::Port(p) => match &m.live.clock_in {
                 Some((q, bpm)) if q == p => {
-                    tempo.note(format!("{bpm:.1} BPM from {p}"), Tone::Normal)
+                    tempo.note(format!("{bpm:.1} BPM from {}", s.shown(p)), Tone::Normal)
                 }
-                _ => tempo.note(format!("waiting for clock from {p}"), Tone::Warn),
+                _ => tempo.note(format!("waiting for clock from {}", s.shown(p)), Tone::Warn),
             },
         });
         let following = s.tempo != TempoSource::Internal;
@@ -111,7 +111,7 @@ impl Form for Sync {
         let arriving = Row::item("arriving", "Clock arriving");
         rows.push(match &m.live.clock_in {
             Some((p, bpm)) => arriving
-                .note(format!("{bpm:.1} BPM on {p}"), Tone::Normal)
+                .note(format!("{bpm:.1} BPM on {}", s.shown(p)), Tone::Normal)
                 .light(true),
             None => arriving.note("none", Tone::Faint).light(false),
         });
@@ -125,7 +125,7 @@ impl Form for Sync {
                 .iter()
                 .position(|c| *c == p.clock_out)
                 .unwrap_or(0);
-            let row = Row::item(format!("clock:{name}"), name.clone()).field(Field::choice(
+            let row = Row::item(format!("clock:{name}"), s.shown(&name)).field(Field::choice(
                 "Clock out",
                 p.clock_out.label(),
                 i,

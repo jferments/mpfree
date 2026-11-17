@@ -276,6 +276,10 @@ pub struct MusicIn {
     ports_changed: bool,
     /// The clock tempo the I/O view shows: port and tenths of a BPM.
     shown_clock: Option<(usize, i64)>,
+    /// The names given to ports on their pages, by id (the rig's; only
+    /// the ports renamed), for what the screen says when Learn takes a
+    /// control. The log keeps each port's own name.
+    shown: Vec<(PortId, String)>,
     /// Periods whose I/O view update was skipped because the screen held
     /// the model.
     busy: u64,
@@ -362,6 +366,7 @@ impl MusicIn {
             applied: None,
             ports_changed: true,
             shown_clock: None,
+            shown: Vec::new(),
             busy: 0,
             learn: LearnMap::new(),
             learning: Vec::new(),
@@ -386,6 +391,24 @@ impl MusicIn {
             routed: Vec::with_capacity(ROUTED_KEYS),
             thru: Vec::with_capacity(THRU_MSGS),
             thru_dropped: 0,
+        }
+    }
+
+    /// The names given to ports on their pages (the rig's), for the
+    /// Monitor's lines and lights and what Learn says it took: only the
+    /// ports renamed are listed. Runs when the setup or the ports change,
+    /// so it allocates only then (and only with a port renamed).
+    fn shown_names(&mut self, m: &mut mpfree_midi_ui::IoModel) {
+        let shown: Vec<(PortId, String)> = self
+            .ports
+            .all()
+            .iter()
+            .filter(|p| m.setup.shown(&p.name) != p.name)
+            .map(|p| (p.id, m.setup.shown(&p.name).to_string()))
+            .collect();
+        if shown != self.shown {
+            self.shown = shown.clone();
+            m.monitor.set_shown(shown);
         }
     }
 
@@ -426,11 +449,14 @@ impl MusicIn {
     }
 
     /// The followed port's name for the tempo chip ("MIDI In" for the
-    /// 5-pin jack, a USB device's own name), while the project's tempo is
+    /// 5-pin jack, a USB device's given or own name), while the project's tempo is
     /// from a port and that port is plugged in.
     pub fn leader_name(&self) -> Option<&str> {
         let id = self.leader?;
         let p = self.ports.all().iter().find(|p| p.id == id)?;
+        if let Some((_, n)) = self.shown.iter().find(|(i, _)| *i == id) {
+            return Some(n);
+        }
         Some(if p.name == mpfree_midi::setup::DIN_NAME {
             "MIDI In"
         } else {
@@ -723,6 +749,7 @@ impl MusicIn {
             // The app follows a clock now (M4).
             m.live.built.clock_in = true;
             self.applied = Some(m.gen);
+            self.shown_names(&mut m);
         }
         if self.ports_changed {
             m.live.ports = self
@@ -750,6 +777,7 @@ impl MusicIn {
                 })
                 .collect();
             m.monitor.set_ports(self.ports.all());
+            self.shown_names(&mut m);
             self.ports_changed = false;
         }
         // The monitor: what came and went since the last period.
@@ -1082,6 +1110,13 @@ impl MusicIn {
                     m.target
                 ));
                 self.unsaved.push(Saved::of(&m, name));
+                // The screen says the port by the name given to it.
+                let control = match self.shown.iter().find(|(id, _)| *id == port) {
+                    Some((_, n)) => {
+                        mpfree_midi_ui::control_text(&m.control.source, m.control.channel, n)
+                    }
+                    None => control,
+                };
                 self.learning.push(Learning::Took {
                     target: m.target,
                     control,
@@ -2439,6 +2474,32 @@ mod tests {
         }
         m.sync(&s, 0.3);
         assert_eq!(m.leader_name(), Some("Beatstep Pro"));
+        // Named on its page: the chip and the Monitor say the name given;
+        // the setup still names it by its own.
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.set_shown("Beatstep Pro", "BSP", []).unwrap();
+            v.gen += 1;
+        }
+        m.sync(&s, 0.4);
+        assert_eq!(m.leader_name(), Some("BSP"));
+        {
+            let v = s.lock().unwrap();
+            assert_eq!(v.monitor.port_name(usb), Some("BSP"));
+            assert_eq!(v.monitor.own_name(usb), Some("Beatstep Pro"));
+        }
+        // Its own name again.
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.set_shown("Beatstep Pro", "", []).unwrap();
+            v.gen += 1;
+        }
+        m.sync(&s, 0.5);
+        assert_eq!(m.leader_name(), Some("Beatstep Pro"));
+        assert_eq!(
+            s.lock().unwrap().monitor.port_name(usb),
+            Some("Beatstep Pro")
+        );
     }
 
     /// The app's turn each period, as main.rs takes it: a keyboard's
