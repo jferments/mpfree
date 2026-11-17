@@ -1033,6 +1033,181 @@ mod tests {
         });
     }
 
+    /// What the step inspector on Beats shows now.
+    fn inspect(s: &Session) -> crate::play_page::Inspect {
+        s.screen
+            .ui
+            .get::<crate::play_widgets::StepInspector>(crate::play_page::INSPECTOR)
+            .expect("the step inspector")
+            .inspect
+            .clone()
+    }
+
+    /// The Q-Link cards' names and values.
+    fn cards(s: &Session) -> Vec<String> {
+        s.screen
+            .ui
+            .get::<mpfree_ui::qlink::QLinkColumn>(crate::play_page::QLINKS)
+            .expect("the Q-Links")
+            .cards
+            .iter()
+            .map(|c| format!("{} {}", c.name, c.value))
+            .collect()
+    }
+
+    /// Play > Beats, the step inspector (sequencer mockup A): a step
+    /// picked puts it in the throws' place with the step's settings;
+    /// its Trig bank (or Q-LINK) gives the Q-Links the condition, ratchet
+    /// and nudge, and a turn there reaches the clip; Sound needs the
+    /// step's pad held. Its × picks it off, the step kept: the throws
+    /// come back and Q-LINK reaches the macros again.
+    #[test]
+    fn beats_inspects_the_step_picked_and_its_banks_pick_the_q_links() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            assert!(!s.page().ends_with("· step"), "{}", s.page());
+            assert!(s.control("throws", "throw", "").is_some());
+            s.press("steps", "step", "Kick step 5");
+            assert!(s.page().ends_with("· step"), "{}", s.page());
+            assert!(
+                s.control("throws", "throw", "").is_none(),
+                "the inspector has the throws' place"
+            );
+            let i = inspect(&s);
+            assert_eq!(i.title, "Step 5 · Kick");
+            let names: Vec<&str> = i.chips.iter().map(|c| c.0.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "Velocity",
+                    "Length",
+                    "Nudge",
+                    "Chance",
+                    "Condition",
+                    "Ratchet"
+                ]
+            );
+            assert_eq!(i.turned, [true, true, true, true, false, false]);
+            assert!(i.locks.is_empty() && i.one && !i.sound);
+            let sound = s.control("step-inspector", "bank", "Sound bank").unwrap();
+            assert!(!sound.target.enabled, "Sound locks the steps held");
+
+            // Trig: the Q-Links turn the condition, ratchet and nudge.
+            s.press("step-inspector", "bank", "Trig bank");
+            assert_eq!(inspect(&s).turned, [false, false, true, false, true, true]);
+            assert_eq!(
+                cards(&s)[..3],
+                ["Condition always", "Ratchet off", "Nudge 0 ticks"]
+            );
+            s.qlink(1, 1);
+            let kick = lane(&s, "Kick").0;
+            let ratchet = |s: &Session| {
+                let c = s.time.steps().clip.expect("the clip");
+                c.row(kick as u8)[4].map(|st| st.ratchet)
+            };
+            assert_eq!(ratchet(&s), Some(2), "the turn reached the clip");
+            assert_eq!(inspect(&s).chips[5].1, "2×");
+            // Q-LINK steps back to Step.
+            s.button("Q-LINK");
+            assert_eq!(inspect(&s).bank, crate::play_page::HeldBank::Step);
+            assert_eq!(cards(&s)[0], "Velocity 100");
+            // × picks it off and keeps it: the throws come back, and
+            // Q-LINK reaches the macro banks again.
+            s.press("step-inspector", "close", "Close the inspector");
+            assert_eq!(on(&clip_row(&s, kick)), [1, 5], "the step stays");
+            assert!(!s.page().ends_with("· step"), "{}", s.page());
+            assert!(s.control("throws", "throw", "").is_some());
+            s.button("Q-LINK");
+            let title = s
+                .screen
+                .ui
+                .get::<mpfree_ui::qlink::QLinkColumn>(crate::play_page::QLINKS)
+                .map(|q| q.title.clone());
+            assert_eq!(title.as_deref(), Some("Q-Links · Macros 1-4"));
+        });
+    }
+
+    /// The step inspector's locks, Copy and Clear: a lock put on a step
+    /// held (STEP SEQ, the Sound bank) shows on the step picked with its
+    /// ×, which takes it off (UNDO brings it back); Copy and a step tapped
+    /// on the lane copies the step with its lock; Clear takes a step out
+    /// with its lock, one take for UNDO.
+    #[test]
+    fn the_step_inspector_takes_locks_off_copies_and_clears_a_step() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            // Pad 5, the kit pad with a sample, on the pads as steps.
+            s.pad(4, 100, 0.05);
+            s.press("play-transport", "view", "Beats");
+            s.button("STEP SEQ");
+            s.pad(0, 100, 0.05);
+            s.pad(4, 100, 0.05);
+            let tune = RelAddr::new(OnTrack::Pad(4), 2);
+            let lock = |s: &Session, step: usize| {
+                s.time
+                    .steps()
+                    .clip
+                    .and_then(|c| c.lock_value(4, step, tune))
+            };
+            let name = s
+                .screen
+                .ui
+                .get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS)
+                .and_then(|g| g.lanes.iter().find(|l| l.pad == 4).map(|l| l.name.clone()))
+                .expect("pad 5's lane");
+            // Held, the inspector shows the step held and offers Sound.
+            s.pad_edge(4, 100, true);
+            s.run_periods(4);
+            let i = inspect(&s);
+            assert_eq!(i.title, format!("Step 5 · {name} · held"));
+            assert!(i.sound);
+            s.press("step-inspector", "bank", "Sound bank");
+            assert_eq!(inspect(&s).bank, crate::play_page::HeldBank::Sound);
+            s.qlink(0, 3);
+            s.pad_edge(4, 0, false);
+            s.run_periods(4);
+            let locked = lock(&s, 4).expect("a lock on step 5");
+            assert!(!s.page().ends_with("· step"), "let go: {}", s.page());
+
+            // Picked on the screen: its lock, with the ×.
+            s.press("steps", "step", &format!("{name} step 5"));
+            let i = inspect(&s);
+            assert_eq!(i.locks.len(), 1, "{i:?}");
+            assert_eq!(i.locks[0].1, "Tune");
+            s.press("step-inspector", "unlock", "Take off lock 1");
+            assert_eq!(lock(&s, 4), None, "the × took it off");
+            assert!(inspect(&s).locks.is_empty());
+            assert_eq!(on(&clip_row(&s, 4)), [1, 5], "the note stays");
+            s.button("UNDO");
+            assert_eq!(lock(&s, 4), Some(locked), "UNDO brings it back");
+
+            // Copy, then step 9: the note and its lock.
+            s.press("step-inspector", "copy", "Copy the step");
+            assert!(inspect(&s).copying);
+            assert!(s.hint().contains("takes step 5's copy"), "{}", s.hint());
+            s.press("steps", "step", &format!("{name} step 9"));
+            assert_eq!(on(&clip_row(&s, 4)), [1, 5, 9]);
+            assert_eq!(lock(&s, 8), Some(locked), "the copy has the lock");
+
+            // Clear step 9: out, its lock too; UNDO brings both back.
+            s.press("steps", "step", &format!("{name} step 9"));
+            assert_eq!(inspect(&s).title, format!("Step 9 · {name}"));
+            s.press("step-inspector", "clear", "Clear the step");
+            assert_eq!(on(&clip_row(&s, 4)), [1, 5]);
+            assert_eq!(lock(&s, 8), None);
+            assert!(!s.page().ends_with("· step"), "{}", s.page());
+            s.button("UNDO");
+            assert_eq!(on(&clip_row(&s, 4)), [1, 5, 9]);
+            assert_eq!(lock(&s, 8), Some(locked));
+        });
+    }
+
     /// A project opened (as at start, Prefs > At start) has no clip
     /// launched. PLAY then starts the pattern Play's Beats shows, as in a
     /// new project; TRACK MUTE's pad 1 silences it and lets it play again.

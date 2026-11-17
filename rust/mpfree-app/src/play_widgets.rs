@@ -15,8 +15,9 @@
 //! in and decides what the events do. Each redraws only what changed where
 //! that matters on the MPC (the transport's numbers, a pad, a step).
 
-use crate::play_page::{SynthPads, LAYOUT_SWITCH, VIEWS};
+use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED, VIEWS};
 use mpfree_arp::scale::pads::PadLayout;
+use mpfree_seq::Cond;
 use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, KNOB};
 use mpfree_ui::widgets::{Pad, PadGrid};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget};
@@ -600,6 +601,32 @@ pub struct Lane {
     pub muted: bool,
     /// Each step's velocity on the page (0: empty).
     pub steps: Vec<u8>,
+    /// What each step's cell shows besides its velocity, step for step
+    /// (missing: nothing).
+    pub marks: Vec<Marks>,
+}
+
+/// What a step's cell shows besides its velocity, which is the height of
+/// its bar (the full step cell of the sequencer design's mockup A).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Marks {
+    /// Its locks: a purple dot each, three at most (on an empty step too:
+    /// a lock with no note).
+    pub locks: u8,
+    /// Its trig condition, as a small label at the top left.
+    pub cond: Cond,
+    /// The chance it plays, in percent: under 100 the cell has a dashed
+    /// outline, with the percent when it has no condition (0 is 100).
+    pub chance: u8,
+    /// Its hits: two or more draw a tick each.
+    pub ratchet: u8,
+    /// Nudged early (below 0) or late (above 0): a small triangle at the
+    /// bottom left or right.
+    pub nudge: i8,
+    /// Its note lasts into the next step: a bar into it.
+    pub tie: bool,
+    /// An empty step a note before it lasts over: a thin bar through it.
+    pub held_over: bool,
 }
 
 /// The pattern: a lane per sound (as many as fit, the ones that play
@@ -895,6 +922,118 @@ impl StepGrid {
     }
 }
 
+/// One step's cell: empty (the first of each beat a little lighter), or
+/// its note as a bar as tall as its velocity over a dim cell in the lane's
+/// colour, with its marks: the condition or the chance at the top left,
+/// the ratchet's ticks after it, a dot per lock at the top right, the
+/// nudge's triangle, a dashed outline for a chance under 100 %, a bar into
+/// the next step for a note that lasts over it.
+#[allow(clippy::too_many_arguments)]
+fn paint_cell(
+    cx: &mut PaintCx,
+    sr: Rect,
+    v: u8,
+    m: &Marks,
+    c: Color,
+    muted: bool,
+    lit: bool,
+    beat: bool,
+) {
+    let t = cx.theme.clone();
+    let tint = |a: f32| {
+        let f = t.raised.mix(c, if muted { a * 0.4 } else { a });
+        if lit {
+            f.mix(Color::rgb(0xFFFFFF), 0.35)
+        } else {
+            f
+        }
+    };
+    if v == 0 {
+        let base = if beat {
+            t.raised
+        } else {
+            t.raised.mix(t.surface, 0.45)
+        };
+        cx.canvas.fill_round_rect(sr, 5, base);
+        if m.held_over {
+            let bar = Rect::new(sr.x - 4, sr.y + sr.h / 2 - 3, sr.w * 2 / 3 + 4, 6);
+            cx.canvas.fill_rect(bar, tint(0.55));
+        }
+    } else {
+        // The cell dim in the lane's colour, the velocity's bar bright
+        // over its bottom.
+        cx.canvas.fill_round_rect(sr, 5, tint(0.35));
+        let bh = ((sr.h as f32 * f32::from(v) / 127.0).round() as i32).clamp(4, sr.h);
+        cx.canvas
+            .fill_round_rect(Rect::new(sr.x, sr.bottom() - bh, sr.w, bh), 5, tint(0.9));
+        if m.tie {
+            // Across the gap into the next step.
+            let bar = Rect::new(sr.right() - 2, sr.y + sr.h / 2 - 3, 16, 6);
+            cx.canvas.fill_rect(bar, tint(0.9));
+        }
+    }
+    if v > 0 && m.chance > 0 && m.chance < 100 {
+        let o = sr.inset(1);
+        let (x0, y0, x1, y1) = (
+            o.x as f32,
+            o.y as f32,
+            o.right() as f32 - 1.0,
+            o.bottom() as f32 - 1.0,
+        );
+        let mut sh = mpfree_ui::Shape::new(sr);
+        sh.dashed(
+            &[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)],
+            2.0,
+            5.0,
+        );
+        cx.canvas.blend_shape(&sh, c.mix(Color::rgb(0xFFFFFF), 0.3));
+    }
+    let ink = t.bg;
+    // The top left: the condition, else the chance, then the ticks.
+    let label = if m.cond != Cond::Always {
+        m.cond.to_string()
+    } else if v > 0 && m.chance > 0 && m.chance < 100 {
+        format!("{}%", m.chance)
+    } else {
+        String::new()
+    };
+    let mut x = sr.x + 4;
+    if !label.is_empty() {
+        let w = (label.len() as i32 * 7 + 6).min(sr.w - 8);
+        let chip = Rect::new(x, sr.y + 3, w, 14);
+        cx.canvas
+            .fill_round_rect(chip, 3, Color::rgb(0xFFFFFF).with_alpha(220));
+        cx.text(FontId::Bold, 10.0, chip, Align::Center, ink, &label);
+        x += w + 3;
+    }
+    if v > 0 && m.ratchet > 1 {
+        for k in 0..i32::from(m.ratchet.min(4)) {
+            cx.canvas
+                .fill_rect(Rect::new(x + k * 4, sr.y + 4, 2, 9), ink.with_alpha(200));
+        }
+    }
+    // The top right: a dot per lock.
+    for k in 0..i32::from(m.locks.min(3)) {
+        let dx = sr.right() - 8 - k * 9;
+        dot(cx, dx, sr.y + 8, 4, LOCKED);
+    }
+    // The nudge: a triangle pointing the way it goes.
+    if v > 0 && m.nudge != 0 {
+        // Nine rows, widest (the tip) in the middle: ◀ at the bottom left
+        // for early, ▶ at the bottom right for late.
+        let y = sr.bottom() - 13;
+        for row in 0..9 {
+            let w = 5 - (row - 4i32).abs();
+            let x = if m.nudge < 0 {
+                sr.x + 9 - w
+            } else {
+                sr.right() - 9
+            };
+            cx.canvas.fill_rect(Rect::new(x, y + row, w, 1), ink);
+        }
+    }
+}
+
 impl Widget for StepGrid {
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
         let painted = self.painted.borrow();
@@ -977,30 +1116,9 @@ impl Widget for StepGrid {
                     continue;
                 }
                 let v = lane.steps.get(s).copied().unwrap_or(0);
-                if v == 0 {
-                    let base = if s % 4 == 0 {
-                        t.raised
-                    } else {
-                        t.raised.mix(t.surface, 0.45)
-                    };
-                    cx.canvas.fill_round_rect(sr, 5, base);
-                } else {
-                    let a = 0.35 + 0.65 * v as f32 / 127.0;
-                    let mut fill = t.raised.mix(c, a);
-                    if lane.muted {
-                        fill = t.raised.mix(c, 0.25);
-                    }
-                    if self.play == Some(s) && !lane.muted {
-                        fill = fill.mix(Color::rgb(0xFFFFFF), 0.35);
-                    }
-                    cx.canvas.fill_round_rect(sr, 5, fill);
-                    // Velocity as a short line along the bottom.
-                    let vw = ((sr.w - 8) as f32 * v as f32 / 127.0) as i32;
-                    cx.canvas.fill_rect(
-                        Rect::new(sr.x + 4, sr.bottom() - 5, vw.max(2), 2),
-                        t.bg.with_alpha(120),
-                    );
-                }
+                let m = lane.marks.get(s).copied().unwrap_or_default();
+                let lit = self.play == Some(s) && !lane.muted;
+                paint_cell(cx, sr, v, &m, c, lane.muted, lit, s % 4 == 0);
                 if self.selected == Some((lane.pad, s)) || self.held.contains(&(lane.pad, s)) {
                     cx.canvas.stroke_round_rect(sr.inset(-3), 7, 2, t.text);
                 }
@@ -1074,6 +1192,297 @@ impl Widget for StepGrid {
             }
         }
         None
+    }
+}
+
+// ---------------------------------------------------------- inspector
+
+/// The inspector's taps, as `Tab` indices after the banks' 0 to 2.
+pub const INSPECT_COPY: usize = 10;
+pub const INSPECT_CLEAR: usize = 11;
+pub const INSPECT_CLOSE: usize = 12;
+
+/// The step held or picked on Beats, under the pattern in the throws'
+/// place (the sequencer design's mockup A): its settings as chips, the
+/// ones the Q-Links turn outlined; Q-LINK's banks, a tap picks one
+/// (`Tab(0..=2)`: Step, Trig, Sound); its locks, each with a × that takes
+/// it off (`Toggle(k)`); Copy (`Tab(INSPECT_COPY)`) and Clear
+/// (`Tab(INSPECT_CLEAR)`); for a step picked (not held), × at the head's
+/// right (`Tab(INSPECT_CLOSE)`) picks it off, the step kept.
+#[derive(Default)]
+pub struct StepInspector {
+    pub inspect: crate::play_page::Inspect,
+}
+
+/// Where the inspector's parts sit.
+struct InspectGeom {
+    head: Rect,
+    banks: [Rect; 3],
+    close: Rect,
+    chips: [Rect; 6],
+    label: Rect,
+    locks: Vec<Rect>,
+    hint: Rect,
+    copy: Rect,
+    clear: Rect,
+}
+
+const BANK_W: i32 = 84;
+const CLOSE_W: i32 = 52;
+const LOCK_W: i32 = 196;
+const BUTTON_W: i32 = 100;
+
+impl StepInspector {
+    fn geom(&self, r: Rect) -> InspectGeom {
+        let (h, body) = card_head(r);
+        let band = Rect::new(h.x, r.y + 4, h.w, h.h + 12);
+        let close = Rect::new(band.right() - CLOSE_W + 4, band.y, CLOSE_W - 4, band.h);
+        let banks = std::array::from_fn(|k| {
+            Rect::new(
+                band.right() - CLOSE_W - (3 - k as i32) * BANK_W,
+                band.y,
+                BANK_W - 4,
+                band.h,
+            )
+        });
+        let gap = 10;
+        let cw = (body.w - 5 * gap) / 6;
+        let chips =
+            std::array::from_fn(|k| Rect::new(body.x + k as i32 * (cw + gap), body.y, cw, 58));
+        let label = Rect::new(body.x, body.y + 58 + 12, body.w, 14);
+        let row = Rect::new(body.x, label.bottom() + 4, body.w, 44);
+        let clear = Rect::new(row.right() - BUTTON_W, row.y, BUTTON_W, row.h);
+        let copy = Rect::new(clear.x - gap - BUTTON_W, row.y, BUTTON_W, row.h);
+        let room = copy.x - gap - row.x;
+        let fit = ((room + gap) / (LOCK_W + gap)).max(0) as usize;
+        let n = self.inspect.locks.len().min(fit);
+        let locks: Vec<Rect> = (0..n)
+            .map(|k| Rect::new(row.x + k as i32 * (LOCK_W + gap), row.y, LOCK_W, row.h))
+            .collect();
+        let hx = locks.last().map_or(row.x, |l| l.right() + gap);
+        let hint = Rect::new(hx, row.y, (copy.x - gap - hx).max(0), row.h);
+        InspectGeom {
+            head: h,
+            banks,
+            close,
+            chips,
+            label,
+            locks,
+            hint,
+            copy,
+            clear,
+        }
+    }
+
+    fn banks_usable(&self) -> [bool; 3] {
+        let note = !self.inspect.chips.is_empty();
+        [note, note, self.inspect.sound]
+    }
+}
+
+impl Widget for StepInspector {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let i = &self.inspect;
+        cx.canvas.fill_rect(r, t.bg);
+        card(cx, r, &i.title, "");
+        let g = self.geom(r);
+        // Q-LINK's banks, the one showing filled.
+        let hint_r = Rect::new(
+            g.head.x,
+            g.head.y,
+            (g.banks[0].x - 12 - g.head.x).max(0),
+            g.head.h,
+        );
+        cx.text(
+            FontId::Sans,
+            13.0,
+            hint_r,
+            Align::Right,
+            t.text_faint,
+            "Q-LINK steps the bank",
+        );
+        let usable = self.banks_usable();
+        for (k, b) in g.banks.iter().enumerate() {
+            let on = i.bank as usize == k;
+            let fill = if on {
+                if k == 2 {
+                    LOCKED
+                } else {
+                    t.accent
+                }
+            } else {
+                t.raised
+            };
+            cx.canvas.fill_round_rect(*b, 8, fill);
+            let ink = if on { t.bg } else { t.button_ink(usable[k]) };
+            let name = ["Step", "Trig", "Sound"][k];
+            cx.text(FontId::Bold, 15.0, *b, Align::Center, ink, name);
+        }
+        // × for a step picked: picks it off (a step held goes when let go).
+        if !i.sound {
+            cx.canvas.fill_round_rect(g.close, 8, t.raised);
+            cx.text(FontId::Bold, 18.0, g.close, Align::Center, t.text_dim, "×");
+        }
+        // The settings: name over value, the ones the Q-Links turn outlined.
+        if i.chips.is_empty() {
+            let r0 = Rect::new(
+                g.chips[0].x,
+                g.chips[0].y,
+                g.chips[5].right() - g.chips[0].x,
+                g.chips[0].h,
+            );
+            cx.canvas
+                .fill_round_rect(r0, 8, t.raised.mix(t.surface, 0.5));
+            cx.text(
+                FontId::Sans,
+                15.0,
+                r0.inset_xy(16, 0),
+                Align::Left,
+                t.text_dim,
+                "No note on this step: its locks play with no note",
+            );
+        }
+        for (k, (name, value)) in i.chips.iter().enumerate().take(6) {
+            let c = g.chips[k];
+            cx.canvas.fill_round_rect(c, 8, t.raised);
+            if i.turned[k] {
+                cx.canvas.stroke_round_rect(c, 8, 2, t.accent);
+            }
+            let (top, bottom) = c.inset_xy(14, 6).take_top(20);
+            cx.text(FontId::Sans, 13.0, top, Align::Left, t.text_dim, name);
+            cx.text(FontId::Bold, 20.0, bottom, Align::Left, t.text, value);
+        }
+        // The locks: a pill each with its ×, then how to add one.
+        cx.text(
+            FontId::Bold,
+            11.0,
+            g.label,
+            Align::Left,
+            t.text_dim,
+            "LOCKS ON THIS STEP",
+        );
+        for (k, lr) in g.locks.iter().enumerate() {
+            let (_, name, value) = &i.locks[k];
+            cx.canvas
+                .fill_round_rect(*lr, lr.h / 2, LOCKED.with_alpha(70));
+            cx.canvas.stroke_round_rect(*lr, lr.h / 2, 2, LOCKED);
+            dot(
+                cx,
+                lr.x + 18,
+                lr.y + lr.h / 2,
+                5,
+                LOCKED.mix(Color::rgb(0xFFFFFF), 0.4),
+            );
+            let text_r = Rect::new(lr.x + 30, lr.y, lr.w - 30 - 34, lr.h);
+            let nw = cx.text(FontId::Bold, 15.0, text_r, Align::Left, t.text, name);
+            let vr = Rect::new(text_r.x + nw + 8, lr.y, (text_r.w - nw - 8).max(0), lr.h);
+            cx.text(FontId::Sans, 14.0, vr, Align::Left, t.text_dim, value);
+            let x = Rect::new(lr.right() - 34, lr.y, 26, lr.h);
+            cx.text(FontId::Bold, 16.0, x, Align::Center, t.text_dim, "×");
+        }
+        if g.hint.w > 120 {
+            let x0 = g.hint.x as f32;
+            let (y0, x1, y1) = (
+                g.hint.y as f32,
+                g.hint.right() as f32 - 1.0,
+                g.hint.bottom() as f32 - 1.0,
+            );
+            let mut sh = mpfree_ui::Shape::new(g.hint);
+            sh.dashed(
+                &[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)],
+                1.5,
+                6.0,
+            );
+            cx.canvas.blend_shape(&sh, t.outline);
+            let words = if i.sound {
+                "+ Lock: turn a Sound knob while the step is held"
+            } else {
+                "+ Lock: hold the step's pad and turn a knob"
+            };
+            cx.text(
+                FontId::Sans,
+                14.0,
+                g.hint.inset_xy(14, 0),
+                Align::Left,
+                t.text_faint,
+                words,
+            );
+        }
+        for (b, label, on) in [
+            (
+                g.copy,
+                if i.copying { "Copy to…" } else { "Copy" },
+                i.copying,
+            ),
+            (g.clear, "Clear", false),
+        ] {
+            cx.canvas
+                .fill_round_rect(b, 8, if on { t.accent } else { t.raised });
+            let ink = if on { t.bg } else { t.button_ink(i.one) };
+            cx.text(FontId::Bold, 15.0, b, Align::Center, ink, label);
+        }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let g = self.geom(r);
+        let usable = self.banks_usable();
+        let mut out: Vec<Target> = g
+            .banks
+            .iter()
+            .enumerate()
+            .map(|(k, b)| {
+                Target::tap(
+                    "bank",
+                    k,
+                    format!("{} bank", ["Step", "Trig", "Sound"][k]),
+                    *b,
+                )
+                .disabled_if(!usable[k])
+            })
+            .collect();
+        for (k, lr) in g.locks.iter().enumerate() {
+            out.push(Target::tap(
+                "unlock",
+                k,
+                format!("Take off lock {}", k + 1),
+                *lr,
+            ));
+        }
+        if !self.inspect.sound {
+            out.push(Target::tap(
+                "close",
+                INSPECT_CLOSE,
+                "Close the inspector",
+                g.close,
+            ));
+        }
+        let one = self.inspect.one;
+        out.push(Target::tap("copy", INSPECT_COPY, "Copy the step", g.copy).disabled_if(!one));
+        out.push(Target::tap("clear", INSPECT_CLEAR, "Clear the step", g.clear).disabled_if(!one));
+        out
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        let g = self.geom(r);
+        if let Some(k) = g.banks.iter().position(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(k));
+        }
+        if !self.inspect.sound && g.close.contains(x, y) {
+            return Some(EventKind::Tab(INSPECT_CLOSE));
+        }
+        if let Some(k) = g.locks.iter().position(|l| l.contains(x, y)) {
+            return Some(EventKind::Toggle(k));
+        }
+        if g.copy.contains(x, y) {
+            return Some(EventKind::Tab(INSPECT_COPY));
+        }
+        g.clear
+            .contains(x, y)
+            .then_some(EventKind::Tab(INSPECT_CLEAR))
     }
 }
 
@@ -1716,6 +2125,7 @@ mod tests {
             color: KNOB[0],
             muted: false,
             steps: steps.to_vec(),
+            marks: Vec::new(),
         }
     }
 

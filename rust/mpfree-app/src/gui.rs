@@ -36,8 +36,12 @@ use crate::looping::{LoopWave, LooperView};
 use crate::mixing::{PlayFx, PlayLevels};
 use crate::pace::{Pace, TOUCH_POLL};
 use crate::perf::ProcView;
-use crate::play_page::{self, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn};
-use crate::play_widgets::{self, MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
+use crate::play_page::{
+    self, HeldBank, InspectTap, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn,
+};
+use crate::play_widgets::{
+    self, MiniPads, PlayTransport, StepGrid, StepInspector, Throws, XyPad, YourTiming,
+};
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::skin_page;
@@ -1353,6 +1357,7 @@ impl Player {
         ui.add(play_page::THROWS, Throws::default());
         ui.add(play_page::XY, XyPad::default());
         ui.add(play_page::TIMING, YourTiming::default());
+        ui.add(play_page::INSPECTOR, StepInspector::default());
         ui.add(play_page::SYNTH_PADS_HEAD, PadsBar::default());
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
@@ -1381,6 +1386,13 @@ impl Player {
             &PlayView::Beats.layout_for(true),
         )
         .expect("beats with timing layout");
+        for (page, timing) in [
+            (play_page::BEATS_STEP_PAGE, false),
+            (play_page::BEATS_TIMING_STEP_PAGE, true),
+        ] {
+            ui.add_page(page, &PlayView::step_layout(timing))
+                .expect("beats with the step inspector");
+        }
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
@@ -2254,6 +2266,20 @@ impl Player {
             // and Sound banks.
             self.play.bank = self.play.bank.next();
             println!("q-link bank: {}", self.play.held_bank().name());
+            self.refresh_play();
+            self.refresh_qlinks();
+            self.refresh_hint();
+            return;
+        }
+        if play && self.play.inspecting() {
+            // A step picked on Beats: Step and Trig (locks need the
+            // step's pad held).
+            self.play.bank = match self.play.bank {
+                HeldBank::Step => HeldBank::Trig,
+                _ => HeldBank::Step,
+            };
+            println!("q-link bank: {}", self.play.bank.name());
+            self.refresh_play();
             self.refresh_qlinks();
             self.refresh_hint();
             return;
@@ -2378,6 +2404,27 @@ impl Player {
                         (xy.x, xy.y) = (x, y);
                     }
                 }
+            }
+        }
+        // The step inspector: filled while a step is held or picked on
+        // Beats, and its page swapped in for the throws' (or back).
+        let inspect = self.play.inspect().unwrap_or_default();
+        if self
+            .ui
+            .get::<StepInspector>(play_page::INSPECTOR)
+            .is_some_and(|w| w.inspect != inspect)
+        {
+            if let Some(w) = self.ui.get_mut::<StepInspector>(play_page::INSPECTOR) {
+                w.inspect = inspect;
+            }
+        }
+        if self.ready && self.view == View::Play && !self.band_showing() && !self.levels.open {
+            let want = self
+                .play
+                .view
+                .page_with(self.settings.timing_strip, self.play.inspecting());
+            if self.ui.page() != want && self.ui.page().starts_with("Play") {
+                self.show_view(View::Play);
             }
         }
         if self.timing_shown() {
@@ -6381,7 +6428,7 @@ impl Player {
             View::Play => self
                 .play
                 .view
-                .page_for(self.settings.timing_strip)
+                .page_with(self.settings.timing_strip, self.play.inspecting())
                 .to_string(),
             View::Arrange => CLIPS_PAGE.to_string(),
             View::Synth => self.synth_page(),
@@ -6934,6 +6981,42 @@ impl Player {
                 self.play.levels.pad_mutes ^= 1 << pad;
                 self.refresh_play();
                 Some(FromUi::PlayFx(PlayFx::PadMute { pad, mute }))
+            }
+            (play_page::INSPECTOR, EventKind::Tab(k)) if k < 3 => {
+                let bank = [HeldBank::Step, HeldBank::Trig, HeldBank::Sound][k];
+                self.play.inspector_tap(InspectTap::Bank(bank));
+                println!(
+                    "q-link bank: {}",
+                    self.play.inspect().map_or(bank, |i| i.bank).name()
+                );
+                self.refresh_play();
+                self.refresh_qlinks();
+                self.refresh_hint();
+                None
+            }
+            (play_page::INSPECTOR, EventKind::Tab(k)) => {
+                let tap = match k {
+                    play_widgets::INSPECT_COPY => InspectTap::Copy,
+                    play_widgets::INSPECT_CLOSE => InspectTap::Close,
+                    _ => InspectTap::Clear,
+                };
+                let a = self.play.inspector_tap(tap);
+                if let Some((_, i)) = self.play.copy_from.filter(|_| tap == InspectTap::Copy) {
+                    self.tell(&format!(
+                        "Copy: tap the step on this lane that takes step {}'s copy",
+                        i + 1
+                    ));
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                self.refresh_hint();
+                a.map(FromUi::Steps)
+            }
+            (play_page::INSPECTOR, EventKind::Toggle(k)) => {
+                let a = self.play.inspector_tap(InspectTap::Unlock(k));
+                self.refresh_play();
+                self.refresh_qlinks();
+                a.map(FromUi::Steps)
             }
             (play_page::THROWS, EventKind::Pad { index, down }) => {
                 let fx = self.play.throw(index, down);
@@ -8128,6 +8211,34 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
             pad: 0,
             step: 6,
             change,
+        });
+    }
+    // Mockup A's marks on the cells: conditions, a chance, ratchets, a
+    // note held over the next step, and locks (one with no note).
+    use mpfree_seq::steps::Change;
+    use mpfree_seq::Cond;
+    for (pad, step, change) in [
+        (0, 8, Change::Cond(Cond::Every { a: 1, b: 2 })),
+        (0, 10, Change::Chance(50)),
+        (2, 15, Change::Ratchet(3)),
+        (4, 12, Change::Cond(Cond::Pre)),
+        (5, 7, Change::Length(STEP_TICKS * 2)),
+        (7, 12, Change::Cond(Cond::Fill)),
+        (10, 2, Change::Ratchet(2)),
+        (12, 8, Change::Cond(Cond::First)),
+        (13, 10, Change::Chance(70)),
+    ] {
+        let _ = h.step_action(StepAction::Change { pad, step, change });
+    }
+    let tune = |pad| {
+        mpfree_play::mpfree_param::RelAddr::new(mpfree_play::mpfree_param::OnTrack::Pad(pad), 2)
+    };
+    for (pad, steps) in [(0u8, (1u128 << 6) | (1 << 9)), (2, 1 << 12), (10, 1 << 5)] {
+        let _ = h.step_action(StepAction::Lock {
+            pad,
+            steps,
+            addr: tune(pad),
+            value: Some(300.0),
         });
     }
     h.command(mpfree_transport::Command::SetSwing(
@@ -11093,6 +11204,9 @@ mod tests {
             (q.title.clone(), q.cards.clone())
         };
         let held = |p: &Player| p.ui.get::<StepGrid>(play_page::STEPS).unwrap().held.clone();
+        // No step picked on the screen (Q-LINK would step its banks).
+        p.play.selected = None;
+        p.refresh_play();
         // A macro bank first: a held step takes the Q-Links over it.
         p.apply(ToUi::QLinkBank);
         assert_eq!(column(&p).0, "Q-Links · Macros 1-4");
@@ -12095,7 +12209,9 @@ mod tests {
     #[test]
     fn the_beats_view_shows_your_timing() {
         let p = sample_play(Fonts::embedded(), PlayView::Beats);
-        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
+        // Step 7 of the kick is picked, as in the sequencer's mockup A:
+        // the step inspector has the throws' place.
+        assert_eq!(p.page(), play_page::BEATS_TIMING_STEP_PAGE);
         let t = p.ui.get::<YourTiming>(play_page::TIMING).unwrap();
         assert_eq!(
             t.lanes.iter().map(|l| l.1.as_str()).collect::<Vec<_>>(),
