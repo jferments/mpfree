@@ -575,6 +575,11 @@ fn from_word<T: Copy>(s: &str, words: &[(&str, T)]) -> Option<T> {
     words.iter().find(|(w, _)| *w == s).map(|(_, v)| *v)
 }
 
+const GRAIN_MODES: &[(&str, GrainMode)] = &[
+    ("cloud", GrainMode::Cloud),
+    ("stretch", GrainMode::Stretch),
+    ("repeat", GrainMode::Repeat),
+];
 const PLAY_MODES: &[(&str, PlayMode)] = &[
     ("one-shot", PlayMode::OneShot),
     ("gate", PlayMode::Gate),
@@ -791,6 +796,7 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
         tune_cents,
         mode,
         grain,
+        grain_mode,
         warp,
     } = r;
     f.num("start", start);
@@ -825,6 +831,8 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
     f.word("channels", channels, PICKS);
     f.num("tune_cents", tune_cents);
     f.word("mode", mode, PLAY_MODES);
+    // Saves before grain modes open as clouds.
+    f.word("grain_mode", grain_mode, GRAIN_MODES);
     f.scope("grain", |f| visit_grain(f, grain));
     f.opt("warp", warp, Warp::new(120.0), |f, w| {
         let Warp { bpm, method, pins } = w;

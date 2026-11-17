@@ -154,6 +154,7 @@ fn busy_kit() -> Project {
         level_spray: 0.7,
         spray_shape: GrainSprayShape::Peaked,
     };
+    g.grain_mode = GrainMode::Repeat;
     p.set_pad(5, Some(Pad::new("Cloud", Layer::new(g))), None)
         .unwrap();
     // A keygroup far up the pad list, a toggle and a gate pad.
