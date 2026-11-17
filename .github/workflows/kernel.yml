@@ -1,0 +1,50 @@
+name: MPFree kernel build
+
+# Own-kernel step 2 (docs/dev/hardware/own-kernel.md): Linux 6.18 long-term with the
+# PREEMPT_RT patch for the MPC One, built by tools/kernel/build.sh in its pinned container
+# on the self-hosted runners. Not a required check; it runs only when the kernel's files
+# change, or by hand. The result is kept as the run's artifact (zImage, modules, config,
+# SHA256SUMS) for the stick builder; nothing here reaches an MPC.
+
+on:
+  pull_request:
+    paths:
+      - 'tools/kernel/**'
+      - '.github/workflows/kernel.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/kernel/**'
+      - '.github/workflows/kernel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One build per branch at a time; a newer push waits rather than cancelling a build.
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Kernel for the MPC One (6.18 with PREEMPT_RT)
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests for the build script
+        run: |
+          python3 tools/kernel/tests/test_check_config.py
+          python3 tools/kernel/tests/test_build_sources.py
+      - name: What this runner has
+        run: bash tools/kernel/build.sh --probe
+      - name: Build
+        run: bash tools/kernel/build.sh "$RUNNER_TEMP/mpfree-kernel"
+      - name: Keep the kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpfree-kernel-${{ github.sha }}
+          path: ${{ runner.temp }}/mpfree-kernel/
+          retention-days: 30
+          if-no-files-found: error
