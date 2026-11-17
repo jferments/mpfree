@@ -1194,22 +1194,275 @@ pub(super) fn compressor(r: &mut Report) {
         );
     }
 
-    // K7 (reported until auto makeup exists), K10.
+    // K12: the release after three seconds of reduction against after
+    // 50 ms: the same in Clean, slower in the styles with a slow stage.
+    let slowdown = |values: &[(u16, f64)], tag: &str, r: &mut Report, subject: &str| {
+        let after = |loud: f64| {
+            let mut d = make_with(&main, rate, values);
+            dynamics::release_after(&mut d, -40.0, 0.0, loud, 8.0).1
+        };
+        let (short, long) = (after(0.05), after(3.0));
+        for (metric, v) in [
+            ("release90_after_50ms_ms", short),
+            ("release90_after_3s_ms", long),
+        ] {
+            r.put("K12", subject, metric, v, Better::Info, None, 0.0);
+        }
+        let ratio = short.zip(long).map(|(s, l)| l / s);
+        if tag == "clean" {
+            r.put(
+                "K12",
+                subject,
+                "release_slowdown",
+                ratio,
+                Better::Near(1.0),
+                Some(0.1),
+                0.03,
+            );
+        } else {
+            r.put(
+                "K12",
+                subject,
+                "release_slowdown",
+                ratio,
+                Better::Higher,
+                Some(2.0),
+                0.2,
+            );
+        }
+    };
+    slowdown(&[], "clean", r, name);
+
+    // K15: the styles. Each meets the curve (its knee), the attack and
+    // release labels and the default's bass distortion (FET's colour
+    // reported), comes back slower after long reduction, and changes
+    // without a click.
+    for (tag, style) in [("opto", k::OPTO), ("bus", k::BUS), ("fet", k::FET)] {
+        let subject = format!("compressor/{tag}");
+        let sv = [(k::STYLE, style as f64)];
+        let c = compressor_with(&sv);
+        let mut d = make_with(&main, rate, &sv);
+        let worst = dynamics::static_curve(&mut d, &levels)
+            .iter()
+            .map(|(i, o)| (o - c.curve_db(*i as f32) as f64).abs())
+            .fold(0.0, f64::max);
+        r.put(
+            "K15",
+            &subject,
+            "curve_error_peak",
+            Some(worst),
+            Better::Lower,
+            Some(0.25),
+            0.05,
+        );
+        for (att, rel) in [(1.0, 50.0), (10.0, 150.0), (30.0, 500.0)] {
+            let mut d = make_with(
+                &main,
+                rate,
+                &[
+                    (k::STYLE, style as f64),
+                    (k::ATTACK, att),
+                    (k::RELEASE, rel),
+                ],
+            );
+            let t = dynamics::timing(&mut d, -40.0, 0.0, (rel * 8.0 / 1000.0).max(0.5));
+            r.put(
+                "K15",
+                &subject,
+                format!("attack_ratio_{att}ms"),
+                t.attack_ms.map(|a| a / att),
+                Better::Near(1.0),
+                Some(0.15),
+                0.05,
+            );
+            // A level step holds long enough to charge the slow stage, so
+            // the plain release is read after a short burst.
+            let mut d = make_with(
+                &main,
+                rate,
+                &[
+                    (k::STYLE, style as f64),
+                    (k::ATTACK, att),
+                    (k::RELEASE, rel),
+                ],
+            );
+            let burst = (8.0 * att / 1000.0).max(0.02);
+            let back =
+                dynamics::release_after(&mut d, -40.0, 0.0, burst, 8.0 * rel / 1000.0 + 0.5).0;
+            r.put(
+                "K15",
+                &subject,
+                format!("release_ratio_after_burst_{rel}ms"),
+                back.map(|a| a / rel),
+                Better::Near(1.0),
+                Some(0.15),
+                0.03,
+            );
+        }
+        for hz in [50.0, 100.0] {
+            let mut d = make_with(
+                &main,
+                rate,
+                &[
+                    (k::STYLE, style as f64),
+                    (k::THRESHOLD, -20.0),
+                    (k::KNEE, 0.0),
+                ],
+            );
+            let thd = floor(harmonics::measure(&mut d, hz, -7.0).thd_db);
+            let target = (tag != "fet").then_some(if hz < 75.0 { -50.0 } else { -56.0 });
+            r.put(
+                "K15",
+                &subject,
+                format!("thd_{hz}hz_gr10"),
+                Some(thd),
+                Better::Lower,
+                target,
+                1.0,
+            );
+        }
+        slowdown(&sv, tag, r, &subject);
+        let mut d = make(&main, rate);
+        r.put(
+            "K15",
+            &subject,
+            "style_change_db",
+            Some(switch_click(&mut d, k::STYLE, style as f64, 220.0)),
+            Better::Lower,
+            Some(3.0),
+            0.5,
+        );
+    }
+    // FET's colour: harmonics of 1 kHz at about 10 dB of reduction, and
+    // what folds back from 5 kHz.
+    let fet = [
+        (k::STYLE, k::FET as f64),
+        (k::THRESHOLD, -20.0),
+        (k::KNEE, 0.0),
+    ];
+    let mut d = make_with(&main, rate, &fet);
+    let h = harmonics::measure(&mut d, 1000.0, -7.0);
+    r.put(
+        "K15",
+        "compressor/fet",
+        "thd_1k_gr10",
+        Some(floor(h.thd_db)),
+        Better::Info,
+        None,
+        0.0,
+    );
+    let mut d = make_with(&main, rate, &fet);
+    let (a5, _) = alias(&mut d, 5000.0, 0.0);
+    r.put(
+        "K15",
+        "compressor/fet",
+        "alias_5k_0dbfs_gr15",
+        Some(a5),
+        Better::Lower,
+        Some(-60.0),
+        1.0,
+    );
+    // 8 kHz's third harmonic folds back at 20.1 kHz.
+    let mut d = make_with(&main, rate, &fet);
+    let (a8, _) = alias(&mut d, 8000.0, 0.0);
+    r.put(
+        "K15",
+        "compressor/fet",
+        "alias_8k_0dbfs_gr15",
+        Some(a8),
+        Better::Info,
+        None,
+        0.0,
+    );
+
+    // K13: Range caps the reduction where the curve says.
+    let values = [(k::RANGE, 6.0)];
+    let c = compressor_with(&values);
+    let mut d = make_with(&main, rate, &values);
+    let worst = dynamics::static_curve(&mut d, &levels)
+        .iter()
+        .map(|(i, o)| (o - c.curve_db(*i as f32) as f64).abs())
+        .fold(0.0, f64::max);
+    r.put(
+        "K13",
+        name,
+        "curve_error_range6",
+        Some(worst),
+        Better::Lower,
+        Some(0.25),
+        0.05,
+    );
+
+    // K14: Link: unlinked, a quiet right side keeps its level under a loud
+    // left; at 50 % it takes half the left's reduction.
+    let l = sine(1000.0, 1.0, n, rate);
+    let rr = sine(1000.0, db_to_amp(-30.0), n, rate);
+    for (metric, link, share) in [
+        ("unlinked_quiet_side_db", 0.0, 0.0),
+        ("half_link_error_db", 50.0, 0.5),
+    ] {
+        let mut d = make_with(&main, rate, &[(k::LINK, link)]);
+        let y = d.render(&Stereo::new(l.clone(), rr.clone(), rate), 0);
+        let (gl, gr) = (g(&y.left, &l), g(&y.right, &rr));
+        r.put(
+            "K14",
+            name,
+            metric,
+            Some((gr - share * gl).abs()),
+            Better::Lower,
+            Some(if share > 0.0 { 0.25 } else { 0.1 }),
+            0.02,
+        );
+    }
+
+    // K7: auto makeup (with Makeup at 0) on the defaults and every preset;
+    // the presets' own makeup reported. K10.
     for s in std::iter::once(&main).chain(&presets) {
         let mut d = make(s, rate);
+        // The presets set their own makeup (a keyed one is judged keyed);
+        // the defaults have none.
+        let keyed = s.preset.is_some_and(|p| {
+            p.values
+                .iter()
+                .any(|(id, v)| *id == k::SIDECHAIN && *v >= 0.5)
+        });
+        let own = s.preset.is_some() && !keyed;
         r.put(
             "K7",
             &s.name,
             "lu_pink18",
             Some(lu(&mut d, &p18)),
-            Better::Info,
-            None,
-            0.0,
+            if own { Better::Near(0.0) } else { Better::Info },
+            own.then_some(1.5),
+            0.2,
         );
         r.put(
             "K7",
             &s.name,
             "lu_pink6",
+            Some(lu(&mut d, &p6)),
+            Better::Info,
+            None,
+            0.0,
+        );
+        let auto = [(k::AUTO_MAKEUP, 1.0), (k::MAKEUP, 0.0)];
+        let mut d = make(s, rate);
+        for (id, v) in auto {
+            d.set(id, v);
+        }
+        r.put(
+            "K7",
+            &s.name,
+            "lu_pink18_auto",
+            Some(lu(&mut d, &p18)),
+            Better::Near(0.0),
+            Some(1.5),
+            0.2,
+        );
+        r.put(
+            "K7",
+            &s.name,
+            "lu_pink6_auto",
             Some(lu(&mut d, &p6)),
             Better::Info,
             None,
