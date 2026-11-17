@@ -78,6 +78,7 @@ use mpfree_node::Cull;
 use crate::bandlimit::{self, OctaveCell, Reach};
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
+    TINY,
 };
 use crate::model::{
     edge_gain, ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx,
@@ -3384,6 +3385,11 @@ fn warped_step(step: i64, tempo: f64, warp_bpm: f64) -> i64 {
 /// the per-frame loop.
 #[inline(never)]
 fn pressure_step(v: &mut Voice) {
+    // The smoothing lands, so pressure let go doesn't creep toward zero
+    // through the denormals.
+    if (v.press_target - v.press).abs() < TINY {
+        v.press = v.press_target;
+    }
     let d = v.route.depth * v.press;
     match v.route.target {
         PressureTarget::Level => {
@@ -3419,8 +3425,15 @@ fn retime(v: &mut Voice) {
 /// depend on `e` and pressure's cutoff factor, so while neither moves (a
 /// held sustain, no pressure) this skips the `exp2` and `tan`; the second
 /// stage is only set for a 4-pole filter, the only one that uses it.
+/// It also flushes the filter's state: ringing out on silence, the filter
+/// reaches exact zeros instead of denormals (here, out of the per-frame
+/// loop, it costs nothing measurable).
 #[inline(never)]
 fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
+    v.svf[0].flush();
+    if f.poles >= 4 {
+        v.svf[1].flush();
+    }
     let key = (e.to_bits(), v.press_fc.to_bits());
     if v.filter_key == Some(key) {
         return;
@@ -3520,6 +3533,9 @@ fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
         }
     }
     v.heard = (v.heard * HEARD_FALL).max(v.last_l.abs().max(v.last_r.abs()));
+    if v.heard < TINY {
+        v.heard = 0.0;
+    }
 }
 
 /// [`render_voice`] for a voice reading band-limited, from now on. Kept
@@ -3846,6 +3862,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Pressure let go lands on zero: its smoothing never creeps toward
+    /// zero through the denormals, which cost far more than a normal
+    /// number (7 times, for 16 pads held after pressure).
+    #[test]
+    fn pressure_let_go_lands_on_exact_zero() {
+        let mut v = Voice {
+            route: PressureRoute {
+                target: PressureTarget::Level,
+                depth: 0.5,
+            },
+            press: 1.0,
+            press_target: 0.0,
+            press_coef: 1.0 - (-1.0 / (PRESSURE_SMOOTH_S * 44_100.0)).exp(),
+            press_gain: 1.0,
+            ..Voice::default()
+        };
+        for frame in 0..44_100 {
+            follow_pressure(&mut v);
+            assert!(
+                v.press == 0.0 || v.press.abs() >= f32::MIN_POSITIVE,
+                "a denormal at frame {frame}"
+            );
+        }
+        assert_eq!(v.press, 0.0);
     }
 
     /// A plain voice gives the same samples, bit for bit, from
