@@ -38,10 +38,11 @@ jobs:
         run: |
           python3 tools/kernel/tests/test_check_config.py
           python3 tools/kernel/tests/test_build_sources.py
+      # The runners' home is read-only to jobs; the tool cache keeps the downloads between runs.
       - name: What this runner has
-        run: bash tools/kernel/build.sh --probe
+        run: MPFREE_KERNEL_CACHE="${RUNNER_TOOL_CACHE:?}/mpfree-kernel" bash tools/kernel/build.sh --probe
       - name: Build
-        run: bash tools/kernel/build.sh "$RUNNER_TEMP/mpfree-kernel"
+        run: MPFREE_KERNEL_CACHE="${RUNNER_TOOL_CACHE:?}/mpfree-kernel" bash tools/kernel/build.sh "$RUNNER_TEMP/mpfree-kernel"
       - name: Keep the kernel
         uses: actions/upload-artifact@v4
         with:
