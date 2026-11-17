@@ -61,7 +61,7 @@ use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
 use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
-use mpfree_midi::setup::{Ignored, PortInput, TempoSource};
+use mpfree_midi::setup::{Ignored, Kept, PortInput, TempoSource};
 use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
 use mpfree_node::ParamInfo;
@@ -243,6 +243,13 @@ pub struct MusicIn {
     learning: Vec<Learning>,
     /// Controls learned but not yet in the project (the screen held it).
     unsaved: Vec<Saved>,
+    /// The I/O view's Learn again: the learned control the next one
+    /// learned replaces (its range, takeover and where it is kept carry
+    /// over). Learn armed from the I/O view stays armed until a control
+    /// takes it or Cancel; the chain editor's ends when the editor does.
+    relearn: Option<(Kept, Saved)>,
+    /// Learn was armed from the I/O view (Learn again).
+    armed_by_io: bool,
     /// Switches of mode whose learned controls follow their parameters,
     /// not yet in the project (the screen held it).
     moved: Vec<crate::fxmodes::Landed>,
@@ -312,9 +319,12 @@ impl MusicIn {
             learn: LearnMap::new(),
             learning: Vec::new(),
             unsaved: Vec::new(),
+            relearn: None,
+            armed_by_io: false,
             moved: Vec::new(),
             unkept: 0,
-            learn_sets: Vec::with_capacity(mpfree_midi::setup::MAX_LEARNED),
+            // The song's and the rig's.
+            learn_sets: Vec::with_capacity(2 * mpfree_midi::setup::MAX_LEARNED),
             next_look: 0.0,
             follow: None,
             leader: None,
@@ -409,10 +419,20 @@ impl MusicIn {
     /// `target`.
     pub fn arm(&mut self, target: ParamAddr) {
         self.learn.arm(target);
+        self.armed_by_io = false;
+        self.relearn = None;
     }
 
     pub fn disarm(&mut self) {
         self.learn.disarm();
+        self.armed_by_io = false;
+        self.relearn = None;
+    }
+
+    /// Learn was armed from the I/O view (its Learn again), not the chain
+    /// editor: it stays armed until a control takes it or Cancel.
+    pub fn armed_by_io(&self) -> bool {
+        self.armed_by_io && self.learn.armed().is_some()
     }
 
     pub fn armed(&self) -> Option<ParamAddr> {
@@ -516,16 +536,47 @@ impl MusicIn {
             }
         };
         if !self.unsaved.is_empty() {
-            for l in self.unsaved.drain(..) {
-                if !m.setup.learned(l) {
+            for mut l in self.unsaved.drain(..) {
+                let mut kept = Kept::Project;
+                // Learn again: the new control takes the old one's place,
+                // with its range, how it takes over and where it is kept;
+                // the way it works carries over when it is the same kind
+                // of control (a key stays a button).
+                if let Some((k, old)) = self.relearn.take().filter(|(_, o)| o.target == l.target) {
+                    let list = match k {
+                        Kept::Project => &mut m.setup.learn,
+                        Kept::Rig => &mut m.setup.rig_learn,
+                    };
+                    list.retain(|o| *o != old);
+                    let key = |s: &Saved| matches!(s.source, mpfree_midi::learn::Source::Note(_));
+                    if key(&old) == key(&l) {
+                        l.mode = old.mode;
+                    }
+                    (l.lo, l.hi, l.takeover) = (old.lo, old.hi, old.takeover);
+                    kept = k;
+                }
+                if !m.setup.learned_in(kept, l) {
                     self.unkept += 1;
                 }
             }
+            self.armed_by_io = false;
             m.gen += 1;
+        }
+        // The Learn section's Learn again and Cancel.
+        if let Some(k) = m.asks.learn_again.take() {
+            if let Some((kept, l)) = m.setup.learned_at(k) {
+                self.learn.arm(l.target);
+                self.relearn = Some((kept, l.clone()));
+                self.armed_by_io = true;
+            }
+        }
+        if std::mem::take(&mut m.asks.cancel_learn) {
+            self.disarm();
         }
         if !self.moved.is_empty() {
             for landed in self.moved.drain(..) {
                 m.setup.learn.retain_mut(|s| follow(s, &landed));
+                m.setup.rig_learn.retain_mut(|s| follow(s, &landed));
             }
             // The learn map is built again from the list.
             m.gen += 1;
@@ -555,9 +606,9 @@ impl MusicIn {
                 0,
                 |e| routed_key(e, routed),
             );
-            let learned = std::mem::take(&mut m.setup.learn);
-            self.build_learn(&learned);
-            m.setup.learn = learned;
+            // The song's learned controls, then the rig's it doesn't
+            // override.
+            self.build_learn(&m.setup.in_use());
             // "Tempo from" a port: follow its clock, by name, so a USB
             // device plugged in later is found.
             let leader = match &m.setup.tempo {
@@ -1848,6 +1899,71 @@ mod tests {
         let (keys, _) = run(&mut m, usb, &[0xB2, 75, 1, 0x92, 60, 90]);
         assert_eq!(keys.len(), 1);
         assert_eq!(m.learning().count(), 0);
+    }
+
+    /// The I/O view's Learn again: the next control moved replaces the
+    /// learned one, keeping its range, takeover and where it is kept;
+    /// Cancel keeps the old one. A control kept for every project works
+    /// in any song, unless the song has its own for the same control.
+    #[test]
+    fn learn_again_replaces_a_control_and_the_rigs_work_in_every_song() {
+        use mpfree_midi::learn::Takeover;
+        let mut m = MusicIn::new();
+        let usb = m.plugged("Keystep 37").unwrap();
+        let s = model();
+        let old = Saved::parse(&format!(
+            "port Keystep 37 | ch 3 | cc 20 | {} | 0.2 0.8 | absolute | pickup",
+            cutoff()
+        ))
+        .unwrap();
+        s.lock().unwrap().setup.learned_in(Kept::Rig, old.clone());
+        s.lock().unwrap().gen += 1;
+        m.sync(&s, 0.0);
+        // The rig's control works with no song mapping.
+        run(&mut m, usb, &[0xB2, 20, 127]);
+        assert!(
+            matches!(m.learning().collect::<Vec<_>>()[..], [Learning::Set(w)] if w.target == cutoff())
+        );
+        // Learn again, then Cancel: nothing changes.
+        s.lock().unwrap().asks.learn_again = Some(0);
+        m.sync(&s, 0.1);
+        assert_eq!(m.armed(), Some(cutoff()));
+        assert!(m.armed_by_io());
+        s.lock().unwrap().asks.cancel_learn = true;
+        m.sync(&s, 0.2);
+        assert_eq!(m.armed(), None);
+        assert_eq!(
+            s.lock().unwrap().setup.rig_learn,
+            std::slice::from_ref(&old)
+        );
+        // Learn again, then a knob: it takes the old one's place in the
+        // rig, with its range and takeover.
+        s.lock().unwrap().asks.learn_again = Some(0);
+        m.sync(&s, 0.3);
+        run(&mut m, usb, &[0xB2, 21, 64]);
+        assert!(matches!(m.learning().next(), Some(Learning::Took { .. })));
+        m.sync(&s, 0.4);
+        {
+            let v = s.lock().unwrap();
+            assert!(v.setup.learn.is_empty());
+            assert_eq!(v.setup.rig_learn.len(), 1);
+            let new = &v.setup.rig_learn[0];
+            assert_eq!(new.source, mpfree_midi::learn::Source::Cc(21));
+            assert_eq!((new.lo, new.hi, new.takeover), (0.2, 0.8, Takeover::Pickup));
+        }
+        assert!(!m.armed_by_io());
+        // The song's own mapping for CC 21 wins over the rig's.
+        let mut song = s.lock().unwrap().setup.rig_learn[0].clone();
+        song.target = "t2.inst.3".parse().unwrap();
+        s.lock().unwrap().setup.learned(song);
+        s.lock().unwrap().gen += 1;
+        m.sync(&s, 0.5);
+        run(&mut m, usb, &[0xB2, 21, 127]);
+        let set: Vec<_> = m.learning().collect();
+        assert!(
+            matches!(set[..], [Learning::Set(w)] if w.target.to_string() == "t2.inst.3"),
+            "{set:?}"
+        );
     }
 
     /// A switch of mode moves a control learned on the insert to the new

@@ -81,16 +81,29 @@ MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controll
 
 The move that teaches a control doesn't play a note, and neither does a learned control. Teach a control again and it moves to the new knob.
 
-Each learned control is listed in the mixer's I/O view, under **MIDI** and then **MIDI Learn**, with the knob it moves. **Works as** says how it moves it:
+### The Learn section
 
-- **Knob or fader**: the knob follows it. Every control but a key starts as this.
-- **Endless**: for a knob that turns forever. Each click moves the knob one step on from where it is, even after you changed it on the screen. Controllers send these three ways, so if the knob jumps or runs backwards, try the next one: **1 up, 127 down**, **65 up, 63 down** or **1 up, 65 down**.
-- **Button: on, then off**: each press switches between the knob's top and bottom.
-- **Button: while held**: top while held, bottom when let go. A key starts as this.
+{{shot: mixer-io-learn | The I/O view's Learn section: what each control moves, where it stands now and where it is kept, with the picked control's range, how it works and how it takes over.}}
 
-Tap **Forget** to take a learned control off. A row in amber says why its control does nothing: the device isn't plugged in, or its port is set to **Plays tracks**, which keeps every message for playing. A port set to **Learn only** turns knobs but plays no notes on the armed track (its [routes](#playing-several-tracks-from-your-keyboards) still play).
+Every learned control is listed in the mixer's I/O view, in the **Learn** section: the device and the control on it (**CC 74**, **note C2 ch 10**), what it moves, a bar for where that stands now, and where it is kept. A row in grey or amber says why its control does nothing: the device isn't plugged in (*unplugged, waits*), its port is set to **Plays tracks**, which keeps every message for playing (*its port only plays tracks*), or the song has its own mapping for the same control (*the song's own mapping wins*). A port set to **Learn only** turns knobs but plays no notes on the armed track (its [routes](#playing-several-tracks-from-your-keyboards) still play).
 
-Learned controls are saved with the project. Still to come: learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
+Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
+
+- **Range**: where the control's bottom and top land, in the knob's own units (– and +, or Q-Links 1 and 2; SHIFT for finer steps). Stop a fader's top at 0 dB, or keep a filter between 200 Hz and 8 kHz. A bottom above the top turns the control upside down.
+- **Works as** (– and +, or Q-Link 3) says how it moves the knob:
+  - **Knob or fader**: the knob follows it. Every control but a key starts as this.
+  - **Endless**: for a knob that turns forever. Each click moves the knob one step on from where it is, even after you changed it on the screen. Controllers send these three ways, so if the knob jumps or runs backwards, try the next one: **1 up, 127 down**, **65 up, 63 down** or **1 up, 65 down**.
+  - **Button: on, then off**: each press switches between the range's top and bottom.
+  - **Button: while held**: top while held, bottom when let go. A key starts as this.
+- **Takeover** (Q-Link 4), for a knob or fader, says what happens when it and the screen disagree, after you changed the value on the screen or opened another song:
+  - **Jump**: the value goes straight to where the knob is.
+  - **Pick up**: the value waits until the knob passes it, so nothing jumps.
+  - **Scale**: the value moves at once, but in step with the knob, so the two meet at the end the knob turns to.
+- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. While a song has its own mapping for the same control, the song's wins.
+- **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
+- **Remove** takes the control off.
+
+Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning any value on the screen rather than only effect knobs (SHIFT + touch a value), and controlling PLAY, STOP, REC and the tempo from a controller.
 
 ## CV and gate
 

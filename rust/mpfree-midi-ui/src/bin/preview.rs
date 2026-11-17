@@ -15,8 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mpfree_midi::setup::{ClockOut, IgnoreSet, Ignored, TrackOut, TrackRoute, DIN_NAME};
-use mpfree_midi_ui::{sample, sections, Built, IoModel};
+use mpfree_midi::learn::Takeover;
+use mpfree_midi::setup::{ClockOut, IgnoreSet, Ignored, Kept, TrackOut, TrackRoute, DIN_NAME};
+use mpfree_midi_ui::{sample, sections, Built, IoModel, LearnLive};
 use mpfree_mixer_ui::sample::{name, play, screen, song_mixer};
 use mpfree_mixer_ui::{MixState, MixView};
 use mpfree_ui::{Fonts, SoftCanvas, Touch, Ui};
@@ -84,6 +85,39 @@ fn shots() -> Vec<Shot> {
         built.setup.learned(l);
         built.live.learn_names.push(name.into());
     }
+    // Learn: the drum machine's key mutes Perc in every project; the
+    // keyboard's filter knob picks up, over 200 Hz to 8 kHz.
+    let mut learn = built.clone();
+    learn.setup.keep_at(2, Kept::Rig);
+    learn.live.learn_names.swap(2, 3);
+    learn.setup.learn[0].takeover = Takeover::Pickup;
+    learn.setup.learn[0].lo = 0.35;
+    learn.setup.learn[0].hi = 0.8;
+    learn.live.learn_live = vec![
+        LearnLive {
+            now: Some(0.55),
+            lo_text: "200 Hz".into(),
+            hi_text: "8.0 kHz".into(),
+        },
+        LearnLive {
+            now: Some(0.71),
+            lo_text: "-inf dB".into(),
+            hi_text: "+6.0 dB".into(),
+        },
+        LearnLive {
+            now: Some(0.3),
+            lo_text: "-inf dB".into(),
+            hi_text: "+6.0 dB".into(),
+        },
+        LearnLive {
+            now: Some(0.0),
+            lo_text: "Off".into(),
+            hi_text: "On".into(),
+        },
+    ];
+    let mut learning = learn.clone();
+    learning.live.learning = Some("Volume (Bass)".into());
+    learning.asks.learn_again = Some(1);
     let rig_port = rig.clone();
     // The keyboard with MIDI out on: the Pads track plays on it and it
     // gets clock while playing, 3 ms early.
@@ -154,7 +188,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-sync",
             about: "Sync: tempo from the 5-pin jacks with clock arriving, following, and clock out per port; following not built yet",
-            section: 3,
+            section: 4,
             model: rig.clone(),
             wheel: 0,
             taps: vec![],
@@ -165,7 +199,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-cv",
             about: "CV: the eight outputs with job, track and main setting; CV out not built yet",
-            section: 4,
+            section: 5,
             model: rig,
             wheel: 0,
             taps: vec![],
@@ -185,20 +219,31 @@ fn shots() -> Vec<Shot> {
             pick: None,
         },
         Shot {
-            name: "io-midi-learn",
-            about: "MIDI, scrolled to MIDI Learn: each learned control, how it works and what it moves, with Forget; one on a device that isn't plugged in",
-            section: 1,
-            model: built.clone(),
-            wheel: 40,
+            name: "io-learn",
+            about: "Learn (board 8, without MIDI Follow): what the controllers move, where each stands and where it is kept; the drum machine's key kept for every project, one on a device that isn't plugged in; the keyboard's filter knob picked, with its range in hertz, Pick up and Project",
+            section: 3,
+            model: learn.clone(),
+            wheel: 0,
             taps: vec![],
             at: 1,
             open: None,
             pick: None,
         },
         Shot {
+            name: "io-learn-learning",
+            about: "Learn after Learn again on the Bass volume: the banner says what the next control moved will take, with Cancel",
+            section: 3,
+            model: learning,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Keystep 37 CC 16"),
+        },
+        Shot {
             name: "io-cv-built",
             about: "CV once CV out is built: each output's volts now",
-            section: 4,
+            section: 5,
             model: built.clone(),
             wheel: 0,
             taps: vec![],
@@ -209,7 +254,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-monitor",
             about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo, each line with where it went; lights per port and channel, in on top and out below",
-            section: 5,
+            section: 6,
             model: sample::monitored(built.clone()),
             wheel: 0,
             taps: vec![],
@@ -220,7 +265,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-monitor-channel",
             about: "Monitor after a tap on the keyboard's channel 1 light: only what came in on it",
-            section: 5,
+            section: 6,
             model: sample::monitored(built.clone()),
             wheel: 0,
             // y -1: the keyboard's channel 1 light, in.
@@ -232,7 +277,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-monitor-now",
             about: "Monitor, Now view, 45 s into a session: the keyboard's chord held with E4 pressed harder, the controls that moved (the learned knob says what it moves), program and bank, the clock from the 5-pin jacks with a pulse lost, bend and pressure, and the Bass track's C2 stuck on MIDI out",
-            section: 5,
+            section: 6,
             model: sample::held_now(built),
             wheel: 0,
             // y -2: the Now half of List | Now.

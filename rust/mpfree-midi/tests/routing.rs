@@ -640,6 +640,49 @@ fn pickup_waits_for_the_knob_to_reach_the_value() {
     .is_empty());
 }
 
+/// Scale: the value moves at once, by the same share of the way to the
+/// end the knob turns towards, until the two meet.
+#[test]
+fn scale_moves_the_value_in_proportion_until_the_knob_meets_it() {
+    let mut map = LearnMap::new();
+    let t = addr(2);
+    map.arm(t);
+    let cc = |value| Msg::Cc {
+        ch: 0,
+        cc: 21,
+        value,
+    };
+    writes(&mut map, KEYS, cc(0));
+    map.set_takeover(0, Takeover::Scale);
+    map.observe(t, 0.6); // the screen says 0.6; the knob is low
+                         // The first move only says where the knob is.
+    assert!(writes(&mut map, KEYS, cc(0)).is_empty());
+    let value = |w: Vec<Input>| match w[..] {
+        [Input::Write(x)] => x.value,
+        _ => panic!("{w:?}"),
+    };
+    // Up half of what's left (0 to 63.5 of 127): the value goes up half
+    // of its 0.4.
+    let v = value(writes(&mut map, KEYS, cc(127 / 2)));
+    let knob = 63.0 / 127.0;
+    assert!((v - (0.6 + knob * 0.4)).abs() < 1e-4, "{v}");
+    // Down to the bottom: the value goes to the bottom with it.
+    let v = value(writes(&mut map, KEYS, cc(0)));
+    assert!(v.abs() < 1e-6, "{v}");
+    // They met: from now on the value follows the knob.
+    let v = value(writes(&mut map, KEYS, cc(100)));
+    assert!((v - 100.0 / 127.0).abs() < 1e-6, "{v}");
+    // Saved and read back as "scale".
+    let saved = mpfree_midi::learn::Saved::of(map.get(0).unwrap(), None);
+    assert!(saved.text().ends_with("| scale"), "{}", saved.text());
+    assert_eq!(
+        mpfree_midi::learn::Saved::parse(&saved.text())
+            .unwrap()
+            .takeover,
+        Takeover::Scale
+    );
+}
+
 #[test]
 fn encoders_buttons_and_keys() {
     let mut map = LearnMap::new();

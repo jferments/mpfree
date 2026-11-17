@@ -4362,6 +4362,8 @@ fn player_session(
     // I/O view's names taken at this generation of the model.
     let mut learn_misses = 0u64;
     let mut learn_names_gen: Option<u64> = None;
+    let mut learn_now_at = 0.0_f64;
+    let mut learning_shown: Option<mpfree_play::mpfree_param::ParamAddr> = None;
     // A followed clock's tempo for the app, taken at the next turn.
     let mut followed_tempo: Option<f64> = None;
     // The port the tempo chip last said the tempo comes from.
@@ -5134,8 +5136,9 @@ fn player_session(
             parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
         }
         // MIDI Learn listens only while the chain editor's learn is armed:
-        // Back or closing the editor stops it too.
-        if music.armed().is_some() && !panels.learning() {
+        // Back or closing the editor stops it too. The I/O view's Learn
+        // again stays armed until a control takes it or its Cancel.
+        if music.armed().is_some() && !panels.learning() && !music.armed_by_io() {
             music.disarm();
         }
         if let Some(line) = param_log.poll(&synth, t_read) {
@@ -5235,10 +5238,12 @@ fn player_session(
         let recording = time.info().state == mpfree_transport::State::Recording;
         for l in music.learning() {
             match l {
-                midi_in::Learning::Took { .. } => {
+                midi_in::Learning::Took { .. } if panels.learning() => {
                     panels.learned();
                     out.show(gui::ToUi::ChainLearnDone);
                 }
+                // The I/O view's Learn again: its section says so.
+                midi_in::Learning::Took { .. } => {}
                 midi_in::Learning::Set(w) => {
                     if learned_set(&mut panels, &mut mix, w, recording).is_none() {
                         learn_misses += 1;
@@ -5259,15 +5264,43 @@ fn player_session(
         // The I/O view names what each learned control moves, whenever
         // the project's learned controls change.
         if let Ok(mut m) = io_model.try_lock() {
-            if learn_names_gen != Some(m.gen) {
-                learn_names_gen = Some(m.gen);
-                let names = m
-                    .setup
-                    .learn
-                    .iter()
-                    .map(|l| modpanels::label(&mix, l.target))
+            let mpfree_midi_ui::IoModel {
+                setup, live, gen, ..
+            } = &mut *m;
+            if learn_names_gen != Some(*gen) {
+                learn_names_gen = Some(*gen);
+                live.learn_names = setup
+                    .all_learned()
+                    .map(|(_, l)| modpanels::label(&mix, l.target))
                     .collect();
-                m.live.learn_names = names;
+                // The ends of each one's range, in its units (the Learn
+                // section's card).
+                live.learn_live = setup
+                    .all_learned()
+                    .map(|(_, l)| match modmix::describe(&mix.mixer, l.target) {
+                        Some((info, _)) => mpfree_midi_ui::LearnLive {
+                            now: None,
+                            lo_text: mpfree_mod::text::value_text(&info, info.from_unit(l.lo)),
+                            hi_text: mpfree_mod::text::value_text(&info, info.from_unit(l.hi)),
+                        },
+                        None => mpfree_midi_ui::LearnLive::default(),
+                    })
+                    .collect();
+                learn_now_at = 0.0;
+            }
+            // Where each one's parameter stands, a few times a second, in
+            // place (no allocation).
+            if mt >= learn_now_at {
+                learn_now_at = mt + 0.25;
+                for ((_, l), v) in setup.all_learned().zip(live.learn_live.iter_mut()) {
+                    v.now = modmix::describe(&mix.mixer, l.target).map(|(i, x)| i.to_unit(x));
+                }
+            }
+            // What Learn waits to give a control, named.
+            let armed = music.armed();
+            if armed != learning_shown {
+                learning_shown = armed;
+                live.learning = armed.map(|a| modpanels::label(&mix, a));
             }
         }
         // Keys a route sends to a track (the I/O view's Routing): the

@@ -1,7 +1,7 @@
 //! The MIDI section: each port's input and thru, where each track plays
 //! ("Plays on", the port and channel as one setting, the owner's rule),
-//! with its program, and the controls learned with MIDI Learn
-//! (`crate::learn`).
+//! with its program. The controls learned with MIDI Learn are in the
+//! Learn section (`crate::learn_section`).
 
 use std::time::Duration;
 
@@ -207,7 +207,6 @@ impl Form for Midi {
             }
             rows.push(row);
         }
-        crate::learn::rows(m, &mut rows);
         rows
     }
 
@@ -217,9 +216,6 @@ impl Form for Midi {
     }
 
     fn step(&self, m: &mut IoModel, key: &str, col: usize, delta: i32) -> bool {
-        if let Some(changed) = crate::learn::step(m, key, col, delta) {
-            return changed;
-        }
         if let Some(name) = parse_key(key, "port") {
             let name = name.to_string();
             let before = m.setup.port(&name);
@@ -418,8 +414,6 @@ mod tests {
                 "Drums",
                 "Bass",
                 "Keys",
-                "MIDI Learn",
-                "No controls learned"
             ]
         );
         assert_eq!(row(&r, "port:MIDI").light, Some(false));
@@ -646,103 +640,5 @@ mod tests {
     fn sec_field(sec: &FormSection<Midi>, key: &str, col: usize) -> (i32, i32) {
         let r = sec.field_rect(key, col, AREA).expect(key);
         (r.x + r.w / 2, r.y + r.h / 2)
-    }
-
-    fn learned(port: Option<&str>, cc: u8) -> mpfree_midi::learn::Saved {
-        use mpfree_midi::learn::{Mode, Saved, Source, Takeover};
-        let target = "t2.inst.7".parse().unwrap();
-        Saved {
-            port: port.map(String::from),
-            channel: 2,
-            source: Source::Cc(cc),
-            target,
-            lo: 0.0,
-            hi: 1.0,
-            mode: Mode::Absolute,
-            takeover: Takeover::Jump,
-        }
-    }
-
-    /// Each learned control: what it is, what it moves, and when it would
-    /// do nothing, the reason in place.
-    #[test]
-    fn learned_controls_are_listed_and_say_when_they_do_nothing() {
-        let s = model();
-        {
-            let mut m = s.lock().unwrap();
-            m.setup.learned(learned(Some("Keystep 37"), 74));
-            m.setup.learned(learned(Some("Launch Control"), 21));
-            m.setup.learned(learned(None, 1));
-            m.live.learn_names = vec!["Cutoff (Drums)".into()];
-        }
-        let r = rows(&s);
-        let a = row(&r, "learn:0");
-        assert_eq!(a.title, "CC 74 · ch 3 · Keystep 37");
-        assert_eq!(a.note, "moves Cutoff (Drums)");
-        assert_eq!(a.fields[0].text, "Knob or fader");
-        assert_eq!(row(&r, "learn:1").note, "not plugged in: moves t2.inst.7");
-        assert_eq!(row(&r, "learn:2").title, "CC 1 · ch 3 · any port");
-        s.lock()
-            .unwrap()
-            .setup
-            .set_port("Keystep 37", |p| p.input = PortInput::PlaysTracks);
-        assert_eq!(
-            row(&rows(&s), "learn:0").note,
-            "does nothing: its port only plays tracks"
-        );
-    }
-
-    /// "Works as" steps through the ways a control moves; Forget takes it
-    /// off, with its name, and what is set is kept with the project.
-    #[test]
-    fn a_learned_control_can_change_and_be_forgotten() {
-        use mpfree_midi::learn::{Encoding, Mode};
-        let s = model();
-        {
-            let mut m = s.lock().unwrap();
-            m.setup.learned(learned(Some("Keystep 37"), 74));
-            m.setup.learned(learned(Some("Keystep 37"), 75));
-            m.live.learn_names = vec!["A".into(), "B".into()];
-        }
-        let mut m = s.lock().unwrap();
-        assert!(Midi.step(&mut m, "learn:0", 0, 1));
-        assert_eq!(
-            m.setup.learn[0].mode,
-            Mode::Relative(Encoding::TwosComplement)
-        );
-        assert!(Midi.step(&mut m, "learn:0", 0, -2));
-        assert_eq!(m.setup.learn[0].mode, Mode::Momentary);
-        assert!(!Midi.step(&mut m, "learn:0", 1, 0));
-        assert!(Midi.step(&mut m, "learn:0", 1, 1));
-        assert_eq!(m.setup.learn.len(), 1);
-        assert_eq!(m.live.learn_names, ["B"]);
-        let (back, warn) = MidiSetup::parse(&m.setup.to_text());
-        assert!(warn.is_empty(), "{warn:?}");
-        assert_eq!(back.learn, m.setup.learn);
-        assert!(!Midi.step(&mut m, "learn:5", 1, 1));
-    }
-
-    /// Forget works by a tap only: a Q-Link or + on its row does nothing.
-    #[test]
-    fn forget_takes_a_tap() {
-        let s = model();
-        s.lock()
-            .unwrap()
-            .setup
-            .learned(learned(Some("Keystep 37"), 74));
-        let mut sec = FormSection::new(Midi, s.clone());
-        let _ = paint(&sec);
-        // Selected by a tap on its title first, then knob 2 and +.
-        let t = sec.field_rect("learn:0", 0, AREA).unwrap();
-        tap(&mut sec, t.x - 40, t.y + 10);
-        assert_eq!(sec.qlink_turn(1, 1, false), IoReply::Ignored);
-        assert!(!sec.qlinks().unwrap()[1].enabled);
-        sec.input(IoInput::Step(1));
-        assert_eq!(s.lock().unwrap().setup.learn.len(), 1);
-        // Selecting the row scrolled it; find Forget again.
-        let _ = paint(&sec);
-        let f = sec.field_rect("learn:0", 1, AREA).unwrap();
-        tap(&mut sec, f.x + 10, f.y + 10);
-        assert!(s.lock().unwrap().setup.learn.is_empty());
     }
 }

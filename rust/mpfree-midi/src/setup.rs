@@ -390,8 +390,12 @@ pub struct MidiSetup {
     /// What each CV/gate output does.
     pub cv: [CvAssign; CV_OUTS],
     /// Controls learned with MIDI Learn, each with its device by name, in
-    /// the order learned.
+    /// the order learned: the song's.
     pub learn: Vec<Saved>,
+    /// Controls learned for every project (kept with the rig, as a port's
+    /// input is): a controller's transport keys or a tempo fader. The
+    /// song's own mapping for the same control wins ([`MidiSetup::in_use`]).
+    pub rig_learn: Vec<Saved>,
 }
 
 impl Default for MidiSetup {
@@ -405,11 +409,21 @@ impl Default for MidiSetup {
             routes: Vec::new(),
             cv: [CvAssign::Off; CV_OUTS],
             learn: Vec::new(),
+            rig_learn: Vec::new(),
         }
     }
 }
 
-/// The most learned controls a project keeps.
+/// Where a learned control is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kept {
+    /// With the song ([`MidiSetup::learn`]).
+    Project,
+    /// For every project ([`MidiSetup::rig_learn`]).
+    Rig,
+}
+
+/// The most learned controls a project keeps (and the rig keeps).
 pub const MAX_LEARNED: usize = 256;
 
 /// The most ports a project names.
@@ -449,14 +463,105 @@ impl MidiSetup {
     /// control (a control moves one thing). False when the project has
     /// [`MAX_LEARNED`] already.
     pub fn learned(&mut self, s: Saved) -> bool {
-        if let Some(old) = self.learn.iter_mut().find(|o| o.same_control(&s)) {
+        self.learned_in(Kept::Project, s)
+    }
+
+    /// [`MidiSetup::learned`], kept with the song or the rig. A control
+    /// moves one thing in each: the same control in the other list stays
+    /// (the song's wins while it is open).
+    pub fn learned_in(&mut self, kept: Kept, s: Saved) -> bool {
+        let list = match kept {
+            Kept::Project => &mut self.learn,
+            Kept::Rig => &mut self.rig_learn,
+        };
+        if let Some(old) = list.iter_mut().find(|o| o.same_control(&s)) {
             *old = s;
-        } else if self.learn.len() < MAX_LEARNED {
-            self.learn.push(s);
+        } else if list.len() < MAX_LEARNED {
+            list.push(s);
         } else {
             return false;
         }
         true
+    }
+
+    /// Every learned control, the song's first, with where it is kept: the
+    /// order the Learn section lists them and [`MidiSetup::learned_at`]
+    /// counts them.
+    pub fn all_learned(&self) -> impl Iterator<Item = (Kept, &Saved)> {
+        self.learn
+            .iter()
+            .map(|l| (Kept::Project, l))
+            .chain(self.rig_learn.iter().map(|l| (Kept::Rig, l)))
+    }
+
+    /// The `k`th of [`MidiSetup::all_learned`].
+    pub fn learned_at(&self, k: usize) -> Option<(Kept, &Saved)> {
+        self.all_learned().nth(k)
+    }
+
+    /// The `k`th of [`MidiSetup::all_learned`], to change.
+    pub fn learned_at_mut(&mut self, k: usize) -> Option<&mut Saved> {
+        let n = self.learn.len();
+        if k < n {
+            self.learn.get_mut(k)
+        } else {
+            self.rig_learn.get_mut(k - n)
+        }
+    }
+
+    /// Forgets the `k`th of [`MidiSetup::all_learned`].
+    pub fn forget_at(&mut self, k: usize) -> Option<(Kept, Saved)> {
+        let n = self.learn.len();
+        if k < n {
+            Some((Kept::Project, self.learn.remove(k)))
+        } else if k - n < self.rig_learn.len() {
+            Some((Kept::Rig, self.rig_learn.remove(k - n)))
+        } else {
+            None
+        }
+    }
+
+    /// Moves the `k`th of [`MidiSetup::all_learned`] to the song or the
+    /// rig. Returns its new place, or None when there is no `k`th or no
+    /// room (it stays). The same control already kept there is replaced.
+    pub fn keep_at(&mut self, k: usize, kept: Kept) -> Option<usize> {
+        let (was, l) = self.learned_at(k).map(|(w, l)| (w, l.clone()))?;
+        if was == kept {
+            return Some(k);
+        }
+        let (from, to) = match kept {
+            Kept::Project => (&mut self.rig_learn, &mut self.learn),
+            Kept::Rig => (&mut self.learn, &mut self.rig_learn),
+        };
+        let at = match to.iter().position(|o| o.same_control(&l)) {
+            Some(i) => {
+                to[i] = l.clone();
+                i
+            }
+            None if to.len() < MAX_LEARNED => {
+                to.push(l.clone());
+                to.len() - 1
+            }
+            None => return None,
+        };
+        from.retain(|o| *o != l);
+        Some(match kept {
+            Kept::Project => at,
+            Kept::Rig => self.learn.len() + at,
+        })
+    }
+
+    /// The learned controls that work now: the song's, then the rig's
+    /// whose control the song doesn't use.
+    pub fn in_use(&self) -> Vec<Saved> {
+        let mut v = self.learn.clone();
+        v.extend(
+            self.rig_learn
+                .iter()
+                .filter(|r| !self.learn.iter().any(|l| l.same_control(r)))
+                .cloned(),
+        );
+        v
     }
 
     /// The settings that belong to the song, saved in the project's `midi`
@@ -465,6 +570,7 @@ impl MidiSetup {
     /// are the rig's ([`MidiSetup::rig`]) and are left at their defaults.
     pub fn project(&self) -> MidiSetup {
         let mut m = self.clone();
+        m.rig_learn.clear();
         for name in self
             .ports
             .iter()
@@ -484,9 +590,13 @@ impl MidiSetup {
     /// The settings that belong to the gear on the desk, kept for every
     /// project (owner, 13 Nov 2026: project settings apart from system-wide
     /// ones): each port's input (Plays tracks, Learn only, Both), thru,
-    /// what it ignores coming in and its gear's delay.
+    /// what it ignores coming in and its gear's delay, and the controls
+    /// learned for every project.
     pub fn rig(&self) -> MidiSetup {
-        let mut m = MidiSetup::default();
+        let mut m = MidiSetup {
+            rig_learn: self.rig_learn.clone(),
+            ..MidiSetup::default()
+        };
         for p in &self.ports {
             m.set_port(&p.name, |q| {
                 q.input = p.input;
@@ -506,9 +616,10 @@ impl MidiSetup {
         self.set_rig(&rig);
     }
 
-    /// `rig`'s port settings (input, thru, ignore, delay), this setup's
-    /// song settings kept.
+    /// `rig`'s port settings (input, thru, ignore, delay) and controls
+    /// learned for every project, this setup's song settings kept.
     pub fn set_rig(&mut self, rig: &MidiSetup) {
+        self.rig_learn = rig.rig_learn.clone();
         let names: Vec<String> = self
             .ports
             .iter()
@@ -596,6 +707,9 @@ impl MidiSetup {
         }
         for l in &self.learn {
             line(&mut s, "learn", &l.text());
+        }
+        for l in &self.rig_learn {
+            line(&mut s, "learn-rig", &l.text());
         }
         s
     }
@@ -718,6 +832,12 @@ impl MidiSetup {
             ["cv", i] => {
                 let i = index(i, CV_OUTS)?;
                 self.cv[i] = parse_cv(v)?;
+            }
+            ["learn-rig"] => {
+                let l = Saved::parse(v).ok_or("not a learned control")?;
+                if !self.learned_in(Kept::Rig, l) {
+                    return Err(format!("more than {MAX_LEARNED} learned controls"));
+                }
             }
             ["learn"] => {
                 let l = Saved::parse(v).ok_or("not a learned control")?;
@@ -1267,6 +1387,45 @@ mod tests {
         assert_eq!(m.learn[0], again);
         let (_, w) = MidiSetup::parse("mpfree-midi 1\nlearn = nonsense\n");
         assert_eq!(w, ["line 2: learn: not a learned control"]);
+    }
+
+    /// A control learned for every project is the rig's: a project
+    /// doesn't save it, opening one keeps it, and the song's own mapping
+    /// for the same control wins while the song is open.
+    #[test]
+    fn controls_learned_for_every_project_are_the_rigs() {
+        let mut m = MidiSetup::default();
+        let tempo = learned(Some("MIDI"), 20);
+        assert!(m.learned_in(Kept::Rig, tempo.clone()));
+        m.learned(learned(Some("Keystep 37"), 74));
+        assert!(!m.project_text().contains("learn-rig"));
+        assert!(m
+            .rig_text()
+            .contains("learn-rig = port MIDI | ch 1 | cc 20"));
+        let (back, w) = MidiSetup::parse(&m.rig_text());
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(back.rig_learn, std::slice::from_ref(&tempo));
+        // Opening another project keeps it.
+        m.set_project(&MidiSetup::default());
+        assert!(m.learn.is_empty());
+        assert_eq!(m.rig_learn, std::slice::from_ref(&tempo));
+        // The song's mapping for the same control wins.
+        let mut song = tempo.clone();
+        song.lo = 0.25;
+        m.learned(song.clone());
+        assert_eq!(m.in_use(), [song.clone()]);
+        assert_eq!(m.all_learned().count(), 2);
+        // Moved to the rig, it replaces the rig's.
+        assert_eq!(m.keep_at(0, Kept::Rig), Some(0));
+        assert_eq!(
+            (m.learn.len(), m.rig_learn.clone()),
+            (0, vec![song.clone()])
+        );
+        // And back to the song.
+        assert_eq!(m.keep_at(0, Kept::Project), Some(0));
+        assert_eq!((m.learn.clone(), m.rig_learn.len()), (vec![song], 0));
+        assert!(m.forget_at(0).is_some());
+        assert!(m.forget_at(0).is_none());
     }
 
     #[test]
