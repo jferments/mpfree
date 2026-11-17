@@ -6083,9 +6083,7 @@ fn player_session(
                 app::Effect::SetupNextStart { backup, want } => {
                     let (state, said) = setup_next_start(o, &store, backup, want);
                     out.note(&said);
-                    if want {
-                        out.show(gui::ToUi::Tell(said));
-                    }
+                    out.show(gui::ToUi::Tell(said));
                     later.extend(app.set_setup(state));
                 }
                 // PROG EDIT: the sound the pads play (Jay, 20:40Z).

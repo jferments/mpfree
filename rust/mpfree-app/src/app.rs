@@ -3611,14 +3611,13 @@ impl App {
     /// the next start, or takes the ask back; - takes it back.
     fn setup_step(&mut self, backup: bool, d: i32) -> Vec<Effect> {
         let Some(st) = &self.setup else {
-            return vec![Effect::Note(
-                "Prefs: this stick has no first-start setup (it wasn't made by the USB creator)"
-                    .into(),
+            return vec![Effect::Tell(
+                "This stick has no first-start setup: it wasn't made by the USB creator".into(),
             )];
         };
         let c = if backup { &st.backup } else { &st.akai };
         if !backup && c.done {
-            return vec![Effect::Note(
+            return vec![Effect::Tell(
                 "Akai's kits and samples are in already: BROWSE, Kits and Samples".into(),
             )];
         }
@@ -4832,7 +4831,7 @@ mod tests {
             "{fx:?}"
         );
         // Without a creator's stick it says so and changes nothing.
-        assert!(matches!(&app.step_item(1, 1)[..], [Effect::Note(_)]));
+        assert!(matches!(&app.step_item(1, 1)[..], [Effect::Tell(_)]));
         // Both left out at the first start.
         let left = Choice {
             left_out: true,
@@ -4895,7 +4894,7 @@ mod tests {
         assert_eq!(app.item_text(Item::SetupAkaiKits).1, "In BROWSE");
         assert!(matches!(
             &app.step_item(row(&app, Item::SetupAkaiKits), 1)[..],
-            [Effect::Note(_)]
+            [Effect::Tell(_)]
         ));
         assert_eq!(
             app.step_item(row(&app, Item::SetupBackup), 1),
@@ -7301,7 +7300,7 @@ mod tests {
         assert_eq!(app.map.browse, Some(button::BROWSE));
         assert_eq!(app.map.main, Some(button::MAIN));
         assert_eq!(app.map.data_push, Some(button::DATA_PUSH));
-        for section in [PrefsSection::Main, PrefsSection::Touch] {
+        for section in [PrefsSection::Main, PrefsSection::Setup, PrefsSection::Touch] {
             app.open_tab(View::Prefs);
             app.prefs_section = section;
             assert!(press(&mut app, button::BROWSE).contains(&Effect::Show(View::Browser)));
