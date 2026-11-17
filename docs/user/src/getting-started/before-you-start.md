@@ -16,7 +16,7 @@ MPFree is a new operating system for making music on the Akai MPC One. It replac
 
 ## How MPFree runs
 
-MPFree starts from a **USB stick**. While it runs, the MPC's own storage, and any memory card in its SD slot, is switched off and never written to, so when you switch off and take the stick out, your MPC starts its factory software again exactly as before. (At MPFree's very first start it switches the MPC's storage on for a few minutes, read-only, to make a backup of it on the stick: see [Installing MPFree](installing.md).) Your projects, samples and settings in the factory software are untouched. What you save in MPFree is kept on the stick.
+MPFree starts from a **USB stick**. While it runs, the MPC's own storage, and any memory card in its SD slot, is switched off and never written to, so when you switch off and take the stick out, your MPC starts its factory software again exactly as before. (At MPFree's very first start it switches the MPC's storage on for a few minutes, read-only, to make a backup of it on the stick, or to read Akai's drum kits and samples from it: see [Installing MPFree](installing.md). It does the same later only when you ask for it in Prefs.) Your projects, samples and settings in the factory software are untouched. What you save in MPFree is kept on the stick.
 
 Once a small start-up helper is on the MPC, switching on with the stick in starts MPFree by itself, with nothing to tap: the MPC logo shows for a few seconds, then MPFree's startup screen, and the pads are ready about 16 seconds after you switch on. The factory software never appears first. Switch on without the stick and the factory software starts as usual.
 

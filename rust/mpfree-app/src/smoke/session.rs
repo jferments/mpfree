@@ -849,6 +849,10 @@ impl Session {
         if self.app.set_perform(self.time.perform()) {
             self.out.show(ToUi::Rec(self.app.rec));
         }
+        let taking = crate::desk::rec_now(&self.time, &self.looper).taking();
+        if let Some(line) = self.time.take_follows(taking) {
+            self.out.note(&format!("time: {line}"));
+        }
         self.app.set_track_count(self.time.track_count());
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();

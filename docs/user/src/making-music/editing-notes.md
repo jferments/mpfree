@@ -18,7 +18,7 @@ The notes are bars on a piano roll: higher notes higher up, time running left to
 - **Move them.** Drag a picked note and every picked note moves with it, along time and up or down in pitch. Moves land on the snap's lines (**Snap**, 1/16 to begin with).
 - **Velocity.** Slide a finger along the velocity lane to set the picked notes' velocity.
 - **Draw and erase.** The tool button switches between Select, Draw and Erase. With Draw, tap an empty spot to add a note there. With Erase, tap a note to take it out.
-- **Duplicate** copies the picked notes to just after them. **Delete** takes them out.
+- **Duplicate** copies the picked notes to just after them. **Delete** takes them out (in Perform, hold it for half a second).
 - **Grid, List, Tracker.** The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. **Tracker** shows every step, described below.
 
 {{shot: arrange-notes-list | The same notes as a list, the picked ones lit.}}

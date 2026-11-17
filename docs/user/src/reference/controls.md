@@ -20,7 +20,7 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 |---|---|---|
 | **Power button**, a short press | Opens the power card: **Shut down**, **Restart** or **Cancel**, and over unsaved changes, whether to save first. Another short press closes it. See [Switching off and restarting](../getting-started/before-you-start.md#switching-off-and-restarting). | Works |
 | **Power button**, held | Switches the MPC off at once, without asking or saving. | Works |
-| **MENU** | Opens the options for the page you are on. In Prefs' System info or Touch screen rows, goes back to the main Prefs rows. | Works |
+| **MENU** | Opens the options for the page you are on. In Prefs' System info, Backup and Akai kits or Touch screen rows, goes back to the main Prefs rows. | Works |
 | **SHIFT + MENU** | Opens Prefs. | Works |
 | **STOP** | Stops playback; sounds ring out and latched pads keep going. Press again to silence everything and go back to bar 1. | Works |
 | **SHIFT + STOP** | Stops, silences everything and goes back to the start of bar 1. | Works |
@@ -109,7 +109,7 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 
 | Button | Goes to | When |
 |---|---|---|
-| **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop). In [Perform](../making-music/playing-live.md#make-and-perform), the Arrange tab's Clips grid; pressed there, the Song view and back. | Works |
+| **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop). In [Perform](../making-music/playing-live.md#make-and-perform), the Arrange tab's Clips grid; pressed there, the Song view, then the [song list](../making-music/arranging.md#the-song-list), then the grid again. | Works |
 | **SHIFT + MAIN** | Switches between [Make and Perform](../making-music/playing-live.md#make-and-perform), as the MAKE or PERFORM chip on the top bar does. | Works |
 | **STEP SEQ** | The pads become steps of one sound over any page, and the Play page shows Beats: hit an empty step to put a note there, a lit one to take it off. Press it again to play the pads. Hold **STEP SEQ** and hit a pad to pick the sound. **PAD BANK** turns the pages of steps; **SHIFT + STEP SEQ** turns on Follow. Hold a step pad and turn the Q-Links to change that step, or lock its sound on the Q-Links' Sound bank; hold it and hit a later one to make the note last to there. **SHIFT** + an empty step holds it with no note, for a lock alone. With a synth on the pads, the pads are the steps of its whole line: hold **STEP SEQ** and play a pad or a chord to pick what new steps play; hold a step and turn **Q-Link 1** to move its notes, or play a keyboard to put its keys on it. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads) and [Steps on the synth](../making-music/synths.md#steps-on-the-synth). | Works (new: needs a device check) |
 | **NEXT SEQ** | The Arrange tab. | Works |

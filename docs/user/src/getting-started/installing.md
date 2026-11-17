@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-creator rust/mpfree-stick tools/mpc-one/stick rust/mpfree-app/src/setup.rs
-checked: 2026-11-16 310ec07
+checked: 2026-11-17 5e8c389
 -->
 
 # Installing MPFree
@@ -11,10 +11,10 @@ MPFree runs from a USB stick that you make on your computer with the **MPFree US
 1. Update your MPC to the factory software MPFree supports, with Akai's own instructions.
 2. Make the stick with the creator, from the update file you used.
 3. Switch on the MPC's developer mode, put the stick in and tap **Yes** once, so the MPC knows to start MPFree when the stick is in.
-4. Wait while MPFree's first start backs up your MPC and brings in its drum kits and samples.
+4. Wait while MPFree's first start backs up your MPC and brings in its drum kits and samples. You can leave either out, to play sooner, and do it later.
 
 > [!WARNING]
-> MPFree has only been tested on the **MPC One (Gen 1)**, the original MPC One. The creator is new: it has been tested on Linux, and the Windows and macOS versions have not yet been tried on a real stick. There are no downloads for musicians yet; this page describes how installing works, and will say where to get the creator when there is a release.
+> MPFree has only been tested on the **MPC One (Gen 1)**, the original MPC One. The creator is new: it has been tested on Linux, and once on Windows 11; the macOS version has not yet been tried on a real stick. There are no downloads for musicians yet; this page describes how installing works, and will say where to get the creator when there is a release.
 
 The creator comes as one file for your computer: **Linux** (64-bit PCs, Ubuntu 22.04, Debian 12 or newer), **Windows** (64-bit) or **macOS** (11 or newer, Apple silicon or Intel).
 
@@ -40,7 +40,7 @@ MPFree only works with the exact factory software it was made for. The creator c
    The creator opens on **Make a stick**, with three numbered steps. Its other pages are the tabs along the top: **Copy the backup** and **Take MPFree off my MPC**. **Preferences** and **Help** are at the top right.
 2. In step **1, Akai's update file**, the creator shows the update file it found in your Downloads, Desktop or Documents folder, with a green tick and **MPC 3.10.1 (MPC One, Gen 1)**. If it didn't find it, drag the file onto the creator's window, or type where it is (the file, or the folder it is in).
 3. Put the USB stick into the computer. In step **2, Your USB stick**, choose it. The creator lists only USB sticks, never your computer's own disks, with their name and size.
-4. In step **3**, click **Make the stick**, tick **Yes, erase this stick**, and click **Erase and make the stick**.
+4. In step **3**, under **On the first start**, leave **Back up my MPC** and **Bring in Akai's drum kits and samples** ticked, or untick one to leave it out ([below](#leaving-out-the-backup-or-akais-kits)). Then click **Make the stick**, tick **Yes, erase this stick**, and click **Erase and make the stick**.
 5. Your computer asks for your password (on Windows: "Do you want to allow this app to make changes?", click **Yes**). The creator needs it to write the stick.
 6. Wait. The creator unpacks the MPC's system from the update file, adds MPFree, writes the stick and reads it all back to check it. This takes a few minutes. Keep the stick in until it says **The stick is ready**.
 7. Eject the stick (on macOS: click the eject button next to **MPFREE** in the Finder; on Windows: **Safely Remove Hardware**), and take it out.
@@ -64,11 +64,11 @@ The helper is three small files in the MPC's own storage. It changes nothing els
 
 ## 4. The first start
 
-The first time MPFree starts, it sets itself up before you can play. It can take 20 to 30 minutes in all, once; the stick's speed decides most of it. The screen always says what it is doing, and one progress bar covers the whole setup: it moves as the data is copied, and once MPFree has measured how fast the stick is, the screen says how long is left.
+The first time MPFree starts, it sets itself up before you can play. It can take 20 to 30 minutes in all, once (less if you left the backup or Akai's kits out); the stick's speed decides most of it. The screen always says what it is doing, and one progress bar covers the whole setup: it moves as the data is copied, and once MPFree has measured how fast the stick is, the screen says how long is left.
 
 1. **Preparing the stick for its first start.** Over the startup screen, MPFree makes the space on the stick for your sounds and settings. This takes a few seconds.
-2. **Backing up your MPC, so you can always go back.** MPFree copies everything in the MPC's own storage onto the stick: the factory software, your projects, samples and settings (about 8 GB), then **checks the backup on the stick** by reading it all back. It only reads the MPC's storage: it never writes it, and checks that nothing was written. This is the longest step.
-3. **Extracting Akai drum kits and samples.** From the backup on the stick, MPFree makes drum kits from the MPC's factory drum programs, and copies its factory samples into your library, where **BROWSE** finds them in the **Akai factory** folder: a kit for each of the MPC's drum kits, which loads onto the pads whole as any kit does (**+** opens it to show its sounds one by one), then **Instruments** (the MPC's keygroup instruments, one folder each) and **Other sounds**. Your own projects and sounds on the MPC (its **MPC Documents**) are not copied there; they are in the backup.
+2. **Backing up your MPC, so you can always go back.** MPFree copies everything in the MPC's own storage onto the stick: the factory software, your projects, samples and settings (about 8 GB), then **checks the backup on the stick** by reading it all back. It only reads the MPC's storage: it never writes it, and checks that nothing was written. This is the longest step. It is left out if you unticked **Back up my MPC**.
+3. **Extracting Akai drum kits and samples.** From the backup on the stick (or, if you left the backup out, straight from the MPC's own storage, which it only reads, as for the backup), MPFree makes drum kits from the MPC's factory drum programs, and copies its factory samples into your library, where **BROWSE** finds them in the **Akai factory** folder: a kit for each of the MPC's drum kits, which loads onto the pads whole as any kit does (**+** opens it to show its sounds one by one), then **Instruments** (the MPC's keygroup instruments, one folder each) and **Other sounds**. Your own projects and sounds on the MPC (its **MPC Documents**) are not copied there; they are in the backup.
 
 **Keep the stick in and the MPC on until the pads light up.** If the first start is interrupted, nothing is harmed: MPFree tries again at the next start (up to three times), and plays with its own drum kits meanwhile.
 
@@ -76,6 +76,18 @@ When it is done, the Play page opens with the MPC's own drum kits first, then MP
 
 > [!MPC]
 > The MPC's drum kits and samples are made from your own MPC, on your own stick. MPFree never shares them, and the creator never gives them out.
+
+### Leaving out the backup or Akai's kits
+
+The creator's two boxes under **On the first start** are both ticked to begin with. Untick one to leave it out of the first start:
+
+- **Back up my MPC** (10 to 20 minutes, about 8 GB on the stick). Without it there is no way back for your MPC on the stick yet. Akai's kits are then read straight from the MPC instead, in about 10 minutes.
+- **Bring in Akai's drum kits and samples** (about 10 minutes). Leave it off if MPFree's own kits are all you want.
+
+With both off, MPFree is ready to play about a minute after the MPC restarts. You can do either later, from MPFree: **SHIFT + MENU** (Prefs), then **Backup and Akai kits** ([Prefs](../reference/prefs.md#backup-and-akai-kits)). It happens at the next start, with the stick in.
+
+> [!NOTE]
+> Reading Akai's kits straight from the MPC, without a backup, is new and hasn't been checked on an MPC yet. Until it has, leave **Back up my MPC** ticked if you want Akai's kits.
 
 ## 5. Check that developer mode is off
 
@@ -105,7 +117,7 @@ When there is a new version of MPFree, put it on the same stick with the new cre
 3. Leave **Keep my backup, settings and files** chosen, and click **Update MPFree**. Approve your computer's password prompt.
 4. When the creator says **MPFree is updated**, put the stick back into the MPC and turn it on. MPFree starts with your settings and files.
 
-If you'd like a new backup of your MPC as well (after an Akai update, say), tick **Back up my MPC again too** under **Keep my backup, settings and files**. The next start then backs up your MPC again, which takes 20 to 30 minutes and about 8 GB on the stick, and the backup already there stays. Without it, if MPFree's first start uses the backup already on the stick, the screen says for a few seconds when that backup was made and whether on this MPC. A backup of another MPC is never used for yours: MPFree backs up yours too.
+To bring in Akai's kits and samples if you left them out of the first start, tick **Bring in Akai's drum kits and samples too**; if they are on the stick already, nothing changes. If you'd like a new backup of your MPC as well (after an Akai update, say), tick **Back up my MPC again too** under **Keep my backup, settings and files**. The next start then backs up your MPC again, which takes 20 to 30 minutes and about 8 GB on the stick, and the backup already there stays. Without it, if MPFree's first start uses the backup already on the stick, the screen says for a few seconds when that backup was made and whether on this MPC. A backup of another MPC is never used for yours: MPFree backs up yours too.
 
 You don't need developer mode again: the helper is already on the MPC. If the stick was set up by an earlier MPFree, its first start after the update may sort the Akai samples into a folder per kit, which takes a minute or two; what is left of the old folders goes to the **Trash**. If the creator can't keep what is on the stick (a stick from a much older or newer MPFree), it stops before writing anything and says so: copy the backup to your computer first, then choose **Erase everything and start over**.
 

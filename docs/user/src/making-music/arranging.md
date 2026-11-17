@@ -1,12 +1,12 @@
 <!--
 status: changing
-covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs
+covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-time-ui/src/list.rs
 checked: 2026-11-14 b76c3c7
 -->
 
 # Arranging a song
 
-The Arrange tab turns clips into a song in two ways. You can play it live, launching whole rows of clips (scenes) and morphing between their sounds. Or you can lay the clips out on a timeline and let the song play itself. You can also do both at once: jam on the grid and record the jam as a song.
+The Arrange tab turns clips into a song in three ways. You can play it live, launching whole rows of clips (scenes) and morphing between their sounds. You can line scenes up in a song list ("Intro × 2, Verse × 4"), as on an MPC. Or you can lay the clips out on a timeline and let the song play itself. You can also do both at once: jam on the grid and record the jam as a song.
 
 ## Scenes
 
@@ -15,7 +15,26 @@ A row of the clip grid is a scene. Tap a row's number on the left and every clip
 {{shot: clips | The Arrange tab's clip grid, with the morph bar under it.}}
 
 - The square button above the row numbers stops every track on the next bar line.
-- A scene can also switch which tracks are muted on its bar line, and move on by itself after some bars (to the next row, back to the first, or to a random one). Setting these up on screen is coming. For now a row plays until you launch another. **Song → scenes** (below) sets rows up to play one after another.
+- A scene can also switch which tracks are muted on its bar line, have a name, and move on by itself after some bars (to the next row, back to the first, or to a random one). Set these up on the Record panel's **Scene** tab (below). **Song → scenes** (below) also sets rows up to play one after another, and the [song list](#the-song-list) plays them in any order.
+
+### Setting up a scene
+
+Tap **Scene**, the third tab on the Record panel's title line, to the right of the grid. It shows the scene playing, or scene 1 when nothing plays. Launching a scene or picking a step of the song list brings that scene.
+
+{{shot: clips-scene | The Record panel's Scene tab: scene 2, named Drop, moves on to the next scene after 4 bars four times in five, and mutes Track 2 when it starts.}}
+
+Turn the wheel to pick a row, and press **–** or **+** to change it:
+
+- **Scene**: which scene you are setting up. Its name shows after its number.
+- **Follow**: what plays after this scene has played its bars: off (it plays until you launch another), the next scene, the previous one, the first or the last, any scene, any other scene, this one again, or Stop. Turning it on sets **After** to the scene's longest clip.
+- **After**: how many bars the scene plays before Follow happens.
+- **Chance**: how often Follow happens, in steps of 10 %.
+- **Or**: what happens the rest of the time, when Chance is under 100 %. **Stay** plays the scene again for the same bars and then tries again.
+- **Mutes**: "as they are" leaves the mutes alone when the scene starts. **+** gives the scene the mutes you have now.
+
+**Mutes now**, under the rows, also gives the scene the mutes you have now: mute the tracks you want silent in this part, then tap it. When the scene starts, those tracks mute and the others play. **Rename** opens the keyboard: type the scene's name and tap **Enter**. The name shows on the song list, and becomes the section's name when the scene goes into the song.
+
+Every change plays at once, and **UNDO** takes it back. Turning one row many times is one undo. While a scene plays, new mutes wait until it starts again.
 
 ## The scene morph
 
@@ -28,6 +47,8 @@ The morph bar under the grid glides the sound from one scene to another, like a 
    - **Keep** leaves everything where the morph put it.
 4. **Save A** or **Save B** stores the sound you have now in the row the crossfader is nearer.
 
+**Reload clip**, at the right of the morph bar, brings the armed track's clip back to the state you saved with **Save state** (see [Save state and Reload](clips.md#save-state-and-reload)).
+
 A knob you turn while morphing changes the scene the crossfader is nearer, and that change stays in the row.
 
 ## The song
@@ -37,13 +58,13 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song �
 {{shot: arrange-song | The Song view: five rows made into a song, a drum block selected, and Rec song on.}}
 
 - **Scenes → song** adds every row that has clips to the end of the song, one after another, with each scene's name above the bars where it starts.
-- **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song.
+- **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song. While clips play over the song, **Back to song** shows on the grid's title line: it stops them all on the next Launch line, and every track plays the song from there.
 - **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips.
 - Hold **SHIFT** and turn the wheel to scroll through the bars. Tap a block to select it. It is picked when you lift your finger, because you can also drag it.
 - Under each track's name is what it plays: its kit (**Kit** for kit 1, then **Kit 2** and on: see [A kit for each track](sampling.md#a-kit-for-each-track)), **Synth**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).
 - **Loop tracks** have lanes too, and Song on plays their loops' blocks as it plays clips (see [Loops in the song](looping.md#loops-in-the-song)).
 
-A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back.
+A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
 
 ### Moving blocks and sections
 
@@ -63,6 +84,21 @@ You can move the song around with your finger:
 
 Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
 
+## The song list
+
+The song list plays scenes one after another, each so many times: "Intro × 2, Verse × 4, Drop × 4, Break × 1". It's the quick way to sketch a song's shape without laying out blocks, and a scene can come back as often as you like. Tap **List** at the top of the Song view to see it; in Perform, **MAIN** goes Clips, Song, List. **Clips** and **Song** at the top go back.
+
+{{shot: arrange-list | The song list: seven steps with their times, bars and where each starts; the Drop playing its third pass of four.}}
+
+- **+ Add a scene** puts a step after the one you picked (at the end if none is), playing the next row that has clips. Tap **‹** or **›** on a step's scene to change it, and **–** or **+** to change how many times it plays (1 to 99). **Bars** says how long the step lasts, and **Starts** the bar it starts on.
+- Tap a step to pick it. **Play from here** plays the list from that step, starting on the next Launch line (at once while stopped). Each step's scene plays its times, and the next comes in on the bar line, so you can play pads or turn knobs over it. The step playing is lit green with "pass 3 of 4"; the one about to start is outlined amber.
+- After the last step everything stops, unless **Loop the list** is on: then it starts again from the top.
+- Launch a scene yourself, stop all, or tap **Back to song**, and the list stops leading; what plays carries on.
+- **Remove** takes the picked step out (in Perform, hold it for half a second). Every change to the list is undoable with **UNDO**.
+- **List → song** writes the whole list onto the end of the timeline, each step's clips for its bars, with the scene's name above where it starts, so you can carry on in the Song view.
+
+A scene's length is its follow action's bars if it has one, else its longest clip, rounded up to whole bars. Moving a row on the grid takes the list's steps with it.
+
 ## Recording a performance into the song
 
 **Rec song** records what you play on the clip grid into the song, so a jam becomes a song you can edit afterwards. The button sits above the clip grid and on the Song view, and it is red while it is on.
@@ -77,6 +113,7 @@ Audio you record from the INPUTS goes on **audio tracks**, with lanes of their o
 - A track you didn't touch keeps what the song already had there. Where you launched a clip, it records over the song, like recording over tape.
 - With the loop on, each time round records over the last.
 - Rec song records which clips played, not new notes. To record notes, use **REC** on a clip (see [Clips and patterns](clips.md)).
+- **In Perform, REC brings Rec song with it**: each take you record (a clip or a loop) also records the grid into the song for as long as it lasts, and the REC chip says "+ Rec song". To leave it out of a take, tap the REC chip and turn off **Rec song with REC**; it's back for the take after. Rec song turned on by hand stays on as usual (see [Make and Perform](playing-live.md#make-and-perform)).
 
 > [!NOTE]
 > A track that is muted when you stop stays muted. Its silent parts are already left out of the song, so unmute it to hear the song as you played it.

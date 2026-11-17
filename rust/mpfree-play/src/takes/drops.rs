@@ -253,7 +253,8 @@ pub(super) fn follow(project: &mut Project, drop: ClipDrop, back: bool) {
     follow_rows(project, drop, back);
 }
 
-/// A row drop: the scenes and the morph's rows follow the row.
+/// A row drop: the scenes, the morph's rows and the song list's steps
+/// follow the row.
 fn follow_rows(project: &mut Project, drop: ClipDrop, back: bool) {
     if !drop.is_row() {
         return;
@@ -284,6 +285,10 @@ fn follow_rows(project: &mut Project, drop: ClipDrop, back: bool) {
         m.a = row(m.a).unwrap_or(m.a).min(SCENES - 1);
         m.b = row(m.b).unwrap_or(m.b).min(SCENES - 1);
     }
+    // The song list's steps play the same scenes where they went.
+    for step in &mut project.arrangement.list.steps {
+        step.row = row(step.row).unwrap_or(step.row).min(SCENES - 1);
+    }
 }
 
 fn plain(s: &Scene) -> bool {
@@ -313,6 +318,7 @@ fn relink(
         markers: song.markers.clone(),
         lanes: song.lanes.clone(),
         morphs: song.morphs.clone(),
+        list: song.list.clone(),
     };
     for p in &song.placements {
         let mut q = p.clone();
@@ -444,9 +450,17 @@ mod tests {
         p.arrangement
             .place(Placement::linked(1, 2, 0, 1920))
             .unwrap();
+        // The song list plays rows 3 then 2.
+        let step = |row| mpfree_seq::ListStep { row, times: 1 };
+        p.arrangement.list.steps = vec![step(2), step(1)];
         let mut takes = Takes::new(8);
         // Row 3 in between rows 1 and 2: rows 2 moves down one.
         let (_, d) = takes.drop_row(&mut p, 2, 1, false).unwrap();
+        assert_eq!(
+            p.arrangement.list.steps,
+            vec![step(1), step(2)],
+            "the list's steps follow their rows"
+        );
         assert_eq!(d, ClipDrop::RowMoved { from: 2, to: 1 });
         assert_eq!(name(&p, 1, 1), Some("Bass C"));
         assert_eq!(name(&p, 0, 2), Some("Fill"), "the row under moved down");
@@ -482,6 +496,7 @@ mod tests {
         want.arrangement
             .place(Placement::linked(1, 2, 0, 1920))
             .unwrap();
+        want.arrangement.list.steps = vec![step(2), step(1)];
         assert_eq!(p, want);
     }
 

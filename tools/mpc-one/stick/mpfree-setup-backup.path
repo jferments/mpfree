@@ -1,5 +1,5 @@
 [Unit]
-Description=MPFree first-start setup: wait for the pad player to ask for the eMMC backup
+Description=MPFree first-start setup: wait for the pad player to ask for the eMMC backup, or to read Akai's content
 DefaultDependencies=no
 After=mpfree-test-internal-off.service
 Conflicts=shutdown.target
@@ -8,6 +8,7 @@ IgnoreOnIsolate=yes
 
 [Path]
 PathExists=/run/mpfree-app/setup-backup.request
+PathExists=/run/mpfree-app/setup-content.request
 Unit=mpfree-setup-backup.service
 
 [Install]

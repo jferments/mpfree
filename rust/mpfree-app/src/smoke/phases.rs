@@ -1780,6 +1780,46 @@ mod device_log {
         });
     }
 
+    /// Reload clip on the bar (`^time: save state: .* kept`, `^time:
+    /// reload: .* reloads at `, `^time: (.*; )?reload: .* back as saved on
+    /// bar \d+`):
+    /// Save state keeps the clip, Reload clip waits for the bar line and
+    /// the saved pattern comes back on it.
+    #[test]
+    fn reload_on_the_bar_writes_its_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.press("header", "tab", "Arrange").settle();
+            let tab = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == "record" && o.target.id == "tab" && o.target.index == 1)
+                .expect("the Record panel's Clip tab")
+                .target;
+            s.press_target(&tab);
+            s.settle();
+            let n = s.lines.len();
+            s.press("clip-card", "button", "Save state").settle();
+            wrote(&s, n, "time: save state: ", " kept");
+            s.press("header", "tab", "Play").settle();
+            s.press("steps", "step", "Kick step 3");
+            s.press("steps", "step", "Kick step 7");
+            s.press("header", "tab", "Arrange").settle();
+            s.button("PLAY").run_for(0.3);
+            let n = s.lines.len();
+            s.press("morph", "button", "Reload clip").settle();
+            wrote(&s, n, "time: reload: ", " reloads at ");
+            s.run_for(2.0);
+            let l = wrote(&s, n, "time: ", " back as saved on bar ");
+            assert!(l.contains("reload: "), "{l}");
+            s.button("STOP");
+        });
+    }
+
     /// The clip grid and the Song view: a clip moved, a copy, a block
     /// moved (`^clips: .* moved to `, `^clips: a copy of `,
     /// `^song: .* moved to `).
