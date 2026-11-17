@@ -96,7 +96,6 @@ use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
 };
 use mpfree_sampler_ui::widgets::SettingList;
-use mpfree_sampler_ui::SourceView;
 use mpfree_seq::{Clip, Note};
 use mpfree_transport::PPQ;
 use mpfree_ui::widgets::Card;
@@ -378,9 +377,10 @@ pub struct SamplePage {
     /// what New project goes back to ([`SamplePage::reset_kits`]).
     factory: Option<(Vec<Project>, Vec<String>)>,
     rate: u32,
-    /// Waveform peaks, tempo and root note, per source, made the first time
-    /// a pad using the source is shown.
-    sources: HashMap<SourceId, Arc<SourceView>>,
+    /// Waveform peaks, hits, tempo and root note, per source, worked out
+    /// off the screen thread the first time a pad using the source is
+    /// shown ([`crate::views`]).
+    sources: crate::views::Views,
     kit: usize,
     pad: usize,
     tab: Option<WaveTab>,
@@ -555,7 +555,7 @@ impl SamplePage {
             names: Vec::new(),
             factory: None,
             rate: 44_100,
-            sources: HashMap::new(),
+            sources: crate::views::Views::new(),
             kit: 0,
             pad: 0,
             tab: None,
@@ -654,7 +654,15 @@ impl SamplePage {
         }
         self.projects = projects;
         self.rate = rate;
-        self.sources.clear();
+        // Views of sounds still here are kept (a kit loaded again, or a
+        // sound in more than one kit); the rest are forgotten.
+        let here: HashSet<SourceId> = self
+            .projects
+            .iter()
+            .flat_map(|p| p.sources())
+            .map(|s| s.id())
+            .collect();
+        self.sources.keep_only(&here);
         self.warps.clear();
         self.cancel_stretching();
         if self.take.take().is_some() {
@@ -1253,12 +1261,7 @@ impl SamplePage {
             return;
         };
         let sources = &mut self.sources;
-        self.play_state = PlayState::from_project(project, self.pad, |s| {
-            sources
-                .entry(s.id())
-                .or_insert_with(|| Arc::new(SourceView::analyse(s)))
-                .clone()
-        });
+        self.play_state = PlayState::from_project(project, self.pad, |s| sources.get(s));
         let Some(ps) = self.play_state.as_ref() else {
             return;
         };
@@ -1291,12 +1294,7 @@ impl SamplePage {
             return;
         };
         let sources = &mut self.sources;
-        self.grain_state = GrainState::from_project(project, self.pad, 0, |s| {
-            sources
-                .entry(s.id())
-                .or_insert_with(|| Arc::new(SourceView::analyse(s)))
-                .clone()
-        });
+        self.grain_state = GrainState::from_project(project, self.pad, 0, |s| sources.get(s));
         let Some(gs) = self.grain_state.as_ref() else {
             return;
         };
@@ -1323,11 +1321,7 @@ impl SamplePage {
         let p = self.projects.get(self.kit)?;
         let region = &p.pad(self.pad)?.layers.first()?.region;
         let source = p.source(region.source)?;
-        let view = self
-            .sources
-            .entry(source.id())
-            .or_insert_with(|| Arc::new(SourceView::analyse(source)))
-            .clone();
+        let view = self.sources.get(source);
         WaveState::from_project(p, self.pad, 0, view)
     }
 
@@ -1350,10 +1344,9 @@ impl SamplePage {
             };
             let source = project.source(p.layers[0].region.source);
             let heard = source.and_then(|s| {
-                self.sources
-                    .entry(s.id())
-                    .or_insert_with(|| Arc::new(SourceView::analyse(s)))
-                    .root_note
+                // The note heard is needed now: worked out here if the
+                // worker hasn't yet.
+                self.sources.full(s).root_note
             });
             let name = match source {
                 Some(s) if keymap::note_in_name(&s.name).is_some() => s.name.as_str(),
@@ -4085,6 +4078,22 @@ impl SamplePage {
         self.poll_open(ui);
         self.poll_kit(ui);
         self.poll_load(ui);
+        // A sound's view came in from the worker: the page shows it (now,
+        // or when it is next shown).
+        if self.sources.take_done() {
+            if showing && self.state.is_some() {
+                self.refresh(ui);
+            } else {
+                self.stale = true;
+            }
+        }
+    }
+
+    /// Whether a sound's view (its peaks, hits, tempo or note) is still
+    /// being worked out off the screen thread.
+    #[allow(dead_code)] // the tests wait on it
+    pub fn analysing(&self) -> bool {
+        self.sources.busy()
     }
 
     /// The line input turned on or off (its row on the Looper tab's MENU).

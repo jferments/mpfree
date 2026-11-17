@@ -16,11 +16,14 @@
 //!   limiter at -0.3 dBFS) takes the place of the clip at full scale.
 //! - The metronome goes on after the mixer, as before: never recorded or
 //!   limited (it keeps itself within ±1).
-//! - What the looper records from the pads: the drums (the pads that
-//!   played, summed from their channels' inputs) and the synth as the
-//!   engines make them, before their strips, as before. Recording through
-//!   the mixer's capture points comes with the recorder, which makes up
-//!   the period they arrive late.
+//! - What the looper records from the pads ([`MixHost::pads_wet`]): the
+//!   pads and the synth as they are heard, with their tracks' effects and
+//!   faders and what the send returns add: the master's input, without the
+//!   Loop track, the Audio track and the line input. It comes a period late
+//!   (the looper runs before the mixer), and the looper makes that up. When
+//!   one of those three can't be taken out (it goes to a submix, or a
+//!   plugin's latency puts it out of step), the looper records the drums
+//!   and the synth as the engines make them, dry, and says why.
 //!
 //! The Play page's effects are inserts from the start ([`PlayFx`]): a DJ
 //! filter on the Drums and Loop tracks (the Filter Q-Links), a 1/8 dotted
@@ -91,6 +94,14 @@ pub const SEND_OFF_DB: f32 = -60.0;
 /// the last of the mixer's [`CAPTURES`], so the others stay free for
 /// print, stems and the looper.
 pub const SAMPLER_CAPTURE: usize = CAPTURES - 1;
+/// The looper's capture points, [`LOOP_CAPTURE`] and the three after it,
+/// below Freeze and Print's: the master's input, then the strips taken out
+/// of it ([`MixHost::pads_wet`]).
+pub const LOOP_CAPTURE: usize = SAMPLER_CAPTURE - 5;
+/// The strips the looper's pads leave out: the loops, the audio tracks and
+/// the line input, in the order of their capture points after
+/// [`LOOP_CAPTURE`].
+const LEFT_OUT: [StripId; 3] = [StripId::Track(LOOP), StripId::Track(AUDIO), LINE];
 
 /// What the Play page's Q-Links and speakers show, read from the mixer (so
 /// the mixer panel's changes show there too).
@@ -359,6 +370,15 @@ impl MixHost {
         }
         for t in [DRUMS, LOOP] {
             mixer.set_now(StripId::Track(t), mx::send(DELAY_RETURN), SEND_OFF_DB);
+        }
+        // What the looper records the pads from, wet (pads_wet).
+        let master_in = (StripId::Master, mpfree_fx::CapturePoint::BeforeInserts);
+        let _ = mixer.set_capture(LOOP_CAPTURE, Some(master_in));
+        for (i, s) in LEFT_OUT.into_iter().enumerate() {
+            let _ = mixer.set_capture(
+                LOOP_CAPTURE + 1 + i,
+                Some((s, mpfree_fx::CapturePoint::AfterFader)),
+            );
         }
         MixHost {
             mixer,
@@ -1061,6 +1081,60 @@ impl MixHost {
         }
     }
 
+    /// What the looper records from the pads, wet, into `left` and `right`:
+    /// the master's input as the last period left it, without the Loop
+    /// track, the Audio track and the line input. That is every track you
+    /// play after its effects and fader, with the echoes and reverbs the
+    /// send returns add (the master's own effects and fader come after it,
+    /// as they do for the loop when it plays). Returns its latency in frames
+    /// after the period it is late; or why it can't be had, when one of the
+    /// three, sounding, goes to a submix or is out of step with the master's
+    /// input (a plugin's latency). Cheap: three subtractions a frame.
+    pub fn pads_wet(
+        &self,
+        left: &mut [f32; PERIOD],
+        right: &mut [f32; PERIOD],
+    ) -> Result<u32, &'static str> {
+        let m = &self.mixer;
+        let latency = m.capture_latency(LOOP_CAPTURE).unwrap_or(0);
+        match m.capture(LOOP_CAPTURE) {
+            Some((l, r)) if l.len() == PERIOD => {
+                left.copy_from_slice(l);
+                right.copy_from_slice(r);
+            }
+            // Before the mixer's first period.
+            _ => {
+                left.fill(0.0);
+                right.fill(0.0);
+                return Ok(latency);
+            }
+        }
+        for (i, s) in LEFT_OUT.into_iter().enumerate() {
+            let slot = LOOP_CAPTURE + 1 + i;
+            let Some((l, r)) = m.capture(slot).filter(|(l, _)| l.len() == PERIOD) else {
+                continue;
+            };
+            if l.iter().chain(r).all(|&x| x == 0.0) {
+                continue;
+            }
+            if m.destination(s) != Some(StripId::Master) {
+                return Err(match i {
+                    0 => "the Loop track goes to a submix",
+                    1 => "the Audio track goes to a submix",
+                    _ => "the line input goes to a submix",
+                });
+            }
+            if m.capture_latency(slot) != Some(latency) {
+                return Err("a plugin's latency puts the mix out of step");
+            }
+            for f in 0..PERIOD {
+                left[f] -= l[f];
+                right[f] -= r[f];
+            }
+        }
+        Ok(latency)
+    }
+
     /// Points the sampler's capture point at `src`, or frees it for the
     /// line input. Takes effect from the next block; false if the mixer
     /// has no such strip (the capture point is then free).
@@ -1568,6 +1642,87 @@ mod tests {
         h.set_level(-12.0);
         let (peak, _) = run(&mut h, 200, 0.5, 0.0);
         assert!((0.12..0.13).contains(&peak), "{peak}");
+    }
+
+    /// The looper's pads, wet: the master's input without the loops, the
+    /// same whether a loop plays or not, with the Drums' echo from the
+    /// delay on Return A in it; and the reason it can't be had once the
+    /// Loop track, playing, goes to a submix.
+    #[test]
+    fn the_pads_wet_are_the_mix_without_the_loops() {
+        use mpfree_fx::ids::mixer::output;
+        // Pad 1 a burst at the start, the synth a tone, the loop (if
+        // `looping`) a tone of its own; the Drums send to the echo.
+        let go = |looping: bool, to_bus: bool| {
+            let mut h = MixHost::new(RATE, -6.0, -6.0);
+            h.play(PlayFx::Strip {
+                strip: StripId::Track(DRUMS),
+                id: mx::send(DELAY_RETURN),
+                value: 0.0,
+            });
+            // The Play page's "off" send is -60 dB; truly off here, so the
+            // loop is left out to the last bit.
+            h.mixer.set_now(
+                StripId::Track(LOOP),
+                mx::send(DELAY_RETURN),
+                mpfree_fx::SILENT_DB,
+            );
+            if to_bus {
+                h.mixer
+                    .set_now(StripId::Track(LOOP), mx::OUTPUT, output::bus(0));
+            }
+            let z = [0f32; PERIOD];
+            let (mut wet, mut why) = (Vec::new(), None);
+            for p in 0..400 {
+                let at = p * PERIOD;
+                if p < 40 {
+                    let d = tone(110.0, 0.5, at);
+                    let mut pads = h.pads();
+                    let (pl, pr) = pads.pad(0).unwrap();
+                    pl[..PERIOD].copy_from_slice(&d);
+                    pr[..PERIOD].copy_from_slice(&d);
+                }
+                let s = tone(330.0, 0.3, at);
+                let lp = if looping { tone(550.0, 0.4, at) } else { z };
+                // What the looper takes, from the last period's mix.
+                let (mut wl, mut wr) = ([0f32; PERIOD], [0f32; PERIOD]);
+                match h.pads_wet(&mut wl, &mut wr) {
+                    Ok(latency) => assert_eq!(latency, 0),
+                    Err(e) => why = Some(e),
+                }
+                wet.extend(wl.iter().zip(&wr).flat_map(|(a, b)| [*a, *b]));
+                let ctx = Ctx::new(RATE, at as u64);
+                let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+                h.period(
+                    &ctx,
+                    (&s, &s),
+                    (&lp, &lp),
+                    (&z, &z),
+                    (&z, &z),
+                    &mut l,
+                    &mut r,
+                );
+            }
+            (wet, why)
+        };
+        let (with, why) = go(true, false);
+        assert_eq!(why, None);
+        let (without, _) = go(false, false);
+        let worst = with
+            .iter()
+            .zip(&without)
+            .fold(0f32, |w, (a, b)| w.max((a - b).abs()));
+        assert!(worst < 1e-6, "the loop is left out: {worst}");
+        // The echo: the burst is over after 40 periods (0.12 s); the 1/8
+        // dotted delay brings it back 0.375 s later, on top of the synth.
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let frame = |s: f64| 2 * (s * f64::from(RATE)) as usize;
+        let before = rms(&without[frame(0.2)..frame(0.35)]);
+        let echo = rms(&without[frame(0.4)..frame(0.5)]);
+        assert!(echo > 1.2 * before, "the echo is in it: {echo} vs {before}");
+        // The Loop track on a submix: it can't be taken out.
+        let (_, why) = go(true, true);
+        assert_eq!(why, Some("the Loop track goes to a submix"));
     }
 
     #[test]

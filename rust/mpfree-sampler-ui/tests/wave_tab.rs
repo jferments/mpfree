@@ -562,3 +562,23 @@ fn row_value(s: &Sample, row: Row) -> String {
         .value
         .clone()
 }
+
+#[test]
+fn peaks_worked_out_later_come_in_where_the_wave_is_zoomed() {
+    let mut s = sample();
+    let source = s.project.source(s.state.source.id).unwrap().clone();
+    // Shown before anything is worked out: a flat line of its length.
+    let mut st = s.state.clone();
+    st.source = Arc::new(SourceView::pending(&source));
+    s.tab.update(&mut s.ui, &st);
+    s.tab.wheel(&mut s.ui, &st, 4);
+    let zoomed = s.tab.view(&s.ui).unwrap();
+    // The peaks come in: the wave draws them, still zoomed where it was.
+    st.source = Arc::new(SourceView::quick(&source));
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(s.tab.view(&s.ui).unwrap(), zoomed);
+    let w = s.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
+    assert_eq!(w.frames(), source.frames());
+    let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+    s.ui.paint(&mut c);
+}

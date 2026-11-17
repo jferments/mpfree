@@ -22,8 +22,8 @@ use mpfree_fx::ids::{
     pitch_correct as tune, plate, room, spring, tape, transient, tuner,
 };
 use mpfree_fx::{
-    interval_semis, nearest_note, Cloud, Ducker, Svf, SvfMode, TransientShaper, DUCKER_RATE_BEATS,
-    VOCAL_KEYS,
+    interval_semis, nearest_note, Cloud, Crush, Ducker, Svf, SvfMode, TransientShaper,
+    DUCKER_RATE_BEATS, VOCAL_KEYS,
 };
 use mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_synth_ui::format::value_text;
@@ -924,11 +924,24 @@ fn trim_num(v: f32) -> String {
 }
 
 /// Crush: one cycle of a 441 Hz sine (dashed) and what comes out, held at
-/// the crush's rate and rounded to its bits.
+/// the crush's rate and rounded to its bits (or between its steps, with
+/// Tails on Buzz); and the low-passes tied to the rate.
 fn crush_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
     let bits = st.value(crush::BITS);
     let rate = st.value(crush::RATE);
+    let buzz = st.value(crush::TAILS) >= 0.5;
     let levels = (bits - 1.0).exp2();
+    let quantise = |v: f32| {
+        if buzz {
+            if v == 0.0 {
+                0.0
+            } else {
+                ((v * levels).floor() + 0.5) / levels
+            }
+        } else {
+            (v * levels).round() / levels
+        }
+    };
     const HZ: f32 = 441.0;
     const M: usize = 400;
     let y = |v: f32| 0.5 + 0.42 * v;
@@ -939,24 +952,48 @@ fn crush_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
         let secs = x / HZ;
         let held = (secs * rate).floor() / rate;
         dry.push((x, y(sine(secs))));
-        wet.push((x, y((sine(held) * levels).round() / levels)));
+        wet.push((x, y(quantise(sine(held)))));
     }
     s.push(
         Card {
             title: "A sine through it".into(),
             caption: format!(
-                "{} bits · {}{}",
+                "{} bits · {}{}{}",
                 trim_num(bits),
                 text(st, crush::RATE),
                 if st.value(crush::DITHER) >= 0.5 {
                     " · dither"
                 } else {
                     ""
-                }
+                },
+                if buzz { " · tails buzz" } else { "" }
             ),
             traces: vec![dashed(dry, t.text_faint), line(wet, t.warn)],
             midline: true,
             active: true,
+            ..Card::default()
+        },
+        page,
+    );
+    let filters = st.value(crush::FILTERS);
+    let on = filters >= 0.5;
+    let response = |hz: f32| Crush::filters_response_db(filters, rate, st.rate, hz);
+    s.push(
+        Card {
+            title: "Filters".into(),
+            caption: if on {
+                format!(
+                    "{} · {}",
+                    text(st, crush::FILTERS),
+                    hz_text(0.45 * rate.min(st.rate.max(1) as f32))
+                )
+            } else {
+                "Off".to_string()
+            },
+            traces: vec![filled(freq_curve(response, -48.0, 6.0), t.accent)],
+            grid: freq_grid(),
+            dot: on.then(|| freq_x(0.45 * rate.min(st.rate.max(1) as f32))),
+            active: on,
             ..Card::default()
         },
         page,

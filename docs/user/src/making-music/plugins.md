@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/plugin_page.rs rust/mpfree-app/src/plugin_store.rs rust/mpfree-browser-ui/src/plugins.rs rust/mpfree-mpcstore
-checked: 2026-11-16 a994ab4
+checked: 2026-11-16 873e19d
 -->
 
 # Getting plugins
@@ -40,7 +40,7 @@ The MPC One downloads plugins through its network cable (the **Link** port on th
 MPFree checks the download against the catalog before it unpacks anything, so a damaged or swapped file is refused. An instrument is then on the Synth tab's **Instrument** row (see [Synths](synths.md#a-synth-for-each-track)) and an effect in the list you add effects from (see [Effects](effects.md#plugins)), straight away.
 
 > [!NOTE]
-> **Not yet checked:** the first try on an MPC One (16 November) couldn't download, and MPFree now downloads in a different way that hasn't been tried on an MPC yet. Your stick needs a version of MPFree made after that. If Update list says the catalog didn't download, install from zips instead (below).
+> **Not yet checked:** the first try on an MPC One (16 November) couldn't download ("Insufficient randomness"). MPFree now downloads in a different way, and checks what stopped it then; neither has been tried on an MPC yet. Your stick needs a version of MPFree made after that. If Update list says the catalog didn't download, install from zips instead (below).
 
 ## Installing from a zip
 

@@ -82,6 +82,8 @@ pub const QLINK_PAGE: &str = "chain";
 pub const CHAIN_HINT: &str = "Q-Links: the effect's four, on every page  ·  SHIFT + Q-Link: fine  ·  drag an effect: move it  ·  touch a control: macro, Learn, + LFO  ·  strip button: other strips";
 /// The hint line on the EQ's page.
 pub const EQ_HINT: &str = "Drag a dot: frequency and gain  ·  wheel or two fingers: its Q  ·  tap the graph twice: add a band  ·  Q-Links: the band  ·  ‹: back";
+/// The hint line on the EQ's page while Solo band is on.
+pub const EQ_SOLO_HINT: &str = "Solo band: you hear only the part of the sound this band shapes  ·  pick another band: hear it  ·  Solo band again: all of it";
 /// The hint line while the strip list is open.
 pub const STRIPS_HINT: &str =
     "Tap a strip: its chain  ·  Tracks, Pads and the rest: those strips  ·  Back: keep this one";
@@ -151,10 +153,11 @@ pub fn chain_picking(ui: &Ui) -> bool {
 }
 
 /// The chain editor's hint line: [`PICKER_HINT`] while the effect picker
-/// is open, [`STRIPS_HINT`] while the strip list is, [`EQ_HINT`] on the
-/// EQ's page, what the choice means while a control that explains its
-/// choices is the one touched (a delay's or reverb's Mix curve:
-/// [`mpfree_fx::control_hint`]), else [`CHAIN_HINT`].
+/// is open, [`STRIPS_HINT`] while the strip list is, [`EQ_SOLO_HINT`] on
+/// the EQ's page while Solo band is on, [`EQ_HINT`] on it otherwise, what
+/// the choice means while a control that explains its choices is the one
+/// touched (a delay's or reverb's Mix curve: [`mpfree_fx::control_hint`]),
+/// else [`CHAIN_HINT`].
 pub fn chain_hint(ui: &Ui) -> &'static str {
     let Some(v) = ui.get::<ChainView>(CHAIN) else {
         return CHAIN_HINT;
@@ -165,7 +168,11 @@ pub fn chain_hint(ui: &Ui) -> &'static str {
     } else if st.list.is_some() {
         STRIPS_HINT
     } else if st.eq && st.selected.is_some() {
-        EQ_HINT
+        if v.eq_page().listening().is_some() {
+            EQ_SOLO_HINT
+        } else {
+            EQ_HINT
+        }
     } else {
         st.focused()
             .and_then(|p| mpfree_fx::control_hint(p.info.name, p.value))

@@ -8791,6 +8791,7 @@ pub fn sample_sampler(fonts: Fonts) -> Player {
     p.apply(ToUi::PadDown { pad, velocity: 100 });
     p.apply(ToUi::PadUp(pad));
     p.apply(ToUi::Show(View::Sample));
+    settle_views(&mut p);
     let beat = f64::from(mpfree_sampler_ui::sample::RATE) * 60.0 / mpfree_sampler_ui::sample::BPM;
     let mut heads = Playheads {
         kit: 0,
@@ -8801,6 +8802,16 @@ pub fn sample_sampler(fonts: Fonts) -> Player {
     heads.frame[0] = (beat * 4.6) as u32;
     p.apply(ToUi::SamplePlayheads(heads));
     p
+}
+
+/// Waits (up to 10 s) for the Sample tab's sounds to be analysed off the
+/// screen thread, as the screen does a moment after a sound is shown.
+pub fn settle_views(p: &mut Player) {
+    let end = Instant::now() + Duration::from_secs(10);
+    while p.sample.analysing() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(2));
+        p.tick(0.0);
+    }
 }
 
 /// A sample player with an app behind it (every button known, so no guide).
@@ -9081,9 +9092,10 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
 
 /// The stack for a thread that calls [`sample_screens`]. Every screen's
 /// `Player` sits in its one frame, which in a debug build is about 7 MiB
-/// (17 Nov 2026): more than a test thread's 2 MiB, and so near the main
-/// thread's 8 MiB that one more screen ran the control sweep out of stack.
-/// Twice that leaves room for the screens to come.
+/// (7,376,832 bytes on 17 Nov 2026): more than a test thread's 2 MiB, and
+/// the main thread's 8 MiB left the control sweep about 14 KB, so one more
+/// screen ran it out of stack ("thread '<unknown>' has overflowed its
+/// stack"). Twice that leaves room for the screens to come.
 pub const SCREENS_STACK: usize = 16 << 20;
 
 /// Run `f` on a thread with [`SCREENS_STACK`], for the commands that draw
@@ -15097,6 +15109,42 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_long_sound_is_shown_at_once_and_analysed_off_the_screen_thread() {
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        let dir = std::env::temp_dir().join(format!("mpfree-sample-views-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A minute of a beat at 120 BPM: a click every half second.
+        let data = (0..60 * 44_100)
+            .map(|i: usize| {
+                let k = (i % 22_050) as f32;
+                let x = 0.6 * (k * 0.3).sin() * (-k / 800.0).exp();
+                (x * 32_767.0).round() / 32_768.0 + 0.0
+            })
+            .collect();
+        let s = Source::new("x", 44_100, 1, data).unwrap();
+        let path = dir.join("Long Beat.wav");
+        std::fs::write(&path, wav::bytes(&s)).unwrap();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.sample.load_file(path, false);
+        tick_until(&mut p, |p| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().name == "Long Beat"
+        });
+        // Shown at once, its length known, the rest still being worked out.
+        let st = p.sample.state().unwrap();
+        assert_eq!(st.source.peaks.frames(), 60 * 44_100);
+        assert!(!st.source.ready && p.sample.analysing());
+        settle_views(&mut p);
+        let src = &p.sample.state().unwrap().source;
+        assert!(src.ready && !p.sample.analysing());
+        let bpm = src.tempo.expect("a tempo found");
+        assert!((bpm - 120.0).abs() < 1.0, "{bpm}");
+        assert!(src.onsets.as_ref().unwrap().pick(0.5).len() >= 100);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
