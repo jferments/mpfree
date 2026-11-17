@@ -1,7 +1,7 @@
 //! Chorus, flanger and phaser: Mix 0 is the input, each does what its
 //! controls say (delay, voices and width; the feedback comb; the phaser's
-//! notches), count changes never click, and the tail estimate covers the
-//! ring-out.
+//! notches), count and shape changes never click, and the tail estimate
+//! covers the ring-out.
 
 use std::f32::consts::PI;
 
@@ -431,7 +431,7 @@ fn the_phasers_feedback_never_lifts_dc() {
 }
 
 #[test]
-fn voice_and_stage_changes_do_not_click() {
+fn voice_stage_and_shape_changes_do_not_click() {
     // The largest second difference of a low sine through the effect: a
     // hard switch between settings shows as a spike far above what the
     // effect makes holding still, while a glide's corner stays near it.
@@ -442,10 +442,13 @@ fn voice_and_stage_changes_do_not_click() {
         run(n.as_mut(), &mut l, &mut r, moves);
         l
     };
-    use ids::{chorus, phaser};
+    use ids::{chorus, flanger, phaser};
     let chorus = || -> Box<dyn Node> { Box::new(Chorus::new()) };
+    let flanger = || -> Box<dyn Node> { Box::new(Flanger::new()) };
     let phaser = || -> Box<dyn Node> { Box::new(Phaser::new()) };
-    let cases: [(&str, Make, u16, Vec<f32>); 2] = [
+    // A change of LFO shape crossfades the two shapes.
+    let shapes = vec![0.0, 1.0, 0.0, 1.0];
+    let cases: [(&str, Make, u16, Vec<f32>); 5] = [
         ("chorus", &chorus, chorus::VOICES, vec![2.0, 4.0, 1.0, 3.0]),
         (
             "phaser",
@@ -453,6 +456,9 @@ fn voice_and_stage_changes_do_not_click() {
             phaser::STAGES,
             vec![1.0, 4.0, 0.0, 2.0, 3.0],
         ),
+        ("chorus shape", &chorus, chorus::SHAPE, shapes.clone()),
+        ("flanger shape", &flanger, flanger::SHAPE, shapes.clone()),
+        ("phaser shape", &phaser, phaser::SHAPE, shapes),
     ];
     for (name, make, id, values) in cases {
         let stills: Vec<Vec<f32>> = values
@@ -607,14 +613,38 @@ fn chorus_depth_is_milliseconds_and_the_bend_stays_inside_a_semitone() {
     let (swing, _) = measure(&[(DEPTH, 100.0), (DELAY, 3.0), (ids::chorus::RATE, 0.6)]);
     assert!((swing - 2.7).abs() < 0.01, "{swing}");
     // However fast and deep, the pitch moves less than a semitone: the
-    // delay never changes faster than 1 - 2^(-1/12) seconds a second.
+    // delay never changes faster than 1 - 2^(-1/12) seconds a second, in
+    // either shape.
     let semitone = 1.0 - 2f32.powf(-1.0 / 12.0);
-    for rate in [0.05f32, 0.6, 3.0, 10.0] {
-        for delay in [2.0f32, 12.0, 40.0] {
-            let (_, slope) = measure(&[(DEPTH, 100.0), (DELAY, delay), (ids::chorus::RATE, rate)]);
-            assert!(slope < semitone, "Rate {rate}, Delay {delay}: {slope}");
+    for shape in [0.0f32, 1.0] {
+        for rate in [0.05f32, 0.6, 3.0, 10.0] {
+            for delay in [2.0f32, 12.0, 40.0] {
+                let (_, slope) = measure(&[
+                    (DEPTH, 100.0),
+                    (DELAY, delay),
+                    (ids::chorus::RATE, rate),
+                    (ids::chorus::SHAPE, shape),
+                ]);
+                assert!(
+                    slope < semitone,
+                    "Shape {shape}, Rate {rate}, Delay {delay}: {slope}"
+                );
+            }
         }
     }
+    // The Triangle sweeps as far as the Sine, at a steady bend.
+    let tri = [
+        (DEPTH, 40.0),
+        (ids::chorus::RATE, 1.0),
+        (ids::chorus::SHAPE, 1.0),
+    ];
+    let (swing, slope) = measure(&tri);
+    assert!((swing - 2.0).abs() < 0.01, "Triangle: {swing} ms");
+    // 2 ms each way, 4 / 0.9 of the swing a cycle at 1 Hz.
+    assert!(
+        (slope - 0.002 * 4.0 / 0.9).abs() < 1e-5,
+        "Triangle: {slope}"
+    );
     // Synced to a sixteenth at 120 BPM (8 cycles a second) too.
     let mut c = Chorus::new();
     c.prepare(RATE, MAX_BLOCK);
