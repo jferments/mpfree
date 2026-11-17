@@ -1,0 +1,34 @@
+# The sampler's quality ratchet: every number may stay or get better, never worse.
+# Written by `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test sampler`;
+# see docs/dev/design/fx-quality.md ("The sampler"). key<TAB>value
+sampler/filter[band-pass 2-pole, resonance 0.5, 1 kHz]/error_db	1.0164
+sampler/filter[high-pass 2-pole, 1 kHz]/error_db	0.0279
+sampler/filter[low-pass 2-pole, 1 kHz]/error_db	0.707
+sampler/filter[low-pass 2-pole, resonance 0.9, 1 kHz]/error_db	0.742
+sampler/filter[low-pass 4-pole, 1 kHz]/error_db	0.1355
+sampler/fold[15 kHz an octave up]/heard_db	-86.4352
+sampler/fold[30 kHz in a 96 kHz file]/heard_db	-77.2572
+sampler/loop[forward, 1000-frame crossfade]/step_db	0
+sampler/loop[forward, no crossfade]/step_db	42.0566
+sampler/loop[ping-pong]/step_db	29.6156
+sampler/pitch[a fifth down, 3 kHz out]/level_db	-0.0176
+sampler/pitch[a fifth down, 3 kHz out]/spur_worst_db	-50.163
+sampler/pitch[a fifth down, 9 kHz out]/level_db	-1.1334
+sampler/pitch[a fifth down, 9 kHz out]/spur_worst_db	-43.5529
+sampler/pitch[a fifth up, 3 kHz out]/level_db	0.0133
+sampler/pitch[a fifth up, 3 kHz out]/spur_worst_db	-73.5969
+sampler/pitch[a fifth up, 9 kHz out]/level_db	0.0081
+sampler/pitch[a fifth up, 9 kHz out]/spur_worst_db	-74.6254
+sampler/pitch[a semitone up, 3 kHz out]/level_db	-0.0028
+sampler/pitch[a semitone up, 3 kHz out]/spur_worst_db	-63.2896
+sampler/pitch[a semitone up, 9 kHz out]/level_db	-0.2067
+sampler/pitch[a semitone up, 9 kHz out]/spur_worst_db	-31.4533
+sampler/pitch[an octave and a fifth up, 3 kHz out]/level_db	0.0142
+sampler/pitch[an octave and a fifth up, 3 kHz out]/spur_worst_db	-73.5969
+sampler/pitch[an octave and a fifth up, 9 kHz out]/level_db	0.0087
+sampler/pitch[an octave and a fifth up, 9 kHz out]/spur_worst_db	-74.6254
+sampler/read[at pitch, no filter]/flatness_db	0
+sampler/stop[choked]/step_db	12.8578
+sampler/stop[let go, 1 ms release]/step_db	32.9428
+sampler/stop[let go, no release]/step_db	47.4863
+sampler/stop[stolen]/step_db	12.8576
