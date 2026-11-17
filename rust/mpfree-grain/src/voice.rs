@@ -7,8 +7,25 @@ use crate::window::{Window, WindowTable};
 /// Grains one voice can play at once.
 pub const MAX_GRAINS: usize = 64;
 /// Frame positions below this (2^31 less a margin for rounding) take the
-/// `i32` path in [`GrainVoice::mix`].
+/// `i32` path in [`mix`].
 const SMALL_FRAMES: f64 = 2_147_000_000.0;
+/// A voice renders in parts of at most this many frames, through its own
+/// scratch buffers (see [`GrainVoice::render`], "Level").
+const PART: usize = 64;
+/// How fast the voice follows how its grains add up (one-pole, seconds).
+const COHERENCE_SECS: f64 = 0.05;
+/// How fast the floor under the level's divisor rises (seconds). It falls
+/// over a quarter of a grain, so a cloud's first grains, and grains cut
+/// short by a live buffer that has only just started, keep their windows.
+const FLOOR_SECS: f64 = 0.01;
+/// The floor in a dense cloud: below it, a lone grain's window shows again.
+const FLOOR_DENSE: f32 = 0.3;
+/// The smoothed window power a voice needs before it judges coherence.
+const COVER: f32 = 0.25;
+/// Coherence is measured in one part of every this many (parts are
+/// counted on the voice's own clock), which keeps most grain frames to
+/// the four sums the level needs.
+const MEASURE_EVERY: u64 = 4;
 
 /// Locks density and size to the tempo. Grains then start on exact frames
 /// of the transport's timeline, so a synced cloud stays on the grid however
@@ -130,8 +147,75 @@ struct Grain {
     age: u32,
     len: u32,
     dphase: f32,
-    gl: f32,
-    gr: f32,
+    /// The grain's own level, before its pan.
+    lvl: f32,
+    /// Left and right pan gains.
+    pl: f32,
+    pr: f32,
+}
+
+/// What a part's grains add up to, frame by frame, before the level is
+/// set: the left and right sums, the sum of the grains' window levels, the
+/// sum of their squares, and the sum of each grain's own power.
+#[derive(Clone, Debug)]
+struct Scratch {
+    l: [f32; PART],
+    r: [f32; PART],
+    s1: [f32; PART],
+    s2: [f32; PART],
+    q: [f32; PART],
+}
+
+impl Scratch {
+    fn new() -> Self {
+        Scratch {
+            l: [0.0; PART],
+            r: [0.0; PART],
+            s1: [0.0; PART],
+            s2: [0.0; PART],
+            q: [0.0; PART],
+        }
+    }
+
+    fn clear(&mut self, m: usize, measure: bool) {
+        self.l[..m].fill(0.0);
+        self.r[..m].fill(0.0);
+        self.s1[..m].fill(0.0);
+        self.s2[..m].fill(0.0);
+        if measure {
+            self.q[..m].fill(0.0);
+        }
+    }
+}
+
+/// The floor under the level's divisor for an overlap: 1 for a sparse
+/// cloud (each grain keeps its window and its level), [`FLOOR_DENSE`] from
+/// overlap 2 (the cloud is held at its source's level), a line between.
+fn floor_for(overlap: f64) -> f32 {
+    let o = overlap as f32;
+    if o <= 1.0 {
+        1.0
+    } else if o >= 2.0 {
+        FLOOR_DENSE
+    } else {
+        1.0 - (o - 1.0) * (1.0 - FLOOR_DENSE)
+    }
+}
+
+/// One-pole coefficient for a time constant.
+fn coefficient(secs: f64, rate: u32) -> f32 {
+    (1.0 - (-1.0 / (secs * f64::from(rate))).exp()) as f32
+}
+
+/// Zero for anything too small to matter, so the averages never decay
+/// into denormals.
+#[inline]
+fn settle(x: f32) -> f32 {
+    if x < 1e-20 {
+        0.0
+    } else {
+        x
+    }
 }
 
 /// One granular voice: a fixed array of grains, a scheduler and a seeded
@@ -158,6 +242,30 @@ pub struct GrainVoice {
     /// The transport's frames per beat, set by [`GrainVoice::set_tempo`]:
     /// a synced cloud follows it in place of its own `frames_per_beat`.
     beat: Option<f64>,
+    sc: Scratch,
+    /// Smoothed: the output's power, the grains' own powers summed, the
+    /// window sum squared and the window powers summed.
+    ey: f32,
+    eq: f32,
+    es1: f32,
+    es2: f32,
+    /// How far the grains add in step (1) rather than as unrelated
+    /// sounds (0): judged from those averages every 8 frames
+    /// (`coherence_to`), and glided to every frame, so the level never
+    /// steps.
+    coherence: f32,
+    coherence_to: f32,
+    /// The floor under the level's divisor, gliding to [`floor_for`] the
+    /// overlap while grains are made and to 1 after.
+    floor: f32,
+    /// The averages' coefficient (per measured frame) and the coherence
+    /// glide's (per frame).
+    k_measure: f32,
+    k_coherence: f32,
+    k_floor: f32,
+    /// The floor's falling coefficient and the grain size it was made for.
+    k_floor_down: f32,
+    k_floor_size: f64,
 }
 
 impl GrainVoice {
@@ -178,6 +286,19 @@ impl GrainVoice {
             span: (0, 0),
             stats: Stats::default(),
             beat: None,
+            sc: Scratch::new(),
+            ey: 0.0,
+            eq: 0.0,
+            es1: 0.0,
+            es2: 0.0,
+            coherence: 0.0,
+            coherence_to: 0.0,
+            floor: 1.0,
+            k_measure: coefficient(COHERENCE_SECS / MEASURE_EVERY as f64, out_rate.max(1)),
+            k_coherence: coefficient(COHERENCE_SECS, out_rate.max(1)),
+            k_floor: coefficient(FLOOR_SECS, out_rate.max(1)),
+            k_floor_down: coefficient(FLOOR_SECS, out_rate.max(1)),
+            k_floor_size: 0.0,
         }
     }
 
@@ -223,6 +344,22 @@ impl GrainVoice {
         self.next_at = self.clock as f64;
         self.last_spawn = self.clock as f64;
         self.scan_offset = 0.0;
+        // Until the cloud has played long enough to tell, guess how its
+        // grains add from the settings: in step only when every grain
+        // reads the same audio as the one before it at the same moment.
+        let p = &self.params;
+        let ratio = (p.pitch.clamp(-48.0, 48.0) / 12.0).exp2();
+        let in_step = p.spray <= 0.0
+            && p.pitch_spray <= 0.0
+            && p.reverse <= 0.0
+            && (p.scan.clamp(-4.0, 4.0) - ratio).abs() < 0.01;
+        self.coherence = if in_step { 1.0 } else { 0.0 };
+        self.coherence_to = self.coherence;
+        self.ey = 0.0;
+        self.eq = 0.0;
+        self.es1 = 0.0;
+        self.es2 = 0.0;
+        self.floor = 1.0;
     }
 
     /// Stops making grains; the ones playing finish (a natural release).
@@ -273,6 +410,11 @@ impl GrainVoice {
             };
         }
         n
+    }
+
+    /// How many grains overlap at once at these settings.
+    fn overlap(&self) -> f64 {
+        self.density() * self.size_frames() / f64::from(self.out_rate)
     }
 
     fn base_offset(&self, len: f64) -> f64 {
@@ -340,6 +482,24 @@ impl GrainVoice {
     /// Mixes this voice into `left` and `right` (it adds; clear them first
     /// if this is the only voice). `transport_frame` is the absolute frame of
     /// `left[0]`, used only for tempo sync.
+    ///
+    /// **Level.** Overlapping grains add up, and how depends on what they
+    /// read: grains of unrelated audio add in power (`n` of them are `√n`
+    /// louder), grains reading the same audio in step (a granular time
+    /// stretch, a steady tone) add in amplitude (`n` louder). The voice
+    /// keeps, frame by frame, the sum of the grains' window levels (`S1`)
+    /// and of their squares (`S2`), and divides the cloud by `c × S1 +
+    /// (1 - c) × √S2`, where `c` is how far the grains are in step: what
+    /// the output's power (smoothed over 50 ms) is against the grains'
+    /// own powers summed, between 1 (unrelated) and `S1² / S2` (in step).
+    /// So a dense cloud plays at its source's level whatever its size,
+    /// density, scan, spray or window, and the window sum's ripple is gone.
+    /// The divisor never goes below a floor: 1 in a sparse cloud (overlap
+    /// 1 or less), so lone grains keep their windows and today's level;
+    /// 0.3 from overlap 2. It starts at 1 and falls over a quarter of a
+    /// grain, so a cloud's first grains keep their windows, and it glides
+    /// back to 1 (in 10 ms) once grains stop, so a cloud's tail fades as
+    /// its last grains do.
     pub fn render<S: GrainSource>(
         &mut self,
         src: &S,
@@ -363,24 +523,102 @@ impl GrainVoice {
         let len = (end - start) as f64;
         let src_ratio = f64::from(src.rate()) / f64::from(self.out_rate);
         let scan = f64::from(self.params.scan.clamp(-4.0, 4.0)) * src_ratio;
-        let mut done = 0usize;
-        let mut search = 0usize;
-        while done < n {
-            let next = self.next_spawn(transport_frame, search, n);
-            let seg = next.unwrap_or(n);
-            self.mix(src, budget, &mut left[done..seg], &mut right[done..seg]);
-            self.scan_offset = (self.scan_offset + scan * (seg - done) as f64).rem_euclid(len);
-            done = seg;
-            if let Some(off) = next {
-                self.spawn(src, budget, src_ratio);
-                let now = self.clock as f64 + off as f64;
-                self.last_spawn = now;
-                self.next_at = now + f64::from(self.out_rate) / self.density();
-                search = off + 1;
-            }
+        let floor_to = if self.spawning {
+            floor_for(self.overlap())
+        } else {
+            1.0
+        };
+        let size = self.size_frames();
+        if size != self.k_floor_size {
+            // A quarter of a grain, at least the rising time.
+            let secs = (size / f64::from(self.out_rate) / 4.0).max(FLOOR_SECS);
+            self.k_floor_down = coefficient(secs, self.out_rate);
+            self.k_floor_size = size;
         }
-        self.clock += n as u64;
+        let mut at = 0usize;
+        while at < n {
+            // Parts follow the voice's clock, not the call, so the output
+            // doesn't depend on how the audio is cut into periods.
+            let into = (self.clock % PART as u64) as usize;
+            let m = (n - at).min(PART - into);
+            let measure = (self.clock / PART as u64).is_multiple_of(MEASURE_EVERY);
+            self.sc.clear(m, measure);
+            let mut done = 0usize;
+            let mut search = 0usize;
+            while done < m {
+                let next = self.next_spawn(transport_frame + at as u64, search, m);
+                let seg = next.unwrap_or(m);
+                mix(
+                    &mut self.grains,
+                    &mut self.active,
+                    &self.window,
+                    src,
+                    budget,
+                    &mut self.sc,
+                    done,
+                    seg,
+                    measure,
+                );
+                self.scan_offset = (self.scan_offset + scan * (seg - done) as f64).rem_euclid(len);
+                done = seg;
+                if let Some(off) = next {
+                    self.spawn(src, budget, src_ratio);
+                    let now = self.clock as f64 + off as f64;
+                    self.last_spawn = now;
+                    self.next_at = now + f64::from(self.out_rate) / self.density();
+                    search = off + 1;
+                }
+            }
+            self.level(
+                &mut left[at..at + m],
+                &mut right[at..at + m],
+                floor_to,
+                measure,
+            );
+            self.clock += m as u64;
+            at += m;
+        }
         self.stats.active = self.active;
+    }
+
+    /// Sets the level of the part in the scratch buffers (see
+    /// [`GrainVoice::render`]) and adds it to `left` and `right`.
+    fn level(&mut self, left: &mut [f32], right: &mut [f32], floor_to: f32, measure: bool) {
+        let m = left.len().min(right.len());
+        let gain = self.params.gain;
+        let (k, km) = (self.k_coherence, self.k_measure);
+        let kf = if floor_to < self.floor {
+            self.k_floor_down
+        } else {
+            self.k_floor
+        };
+        let sc = &self.sc;
+        for i in 0..m {
+            let (yl, yr, s1, s2) = (sc.l[i], sc.r[i], sc.s1[i], sc.s2[i]);
+            self.floor += kf * (floor_to - self.floor);
+            if measure {
+                self.ey = settle(self.ey + km * (yl * yl + yr * yr - self.ey));
+                self.eq = settle(self.eq + km * (sc.q[i] - self.eq));
+                self.es1 = settle(self.es1 + km * (s1 * s1 - self.es1));
+                self.es2 = settle(self.es2 + km * (s2 - self.es2));
+                // Judged every 8 frames of the voice's own clock.
+                if (self.clock + i as u64) & 7 == 0 && self.es2 > COVER && self.eq > 1e-12 {
+                    // What grains fully in step would give; near 1 the
+                    // two laws agree anyway.
+                    let in_step = self.es1 / self.es2;
+                    if in_step > 1.05 {
+                        self.coherence_to =
+                            ((self.ey / self.eq - 1.0) / (in_step - 1.0)).clamp(0.0, 1.0);
+                    }
+                }
+            }
+            self.coherence += k * (self.coherence_to - self.coherence);
+            let c = self.coherence;
+            let divisor = (c * s1 + (1.0 - c) * s2.sqrt()).max(self.floor);
+            let g = gain / divisor;
+            left[i] += yl * g;
+            right[i] += yr * g;
+        }
     }
 
     fn spawn<S: GrainSource>(&mut self, src: &S, budget: &mut Budget, src_ratio: f64) {
@@ -430,77 +668,119 @@ impl GrainVoice {
         };
 
         let pan = p.spread.clamp(0.0, 1.0) * r_pan;
-        // Overlapping grains add up; keep a dense cloud near the level of a sparse one.
-        let overlap = self.density() * size / f64::from(self.out_rate);
-        let level = p.gain / (overlap.max(1.0).sqrt() as f32);
+        // The cloud's level is set as the grains add up (`level`), so each
+        // grain plays at full level here.
         self.grains[self.active] = Grain {
             pos,
             inc: if reverse { -speed } else { speed },
             age: 0,
             len: size as u32,
             dphase: 1.0 / (size as f32 - 1.0),
-            gl: level * (1.0 - pan).min(1.0),
-            gr: level * (1.0 + pan).min(1.0),
+            lvl: 1.0,
+            pl: (1.0 - pan).min(1.0),
+            pr: (1.0 + pan).min(1.0),
         };
         self.active += 1;
         budget.live += 1;
         self.stats.spawned += 1;
         self.stats.peak_active = self.stats.peak_active.max(self.active);
     }
+}
 
-    fn mix<S: GrainSource>(
-        &mut self,
-        src: &S,
-        budget: &mut Budget,
-        left: &mut [f32],
-        right: &mut [f32],
-    ) {
-        let n = left.len();
-        if n == 0 {
-            return;
+/// Mixes the grains playing into frames `from..to` of the scratch buffers,
+/// and retires the ones that finish.
+#[allow(clippy::too_many_arguments)]
+fn mix<S: GrainSource>(
+    grains: &mut [Grain; MAX_GRAINS],
+    active: &mut usize,
+    window: &WindowTable,
+    src: &S,
+    budget: &mut Budget,
+    sc: &mut Scratch,
+    from: usize,
+    to: usize,
+    measure: bool,
+) {
+    let n = to.saturating_sub(from);
+    if n == 0 {
+        return;
+    }
+    let (sl_, sr_) = (&mut sc.l[from..to], &mut sc.r[from..to]);
+    let (s1_, s2_, q_) = (
+        &mut sc.s1[from..to],
+        &mut sc.s2[from..to],
+        &mut sc.q[from..to],
+    );
+    let mut i = 0;
+    while i < *active {
+        let g = &mut grains[i];
+        let m = ((g.len - g.age) as usize).min(n);
+        let (mut pos, mut age) = (g.pos, g.age);
+        let (lvl, pl, pr) = (g.lvl, g.pl, g.pr);
+        // Grains are kept inside the span, which never starts below
+        // frame 0, so truncation is floor (and avoids a libm call).
+        // Below 2^31 frames (13 hours at 44.1 kHz, so every sample and
+        // nearly every live buffer) the frame goes through an `i32`,
+        // which ARMv7 converts to and from a double in one instruction
+        // each; an `i64` takes two library calls. Same result either way.
+        let last = pos + g.inc * m as f64;
+        // One frame: read, window, and add to the sums (the grain's own
+        // power too, in a measured part).
+        macro_rules! frame {
+            ($k:expr, $read:expr, $measure:expr) => {{
+                let [a_l, a_r] = $read;
+                let a = window.at(age as f32 * g.dphase) * lvl;
+                let (vl, vr) = (a_l * a * pl, a_r * a * pr);
+                sl_[$k] += vl;
+                sr_[$k] += vr;
+                s1_[$k] += a;
+                s2_[$k] += a * a;
+                if $measure {
+                    q_[$k] += vl * vl + vr * vr;
+                }
+                pos += g.inc;
+                age += 1;
+            }};
         }
-        let mut i = 0;
-        while i < self.active {
-            let g = &mut self.grains[i];
-            let m = ((g.len - g.age) as usize).min(n);
-            let (mut pos, mut age) = (g.pos, g.age);
-            // Grains are kept inside the span, which never starts below
-            // frame 0, so truncation is floor (and avoids a libm call).
-            // Below 2^31 frames (13 hours at 44.1 kHz, so every sample and
-            // nearly every live buffer) the frame goes through an `i32`,
-            // which ARMv7 converts to and from a double in one instruction
-            // each; an `i64` takes two library calls. Same result either way.
-            let last = pos + g.inc * m as f64;
-            if pos.min(last) >= 0.0 && pos.max(last) < SMALL_FRAMES {
-                for (l, r) in left[..m].iter_mut().zip(&mut right[..m]) {
+        let small = pos.min(last) >= 0.0 && pos.max(last) < SMALL_FRAMES;
+        match (small, measure) {
+            (true, false) => {
+                for k in 0..m {
                     let f = pos as i32;
-                    let [sl, sr] = src.read(i64::from(f), (pos - f64::from(f)) as f32);
-                    let w = self.window.at(age as f32 * g.dphase);
-                    *l += sl * w * g.gl;
-                    *r += sr * w * g.gr;
-                    pos += g.inc;
-                    age += 1;
+                    frame!(
+                        k,
+                        src.read(i64::from(f), (pos - f64::from(f)) as f32),
+                        false
+                    );
                 }
-            } else {
-                for (l, r) in left[..m].iter_mut().zip(&mut right[..m]) {
+            }
+            (true, true) => {
+                for k in 0..m {
+                    let f = pos as i32;
+                    frame!(k, src.read(i64::from(f), (pos - f64::from(f)) as f32), true);
+                }
+            }
+            (false, false) => {
+                for k in 0..m {
                     let f = pos as i64;
-                    let [sl, sr] = src.read(f, (pos - f as f64) as f32);
-                    let w = self.window.at(age as f32 * g.dphase);
-                    *l += sl * w * g.gl;
-                    *r += sr * w * g.gr;
-                    pos += g.inc;
-                    age += 1;
+                    frame!(k, src.read(f, (pos - f as f64) as f32), false);
                 }
             }
-            g.pos = pos;
-            g.age = age;
-            if g.age >= g.len {
-                budget.live = budget.live.saturating_sub(1);
-                self.active -= 1;
-                self.grains[i] = self.grains[self.active];
-            } else {
-                i += 1;
+            (false, true) => {
+                for k in 0..m {
+                    let f = pos as i64;
+                    frame!(k, src.read(f, (pos - f as f64) as f32), true);
+                }
             }
+        }
+        g.pos = pos;
+        g.age = age;
+        if g.age >= g.len {
+            budget.live = budget.live.saturating_sub(1);
+            *active -= 1;
+            grains[i] = grains[*active];
+        } else {
+            i += 1;
         }
     }
 }

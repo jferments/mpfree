@@ -645,3 +645,15 @@ Cost isn't in the report: `mpfree-bench`'s "Sampler grains (per grain)" scaling 
 - **G6:** 22 % and 51 % of grains are skipped, and the clouds lose 4.5 and 5.7 LU.
 - **G7:** full spread loses 1.8 LU and leaves a correlation of 0.76.
 - **G8:** 97, 192 and 484 ms to speak with 200 ms, 500 ms and 1 s grains.
+
+### Step A2: level and smoothness (2026-11-17)
+
+The voice no longer scales each grain by 1/√overlap. Every grain sounds at full level and each output frame is divided by how much window is sounding, measured as the cloud plays ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Level).
+
+- **G1, G2 met:** the level moves 0.84 LU on pink and 0.99 LU on the pad across the grid (from 10.7 and 11.0); the defaults are +0.15 LU and -0.25 LU from the source (from -3.7 and -4.2); a time stretch plays 0.42 LU (overlap 16) and 0.39 LU (overlap 64) over the sprayed cloud (from +10.5 and +16.5).
+- **G3 ripple and modulation met for every window:** the defaults ripple 0.006 dB (from 4.2), modulation -83 dB (from -15); Tukey and trapezoid at overlap 2 ripple 0.008 dB (from 6), modulation -78 dB. The sine's sideband at the defaults is -20.9 dB (from -16.4): what is left comes from the grains starting at regular times, which step A3 (a little random timing) is for.
+- **G6 level met:** with grains skipped at the cap the cloud keeps its level (0.01 and 0.16 LU, from -4.5 and -5.7); as many grains are skipped as before.
+- **G8:** 50, 125 and 215 ms to speak (from 97, 192 and 484): a cloud that has only just started is no longer scaled for the full overlap it hasn't reached. The floor keeps the first grains' windows, so it isn't instant (A5 is the step for that).
+- **Unchanged or nearly:** G4 swings 8.1 dB on the pad and 27.6 dB on the sine (from 10.3 and 32: the comb is A3's); G5 within 0.5 dB, but for three octaves up at -101 dB (from -95); G7 the same.
+- **Heard:** a blind, loudness-matched A/B of five cases (a frozen pad at the defaults, a stretch with a Tukey window, drums with Density rising from 20 to 400 a second, long-grain piano presses and the Grains FX on drums).
+- **Cost:** the level costs four running sums a grain frame, and the coherence measure one more sum a grain frame in one 64-frame part of every four. The instruction gate's granular cases rose (blessed): the 4 granular pads alone +12.0 %, Grains FX (dense) +9.0 %, 20 pads + master grains +4.6 %, 20 pads +2.5 %, the song +3.8 % (about 2 % of it this change). The MPC's figure comes with step A6.
