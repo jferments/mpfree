@@ -76,7 +76,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Filter** | **Multi**: low-pass, high-pass, band-pass and more, with resonance. **DJ**: one knob, turn left for a low-pass, right for a high-pass. |
 | **Comb** | Short tuned delays for metallic, resonant tones. |
 | **Auto wah** | A wah that follows your playing: louder notes open it further. It can also sweep in time (**Source** LFO) or stay where you put it (**Source** Pedal: turn **Center** with a Q-Link, like rocking a pedal). |
-| **Drive** | Warm saturation up to hard distortion: **Soft**, **Hard**, **Tube**, **Foldback**, **Fuzz** and **Rectify**; and the colour of a mixing desk or a tape machine: **Console**, **Tape**, **Iron** and **Soften**. Auto-gain keeps the level steady as you turn it up, so you hear more grit, not more volume. |
+| **Drive** | Warm saturation up to hard distortion: **Soft**, **Hard**, **Tube**, **Foldback**, **Fuzz** and **Rectify**; and the colour of a mixing desk or a tape machine: **Console**, **Tape**, **Iron** and **Soften**. Auto-gain keeps the level steady as you turn it up, so you hear more grit, not more volume. **Bias** makes the curve lopsided, for a fuller sound with even harmonics, in every mode but Soft (there it is dimmed). Changing the mode or the Quality fades over 10 ms, so it doesn't click while you play. |
 | **Amp** | A guitar or bass amp (Clean, Crunch, Lead, Bass) with its tone controls and a speaker cabinet. |
 | **Exciter** | Adds sparkle and air to the top end. |
 | **Crush** | Bit and sample-rate reduction. |

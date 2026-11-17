@@ -155,179 +155,179 @@ delay/tape[Space heads]/zipper_worst_db	22.9867
 delay/tape[Worn tape]/alias_5k_0_db	-140
 delay/tape[Worn tape]/tail_cut_db	-76.357
 delay/tape[Worn tape]/zipper_worst_db	10.2662
-drive/console/alias_2k5_0dbfs	-60.6111
-drive/console/alias_5k_0dbfs	-41.1672
-drive/console/alias_5k_m12dbfs	-95.2879
-drive/console/alias_8k_0dbfs	-16.3598
-drive/console/flat_m40dbfs	0
-drive/console/flat_mix50	0
-drive/console/lu_pink18_amount0	-0.0626
-drive/console/lu_pink18_amount100	-0.9368
-drive/console/lu_pink18_amount50	-0.2467
+drive/console/alias_2k5_0dbfs	-67.7646
+drive/console/alias_5k_0dbfs	-98.8903
+drive/console/alias_5k_m12dbfs	-140
+drive/console/alias_8k_0dbfs	-55.404
+drive/console/flat_m40dbfs	0.0072
+drive/console/flat_mix50	0.0037
+drive/console/lu_pink18_amount0	-0.0611
+drive/console/lu_pink18_amount100	-0.9221
+drive/console/lu_pink18_amount50	-0.2422
 drive/console/zipper_db	0
-drive/console[Console warmth]/alias_5k_0dbfs	-49.6772
+drive/console[Console warmth]/alias_5k_0dbfs	-140
 drive/console[Console warmth]/zipper_db	0
-drive/console[Hot console]/alias_5k_0dbfs	-19.2231
+drive/console[Hot console]/alias_5k_0dbfs	-78.0388
 drive/console[Hot console]/zipper_db	0
-drive/foldback/alias_2k5_0dbfs_eco	-54.6421
-drive/foldback/alias_2k5_0dbfs_hq	-56.305
-drive/foldback/alias_5k_0dbfs_eco	-53.4058
-drive/foldback/alias_5k_0dbfs_hq	-79.9236
+drive/foldback/alias_2k5_0dbfs_eco	-52.8746
+drive/foldback/alias_2k5_0dbfs_hq	-55.975
+drive/foldback/alias_5k_0dbfs_eco	-59.5781
+drive/foldback/alias_5k_0dbfs_hq	-79.3071
 drive/foldback/alias_5k_m12dbfs_eco	-140
 drive/foldback/alias_5k_m12dbfs_hq	-140
-drive/foldback/alias_8k_0dbfs_eco	-17.9096
-drive/foldback/alias_8k_0dbfs_hq	-64.7745
-drive/foldback/bias_change_db	-140
-drive/foldback/flat_m40dbfs_eco	0.3462
-drive/foldback/flat_m40dbfs_hq	0.3463
-drive/foldback/flat_mix50	0.3476
-drive/foldback/lu_pink18_drive0	-0.1286
-drive/foldback/lu_pink18_drive12	0.4875
-drive/foldback/lu_pink18_drive24	5.6871
-drive/foldback/lu_pink18_drive36	2.7638
-drive/foldback/zipper_db	1.0903
-drive/foldback[Foldback grit]/alias_5k_0dbfs	-2.5251
-drive/foldback[Foldback grit]/zipper_db	2.264
-drive/fuzz/alias_2k5_0dbfs_eco	-51.8361
-drive/fuzz/alias_2k5_0dbfs_hq	-65.2917
-drive/fuzz/alias_5k_0dbfs_eco	-39.197
-drive/fuzz/alias_5k_0dbfs_hq	-54.7042
-drive/fuzz/alias_5k_m12dbfs_eco	-56.4759
-drive/fuzz/alias_5k_m12dbfs_hq	-77.3789
-drive/fuzz/alias_8k_0dbfs_eco	-27.0461
-drive/fuzz/alias_8k_0dbfs_hq	-44.7023
-drive/fuzz/bias_change_db	-6.2945
-drive/fuzz/dc_hits_bias100_dbfs	-134.8009
-drive/fuzz/flat_m40dbfs_eco	0.3484
-drive/fuzz/flat_m40dbfs_hq	0.3485
-drive/fuzz/flat_mix50	0.3434
-drive/fuzz/lu_pink18_drive0	0.0085
-drive/fuzz/lu_pink18_drive12	0.8641
-drive/fuzz/lu_pink18_drive24	2.7041
-drive/fuzz/lu_pink18_drive36	3.4917
-drive/fuzz/subsonic_hits_bias100	-12.8438
-drive/fuzz/zipper_db	2.3188
-drive/fuzz[Fuzz box]/alias_5k_0dbfs	-22.1354
-drive/fuzz[Fuzz box]/zipper_db	0.4131
-drive/hard/alias_2k5_0dbfs_eco	-47.8389
-drive/hard/alias_2k5_0dbfs_hq	-61.5595
-drive/hard/alias_5k_0dbfs_eco	-38.1333
-drive/hard/alias_5k_0dbfs_hq	-50.1392
-drive/hard/alias_5k_m12dbfs_eco	-140
-drive/hard/alias_5k_m12dbfs_hq	-140
-drive/hard/alias_8k_0dbfs_eco	-28.5439
-drive/hard/alias_8k_0dbfs_hq	-42.7752
-drive/hard/bias_change_db	-140
-drive/hard/flat_m40dbfs_eco	0.3462
-drive/hard/flat_m40dbfs_hq	0.3463
-drive/hard/flat_mix50	0.346
-drive/hard/lu_pink18_drive0	-0.1413
-drive/hard/lu_pink18_drive12	-0.4186
-drive/hard/lu_pink18_drive24	2.7634
-drive/hard/lu_pink18_drive36	3.5123
-drive/hard/zipper_db	0.0509
-drive/hard[Hard clip]/alias_5k_0dbfs	-30.1173
-drive/hard[Hard clip]/zipper_db	0
+drive/foldback/alias_8k_0dbfs_eco	-36.3525
+drive/foldback/alias_8k_0dbfs_hq	-62.3379
+drive/foldback/bias_change_db	2.1478
+drive/foldback/flat_m40dbfs_eco	0.1926
+drive/foldback/flat_m40dbfs_hq	0.1933
+drive/foldback/flat_mix50	0.3097
+drive/foldback/lu_pink18_drive0	-0.0668
+drive/foldback/lu_pink18_drive12	0.3478
+drive/foldback/lu_pink18_drive24	2.6725
+drive/foldback/lu_pink18_drive36	-2.2475
+drive/foldback/zipper_db	1.2188
+drive/foldback[Foldback grit]/alias_5k_0dbfs	-25.9531
+drive/foldback[Foldback grit]/zipper_db	2.775
+drive/fuzz/alias_2k5_0dbfs_eco	-61.7081
+drive/fuzz/alias_2k5_0dbfs_hq	-64.9005
+drive/fuzz/alias_5k_0dbfs_eco	-49.9918
+drive/fuzz/alias_5k_0dbfs_hq	-74.66
+drive/fuzz/alias_5k_m12dbfs_eco	-71.6659
+drive/fuzz/alias_5k_m12dbfs_hq	-101.8775
+drive/fuzz/alias_8k_0dbfs_eco	-40.5758
+drive/fuzz/alias_8k_0dbfs_hq	-60.0175
+drive/fuzz/bias_change_db	-5.9831
+drive/fuzz/dc_hits_bias100_dbfs	-136.035
+drive/fuzz/flat_m40dbfs_eco	0.1925
+drive/fuzz/flat_m40dbfs_hq	0.1932
+drive/fuzz/flat_mix50	0.309
+drive/fuzz/lu_pink18_drive0	0.0705
+drive/fuzz/lu_pink18_drive12	0.32
+drive/fuzz/lu_pink18_drive24	0.7908
+drive/fuzz/lu_pink18_drive36	0.9251
+drive/fuzz/subsonic_hits_bias100	-22.5611
+drive/fuzz/zipper_db	2.6526
+drive/fuzz[Fuzz box]/alias_5k_0dbfs	-52.4815
+drive/fuzz[Fuzz box]/zipper_db	1.09
+drive/hard/alias_2k5_0dbfs_eco	-59.3411
+drive/hard/alias_2k5_0dbfs_hq	-67.3481
+drive/hard/alias_5k_0dbfs_eco	-55.1048
+drive/hard/alias_5k_0dbfs_hq	-68.9044
+drive/hard/alias_5k_m12dbfs_eco	-67.5973
+drive/hard/alias_5k_m12dbfs_hq	-91.6555
+drive/hard/alias_8k_0dbfs_eco	-44.2494
+drive/hard/alias_8k_0dbfs_hq	-59.7164
+drive/hard/bias_change_db	-7.9544
+drive/hard/flat_m40dbfs_eco	0.1927
+drive/hard/flat_m40dbfs_hq	0.1933
+drive/hard/flat_mix50	0.3095
+drive/hard/lu_pink18_drive0	-0.136
+drive/hard/lu_pink18_drive12	0.0517
+drive/hard/lu_pink18_drive24	0.8127
+drive/hard/lu_pink18_drive36	0.9603
+drive/hard/zipper_db	0.3448
+drive/hard[Hard clip]/alias_5k_0dbfs	-45.3691
+drive/hard[Hard clip]/zipper_db	0.4292
 drive/iron/alias_2k5_0dbfs	-140
 drive/iron/alias_5k_0dbfs	-140
 drive/iron/alias_5k_m12dbfs	-140
-drive/iron/alias_8k_0dbfs	-114.035
-drive/iron/flat_m40dbfs	0.2612
-drive/iron/flat_mix50	0.2743
-drive/iron/lu_pink18_amount0	-0.0169
-drive/iron/lu_pink18_amount100	-0.1385
-drive/iron/lu_pink18_amount50	-0.0506
+drive/iron/alias_8k_0dbfs	-140
+drive/iron/flat_m40dbfs	0.0073
+drive/iron/flat_mix50	0.0037
+drive/iron/lu_pink18_amount0	-0.0098
+drive/iron/lu_pink18_amount100	-0.1289
+drive/iron/lu_pink18_amount50	-0.0432
 drive/iron/zipper_db	0
 drive/iron[Iron bass]/alias_5k_0dbfs	-140
 drive/iron[Iron bass]/zipper_db	0
-drive/rectify/alias_dbfs_2k5_0dbfs_eco	-45.9238
-drive/rectify/alias_dbfs_2k5_0dbfs_hq	-60.3263
-drive/rectify/alias_dbfs_5k_0dbfs_eco	-32.7554
-drive/rectify/alias_dbfs_5k_0dbfs_hq	-48.029
-drive/rectify/alias_dbfs_5k_m12dbfs_eco	-46.1809
-drive/rectify/alias_dbfs_5k_m12dbfs_hq	-60.3141
-drive/rectify/alias_dbfs_8k_0dbfs_eco	-26.6643
-drive/rectify/alias_dbfs_8k_0dbfs_hq	-39.2281
-drive/rectify/bias_change_db	-140
-drive/rectify/lu_pink18_drive0	4.1552
-drive/rectify/lu_pink18_drive12	4.488
-drive/rectify/lu_pink18_drive24	6.6234
-drive/rectify/lu_pink18_drive36	3.97
-drive/rectify/zipper_db	0.2851
-drive/rectify[Octave up]/alias_dbfs_5k_0dbfs	-39.8949
-drive/rectify[Octave up]/zipper_db	2.6813
-drive/soft/alias_2k5_0dbfs_eco	-69.3046
-drive/soft/alias_2k5_0dbfs_hq	-70.8384
-drive/soft/alias_5k_0dbfs_eco	-52.6076
-drive/soft/alias_5k_0dbfs_hq	-104.0393
-drive/soft/alias_5k_m12dbfs_eco	-101.3469
+drive/rectify/alias_dbfs_2k5_0dbfs_eco	-61.9593
+drive/rectify/alias_dbfs_2k5_0dbfs_hq	-73.4851
+drive/rectify/alias_dbfs_5k_0dbfs_eco	-49.2559
+drive/rectify/alias_dbfs_5k_0dbfs_hq	-75.327
+drive/rectify/alias_dbfs_5k_m12dbfs_eco	-60.7078
+drive/rectify/alias_dbfs_5k_m12dbfs_hq	-83.8541
+drive/rectify/alias_dbfs_8k_0dbfs_eco	-48.0426
+drive/rectify/alias_dbfs_8k_0dbfs_hq	-68.4369
+drive/rectify/bias_change_db	6.2222
+drive/rectify/lu_pink18_drive0	0.0746
+drive/rectify/lu_pink18_drive12	1.5413
+drive/rectify/lu_pink18_drive24	2.153
+drive/rectify/lu_pink18_drive36	0.9748
+drive/rectify/zipper_db	0.3152
+drive/rectify[Octave up]/alias_dbfs_5k_0dbfs	-66.0153
+drive/rectify[Octave up]/zipper_db	2.6718
+drive/soft/alias_2k5_0dbfs_eco	-67.2712
+drive/soft/alias_2k5_0dbfs_hq	-70.4542
+drive/soft/alias_5k_0dbfs_eco	-68.637
+drive/soft/alias_5k_0dbfs_hq	-103.7412
+drive/soft/alias_5k_m12dbfs_eco	-140
 drive/soft/alias_5k_m12dbfs_hq	-140
-drive/soft/alias_8k_0dbfs_eco	-32.5835
-drive/soft/alias_8k_0dbfs_hq	-61.0053
+drive/soft/alias_8k_0dbfs_eco	-46.7883
+drive/soft/alias_8k_0dbfs_hq	-60.6678
 drive/soft/bias_change_db	-140
-drive/soft/flat_m40dbfs_eco	0.3462
-drive/soft/flat_m40dbfs_hq	0.3463
-drive/soft/flat_mix50	0.3473
-drive/soft/lu_pink18_drive0	-0.1308
-drive/soft/lu_pink18_drive12	0.1781
-drive/soft/lu_pink18_drive24	2.2617
-drive/soft/lu_pink18_drive36	3.4058
-drive/soft/zipper_db	0.1191
-drive/soft[Warm tape]/alias_5k_0dbfs	-96.375
-drive/soft[Warm tape]/zipper_db	0.5626
+drive/soft/flat_m40dbfs_eco	0.1927
+drive/soft/flat_m40dbfs_hq	0.1933
+drive/soft/flat_mix50	0.3097
+drive/soft/lu_pink18_drive0	-0.1232
+drive/soft/lu_pink18_drive12	0.0219
+drive/soft/lu_pink18_drive24	0.628
+drive/soft/lu_pink18_drive36	0.9326
+drive/soft/zipper_db	0.1128
+drive/soft[Warm tape]/alias_5k_0dbfs	-105.9538
+drive/soft[Warm tape]/zipper_db	0.392
 drive/soften/alias_2k5_0dbfs	-140
-drive/soften/alias_5k_0dbfs	-71.9955
-drive/soften/alias_5k_m12dbfs	-119.4083
-drive/soften/alias_8k_0dbfs	-32.797
-drive/soften/flat_m40dbfs	0.0003
-drive/soften/flat_mix50	0
-drive/soften/lu_pink18_amount0	-0.0003
-drive/soften/lu_pink18_amount100	-0.079
-drive/soften/lu_pink18_amount50	-0.0053
+drive/soften/alias_5k_0dbfs	-140
+drive/soften/alias_5k_m12dbfs	-140
+drive/soften/alias_8k_0dbfs	-77.1404
+drive/soften/flat_m40dbfs	0.0073
+drive/soften/flat_mix50	0.0037
+drive/soften/lu_pink18_amount0	0.0003
+drive/soften/lu_pink18_amount100	-0.0651
+drive/soften/lu_pink18_amount50	-0.0034
 drive/soften/zipper_db	0
-drive/soften[Soft highs]/alias_5k_0dbfs	-62.8292
+drive/soften[Soft highs]/alias_5k_0dbfs	-140
 drive/soften[Soft highs]/zipper_db	0
 drive/switch/click_console_to_tape	0
-drive/switch/click_eco_to_hq	67.5675
-drive/switch/click_soft_to_foldback	30.7898
-drive/switch/click_soft_to_fuzz	17.4775
-drive/switch/click_soft_to_hard	1.1312
-drive/switch/click_tube_to_rectify	0.0126
-drive/tape/alias_2k5_0dbfs	-64.3233
-drive/tape/alias_5k_0dbfs	-33.5529
-drive/tape/alias_5k_m12dbfs	-74.9031
-drive/tape/alias_8k_0dbfs	-18.0112
-drive/tape/flat_m40dbfs	1.3729
-drive/tape/flat_mix50	0.4213
-drive/tape/lu_pink18_amount0	-0.326
-drive/tape/lu_pink18_amount100	-1.8608
-drive/tape/lu_pink18_amount50	-0.695
-drive/tape/zipper_db	0
-drive/tape[Pushed tape]/alias_5k_0dbfs	-23.2843
+drive/switch/click_eco_to_hq	0
+drive/switch/click_soft_to_foldback	0.8726
+drive/switch/click_soft_to_fuzz	0.3027
+drive/switch/click_soft_to_hard	0.3164
+drive/switch/click_tube_to_rectify	0.0153
+drive/tape/alias_2k5_0dbfs	-71.9685
+drive/tape/alias_5k_0dbfs	-94.7105
+drive/tape/alias_5k_m12dbfs	-140
+drive/tape/alias_8k_0dbfs	-57.7907
+drive/tape/flat_m40dbfs	1.3751
+drive/tape/flat_mix50	0.44
+drive/tape/lu_pink18_amount0	-0.3104
+drive/tape/lu_pink18_amount100	-1.772
+drive/tape/lu_pink18_amount50	-0.659
+drive/tape/zipper_db	0.0051
+drive/tape[Pushed tape]/alias_5k_0dbfs	-83.4576
 drive/tape[Pushed tape]/zipper_db	0
-drive/tape[Tape glue]/alias_5k_0dbfs	-32.0877
+drive/tape[Tape glue]/alias_5k_0dbfs	-93.5536
 drive/tape[Tape glue]/zipper_db	0
-drive/tube/alias_2k5_0dbfs_eco	-70.1747
-drive/tube/alias_2k5_0dbfs_hq	-71.7104
-drive/tube/alias_5k_0dbfs_eco	-53.8202
-drive/tube/alias_5k_0dbfs_hq	-104.2587
-drive/tube/alias_5k_m12dbfs_eco	-103.1972
+drive/tube/alias_2k5_0dbfs_eco	-68.1464
+drive/tube/alias_2k5_0dbfs_hq	-71.3285
+drive/tube/alias_5k_0dbfs_eco	-65.1519
+drive/tube/alias_5k_0dbfs_hq	-103.9559
+drive/tube/alias_5k_m12dbfs_eco	-140
 drive/tube/alias_5k_m12dbfs_hq	-140
-drive/tube/alias_8k_0dbfs_eco	-33.4551
-drive/tube/alias_8k_0dbfs_hq	-61.0986
-drive/tube/bias_change_db	-10.3743
-drive/tube/dc_hits_bias100_dbfs	-130.003
-drive/tube/flat_m40dbfs_eco	0.3467
-drive/tube/flat_m40dbfs_hq	0.3468
-drive/tube/flat_mix50	0.3472
-drive/tube/lu_pink18_drive0	-0.0909
-drive/tube/lu_pink18_drive12	0.2377
-drive/tube/lu_pink18_drive24	2.2737
-drive/tube/lu_pink18_drive36	3.41
-drive/tube/subsonic_hits_bias100	-13.827
-drive/tube/zipper_db	0.1357
-drive/tube[Tube glow]/alias_5k_0dbfs	-57.913
-drive/tube[Tube glow]/zipper_db	0.1648
+drive/tube/alias_8k_0dbfs_eco	-47.7781
+drive/tube/alias_8k_0dbfs_hq	-60.7627
+drive/tube/bias_change_db	-10.3308
+drive/tube/dc_hits_bias100_dbfs	-131.1612
+drive/tube/flat_m40dbfs_eco	0.1926
+drive/tube/flat_m40dbfs_hq	0.1933
+drive/tube/flat_mix50	0.3096
+drive/tube/lu_pink18_drive0	-0.0857
+drive/tube/lu_pink18_drive12	0.0955
+drive/tube/lu_pink18_drive24	0.6587
+drive/tube/lu_pink18_drive36	0.9417
+drive/tube/subsonic_hits_bias100	-23.4997
+drive/tube/zipper_db	0.1266
+drive/tube[Tube glow]/alias_5k_0dbfs	-80.1329
+drive/tube[Tube glow]/zipper_db	0.5672
 eq/bell_12k_q0.71_width_ratio	0.5775
 eq/bell_12k_q0.71_worst_db	-6.5548
 eq/bell_12k_q1.41_width_ratio	0.5785
@@ -358,7 +358,7 @@ eq/bell_8k_q1.41_width_ratio	0.7907
 eq/bell_8k_q1.41_worst_db	-1.8981
 eq/bell_8k_q4_width_ratio	0.797
 eq/bell_8k_q4_worst_db	-1.3386
-eq/drawn_vs_heard_db	0.0265
+eq/drawn_vs_heard_db	0.0042
 eq/high_cut_12k_24db_worst_db	-14.2988
 eq/high_cut_5k_12db_worst_db	-2.217
 eq/high_cut_5k_24db_worst_db	-1.4194

@@ -909,7 +909,14 @@ pub static PLANS: &[Plan] = &[
                 },
             ],
         )],
-        dims: &[],
+        // Soft with a bias would be Tube (FX quality plan 2, decision 10.1).
+        dims: &[Dim {
+            controls: &["Bias"],
+            by: "Mode",
+            when: When::Is(&[0.0]),
+            reason: "Soft doesn't use it",
+            swap: false,
+        }],
     },
     Plan {
         id: "mpfree.fx.character",
