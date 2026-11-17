@@ -586,6 +586,11 @@ fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
 }
 
 pub enum ToUi {
+    /// The MIDI out the Sample tab's auto-sample plays outside gear
+    /// through (the 5-pin jacks, while they are open and Prefs' Send MIDI
+    /// and CV out is on), when it comes (Some) or goes (None)
+    /// (`MidiOut::gear_changed`).
+    Gear(Option<sample_page::GearOut>),
     /// A line for the terminal and the Events log.
     Line(String),
     /// A short press of the power button (power.rs): the power card opens,
@@ -5102,6 +5107,10 @@ impl Player {
                 }
             }
             ToUi::SampleGrains(c) => self.sample.cloud_back(&mut self.ui, c),
+            ToUi::Gear(g) => {
+                self.sample.set_gear(&mut self.ui, g);
+                self.print_sample_lines();
+            }
             ToUi::SampleInputBack(f) => {
                 self.sample.input_back(f);
                 self.print_sample_lines();
@@ -10621,6 +10630,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         t.caret = 13;
     }
     out.push(("sample-name", naming));
+    // The same keyboard with #+= on: the letter keys type symbols.
+    let mut symbols = sample_sampler(fonts());
+    symbols.on_event(UiEvent {
+        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+        kind: EventKind::Type(0),
+    });
+    if let Some(t) = symbols.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
+        t.typed[0] = "Break 92 [#2]".to_string();
+        t.caret = 13;
+        t.symbols = true;
+    }
+    out.push(("sample-name-symbols", symbols));
     // The Pads tab's Pad view: A5 copied onto A2, A5 picked again.
     let mut pads = sample_sampler(fonts());
     open_pads(&mut pads, mpfree_sampler_ui::pads_tab::PAD_VIEW);
@@ -18557,13 +18578,13 @@ mod tests {
         // octave apart, one layer, short notes onto A1-A4.
         let sent = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let to = sent.clone();
-        p.sample.set_gear(
-            &mut p.ui,
-            Some(sample_page::GearOut {
-                name: "MIDI Out (DIN)".into(),
-                send: Arc::new(move |m: &[u8]| to.lock().unwrap().push(m.to_vec())),
-            }),
-        );
+        p.apply(ToUi::Gear(Some(sample_page::GearOut {
+            name: "MIDI Out (DIN)".into(),
+            send: Arc::new(move |m: &[u8]| to.lock().unwrap().push(m.to_vec())),
+        })));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: auto-sample can play outside gear on MIDI Out (DIN)"));
         step(&mut p, Row::Source, 2);
         assert_eq!(source(&p), "Gear · MIDI ch 2");
         step(&mut p, Row::Every, 9);
@@ -18609,6 +18630,11 @@ mod tests {
         while p.sample.auto_running() {
             assert!(t.elapsed() < Duration::from_secs(60), "it finishes");
             for m in sent.lock().unwrap().drain(..) {
+                if m.is_empty() {
+                    // The end of the job.
+                    midi.push(m);
+                    continue;
+                }
                 assert_eq!(m.len(), 3);
                 assert_eq!(m[0] & 0x0f, 1, "channel 2");
                 match m[0] & 0xf0 {
@@ -18635,12 +18661,17 @@ mod tests {
         // What the job sent after the last look, before it ended: once it
         // has landed, everything it sent is in.
         midi.extend(sent.lock().unwrap().drain(..));
-        assert!(midi.iter().all(|m| m[0] & 0x0f == 1), "channel 2");
-        // Two level tests and four notes, each on and off, then All Notes Off.
-        let ons = midi.iter().filter(|m| m[0] == 0x91).count();
-        let offs = midi.iter().filter(|m| m[0] == 0x81).count();
-        assert_eq!((ons, offs), (6, 6));
-        assert_eq!(midi.last().map(|m| m.as_slice()), Some(&[0xb1, 123, 0][..]));
+        let notes: Vec<&Vec<u8>> = midi.iter().filter(|m| !m.is_empty()).collect();
+        assert!(notes.iter().all(|m| m[0] & 0x0f == 1), "channel 2");
+        // Two level tests and four notes, each on and off; the job's All
+        // Notes Off goes to the MIDI out as the end of the job (no bytes,
+        // which ends the notes it left on: it takes notes only), and the
+        // page says the job is over once it has landed.
+        let ons = notes.iter().filter(|m| m[0] == 0x91).count();
+        let offs = notes.iter().filter(|m| m[0] == 0x81).count();
+        assert_eq!((ons, offs, notes.len()), (6, 6, 12));
+        assert_eq!(midi.len(), 14);
+        assert!(midi[12].is_empty() && midi[13].is_empty(), "{midi:?}");
         let log = events_log(&p);
         assert!(
             log.iter().any(|l| l.starts_with(
@@ -18675,15 +18706,25 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
             p.tick(0.033);
         }
-        let sent = sent.lock().unwrap();
         assert_eq!(
-            sent.iter().map(|m| m.as_slice()).collect::<Vec<_>>(),
-            [&[0x91, 60, 127][..], &[0x81, 60, 64], &[0xb1, 123, 0]],
-            "the first test note, let go"
+            sent.lock()
+                .unwrap()
+                .iter()
+                .map(|m| m.as_slice())
+                .collect::<Vec<_>>(),
+            [&[0x91, 60, 127][..], &[0x81, 60, 64], &[], &[]],
+            "the first test note, let go, and the job's end"
         );
         assert!(events_log(&p)
             .iter()
             .any(|l| l == "sample: auto-sample cancelled, keeping the notes done"));
+        // The MIDI out goes (Send MIDI and CV out turned off): the Source
+        // row keeps the gear, and the bar says there is no MIDI out for it.
+        p.apply(ToUi::Gear(None));
+        assert!(events_log(&p).iter().any(|l| l
+            == "sample: auto-sample can't play outside gear now (no MIDI out open and sending)"));
+        assert_eq!(source(&p), "Gear · MIDI ch 2");
+        assert_eq!(title(&p), "Auto-sample: no MIDI out for the gear");
     }
 
     #[test]

@@ -6,8 +6,10 @@
 //! ready to change (Delete takes off the letter before the cursor, Clear
 //! takes off the lot), over a keyboard: the digits, the letters in QWERTY
 //! rows, Shift (once, for the next letter; on by itself at the start of an
-//! empty name), the hyphen, apostrophe and point, Space, Cancel and Enter,
-//! every key at least 64 px. With more than one ask (a pad and its sound),
+//! empty name), the hyphen, apostrophe and point, #+= (the letter keys
+//! type symbols until ABC; Jay, 17 Nov: "It would be nice to be able to
+//! input more symbols"), Space, Cancel and Enter, every key at least
+//! 64 px. With more than one ask (a pad and its sound),
 //! a switch at the top picks which name the keys type, and each keeps what
 //! is typed in it. Enter with a name left empty keeps the pad open and
 //! says so in red; Cancel closes it and changes nothing.
@@ -80,6 +82,14 @@ const CHARS: [(char, char); 39] = [
     ('.', ','),
 ];
 
+/// What the letter keys (indices 10 to 35) type while #+= is on.
+const SYMBOLS: [char; 26] = [
+    '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '~', '`', '=', '+', '[', ']', '{', '}', ';',
+    ':', '"', '<', '>', '?', '/', '|',
+];
+/// The letter keys' indices.
+const LETTERS: std::ops::Range<usize> = 10..36;
+
 /// The other keys, as `Tab` indices.
 pub const KEY_SHIFT: usize = 40;
 pub const KEY_BACK: usize = 41;
@@ -87,8 +97,18 @@ pub const KEY_CLEAR: usize = 42;
 pub const KEY_SPACE: usize = 43;
 pub const KEY_CANCEL: usize = 44;
 pub const KEY_ENTER: usize = 45;
+/// The letter keys type symbols, or letters again.
+pub const KEY_SYMBOLS: usize = 46;
 /// The switch's ask `i` is `KEY_FIELD + i`.
 pub const KEY_FIELD: usize = 50;
+
+/// The letter key typing `c` while #+= is on, for tests.
+pub fn symbol_key(c: char) -> Option<usize> {
+    SYMBOLS
+        .iter()
+        .position(|&s| s == c)
+        .map(|i| LETTERS.start + i)
+}
 
 /// The character key typing `c` (without or with Shift), for tests.
 pub fn char_key(c: char) -> Option<(usize, bool)> {
@@ -126,6 +146,9 @@ pub struct TextPad {
     pub caret: usize,
     /// The next letter is a capital (or the key's other character).
     pub shift: bool,
+    /// The letter keys type symbols ([`KEY_SYMBOLS`]), until it is
+    /// pressed again.
+    pub symbols: bool,
     /// Said under the name: why Enter didn't close the pad.
     pub warning: String,
 }
@@ -137,6 +160,7 @@ impl TextPad {
         self.typed = asks.iter().map(|a| a.value.clone()).collect();
         self.asks = asks;
         self.warning.clear();
+        self.symbols = false;
         self.pick(0);
     }
 
@@ -146,6 +170,7 @@ impl TextPad {
         self.field = 0;
         self.caret = 0;
         self.shift = false;
+        self.symbols = false;
         self.warning.clear();
     }
 
@@ -236,11 +261,11 @@ impl TextPad {
         self.warning.clear();
         match key {
             k if k < CHARS.len() => {
-                let (a, b) = CHARS[k];
-                self.put(if self.shift { b } else { a });
+                self.put(self.char_of(k));
                 self.shift = false;
             }
             KEY_SPACE => self.put(' '),
+            KEY_SYMBOLS => self.symbols = !self.symbols,
             KEY_SHIFT => self.shift = !self.shift,
             KEY_BACK => {
                 let end = self.caret_byte();
@@ -273,7 +298,7 @@ impl TextPad {
             KEY_SPACE => room && self.caret > 0,
             KEY_BACK => self.caret > 0,
             KEY_CLEAR => !self.text().is_empty(),
-            KEY_SHIFT | KEY_CANCEL | KEY_ENTER => true,
+            KEY_SHIFT | KEY_CANCEL | KEY_ENTER | KEY_SYMBOLS => true,
             k if k >= KEY_FIELD => k - KEY_FIELD < self.asks.len() && k - KEY_FIELD != self.field,
             _ => false,
         }
@@ -338,21 +363,34 @@ impl TextPad {
         for i in 29..38 {
             out.push((i, at(i as i32 - 28, 3, 1)));
         }
-        // Cancel, Clear, Space, the point and Enter.
+        // Cancel, Clear, the symbols, Space, the point and Enter.
         out.push((KEY_CANCEL, at(0, 4, 2)));
         out.push((KEY_CLEAR, at(2, 4, 1)));
-        out.push((KEY_SPACE, at(3, 4, 4)));
+        out.push((KEY_SYMBOLS, at(3, 4, 1)));
+        out.push((KEY_SPACE, at(4, 4, 3)));
         out.push((38, at(7, 4, 1)));
         out.push((KEY_ENTER, at(8, 4, 2)));
         out
     }
 
+    /// What character key `k` types now.
+    fn char_of(&self, k: usize) -> char {
+        if self.symbols && LETTERS.contains(&k) {
+            return SYMBOLS[k - LETTERS.start];
+        }
+        let (a, b) = CHARS[k];
+        if self.shift {
+            b
+        } else {
+            a
+        }
+    }
+
     fn label(&self, k: usize) -> String {
         match k {
-            k if k < CHARS.len() => {
-                let (a, b) = CHARS[k];
-                if self.shift { b } else { a }.to_string()
-            }
+            k if k < CHARS.len() => self.char_of(k).to_string(),
+            KEY_SYMBOLS if self.symbols => "ABC".into(),
+            KEY_SYMBOLS => "#+=".into(),
             KEY_SHIFT => "Shift".into(),
             KEY_BACK => "Delete".into(),
             KEY_CLEAR => "Clear".into(),
@@ -461,7 +499,7 @@ impl Widget for TextPad {
         for (k, kr) in TextPad::keys(r) {
             let usable = self.usable(k);
             let enter = k == KEY_ENTER;
-            let shift_on = k == KEY_SHIFT && self.shift;
+            let shift_on = (k == KEY_SHIFT && self.shift) || (k == KEY_SYMBOLS && self.symbols);
             cx.canvas
                 .fill_round_rect(kr, 12, if enter { t.accent } else { t.raised });
             if shift_on {
@@ -596,6 +634,35 @@ mod tests {
     }
 
     #[test]
+    fn the_symbols_key_turns_the_letter_keys_into_symbols_until_abc() {
+        let mut p = TextPad::default();
+        p.open(vec![pad_name("Kick")]);
+        let (q, _) = char_key('q').unwrap();
+        assert_eq!(p.label(KEY_SYMBOLS), "#+=");
+        assert_eq!(tap(&mut p, KEY_SYMBOLS), Some(EventKind::Tab(KEY_SYMBOLS)));
+        assert_eq!(
+            (p.label(q), p.label(KEY_SYMBOLS)),
+            ("!".into(), "ABC".into())
+        );
+        for c in ['#', '[', '<', '|'] {
+            tap(&mut p, symbol_key(c).unwrap());
+        }
+        // The digits, hyphen and point type as before; the symbols stay on.
+        tap(&mut p, char_key('2').unwrap().0);
+        tap(&mut p, char_key('-').unwrap().0);
+        assert_eq!(p.text(), "Kick#[<|2-");
+        assert!(p.symbols);
+        tap(&mut p, KEY_SYMBOLS);
+        tap(&mut p, q);
+        assert_eq!(p.text(), "Kick#[<|2-q");
+        // Every symbol is on a key, and a new name starts with letters.
+        assert!(SYMBOLS.iter().all(|&c| symbol_key(c).is_some()));
+        tap(&mut p, KEY_SYMBOLS);
+        p.open(vec![pad_name("Kick")]);
+        assert!(!p.symbols);
+    }
+
+    #[test]
     fn the_wheel_moves_the_cursor_and_keys_type_at_it() {
         let mut p = TextPad::default();
         p.open(vec![pad_name("Bak")]);
@@ -701,7 +768,7 @@ mod tests {
         let mut p = TextPad::default();
         p.open(vec![pad_name("Kick"), sound_name("Hit")]);
         let keys: Vec<(usize, Rect)> = TextPad::keys(R).into_iter().chain(p.fields(R)).collect();
-        assert_eq!(keys.len(), 39 + 6 + 2);
+        assert_eq!(keys.len(), 39 + 7 + 2);
         let card = TextPad::card(R);
         for (i, (k, kr)) in keys.iter().enumerate() {
             assert!(kr.w >= 64 && kr.h >= 64, "key {k}: {kr:?}");
