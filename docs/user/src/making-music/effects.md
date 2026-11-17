@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-16 ececc7e
+checked: 2026-11-17 8ac941f3
 -->
 
 # Effects
@@ -83,7 +83,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
 | **Lo-fi** | Worn tape and dusty vinyl under one **Amount** knob, from a hint of age to a broken machine. **Wow** is slow pitch drift that wanders like a worn tape, not a steady wobble, at about **Rate**; **Stereo** lets the two sides drift apart; **Flutter** is a fast waver; **Saturation** is the tape's soft grit; **Dropouts** are short dips in level where the tape is worn. **Crackle**, **Noise** (hiss) and **Hum** (at your country's **Mains**, 50 or 60 Hz) follow the music while **Follow** is at 100 %: they come in with the sound and fade about a second after it stops, so a stopped track is silent. Turn Follow down for a bed of noise that keeps going. **Low cut**, **High cut** and **Width** set the tone. At Amount 0 it is exactly the sound going in (see [Lo-fi](#lo-fi)). |
 | **Chorus**, **Flanger**, **Phaser** | Movement and width. Each is below. |
-| **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. |
+| **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. Every **Shape** is smooth: a Square chops crisply at any speed without a click, and the ramps return in a few milliseconds. Synced, it stays on the beat when a loop starts again or you jump in the song, and changing Shape, Sync or Mode while it plays glides instead of clicking. |
 | **Ring mod** | Bells, clangs and robot voices. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one. |
 | **Freq shifter** | Moves every frequency up or down by the same number of hertz, so a sound stops being in tune with itself: a few hertz is a slow, endless swirl, more makes drums metallic and voices robotic. **Feedback** sends it round again, climbing or falling. |
