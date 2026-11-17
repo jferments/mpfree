@@ -37,12 +37,15 @@ pub struct Timed {
     pub offset: u32,
     bytes: [u8; 3],
     len: u8,
-    /// The sending track, or [`NO_TRACK`].
+    /// The sending track, or [`NO_TRACK`] or [`PAGE`].
     track: u8,
 }
 
 /// [`Timed`]'s track when no track sent it.
 const NO_TRACK: u8 = 0xFF;
+/// [`Timed`]'s track when a port's page sent it (its test note or All
+/// notes off).
+const PAGE: u8 = 0xFE;
 
 impl Timed {
     pub fn msg(offset: u32, m: Msg) -> Timed {
@@ -60,9 +63,22 @@ impl Timed {
         Timed { track, ..self }
     }
 
+    /// The same message, sent from a port's page (for the MIDI monitor).
+    pub fn from_page(self) -> Timed {
+        Timed {
+            track: PAGE,
+            ..self
+        }
+    }
+
     /// The track that sent it, if one did.
     pub fn track(&self) -> Option<u8> {
-        (self.track != NO_TRACK).then_some(self.track)
+        (self.track != NO_TRACK && self.track != PAGE).then_some(self.track)
+    }
+
+    /// A port's page sent it.
+    pub fn is_from_page(&self) -> bool {
+        self.track == PAGE
     }
 
     /// One real-time byte (F8 clock, FA start, FB continue, FC stop).
@@ -368,6 +384,16 @@ impl OutputRouter {
         }
     }
 
+    /// Ends the sounding notes of every track that plays on `port`, at
+    /// `offset`: the port went away, or its page's All notes off.
+    pub fn port_off(&mut self, port: PortId, offset: u32, queues: &mut [OutQueue]) {
+        for t in 0..MAX_TRACKS {
+            if self.routes[t].is_some_and(|r| r.port == port) {
+                self.track_off(t, offset, queues);
+            }
+        }
+    }
+
     /// Ends every sounding note of every track (stop, panic), at `offset`.
     /// Only notes that are on are sent, not 2048 blind note-offs, so the
     /// DIN jack is not busy for 2 s.
@@ -563,6 +589,50 @@ mod tests {
         assert_eq!(last, 0x90);
         let mut last = 0;
         assert_eq!(q.write_bytes(&mut out, false, &mut last), 10);
+    }
+
+    /// A port's notes end alone: another port's go on.
+    #[test]
+    fn port_off_ends_only_that_ports_notes() {
+        let mut r = OutputRouter::new();
+        let mut qs = [OutQueue::new(), OutQueue::new()];
+        let on = |note| Msg::NoteOn {
+            ch: 0,
+            note,
+            vel: 100,
+        };
+        let usb = PortId(1);
+        let din = crate::port::DIN;
+        r.set_route(
+            0,
+            Some(OutRoute {
+                port: din,
+                channel: 0,
+            }),
+            0,
+            &mut qs,
+        );
+        r.set_route(
+            1,
+            Some(OutRoute {
+                port: usb,
+                channel: 3,
+            }),
+            0,
+            &mut qs,
+        );
+        r.send(0, on(60), 0, &mut qs);
+        r.send(1, on(62), 0, &mut qs);
+        r.send(1, on(64), 0, &mut qs);
+        for q in qs.iter_mut() {
+            q.clear();
+        }
+        r.port_off(usb, 7, &mut qs);
+        assert!(qs[0].is_empty());
+        let offs: Vec<&[u8]> = qs[1].as_slice().iter().map(Timed::bytes).collect();
+        assert_eq!(offs, [&[0x83, 62, 64][..], &[0x83, 64, 64][..]]);
+        assert!(qs[1].as_slice().iter().all(|t| t.offset == 7));
+        assert_eq!(r.sounding(), 1, "the jacks' note is still on");
     }
 
     #[test]
