@@ -788,65 +788,65 @@ gate/gate[Gated snare]/onset_1ms_db	0
 gate/gate[Kick trigger]/onset_1ms_db	0
 gate/gate[Soft cleanup]/onset_1ms_db	0
 gate/gate[Tight drums]/onset_1ms_db	0
-limiter/limiter-auto-off/release_ratio_20ms	0.8259
-limiter/limiter-auto-off/release_ratio_300ms	0.7966
-limiter/limiter-auto-off/release_ratio_80ms	0.8017
+limiter/limiter-auto-off/release_ratio_20ms	0.9903
+limiter/limiter-auto-off/release_ratio_300ms	0.9937
+limiter/limiter-auto-off/release_ratio_80ms	0.9931
 limiter/limiter-auto-off/sample_peak_over_ceiling_db	0
-limiter/limiter-auto-off/thd_100hz_12db_over	-43.509
-limiter/limiter-auto-off/thd_100hz_6db_over	-48.4367
-limiter/limiter-auto-off/thd_50hz_12db_over	-31.9482
-limiter/limiter-auto-off/thd_50hz_6db_over	-36.9751
-limiter/limiter-auto-off/true_peak_over_ceiling_db	1.1533
-limiter/limiter-true-peak/alias_5khz_12db_over	-94.6414
-limiter/limiter-true-peak/alias_5khz_6db_over	-94.6421
-limiter/limiter-true-peak/release_slowdown	1
+limiter/limiter-auto-off/thd_100hz_12db_over	-124.6005
+limiter/limiter-auto-off/thd_100hz_6db_over	-124.5997
+limiter/limiter-auto-off/thd_50hz_12db_over	-64.104
+limiter/limiter-auto-off/thd_50hz_6db_over	-64.104
+limiter/limiter-auto-off/true_peak_over_ceiling_db	0.8944
+limiter/limiter-true-peak/alias_5khz_12db_over	-140
+limiter/limiter-true-peak/alias_5khz_6db_over	-140
+limiter/limiter-true-peak/release_slowdown	9.1883
 limiter/limiter-true-peak/sample_peak_over_ceiling_db	0
-limiter/limiter-true-peak/thd_100hz_12db_over	-36.9668
-limiter/limiter-true-peak/thd_100hz_6db_over	-40.7607
-limiter/limiter-true-peak/thd_50hz_12db_over	-25.8096
-limiter/limiter-true-peak/thd_50hz_6db_over	-29.871
-limiter/limiter-true-peak/true_peak_over_ceiling_db	0.4822
-limiter/limiter/alias_5khz_12db_over	-89.8973
-limiter/limiter/alias_5khz_6db_over	-89.8969
+limiter/limiter-true-peak/thd_100hz_12db_over	-125.0279
+limiter/limiter-true-peak/thd_100hz_6db_over	-125.059
+limiter/limiter-true-peak/thd_50hz_12db_over	-54.2301
+limiter/limiter-true-peak/thd_50hz_6db_over	-54.2304
+limiter/limiter-true-peak/true_peak_over_ceiling_db	0.0028
+limiter/limiter/alias_5khz_12db_over	-130.2411
+limiter/limiter/alias_5khz_6db_over	-127.5073
 limiter/limiter/latency_spread_frames	0
-limiter/limiter/release_slowdown	1
+limiter/limiter/release_slowdown	9.1883
 limiter/limiter/sample_peak_over_ceiling_db	0
-limiter/limiter/thd_100hz_12db_over	-36.769
-limiter/limiter/thd_100hz_6db_over	-40.6056
-limiter/limiter/thd_50hz_12db_over	-25.7446
-limiter/limiter/thd_50hz_6db_over	-29.8319
-limiter/limiter/true_peak_over_ceiling_db	1.3775
+limiter/limiter/thd_100hz_12db_over	-124.6005
+limiter/limiter/thd_100hz_6db_over	-124.5997
+limiter/limiter/thd_50hz_12db_over	-53.9322
+limiter/limiter/thd_50hz_6db_over	-53.9322
+limiter/limiter/true_peak_over_ceiling_db	0.8944
 limiter/limiter/zipper_ceiling	0.0229
 limiter/limiter/zipper_gain	0.3207
 limiter/limiter/zipper_release	0.0229
 limiter/limiter[Drum smash]/sample_peak_over_ceiling_db	0
-limiter/limiter[Drum smash]/thd_50hz_6db_over	-23.5139
-limiter/limiter[Drum smash]/true_peak_over_ceiling_db	1.3776
+limiter/limiter[Drum smash]/thd_50hz_6db_over	-53.2942
+limiter/limiter[Drum smash]/true_peak_over_ceiling_db	0.8944
 limiter/limiter[Loud master]/sample_peak_over_ceiling_db	0
-limiter/limiter[Loud master]/thd_50hz_6db_over	-25.8096
-limiter/limiter[Loud master]/true_peak_over_ceiling_db	0.6088
+limiter/limiter[Loud master]/thd_50hz_6db_over	-54.2301
+limiter/limiter[Loud master]/true_peak_over_ceiling_db	0.0028
 limiter/limiter[Safe peaks]/sample_peak_over_ceiling_db	0
-limiter/limiter[Safe peaks]/thd_50hz_6db_over	-29.8319
-limiter/limiter[Safe peaks]/true_peak_over_ceiling_db	1.3776
-limiter/master-safety/alias_5khz_12db_over	-117.1374
-limiter/master-safety/alias_5khz_6db_over	-117.1777
+limiter/limiter[Safe peaks]/thd_50hz_6db_over	-53.9322
+limiter/limiter[Safe peaks]/true_peak_over_ceiling_db	0.8944
+limiter/master-safety/alias_5khz_12db_over	-140
+limiter/master-safety/alias_5khz_6db_over	-140
 limiter/master-safety/latency_spread_frames	0
-limiter/master-safety/release_ratio_20ms	0.8011
-limiter/master-safety/release_ratio_300ms	0.7959
-limiter/master-safety/release_ratio_80ms	0.8003
+limiter/master-safety/release_ratio_20ms	0.9995
+limiter/master-safety/release_ratio_300ms	0.9937
+limiter/master-safety/release_ratio_80ms	0.988
 limiter/master-safety/sample_peak_over_ceiling_db	0
-limiter/master-safety/thd_100hz_12db_over	-51.6312
-limiter/master-safety/thd_100hz_6db_over	-51.772
-limiter/master-safety/thd_50hz_12db_over	-35.8925
-limiter/master-safety/thd_50hz_6db_over	-38.6624
-limiter/master-safety/true_peak_over_ceiling_db	1.108
+limiter/master-safety/thd_100hz_12db_over	-140
+limiter/master-safety/thd_100hz_6db_over	-140
+limiter/master-safety/thd_50hz_12db_over	-63.1231
+limiter/master-safety/thd_50hz_6db_over	-63.1234
+limiter/master-safety/true_peak_over_ceiling_db	0.0005
 limiter/master-safety/zipper_ceiling	0.0229
 limiter/master-safety/zipper_release	0.0229
-limiter/master-safety/zipper_trim	0.049
-limiter/master-soft-clip/alias_5khz_12db_over	-17.0077
-limiter/master-soft-clip/alias_5khz_6db_over	-27.5906
+limiter/master-safety/zipper_trim	0.0485
+limiter/master-soft-clip/alias_5khz_12db_over	-62.3275
+limiter/master-soft-clip/alias_5khz_6db_over	-81.7906
 limiter/master-soft-clip/sample_peak_over_ceiling_db	0
-limiter/master-soft-clip/true_peak_over_ceiling_db	4.373
+limiter/master-soft-clip/true_peak_over_ceiling_db	0.0024
 lofi/lofi/cuts_heard_vs_drawn_420_3200	0.0059
 lofi/lofi/cuts_heard_vs_drawn_80_8000	0.0059
 lofi/lofi/dropout_depth_error_db	0.005

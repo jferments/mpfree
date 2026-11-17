@@ -437,7 +437,10 @@ fn limiter_never_passes_its_ceiling_and_leaves_quiet_audio_alone() {
     let quiet = sine(300.0, 9600);
     let (l, _) = render(&mut *lim, &(quiet.clone(), quiet.clone()), &[], 64);
     let d = lim.latency() as usize;
-    assert_eq!(d, 77, "1.5 ms at 48 kHz plus the true-peak filter's half");
+    assert_eq!(
+        d, 87,
+        "1.5 ms at 48 kHz plus the true-peak filter's half, less one"
+    );
     for i in d..l.len() {
         assert!((l[i] - quiet[i - d]).abs() < 1e-6, "frame {i}");
     }
