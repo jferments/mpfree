@@ -74,6 +74,9 @@ pub struct TimeControl {
     editor: Option<Editor>,
     pub(super) armed: Option<usize>,
     takes: Takes,
+    /// The take a step lock's turn went into last: a turn that joins it
+    /// writes no line, so a knob turned through many values is one line.
+    lock_take: u32,
     /// CAPTURE's history and the move log, fed the audio half's notes and
     /// gestures with the spans they were played in.
     capture: Box<Capture>,
@@ -154,6 +157,7 @@ impl TimeControl {
             editor: None,
             armed: tracks.armed,
             takes: Takes::default(),
+            lock_take: 0,
             capture: Box::new(Capture::new()),
             move_log: Box::new(MoveLog::new()),
             pending: None,
@@ -674,6 +678,13 @@ impl TimeControl {
                 song_step: c.speed.to_song(STEP_TICKS as f64),
                 origin,
                 locks: pitches.iter().map(|&p| (p, grid.lock_row(c, p))).collect(),
+                lock_values: c
+                    .locks
+                    .iter()
+                    .filter_map(|l| {
+                        Some((l.sound?, grid.place(c.length, l.tick).0, l.addr, l.value))
+                    })
+                    .collect(),
                 rows: pitches.into_iter().map(|p| (p, grid.row(c, p))).collect(),
             })
         });
@@ -746,6 +757,32 @@ impl TimeControl {
                     ),
                 )
             }
+            StepAction::Lock {
+                pad,
+                steps,
+                addr,
+                value,
+            } => {
+                let held = step_list(steps);
+                (
+                    grid.lock_steps(clip, Some(pad), &held, addr, value),
+                    Some(mpfree_seq::steps::lock_key_steps(Some(pad), steps, addr)),
+                    format!(
+                        "{} of pad {}: lock {addr} {}",
+                        steps_text(&held),
+                        pad + 1,
+                        value.map_or("off".to_string(), |v| format!("{v}"))
+                    ),
+                )
+            }
+            StepAction::ClearLocks { pad, steps } => {
+                let held = step_list(steps);
+                (
+                    grid.clear_step_locks(clip, Some(pad), &held),
+                    None,
+                    format!("{} of pad {}", steps_text(&held), pad + 1),
+                )
+            }
             StepAction::ClearPad { pad } => (
                 grid.clear_row(clip, pad),
                 None,
@@ -788,9 +825,14 @@ impl TimeControl {
         if edit.is_empty() && made.is_none() {
             return Ok(String::new());
         }
-        self.takes
+        let take = self
+            .takes
             .edit(&mut self.project, track, slot, &edit, join)
             .map_err(|e| format!("steps: {e:?}"))?;
+        let joined = matches!(a, StepAction::Lock { .. }) && take == self.lock_take;
+        if matches!(a, StepAction::Lock { .. }) {
+            self.lock_take = take;
+        }
         let before = (self.launches.clone(), self.cues.clone());
         if made.is_none() && !edit.add.is_empty() {
             self.launch_edited(track, slot);
@@ -810,6 +852,10 @@ impl TimeControl {
                 format!("steps: {what} erased")
             }
             (None, StepAction::CopySteps { .. }) => format!("steps: {what} copied"),
+            // One line a turn, at its first detent.
+            (None, StepAction::Lock { .. }) if joined => String::new(),
+            (None, StepAction::Lock { .. }) => format!("steps: {what}"),
+            (None, StepAction::ClearLocks { .. }) => format!("steps: {what}: locks erased"),
             (None, StepAction::Length { steps, copy }) => {
                 let bars = steps.div_ceil(16);
                 let s = if bars == 1 { "" } else { "s" };
@@ -1859,5 +1905,20 @@ fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String {
     match t.rem_euclid(bar) / beat {
         0 => format!("bar {n}"),
         b => format!("bar {n} beat {}", b + 1),
+    }
+}
+
+/// The steps whose bits are set (step 0 the lowest).
+fn step_list(steps: u128) -> Vec<usize> {
+    (0..128).filter(|i| steps & (1u128 << i) != 0).collect()
+}
+
+/// "step 5", or "steps 1, 5".
+fn steps_text(steps: &[usize]) -> String {
+    let list: Vec<String> = steps.iter().map(|i| (i + 1).to_string()).collect();
+    if list.len() == 1 {
+        format!("step {}", list[0])
+    } else {
+        format!("steps {}", list.join(", "))
     }
 }
