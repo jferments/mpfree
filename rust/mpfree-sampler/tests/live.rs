@@ -1,8 +1,10 @@
-//! Live settings (`Event::PadLive`, `Event::ProgramLive`) and the hard
-//! stop (`Engine::stop_all`): a change lands on its frame, a p-locked hit
-//! plays as a pad set that way would, playing voices glide to the new
-//! level, pan, cutoff and tune, NaN and a new view give the pad's own back,
-//! and the hard stop leaves nothing playing, here or on the lane.
+//! Live settings (`Event::PadLive`, `Event::ProgramLive`), step locks
+//! (`Event::PadLock`) and the hard stop (`Engine::stop_all`): a change
+//! lands on its frame, a p-locked hit plays as a pad set that way would,
+//! playing voices glide to the new level, pan, cutoff and tune, NaN and a
+//! new view give the pad's own back (a lock stays through a new view, and
+//! a live value goes over it; a locked decay shortens a sound that plays
+//! out), and the hard stop leaves nothing playing, here or on the lane.
 
 use std::time::{Duration, Instant};
 
@@ -101,6 +103,10 @@ fn hit(pad: u8) -> Event {
 
 fn live(pad: u8, field: PadField, value: f32) -> Event {
     Event::PadLive { pad, field, value }
+}
+
+fn lock(pad: u8, field: PadField, value: f32) -> Event {
+    Event::PadLock { pad, field, value }
 }
 
 /// Root mean square of frames `a..b` (both channels).
@@ -355,6 +361,116 @@ fn nan_and_a_new_view_give_the_pads_own_back() {
     // Cleared, the pad plays exactly as before.
     let clean = play(&mut engine(&p), 4_000, 128, &[(0, hit(0))]);
     assert!(play(&mut e, 4_000, 128, &[(0, hit(0))]) == clean);
+}
+
+#[test]
+fn a_locked_hit_plays_as_a_pad_set_that_way_and_a_live_value_goes_over_it() {
+    let s = noise(20_000, 17);
+    let p = kit(&s, plain(&s));
+    let mut events: Vec<(usize, Event)> = vec![
+        (300, lock(0, PadField::Level, -6.0)),
+        (300, lock(0, PadField::Tune, 700.0)),
+        (300, lock(0, PadField::Cutoff, 800.0)),
+    ];
+    events.push((300, hit(0)));
+    events.push((6_000, Event::NoteOff { pad: 0 }));
+    let locked = play(&mut engine(&p), 12_000, 128, &events);
+    let mut pad = plain(&s);
+    pad.level_db = -6.0;
+    pad.tune_cents = 700;
+    pad.filter = Filter {
+        kind: FilterKind::LowPass,
+        poles: 2,
+        cutoff_hz: 800.0,
+        resonance: 0.0,
+        env_octaves: 0.0,
+    };
+    let own = play(
+        &mut engine(&kit(&s, pad)),
+        12_000,
+        128,
+        &[(300, hit(0)), (6_000, Event::NoteOff { pad: 0 })],
+    );
+    assert!(rms(&own, 300, 6_000) > 0.005, "it plays");
+    let worst = locked
+        .iter()
+        .zip(&own)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
+    assert!(
+        worst < 1e-4,
+        "the lock differs from the pad's own by {worst}"
+    );
+    // A live level goes over the lock; NaN gives the lock back, and the
+    // lock's own NaN the pad's own.
+    let mut e = engine(&p);
+    e.apply(lock(0, PadField::Level, -6.0));
+    e.apply(live(0, PadField::Level, -20.0));
+    assert_eq!(e.pad_lock_value(0, PadField::Level), Some(-6.0));
+    let over = play(&mut e, 4_000, 128, &[(0, hit(0))]);
+    let mut quiet = plain(&s);
+    quiet.level_db = -20.0;
+    let want = play(&mut engine(&kit(&s, quiet)), 4_000, 128, &[(0, hit(0))]);
+    assert!(over.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-4));
+    e.apply(live(0, PadField::Level, f32::NAN));
+    e.apply(lock(0, PadField::Level, f32::NAN));
+    assert_eq!(e.pad_lock_value(0, PadField::Level), None);
+    e.apply(Event::AllOff);
+    let _ = play(&mut e, 20_000, 128, &[]);
+    let clean = play(&mut engine(&p), 4_000, 128, &[(0, hit(0))]);
+    assert!(play(&mut e, 4_000, 128, &[(0, hit(0))]) == clean);
+}
+
+#[test]
+fn a_lock_stays_through_a_new_view_and_moves_a_sound_still_ringing() {
+    let s = noise(40_000, 19);
+    let p = kit(&s, plain(&s));
+    let mut e = engine(&p);
+    e.apply(lock(0, PadField::Cutoff, 500.0));
+    e.set_view(EngineView::build(&p, RATE));
+    assert_eq!(e.pad_lock_value(0, PadField::Cutoff), Some(500.0), "kept");
+    e.apply(lock(0, PadField::Cutoff, f32::NAN));
+    // A lock with no note on a held sound: its level follows from the
+    // lock's frame.
+    let ringing = play(
+        &mut engine(&p),
+        30_000,
+        128,
+        &[(0, hit(0)), (10_000, lock(0, PadField::Level, -40.0))],
+    );
+    assert!(rms(&ringing, 2_000, 9_000) > 0.05, "loud before the lock");
+    assert!(
+        rms(&ringing, 15_000, 25_000) < rms(&ringing, 2_000, 9_000) * 0.05,
+        "quiet after it"
+    );
+}
+
+#[test]
+fn a_locked_decay_shortens_a_sound_that_plays_out() {
+    let s = noise(40_000, 23);
+    let mut r = Region::whole(&s);
+    r.mode = PlayMode::OneShot;
+    let pad = Pad::new("long", Layer::new(r));
+    assert!(pad.amp.sustain >= 0.999, "it plays out");
+    let p = kit(&s, pad);
+    let open = play(&mut engine(&p), 30_000, 128, &[(0, hit(0))]);
+    assert!(rms(&open, 20_000, 30_000) > 0.05, "plays out");
+    let short = play(
+        &mut engine(&p),
+        30_000,
+        128,
+        &[(0, lock(0, PadField::Decay, 100.0)), (0, hit(0))],
+    );
+    assert!(rms(&short, 0, 400) > 0.05, "starts");
+    assert!(rms(&short, 20_000, 30_000) < 1e-4, "gone after its decay");
+    // A live decay alone keeps the pad's sustain, as the crossfader's does.
+    let live_decay = play(
+        &mut engine(&p),
+        30_000,
+        128,
+        &[(0, live(0, PadField::Decay, 100.0)), (0, hit(0))],
+    );
+    assert!(rms(&live_decay, 20_000, 30_000) > 0.05, "plays out");
 }
 
 fn split(mut e: Engine, threaded: bool) -> Engine {

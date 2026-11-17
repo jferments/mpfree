@@ -16,7 +16,11 @@
 //!   is a tie: the held step's note lasts to the end of it (or ends there,
 //!   inside the note). A lit step, an earlier one, or any step after a
 //!   turn joins the steps held instead.
-//! - **ERASE + a step** clears it, locks included.
+//! - **ERASE + a step** clears it, locks included; **ERASE pressed while
+//!   steps are held** takes their locks off and leaves their notes
+//!   ([`StepKeys::erase_locks`]).
+//! - **SHIFT + an empty step** holds it with no note: a knob turned then
+//!   is a lock with no note.
 //! - **COPY + a step** picks it; each step tapped after it, COPY still
 //!   held, gets a copy, locks included.
 //!
@@ -55,6 +59,9 @@ pub struct Press {
     pub erase: bool,
     /// COPY held: the step is picked to copy, or gets the copy.
     pub copy: bool,
+    /// SHIFT held: an empty step is held with no note, for a lock with
+    /// no note.
+    pub shift: bool,
     pub rolling: bool,
 }
 
@@ -150,6 +157,35 @@ impl StepKeys {
         }
     }
 
+    /// ERASE pressed while steps are held: their locks come off, as one
+    /// undo, and their notes stay. None while no step is held; else what
+    /// to tell.
+    pub fn erase_locks(&mut self, time: &mut TimeHost) -> Option<String> {
+        let (sound, steps) = self.held_steps()?;
+        self.turned = true;
+        self.keep_all();
+        let bits = steps
+            .iter()
+            .filter(|&&i| i < 128)
+            .fold(0u128, |b, &i| b | 1u128 << i);
+        let (which, has) = if steps.len() == 1 {
+            (format!("step {}", steps[0] + 1), "has")
+        } else {
+            let list: Vec<String> = steps.iter().map(|i| (i + 1).to_string()).collect();
+            (format!("steps {}", list.join(", ")), "have")
+        };
+        Some(
+            match time.step_action(StepAction::ClearLocks {
+                pad: sound,
+                steps: bits,
+            }) {
+                Ok(l) if l.is_empty() => format!("ERASE: {which} {has} no locks"),
+                Ok(_) => format!("ERASE: the locks of {which} are off (UNDO brings them back)"),
+                Err(e) => format!("steps: {e}"),
+            },
+        )
+    }
+
     /// COPY was let go: the step picked is forgotten.
     pub fn forget_copy(&mut self) {
         self.copy_from = None;
@@ -234,6 +270,18 @@ impl StepKeys {
         if p.copy {
             self.hold(pad, s.sound, step, Kind::Done, false);
             return self.copy(s.sound, step, lit, time);
+        }
+        if p.shift && !lit {
+            // SHIFT + an empty step: held with no note, for a lock with no
+            // note.
+            self.hold(pad, s.sound, step, Kind::Set { remove: false }, false);
+            return Pressed {
+                log: format!(
+                    "steps: step {} of {name} held for a lock with no note",
+                    step + 1
+                ),
+                ..Pressed::default()
+            };
         }
         // A later step tapped while one is held, nothing turned yet: the
         // held step's note lasts to the end of it.
@@ -535,6 +583,7 @@ mod tests {
             velocity,
             erase,
             copy: false,
+            shift: false,
             rolling,
         }
     }
@@ -561,6 +610,7 @@ mod tests {
             origin: None,
             rows: vec![(0, row)],
             locks: vec![(0, locks)],
+            lock_values: Vec::new(),
         }
     }
 
@@ -745,6 +795,99 @@ mod tests {
         keys.press(s, 6, at(100, false, true), &mut time);
         keys.release(6, &mut time);
         assert_eq!(notes(&time).len(), 3);
+    }
+
+    /// SHIFT + an empty step holds it with no note, so a turn is a lock
+    /// with no note; ERASE pressed while steps are held takes their locks
+    /// off, as one undo, and leaves their notes.
+    #[test]
+    fn shift_holds_an_empty_step_and_erase_takes_the_held_steps_locks_off() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let Ok(mut time) = TimeHost::new(44_100, 120.0) else {
+            return;
+        };
+        let mut keys = StepKeys::default();
+        let s = view(2, 0);
+        let tune = RelAddr::new(OnTrack::Pad(2), 2);
+        let lock_at = |time: &TimeHost, step: usize| {
+            time.steps().clip.and_then(|c| c.lock_value(2, step, tune))
+        };
+        // A clip with a note on step 1.
+        keys.press(s, 0, at(100, false, true), &mut time);
+        keys.release(0, &mut time);
+        // SHIFT + step 5 (empty): held, no note, nothing sounds.
+        let p = keys.press(
+            s,
+            4,
+            Press {
+                shift: true,
+                ..at(100, false, false)
+            },
+            &mut time,
+        );
+        assert!(p.log.contains("lock with no note"), "{}", p.log);
+        assert_eq!(p.sound, None);
+        assert_eq!(keys.held_steps(), Some((2, vec![4])));
+        assert_eq!(notes(&time).len(), 1, "no note");
+        time.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1 << 4,
+            addr: tune,
+            value: Some(700.0),
+        })
+        .expect("a lock");
+        keys.turned();
+        keys.release(4, &mut time);
+        assert_eq!(lock_at(&time, 4), Some(700.0), "a lock with no note");
+        assert_eq!(notes(&time).len(), 1);
+        // SHIFT + a lit step is a plain hold.
+        keys.press(
+            s,
+            0,
+            Press {
+                shift: true,
+                ..at(100, false, true)
+            },
+            &mut time,
+        );
+        time.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1,
+            addr: tune,
+            value: Some(-300.0),
+        })
+        .expect("a lock");
+        keys.turned();
+        // ERASE while steps 1 and 5 are held: both lose their locks, as one
+        // undo; the note on step 1 stays (SHIFT again: step 5 joins with no
+        // note).
+        keys.press(
+            s,
+            4,
+            Press {
+                shift: true,
+                ..at(100, false, true)
+            },
+            &mut time,
+        );
+        assert_eq!(keys.held_steps(), Some((2, vec![0, 4])));
+        let t = keys.erase_locks(&mut time).expect("steps held");
+        assert!(t.contains("the locks of steps 1, 5 are off"), "{t}");
+        assert_eq!((lock_at(&time, 0), lock_at(&time, 4)), (None, None));
+        assert_eq!(notes(&time).len(), 1, "the note stays");
+        let t = keys.erase_locks(&mut time).expect("steps held");
+        assert!(t.contains("steps 1, 5 have no locks"), "{t}");
+        keys.release(0, &mut time);
+        keys.release(4, &mut time);
+        assert_eq!(notes(&time).len(), 1, "erased: nothing comes off");
+        time.act(mpfree_time_ui::view::TimeAction::Undo)
+            .expect("undo");
+        assert_eq!(
+            (lock_at(&time, 0), lock_at(&time, 4)),
+            (Some(-300.0), Some(700.0)),
+            "UNDO brings both back"
+        );
+        assert_eq!(keys.erase_locks(&mut time), None, "nothing held");
     }
 
     /// COPY + a step picks it; each step after gets a copy; COPY let go

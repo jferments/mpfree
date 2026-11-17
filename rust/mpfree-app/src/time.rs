@@ -68,6 +68,7 @@ mod control;
 mod follow;
 pub mod link;
 
+use mpfree_play::mpfree_param::RelAddr;
 use mpfree_play::{Event, Out, Sink, TrackArps};
 use mpfree_seq::mpfree_moves::Input;
 use mpfree_seq::steps::{Change, Step};
@@ -123,6 +124,9 @@ pub struct StepClip {
     /// The same rows' locks: how many each step holds (its row's own and
     /// the whole step's), for the step pads' lock colour.
     pub locks: Vec<(u8, Vec<usize>)>,
+    /// Each row's own locks: row, step, parameter and value, for the
+    /// Q-Links' cards of a held step.
+    pub lock_values: Vec<(u8, usize, RelAddr, f32)>,
 }
 
 impl StepClip {
@@ -132,6 +136,14 @@ impl StepClip {
             .iter()
             .find(|(p, _)| *p == pitch)
             .map_or(&[], |(_, r)| r.as_slice())
+    }
+
+    /// The lock of `addr` on step `step` of row `pitch`, if it has one.
+    pub fn lock_value(&self, pitch: u8, step: usize, addr: RelAddr) -> Option<f32> {
+        self.lock_values
+            .iter()
+            .find(|&&(p, i, a, _)| (p, i, a) == (pitch, step, addr))
+            .map(|l| l.3)
     }
 
     /// How many locks each step of `pitch` holds (empty with no such row).
@@ -174,6 +186,20 @@ pub enum StepAction {
         steps: u128,
         change: Change,
     },
+    /// A knob turned while step pads are held (STEP SEQ): the Q-Links'
+    /// Sound bank, or a knob on the Synth tab. The steps of `pad` whose
+    /// bits are set in `steps` take a lock of `addr` at `value` (a step
+    /// with no note: a lock with no note), or with `None` lose it. A whole
+    /// turn is one undo.
+    Lock {
+        pad: u8,
+        steps: u128,
+        addr: RelAddr,
+        value: Option<f32>,
+    },
+    /// ERASE pressed while step pads are held: the steps of `pad` whose
+    /// bits are set in `steps` lose their locks; their notes stay.
+    ClearLocks { pad: u8, steps: u128 },
     /// ERASE + a lane's name: every step of `pad` comes out of the clip.
     ClearPad { pad: u8 },
     /// ERASE + a step pad (one step) or + a PAD BANK (a page), with STEP
@@ -226,6 +252,21 @@ pub trait Pads {
         let _ = o;
         false
     }
+    /// A clip's parameter lock (`Some`) or its end (`None`) on a kit
+    /// pad's sound (`Owner::Pad`) or an instrument (`Owner::Inst`),
+    /// `offset` frames into the period, before the note it plays with.
+    /// True when it was taken; otherwise it goes on to the mixer's mod
+    /// engine, which plays the strips' and inserts' locks and counts the
+    /// rest. By default nothing is taken.
+    fn lock_at(
+        &mut self,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        value: Option<f32>,
+        offset: u32,
+    ) -> bool {
+        let _ = (addr, value, offset);
+        false
+    }
     /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
     /// the pads through their track's arp, a latched arp, or a clip that
     /// plays through its arp. It is live playing, so the pad player gives
@@ -267,6 +308,19 @@ impl Pads for crate::sampler::Player {
     }
     fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
         crate::sampler::Player::pressure_at(self, pad, value, offset)
+    }
+    fn lock_at(
+        &mut self,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        value: Option<f32>,
+        offset: u32,
+    ) -> bool {
+        match (addr.owner, crate::sampler::pad_field(addr.param)) {
+            (mpfree_play::mpfree_param::Owner::Pad(_, pad), Some(field)) => {
+                self.pad_lock(usize::from(pad), field, value, offset)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1092,6 +1146,66 @@ mod tests {
         );
     }
 
+    /// A held step's lock on its pad's sound: the turns are one undo, and
+    /// played, the lock reaches the pads on its note's frame, before the
+    /// note, and ends on the pad's next note without it.
+    #[test]
+    fn held_step_locks_reach_the_pads_before_their_note_and_end_at_the_next() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        for step in [0, 4] {
+            h.step_action(StepAction::Tap {
+                pad: 2,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        let track = h.control.armed().expect("an armed track") as u8;
+        let tune = RelAddr::new(OnTrack::Pad(2), 2);
+        let lines: Vec<String> = [100.0, 300.0, 500.0]
+            .iter()
+            .map(|&v| {
+                h.step_action(StepAction::Lock {
+                    pad: 2,
+                    steps: 1,
+                    addr: tune,
+                    value: Some(v),
+                })
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            ["steps: step 1 of pad 3: lock pad2.2 100", "", ""],
+            "one line a turn"
+        );
+        let lock = |h: &TimeHost| h.steps().clip.and_then(|c| c.lock_value(2, 0, tune));
+        assert_eq!(lock(&h), Some(500.0));
+        h.command(Command::Play);
+        // Two passes of the one-bar clip.
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        let hits: Vec<_> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(hits.len(), 4, "{hits:?}");
+        let (on, off) = (Some(500.0), None);
+        let at = tune.on(track);
+        assert_eq!(
+            pads.locks,
+            vec![
+                (hits[0].0, 0, at, on),
+                (hits[1].0, 1, at, off),
+                (hits[2].0, 2, at, on),
+                (hits[3].0, 3, at, off)
+            ],
+            "each pass: the lock before step 1's note, its end before step 5's"
+        );
+        assert_eq!(h.dropped(), 0);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(lock(&h), None, "UNDO: the whole turn");
+        assert_eq!(h.steps().clip.unwrap().row(2).iter().flatten().count(), 2);
+    }
+
     #[test]
     fn erase_takes_a_lanes_steps_or_a_clip_and_undo_brings_them_back() {
         use mpfree_seq::Note;
@@ -1329,6 +1443,14 @@ mod tests {
         stops: usize,
         /// (absolute frame, pad, value)
         pressure: Vec<(u64, usize, u8)>,
+        /// The pads' sound locks taken: (absolute frame, hits before it,
+        /// address, value or None for its end).
+        locks: Vec<(
+            u64,
+            usize,
+            mpfree_play::mpfree_param::ParamAddr,
+            Option<f32>,
+        )>,
     }
 
     impl Pads for Fake {
@@ -1344,6 +1466,20 @@ mod tests {
         fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
             self.pressure
                 .push((self.frame + u64::from(offset), pad, value));
+        }
+        fn lock_at(
+            &mut self,
+            addr: mpfree_play::mpfree_param::ParamAddr,
+            value: Option<f32>,
+            offset: u32,
+        ) -> bool {
+            use mpfree_play::mpfree_param::Owner;
+            if !matches!(addr.owner, Owner::Pad(..)) {
+                return false;
+            }
+            let at = self.frame + u64::from(offset);
+            self.locks.push((at, self.hits.len(), addr, value));
+            true
         }
     }
 
