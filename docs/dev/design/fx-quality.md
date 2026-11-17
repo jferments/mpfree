@@ -8,11 +8,11 @@ checked: 2026-11-16 ececc7e
 
 An effect is good when it meets its measured targets, wins or ties in blind, level-matched listening, has the controls musicians know, and fits the MPC's budget. This page holds the first of those: each target as a number with its reason, how fxlab measures it, and the ratchet on CI that stops any number getting worse.
 
-**Second round** (measuring built 2026-11-17): drive (Drive and Character), crush, compressor, filters (Multi and DJ) and lo-fi, by the same method, in [Round 2](#round-2-drive-crush-compressor-filters-and-lo-fi) below. Research and plan: jferments/mpfree-claude `fx/quality/` (plan-2.md, research-drive.md, research-crush.md, research-compressor.md, research-filter.md, research-lofi.md, baseline-2026-11-17.md).
+**Second round** (measuring built 2026-11-17): drive (Drive and Character), crush, compressor, filters (Multi and DJ) and lo-fi, by the same method, in [Round 2](#round-2-drive-crush-compressor-filters-and-lo-fi) below; the amp joined it on 17 Nov (class `amp`, ids A; plan-2 section 12, research-amp.md). Research and plan: jferments/mpfree-claude `fx/quality/` (plan-2.md, research-drive.md, research-crush.md, research-compressor.md, research-filter.md, research-lofi.md, baseline-2026-11-17.md).
 
 ## The report
 
-`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter` or `lofi`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq` and `eq[preset]`; an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All eight classes take about 35 s in a release build (the round-2 classes 15 s, most of it the Drive's 4x quality).
+`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi` or `amp`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq` and `eq[preset]`; an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All nine classes take about 38 s in a release build (the round-2 classes 15 s, most of it the Drive's 4x quality).
 
 New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known answers:
 
@@ -128,7 +128,7 @@ cargo test --release --locked -p mpfree-fxlab --test quality      # the ratchet
 
 ## Round 2: drive, crush, compressor, filters and lo-fi
 
-The targets of plan-2 (ids G, B, K, F and L), measured by `quality/round2.rs`. The measures it adds, beside the first round's:
+The targets of plan-2 (ids G, B, K, F and L, and A for the amp), measured by `quality/round2.rs`. The measures it adds, beside the first round's:
 
 | Measure | What it reads |
 |---|---|
@@ -139,6 +139,7 @@ The targets of plan-2 (ids G, B, K, F and L), measured by `quality/round2.rs`. T
 | Heard against drawn | The gain of a sine at chosen frequencies (a lock-in over whole periods) against the engine's own `response_db` or `cuts_db` |
 | IMD | SMPTE (60 Hz at -8 dBFS with 7 kHz at -20 dBFS: the sidebands at ±60, ±120, ±180 Hz against 7 kHz) and the CCIF difference tone (19 and 20 kHz at -12 dBFS each) |
 | Null | The largest difference between the output and the input as the node saw it (32-bit), late by the reported latency, dBFS; -140 when they are the same |
+| Power chord mud | For the amp: E2, B2 and E3 together (a metal rhythm part's power chord) through it, Blackman-Harris windowed; the share of the output from 20 to 70 Hz against all of it from 20 Hz up, dB. Clipping a chord makes its 41 Hz difference tone, the mud a tight boost takes away |
 
 ### Drive (G)
 
@@ -216,6 +217,24 @@ Subjects: the Drive family's ten modes (`drive/soft` to `drive/soften`) at their
 | L10 | `null_amount0_dbfs` | Bit for bit | Inserting it changes nothing |
 | L11 | `zipper_db` | ≤ 3 dB | Smooth automation |
 
+### Amp (A)
+
+The Amp at each model (`amp/clean`, `amp/crunch`, `amp/lead`, `amp/bass`) and its presets (`amp/amp[Modern lead]`). The targets reach rich, high-gain distortion as one use among many; presets and defaults stay broad across styles.
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| A1 | `alias_1k_m6dbfs_gain10`, `alias_2k_m6dbfs_gain10`, `alias_5k_m12dbfs_gain10` | ≤ -60, -60 and -50 dB at Gain 10, every model (Gain 5 and the presets' 5 kHz kept by the ratchet) | Inharmonic fizz on high notes; about -60 dB is where it stops mattering |
+| A2 | `cleanup_db_gain5` | A 1 kHz sine's THD falls at least 10 dB from -6 to -30 dBFS at Gain 5 (Clean, Crunch, Bass; Lead reported) | Playing softer cleans up |
+| A3 | `lu_pink18_gain*` | Pink at -18 dBFS within ±2 LU of the dry from Gain 2.5 to 10 (Gain 0 reported) | Gain changes grit, not loudness |
+| A4 | `lu_pink18` (presets) | Within ±1 LU | Fair A/B |
+| A5 | `power_chord_sub70_db_gain10_nocab` | Reported for today's sound; a Tight boost, once there is one, under -25 dB | Palm mutes and chords stay clear, when asked |
+| A6 | `bass_jump_db`, `mid_jump_db`, `treble_jump_db` | A knob thrown from 0 to 10 under a 220 Hz sine spikes ≤ 3 dB over the steady sound (switch click) | Smooth knobs |
+| A7 | `gain_zipper_db` | fxlab's zipper on Gain ≤ 3 dB | Smooth knob |
+| A8 | `model_change_db`, `cab_change_db` | ≤ 3 dB (switch click) | No clicks |
+| A9 | `silence_out_dbfs_gain10` | ≤ -120 dBFS; the gate's rows come with the gate | Clean rests |
+
+The fuzz's rows (A10, A11) come with the fuzz (decision 10.6), and A12 is the instruction gate's two Amp cases.
+
 ### Baseline (2026-11-17, before any fix)
 
 76 of 109 drive targets, 19 of 32 crush, 16 of 24 compressor, 25 of 30 filter and 17 of 26 lo-fi targets met. The gaps:
@@ -244,3 +263,13 @@ What changed (design: [fx.md](fx.md), the Crush entry; decision 10.2): each hold
 - **Measured differently:** the presets' off-grid row runs with Jitter at 0: jitter moves the holds off any grid on purpose (Wobbly clock reads -6.8 dB with it).
 - **Blessed worse, and why:** Soft grit's loudness, -0.38 LU (was -0.05), inside ±1 LU: its 32 kHz rate doesn't divide a 44.1 kHz session, and the images that folded back under 22 kHz and the stray tones of the uneven holds no longer add to its level.
 - **Cost** (the instruction gate's case, rustc 1.97.0, a 128-frame block at 44.1 kHz, the default 8 bits at 11,025 Hz): 10.3k to 36.2k instructions (3.5 times), about 1 % of a period on the MPC. Each hold that changes the value adds 32 corrections for each side (one at the same value adds none): the step is read from a table of 17 phases (one per sixteenth of a frame, interpolated between two rows) in two straight runs round the ring, which halved a first version's 71.3k. A rate at or above the session's holds every frame and adds none. Perform FX's own crush is a separate engine and is unchanged.
+
+### Amp baseline (2026-11-17, before any fix)
+
+38 of 64 amp targets met (rows added by the amp's measuring PR; nothing in the amp changed). The gaps:
+
+- **Aliasing at high gain:** Lead at Gain 10 aliases at -38, -38 and -32 dB (1 and 2 kHz at -6 dBFS, 5 kHz at -12) and Crunch's 2 and 5 kHz at -48 and -36; Clean and Bass meet A1. The Modern lead preset's 5 kHz alias is -35 dB.
+- **Level:** Lead plays pink 12.5 LU over the dry at Gain 2.5 and 8.5 at Gain 10; Crunch reaches +2.05 at Gain 10. The presets are -1.5 to +9 LU (Classic crunch +2.2, Modern lead +9.0, Lo-fi radio +4.1, Bass grit -1.5; Sparkle clean +0.5 meets).
+- **Knobs and switches:** the tone stack's knobs jump: Treble 0 to 10 spikes 38.8 dB on Clean, 22.0 on Bass and 6.1 on Crunch; Mid 28.5 (Clean) and 13.5 (Bass); Bass 16.3 (Clean). Gain's zipper is 5.1 to 8.2 dB on Crunch, Lead and Bass (Clean 0.9). Taking the cab out clicks 38.0 dB on Clean, 21.8 on Bass and 12.8 on Crunch (the research's first-difference probe missed it); Lead's distortion hides the same steps. Model changes are clean.
+- **Reported:** Lead cleans up 1.9 dB from -6 to -30 dBFS (the others 10.3 to 26.2 dB); the power chord's mud at Gain 10 with the cab off is -13.6 dB on Lead and -22 to -26 on the others.
+- **Cost** (the instruction gate's new cases): Amp (Crunch) 206.6k instructions a block, Amp (Lead, Gain 10) 232.8k.
