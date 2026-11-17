@@ -130,6 +130,7 @@ Changing the curve glides from one blend to the other, so it doesn't click. A pr
 - **Feedback** sends the copy round again: up for a metallic ring, down (below 0) for a hollow one. The flanger stays as loud as the sound going in at any Feedback and Mix: more Feedback sharpens the notches and the peaks between them, it doesn't make the sound louder.
 - The notches stay deep all the way up, however the sweep moves, and the curve on its page is the one you hear.
 - **Mix** is a plain crossfade: 50 % is the deepest notch.
+- **Through zero** (off by default) is the tape flange, the sound of two tape machines playing together while one is slowed by a thumb on its reel. The sound waits 5 ms and the copy, flipped over, swings either side of it, so twice a cycle the two meet and, at Mix 50 %, the sound vanishes for a moment. **Delay** times **Depth** is how far the copy swings each way, up to the 5 ms wait. The mixer makes up the 5 ms, so the track stays in time with the others. Feedback rings at about 5 ms, so keep it low for the classic sound: the **Tape flange** preset has none. Turning it on or off glides, so it doesn't click.
 
 > [!NOTE]
 > Flangers saved before this change sound a little different: they go in at the level of the sound going in, so at the defaults they are about 2 dB louder than before and with Feedback near either end up to about 4 dB quieter; their highs are brighter; and with a Delay over 5 ms and a deep Depth the sweep stops at 20 ms.

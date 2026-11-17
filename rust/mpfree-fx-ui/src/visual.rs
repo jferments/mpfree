@@ -346,24 +346,38 @@ pub fn strip(
         Scratch::Flanger(f) => {
             let base = v(flanger::DELAY);
             let off = 0.25 * v(flanger::WIDTH) / 100.0;
+            // Through zero draws the gap between the copy and the dry, the
+            // dry's wait either way of the crossing (the midline); off, the
+            // delay, two octaves either way of Delay.
+            let tz = f.through_zero();
+            let wait = f.wait_ms();
             let sweep = |off: f32| -> Vec<(f32, f32)> {
                 (0..N)
                     .map(|i| {
                         let x = i as f32 / (N - 1) as f32;
-                        let d = f.delay_ms((2.0 * x + off).fract());
-                        (x, ((d / base).log2() / 4.0 + 0.5).clamp(0.0, 1.0))
+                        let p = (2.0 * x + off).fract();
+                        let y = if tz {
+                            0.5 + 0.5 * f.gap_ms(p) / wait
+                        } else {
+                            (f.delay_ms(p) / base).log2() / 4.0 + 0.5
+                        };
+                        (x, y.clamp(0.0, 1.0))
                     })
                     .collect()
             };
+            let rate = lfo_rate(st, flanger::SYNC, flanger::RATE);
             s.push(
                 Card {
                     title: "Sweep".into(),
-                    caption: format!(
-                        "{} · ±{:.1} oct · {}",
-                        ms_text(base),
-                        2.0 * v(flanger::DEPTH) / 100.0,
-                        lfo_rate(st, flanger::SYNC, flanger::RATE)
-                    ),
+                    caption: if tz {
+                        format!("through zero · ±{} · {rate}", ms_text(f.gap_ms(0.25)))
+                    } else {
+                        format!(
+                            "{} · ±{:.1} oct · {rate}",
+                            ms_text(base),
+                            2.0 * v(flanger::DEPTH) / 100.0,
+                        )
+                    },
                     traces: vec![dashed(sweep(off), t.good), line(sweep(0.0), t.accent)],
                     midline: true,
                     active: true,
@@ -371,17 +385,21 @@ pub fn strip(
                 },
                 page,
             );
+            // Filled where the sweep starts (through zero: where the copy is
+            // furthest behind); dashed at its top (through zero: close to
+            // the crossing, where only the highs are left).
+            let (solid, faint) = if tz { (0.25, 0.04) } else { (0.0, 0.25) };
             s.push(
                 Card {
                     title: "Comb".into(),
                     caption: format!("feedback {}", text(st, flanger::FEEDBACK)),
                     traces: vec![
                         dashed(
-                            freq_curve(|hz| f.response_db(hz, 0.25), -30.0, 30.0),
+                            freq_curve(|hz| f.response_db(hz, faint), -30.0, 30.0),
                             t.text_faint,
                         ),
                         filled(
-                            freq_curve(|hz| f.response_db(hz, 0.0), -30.0, 30.0),
+                            freq_curve(|hz| f.response_db(hz, solid), -30.0, 30.0),
                             t.accent,
                         ),
                     ],

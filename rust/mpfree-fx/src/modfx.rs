@@ -847,6 +847,7 @@ pub mod flanger {
     pub const FEEDBACK: u16 = 4;
     pub const WIDTH: u16 = 5;
     pub const MIX: u16 = 6;
+    pub const THROUGH_ZERO: u16 = 7;
 }
 
 static FLANGER_INFO: NodeInfo = NodeInfo {
@@ -854,7 +855,7 @@ static FLANGER_INFO: NodeInfo = NodeInfo {
     name: "Flanger",
     kind: Kind::Effect,
 };
-static FLANGER_PARAMS: [ParamInfo; 7] = [
+static FLANGER_PARAMS: [ParamInfo; 8] = [
     ParamInfo {
         id: 0,
         name: "Rate",
@@ -932,10 +933,39 @@ static FLANGER_PARAMS: [ParamInfo; 7] = [
         curve: Curve::Linear,
         readonly: false,
     },
+    ParamInfo {
+        id: 7,
+        name: "Through zero",
+        group: "Output",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(THROUGH_ZERO),
+        readonly: false,
+    },
 ];
 
 /// The sweep at full depth: two octaves of delay each way.
 const FLANGE_OCTAVES: f32 = 2.0;
+/// Through zero's choices.
+const THROUGH_ZERO: &[&str] = &["Off", "On"];
+/// With Through zero on, the dry waits this long (the latency reported)
+/// and the copy sweeps either side of it, so the two cross.
+const TZ_MS: f32 = 5.0;
+/// The time constant of Through zero's crossover when it is switched (it
+/// is done in about 140 ms).
+const TZ_FADE_MS: f32 = 10.0;
+/// With Through zero, the share of the power the dry and the copy have in
+/// common on music, averaged over the sweep: the copy is within a few ms
+/// of the dry, so the bass is shared. Pink noise shares 7 to 9 %, drum
+/// hits 20 %; the trim takes off the middle.
+const TZ_SHARED: f32 = 0.14;
+
+/// The dry's wait with Through zero on, in whole frames.
+fn tz_frames(rate: u32) -> f32 {
+    (TZ_MS * 0.001 * rate as f32).round()
+}
 /// The longest the sweep reaches: past 20 ms a flanger is a doubler. At a
 /// Delay over 5 ms the sweep is narrowed to fit, the same both ways.
 const FLANGE_MAX_MS: f32 = 20.0;
@@ -949,26 +979,45 @@ fn flange_octaves(depth: f32, log_delay: f32) -> f32 {
     (FLANGE_OCTAVES * depth).min(LOG2_FLANGE_MAX_MS - log_delay)
 }
 
-/// The flanger's level trim at Feedback `g` and Mix `m` (0 to 1): the
-/// dry and the comb summed carry `(1 - m)² + m² / (1 - g²)` of a noise's
-/// power (the loop's own gain is `1 / (1 - g²)`, and the comb's echoes
-/// don't line up with the dry), so this holds the level at any Feedback
-/// and Mix, and the notches keep their depth. 1 at Mix 0.
+/// The flanger's level trim at Feedback `g`, Mix `m` and Through zero
+/// `tz` (0 to 1 each): the dry and the comb summed carry `(1 - m)² + m² /
+/// (1 - g²)` of a noise's power (the loop's own gain is `1 / (1 - g²)`,
+/// and the comb's echoes don't line up with the dry), so this holds the
+/// level at any Feedback and Mix, and the notches keep their depth. With
+/// Through zero the copy is inverted and passes the dry, so it cancels
+/// what they share, [`TZ_SHARED`] of the power on music; that comes off.
+/// 1 at Mix 0.
 #[inline]
-fn flange_trim(g: f32, m: f32) -> f32 {
+fn flange_trim(g: f32, m: f32, tz: f32) -> f32 {
     let dry = 1.0 - m;
-    1.0 / (dry * dry + m * m / (1.0 - g * g)).sqrt()
+    1.0 / (dry * dry + m * m / (1.0 - g * g) - 2.0 * TZ_SHARED * tz * dry * m).sqrt()
 }
 
 /// A stereo flanger: a short delay swept in octaves (so the comb moves
 /// evenly), with positive (metallic) or negative (hollow) feedback, read
 /// through the flat read so the high notches stay deep round the loop,
 /// and trimmed so it goes in at the dry's level at any Feedback.
+///
+/// **Through zero** (off by default) is the tape flange: the dry waits
+/// [`TZ_MS`] and the copy, inverted, sweeps evenly either side of it
+/// (Delay times Depth each way, at most the wait), so the two cross twice
+/// a cycle and cancel there. The dry is read through the same flat read
+/// at the wait, so with no Feedback the crossing cancels exactly.
 pub struct Flanger {
-    v: [f32; 7],
+    v: [f32; 8],
     rate: u32,
     lfo: Lfo,
     lines: [FlatLine; 2],
+    /// The dry's lines for Through zero, written whether it is on or not.
+    dry: [FlatLine; 2],
+    /// Through zero, 0 off to 1 on, gliding over [`TZ_FADE_MS`].
+    tz: Smooth,
+    /// The dry's wait in frames ([`tz_frames`]) and its read's weights.
+    tz_at: f32,
+    tz_w: (usize, [f32; TAPS]),
+    /// Frames written to the dry's lines since Through zero was last off
+    /// (they aren't written while it is off).
+    dry_fill: usize,
     depth: Smooth,
     log_delay: Smooth,
     feedback: Smooth,
@@ -978,9 +1027,10 @@ pub struct Flanger {
     base: f32,
     /// [`flange_octaves`]'s ceiling at the base delay, cached with it.
     max_oct: f32,
-    /// [`flange_trim`] for the Feedback and Mix it was worked out at.
+    /// [`flange_trim`] for the Feedback, Mix and Through zero it was
+    /// worked out at.
     trim: f32,
-    trim_at: (f32, f32),
+    trim_at: (f32, f32, f32),
 }
 
 impl Default for Flanger {
@@ -990,23 +1040,61 @@ impl Default for Flanger {
 }
 
 impl Flanger {
+    /// Whether Through zero is on (the setting, not the glide).
+    pub fn through_zero(&self) -> bool {
+        self.v[flanger::THROUGH_ZERO as usize] >= 0.5
+    }
+
+    /// With Through zero on, how far the copy sweeps either side of the
+    /// dry, in frames: Delay times Depth, at most the dry's wait less two
+    /// frames.
+    fn reach_frames(&self, delay_frames: f32, depth: f32) -> f32 {
+        (delay_frames * depth).min(self.tz_at - 2.0)
+    }
+
     /// The delay in frames at LFO phase `phase` (0 to 1 a cycle) for the
     /// settings set, worked out as the sound is.
     fn delay_frames(&self, phase: f32) -> f32 {
+        if self.through_zero() {
+            let delay = self.v[flanger::DELAY as usize] * 0.001 * self.rate as f32;
+            let reach = self.reach_frames(delay, self.v[flanger::DEPTH as usize] / 100.0);
+            return self.tz_at + reach * sine(wrap(phase));
+        }
         let log_delay = self.v[flanger::DELAY as usize].log2();
         let base = log_delay.exp2() * 0.001 * self.rate as f32;
         let oct = flange_octaves(self.v[flanger::DEPTH as usize] / 100.0, log_delay);
         base * (oct * sine(wrap(phase))).exp2()
     }
 
-    /// The delay in ms at LFO phase `phase` (0 to 1 a cycle), for the
-    /// settings set. For drawing.
+    /// The copy's delay in ms at LFO phase `phase` (0 to 1 a cycle), for
+    /// the settings set. For drawing.
     pub fn delay_ms(&self, phase: f32) -> f32 {
+        if self.through_zero() {
+            return self.delay_frames(phase) * 1000.0 / self.rate as f32;
+        }
         let oct = flange_octaves(
             self.v[flanger::DEPTH as usize] / 100.0,
             self.v[flanger::DELAY as usize].log2(),
         );
         self.v[flanger::DELAY as usize] * (oct * sine(wrap(phase))).exp2()
+    }
+
+    /// How far the copy is behind the dry in ms at LFO phase `phase` (0 to
+    /// 1 a cycle), for the settings set: the copy's delay, less the dry's
+    /// wait with Through zero on (then negative while the copy is ahead).
+    /// For drawing.
+    pub fn gap_ms(&self, phase: f32) -> f32 {
+        self.delay_ms(phase) - self.wait_ms()
+    }
+
+    /// How long the dry waits in ms: [`TZ_MS`] (to the frame) with
+    /// Through zero on, none with it off. For drawing.
+    pub fn wait_ms(&self) -> f32 {
+        if self.through_zero() {
+            self.tz_at * 1000.0 / self.rate.max(1) as f32
+        } else {
+            0.0
+        }
     }
 
     /// The response in dB at `hz` with the sweep held at `phase`, for the
@@ -1024,7 +1112,18 @@ impl Flanger {
         let (dr, di) = (1.0 - fb * zr, -fb * zi);
         let den = dr * dr + di * di;
         let (wr, wi) = ((zr * dr + zi * di) / den, (zi * dr - zr * di) / den);
-        let trim = f64::from(flange_trim(g, m));
+        let tz = if self.through_zero() { 1.0 } else { 0.0 };
+        let trim = f64::from(flange_trim(g, m, tz));
+        if self.through_zero() {
+            // out = trim ((1 - mix) dry - mix wet), the dry through the
+            // same read at the wait.
+            let (i, w) = self.tz_w;
+            let (xr, xi) = flat_response(i, &w, 2.0 * std::f64::consts::PI * f64::from(hz) / fs);
+            return crate::svf::power_db((
+                trim * ((1.0 - mix) * xr - mix * wr),
+                trim * ((1.0 - mix) * xi - mix * wi),
+            ));
+        }
         crate::svf::power_db((trim * (1.0 - mix + mix * wr), trim * mix * wi))
     }
 
@@ -1035,6 +1134,11 @@ impl Flanger {
             rate: 0,
             lfo: Lfo::default(),
             lines: [FlatLine::default(), FlatLine::default()],
+            dry: [FlatLine::default(), FlatLine::default()],
+            tz: Smooth::new(if v[7] >= 0.5 { 1.0 } else { 0.0 }),
+            tz_at: 0.0,
+            tz_w: (0, [0.0; TAPS]),
+            dry_fill: usize::MAX,
             depth: Smooth::new(v[2] / 100.0),
             log_delay: Smooth::new(v[3].log2()),
             feedback: Smooth::new(v[4] / 100.0),
@@ -1043,7 +1147,7 @@ impl Flanger {
             base: 0.0,
             max_oct: 0.0,
             trim: 1.0,
-            trim_at: (f32::NAN, f32::NAN),
+            trim_at: (f32::NAN, f32::NAN, f32::NAN),
         };
         f.prepare(48_000, mpfree_node::MAX_BLOCK);
         f.reset();
@@ -1062,6 +1166,7 @@ impl Flanger {
             flanger::FEEDBACK => self.feedback.target = v / 100.0,
             flanger::WIDTH => self.width.target = v / 100.0,
             flanger::MIX => self.mix.target = v / 100.0,
+            flanger::THROUGH_ZERO => self.tz.target = if v >= 0.5 { 1.0 } else { 0.0 },
             _ => {}
         }
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
@@ -1074,6 +1179,17 @@ impl Flanger {
     }
 
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+        if self.tz.value == 0.0 && self.tz.target == 0.0 {
+            // Through zero off: the dry's lines go stale.
+            self.dry_fill = 0;
+            self.run_off(l, r);
+        } else {
+            self.run_tz(l, r);
+        }
+    }
+
+    /// The flanger with Through zero off and settled.
+    fn run_off(&mut self, l: &mut [f32], r: &mut [f32]) {
         let longest = self.lines[0].longest();
         for i in 0..l.len() {
             if !self.log_delay.settled() {
@@ -1084,9 +1200,9 @@ impl Flanger {
             let fb = self.feedback.next();
             let off_r = 0.25 * self.width.next();
             let mix = self.mix.next();
-            if (fb, mix) != self.trim_at {
-                self.trim = flange_trim(fb, mix);
-                self.trim_at = (fb, mix);
+            if (fb, mix, 0.0) != self.trim_at {
+                self.trim = flange_trim(fb, mix, 0.0);
+                self.trim_at = (fb, mix, 0.0);
             }
             let ph = self.lfo.next();
             let x = [l[i], r[i]];
@@ -1099,6 +1215,73 @@ impl Flanger {
                 let wet = self.lines[ch].read_with(k, &w);
                 self.lines[ch].push(flush(x[ch] + fb * wet));
                 y[ch] = self.trim * lerp(x[ch], wet, mix);
+            }
+            l[i] = y[0];
+            r[i] = y[1];
+        }
+    }
+
+    /// The flanger with Through zero on, or gliding either way. Turned
+    /// on, the dry's lines fill for the wait before the glide starts.
+    fn run_tz(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let longest = self.lines[0].longest();
+        let (zi, zw) = self.tz_w;
+        let fill = self.dry[0].n;
+        for i in 0..l.len() {
+            if !self.log_delay.settled() {
+                let ld = self.log_delay.next();
+                self.set_base(ld);
+            }
+            let raw = self.depth.next();
+            let depth = (FLANGE_OCTAVES * raw).min(self.max_oct);
+            let fb = self.feedback.next();
+            let off_r = 0.25 * self.width.next();
+            let mix = self.mix.next();
+            let tz = if self.dry_fill < fill {
+                self.dry_fill += 1;
+                self.tz.value
+            } else {
+                self.tz.next()
+            };
+            if (fb, mix, tz) != self.trim_at {
+                self.trim = flange_trim(fb, mix, tz);
+                self.trim_at = (fb, mix, tz);
+            }
+            let reach = if tz > 0.0 {
+                self.reach_frames(self.base, raw)
+            } else {
+                0.0
+            };
+            let ph = self.lfo.next();
+            let x = [l[i], r[i]];
+            let mut y = [0.0f32; 2];
+            for ch in 0..2 {
+                let off = if ch == 0 { 0.0 } else { off_r };
+                let s = sine(wrap(ph + off));
+                // Read before the write: the last write is one frame back.
+                let swept = if tz < 1.0 {
+                    let d = self.base * (depth * s).exp2();
+                    let (k, w) = flat_weights(d - 1.0, longest);
+                    self.lines[ch].read_with(k, &w)
+                } else {
+                    0.0
+                };
+                let (dry, wet) = if tz > 0.0 {
+                    let (k, w) = flat_weights(self.tz_at + reach * s - 1.0, longest);
+                    let crossed = self.lines[ch].read_with(k, &w);
+                    let waited = self.dry[ch].read_with(zi, &zw);
+                    // Off to on: the dry to the waited dry, the copy to the
+                    // crossing copy, inverted.
+                    (
+                        lerp(x[ch], waited, tz),
+                        (lerp(swept, crossed, tz), lerp(swept, -crossed, tz)),
+                    )
+                } else {
+                    (x[ch], (swept, swept))
+                };
+                self.dry[ch].push(x[ch]);
+                self.lines[ch].push(flush(x[ch] + fb * wet.0));
+                y[ch] = self.trim * lerp(dry, wet.1, mix);
             }
             l[i] = y[0];
             r[i] = y[1];
@@ -1122,11 +1305,16 @@ impl Node for Flanger {
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         let rate = rate.max(1);
         if rate != self.rate {
-            // The longest the sweep reaches.
+            // The longest the sweep reaches (Through zero's reaches twice
+            // the dry's wait, well inside it).
             let frames = (FLANGE_MAX_MS * 0.001 * rate as f32) as usize + 8;
             self.lines = [FlatLine::new(frames), FlatLine::new(frames)];
+            let wait = tz_frames(rate) as usize + 8;
+            self.dry = [FlatLine::new(wait), FlatLine::new(wait)];
         }
         self.rate = rate;
+        self.tz_at = tz_frames(rate);
+        self.tz_w = flat_weights(self.tz_at - 1.0, self.dry[0].longest());
         smooth_all(
             &mut [
                 &mut self.depth,
@@ -1138,6 +1326,7 @@ impl Node for Flanger {
             rate,
             30.0,
         );
+        self.tz.set_time(rate, TZ_FADE_MS);
         self.lfo.set(self.v[0], self.v[1] as usize, rate);
         self.set_base(self.log_delay.value);
     }
@@ -1148,12 +1337,15 @@ impl Node for Flanger {
             &mut self.feedback,
             &mut self.width,
             &mut self.mix,
+            &mut self.tz,
         ] {
             s.snap(s.target);
         }
-        for line in &mut self.lines {
+        for line in self.lines.iter_mut().chain(self.dry.iter_mut()) {
             line.clear();
         }
+        // Cleared, the dry's lines hold the silence before.
+        self.dry_fill = usize::MAX;
         self.lfo.reset();
         self.set_base(self.log_delay.value);
     }
@@ -1168,6 +1360,14 @@ impl Node for Flanger {
             }
         }) {
             self.run(&mut left[from..to], &mut right[from..to]);
+        }
+    }
+    fn latency(&self) -> u32 {
+        // Through zero holds the dry back; the copy sweeps either side.
+        if self.through_zero() {
+            self.tz_at as u32
+        } else {
+            0
         }
     }
     fn tail_frames(&self) -> u32 {

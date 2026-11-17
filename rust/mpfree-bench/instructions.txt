@@ -48,7 +48,8 @@
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding
 188280	EQ (4 bands and both cuts), HQ 2x
-63735	Flanger
+64257	Flanger
+92617	Flanger, through zero
 386476	Fuzz
 434564	Grains FX (dense)
 188538	Keys Dusty Keys, 16 voices
