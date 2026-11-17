@@ -147,6 +147,7 @@ mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
 mod undo;
+mod views;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
@@ -6360,14 +6361,21 @@ fn player_session(
         let synth_took = t_synth.elapsed();
         synth_time.add(synth_took);
         engines.add(engines::SYNTH, synth_took);
-        // What the looper records from the pads: the drums and the synth as
-        // the engines make them, before the mixer (the loop plays back
-        // through the mixer, so the Level is applied once).
-        for f in 0..PERIOD {
-            pads_l[f] = drums_l[f] + synth_l[f];
-            pads_r[f] = drums_r[f] + synth_r[f];
+        // What the looper records from the pads: as they are heard, with
+        // their effects, from the mix of the last period (the master's
+        // input without the loops: mixing.rs); when that can't be had, the
+        // drums and the synth as the engines make them, dry. Either way
+        // before the master, so the Level is applied once.
+        let how = mix.pads_wet(&mut pads_l, &mut pads_r);
+        if how.is_err() {
+            for f in 0..PERIOD {
+                pads_l[f] = drums_l[f] + synth_l[f];
+                pads_r[f] = drums_r[f] + synth_r[f];
+            }
         }
-        looper.take_pads(&pads_l, &pads_r);
+        if let Some(line) = looper.take_pads_as(&pads_l, &pads_r, how) {
+            out.note(&line);
+        }
         // The loop, for its track; the line input comes with it.
         let t_loop = Instant::now();
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);

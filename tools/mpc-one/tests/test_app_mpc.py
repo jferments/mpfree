@@ -1347,13 +1347,17 @@ class StaticTests(unittest.TestCase):
 
     def test_it_starts_only_a_read_only_journalctl_and_the_gpu_process_it_is_given(self):
         code = "".join(c for _, c in self.program_sources())
-        self.assertEqual(code.count("Command::new("), 3)
+        self.assertEqual(code.count("Command::new("), 4)
         self.assertIn('Command::new("journalctl")', code)
         # The Plugins place's downloads in the static build: mpfree-fetch from beside the program (HELPER, only
-        # that name), with the address (the catalog's sites only, checked first), the file and the limit.
+        # that name), with the address (the catalog's sites only, checked first), the file and the limit; and
+        # once, mpfree-fetch --tls, which downloads nothing and says what its libcurl's OpenSSL said (stopped
+        # if it gives no answer within TLS_WAIT).
         fetch = dict(self.program_sources())["mpfree-mpcstore/fetch.rs"]
-        self.assertEqual(fetch.count("Command::new("), 1)
-        self.assertIn("let mut child = Command::new(helper)", fetch)
+        self.assertEqual(fetch.count("Command::new("), 2)
+        self.assertIn("let mut child = Command::new(helper).arg(url).arg(out).arg(max.to_string())", fetch)
+        self.assertIn('let mut child = match Command::new(helper).arg("--tls").stdin(Stdio::null())', fetch)
+        self.assertIn("pub const TLS_WAIT: Duration = Duration::from_secs(10);", fetch)
         self.assertIn('pub const HELPER: &str = "mpfree-fetch";', fetch)
         self.assertIn("let p = std::env::current_exe().ok()?.with_file_name(HELPER);", fetch)
         self.assertIn("if !allowed(url) {\n        return Err(format!(\"{url} is not on the catalog's sites\"));\n"
@@ -1385,7 +1389,7 @@ class StaticTests(unittest.TestCase):
     def test_unsafe_code_only_in_sys(self):
         """The C calls (ioctl, fcntl, sched_setscheduler, mlockall, sync for the power card, and signal, raise and unlink for the safe
         start's stop handler) are the only unsafe code in MPFree's own source, but for the Plugins place's
-        downloads (libcurl through dlopen, in mpfree-mpcstore's fetch.rs)."""
+        downloads (libcurl through dlopen, and its OpenSSL's random numbers checked, in mpfree-mpcstore's fetch.rs)."""
         for name, code in self.program_sources():
             if name == "mpfree-app/main.rs":
                 self.assertIn("#![deny(unsafe_code)]", code)
@@ -1393,10 +1397,15 @@ class StaticTests(unittest.TestCase):
                 self.assertIn("#![forbid(unsafe_code)]", code, name)
             if name == "mpfree-mpcstore/fetch.rs":
                 # Downloads for the Plugins place: libcurl opened with dlopen (no build dependency), and only
-                # these of its functions looked up and called.
-                self.assertEqual(sorted(set(re.findall(r"libc::(\w+)\(", code))), ["dlopen", "dlsym"])
+                # these of its functions looked up and called. Then the OpenSSL libcurl already opened
+                # (RTLD_NOLOAD), to check it can make random numbers and load its default provider if not,
+                # and the kernel's getrandom, called only to say why when it still can't.
+                self.assertEqual(sorted(set(re.findall(r"libc::(\w+)\(", code))), ["dlopen", "dlsym", "getrandom"])
+                self.assertIn("libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_NOLOAD", code)
                 self.assertEqual(sorted(set(re.findall(r'sym\(c"(\w+)"\)', code))),
-                                 ["curl_easy_cleanup", "curl_easy_init", "curl_easy_perform", "curl_easy_setopt",
+                                 ["ERR_error_string_n", "ERR_get_error", "OPENSSL_info", "OSSL_PROVIDER_load",
+                                  "OpenSSL_version", "RAND_status",
+                                  "curl_easy_cleanup", "curl_easy_init", "curl_easy_perform", "curl_easy_setopt",
                                   "curl_easy_strerror", "curl_global_init"])
                 continue
             if name != "mpfree-app/sys.rs":

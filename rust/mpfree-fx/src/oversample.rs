@@ -405,9 +405,125 @@ impl IirPhase {
     }
 }
 
+/// [`IirUp2`], [`IirDown2`] and [`IirPhase`] of one design for one
+/// channel, with the number of sections `N` fixed when compiled, so each
+/// chain is unrolled (no loop or bounds over a list of sections). The
+/// same arithmetic in the same order, so the same output to the bit. For
+/// the hot paths (Drive's Eco, Character) where the sections' bookkeeping
+/// cost as much as their arithmetic. Its states are flushed of values too
+/// small to hear every few frames ([`IirPair::settle`], on a grid of
+/// frames the owner counts from the stream's start, so the output is the
+/// same in any block size) rather than once a section and sample, so a
+/// chain fed silence sits in denormals for a few frames at most;
+/// otherwise the output is the same to the bit.
+#[derive(Clone, Debug)]
+pub(crate) struct IirPair<const N: usize> {
+    c: [f32; N],
+    /// Each section's `[x1, y1]`: the up-sampler's, the down-sampler's and
+    /// the phase match's.
+    up: [[f32; 2]; N],
+    down: [[f32; 2]; N],
+    phase: [[f32; 2]; N],
+}
+
+impl<const N: usize> IirPair<N> {
+    /// Works out the design (control thread): transition `tbw`.
+    pub(crate) fn new(tbw: f64) -> IirPair<N> {
+        let mut c = [0.0f32; N];
+        c.copy_from_slice(&iir_halfband(N, tbw));
+        IirPair {
+            c,
+            up: [[0.0; 2]; N],
+            down: [[0.0; 2]; N],
+            phase: [[0.0; 2]; N],
+        }
+    }
+
+    #[inline(always)]
+    fn ap(a: f32, s: &mut [f32; 2], x: f32) -> f32 {
+        let y = a * (x - s[1]) + s[0];
+        *s = [x, y];
+        y
+    }
+
+    /// Flushes every state too small to hear to zero.
+    pub(crate) fn settle(&mut self) {
+        for st in [&mut self.up, &mut self.down, &mut self.phase] {
+            for v in st.iter_mut().flatten() {
+                *v = crate::flush(*v);
+            }
+        }
+    }
+
+    /// Both branches (even sections from `e`, odd ones from `o`) through
+    /// the states `st`.
+    #[inline(always)]
+    fn branches(c: &[f32; N], st: &mut [[f32; 2]; N], e: f32, o: f32) -> (f32, f32) {
+        let (mut e, mut o) = (e, o);
+        let mut k = 0;
+        while k < N {
+            e = Self::ap(c[k], &mut st[k], e);
+            k += 2;
+        }
+        let mut k = 1;
+        while k < N {
+            o = Self::ap(c[k], &mut st[k], o);
+            k += 2;
+        }
+        (e, o)
+    }
+
+    /// One input sample in, two out (in time order), as [`IirUp2::run`].
+    #[inline]
+    pub(crate) fn up(&mut self, x: f32) -> [f32; 2] {
+        let (e, o) = Self::branches(&self.c, &mut self.up, x, x);
+        [e, o]
+    }
+
+    /// Two samples in (in time order), one out, as [`IirDown2::run`].
+    #[inline]
+    pub(crate) fn down(&mut self, x: [f32; 2]) -> f32 {
+        let (e, o) = Self::branches(&self.c, &mut self.down, x[1], x[0]);
+        0.5 * (e + o)
+    }
+
+    /// The pair's phase at the base rate, as [`IirPhase::run`].
+    #[inline]
+    pub(crate) fn phase(&mut self, x: f32) -> f32 {
+        let mut y = x;
+        for k in 0..N {
+            y = Self::ap(self.c[k], &mut self.phase[k], y);
+        }
+        y
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.up = [[0.0; 2]; N];
+        self.down = [[0.0; 2]; N];
+        self.phase = [[0.0; 2]; N];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unrolled_pair_is_the_same_to_the_bit_on_audible_signals() {
+        let mut pair = IirPair::<5>::new(0.06);
+        let (mut up, mut down) = (IirUp2::new(5, 0.06), IirDown2::new(5, 0.06));
+        let mut phase = IirPhase::new(5, 0.06);
+        let mut seed = 7u32;
+        for _ in 0..4000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let x = (seed >> 9) as f32 / (1u32 << 22) as f32 - 1.0;
+            let a = up.run(x);
+            assert_eq!(pair.up(x), a);
+            let y = [a[0] * a[0], a[1].abs()];
+            assert_eq!(pair.down(y), down.run(y));
+            assert_eq!(pair.phase(x), phase.run(x));
+        }
+    }
 
     #[test]
     fn the_phase_match_is_the_pair_with_a_straight_line_between() {
