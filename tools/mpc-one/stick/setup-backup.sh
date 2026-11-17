@@ -32,7 +32,9 @@ R=''
 #      (progress: the stick's block layer read counter, against what the copy wrote; holes read as zeros
 #      without reading the stick).
 #      Then MANIFEST.txt is written and the folder renamed to backup/mpc-one-emmc-<UTC>/, owned by root
-#      and readable by the pad player's group (it reads the factory kits and samples from it).
+#      and readable by the pad player's group (it reads the factory kits and samples from it). Its "MPC:"
+#      line tells this MPC's backups from another's: a fingerprint of the device tree's serial number (the
+#      first 16 hex digits of the SHA-256 of "mpfree-mpc:" and the number), never the number itself.
 # Nothing is ever written to the eMMC: no mount, no fsck, no write. The only writes are partition 4's
 # backup folder, /run (RAM: the status, the udev rule, and the request, removed), the kernel log, the
 # controller's sysfs bind and unbind files, the eMMC disks' force_ro files (which only switch read-only on)
@@ -360,12 +362,19 @@ done
 [ -z "$bad" ] || fail "the backup on the stick does not read back as copied:$bad" verifying
 took=$(( $(cut -d. -f1 "$R/proc/uptime") - started ))
 say "read back and checked in $took s ($(( total / 1024 / (took > 0 ? took : 1) )) KB/s)"
+# Which MPC this is (the pad player's setup.rs makes the same fingerprint to compare).
+mpc=''
+if [ -r "$R/sys/firmware/devicetree/base/serial-number" ]; then
+  serial=$(tr -d '\000' < "$R/sys/firmware/devicetree/base/serial-number")
+  [ -z "$serial" ] || mpc=$(printf 'mpfree-mpc:%s' "$serial" | sha256sum | cut -c1-16)
+fi
 {
   echo "MPFree eMMC backup, made on the MPC by MPFree's first-start setup (setup-backup.sh)"
   echo "made: $stamp (the MPC's clock, UTC)"
   echo "kernel: $(cat "$R/proc/sys/kernel/osrelease" 2>/dev/null)"
   echo "boot id: $(cat "$R/proc/sys/kernel/random/boot_id" 2>/dev/null)"
   echo "eMMC: ${emmc:-?}, $size sectors"
+  echo "MPC: ${mpc:-unknown} (a fingerprint of its serial number, not the number)"
   echo "read-only window: every eMMC block device was read-only (ro = 1, force_ro = 1 on boot0/1);"
   echo "its write and discard counters did not move during the copy:"
   sed 's/^/  /' "$S/counters-after.txt"

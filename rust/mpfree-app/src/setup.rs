@@ -32,6 +32,16 @@
 //! a steady pace from one stage to the next, never backwards, and the card
 //! says how long is left once a rate is known.
 //!
+//! **A backup made before** (partition 4 kept when the stick was made
+//! again, or a start cut off after the backup) is used rather than a new
+//! one, and the card says so for a few seconds: when it was made and
+//! whether on this MPC ([`About`], from its folder's name and the `MPC:`
+//! line of its MANIFEST.txt, a fingerprint of the device tree's serial
+//! number, [`fingerprint`]). One from another MPC is not used: this MPC
+//! is backed up afresh. The creator can ask for a new backup too
+//! (`write --new-backup`): it leaves a token in [`NEW_BACKUP`], which the
+//! setup honours once, keeping the backups the stick already has.
+//!
 //! It runs only where the stick has the backup service (the creator's
 //! sticks), only with `--data`, and never in `play`.
 
@@ -70,6 +80,16 @@ pub const STATUS: &str = "/run/mpfree-setup/status";
 pub const REQUEST: &str = "setup-backup.request";
 /// Starts that try the setup before it gives up until the stick is made again.
 pub const MAX_TRIES: i64 = 3;
+/// The MPC's serial number, in the device tree U-Boot hands the kernel
+/// (world-readable). Only its [`fingerprint`] is kept or compared.
+pub const SERIAL: &str = "/sys/firmware/devicetree/base/serial-number";
+/// The creator's request for a new backup (`mpfree-stick write
+/// --new-backup`), on the stick's read-only root: a token in hex, honoured
+/// once (the store keeps it as `new-backup`).
+pub const NEW_BACKUP: &str = "/etc/mpfree-test/new-backup";
+/// What a backup's MANIFEST.txt calls the MPC it was made on
+/// (setup-backup.sh writes it).
+const MPC_LINE: &str = "MPC: ";
 /// The setup's steps, in order, as the store records them (`done`).
 /// "kit folders" took the place of "samples" (Akai's samples in Akai's own
 /// folders, round 4, 16 Nov), so a stick set up before sorts them into kit
@@ -88,6 +108,8 @@ pub struct Paths {
     pub service: PathBuf,
     pub status: PathBuf,
     pub request: PathBuf,
+    pub serial: PathBuf,
+    pub new_backup: PathBuf,
 }
 
 impl Paths {
@@ -97,16 +119,20 @@ impl Paths {
             service: PathBuf::from(SERVICE),
             status: PathBuf::from(STATUS),
             request: report_dir.join(REQUEST),
+            serial: PathBuf::from(SERIAL),
+            new_backup: PathBuf::from(NEW_BACKUP),
         }
     }
 }
 
-/// How long to wait: for the service to answer at all, and for the whole
-/// backup (the service's own limit is an hour).
+/// How long to wait: for the service to answer at all, for the whole
+/// backup (the service's own limit is an hour), and on the card that says
+/// a backup made before is used.
 pub struct Timing {
     pub poll: Duration,
     pub answer: Duration,
     pub backup: Duration,
+    pub notice: Duration,
 }
 
 impl Timing {
@@ -115,6 +141,7 @@ impl Timing {
             poll: Duration::from_millis(500),
             answer: Duration::from_secs(60),
             backup: Duration::from_secs(70 * 60),
+            notice: Duration::from_secs(5),
         }
     }
 }
@@ -130,13 +157,150 @@ pub fn done_steps(saved: &Settings) -> Vec<String> {
         .collect()
 }
 
-/// Whether the setup still has to run: the stick has the service, a step
-/// is not done, and the setup has not given up.
+/// Whether the setup still has to run: the stick has the service, and a
+/// step is not done and the setup has not given up, or the creator asked
+/// for a new backup that this partition 4 has not made yet.
 pub fn needed(paths: &Paths, saved: &Settings) -> bool {
     let done = done_steps(saved);
     paths.service.is_file()
-        && STEPS.iter().any(|s| !done.iter().any(|d| d == s))
-        && saved.get_i64("tries").unwrap_or(0) < MAX_TRIES
+        && (new_backup_asked(paths, saved).is_some()
+            || (STEPS.iter().any(|s| !done.iter().any(|d| d == s))
+                && saved.get_i64("tries").unwrap_or(0) < MAX_TRIES))
+}
+
+/// The creator's request for a new backup ([`NEW_BACKUP`]), when the store
+/// has not honoured it yet: its token.
+fn new_backup_asked(paths: &Paths, saved: &Settings) -> Option<String> {
+    let text = std::fs::read_to_string(&paths.new_backup).ok()?;
+    let token = text.trim();
+    let hex = (8..=64).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_hexdigit());
+    (hex && saved.get_str("new-backup") != Some(token)).then(|| token.to_string())
+}
+
+/// Which MPC this is, as a backup's MANIFEST.txt records it: the first 16
+/// hex digits of the SHA-256 of `mpfree-mpc:` and the device tree's serial
+/// number (its NUL bytes left out), never the number itself. setup-backup.sh
+/// makes the same with `tr`, `printf` and `sha256sum`. None without one.
+pub fn fingerprint(serial: &[u8]) -> Option<String> {
+    let mut s: Vec<u8> = serial.iter().copied().filter(|&b| b != 0).collect();
+    while s.last() == Some(&b'\n') {
+        s.pop();
+    }
+    if s.is_empty() {
+        return None;
+    }
+    let mut h = mpfree_mpcstore::sha256::Sha256::new();
+    h.update(b"mpfree-mpc:");
+    h.update(&s);
+    let hex = mpfree_mpcstore::sha256::to_hex(&h.finish());
+    Some(hex[..16].to_string())
+}
+
+/// This MPC's fingerprint, if its device tree has a serial number.
+fn this_mpc(paths: &Paths) -> Option<String> {
+    fingerprint(&std::fs::read(&paths.serial).ok()?)
+}
+
+/// What a backup says about itself.
+#[derive(Debug, PartialEq)]
+pub struct About {
+    /// When it was made, by the MPC's clock: seconds since 1970 (UTC), from
+    /// the folder's name (`mpc-one-emmc-<UTC>`).
+    pub made: Option<i64>,
+    /// The fingerprint of the MPC it was made on, from MANIFEST.txt; None
+    /// for a backup made before MPFree recorded it, or on an MPC whose tree
+    /// had no serial number.
+    pub mpc: Option<String>,
+}
+
+pub fn about(folder: &Path) -> About {
+    let made = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("mpc-one-emmc-"))
+        .and_then(stamp_secs);
+    let manifest = std::fs::read_to_string(folder.join("MANIFEST.txt")).unwrap_or_default();
+    let mpc = manifest
+        .lines()
+        .find_map(|l| l.strip_prefix(MPC_LINE))
+        .and_then(|rest| rest.split_whitespace().next())
+        .filter(|f| f.len() == 16 && f.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_string);
+    About { made, mpc }
+}
+
+/// Days from 1970-01-01 to a date of the (proleptic) Gregorian calendar.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// `20261116T014409Z` (setup-backup.sh's stamp): seconds since 1970.
+fn stamp_secs(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let digits = |r: std::ops::Range<usize>| -> Option<i64> {
+        let part = s.get(r)?;
+        part.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| part.parse().ok())
+            .flatten()
+    };
+    if b.len() != 16 || b[8] != b'T' || b[15] != b'Z' {
+        return None;
+    }
+    let (y, mo, d) = (digits(0..4)?, digits(4..6)?, digits(6..8)?);
+    let (h, mi, se) = (digits(9..11)?, digits(11..13)?, digits(13..15)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    Some(days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + se)
+}
+
+/// "16 Nov 2026, 01:44 UTC".
+fn date_text(secs: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let (y, m, d, h, min) = mpfree_library::project::civil(secs.max(0) as u64);
+    format!(
+        "{d} {} {y}, {h:02}:{min:02} UTC",
+        MONTHS[(m as usize - 1) % 12]
+    )
+}
+
+/// How long ago, by this MPC's clock: None when the clock is behind the
+/// backup's (it may not have been set) or implausibly far ahead.
+fn ago(made: i64, now: i64) -> Option<String> {
+    let secs = now - made;
+    let (hours, days) = (secs / 3600, secs / 86_400);
+    Some(match secs {
+        s if !(-300..10 * 365 * 86_400).contains(&s) => return None,
+        s if s < 3600 => "less than an hour ago".into(),
+        _ if hours == 1 => "an hour ago".into(),
+        _ if hours < 48 => format!("{hours} hours ago"),
+        _ => format!("{days} days ago"),
+    })
+}
+
+/// The card's line about a backup made before: when, and on which MPC.
+pub fn about_text(a: &About, here: Option<&str>, now: i64) -> String {
+    let when = match a.made {
+        Some(m) => match ago(m, now) {
+            Some(ago) => format!("Made {}, {ago}", date_text(m)),
+            None => format!("Made {}", date_text(m)),
+        },
+        None => "Made at a time it does not say".into(),
+    };
+    let which = match (a.mpc.as_deref(), here) {
+        (Some(b), Some(h)) if b == h => "on this MPC",
+        (None, _) => "it does not say on which MPC",
+        _ => "this MPC could not be checked against it",
+    };
+    format!("{when}, {which}")
 }
 
 /// The service's report.
@@ -378,6 +542,7 @@ pub struct Outcome {
 const BACKING_UP: &str = "Backing up your MPC, so you can always go back";
 const CHECKING: &str = "Checking the backup on the stick";
 const EXTRACTING: &str = "Extracting Akai drum kits and samples";
+const REUSING: &str = "Using the backup of your MPC already on the stick";
 
 fn gb(bytes: u64) -> String {
     format!("{:.1}", bytes as f64 / 1e9)
@@ -433,26 +598,66 @@ fn image_in(folder: &Path) -> PathBuf {
 }
 
 /// The backup an earlier start made: the one the store names, if it is
-/// still on partition 4, or else the newest finished one there.
-fn earlier_backup(paths: &Paths, saved: &Settings) -> Option<PathBuf> {
+/// still on partition 4, or else the newest finished one there. One of
+/// another MPC ([`from_another_mpc`]) is passed over and put in `others`.
+fn earlier_backup(
+    paths: &Paths,
+    saved: &Settings,
+    here: Option<&str>,
+    others: &mut Vec<PathBuf>,
+) -> Option<PathBuf> {
     let named = done_steps(saved)
         .iter()
         .any(|d| d == "backup")
         .then(|| saved.get_str("backup").map(PathBuf::from))
         .flatten()
         .filter(|f| f.parent() == Some(&paths.data.join("backup")) && image_in(f).is_file());
-    named.or_else(|| finished_backup(paths))
+    for f in named
+        .into_iter()
+        .chain(finished_backups(paths).into_iter().rev())
+    {
+        if !from_another_mpc(&about(&f), here) {
+            return Some(f);
+        }
+        if !others.contains(&f) {
+            others.push(f);
+        }
+    }
+    None
 }
 
-/// The newest finished backup in partition 4's `backup/`, for a start whose
-/// record of it was never saved (the third creator stick's, 16 Nov, whose
-/// store refused the folder). The root service gives a backup folder its
-/// name only once it has read every image back and checked it against the
-/// eMMC's hash, and writes SHA256SUMS and MANIFEST.txt first; a cut-off one
-/// keeps its `.part` name.
+/// Whether a backup was made on another MPC: only when both it and this
+/// MPC have a fingerprint, and they differ.
+fn from_another_mpc(a: &About, here: Option<&str>) -> bool {
+    matches!((a.mpc.as_deref(), here), (Some(b), Some(h)) if b != h)
+}
+
+/// Seconds since 1970 by this MPC's clock.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// The newest finished backup in partition 4's `backup/`.
+#[cfg(test)]
 fn finished_backup(paths: &Paths) -> Option<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(paths.data.join("backup"))
-        .ok()?
+    finished_backups(paths).pop()
+}
+
+/// Every finished backup in partition 4's `backup/`, oldest first, for a
+/// start whose record of its backup was never saved (the third creator
+/// stick's, 16 Nov, whose store refused the folder), or whose record names
+/// another MPC's. The root service gives a backup folder its name only once
+/// it has read every image back and checked it against the eMMC's hash, and
+/// writes SHA256SUMS and MANIFEST.txt first; a cut-off one keeps its `.part`
+/// name.
+fn finished_backups(paths: &Paths) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(paths.data.join("backup")) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .filter(|e| {
@@ -467,7 +672,7 @@ fn finished_backup(paths: &Paths) -> Option<PathBuf> {
         })
         .collect();
     found.sort();
-    found.pop()
+    found
 }
 
 /// Runs the steps not done yet. `saved` is what the store holds now.
@@ -484,13 +689,26 @@ pub fn run(
     save: &mut dyn FnMut(&Settings),
 ) -> Outcome {
     let mut out = saved.clone();
-    let tries = saved.get_i64("tries").unwrap_or(0) + 1;
+    let asked = new_backup_asked(paths, saved);
+    // A new backup the creator asked for starts the tries afresh.
+    let tries = match asked {
+        Some(_) => 1,
+        None => saved.get_i64("tries").unwrap_or(0) + 1,
+    };
     out.set_i64("tries", tries);
     say(format!("first start: setup, try {tries} of {MAX_TRIES}"));
     // A step this version no longer has ("samples") is forgotten.
     let mut done = done_steps(saved);
     done.retain(|d| STEPS.contains(&d.as_str()));
-    if saved.get_str("done").is_some() {
+    if let Some(token) = &asked {
+        // Honoured once: from now on the backup step is not done until a
+        // new backup is made ("fresh-backup" says so until then).
+        say("first start: the stick was made asking for a new backup; the backups on the stick are kept".into());
+        out.set_str("new-backup", token);
+        out.set_str("fresh-backup", "asked");
+        done.retain(|d| d != "backup");
+    }
+    if saved.get_str("done").is_some() || asked.is_some() {
         out.set_str("done", &done.join(","));
     }
     save(&out);
@@ -514,14 +732,31 @@ pub fn run(
         est: Estimate::new(EMMC_BYTES),
         clock: Instant::now(),
     };
-    let folder = match earlier_backup(paths, saved) {
-        Some(f) => {
+    let here = this_mpc(paths);
+    let mut others = Vec::new();
+    let earlier = match out.get_str("fresh-backup") {
+        Some(_) => None,
+        None => earlier_backup(paths, &out, here.as_deref(), &mut others),
+    };
+    if earlier.is_none() {
+        for f in &others {
             say(format!(
-                "first start: using the backup made before: {}",
+                "first start: {} is a backup of another MPC; this one is backed up too",
+                f.display()
+            ));
+        }
+    }
+    let folder = match earlier {
+        Some(f) => {
+            let line = about_text(&about(&f), here.as_deref(), now_secs());
+            say(format!(
+                "first start: using the backup made before: {} ({line})",
                 f.display()
             ));
             bar.finish(Stage::Copy);
             bar.finish(Stage::Verify);
+            show(show_f, REUSING, line, bar.value());
+            thread::sleep(timing.notice);
             f
         }
         None => match backup(paths, timing, &mut bar, show_f, say) {
@@ -530,6 +765,7 @@ pub fn run(
         },
     };
     out.set_str("backup", &folder.display().to_string());
+    out.remove("fresh-backup");
     mark(&mut out, &mut done, "backup");
     save(&out);
     let v = bar.value();
@@ -1355,6 +1591,8 @@ mod tests {
             service: t.0.join("setup-backup.sh"),
             status: t.0.join("run/status"),
             request: t.0.join("run/setup-backup.request"),
+            serial: t.0.join("serial-number"),
+            new_backup: t.0.join("new-backup"),
         }
     }
 
@@ -1363,6 +1601,7 @@ mod tests {
             poll: Duration::from_millis(5),
             answer: Duration::from_millis(100),
             backup: Duration::from_secs(5),
+            notice: Duration::ZERO,
         }
     }
 
@@ -1383,12 +1622,14 @@ mod tests {
             &mut |l| said.push(l),
             &mut |s| saves.push(s.clone()),
         );
-        // The try's number is kept before anything runs, and every save
-        // after it keeps what the one before it had.
-        assert_eq!(
-            saves.first().and_then(|s| s.get_i64("tries")),
-            Some(saved.get_i64("tries").unwrap_or(0) + 1)
-        );
+        // The try's number is kept before anything runs (the first, for a
+        // new backup the creator asked for), and every save after it keeps
+        // what the one before it had.
+        let first = match new_backup_asked(p, saved) {
+            Some(_) => 1,
+            None => saved.get_i64("tries").unwrap_or(0) + 1,
+        };
+        assert_eq!(saves.first().and_then(|s| s.get_i64("tries")), Some(first));
         for w in saves.windows(2) {
             let (a, b) = (done_steps(&w[0]), done_steps(&w[1]));
             assert!(a.iter().all(|d| b.contains(d)), "{a:?} then {b:?}");
@@ -1913,6 +2154,236 @@ mod tests {
         // Saved as it went: the try, then the backup before the kits ran.
         assert_eq!(done_steps(&saves[0]), Vec::<String>::new());
         assert_eq!(done_steps(&saves[1]), vec!["backup".to_string()]);
+    }
+
+    /// A finished backup of the test disk, made at `stamp` on the MPC whose
+    /// serial number is `serial` (None: a MANIFEST.txt with no MPC line).
+    fn finished(p: &Paths, stamp: &str, serial: Option<&[u8]>) -> PathBuf {
+        let folder = p.data.join(format!("backup/mpc-one-emmc-{stamp}"));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("mmcblk0.img"),
+            mpfree_factory::import::testdisk::disk(),
+        )
+        .unwrap();
+        std::fs::write(folder.join("SHA256SUMS"), b"").unwrap();
+        let mpc = serial
+            .map(|s| format!("MPC: {} (a fingerprint)\n", fingerprint(s).unwrap()))
+            .unwrap_or_default();
+        std::fs::write(
+            folder.join("MANIFEST.txt"),
+            format!("MPFree eMMC backup\nmade: {stamp}\n{mpc}eMMC: X, 1 sectors\n"),
+        )
+        .unwrap();
+        folder
+    }
+
+    /// The store of a stick set up before "kit files" was a step.
+    fn set_up_before(folder: &Path) -> Settings {
+        let mut s = Settings::default();
+        s.set_str("backup", &folder.display().to_string());
+        s.set_str("done", "backup,kits,kit folders");
+        s
+    }
+
+    #[test]
+    fn the_mpc_fingerprint_is_the_shells() {
+        // printf 'mpfree-mpc:%s' TEST-SERIAL-1 | sha256sum | cut -c1-16
+        assert_eq!(
+            fingerprint(b"TEST-SERIAL-1\0").as_deref(),
+            Some("ef35dd49421177f8")
+        );
+        assert_eq!(
+            fingerprint(b"TEST-SERIAL-1\n\n").as_deref(),
+            Some("ef35dd49421177f8"),
+            "$(...) drops the newlines at the end"
+        );
+        assert_eq!(fingerprint(b"\0\0"), None);
+        assert_eq!(fingerprint(b""), None);
+    }
+
+    #[test]
+    fn a_backup_says_when_and_on_which_mpc() {
+        let t = tmp("about");
+        let p = paths(&t);
+        let folder = finished(&p, "20261116T014409Z", Some(b"TEST-SERIAL-1\0"));
+        let a = about(&folder);
+        assert_eq!(a.made, Some(1_794_793_449));
+        assert_eq!(a.mpc.as_deref(), Some("ef35dd49421177f8"));
+        assert_eq!(stamp_secs("20000229T235959Z"), Some(951_868_799));
+        for bad in [
+            "20261116T014409",
+            "2026111XT014409Z",
+            "20261316T014409Z",
+            "+0261116T014409Z",
+        ] {
+            assert_eq!(stamp_secs(bad), None, "{bad}");
+        }
+        let here = Some("ef35dd49421177f8");
+        let made = 1_794_793_449;
+        assert_eq!(
+            about_text(&a, here, made + 2 * 86_400 + 600),
+            "Made 16 Nov 2026, 01:44 UTC, 2 days ago, on this MPC"
+        );
+        assert_eq!(
+            about_text(&a, here, made + 19 * 3600),
+            "Made 16 Nov 2026, 01:44 UTC, 19 hours ago, on this MPC"
+        );
+        assert_eq!(
+            about_text(&a, here, made + 60),
+            "Made 16 Nov 2026, 01:44 UTC, less than an hour ago, on this MPC"
+        );
+        assert_eq!(
+            about_text(&a, here, 0),
+            "Made 16 Nov 2026, 01:44 UTC, on this MPC",
+            "a clock that was never set says no age"
+        );
+        assert_eq!(
+            about_text(&a, None, made),
+            "Made 16 Nov 2026, 01:44 UTC, less than an hour ago, this MPC could not be checked against it"
+        );
+        let older = About {
+            made: None,
+            mpc: None,
+        };
+        assert_eq!(
+            about_text(&older, here, made),
+            "Made at a time it does not say, it does not say on which MPC"
+        );
+    }
+
+    #[test]
+    fn a_backup_made_before_is_shown_before_it_is_used() {
+        let t = tmp("shown");
+        let p = paths(&t);
+        std::fs::write(&p.serial, b"TEST-SERIAL-1\0").unwrap();
+        let folder = finished(&p, "20261115T120000Z", Some(b"TEST-SERIAL-1"));
+        let saved = set_up_before(&folder);
+        assert!(needed(&p, &saved));
+        let (o, shown, said) = run_it(&p, &saved);
+        assert_eq!(o.failed, None, "{said:?}");
+        assert!(!p.request.exists(), "no new backup");
+        let card = shown
+            .iter()
+            .find(|s| s.message == REUSING)
+            .expect("the card");
+        assert!(
+            card.detail.starts_with("Made 15 Nov 2026, 12:00 UTC")
+                && card.detail.ends_with(", on this MPC"),
+            "{}",
+            card.detail
+        );
+        let line = said
+            .iter()
+            .find(|l| l.contains("using the backup made before"))
+            .unwrap();
+        assert!(line.ends_with(", on this MPC)"), "{line}");
+        assert!(
+            !line.contains("ef35"),
+            "the fingerprint stays in the manifest"
+        );
+        // A backup from before the MPC was recorded is used too, and says so.
+        let t = tmp("shown-old");
+        let p = paths(&t);
+        std::fs::write(&p.serial, b"TEST-SERIAL-1\0").unwrap();
+        let folder = finished(&p, "20261115T120000Z", None);
+        let (o, shown, _) = run_it(&p, &set_up_before(&folder));
+        assert_eq!(o.failed, None);
+        assert!(!p.request.exists());
+        let card = shown.iter().find(|s| s.message == REUSING).unwrap();
+        assert!(
+            card.detail.ends_with("it does not say on which MPC"),
+            "{}",
+            card.detail
+        );
+    }
+
+    #[test]
+    fn a_backup_of_another_mpc_is_not_used() {
+        let t = tmp("other");
+        let p = paths(&t);
+        std::fs::write(&p.serial, b"TEST-SERIAL-1\0").unwrap();
+        let theirs = finished(&p, "20261115T120000Z", Some(b"TEST-SERIAL-2"));
+        let (o, shown, said) = run_it(&p, &set_up_before(&theirs));
+        assert!(p.request.exists(), "this MPC is backed up");
+        assert_eq!(
+            o.failed.as_deref(),
+            Some("the backup service did not answer")
+        );
+        assert!(!shown.iter().any(|s| s.message == REUSING));
+        assert!(
+            said.iter().any(|l| l
+                == &format!(
+                    "first start: {} is a backup of another MPC; this one is backed up too",
+                    theirs.display()
+                )),
+            "{said:#?}"
+        );
+        // This MPC's own backup, older than the other's, is the one used.
+        take_away(&p.request);
+        let ours = finished(&p, "20261114T090000Z", Some(b"TEST-SERIAL-1"));
+        let (o, shown, said) = run_it(&p, &set_up_before(&theirs));
+        assert_eq!(o.failed, None, "{said:?}");
+        assert!(!p.request.exists(), "no new backup");
+        assert_eq!(o.saved.get_str("backup"), Some(ours.to_str().unwrap()));
+        assert!(shown.iter().any(|s| s.message == REUSING));
+        // Without a serial number to compare, the store's backup is used.
+        take_away(&p.serial);
+        let (o, _, _) = run_it(&p, &set_up_before(&theirs));
+        assert_eq!(o.saved.get_str("backup"), Some(theirs.to_str().unwrap()));
+    }
+
+    #[test]
+    fn the_creator_can_ask_for_a_new_backup() {
+        let t = tmp("again");
+        let p = paths(&t);
+        let old = finished(&p, "20261114T090000Z", None);
+        let mut saved = set_up_before(&old);
+        saved.set_str("done", "backup,kits,kit folders,kit files");
+        saved.set_i64("tries", MAX_TRIES);
+        assert!(!needed(&p, &saved));
+        // A token that isn't one is no request.
+        std::fs::write(&p.new_backup, "not hex\n").unwrap();
+        assert!(!needed(&p, &saved));
+        std::fs::write(&p.new_backup, "0123456789abcdef0123456789abcdef\n").unwrap();
+        assert!(needed(&p, &saved), "asked, even after the setup gave up");
+        // The first try fails (no answer): the request is kept as asked.
+        let (o, _, said, saves) = run_saving(&p, &saved);
+        assert!(p.request.exists(), "a new backup is asked for");
+        assert_eq!(
+            o.failed.as_deref(),
+            Some("the backup service did not answer")
+        );
+        assert!(said.iter().any(|l| l.contains("asking for a new backup")));
+        assert_eq!(
+            saves[0].get_str("new-backup"),
+            Some("0123456789abcdef0123456789abcdef"),
+            "honoured once, saved before anything runs"
+        );
+        assert_eq!(o.saved.get_str("fresh-backup"), Some("asked"));
+        assert_eq!(o.saved.get_str("done"), Some("kits,kit folders,kit files"));
+        assert_eq!(o.saved.get_i64("tries"), Some(1));
+        assert!(needed(&p, &o.saved), "tried again at the next start");
+        // The next start asks again rather than use the old backup.
+        take_away(&p.request);
+        let new = finished(&p, "20261116T200000Z", None);
+        std::fs::write(
+            &p.status,
+            format!("state=done\nstep=done\nfolder={}\n", new.display()),
+        )
+        .unwrap();
+        let (o, shown, said) = run_it(&p, &o.saved);
+        assert_eq!(o.failed, None, "{said:?}");
+        assert!(p.request.exists(), "asked again");
+        assert!(!shown.iter().any(|s| s.message == REUSING));
+        assert_eq!(o.saved.get_str("backup"), Some(new.to_str().unwrap()));
+        assert_eq!(o.saved.get_str("fresh-backup"), None);
+        assert_eq!(
+            o.saved.get_str("done"),
+            Some("kits,kit folders,kit files,backup")
+        );
+        assert!(old.join("mmcblk0.img").is_file(), "the old backup is kept");
+        assert!(!needed(&p, &o.saved), "once only");
     }
 
     #[test]
