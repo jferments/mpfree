@@ -498,6 +498,22 @@ pub fn loops_playing() -> Result<Session, String> {
     Ok(s)
 }
 
+/// The Song view with Loop tracks (loop-tracks.md part 5): `loops_playing`'s
+/// rows 1 to 4 made into a song and song mode on, so the Loop tracks'
+/// lanes hold their loops' blocks under the note tracks'.
+pub fn song_loops_state() -> Result<TimeState, String> {
+    let mut s = loops_playing()?;
+    let rows: Vec<(usize, Tick)> = (0..4)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    let mut state = s.state();
+    state.song_view = true;
+    state.song_on = true;
+    Ok(state)
+}
+
 /// The Song view of the 24-track project: rows 1 to 4 made into a song,
 /// song mode on, scrolled down to the last tracks and "+ Track".
 pub fn big_song_state() -> Result<TimeState, String> {

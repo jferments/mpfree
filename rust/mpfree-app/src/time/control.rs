@@ -167,6 +167,9 @@ pub struct TimeControl {
     /// The Loop cell armed (`TimeAction::LoopCell`): the next loop
     /// recorded lands there.
     loop_cell: Option<(usize, usize)>,
+    /// The loops the song's blocks play (song mode, `loops::song_plan`),
+    /// as of the last period.
+    song_loops: [bool; LOOPS],
     /// The points for the next recorded change.
     touch: Vec<TouchPoint>,
     moves: Vec<(f64, f32, Kind)>,
@@ -246,6 +249,7 @@ impl TimeControl {
             loops_seen: [LoopNow::default(); LOOPS],
             loops_gone: [None; LOOPS],
             loop_cell: None,
+            song_loops: [false; LOOPS],
             touch: Vec::with_capacity(TOUCH_POINTS),
             moves: Vec::with_capacity(MOVE_POINTS),
             recorded_now: false,
@@ -416,6 +420,23 @@ impl TimeControl {
             compile = true;
         }
         self.started.clear();
+        // Song mode: the Loop tracks' blocks turn their loops on and off
+        // on their own ticks, on the tracks with no clip launched.
+        self.song_loops = [false; LOOPS];
+        if self.song {
+            let (launches, tracks) = (&self.launches, &self.project.tracks);
+            let free = |t: usize| {
+                !launches.iter().any(|l| l.track == t) && tracks.get(t).is_some_and(|tr| !tr.mute)
+            };
+            let spans = self.block.spans().iter().map(|s| s.ticks());
+            let plan = loops::song_plan(&self.project, spans, free);
+            self.song_loops = plan.on;
+            for (at, song) in self.loop_at.iter_mut().zip(plan.at) {
+                if song.is_some() {
+                    *at = song;
+                }
+            }
+        }
         // Follow actions coming due are cued for their bar lines.
         if self.info.state.rolling() {
             let bar = self.info.meter.bar_ticks();
@@ -1771,12 +1792,17 @@ impl TimeControl {
                 let was = song.placements.get(index).map(|p| (p.track, p.slot()));
                 let j = song
                     .move_placement(tracks, index, track, start, copy)
-                    .map_err(|_| {
-                        format!(
+                    .map_err(|e| match e {
+                        // A loop's block stays on its Loop track's lane
+                        // (loop-tracks.md part 5).
+                        ModelError::BadLoop => format!(
+                            "song: {name} stays on its own lane: a loop's block can't go to another track, nor a clip's onto a Loop track"
+                        ),
+                        _ => format!(
                             "song: {name} doesn't fit on {} at {}: it would run into another block",
                             track_name(track),
                             at(start)
-                        )
+                        ),
                     })?;
                 let own = was.is_some_and(|(t, slot)| t != track && slot.is_some());
                 let own = if own {
@@ -2196,13 +2222,19 @@ impl TimeControl {
     }
 
     /// Which loops the Loop tracks have on (loop-tracks.md): a loop plays
-    /// while its cell is launched on a Loop track that isn't muted, or
-    /// while it is in no cell. A change from the last poll's cues lands on
-    /// the cue's bar line; any other at once. Allocates nothing.
+    /// while its cell is launched on a Loop track that isn't muted, while
+    /// a block of it plays in song mode, or while it is in no cell. A
+    /// change from the last poll's cues lands on the cue's bar line, one
+    /// from a block on the block's start or end; any other at once.
+    /// Allocates nothing.
     pub fn loop_plan(&self) -> LoopPlan {
         let launched = self.launches.iter().map(|l| (l.track, l.slot));
+        let mut on = loops::playing(&self.project, launched);
+        for (on, song) in on.iter_mut().zip(self.song_loops) {
+            *on |= song;
+        }
         LoopPlan {
-            on: loops::playing(&self.project, launched),
+            on,
             at: self.loop_at,
         }
     }

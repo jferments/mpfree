@@ -161,6 +161,17 @@ A project saved before Loop tracks opens with each of its loops on a Loop track 
 
 With a cell armed, **OVERDUB** adds a layer to the loop that Loop track is playing. Tap the armed cell again, or arm the notes (a track's Arm pill, the Beats view), to let go of it. When all eight loops hold something, or the loop memory is nearly full, the tap and REC say so: clear a loop on the Looper tab first. A new project starts with no Loop track; the first loop you record makes Loops A, as before.
 
+### Loops in the song
+
+Loop tracks have lanes in the **Song view** too (tap **Song ›** above the grid), with what they record under the name. A loop's block plays like a clip's:
+
+- **Song on** brings each loop in where its block starts and takes it out where it ends, on the tick, on any Loop track where you haven't launched a cell and that isn't muted. Launch a cell and it takes that Loop track over, as a clip does; stop it and the track goes back to the song.
+- **Rec song** keeps the loops you launch on the grid, each as a block from where it came in to where it went quiet, linked to its cell.
+- **Scenes → song** puts the loops in each row into the song with the clips.
+- A block plays the loop where it would be if it had played all along, as a launch does: a block of a two-bar loop that starts a bar into the loop's pass starts in its second bar. A loop's block stays on its own lane: drag it along the lane, but not onto another track, and no clip goes onto a Loop track's lane.
+
+{{shot: arrange-song-loops | The Song view with Loop tracks: Loops A and Loops B play their loops' blocks under the drums, hats and bass.}}
+
 ### A loop's name
 
 The Play page's loop strip, the Looper tab and the REC chip name a loop by its place on the grid: **Loops B · Loop 2 · Verse** is Loop 2, on Loops B, in the row of the Verse scene ("row 2" for a row with no scene name). In the Looper tab's list, a loop on a Loop track shows its track and length ("Loops B · 2 bars"); its layers are in the editor. **Show in Clips**, in the Use the loop panel, opens the Arrange tab with the loop's cell in view.
@@ -183,7 +194,7 @@ Recording MPFree's own pads needs nothing made up: they are already in time. For
 
 ## Coming next
 
-- **Loops in the song**: a lane per Loop track in the Song view, and Rec song keeping the loops you launch.
+- **A loop's block from its own start**: a block that starts the loop from its top wherever it sits, and **Print to audio track**, turning a loop's blocks into regions on an audio track.
 - **To a pad**: send a loop to a pad as a sample on the Sample tab. You will also be able to drag a single layer onto it.
 - **Save loop**: keep it on the stick with its layers. Your loops are also saved with your project, every layer with its mix (see [Saving your work](saving.md)).
 
