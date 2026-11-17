@@ -78,6 +78,7 @@ fn makes_a_stick_the_hook_takes() {
         ssh: None,
         dev: None,
         creator: "test creator",
+        choices: Default::default(),
     };
     let out = t.0.join("stick.img");
     let made = stick::build_image(&b, &out, &mut |m| notes.push(m)).unwrap();
@@ -204,8 +205,22 @@ fn makes_a_stick_the_hook_takes() {
             "{path}"
         );
     }
+    // No download helper in the programs folder: none on the stick, and the
+    // report says so.
+    assert!(root
+        .lookup("/etc/mpfree-test/mpfree-fetch")
+        .unwrap()
+        .is_none());
+    assert!(made
+        .notes
+        .iter()
+        .any(|n| n.starts_with("download helper: none (no mpfree-fetch")));
     // No placeholder is left anywhere.
-    for path in r.files.keys().filter(|p| !r.only_with_ssh.contains(p)) {
+    for path in r
+        .files
+        .keys()
+        .filter(|p| !r.only_with_ssh.contains(p) && *p != "/etc/mpfree-test/mpfree-fetch")
+    {
         let text = read(&root, path);
         for v in r.placeholders.values() {
             assert!(
@@ -277,6 +292,65 @@ fn makes_a_stick_the_hook_takes() {
 }
 
 #[test]
+fn the_download_helper_goes_beside_the_pad_player() {
+    let t = tmp("fetch");
+    let upd = update_file(&t.0);
+    let src = stick::open_update(&upd, &t.0, true, &mut |_| {}).unwrap();
+    // From a programs folder: checked, and only when it is there.
+    let dir = t.0.join("programs");
+    std::fs::create_dir_all(&dir).unwrap();
+    let progs = programs();
+    for (name, b) in
+        stick::PROGRAM_FILES
+            .iter()
+            .zip([&progs.pad_player, &progs.screen_log, &progs.startup])
+    {
+        std::fs::write(dir.join(name), b).unwrap();
+    }
+    assert!(stick::Programs::from_dir(&dir).unwrap().fetch.is_none());
+    for (bad, why) in [
+        (progs.startup.clone(), "not linked dynamically"),
+        (
+            dynamic_arm_program("GLIBC_2.43"),
+            "built against glibc 2.43, newer than the MPC's 2.39",
+        ),
+        (b"#!/bin/sh\n".to_vec(), "not a program for the MPC"),
+    ] {
+        std::fs::write(dir.join(stick::FETCH_FILE), bad).unwrap();
+        let e = stick::Programs::from_dir(&dir).err().unwrap().to_string();
+        assert!(e.contains(why) && e.contains("cargo zigbuild"), "{e}");
+    }
+    let helper = dynamic_arm_program("GLIBC_2.34");
+    std::fs::write(dir.join(stick::FETCH_FILE), &helper).unwrap();
+    let progs = stick::Programs::from_dir(&dir).unwrap();
+    assert_eq!(progs.fetch.as_deref(), Some(&helper[..]));
+    let b = Build {
+        source: &src,
+        programs: &progs,
+        kits: b"k",
+        ssh: None,
+        dev: None,
+        creator: "test",
+        choices: Default::default(),
+    };
+    let out = t.0.join("stick.img");
+    let made = stick::build_image(&b, &out, &mut |_| {}).unwrap();
+    let img = File::open(&out).unwrap();
+    let table = gpt::read(&img).unwrap();
+    let root = part_fs(&img, table.part(1).unwrap());
+    assert_eq!(read(&root, "/etc/mpfree-test/mpfree-fetch"), helper);
+    let node = root
+        .lookup("/etc/mpfree-test/mpfree-fetch")
+        .unwrap()
+        .unwrap();
+    assert_eq!(node.perm(), 0o755);
+    assert!(made
+        .notes
+        .iter()
+        .any(|n| n.starts_with("download helper: mpfree-fetch (")));
+}
+
+#[test]
 fn refuses_a_system_without_a_program_the_setup_needs() {
     let t = tmp("no-programs");
     let upd = update_file_with(&t.0, &fake_rootfs_without(&["stat", "udevadm"]));
@@ -289,6 +363,7 @@ fn refuses_a_system_without_a_program_the_setup_needs() {
         ssh: None,
         dev: None,
         creator: "test creator",
+        choices: Default::default(),
     };
     let out = t.0.join("stick.img");
     let Err(e) = stick::build_image(&b, &out, &mut |_| {}) else {
@@ -315,6 +390,7 @@ fn developer_ssh_when_asked() {
         ssh: Some(&s),
         dev: None,
         creator: "test",
+        choices: Default::default(),
     };
     let out = t.0.join("stick.img");
     stick::build_image(&b, &out, &mut |_| {}).unwrap();
@@ -368,6 +444,7 @@ fn developer_tools_go_on_the_setup_partition() {
         ssh: None,
         dev: Some(&dev),
         creator: "test",
+        choices: Default::default(),
     };
     let out = t.0.join("stick.img");
     let made = stick::build_image(&b, &out, &mut |_| {}).unwrap();
@@ -433,6 +510,7 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
         ssh: None,
         dev: None,
         creator: "test",
+        choices: Default::default(),
     };
     // A 16 GB stick, as a sparse file.
     let disk_path = t.0.join("disk.img");
@@ -506,6 +584,35 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
         stick::uuid_text(&again.layout.part(4).guid),
         again.values.data_uuid
     );
+    let root = part_fs(&disk, again.layout.part(1));
+    assert!(
+        root.lookup(stick::NEW_BACKUP_FILE).unwrap().is_none(),
+        "the backup there is used unless a new one is asked for"
+    );
+    // Made again asking for a new backup: partition 4 is kept, and the
+    // first start finds the request (a token, once) on partition 1.
+    let asked = Build {
+        choices: stick::Choices {
+            new_backup: true,
+            ..Default::default()
+        },
+        ..b
+    };
+    let again = stick::write_disk(&asked, &disk, bytes, &t.0, false, &mut |_| {}).unwrap();
+    assert_eq!(stick::existing_data(&disk), Some(p4.last), "kept");
+    let root = part_fs(&disk, again.layout.part(1));
+    let token = read(&root, stick::NEW_BACKUP_FILE);
+    assert_eq!(token.len(), 33);
+    assert!(token[..32].iter().all(u8::is_ascii_hexdigit) && token[32] == b'\n');
+    assert_eq!(
+        root.lookup(stick::NEW_BACKUP_FILE).unwrap().unwrap().perm(),
+        0o644,
+        "the pad player reads it"
+    );
+    assert!(String::from_utf8(read(&root, stick::ABOUT_FILE))
+        .unwrap()
+        .contains("new backup at the first start: asked\n"));
+    assert!(again.notes.iter().any(|n| n.contains("--new-backup")));
     // The newest finished backup, copied off and checked.
     let to = t.0.join("backups");
     let got = stick::copy_backup(&disk, &to, &mut |_| {}).unwrap();
@@ -595,4 +702,188 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
     );
     drop(src);
     let _ = WriteAt::write_at(&disk, &[0], 0);
+}
+
+#[test]
+fn the_developer_routes_go_on_the_stick() {
+    let t = tmp("routes");
+    let upd = update_file(&t.0);
+    let src = stick::open_update(&upd, &t.0, true, &mut |_| {}).unwrap();
+    let progs = programs();
+    let kits = b"MPFK test kits".to_vec();
+    let kernel = update::hex(&Sha256::digest(b"kernel"));
+    let hook = "/boot/mpfree-softreboot";
+    let loadpin = "/etc/systemd/system/az0x-loadpin-trustpoints.service";
+    let routes = [
+        stick::Route::SoftReboot,
+        stick::Route::KexecFile { loadpin_off: false },
+        stick::Route::KexecFile { loadpin_off: true },
+        stick::Route::Chain {
+            live_dtb: example("live"),
+        },
+    ];
+    for (n, route) in routes.into_iter().enumerate() {
+        let b = Build {
+            source: &src,
+            programs: &progs,
+            kits: &kits,
+            ssh: None,
+            dev: None,
+            creator: "test creator",
+            choices: stick::Choices {
+                route: route.clone(),
+                ..Default::default()
+            },
+        };
+        let out = t.0.join(format!("stick{n}.img"));
+        let made = stick::build_image(&b, &out, &mut |_| {}).unwrap();
+        let img = File::open(&out).unwrap();
+        let table = gpt::read(&img).unwrap();
+        let p1 = table.part(1).unwrap();
+        assert_eq!(stick::uuid_text(&p1.guid), made.values.root_uuid);
+        let root = part_fs(&img, p1);
+        let text = |path: &str| String::from_utf8(read(&root, path)).unwrap();
+        let has = |path: &str| root.lookup(path).unwrap().is_some();
+        // Whatever the route, the hook's list holds what is on the stick.
+        let listed = text(&format!("{hook}/SHA256SUMS"));
+        for line in listed.lines() {
+            let (sum, path) = line.split_once("  ").unwrap();
+            assert_eq!(
+                update::hex(&Sha256::digest(read(&root, path))),
+                sum,
+                "{path}"
+            );
+        }
+        let about = text(stick::ABOUT_FILE);
+        let chain = matches!(route, stick::Route::Chain { .. });
+        assert_eq!(
+            read(&root, "/usr/sbin/kexec") == b"#!/bin/sh\n# Akai's program\n",
+            chain,
+            "only the chain keeps Akai's kexec"
+        );
+        assert_eq!(has("/boot/mpfree-kexec"), chain);
+        assert_eq!(has("/etc/mpfree-test/chain.sh"), chain);
+        if route == stick::Route::SoftReboot {
+            assert!(!has(&format!("{hook}/jump")));
+            assert!(has(loadpin), "Akai's LoadPin unit is masked");
+            assert!(!about.contains("route:"));
+            assert!(made
+                .notes
+                .iter()
+                .any(|n| n.starts_with("route: soft-reboot")));
+            fsck(&img, p1, &t.0);
+            continue;
+        }
+        assert_eq!(text(&format!("{hook}/jump")), "kexec-file\n");
+        assert_eq!(
+            text(&format!("{hook}/kernel.sha256")),
+            format!("{kernel}  /boot/zImage-{RELEASE}\n")
+        );
+        let cmdline = text(&format!("{hook}/cmdline"));
+        let words: Vec<&str> = cmdline.split_whitespace().collect();
+        assert_eq!(words[0], format!("root=PARTUUID={}", made.values.root_uuid));
+        assert_eq!(
+            words.contains(&"loadpin.enforce=0"),
+            route != stick::Route::KexecFile { loadpin_off: false }
+        );
+        assert_eq!(words.contains(&"mpfree.chain=1"), chain);
+        assert_eq!(
+            words.contains(&"sysctl.kernel.kexec_load_disabled=1"),
+            !chain
+        );
+        for f in ["jump", "cmdline", "kernel.sha256"] {
+            assert!(listed.contains(&format!("  {hook}/{f}\n")), "{f}");
+        }
+        assert!(!has(loadpin), "Akai's LoadPin unit runs on Akai's kernel");
+        assert!(about.contains(&format!("route: {} (developer option)\n", route.flags())));
+        assert!(made
+            .notes
+            .iter()
+            .any(|n| n.starts_with(&format!("route: {} (developer option)", route.flags()))));
+        if chain {
+            let k = "/boot/mpfree-kexec";
+            assert_eq!(
+                read(&root, &format!("{k}/kexec.dtb")),
+                example("kexec_dtb"),
+                "the builder's kexec.dtb for the same trees"
+            );
+            assert_eq!(
+                text(&format!("{k}/cmdline.txt")),
+                format!(
+                    "root=PARTUUID={} rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1\n",
+                    made.values.root_uuid
+                )
+            );
+            let zimage = root.lookup(&format!("{k}/zImage")).unwrap().unwrap();
+            assert_eq!(zimage.kind(), Some(Kind::Symlink));
+            assert_eq!(
+                root.read_link(&zimage).unwrap(),
+                format!("../zImage-{RELEASE}").into_bytes()
+            );
+            let sums = text(&format!("{k}/SHA256SUMS"));
+            let dtb_sum = update::hex(&Sha256::digest(example("kexec_dtb")));
+            let cmd_sum = update::hex(&Sha256::digest(text(&format!("{k}/cmdline.txt"))));
+            assert_eq!(
+                sums,
+                format!("{kernel}  zImage\n{dtb_sum}  kexec.dtb\n{cmd_sum}  cmdline.txt\n")
+            );
+            for f in ["/etc/mpfree-test/chain.sh", "/boot/mpfree-kexec/SHA256SUMS"] {
+                assert!(listed.contains(&format!("  {f}\n")), "{f}");
+            }
+            assert!(has(
+                "/etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service"
+            ));
+            assert!(made
+                .notes
+                .iter()
+                .any(|n| n.contains("/usr/lib/systemd/systemd-shutdown runs /usr/sbin/kexec")));
+            assert!(made.notes.iter().any(|n| n.starts_with("chain: kexec.dtb")));
+            for n in &made.notes {
+                assert!(!n.contains("EXAMPLE-SERIAL"), "no values in the notes: {n}");
+            }
+        }
+        fsck(&img, p1, &t.0);
+    }
+    // The chain refuses a running tree read on a stick's own system, and a
+    // systemd-shutdown that runs another kexec than the one it keeps.
+    let mut stick_tree = mpfree_stick::dtb::parse(&example("live")).unwrap();
+    stick_tree
+        .find_mut("/dwmmc@ff0f0000")
+        .unwrap()
+        .set_prop("status", b"disabled\0".to_vec());
+    std::fs::create_dir_all(t.0.join("other")).unwrap();
+    let other = update_file_with(
+        &t.0.join("other"),
+        &fake_rootfs_with(&[], b"/usr/local/sbin/kexec\0"),
+    );
+    for (source, live, why) in [
+        (
+            &src,
+            mpfree_stick::dtb::build(&stick_tree),
+            "no enabled eMMC controller",
+        ),
+        (
+            // Its own work folder: an update is unpacked under the process's id.
+            &stick::open_update(&other, &t.0.join("other"), true, &mut |_| {}).unwrap(),
+            example("live"),
+            "names /usr/local/sbin/kexec for kexec",
+        ),
+    ] {
+        let b = Build {
+            source,
+            programs: &progs,
+            kits: &kits,
+            ssh: None,
+            dev: None,
+            creator: "test creator",
+            choices: stick::Choices {
+                route: stick::Route::Chain { live_dtb: live },
+                ..Default::default()
+            },
+        };
+        let out = t.0.join("refused.img");
+        let err = stick::build_image(&b, &out, &mut |_| {}).err().unwrap();
+        assert!(err.to_string().contains(why), "{err}");
+        let _ = std::fs::remove_file(&out);
+    }
 }

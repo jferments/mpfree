@@ -772,6 +772,67 @@ mod step_seq {
             assert_eq!(s.sent_lights[button::STEP_SEQ as usize], LIGHT_OFF);
         });
     }
+
+    /// Step pads held (sequencer S1): Q-Link 1 turned on the controller
+    /// sets the step held, which stays on its release; a later step tapped
+    /// while one is held is a tie; COPY + a step, then others, copies it,
+    /// and UNDO takes a copy back.
+    #[test]
+    fn held_step_pads_set_tie_and_copy_steps() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.pad(2, 100, 0.05);
+            s.button("STEP SEQ");
+            // Pad 3's steps: (step, velocity, length).
+            let row = |s: &Session| -> Vec<(usize, u8, i64)> {
+                let d = s.time.steps();
+                d.clip.map_or(vec![], |c| {
+                    c.row(2)
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, st)| st.map(|st| (i, st.velocity, st.len)))
+                        .collect()
+                })
+            };
+            s.pad(0, 100, 0.05);
+            s.pad(4, 100, 0.05);
+            let v = row(&s)[0].1;
+            // Hold step 1 and turn Q-Link 1: louder, and it stays.
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            assert!(s.hint().starts_with("Step 1 held"), "{}", s.hint());
+            s.qlink(0, 3);
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            assert_eq!(row(&s)[0], (0, v + 6, 240), "{:?}", row(&s));
+            // Hold step 1 and tap step 3: it lasts to the end of step 3.
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            s.pad(2, 100, 0.05);
+            assert!(
+                s.hint().contains("lasts to the end of step 3"),
+                "{}",
+                s.hint()
+            );
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            assert_eq!(row(&s)[0], (0, v + 6, 720));
+            assert_eq!(row(&s).len(), 2, "the tie's end stays empty");
+            // COPY + step 5, then steps 9 and 13.
+            s.button_edge("COPY", true);
+            assert!(s.app.step_pads().is_some_and(|p| p.copying));
+            for pad in [4, 8, 12] {
+                s.pad(pad, 100, 0.05);
+            }
+            s.button_edge("COPY", false);
+            let steps: Vec<usize> = row(&s).iter().map(|r| r.0).collect();
+            assert_eq!(steps, [0, 4, 8, 12]);
+            s.button("UNDO");
+            let steps: Vec<usize> = row(&s).iter().map(|r| r.0).collect();
+            assert_eq!(steps, [0, 4, 8], "UNDO: the last copy goes");
+        });
+    }
 }
 
 #[cfg(test)]

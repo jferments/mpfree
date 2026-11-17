@@ -77,6 +77,16 @@ def fake_elf(machine=40, flags=0x05000400, etype=2, interp=False):
     return head + ph + b"FAKE-SCREEN-LOG" * 100
 
 
+def fake_helper(glibc=b"GLIBC_2.34"):
+    """A stand-in for mpfree-fetch: a position-independent ARM program with the MPC's loader as its interpreter."""
+    interp = b"/lib/ld-linux-armhf.so.3\0"
+    head = b"\x7fELF\x01\x01\x01" + b"\x00" * 9 + struct.pack(
+        "<HHIIIIIHHHHHH", 3, 40, 1, 0x1000, 52, 0, 0x05000400, 52, 32, 2, 40, 0, 0)
+    ph = struct.pack("<8I", 1, 0, 0, 0, 4096, 4096, 5, 0x1000)
+    ph += struct.pack("<8I", 3, 116, 0, 0, len(interp), len(interp), 4, 1)
+    return head + ph + interp + b"GLIBC_2.4\0" + glibc + b"\0" + b"FAKE-FETCH" * 100
+
+
 def new_board(variant=False, phy=True):
     tree = board_tree()
     new_parts(tree, phy)
@@ -408,6 +418,13 @@ class KexecStickTests(unittest.TestCase):
         else:
             for name in ("jump", "cmdline", "kernel.sha256"):
                 self.assertIn("File not found", self.dfs(root_img, f"stat /boot/mpfree-softreboot/{name}"))
+        # Akai's LoadPin trust-points unit fails on every soft-reboot, so a soft-reboot stick masks it; on the
+        # kexec-file route its read pins the stick's root, so it stays.
+        loadpin = self.dfs(root_img, "stat /etc/systemd/system/az0x-loadpin-trustpoints.service")
+        if kexec_file:
+            self.assertIn("File not found", loadpin)
+        else:
+            self.assertIn('Fast link dest: "/dev/null"', loadpin)
         if chain:
             listed += ["/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service",
                        "/etc/mpfree-test/chain-done.sh", "/etc/systemd/system/mpfree-test-chain-done.service",
@@ -828,6 +845,36 @@ class KexecStickTests(unittest.TestCase):
                               (("--app", app, "--kits", too_big), "is not a kits file"),
                               (("--app", self.key + ".pub", "--kits", kits), "is not a 32-bit little-endian ELF"),
                               (("--app", os.path.join(self.tmp, "missing"), "--kits", kits), "build the pad player")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+
+    def test_download_helper_beside_the_pad_player(self):
+        """--fetch: mpfree-fetch, dynamic (the static pad player can't open libcurl), at FETCH_PROGRAM."""
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        helper = os.path.join(self.tmp, "mpfree-fetch")
+        write(helper, fake_helper(), 0o755)
+        res = self.build("--app", app, "--kits", kits, "--fetch", helper)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"download helper: {helper} (", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        out = os.path.join(self.tmp, "fetch-back")
+        run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree-fetch {out}", root_img])
+        with open(out, "rb") as fh:
+            self.assertEqual(fh.read(), fake_helper())
+        self.assertIn("Mode:  0755", self.dfs(root_img, "stat /etc/mpfree-test/mpfree-fetch"))
+        bad_glibc = os.path.join(self.tmp, "new-glibc")
+        write(bad_glibc, fake_helper(b"GLIBC_2.43"), 0o755)
+        for args, problem in ((("--fetch", helper), "--fetch needs --app"),
+                              (("--app", app, "--kits", kits, "--fetch", app), "not linked dynamically"),
+                              (("--app", app, "--kits", kits, "--fetch", bad_glibc),
+                               "built against glibc 2.43, newer than the MPC's 2.39"),
+                              (("--app", app, "--kits", kits, "--fetch", os.path.join(self.tmp, "none")),
+                               "build mpfree-fetch first")):
             res = self.build(*args)
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn(problem, res.stdout)
@@ -1479,6 +1526,10 @@ class StaticTests(unittest.TestCase):
             self.assertNotIn(word, unit)
         self.assertEqual(re.findall(r"(?m)^ExecStart\S*=.*$", unit), ["ExecStart=/bin/sh /etc/mpfree-test/start-app.sh"])
         self.assertEqual(tool.APP_UID, 960)
+        # The unit runs `sh start-app.sh`, which execs the app: without SyslogIdentifier journald names every
+        # pad player line `sh[pid]` (the final round, 16 Nov).
+        for unit in (tool.APP_USER_UNIT.format(user="mpfree", after=""), tool.APP_UNIT.format(after="")):
+            self.assertEqual(re.findall(r"(?m)^SyslogIdentifier=.*$", unit), ["SyslogIdentifier=mpfree"])
 
     def test_busybox_find_takes_the_storage_scripts_expression(self):
         """The MPC's shell tools may be BusyBox: its find must understand -xdev, -path ... -prune, ! -user and

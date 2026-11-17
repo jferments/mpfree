@@ -472,6 +472,180 @@ impl Line {
     }
 }
 
+/// The transition band of an [`Os2`]'s half-bands (of the doubled rate).
+/// Three first-order sections make each: the pair is an all-pass, so the
+/// band stays flat whatever the design, and the stop band only has to
+/// hold a loop saturator's harmonics, which fall away fast.
+const OS2_TBW: f64 = 0.1;
+
+/// One first-order all-pass section, `y = a (x - y1) + x1`, its state
+/// `[x1, y1]`.
+#[inline(always)]
+fn ap1(a: f32, s: &mut [f32; 2], x: f32) -> f32 {
+    let y = flush(a * (x - s[1]) + s[0]);
+    *s = [x, y];
+    y
+}
+
+/// A shaper in a feedback loop, run at twice the rate (FX quality, D5):
+/// the harmonics it makes above the base Nyquist are filtered out instead
+/// of folding back as aliases, which a loop would play again on every
+/// repeat. Polyphase IIR half-bands of three sections each way (the
+/// design of [`crate::oversample::IirUp2`], unrolled). With a straight
+/// line inside, up then down is one all-pass, so the loop keeps its whole
+/// band (no hidden loss); it is [`Os2::lag`] late at low frequencies
+/// (about 1.3 frames) and later toward the top, which a repeat gathers
+/// once a pass unless the loop reads that much sooner.
+#[derive(Clone, Debug)]
+pub(crate) struct Os2 {
+    /// The sections' coefficients: 0 and 2 make the even branch, 1 the odd.
+    c: [f32; 3],
+    up: [[f32; 2]; 3],
+    down: [[f32; 2]; 3],
+    lag: f32,
+}
+
+impl Os2 {
+    pub(crate) fn new() -> Os2 {
+        let k = crate::oversample::iir_halfband(3, OS2_TBW);
+        let c = [k[0], k[1], k[2]];
+        // Up then down is the product of every section at the base rate,
+        // each `(a + z^-1) / (1 + a z^-1)`, `(1 - a) / (1 + a)` frames late
+        // at low frequencies.
+        let lag = c.iter().map(|a| (1.0 - a) / (1.0 + a)).sum();
+        Os2 {
+            c,
+            up: [[0.0; 2]; 3],
+            down: [[0.0; 2]; 3],
+            lag,
+        }
+    }
+    /// How late the stage is at low frequencies, frames (about 1.3).
+    pub(crate) fn lag(&self) -> f32 {
+        self.lag
+    }
+    /// `shape` applied to `x` at twice the rate.
+    #[inline]
+    pub(crate) fn run(&mut self, x: f32, shape: impl Fn(f32) -> f32) -> f32 {
+        let c = self.c;
+        // Up: both branches see the input; the even one makes the first
+        // of the two samples, the odd one the second.
+        let e = ap1(c[0], &mut self.up[0], x);
+        let e = ap1(c[2], &mut self.up[2], e);
+        let o = ap1(c[1], &mut self.up[1], x);
+        let (a, b) = (shape(e), shape(o));
+        // Down: the second sample through the even branch, the first
+        // through the odd one, averaged.
+        let e = ap1(c[0], &mut self.down[0], b);
+        let e = ap1(c[2], &mut self.down[2], e);
+        let o = ap1(c[1], &mut self.down[1], a);
+        0.5 * (e + o)
+    }
+    pub(crate) fn reset(&mut self) {
+        self.up = [[0.0; 2]; 3];
+        self.down = [[0.0; 2]; 3];
+    }
+}
+
+/// How long a [`FlatRead`] takes to swap between its two reads, ms.
+const SWAP_MS: f32 = 3.0;
+
+/// A read of a [`Line`] that keeps the whole band while its delay holds
+/// still and follows it smoothly while it moves (FX quality, D2). Still,
+/// the fraction of a frame is a first-order all-pass (Thiran): flat in
+/// level at every frequency and exact in time at low ones, where the
+/// cubic loses up to 0.7 dB at 10 kHz and 3.5 dB at 15 kHz half way
+/// between frames, which a feedback loop compounds on every repeat (and
+/// so made the repeats' brightness depend on the tempo). Moving, it is
+/// the cubic, which follows a glide where an all-pass would ring. Each
+/// time the delay starts or stops moving it crossfades between the two
+/// over [`SWAP_MS`]; the all-pass's state is the read's own last output,
+/// so it picks up where the cubic left off.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FlatRead {
+    /// The last output: the all-pass's state.
+    last: f32,
+    /// How far over to the all-pass: 0 the cubic, 1 the all-pass.
+    k: f32,
+    step: f32,
+    /// The still delay, its whole frames and its coefficient, worked out
+    /// once.
+    d: f32,
+    i: usize,
+    eta: f32,
+}
+
+impl Default for FlatRead {
+    fn default() -> FlatRead {
+        FlatRead {
+            last: 0.0,
+            k: 0.0,
+            step: 1.0,
+            d: f32::NAN,
+            i: 0,
+            eta: 0.0,
+        }
+    }
+}
+
+impl FlatRead {
+    pub(crate) fn set_rate(&mut self, rate: u32) {
+        self.step = 1.0 / at_least(SWAP_MS * 0.001 * rate as f32, 1.0);
+    }
+    /// A fresh read, already on the all-pass when `still`.
+    pub(crate) fn reset(&mut self, still: bool) {
+        self.last = 0.0;
+        self.k = if still { 1.0 } else { 0.0 };
+        self.d = f32::NAN;
+    }
+    /// `line` `d` frames before its last write, as [`Line::read`]; `still`
+    /// while `d` holds still.
+    #[inline]
+    pub(crate) fn read(&mut self, line: &Line, d: f32, still: bool) -> f32 {
+        if still {
+            if self.k < 1.0 {
+                self.k = at_most(self.k + self.step, 1.0);
+            }
+        } else if self.k > 0.0 {
+            self.k = at_least(self.k - self.step, 0.0);
+        }
+        let y = if self.k <= 0.0 {
+            line.read(d)
+        } else {
+            let a = self.all_pass(line, d);
+            if self.k >= 1.0 {
+                a
+            } else {
+                let c = line.read(d);
+                c + self.k * (a - c)
+            }
+        };
+        self.last = y;
+        y
+    }
+    /// The all-pass read: whole frames `i` and a fraction from 0.5 to 1.5
+    /// toward `i + 1` (where its delay is nearly flat across the band),
+    /// `y = at(i + 1) + eta * (at(i) - last)`.
+    #[inline]
+    fn all_pass(&mut self, line: &Line, d: f32) -> f32 {
+        if d != self.d {
+            self.d = d;
+            let d = at_most(at_least(d, 1.0), line.max());
+            let whole = d as usize;
+            let t = d - whole as f32;
+            let (i, frac) = if t >= 0.5 || whole < 2 {
+                (whole, at_least(t, 0.5))
+            } else {
+                (whole - 1, 1.0 + t)
+            };
+            self.i = i;
+            self.eta = (1.0 - frac) / (1.0 + frac);
+        }
+        // `tap(n)` is the frame n - 1 before the newest.
+        flush(line.tap(self.i + 2) + self.eta * (line.tap(self.i + 1) - self.last))
+    }
+}
+
 /// One 12 dB per octave Butterworth state-variable stage in Simper's
 /// trapezoidal form, stereo, giving its low-pass and band-pass at once
 /// (the high-pass is `x - SQRT_2 * band - low`, the all-pass
@@ -808,6 +982,120 @@ mod tests {
         b.set_curve(9.0);
         b.snap();
         assert_eq!(b.next(), mix_gains(0.5, 2));
+    }
+
+    /// A sine's level and phase in `y` from frame `from` on: one DFT bin
+    /// over a whole number of cycles.
+    fn bin(y: &[f32], from: usize, cycles: usize, period: f64) -> (f64, f64) {
+        let n = (cycles as f64 * period).round() as usize;
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (k, v) in y[from..from + n].iter().enumerate() {
+            let a = std::f64::consts::TAU * (from + k) as f64 / period;
+            re += f64::from(*v) * a.cos();
+            im -= f64::from(*v) * a.sin();
+        }
+        ((re * re + im * im).sqrt() * 2.0 / n as f64, im.atan2(re))
+    }
+
+    /// A sine of `period` frames through `f`, which sees each input frame
+    /// once: its gain in dB and its delay in frames.
+    fn through(period: f64, mut f: impl FnMut(f32) -> f32) -> (f64, f64) {
+        let total = 4096 + (40.0 * period) as usize;
+        let x: Vec<f32> = (0..total)
+            .map(|i| (std::f64::consts::TAU * i as f64 / period).sin() as f32 * 0.5)
+            .collect();
+        let y: Vec<f32> = x.iter().map(|&v| f(v)).collect();
+        let (ax, px) = bin(&x, 4096, 20, period);
+        let (ay, py) = bin(&y, 4096, 20, period);
+        let mut dp = px - py;
+        while dp < 0.0 {
+            dp += std::f64::consts::TAU;
+        }
+        (
+            20.0 * (ay / ax).log10(),
+            dp / std::f64::consts::TAU * period,
+        )
+    }
+
+    #[test]
+    fn a_still_flat_read_keeps_every_frequency_and_its_time() {
+        // Half a frame, a fifth and a whole number of frames.
+        for d in [100.5f32, 100.2, 100.0, 37.9] {
+            for period in [48.0f64, 4.8, 3.2, 2.4] {
+                let mut line = Line::new(512);
+                let mut r = FlatRead::default();
+                r.set_rate(48_000);
+                r.reset(true);
+                let (db, late) = through(period, |v| {
+                    line.push(v);
+                    r.read(&line, d, true)
+                });
+                // Flat to 0.01 dB up to 20 kHz (the cubic loses 3.5 dB at
+                // 15 kHz half way between frames).
+                assert!(db.abs() < 0.01, "{d} frames, {period}-frame sine: {db} dB");
+                // On time at low frequencies (the newest frame is 0 back,
+                // so a read `d` back is `d` late).
+                if period >= 48.0 {
+                    let off = (late - d as f64).rem_euclid(period);
+                    let off = off.min(period - off);
+                    assert!(off < 0.02, "{d} frames: {late} late");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_flat_read_swaps_to_the_cubic_and_back_without_a_step() {
+        let mut line = Line::new(4096);
+        let mut r = FlatRead::default();
+        r.set_rate(48_000);
+        r.reset(true);
+        let mut last = 0.0f32;
+        let mut worst = 0.0f32;
+        for i in 0..20_000 {
+            let x = (i as f32 * 0.01).sin() * 0.5;
+            line.push(x);
+            // Still, then a glide from 1000 to 1500 frames, then still.
+            let (d, still) = match i {
+                0..=5_999 => (1000.0, true),
+                6_000..=9_999 => (1000.0 + 500.0 * (i - 6_000) as f32 / 4_000.0, false),
+                _ => (1500.0, true),
+            };
+            let y = r.read(&line, d, still);
+            if i > 2_000 {
+                worst = worst.max((y - last).abs());
+            }
+            last = y;
+        }
+        // A 0.01-radian sine of 0.5 moves at most 0.005 a frame; a glide
+        // slows it a little. A step would show far above.
+        assert!(worst < 0.0052, "{worst}");
+    }
+
+    #[test]
+    fn os2_with_a_straight_line_is_the_iir_pair() {
+        let mut o = Os2::new();
+        let mut up = crate::oversample::IirUp2::new(3, OS2_TBW);
+        let mut down = crate::oversample::IirDown2::new(3, OS2_TBW);
+        for i in 0..4000 {
+            let x = kit_noise(i);
+            let a = o.run(x, |v| v);
+            let b = down.run(up.run(x));
+            assert!((a - b).abs() < 1e-6, "{i}: {a} {b}");
+        }
+    }
+
+    #[test]
+    fn os2_keeps_the_whole_band_and_lags_as_it_says() {
+        for period in [96.0f64, 9.6, 4.8, 3.2, 2.6] {
+            let mut o = Os2::new();
+            let (db, late) = through(period, |v| o.run(v, |s| s));
+            assert!(db.abs() < 0.01, "{period}-frame sine: {db} dB");
+            if period >= 96.0 {
+                assert!((late - o.lag() as f64).abs() < 0.02, "{late} {}", o.lag());
+            }
+        }
+        assert!((Os2::new().lag() - 1.29).abs() < 0.01);
     }
 
     fn kit_noise(i: u32) -> f32 {
