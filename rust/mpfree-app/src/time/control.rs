@@ -16,6 +16,12 @@
 //! to song follows the cues, started cues become launches, follow actions
 //! coming due are cued, and recorded changes go into the clips and the
 //! take history. A compile sends the view, which says what it includes.
+//!
+//! A step edit (a tap, a turn, a lock) that only adds and erases notes and
+//! locks of a clip playing or cued is not compiled: its changes go to the
+//! audio half, which makes them to its view in place ([`ToAudio::Edit`]).
+
+use std::time::{Duration, Instant};
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
@@ -23,7 +29,7 @@ use mpfree_play::{ClipDrop, Cue, Includes, Launch, PlayView, SongChange, Started
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
-use mpfree_seq::steps::Grid;
+use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::{Clip, ModelError, Project, TouchPoint, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
@@ -34,11 +40,56 @@ use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
-use super::link::{Counts, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
+use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
 use super::{StepAction, StepClip, StepsData, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
+
+/// The most changes a step edit sends to be made in place; a bigger one
+/// (a whole page erased or copied) compiles.
+const MAX_IN_PLACE: usize = 64;
+/// The most work a step edit made in place may cost the audio half: its
+/// changes times the clip's notes and locks, each change a search and a
+/// move of the ones after it. A bigger one compiles.
+const IN_PLACE_WORK: usize = 8192;
+
+/// What compiles and step edits cost the thread the control half runs on
+/// (today the audio thread), for the status line: the device's numbers
+/// for the time engine's own thread (time-threads.md, step 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Costs {
+    pub compiles: u64,
+    /// The slowest compile, and the notes and locks its view played.
+    pub slowest_compile: Duration,
+    pub slowest_compile_notes: usize,
+    /// Step edits made in place, and step edits that compiled.
+    pub steps_in_place: u64,
+    pub steps_compiled: u64,
+    /// The slowest of each kind, from the action to the audio half having
+    /// taken what it sent ([`super::TimeHost::step_action`]).
+    pub slowest_in_place: Duration,
+    pub slowest_step_compiled: Duration,
+}
+
+impl Costs {
+    /// "compiles: 12 (slowest 0.21 ms, 96 notes and locks); step edits:
+    /// 40 in place (slowest 0.02 ms), 3 compiled (slowest 0.25 ms)".
+    pub fn describe(&self) -> String {
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        format!(
+            "compiles: {} (slowest {:.2} ms, {} notes and locks); step edits: {} in place \
+             (slowest {:.2} ms), {} compiled (slowest {:.2} ms)",
+            self.compiles,
+            ms(self.slowest_compile),
+            self.slowest_compile_notes,
+            self.steps_in_place,
+            ms(self.slowest_in_place),
+            self.steps_compiled,
+            ms(self.slowest_step_compiled)
+        )
+    }
+}
 
 pub struct TimeControl {
     pub(super) project: Project,
@@ -77,6 +128,8 @@ pub struct TimeControl {
     /// The take a step lock's turn went into last: a turn that joins it
     /// writes no line, so a knob turned through many values is one line.
     lock_take: u32,
+    /// What compiles and step edits cost.
+    pub(super) costs: Costs,
     /// CAPTURE's history and the move log, fed the audio half's notes and
     /// gestures with the spans they were played in.
     capture: Box<Capture>,
@@ -158,6 +211,7 @@ impl TimeControl {
             armed: tracks.armed,
             takes: Takes::default(),
             lock_take: 0,
+            costs: Costs::default(),
             capture: Box::new(Capture::new()),
             move_log: Box::new(MoveLog::new()),
             pending: None,
@@ -368,6 +422,7 @@ impl TimeControl {
     }
 
     pub(super) fn compile(&mut self) -> Result<(), String> {
+        let at = Instant::now();
         // An undone capture takes its clip, and so its launch, away; an
         // undone + Track takes its track.
         let project = &self.project;
@@ -408,13 +463,81 @@ impl TimeControl {
                 }
             }
         }
+        let played = v.notes() + v.locks();
         self.sync_tracks();
         self.send_view(Box::new(v));
         self.compile_asked = false;
         self.changed = true;
         self.recorded = false;
         self.steps_changed = true;
+        let took = at.elapsed();
+        let c = &mut self.costs;
+        c.compiles += 1;
+        if took > c.slowest_compile {
+            (c.slowest_compile, c.slowest_compile_notes) = (took, played);
+        }
         Ok(())
+    }
+
+    /// Step edit `edit` of clip `slot` of `track`, already made to the
+    /// project, sent to the audio half to make to its view in place, so a
+    /// tap or a turn needs no compile. A clip the view does not play or
+    /// cue needs nothing sent. False when it must compile instead: an edit
+    /// of the clip's length, pressure or moves; song mode, where the
+    /// song's placements play clips too; while recording or counting in,
+    /// when the audio half edits the view itself; a view still waiting to
+    /// go; a track other than the armed one, whose clips the view has no
+    /// room in; an edit too big; or a queue that fills (the changes that
+    /// went are made, then the compiled view takes their place).
+    fn in_place(&mut self, track: usize, slot: usize, edit: &Edit) -> bool {
+        let changes =
+            edit.erase.len() + edit.add.len() + edit.erase_locks.len() + edit.add_locks.len();
+        let held = self
+            .project
+            .clip(track, slot)
+            .map_or(0, |c| c.notes.len() + c.locks.len());
+        let plain = edit.length.is_none() && edit.moves.is_none() && edit.touch.is_empty();
+        if !plain
+            || self.song
+            || self.unsent.is_some()
+            || self.armed != Some(track)
+            || matches!(self.info.state, State::Recording | State::CountIn)
+            || changes > MAX_IN_PLACE
+            || changes * held.max(1) > IN_PLACE_WORK
+        {
+            return false;
+        }
+        let shown = self
+            .launches
+            .iter()
+            .any(|l| (l.track, l.slot) == (track, slot))
+            || self
+                .cues
+                .iter()
+                .any(|c| c.track == track && c.slot == Some(slot));
+        if !shown {
+            return true;
+        }
+        let (Ok(t), Ok(s)) = (u16::try_from(track), u16::try_from(slot)) else {
+            return false;
+        };
+        // In the order the clip took them (`Clip::apply`), so the view
+        // holds them in the order a compile would.
+        let changes = (edit.erase.iter().map(|&n| InPlace::EraseNote(n)))
+            .chain(edit.erase_locks.iter().map(|&l| InPlace::EraseLock(l)))
+            .chain(edit.add.iter().map(|&n| InPlace::AddNote(n)))
+            .chain(edit.add_locks.iter().map(|&l| InPlace::AddLock(l)));
+        for change in changes {
+            let m = ToAudio::Edit {
+                track: t,
+                slot: s,
+                change,
+            };
+            if self.tx.send(m).is_err() {
+                return false;
+            }
+        }
+        true
     }
 
     /// The view of the project as it is, with what it includes and room
@@ -525,17 +648,19 @@ impl TimeControl {
     /// clip and has none waiting: the pattern starts (at the next bar
     /// line while the music plays), so what was added is heard, as a new
     /// pattern's first step does. Not in song mode.
-    fn launch_edited(&mut self, track: usize, slot: usize) {
+    /// True if it launched it.
+    fn launch_edited(&mut self, track: usize, slot: usize) -> bool {
         if self.song
             || self.launches.iter().any(|l| l.track == track)
             || self.cues.iter().any(|c| c.track == track)
         {
-            return;
+            return false;
         }
         let info = self.info;
         let launch = TimeAction::Launch { track, slot };
         (self.launches, self.cues) =
             clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
+        true
     }
 
     /// "take 3 · Drums / 1", as the takes list names it: what UNDO and
@@ -834,12 +959,17 @@ impl TimeControl {
             self.lock_take = take;
         }
         let before = (self.launches.clone(), self.cues.clone());
-        if made.is_none() && !edit.add.is_empty() {
-            self.launch_edited(track, slot);
-        }
-        if let Err(e) = self.compile() {
-            (self.launches, self.cues) = before;
-            return Err(e);
+        let launched = made.is_none() && !edit.add.is_empty() && self.launch_edited(track, slot);
+        if made.is_none() && !launched && self.in_place(track, slot, &edit) {
+            self.changed = true;
+            self.steps_changed = true;
+            self.costs.steps_in_place += 1;
+        } else {
+            self.costs.steps_compiled += 1;
+            if let Err(e) = self.compile() {
+                (self.launches, self.cues) = before;
+                return Err(e);
+            }
         }
         let on = if edit.add.is_empty() { "off" } else { "on" };
         Ok(match (made, a) {
@@ -1876,13 +2006,18 @@ impl TimeControl {
         );
         // The fallbacks between the halves, when there are any.
         let lost = c.lost + self.lost();
-        if lost + c.behind + c.kept + c.refused > 0 {
+        if lost + c.behind + c.kept + c.refused + c.missed > 0 {
             line.push_str(&format!(
                 "; between the halves: {lost} messages lost, {} late views compiled again, \
-                 {} views kept unfreed, {} transport commands refused",
-                c.behind, c.kept, c.refused
+                 {} views kept unfreed, {} transport commands refused, {} step edits \
+                 compiled again",
+                c.behind, c.kept, c.refused, c.missed
             ));
         }
+        // What compiles and step edits cost (the device's numbers for the
+        // control half's own thread).
+        line.push_str("; ");
+        line.push_str(&self.costs.describe());
         // Following another device's clock, when it had to put anything right.
         let f = &self.follow;
         if f.any() {
