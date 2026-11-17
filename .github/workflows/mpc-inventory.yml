@@ -135,9 +135,15 @@ jobs:
           python3 tools/ci/test_store.py
       - name: The USB creator release's file hand-over, tested against a fake GitHub (node)
         # tools/ci/release_assets.js runs inside actions/github-script; any node 18 or newer
-        # runs its tests: the machine's own, else the runner's bundled one.
+        # runs its tests: the machine's own, else the newest of the runner's bundled ones that
+        # runs here (the runner also bundles node24_alpine, built for musl, which can't).
         run: |
-          node=$(command -v node || ls -d "$RUNNER_WORKSPACE"/../../externals/node*/bin/node 2>/dev/null | sort -V | tail -n 1)
+          node=$(command -v node || true)
+          if [ -z "$node" ]; then
+            for n in $(ls -d "$RUNNER_WORKSPACE"/../../externals/node*/bin/node 2>/dev/null | sort -rV); do
+              if "$n" -e 0 2>/dev/null; then node=$n; break; fi
+            done
+          fi
           test -n "$node" || { echo "no node on this runner"; exit 1; }
           "$node" --version
           "$node" --test tools/ci/test_release_assets.js
