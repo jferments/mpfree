@@ -1406,6 +1406,35 @@ mod tests {
         });
     }
 
+    /// PAD BANK B pages the kit: pad 5 is then the kit's pad B5 (pad 20),
+    /// REC records note 20 and the clip plays pad 20 back, while pad 5
+    /// (A5) stays as it was.
+    #[test]
+    fn pad_bank_b_records_and_plays_the_kits_next_pads() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            s.press("steps", "step", "Snare step 1");
+            s.button("PAD BANK B/F");
+            assert_eq!(s.app.pad_page(), 1, "bank B");
+            s.button("REC");
+            s.button("PLAY");
+            s.run_for(0.55);
+            s.pad(4, 100, 0.05);
+            s.run_for(0.4);
+            s.button("STOP").run_for(0.2);
+            assert_eq!(on(&clip_row(&s, 20)).len(), 1, "the take has pad B5");
+            assert!(on(&clip_row(&s, 4)).is_empty(), "and not A5");
+
+            let from = s.hits.on.len();
+            s.button("PLAY");
+            s.run_for(2.2);
+            s.button("STOP").run_for(0.1);
+            assert!(hits_on(&s, 20, from) > 0, "the clip plays pad B5");
+            assert_eq!(hits_on(&s, 4, from), 0, "not A5");
+        });
+    }
+
     /// The Kick's speaker on Play and Pad 1's M in the pad mixer are one
     /// mute: each shows what the other did.
     #[test]
@@ -1840,7 +1869,8 @@ mod tests {
             s.wheel_with("SHIFT", 1).run_for(0.2);
             assert_eq!(s.kit, 1, "the next kit plays");
             assert_ne!(chip(&mut s), first, "the header names it");
-            assert!(chip(&mut s).ends_with("Bank B"), "{}", chip(&mut s));
+            // The pad bank is the app's, not the kit's: still A.
+            assert!(chip(&mut s).ends_with("Bank A"), "{}", chip(&mut s));
             s.wheel_with("SHIFT", -1).run_for(0.2);
             assert_eq!(s.kit, 0);
             assert_eq!(chip(&mut s), first);
@@ -1881,7 +1911,7 @@ mod tests {
             assert_eq!(s.kit, 2, "the kit tapped plays");
             assert_eq!(s.page(), play, "and Play is back");
             assert!(
-                kit_chip(&mut s).label.ends_with("Bank C"),
+                kit_chip(&mut s).label.ends_with("Bank A"),
                 "{}",
                 kit_chip(&mut s).label
             );

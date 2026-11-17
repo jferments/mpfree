@@ -75,7 +75,7 @@ use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
     self as model, ChannelPick, ChopSet, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project,
-    Region, Source, SourceId, Warp, KEPT_CHOP, WARP_BPM,
+    Region, Source, SourceId, Warp, KEPT_CHOP, PADS, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -103,7 +103,6 @@ use mpfree_transport::PPQ;
 use mpfree_ui::widgets::Card;
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
 
-use crate::app::bank_letter;
 use crate::gui::FromUi;
 use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
 use mpfree_fx::{CapturePoint, StripId};
@@ -903,7 +902,7 @@ impl SamplePage {
     /// Picks pad `pad` itself (a tap on its cell or its zone), whatever
     /// the pads play.
     fn pick(&mut self, pad: usize) {
-        if pad == self.pad || pad >= 16 {
+        if pad == self.pad || pad >= PADS {
             return;
         }
         self.lift();
@@ -956,7 +955,7 @@ impl SamplePage {
 
     /// The previous (`delta` < 0) or next pad with a sound.
     pub fn step_pad(&mut self, delta: i32) {
-        let from = (self.pad as i32 + delta.signum()).rem_euclid(16) as usize;
+        let from = (self.pad as i32 + delta.signum()).rem_euclid(PADS as i32) as usize;
         if let Some(p) = self.with_sound(from, delta.signum()) {
             self.hit(p);
         }
@@ -966,9 +965,9 @@ impl SamplePage {
     /// `dir`) that has a sound in the kit.
     fn with_sound(&self, from: usize, dir: i32) -> Option<usize> {
         let p = self.projects.get(self.kit)?;
-        let dir = if dir < 0 { 15 } else { 1 };
-        (0..16)
-            .map(|i| (from + i * dir) % 16)
+        let dir = if dir < 0 { PADS - 1 } else { 1 };
+        (0..PADS)
+            .map(|i| (from + i * dir) % PADS)
             .find(|&pad| p.pad(pad).is_some_and(|pd| !pd.layers.is_empty()))
     }
 
@@ -1030,12 +1029,12 @@ impl SamplePage {
             return pad;
         };
         match p.pads_play() {
-            PadsPlay::Keys { from } if pad < 16 => p
+            PadsPlay::Keys { from } if pad < PADS => p
                 .keygroups_for(from.saturating_add(pad as u8))
                 .first()
                 .copied()
                 .unwrap_or(pad),
-            PadsPlay::Levels { pad: of, .. } if pad < 16 => usize::from(of),
+            PadsPlay::Levels { pad: of, .. } if pad < PADS => usize::from(of),
             _ => pad,
         }
     }
@@ -1080,7 +1079,7 @@ impl SamplePage {
             return false;
         }
         let play = match levels {
-            Some((pad, by)) if pad < 16 => PadsPlay::Levels { pad: pad as u8, by },
+            Some((pad, by)) if pad < PADS => PadsPlay::Levels { pad: pad as u8, by },
             Some(_) => return false,
             None => PadsPlay::Pads,
         };
@@ -1251,7 +1250,9 @@ impl SamplePage {
     fn refresh(&mut self, ui: &mut Ui) {
         self.stale = false;
         self.state = self.build_state();
-        let bank = Some(bank_letter(self.kit));
+        // Pads are named by their own bank, A1 to H16 (PAD BANK pages a
+        // kit's 128 pads), not the kit's.
+        let bank: Option<char> = None;
         match (self.state.as_ref(), self.tab.as_mut()) {
             (Some(st), Some(tab)) => {
                 tab.bank = bank;
@@ -1620,8 +1621,8 @@ impl SamplePage {
         }
     }
 
-    fn pad_text(&self, kit: usize, pad: usize) -> String {
-        format!("{}{}", bank_letter(kit), pad % 16 + 1)
+    fn pad_text(&self, _kit: usize, pad: usize) -> String {
+        crate::app::kit_pad_name(pad)
     }
 
     fn show_empty(&mut self, ui: &mut Ui) {
@@ -1889,7 +1890,7 @@ impl SamplePage {
     /// edit) onto pad `to`, one undo step.
     fn send(&mut self, ui: &mut Ui, kit: usize, from: usize, to: usize) {
         send::show(ui, true, false);
-        if kit != self.kit || to == from || to >= 16 {
+        if kit != self.kit || to == from || to >= PADS {
             self.lines.push("sample: Send to pad called off".into());
             return;
         }
@@ -2484,7 +2485,7 @@ impl SamplePage {
         let p = self.projects.get(kit)?;
         Some((
             kit,
-            (0..16)
+            (0..mpfree_sampler::model::PADS)
                 .map(|i| {
                     p.pad(i)
                         .filter(|pd| !pd.layers.is_empty())
@@ -5479,8 +5480,7 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
 
 /// A phrase as a clip of the time engine, at [`PPQ`]: slice `k` is a note
 /// for pad `first_pad + k` at full velocity, the clip as long as the
-/// phrase's whole beats. The Clips tracks play pads 1 to 16 of the kit, so
-/// a phrase on pads past those is refused.
+/// phrase's whole beats. A track's clips play any of its kit's 128 pads.
 fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String> {
     let ppq = i64::from(PPQ);
     let mut clip = Clip::new(&format!("{name} phrase"), i64::from(p.beats) * ppq);
@@ -5488,8 +5488,8 @@ fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String>
         let pad = first_pad + h.slice;
         let note = u8::try_from(pad)
             .ok()
-            .filter(|n| *n < 16)
-            .ok_or("the clips play pads 1 to 16 only")?;
+            .filter(|&n| usize::from(n) < PADS)
+            .ok_or("past the kit's last pad")?;
         let at = i64::try_from(h.tick(PPQ)).map_err(|_| "too long")?;
         let len = i64::try_from(h.ticks(PPQ)).map_err(|_| "too long")?;
         clip.add_note(Note::new(at, len, note, 127))
@@ -5864,7 +5864,7 @@ mod tests {
     use mpfree_sampler::phrase::Hit;
 
     #[test]
-    fn a_phrase_is_a_note_per_slice_on_its_pad_and_only_on_pads_1_to_16() {
+    fn a_phrase_is_a_note_per_slice_on_its_pad_up_to_pad_128() {
         let hit = |slice, beat, beats| Hit { slice, beat, beats };
         let p = Phrase {
             hits: vec![hit(0, 0.0, 0.25), hit(1, 0.25, 0.5), hit(2, 2.75, 1.0)],
@@ -5881,9 +5881,12 @@ mod tests {
             notes,
             [(0, 240, 12, 127), (240, 480, 13, 127), (2640, 960, 14, 127)]
         );
+        // Pads past 16 are the kit's next page (PAD BANK B); past 128,
+        // refused.
+        assert_eq!(phrase_clip("Break", &p, 14).unwrap().notes[2].note, 16);
         assert_eq!(
-            phrase_clip("Break", &p, 14).unwrap_err(),
-            "the clips play pads 1 to 16 only"
+            phrase_clip("Break", &p, 126).unwrap_err(),
+            "past the kit's last pad"
         );
     }
 }

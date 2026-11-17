@@ -486,7 +486,12 @@ impl PadsTab {
         let kit = self.kit.clone();
         if let Some(m) = ui.get_mut::<PadMap>(MAP) {
             m.title = if kit.is_empty() { "Pads".into() } else { kit };
-            m.right = self.bank.map_or_else(String::new, |b| format!("bank {b}"));
+            // The bank the grid shows: the one given, or the page of its
+            // first pad (A1 to H16).
+            let bank = self
+                .bank
+                .unwrap_or((b'A' + (st.first / 16 % 26) as u8) as char);
+            m.right = format!("bank {bank}");
             m.lit.resize(cells.len(), false);
             m.cells = cells;
             m.selected = st.pad - st.first;

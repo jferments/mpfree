@@ -82,7 +82,7 @@ On the Play page, the Looper tab, the mixer and the FX chain editor, the data wh
 - On the mixer and the chain editor, the wheel keeps its old job (the selected strip's volume, the first knob) until you tap a control. Changing page, or tapping an empty spot, takes the outline away.
 - While the list of effects is open, the wheel moves through the effects and its push opens presets and then adds, as always (see [Adding an effect](../making-music/mixing-and-effects.md#adding-an-effect)).
 
-To change the kit, tap the kit chip, press a **PAD BANK** button, or hold **SHIFT** and turn the wheel on the Play page.
+To change the kit, tap the kit chip or hold **SHIFT** and turn the wheel on the Play page. The **PAD BANK** buttons put the kit's other banks of 16 pads on the pads.
 
 ## Hold and turn
 

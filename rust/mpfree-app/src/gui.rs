@@ -603,6 +603,24 @@ pub fn other_kit_mutes(what: &str, kit: usize) -> String {
     )
 }
 
+/// Why a kit pad has no mute of its own, in a line starting `what`: on
+/// kit `kit` (the armed track's, counted from 0) past kit 1 its pads play
+/// through their track's channel; on page `page` past A (PAD BANK) they
+/// have no pad strips, which only kit 1's pads A1-A16 have until any pad
+/// can have its own channel. None for those 16, and for no kit (the
+/// synth's pads).
+pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<String> {
+    match kit? {
+        0 if page == 0 => None,
+        0 => Some(format!(
+            "{what}: pads {}-{} have no mixer strips of their own yet (A1-A16 have): mute the track",
+            crate::app::kit_pad_name(page * 16),
+            crate::app::kit_pad_name(page * 16 + 15)
+        )),
+        k => Some(other_kit_mutes(what, k)),
+    }
+}
+
 fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds, kits: &crate::sampler::TrackKits) {
     use std::borrow::Cow;
     for (i, t) in st.tracks.iter_mut().enumerate() {
@@ -747,6 +765,10 @@ pub enum ToUi {
         velocity: u8,
     },
     Kit(usize),
+    /// PAD BANK turned the kit's page (A = 0 to H = 7): the 16 pads are
+    /// its pads 16 * page + 1 on. `PadDown`, `PadUp` and `PadFlash` name
+    /// the 16 pads; with a kit, pad n is the kit's pad 16 * page + n.
+    PadPage(usize),
     /// The master fader (the Level), dB.
     Level {
         db: f32,
@@ -1278,6 +1300,8 @@ pub struct Player {
     save_sent: Option<(Instant, usize, usize)>,
     kits: Vec<KitView>,
     kit: usize,
+    /// The kit's page on the pads (PAD BANK A = 0 to H = 7).
+    pad_page: usize,
     midi: u64,
     midi_held_back: u64,
     timing: Timing,
@@ -1734,6 +1758,7 @@ impl Player {
             ui,
             kits: Vec::new(),
             kit: 0,
+            pad_page: 0,
             midi: 0,
             midi_held_back: 0,
             timing: Timing {
@@ -1856,6 +1881,15 @@ impl Player {
         self.set_kit(0);
     }
 
+    /// The kit pad pad `cell` (0 to 15) plays on the page shown: 16 *
+    /// page + cell for a kit, the cell itself for the synth's pads.
+    fn kit_pad(&self, cell: usize) -> usize {
+        match self.kits.get(self.kit) {
+            Some(k) if k.synth.is_some() => cell,
+            _ => self.pad_page * 16 + cell,
+        }
+    }
+
     fn set_kit(&mut self, k: usize) {
         if k >= self.kits.len() {
             return;
@@ -1898,7 +1932,7 @@ impl Player {
                     switch(Some(s)),
                 ),
                 None => (
-                    format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
+                    format!("Pads · Bank {}", crate::app::bank_letter(self.pad_page)),
                     kit.name.clone(),
                     None,
                 ),
@@ -1936,9 +1970,9 @@ impl Player {
                 }
             }
         }
-        // The pattern's lanes.
+        // The pattern's lanes: any of a kit's 128 pads, the synth's 16.
         let pads: Vec<PadInfo> = match now {
-            Some(kit) => (0..16)
+            Some(kit) => (0..kit.pads.len().max(16))
                 .map(|i| PadInfo {
                     label: kit.pads.get(i).cloned().flatten(),
                     color: Some(Color::from_pad(kit.colour)),
@@ -3056,7 +3090,8 @@ impl Player {
     /// them alone.
     fn erase_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
         match (ev.widget.as_str(), &ev.kind) {
-            (play_page::STEPS, EventKind::Toggle(pad)) if *pad < 16 => {
+            // A lane's speaker: that pad's steps (any of the kit's 128).
+            (play_page::STEPS, EventKind::Toggle(pad)) if *pad < 128 => {
                 Some(Some(FromUi::Steps(StepAction::ClearPad {
                     pad: *pad as u8,
                 })))
@@ -3305,8 +3340,14 @@ impl Player {
                 pad.color = (!label.is_empty()).then_some(if i < 9 { notes } else { marks });
             }
         } else if let Some(kit) = kit {
+            // A kit's page (PAD BANK); the synth's pads are its 16.
+            let first = if kit.synth.is_some() {
+                0
+            } else {
+                self.pad_page * 16
+            };
             for (i, pad) in g.pads.iter_mut().enumerate() {
-                let label = kit.pads.get(i).cloned().flatten();
+                let label = kit.pads.get(first + i).cloned().flatten();
                 pad.color = label.as_ref().map(|_| Color::from_pad(kit.colour));
                 pad.label = label.unwrap_or_default();
             }
@@ -3349,7 +3390,7 @@ impl Player {
                 format!(
                     "{} · Bank {}",
                     chip_kit_name(&k.name, self.kit),
-                    crate::app::bank_letter(self.kit)
+                    crate::app::bank_letter(self.pad_page)
                 ),
                 Tone::Normal,
             )),
@@ -3602,7 +3643,7 @@ impl Player {
                      {WHEEL_HINT}   ·   {stop}", self.chain_page.bind.title())
         } else {
             match self.view {
-                View::Play => format!("Tap All, Beats or Loop: the view   ·   {WHEEL_HINT}   ·   PAD BANK: kit   ·   \
+                View::Play => format!("Tap All, Beats or Loop: the view   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
                                        NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Arrange if self.time.edit.is_some() => {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
@@ -4773,14 +4814,19 @@ impl Player {
                 self.set_kits(kits);
                 self.sample_changed();
             }
-            ToUi::PadDown { pad, velocity } => {
+            ToUi::PadDown {
+                pad: cell,
+                velocity,
+            } => {
                 if let Some(g) = self
                     .ui
                     .get_mut::<MiniPads>(play_page::PADS)
                     .map(|m| &mut m.grid)
                 {
-                    g.hit(pad, velocity);
+                    g.hit(cell, velocity);
                 }
+                // The kit's pad on the page (the synth's pad as it is).
+                let pad = self.kit_pad(cell);
                 // With Drums on the pads, the Synth tab shows the page of
                 // the pad hit last, as the Sample page edits it.
                 let synth_plays = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
@@ -4798,7 +4844,7 @@ impl Player {
                 // page's Tune and Decay turn it.
                 let shown = self.view == View::Sample;
                 self.sample.press(&mut self.ui, pad, velocity, shown);
-                self.levels_hit(pad, true);
+                self.levels_hit(cell, pad, true);
                 // Load to pad or Send to pad may have put a sound on it.
                 self.sample_names();
                 self.sample_changed();
@@ -4821,16 +4867,17 @@ impl Player {
                     self.looper_page.hit(g);
                 }
             }
-            ToUi::PadUp(pad) => {
+            ToUi::PadUp(cell) => {
                 if let Some(g) = self
                     .ui
                     .get_mut::<MiniPads>(play_page::PADS)
                     .map(|m| &mut m.grid)
                 {
-                    g.release(pad);
+                    g.release(cell);
                 }
+                let pad = self.kit_pad(cell);
                 self.sample.pad_up(&mut self.ui, pad);
-                self.levels_hit(pad, false);
+                self.levels_hit(cell, pad, false);
             }
             ToUi::PadFlash { pad, velocity } => {
                 if let Some(g) = self
@@ -4849,6 +4896,17 @@ impl Player {
                 self.set_kit(k);
                 self.sample.set_kit(k);
                 self.sample_changed();
+            }
+            ToUi::PadPage(page) => {
+                if page != self.pad_page {
+                    self.pad_page = page;
+                    // The 16 pads show the page's sounds; Beats keeps its
+                    // lanes (any of the kit's pads), with the page's empty
+                    // pads last.
+                    self.play.pad_page = page;
+                    self.set_kit(self.kit);
+                    self.refresh_play();
+                }
             }
             ToUi::Level { db, .. } => {
                 let text = format!("{db:.1}");
@@ -7116,8 +7174,11 @@ impl Player {
 
     /// A pad down (`down`) or up: lit on the panel while held, and with
     /// Pick pad armed, the pad the levels play from now on.
-    fn levels_hit(&mut self, pad: usize, down: bool) {
-        if pad >= 16 || self.sample.levels().is_none() {
+    /// Pad `cell` of the 16 (the kit's pad `pad`) hit or let go while 16
+    /// Levels are on: lit in the panel, and while picking, the kit pad
+    /// the levels play.
+    fn levels_hit(&mut self, cell: usize, pad: usize, down: bool) {
+        if cell >= 16 || self.sample.levels().is_none() {
             return;
         }
         if down && self.levels.picking {
@@ -7127,8 +7188,8 @@ impl Player {
             self.after_levels_change();
         }
         self.levels.lit = if down {
-            Some(pad)
-        } else if self.levels.lit == Some(pad) {
+            Some(cell)
+        } else if self.levels.lit == Some(cell) {
             None
         } else {
             self.levels.lit
@@ -8121,6 +8182,14 @@ impl Player {
                     "steps",
                     self.track_kits.kit_of(self.play.steps.track).unwrap_or(0),
                 ));
+                None
+            }
+            // Pads past A16 have no strip, so no mute, yet.
+            (play_page::STEPS, EventKind::Toggle(pad)) if pad >= 16 => {
+                let kit = self.track_kits.kit_of(self.play.steps.track);
+                if let Some(why) = no_pad_mutes("steps", kit.or(Some(0)), pad / 16) {
+                    self.tell(&why);
+                }
                 None
             }
             (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 => {
@@ -14272,6 +14341,71 @@ mod tests {
         // Back on kit 1: the mute shows again.
         p.apply(ToUi::TrackKits(Box::new(crate::sampler::TrackKits::new(2))));
         assert!(muted(&p));
+    }
+
+    /// R3 part 2b: PAD BANK B puts the kit's pads B1-B16 on the 16 pads:
+    /// their names, the heading and the kit chip say so, and a hit there
+    /// is the kit's pad on the Sample tab.
+    #[test]
+    fn pad_bank_b_shows_the_kits_next_sixteen_pads_and_the_sample_tab_edits_them() {
+        use crate::play_widgets::MiniPads;
+        use mpfree_sampler_ui::widgets::PadBar;
+        let mut p = sample_sampler(Fonts::embedded());
+        let pad = mpfree_sampler_ui::sample::PAD;
+        // The loop on pad B5 too, as Send to pad would put it.
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let mut b5 = project.pad(pad).unwrap().clone();
+        b5.name = "Break B5".to_string();
+        project.set_pad(16 + pad, Some(b5), None).unwrap();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        let mut kits = p.kits.clone();
+        kits[0].pads = (0..128)
+            .map(|i| match i {
+                i if i == pad => Some("Break 92".to_string()),
+                i if i == 16 + pad => Some("Break B5".to_string()),
+                _ => None,
+            })
+            .collect();
+        p.apply(ToUi::Kits(kits));
+        let shown = |p: &Player| {
+            let m = p.ui.get::<MiniPads>(play_page::PADS).unwrap();
+            (m.title.clone(), m.grid.pads[pad].label.clone())
+        };
+        assert_eq!(shown(&p), ("Pads · Bank A".into(), "Break 92".into()));
+        p.apply(ToUi::PadPage(1));
+        assert_eq!(shown(&p), ("Pads · Bank B".into(), "Break B5".into()));
+        let chips = &p.ui.get::<Header>("header").unwrap().chips;
+        assert!(
+            chips.iter().any(|c| c.text.ends_with("· Bank B")),
+            "{:?}",
+            chips.iter().map(|c| &c.text).collect::<Vec<_>>()
+        );
+        // Pad 5 is B5: the Sample tab edits it.
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        p.apply(ToUi::PadUp(pad));
+        assert_eq!(p.sample.pad(), 16 + pad);
+        assert!(
+            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
+                .unwrap()
+                .title
+                .starts_with("Pad B5 · Break B5"),
+            "{}",
+            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
+                .unwrap()
+                .title
+        );
+        // Beats' lanes still take the sounds of every bank.
+        let lanes: Vec<usize> = p.play.lane_pads();
+        assert_eq!(lanes.iter().filter(|&&l| l >= 16).count(), 16, "{lanes:?}");
+        assert!(
+            lanes.contains(&pad) && lanes.contains(&(16 + pad)),
+            "{lanes:?}"
+        );
+        p.apply(ToUi::PadPage(0));
+        assert_eq!(shown(&p), ("Pads · Bank A".into(), "Break 92".into()));
     }
 
     #[test]

@@ -60,7 +60,7 @@ pub struct TimeAudio {
     n_hits: usize,
     /// Each pad's pressure last sent to CAPTURE's history, None after a
     /// press: a value that did not change is not sent again.
-    pressure_sent: [Option<u8>; 16],
+    pressure_sent: [Option<u8>; 128],
     /// The clips' parameter locks and lanes' values this period, for the
     /// mixer's mod engine.
     locks: Vec<LockOut>,
@@ -120,7 +120,7 @@ impl TimeAudio {
             jump_pending: false,
             hits: [HitInfo::default(); MAX_HITS],
             n_hits: 0,
-            pressure_sent: [None; 16],
+            pressure_sent: [None; 128],
             locks: Vec::with_capacity(MAX_LOCKS),
             lanes: Vec::with_capacity(MAX_LOCKS),
             locks_dropped: 0,
@@ -344,7 +344,7 @@ impl TimeAudio {
     }
 
     pub fn pad_pressure(&mut self, offset: u32, pad: u8, value: u8) {
-        if pad >= 16 {
+        if pad >= 128 {
             return;
         }
         let event = Event::Pressure { note: pad, value };

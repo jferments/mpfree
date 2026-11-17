@@ -41,7 +41,7 @@ use mpfree_sampler::engine::{
     MAX_GRAINS,
 };
 use mpfree_sampler::model::{
-    GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
+    GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source, PADS,
 };
 
 use mpfree_fx::{CapturePoint, StripId};
@@ -93,8 +93,8 @@ pub struct Player {
     engine: Engine,
     /// The kit the pads play (the armed track's).
     kit: usize,
-    /// Pads with a sound, per kit.
-    sounds: Vec<[bool; 16]>,
+    /// Pads with a sound, per kit: bit p for pad p (pads 1 to 128).
+    sounds: Vec<u128>,
     peak_grains: usize,
     /// Each kit's project, until the screen thread takes them.
     projects: Vec<Project>,
@@ -384,7 +384,7 @@ impl Player {
         let mut first: Vec<(usize, Source)> = Vec::new();
         for (k, kit) in kits.iter_mut().enumerate() {
             let mut project = Project::new();
-            let mut has = [false; 16];
+            let mut has = 0u128;
             for (p, &note) in pad_notes.iter().enumerate() {
                 let Some(s) = kit.sounds.iter_mut().find(|s| s.note == note) else {
                     continue;
@@ -396,7 +396,7 @@ impl Player {
                 project
                     .set_pad(p, Some(kit_pad(&s.name, Region::whole(&source))), None)
                     .map_err(|e| format!("kit {} ({}), {}: {e:?}", k + 1, kit.name, s.name))?;
-                has[p] = true;
+                has |= 1 << p;
                 if k == 0 {
                     first.push((p, source));
                 }
@@ -407,7 +407,7 @@ impl Player {
         }
         if kits.len() < MAX_KITS {
             let mut project = Project::new();
-            let mut has = [false; 16];
+            let mut has = 0u128;
             let mut grain_sounds = Vec::new();
             for (p, source) in &first {
                 project.add_source(source.clone());
@@ -419,7 +419,7 @@ impl Player {
                 project
                     .set_pad(*p, Some(grain_pad(&name, source, p / 4)), None)
                     .map_err(|e| format!("Grains, {name}: {e:?}"))?;
-                has[*p] = true;
+                has |= 1 << *p;
                 grain_sounds.push(Sound {
                     note: pad_notes[*p],
                     name,
@@ -457,9 +457,21 @@ impl Player {
         self.kit
     }
 
-    /// Which of kit `kit`'s 16 pads have a sound (none past the last kit).
-    pub fn sounds(&self, kit: usize) -> [bool; 16] {
-        self.sounds.get(kit).copied().unwrap_or([false; 16])
+    /// Which of kit `kit`'s 128 pads have a sound, bit p for pad p (none
+    /// past the last kit).
+    pub fn sounds(&self, kit: usize) -> u128 {
+        self.sounds.get(kit).copied().unwrap_or(0)
+    }
+
+    /// Whether kit `kit`'s pad `pad` has a sound.
+    pub fn has_sound(&self, kit: usize, pad: usize) -> bool {
+        pad < PADS && self.sounds(kit) & (1 << pad) != 0
+    }
+
+    /// Which pads of page `page` (PAD BANK A = 0) of kit `kit` have a
+    /// sound, as the 16 pads show them.
+    pub fn page_sounds(&self, kit: usize, page: usize) -> [bool; 16] {
+        std::array::from_fn(|p| self.has_sound(kit, page * 16 + p))
     }
 
     /// The pads play kit `k` from the next hit on (the armed track's).
@@ -497,9 +509,9 @@ impl Player {
         };
         // A chop can put sounds on pads that had none (and undo take them away).
         if let Some(has) = self.sounds.get_mut(swap.kit) {
-            for (p, h) in has.iter_mut().enumerate() {
-                *h = view.has_pad(p);
-            }
+            *has = (0..PADS)
+                .filter(|&p| view.has_pad(p))
+                .fold(0, |m, p| m | 1 << p);
         }
         swap.view = Some(self.engine.edit_kit_view(swap.kit, view));
         true
@@ -616,7 +628,7 @@ impl Player {
 
     /// [`Player::hit_at`] on kit `kit` (a clip's note on its track's kit).
     pub fn hit_kit_at(&mut self, kit: usize, pad: usize, velocity: u8, offset: u32) -> bool {
-        if pad >= 16 || !self.sounds.get(kit).is_some_and(|s| s[pad]) {
+        if !self.has_sound(kit, pad) {
             return false;
         }
         let velocity = engine_velocity(velocity);
@@ -672,7 +684,7 @@ impl Player {
 
     /// [`Player::release_at`] on kit `kit`.
     pub fn release_kit_at(&mut self, kit: usize, pad: usize, offset: u32) {
-        if pad < 16 {
+        if pad < PADS {
             self.engine
                 .schedule_for(kit, offset, Event::NoteOff { pad: pad as u8 });
         }
@@ -700,7 +712,7 @@ impl Player {
         value: Option<f32>,
         offset: u32,
     ) -> bool {
-        pad < 16
+        pad < PADS
             && self.engine.schedule_for(
                 kit,
                 offset,
@@ -725,7 +737,7 @@ impl Player {
         end: u64,
         velocity: u8,
     ) -> bool {
-        if pad >= 16 || layer > usize::from(u8::MAX) {
+        if pad >= PADS || layer > usize::from(u8::MAX) {
             return false;
         }
         let clip = |f: u64| u32::try_from(f).unwrap_or(u32::MAX);
@@ -752,7 +764,7 @@ impl Player {
 
     /// [`Player::pressure_at`] on kit `kit` (a clip's recorded pressure).
     pub fn pressure_kit_at(&mut self, kit: usize, pad: usize, value: u8, offset: u32) {
-        if pad < 16 {
+        if pad < PADS {
             self.engine.schedule_for(
                 kit,
                 offset,
@@ -767,7 +779,7 @@ impl Player {
     /// Pad pressure, 0 to 127, from the next render on, on the kit the pads
     /// play.
     pub fn pressure(&mut self, pad: usize, value: u8) {
-        if pad < 16 {
+        if pad < PADS {
             self.engine.schedule_for(
                 self.kit,
                 0,
@@ -793,7 +805,7 @@ impl Player {
 
     /// The pads whose hit keeps a latched sound playing, as bits (pad `k`
     /// is bit `k`) of the kit the pads play: their lights stay on.
-    pub fn latched_pads(&self) -> u16 {
+    pub fn latched_pads(&self) -> u128 {
         self.engine.kit_latched_pads(self.kit)
     }
 
@@ -1142,7 +1154,7 @@ mod tests {
         let mut ks = kits();
         let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
         // Kick (pad 1) is 3000 frames: frames 1000 to 1500 of it.
-        assert!(!p.audition(0, 16, 0, 1000, 1500, 127));
+        assert!(!p.audition(0, 128, 0, 1000, 1500, 127));
         assert!(!p.audition(0, 0, 0, 1000, 1500, 0));
         assert!(p.audition(0, 0, 0, 1000, 1500, 127));
         let (out, _) = run(&mut p, 8);
@@ -1370,10 +1382,10 @@ mod tests {
         let mut player = Player::new(&mut kits, &NOTES, 44_100).unwrap();
         let mut projects = player.take_projects();
         let empty = (0..16)
-            .find(|&p| !player.sounds(0)[p])
+            .find(|&p| !player.has_sound(0, p))
             .expect("a pad without a sound in kit 1");
         assert!(!player.hit_at(empty, 100, 0));
-        let from = (0..16).find(|&p| player.sounds(0)[p]).unwrap();
+        let from = (0..16).find(|&p| player.has_sound(0, p)).unwrap();
         let project = &mut projects[0];
         let source = project
             .source(project.pad(from).unwrap().layers[0].region.source)
@@ -1389,7 +1401,7 @@ mod tests {
             view: Some(EngineView::build(project, 44_100)),
         };
         assert!(player.swap_view(&mut swap));
-        assert!(player.sounds(0)[empty] && player.hit_at(empty, 100, 0));
+        assert!(player.has_sound(0, empty) && player.hit_at(empty, 100, 0));
         // Undone, the pad is silent again.
         project.undo();
         let mut swap = ViewSwap {
@@ -1398,6 +1410,38 @@ mod tests {
         };
         assert!(player.swap_view(&mut swap));
         assert!(!player.hit_at(empty, 100, 0));
+    }
+
+    /// R3 part 2b: a kit's pads past 16 (PAD BANK B to H) hold and play
+    /// sounds like its first 16.
+    #[test]
+    fn a_kit_plays_its_pads_past_16() {
+        let mut kits = kits();
+        let mut player = Player::new(&mut kits, &NOTES, 44_100).unwrap();
+        let mut projects = player.take_projects();
+        let loud = |p: &mut Player| run(p, 8).0.iter().any(|s| s.abs() > 0.01);
+        assert!(!player.has_sound(0, 20) && !player.hit_kit_at(0, 20, 100, 0));
+        let from = (0..16).find(|&p| player.has_sound(0, p)).unwrap();
+        let copy = projects[0].pad(from).cloned();
+        projects[0].set_pad(20, copy, None).unwrap();
+        let mut swap = ViewSwap {
+            kit: 0,
+            view: Some(EngineView::build(&projects[0], 44_100)),
+        };
+        assert!(player.swap_view(&mut swap));
+        assert!(player.has_sound(0, 20));
+        assert_eq!(
+            (player.sounds(0) >> 16) & 0xFFFF,
+            1 << 4,
+            "bank B: B5 alone"
+        );
+        assert!(player.page_sounds(0, 1)[4]);
+        assert!(!player.page_sounds(0, 1)[0]);
+        assert!(player.hit_kit_at(0, 20, 100, 0));
+        assert!(loud(&mut player));
+        player.release_kit_at(0, 20, 0);
+        // Past the last pad: nothing.
+        assert!(!player.has_sound(0, 128) && !player.hit_kit_at(0, 128, 100, 0));
     }
 
     #[test]
@@ -1409,7 +1453,7 @@ mod tests {
         // No keygroups yet: a key plays nothing.
         assert!(player.key_at(60, 100, 0));
         assert!(!loud(&mut player));
-        let pads: Vec<usize> = (0..16).filter(|&p| player.sounds(0)[p]).collect();
+        let pads: Vec<usize> = (0..16).filter(|&p| player.has_sound(0, p)).collect();
         let roots: Vec<(usize, u8)> = pads.iter().map(|&p| (p, 48 + p as u8)).collect();
         projects[0].map_to_keys(&roots).unwrap();
         let mut swap = ViewSwap {
@@ -1484,7 +1528,7 @@ mod tests {
         let mut ks = kits();
         let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
         assert!(p.kits() >= 2);
-        let pad_of = |p: &Player, k: usize| (0..16).find(|&i| p.sounds(k)[i]).unwrap();
+        let pad_of = |p: &Player, k: usize| (0..16).find(|&i| p.has_sound(k, i)).unwrap();
         let (a, b) = (pad_of(&p, 0), pad_of(&p, 1));
         assert!(p.hit_kit_at(0, a, 100, 0));
         assert!(p.hit_kit_at(1, b, 100, 0));
