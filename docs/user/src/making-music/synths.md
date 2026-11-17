@@ -183,6 +183,21 @@ The **Chromatic / In key** switch in the pads heading on the Synth tab flips the
 > [!TIP]
 > Drums is a kit rather than a keyboard: pad 1 plays the first drum, pad 2 the second and so on, whatever the scale, layout or octave.
 
+## Steps on the synth
+
+Press **STEP SEQ** with the synth on the pads and the 16 pads become the steps of the synth's whole line: each step can hold a note or a chord, and every note on it comes and goes together.
+
+1. **Pick what to play.** Hold **STEP SEQ** and play a pad: you hear it, and new steps play that note. Hold two or more pads together (up to eight) and new steps play the chord. On the Chord pads layout one pad is already a chord. Until you pick, new steps play the pad you played last. The chip at the top of the screen names it, such as **Pads: steps · Poly · C3 + G3**.
+2. **Hit an empty step** to put the note or chord there, as loud as you hit it. While the transport is stopped you hear it.
+3. **Hit a lit step and let go** to take the whole step off.
+4. **Pick another note** at any time the same way, holding **STEP SEQ**: the steps already there keep theirs.
+
+On the Beats view the line is the lane on the pads, named **Line**. Tap an empty step there to put the note or chord on it; tap a lit one to pick it, and tap it again to take it off.
+
+Everything else works as on a drum's steps (see [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads)): hold a step and turn the Q-Links to change its velocity, length, nudge and chance for every note on it; press **Q-LINK** for its condition and ratchet, and again for **Sound** to lock the synth's knobs on that step; hold a step and hit a later one for a long note; **COPY** and **ERASE** copy and clear whole steps; **UNDO** takes any of it back.
+
+To change one note of a chord on a step, take the step off and put the new chord there. A knob for a step's note comes next.
+
 ## Tuning
 
 Out of the box every synth plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the synth on the pads in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)).
