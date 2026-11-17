@@ -8,11 +8,11 @@ checked: 2026-11-16 ececc7e
 
 An effect is good when it meets its measured targets, wins or ties in blind, level-matched listening, has the controls musicians know, and fits the MPC's budget. This page holds the first of those: each target as a number with its reason, how fxlab measures it, and the ratchet on CI that stops any number getting worse.
 
-**Second round** (measuring built 2026-11-17): drive (Drive and Character), crush, compressor, filters (Multi and DJ) and lo-fi, by the same method, in [Round 2](#round-2-drive-crush-compressor-filters-and-lo-fi) below. Research and plan: jferments/mpfree-claude `fx/quality/` (plan-2.md, research-drive.md, research-crush.md, research-compressor.md, research-filter.md, research-lofi.md, baseline-2026-11-17.md).
+**Second round** (measuring built 2026-11-17): drive (Drive and Character), crush, compressor, filters (Multi and DJ) and lo-fi, by the same method, in [Round 2](#round-2-drive-crush-compressor-filters-and-lo-fi) below; the amp joined it on 17 Nov (class `amp`, ids A; plan-2 section 12, research-amp.md). Research and plan: jferments/mpfree-claude `fx/quality/` (plan-2.md, research-drive.md, research-crush.md, research-compressor.md, research-filter.md, research-lofi.md, baseline-2026-11-17.md).
 
 ## The report
 
-`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter` or `lofi`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq` and `eq[preset]`; an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All eight classes take about 35 s in a release build (the round-2 classes 15 s, most of it the Drive's 4x quality).
+`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi` or `amp`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq` and `eq[preset]`; an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All nine classes take about 38 s in a release build (the round-2 classes 15 s, most of it the Drive's 4x quality).
 
 New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known answers:
 
@@ -128,7 +128,7 @@ cargo test --release --locked -p mpfree-fxlab --test quality      # the ratchet
 
 ## Round 2: drive, crush, compressor, filters and lo-fi
 
-The targets of plan-2 (ids G, B, K, F and L), measured by `quality/round2.rs`. The measures it adds, beside the first round's:
+The targets of plan-2 (ids G, B, K, F and L, and A for the amp), measured by `quality/round2.rs`. The measures it adds, beside the first round's:
 
 | Measure | What it reads |
 |---|---|
@@ -139,6 +139,7 @@ The targets of plan-2 (ids G, B, K, F and L), measured by `quality/round2.rs`. T
 | Heard against drawn | The gain of a sine at chosen frequencies (a lock-in over whole periods) against the engine's own `response_db` or `cuts_db` |
 | IMD | SMPTE (60 Hz at -8 dBFS with 7 kHz at -20 dBFS: the sidebands at ±60, ±120, ±180 Hz against 7 kHz) and the CCIF difference tone (19 and 20 kHz at -12 dBFS each) |
 | Null | The largest difference between the output and the input as the node saw it (32-bit), late by the reported latency, dBFS; -140 when they are the same |
+| Power chord mud | For the amp: E2, B2 and E3 together (a metal rhythm part's power chord) through it, Blackman-Harris windowed; the share of the output from 20 to 70 Hz against all of it from 20 Hz up, dB. Clipping a chord makes its 41 Hz difference tone, the mud a tight boost takes away |
 
 ### Drive (G)
 
@@ -149,14 +150,14 @@ Subjects: the Drive family's ten modes (`drive/soft` to `drive/soften`) at their
 | G1 | `alias_5k_0dbfs_eco`, `_hq`; Character's `alias_5k_0dbfs` | Smooth curves (Soft, Tube, Console, Tape): ≤ -65 dB in Eco and Character, ≤ -90 dB in HQ; 2.5 kHz, 8 kHz and -12 dBFS held | Inharmonic fizz; 2x oversampling with first-order ADAA reaches -69.5 dB on tanh |
 | G2 | the same for Hard, Fuzz, Foldback; Rectify in dBFS | ≤ -50 dB in Eco, ≤ -60 dB in HQ | A hard edge has harmonics to every order; 4x with ADAA reaches -65 dB |
 | G3 | presets' `alias_5k_0dbfs` | Held | Presets drive hard on purpose |
-| G4 | `lu_pink18_drive0` to `36`, `lu_pink18_amount0` to `100` | Within ±1 LU of the dry on pink at -18 dBFS RMS (Rectify ±3) | More drive is more grit, not louder |
+| G4 | `lu_pink18_drive0` to `36`, `lu_pink18_amount0` to `100` | Within ±1 LU of the dry on pink at -18 dBFS RMS (Rectify and Foldback ±3) | More drive is more grit, not louder |
 | G5 | `lu_pink6_*`, `lu_hits_*` | Reported | Rounding loud peaks loses loudness by design |
 | G6 | `bias_change_db` | The output changes by at least -20 dB of itself between Bias 0 and 100 (1 kHz, -12 dBFS) in every mode but Soft, where the knob is dimmed (Jay, 17 Nov) | A control that does nothing is a bug |
 | G7 | `drive/switch/click_*` | ≤ 3 dB, Mode and Quality changes | No clicks when trying modes |
 | G8 | `flat_m40dbfs*`, `flat_mix50` | Within ±0.5 dB from 20 Hz to 20 kHz at -40 dBFS and at Mix 50 % (Tape's colour and Rectify reported) | Clean when quiet |
 | G9 | `subsonic_hits_bias100`, `dc_hits_bias100_dbfs` | Under 15 Hz ≤ -20 dB of the total on hits (Tube and Fuzz, Bias 100, Drive 24); DC ≤ -100 dBFS | Inaudible energy eats headroom |
 | G10 | `h2_minus_h3`, `high_order_share`, `thd_1k_*dbfs`, `imd_smpte`, `imd_ccif` | Reported | A mode's profile becomes a target once it is designed to one |
-| G11 | `zipper_db` | ≤ 3 dB, every mode and preset | Smooth automation |
+| G11 | `zipper_db`; Rectify's `zipper_bias_db` | ≤ 3 dB, every mode and preset; Rectify's Bias sweep reported (moving its fold point is a change of sound) | Smooth automation |
 
 ### Crush (B)
 
@@ -166,7 +167,8 @@ Subjects: the Drive family's ten modes (`drive/soft` to `drive/soften`) at their
 | B2 | `dither_noise_rise_bits8`, `thd_m40dbfs_bits8_dither` | TPDF raises the noise 4 to 6 dB; a -40 dBFS sine at 8 bits ≤ -30 dB THD with dither | Dither turns distortion into steady noise |
 | B3 | `off_grid_<R>hz`, `_at48k`; presets' `off_grid_at_16bits` | ≤ -45 dB at 8, 10, 11.025, 22.05, 26.04 and 32 kHz, in this session and at 48 kHz | Stray tones from the session's frame grid and folded images are in no sampler being imitated; a prototype with exact sampling times and band-limited steps reaches about -50 dB |
 | B4 | `image_error_quarter_rate` | Within 1 dB of the zero-order hold's sin(x)/x | The images are the effect |
-| B6 | `m50dbfs_bits8_out_dbfs` | Reported (mid-tread gates under half a step; a mid-riser choice gets a target) | Tails cut off sound broken |
+| B6 | `m50dbfs_bits8_out_dbfs`, `m50dbfs_bits8_buzz_out_dbfs` | Cut reported (mid-tread gates under half a step); with Tails on Buzz (a mid-riser) a -50 dBFS sine at 8 bits comes out at -60 dBFS or more | Tails cut off sound broken, so there is a choice that keeps them |
+| B7 | `filters_drawn_vs_heard_db` | The Filters card's curve within 0.5 dB of a sine through them (Both against Off, 11,025 Hz, 200 to 4800 Hz) | What is drawn is what plays |
 | B8 | `step_spike_db` | A Bits or Rate change's step ≤ 3 dB over the crushed signal's own (first differences) | Stepping is the sound, a click isn't; fxlab's usual zipper is reported, not judged |
 | B9 | `lu_pink18` | Within ±1 LU, defaults and presets | Fair A/B |
 | B10 | `silence_out_dbfs` | ≤ -120 dBFS | Clean rests |
@@ -215,6 +217,24 @@ Subjects: the Drive family's ten modes (`drive/soft` to `drive/soften`) at their
 | L10 | `null_amount0_dbfs` | Bit for bit | Inserting it changes nothing |
 | L11 | `zipper_db` | ≤ 3 dB | Smooth automation |
 
+### Amp (A)
+
+The Amp at each model (`amp/clean`, `amp/crunch`, `amp/lead`, `amp/bass`) and its presets (`amp/amp[Modern lead]`). The targets reach rich, high-gain distortion as one use among many; presets and defaults stay broad across styles.
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| A1 | `alias_1k_m6dbfs_gain10`, `alias_2k_m6dbfs_gain10`, `alias_5k_m12dbfs_gain10` | ≤ -60, -60 and -50 dB at Gain 10, every model (Gain 5 and the presets' 5 kHz kept by the ratchet) | Inharmonic fizz on high notes; about -60 dB is where it stops mattering |
+| A2 | `cleanup_db_gain5` | A 1 kHz sine's THD falls at least 10 dB from -6 to -30 dBFS at Gain 5 (Clean, Crunch, Bass; Lead reported) | Playing softer cleans up |
+| A3 | `lu_pink18_gain*` | Pink at -18 dBFS within ±2 LU of the dry from Gain 2.5 to 10 (Gain 0 reported) | Gain changes grit, not loudness |
+| A4 | `lu_pink18` (presets) | Within ±1 LU | Fair A/B |
+| A5 | `power_chord_sub70_db_gain10_nocab`, `..._tight` | A power chord's energy from 20 to 70 Hz against all of it, at Gain 10 with the cab off: reported plain; with the Tight boost ≤ -25 dB on Lead (the other models' kept) | Palm mutes and chords stay clear, when asked |
+| A6 | `bass_jump_db`, `mid_jump_db`, `treble_jump_db` | A knob thrown from 0 to 10 under a 220 Hz sine spikes ≤ 3 dB over the steady sound (switch click) | Smooth knobs |
+| A7 | `gain_zipper_db` | fxlab's zipper on Gain ≤ 3 dB | Smooth knob |
+| A8 | `model_change_db`, `cab_change_db`, `boost_change_db` | ≤ 3 dB (switch click) | No clicks |
+| A9 | `silence_out_dbfs_gain10`; on Lead with Gate 8 (-45 dBFS): `gate_hiss_out_dbfs_gain10`, `gate_open_ms`, `gate_closes_on_decay` | Silence ≤ -120 dBFS. A note then hiss at -60 dBFS RMS: the last half second of the rest ≤ -90 dBFS at Gain 10. A note after silence is within 1 dB of the ungated amp's in ≤ 2 ms, and a note decaying 40 dB a second shuts the gate once (gated over ungated, 1 ms windows, under a half after over 0.9); both at Gain 0, where the amp is nearly straight, so a half-open gate can't hide in the clipping | Clean rests, notes not chopped |
+
+The fuzz's rows (A10, A11) come with the fuzz (decision 10.6), and A12 is the instruction gate's two Amp cases.
+
 ### Baseline (2026-11-17, before any fix)
 
 76 of 109 drive targets, 19 of 32 crush, 16 of 24 compressor, 25 of 30 filter and 17 of 26 lo-fi targets met. The gaps:
@@ -224,3 +244,42 @@ Subjects: the Drive family's ten modes (`drive/soft` to `drive/soften`) at their
 - **Compressor:** steady signals get up to 0.95 dB less reduction than drawn and the attack takes 1.6 to 1.9 times its label (peak detection; RMS detection meets the curve within 0.02 dB); 50 Hz distorts at -44 dB and 100 Hz at -50 at the defaults; Ratio 1 is not quite bit for bit (-132 dBFS).
 - **Filters:** a mix-level source through a low-pass swept at full Resonance reaches +2.8 dBFS (12 dB) and +1.0 (24 dB); a type change clicks (64 dB) and a slope change (29 dB); the drive aliases at -20 dB.
 - **Lo-fi:** the wow tops out at 0.39 % and the flutter at 0.13 %; one line holds 81 % of the wow; saturation aliases at -28 dB; the defaults and tape and vinyl presets are 1.2 to 1.6 LU quieter than the dry; at Amount 0 the cuts stay at 20 Hz and 20 kHz (-3 dB there, flat within 0.3 dB from 40 Hz to 16 kHz), so the output isn't the input.
+
+### Drive PR
+
+What changed (design: [fx.md](fx.md), the Drive and Character entries): Drive's curves are averaged by first-order antiderivative antialiasing (ADAA) inside its oversampling (Eco 2x, HQ 4x), and Character runs at twice the rate with ADAA on its curves; auto gain holds Gaussian noise at -18 dBFS RMS at its level; a change of Mode or Quality crossfades; Bias acts in Hard, Foldback and Rectify (decision 10.1) and is dimmed in Soft; the DC blocker is a fourth-order 17 Hz high-pass on the output, dry and wet together. After it: 106 of 109 drive targets met (76 before); the other classes are unchanged.
+
+- **Met now:** a 5 kHz sine at 0 dBFS aliases at -68.6 dB (Soft), -55.1 (Hard), -65.2 (Tube) and -59.6 (Foldback) in Eco, and -103.7, -68.9, -104.0 and -79.3 in HQ (G1, G2; Eco was -52.6, -38.1, -53.8 and -53.4, Hard's HQ -50.1); Fuzz's HQ -74.7 (was -54.7) and Rectify's -75.3 dBFS (was -48.0); Character's Console -98.9 and Tape -94.7 (were -41.2 and -33.6). Pink at -18 dBFS stays within 1 LU of the dry from Drive 0 to 36 in Soft, Hard, Tube and Fuzz (G4; up to +3.5 before), and within 3 in Foldback and Rectify (+5.7 and +6.6 before). Bias changes the sound in every mode but Soft (G6). A Mode change clicks at most 0.9 dB over the sound and a Quality change not at all (G7; 31 and 68 dB before). Quiet signals are flat within 0.2 dB (G8; 0.35). The energy under 15 Hz on hits at Bias 100 is -23.5 dB (Tube) and -22.6 dB (Fuzz) of the hit (G9; -13.8 and -12.8).
+- **Still unmet:** Fuzz's and Rectify's Eco alias at 5 kHz, -49.99 dB and -49.3 dBFS against -50 (G2; were -39.2 and -32.8): at 2x a hard edge's harmonics fold before first-order ADAA can take them out, and more half-band sections change nothing; HQ meets both. Tape at Amount 100 plays pink 1.77 LU under the dry (G4; 1.86 before), its own head bump and top-end loss; left as designed.
+- **Measured differently:** fxlab's response measure now starts each window, the device's and the wire's, the same time (up to 4096 frames) before its own peak. A 512-frame start cut the sweep's band-edge ringing at a different point for a device with latency, and read a plain delay as a few tenths of a dB of ripple under 200 Hz. It moved the EQ's drawn-against-heard row from 0.027 to 0.004 dB and no other row of the first round. Foldback's G4 tolerance is ±3 LU, as Rectify's: its folds spread power past 20 kHz at high drive, so no fixed gain holds its loudness the way it holds a clipper's (the exact Gaussian gain reads the same). Rectify's Bias sweep is reported apart, at 6.6 dB with no target: moving the fold point is a change of sound, and a sweep 20 times slower reads the same.
+- **Blessed worse, and why:** Soft's and Tube's 2.5 kHz Eco aliases (-67.3 and -68.1 dB, were -69.3 and -70.2), Foldback's (-52.9, was -54.6) and Foldback's 8 kHz HQ alias (-62.3, was -64.8). The worst line in each is still the harmonic just above 22.05 kHz that the down-sampler's transition band lets through (the 9th of 2.5 kHz, at 22.5 kHz; the 3rd of 8 kHz, at 24 kHz). Under ADAA a curve's harmonics come out as the continuous curve's average over a step, which droops less near the top than the two-point mean the flat filter undoes, so that one line is about 2 dB louder; every other alias line fell (Soft's next, the 11th harmonic, from -91 to -100 dB). Hard's -12 dBFS aliases, -67.6 dB in Eco and -91.7 in HQ (were -140, no clipping at all): Bias now acts in Hard, and at the default Bias 20 a -12 dBFS sine at Drive 12 clips on one side; at Bias 0 it reads -110. The Drive sweep's zipper on the Foldback grit and Fuzz box presets, 2.8 and 1.1 dB (were 2.3 and 0.4), inside the 3 dB target: the sweep's sharpest corner fell (0.237 to 0.189, and 0.050 to 0.041), but the steady sound's corners, the reference, fell further, because they no longer carry aliases. Inside their tolerance, and within the 3 dB target too: Hard's zipper 0.34 dB (was 0.05), Hard clip's 0.43 (0), Tube glow's 0.57 (0.16), Fuzz's 2.65 (2.32).
+- **Cost** (the instruction gate's cases, rustc 1.97.0, a 128-frame block at 44.1 kHz): Drive's Eco 154.6k to 202.6k instructions (1.31 times), HQ 272.3k to 430.3k (1.58 times), the drive, filter, delay and compressor chain 255.1k to 327.1k. Character costs 4.2 to 5.2 times its old base-rate cost: Console 20.1k to 104.2k, Soften 23.2k to 97.1k, Iron 27.0k to 120.1k, Tape 32.9k to 149.8k. Three trims kept the sound to the bit or within 2e-15: unrolled half-bands (`oversample::IirPair`), their states flushed every 32 frames (16 in Character) instead of every section and sample, and MPFree's own `exp` and `ln` for the antiderivatives (the C library's were a quarter of Drive's cost). Three half-band sections each way in Character would save another 15k but let Tape alias at -61 dB, past its target. Iron and Soften aliased little at the base rate (-140 and -72 dB at 5 kHz), so running those two modes there would bring them near their old cost, at the price of more code in the mode crossfade: for the device round to decide.
+
+### Crush PR
+
+What changed (design: [fx.md](fx.md), the Crush entry; decision 10.2): each hold falls at its exact time, reads the input then with a cubic, and steps there by a minimum-phase band-limited step (no latency); new **Tails** (Cut, Buzz), **Filters** (Off, Before, After, Both: fourth-order Butterworth low-passes at 0.45 times the rate, on in the vintage presets), **Jitter** and **Output**; three presets (12-bit 40k, 8-bit sampler, Wobbly clock). After it: 40 of 40 crush targets met (19 of 32 before; B6's Buzz row, B7 and the new presets' rows are new); the other classes are unchanged.
+
+- **Met now:** what lies off the hold's grid, against the tone, at 8, 10, 11.025, 22.05, 26.04 and 32 kHz: -74.3, -54.6, -91.4, -92.3, -64.0 and -68.3 dB in a 44.1 kHz session, and -90.0, -72.8, -60.7, -64.7, -69.6 and -67.6 at 48 kHz (B3; -11 to -16 dB before at the rates that don't divide the session's). The presets at 16 bits: -59.0 (Wobbly clock, measured with Jitter at 0) to -93.2 dB. The images at a quarter of the rate follow sin(x)/x within 0.0015 dB (B4). Buzz keeps a -50 dBFS sine at 8 bits at -48.2 dBFS (B6). The Filters' drawing is within 0.0012 dB of what plays (B7). Every preset and the default within 0.74 LU of the dry (B9).
+- **Measured differently:** the presets' off-grid row runs with Jitter at 0: jitter moves the holds off any grid on purpose (Wobbly clock reads -6.8 dB with it).
+- **Blessed worse, and why:** Soft grit's loudness, -0.38 LU (was -0.05), inside ±1 LU: its 32 kHz rate doesn't divide a 44.1 kHz session, and the images that folded back under 22 kHz and the stray tones of the uneven holds no longer add to its level.
+- **Cost** (the instruction gate's case, rustc 1.97.0, a 128-frame block at 44.1 kHz, the default 8 bits at 11,025 Hz): 10.3k to 36.2k instructions (3.5 times), about 1 % of a period on the MPC. Each hold that changes the value adds 32 corrections for each side (one at the same value adds none): the step is read from a table of 17 phases (one per sixteenth of a frame, interpolated between two rows) in two straight runs round the ring, which halved a first version's 71.3k. A rate at or above the session's holds every frame and adds none. Perform FX's own crush is a separate engine and is unchanged.
+
+### Amp baseline (2026-11-17, before any fix)
+
+38 of 64 amp targets met (rows added by the amp's measuring PR; nothing in the amp changed). The gaps:
+
+- **Aliasing at high gain:** Lead at Gain 10 aliases at -38, -38 and -32 dB (1 and 2 kHz at -6 dBFS, 5 kHz at -12) and Crunch's 2 and 5 kHz at -48 and -36; Clean and Bass meet A1. The Modern lead preset's 5 kHz alias is -35 dB.
+- **Level:** Lead plays pink 12.5 LU over the dry at Gain 2.5 and 8.5 at Gain 10; Crunch reaches +2.05 at Gain 10. The presets are -1.5 to +9 LU (Classic crunch +2.2, Modern lead +9.0, Lo-fi radio +4.1, Bass grit -1.5; Sparkle clean +0.5 meets).
+- **Knobs and switches:** the tone stack's knobs jump: Treble 0 to 10 spikes 38.8 dB on Clean, 22.0 on Bass and 6.1 on Crunch; Mid 28.5 (Clean) and 13.5 (Bass); Bass 16.3 (Clean). Gain's zipper is 5.1 to 8.2 dB on Crunch, Lead and Bass (Clean 0.9). Taking the cab out clicks 38.0 dB on Clean, 21.8 on Bass and 12.8 on Crunch (the research's first-difference probe missed it); Lead's distortion hides the same steps. Model changes are clean.
+- **Reported:** Lead cleans up 1.9 dB from -6 to -30 dBFS (the others 10.3 to 26.2 dB); the power chord's mud at Gain 10 with the cab off is -13.6 dB on Lead and -22 to -26 on the others.
+- **Cost** (the instruction gate's new cases): Amp (Crunch) 206.6k instructions a block, Amp (Lead, Gain 10) 232.8k.
+
+
+### Amp PR
+
+What changed (design: [fx.md](fx.md), the Amp entry): the first clipping stage's curve is averaged by first-order ADAA inside the 4x path, and the tone stack and the power stage moved inside it; the output trims are fitted on pink noise at -18 dBFS at every step of Gain; Gain, the tone knobs and Level glide (the stack's values every 4 frames on a frame grid); Model, Boost and Cab changes crossfade over 10 ms; new **Boost** (Off, Tight, Treble), **Gate** and **Release**, **Sag** and **Depth** (ids 8 to 12; 0 to 7 unchanged); four presets (Edge of breakup, Tight rhythm, Treble lead, Synth grit) and the old ones' Level set so each plays as loud as the dry. After it: all 76 amp targets met (38 of 64 before; the Tight boost's A5 rows, the Boost change's A8 rows, the gate's three A9 rows and the new presets' rows are new); the other classes are unchanged.
+
+- **Met now:** at Gain 10 Lead aliases at -64.1, -64.3 and -57.6 dB (1 and 2 kHz at -6 dBFS, 5 kHz at -12; were -38, -38 and -32) and Crunch at -83.0, -73.8 and -61.5 (were -68, -48 and -36) (A1). Pink at -18 dBFS within 0.4 LU of the dry from Gain 0 to 10 on every model (A3; Lead was up to +12.5; the trims meet it exactly at whole steps of Gain, and Lead at 2.5 reads 0.38 between them) and every preset within 0.1 LU (A4; Modern lead was +9.0). The Tight boost takes a power chord's mud at Lead 10 from -13.6 to -27.9 dB (A5). A tone knob thrown from 0 to 10 spikes at most 0.05 dB over the sound (A6; Clean's Treble was 38.8), Gain's zipper is at most 0.08 dB (A7; up to 8.2), a Cab change reads 0 (A8; Clean's was 38.0) and a Boost change at most 0.8. With Gate 8 the rest after a note is digital silence even at Lead 10 with -60 dBFS hiss in, a note is through within 1 ms and a decaying note shuts the gate once (A9).
+- **Reported:** on the other models the Tight boost adds mud instead (Clean -25.6 to -17.7 dB, Crunch -22.2 to -18.7, Bass -23.4 to -18.6): its own clipping makes the chord's difference tones, which only Lead's 300 Hz tightening high-pass takes out, as a real overdrive into a clean amp does. Cutting the boost's lows harder (two poles at 150 Hz) made Lead worse (-15.4 dB) and its switch click.
+- **Blessed worse, and why:** a Model change reads 0.16 to 0.45 dB (was 0; target 3): the old model and the new now play together for 10 ms instead of the sound jumping, and the jump read 0 because the level after it was higher. Bass's clean-up, 16.45 dB (was 16.48), inside its tolerance.
+- **Cost** (the instruction gate's cases, rustc 1.97.0, a 128-frame block at 44.1 kHz): Amp (Crunch) 206.6k to 319.6k instructions (1.55 times), Amp (Lead, Gain 10) 232.8k to 341.6k (1.47 times). ADAA on every stage and the power stage cost 424k and 506k and changed the worst alias by under 0.5 dB: the first stage takes the most gain and squares the wave off, while the later ones clip what its Miller pole has already smoothed, and the power stage clips gently at 4x. The gate, the boost and Depth cost nothing while off; Sag's follower runs once a frame.

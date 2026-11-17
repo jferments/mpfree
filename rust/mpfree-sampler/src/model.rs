@@ -137,6 +137,108 @@ impl Source {
     pub fn make_octaves(&self) {
         crate::bandlimit::prepare_now(&self.octaves, &self.data, self.channels);
     }
+
+    /// The same sound at `rate` (itself when it is at that rate already),
+    /// converted with `mpfree-stretch`'s windowed sinc, with the
+    /// [`Rescale`] that moves anything placed on it to the same moments
+    /// of the new one. Heavy for a long sound: call it off the audio and
+    /// screen threads.
+    pub fn at_rate(&self, rate: u32) -> Result<(Source, Rescale), ModelError> {
+        let data = if rate == self.rate {
+            self.data.to_vec()
+        } else {
+            mpfree_stretch::convert_rate(&self.data, usize::from(self.channels), self.rate, rate)
+        };
+        let to = Source::new(&self.name, rate, self.channels, data)?;
+        let r = Rescale {
+            from: self.id,
+            to: to.id,
+            ratio: f64::from(rate) / f64::from(self.rate),
+            frames: to.frames(),
+            rate,
+        };
+        Ok((to, r))
+    }
+}
+
+/// Puts every sound in `sources` that isn't at `rate` at that rate
+/// ([`Source::at_rate`]), and moves what `pads` and `chops` place on them
+/// along. A sound that can't be converted (too short to hold a frame at
+/// the new rate) stays as it was. Returns what moved, one [`Rescale`] a
+/// sound.
+pub fn convert_to_rate(
+    sources: &mut [Source],
+    pads: &mut [Pad],
+    chops: &mut [ChopSet],
+    rate: u32,
+) -> Vec<Rescale> {
+    convert_sounds(sources, pads, chops, &mut at_rate(rate))
+}
+
+/// What [`convert_sounds`] asks of each sound: its converted copy and
+/// where frames on it land, or None to keep it as it is.
+pub type Convert<'a> = dyn FnMut(&Source) -> Option<(Source, Rescale)> + 'a;
+
+/// Each sound not at `rate` put at it, as [`convert_to_rate`] does.
+pub fn at_rate(rate: u32) -> impl FnMut(&Source) -> Option<(Source, Rescale)> {
+    move |s: &Source| {
+        if s.rate() == rate {
+            None
+        } else {
+            s.at_rate(rate).ok()
+        }
+    }
+}
+
+/// [`convert_to_rate`] with the conversion the caller's (`convert`): one
+/// that remembers what it made, so sounds shared between kits stay
+/// shared, or that keeps a sound as it is when memory is short.
+pub fn convert_sounds(
+    sources: &mut [Source],
+    pads: &mut [Pad],
+    chops: &mut [ChopSet],
+    convert: &mut Convert<'_>,
+) -> Vec<Rescale> {
+    let mut moved = Vec::new();
+    for s in sources.iter_mut() {
+        let Some((to, r)) = convert(s) else {
+            continue;
+        };
+        for p in pads.iter_mut() {
+            p.rescale(&r);
+        }
+        for c in chops.iter_mut() {
+            c.rescale(&r);
+        }
+        *s = to;
+        moved.push(r);
+    }
+    moved
+}
+
+/// Where frames on a sound land once it is converted to another rate
+/// ([`Source::at_rate`]): regions, loops, fades, warp pins and chop
+/// markers on the sound `from` move to the same moments of `to`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rescale {
+    pub from: SourceId,
+    pub to: SourceId,
+    /// The new rate over the old.
+    pub ratio: f64,
+    /// The converted sound's frames and rate.
+    pub frames: u64,
+    pub rate: u32,
+}
+
+impl Rescale {
+    /// A frame of the old sound on the new one.
+    pub fn frame(&self, f: u64) -> u64 {
+        ((f as f64 * self.ratio).round() as u64).min(self.frames)
+    }
+    /// A length in frames on the new sound.
+    pub fn length(&self, n: u32) -> u32 {
+        (f64::from(n) * self.ratio).round().min(f64::from(u32::MAX)) as u32
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -630,6 +732,46 @@ pub struct Region {
 }
 
 impl Region {
+    /// Moves the region onto its sound converted to another rate (`r`),
+    /// keeping every point at the same moment: start and end, the loop
+    /// and its crossfade, the fades and the warp pins. Rounding never
+    /// leaves it unplayable: points are kept inside the region and the
+    /// crossfade and fades inside what holds them; a pin that no longer
+    /// fits is dropped. A region on another sound is left alone.
+    pub fn rescale(&mut self, r: &Rescale) {
+        if self.source != r.from || r.frames == 0 {
+            return;
+        }
+        self.source = r.to;
+        self.start = r.frame(self.start).min(r.frames - 1);
+        self.end = r.frame(self.end).clamp(self.start + 1, r.frames);
+        if let Some(l) = &mut self.sustain_loop {
+            l.start = r.frame(l.start).clamp(self.start, self.end - 1);
+            l.end = r.frame(l.end).clamp(l.start + 1, self.end);
+            let room = ((l.end - l.start) / 2).min(l.start - self.start);
+            l.crossfade = u64::from(r.length(l.crossfade)).min(room) as u32;
+        }
+        let len = self.frames();
+        self.fade_in.frames = r.length(self.fade_in.frames);
+        self.fade_out.frames = r.length(self.fade_out.frames);
+        let over =
+            (u64::from(self.fade_in.frames) + u64::from(self.fade_out.frames)).saturating_sub(len);
+        let cut = over.min(u64::from(self.fade_out.frames));
+        self.fade_out.frames -= cut as u32;
+        self.fade_in.frames -= (over - cut) as u32;
+        if let Some(w) = &mut self.warp {
+            let (a, b) = (self.start, self.end);
+            for p in &mut w.pins {
+                p.frame = r.frame(p.frame);
+            }
+            w.pins.retain(|p| p.frame > a && p.frame < b);
+            w.pins.dedup_by_key(|p| p.frame);
+            if !w.pins_ok(a, b, r.rate) {
+                w.pins.clear();
+            }
+        }
+    }
+
     /// All of a source, one-shot, untouched.
     pub fn whole(source: &Source) -> Region {
         Region {
@@ -853,6 +995,23 @@ impl ChopSet {
 
     pub fn markers(&self) -> &[u64] {
         &self.markers
+    }
+
+    /// Moves the slices onto their sound converted to another rate (`r`):
+    /// each marker at the same moment. A chop of another sound is left
+    /// alone.
+    pub fn rescale(&mut self, r: &Rescale) {
+        if self.source != r.from {
+            return;
+        }
+        self.source = r.to;
+        self.frames = r.frames;
+        for m in &mut self.markers {
+            *m = r.frame(*m);
+        }
+        let n = self.frames;
+        self.markers.retain(|&m| m > 0 && m < n);
+        self.markers.dedup();
     }
     pub fn slices(&self) -> usize {
         self.markers.len() + 1
@@ -1196,6 +1355,13 @@ pub const SLICE_KEYS_FROM: u8 = 36;
 pub const KEYGROUP_POLYPHONY: u8 = 16;
 
 impl Pad {
+    /// [`Region::rescale`] on every layer.
+    pub fn rescale(&mut self, r: &Rescale) {
+        for l in &mut self.layers {
+            l.region.rescale(r);
+        }
+    }
+
     pub fn new(name: &str, layer: Layer) -> Pad {
         Pad {
             name: name.to_string(),
@@ -2150,6 +2316,47 @@ impl Project {
         self.undo.clear();
         self.redo.clear();
         self.removed.clear();
+    }
+
+    /// Puts every sound at another rate than `rate` at it
+    /// ([`convert_to_rate`]), with the pads, the stored scenes and the
+    /// chop sets moved along, for a project or kit just read from a file.
+    /// When anything moved, the undo history is forgotten
+    /// ([`Project::clear_history`]): its steps hold frames on the sounds as
+    /// they were. Heavy for long sounds: call it off the audio and screen
+    /// threads.
+    pub fn convert_to_rate(&mut self, rate: u32) -> Vec<Rescale> {
+        self.convert_sounds(&mut at_rate(rate))
+    }
+
+    /// [`Project::convert_to_rate`] with the conversion the caller's
+    /// ([`convert_sounds`]).
+    pub fn convert_sounds(&mut self, convert: &mut Convert<'_>) -> Vec<Rescale> {
+        let mut pads: Vec<Pad> = Vec::new();
+        let mut at = Vec::new();
+        let scenes = self.scenes.iter_mut().flatten();
+        let slots = std::iter::once(&mut self.pads).chain(scenes.map(|s| &mut s.pads));
+        for (i, list) in slots.enumerate() {
+            for (j, p) in list.iter_mut().enumerate() {
+                if let Some(p) = p.take() {
+                    at.push((i, j));
+                    pads.push(p);
+                }
+            }
+        }
+        let moved = convert_sounds(&mut self.sources, &mut pads, &mut self.chop_sets, convert);
+        let scenes = self.scenes.iter_mut().flatten();
+        let mut slots: Vec<&mut Vec<Option<Pad>>> = std::iter::once(&mut self.pads)
+            .chain(scenes.map(|s| &mut s.pads))
+            .collect();
+        for ((i, j), p) in at.into_iter().zip(pads) {
+            slots[i][j] = Some(p);
+        }
+        if !moved.is_empty() {
+            self.clear_history();
+            self.revision += 1;
+        }
+        moved
     }
 
     pub fn can_undo(&self) -> bool {

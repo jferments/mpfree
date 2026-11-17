@@ -15,7 +15,7 @@ Every analysis works on a device under test (`dut::Dut`): any MPFree node throug
 | Analysis | Module | Method | Numbers |
 |---|---|---|---|
 | Distortion and aliasing | `harmonics` | One sine on an odd FFT bin of a 65,536-point transform (coherent: no window, no leakage). Bins are sorted into fundamental, harmonics, aliases (harmonics above Nyquist folded back) and the rest. An alias counts only as a line 10 dB over its neighbours, so a chorus's smear is not called aliasing. | THD, harmonics 2 to 9, worst and total alias (relative and in dBFS), everything else |
-| Frequency response | `response` | Exponential sweep (Farina) deconvolved, divided by a wire's spectrum, read at third-octave centres. | Gain and phase per band, delay |
+| Frequency response | `response` | Exponential sweep (Farina) deconvolved, divided by a wire's spectrum, read at third-octave centres. The device's window and the wire's each start the same time (up to 4096 frames) before their own peak, so the sweep's band edges, which ring for tens of milliseconds, cancel even for a device with latency (a 512-frame start, cut at a different point in that ringing, read a plain delay as a few tenths of a dB of ripple under 200 Hz). | Gain and phase per band, delay |
 | Loudness | `loudness` | ITU-R BS.1770-4: K-weighting, 400 ms blocks, gates at -70 LUFS and -10 LU; true peak by 4x oversampling. | LUFS change on pink noise, true peak |
 | Nulls | `null` | Cross-correlation, then the fractional lag (golden section over half a frame) and least-squares gain that leave the smallest residual. | Residual in dB |
 | Reverb and delay tails | `room` | Schroeder backward integral per octave; echo density (Abel and Huang); "metallic" excess (Welch spectrum of the tail against its third-octave average); IACC. | EDT, T20, T30 per octave, time to diffuse, tail excess, IACC |
@@ -31,7 +31,7 @@ Every analysis works on a device under test (`dut::Dut`): any MPFree node throug
 
 A **report card** (`card`) is one effect at one setting, measured by every analysis that fits its category, as named numbers (`resp_1k_db`, `thd_1k_-18_db`, `alias_5k_0_db`, `t30_1k_s`...). Effects that move frequencies (ring mod, frequency shifter, pitch, harmonizer, granulator) get no harmonics or response, which would mean nothing for them.
 
-The **quality report** (`quality`, `fxlab quality`) gathers every target of the FX quality plan (delay, EQ and reverb; drive, crush, compressor, filters and lo-fi), and **the ratchet** (`tests/quality.rs` against `quality/ratchet.tsv`, on CI in release) stops any of those numbers getting worse: [FX quality](fx-quality.md).
+The **quality report** (`quality`, `fxlab quality`) gathers every target of the FX quality plan (delay, EQ and reverb; drive, crush, compressor, filters, lo-fi and the amp), and **the ratchet** (`tests/quality.rs` against `quality/ratchet.tsv`, on CI in release) stops any of those numbers getting worse: [FX quality](fx-quality.md).
 
 **Quality gates** (`tests/gates.rs`, run by `cargo test`): lines of the plan our effects already meet, so a change that makes one worse fails. Transparent effects are flat within 0.01 dB with THD under -140 dB; Drive HQ keeps aliases 90 dB down at 5 kHz full scale, Eco 50 dB; the limiter in true-peak mode holds true peaks within 0.5 dB of its ceiling on hot pink noise; master safety never passes its ceiling; every effect's quick card is finite and is quiet one second after its tail. Gaps the plan still has to close are reported by `fxlab cards`, not asserted.
 
@@ -117,7 +117,7 @@ On the MPC, building and installing the plugins and each `fxprobe.sh` and `fxpro
 
 ## Tests
 
-- `cargo test -p mpfree-fxlab`: 58 unit tests (each analysis on signals with known answers, schedules, plans, capture analysis against direct measurement, the ratchet's comparisons) and the six quality gates.
+- `cargo test -p mpfree-fxlab`: 60 unit tests (each analysis on signals with known answers, schedules, plans, capture analysis against direct measurement, the ratchet's comparisons) and the six quality gates.
 - `cargo test --release -p mpfree-fxlab --test quality`: the FX quality ratchet (ignored in a debug build), on CI in the `rust` job.
 - `tools/fxprobe/test/run_chain_test.py` (by hand; needs the SDK checkout and a C++ compiler): builds both plugins and `chain_sim`, a small host that runs plugins in series the way an MPC track does, then checks that a wire capture holds the programme bit for bit at the frame fxlab finds, that a capture through the SDK's delay example is complete with its gain, timing log and host-call log, that `fxprobe.py` setup, capture and pull at two gains read back through `fxlab analyse` as a flat wire, and the stick route end to end: a staged kit, `fxprobe.sh install` to a fake internal drive, the installed plugins finding the work folder through their pointer (also after the stick comes back under another mount name, without rerunning the old command), and captures that read back as a flat wire.
 - `tools/fxprobe/test/test_fxprobe_sh.py` (CI, under BusyBox): `stage.py` with stand-in builds, and every `fxprobe.sh` mode against a fake MPC root and stand-in plugin instances, refusals included.

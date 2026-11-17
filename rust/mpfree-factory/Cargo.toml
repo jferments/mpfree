@@ -6,6 +6,8 @@ publish = false
 description = "Drum kits and samples for the pad player: MPFree's own kits rendered from the Drums synth, and the owner's Akai factory kits and samples read from their own eMMC backup, on their own device"
 
 [dependencies]
+mpfree-flac = { path = "../mpfree-flac" }
+sha2 = "0.10"
 mpfree-diskimage = { path = "../mpfree-diskimage" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }

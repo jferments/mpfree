@@ -1,15 +1,18 @@
 //! MPFree's own sounds in the library, so BROWSE has sounds that aren't
 //! Akai's: once per stick, MPFree's own drum kits (the Drums synth's kits,
-//! rendered when the stick was made: kits.bin) are written as kit folders in
+//! rendered when the stick was made: kits.bin) and the free kits made from
+//! public-domain (CC0) libraries that release sticks carry after them
+//! (`mpfree_factory::freekits`) are written as kit folders in
 //! `Kits/MPFree/`, one folder per kit with `kit.txt` and its sounds
 //! (`mpfree_library::kit`).
 //!
 //! - It runs on a thread of its own, at the background priority, through
 //!   `mpfree-library` (inside `library/` on the `--data` folder only).
-//! - It is done once: the browser's lists keep `bundled = mpfree-kits 1`
+//! - It is done once: the browser's lists keep `bundled = mpfree-kits 2`
 //!   ([`TAG`]) when it has run, so a kit the musician deletes stays deleted.
 //!   A later version with more sounds changes the tag and adds only what is
-//!   missing (a kit folder already there is left as it is).
+//!   missing (a kit folder already there is left as it is; a kit deleted
+//!   before comes back once). Tag 2 added the free kits.
 //! - Nothing is written when the pads have none of MPFree's own kits (an
 //!   older stick): the next start looks again.
 
@@ -18,7 +21,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
 /// What has been put in the library, as the browser's lists keep it.
-pub const TAG: &str = "mpfree-kits 1";
+/// 2: the free kits too (2026-11-16).
+pub const TAG: &str = "mpfree-kits 2";
 /// The folder in Kits.
 pub const FOLDER: &str = "MPFree";
 /// The prefix MPFree's own kits' names carry (`mpfree_factory::drums`).
@@ -26,11 +30,13 @@ const PREFIX: &str = "MPFree ";
 
 pub use crate::sample_page::KitFile;
 
-/// Whether `name` is one of MPFree's own kits (one per Drums synth kit).
+/// Whether `name` is one of MPFree's own kits (one per Drums synth kit) or
+/// one of its free kits.
 pub fn own_kit(name: &str) -> bool {
     mpfree_synth::Drums::presets()
         .iter()
         .any(|p| name.strip_prefix(PREFIX) == Some(p.name))
+        || mpfree_factory::freekits::kit_names().any(|k| k == name)
 }
 
 /// The folder name a kit gets in `Kits/MPFree/`: without the prefix.
@@ -100,6 +106,11 @@ mod tests {
         assert!(!own_kit(first));
         assert!(!own_kit("ClassicHouse-Kit-Classy"));
         assert!(!own_kit("Grains: MPFree Init Kit"));
+        // The free kits are MPFree's too, in the same folder, named as they are.
+        assert!(own_kit("Big Rusty Drums"));
+        assert!(own_kit("VCSL Percussion"));
+        assert!(!own_kit("Big Rusty"));
+        assert_eq!(folder_name("Swirly Drums"), "Swirly Drums");
         assert_eq!(folder_name(&format!("MPFree {first}")), first);
     }
 

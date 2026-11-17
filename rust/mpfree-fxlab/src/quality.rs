@@ -38,10 +38,11 @@ pub enum Class {
     Compressor,
     Filter,
     Lofi,
+    Amp,
 }
 
 impl Class {
-    pub const ALL: [Class; 8] = [
+    pub const ALL: [Class; 9] = [
         Class::Delay,
         Class::Eq,
         Class::Reverb,
@@ -50,6 +51,7 @@ impl Class {
         Class::Compressor,
         Class::Filter,
         Class::Lofi,
+        Class::Amp,
     ];
 
     pub fn name(self) -> &'static str {
@@ -62,6 +64,7 @@ impl Class {
             Class::Compressor => "compressor",
             Class::Filter => "filter",
             Class::Lofi => "lofi",
+            Class::Amp => "amp",
         }
     }
 
@@ -184,6 +187,7 @@ pub fn report(class: Class, rate: u32) -> Report {
         Class::Compressor => round2::compressor(&mut r),
         Class::Filter => round2::filter(&mut r),
         Class::Lofi => round2::lofi(&mut r),
+        Class::Amp => round2::amp(&mut r),
     }
     r
 }
