@@ -2,8 +2,10 @@
 //! the creator is one file that works wherever it is put (on Windows, even
 //! opened straight from its zip). Set `MPFREE_CREATOR_PROGRAMS` to the folder
 //! of programs when building, and every file in it whose name is made of
-//! `a-z`, `0-9` and `-` is embedded (`mpfree-stick`'s `PROGRAM_FILES`; the
-//! creator checks at run time that they are all there and are ARM programs).
+//! `a-z`, `0-9` and `-` is embedded (`mpfree-stick`'s `PROGRAM_FILES`, which
+//! the creator checks at run time are all there and are ARM programs, and
+//! the free drum kits, `free-kits`, which the stick builder adds after
+//! MPFree's own kits).
 //! Without it, nothing is embedded, and the creator looks for a
 //! `stick-programs` folder next to itself, as a developer's build always has.
 

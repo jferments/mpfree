@@ -1,0 +1,146 @@
+# MPFree's free drum kits: public-domain (CC0 1.0) sample libraries, one hit
+# per pad, read at pinned commits. The format and the tool that makes the
+# kits are described in src/freekits.rs (mpfree-free-kits). Chosen by the
+# owner on 2026-11-16 from the shortlist in docs/dev/design/usb-creator.md.
+#
+# How the hits were picked (2026-11-16): the first round robin of a strong
+# but not the strongest velocity layer; for a drum recorded with several
+# microphones, its close and overhead microphones at the levels the
+# library's own default SFZ program gives them (amplitude = CC value / 127,
+# in dB). Pads follow the MPC's pad notes: pad 2 kick, pad 6 snare, pad 3
+# closed hat, pads 9 to 12 toms high to low, pads 13 to 16 cymbals.
+
+kit Big Rusty Drums
+  maker Karoryfer Samples
+  terms CC0 1.0
+  source sfzinstruments/karoryfer.big-rusty-drums f07ce00df34a46b6b08375be56fe116cf15782bc
+  licence a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499 LICENSE
+  pad 1 Side stick
+    file 5b1d59dfd66b360d078f9f0ad7154e84c426938ca64462527550d49ee72cc49e -2.1 0 Samples/snare_14/sidestick/btm/sn_ss_vl4_rr1.flac
+    file b81e2102701952ed73eb8fcdb08d9e3ad5c055b822bd360e8b345f181436ad73 -10 0 Samples/snare_14/sidestick/top/sn_ss_vl4_rr1.flac
+    file 63519f4759e8712583e6cdd93936eac8fdaf6ef9f2dbd0ddb63f3d4627b3e5ae -6.5 0 Samples/snare_14/sidestick/oh/sn_ss_vl4_rr1.flac
+  pad 2 Kick
+    file 35436a84127b72757e7dc7c266783af7e5f8e4f4244584df083a8cb8b784b768 -2.1 0 Samples/kick_24/kick/kick/k_vl13_rr1.flac
+  pad 3 Closed hat
+    file 87b23f751a0437ddab419489e2cbd14a79b7955d29034af513a77de96770efd4 0 0 Samples/hihat_14/cl/cl/ht_cl_vl5_rr1.flac
+    file 7828b550006e5396b4656f4b156450cec6f87526fac28318312d6afd2b022398 0 0 Samples/hihat_14/cl/oh/ht_cl_vl5_rr1.flac
+  pad 4 Stack
+    file 8a996343ea6f09470f3ffedcbde6ba7fa702548be554db2160caaf3a086f6b4f -10 0 Samples/stack_3_layer/mid/cl/st_mid_vl5_rr1.flac
+    file 7d2a83115fc97b0d17a0a0e6cc4afc5e152709c63a23b30b8aa4a9a8ced82b75 -2.1 0 Samples/stack_3_layer/mid/oh/st_mid_vl5_rr1.flac
+  pad 5 Rimshot
+    file 959da63188cbdb5dbf21e45a5fcf9e7682de0e57b5370491d66a0fc61ae511c0 -2.1 0 Samples/snare_14/rimshot/btm/sn_rims_vl5_rr1.flac
+    file ca54acdfb20c1f8cbbf997598c7a8bc5d94333e4a7a2d7c7413cdeea56ab1f44 -10 0 Samples/snare_14/rimshot/top/sn_rims_vl5_rr1.flac
+    file 09753fdacbadae393443a142f0b71daf276393e3e61d17bb8114e27ff8b828a0 -6.5 0 Samples/snare_14/rimshot/oh/sn_rims_vl5_rr1.flac
+  pad 6 Snare
+    file 2d108313a2e26ef53ce4afa34a37e3cbd00f36b755223f63dbe4528d6efde736 -2.1 0 Samples/snare_14/center/btm/sn_center_vl9_rr1.flac
+    file bce1459c07e2960252e8b7d67bbcd725c5333848bfa997828221f231781cf848 -10 0 Samples/snare_14/center/top/sn_center_vl9_rr1.flac
+    file 034948624fe5068a4c52ca4745d3350da1b1258548d3642a9c398aadcb793404 -6.5 0 Samples/snare_14/center/oh/sn_center_vl9_rr1.flac
+  pad 7 Open hat
+    file 38f3565f2c23803205e7483a3e992f33e041dd3af2e340e38b1486cc3663f856 0 0 Samples/hihat_14/open/cl/ht_open_vl5_rr1.flac
+    file 429fac3437e0aa119308bf825c3c81097aa42baae70101e74b219abe48116f39 0 0 Samples/hihat_14/open/oh/ht_open_vl5_rr1.flac
+  pad 8 Pedal hat
+    file 50440e053ba88861191803578ee6c0c26c71ba640d59e6b22b5e2e54861dd4fa 0 0 Samples/hihat_14/chik/cl/ht_chik_vl4_rr1.flac
+    file 2140aa065c14e49c9d17d1d7cbb50a620a5523d8f4c069b5cbf960f19b339198 0 0 Samples/hihat_14/chik/oh/ht_chik_vl4_rr1.flac
+  pad 9 Tom 14in
+    file 7aabe82391ff96cda9203cee81fc72fa1665ca225ddfab8bc05abd883c18c727 -2.1 0 Samples/tom_14/center/cl/t14_vl5_rr1.flac
+    file 6291e1080fe2579239ace581c2f37dcb500053cf062c914c06d4fb39c2308c75 -5.2 0 Samples/tom_14/center/oh/t14_vl5_rr1.flac
+  pad 10 Tom 15in
+    file 8aa9c75b965c802975485a2aaed3244f4759d0c6e6ae6705cf6f7be302a9d3f7 -2.1 0 Samples/tom_15/center/cl/t15_vl6_rr1.flac
+    file 88db4b563aa4df6144fa35b42156faebd70258bd79b4b7ba0161227fc2fedf51 -5.2 0 Samples/tom_15/center/oh/t15_vl6_rr1.flac
+  pad 11 Tom 18in
+    file d29c16fa8b3906ad46ad6833aeaf95680eb338d3976358e4913e51ed9bfa7bec -2.1 0 Samples/tom_18/center/cl/t18_vl7_rr1.flac
+    file a8c209356e6b823ee2fc567845484fa8a02ed5cd34c2b35126551b1e7c4455e4 -5.2 0 Samples/tom_18/center/oh/t18_vl7_rr1.flac
+  pad 12 Kick open
+    file 8171884d31f6c49cbc82a6bc94c843439ea92a06e7846bb2cf77422f822e9f0b -2.1 0 Samples/kick_24_nodamp/kick/kick/k_nodamp_vl5_rr1.flac
+  pad 13 Crash
+    file 79afe7dc4a68a733d89207184f2e64e9815fb45ce82901a8c7e883562e584a9d -10 0 Samples/crash_17/cr/cl/cr_vl4_rr1.flac
+    file 84150bf1f6842d3cb7738c579ac06bdfb5319a5ab180a4b7663e8058fd0a0e46 -2.1 0 Samples/crash_17/cr/oh/cr_vl4_rr1.flac
+  pad 14 China
+    file c29edd4a3c62133522ce6a97c5a91ac631a554d7d0bb83d2c5d09d022879aa02 -10 0 Samples/china_18/cn/cl/cn_vl4_rr1.flac
+    file f70237e31cf080ce9beda7cf6ef4b94903416c9030262f897b144dcf5eefdd9f -2.1 0 Samples/china_18/cn/oh/cn_vl4_rr1.flac
+  pad 15 Ride
+    file 7a1c6722de9e8cbf5fb16e6431803f8353dc5e8595cc2c5a9ddf7b6b3c809a72 -10 0 Samples/ride_22/rd/cl/rd_vl8_rr1.flac
+    file c3ed9e262bab2e09f57b6dc98ffe501839b88bc0a809b32c0d1ff3d588a6cda6 -2.1 0 Samples/ride_22/rd/oh/rd_vl8_rr1.flac
+  pad 16 Ride bell
+    file 1866d2922a8c588435d83ab9e0abf8ebafc1abc0c7355aa0c60845413ce96085 -10 0 Samples/ride_22/bl/cl/rd_bl_vl3_rr1.flac
+    file 5045674e9f69dffa6cdcefb438d25cceb419d1268e61b02a08217d8ef9637252 -2.1 0 Samples/ride_22/bl/oh/rd_bl_vl3_rr1.flac
+
+kit Swirly Drums
+  maker Karoryfer Samples
+  terms CC0 1.0
+  source sfzinstruments/karoryfer.swirly-drums c40dafe0011cb2e54c0c220ff0fa308a11fc60f5
+  licence a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499 license
+  pad 1 Snare edge
+    file c608ee9e307b4555e1a07f75017920858e6c1ab7f7219fbdd53eba599ddab7e3 -4 0 Samples/snare_edge/snare_edge_vl9_rr1_top.wav
+    file 655213929a8f3e982c03e17d97bd3b433cb5ba8221d742bf3bcb92b818467428 -2.1 0 Samples/snare_edge/snare_edge_vl9_rr1_btm.wav
+  pad 2 Kick
+    file 58a688e3bd29402a49d2ef701bf63474c11f588922dd4939d085b1317ab46367 -5.2 0 Samples/marching_kick/marching_kick_vl20_rr1_beater.wav
+    file f944906aa3a46e0d90e55b9fd1ed5cbbd0441d33167cdb06014f0e360ef3d975 -2.1 0 Samples/marching_kick/marching_kick_vl20_rr1_reso.wav
+  pad 3 Closed hat
+    file 0f239046281c7f97d3a8000321486d34d0feac38c86d212350def4cbd4718468 0 0 Samples/hat_tight/hh_tight_vl13_rr1.wav
+  pad 4 Cowbell
+    file f4a3b375948eed176fd19e41ac4f196c56007e77e4fd8ac3428ea6f39a9289d1 0 0 Samples/cowbell/cowbell_vl8_rr1.wav
+  pad 5 Snare dig
+    file 61ba02467a9b5309d6f9a38295274fe4106d8380289ce339ac343e5e0c4a045c -4 0 Samples/snare_dig/snare_dig_vl6_rr1_top.wav
+    file 6c9401adf7959f1d1f39cdfe48c61f0c9b42752d19c3baa93bb506c84738023e -2.1 0 Samples/snare_dig/snare_dig_vl6_rr1_btm.wav
+  pad 6 Snare
+    file 6df5def990884c9d995fd734f817d4e7c988de777568cfbff5bebd0dac902ac1 -4 0 Samples/snare_main/snare_hit_vl11_rr1_top.wav
+    file c48e11c8ad09f1972c898285d0be4f20f856d08c33ae96a515d2c4753a9e274f -2.1 0 Samples/snare_main/snare_hit_vl11_rr1_btm.wav
+  pad 7 Open hat
+    file 3bcf4c0d7bfd057571d25e00dbf771cefbe2d6faa35d5953722c5bbf45b5dab7 0 0 Samples/hat_open/hh_open_vl12_rr1.wav
+  pad 8 Pedal hat
+    file 860ab2e9a1785178bfbac3e0312ca08e44aa1263db174ea0ac209151b4bbb111 0 0 Samples/hat_foot/hh_foot_vl8_rr1.wav
+  pad 9 Tom 10in
+    file 3b16ec5b38e777d9ab611f377cc119ba5204dea6d453747078515a65fc13d648 -1.9 0 Samples/tom_mhi/tom_mhi_vl9_rr1.wav
+  pad 10 Tom 12in
+    file 77a25fa210e76ff14188fbc0992e844358a1c31b8a0510445d7a57553bbb1f68 -1.9 0 Samples/tom_xmed/tom_xmed_vl9_rr1.wav
+  pad 11 Tom 13in
+    file 884a4ecc2f288b5dc0d85f8a787ac660aa9acd86c144a70f4ee1138a7fc8efcc -1.9 0 Samples/tom_mlow/tom_mlow_vl11_rr1.wav
+  pad 12 Floor tom
+    file 2a593a323086fee1bd9956810c2ae903732bf987ca0bd6805fdce2f8b135c4b5 -1.9 0 Samples/tom_floor/tom_floor_vl11_rr1.wav
+  pad 13 Crash
+    file 7dd92ad67f371a2f0e72f07b6a6b371064f41980289fcddcbd7b6571cc67e5e6 0 0 Samples/crash/crash_vl11_rr1.wav
+  pad 14 Splash
+    file eb7f69a2d91deee5d27789035a8c2d81ded5f38168be63a50f5171fd49a05429 0 0 Samples/splash/splash_vl11_rr1.wav
+  pad 15 Ride
+    file 8318d5a0561df5871873a2da494e8ba0e1cdb61cd56fa18666a236aaaa58eb82 0 0 Samples/ride/ride_vl13_rr1.wav
+  pad 16 China
+    file 6fca308075b25b87c61d88c4231a3c9835b49d9fe7aa77bd5a3107493afeeba2 0 0 Samples/china/china_vl11_rr1.wav
+
+kit VCSL Percussion
+  maker Versilian Studios
+  terms CC0 1.0
+  source sgossner/VCSL c1ea7bcc3c7309650ab0da9d15c9cd1fbc4a4c7e
+  licence a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499 LICENSE
+  pad 1 Claves
+    file 12285f65ed125f4140d1e8a86b2d6a08bf3283b7bf30c10d68290b8e8230a927 0 0 Idiophones/Struck Idiophones/Claves/Claves1_Hit_v3_rr1_Mid.wav
+  pad 2 Cajon bass
+    file ad85e345189439370fb54676813affba0e46f5d9f502aa63e995a2ea7a831960 0 0 Idiophones/Struck Idiophones/Cajon/Cajon_hit2_f_rr1.wav
+  pad 3 Tambourine
+    file 885ebf1d70f8e888f576682e4e4112b92b69649162f392c83b3379c91a09cf41 0 0 Idiophones/Struck Idiophones/Tambourine 1/Tamb1_Hit_v2_rr1_Mid.wav
+  pad 4 Shaker
+    file 793c21eb3afdcd68535b3b1df45a097625fc02f26fb7bc86f1dc5b1e5b28e8db 0 0 Idiophones/Struck Idiophones/Shaker, Small/Mid_Shaker_Slap_rr1.wav
+  pad 5 Claps
+    file 4c9f3fe4a34733b9be6ed9ce5e5aad48b19c1029ae9c6dd1b96294a847539e3f 0 0 Idiophones/Struck Idiophones/Claps/Clap_rr1.wav
+  pad 6 Cajon slap
+    file 18241c7c9f73dc9edfe6402371fefba5584ed5f9bc6fe827d3bba945841301d6 0 0 Idiophones/Struck Idiophones/Cajon/Cajon_hit1_f_rr1.wav
+  pad 7 Sleigh bells
+    file cc424c298ac98a783ebf37ce6f2152a19b227ff89c5c20bc2462ddc8261fefc5 0 0 Idiophones/Struck Idiophones/Sleigh Bells/Sleighbells_Hit_rr1_Mid.wav
+  pad 8 Cabasa
+    file 0290fec6f2e39d3757c6d69562ef50d47c4ec7da2e2947110e7738896b4f378d 0 0 Idiophones/Struck Idiophones/Cabasa/Cabasa1_Hit_rr1_Mid.wav
+  pad 9 Bongo high
+    file e93ed5c0fbafc3f122ced7c56c3f08021d8616e96c81c42aa62c5f368111d001 0 0 Membranophones/Struck Membranophones/Bongos/BongoH_Hit1_v3_rr1_Mid.wav
+  pad 10 Bongo low
+    file 07986a1bc54b31dafd9c7dc250e42a613977b320b33b2e4652d21332064de4eb 0 0 Membranophones/Struck Membranophones/Bongos/BongoL_Hit1_v3_rr1_Mid.wav
+  pad 11 Conga
+    file 664365ac735d819c69cabbbae8a78d225fa73059e698ad8ca292c46cc03c6961 0 0 Membranophones/Struck Membranophones/Conga/Conga_HitN_v3_rr1_Sum.wav
+  pad 12 Tumba
+    file 5504101dba1a22e133efb77147084e96565a7ff64535f94f2f3d8934f2b2895b 0 0 Membranophones/Struck Membranophones/Conga/Tumba_HitN_v4_rr1_Sum.wav
+  pad 13 Cowbell
+    file 36e9243e18b299bde0ebbb108c65846ddb5d46b35a61655fa18a0327e3390e87 0 0 Idiophones/Struck Idiophones/Cowbells/Cowbell1_Hit_v3_rr1_Mid.wav
+  pad 14 Agogo
+    file f74a3100634a4372f2e2f81adf2f6a7839861ec4dcf13291001a3268e37806de 0 0 Idiophones/Struck Idiophones/Agogo Bells/Agogo_High_v2_rr1_Mid.wav
+  pad 15 Triangle
+    file bec62db48c6a052bff1b54f88c11fc6cb6131b9633da2afb35636291754971af 0 0 Idiophones/Struck Idiophones/Triangles/Triangle1_Hit_v2_rr1_Mid.wav
+  pad 16 Woodblock
+    file 86b690a393ad62d65dc6832948adb0cc164fe22f544a8065809f000c65d615fc 0 0 Idiophones/Struck Idiophones/Woodblock/wood_click_f_rr1.wav

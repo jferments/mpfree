@@ -1241,7 +1241,7 @@ impl Browser {
     /// Recent and Favourites as text, one `recent = Samples/Drums/Kick.wav`
     /// or `favourite = ...` line each, after the last project's
     /// (`project = Projects/Night drive`) and MPFree's own sounds' version
-    /// (`bundled = mpfree-kits 1`).
+    /// (`bundled = mpfree-kits 2`).
     pub fn lists_text(&self) -> String {
         let mut s = String::new();
         if let Some(b) = &self.bundled {
