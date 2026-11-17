@@ -4640,8 +4640,8 @@ fn player_session(
     // What the mixer's I/O view shows and edits (MIDI, Sync and CV). The
     // loop only ever try_locks it (MusicIn::sync).
     let io_model = midi_in::io_model();
-    // The I/O view's rig as it was left (midi_saved.rs): each port's input
-    // and thru, for every project. The song's MIDI settings come with the
+    // The I/O view's rig as it was left (midi_saved.rs): each port's input,
+    // what it ignores and its delay, for every project. The song's MIDI settings come with the
     // project (its `midi` part).
     let rig_text = store
         .read(midi_saved::OWNER, midi_saved::RIG)
@@ -5598,6 +5598,11 @@ fn player_session(
                 None => {}
             }
         }
+        // What thru passes on (the I/O view's Routing): out of its output
+        // now, if MIDI out is on.
+        for p in music.take_thru() {
+            midi_out.thru(p.from, p.to, p.msg);
+        }
         for (track, k) in routed_keys.drain(..) {
             play_routed(
                 track,
@@ -6367,6 +6372,10 @@ fn player_session(
         for (due, port, m) in seq.midi.sent() {
             let to = if m.is_from_page() {
                 To::PortPage
+            } else if m.is_from_sampler() {
+                To::Sampler
+            } else if let Some(from) = m.thru_from() {
+                To::ThruFrom(from)
             } else {
                 m.track().map_or(To::Clock, To::SentBy)
             };
