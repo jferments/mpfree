@@ -821,6 +821,7 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         wow,
         key_fade,
         vel_fade,
+        vintage,
     } = p;
     f.text_field("name", name);
     f.word("select", select, SELECTS);
@@ -869,4 +870,5 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
     f.num("wow", wow);
     f.num("key_fade", key_fade);
     f.num("vel_fade", vel_fade);
+    f.flag("vintage", vintage);
 }

@@ -151,6 +151,9 @@ pub enum Row {
     Tune,
     /// How much the pitch wanders, as on worn tape.
     Wow,
+    /// Whether the pad plays pitched up as old samplers did, aliasing and
+    /// all, instead of clean.
+    Vintage,
     /// Whether the pad is a keygroup.
     Keys,
     LowKey,
@@ -184,7 +187,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 32] = [
+    pub const ALL: [Row; 33] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
@@ -195,6 +198,7 @@ impl Row {
         Row::Pan,
         Row::Tune,
         Row::Wow,
+        Row::Vintage,
         Row::Keys,
         Row::LowKey,
         Row::HighKey,
@@ -231,6 +235,7 @@ impl Row {
             Row::Pan => "Pan",
             Row::Tune => "Tune",
             Row::Wow => "Wow & flutter",
+            Row::Vintage => "Vintage",
             Row::Keys => "Keys",
             Row::LowKey => "Low key",
             Row::HighKey => "High key",
@@ -1254,6 +1259,7 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
             p.tune_cents = (semis * 100).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS);
         }
         Row::Wow => p.wow = round_to(p.wow + d * 0.1, 0.1).clamp(0.0, 1.0),
+        Row::Vintage => p.vintage = !p.vintage,
         Row::Keys => {
             // On over the whole keyboard, at middle C until the app knows
             // better; a keygroup plays chords, so it gets the voices for them.
@@ -1441,6 +1447,7 @@ pub fn value_text(p: &Pad, row: Row) -> String {
             0 => "Off".into(),
             x => format!("{x} %"),
         },
+        Row::Vintage => if p.vintage { "On" } else { "Off" }.into(),
         Row::Keys => if p.keys.is_some() { "On" } else { "Off" }.into(),
         Row::LowKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.lo)),
         Row::HighKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.hi)),
@@ -1638,6 +1645,7 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::Pan,
         Row::Tune,
         Row::Wow,
+        Row::Vintage,
         Row::Keys,
         Row::LowKey,
         Row::HighKey,

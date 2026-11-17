@@ -51,6 +51,12 @@ pub struct Hits {
     /// sounding kit when the session has one ([`Session::make_sounds`]).
     queued: Vec<(usize, u8, u32)>,
     released: Vec<(usize, u32)>,
+    /// This period's locks on a kit pad's sound (address, value, offset),
+    /// for the sounding kit, which takes them before the period's hits.
+    lock_queue: Vec<(mpfree_play::mpfree_param::ParamAddr, Option<f32>, u32)>,
+    /// Every lock on a pad's sound or an instrument the clips played, in
+    /// order (`None`: its end), as main.rs's pads take them.
+    pub locked: Vec<(mpfree_play::mpfree_param::ParamAddr, Option<f32>)>,
     /// While an export's replay plays one track alone: the other tracks'
     /// notes are kept quiet, as main.rs's pads keep them (`export::quiets`;
     /// every track plays the pads here).
@@ -98,6 +104,24 @@ impl time::Pads for Hits {
     }
     fn stop_all(&mut self) {}
     fn pressure_at(&mut self, _pad: usize, _value: u8, _offset: u32) {}
+    // A pad's sound or an instrument takes its locks, as main.rs's pads do.
+    fn lock_at(
+        &mut self,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        value: Option<f32>,
+        offset: u32,
+    ) -> bool {
+        use mpfree_play::mpfree_param::Owner;
+        match addr.owner {
+            Owner::Pad(..) if crate::sampler::pad_field(addr.param).is_some() => {
+                self.lock_queue.push((addr, value, offset));
+            }
+            Owner::Inst(_) => {}
+            _ => return false,
+        }
+        self.locked.push((addr, value));
+        true
+    }
     // Every event goes on as usual; the notes are written down first.
     fn out(&mut self, o: &mpfree_play::Out) -> bool {
         use mpfree_play::Event;
@@ -476,6 +500,9 @@ impl Session {
     pub fn button(&mut self, name: &str) -> &mut Session {
         let note = self.button_note(name);
         let t = self.t();
+        let held =
+            crate::erase_held_steps(&self.app, &mut self.step_keys, &mut self.time, note, true);
+        self.fx.extend(held);
         let fx = self.app.button(note, true, t);
         self.fx.extend(fx);
         self.run_periods(2);
@@ -638,6 +665,9 @@ impl Session {
     pub fn button_edge(&mut self, name: &str, down: bool) -> &mut Session {
         let note = self.button_note(name);
         let t = self.t();
+        let held =
+            crate::erase_held_steps(&self.app, &mut self.step_keys, &mut self.time, note, down);
+        self.fx.extend(held);
         let fx = self.app.button(note, down, t);
         self.fx.extend(fx);
         self.run_periods(2)
@@ -789,11 +819,16 @@ impl Session {
             self.export.tap.send(&o, is);
         }
         // The pads' hits into the sounding kit, when there is one.
-        let (queued, released) = (
+        let (queued, released, locks) = (
             std::mem::take(&mut self.hits.queued),
             std::mem::take(&mut self.hits.released),
+            std::mem::take(&mut self.hits.lock_queue),
         );
         if let Some(p) = self.sounds.as_mut() {
+            // Locks first, so a note on a lock's frame starts with it.
+            for (addr, value, offset) in locks {
+                time::Pads::lock_at(p, addr, value, offset);
+            }
             for (pad, velocity, offset) in queued {
                 p.hit_at(pad, velocity, offset);
             }
