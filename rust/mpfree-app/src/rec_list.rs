@@ -37,8 +37,10 @@ pub struct ListRow {
 #[derive(Default)]
 pub struct RecList {
     pub rows: Vec<ListRow>,
-    /// Rec song is on (live to song).
+    /// Rec song is on (live to song), or in Perform comes with the take.
     pub song: bool,
+    /// Perform (sequencer S4): Rec song comes with REC's take.
+    pub perform: bool,
     /// Only a tap on Arm moves the arm.
     pub pinned: bool,
     /// What REC records ("Track 1 · Clip 1"), for the chip's looks.
@@ -223,8 +225,16 @@ impl Widget for RecList {
         RecList::paint_switch(
             cx,
             hits.song,
-            "Rec song",
-            "launches, mutes and scene changes go into the song",
+            if self.perform {
+                "Rec song with REC"
+            } else {
+                "Rec song"
+            },
+            if self.perform {
+                "each take puts launches, mutes and scenes in the song"
+            } else {
+                "launches, mutes and scene changes go into the song"
+            },
             self.song,
         );
         RecList::paint_switch(

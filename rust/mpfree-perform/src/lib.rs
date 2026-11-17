@@ -23,9 +23,21 @@
 //!   (a locate past the point) starts it on the next bar line instead.
 //!   A scene's follow goes first and cues every track, so a clip follow on
 //!   a track that already has a cue waits: whatever is cued wins.
+//! - A one-shot clip ([`mpfree_seq::Clip::once`]) has its track's stop
+//!   cued the same way, in the bar before the end of the pass it started
+//!   in, on that tick exactly ([`once_end`], `LaunchGrid::At`); its own
+//!   follow waits.
 //! - Stay keeps playing and rolls again `bars` bars later, so a follow
 //!   with a chance between Next and Stay plays on for a random number of
 //!   passes. Again starts the same again (a new start to count from).
+//! - [`Perform::play_list`]: the song list (sequencer S4) from a step: its
+//!   scene launches as above, and [`Perform::due`] launches the next
+//!   step's scene in the bar before the step's span ends (its scene's
+//!   length times its times), on the bar line where it ends, or stops
+//!   every track after the last step (the first again when the list goes
+//!   round). While the list plays, the scenes' own follow actions wait;
+//!   the host ends it ([`Perform::end_list`]) when a scene is launched by
+//!   hand or everything stops.
 //!
 //! [`morph`]: the scene morph (T10), two rows' stored values on the mod
 //! engine's scenes A and B.
@@ -45,8 +57,9 @@ pub use morph::{save_scene, Loaded, SceneMorph};
 pub use song::{Recorded, SongRecorder};
 
 use mpfree_play::{anchored, Cue, Launch, PlayView, Started};
+use mpfree_seq::arrange::scene_length;
 use mpfree_seq::scenes::follow_target;
-use mpfree_seq::{Follow, FollowAction, LaunchGrid, Project, MAX_TRACKS, SCENES, SLOTS};
+use mpfree_seq::{Clip, Follow, FollowAction, LaunchGrid, Project, MAX_TRACKS, SCENES, SLOTS};
 use mpfree_transport::Tick;
 
 /// When a launch happens.
@@ -87,6 +100,26 @@ pub struct Playing {
     pub stays: u32,
 }
 
+/// The song list playing: its step, and the bar line that step's scene
+/// starts on (None while it waits for a line not yet known); while it
+/// waits, the step playing out and the line it started on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListPlaying {
+    pub step: usize,
+    pub start: Option<Tick>,
+    pub out: Option<(usize, Tick)>,
+}
+
+impl ListPlaying {
+    /// The step sounding at song tick `now`, and the line it started on.
+    fn sounding(&self, now: Tick) -> Option<(usize, Tick)> {
+        match self.start {
+            Some(s) if s <= now => Some((self.step, s)),
+            _ => self.out,
+        }
+    }
+}
+
 /// A track's clip follow: the launch it counts for (slot and start) and
 /// its Stays since.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +143,8 @@ pub struct Perform {
     /// follow's on the next bar line, its point.
     cue_lines: [Option<LaunchGrid>; MAX_TRACKS],
     clips: [Option<ClipCount>; MAX_TRACKS],
+    /// The song list, while it plays.
+    list: Option<ListPlaying>,
     rng: u64,
 }
 
@@ -128,6 +163,7 @@ impl Perform {
             cue_mutes: [None; MAX_TRACKS],
             cue_lines: [None; MAX_TRACKS],
             clips: [None; MAX_TRACKS],
+            list: None,
             rng: seed | 1,
         }
     }
@@ -140,6 +176,115 @@ impl Perform {
     /// The row launched and waiting for its bar line.
     pub fn cued(&self) -> Option<usize> {
         self.cued
+    }
+
+    /// The song list's step playing, or waiting for its line.
+    pub fn list(&self) -> Option<ListPlaying> {
+        self.list
+    }
+
+    /// Play the song list from step `step`: its scene launches as
+    /// [`Perform::launch_scene`] launches it, and the list goes on by
+    /// itself (see the module notes). False (nothing done) past the
+    /// list's end.
+    pub fn play_list(
+        &mut self,
+        project: &mut Project,
+        step: usize,
+        when: When,
+        launches: &mut Vec<Launch>,
+        cues: &mut Vec<Cue>,
+    ) -> bool {
+        let Some(row) = project.arrangement.list.steps.get(step).map(|s| s.row) else {
+            return false;
+        };
+        if !self.launch_scene(project, row, when, launches, cues) {
+            return false;
+        }
+        // The step playing until now plays out until the line.
+        let out = self.list.and_then(|l| match l.start {
+            Some(s) => Some((l.step, s)),
+            None => l.out,
+        });
+        self.list = Some(match when {
+            When::Now(bar) => ListPlaying {
+                step,
+                start: Some(bar),
+                out: None,
+            },
+            When::Cued => ListPlaying {
+                step,
+                start: None,
+                out,
+            },
+        });
+        true
+    }
+
+    /// Step `at` was put in the list (`inserted`) or taken out: the step
+    /// playing keeps its place. Taken out while it plays, the list stops
+    /// going on (what plays plays on).
+    pub fn list_edited(&mut self, at: usize, inserted: bool) {
+        let Some(l) = self.list.as_mut() else {
+            return;
+        };
+        let shift = |k: &mut usize| -> bool {
+            if inserted && *k >= at {
+                *k += 1;
+            } else if !inserted && *k > at {
+                *k -= 1;
+            } else if !inserted && *k == at {
+                return false;
+            }
+            true
+        };
+        if !shift(&mut l.step) {
+            self.list = None;
+            return;
+        }
+        if let Some((k, s)) = l.out {
+            let mut k = k;
+            l.out = shift(&mut k).then_some((k, s));
+        }
+    }
+
+    /// The list stops going on by itself (a scene launched by hand, Stop
+    /// all, Back to song); what plays plays on.
+    pub fn end_list(&mut self) {
+        self.list = None;
+    }
+
+    /// Where the list is at song tick `now`, with bars of `bar` ticks:
+    /// the step sounding, the pass playing (from 1) and how far through
+    /// the step it is (0 to 1). None while it doesn't play, or its first
+    /// step waits for its line.
+    pub fn list_pass(&self, project: &Project, now: Tick, bar: Tick) -> Option<(usize, u16, f32)> {
+        let (step, start) = self.list?.sounding(now)?;
+        let s = project.arrangement.list.steps.get(step)?;
+        let pass_len = scene_length(project, s.row, bar).max(1);
+        let span = pass_len * Tick::from(s.times);
+        let into = (now - start).clamp(0, span - 1);
+        let pass = (into / pass_len) as u16 + 1;
+        Some((step, pass.min(s.times), into as f32 / span as f32))
+    }
+
+    /// The list's step waiting for its line at song tick `now`, if one
+    /// does.
+    pub fn list_waiting(&self, now: Tick) -> Option<usize> {
+        let l = self.list?;
+        l.start.is_none_or(|s| s > now).then_some(l.step)
+    }
+
+    /// What the list plays next and where, for NEXT: the step after the
+    /// one playing (None: it stops) and the bar line its step ends on.
+    /// None while the list doesn't play or its step waits for its line.
+    pub fn list_next(&self, project: &Project, bar: Tick) -> Option<(Option<usize>, Tick)> {
+        let l = self.list.filter(|_| self.cued.is_none())?;
+        let start = l.start?;
+        let list = &project.arrangement.list;
+        let s = list.steps.get(l.step)?;
+        let end = start + scene_length(project, s.row, bar) * Tick::from(s.times);
+        Some((list.after(l.step), end))
     }
 
     /// Launch row `row`: see the module notes. False (and nothing done)
@@ -219,7 +364,7 @@ impl Perform {
     }
 
     /// Stop every track (on the next bar line while rolling), and forget
-    /// the scene.
+    /// the scene and the song list.
     pub fn stop_all(&mut self, when: When, launches: &mut Vec<Launch>, cues: &mut Vec<Cue>) {
         let mut busy = [false; MAX_TRACKS];
         for t in launches
@@ -247,6 +392,7 @@ impl Perform {
         self.cue_lines = [None; MAX_TRACKS];
         self.cued = None;
         self.playing = None;
+        self.list = None;
     }
 
     /// The mute a scene's cue on `track` sets when it starts, if any.
@@ -327,7 +473,23 @@ impl Perform {
                 start: st.at,
                 stays: 0,
             });
+            // The list's step counts from where its scene started.
+            if let Some(l) = self.list.as_mut() {
+                l.start = Some(st.at);
+            }
         }
+    }
+
+    /// The scene playing's follow action while no scene is cued, for
+    /// Perform's NEXT (sequencer S4): its row, its point (the bar line it
+    /// lands on, with bars of `bar` ticks) and the follow. It is cued a
+    /// bar before the point ([`Perform::due`]), and the cue shows from then.
+    pub fn scene_follow(&self, project: &Project, bar: Tick) -> Option<(usize, Tick, Follow)> {
+        let p = self
+            .playing
+            .filter(|_| self.cued.is_none() && self.list.is_none())?;
+        let f = project.scene(p.row)?.follow?;
+        Some((p.row, point(p.start, f, p.stays, bar.max(1)), f))
     }
 
     /// The follow actions due at song tick `now` (the next tick the
@@ -344,8 +506,12 @@ impl Perform {
     ) -> Fired {
         let mut fired = Fired::default();
         let bar = bar.max(1);
+        // The song list in place of the scenes' follow actions.
+        if self.list.is_some() {
+            self.list_due(project, launches, cues, now, bar, &mut fired);
+        }
         // The scene's follow first: it cues every track.
-        if let (Some(p), None) = (self.playing, self.cued) {
+        if let (Some(p), None, None) = (self.playing, self.cued, self.list) {
             if let Some(f) = project.scene(p.row).and_then(|s| s.follow) {
                 if now > point(p.start, f, p.stays, bar) - bar {
                     let mut filled = [false; SCENES];
@@ -391,7 +557,27 @@ impl Perform {
             let Some(track) = project.tracks.get(l.track) else {
                 continue;
             };
-            let Some(f) = track.slots.get(l.slot).and_then(|c| c.as_ref()?.follow) else {
+            let Some(clip) = track.slots.get(l.slot).and_then(Option::as_ref) else {
+                self.clips[l.track] = None;
+                continue;
+            };
+            // A one-shot: its track stops where the pass it started in
+            // ends, cued in the bar before as a follow is; its follow
+            // waits.
+            if clip.once {
+                self.clips[l.track] = None;
+                let end = once_end(&l, clip);
+                if now > end - bar {
+                    cues.push(Cue {
+                        track: l.track,
+                        slot: None,
+                    });
+                    self.cue_lines[l.track] = Some(LaunchGrid::At(end));
+                    fired.clips |= 1u128 << l.track;
+                }
+                continue;
+            }
+            let Some(f) = clip.follow else {
                 self.clips[l.track] = None;
                 continue;
             };
@@ -434,6 +620,75 @@ impl Perform {
         fired
     }
 
+    /// The song list's next step, in the bar before the one playing ends:
+    /// its scene cued for that bar line (the next bar line, if the check
+    /// comes late), or every track stopped after the last step.
+    fn list_due(
+        &mut self,
+        project: &mut Project,
+        launches: &mut Vec<Launch>,
+        cues: &mut Vec<Cue>,
+        now: Tick,
+        bar: Tick,
+        fired: &mut Fired,
+    ) {
+        let Some(l) = self.list else {
+            return;
+        };
+        let (Some(start), None) = (l.start, self.cued) else {
+            return;
+        };
+        let Some(s) = project.arrangement.list.steps.get(l.step).copied() else {
+            // The list lost the step (an edit): it ends.
+            self.list = None;
+            return;
+        };
+        let end = start + scene_length(project, s.row, bar) * Tick::from(s.times);
+        if now <= end - bar {
+            return;
+        }
+        // Late (a locate past it): the next bar line.
+        let line = if now <= end {
+            end
+        } else {
+            (now + bar - 1) / bar * bar
+        };
+        match project.arrangement.list.after(l.step) {
+            Some(next) => {
+                let row = project.arrangement.list.steps[next].row;
+                self.launch_scene(project, row, When::Cued, launches, cues);
+                self.list = Some(ListPlaying {
+                    step: next,
+                    start: Some(line),
+                    out: Some((l.step, start)),
+                });
+                // An empty row with nothing playing has no cue to start:
+                // it is a silent step from its line.
+                if cues.is_empty() {
+                    self.cued = None;
+                    self.playing = Some(Playing {
+                        row,
+                        start: line,
+                        stays: 0,
+                    });
+                }
+                fired.scene = Some(Some(row));
+            }
+            None => {
+                self.stop_all(When::Cued, launches, cues);
+                self.list = None;
+                fired.scene = Some(None);
+            }
+        }
+        // It lands on its line, the next bar line, whatever the launch
+        // quantise.
+        for c in cues.iter() {
+            if let Some(g) = self.cue_lines.get_mut(c.track) {
+                *g = Some(LaunchGrid::Bars(1));
+            }
+        }
+    }
+
     /// `f.action` with a chance of `f.chance` %, else `f.other`.
     fn pick(&mut self, f: &Follow) -> FollowAction {
         if f.chance >= 100 || self.roll() % 100 < u64::from(f.chance) {
@@ -454,6 +709,15 @@ impl Perform {
     }
 }
 
+/// Where a one-shot launch stops ([`mpfree_seq::Clip::once`]): the end of
+/// the pass of `clip` that its start is in, its passes counted from its
+/// origin (a legato launch's is earlier than its start).
+pub fn once_end(l: &Launch, clip: &Clip) -> Tick {
+    let pass = clip.speed.to_song(clip.length as f64).max(1.0);
+    let k = ((l.start - l.origin) as f64 / pass).floor().max(0.0);
+    l.origin + ((k + 1.0) * pass).round() as Tick
+}
+
 /// Where a follow from `start` comes due after `stays` Stays.
 fn point(start: Tick, f: Follow, stays: u32, bar: Tick) -> Tick {
     start + i64::from(f.bars) * bar * (i64::from(stays) + 1)
@@ -462,7 +726,7 @@ fn point(start: Tick, f: Follow, stays: u32, bar: Tick) -> Tick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_seq::{Clip, Track};
+    use mpfree_seq::Track;
 
     const BAR: Tick = 3840;
 
@@ -586,6 +850,12 @@ mod tests {
         };
         perf.started(&mut p, &st);
         cues.clear();
+        // NEXT's reading (S4): the scene's follow lands on bar 3.
+        let next = perf.scene_follow(&p, BAR);
+        assert_eq!(
+            next,
+            Some((0, 3 * BAR, Follow::after(2, FollowAction::Next)))
+        );
         // Due at bar 3 (two bars from bar 1): queued once past bar 2.
         for now in [BAR, 2 * BAR] {
             let f = perf.due(&mut p, &mut launches, &mut cues, now, BAR);
@@ -595,9 +865,125 @@ mod tests {
         assert_eq!(f.scene, Some(Some(1)));
         assert_eq!(cues.len(), 2);
         assert_eq!(perf.cued(), Some(1));
+        // Cued, the cue is what comes next.
+        assert_eq!(perf.scene_follow(&p, BAR), None);
         // Waiting for its bar line, it does not fire again.
         let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR + 2, BAR);
         assert_eq!(f, Fired::default());
+    }
+
+    /// The song list (S4): a step plays its scene its times, the next
+    /// step's scene is cued in the bar before it ends, a scene can come
+    /// twice, the scenes' own follows wait while it plays, and after the
+    /// last step every track stops (or the first plays again).
+    #[test]
+    fn the_song_list_plays_its_steps_in_order_then_stops() {
+        use mpfree_seq::ListStep;
+        let mut p = project();
+        // Row 0 is a bar long, row 1 two bars; row 0's own follow waits.
+        p.scene_mut(0).unwrap().follow = Some(Follow::after(1, FollowAction::Last));
+        p.arrangement.list.steps = vec![
+            ListStep { row: 0, times: 2 },
+            ListStep { row: 1, times: 1 },
+            ListStep { row: 0, times: 1 },
+        ];
+        let mut perf = Perform::default();
+        let (mut launches, mut cues) = (vec![], vec![]);
+        assert!(!perf.play_list(&mut p, 3, When::Cued, &mut launches, &mut cues));
+        assert!(perf.play_list(&mut p, 0, When::Cued, &mut launches, &mut cues));
+        assert_eq!(
+            perf.list(),
+            Some(ListPlaying {
+                step: 0,
+                start: None,
+                out: None
+            })
+        );
+        assert_eq!(perf.list_pass(&p, 0, BAR), None, "waiting for its line");
+        assert_eq!(perf.list_waiting(0), Some(0));
+        let started = |perf: &mut Perform, p: &mut Project, at: Tick, slot: usize| {
+            perf.started(
+                p,
+                &Started {
+                    track: 0,
+                    slot: Some(slot),
+                    at,
+                    origin: at,
+                    mute: None,
+                    from: at,
+                },
+            );
+        };
+        started(&mut perf, &mut p, BAR, 0);
+        cues.clear();
+        assert_eq!(perf.scene_follow(&p, BAR), None, "the list in its place");
+        assert_eq!(perf.list_next(&p, BAR), Some((Some(1), 3 * BAR)));
+        assert_eq!(
+            perf.list_pass(&p, 2 * BAR + BAR / 2, BAR),
+            Some((0, 2, 0.75))
+        );
+        // Two passes of a bar from bar 1: step 2 is cued in bar 2.
+        for now in [BAR, 2 * BAR] {
+            let f = perf.due(&mut p, &mut launches, &mut cues, now, BAR);
+            assert_eq!(f, Fired::default(), "{now}");
+        }
+        let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR + 1, BAR);
+        assert_eq!(f.scene, Some(Some(1)));
+        assert_eq!(perf.cued(), Some(1));
+        assert_eq!(perf.cue_line(0), Some(LaunchGrid::Bars(1)));
+        assert_eq!(perf.list().unwrap().step, 1);
+        // Step 1 plays out its last pass while step 2 waits for bar 3.
+        assert_eq!(perf.list_pass(&p, 2 * BAR + 1, BAR).map(|x| x.0), Some(0));
+        assert_eq!(perf.list_waiting(2 * BAR + 1), Some(1));
+        started(&mut perf, &mut p, 3 * BAR, 1);
+        assert_eq!(perf.list_waiting(3 * BAR), None);
+        assert_eq!(perf.list_pass(&p, 3 * BAR, BAR), Some((1, 1, 0.0)));
+        cues.clear();
+        // Row 1 (two bars) from bar 3, then row 0 again from bar 5.
+        assert_eq!(
+            perf.due(&mut p, &mut launches, &mut cues, 4 * BAR, BAR),
+            Fired::default()
+        );
+        let f = perf.due(&mut p, &mut launches, &mut cues, 4 * BAR + 1, BAR);
+        assert_eq!(f.scene, Some(Some(0)));
+        started(&mut perf, &mut p, 5 * BAR, 0);
+        cues.clear();
+        assert_eq!(perf.list_next(&p, BAR), Some((None, 6 * BAR)));
+        // After the last: every track stops on bar 6, and the list ends.
+        launches = vec![Launch {
+            track: 0,
+            slot: 0,
+            origin: 5 * BAR,
+            start: 5 * BAR,
+        }];
+        let f = perf.due(&mut p, &mut launches, &mut cues, 5 * BAR + 1, BAR);
+        assert_eq!(f.scene, Some(None));
+        assert_eq!(
+            cues,
+            vec![Cue {
+                track: 0,
+                slot: None
+            }]
+        );
+        assert_eq!(perf.list(), None);
+        // Round: the first step again; and end_list leaves the scene.
+        p.arrangement.list.looped = true;
+        cues.clear();
+        perf.play_list(&mut p, 2, When::Now(0), &mut launches, &mut cues);
+        let f = perf.due(&mut p, &mut launches, &mut cues, 1, BAR);
+        assert_eq!(f.scene, Some(Some(0)));
+        assert_eq!(perf.list().unwrap().step, 0);
+        // A step put in before the one playing moves it on; the one
+        // playing taken out ends the list.
+        perf.list_edited(0, true);
+        assert_eq!(perf.list().unwrap().step, 1);
+        perf.list_edited(0, false);
+        assert_eq!(perf.list().unwrap().step, 0);
+        perf.list_edited(0, false);
+        assert_eq!(perf.list(), None);
+        perf.play_list(&mut p, 1, When::Now(0), &mut launches, &mut cues);
+        perf.end_list();
+        assert_eq!(perf.list(), None);
     }
 
     /// Launch quantise (S4): a scene's cues land together on the
@@ -669,6 +1055,53 @@ mod tests {
                 slot: Some(1)
             }]
         );
+    }
+
+    /// A one-shot clip (S4): its stop is cued in the bar before the end
+    /// of the pass it started in, on that tick; a legato launch's pass
+    /// counts from its origin; its follow waits; a cue waiting wins.
+    #[test]
+    fn a_one_shot_clip_cues_its_stop_at_the_end_of_its_pass() {
+        let mut p = project();
+        {
+            let c = p.tracks[1].slots[1].as_mut().unwrap();
+            c.once = true;
+            c.follow = Some(Follow::after(1, FollowAction::Next));
+        }
+        let mut perf = Perform::default();
+        let launch = |origin, start| Launch {
+            track: 1,
+            slot: 1,
+            origin,
+            start,
+        };
+        let mut launches = vec![launch(BAR, BAR)];
+        let mut cues = vec![];
+        // Two bars long from bar 2: nothing in its first bar.
+        let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR, BAR);
+        assert_eq!(f, Fired::default(), "its follow waits");
+        let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR + 1, BAR);
+        assert_eq!(f.clips, 0b10);
+        assert_eq!(
+            cues,
+            vec![Cue {
+                track: 1,
+                slot: None
+            }]
+        );
+        assert_eq!(perf.cue_line(1), Some(LaunchGrid::At(3 * BAR)));
+        assert_eq!(LaunchGrid::At(3 * BAR).next(2 * BAR + 1, BAR), 3 * BAR);
+        assert_eq!(LaunchGrid::At(3 * BAR).next(4 * BAR, BAR), 4 * BAR);
+        // The stop waiting wins: nothing more.
+        let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR + 2, BAR);
+        assert!(!f.changed());
+        // Legato, taking over a pass at its second bar: it ends with that
+        // pass.
+        let l = launch(0, BAR);
+        assert_eq!(once_end(&l, p.clip(1, 1).unwrap()), 2 * BAR);
+        // At half speed a pass is twice as long.
+        p.tracks[1].slots[1].as_mut().unwrap().speed = mpfree_seq::Speed::new(1, 2).unwrap();
+        assert_eq!(once_end(&launch(0, 0), p.clip(1, 1).unwrap()), 4 * BAR);
     }
 
     #[test]

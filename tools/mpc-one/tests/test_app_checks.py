@@ -200,6 +200,23 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(got["the change landed on a bar line"])
         self.assertFalse(got["TRACK MUTE held soloed a track"])
 
+    def test_reload_on_the_bar_needs_the_state_the_wait_and_the_landing(self):
+        w = checks.Window(lines("time: save state: Beat kept (Reload clip brings it back)",
+                                "time: reload: Beat reloads at bar 3 (Reload clip again: taken back)",
+                                "time: reload: Beat back as saved on bar 3"))
+        self.assertTrue(all(ok for ok, _ in self.judge("reload-on-the-bar", w)))
+        # Stopped, it lands at once: no wait and no bar line.
+        w = checks.Window(lines("time: save state: Beat kept (Reload clip brings it back)",
+                                "time: reload: Beat is back as saved (UNDO takes it back)"))
+        got = dict((what, ok) for ok, what in self.judge("reload-on-the-bar", w))
+        self.assertTrue(got["Save state kept the clip"])
+        self.assertFalse(got["the reload waited for its line"])
+        self.assertFalse(got["it landed on a bar line"])
+        # Off the bar line is not on it.
+        w = checks.Window(lines("time: reload: Beat back as saved on bar 3 beat 2"))
+        got = dict((what, ok) for ok, what in self.judge("reload-on-the-bar", w))
+        self.assertFalse(got["it landed on a bar line"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]

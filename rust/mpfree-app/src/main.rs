@@ -6500,6 +6500,10 @@ fn player_session(
         if app.set_perform(time.perform()) {
             out.show(gui::ToUi::Rec(app.rec));
         }
+        // Perform: a take brings Rec song with it (sequencer S4).
+        if let Some(line) = time.take_follows(desk::rec_now(&time, &looper).taking()) {
+            out.note(&format!("time: {line}"));
+        }
         app.set_track_count(time.track_count());
         // The transport buttons' lights follow the transport and the
         // loops (only the ones that changed; next period's effects).
