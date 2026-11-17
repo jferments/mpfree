@@ -118,6 +118,24 @@ impl Desk<'_> {
                 panels.learned();
                 music.disarm();
             }
+            // SHIFT + a touch on a value (layout spec 4d): MIDI Learn waits
+            // for a control to take it, and the same value again cancels.
+            // A knob on the Synth tab is the selected track's synth's.
+            gui::FromUi::LearnValue(v) => {
+                use mpfree_play::mpfree_param::{Owner, ParamAddr};
+                let addr = match v {
+                    gui::LearnValue::Param(a) => a,
+                    gui::LearnValue::Synth(id) => {
+                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
+                        ParamAddr::new(Owner::Inst(t), id)
+                    }
+                };
+                if music.armed() == Some(addr) && music.waits() {
+                    music.disarm();
+                } else {
+                    music.arm_from(addr, midi_in::ArmedBy::Touch);
+                }
+            }
             gui::FromUi::Macros(a) => {
                 let recording = time.info().state == mpfree_transport::State::Recording;
                 fx.extend(panels.macros(app, mix, &a, recording))

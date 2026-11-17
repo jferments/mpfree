@@ -640,6 +640,49 @@ fn pickup_waits_for_the_knob_to_reach_the_value() {
     .is_empty());
 }
 
+/// Scale: the value moves at once, by the same share of the way to the
+/// end the knob turns towards, until the two meet.
+#[test]
+fn scale_moves_the_value_in_proportion_until_the_knob_meets_it() {
+    let mut map = LearnMap::new();
+    let t = addr(2);
+    map.arm(t);
+    let cc = |value| Msg::Cc {
+        ch: 0,
+        cc: 21,
+        value,
+    };
+    writes(&mut map, KEYS, cc(0));
+    map.set_takeover(0, Takeover::Scale);
+    map.observe(t, 0.6); // the screen says 0.6; the knob is low
+                         // The first move only says where the knob is.
+    assert!(writes(&mut map, KEYS, cc(0)).is_empty());
+    let value = |w: Vec<Input>| match w[..] {
+        [Input::Write(x)] => x.value,
+        _ => panic!("{w:?}"),
+    };
+    // Up half of what's left (0 to 63.5 of 127): the value goes up half
+    // of its 0.4.
+    let v = value(writes(&mut map, KEYS, cc(127 / 2)));
+    let knob = 63.0 / 127.0;
+    assert!((v - (0.6 + knob * 0.4)).abs() < 1e-4, "{v}");
+    // Down to the bottom: the value goes to the bottom with it.
+    let v = value(writes(&mut map, KEYS, cc(0)));
+    assert!(v.abs() < 1e-6, "{v}");
+    // They met: from now on the value follows the knob.
+    let v = value(writes(&mut map, KEYS, cc(100)));
+    assert!((v - 100.0 / 127.0).abs() < 1e-6, "{v}");
+    // Saved and read back as "scale".
+    let saved = mpfree_midi::learn::Saved::of(map.get(0).unwrap(), None);
+    assert!(saved.text().ends_with("| scale"), "{}", saved.text());
+    assert_eq!(
+        mpfree_midi::learn::Saved::parse(&saved.text())
+            .unwrap()
+            .takeover,
+        Takeover::Scale
+    );
+}
+
 #[test]
 fn encoders_buttons_and_keys() {
     let mut map = LearnMap::new();
@@ -1214,4 +1257,47 @@ fn routes_past_the_most_kept_are_counted() {
     let many = (0..40u8).map(|t| route(KEYS, Some(t % 16), t));
     assert_eq!(r.set_routes(many, 0, |_| {}), 40 - MAX_ROUTES);
     assert_eq!(r.routes().count(), MAX_ROUTES);
+}
+
+/// A key made a toggle on a value that is already on (PLAY and STOP while
+/// playing, a muted track) turns it off on its first press.
+#[test]
+fn a_toggle_starts_from_where_its_value_stands() {
+    let mut map = LearnMap::new();
+    let a = addr(3);
+    map.observe(a, 1.0);
+    map.arm(a);
+    let key = |down: bool| {
+        if down {
+            Msg::NoteOn {
+                ch: 0,
+                note: 36,
+                vel: 100,
+            }
+        } else {
+            Msg::NoteOff {
+                ch: 0,
+                note: 36,
+                vel: 0,
+            }
+        }
+    };
+    assert!(matches!(
+        writes(&mut map, KEYS, key(true))[..],
+        [Input::Learned(0)]
+    ));
+    // The app makes it a toggle as it learns, before the key comes up.
+    map.set_mode(0, Mode::Toggle);
+    assert!(writes(&mut map, KEYS, key(false)).is_empty());
+    let first = writes(&mut map, KEYS, key(true));
+    assert!(
+        matches!(first[..], [Input::Write(x)] if x.value == 0.0),
+        "{first:?}"
+    );
+    assert!(writes(&mut map, KEYS, key(false)).is_empty());
+    let second = writes(&mut map, KEYS, key(true));
+    assert!(
+        matches!(second[..], [Input::Write(x)] if x.value == 1.0),
+        "{second:?}"
+    );
 }
