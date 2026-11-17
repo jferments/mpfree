@@ -125,10 +125,12 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         (Row::Reverse, "15 %"),
         (Row::Spread, "70 %"),
         (Row::Quantise, "Minor"),
+        (Row::Sync, "Off"),
         (Row::Position, "56.0 %"),
         (Row::Size, "150 ms"),
         (Row::Density, "120 /s"),
         (Row::Pitch, "-5 st"),
+        (Row::Level, "+0.0 dB"),
     ] {
         assert_eq!(row_value(&s, row), value, "{row:?}");
     }
@@ -321,6 +323,89 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     assert_eq!(
         s.project.pad(PAD).unwrap().layers[0].region.grain.window,
         GrainWindow::Hann
+    );
+}
+
+#[test]
+fn tempo_sync_locks_density_and_size_to_beats_and_level_sets_the_cloud() {
+    let mut s = grain(true);
+    let before = undo_steps(&s.project);
+    // 120 grains a second of 150 ms at 120 BPM: 60 a beat, 0.3 of a beat.
+    step_apply(&mut s, Row::Sync, 1);
+    assert_eq!(row_value(&s, Row::Sync), "Density");
+    assert_eq!(row_value(&s, Row::Density), "32 /beat", "the most a beat");
+    assert_eq!(row_value(&s, Row::Size), "150 ms");
+    step_apply(&mut s, Row::Sync, 1);
+    assert_eq!(row_value(&s, Row::Sync), "Size");
+    assert_eq!(row_value(&s, Row::Density), "120 /s", "free again");
+    assert_eq!(
+        row_value(&s, Row::Size),
+        "1/4 beat",
+        "nearest 0.3 of a beat"
+    );
+    step_apply(&mut s, Row::Sync, 1);
+    assert_eq!(row_value(&s, Row::Sync), "Both");
+    step_apply(&mut s, Row::Density, -3);
+    assert_eq!(row_value(&s, Row::Density), "12 /beat");
+    step_apply(&mut s, Row::Size, 1);
+    assert_eq!(row_value(&s, Row::Size), "1/2 beat");
+    let g = s.project.pad(PAD).unwrap().layers[0].region.grain;
+    let t = g.sync.unwrap();
+    assert_eq!((t.grains_per_beat, t.size_beats), (Some(12.0), Some(0.5)));
+    assert_eq!(t.frames_per_beat, grain_tab::SAVED_FRAMES_PER_BEAT);
+    assert_eq!((g.density, g.size_ms), (120.0, 150.0), "kept for later");
+    // A synced size: the cloud draws its grains at the tempo's length,
+    // the touch pad and Q-Link 2 step its beats.
+    assert_eq!(s.state.size_ms(), 250.0);
+    s.state.bpm = 60.0;
+    assert_eq!(s.state.size_ms(), 500.0);
+    let a = qlink(&mut s, 1, 2, false).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(row_value(&s, Row::Size), "2 beats");
+    let card = s.ui.get::<KnobCard>(grain_tab::QLINKS[1]).unwrap();
+    assert_eq!((card.value.as_str(), card.sub.as_str()), ("2", "beats"));
+    let card = s.ui.get::<KnobCard>(grain_tab::QLINKS[2]).unwrap();
+    assert_eq!((card.value.as_str(), card.sub.as_str()), ("12", "/beat"));
+    lift(&mut s);
+    let r = rect(&s, grain_tab::XY);
+    let acts = drag(
+        &mut s,
+        XyPad::point(r, 0.56, 0.75),
+        XyPad::point(r, 0.56, 1.0),
+    );
+    apply(&mut s, acts.last().unwrap());
+    lift(&mut s);
+    assert_eq!(row_value(&s, Row::Size), "4 beats", "the top of the pad");
+    // Level: the cloud's gain, half a dB a step.
+    step_apply(&mut s, Row::Level, -4);
+    assert_eq!(row_value(&s, Row::Level), "-2.0 dB");
+    let gain = s.project.pad(PAD).unwrap().layers[0].region.grain.gain;
+    assert!((gain - 0.794).abs() < 1e-3, "{gain}");
+    step_apply(&mut s, Row::Level, 99);
+    assert_eq!(row_value(&s, Row::Level), "+12.0 dB");
+    // Off frees both, back to what they were.
+    step_apply(&mut s, Row::Sync, -3);
+    assert_eq!(row_value(&s, Row::Sync), "Off");
+    assert_eq!(row_value(&s, Row::Size), "150 ms");
+    assert_eq!(row_value(&s, Row::Density), "120 /s");
+    assert!(s.project.pad(PAD).unwrap().layers[0]
+        .region
+        .grain
+        .sync
+        .is_none());
+    assert!(step(&mut s, Row::Sync, -1).is_none(), "Off is the first");
+    assert!(undo_steps(&s.project) > before);
+    let a = grain_project().0.pad(PAD).unwrap().layers[0].region.clone();
+    let mut b = a.clone();
+    b.grain.gain = s.project.pad(PAD).unwrap().layers[0].region.grain.gain;
+    b.grain.sync = Some(mpfree_sampler::model::TempoSync {
+        frames_per_beat: 22_050.0,
+        grains_per_beat: Some(4.0),
+        size_beats: None,
+    });
+    assert_eq!(
+        describe(&a, &b),
+        "tempo sync Off -> Density, density 120 /s -> 4 /beat, level +0.0 dB -> +12.0 dB"
     );
 }
 
