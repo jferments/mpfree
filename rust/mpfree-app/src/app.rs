@@ -1722,6 +1722,17 @@ impl App {
         self.erase_held
     }
 
+    /// Whether hardware button `note` is ERASE.
+    pub fn is_erase(&self, note: u8) -> bool {
+        Some(note) == self.map.erase
+    }
+
+    /// SHIFT is held (a step pad pressed now on an empty step holds it
+    /// with no note, for a lock with no note).
+    pub fn shift_held(&self) -> bool {
+        self.shift
+    }
+
     /// TRACK MUTE: whether a pad press plays, or mutes a track or a pad
     /// (the audio loop applies it, and lights the pads).
     pub fn mute_keys(&self) -> MuteKeys {

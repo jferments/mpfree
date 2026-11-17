@@ -2278,6 +2278,25 @@ impl SamplePage {
         Some((p.tune_cents as f32 / 100.0, decay))
     }
 
+    /// Pad `pad`'s own tune (cents), decay (ms; the longest for a sound
+    /// that plays out), cutoff (Hz; open without a filter) and level (dB)
+    /// on the playing kit: what a step without a lock plays, for the
+    /// Sound bank of held step pads.
+    pub fn pad_sound(&self, pad: usize) -> Option<[f32; 4]> {
+        let p = self.projects.get(self.kit)?.pad(pad)?;
+        let decay = if p.amp.sustain < 0.999 {
+            p.amp.decay_ms
+        } else {
+            crate::play_page::DECAY_MAX_MS
+        };
+        let cutoff = if p.filter.kind == mpfree_sampler::dsp::FilterKind::Off {
+            crate::play_page::CUTOFF_OPEN_HZ
+        } else {
+            p.filter.cutoff_hz
+        };
+        Some([p.tune_cents as f32, decay, cutoff, p.level_db])
+    }
+
     /// A Play page Q-Link on `pad` of the playing kit: its tuning or its
     /// decay, by `d` detents (`fine`: SHIFT held). One undo step a turn,
     /// as on the Play tab; the kit's new view goes to the audio thread.
