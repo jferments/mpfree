@@ -848,6 +848,8 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
         mode,
         grain,
         grain_mode,
+        grain_keys,
+        grain_glide_ms,
         warp,
     } = r;
     f.num("start", start);
@@ -885,6 +887,13 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
     // Saves before grain modes open as clouds.
     f.word("grain_mode", grain_mode, GRAIN_MODES);
     f.scope("grain", |f| visit_grain(f, grain));
+    // Saves before key tracking open with the keys moving the pitch alone.
+    f.scope("grain_keys", |f| {
+        let GrainKeys { size, scan } = grain_keys;
+        f.flag("size", size);
+        f.flag("scan", scan);
+    });
+    f.num("grain_glide_ms", grain_glide_ms);
     f.opt("warp", warp, Warp::new(120.0), |f, w| {
         let Warp { bpm, method, pins } = w;
         f.num("bpm", bpm);

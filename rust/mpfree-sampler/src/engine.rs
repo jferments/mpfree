@@ -99,7 +99,8 @@ use crate::grain_clip::GrainClip;
 use crate::hits::{self, HitCell};
 use crate::model::{
     edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LoopMode,
-    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod,
+    GRAIN_GLIDE_MAX_MS, PADS,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -292,9 +293,12 @@ pub struct ViewLayer {
     src_rate: u32,
     /// Grain settings with the layer's tune and reverse folded in.
     grain: mpfree_grain::Params,
-    /// A Tone region: tune moves its density, not its grains' pitch
-    /// ([`pitched_grain`]).
-    tone: bool,
+    /// What a key or a tune moves ([`pitched_grain`]): a Tone region's
+    /// density (its note), or the grains' pitch and, with the region's key
+    /// tracking, their size and the scan.
+    follow: KeyFollow,
+    /// Frames a granular voice takes to glide to a new key (0, none).
+    glide: u32,
     /// The tempo the layer's audio is at, when it is warped (0 if not):
     /// the voice plays it `tempo / warp_bpm` times as fast.
     warp_bpm: f64,
@@ -450,8 +454,12 @@ impl EngineView {
                         let g = unit_gain * pad_gain;
                         let cents = f64::from(r.tune_cents + l.tune_cents + p.tune_cents);
                         let ratio = f64::from(s.rate()) / f64::from(rate) * (cents / 1200.0).exp2();
-                        let tone = r.grain_mode == GrainMode::Tone;
-                        let mut grain = pitched_grain(r.grain, (cents / 100.0) as f32, tone);
+                        let follow = KeyFollow {
+                            tone: r.grain_mode == GrainMode::Tone,
+                            size: r.grain_keys.size,
+                            scan: r.grain_keys.scan,
+                        };
+                        let mut grain = pitched_grain(r.grain, (cents / 100.0) as f32, follow);
                         // A stretch of a sound with a tempo keeps time.
                         if r.grain_mode == GrainMode::Stretch {
                             grain.scan_tempo = r.warp.as_ref().map(|w| w.bpm);
@@ -484,7 +492,9 @@ impl EngineView {
                             vel_hi: l.vel_hi,
                             src_rate: s.rate(),
                             grain,
-                            tone,
+                            follow,
+                            glide: (r.grain_glide_ms.clamp(0.0, GRAIN_GLIDE_MAX_MS) / 1000.0
+                                * rate as f32) as u32,
                             warp_bpm: 0.0,
                             copy: false,
                             source_at: None,
@@ -941,10 +951,17 @@ struct Voice {
     src_rate: u32,
     /// Grain settings before pressure moves them.
     grain_base: GrainParams,
-    /// A Tone voice ([`ViewLayer::tone`]), and the semitones its hit added
-    /// (a keygroup's, a live tune's), kept for a live edit.
-    grain_tone: bool,
+    /// What a key moves ([`ViewLayer::follow`]), and the semitones its hit
+    /// added (a keygroup's, a live tune's), kept for a live edit and a
+    /// glide; of those, the hit's key (a keygroup's, 16 Levels').
+    grain_follow: KeyFollow,
     grain_hit: f32,
+    grain_key: i32,
+    /// Gliding to another key ([`ViewLayer::glide`]): where `grain_hit`
+    /// goes, how far it moves a frame, and the frames left.
+    glide_to: f32,
+    glide_step: f32,
+    glide_left: u32,
     route: PressureRoute,
     /// Pressure asked for and the smoothed value in use, 0 to 1.
     press_target: f32,
@@ -1463,6 +1480,9 @@ pub struct Engine {
     /// [`Engine::victim`]'s count of each kit's pads' held voices, all 0
     /// between calls, [`PADS`] a kit.
     held: Vec<u16>,
+    /// Each pad's last granular key (its voice's semitones), which a
+    /// gliding layer's next voice starts from, [`PADS`] a kit.
+    last_key: Vec<Option<f32>>,
     rng: Rng,
     clock: u64,
     fixed_velocity: Option<u8>,
@@ -1541,6 +1561,7 @@ impl Engine {
             events: Vec::with_capacity(MAX_EVENTS),
             cycle: vec![0; PADS * kits],
             held: vec![0; PADS * kits],
+            last_key: vec![None; PADS * kits],
             rng: Rng::new(0x5A4D_5052),
             clock: 0,
             fixed_velocity: None,
@@ -2539,8 +2560,19 @@ impl Engine {
             *g *= edge_gain(velocity, l.vel_lo, l.vel_hi, vp.vel_fade, 1, 127);
         }
         let polyphony = usize::from(vp.polyphony);
+        // A mono pad's gliding granular layers: a key played while one
+        // holds moves that cloud there, without a new start (legato).
+        let mut legato = [false; crate::model::MAX_LAYERS];
+        if polyphony == 1 {
+            for (li, l) in vp.layers.iter().enumerate().take(count) {
+                legato[li] = l.glide > 0 && l.mode == PlayMode::Granular;
+            }
+        }
         for li in 0..count {
             if !chosen[li] {
+                continue;
+            }
+            if legato[li] && self.glide_held(pad, li, note, vary) {
                 continue;
             }
             // Polyphony: push out this pad's oldest voices past the limit.
@@ -2565,6 +2597,50 @@ impl Engine {
             }
             self.start_voice(p, li, level * gains[li], vel, note, vary);
         }
+    }
+
+    /// A held granular voice of layer `li` of pad `pad`, if one is
+    /// playing, glides to `vary`'s key (a mono pad's next key: see
+    /// [`Region::grain_glide_ms`]) and plays `note` from now on. False if
+    /// none holds.
+    ///
+    /// [`Region::grain_glide_ms`]: crate::model::Region::grain_glide_ms
+    fn glide_held(&mut self, pad: u8, li: usize, note: u8, vary: Vary) -> bool {
+        let p = usize::from(pad);
+        let Some(glide) = self.view.pads[p]
+            .as_ref()
+            .and_then(|vp| vp.layers.get(li))
+            .map(|l| l.glide)
+        else {
+            return false;
+        };
+        let at = self.at;
+        for (v, _) in self.pool.iter_mut() {
+            if v.active
+                && v.granular
+                && v.held
+                && v.kill_left == 0
+                && usize::from(v.kit) == at
+                && v.pad == pad
+                && usize::from(v.layer) == li
+            {
+                let now = if v.glide_left > 0 {
+                    v.glide_to
+                } else {
+                    v.grain_hit
+                };
+                let to = now + (vary.semis - v.grain_key) as f32;
+                v.glide_to = to;
+                v.glide_step = (to - v.grain_hit) / glide.max(1) as f32;
+                v.glide_left = glide;
+                v.grain_key = vary.semis;
+                v.note = note;
+                v.by = vary.by.unwrap_or(pad);
+                self.last_key[at * PADS + p] = Some(to);
+                return true;
+            }
+        }
+        false
     }
 
     /// Starts layer `li` of pad `p` with what `vary` changes. A slice, for
@@ -2687,10 +2763,17 @@ impl Engine {
                 program[ProgramField::Tune as usize],
             )
         };
-        let mut grain = pitched_grain(l.grain, semis as f32, l.tone);
-        if tune != 0.0 {
-            grain = pitched_grain(grain, tune / 100.0, l.tone);
+        // A gliding layer's voice starts from the pad's last key.
+        let hit = semis as f32 + tune / 100.0;
+        let from = if granular && l.glide > 0 {
+            self.last_key[at * PADS + p].filter(|k| *k != hit)
+        } else {
+            None
+        };
+        if granular {
+            self.last_key[at * PADS + p] = Some(hit);
         }
+        let mut grain = pitched_grain(l.grain, from.unwrap_or(hit), l.follow);
         if let Some(at) = vary.start {
             grain.position = (at * 16.0 / 15.0).min(1.0);
         }
@@ -2834,8 +2917,12 @@ impl Engine {
             granular,
             src_rate: l.src_rate,
             grain_base: grain,
-            grain_tone: l.tone,
-            grain_hit: semis as f32 + tune / 100.0,
+            grain_follow: l.follow,
+            grain_hit: from.unwrap_or(hit),
+            grain_key: semis,
+            glide_to: hit,
+            glide_step: from.map_or(0.0, |k| (hit - k) / l.glide as f32),
+            glide_left: if from.is_some() { l.glide } else { 0 },
             route: vp.pressure,
             press_target: 0.0,
             press: 0.0,
@@ -2906,7 +2993,7 @@ impl Engine {
         let beat = self.frames_per_beat();
         if let Some(g) = self.pool.grain_mut(slot).filter(|_| granular) {
             g.set_tempo(beat);
-            g.set_params(tuned_grain(grain, cents, l.tone));
+            g.set_params(tuned_grain(grain, cents, l.follow));
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
             g.start();
@@ -3258,12 +3345,26 @@ fn grains<C: GrainSource>(
         let (bl, br) = (&mut sl[..n], &mut sr[..n]);
         bl.fill(0.0);
         br.fill(0.0);
-        if v.route.target != PressureTarget::Off || v.grain_cents != v.follow.cents {
+        let gliding = v.glide_left > 0;
+        if gliding {
+            // On to the next key, a part at a time.
+            let k = (n as u32).min(v.glide_left);
+            v.glide_left -= k;
+            v.grain_hit = if v.glide_left == 0 {
+                v.glide_to
+            } else {
+                v.grain_hit + v.glide_step * k as f32
+            };
+            let mut p = pitched_grain(v.layer_grain, v.grain_hit, v.grain_follow);
+            p.position = v.grain_base.position;
+            v.grain_base = p;
+        }
+        if gliding || v.route.target != PressureTarget::Off || v.grain_cents != v.follow.cents {
             let cents = v.follow.cents;
             g.set_params(tuned_grain(
                 pressed_grain(v.grain_base, v.route, v.press),
                 cents,
-                v.grain_tone,
+                v.grain_follow,
             ));
             v.grain_cents = cents;
         }
@@ -3286,26 +3387,45 @@ fn grains<C: GrainSource>(
 }
 
 /// Grain settings `cents` higher (the program's tune).
-fn tuned_grain(g: GrainParams, cents: f32, tone: bool) -> GrainParams {
+fn tuned_grain(g: GrainParams, cents: f32, follow: KeyFollow) -> GrainParams {
     if cents != 0.0 {
-        pitched_grain(g, cents / 100.0, tone)
+        pitched_grain(g, cents / 100.0, follow)
     } else {
         g
     }
 }
 
-/// Grain settings `semis` higher: the grains' pitch, or for a Tone region
-/// (`tone`) the density, with the size shortened as much so each grain
+/// Grain settings `semis` higher: the grains' pitch (and with key
+/// tracking their size, shorter, and the scan, faster, as much), or for a
+/// Tone region the density, with the size shortened as much so each grain
 /// keeps as many cycles of the note.
-fn pitched_grain(mut g: GrainParams, semis: f32, tone: bool) -> GrainParams {
-    if tone {
-        let k = (semis / 12.0).exp2();
+fn pitched_grain(mut g: GrainParams, semis: f32, follow: KeyFollow) -> GrainParams {
+    let k = (semis / 12.0).exp2();
+    if follow.tone {
         g.density *= k;
         g.size_ms /= k;
     } else {
         g.pitch += semis;
+        if follow.size {
+            g.size_ms /= k;
+        }
+    }
+    if follow.scan {
+        g.scan *= k;
     }
     g
+}
+
+/// What a key moves on a granular voice ([`pitched_grain`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct KeyFollow {
+    /// A Tone region: its density (the note), with its size shortened as
+    /// much so each grain keeps its cycles; else the grains' pitch.
+    tone: bool,
+    /// The grains' size too (key tracking, [`GrainKeys::size`]).
+    size: bool,
+    /// The scan too ([`GrainKeys::scan`]).
+    scan: bool,
 }
 
 /// A voice's filter with the live settings on it: `cutoff` and `resonance`
@@ -3497,13 +3617,12 @@ fn follow_edit(
     if l.hits.is_none() {
         v.hits = None;
     }
-    if v.granular && l.mode == PlayMode::Granular && l.grain != v.layer_grain {
-        let mut p = l.grain;
-        if v.grain_tone {
-            p = pitched_grain(p, v.grain_hit, true);
-        } else {
-            p.pitch += v.grain_base.pitch - v.layer_grain.pitch;
-        }
+    if v.granular
+        && l.mode == PlayMode::Granular
+        && (l.grain != v.layer_grain || l.follow != v.grain_follow)
+    {
+        v.grain_follow = l.follow;
+        let mut p = pitched_grain(l.grain, v.grain_hit, v.grain_follow);
         if v.grain_base.position != v.layer_grain.position {
             p.position = v.grain_base.position;
         }
@@ -3512,7 +3631,7 @@ fn follow_edit(
         g.set_params(tuned_grain(
             pressed_grain(p, v.route, v.press),
             v.follow.cents,
-            v.grain_tone,
+            v.grain_follow,
         ));
         v.grain_cents = v.follow.cents;
     }
