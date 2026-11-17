@@ -14,7 +14,7 @@ use crate::fft::power_spectrum;
 use crate::harmonics::{self, N};
 use crate::signals::{coherent, db_to_amp, level_steps, peak_of, pink, rms_of, sine};
 use crate::wav::Stereo;
-use crate::{dynamics, flutter, mixlaw, response};
+use crate::{dynamics, flutter, mixlaw, response, zipper};
 
 // ---------------------------------------------------------------------------
 // Shared measures.
@@ -318,7 +318,15 @@ pub(super) fn drive(r: &mut Report) {
         } else {
             (ch::AMOUNT, &[0.0, 50.0, 100.0])
         };
-        let tol_lu = if rectify { 3.0 } else { 1.0 };
+        // Rectify and Foldback put much of a signal's power into new
+        // frequencies (an octave up; folds that act like frequency
+        // modulation, spreading past 20 kHz at high drive), so no fixed
+        // gain holds their loudness the way it holds a clipper's: ±3 LU.
+        let tol_lu = if rectify || mode == "foldback" {
+            3.0
+        } else {
+            1.0
+        };
         for v in steps {
             let mut d = make_with(s, rate, &[(knob, *v)]);
             let k = if is_drive { "drive" } else { "amount" };
@@ -477,15 +485,19 @@ pub(super) fn drive(r: &mut Report) {
         );
 
         // G11: zipper.
-        r.put(
-            "G11",
-            name,
-            "zipper_db",
-            worst_zipper(s, rate),
-            Better::Lower,
-            Some(3.0),
-            0.5,
-        );
+        let (zip, bias_zip) = drive_zipper(s, rate);
+        r.put("G11", name, "zipper_db", zip, Better::Lower, Some(3.0), 0.5);
+        if rectify {
+            r.put(
+                "G11",
+                name,
+                "zipper_bias_db",
+                bias_zip,
+                Better::Info,
+                None,
+                0.0,
+            );
+        }
     }
 
     // G7: a Mode or Quality change under a 100 Hz sine.
@@ -587,12 +599,33 @@ pub(super) fn drive(r: &mut Report) {
             "G11",
             &s.name,
             "zipper_db",
-            worst_zipper(s, rate),
+            drive_zipper(s, rate).0,
             Better::Lower,
             Some(3.0),
             0.5,
         );
     }
+}
+
+/// fxlab's zipper (each control swept under a sine, its sharpest step
+/// against the resting ends'), and Rectify's Bias apart. Bias moves where
+/// Rectify folds: at either end of its range the test sine never reaches
+/// the fold (a smooth curve), in between it does (corners), so the sweep's
+/// sharpest step stands far above the ends' for a reason that is not a
+/// zipper (a sweep twenty times slower shows the same). Reported, not held.
+fn drive_zipper(s: &Subject, rate: u32) -> (Option<f64>, Option<f64>) {
+    if mode_of(s) != "rectify" {
+        return (worst_zipper(s, rate), None);
+    }
+    let mut mk = || -> Box<dyn Dut> { Box::new(make(s, rate)) };
+    let all = zipper::sweep_all(&mut mk, 50.0);
+    let worst = |bias: bool| {
+        all.iter()
+            .filter(|z| (z.id == ids::drive::BIAS) == bias)
+            .map(|z| z.step_db.max(0.0))
+            .reduce(f64::max)
+    };
+    (worst(false), worst(true))
 }
 
 /// The worst deviation of the response from its own 1 kHz gain, 20 Hz to

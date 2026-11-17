@@ -2,7 +2,8 @@
 //! Console holds loud peaks with odd harmonics only and Iron adds even
 //! ones; Tape lifts its head bump and loses a little top; Soften takes the
 //! edge off loud highs and leaves quiet ones and lows alone; Mix 0 is the
-//! input exactly and Output scales; a change of mode does not click.
+//! input (late, through an all-pass) and Output scales; a change of mode
+//! does not click.
 
 use std::f32::consts::PI;
 
@@ -167,16 +168,23 @@ fn soften_takes_the_edge_off_loud_highs_only() {
 }
 
 #[test]
-fn mix_zero_is_the_input_exactly_and_output_scales() {
+fn mix_zero_is_the_input_late_and_output_scales() {
+    // The dry side takes the half-bands' phase (an all-pass) and the
+    // latency: at Mix 0 the input at its own level at every frequency, on
+    // time at low ones.
+    assert_eq!(character(&[]).latency(), 4);
     let x = sine(440.0, 0.8, 4800);
     for mode in [CONSOLE, TAPE, IRON, SOFTEN] {
         let mut c = character(&[(MODE, mode), (AMOUNT, 100.0), (MIX, 0.0)]);
         let (mut l, mut r) = (x.clone(), x.clone());
         run(&mut c, &mut l, &mut r, &[]);
-        assert!(
-            l.iter().zip(&x).all(|(a, b)| a.to_bits() == b.to_bits()),
-            "mode {mode}"
-        );
+        let worst = (2400..4800).fold(0.0f32, |m, i| m.max((l[i] - x[i - 4]).abs()));
+        assert!(worst < 0.002, "mode {mode}: {worst}");
+        for hz in [5000.0, 15_000.0] {
+            let y = through(&[(MODE, mode), (AMOUNT, 100.0), (MIX, 0.0)], hz, 0.5);
+            let g = db(rms(&y) / rms(&sine(hz, 0.5, RATE as usize)));
+            assert!(g.abs() < 0.01, "mode {mode}, {hz} Hz: {g:+.3} dB");
+        }
     }
     let quiet = sine(1000.0, 0.01, RATE as usize);
     let mut c = character(&[(AMOUNT, 0.0), (OUTPUT, -6.0)]);
