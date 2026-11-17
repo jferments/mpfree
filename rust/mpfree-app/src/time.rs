@@ -2573,6 +2573,50 @@ mod tests {
             .collect()
     }
 
+    /// A track's MIDI effects go from the project to the sound loop: the
+    /// control half sends the effects and, the first time, a chain to run
+    /// them in; the live pads through the track's arp then play through
+    /// them, as do edits made later. A chain stays when its effects go.
+    #[test]
+    fn a_tracks_midi_effects_reach_the_pads_from_the_project() {
+        use mpfree_notefx::{Fx, Slot};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        let transpose = |semitones| Slot {
+            fx: Fx::Transpose { semitones },
+            on: true,
+        };
+        h.control.project.tracks[1].note_fx.slots[0] = Some(transpose(2));
+        // A period for an edit to cross to the audio half, then a press.
+        let press = |h: &mut TimeHost, pads: &mut Fake, arps: &mut TrackArps| {
+            h.period_arps(PERIOD, pads, arps);
+            pads.frame += u64::from(PERIOD);
+            arps.pad(
+                1,
+                0,
+                Event::NoteOn {
+                    note: 4,
+                    velocity: 100,
+                },
+            );
+            arps.pad(1, 10, Event::NoteOff { note: 4 });
+            for _ in 0..4 {
+                h.period_arps(PERIOD, pads, arps);
+                pads.frame += u64::from(PERIOD);
+            }
+            pads.hits.last().map(|&(_, pad, _)| pad)
+        };
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(6));
+        assert!(arps.has_chain(1) && !arps.has_chain(0));
+        h.control.project.tracks[1].note_fx.slots[0] = Some(transpose(-3));
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(1));
+        h.control.project.tracks[1].note_fx.slots[0] = None;
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(4));
+        assert!(arps.has_chain(1));
+        assert_eq!((h.dropped(), arps.dropped()), (0, 0));
+    }
+
     /// STOP while stopped (the transport's panic) silences everything,
     /// every track's arp included, and costs only what sounds. In the
     /// 12 Nov live test each such STOP lost 512 notes in the time engine

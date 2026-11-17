@@ -15,6 +15,9 @@
 //! dest 0
 //! swing 240 58
 //! solo
+//! notefx 0 1 on chord shape=m7 voicing=close inv=0 below=- vel=90 strum=8 scale=-
+//! notefx 1 2 off echo time=480t repeats=3 fb=70 pitch=0
+//! notearp 1
 //! clip 0 7680 Beat 1
 //! speed 1 1
 //! launch ticks 960
@@ -52,6 +55,7 @@ use std::fmt::Write as _;
 use std::str::FromStr;
 
 use mpfree_moves::{Kind, Map, Moves, Point, Steps, Target};
+use mpfree_notefx::{Slot, MAX_FX};
 use mpfree_param::{ParamAddr, RelAddr};
 use mpfree_transport::time::{Swing, Tick};
 
@@ -92,6 +96,17 @@ pub fn to_text(p: &Project) -> String {
         let _ = writeln!(s, "rectouch {}", u8::from(t.record_touch));
         if let Some(grid) = t.record_quantise {
             let _ = writeln!(s, "recquant {grid}");
+        }
+        // The track's MIDI effects, each in its place with its id, then
+        // the arp's place.
+        for (place, slot) in t.note_fx.slots.iter().enumerate() {
+            if let Some(slot) = slot {
+                let id = t.note_fx.ids[place];
+                let _ = writeln!(s, "notefx {place} {id} {}", slot.to_words());
+            }
+        }
+        if !t.note_fx.is_empty() || t.note_fx.arp_at != 0 {
+            let _ = writeln!(s, "notearp {}", t.note_fx.arp_at);
         }
         if let Some(input) = t.loops() {
             let _ = writeln!(s, "loops {}", input.word());
@@ -421,6 +436,28 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                     return Err(bad("recquant"));
                 }
                 last(&mut p).record_quantise = Some(grid)
+            }
+            ("notefx", At::Track) => {
+                let place: usize = num(w.next()).ok_or_else(|| bad("place"))?;
+                let id: u16 = num(w.next()).ok_or_else(|| bad("notefx id"))?;
+                let fx = &mut last(&mut p).note_fx;
+                if place >= MAX_FX || fx.slots[place].is_some() {
+                    return Err(bad("place"));
+                }
+                // Each effect's id is its own on the track.
+                if id == 0 || fx.place_of(id).is_some() {
+                    return Err(bad("notefx id"));
+                }
+                let slot = Slot::from_words(nth_rest(rest, 2)).map_err(|e| bad(&e))?;
+                fx.slots[place] = Some(slot);
+                fx.ids[place] = id;
+            }
+            ("notearp", At::Track) => {
+                let at: u8 = num(w.next()).ok_or_else(|| bad("notearp"))?;
+                if usize::from(at) > MAX_FX {
+                    return Err(bad("notearp"));
+                }
+                last(&mut p).note_fx.arp_at = at;
             }
             ("loops", At::Track) => {
                 let input = w.next().and_then(LoopInput::from_word);
@@ -753,6 +790,14 @@ mod tests {
         p.tracks[2].record_touch = false;
         p.tracks[2].record_quantise = Some(160);
         p.launch = crate::LaunchGrid::Bars(4);
+        // Board 7's Notes: Scale, Chord, the arp, Humanize (off).
+        let fx = &mut p.tracks[2].note_fx;
+        let all = mpfree_notefx::Fx::all();
+        for (place, (i, on)) in [(0, true), (1, true), (6, false)].into_iter().enumerate() {
+            fx.slots[place] = Some(Slot { fx: all[i], on });
+            fx.ids[place] = [4, 2, 9][place];
+        }
+        fx.arp_at = 2;
         let mut c = Clip::new("Beat with  spaces", 7680);
         c.speed = Speed::new(2, 1).unwrap();
         c.swing = Swing::new(480, 66);
@@ -945,6 +990,25 @@ mod tests {
         assert!(from_text(&big).is_err());
         let coarse = text.replace("recquant 160", "recquant 99999");
         assert!(from_text(&coarse).is_err());
+        // A MIDI effect past the last place, twice in one, out of range,
+        // or one this build doesn't have.
+        assert!(text.contains("notefx 1 2 on chord shape=major"));
+        for (from, to) in [
+            ("notefx 1 2 on", "notefx 8 2 on"),
+            ("notefx 1 2 on", "notefx 0 2 on"),
+            // An id of none, or another effect's on the track.
+            ("notefx 1 2 on", "notefx 1 0 on"),
+            ("notefx 1 2 on", "notefx 1 4 on"),
+            ("notefx 1 2 on", "notefx 1 on"),
+            ("notearp 2", "notearp 9"),
+            ("notefx 1 2 on chord", "notefx 1 2 on sparkle"),
+            ("vel=100", "vel=101"),
+        ] {
+            assert!(from_text(&text.replace(from, to)).is_err(), "{to}");
+        }
+        // A setting this build doesn't know is skipped.
+        let newer = text.replace("notefx 1 2 on chord", "notefx 1 2 on chord glow=3");
+        assert_eq!(from_text(&newer).unwrap(), full());
         let nan = text.replace("lock 480 36 pad36.4 0.1", "lock 480 36 pad36.4 NaN");
         assert!(from_text(&nan).is_err());
     }
