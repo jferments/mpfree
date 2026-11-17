@@ -132,6 +132,15 @@ jobs:
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_mpc_projects.py
           python3 tools/mpc-import/tests/test_inspect_xpj.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py
+          python3 tools/ci/test_store.py
+      - name: The USB creator release's file hand-over, tested against a fake GitHub (node)
+        # tools/ci/release_assets.js runs inside actions/github-script; any node 18 or newer
+        # runs its tests: the machine's own, else the runner's bundled one.
+        run: |
+          node=$(command -v node || ls -d "$RUNNER_WORKSPACE"/../../externals/node*/bin/node 2>/dev/null | sort -V | tail -n 1)
+          test -n "$node" || { echo "no node on this runner"; exit 1; }
+          "$node" --version
+          "$node" --test tools/ci/test_release_assets.js
       - name: Check the remote survey contains no known destructive operations
         run: |
           python3 - <<'PY'
@@ -712,19 +721,14 @@ jobs:
       - name: Per-crate table in the run summary
         run: |
           python3 tools/ci/coverage_summary.py "$RUNNER_TEMP/coverage.json" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Keep the lcov report for 3 days (hand-started runs only)
-        # The summary above is the report. Artifacts count against the account's
-        # storage, billed by the hour, and main merges many times a day, so only
-        # a hand-started run (Run workflow) keeps the per-line file. When the
-        # storage is full ("Artifact storage quota has been hit", 2026-11-11) the
-        # upload fails, and that must not turn the run red.
-        if: github.event_name == 'workflow_dispatch'
+      - name: Keep the lcov report on the CI VM
+        # The summary above is the report. The per-line file goes to the folder
+        # the mpfree runners share on the CI VM (tools/ci/store.py:
+        # /srv/mpfree-store/coverage, the newest 30 runs), never to GitHub's
+        # artifact storage, which the account's runs filled (2026-11-11). A
+        # store that can't take it must not turn the run red.
         continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: rust-lcov
-          path: ${{ runner.temp }}/lcov.info
-          retention-days: 3
+        run: python3 tools/ci/store.py keep coverage "$RUNNER_TEMP/lcov.info" "$RUNNER_TEMP/coverage.json"
 
   soak:
     name: The song for 2^21 periods without allocating (soak)
