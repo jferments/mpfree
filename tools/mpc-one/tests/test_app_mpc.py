@@ -840,6 +840,44 @@ class AppTests(unittest.TestCase):
         # The app step copies, starts and stops nothing.
         self.assertEqual(self.log_lines("program: "), [])
 
+    def test_the_chains_second_kernel_is_mpfrees_own(self):
+        """A stick built with --own-kernel: on the chain's second kernel the release is MPFree's own (the build
+        report's `its own kernel release:` line), and that kernel has no kexec at all, so no sysctl for it."""
+        own = "6.18.57-rt9-mpfree"
+        folder = os.path.join(self.work, "kexec-stick-20260101T000000Z-abc")
+        write(os.path.join(folder, "report.txt"), f"its kernel release: {NEW}\n"
+              f"its own kernel release: {own} (--own-kernel: the chain's second kernel)\nrunning release: 6.6.95-fake\n")
+        write(f"{self.root}/proc/sys/kernel/osrelease", own + "\n")
+        os.remove(f"{self.root}/proc/sys/kernel/kexec_load_disabled")
+        write(self.app, "active\n")
+        res = self.run_helper("", MPFREE_APP_STEPS="app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in (f"its kernels: {NEW} (Akai's), then MPFree's own {own} on the chain's second kernel",
+                     f"release: {own}\n", "MPFree's own kernel (the stick's --own-kernel): the chain restarted into it",
+                     "kexec: not in this kernel", "CHECKS-OK"):
+            self.assertIn(text, res.stdout)
+        # The chain fell back: the same stick on Akai's kernel passes as before.
+        write(f"{self.root}/proc/sys/kernel/osrelease", NEW + "\n")
+        write(f"{self.root}/proc/sys/kernel/kexec_load_disabled", "1\n")
+        res = self.run_helper("", MPFREE_APP_STEPS="app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("kexec_load_disabled: 1", res.stdout)
+        # Another kernel, or kexec there but not off, stops before anything else.
+        write(f"{self.root}/proc/sys/kernel/osrelease", "6.1.0-other\n")
+        write(f"{self.root}/proc/sys/kernel/kexec_load_disabled", "0\n")
+        res = self.run_helper("", MPFREE_APP_STEPS="app")
+        self.assertNotEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"PROBLEM: running 6.1.0-other, not the test build's {NEW} or {own}", res.stdout)
+        self.assertIn("PROBLEM: kexec is not disabled", res.stdout)
+        self.assertIn("CHECKS-STOP", res.stdout)
+        # Without the own kernel's line, only Akai's release is the test build's.
+        write(os.path.join(folder, "report.txt"), f"its kernel release: {NEW}\nrunning release: 6.6.95-fake\n")
+        write(f"{self.root}/proc/sys/kernel/osrelease", own + "\n")
+        write(f"{self.root}/proc/sys/kernel/kexec_load_disabled", "1\n")
+        res = self.run_helper("", MPFREE_APP_STEPS="app")
+        self.assertNotEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"PROBLEM: running {own}, not the test build's {NEW}\n", res.stdout)
+
     def test_a_stick_the_usb_creator_wrote_is_found_by_its_record(self):
         """mpfree-stick write --record's creator-stick-<UTC> folder (report.txt and known_hosts, no stick.img)
         is the test build when it is newer than the last kexec-stick folder (its known_hosts is then the one used)."""
