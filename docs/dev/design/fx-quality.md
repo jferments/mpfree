@@ -686,6 +686,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#transient-shaper); decisio
 | G12 | `hits[drums, half speed or double speed]/pre_db`, `attack_ms`, `flam_db` | ≤ -24 dB; ≤ 1 ms; ≤ 3 dB | White-noise bursts from silence every 0.25 s, each decaying 40 ms, stretched as Stretch sets it (90 ms, 45 a second, regular, from the start) to half and double speed with the bursts' starts as hits; the medians over the hits of: the loudest millisecond in the 30 ms before each hit's time against the hit's; from its time until the level first reaches half the hit's, in half milliseconds; the largest rise of the level (4 ms, a millisecond at a time) over its lowest since the hit's peak, in the next 60 ms. The loudness against the drums' and the same without hits are shown (step B5) |
 | G13 | `move[...]/level_change_lu`, `extra_swing_db` | within 1 LU; 3 dB | A sprayed cloud (80 ms, 80 a second, spray 0.3) on pink and the pad moved by its LFO (a 0.5 Hz sine) on position (full depth), size, density, pitch (half depth) and spray (from 0.5, full), or by its envelope on size (0.5 s up, 1 s down to half): the loudness against the cloud unmoved, and how much further its level (400 ms windows every 100 ms) swings over two cycles (step B3) |
 | G1 | `vary[...]/level_change_lu` | within 1 LU | Full size spray, full level spray and peaked spray, each against the same cloud without it (40 a second, spray 0.3), on pink and the pad (step B1) |
+| G14 | `preset[...]/level_change_lu` | within 1.5 LU (the stutter: of -4) | Each grain preset (`mpfree_sampler::grain_presets`) on pink and the pad at the lab's position: the loudness against the default cloud's there. The stutter's grains fill half of each sixteenth with their fades, so it sits about 4 LU down (step B6) |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
 | G3 | `smooth[defaults, 1 kHz]/sideband_db` | -40 dB | The first grain-rate sideband (1 kHz ± the density, ±3 Hz) of a held sine against the tone, from a 65536-point transform (0.7 Hz bins). Until step A3 it used 8192 points, whose window's main lobe (±21.5 Hz) let the tone itself into the band: the -16.4 and -20.9 dB there were mostly the tone. `flutter_db`, the held sine's 10 ms level against its mean, is shown, not kept |
@@ -790,6 +791,13 @@ Each grain voice has an LFO and an envelope (`mpfree_grain::motion`, `Params::lf
 
 - **G13 met:** the loudness moves by at most 0.23 LU (the pad with its position swept across the whole sound), and no movement makes the level swing more than 1.3 dB further than the cloud unmoved does (pink with its spray swept from 0 to 1; every other case within 0.4 dB, most a little less than unmoved).
 - **Unchanged:** every other row, bit for bit (with nothing to move, the settings are as set; the LFO's Hold and Drift values come from a random sequence of their own).
+
+### Step B6: presets (2026-11-17)
+
+Eight grain presets (`mpfree_sampler::grain_presets`), each a mode with its settings, key tracking, glide and movement, put on a pad by the Grain list's Preset row; they keep the sound, the position and the level ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Presets). New rows: G14.
+
+- **G14 met:** every preset within 1.3 LU of the default cloud on pink and the pad (Tape stretch and Sub drone on pink, -1.28 and -1.27, the furthest; Shimmer fifths on the pad +1.07); the stutter 4.43 and 3.66 LU down, its gaps. Grit cloud was 2.2 LU down on pink at first (15 ms grains, 90 a second, half level spray: a sparse cloud keeps its grains' own levels), so it plays 20 ms grains at 100 a second with level spray 0.4 (-0.96 LU).
+- **Unchanged:** every other row, bit for bit (presets are settings; the engine is the same).
 
 ## Round 5: movement, pitch and voice
 

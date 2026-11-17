@@ -50,6 +50,22 @@ grain/pitch[2 kHz three octaves up]/spur_db	-85.6694
 grain/pitch[6 kHz two octaves up]/heard_db	-86.0717
 grain/pitch[9 kHz a fifth up]/spur_db	-70.9836
 grain/pitch[9 kHz a semitone up]/spur_db	-29.0479
+grain/preset[pad, Frozen choir]/level_change_lu	0.0447
+grain/preset[pad, Glass pad]/level_change_lu	0.6495
+grain/preset[pad, Grit cloud]/level_change_lu	-0.0605
+grain/preset[pad, Shimmer fifths]/level_change_lu	1.0708
+grain/preset[pad, Stutter 1/16]/level_change_lu	-3.6554
+grain/preset[pad, Sub drone]/level_change_lu	-1.0199
+grain/preset[pad, Swarm]/level_change_lu	0.2089
+grain/preset[pad, Tape stretch]/level_change_lu	-0.6532
+grain/preset[pink, Frozen choir]/level_change_lu	-0.7346
+grain/preset[pink, Glass pad]/level_change_lu	-0.4995
+grain/preset[pink, Grit cloud]/level_change_lu	-0.9617
+grain/preset[pink, Shimmer fifths]/level_change_lu	-0.4181
+grain/preset[pink, Stutter 1/16]/level_change_lu	-4.4319
+grain/preset[pink, Sub drone]/level_change_lu	-1.2707
+grain/preset[pink, Swarm]/level_change_lu	-0.8313
+grain/preset[pink, Tape stretch]/level_change_lu	-1.2813
 grain/smooth[Hann, overlap 2]/modulation_db	-83.1461
 grain/smooth[Hann, overlap 2]/ripple_db	0.0055
 grain/smooth[Tukey 0.5, overlap 2]/modulation_db	-84.6457
