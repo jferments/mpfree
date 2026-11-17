@@ -943,11 +943,16 @@ pub static PLANS: &[Plan] = &[
             &[
                 Section {
                     hero: &["Bits", "Rate"],
-                    rows: &["Dither"],
-                    drawings: &["A sine through it"],
-                    ..s("crush", "Crush", Tone, &["Bits", "Rate", "Dither"])
+                    rows: &["Dither", "Tails", "Filters"],
+                    drawings: &["A sine through it", "Filters"],
+                    ..s(
+                        "crush",
+                        "Crush",
+                        Tone,
+                        &["Bits", "Rate", "Jitter", "Dither", "Tails", "Filters"],
+                    )
                 },
-                s("output", "Output", Voice, &["Mix"]),
+                s("output", "Output", Voice, &["Output", "Mix"]),
             ],
         )],
         dims: &[],

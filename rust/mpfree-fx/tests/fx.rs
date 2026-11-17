@@ -543,37 +543,40 @@ fn oversampling_keeps_aliasing_down() {
 #[test]
 fn crush_quantises_and_holds() {
     use ids::crush::*;
-    let mut c = set_up(Box::new(Crush::new()), &[(BITS, 3.0)]);
+    // At the session's rate a hold every frame: 3 bits, levels at
+    // multiples of 1/4.
+    let mut c = set_up(Box::new(Crush::new()), &[(BITS, 3.0), (RATE, 48_000.0)]);
     let x = sine(100.0, 0.9, 4800);
     let (mut l, mut r) = (x.clone(), x.clone());
     run_once(c.as_mut(), &mut l, &mut r);
-    // 3 bits: levels at multiples of 1/4.
     assert!(
         l.iter().all(|v| (v * 4.0 - (v * 4.0).round()).abs() < 1e-6),
         "on the 3-bit grid"
     );
-    // 4.8 kHz: each value held about 10 frames (the phase is a float, so
-    // a hold can be one frame longer or shorter).
-    let mut c = set_up(Box::new(Crush::new()), &[(BITS, 16.0), (RATE, 4800.0)]);
-    let mut rng = Lcg(1);
-    let x: Vec<f32> = (0..4800).map(|_| rng.unit() - 0.5).collect();
+    // Tails on Buzz: halfway between the levels instead, and a quiet sine
+    // (under half a step) still sounds.
+    let mut c = set_up(
+        Box::new(Crush::new()),
+        &[(BITS, 3.0), (RATE, 48_000.0), (TAILS, 1.0)],
+    );
+    let x = sine(100.0, 0.1, 4800);
     let (mut l, mut r) = (x.clone(), x.clone());
     run_once(c.as_mut(), &mut l, &mut r);
-    let mut runs = vec![1usize];
-    for i in 1..l.len() {
-        if l[i] == l[i - 1] {
-            *runs.last_mut().unwrap() += 1;
-        } else {
-            runs.push(1);
-        }
-    }
-    assert!((475..=481).contains(&runs.len()), "{} holds", runs.len());
     assert!(
-        runs[1..runs.len() - 1]
-            .iter()
-            .all(|&n| (9..=11).contains(&n)),
-        "{runs:?}"
+        l.iter()
+            .all(|v| *v == 0.0 || (v * 4.0 - 0.5 - (v * 4.0 - 0.5).round()).abs() < 1e-6),
+        "between the 3-bit levels"
     );
+    assert!(l.iter().any(|v| v.abs() > 0.1), "a quiet sine buzzes");
+    // 4.8 kHz: one held value every 10 frames on average, each step
+    // band-limited (so the output moves within a hold, but the held
+    // values change about 480 times a second).
+    let mut c = set_up(Box::new(Crush::new()), &[(BITS, 16.0), (RATE, 4800.0)]);
+    let x = sine(1000.0, 0.5, 4800);
+    let (mut l, mut r) = (x.clone(), x.clone());
+    run_once(c.as_mut(), &mut l, &mut r);
+    let peak = l.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!((0.4..0.6).contains(&peak), "{peak}");
 }
 
 #[test]
