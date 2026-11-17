@@ -208,6 +208,27 @@ pub struct ClipInfo {
     pub length: Tick,
     pub speed: Speed,
     pub notes: usize,
+    /// A Loop track's cell: the looper's loop it launches (`Clip::looped`).
+    pub looped: Option<u8>,
+}
+
+/// What the looper says of a loop, for its cells on the Clips grid: the
+/// app fills it from the Looper's view ([`TimeState::loops`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoopFacts {
+    /// It records a layer now.
+    pub overdubbing: bool,
+    /// Its small wave for the cells ([`crate::widgets::GridCell::wave`]).
+    pub wave: [u8; crate::widgets::CELL_WAVE],
+}
+
+/// The loops for the grid: each loop's facts, how many hold a loop, and
+/// the share of the loop memory in use, in percent. The app fills it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoopsInfo {
+    pub loops: [LoopFacts; mpfree_seq::LOOPS],
+    pub in_use: usize,
+    pub memory_pct: u8,
 }
 
 impl ClipInfo {
@@ -339,6 +360,8 @@ impl TakeRow {
 pub struct TimeState {
     pub transport: TransportInfo,
     pub tracks: Vec<TrackInfo>,
+    /// The looper's loops, for the Loop tracks' cells. The app sets them.
+    pub loops: LoopsInfo,
     pub launches: Vec<Launch>,
     /// Launches and stops waiting for the next bar line. The app sets them.
     pub cues: Vec<Cue>,
@@ -356,6 +379,9 @@ pub struct TimeState {
     /// (`mpfree_perform::Perform`). The app sets them.
     pub scene_playing: Option<usize>,
     pub scene_cued: Option<usize>,
+    /// Each row's scene name, as far as the project names them (empty: a
+    /// plain row, shown as its number).
+    pub scenes: Vec<String>,
     /// The scene morph. The app sets it.
     pub morph: MorphInfo,
     /// The page shows the song (the timeline) in place of the grid. The
@@ -494,6 +520,7 @@ impl TimeState {
                             length: c.length,
                             speed: c.speed,
                             notes: c.notes.len(),
+                            looped: c.looped,
                         })
                     })
                     .collect(),
@@ -502,6 +529,7 @@ impl TimeState {
         TimeState {
             transport,
             tracks,
+            loops: LoopsInfo::default(),
             launches: launches.to_vec(),
             cues: Vec::new(),
             armed,
@@ -511,6 +539,7 @@ impl TimeState {
             capture: None,
             scene_playing: None,
             scene_cued: None,
+            scenes: project.scenes.iter().map(|s| s.name.clone()).collect(),
             morph: MorphInfo::default(),
             song_view: false,
             song_on: false,
@@ -1408,6 +1437,52 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
     bar
 }
 
+/// Where a loop sits on the Clips grid, as Play's strip and the Looper
+/// tab name it: its Loop track and its row (the first, if it is in more
+/// than one).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoopPlace {
+    pub track: usize,
+    pub slot: usize,
+    /// "Loops B".
+    pub track_name: String,
+    /// The row's scene name, or "row 2".
+    pub row: String,
+}
+
+impl LoopPlace {
+    /// "Loops B · Loop 2 · Verse".
+    pub fn full(&self, n: usize) -> String {
+        format!("{} · Loop {} · {}", self.track_name, n + 1, self.row)
+    }
+}
+
+/// Each loop's place on the grid; None for a loop in no cell.
+pub fn loop_places(st: &TimeState) -> [Option<LoopPlace>; mpfree_seq::LOOPS] {
+    let mut out: [Option<LoopPlace>; mpfree_seq::LOOPS] = Default::default();
+    for (track, t) in st.tracks.iter().enumerate() {
+        for (slot, c) in t.slots.iter().enumerate() {
+            let Some(n) = c.as_ref().and_then(|c| c.looped) else {
+                continue;
+            };
+            let Some(place @ None) = out.get_mut(usize::from(n)) else {
+                continue;
+            };
+            let row = match st.scenes.get(slot).filter(|s| !s.is_empty()) {
+                Some(name) => name.clone(),
+                None => format!("row {}", slot + 1),
+            };
+            *place = Some(LoopPlace {
+                track,
+                slot,
+                track_name: t.name.clone(),
+                row,
+            });
+        }
+    }
+    out
+}
+
 /// Cell `slot` of `track` for `st`.
 pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     let Some(clip) = st.clip(track, slot) else {
@@ -1415,10 +1490,16 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     };
     let t = &st.transport;
     let len = clip.song_len().max(1.0);
-    let notes = if clip.notes == 1 {
-        "1 note".to_string()
-    } else {
-        format!("{} notes", clip.notes)
+    let facts = clip
+        .looped
+        .and_then(|n| st.loops.loops.get(usize::from(n)))
+        .copied();
+    // A loop cell shows its wave in the detail's place, and the detail
+    // at the foot.
+    let notes = match (facts, clip.notes) {
+        (Some(_), _) => String::new(),
+        (None, 1) => "1 note".to_string(),
+        (None, n) => format!("{n} notes"),
     };
     let mut cell = GridCell {
         state: CellState::Stopped,
@@ -1426,6 +1507,7 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         detail: length_label(len, t.meter),
         foot: notes,
         progress: 0.0,
+        wave: facts.map(|f| f.wave),
     };
     let cue = st.cue(track);
     if cue.is_some_and(|c| c.slot == Some(slot)) {
@@ -1449,6 +1531,9 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     if t.state == State::Recording && st.armed == Some(track) {
         cell.state = CellState::Recording;
         cell.detail = "recording".to_string();
+    } else if facts.is_some_and(|f| f.overdubbing) {
+        cell.state = CellState::Recording;
+        cell.detail = "overdub".to_string();
     } else {
         cell.state = CellState::Playing;
     }
@@ -1471,6 +1556,7 @@ pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
             color: track_color(i),
             armed: st.armed == Some(i),
             mute: tr.mute,
+            loops: tr.loops.is_some(),
             cells: (0..tr.slots.len()).map(|s| cell_of(st, i, s)).collect(),
         })
         .collect()
@@ -1749,6 +1835,17 @@ impl TimePage {
         true
     }
 
+    /// Bring the grid's cell `slot` of `track` into view: its page of
+    /// tracks, and its row if it is off the rows shown (Show in Clips on
+    /// the Looper tab). Call [`TimePage::update`] after.
+    pub fn show_cell(&mut self, track: usize, slot: usize) {
+        self.first_track = track / GRID_COLS * GRID_COLS;
+        let rows = self.rows_seen.max(1);
+        if slot < self.first_row || slot >= self.first_row + rows {
+            self.first_row = slot.min(SLOTS.saturating_sub(rows));
+        }
+    }
+
     /// Scroll the grid `delta` rows down (up if negative), or on the Song
     /// view the timeline `delta` bars on. In the note editor the editor
     /// scrolls: the action for the app.
@@ -1812,12 +1909,25 @@ impl TimePage {
         let tracks = grid_tracks(st);
         let rows = self.visible_rows(ui).max(1);
         self.rows_seen = rows;
-        let title = format!(
-            "Clips · slots {}–{} of {SLOTS}",
-            self.first_row + 1,
-            (self.first_row + rows).min(SLOTS)
-        );
-        // Past 8 tracks the grid's pager takes the legend's place.
+        // With Loop tracks, the title is the loops' gauge: how many of the
+        // looper's loops hold one, and the share of its memory in use (the
+        // row numbers say which rows show). Past 8 tracks the pager takes
+        // the legend's place, so the gauge is not there.
+        let title = if st.tracks.iter().any(|t| t.loops.is_some()) {
+            let l = &st.loops;
+            format!(
+                "Loops {} of {} · memory {} %",
+                l.in_use,
+                mpfree_seq::LOOPS,
+                l.memory_pct
+            )
+        } else {
+            format!(
+                "Clips · slots {}–{} of {SLOTS}",
+                self.first_row + 1,
+                (self.first_row + rows).min(SLOTS)
+            )
+        };
         let legend = "ring: one pass   ·   amber: next bar   ·   red: recording".to_string();
         let can_add = st.tracks.len() < MAX_TRACKS;
         let same_grid = ui.get::<ClipGrid>(CLIPS).is_some_and(|g| {
@@ -2173,6 +2283,67 @@ mod tests {
             CellState::Playing,
             "only the armed track records"
         );
+    }
+
+    /// Loop tracks (part 3): a loop cell draws its loop's wave in the
+    /// detail's place with its length at the foot, its pass on the wave
+    /// (no ring), "overdub" while it takes a layer; the header has a wave
+    /// mark; the title counts the loops; each loop's place names its
+    /// track and row (or scene).
+    #[test]
+    fn loop_cells_show_their_wave_and_loops_are_named_by_place() {
+        let mut st = crate::sample::loops_playing().unwrap().state();
+        st.loops.loops[1].wave = [200; crate::widgets::CELL_WAVE];
+        st.loops.in_use = 4;
+        st.loops.memory_pct = 38;
+        let stopped = cell_of(&st, 3, 0);
+        assert_eq!(
+            (
+                stopped.state,
+                stopped.detail.as_str(),
+                stopped.foot.as_str()
+            ),
+            (CellState::Stopped, "2 bars", "")
+        );
+        assert_eq!(stopped.wave, Some([0; crate::widgets::CELL_WAVE]));
+        let playing = cell_of(&st, 4, 1);
+        assert_eq!(playing.state, CellState::Playing);
+        assert_eq!(playing.wave, Some([200; crate::widgets::CELL_WAVE]));
+        st.loops.loops[1].overdubbing = true;
+        let over = cell_of(&st, 4, 1);
+        assert_eq!(
+            (over.state, over.detail.as_str()),
+            (CellState::Recording, "overdub")
+        );
+        assert_eq!(cell_of(&st, 0, 0).wave, None, "a note clip has no wave");
+        let tracks = grid_tracks(&st);
+        assert_eq!(
+            tracks.iter().map(|t| t.loops).collect::<Vec<_>>(),
+            [false, false, false, true, true, true]
+        );
+        // The places: the first row a loop is in, by its scene's name.
+        st.scenes = vec![String::new(), "Verse".into()];
+        let places = loop_places(&st);
+        let full = |n: usize| places[n].as_ref().map(|p| p.full(n));
+        assert_eq!(full(0).as_deref(), Some("Loops A · Loop 1 · row 1"));
+        assert_eq!(full(1).as_deref(), Some("Loops B · Loop 2 · Verse"));
+        assert_eq!(full(3).as_deref(), Some("Loops A · Loop 4 · row 4"));
+        assert_eq!(places[4], None);
+        let three = places[2].as_ref().unwrap();
+        assert_eq!((three.track, three.slot), (4, 2));
+        // The gauge, in the legend.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        page.update(&mut ui, &st);
+        let title = &ui.get::<ClipGrid>(CLIPS).unwrap().title;
+        assert_eq!(title, "Loops 4 of 8 · memory 38 %");
+        // Show in Clips: a cell off the rows shown brings its row.
+        page.show_cell(4, 14);
+        assert_eq!(page.first_track, 0);
+        assert!(page.first_row > 0 && page.first_row <= 14);
     }
 
     #[test]

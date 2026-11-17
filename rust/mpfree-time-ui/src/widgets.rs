@@ -445,7 +445,14 @@ pub struct GridCell {
     pub foot: String,
     /// How far through its pass the clip is, 0.0 to 1.0 (the ring).
     pub progress: f32,
+    /// A loop cell's small wave, drawn under its name in the detail's
+    /// place (the detail goes to the foot when it is empty): each column's
+    /// peak, 0 to 255 (all 0 until the looper has made it).
+    pub wave: Option<[u8; CELL_WAVE]>,
 }
+
+/// Columns of a loop cell's small wave ([`GridCell::wave`]).
+pub const CELL_WAVE: usize = 24;
 
 /// One column of the grid: a track and its slots.
 #[derive(Clone, Debug, PartialEq)]
@@ -458,6 +465,8 @@ pub struct GridTrack {
     /// Recording goes into this track.
     pub armed: bool,
     pub mute: bool,
+    /// A Loop track: a wave mark before what it records, under its name.
+    pub loops: bool,
     pub cells: Vec<GridCell>,
 }
 
@@ -968,6 +977,7 @@ impl Widget for ClipGrid {
                 || old.color != new.color
                 || old.armed != new.armed
                 || old.mute != new.mute
+                || old.loops != new.loops
                 || old.cells.len() != new.cells.len()
             {
                 return None;
@@ -1142,12 +1152,23 @@ impl Widget for ClipGrid {
                 name = name.take_left(14).1;
             }
             if two {
+                let mut sound = Rect::new(head.x + 10, head.y + 22, head.w - 16, 18);
+                let dim = if track.mute { t.text_faint } else { t.text_dim };
+                if track.loops {
+                    // A Loop track's mark: a little wave before its input.
+                    let cy = sound.y + sound.h / 2;
+                    for (k, h) in [6, 10, 5].into_iter().enumerate() {
+                        let x = sound.x + 3 * k as i32;
+                        cx.canvas.fill_rect(Rect::new(x, cy - h / 2, 2, h), dim);
+                    }
+                    sound = sound.take_left(12).1;
+                }
                 cx.text(
                     FontId::Sans,
                     t.size_small - 2.0,
-                    Rect::new(head.x + 10, head.y + 22, head.w - 16, 18),
+                    sound,
                     Align::Left,
-                    if track.mute { t.text_faint } else { t.text_dim },
+                    dim,
                     &track.sound,
                 );
             }
@@ -1608,16 +1629,13 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         CellState::Recording => t.bad.mix(t.text, 0.2),
         _ => t.text_dim,
     };
-    cx.text(
-        FontId::Sans,
-        t.size_small - 1.0,
-        detail,
-        Align::Left,
-        detail_ink,
-        &cell.detail,
-    );
     let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
-    let ring_room = if rolling { RING + 4 } else { 0 };
+    // A loop shows its pass on its wave, not with a ring.
+    let ring_room = if rolling && cell.wave.is_none() {
+        RING + 4
+    } else {
+        0
+    };
     let foot = Rect::new(
         inner.x,
         inner.bottom() - 18,
@@ -1629,17 +1647,71 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         CellState::Recording => t.bad.mix(t.text, 0.2),
         _ => t.text_faint,
     };
-    if foot.y >= detail.bottom() - 2 {
+    if let Some(wave) = &cell.wave {
+        // A loop: its wave in the detail's place, and at the foot the
+        // foot, or the detail when there is none ("2 bars", "overdub").
+        // Playing, the wave is lit up to the playhead, as on Play's strip.
+        let band = detail.inset_xy(0, 2);
+        let lit = match cell.state {
+            CellState::Recording => fill.mix(t.bad.mix(t.text, 0.2), 0.85),
+            _ => fill.mix(base.mix(t.text, 0.45), 0.9),
+        };
+        let ink = fill.mix(base.mix(t.text, 0.3), 0.7);
+        let dim = fill.mix(base.mix(t.text, 0.3), 0.4);
+        let head = rolling.then(|| band.x + (band.w as f32 * cell.progress) as i32);
+        let cy = band.y + band.h / 2;
+        for (c, &p) in wave.iter().enumerate() {
+            let x0 = band.x + band.w * c as i32 / CELL_WAVE as i32;
+            let x1 = band.x + band.w * (c as i32 + 1) / CELL_WAVE as i32;
+            let h = (i32::from(p) * band.h / 255).max(1);
+            let ink = match head {
+                Some(hx) if x0 < hx => lit,
+                Some(_) => dim,
+                None => ink,
+            };
+            cx.canvas
+                .fill_rect(Rect::new(x0, cy - h / 2, (x1 - x0 - 1).max(1), h), ink);
+        }
+        if let Some(hx) = head {
+            cx.canvas
+                .fill_rect(Rect::new(hx, band.y - 1, 1, band.h + 2), t.text);
+        }
+        let (line, ink) = if cell.foot.is_empty() {
+            (&cell.detail, detail_ink)
+        } else {
+            (&cell.foot, foot_ink)
+        };
+        if foot.y >= detail.bottom() - 2 {
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                foot,
+                Align::Left,
+                ink,
+                line,
+            );
+        }
+    } else {
         cx.text(
             FontId::Sans,
             t.size_small - 1.0,
-            foot,
+            detail,
             Align::Left,
-            foot_ink,
-            &cell.foot,
+            detail_ink,
+            &cell.detail,
         );
+        if foot.y >= detail.bottom() - 2 {
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                foot,
+                Align::Left,
+                foot_ink,
+                &cell.foot,
+            );
+        }
     }
-    if rolling && inner.h >= RING + 20 {
+    if rolling && cell.wave.is_none() && inner.h >= RING + 20 {
         let color = if cell.state == CellState::Recording {
             t.bad
         } else {
@@ -1956,6 +2028,7 @@ mod tests {
                 color: Color::rgb(0x3DDC97),
                 armed: i == 1,
                 mute: false,
+                loops: false,
                 cells,
             });
         }

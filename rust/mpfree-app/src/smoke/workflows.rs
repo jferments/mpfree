@@ -2376,11 +2376,14 @@ mod tests {
         }
         on_big_stack(|| {
             let mut s = Session::new();
+            s.make_sounds();
             s.press("play-transport", "view", "Loop").settle();
             let from = s.lines.len();
             s.button("REC").button("PLAY");
             until(&mut s, 0, Phase::Recording);
-            s.run_for(2.0);
+            // A pad's tone in the first pass, for its wave.
+            s.pad(0, 120, 0.3);
+            s.run_for(1.7);
             s.button("REC");
             until(&mut s, 0, Phase::Playing);
             line(&mut s, from, "time: Loop 1 on Loops A, row 1, playing", 1.0);
@@ -2392,7 +2395,34 @@ mod tests {
             assert_eq!(s.time.state().launch(8).map(|l| l.slot), Some(0));
             assert!(on(&s, 0));
             s.run_periods(2);
-            assert_eq!(s.screen.time.tracks[8].sound, "Pads + synth");
+            assert_eq!(s.screen.time.tracks[8].sound, "Pads");
+            // Part 3: the cell draws the loop's wave once the looper has
+            // made it, and Play's strip names the loop by its place.
+            s.run_for(1.5);
+            assert!(
+                s.screen.time.loops.loops[0].wave.iter().any(|&p| p > 0),
+                "{:?}",
+                s.screen.time.loops.loops[0]
+            );
+            let cell = mpfree_time_ui::view::cell_of(&s.screen.time, 8, 0);
+            assert!(cell.wave.is_some_and(|w| w.iter().any(|&p| p > 0)));
+            let strip = s
+                .screen
+                .ui
+                .get::<crate::looper_page::LoopStrip>(crate::looper_page::LOOP_STRIP)
+                .unwrap();
+            assert!(
+                strip.right_wide.starts_with("Loops A · Loop 1 · row 1 · "),
+                "{}",
+                strip.right_wide
+            );
+            // Show in Clips on the Looper tab: the Arrange page, with Loops
+            // A's page of tracks in view.
+            s.press("header", "tab", "Looper").settle();
+            s.press("luse", "use", "Show in Clips").settle();
+            assert_eq!(s.view(), View::Arrange);
+            assert_eq!(s.screen.time_page.first_track, 8);
+            s.press("header", "tab", "Play").settle();
 
             // Row 2's scene: Loops A has nothing there, so loop 1 stops on
             // the bar line.

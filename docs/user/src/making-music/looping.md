@@ -139,16 +139,19 @@ Pick a loop, then use the tools along the top of the editor while it plays (not 
 
 ## Loops in the Clips grid
 
-Every loop you record also shows on the **Arrange** tab's Clips grid, on a **Loop track**: a column named **Loops A**, **Loops B** and so on, with **Pads + synth** under the name. A loop's cell is named after it ("Loop 2"), and it launches, stops and plays in scenes like any clip, on the bar line:
+Every loop you record also shows on the **Arrange** tab's Clips grid, on a **Loop track**: a column named **Loops A**, **Loops B** and so on, with a little wave and what it records under the name (**Pads**, for the pads and the synth). A loop's cell is named after it ("Loop 2") and shows the loop's wave and its length; while it plays, the wave lights up to where the loop is, and it turns red with **overdub** while you add a layer. The grid's title, **Loops 4 of 8 · memory 38 %**, says how many of the eight loops hold something and how much of the loop memory they use. A loop's cell launches, stops and plays in scenes like any clip, on the bar line:
 
 - **A loop you record lands on a Loop track with nothing playing**, in the row of the scene playing (row 1 if none), and keeps playing. When every Loop track already plays a loop, MPFree adds one, so loops you record one after another still play together, as before.
 - **One loop plays per Loop track**, as one clip plays per track; loops on different Loop tracks play together. Tap another loop's cell on the same Loop track and the one playing goes quiet on the next bar line as the new one comes in, both on the bar line exactly.
 - **Scenes, Stop all and TRACK MUTE work on loops too.** A scene plays the loops in its row, and a Loop track with nothing in that row stops. Stop all stops every loop on the next bar line. A muted Loop track's loop goes quiet at once.
 - **A loop that isn't playing keeps its place** in the song: launch it again and it comes back in step.
 - **Clear** a loop, or undo its first pass, and its cell empties (Redo of the first pass puts it back). **½ length**, **× 2** and **Trim** change the cell's length with the loop's.
+- **A Loop track past the first 8 tracks** is on the grid's next page: tap **›** over the grid, or **Show in Clips** on the Looper tab (see below).
 - **The pads never play a Loop track.** Picking one keeps the pads on the track they were on, and **+** in an empty Loop cell says to record the loop on the Play page or the Looper tab instead. Drag a loop's cell to another row or another Loop track, or SHIFT-drop a copy into another row of its own Loop track (both rows play the same loop). Loops stay on Loop tracks, and clips on the other tracks.
 
 A project saved before Loop tracks opens with each of its loops on a Loop track of its own, in row 1, all playing as they did. A project saved with Loop tracks opens with nothing launched, as its clips do: tap a loop's cell, or its scene, to play it.
+
+The Play page's loop strip, the Looper tab and the REC chip name a loop by its place on the grid: **Loops B · Loop 2 · Verse** is Loop 2, on Loops B, in the row of the Verse scene ("row 2" for a row with no scene name). In the Looper tab's list, a loop on a Loop track shows its track and length ("Loops B · 2 bars"); its layers are in the editor. **Show in Clips**, in the Use the loop panel, opens the Arrange tab with the loop's cell in view.
 
 ## Recording an instrument
 
@@ -168,11 +171,9 @@ Recording MPFree's own pads needs nothing made up: they are already in time. For
 
 ## Coming next
 
-- **Loop tracks drawn as loops**: each cell with its loop's wave, bars and layers, a wave icon on the Loop track's name, and a gauge of the loops and memory in use.
-- **Recording from the grid**: tap an empty Loop cell to arm it, and REC records a loop there, from the Loop track's input (the pads and synth, the line input, or the other loops).
+- **Recording from the grid**: tap an empty Loop cell to arm it, and REC records a loop there, from the Loop track's input (the pads and synth, the line input, or the other loops). **+ Track** will also add a Loop track, and a new project will start with an empty Loops A.
 - **Loops in the song**: a lane per Loop track in the Song view, and Rec song keeping the loops you launch.
 - **To a pad**: send a loop to a pad as a sample on the Sample tab. You will also be able to drag a single layer onto it.
-- **To a clip**: send it to the Arrange tab as an audio clip, or drag a single layer onto it.
 - **Save loop**: keep it on the stick with its layers. Your loops are also saved with your project, every layer with its mix (see [Saving your work](saving.md)).
 
 > [!MPC]

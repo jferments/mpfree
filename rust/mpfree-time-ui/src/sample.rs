@@ -456,6 +456,48 @@ pub fn big_playing(armed: usize) -> Result<Session, String> {
     Ok(s)
 }
 
+/// Loop tracks (loop-tracks.md): Drums, Hats and Bass, then Loops A
+/// (Pads + synth: Loop 1 in rows 1 and 2, Loop 4 in row 4), Loops B (Line
+/// in: Loop 2 in row 2, Loop 3 in row 3) and an empty Loops C (Resample),
+/// playing row 2 at 3.1.
+pub fn loops_playing() -> Result<Session, String> {
+    use mpfree_seq::{LoopInput, TrackKind};
+    let mut p = project();
+    p.tracks.truncate(3);
+    let mut loops = |name: &str, input: LoopInput, cells: &[(usize, u8, Tick)]| {
+        let mut t = Track::new_loops(name, p.tracks.len() as u16);
+        t.kind = TrackKind::Loops(input);
+        for &(slot, n, ticks) in cells {
+            t.slots[slot] = Some(Clip::new_loop(n, ticks));
+        }
+        p.tracks.push(t);
+    };
+    loops(
+        "Loops A",
+        LoopInput::Pads,
+        &[(0, 0, 2 * BAR), (1, 0, 2 * BAR), (3, 3, 4 * BAR)],
+    );
+    loops(
+        "Loops B",
+        LoopInput::Line,
+        &[(1, 1, 2 * BAR), (2, 2, 4 * BAR)],
+    );
+    loops("Loops C", LoopInput::Resample, &[]);
+    let launches = (0..5)
+        .filter(|&t| p.tracks[t].slots[1].is_some())
+        .map(|track| Launch {
+            track,
+            slot: 1,
+            origin: 0,
+            start: 0,
+        })
+        .collect();
+    let mut s = Session::new(p, launches, Some(0))?;
+    s.command_at(0, Command::Play)?;
+    s.run_to(2 * BAR + SIXTEENTH)?;
+    Ok(s)
+}
+
 /// The Song view of the 24-track project: rows 1 to 4 made into a song,
 /// song mode on, scrolled down to the last tracks and "+ Track".
 pub fn big_song_state() -> Result<TimeState, String> {
