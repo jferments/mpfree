@@ -547,6 +547,9 @@ pub struct KitView {
     /// The synth's pad layout, for the pads panel's Chromatic | In key
     /// switch; None for a kit.
     pub synth: Option<SynthPads>,
+    /// The synth's pads' notes, for Beats' scale rows (pad 1 first);
+    /// empty for a kit and the Drums engine.
+    pub pitches: Vec<Option<play_page::PadPitch>>,
 }
 
 /// Timing numbers from the audio thread.
@@ -937,6 +940,12 @@ pub enum ToUi {
 #[derive(Debug, PartialEq)]
 pub enum FromUi {
     Pad {
+        pad: usize,
+        down: bool,
+    },
+    /// A finger on a scale row's name on Beats: the synth's pad sounds
+    /// until it lifts, never recorded and never a step press.
+    Audition {
         pad: usize,
         down: bool,
     },
@@ -1876,11 +1885,22 @@ impl Player {
                 .map(|i| PadInfo {
                     label: kit.pads.get(i).cloned().flatten(),
                     color: Some(Color::from_pad(kit.colour)),
+                    pitch: kit.pitches.get(i).copied().flatten(),
                 })
                 .collect(),
             None => vec![PadInfo::default(); 16],
         };
         if self.play.pads != pads {
+            // Scale rows start again from the notes in another layout.
+            if self
+                .play
+                .pads
+                .iter()
+                .map(|p| p.pitch)
+                .ne(pads.iter().map(|p| p.pitch))
+            {
+                self.play.low = None;
+            }
             self.play.pads = pads;
             self.refresh_play();
         }
@@ -2756,6 +2776,7 @@ impl Player {
             (g.page, g.pages, g.length) = (old.page, old.pages, old.length);
             g.on_pads = old.on_pads;
             g.held.clone_from(&old.held);
+            g.pitched = old.pitched;
         }
         self.play.fill_steps(&mut g);
         let same = self
@@ -2771,6 +2792,7 @@ impl Player {
                     && (old.page, old.pages, old.length) == (g.page, g.pages, g.length)
                     && old.on_pads == g.on_pads
                     && old.held == g.held
+                    && old.pitched == g.pitched
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -2783,6 +2805,7 @@ impl Player {
                 (w.page, w.pages, w.length) = (g.page, g.pages, g.length);
                 w.on_pads = g.on_pads;
                 w.held = g.held;
+                w.pitched = g.pitched;
             }
         }
         let mut th = Throws::default();
@@ -2897,6 +2920,12 @@ impl Player {
             (play_page::STEPS, EventKind::Toggle(pad)) if *pad < 16 => {
                 Some(Some(FromUi::Steps(StepAction::ClearPad {
                     pad: *pad as u8,
+                })))
+            }
+            // A scale row's name: that note's steps.
+            (play_page::STEPS, EventKind::Pad { index, down: true }) if *index < 16 => {
+                Some(Some(FromUi::Steps(StepAction::ClearPad {
+                    pad: *index as u8,
                 })))
             }
             (time_view::CLIPS, EventKind::Select(i)) => {
@@ -7725,6 +7754,40 @@ impl Player {
                 // STEP SEQ: the pads turn to the page shown.
                 (moved && self.play.on_pads.is_some()).then_some(FromUi::StepPage(self.play.page))
             }
+            // Scale rows (a synth track): Fold, and the octave down or up.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_FOLD)) => {
+                self.play.toggle_fold();
+                self.tell(if self.play.fold {
+                    "steps: Fold: only the notes the pattern uses"
+                } else {
+                    "steps: every note of the pads"
+                });
+                self.refresh_play();
+                None
+            }
+            (play_page::STEPS, EventKind::Tab(k))
+                if k == play_widgets::HEAD_LOWER || k == play_widgets::HEAD_HIGHER =>
+            {
+                let up = k == play_widgets::HEAD_HIGHER;
+                let n = self
+                    .ui
+                    .rect_of(play_page::STEPS)
+                    .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+                    .map_or(6, |(r, g)| g.note_rows(r));
+                if !self.play.turn_octave(up, n) {
+                    self.tell(if up {
+                        "steps: these are the pads' highest notes"
+                    } else {
+                        "steps: these are the pads' lowest notes"
+                    });
+                }
+                self.refresh_play();
+                None
+            }
+            // A finger on a scale row's name: its note sounds.
+            (play_page::STEPS, EventKind::Pad { index, down }) => {
+                Some(FromUi::Audition { pad: index, down })
+            }
             (play_page::STEPS, EventKind::Tab(k)) => {
                 match self.play.length_action(k == play_widgets::HEAD_LONGER) {
                     Ok(a) => Some(FromUi::Steps(a)),
@@ -8704,6 +8767,7 @@ pub fn sample_kits() -> Vec<KitView> {
         colour,
         chip: None,
         synth: None,
+        pitches: Vec::new(),
     };
     // Kit 2 is the Play mockups' kit (F to I), so the previews show it.
     let mut boom_bap = kit("Boom Bap", [0x00, 0x2A, 0x3F], 16);
@@ -9022,6 +9086,86 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
     }
     p.apply(ToUi::Time(Box::new(h.state())));
     p.apply(ToUi::Steps(Box::new(h.steps())));
+}
+
+/// Beats on a synth track, as the sequencer design's mockup B: the synth
+/// on the pads in C minor, In key (C3 up), the timing strip off so the
+/// pattern has eight rows, and a bass line with a C minor triad on step 1,
+/// an accent, a 50 % note and a 1:2 note.
+pub fn sample_beats_synth(fonts: Fonts) -> Player {
+    use crate::time::{Pads, StepAction, TimeHost, STEP_TICKS};
+    use mpfree_seq::steps::Change;
+    let mut p = sample_player(fonts);
+    let mut s = crate::synth::Synth::new(44_100);
+    let mut set = s.settings();
+    set.scale = mpfree_arp::scale::by_name("Minor")
+        .map(|d| mpfree_arp::scale::Scale::with_down(0, d.mask, d.down));
+    set.set_layout(mpfree_arp::scale::pads::PadLayout::InKey);
+    s.set_settings(set);
+    let synth_kit = sample_kits().len();
+    p.apply(ToUi::KitChanged {
+        kit: synth_kit,
+        view: s.kit_view(),
+    });
+    p.apply(ToUi::Kit(synth_kit));
+    let mut settings = p.settings.clone();
+    settings.timing_strip = false;
+    p.apply(ToUi::Settings(settings));
+    struct Quiet;
+    impl Pads for Quiet {
+        fn hit_at(&mut self, _: usize, _: u8, _: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _: usize, _: u32) {}
+        fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: usize, _: u8, _: u32) {}
+    }
+    let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
+        return p;
+    };
+    // (pad, step, velocity, steps long): C3 is pad 1, Eb3 pad 3, G3 pad 5.
+    let notes: [(u8, usize, u8, i64); 11] = [
+        (0, 0, 100, 3),
+        (2, 0, 100, 3),
+        (4, 0, 100, 3),
+        (4, 4, 90, 1),
+        (6, 6, 96, 2),
+        (7, 8, 127, 1),
+        (5, 10, 84, 2),
+        (3, 12, 90, 1),
+        (4, 13, 90, 1),
+        (2, 14, 96, 2),
+        (0, 14, 70, 1),
+    ];
+    for (pad, step, velocity, len) in notes {
+        let _ = h.step_action(StepAction::Tap {
+            pad,
+            step,
+            velocity,
+        });
+        if len > 1 {
+            let _ = h.step_action(StepAction::Change {
+                pad,
+                step,
+                change: Change::Length(STEP_TICKS * len),
+            });
+        }
+    }
+    for (pad, step, change) in [
+        (5, 10, Change::Chance(50)),
+        (2, 14, Change::Cond(mpfree_seq::Cond::Every { a: 1, b: 2 })),
+    ] {
+        let _ = h.step_action(StepAction::Change { pad, step, change });
+    }
+    let mut q = Quiet;
+    h.period(128, &mut q);
+    p.apply(ToUi::Time(Box::new(h.state())));
+    p.apply(ToUi::Steps(Box::new(h.steps())));
+    p.show_play_view(PlayView::Beats);
+    p.outbox.retain(|a| !matches!(a, FromUi::Arm(_)));
+    let _ = p.take_actions();
+    p.ui.invalidate();
+    p
 }
 
 /// Hits played on the pads over the last two bars, a little off the grid
@@ -10000,6 +10144,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     synth.apply(ToUi::Kit(synth_kit));
     sample_loop(&mut synth);
     out.push(("play-synth-in-key", synth));
+    // Beats on a synth track (the sequencer design's mockup B): C minor
+    // in key, the scale rows high on top with the roots shaded, a triad on
+    // step 1.
+    out.push(("play-beats-synth", sample_beats_synth(fonts())));
     // The mixer over Play (TRACK MIX), a strip selected for the Q-Links.
     let mut mixer = sample_player(fonts());
     let mut m = mpfree_mixer_ui::sample::song_mixer();
@@ -12522,7 +12670,7 @@ mod tests {
         assert!(grid(&p).2.ends_with("pads: page 2 · BANK B"));
         apply_effects(&mut p, click(&mut app, button::PAD_BANK[0]));
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
-        let (x, y) = StepGrid::head_at(r, HEAD_NEXT);
+        let (x, y) = StepGrid::head_at(r, HEAD_NEXT, false);
         let a = p.touch(3, Touch::Down, x, y);
         p.touch(3, Touch::Up, x, y);
         assert_eq!(a, Some(FromUi::StepPage(1)));
@@ -12544,6 +12692,71 @@ mod tests {
         assert_eq!(grid(&p).0, None);
     }
 
+    /// Beats on a synth track (sequencer S3, mockup B): the pads' notes
+    /// as rows high on top, an octave at a time; Fold keeps the notes
+    /// used; a finger on a row's name plays it, and with ERASE held clears
+    /// its steps.
+    #[test]
+    fn beats_on_a_synth_track_shows_scale_rows_that_fold_and_play() {
+        use play_widgets::{HEAD_FOLD, HEAD_HIGHER, HEAD_LOWER};
+        let mut p = sample_beats_synth(Fonts::embedded());
+        p.take_actions();
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let tap = |p: &mut Player, k: usize| {
+            let (x, y) = StepGrid::head_at(r, k, true);
+            let a = p.touch(3, Touch::Down, x, y);
+            p.touch(3, Touch::Up, x, y);
+            a
+        };
+        let shown = |p: &Player| {
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes_shown(r)
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // C minor, In key from C3: C4 on top down to C3, eight rows with
+        // the timing strip off.
+        assert_eq!(shown(&p), [7, 6, 5, 4, 3, 2, 1, 0]);
+        // › an octave up, then as high as the pads go, then no further.
+        assert_eq!(tap(&mut p, HEAD_HIGHER), None);
+        assert_eq!(shown(&p), [14, 13, 12, 11, 10, 9, 8, 7]);
+        tap(&mut p, HEAD_HIGHER);
+        assert_eq!(shown(&p), [15, 14, 13, 12, 11, 10, 9, 8]);
+        tap(&mut p, HEAD_HIGHER);
+        assert!(hint(&p).contains("highest notes"), "{}", hint(&p));
+        // ‹ an octave down from D4: D3 up.
+        tap(&mut p, HEAD_LOWER);
+        assert_eq!(shown(&p), [8, 7, 6, 5, 4, 3, 2, 1]);
+        // Fold: the seven notes the line uses, from C3.
+        assert_eq!(tap(&mut p, HEAD_FOLD), None);
+        assert!(hint(&p).contains("only the notes"), "{}", hint(&p));
+        assert_eq!(shown(&p), [7, 6, 5, 4, 3, 2, 0]);
+        tap(&mut p, HEAD_FOLD);
+        assert_eq!(shown(&p), [7, 6, 5, 4, 3, 2, 1, 0]);
+        // A finger on C4's name plays it until it lifts.
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let (x, y) = g.name_at(r, 0);
+        assert_eq!(
+            p.touch(5, Touch::Down, x, y),
+            Some(FromUi::Audition { pad: 7, down: true })
+        );
+        assert_eq!(
+            p.touch(5, Touch::Up, x, y),
+            Some(FromUi::Audition {
+                pad: 7,
+                down: false
+            })
+        );
+        // ERASE held: the name clears C4's steps instead.
+        let mut st = p.status.clone();
+        st.erase = true;
+        p.apply(ToUi::Status(st));
+        assert_eq!(
+            p.touch(6, Touch::Down, x, y),
+            Some(FromUi::Steps(StepAction::ClearPad { pad: 7 }))
+        );
+    }
+
     /// UNDO follows the page (Jay, 13 Nov 13:53Z): the loop on the Loop
     /// view, the takes on Beats, and on All whichever changed last.
     /// Jay after live test 3: 32, 64 and 128 steps, with a clear way to
@@ -12556,7 +12769,7 @@ mod tests {
         p.take_actions();
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let tap = |p: &mut Player, k: usize| {
-            let (x, y) = StepGrid::head_at(r, k);
+            let (x, y) = StepGrid::head_at(r, k, false);
             let a = p.touch(3, Touch::Down, x, y);
             p.touch(3, Touch::Up, x, y);
             a

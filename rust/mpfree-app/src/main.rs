@@ -2448,6 +2448,27 @@ fn sound_step(
     p.tell.map(app::Effect::Tell)
 }
 
+/// A scale row's name pressed (`down`) or let go on Beats: the synth's pad
+/// (or the kit's) sounds while it is held, as a step pad's press does
+/// while stopped, recording nothing.
+fn audition(
+    pad: usize,
+    down: bool,
+    player: &mut sampler::Player,
+    synth: &mut synth::Synth,
+    synth_on: bool,
+) {
+    let v = play_page::TAP_VELOCITY;
+    match (synth_on, down) {
+        (true, true) => synth.note_on(pad, v, 0),
+        (true, false) => synth.note_off(pad, 0),
+        (false, true) => {
+            player.hit_at(pad, v, 0);
+        }
+        (false, false) => player.release_at(pad, 0),
+    }
+}
+
 /// A step pad let go: its line, and the sound its press played stops.
 fn let_go_of_step(
     r: step_keys::Released,
@@ -2665,6 +2686,7 @@ fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
                 colour: akai::kit_colour(k),
                 chip: None,
                 synth: None,
+                pitches: Vec::new(),
             }
         })
         .collect();
@@ -4798,6 +4820,11 @@ fn player_session(
                     out.show(gui::ToUi::PadUp(pad));
                 }
                 gui::FromUi::Pad { .. } => {}
+                // A scale row's name on Beats: the pad sounds while held.
+                gui::FromUi::Audition { pad, down } if pad < 16 => {
+                    audition(pad, down, &mut player, &mut synth, synth_on);
+                }
+                gui::FromUi::Audition { .. } => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {

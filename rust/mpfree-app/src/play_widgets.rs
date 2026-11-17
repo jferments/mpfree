@@ -861,6 +861,21 @@ pub struct Lane {
     /// What each step's cell shows besides its velocity, step for step
     /// (missing: nothing).
     pub marks: Vec<Marks>,
+    /// On a synth track's scale rows: the pad's note (a chord's root) and
+    /// whether it is the key's root, shaded.
+    pub note: Option<u8>,
+    pub root: bool,
+}
+
+/// A synth track's pattern as scale rows (the sequencer design's mockup
+/// B): the lanes are the pads in pitch order, high on top, as many as
+/// fit from `low` up; Fold keeps only the notes used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pitched {
+    /// Only the rows with notes.
+    pub fold: bool,
+    /// The lowest note row shown, counted up from the lowest there is.
+    pub low: usize,
 }
 
 /// What a step's cell shows besides its velocity, which is the height of
@@ -893,6 +908,12 @@ pub struct Marks {
 /// head's controls (Jay after live test 3: 32, 64 and 128 steps) give
 /// `Tab(HEAD_PREV)` and `Tab(HEAD_NEXT)` for the page, `Tab(HEAD_SHORTER)`
 /// and `Tab(HEAD_LONGER)` for the length.
+///
+/// On a synth track ([`Pitched`]) the lanes are scale rows, high on top,
+/// each named by its note with the roots shaded; a finger on a row's name
+/// plays it (`Pad { index: pad, down }`, down and up), and the head adds
+/// Fold (`Tab(HEAD_FOLD)`) and the octave's ‹ and › (`Tab(HEAD_LOWER)`,
+/// `Tab(HEAD_HIGHER)`).
 #[derive(Default)]
 pub struct StepGrid {
     /// "Pattern 1 · Drums".
@@ -921,6 +942,10 @@ pub struct StepGrid {
     pub held: Vec<(usize, usize)>,
     /// The Arm pill at the left of the heading: the notes as a REC target.
     pub arm: Option<ArmPill>,
+    /// A synth track's scale rows; None for a kit's sounds.
+    pub pitched: Option<Pitched>,
+    /// The finger on a scale row's name, and its pad, until it lifts.
+    sounding: Option<(u64, usize)>,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
 
@@ -929,6 +954,10 @@ pub const HEAD_PREV: usize = 0;
 pub const HEAD_NEXT: usize = 1;
 pub const HEAD_SHORTER: usize = 2;
 pub const HEAD_LONGER: usize = 3;
+/// Scale rows: Fold, and the octave down and up.
+pub const HEAD_FOLD: usize = 4;
+pub const HEAD_LOWER: usize = 5;
+pub const HEAD_HIGHER: usize = 6;
 /// The most steps the pattern's + makes, and the fewest its - leaves.
 pub const MAX_STEPS: usize = 128;
 pub const MIN_STEPS: usize = 16;
@@ -946,10 +975,12 @@ struct StepLook {
     on_pads: Option<usize>,
     held: Vec<(usize, usize)>,
     arm: Option<ArmPill>,
+    pitched: Option<Pitched>,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
-/// then › and ‹ round the page number. Each answers over the head's whole
+/// then › and ‹ round the page number; on scale rows, the octave's ‹ and
+/// › round its name, then Fold. Each answers over the head's whole
 /// height.
 struct Head {
     title: Rect,
@@ -959,13 +990,18 @@ struct Head {
     shorter: Rect,
     length: Rect,
     longer: Rect,
+    /// Scale rows only (empty otherwise).
+    fold: Rect,
+    lower: Rect,
+    octave: Rect,
+    higher: Rect,
 }
 
 /// A head button's width.
 const HEAD_BTN: i32 = 56;
 
 impl Head {
-    fn of(r: Rect) -> Head {
+    fn of(r: Rect, pitched: bool) -> Head {
         let (h, body) = card_head(r);
         let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
         let mut x = h.right();
@@ -980,14 +1016,31 @@ impl Head {
         let next = take(HEAD_BTN);
         let page = take(52);
         let prev = take(HEAD_BTN);
+        let none = Rect::new(prev.x, band.y, 0, 0);
+        let (fold, lower, octave, higher) = if pitched {
+            take(14);
+            let higher = take(HEAD_BTN);
+            let octave = take(64);
+            let lower = take(HEAD_BTN);
+            take(6);
+            let fold = take(68);
+            (fold, lower, octave, higher)
+        } else {
+            (none, none, none, none)
+        };
+        let left = if pitched { fold.x } else { prev.x };
         Head {
-            title: Rect::new(h.x, h.y, (prev.x - 12 - h.x).max(0), h.h),
+            title: Rect::new(h.x, h.y, (left - 12 - h.x).max(0), h.h),
             prev,
             page,
             next,
             shorter,
             length,
             longer,
+            fold,
+            lower,
+            octave,
+            higher,
         }
     }
 
@@ -998,6 +1051,9 @@ impl Head {
             (self.next, HEAD_NEXT),
             (self.shorter, HEAD_SHORTER),
             (self.longer, HEAD_LONGER),
+            (self.fold, HEAD_FOLD),
+            (self.lower, HEAD_LOWER),
+            (self.higher, HEAD_HIGHER),
         ]
         .into_iter()
         .find(|(b, _)| b.contains(x, y))
@@ -1071,11 +1127,50 @@ impl StepGrid {
         }
     }
 
-    /// The lanes shown in `rows` rows: the most wanted, in pad order.
+    /// The lanes shown in `rows` rows: the most wanted, in pad order. On
+    /// scale rows, the line (if it is there) on top, then the notes from
+    /// the window's lowest up, high on top.
     fn shown(&self, rows: usize) -> Vec<&Lane> {
-        let mut v: Vec<&Lane> = self.lanes.iter().take(rows).collect();
-        v.sort_by_key(|l| l.pad);
-        v
+        let Some(p) = self.pitched else {
+            let mut v: Vec<&Lane> = self.lanes.iter().take(rows).collect();
+            v.sort_by_key(|l| l.pad);
+            return v;
+        };
+        let (mut top, notes): (Vec<&Lane>, Vec<&Lane>) =
+            self.lanes.iter().partition(|l| l.pad >= 16);
+        let n = rows.saturating_sub(top.len());
+        let low = p.low.min(notes.len().saturating_sub(n));
+        top.extend(notes.iter().skip(low).take(n).rev());
+        top
+    }
+
+    /// How many note rows the scale rows show in `r` (the line's taken
+    /// off), for the octave's ‹ and ›.
+    pub fn note_rows(&self, r: Rect) -> usize {
+        let top = self.lanes.iter().filter(|l| l.pad >= 16).count();
+        self.geom(r).rows.saturating_sub(top).max(1)
+    }
+
+    /// The octave's name on scale rows: the lowest row's ("Oct 3", for
+    /// C3 up).
+    fn octave(&self, rows: usize) -> String {
+        self.shown(rows)
+            .iter()
+            .filter_map(|l| l.note)
+            .min()
+            .map_or_else(String::new, |n| format!("Oct {}", i32::from(n) / 12 - 1))
+    }
+
+    /// Scale rows: whether the octave's ‹ and › can move the window.
+    fn octave_usable(&self, rows: usize) -> (bool, bool) {
+        let Some(p) = self.pitched else {
+            return (false, false);
+        };
+        let top = self.lanes.iter().filter(|l| l.pad >= 16).count();
+        let notes = self.lanes.len() - top;
+        let n = rows.saturating_sub(top);
+        let low = p.low.min(notes.saturating_sub(n));
+        (low > 0, low + n < notes)
     }
 
     fn look(&self) -> StepLook {
@@ -1090,15 +1185,18 @@ impl StepGrid {
             on_pads: self.on_pads,
             held: self.held.clone(),
             arm: self.arm,
+            pitched: self.pitched,
         }
     }
 
-    /// The middle of head control `k` (`HEAD_PREV` ...), for the app's
-    /// tests.
+    /// The middle of head control `k` (`HEAD_PREV` ...) with scale rows
+    /// (`pitched`) or without, for the app's tests.
     #[cfg(test)]
-    pub fn head_at(r: Rect, k: usize) -> (i32, i32) {
-        let h = Head::of(r);
-        let b = [h.prev, h.next, h.shorter, h.longer][k];
+    pub fn head_at(r: Rect, k: usize, pitched: bool) -> (i32, i32) {
+        let h = Head::of(r, pitched);
+        let b = [
+            h.prev, h.next, h.shorter, h.longer, h.fold, h.lower, h.higher,
+        ][k];
         (b.x + b.w / 2, b.y + b.h / 2)
     }
 
@@ -1114,12 +1212,21 @@ impl StepGrid {
     }
 
     /// The head: the title on the left, then the details, the page with
-    /// ‹ and ›, and the length with - and +.
+    /// ‹ and ›, and the length with - and +; on scale rows, Fold and the
+    /// octave with its ‹ and › before the page. The details go where they
+    /// would crowd the title.
     fn paint_head(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        let hd = Head::of(r);
+        let hd = Head::of(r, self.pitched.is_some());
         let (h, _) = card_head(r);
-        if !self.right.is_empty() {
+        let title_w = cx.measure(FontId::Bold, draw::HEAD_PX, &self.title.to_uppercase())
+            + if self.arm.is_some() {
+                ARM_PILL_W + 10
+            } else {
+                0
+            };
+        let right_w = cx.measure(FontId::Sans, draw::HEAD_PX, &self.right);
+        if !self.right.is_empty() && title_w + 16 + right_w <= hd.title.w {
             cx.text(
                 FontId::Sans,
                 draw::HEAD_PX,
@@ -1148,6 +1255,29 @@ impl StepGrid {
         button(cx, hd.shorter, "−", shorter);
         button(cx, hd.longer, "+", longer);
         let row = |b: Rect| Rect::new(b.x, h.y, b.w, h.h);
+        if let Some(p) = self.pitched {
+            let rows = self.geom(r).rows;
+            let (lower, higher) = self.octave_usable(rows);
+            button(cx, hd.lower, "‹", lower);
+            button(cx, hd.higher, "›", higher);
+            cx.text(
+                FontId::Bold,
+                draw::HEAD_PX,
+                row(hd.octave),
+                Align::Center,
+                t.text_dim,
+                &self.octave(rows),
+            );
+            // Fold: lit while on.
+            let face = Rect::new(hd.fold.x + 4, mid - 13, hd.fold.w - 8, 26);
+            let (fill, ink) = if p.fold {
+                (t.accent, t.bg)
+            } else {
+                (t.raised, t.text)
+            };
+            cx.canvas.fill_round_rect(face, 8, fill);
+            cx.text(FontId::Bold, 14.0, face, Align::Center, ink, "Fold");
+        }
         let page = format!("{}/{}", self.page + 1, self.pages.max(1));
         cx.text(
             FontId::Bold,
@@ -1333,7 +1463,12 @@ impl Widget for StepGrid {
                 cx.text(
                     FontId::Bold,
                     draw::HEAD_PX,
-                    Rect::new(x, h.y, Head::of(r).title.right() - x, h.h),
+                    Rect::new(
+                        x,
+                        h.y,
+                        Head::of(r, self.pitched.is_some()).title.right() - x,
+                        h.h,
+                    ),
                     Align::Left,
                     t.text_dim,
                     &self.title.to_uppercase(),
@@ -1361,35 +1496,59 @@ impl Widget for StepGrid {
             let mb = g.mute_button(k);
             let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
             let c = lane.color;
-            cx.canvas
-                .fill_round_rect(Rect::new(nr.x, y + g.rh / 2 - 5, 10, 10), 3, c);
-            let ink = if lane.muted { t.text_faint } else { t.text };
             let on_pads = self.on_pads == Some(lane.pad);
-            // STEP SEQ's lane: its name over a small "ON THE PADS".
-            let name_r = if on_pads {
-                let (top, bottom) = nr.take_left(18).1.take_top(g.rh * 3 / 5);
-                cx.text(
-                    FontId::Bold,
-                    10.0,
-                    bottom,
-                    Align::Left,
-                    t.accent,
-                    "ON THE PADS",
-                );
-                top
+            if self.pitched.is_some() && lane.pad < 16 {
+                // A scale row: its note on a key, the roots shaded and
+                // tagged; a finger on it plays it.
+                let key = Rect::new(g.names.x, y, g.names.w - 10, g.rh);
+                let fill = if lane.root {
+                    t.raised.mix(c, 0.45)
+                } else {
+                    t.raised
+                };
+                cx.canvas.fill_round_rect(key, 6, fill);
+                // The tag only on a root's key, so a chord's name has the
+                // whole key elsewhere.
+                let inner = key.inset_xy(12, 0);
+                let (tag, name_r) = if lane.root {
+                    inner.take_right(36)
+                } else {
+                    (Rect::new(inner.right(), inner.y, 0, 0), inner)
+                };
+                cx.text(FontId::Sans, 15.0, name_r, Align::Left, t.text, &lane.name);
+                if lane.root {
+                    cx.text(FontId::Sans, 11.0, tag, Align::Right, t.text_dim, "root");
+                }
             } else {
-                nr.take_left(18).1
-            };
-            cx.text(FontId::Sans, 14.0, name_r, Align::Left, ink, &lane.name);
-            // The mute button: a box round the speaker, red-tinted while
-            // muted.
-            if lane.muted {
-                cx.canvas.fill_round_rect(mb, 6, t.raised.mix(t.bad, 0.3));
-            } else {
-                cx.canvas.fill_round_rect(mb, 6, t.raised);
+                cx.canvas
+                    .fill_round_rect(Rect::new(nr.x, y + g.rh / 2 - 5, 10, 10), 3, c);
+                let ink = if lane.muted { t.text_faint } else { t.text };
+                // STEP SEQ's lane: its name over a small "ON THE PADS".
+                let name_r = if on_pads {
+                    let (top, bottom) = nr.take_left(18).1.take_top(g.rh * 3 / 5);
+                    cx.text(
+                        FontId::Bold,
+                        10.0,
+                        bottom,
+                        Align::Left,
+                        t.accent,
+                        "ON THE PADS",
+                    );
+                    top
+                } else {
+                    nr.take_left(18).1
+                };
+                cx.text(FontId::Sans, 14.0, name_r, Align::Left, ink, &lane.name);
+                // The mute button: a box round the speaker, red-tinted while
+                // muted.
+                if lane.muted {
+                    cx.canvas.fill_round_rect(mb, 6, t.raised.mix(t.bad, 0.3));
+                } else {
+                    cx.canvas.fill_round_rect(mb, 6, t.raised);
+                }
+                cx.canvas.stroke_round_rect(mb, 6, 1, t.outline);
+                speaker(cx, mb.x + mb.w / 2 + 1, mb.y + mb.h / 2, t.text, lane.muted);
             }
-            cx.canvas.stroke_round_rect(mb, 6, 1, t.outline);
-            speaker(cx, mb.x + mb.w / 2 + 1, mb.y + mb.h / 2, t.text, lane.muted);
             for s in 0..16 {
                 let sr = g.cell(k, s);
                 if s >= self.steps {
@@ -1418,7 +1577,7 @@ impl Widget for StepGrid {
         let mut out = Vec::new();
         // The head: ‹ › turn the pages of 16, - + halve or double the
         // steps (faint when they can't; a tap then says why).
-        let h = Head::of(r);
+        let h = Head::of(r, self.pitched.is_some());
         let (prev, next, shorter, longer) = self.usable();
         for (k, label, rect, can) in [
             (HEAD_PREV, "Previous page", h.prev, prev),
@@ -1428,17 +1587,37 @@ impl Widget for StepGrid {
         ] {
             out.push(Target::tap("head", k, label, rect).disabled_if(!can));
         }
+        if self.pitched.is_some() {
+            let (lower, higher) = self.octave_usable(g.rows);
+            for (k, label, rect, can) in [
+                (HEAD_FOLD, "Fold", h.fold, true),
+                (HEAD_LOWER, "Octave down", h.lower, lower),
+                (HEAD_HIGHER, "Octave up", h.higher, higher),
+            ] {
+                out.push(Target::tap("head", k, label, rect).disabled_if(!can));
+            }
+        }
         if let Some(pill) = self.arm {
             out.push(Target::tap("arm", 0, pill.label(), arm_pill_hit(r)));
         }
         for (k, lane) in self.shown(g.rows).iter().enumerate() {
-            // The lane's whole name is its mute button (bigger mutes).
-            out.push(Target::tap(
-                "mute",
-                lane.pad,
-                format!("{} speaker", lane.name),
-                g.mute_hit(k),
-            ));
+            if self.pitched.is_some() && lane.pad < 16 {
+                // A scale row's name plays its note while held.
+                out.push(Target::hold(
+                    "note",
+                    lane.pad,
+                    format!("{}: play", lane.name),
+                    g.mute_hit(k),
+                ));
+            } else {
+                // The lane's whole name is its mute button (bigger mutes).
+                out.push(Target::tap(
+                    "mute",
+                    lane.pad,
+                    format!("{} speaker", lane.name),
+                    g.mute_hit(k),
+                ));
+            }
             for st in 0..self.steps.min(16) {
                 out.push(Target::tap(
                     "step",
@@ -1451,11 +1630,21 @@ impl Widget for StepGrid {
         out
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        // A scale row's note sounds until its finger lifts.
+        if phase == Touch::Up {
+            if let Some((_, pad)) = self.sounding.filter(|(finger, _)| *finger == f) {
+                self.sounding = None;
+                return Some(EventKind::Pad {
+                    index: pad,
+                    down: false,
+                });
+            }
+        }
         if phase != Touch::Down {
             return None;
         }
-        if let Some(i) = Head::of(r).at(x, y) {
+        if let Some(i) = Head::of(r, self.pitched.is_some()).at(x, y) {
             return Some(EventKind::Tab(i));
         }
         if self.arm.is_some() && arm_pill_hit(r).contains(x, y) {
@@ -1465,6 +1654,14 @@ impl Widget for StepGrid {
         let lanes = self.shown(g.rows);
         for (k, lane) in lanes.iter().enumerate() {
             if g.mute_hit(k).contains(x, y) {
+                if self.pitched.is_some() && lane.pad < 16 {
+                    let pad = lane.pad;
+                    self.sounding = Some((f, pad));
+                    return Some(EventKind::Pad {
+                        index: pad,
+                        down: true,
+                    });
+                }
                 return Some(EventKind::Toggle(lane.pad));
             }
             for s in 0..self.steps.min(16) {
@@ -2412,7 +2609,93 @@ mod tests {
             muted: false,
             steps: steps.to_vec(),
             marks: Vec::new(),
+            note: None,
+            root: false,
         }
+    }
+
+    /// A synth track's scale rows (the sequencer design's mockup B): the
+    /// window of notes high on top, the line above it, a name that plays
+    /// its note while held, and the head's Fold and octave.
+    #[test]
+    fn scale_rows_show_the_notes_high_on_top_and_their_names_play() {
+        let mut g = StepGrid {
+            steps: 16,
+            pitched: Some(Pitched {
+                fold: false,
+                low: 0,
+            }),
+            ..Default::default()
+        };
+        // Sixteen pads, lowest first, a root every seventh.
+        g.lanes = (0..16)
+            .map(|p| Lane {
+                note: Some(48 + p as u8),
+                root: p % 7 == 0,
+                ..lane(p, &[0; 16])
+            })
+            .collect();
+        let r = Rect::new(0, 0, 998, 360);
+        assert_eq!(g.lanes_shown(r), vec![7, 6, 5, 4, 3, 2, 1, 0]);
+        assert_eq!(g.note_rows(r), 8);
+        assert_eq!(g.octave(8), "Oct 3");
+        assert_eq!(g.octave_usable(8), (false, true));
+        g.pitched = Some(Pitched {
+            fold: false,
+            low: 3,
+        });
+        assert_eq!(g.lanes_shown(r), vec![10, 9, 8, 7, 6, 5, 4, 3]);
+        // Past the top: the highest eight.
+        g.pitched = Some(Pitched {
+            fold: false,
+            low: 20,
+        });
+        assert_eq!(g.lanes_shown(r), vec![15, 14, 13, 12, 11, 10, 9, 8]);
+        assert_eq!(g.octave_usable(8), (true, false));
+        // STEP SEQ's line stays on top, over seven notes.
+        g.pitched = Some(Pitched {
+            fold: false,
+            low: 0,
+        });
+        g.lanes.insert(0, lane(255, &[0; 16]));
+        assert_eq!(g.lanes_shown(r), vec![255, 6, 5, 4, 3, 2, 1, 0]);
+        assert_eq!(g.note_rows(r), 7);
+        // A finger on a row's name plays it until that finger lifts.
+        let (x, y) = g.name_at(r, 1);
+        assert_eq!(
+            g.touch(4, Touch::Down, x, y, r),
+            Some(EventKind::Pad {
+                index: 6,
+                down: true
+            })
+        );
+        assert_eq!(g.touch(5, Touch::Up, x, y, r), None, "another finger");
+        assert_eq!(
+            g.touch(4, Touch::Up, x, y, r),
+            Some(EventKind::Pad {
+                index: 6,
+                down: false
+            })
+        );
+        // The line's name is no key.
+        let (x, y) = g.name_at(r, 0);
+        assert_eq!(
+            g.touch(6, Touch::Down, x, y, r),
+            Some(EventKind::Toggle(255))
+        );
+        // The head: Fold, then the octave's ‹ and ›, before the page's.
+        for k in [HEAD_FOLD, HEAD_LOWER, HEAD_HIGHER, HEAD_PREV, HEAD_LONGER] {
+            let (x, y) = StepGrid::head_at(r, k, true);
+            assert_eq!(g.touch(7, Touch::Down, x, y, r), Some(EventKind::Tab(k)));
+        }
+        let t = g.targets(r);
+        assert!(t.iter().any(|t| t.id == "note" && t.label == "Pad 7: play"));
+        assert!(!t.iter().any(|t| t.id == "mute" && t.index < 16));
+        assert!(t.iter().any(|t| t.id == "head" && t.label == "Fold"));
+        // A kit's lanes: no Fold, no octave.
+        g.pitched = None;
+        let (x, y) = StepGrid::head_at(r, HEAD_FOLD, true);
+        assert_eq!(g.touch(8, Touch::Down, x, y, r), None);
     }
 
     #[test]

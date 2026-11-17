@@ -1220,6 +1220,8 @@ impl Session {
                 self.pad_edge(pad, v, down);
             }
             FromUi::Pad { .. } => {}
+            // A scale row's note: no sound is rendered here.
+            FromUi::Audition { .. } => {}
             FromUi::Kit(k) => self.kit_to = Some(k.min(self.kits)),
             FromUi::Synth(mpfree_synth_ui::SynthAction::Set { id, value }) => {
                 let from = self.synth.value(id);
