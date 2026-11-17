@@ -70,6 +70,17 @@ impl<R: ReadAt> Content<Offset<R>> {
             len,
         })?)
     }
+
+    /// The content partition on its own, `len` bytes from the start of
+    /// `part` (the MPC's own partition device, read through MPFree's
+    /// read-only window, when there is no backup to read it from).
+    pub fn from_partition(part: R, len: u64) -> io::Result<Self> {
+        Content::from_fs(Ext4::open(Offset {
+            inner: part,
+            start: 0,
+            len,
+        })?)
+    }
 }
 
 impl<F: ReadAt> Content<F> {
