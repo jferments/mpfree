@@ -144,12 +144,18 @@ fn busy_kit() -> Project {
         reverse: 0.5,
         spread: 0.8,
         gain: 0.9,
+        scan_tempo: None,
         sync: Some(TempoSync {
             frames_per_beat: 28_604.3,
             grains_per_beat: Some(8.0),
             size_beats: None,
         }),
+        timing: 0.65,
+        size_spray: 0.45,
+        level_spray: 0.7,
+        spray_shape: GrainSprayShape::Peaked,
     };
+    g.grain_mode = GrainMode::Repeat;
     p.set_pad(5, Some(Pad::new("Cloud", Layer::new(g))), None)
         .unwrap();
     // A keygroup far up the pad list, a toggle and a gate pad.
@@ -173,7 +179,7 @@ fn busy_kit() -> Project {
     p.keep_chop(kept.unwrap()).unwrap();
     let mut m = *p.master();
     m.mix = 0.35;
-    m.grain.window = GrainWindow::Exponential { decay: 6.0 };
+    m.grain.window = GrainWindow::Shape { shape: 0.85 };
     m.grain.density = 44.0;
     p.set_master(m, None).unwrap();
     p.set_pads_play(PadsPlay::Levels {
