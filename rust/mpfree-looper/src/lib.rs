@@ -439,8 +439,9 @@ pub struct Stats {
     /// Layer commands for a layer that is not there, and loop numbers past
     /// [`MAX_LOOPS`].
     pub no_layer: u64,
-    /// First passes thrown away: the transport stopped or jumped before
-    /// the end, or the pass outgrew the memory.
+    /// First passes thrown away: the transport jumped before the end,
+    /// STOP came before a 1/16 note was played, or the pass outgrew the
+    /// memory.
     pub aborted: u64,
 }
 
@@ -501,6 +502,9 @@ pub struct Status {
     /// Frames of the first pass recorded so far, while it records (0
     /// otherwise): what [`Looper::first_pass`] reads.
     pub recorded: usize,
+    /// STOP cut the first pass short: the frames of it that hold sound.
+    /// The rest, to `frames`, is silent. None otherwise.
+    pub cut: Option<usize>,
 }
 
 /// The memory gauge: all the loops together.
@@ -897,6 +901,18 @@ impl Store {
         true
     }
 
+    /// Give back a slot's blocks after its first `n`.
+    fn shrink(&mut self, lp: usize, slot: usize, n: usize) {
+        let t = self.table(lp, slot);
+        while self.held[lp][slot] as usize > n {
+            self.held[lp][slot] -= 1;
+            let h = self.held[lp][slot] as usize;
+            self.free[self.n_free] = self.tables[t + h];
+            self.tables[t + h] = NONE;
+            self.n_free += 1;
+        }
+    }
+
     /// Give back every block of a slot.
     fn release(&mut self, lp: usize, slot: usize) {
         let t = self.table(lp, slot);
@@ -1060,6 +1076,16 @@ struct Loop {
     written: usize,
     end_tick: Option<Tick>,
     ending: bool,
+    /// A bar's ticks when the first pass started (STOP rounds the loop to
+    /// whole bars of it).
+    bar: Tick,
+    /// The last bar line the first pass reached (its tick and frame), and
+    /// the frame the next one falls on at the tempo then.
+    last_bar: (Tick, u64),
+    next_bar: u64,
+    /// Frames of the first pass that hold its sound: `len` unless STOP cut
+    /// it short ([`Loop::stop_first`]), and then the rest is silent.
+    cut: usize,
     /// Go straight into an overdub when the first pass ends.
     then_overdub: bool,
     after: After,
@@ -1219,6 +1245,10 @@ impl Loop {
         written: 0,
         end_tick: None,
         ending: false,
+        bar: 4 * PPQ as Tick,
+        last_bar: (0, 0),
+        next_bar: 0,
+        cut: 0,
         then_overdub: false,
         after: After::Play,
         fade_old: 1.0,
@@ -1454,6 +1484,7 @@ impl Looper {
             } else {
                 0
             },
+            cut: (l.len > 0 && l.cut < l.len).then_some(l.cut),
         })
     }
 
@@ -3424,6 +3455,7 @@ impl Loop {
         self.n_undone = 0;
         self.end_tick = None;
         self.ending = false;
+        self.cut = 0;
         self.then_overdub = false;
         self.first_open = false;
         self.written = 0;
@@ -3462,7 +3494,9 @@ impl Loop {
                 self.end_tick = Some(end);
                 self.finish_first(store, stats, me, end, frame);
             }
-            Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. } | Mark::Panic => {
+            // STOP: what was played is kept, cut where STOP came.
+            Mark::Stopped { tick } => self.stop_first(store, stats, me, tick, frame),
+            Mark::Looped { .. } | Mark::Located { .. } | Mark::Panic => {
                 stats.aborted += 1;
                 self.reset();
                 self.reclaim(store, me);
@@ -3484,11 +3518,18 @@ impl Loop {
             Phase::Recording if t > self.origin && (self.end_tick == Some(t) || self.ending) => {
                 self.finish_first(store, stats, me, t, f);
             }
+            Phase::Recording => {
+                self.last_bar = (t, f);
+                self.next_bar = span.frame_of((t + self.bar) as f64);
+            }
             Phase::Armed if t >= 0 && matches!(span.state, State::Playing | State::Recording) => {
                 self.phase = Phase::Recording;
                 self.origin = t;
                 self.start_frame = f;
-                self.end_tick = self.bars.map(|b| t + i64::from(b) * span.meter.bar_ticks());
+                self.bar = span.meter.bar_ticks();
+                self.last_bar = (t, f);
+                self.next_bar = span.frame_of((t + self.bar) as f64);
+                self.end_tick = self.bars.map(|b| t + i64::from(b) * self.bar);
                 self.ending = false;
                 self.then_overdub = self.after == After::Overdub && !self.resample;
                 self.first_open = true;
@@ -3501,15 +3542,63 @@ impl Loop {
     }
 
     fn finish_first(&mut self, store: &mut Store, stats: &mut Stats, me: usize, t: Tick, f: u64) {
-        self.mixing = true;
         let len = (f - self.start_frame) as usize;
-        if len == 0 || !store.grow(me, 0, blocks_for(len)) {
+        self.finish_len(store, stats, me, t, len);
+    }
+
+    /// STOP during the first pass (the transport stopped at `tick`, frame
+    /// `f`): what was played is kept, and nothing after STOP. The loop is
+    /// whole bars, so it stays on the song's bar lines: up to the next bar
+    /// line, silent after the cut, or back to the bar line just passed when
+    /// STOP came within a 1/16 note after it (pressed a moment late). With
+    /// no whole bar left that way, nothing is kept.
+    fn stop_first(&mut self, store: &mut Store, stats: &mut Stats, me: usize, tick: Tick, f: u64) {
+        let (bar_t, bar_f) = self.last_bar;
+        // The bar line just passed, or the next one (as the transport would
+        // have reached it at the tempo then).
+        let (end_t, end_f) = if tick - bar_t <= SIXTEENTH {
+            (bar_t, bar_f)
+        } else {
+            (bar_t + self.bar, self.next_bar)
+        };
+        let len = end_f.saturating_sub(self.start_frame) as usize;
+        if end_t <= self.origin || len == 0 {
             stats.aborted += 1;
             self.reset();
             self.reclaim(store, me);
             return;
         }
+        // Stopped: no overdub waits for PLAY.
+        self.then_overdub = false;
+        self.end_tick = Some(end_t);
+        if self.finish_len(store, stats, me, end_t, len) {
+            self.cut = len.min(f.saturating_sub(self.start_frame) as usize);
+            self.slots[0].valid = (0, self.cut);
+        }
+    }
+
+    /// The first pass ends at tick `t`, `len` frames long. False if there
+    /// is no memory for it (the pass is thrown away).
+    fn finish_len(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        t: Tick,
+        len: usize,
+    ) -> bool {
+        self.mixing = true;
+        if len == 0 || !store.grow(me, 0, blocks_for(len)) {
+            stats.aborted += 1;
+            self.reset();
+            self.reclaim(store, me);
+            return false;
+        }
+        // A pass cut back to a bar line it had recorded past gives back
+        // the blocks after it.
+        store.shrink(me, 0, blocks_for(len));
         self.len = len;
+        self.cut = len;
         self.len_ticks = t - self.origin;
         self.order[0] = 0;
         self.in_order = 1;
@@ -3529,6 +3618,7 @@ impl Loop {
             self.then_overdub = false;
             self.open_overdub(store, stats, me, HANDOFF_FADE);
         }
+        true
     }
 
     /// The first pass's writer: frame `f`'s input belongs `latency` frames
@@ -3560,7 +3650,7 @@ impl Loop {
                 self.pre[2 * k + 1] = self.ring[2 * r + 1];
             }
         }
-        if self.len > 0 && j >= self.len {
+        if self.len > 0 && j >= self.cut {
             self.seal(store, me);
             return;
         }
@@ -3580,17 +3670,42 @@ impl Loop {
         self.first_open = false;
         // A resampled first pass is written: overdubs take the input.
         self.resample = false;
+        let cut = self.cut.min(self.len);
+        if cut < self.len {
+            // Cut by STOP: the take fades out where STOP came.
+            let out = FADE.min(cut / 2);
+            for k in 0..out {
+                let w = 1.0 - (k as f32 + 0.5) / out as f32;
+                let idx = cut - out + k;
+                let a = store.get(me, 0, idx);
+                store.set(me, 0, idx, [a[0] * w, a[1] * w]);
+            }
+        }
         let fade = FADE.min(self.len / 2);
         for k in 0..fade {
             let w = (k as f32 + 0.5) / fade as f32;
             let p = FADE - fade + k;
             let idx = self.len - fade + k;
-            let a = store.get(me, 0, idx);
+            // After a cut the end is silence (never written).
+            let a = if idx < cut {
+                store.get(me, 0, idx)
+            } else {
+                [0.0; 2]
+            };
             let y = [
                 a[0] * (1.0 - w) + self.pre[2 * p] * w,
                 a[1] * (1.0 - w) + self.pre[2 * p + 1] * w,
             ];
             store.set(me, 0, idx, y);
+        }
+        if cut < self.len {
+            // What plays: the take, and the loop point's fade into it.
+            let from = self.len - fade;
+            self.slots[0].valid = if from <= cut {
+                (0, self.len)
+            } else {
+                (from, self.len - from + cut)
+            };
         }
     }
 

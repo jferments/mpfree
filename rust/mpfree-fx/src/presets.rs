@@ -303,11 +303,34 @@ pub static COMB: &[Preset] = &[
     },
 ];
 
-/// Crush: classic sampler grit down to nothing left.
+/// Crush: classic samplers (their rate-tied filters on), grit, and down
+/// to nothing left.
 pub static CRUSH: &[Preset] = &[
     Preset {
         name: "12-bit classic",
-        values: &[(crush::BITS, 12.0), (crush::RATE, 26_040.0)],
+        values: &[
+            (crush::BITS, 12.0),
+            (crush::RATE, 26_040.0),
+            (crush::FILTERS, 3.0),
+            (crush::OUTPUT, 1.0),
+        ],
+    },
+    Preset {
+        name: "12-bit 40k",
+        values: &[
+            (crush::BITS, 12.0),
+            (crush::RATE, 40_000.0),
+            (crush::FILTERS, 3.0),
+        ],
+    },
+    Preset {
+        name: "8-bit sampler",
+        values: &[
+            (crush::BITS, 8.0),
+            (crush::RATE, 22_050.0),
+            (crush::FILTERS, 3.0),
+            (crush::OUTPUT, 1.5),
+        ],
     },
     Preset {
         name: "Soft grit",
@@ -327,6 +350,17 @@ pub static CRUSH: &[Preset] = &[
             (crush::BITS, 8.0),
             (crush::RATE, 8000.0),
             (crush::DITHER, 1.0),
+            (crush::FILTERS, 3.0),
+            (crush::OUTPUT, 3.0),
+        ],
+    },
+    Preset {
+        name: "Wobbly clock",
+        values: &[
+            (crush::BITS, 8.0),
+            (crush::RATE, 6000.0),
+            (crush::JITTER, 40.0),
+            (crush::TAILS, 1.0),
         ],
     },
     Preset {

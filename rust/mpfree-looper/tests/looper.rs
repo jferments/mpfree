@@ -521,17 +521,128 @@ fn a_transport_loop_ends_the_first_pass_and_the_loop_follows_it() {
     }
 }
 
+/// STOP during the first pass keeps what was played, cut at STOP: the
+/// loop runs to the next bar line, silent after the cut, so it stays on
+/// the bars (Jay, 16 Nov: STOP stops at once and keeps the take).
 #[test]
-fn stopping_or_jumping_during_the_first_pass_throws_it_away() {
+fn stop_during_the_first_pass_keeps_the_take_up_to_the_next_bar_line() {
+    let mut r = Rig::new(10, 128);
+    r.cmd(L::SetBars(None));
+    r.cmd(L::Record);
+    r.at(START, T::Play);
+    // STOP a quarter of the way into the second bar.
+    let stop = START + BAR as u64 + 5_000;
+    r.at(stop, T::Stop);
+    r.run(stop + 2_000, &noise);
+    let s = r.l.status();
+    assert_eq!(s.phase, Phase::Playing, "kept");
+    assert_eq!(
+        (s.frames, s.ticks),
+        (2 * BAR, 2 * BAR_TICKS),
+        "two whole bars"
+    );
+    assert_eq!(s.cut, Some(BAR + 5_000), "the take ends where STOP came");
+    assert_eq!(r.l.stats().aborted, 0);
+    assert_eq!(r.l.memory().used, held(2), "memory for the two bars");
+    // Silent while stopped: nothing plays until PLAY.
+    assert!(r.out[2 * stop as usize..].iter().all(|&v| v == 0.0));
+    // Back to bar 1 and PLAY: the take, then silence to the bar line.
+    r.at(stop + 3_000, T::StopAndRewind);
+    let play = stop + 4_000;
+    r.at(play, T::Play);
+    r.run(play + 2 * BAR as u64 + 10, &dc(0.0));
+    let cut = (BAR + 5_000) as u64;
+    for f in (play + FADE as u64..play + cut - FADE as u64).step_by(5) {
+        let want = noise(START + f - play);
+        assert!((r.left(f) - want[0]).abs() < 1e-4, "frame {f}");
+        assert!((r.right(f) - want[1]).abs() < 1e-4, "frame {f}");
+    }
+    // The take fades out at the cut, over FADE frames.
+    let at_cut = play + cut - 1;
+    assert!(r.left(at_cut).abs() < 0.01, "{}", r.left(at_cut));
+    // Nothing after STOP was recorded, though the input went on (up to
+    // the loop point's fade, which plays between frames).
+    let end = play + 2 * BAR as u64;
+    let quiet = play + cut..end - FADE as u64 - 1;
+    assert!(quiet.clone().all(|f| r.left(f) == 0.0 && r.right(f) == 0.0));
+    // The loop point: the input just before bar 1 (the pre-roll) fades in
+    // over the end, into the loop's first frame.
+    let pre = noise(START - 1);
+    assert!(
+        (r.left(end - 1) - pre[0]).abs() < 0.01,
+        "{} vs {}",
+        r.left(end - 1),
+        pre[0]
+    );
+}
+
+/// STOP a moment after a bar line (within a 1/16 note) ends the loop on
+/// that bar line: what was played after it is left out.
+#[test]
+fn stop_just_after_a_bar_line_ends_the_loop_on_it() {
+    let mut r = Rig::new(10, 128);
+    r.cmd(L::SetBars(None));
+    r.cmd(L::Record);
+    r.at(START, T::Play);
+    // 1 000 frames (174 ticks) into the second bar; a 1/16 note is 240.
+    let stop = START + BAR as u64 + 1_000;
+    r.at(stop, T::Stop);
+    r.run(stop + 500, &noise);
+    let s = r.l.status();
+    assert_eq!(s.phase, Phase::Playing);
+    assert_eq!(
+        (s.frames, s.ticks, s.cut),
+        (BAR, BAR_TICKS, None),
+        "one whole bar"
+    );
+    assert_eq!(
+        r.l.memory().used,
+        held(1),
+        "the blocks after the bar went back"
+    );
+    r.at(stop + 600, T::StopAndRewind);
+    let play = stop + 1_000;
+    r.at(play, T::Play);
+    r.run(play + 2 * BAR as u64, &dc(0.0));
+    for f in (play + BAR as u64 + FADE as u64..play + 2 * BAR as u64 - FADE as u64).step_by(5) {
+        let want = noise(START + (f - play) % BAR as u64);
+        assert!((r.left(f) - want[0]).abs() < 1e-4, "frame {f}");
+    }
+}
+
+/// A steady sound cut by STOP fades out and back in at the loop point,
+/// with no click.
+#[test]
+fn a_cut_take_has_no_clicks() {
+    let mut r = Rig::new(10, 128);
+    r.cmd(L::SetBars(None));
+    r.cmd(L::Record);
+    r.at(START, T::Play);
+    let stop = START + BAR as u64 / 2;
+    r.at(stop, T::Stop);
+    r.run(stop + 1_000, &dc(0.25));
+    assert_eq!(r.l.status().cut, Some(BAR / 2));
+    r.at(stop + 1_100, T::StopAndRewind);
+    let play = stop + 2_000;
+    r.at(play, T::Play);
+    r.run(play + 3 * BAR as u64, &dc(0.0));
+    let step = r.max_step(play + FADE as u64, play + 3 * BAR as u64);
+    assert!(step < 0.002, "{step}");
+}
+
+#[test]
+fn stop_before_a_sixteenth_or_a_jump_throws_the_first_pass_away() {
     let mut r = Rig::new(10, 128);
     r.cmd(L::Record);
     r.at(START, T::Play);
-    r.at(START + 5_000, T::Stop);
-    r.run(START + 6_000, &noise);
+    // 1 000 frames: 174 ticks, under a 1/16 note.
+    r.at(START + 1_000, T::Stop);
+    r.run(START + 2_000, &noise);
     assert_eq!(r.l.status().phase, Phase::Empty);
     assert_eq!(r.l.stats().aborted, 1);
+    assert_eq!(r.l.memory().used, 0);
     // Back to bar 1, then a locate in the middle of the pass.
-    r.at(START + 6_500, T::StopAndRewind);
+    r.at(START + 2_500, T::StopAndRewind);
     r.cmd(L::Record);
     r.at(START + 7_000, T::Play);
     r.at(START + 9_000, T::Locate(5_000));

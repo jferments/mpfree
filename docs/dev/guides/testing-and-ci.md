@@ -183,8 +183,11 @@ touchscreen, using the list of controls each widget gives
   every check the smoke tests can do, and ask only about what a round
   tests). One module per area, so a round can run one area alone
   (`cargo test -p mpfree-app --bins smoke::phases::looper`):
-  - `looper`: REC records two bars from the bar line; OVERDUB adds a
-    layer; STOP stops the loop and its playhead at once (live test 3 found
+  - `looper`: REC records from the bar line and REC again closes it on
+    the bar line; REC and PLAY record until STOP, which keeps the take
+    (silent to the bar line); a pad recorded with the Play page's echo in
+    the loop; OVERDUB adds a layer; STOP stops the loop and its playhead
+    at once (live test 3 found
     it playing on for minutes; the test fails on that build); every tool
     while it plays, UNDO and SHIFT + UNDO, the undo history back and
     forward, trim; a layer row's speaker, S, level and Q-Links; a layer

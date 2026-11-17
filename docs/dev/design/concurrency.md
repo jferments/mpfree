@@ -32,6 +32,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-midilog` | The MIDI monitor's Save log (handed to `mpfree-store`) and, while the developer tools are on, its lines in `/run/mpfree-app/midi.log` for the workstation console; four times a second, holding the I/O model's lock only to take an ask or word new lines (the audio loop only `try_lock`s it) |
 | `mpfree-journal` | The console's log |
 | `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs, at idle priority |
+| `mpfree-analyse` | The Sample tab's views of its sounds (`views.rs`): peaks and mono mix, then hits, tempo and root note, off the sound's cores at background priority; the sound shown last first |
 | `autosample` | An auto-sample: at idle priority for one of MPFree's instruments, at normal priority for external gear |
 
 ## The plan, in order

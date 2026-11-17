@@ -54,7 +54,7 @@ impl Response {
 }
 
 /// Deconvolves `out` (the left channel) against `s`, keeping `window`
-/// frames of linear response from a few frames before its peak, and
+/// frames of linear response from up to 4096 frames before its peak, and
 /// returns its gain and phase at the third-octave centres.
 pub fn analyse(s: &Sweep, out: &Stereo, window: usize) -> Response {
     let n = s.sweep.len();
@@ -65,15 +65,22 @@ pub fn analyse(s: &Sweep, out: &Stereo, window: usize) -> Response {
     let delay = (0..window.min(dev.len().saturating_sub(base)))
         .max_by(|a, b| dev[base + a].abs().total_cmp(&dev[base + b].abs()))
         .unwrap_or(0);
-    // Keep a little before time zero (filters ring both ways after
-    // deconvolution) but well clear of the 2nd harmonic, L ln 2 earlier.
-    let pre = ((s.l * 2f64.ln()) * 0.5).min(512.0) as usize;
+    // Keep some time before time zero (the sweep's band edges and the
+    // device's filters ring both ways after deconvolution; a 20 Hz edge
+    // for tens of milliseconds) but well clear of the 2nd harmonic, L ln 2
+    // earlier.
+    let pre = ((s.l * 2f64.ln()) * 0.5).min(4096.0) as usize;
     let size = pow2_at_least(window + pre);
     let fft = Fft::new(size);
-    let take = |ir: &[f64]| -> Vec<f64> {
+    // Both windows start `pre` before their own time zero (the device's
+    // at its delay): the sweep's band edges ring for tens of milliseconds
+    // either side, and a cut at different points in that ringing for the
+    // device and the wire would read as a low-frequency ripple of a few
+    // tenths of a dB on a plain delay.
+    let take = |ir: &[f64], at: usize| -> Vec<f64> {
         let mut v = vec![0.0; size];
         for (j, slot) in v.iter_mut().enumerate().take(window + pre) {
-            let i = base + j;
+            let i = at + j;
             if i >= pre {
                 *slot = ir.get(i - pre).copied().unwrap_or(0.0);
             }
@@ -86,8 +93,8 @@ pub fn analyse(s: &Sweep, out: &Stereo, window: usize) -> Response {
         }
         v
     };
-    let (mut dr, mut di) = (take(&dev), vec![0.0; size]);
-    let (mut wr, mut wi) = (take(&wire), vec![0.0; size]);
+    let (mut dr, mut di) = (take(&dev, base + delay), vec![0.0; size]);
+    let (mut wr, mut wi) = (take(&wire, base), vec![0.0; size]);
     fft.forward(&mut dr, &mut di);
     fft.forward(&mut wr, &mut wi);
     let rate = s.rate as f64;
@@ -100,9 +107,7 @@ pub fn analyse(s: &Sweep, out: &Stereo, window: usize) -> Response {
             let den = c * c + d * d;
             let (hr, hi) = ((a * c + b * d) / den, (b * c - a * d) / den);
             let gain = 10.0 * (hr * hr + hi * hi).max(1e-30).log10();
-            let w = std::f64::consts::TAU * k as f64 / size as f64;
-            let phase = (hi.atan2(hr) + w * delay as f64 + std::f64::consts::PI)
-                .rem_euclid(std::f64::consts::TAU)
+            let phase = (hi.atan2(hr) + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
                 - std::f64::consts::PI;
             (f, gain, phase)
         })
@@ -129,6 +134,45 @@ mod tests {
         let r = measure(&mut Wire { rate: 48_000 }, -12.0, 4096);
         assert_eq!(r.delay, 0);
         assert!(r.worst_error(30.0, 20_000.0, |_| 0.0) < 0.01, "{r:?}");
+    }
+
+    #[test]
+    fn a_delayed_wire_is_flat_down_to_25_hz() {
+        // A plain delay (a drive's latency) at 44.1 kHz with the window the
+        // quality report uses: flat at the bottom too.
+        struct Late(usize);
+        impl crate::dut::Dut for Late {
+            fn name(&self) -> String {
+                "late".into()
+            }
+            fn rate(&self) -> u32 {
+                44_100
+            }
+            fn latency(&self) -> usize {
+                self.0
+            }
+            fn reset(&mut self) {}
+            fn params(&self) -> Vec<mpfree_fx::mpfree_node::ParamInfo> {
+                Vec::new()
+            }
+            fn set(&mut self, _: u16, _: f64) {}
+            fn process(&mut self, input: &Stereo, _: &[crate::dut::Change]) -> Stereo {
+                let n = input.len();
+                let l = (0..n)
+                    .map(|i| {
+                        if i < self.0 {
+                            0.0
+                        } else {
+                            input.left[i - self.0]
+                        }
+                    })
+                    .collect();
+                Stereo::mono(l, input.rate)
+            }
+        }
+        let r = measure(&mut Late(55), -40.0, 8192);
+        assert_eq!(r.delay, 55);
+        assert!(r.worst_error(25.0, 20_000.0, |_| 0.0) < 0.01, "{r:?}");
     }
 
     #[test]

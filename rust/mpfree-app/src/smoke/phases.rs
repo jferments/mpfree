@@ -37,21 +37,31 @@ mod looper {
         assert_eq!(status(s).phase, want, "after {seconds} s");
     }
 
-    /// A loop recorded on the Looper tab with PLAY and REC: two bars from
-    /// the next bar line, then it plays.
+    /// A loop recorded on the Looper tab with PLAY and REC, from the next
+    /// bar line, two bars long, then it plays: free length (the default),
+    /// closed by REC again a bar and a half in, on the bar line; or a set
+    /// length (+ New loop takes the length of the loop picked before).
     fn record_a_loop(s: &mut Session) {
         s.button("REC");
         assert_eq!(status(s).phase, Phase::Armed, "REC waits for the bar line");
         until_phase(s, Phase::Recording, 2.5);
-        until_phase(s, Phase::Playing, 4.5);
+        if status(s).bars.is_none() {
+            s.run_for(3.0);
+            s.button("REC");
+            assert!(status(s).ending, "REC again: it ends on the bar line");
+            until_phase(s, Phase::Playing, 1.5);
+        } else {
+            until_phase(s, Phase::Playing, 4.5);
+        }
     }
 
-    /// REC on the Looper tab records 2 bars from the next bar line; OVERDUB
-    /// adds a layer from the next pass and REC ends it; STOP stops the loop
-    /// and its playhead at once (live test 3: it played on for minutes);
-    /// PLAY starts both again.
+    /// REC on the Looper tab records from the next bar line until REC
+    /// again, which closes it on the bar line; OVERDUB adds a layer from
+    /// the next pass and REC ends it; STOP stops the loop and its playhead
+    /// at once (live test 3: it played on for minutes); PLAY starts both
+    /// again.
     #[test]
-    fn rec_records_two_bars_and_stop_stops_the_loop_at_once() {
+    fn rec_closes_on_the_bar_line_and_stop_stops_the_loop_at_once() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Looper");
@@ -62,6 +72,7 @@ mod looper {
             let st = status(&s);
             assert_eq!(st.origin as u64 % bar, 0, "it started on a bar line");
             assert_eq!(st.ticks as u64, 2 * bar, "two bars long");
+            assert_eq!(st.bars, None, "free length by default (Jay, 16 Nov)");
             assert_eq!(st.layers, 1);
 
             // OVERDUB: a layer from the next pass; REC ends it.
@@ -92,6 +103,118 @@ mod looper {
             assert_ne!(status(&s).position, at, "the loop plays again");
             assert_eq!(status(&s).layers, 2, "with both layers");
             s.button("STOP");
+        });
+    }
+
+    /// A loop's first layer as it plays, frame by frame.
+    fn first_layer(s: &Session) -> Vec<[f32; 2]> {
+        let layer = s.looper.looper.layer(0).expect("a layer");
+        let mut x = vec![[0f32; 2]; status(s).frames];
+        layer.read(0, &mut x);
+        x
+    }
+
+    /// REC + PLAY records until STOP (free length, the default), and STOP
+    /// stops at once and keeps what was played: the loop runs to the next
+    /// bar line, silent after STOP, and PLAY plays it (Jay, 16 Nov).
+    #[test]
+    fn rec_and_play_record_until_stop_which_keeps_the_take() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.button("REC");
+            assert_eq!(status(&s).phase, Phase::Armed, "REC waits for PLAY");
+            s.button("PLAY");
+            until_phase(&mut s, Phase::Recording, 0.5);
+            s.pad(0, 100, 0.05);
+            // A bar and a quarter at 120 BPM: still recording.
+            s.run_for(2.4);
+            assert_eq!(status(&s).phase, Phase::Recording, "no set length");
+            s.button("STOP");
+            assert!(!s.time.info().state.rolling(), "STOP stops at once");
+            s.run_for(0.1);
+            let st = status(&s);
+            assert_eq!(st.phase, Phase::Playing, "the take is kept");
+            assert_eq!(
+                st.ticks,
+                2 * 4 * PPQ as i64,
+                "two bars: to the next bar line"
+            );
+            let cut = st.cut.expect("cut at STOP");
+            let seconds = cut as f64 / 44_100.0;
+            assert!((2.4..2.6).contains(&seconds), "cut after {seconds} s");
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.starts_with("looper: loop of 2 bars") && l.contains("cut at STOP")),
+                "{:?}",
+                s.said()
+            );
+            // The pad is in it, and nothing after STOP.
+            let x = first_layer(&s);
+            let peak = |x: &[[f32; 2]]| x.iter().fold(0f32, |m, v| m.max(v[0].abs()));
+            assert!(peak(&x[..cut]) > 0.05, "the pad was recorded");
+            let quiet_to = st.frames - mpfree_looper::FADE - 1;
+            assert_eq!(peak(&x[cut..quiet_to]), 0.0, "nothing after STOP");
+            // SHIFT + STOP: back to bar 1. PLAY: the loop plays.
+            s.button_with("SHIFT", "STOP").run_for(0.1);
+            s.button("PLAY").run_for(0.5);
+            assert!(s.time.info().state.rolling());
+            assert!(status(&s).position > 0.0, "the loop plays from bar 1");
+            s.button("STOP");
+        });
+    }
+
+    /// The loop records the pads as they are heard, with their effects:
+    /// the echo of the Play page's delay on the Drums is in the loop, and
+    /// the pad lands where it was played, though the mix comes a period
+    /// late (the final round: the echo was heard but not recorded).
+    #[test]
+    fn the_loop_records_the_pads_with_their_effects() {
+        use crate::mixing::{PlayFx, DELAY_RETURN, DRUMS};
+        use mpfree_fx::ids::mixer as mx;
+        use mpfree_fx::StripId;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.mix.play(PlayFx::Strip {
+                strip: StripId::Track(DRUMS),
+                id: mx::send(DELAY_RETURN),
+                value: 0.0,
+            });
+            s.press("header", "tab", "Looper");
+            s.button("REC").button("PLAY");
+            until_phase(&mut s, Phase::Recording, 0.5);
+            s.run_for(0.25);
+            s.pad(0, 127, 0.05);
+            s.run_for(1.5);
+            s.button("STOP").run_for(0.1);
+            assert_eq!(status(&s).phase, Phase::Playing);
+            assert!(
+                !s.said().iter().any(|l| l.contains("records the pads dry")),
+                "{:?}",
+                s.said()
+            );
+            let x = first_layer(&s);
+            let rms = |a: usize, b: usize| {
+                (x[a..b].iter().map(|v| v[0] * v[0]).sum::<f32>() / (b - a) as f32).sqrt()
+            };
+            let hit = x.iter().position(|v| v[0].abs() > 0.01).expect("the pad");
+            // Played about 0.25 s into the bar (a period or two either
+            // way for where the session hands the press over), not a
+            // period later.
+            let at = hit as f64 / 44_100.0;
+            assert!((0.24..0.27).contains(&at), "the pad at {at} s");
+            // The pad's sound is gone in 0.15 s; the 1/8 dotted echo comes
+            // 0.375 s after it.
+            let ms = |m: usize| hit + m * 441 / 10;
+            let gap = rms(ms(250), ms(350));
+            let echo = rms(ms(375), ms(475));
+            assert!(
+                echo > 0.01 && echo > 5.0 * gap,
+                "echo {echo}, before it {gap}"
+            );
         });
     }
 
@@ -1094,7 +1217,16 @@ mod device_log {
             let n = s.lines.len();
             s.button("REC");
             wrote(&s, n, "looper: Record: armed", "");
-            s.button("STOP");
+            // The looper check's `^looper: loop of .* cut at STOP`, and
+            // never `^looper: records the pads dry`.
+            s.run_for(3.0);
+            let n = s.lines.len();
+            s.button("STOP").run_for(0.2);
+            wrote(&s, n, "looper: loop of ", "cut at STOP");
+            assert!(!s
+                .lines
+                .iter()
+                .any(|l| l.starts_with("looper: records the pads dry")));
         });
     }
 }
