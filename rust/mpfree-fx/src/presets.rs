@@ -183,6 +183,25 @@ pub static FILTER: &[Preset] = &[
             (filter::GAIN, 6.0),
         ],
     },
+    Preset {
+        name: "Ladder bass",
+        values: &[
+            (filter::MODEL, 1.0),
+            (filter::CUTOFF, 500.0),
+            (filter::RESONANCE, 70.0),
+            (filter::DRIVE, 6.0),
+        ],
+    },
+    Preset {
+        name: "Screaming low-pass",
+        values: &[
+            (filter::TYPE, LOW_PASS),
+            (filter::CUTOFF, 1200.0),
+            (filter::RESONANCE, 85.0),
+            (filter::DRIVE, 6.0),
+            (filter::RES_MODE, 1.0),
+        ],
+    },
 ];
 
 // Drive modes.

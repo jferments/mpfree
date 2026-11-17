@@ -337,6 +337,8 @@ impl Desk<'_> {
             | gui::FromUi::OpenLoops(_)
             | gui::FromUi::OpenAudio(_)
             | gui::FromUi::TrackInstrument(_)
+            // A MIDI file's notes go on the pads the instruments play them on.
+            | gui::FromUi::MidiFile(_)
             // The synth's and the mixer's turn histories are the loop's.
             | gui::FromUi::UndoHistory(_)
             | gui::FromUi::UndoOn { .. }

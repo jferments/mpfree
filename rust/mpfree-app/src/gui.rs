@@ -1170,6 +1170,9 @@ pub enum FromUi {
     SamplePhrase(Box<mpfree_seq::Clip>),
     /// Save on the Touch page: keep this tuning in the store.
     SaveTouch(Tuning),
+    /// A MIDI file BROWSE loaded, read: its tracks as clips from the armed
+    /// track on ([`crate::midi_file::put`]).
+    MidiFile(Box<crate::midi_file::MidiImport>),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -1309,6 +1312,8 @@ pub struct Player {
     preview_db: f32,
     /// A sound file being read for the preview.
     preview_load: Option<std::sync::mpsc::Receiver<sample_page::Loaded>>,
+    /// A MIDI file BROWSE loaded, being read ([`crate::midi_file`]).
+    midi_load: Option<std::sync::mpsc::Receiver<Result<crate::midi_file::MidiImport, String>>>,
     /// MPFree's own kits being written into the library (bundled.rs), and
     /// whether this run has looked whether they need to be.
     bundling: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
@@ -1691,6 +1696,7 @@ impl Player {
             audio_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
+            midi_load: None,
             bundling: None,
             bundle_looked: false,
             arp_panel,
@@ -5537,6 +5543,12 @@ impl Player {
                 println!("sample: phrase {:?} found no room on its way to the clips; the pads have the slices", clip.name);
                 let _ = io::stdout().flush();
             }
+            FromUi::MidiFile(m) => {
+                self.say(format!(
+                    "MIDI file {}: not loaded (the sound loop was busy): load it again",
+                    m.file
+                ));
+            }
             _ => {}
         }
     }
@@ -5633,6 +5645,10 @@ impl Player {
                 self.outbox.push(FromUi::PreviewStop);
             }
             A::SaveLists(text) => self.outbox.push(FromUi::SaveBrowserLists(text)),
+            // A MIDI file: read in a thread, then its tracks as clips.
+            A::LoadMidi { path, .. } => {
+                self.midi_load = Some(crate::midi_file::read_in_thread(path));
+            }
             A::PickerClosed { .. } => {}
             // Kit files (mpfree_library::kit): a kit loads in place of the
             // kit the pads play; Save kit saves that kit as a kit folder.
@@ -5811,6 +5827,28 @@ impl Player {
                 self.outbox.push(FromUi::Preview(Box::new(p)));
             }
             Err(e) => self.say(format!("preview: not heard ({e})")),
+        }
+    }
+
+    /// A MIDI file BROWSE loaded, once read: its clips to the time engine,
+    /// or why it can't be.
+    fn poll_midi(&mut self) {
+        let Some(rx) = &self.midi_load else {
+            return;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("its thread stopped".into()),
+        };
+        self.midi_load = None;
+        match r {
+            Ok(m) => self.outbox.push(FromUi::MidiFile(Box::new(m))),
+            Err(e) => {
+                let line = format!("MIDI file: not loaded: {e}");
+                self.tell(&line);
+                self.say(line);
+            }
         }
     }
 
@@ -8023,6 +8061,7 @@ impl Player {
         self.poll_saves();
         self.poll_plugins();
         self.poll_preview();
+        self.poll_midi();
         self.poll_loops();
         self.poll_audio();
         self.open_at_start();

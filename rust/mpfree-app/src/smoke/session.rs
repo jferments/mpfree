@@ -1275,6 +1275,17 @@ impl Session {
             FromUi::TrackInstrument(track) => {
                 self.out.note(&format!("arrange: no track {}", track + 1))
             }
+            // A MIDI file from BROWSE, as main.rs.
+            FromUi::MidiFile(m) => {
+                let synth_has = self.synth_on.then_some(&*self.synth);
+                let own = &self.mix.instruments;
+                let r = crate::midi_file::put(&mut self.time, &m, |t, n| {
+                    crate::midi_file::pad_on_track(own, synth_has, t, n)
+                });
+                let (Ok(line) | Err(line)) = r;
+                self.out.note(&line);
+                self.out.show(ToUi::Tell(line));
+            }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
             FromUi::OpenLoops(l) => self.looper.open(*l),
