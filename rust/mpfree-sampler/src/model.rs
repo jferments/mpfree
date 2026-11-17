@@ -55,6 +55,10 @@ pub struct Source {
     channels: u8,
     /// Interleaved when stereo.
     data: Arc<[f32]>,
+    /// Its octave copies, for reading it more than an octave up
+    /// ([`crate::bandlimit`]), shared by every clone. Made when a pad
+    /// that can play it that high asks for them.
+    octaves: Arc<crate::bandlimit::OctaveCell>,
 }
 
 fn fnv1a(hash: &mut u64, bytes: &[u8]) {
@@ -94,6 +98,7 @@ impl Source {
             rate,
             channels,
             data: data.into(),
+            octaves: Arc::default(),
         })
     }
 
@@ -121,6 +126,16 @@ impl Source {
     }
     pub fn data(&self) -> &Arc<[f32]> {
         &self.data
+    }
+    /// Where its octave copies are kept ([`crate::bandlimit::prepare`]
+    /// makes them).
+    pub fn octaves(&self) -> &Arc<crate::bandlimit::OctaveCell> {
+        &self.octaves
+    }
+    /// Makes its octave copies here and now if they aren't made yet: for
+    /// offline renders and tests, which mustn't wait on a thread.
+    pub fn make_octaves(&self) {
+        crate::bandlimit::prepare_now(&self.octaves, &self.data, self.channels);
     }
 }
 
@@ -992,6 +1007,11 @@ pub struct Pad {
     /// In Cycle and Random, layers with the same velocities take turns
     /// among themselves and the overlapping ones play together.
     pub vel_fade: u8,
+    /// Vintage: the pad pitches its sound as older samplers do, read
+    /// straight with no low-pass, so pitching it up aliases (grit on
+    /// purpose). Off, a pad pitched up is read band-limited
+    /// ([`crate::bandlimit`]) and stays clean.
+    pub vintage: bool,
 }
 
 /// The longest key fade, in notes.
@@ -1199,6 +1219,7 @@ impl Pad {
             wow: 0.0,
             key_fade: 0,
             vel_fade: 0,
+            vintage: false,
         }
     }
 
