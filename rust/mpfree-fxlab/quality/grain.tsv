@@ -17,6 +17,30 @@ grain/level[pad, defaults]/offset_lu	-0.5097
 grain/level[pad]/range_lu	0.6416
 grain/level[pink, defaults]/offset_lu	0.3452
 grain/level[pink]/range_lu	0.6294
+grain/move[pad, env size]/extra_swing_db	0.0918
+grain/move[pad, env size]/level_change_lu	-0.1127
+grain/move[pad, lfo density]/extra_swing_db	-0.1856
+grain/move[pad, lfo density]/level_change_lu	-0.0319
+grain/move[pad, lfo pitch]/extra_swing_db	-0.3396
+grain/move[pad, lfo pitch]/level_change_lu	-0.0079
+grain/move[pad, lfo position]/extra_swing_db	-0.1433
+grain/move[pad, lfo position]/level_change_lu	-0.2262
+grain/move[pad, lfo size]/extra_swing_db	0.2115
+grain/move[pad, lfo size]/level_change_lu	-0.0346
+grain/move[pad, lfo spray]/extra_swing_db	-0.0232
+grain/move[pad, lfo spray]/level_change_lu	-0.1082
+grain/move[pink, env size]/extra_swing_db	-0.2643
+grain/move[pink, env size]/level_change_lu	-0.0696
+grain/move[pink, lfo density]/extra_swing_db	-0.0539
+grain/move[pink, lfo density]/level_change_lu	-0.0567
+grain/move[pink, lfo pitch]/extra_swing_db	-0.0787
+grain/move[pink, lfo pitch]/level_change_lu	-0.0011
+grain/move[pink, lfo position]/extra_swing_db	-0.2556
+grain/move[pink, lfo position]/level_change_lu	0.0286
+grain/move[pink, lfo size]/extra_swing_db	0.057
+grain/move[pink, lfo size]/level_change_lu	0.0723
+grain/move[pink, lfo spray]/extra_swing_db	1.2451
+grain/move[pink, lfo spray]/level_change_lu	-0.1204
 grain/onset[pad, 1000 ms grains]/ms	10
 grain/onset[pad, 200 ms grains]/ms	10
 grain/onset[pad, 500 ms grains]/ms	10

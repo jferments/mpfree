@@ -684,6 +684,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#transient-shaper); decisio
 | G1 | `level[..., defaults]/offset_lu` | within 1 LU | The defaults against the source |
 | G11 | `tone[A2, A4, B5]/pitch_cents` | within 5 cents | Short regular grains of one spot of the pad, four cycles long, at the note's density: the spectrum's peak near the note (65536-point transform, parabolic) against the note (step B5) |
 | G12 | `hits[drums, half speed or double speed]/pre_db`, `attack_ms`, `flam_db` | ≤ -24 dB; ≤ 1 ms; ≤ 3 dB | White-noise bursts from silence every 0.25 s, each decaying 40 ms, stretched as Stretch sets it (90 ms, 45 a second, regular, from the start) to half and double speed with the bursts' starts as hits; the medians over the hits of: the loudest millisecond in the 30 ms before each hit's time against the hit's; from its time until the level first reaches half the hit's, in half milliseconds; the largest rise of the level (4 ms, a millisecond at a time) over its lowest since the hit's peak, in the next 60 ms. The loudness against the drums' and the same without hits are shown (step B5) |
+| G13 | `move[...]/level_change_lu`, `extra_swing_db` | within 1 LU; 3 dB | A sprayed cloud (80 ms, 80 a second, spray 0.3) on pink and the pad moved by its LFO (a 0.5 Hz sine) on position (full depth), size, density, pitch (half depth) and spray (from 0.5, full), or by its envelope on size (0.5 s up, 1 s down to half): the loudness against the cloud unmoved, and how much further its level (400 ms windows every 100 ms) swings over two cycles (step B3) |
 | G1 | `vary[...]/level_change_lu` | within 1 LU | Full size spray, full level spray and peaked spray, each against the same cloud without it (40 a second, spray 0.3), on pink and the pad (step B1) |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
@@ -782,6 +783,13 @@ Part 4, Stretch keeps hits (`GrainSource::next_hit`, `GrainVoice::render` "Hits"
 
 - **G12 met:** half speed, the 30 ms before a hit -70.8 dB under it (without hits +2.4: every grain reading ahead plays it early, louder than the hit itself); double speed, half the hit's level 0.5 ms after its time (without hits 20.0 ms: the grains reach it one by one); no second attack (1.9 and 0.4 dB). A stretch keeping its hits is 1.4 LU quieter at half speed (its hits are half as many a second, and what a slowed stretch has too little of just before each thins out) and 1.5 LU louder at double speed (twice as many whole hits).
 - **Unchanged:** every other row.
+
+### Step B3: movement per pad (2026-11-17)
+
+Each grain voice has an LFO and an envelope (`mpfree_grain::motion`, `Params::lfo` and `env`), each moving one setting of the grains as they are made: position, size, density, pitch or spray ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Movement). They are worked out at the start of each 64-frame part of the voice's clock, so a moving cloud renders the same at any period size (`tests/motion.rs`), and the level law plays the moved cloud as any other. New rows: G13.
+
+- **G13 met:** the loudness moves by at most 0.23 LU (the pad with its position swept across the whole sound), and no movement makes the level swing more than 1.3 dB further than the cloud unmoved does (pink with its spray swept from 0 to 1; every other case within 0.4 dB, most a little less than unmoved).
+- **Unchanged:** every other row, bit for bit (with nothing to move, the settings are as set; the LFO's Hold and Drift values come from a random sequence of their own).
 
 ## Round 5: movement, pitch and voice
 

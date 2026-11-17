@@ -1,6 +1,7 @@
 //! The grain voice: schedules grains and mixes them.
 
 use crate::buffer::{Aim, GrainSource};
+use crate::motion::{env_level, moved, GrainEnv, GrainLfo, LfoState, MotionTarget};
 use crate::rng::Rng;
 use crate::window::{Window, WindowTable};
 
@@ -46,6 +47,9 @@ const TIMING_SEED: u64 = 0x7A3E_D1CE_0F7E_57A3;
 /// sequence, for the same reason: with no variation a cloud plays exactly
 /// as before variation existed.
 const VARY_SEED: u64 = 0x5EED_0B1A_C0DE_2611;
+/// Mixed into the seed of the LFO's own random sequence (its Hold and
+/// Drift values), for the same reason.
+const LFO_SEED: u64 = 0x1F0D_5EED_0A7E_B3B3;
 /// A grain varied all the way down in level (`Params::level_spray` 1) is
 /// this many decibels down.
 const LEVEL_SPRAY_DB: f32 = 24.0;
@@ -139,6 +143,11 @@ pub struct Params {
     /// How the position spray spreads grains: evenly, or peaked at the
     /// position.
     pub spray_shape: SprayShape,
+    /// The voice's LFO, moving one setting (see [`crate::motion`]).
+    pub lfo: GrainLfo,
+    /// The voice's movement envelope, moving one setting from the voice's
+    /// start (see [`crate::motion`]).
+    pub env: GrainEnv,
 }
 
 impl Default for Params {
@@ -162,6 +171,8 @@ impl Default for Params {
             size_spray: 0.0,
             level_spray: 0.0,
             spray_shape: SprayShape::Even,
+            lfo: GrainLfo::default(),
+            env: GrainEnv::default(),
         }
     }
 }
@@ -348,7 +359,20 @@ fn settle(x: f32) -> f32 {
 #[derive(Clone, Debug)]
 pub struct GrainVoice {
     out_rate: u32,
+    /// The settings as set ([`GrainVoice::set_params`]).
     params: Params,
+    /// The settings the grains are made with: as set, moved by the LFO and
+    /// the envelope (see [`crate::motion`]).
+    moved: Params,
+    /// The LFO's place and random values, and its value and the
+    /// envelope's level at the start of this part.
+    lfo: LfoState,
+    lfo_value: f32,
+    env_value: f32,
+    /// Voice clock frames: the voice's start, and when the LFO was last
+    /// moved on.
+    started: u64,
+    motion_at: u64,
     window: WindowTable,
     grains: [Grain; MAX_GRAINS],
     active: usize,
@@ -422,6 +446,12 @@ impl GrainVoice {
         GrainVoice {
             out_rate: out_rate.max(1),
             params,
+            moved: params,
+            lfo: LfoState::new(Rng::new(seed ^ LFO_SEED)),
+            lfo_value: 0.0,
+            env_value: 0.0,
+            started: 0,
+            motion_at: 0,
             window: WindowTable::new(params.window),
             grains: [Grain::default(); MAX_GRAINS],
             active: 0,
@@ -472,22 +502,32 @@ impl GrainVoice {
 
     /// The tempo sync in force: the params', at the tempo set.
     fn sync(&self) -> Option<TempoSync> {
-        let mut s = self.params.sync?;
+        let mut s = self.moved.sync?;
         if let Some(b) = self.beat {
             s.frames_per_beat = b;
         }
         Some(s)
     }
 
+    /// The settings as set.
     pub fn params(&self) -> &Params {
         &self.params
     }
 
+    /// The settings the next grains are made with: as set, moved by the
+    /// LFO and the envelope as they are now.
+    pub fn moved_params(&self) -> &Params {
+        &self.moved
+    }
+
     /// Takes effect for the next grain; grains already playing finish as
     /// they started. A new window shape rebuilds the table (1025 values).
+    /// The LFO and the envelope move the new settings by as much as they
+    /// moved the old (they move on at the next part of the voice's clock).
     pub fn set_params(&mut self, p: Params) {
         self.params = p;
         self.window.set(p.window);
+        self.apply_motion();
     }
 
     /// Restarts the random sequence.
@@ -495,6 +535,53 @@ impl GrainVoice {
         self.rng = Rng::new(seed);
         self.trng = Rng::new(seed ^ TIMING_SEED);
         self.vrng = Rng::new(seed ^ VARY_SEED);
+        self.lfo = LfoState::new(Rng::new(seed ^ LFO_SEED));
+    }
+
+    /// Moves the LFO on to the voice's clock, takes its value and the
+    /// envelope's level, and moves the settings by them.
+    fn tick_motion(&mut self) {
+        let rate = f64::from(self.out_rate);
+        let lfo = self.params.lfo;
+        let period = match lfo.beats {
+            Some(b) if b.is_finite() && b > 0.0 => {
+                f64::from(b.clamp(1.0 / 64.0, 256.0)) * self.beat.unwrap_or(rate * 0.5)
+            }
+            _ => rate / f64::from(lfo.rate_hz.clamp(0.01, 40.0)),
+        };
+        self.lfo
+            .advance((self.clock - self.motion_at) as f64 / period.max(1.0));
+        self.motion_at = self.clock;
+        self.lfo_value = if lfo.target == MotionTarget::Off {
+            0.0
+        } else {
+            self.lfo.value(lfo.shape)
+        };
+        let env = self.params.env;
+        self.env_value = if env.target == MotionTarget::Off {
+            0.0
+        } else {
+            env_level(&env, self.clock - self.started, self.out_rate)
+        };
+        self.apply_motion();
+    }
+
+    /// The settings as set, moved by the LFO's value and the envelope's
+    /// level as they last were.
+    fn apply_motion(&mut self) {
+        let mut p = self.params;
+        let (lfo, env) = (p.lfo, p.env);
+        moved(
+            &mut p,
+            lfo.target,
+            lfo.depth.clamp(-1.0, 1.0) * self.lfo_value,
+        );
+        moved(
+            &mut p,
+            env.target,
+            env.depth.clamp(-1.0, 1.0) * self.env_value,
+        );
+        self.moved = p;
     }
 
     /// Starts making grains, the first at the start of the next render.
@@ -506,8 +593,13 @@ impl GrainVoice {
     /// a cloud speaks at its level at once at any size and fills in to its
     /// density over the next grain (a slow swell is the amp envelope's
     /// attack). A start on a hit (see [`GrainVoice::render`], "Hits") has
-    /// only the hit's grain.
+    /// only the hit's grain. The LFO and the envelope start again.
     pub fn start(&mut self) {
+        // The LFO and the envelope start again.
+        self.lfo.restart();
+        self.started = self.clock;
+        self.motion_at = self.clock;
+        self.tick_motion();
         self.spawning = true;
         self.prefill = true;
         self.next_at = self.clock as f64;
@@ -517,7 +609,7 @@ impl GrainVoice {
         // Until the cloud has played long enough to tell, guess how its
         // grains add from the settings: in step only when every grain
         // reads the same audio as the one before it at the same moment.
-        let p = &self.params;
+        let p = &self.moved;
         let ratio = (p.pitch.clamp(-48.0, 48.0) / 12.0).exp2();
         let in_step = p.spray <= 0.0
             && p.pitch_spray <= 0.0
@@ -589,7 +681,7 @@ impl GrainVoice {
     }
 
     fn base_offset(&self, len: f64) -> f64 {
-        (f64::from(self.params.position.clamp(0.0, 1.0)) * len + self.scan_offset).rem_euclid(len)
+        (f64::from(self.moved.position.clamp(0.0, 1.0)) * len + self.scan_offset).rem_euclid(len)
     }
 
     /// How much longer than the size the varied grains are on average:
@@ -599,7 +691,7 @@ impl GrainVoice {
     /// the transport's tempo over the source's, 1 without both (held to
     /// 1/8 to 8).
     fn scan_tempo_ratio(&self) -> f64 {
-        match (self.params.scan_tempo, self.beat) {
+        match (self.moved.scan_tempo, self.beat) {
             (Some(bpm), Some(beat)) if bpm.is_finite() && bpm > 0.0 => {
                 let now = 60.0 * f64::from(self.out_rate) / beat;
                 (now / f64::from(bpm)).clamp(0.125, 8.0)
@@ -611,11 +703,11 @@ impl GrainVoice {
     /// Free-running grains at regular times (timing 0), which keep their
     /// exact times.
     fn exact(&self) -> bool {
-        self.params.timing <= 0.0 && self.sync_interval().is_none()
+        self.moved.timing <= 0.0 && self.sync_interval().is_none()
     }
 
     fn size_spray_mean(&self) -> f64 {
-        let s = f64::from(self.params.size_spray.clamp(0.0, 1.0));
+        let s = f64::from(self.moved.size_spray.clamp(0.0, 1.0));
         if s < 1e-6 {
             return 1.0;
         }
@@ -623,7 +715,7 @@ impl GrainVoice {
     }
 
     fn size_frames(&self) -> f64 {
-        let p = &self.params;
+        let p = &self.moved;
         let rate = f64::from(self.out_rate);
         let frames = match self
             .sync()
@@ -637,7 +729,7 @@ impl GrainVoice {
 
     /// Grains per second, synced or not.
     fn density(&self) -> f64 {
-        let p = &self.params;
+        let p = &self.moved;
         let d = match self.sync().and_then(|s| s.grains_per_beat.map(|g| (s, g))) {
             Some((s, g)) if s.frames_per_beat > 0.0 => {
                 f64::from(g) * f64::from(self.out_rate) / s.frames_per_beat
@@ -723,6 +815,11 @@ impl GrainVoice {
     /// start again a period after it. So each hit plays once, at its time
     /// and at its own attack; what a slowed stretch has too little of
     /// just before a hit thins out, as a beat-slicing stretch gaps.
+    ///
+    /// **Movement.** At the start of each 64-frame part of the voice's
+    /// clock the LFO moves on and the envelope is read ([`crate::motion`]),
+    /// and the part's grains are made with the settings they move
+    /// ([`GrainVoice::moved_params`]).
     pub fn render<S: GrainSource>(
         &mut self,
         src: &S,
@@ -746,31 +843,16 @@ impl GrainVoice {
         self.span = (start, end);
         let len = (end - start) as f64;
         let src_ratio = f64::from(src.rate()) / f64::from(self.out_rate);
-        let scan =
-            f64::from(self.params.scan.clamp(-4.0, 4.0)) * src_ratio * self.scan_tempo_ratio();
-        // As `spawn` shortens a grain whose read wouldn't fit.
-        let speed = f64::from((self.params.pitch.clamp(-48.0, 48.0) / 12.0).exp2()) * src_ratio;
-        self.fit_size = (self.size_frames() * self.size_spray_mean())
-            .min((len - 4.0) / speed)
-            .max(2.0);
-        let floor_to = if self.spawning {
-            floor_for(self.overlap(), level_rms(self.params.level_spray))
-        } else {
-            1.0
-        };
-        let size = self.size_frames();
-        if size != self.k_floor_size {
-            // A quarter of a grain, at least the rising time.
-            let secs = (size / f64::from(self.out_rate) / 4.0).max(FLOOR_SECS);
-            self.k_floor_down = coefficient(secs, self.out_rate);
-            self.k_floor_size = size;
-        }
         let mut at = 0usize;
         while at < n {
             // Parts follow the voice's clock, not the call, so the output
             // doesn't depend on how the audio is cut into periods.
             let into = (self.clock % PART as u64) as usize;
             let m = (n - at).min(PART - into);
+            if into == 0 {
+                self.tick_motion();
+            }
+            let (scan, floor_to) = self.part_settings(len, src_ratio);
             let measure = (self.clock / PART as u64).is_multiple_of(MEASURE_EVERY);
             self.sc.clear(m, measure);
             let mut done = 0usize;
@@ -822,7 +904,7 @@ impl GrainVoice {
                     self.spawn_hit(src, budget, src_ratio, h, frac);
                     let born = self.clock as f64 + seg as f64 - frac;
                     self.last_spawn = born;
-                    self.gap = gap_factor(self.params.timing, self.trng.unit());
+                    self.gap = gap_factor(self.moved.timing, self.trng.unit());
                     self.next_at = born + self.period() * self.gap;
                     self.last_hit = Some((h, self.clock + seg as u64));
                     hits_left -= 1;
@@ -847,7 +929,7 @@ impl GrainVoice {
                     };
                     self.spawn(src, budget, src_ratio, 0, scan, now - born);
                     self.last_spawn = born;
-                    self.gap = gap_factor(self.params.timing, self.trng.unit());
+                    self.gap = gap_factor(self.moved.timing, self.trng.unit());
                     self.next_at = born + self.period() * self.gap;
                     search = off + 1;
                 }
@@ -864,6 +946,33 @@ impl GrainVoice {
         self.stats.active = self.active;
         self.stats.thinned =
             self.spawning && self.density() * self.fit_size / f64::from(self.out_rate) > CAP_FIT;
+    }
+
+    /// What this part's grains go by, from the settings (as moved): the
+    /// scan's speed in source frames an output frame, and the floor the
+    /// level's divisor glides to. Sets the grains' fitted size and the
+    /// floor's falling coefficient.
+    fn part_settings(&mut self, len: f64, src_ratio: f64) -> (f64, f32) {
+        let scan =
+            f64::from(self.moved.scan.clamp(-4.0, 4.0)) * src_ratio * self.scan_tempo_ratio();
+        // As `spawn` shortens a grain whose read wouldn't fit.
+        let speed = f64::from((self.moved.pitch.clamp(-48.0, 48.0) / 12.0).exp2()) * src_ratio;
+        let size = self.size_frames();
+        self.fit_size = (size * self.size_spray_mean())
+            .min((len - 4.0) / speed)
+            .max(2.0);
+        let floor_to = if self.spawning {
+            floor_for(self.overlap(), level_rms(self.moved.level_spray))
+        } else {
+            1.0
+        };
+        if size != self.k_floor_size {
+            // A quarter of a grain, at least the rising time.
+            let secs = (size / f64::from(self.out_rate) / 4.0).max(FLOOR_SECS);
+            self.k_floor_down = coefficient(secs, self.out_rate);
+            self.k_floor_size = size;
+        }
+        (scan, floor_to)
     }
 
     /// The first hit the scan reaches on a frame from `from` to `last` of
@@ -968,7 +1077,7 @@ impl GrainVoice {
             budget.skipped += 1;
             return;
         }
-        let p = self.params;
+        let p = self.moved;
         let (start, end) = src.span();
         let hi = end as f64 - 3.0;
         let mut semis = p.pitch.clamp(-48.0, 48.0);
@@ -1036,7 +1145,7 @@ impl GrainVoice {
         loop {
             age += match synced {
                 Some(iv) => iv.max(thin),
-                None => period * gap_factor(self.params.timing, self.trng.unit()),
+                None => period * gap_factor(self.moved.timing, self.trng.unit()),
             };
             if age >= size - 1.0 {
                 break;
@@ -1053,10 +1162,10 @@ impl GrainVoice {
     /// [`GrainVoice::render`]) and adds it to `left` and `right`.
     fn level(&mut self, left: &mut [f32], right: &mut [f32], floor_to: f32, measure: bool) {
         let m = left.len().min(right.len());
-        let gain = self.params.gain;
+        let gain = self.moved.gain;
         let (k, km) = (self.k_coherence, self.k_measure);
         // Grains varied in level cover less window power.
-        let cover = COVER * level_rms(self.params.level_spray).powi(2);
+        let cover = COVER * level_rms(self.moved.level_spray).powi(2);
         let kf = if floor_to < self.floor {
             self.k_floor_down
         } else {
@@ -1120,7 +1229,7 @@ impl GrainVoice {
             budget.skipped += 1;
             return;
         }
-        let p = self.params;
+        let p = self.moved;
         let (start, end) = src.span();
         let len = (end - start) as f64;
 
