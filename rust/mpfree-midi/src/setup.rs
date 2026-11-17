@@ -267,6 +267,47 @@ pub struct PortSetup {
     /// tracks and learned controls use, so a renamed port keeps them. The
     /// rig's: the same in every project.
     pub shown: String,
+    /// Which device profile names its controls (board 6's Profile): the
+    /// rig's.
+    pub profile: ProfilePick,
+}
+
+/// A port's device profile ([`crate::profile`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ProfilePick {
+    /// The first profile made for the name the port calls itself, if any.
+    #[default]
+    Auto,
+    /// None: only the controllers most gear agrees on are named.
+    Off,
+    /// The profile with this name (none while there is no such profile).
+    Named(String),
+}
+
+impl ProfilePick {
+    /// The word saved for it: `auto`, `none` or the profile's name.
+    pub fn word(&self) -> &str {
+        match self {
+            ProfilePick::Auto => "auto",
+            ProfilePick::Off => "none",
+            ProfilePick::Named(n) => n,
+        }
+    }
+
+    /// Reads [`ProfilePick::word`] back. A name too long for a profile is
+    /// refused.
+    pub fn from_word(v: &str) -> Result<ProfilePick, String> {
+        if v.eq_ignore_ascii_case("auto") {
+            return Ok(ProfilePick::Auto);
+        }
+        if v.eq_ignore_ascii_case("none") {
+            return Ok(ProfilePick::Off);
+        }
+        if v.is_empty() || v.chars().count() > crate::profile::MAX_NAME {
+            return Err(format!("\"{v}\" is not a profile's name"));
+        }
+        Ok(ProfilePick::Named(v.to_string()))
+    }
 }
 
 impl PortSetup {
@@ -278,6 +319,7 @@ impl PortSetup {
             ignore: IgnoreSet::NONE,
             delay_tenths: 0,
             shown: String::new(),
+            profile: ProfilePick::Auto,
         }
     }
 
@@ -726,8 +768,9 @@ impl MidiSetup {
     /// The settings that belong to the song, saved in the project's `midi`
     /// part: tracks' outputs, the routes to tracks and thru, Tempo from and
     /// following, each port's clock out, the CV jobs and learned controls.
-    /// Each port's input, what it ignores, its delay and its shown name are
-    /// the rig's ([`MidiSetup::rig`]) and are left at their defaults.
+    /// Each port's input, what it ignores, its delay, its shown name and
+    /// its profile are the rig's ([`MidiSetup::rig`]) and are left at
+    /// their defaults.
     pub fn project(&self) -> MidiSetup {
         let mut m = self.clone();
         m.rig_learn.clear();
@@ -742,6 +785,7 @@ impl MidiSetup {
                 p.ignore = IgnoreSet::NONE;
                 p.delay_tenths = 0;
                 p.shown.clear();
+                p.profile = ProfilePick::Auto;
             });
         }
         m
@@ -750,8 +794,8 @@ impl MidiSetup {
     /// The settings that belong to the gear on the desk, kept for every
     /// project (owner, 13 Nov 2026: project settings apart from system-wide
     /// ones): each port's input (Plays tracks, Learn only, Both), what it
-    /// ignores coming in, its gear's delay and its shown name, and the
-    /// controls learned for every project.
+    /// ignores coming in, its gear's delay, its shown name and its
+    /// profile, and the controls learned for every project.
     pub fn rig(&self) -> MidiSetup {
         let mut m = MidiSetup {
             rig_learn: self.rig_learn.clone(),
@@ -763,6 +807,7 @@ impl MidiSetup {
                 q.ignore = p.ignore;
                 q.delay_tenths = p.delay_tenths;
                 q.shown = p.shown.clone();
+                q.profile = p.profile.clone();
             });
         }
         m
@@ -776,8 +821,9 @@ impl MidiSetup {
         self.set_rig(&rig);
     }
 
-    /// `rig`'s port settings (input, ignore, delay, shown name) and controls
-    /// learned for every project, this setup's song settings kept.
+    /// `rig`'s port settings (input, ignore, delay, shown name, profile)
+    /// and controls learned for every project, this setup's song settings
+    /// kept.
     pub fn set_rig(&mut self, rig: &MidiSetup) {
         self.rig_learn = rig.rig_learn.clone();
         let names: Vec<String> = self
@@ -793,6 +839,7 @@ impl MidiSetup {
                 p.ignore = want.ignore;
                 p.delay_tenths = want.delay_tenths;
                 p.shown = want.shown;
+                p.profile = want.profile;
             });
         }
     }
@@ -841,6 +888,9 @@ impl MidiSetup {
             }
             if !p.shown.is_empty() {
                 line(&mut s, &format!("{k}.shown"), &p.shown);
+            }
+            if p.profile != ProfilePick::Auto {
+                line(&mut s, &format!("{k}.profile"), p.profile.word());
             }
         }
         for (i, t) in self.tracks.iter().enumerate() {
@@ -976,6 +1026,7 @@ impl MidiSetup {
                     ["ignore"] => p.ignore = IgnoreSet::parse(v)?,
                     ["delay-ms"] => p.delay_tenths = parse_delay(v)?,
                     ["shown"] => p.shown = parse_shown(v)?,
+                    ["profile"] => p.profile = ProfilePick::from_word(v)?,
                     _ => return Err("unknown key".into()),
                 }
             }
@@ -1819,5 +1870,41 @@ mod tests {
         assert_eq!(ClockOut::default().label(), "Off");
         let names: Vec<_> = PortInput::ALL.iter().map(|p| p.label()).collect();
         assert_eq!(names, ["Plays tracks", "Learn only", "Both"]);
+    }
+
+    /// A port's profile is the rig's: saved with it (Auto, the default,
+    /// isn't written), left out of the project, read back as picked.
+    #[test]
+    fn a_ports_profile_is_the_rigs() {
+        let mut m = MidiSetup::default();
+        m.set_port("Juno-X", |p| {
+            p.profile = ProfilePick::Named("Juno-X".into())
+        });
+        m.set_port(DIN_NAME, |p| p.profile = ProfilePick::Off);
+        let rig = m.rig_text();
+        assert!(rig.contains("port.1.profile = Juno-X\n"), "{rig}");
+        assert!(rig.contains("port.2.profile = none\n"), "{rig}");
+        assert!(!m.project_text().contains("profile"));
+        let (back, warn) = MidiSetup::parse(&rig);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(
+            back.port("Juno-X").profile,
+            ProfilePick::Named("Juno-X".into())
+        );
+        assert_eq!(back.port(DIN_NAME).profile, ProfilePick::Off);
+        assert_eq!(back.port("Keystep").profile, ProfilePick::Auto);
+        // Another project keeps the rig's picks; Auto again drops the port.
+        let mut other = MidiSetup::default();
+        other.set_rig(&back);
+        assert_eq!(other.port(DIN_NAME).profile, ProfilePick::Off);
+        other.set_port(DIN_NAME, |p| p.profile = ProfilePick::Auto);
+        other.set_port("Juno-X", |p| p.profile = ProfilePick::Auto);
+        assert!(other.ports.is_empty());
+        // Words: the two the page uses, any capitals; a name too long isn't one.
+        assert_eq!(ProfilePick::from_word("AUTO"), Ok(ProfilePick::Auto));
+        assert_eq!(ProfilePick::from_word("None"), Ok(ProfilePick::Off));
+        assert!(ProfilePick::from_word(&"x".repeat(40)).is_err());
+        let (_, warn) = MidiSetup::parse(&format!("{HEADER}\nport.1 = A\nport.1.profile =\n"));
+        assert_eq!(warn.len(), 1, "{warn:?}");
     }
 }

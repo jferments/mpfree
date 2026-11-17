@@ -5172,6 +5172,12 @@ fn player_session(
     for w in midi_saved::restore(&io_model, rig_text.as_deref()) {
         out.note(&format!("midi: setting not read: {w}"));
     }
+    // Device profiles the musician put in files/midi-profiles/ (read
+    // only), beside the built-in General MIDI: they name a port's controls
+    // in the Monitor and Learn.
+    for line in midi_saved::load_profiles(&store, &io_model) {
+        out.note(&line);
+    }
     let mut midi_saver = midi_saved::Saver::new(&io_model);
     // The Monitor's Save log (through the store, files/midi-logs/) and its
     // lines in RAM for the workstation console while the developer tools

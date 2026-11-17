@@ -49,9 +49,11 @@ use std::time::Duration;
 
 pub use learn::control_text;
 pub use monitor::words as monitor_words;
+pub use monitor::words_named as monitor_words_named;
 pub use monitor::DevMonitor;
 use mpfree_midi::cv::CV_OUTS;
 pub use mpfree_midi::monitor::Monitor;
+pub use mpfree_midi::profile::{Profile, Profiles};
 pub use mpfree_midi::setup::MidiSetup;
 
 mod cv;
@@ -213,6 +215,27 @@ pub struct IoModel {
     /// What the sections asked the app to do, taken by the app at its next
     /// look at the model.
     pub asks: Asks,
+    /// The device profiles there are: the built-in ones and the
+    /// musician's, which the app reads from the store at start. Not part
+    /// of the setup: `gen` doesn't move.
+    pub profiles: Profiles,
+}
+
+impl IoModel {
+    /// The profile that names the controls of the port named `name` (its
+    /// own name): the one it picked, or for Auto the first made for it.
+    pub fn profile(&self, name: &str) -> Option<&Profile> {
+        let pick = self.setup.ports.iter().find(|p| p.name == name);
+        match pick {
+            Some(p) => self.profiles.of(&p.profile, name),
+            None => self.profiles.matching(name),
+        }
+    }
+
+    /// The profile of the port with id `port` in the Monitor's table.
+    pub fn profile_of(&self, port: mpfree_midi::PortId) -> Option<&Profile> {
+        self.profile(self.monitor.own_name(port)?)
+    }
 }
 
 /// What a section asks the app for (each is taken once).
