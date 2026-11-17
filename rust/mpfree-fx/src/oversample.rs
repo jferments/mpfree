@@ -103,7 +103,7 @@ impl Hist {
 /// in vector registers (NEON on the MPC). The order of the additions is
 /// fixed, so the result never depends on the block size.
 #[inline]
-fn dot(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len());
     let whole = n / 8 * 8;
     let mut acc = [0.0f32; 8];

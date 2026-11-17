@@ -470,6 +470,11 @@ pub struct Ui {
     /// The controls fingers rest on that the wheel turns while they stay
     /// down ([`Widget::held`]), oldest first: the wheel takes the newest.
     held: Vec<Held>,
+    /// A finger holding a button that needs a hold (Perform's guard,
+    /// sequencer S4): its widget, the button and how far the red fill has
+    /// crossed it ([`Ui::set_hold_fill`]); and the fill as last drawn.
+    hold_fill: Option<(usize, Rect, f32)>,
+    hold_drawn: Option<(usize, Rect, f32)>,
 }
 
 /// A finger resting on a control with a value: the wheel turns it until
@@ -562,6 +567,8 @@ impl Ui {
             overrides: Vec::new(),
             focus: None,
             refocus: Vec::new(),
+            hold_fill: None,
+            hold_drawn: None,
             drawn: None,
             held: Vec::new(),
         }
@@ -809,6 +816,25 @@ impl Ui {
         let (_, w, _) = self.widgets.iter_mut().find(|(n, _, _)| n == name)?;
         let any: &mut dyn Any = w.as_mut();
         any.downcast_mut::<W>()
+    }
+
+    /// A finger holds `rect` of widget `widget`, a button that needs a
+    /// hold (Perform's guard, sequencer S4): a red fill crosses it from the
+    /// left, `frac` (0 to 1) of the way, over what the widget draws. None
+    /// takes it away. The widget is drawn again whole when it changes.
+    pub fn set_hold_fill(&mut self, fill: Option<(&str, Rect, f32)>) {
+        let want = fill.and_then(|(name, rect, frac)| {
+            let wi = self.widgets.iter().position(|(n, _, _)| n == name)?;
+            Some((wi, rect, frac.clamp(0.0, 1.0)))
+        });
+        if want != self.hold_fill {
+            for (wi, ..) in [self.hold_fill, want].into_iter().flatten() {
+                if !self.refocus.contains(&wi) {
+                    self.refocus.push(wi);
+                }
+            }
+            self.hold_fill = want;
+        }
     }
 
     /// Redraw everything at the next `paint`.
@@ -1243,6 +1269,10 @@ impl Ui {
             if was != outline {
                 whole = true;
             }
+            let hold = self.hold_fill.filter(|h| h.0 == wi);
+            if hold != self.hold_drawn.filter(|h| h.0 == wi) {
+                whole = true;
+            }
             match outline {
                 Some((o, w, c)) => drawn = Some((wi, o, w, c)),
                 None if drawn.is_some_and(|d| d.0 == wi) => drawn = None,
@@ -1284,6 +1314,15 @@ impl Ui {
                     let radius = (theme.radius / 2).min(o.w.min(o.h) / 2).max(0);
                     canvas.stroke_round_rect(o, radius, width, colour);
                 }
+                if let Some((_, h, frac)) = hold {
+                    // Perform's guard: the red fill crossing the button.
+                    let w = (h.w as f32 * frac).round() as i32;
+                    let fill = Color {
+                        a: 150,
+                        ..theme.bad
+                    };
+                    canvas.fill_round_rect(Rect::new(h.x, h.y, w, h.h), 8, fill);
+                }
                 if !*full {
                     damage.push(part);
                 }
@@ -1295,6 +1334,7 @@ impl Ui {
         }
         *full = false;
         self.drawn = drawn;
+        self.hold_drawn = self.hold_fill;
         damage
     }
 }
@@ -1333,6 +1373,39 @@ mod tests {
             paints: std::cell::Cell::new(0),
             touches: Vec::new(),
         }
+    }
+
+    /// Perform's guard (sequencer S4): a hold fill is drawn over its
+    /// widget, crossing its button from the left, and goes again.
+    #[test]
+    fn a_hold_fill_draws_over_its_widget_and_goes() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 200, 100);
+        ui.add("a", probe());
+        ui.add_page("p", "a").unwrap();
+        let mut c = SoftCanvas::new(200, 100);
+        ui.paint(&mut c);
+        assert!(!ui.needs_paint());
+        let px = |c: &SoftCanvas, x: usize, y: usize| {
+            let rgb = c.to_rgb();
+            let i = (y * 200 + x) * 3;
+            (rgb[i], rgb[i + 1], rgb[i + 2])
+        };
+        let r = Rect::new(20, 20, 100, 40);
+        ui.set_hold_fill(Some(("a", r, 0.5)));
+        assert!(ui.needs_paint());
+        ui.paint(&mut c);
+        let (red, green, _) = px(&c, 30, 40);
+        assert!(red > green.saturating_add(40), "{red} {green}");
+        assert_eq!(px(&c, 100, 40), (255, 255, 255));
+        // The same fill again draws nothing more; an unknown widget none.
+        ui.set_hold_fill(Some(("a", r, 0.5)));
+        assert!(!ui.needs_paint());
+        ui.set_hold_fill(None);
+        assert!(ui.needs_paint());
+        ui.paint(&mut c);
+        assert_eq!(px(&c, 30, 40), (255, 255, 255));
+        ui.set_hold_fill(Some(("nope", r, 1.0)));
+        assert!(!ui.needs_paint());
     }
 
     /// Four controls in a square: two buttons over two sliders, listed

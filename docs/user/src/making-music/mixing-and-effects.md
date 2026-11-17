@@ -123,7 +123,7 @@ Both record in real time while the song plays, so the strip shows **Freezing** o
 
 The **Master** strip on the right is everything you hear. Its fader is the same level as the master bar on the Play page.
 
-The last thing on the master is **Master safety**, a limiter that keeps the output from going past -0.3 dB, so a loud moment never distorts harshly or hurts your ears. It shows how many times it has caught a peak. If it is catching all the time, turn something down.
+The last thing on the master is **Master safety**, a limiter that keeps the output from going past -0.3 dB, so a loud moment never distorts harshly or hurts your ears. It also catches the peaks a converter rebuilds between samples, which can go over the samples themselves. It shows how many times it has caught a peak. If it is catching all the time, turn something down. Its modes are in [Master safety](effects.md#master-safety).
 
 > [!TIP]
 > Distortion you want is fine: put Drive, Crush or Lo-fi on a strip and push it. Master safety only stops the final output from clipping by accident.

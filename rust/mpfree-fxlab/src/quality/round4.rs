@@ -45,7 +45,7 @@ fn preset_sets(s: &Subject, id: u16, v: f32) -> bool {
 /// A fresh node for `s` with `values` on top of its preset and fixed
 /// values, for the measures that read a meter, feed a side-chain or move
 /// the song position.
-fn node_with(s: &Subject, rate: u32, values: &[(u16, f64)]) -> Box<dyn Node> {
+pub(super) fn node_with(s: &Subject, rate: u32, values: &[(u16, f64)]) -> Box<dyn Node> {
     let mut n =
         mpfree_fx::registry::make(s.id).unwrap_or_else(|| panic!("{} is in the registry", s.id));
     n.prepare(rate, MAX_BLOCK);
@@ -423,6 +423,27 @@ pub(super) fn limiter(r: &mut Report) {
             Better::Lower,
             None,
             1.0,
+        );
+    }
+
+    // P3's price: the loudness the programme keeps when pushed 6 dB into
+    // the ceiling (the push less what the limiting takes back), so the
+    // hold's and the release's cost in punch is seen.
+    for (s, push) in [
+        (&lim, li::GAIN),
+        (&tp, li::GAIN),
+        (&fixed, li::GAIN),
+        (&safe, mi::TRIM),
+    ] {
+        let mut d = make_with(s, rate, &[(push, 6.0)]);
+        r.put(
+            "P3",
+            &s.name,
+            "programme_lu_change_6db_push",
+            Some(lu_change(&mut d, &programme(rate, 5.0))),
+            Better::Info,
+            None,
+            0.0,
         );
     }
 

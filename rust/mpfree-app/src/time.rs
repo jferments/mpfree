@@ -886,6 +886,14 @@ impl TimeHost {
         self.control.perform()
     }
 
+    /// Whether a take records (the notes, their count-in, or a loop's
+    /// pass), each period: in Perform a take turns Rec song on for its
+    /// length ([`TimeControl::take_follows`]). A line for the log.
+    pub fn take_follows(&mut self, taking: bool) -> Option<String> {
+        let r = self.control.take_follows(taking);
+        self.sent(r)
+    }
+
     /// Which loops the Loop tracks have on, and the bar line each change
     /// lands on ([`TimeControl::loop_plan`]): for the looper, before its
     /// period, so a launch lands on its line's own frame.
@@ -3645,6 +3653,440 @@ mod tests {
                 "{again:?} {heard:?}"
             );
         }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// "Back to song" (sequencer S4): every clip launched over the song
+    /// stops on the launch line and the song plays its tracks from there;
+    /// stopped, it is at once; with song mode off it turns it on.
+    #[test]
+    fn back_to_song_stops_the_clips_on_the_line_and_the_song_plays_on() {
+        use mpfree_seq::arrange::Placement;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        h.control.project.tracks[0].slots[0] = Some(one_bar(4));
+        h.control.project.tracks[0].slots[1] = Some(one_bar(9));
+        h.control
+            .project
+            .arrangement
+            .placements
+            .push(Placement::linked(0, 0, 0, 8 * 3840));
+        h.act(TimeAction::SongMode(true)).unwrap();
+        assert!(!h.state().over_song(), "the song alone");
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        assert!(h.state().over_song(), "a clip over the song");
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let live = pads.hits.last().unwrap().1;
+        assert_eq!(pads.hits.len(), 1);
+        let said = h.act(TimeAction::BackToSong).unwrap();
+        assert_eq!(
+            said,
+            "back to song: every track plays the song from the next launch line"
+        );
+        let st = h.state();
+        assert!(st.song_on);
+        assert!(st.over_song(), "the clip plays to the line");
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        assert_eq!(pads.hits.len(), 2, "{:?}", pads.hits);
+        let (at, song, _) = pads.hits[1];
+        assert!(at.abs_diff(BAR) <= 128, "on the line: {at}");
+        assert_ne!(song, live, "the song's clip, not the one launched");
+        assert!(!h.state().over_song(), "nothing launched now");
+        // Stopped, with song mode off: at once, and song mode is on.
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        h.act(TimeAction::SongMode(false)).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        assert_eq!(h.act(TimeAction::BackToSong).unwrap(), "back to song");
+        let st = h.state();
+        assert!(st.song_on && st.launches.is_empty() && st.cues.is_empty());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The scene editor (sequencer S4, part 7): a scene's settings are
+    /// takes, a row turned again joining its take; the editor follows a
+    /// scene launched; the scene's follow action plays.
+    #[test]
+    fn the_scene_editor_sets_a_scene_and_undo_takes_it_back() {
+        use mpfree_seq::{Follow, FollowAction, SceneSettings};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |name: &str, note: u8| {
+            let mut c = Clip::new(name, 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        let t = &mut h.control.project.tracks[0];
+        t.slots[0] = Some(one_bar("intro", 4));
+        t.slots[1] = Some(one_bar("verse", 9));
+        // Nothing playing: the editor shows scene 1, a plain row.
+        let st = h.state();
+        assert_eq!((st.scene_focus, &st.scene), (0, &SceneSettings::default()));
+        let follow = |chance| SceneSettings {
+            follow: Some(Follow {
+                chance,
+                ..Follow::after(1, FollowAction::Next)
+            }),
+            ..SceneSettings::default()
+        };
+        let set = |h: &mut TimeHost, card_row, settings| {
+            h.act(TimeAction::SceneSettings {
+                row: 0,
+                card_row,
+                settings,
+            })
+        };
+        assert_eq!(
+            set(&mut h, 1, follow(100)).unwrap(),
+            "scene 1 · Follow Next (UNDO takes it back)"
+        );
+        let takes = h.state().done.len();
+        set(&mut h, 3, follow(90)).unwrap();
+        set(&mut h, 3, follow(80)).unwrap();
+        assert_eq!(
+            h.state().done.len(),
+            takes + 1,
+            "Chance turned twice: one take"
+        );
+        assert_eq!(
+            h.state().done.last().unwrap().short(),
+            format!("scene {}", takes + 1)
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().scene, follow(100), "UNDO takes Chance back");
+        // A name.
+        let named = SceneSettings {
+            name: "Intro".into(),
+            ..follow(100)
+        };
+        assert_eq!(
+            set(&mut h, mpfree_time_ui::view::SCENE_NAME, named).unwrap(),
+            "scene 1 · named Intro (UNDO takes it back)"
+        );
+        assert_eq!(h.state().scenes[0], "Intro");
+        assert!(set(
+            &mut h,
+            mpfree_time_ui::view::SCENE_NAME,
+            SceneSettings {
+                name: "x".repeat(mpfree_seq::MAX_SCENE_NAME + 1),
+                ..follow(100)
+            }
+        )
+        .is_err());
+        // The editor's ‹ ›, then a scene launched: the editor follows it.
+        h.act(TimeAction::SceneFocus(1)).unwrap();
+        let st = h.state();
+        assert_eq!((st.scene_focus, &st.scene), (1, &SceneSettings::default()));
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        assert_eq!(h.state().scene_focus, 0);
+        // Scene 1 plays a bar, then follows on to scene 2.
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        assert_eq!(h.state().scene_playing, Some(1));
+        let played: Vec<(u64, usize)> = pads.hits.iter().map(|h| (h.0, h.1)).collect();
+        assert_eq!(played.len(), 2, "{played:?}");
+        assert!(played[1].0.abs_diff(BAR) <= 128, "{played:?}");
+        assert_ne!(played[0].1, played[1].1, "scene 2's clip");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// A one-shot clip (sequencer S4, the clip card's Mode: Once): it plays
+    /// one pass, its track's stop waiting from its last bar, and stops on
+    /// the tick the pass ends, though that is no bar line.
+    #[test]
+    fn a_one_shot_clip_plays_one_pass_and_its_track_stops() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        // Three beats, a note on each.
+        let mut c = Clip::new("fill", 2880);
+        c.notes = [0, 960, 1920]
+            .iter()
+            .map(|&t| mpfree_seq::Note::new(t, 100, 7, 100))
+            .collect();
+        c.once = true;
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 8, &[]);
+        let st = h.state();
+        assert_eq!(
+            st.cues,
+            vec![mpfree_play::Cue {
+                track: 0,
+                slot: None
+            }],
+            "its stop waits"
+        );
+        assert_eq!(st.cue_lines, vec![(0, mpfree_seq::LaunchGrid::At(2880))]);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        let played: Vec<u64> = pads.hits.iter().map(|h| h.0).collect();
+        assert_eq!(played.len(), 3, "one pass: {played:?}");
+        for (k, at) in [0, BAR / 4, BAR / 2].iter().enumerate() {
+            assert!(played[k].abs_diff(*at) <= 128, "{k}: {played:?}");
+        }
+        let st = h.state();
+        assert!(st.launches.is_empty() && st.cues.is_empty());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The song list (sequencer S4): steps added after the pick play
+    /// their rows their times, in order, the next one landing on the bar
+    /// its step ends; after the last everything stops. Edits are takes
+    /// UNDO takes back; List → song lays the list on the timeline; a scene
+    /// launched by hand ends the list.
+    #[test]
+    fn the_song_list_plays_its_steps_in_order_and_edits_undo() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |name: &str, note: u8| {
+            let mut c = Clip::new(name, 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        let t = &mut h.control.project.tracks[0];
+        t.slots[0] = Some(one_bar("intro", 4));
+        t.slots[1] = Some(one_bar("verse", 9));
+        t.slots[3] = Some(one_bar("drop", 6));
+        // Two steps: row 1, then the next row with a clip, row 2.
+        assert_eq!(
+            h.act(TimeAction::ListAdd).unwrap(),
+            "song list: step 1 plays row 1"
+        );
+        assert_eq!(
+            h.act(TimeAction::ListAdd).unwrap(),
+            "song list: step 2 plays row 2"
+        );
+        h.act(TimeAction::ListTimes { step: 0, delta: 1 }).unwrap();
+        let st = h.state();
+        let rows: Vec<(String, usize, u16, i64, i64)> = st
+            .list
+            .iter()
+            .map(|r| (r.name.clone(), r.row, r.times, r.bars, r.starts))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![("Row 1".into(), 0, 2, 2, 1), ("Row 2".into(), 1, 1, 1, 3)]
+        );
+        assert_eq!(st.list_pick, Some(1));
+        // Step 2's scene: the next row with a clip skips the empty one.
+        h.act(TimeAction::ListScene { step: 1, delta: 1 }).unwrap();
+        assert_eq!(h.state().list[1].row, 3);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().list[1].row, 1, "UNDO takes the edit back");
+        // Played from the top while stopped: row 1 twice, row 2, then
+        // every track stops on bar 4.
+        h.act(TimeAction::ListPlay(0)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(h.state().list_next, Some((Some(1), 2 * 3840)));
+        // In its last bar the next step waits for its line.
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        let st = h.state();
+        assert_eq!(st.list[0].playing.map(|p| p.0), Some(2), "pass 2 of 2");
+        assert!(st.list[1].waiting);
+        assert_eq!(st.scene_cued, Some(1));
+        run(&mut h, &mut pads, 5 * BAR, &[]);
+        let played: Vec<(u64, usize)> = pads.hits.iter().map(|h| (h.0, h.1)).collect();
+        assert_eq!(played.len(), 3, "{played:?}");
+        for (k, at) in [0, BAR, 2 * BAR].iter().enumerate() {
+            assert!(played[k].0.abs_diff(*at) <= 128, "{k}: {played:?}");
+        }
+        assert_eq!(played[0].1, played[1].1);
+        assert_ne!(played[1].1, played[2].1, "row 2's clip");
+        let st = h.state();
+        assert!(st.launches.is_empty(), "stopped after the last step");
+        assert!(st.list.iter().all(|r| r.playing.is_none()));
+        // Remove, and UNDO puts it back.
+        h.act(TimeAction::ListRemove(1)).unwrap();
+        assert_eq!(h.state().list.len(), 1);
+        assert_eq!(h.state().list_pick, Some(0));
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().list.len(), 2);
+        // List → song: three bars of blocks and a marker each step.
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 6 * BAR, &[]);
+        let said = h.act(TimeAction::ListToSong).unwrap();
+        assert_eq!(said, "list → song: 2 steps from bar 1");
+        let song = &h.control.project.arrangement;
+        assert_eq!(song.markers.len(), 2);
+        assert_eq!(song.end(), 3 * 3840);
+        // A scene by hand ends the list.
+        h.act(TimeAction::ListPlay(0)).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, 7 * BAR, &[]);
+        assert!(h.state().list.iter().any(|r| r.playing.is_some()));
+        h.act(TimeAction::LaunchScene(3)).unwrap();
+        let st = h.state();
+        assert!(st.list_next.is_none() && st.list.iter().all(|r| !r.waiting));
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Save state and Reload clip (sequencer S4): the saved state comes
+    /// back on the launch line while the clip plays, at once while the
+    /// transport is stopped; UNDO takes a reload back; asked again while
+    /// it waits, it is taken back; a deleted clip forgets its state.
+    #[test]
+    fn reload_clip_lands_on_the_launch_line_and_undo_takes_it_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        h.control.project.tracks[0].slots[0] = Some(one_bar(4));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let reload = || TimeAction::Reload { track: 0, slot: 0 };
+        let pitch = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().notes[0].note;
+        assert!(h
+            .act(reload())
+            .unwrap_err()
+            .contains("no saved state: Save state on the Clip card first"));
+        assert_eq!(
+            h.act(TimeAction::SaveState { track: 0, slot: 0 }).unwrap(),
+            "save state: beat kept (Reload clip brings it back)"
+        );
+        assert_eq!(h.state().saved, [(0, 0)]);
+        assert_eq!(h.act(reload()).unwrap(), "reload: beat is as saved already");
+        // Mangled: another note.
+        let mangle = |h: &mut TimeHost| {
+            h.control.project.tracks[0].slots[0] = Some(one_bar(9));
+            h.control.compile().unwrap();
+        };
+        mangle(&mut h);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(pads.hits.len(), 1);
+        let mangled = pads.hits[0].1;
+        assert_eq!(
+            h.act(reload()).unwrap(),
+            "reload: beat reloads at bar 2 (Reload clip again: taken back)"
+        );
+        let st = h.state();
+        assert_eq!(st.reloads, [(0, 0, 3840)]);
+        assert_eq!(pitch(&h), 9, "not yet");
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        assert_eq!(pads.hits.len(), 2, "{:?}", pads.hits);
+        let (at, pad, _) = pads.hits[1];
+        assert!(at.abs_diff(BAR) <= 128, "on the line: {at}");
+        assert_ne!(pad, mangled, "the saved note");
+        assert_eq!(
+            h.take_later_note().unwrap(),
+            "reload: beat back as saved on bar 2"
+        );
+        let st = h.state();
+        assert!(st.reloads.is_empty());
+        assert_eq!(pitch(&h), 4);
+        assert_eq!(st.done.last().unwrap().short(), "reload 1");
+        // UNDO: mangled again; stopped, a reload is at once.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(pitch(&h), 9);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        assert_eq!(
+            h.act(reload()).unwrap(),
+            "reload: beat is back as saved (UNDO takes it back)"
+        );
+        assert_eq!(pitch(&h), 4);
+        // Taken back while it waits.
+        mangle(&mut h);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, 2 * BAR + BAR / 2, &[]);
+        assert!(h.act(reload()).unwrap().contains("reloads at"));
+        assert_eq!(h.act(reload()).unwrap(), "reload: beat's reload taken back");
+        assert!(h.state().reloads.is_empty());
+        // STOP lands what waits.
+        h.act(reload()).unwrap();
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        assert_eq!(
+            h.take_later_note().unwrap(),
+            "reload: beat back as saved (STOP)"
+        );
+        assert_eq!(pitch(&h), 4);
+        // A deleted clip forgets its saved state.
+        h.act(TimeAction::DeleteClip { track: 0, slot: 0 }).unwrap();
+        assert!(h.state().saved.is_empty());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Perform's Rec song with REC (sequencer S4): a take turns Rec song
+    /// on for its length and what it played goes into the song when it
+    /// ends; "+ Rec song" taken off skips one take; Rec song off during
+    /// a take that turned it on is off for that take; in Make a take
+    /// changes nothing.
+    #[test]
+    fn in_perform_a_take_brings_rec_song_for_its_length() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        // Make: a take is only a take.
+        assert_eq!(h.take_follows(true), None);
+        assert!(!h.state().song_rec && !h.state().song_with_take);
+        assert_eq!(h.take_follows(false), None);
+        h.act(TimeAction::Perform(true)).unwrap();
+        assert!(h.state().song_with_take, "the REC chip says + Rec song");
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(
+            h.take_follows(true).as_deref(),
+            Some("rec song: on with REC (Perform)")
+        );
+        assert!(h.state().song_rec && h.state().song_with_take);
+        run(&mut h, &mut pads, 2 * BAR + BAR / 2, &[]);
+        let line = h.take_follows(false).unwrap();
+        assert!(
+            line.starts_with("rec song: off with the take, ") && line.contains("placement"),
+            "{line}"
+        );
+        let st = h.state();
+        assert!(!st.song_rec && st.song_with_take, "ready for the next take");
+        assert!(
+            !st.placements.is_empty(),
+            "the take's stretch is in the song"
+        );
+        // Taken off for the next take: it records no song.
+        assert_eq!(
+            h.act(TimeAction::RecSongWithTake(false)).unwrap(),
+            "rec song: off for the next take"
+        );
+        assert!(!h.state().song_with_take);
+        assert_eq!(h.take_follows(true), None);
+        assert!(!h.state().song_rec);
+        assert_eq!(h.take_follows(false), None);
+        assert!(h.state().song_with_take, "back with the take after it");
+        // Off by hand during a take that turned it on: off for that take.
+        h.take_follows(true).unwrap();
+        h.act(TimeAction::RecSong(false)).unwrap();
+        assert!(!h.state().song_rec && !h.state().song_with_take);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        assert_eq!(h.take_follows(false), None);
+        // "+ Rec song" put back during a take turns it on for the rest.
+        h.act(TimeAction::RecSongWithTake(false)).unwrap();
+        h.take_follows(true);
+        assert_eq!(
+            h.act(TimeAction::RecSongWithTake(true)).unwrap(),
+            "rec song: on with this take"
+        );
+        assert!(h.state().song_rec);
+        // Rec song on by hand stays on after a take.
+        h.take_follows(false).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        assert_eq!(h.take_follows(true), None);
+        assert_eq!(h.take_follows(false), None);
+        assert!(h.state().song_rec);
+        // In Make "+ Rec song" is refused.
+        h.act(TimeAction::Perform(false)).unwrap();
+        assert!(h.act(TimeAction::RecSongWithTake(true)).is_err());
         assert_eq!(h.dropped(), 0);
     }
 

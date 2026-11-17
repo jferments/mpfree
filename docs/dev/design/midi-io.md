@@ -316,7 +316,7 @@ At the thread's handoff (2026-11-12), M1 to M6 are built on the host, and nothin
 - **CV 5 to 8.** First the read-only `cv-ports` capture (`MPFREE_CAPTURE_PHASES=cv-ports`, [the diagnostics guide](../guides/audio-midi-diagnostics.md)): Akai's app drives a CV track on ports 5 and 6, then 7 and 8, and the report names the control changes each port got. If they are CC 8 to 15, as the pattern says, `CHECKED_OUTS` becomes 8 and the meter round covers all eight outputs.
 - **After the meter round.** The measured full scale in `cv_wire::counts`, which jack is which output, and a tuning page for each output.
 - **Not built yet.**
-  - Blocks on a route (arp, transpose, filters: the MIDI effects of phase 3).
+  - Blocks on a route (arp, transpose, filters: the MIDI effects of phase 3; their engine is [`mpfree-notefx`](note-fx.md)).
   - MIDI Learn by SHIFT + a touch on the Play page, the Pads and Sample tabs, the arpeggiator and plugin skins.
   - USB-B as a MIDI device to a computer, which needs its own rule zero review.
   - Stamping clock bytes half a period earlier (see [midi-clock.md](midi-clock.md), Timing).

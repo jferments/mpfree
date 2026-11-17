@@ -613,6 +613,50 @@ fn writes_a_stick_keeps_its_data_and_copies_the_backup_off() {
         .unwrap()
         .contains("new backup at the first start: asked\n"));
     assert!(again.notes.iter().any(|n| n.contains("--new-backup")));
+    assert!(root.lookup(stick::LEAVE_OUT_FILE).unwrap().is_none());
+    assert!(root.lookup(stick::AKAI_KITS_FILE).unwrap().is_none());
+    // Made with the backup and Akai's kits left out: the first start finds
+    // what to leave out, a word a line, on partition 1.
+    let left = Build {
+        choices: stick::Choices {
+            no_backup: true,
+            no_akai_kits: true,
+            ..Default::default()
+        },
+        ..b
+    };
+    let again = stick::write_disk(&left, &disk, bytes, &t.0, false, &mut |_| {}).unwrap();
+    let root = part_fs(&disk, again.layout.part(1));
+    assert_eq!(read(&root, stick::LEAVE_OUT_FILE), b"backup\nakai-kits\n");
+    assert_eq!(
+        root.lookup(stick::LEAVE_OUT_FILE).unwrap().unwrap().perm(),
+        0o644,
+        "the pad player reads it"
+    );
+    assert!(String::from_utf8(read(&root, stick::ABOUT_FILE))
+        .unwrap()
+        .contains("left out of the first start: the backup and Akai's kits and samples\n"));
+    assert!(again
+        .notes
+        .iter()
+        .any(|n| n.contains("leaves out the backup and Akai's kits and samples")));
+    // An update asking for Akai's kits: a token, once.
+    let asked = Build {
+        choices: stick::Choices {
+            akai_kits: true,
+            ..Default::default()
+        },
+        ..b
+    };
+    let again = stick::write_disk(&asked, &disk, bytes, &t.0, false, &mut |_| {}).unwrap();
+    let root = part_fs(&disk, again.layout.part(1));
+    let token = read(&root, stick::AKAI_KITS_FILE);
+    assert_eq!(token.len(), 33);
+    assert!(token[..32].iter().all(u8::is_ascii_hexdigit) && token[32] == b'\n');
+    assert!(root.lookup(stick::LEAVE_OUT_FILE).unwrap().is_none());
+    assert!(String::from_utf8(read(&root, stick::ABOUT_FILE))
+        .unwrap()
+        .contains("Akai's kits at the first start: asked\n"));
     // The newest finished backup, copied off and checked.
     let to = t.0.join("backups");
     let got = stick::copy_backup(&disk, &to, &mut |_| {}).unwrap();
