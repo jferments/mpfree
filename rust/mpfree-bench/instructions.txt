@@ -32,7 +32,7 @@
 209217	Cloud reverb (Room, Eco)
 20102	Comb
 20996	Compressor
-10346	Crush
+36221	Crush
 13406	DJ filter
 70889	Delay
 129473	Drawbar Church, 8 keys
