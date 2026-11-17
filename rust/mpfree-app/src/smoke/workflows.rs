@@ -2912,4 +2912,50 @@ mod tests {
             s.button("STOP");
         });
     }
+
+    /// Make and Perform (sequencer S4, Jay's decision 5): the top bar's
+    /// MAKE chip switches to Perform and says what changed; MAIN then goes
+    /// to Arrange's Clips grid and steps to the Song view and back, the arm
+    /// is pinned, and SHIFT + MAIN comes back to Make, with nothing
+    /// playing stopped.
+    #[test]
+    fn make_and_perform_switch_from_the_chip_and_shift_main() {
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            assert!(!s.time.project().perform, "a new project is in Make");
+            assert!(s.control("header", "chip", "MAKE").is_some());
+            s.button("PLAY");
+            s.run_for(0.3);
+            s.press("header", "chip", "MAKE");
+            s.run_for(0.2);
+            assert!(s.time.project().perform);
+            assert!(s.control("header", "chip", "PERFORM").is_some());
+            assert!(s.hint().starts_with("Perform: "), "{}", s.hint());
+            assert!(s.app.rec.pinned, "Perform pins the arm");
+            assert_eq!(s.time.info().state, State::Playing, "nothing stops");
+            // MAIN: the Clips grid, then the Song view, then the grid.
+            s.button("MAIN").run_for(0.2);
+            assert_eq!(s.view(), View::Arrange);
+            assert!(!s.screen.time.song_view);
+            s.button("MAIN").run_for(0.2);
+            assert!(s.screen.time.song_view);
+            s.button("MAIN").run_for(0.2);
+            assert!(!s.screen.time.song_view);
+            // A page doesn't move the pinned arm.
+            s.press("header", "tab", "Looper").run_for(0.2);
+            assert_eq!(s.app.rec.target, crate::rec_arm::Target::Notes);
+            // SHIFT + MAIN: Make again; MAIN is Play's.
+            s.button_with("SHIFT", "MAIN").run_for(0.2);
+            assert!(!s.time.project().perform);
+            assert!(s.hint().starts_with("Make: "), "{}", s.hint());
+            assert!(!s.app.rec.pinned);
+            assert!(s.control("header", "chip", "MAKE").is_some());
+            s.button("MAIN").run_for(0.2);
+            assert_eq!(s.view(), View::Play);
+            assert_eq!(s.time.info().state, State::Playing);
+            s.button("STOP");
+        });
+    }
 }

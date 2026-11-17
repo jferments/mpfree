@@ -1582,6 +1582,138 @@ mod device_log {
         });
     }
 
+    /// Live erase (`^ERASE: pad \d+'s notes come out`): ERASE held and a
+    /// pad pressed while recording erases that pad's notes as the playhead
+    /// passes them, and the pad neither sounds nor records; letting go of
+    /// the pad, or of ERASE, stops it; while only playing, ERASE + a pad
+    /// plays the pad as before.
+    #[test]
+    fn live_erase_writes_its_lines() {
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.button("REC");
+            s.button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            s.pad(0, 100, 0.05);
+            s.pad(2, 100, 0.05);
+            s.run_for(2.0);
+            s.button("STOP");
+            s.run_for(0.2);
+            let pads_in = |s: &Session| {
+                let mut n: Vec<u8> = s.time.project().tracks[0]
+                    .slots
+                    .iter()
+                    .flatten()
+                    .flat_map(|c| c.notes.iter().map(|n| n.note))
+                    .collect();
+                n.sort();
+                n.dedup();
+                n
+            };
+            assert_eq!(pads_in(&s), [0, 2]);
+            // Overdub the take, with ERASE + pad 1 held for a while.
+            let n = s.lines.len();
+            s.button("OVERDUB");
+            s.button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            wrote(&s, n, "rec: ready, PLAY adds to ", "");
+            let n = s.lines.len();
+            let hits = s.hits.on.len();
+            s.button_edge("ERASE", true);
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            wrote(&s, n, "ERASE: pad 1's notes come out", "");
+            assert!(s.time.erases(0));
+            s.run_for(4.5);
+            assert!(
+                !s.hits.on[hits..].iter().any(|h| h.0 == 0),
+                "pad 1 neither sounds nor plays back"
+            );
+            assert_eq!(pads_in(&s), [2], "pad 1's notes came out");
+            s.pad_edge(0, 0, false);
+            assert!(!s.time.erasing(), "let go of the pad: it stops");
+            // ERASE let go first stops it too.
+            s.pad_edge(2, 100, true);
+            assert!(s.time.erases(2));
+            s.button_edge("ERASE", false);
+            assert!(!s.time.erasing(), "let go of ERASE: it stops");
+            s.pad_edge(2, 0, false);
+            s.button("STOP");
+            assert_eq!(pads_in(&s), [2], "pad 3's notes stay");
+        });
+    }
+
+    /// Knob recording (sequencer S1): while recording, a knob turned on
+    /// the screen for the armed track (a mixer strip's pan here, an
+    /// instrument's knob) becomes a lock on the note being played; while
+    /// only playing, nothing is recorded.
+    #[test]
+    fn knob_turns_while_recording_become_locks() {
+        use mpfree_fx::ids::mixer;
+        use mpfree_fx::StripId;
+        use mpfree_mixer_ui::MixAction;
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_synth_ui::view::SynthAction;
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.button("REC");
+            s.button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            let locks = |s: &Session| -> Vec<(RelAddr, f32)> {
+                s.time.project().tracks[0]
+                    .slots
+                    .iter()
+                    .flatten()
+                    .flat_map(|c| c.locks.iter().map(|l| (l.addr, l.value)))
+                    .collect()
+            };
+            assert!(locks(&s).is_empty());
+            // Pad 1 held, the Track 1 strip's pan turned, and a knob of
+            // its instrument.
+            s.pad_edge(0, 100, true);
+            s.run_periods(2);
+            s.route(FromUi::Mixer(MixAction::Set {
+                strip: StripId::Track(0),
+                id: mixer::PAN,
+                value: -40.0,
+            }));
+            s.route(FromUi::Synth(SynthAction::Set { id: 3, value: 0.25 }));
+            s.run_periods(2);
+            s.pad_edge(0, 0, false);
+            s.run_for(2.5);
+            let got = locks(&s);
+            assert!(
+                got.contains(&(RelAddr::new(OnTrack::Strip, mixer::PAN), -40.0)),
+                "{got:?}"
+            );
+            assert!(
+                got.contains(&(RelAddr::new(OnTrack::Inst, 3), 0.25)),
+                "{got:?}"
+            );
+            s.button("STOP");
+            s.run_for(0.2);
+            // Playing, not recording: a turn is only a turn.
+            let before = locks(&s).len();
+            s.button("PLAY");
+            s.run_for(0.5);
+            s.route(FromUi::Mixer(MixAction::Set {
+                strip: StripId::Track(0),
+                id: mixer::PAN,
+                value: 20.0,
+            }));
+            s.run_for(2.5);
+            assert_eq!(locks(&s).len(), before);
+            s.button("STOP");
+        });
+    }
+
     /// TRACK MUTE (`^track mute: .* muted`, `^TRACK MUTE \S+ bank [B-H]: `).
     #[test]
     fn track_mute_writes_its_mutes_and_its_bank() {

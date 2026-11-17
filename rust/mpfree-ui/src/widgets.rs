@@ -1169,10 +1169,20 @@ pub struct OptionRow {
 /// text is 15 px, the value box takes a little over half the row, its
 /// arrows are drawn thin, and a tap on its left or right third steps the
 /// value.
+///
+/// With `tabs`, the title line is a row of tabs instead (Arrange's Record
+/// and Clip, sequencer S3): the tab `tab` is lit, and a tap on another
+/// gives `Tab(k)` at once. The last tab takes the room the others leave,
+/// its name cut with "…" if it is longer; the title and `right` are not
+/// shown.
 pub struct OptionList {
     pub title: String,
     pub right: String,
+    pub tabs: Vec<String>,
+    pub tab: usize,
     pub rows: Vec<OptionRow>,
+    /// What the list says with no rows ("nothing here" to begin with).
+    pub empty: String,
     pub selected: usize,
     /// The selected row is open for the wheel: its value box is outlined
     /// and its arrows lit, until the wheel's push sets it.
@@ -1207,13 +1217,18 @@ const NARROW_ARROW_W: i32 = 22;
 /// How far a finger on a row moves before it scrolls the list instead of
 /// picking the row.
 const OPTION_DRAG_PX: i32 = 12;
+/// A tab of the title line, but the last (which takes the rest).
+const OPTION_TAB_W: i32 = 84;
 
 impl OptionList {
     pub fn new(title: &str) -> OptionList {
         OptionList {
             title: title.to_string(),
             right: String::new(),
+            tabs: Vec::new(),
+            tab: 0,
             rows: Vec::new(),
+            empty: "nothing here".to_string(),
             selected: 0,
             editing: false,
             top: std::cell::Cell::new(0),
@@ -1303,6 +1318,22 @@ impl OptionList {
         Some((row, value))
     }
 
+    /// Tab `k`'s rectangle on the title line, from the panel's top edge
+    /// to the first row (so a finger finds it), if there are tabs.
+    pub fn tab_rect(&self, r: Rect, k: usize) -> Option<Rect> {
+        if k >= self.tabs.len() {
+            return None;
+        }
+        let head = r.inset(14);
+        let x = head.x + k as i32 * OPTION_TAB_W;
+        let w = if k + 1 == self.tabs.len() {
+            head.right() - x
+        } else {
+            OPTION_TAB_W - 6
+        };
+        Some(Rect::new(x, r.y, w.max(0), OptionList::body(r).y - r.y))
+    }
+
     /// The row draws narrow (see [`OptionList`]).
     pub fn narrow(row: Rect) -> bool {
         row.w < NARROW_ROW_W
@@ -1321,7 +1352,33 @@ impl OptionList {
 impl Widget for OptionList {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, &self.right);
+        if self.tabs.is_empty() {
+            cx.titled_panel(r, &self.title, &self.right);
+        } else {
+            // The title line as tabs: as the title is drawn, the lit one
+            // in full ink and underlined.
+            cx.panel(r);
+            let head = r.inset(t.pad).take_top(26).0;
+            for (k, name) in self.tabs.iter().enumerate() {
+                let Some(tr) = self.tab_rect(r, k) else {
+                    continue;
+                };
+                let line = Rect::new(tr.x, head.y, tr.w, head.h);
+                let on = k == self.tab;
+                let w = cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    line,
+                    Align::Left,
+                    if on { t.text } else { t.text_dim },
+                    &name.to_uppercase(),
+                );
+                if on {
+                    let bar = Rect::new(line.x, line.bottom() + 2, w.min(line.w), 3);
+                    cx.canvas.fill_round_rect(bar, 1, t.accent);
+                }
+            }
+        }
         for k in 0..self.rows.len() {
             let Some((row, value)) = self.row_rects(r, k) else {
                 continue;
@@ -1394,13 +1451,18 @@ impl Widget for OptionList {
                 body.take_top(OPTION_H).0,
                 Align::Left,
                 t.text_faint,
-                "nothing here",
+                &self.empty,
             );
         }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let mut out = Vec::new();
+        for (k, name) in self.tabs.iter().enumerate() {
+            if let Some(tr) = self.tab_rect(r, k) {
+                out.push(Target::tap("tab", k, name.clone(), tr).disabled_if(k == self.tab));
+            }
+        }
         for k in 0..self.rows.len() {
             let Some((row, value)) = self.row_rects(r, k) else {
                 continue;
@@ -1447,6 +1509,12 @@ impl Widget for OptionList {
                 self.selected = g.row;
                 return Some(EventKind::Select(g.row));
             }
+        }
+        if let Some(k) =
+            (0..self.tabs.len()).find(|&k| self.tab_rect(r, k).is_some_and(|tr| tr.contains(x, y)))
+        {
+            // Another tab: the app shows its list (the lit one does nothing).
+            return (k != self.tab).then_some(EventKind::Tab(k));
         }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
@@ -1735,6 +1803,41 @@ mod tests {
         // A short list has no bar.
         o.rows.truncate(4);
         assert!(o.scroll_bar(r).is_none());
+    }
+
+    #[test]
+    fn option_tabs_switch_lists_from_the_title_line() {
+        let mut o = OptionList::new("Record");
+        o.tabs = vec!["Record".into(), "Clip · Verse B".into()];
+        o.rows = vec![OptionRow {
+            name: "Armed".into(),
+            value: "Bass".into(),
+        }];
+        let r = Rect::new(0, 0, 250, 14 * 2 + 34 + OPTION_H * 3);
+        let (a, b) = (o.tab_rect(r, 0).unwrap(), o.tab_rect(r, 1).unwrap());
+        // From the panel's top to the first row, the last to the right.
+        let (row, _) = o.row_rects(r, 0).unwrap();
+        assert_eq!((a.y, a.bottom()), (0, row.y));
+        assert!(a.right() < b.x && b.right() == row.right(), "{a:?} {b:?}");
+        assert!(o.tab_rect(r, 2).is_none());
+        // The other tab at once; the lit one, nothing.
+        assert_eq!(
+            o.touch(1, Touch::Down, b.x + 4, b.y + 20, r),
+            Some(EventKind::Tab(1))
+        );
+        assert_eq!(o.touch(1, Touch::Down, a.x + 4, a.y + 20, r), None);
+        o.tab = 1;
+        assert_eq!(
+            o.touch(1, Touch::Down, a.x + 4, a.y + 20, r),
+            Some(EventKind::Tab(0))
+        );
+        let t = o.targets(r);
+        let tabs: Vec<_> = t.iter().filter(|t| t.id == "tab").collect();
+        assert_eq!(tabs.len(), 2);
+        // Without tabs, nothing on the title line answers.
+        o.tabs.clear();
+        assert_eq!(o.touch(1, Touch::Down, b.x + 4, b.y + 20, r), None);
+        assert!(!o.targets(r).iter().any(|t| t.id == "tab"));
     }
 
     #[test]
