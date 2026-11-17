@@ -110,17 +110,18 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | Button | Goes to | When |
 |---|---|---|
 | **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop). | Works |
-| **STEP SEQ** | The pads become steps of one sound over any page, and the Play page shows Beats: hit an empty step to put a note there, a lit one to take it off. Press it again to play the pads. Hold **STEP SEQ** and hit a pad to pick the sound. **PAD BANK** turns the pages of steps; **SHIFT + STEP SEQ** turns on Follow. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads). | Works (new: needs a device check) |
+| **STEP SEQ** | The pads become steps of one sound over any page, and the Play page shows Beats: hit an empty step to put a note there, a lit one to take it off. Press it again to play the pads. Hold **STEP SEQ** and hit a pad to pick the sound. **PAD BANK** turns the pages of steps; **SHIFT + STEP SEQ** turns on Follow. Hold a step pad and turn the Q-Links to change that step; hold it and hit a later one to make the note last to there. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads). | Works (new: needs a device check) |
 | **NEXT SEQ** | The Arrange tab. | Works |
 | **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. | Works |
 | **SAMPLE EDIT** | The Sample tab's Wave page. | Works |
 | **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab's Pad view. | Works |
 | **TRACK MUTE** | The pads become mute keys over any page: pads 1-16 mute and unmute tracks 1-16, and **PAD BANK** picks the next 16 (B: 17-32, up to H: 113-128). **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Works |
-| **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Effects](../making-music/effects.md#macros). | Works |
+| **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Effects](../making-music/effects.md#macros). While you hold a step pad with **STEP SEQ** on, it switches the Q-Links between the step's velocity, length, nudge and chance and its condition, ratchet and fine nudge. | Works |
 | **ERASE** | Hold **ERASE** and tap something on the screen to delete it: a clip on the Arrange tab, a pattern row's name on the Play page (that sound's steps), or a layer on the Looper tab. With **STEP SEQ** on, **ERASE** + a step pad clears that step, and **ERASE** + a **PAD BANK** button clears that page of steps. **UNDO** brings it back. The hint line says what you can tap while you hold it. A clip used in the song, a whole loop, effects and macros can't be deleted this way yet. In the browser, **ERASE** moves the item picked to the Trash (asking first). Live erase while recording is planned. | Works |
 | **BROWSE** | Opens the browser over the page, and goes back to the page. **SHIFT + BROWSE** saves the project, on any page. See [Saving your work](../making-music/saving.md). | Works |
 | **The data wheel's push** | See [Everywhere](#everywhere). | Works |
-| **COPY**, **TC** | Not assigned yet. | Planned |
+| **COPY** | With **STEP SEQ** on: hold **COPY**, hit a step pad, then hit the steps it should go to. Or hold **COPY**, press a **PAD BANK** button, then the **PAD BANK** button it should go to, to copy a whole page of the sound's steps. **UNDO** takes a copy back. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads). | Works (new: needs a device check) |
+| **TC** | Not assigned yet. | Planned |
 
 ## For developers
 

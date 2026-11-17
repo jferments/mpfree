@@ -244,6 +244,15 @@ impl Change {
     pub fn key_all(self, i: usize) -> u64 {
         self.key(ALL, i)
     }
+
+    /// The key for this kind of change on several steps of sound `pitch`
+    /// at once ([`Grid::change_steps`]), `steps` a bit for each step (step
+    /// 0 the lowest), so a turn of several held steps joins one undo. It
+    /// never equals a one-step key.
+    pub fn key_steps(self, pitch: u8, steps: u128) -> u64 {
+        let folded = (steps as u64) ^ ((steps >> 64) as u64).rotate_left(23);
+        (self.key(pitch, 0) & !0xFFFF_FFFF_FFFF) | (1 << 47) | (folded & 0x7FFF_FFFF_FFFF)
+    }
 }
 
 /// A key naming a lock of `addr` on step `i` of row `sound`, so that a
@@ -509,6 +518,73 @@ impl Grid {
                 .collect(),
             ..Edit::default()
         }
+    }
+
+    /// Copy `count` steps of sound `pitch` from step `from` over the steps
+    /// from `to` (COPY with STEP SEQ on: a step, or a page): the notes of
+    /// `pitch` and the row's locks on each target step go, and the source
+    /// step's come in, each keeping its nudge as far as the target step
+    /// allows. Steps past the clip's end are left out, on either side; an
+    /// empty source step clears its target.
+    pub fn copy_steps(self, clip: &Clip, pitch: u8, from: usize, to: usize, count: usize) -> Edit {
+        let n = self.steps(clip.length);
+        let mut edit = Edit::default();
+        if from == to {
+            return edit;
+        }
+        for k in 0..count {
+            let (src, dst) = (from + k, to + k);
+            if src >= n || dst >= n {
+                break;
+            }
+            let (lo, hi) = self.nudges(clip.length, dst);
+            let at = |tick: Tick| {
+                let nudge = self.place(clip.length, tick).1;
+                self.tick(clip.length, dst, nudge.clamp(lo, hi))
+            };
+            edit.erase.extend(self.notes(clip, pitch, dst));
+            edit.erase_locks.extend(self.locks(clip, Some(pitch), dst));
+            edit.add
+                .extend(self.notes(clip, pitch, src).into_iter().map(|n| Note {
+                    tick: at(n.tick),
+                    ..n
+                }));
+            edit.add_locks.extend(
+                self.locks(clip, Some(pitch), src)
+                    .into_iter()
+                    .map(|l| Lock {
+                        tick: at(l.tick),
+                        ..l
+                    }),
+            );
+        }
+        // Nothing to change where a step was copied over its own copy.
+        let same = |a: &[Note], b: &[Note]| {
+            let mut a = a.to_vec();
+            let mut b = b.to_vec();
+            a.sort_by_key(|n| (n.tick, n.note, n.len, n.velocity));
+            b.sort_by_key(|n| (n.tick, n.note, n.len, n.velocity));
+            a == b
+        };
+        if same(&edit.erase, &edit.add) && edit.erase_locks == edit.add_locks {
+            return Edit::default();
+        }
+        edit
+    }
+
+    /// Change steps `steps` of sound `pitch` together, each as
+    /// [`Grid::change`] does (several step pads held while a Q-Link
+    /// turns). Empty steps are left out.
+    pub fn change_steps(self, clip: &Clip, pitch: u8, steps: &[usize], change: Change) -> Edit {
+        let mut edit = Edit::default();
+        let mut done: Vec<usize> = Vec::new();
+        for &i in steps {
+            if !done.contains(&i) {
+                done.push(i);
+                edit.join(self.change(clip, pitch, i, change));
+            }
+        }
+        edit
     }
 
     /// Change step `i` of sound `pitch`. Values are kept in range; an
@@ -1246,6 +1322,66 @@ mod tests {
         assert!(g.clear_steps(&c, 36, 6, 6).is_empty());
         c.apply(&page).unwrap();
         assert_eq!(g.row(&c, 36).iter().flatten().count(), 1, "step 17 stays");
+    }
+
+    /// COPY with STEP SEQ on: one sound's step, with its nudge and locks,
+    /// over another (or a page over a page); the other sounds stay.
+    #[test]
+    fn copying_steps_takes_one_rows_notes_and_locks_along() {
+        use mpfree_param::OnTrack;
+        let g = Grid::new(240).unwrap();
+        // Kick on step 1, 10 ticks late; a snare on step 1 and on step 4,
+        // and a kick on step 4 that the copy replaces.
+        let mut c = clip(2 * BAR, &[(250, 36), (240, 38), (960, 38), (960, 36)]);
+        let addr = RelAddr::new(OnTrack::Inst, 1);
+        c.apply(&g.lock(&c, Some(36), 1, addr, 0.25)).unwrap();
+        let e = g.copy_steps(&c, 36, 1, 4, 1);
+        c.apply(&e).unwrap();
+        let kick: Vec<Tick> = c
+            .notes
+            .iter()
+            .filter(|n| n.note == 36)
+            .map(|n| n.tick)
+            .collect();
+        assert!(kick.contains(&250) && kick.contains(&970), "{kick:?}");
+        assert!(!kick.contains(&960), "the old kick on step 4 went");
+        assert_eq!(g.row(&c, 38).iter().flatten().count(), 2, "the snares stay");
+        let locks = g.locks(&c, Some(36), 4);
+        assert_eq!(locks.len(), 1);
+        assert_eq!((locks[0].tick, locks[0].value), (970, 0.25));
+        // Again: nothing changes.
+        assert!(g.copy_steps(&c, 36, 1, 4, 1).is_empty());
+        assert!(g.copy_steps(&c, 36, 1, 1, 1).is_empty());
+        // A page over a page; past the end of a one-bar clip, nothing.
+        let page = g.copy_steps(&c, 36, 0, 16, 16);
+        assert_eq!(page.add.len(), 2);
+        assert!(page.add.iter().all(|n| n.tick >= 16 * 240));
+        let short = clip(BAR, &[(0, 36)]);
+        assert!(g.copy_steps(&short, 36, 0, 16, 16).is_empty());
+        // An empty step copied clears the target.
+        let clear = g.copy_steps(&c, 36, 2, 4, 1);
+        assert_eq!(clear.erase.len(), 1);
+        assert!(clear.add.is_empty());
+        assert_eq!(clear.erase_locks.len(), 1);
+    }
+
+    /// Several held steps turned together: one edit, every step with a
+    /// note, under a key no one step has.
+    #[test]
+    fn changing_several_steps_is_one_edit_with_its_own_key() {
+        let g = Grid::new(240).unwrap();
+        let c = clip(BAR, &[(0, 36), (960, 36), (480, 38)]);
+        let e = g.change_steps(&c, 36, &[0, 2, 4, 4], Change::Velocity(30));
+        assert_eq!(e.add.len(), 2, "steps 0 and 4; step 2 is empty");
+        assert!(e.add.iter().all(|n| n.velocity == 30));
+        let v = Change::Velocity(30);
+        let many = v.key_steps(36, (1 << 0) | (1 << 4));
+        assert_ne!(many, v.key(36, 0));
+        assert_ne!(many, v.key(36, 4));
+        assert_ne!(many, v.key(36, 17));
+        assert_ne!(many, Change::Length(240).key_steps(36, (1 << 0) | (1 << 4)));
+        assert_ne!(many, v.key_steps(38, (1 << 0) | (1 << 4)));
+        assert_eq!(many, Change::Velocity(90).key_steps(36, 0b1_0001));
     }
 
     /// Page edits take the clip's moves along: a copied page copies them,

@@ -40,7 +40,7 @@ The MPC One downloads plugins through its network cable (the **Link** port on th
 MPFree checks the download against the catalog before it unpacks anything, so a damaged or swapped file is refused. An instrument is then on the Synth tab's **Instrument** row (see [Synths](synths.md#a-synth-for-each-track)) and an effect in the list you add effects from (see [Effects](effects.md#plugins)), straight away.
 
 > [!NOTE]
-> **Not yet checked:** the first try on the MPC One (16 Nov) failed with "Insufficient randomness", and the fix for it hasn't been tried there yet. If Update list says the catalog didn't download, install from zips instead (below).
+> **Not yet checked:** the first try on an MPC One (16 November) couldn't download ("Insufficient randomness"). MPFree now downloads in a different way, and checks what stopped it then; neither has been tried on an MPC yet. Your stick needs a version of MPFree made after that. If Update list says the catalog didn't download, install from zips instead (below).
 
 ## Installing from a zip
 

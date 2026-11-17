@@ -147,7 +147,8 @@ fn human(bytes: u64) -> String {
 }
 
 /// The log's line for the first listing: what is there, whether downloads
-/// can work, and what libcurl's TLS library said as it started.
+/// can work, and what libcurl's TLS library said as it started (in this
+/// program, or on the MPC in the download helper beside it).
 fn listing_line(l: &Listing) -> String {
     let catalog = match &l.catalog {
         Some(c) => format!(
@@ -157,14 +158,16 @@ fn listing_line(l: &Listing) -> String {
         ),
         None => "no catalog kept yet".into(),
     };
+    // What downloads go through: the system's libcurl, or on the MPC (a
+    // static build) the helper beside the program (mpfree-mpcstore's fetch).
+    let means = mpfree_mpcstore::fetch::means();
     let mut downloads = if l.no_folder {
-        "downloads off (no data folder)"
+        "downloads off (no data folder)".to_string()
     } else if l.can_download {
-        "downloads possible (libcurl found)"
+        format!("downloads possible ({means} found)")
     } else {
-        "downloads off (no libcurl)"
-    }
-    .to_string();
+        format!("downloads off (no {means})")
+    };
     if let Some(tls) = &l.tls {
         downloads = format!("{downloads}, {tls}");
     }
@@ -1546,9 +1549,13 @@ mod tests {
             tls: Some("OpenSSL 3.0.13 ready".into()),
             ..Listing::default()
         })));
+        // libcurl's in this program, or the helper's in a static build.
         assert_eq!(
             p.take_lines(),
-            vec!["plugins: 0 installed, 0 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found), OpenSSL 3.0.13 ready"]
+            vec![format!(
+                "plugins: 0 installed, 0 zip(s) on the stick, no catalog kept yet, downloads possible ({} found), OpenSSL 3.0.13 ready",
+                mpfree_mpcstore::fetch::means()
+            )]
         );
     }
 
@@ -1556,9 +1563,14 @@ mod tests {
     fn the_log_says_what_is_there_and_what_was_done() {
         let mut p = page_with(Vec::new(), Vec::new(), true);
         let lines = p.take_lines();
+        // A static build (the MPC's, or a host built with +crt-static)
+        // downloads through the helper, any other through libcurl.
         assert_eq!(
             lines,
-            vec!["plugins: 0 installed, 0 zip(s) on the stick, catalog of 2026-11-10 kept (3 plugins), downloads possible (libcurl found)"]
+            vec![format!(
+                "plugins: 0 installed, 0 zip(s) on the stick, catalog of 2026-11-10 kept (3 plugins), downloads possible ({} found)",
+                mpfree_mpcstore::fetch::means()
+            )]
         );
         p.take(News::Done {
             key: "maker.echo".into(),

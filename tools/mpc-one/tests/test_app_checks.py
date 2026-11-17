@@ -184,6 +184,21 @@ class JudgeTests(unittest.TestCase):
         refused = window + lines("plugins: [SYN] Modal Voice would not start: failed to map segment")
         got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(refused, refused))
         self.assertFalse(got[-1][0])
+        # The static pad player on the MPC downloads through mpfree-fetch, and says whether it has it.
+        for means in ("downloads possible (mpfree-fetch found)", "downloads off (no mpfree-fetch)"):
+            helper = lines(f"plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, {means}") + window[1:]
+            got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(helper, helper))
+            self.assertTrue(got[0][0], means)
+            self.assertFalse(got[1][0], means)
+        # The helper reports its libcurl's OpenSSL (mpfree-fetch --tls), or why it couldn't.
+        for tls, ready in (("OpenSSL 3.5.4 ready", True),
+                           ("OpenSSL 3.5.4 ready (its random numbers didn't start: x; MPFree loaded its default "
+                            "provider)", True),
+                           ("TLS not checked: mpfree-fetch gave no answer in 10 s", False)):
+            helper = lines("plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible "
+                           f"(mpfree-fetch found), {tls}") + window[1:]
+            got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(helper, helper))
+            self.assertEqual([ok for ok, _, _ in got][:2], [True, ready], tls)
 
     def test_kept_reads_the_running_value_too(self):
         session = lines("saved settings: pad curve Hard, sound cores two, loop memory 10 min, x",

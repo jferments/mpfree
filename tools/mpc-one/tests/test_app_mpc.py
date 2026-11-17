@@ -120,7 +120,8 @@ PLUGIN_STORE_NEEDLES = (
     ("mpfree-app/plugin_store.rs", "let _ = std::fs::remove_file(&file);"),
     # The catalog's picture, files/plugins/.downloads/picture-<16 hex digits>.png, removed if it doesn't decode.
     ("mpfree-app/plugin_store.rs", "let _ = std::fs::remove_file(&cache);"),
-    # fetch: the file it is given (only the three above), made new or emptied; removed on any failure.
+    # fetch: the file it is given (only the three above), made new or emptied; removed on any failure, also
+    # when the static build's helper (mpfree-fetch, which writes it the same way) fails or is cancelled.
     ("mpfree-mpcstore/fetch.rs", "let file = File::create(out).map_err(|e| format!(\"{}: {e}\", out.display()))?;"),
     ("mpfree-mpcstore/fetch.rs", "let _ = std::fs::remove_file(out);"),
     # install: each plugin folder unpacked into files/plugins/.mpfree-installing-<folder> (names checked by
@@ -1346,8 +1347,21 @@ class StaticTests(unittest.TestCase):
 
     def test_it_starts_only_a_read_only_journalctl_and_the_gpu_process_it_is_given(self):
         code = "".join(c for _, c in self.program_sources())
-        self.assertEqual(code.count("Command::new("), 2)
+        self.assertEqual(code.count("Command::new("), 4)
         self.assertIn('Command::new("journalctl")', code)
+        # The Plugins place's downloads in the static build: mpfree-fetch from beside the program (HELPER, only
+        # that name), with the address (the catalog's sites only, checked first), the file and the limit; and
+        # once, mpfree-fetch --tls, which downloads nothing and says what its libcurl's OpenSSL said (stopped
+        # if it gives no answer within TLS_WAIT).
+        fetch = dict(self.program_sources())["mpfree-mpcstore/fetch.rs"]
+        self.assertEqual(fetch.count("Command::new("), 2)
+        self.assertIn("let mut child = Command::new(helper).arg(url).arg(out).arg(max.to_string())", fetch)
+        self.assertIn('let mut child = match Command::new(helper).arg("--tls").stdin(Stdio::null())', fetch)
+        self.assertIn("pub const TLS_WAIT: Duration = Duration::from_secs(10);", fetch)
+        self.assertIn('pub const HELPER: &str = "mpfree-fetch";', fetch)
+        self.assertIn("let p = std::env::current_exe().ok()?.with_file_name(HELPER);", fetch)
+        self.assertIn("if !allowed(url) {\n        return Err(format!(\"{url} is not on the catalog's sites\"));\n"
+                      "    }\n    if STATIC {", fetch)
         # The GPU drawing process (mpfree_ui::gpu_screen), only with --gpu-screen PROGRAM: that program, with
         # the app's frames on its stdin and its answers on its stdout.
         gpu = dict(self.program_sources())["mpfree-ui/gpu_screen.rs"]
