@@ -621,97 +621,9 @@ fn eq(r: &mut Report) {
     let audio = prototype::log_freqs(20.0, 20_000.0f64.min(0.49 * rate as f64), 400);
     let nyq = 0.4999 * rate as f64;
 
-    // E3: bells against the analog prototype, shape and width.
-    for fc in [1000.0, 5000.0, 8000.0, 12_000.0, 16_000.0] {
-        for q in [0.71, 1.41, 4.0] {
-            let e = eq_with(&band(1, BELL, fc as f32, 12.0, q as f32), rate);
-            let c = curve(&e, &audio);
-            let (worst, _) =
-                prototype::worst_diff(&audio, &c, |f| prototype::bell_db(f, fc, 12.0, q));
-            let tag = format!("bell_{}_q{q}", label(fc));
-            r.put(
-                "E3",
-                "eq",
-                format!("{tag}_worst_db"),
-                Some(worst),
-                Better::Near(0.0),
-                Some(0.5),
-                0.02,
-            );
-            let dig = prototype::half_gain_width(|f| curve(&e, &[f])[0], 12.0, 10.0, nyq);
-            let ana =
-                prototype::half_gain_width(|f| prototype::bell_db(f, fc, 12.0, q), 12.0, 10.0, 1e6);
-            let ratio = dig.zip(ana).map(|(d, a)| d / a);
-            r.put(
-                "E3",
-                "eq",
-                format!("{tag}_width_ratio"),
-                ratio,
-                Better::Near(1.0),
-                Some(0.05),
-                0.005,
-            );
-        }
-    }
-    // E3: shelves.
-    for (kind, name, freqs) in [
-        (HIGH_SHELF, "high_shelf", [2000.0, 5000.0, 8000.0, 12_000.0]),
-        (LOW_SHELF, "low_shelf", [50.0, 100.0, 200.0, 500.0]),
-    ] {
-        for fc in freqs {
-            let e = eq_with(&band(1, kind, fc as f32, 6.0, 0.71), rate);
-            let c = curve(&e, &audio);
-            let (worst, _) = prototype::worst_diff(&audio, &c, |f| {
-                if kind == HIGH_SHELF {
-                    prototype::high_shelf_db(f, fc, 6.0, 0.71)
-                } else {
-                    prototype::low_shelf_db(f, fc, 6.0, 0.71)
-                }
-            });
-            r.put(
-                "E3",
-                "eq",
-                format!("{name}_{}_worst_db", label(fc)),
-                Some(worst),
-                Better::Near(0.0),
-                Some(0.5),
-                0.02,
-            );
-        }
-    }
-    // The cuts against Butterworth, down to -12 dB (below that a digital
-    // low-pass falls faster than the analog one toward its zero at
-    // Nyquist, which is cut either way). Reported and kept, no target yet.
-    for (high, fc, slope) in [
-        (false, 100.0, 1.0),
-        (false, 100.0, 2.0),
-        (true, 5000.0, 1.0),
-        (true, 5000.0, 2.0),
-        (true, 12_000.0, 2.0),
-    ] {
-        let (fid, sid) = if high {
-            (eqi::HIGH_CUT, eqi::HIGH_SLOPE)
-        } else {
-            (eqi::LOW_CUT, eqi::LOW_SLOPE)
-        };
-        let e = eq_with(&[(fid, fc as f32), (sid, slope)], rate);
-        let c = curve(&e, &audio);
-        let order = if slope == 1.0 { 2 } else { 4 };
-        let analog = |f: f64| prototype::butterworth_db(f, fc, order, !high);
-        let (fs, cs): (Vec<f64>, Vec<f64>) = audio
-            .iter()
-            .zip(&c)
-            .filter(|(f, _)| analog(**f) > -12.0)
-            .map(|(f, v)| (*f, *v))
-            .unzip();
-        let (worst, _) = prototype::worst_diff(&fs, &cs, analog);
-        let name = format!(
-            "{}_cut_{}_{}db_worst_db",
-            if high { "high" } else { "low" },
-            label(fc),
-            6 * order
-        );
-        r.put("E3", "eq", name, Some(worst), Better::Near(0.0), None, 0.02);
+    // E3 at both Qualities: Normal (`eq`) and HQ 2x (`eq[HQ 2x]`).
+    for (subject, quality) in [("eq", eqi::NORMAL), ("eq[HQ 2x]", eqi::HQ)] {
+        eq_curves(r, subject, quality, &audio, nyq);
     }
 
     // E4: the conventions.
@@ -758,19 +670,30 @@ fn eq(r: &mut Report) {
         );
     }
 
-    // E2: what it draws is what it plays.
-    {
-        let values = band(1, BELL, 1000.0, 6.0, 1.0);
+    // E2: what it draws is what it plays; at HQ 2x with a broad bell up
+    // high, where the half-bands round the bands count, to 20 kHz.
+    for (subject, values, top) in [
+        ("eq", band(1, BELL, 1000.0, 6.0, 1.0), 16_000.0),
+        (
+            "eq[HQ 2x]",
+            {
+                let mut v = band(1, BELL, 12_000.0, 12.0, 0.71);
+                v.push((eqi::QUALITY, eqi::HQ));
+                v
+            },
+            20_000.0f64.min(0.45 * rate as f64),
+        ),
+    ] {
         let mut d = NodeDut::from_registry(EQ_ID, rate).expect("the EQ is in the registry");
         for (id, v) in &values {
             d.set(*id, *v as f64);
         }
         let e = eq_with(&values, rate);
         let m = response::measure(&mut d, -12.0, 16_384);
-        let worst = m.worst_error(30.0, 16_000.0, |f| curve(&e, &[f])[0]);
+        let worst = m.worst_error(30.0, top, |f| curve(&e, &[f])[0]);
         r.put(
             "E2",
-            "eq",
+            subject,
             "drawn_vs_heard_db",
             Some(worst),
             Better::Lower,
@@ -799,9 +722,15 @@ fn eq(r: &mut Report) {
 
     // E7: zipper at the defaults and every preset.
     let entry = mpfree_fx::registry::entry(EQ_ID).expect("the EQ is in the registry");
-    let subjects = std::iter::once(None).chain(entry.presets.iter().map(Some));
-    for p in subjects {
-        let s = Subject {
+    let hq = Subject {
+        name: "eq[HQ 2x]".into(),
+        id: EQ_ID,
+        fixed: &[(eqi::QUALITY, eqi::HQ)],
+        preset: None,
+    };
+    let subjects = std::iter::once(None)
+        .chain(entry.presets.iter().map(Some))
+        .map(|p| Subject {
             name: match p {
                 None => "eq".into(),
                 Some(p) => format!("eq[{}]", p.name),
@@ -809,7 +738,9 @@ fn eq(r: &mut Report) {
             id: EQ_ID,
             fixed: &[],
             preset: p,
-        };
+        })
+        .chain(std::iter::once(hq));
+    for s in subjects {
         r.put(
             "E7",
             &s.name,
@@ -818,6 +749,121 @@ fn eq(r: &mut Report) {
             Better::Lower,
             Some(3.0),
             0.5,
+        );
+    }
+}
+
+/// E3 for the EQ at `quality`: +12 dB bells and +6 dB shelves against
+/// their analog prototypes, and the cuts against Butterworth, from its own
+/// curve (which E2 holds to what it plays).
+fn eq_curves(r: &mut Report, subject: &str, quality: f32, audio: &[f64], nyq: f64) {
+    let rate = r.rate;
+    let top = nyq.min(20_000.0);
+    let with = |mut v: Vec<(u16, f32)>| {
+        v.push((eqi::QUALITY, quality));
+        v
+    };
+    for fc in [1000.0, 5000.0, 8000.0, 12_000.0, 16_000.0] {
+        for q in [0.71, 1.41, 4.0] {
+            let e = eq_with(&with(band(1, BELL, fc as f32, 12.0, q as f32)), rate);
+            let c = curve(&e, audio);
+            let (worst, _) =
+                prototype::worst_diff(audio, &c, |f| prototype::bell_db(f, fc, 12.0, q));
+            let tag = format!("bell_{}_q{q}", label(fc));
+            r.put(
+                "E3",
+                subject,
+                format!("{tag}_worst_db"),
+                Some(worst),
+                Better::Near(0.0),
+                Some(0.5),
+                0.02,
+            );
+            // Both widths inside the band the target is set on: a bell
+            // whose half-gain edge lies above 20 kHz (or Nyquist) compares
+            // what is left of it, not a digital width cut off at Nyquist
+            // with an analog one that runs on.
+            let dig = prototype::half_gain_width(|f| curve(&e, &[f])[0], 12.0, 10.0, top);
+            let ana =
+                prototype::half_gain_width(|f| prototype::bell_db(f, fc, 12.0, q), 12.0, 10.0, top);
+            let ratio = dig.zip(ana).map(|(d, a)| d / a);
+            r.put(
+                "E3",
+                subject,
+                format!("{tag}_width_ratio"),
+                ratio,
+                Better::Near(1.0),
+                Some(0.05),
+                0.005,
+            );
+        }
+    }
+    // E3: shelves.
+    for (kind, name, freqs) in [
+        (HIGH_SHELF, "high_shelf", [2000.0, 5000.0, 8000.0, 12_000.0]),
+        (LOW_SHELF, "low_shelf", [50.0, 100.0, 200.0, 500.0]),
+    ] {
+        for fc in freqs {
+            let e = eq_with(&with(band(1, kind, fc as f32, 6.0, 0.71)), rate);
+            let c = curve(&e, audio);
+            let (worst, _) = prototype::worst_diff(audio, &c, |f| {
+                if kind == HIGH_SHELF {
+                    prototype::high_shelf_db(f, fc, 6.0, 0.71)
+                } else {
+                    prototype::low_shelf_db(f, fc, 6.0, 0.71)
+                }
+            });
+            r.put(
+                "E3",
+                subject,
+                format!("{name}_{}_worst_db", label(fc)),
+                Some(worst),
+                Better::Near(0.0),
+                Some(0.5),
+                0.02,
+            );
+        }
+    }
+    // The cuts against Butterworth, down to -12 dB (below that a digital
+    // low-pass falls faster than the analog one toward its zero at
+    // Nyquist, which is cut either way). Reported and kept, no target yet.
+    for (high, fc, slope) in [
+        (false, 100.0, 1.0),
+        (false, 100.0, 2.0),
+        (true, 5000.0, 1.0),
+        (true, 5000.0, 2.0),
+        (true, 12_000.0, 2.0),
+    ] {
+        let (fid, sid) = if high {
+            (eqi::HIGH_CUT, eqi::HIGH_SLOPE)
+        } else {
+            (eqi::LOW_CUT, eqi::LOW_SLOPE)
+        };
+        let e = eq_with(&with(vec![(fid, fc as f32), (sid, slope)]), rate);
+        let c = curve(&e, audio);
+        let order = if slope == 1.0 { 2 } else { 4 };
+        let analog = |f: f64| prototype::butterworth_db(f, fc, order, !high);
+        let (fs, cs): (Vec<f64>, Vec<f64>) = audio
+            .iter()
+            .zip(&c)
+            .filter(|(f, _)| analog(**f) > -12.0)
+            .map(|(f, v)| (*f, *v))
+            .unzip();
+        let (worst, _) = prototype::worst_diff(&fs, &cs, analog);
+        let name = format!(
+            "{}_cut_{}_{}db_worst_db",
+            if high { "high" } else { "low" },
+            label(fc),
+            6 * order
+        );
+        r.put(
+            "E3",
+            subject,
+            name,
+            Some(worst),
+            Better::Near(0.0),
+            None,
+            0.02,
         );
     }
 }
