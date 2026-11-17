@@ -5373,6 +5373,12 @@ fn player_session(
             }
         }
         cv_out.tick(&mut |l| out.midi(&l));
+        // The Sample tab's auto-sample of outside gear plays through the
+        // jacks while they are open and sending: the screen hears when
+        // that comes or goes (allocates only then).
+        if let Some(g) = midi_out.gear_changed() {
+            out.show(gui::ToUi::Gear(g));
+        }
         music.sync(&io_model, mt);
         // The Monitor's "Send note-offs to MIDI out": only the notes MPFree
         // left on there, as STOP's panic sends them.
@@ -6657,8 +6663,13 @@ fn player_session(
         if let Some(line) = looper.take_pads_as(&pads_l, &pads_r, how) {
             out.note(&line);
         }
-        // The loop, for its track; the line input comes with it.
+        // The loop, for its track; the line input comes with it. First
+        // the Loop tracks' launches, so a loop goes on or off on its bar
+        // line's own frame (loop-tracks.md).
         let t_loop = Instant::now();
+        for line in looper.follow_plan(&time.loop_plan()) {
+            out.note(&line);
+        }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and play into the mixer's Audio track (song mode only).
@@ -6911,6 +6922,12 @@ fn player_session(
         }
         for line in looper.changes(|| time.position_text()) {
             out.note(&line);
+        }
+        // A loop recorded lands on a Loop track; its cells follow it.
+        if let Some(now) = looper.grid_now() {
+            for line in time.loops_are(&now) {
+                out.note(&format!("time: {line}"));
+            }
         }
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));

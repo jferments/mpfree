@@ -22,16 +22,16 @@
 149818	Character (Tape)
 103784	Chorus (2 voices)
 173943	Chorus (4 voices)
-908699	Cloud reverb (Cloud)
-254417	Cloud reverb (Cloud, Eco)
-282548	Cloud reverb (Echoes)
-169785	Cloud reverb (Echoes, Eco)
-723627	Cloud reverb (Hall)
-249011	Cloud reverb (Hall, Eco)
-767509	Cloud reverb (Plate)
-225383	Cloud reverb (Plate, Eco)
-554764	Cloud reverb (Room)
-209217	Cloud reverb (Room, Eco)
+991771	Cloud reverb (Cloud)
+274985	Cloud reverb (Cloud, Eco)
+313193	Cloud reverb (Echoes)
+183745	Cloud reverb (Echoes, Eco)
+791153	Cloud reverb (Hall)
+267451	Cloud reverb (Hall, Eco)
+839996	Cloud reverb (Plate)
+247105	Cloud reverb (Plate, Eco)
+607265	Cloud reverb (Room)
+226832	Cloud reverb (Room, Eco)
 20102	Comb
 27650	Compressor
 36221	Crush
@@ -61,11 +61,11 @@
 25436	Looper (60 s), overdubbing
 28961	Master safety
 210819	Mixer, 12 tracks and 8 pads, routing only
-1475135	Mixer, 12 tracks and 8 pads, with a song's inserts
-999293	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
-1086930	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
+1541726	Mixer, 12 tracks and 8 pads, with a song's inserts
+1017757	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
+1123370	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
 370832	Mixer, 16 tracks and 32 pads, routing only
-1301290	Mixer, a song's inserts, 6 tracks frozen, printing a bus
+1367496	Mixer, a song's inserts, 6 tracks frozen, printing a bus
 52828	Mixer, idle (63 strips, nothing playing)
 107876	Mod: 8 macros x 8, 16 rows, morph, locks
 9033	Moves: 16 lanes playing, the move log taking 3 controls

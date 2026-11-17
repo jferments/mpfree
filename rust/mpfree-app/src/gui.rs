@@ -101,6 +101,12 @@ pub const NUMPAD: &str = "numpad";
 pub const NUMPAD_PAGE: &str = "Type a number";
 const NUMPAD_LAYOUT: &str = "col(header:60, numpad:*, hint:26)";
 const NUMPAD_HINT: &str = "Tap the number, then Enter   ·   wheel or - / +: step it   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
+/// The text keyboard (the sampler review's R1: names), over the page it
+/// was asked from, as the number pad.
+pub const TEXTPAD: &str = "textpad";
+pub const TEXTPAD_PAGE: &str = "Type a name";
+const TEXTPAD_LAYOUT: &str = "col(header:60, textpad:*, hint:26)";
+const TEXTPAD_HINT: &str = "Tap the letters, then Enter   ·   wheel or - / +: move the cursor   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
 /// How long a finger stays on Play's BPM to type the tempo, seconds.
 const TEMPO_HOLD: f32 = 0.6;
 /// The undo history (Jay after live test 3: hold UNDO to see the page's
@@ -508,7 +514,8 @@ struct PowerOpen {
 /// it, the card waits for as long as it takes.
 const POWER_SAVE_START_S: f32 = 10.0;
 
-/// Where a typed number goes, and the page the number pad was opened over.
+/// Where a typed number or name goes, and the page the number pad or the
+/// text keyboard was opened over.
 #[derive(Clone, Debug)]
 struct Typing {
     to: TypeTo,
@@ -521,6 +528,9 @@ enum TypeTo {
     Sample,
     /// The tempo (a long press on Play's BPM).
     Tempo,
+    /// The Sample tab's pad and its sound, named on the text keyboard
+    /// ([`sample_page::SamplePage::named`]).
+    SampleName,
 }
 
 /// What the pad player shows about one kit.
@@ -565,10 +575,13 @@ pub struct Timing {
 pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
 
 /// Writes what each track plays under its name: its own instrument's
-/// name, or "Kit".
+/// name, or "Kit"; a Loop track's input ("Pads + synth").
 fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
     for (i, t) in st.tracks.iter_mut().enumerate() {
-        let name = sounds.get(i).copied().flatten().map_or("Kit", |h| h.name);
+        let name = match t.loops {
+            Some(input) => input.name(),
+            None => sounds.get(i).copied().flatten().map_or("Kit", |h| h.name),
+        };
         if t.sound != name {
             t.sound = name.to_string();
         }
@@ -576,6 +589,11 @@ fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
 }
 
 pub enum ToUi {
+    /// The MIDI out the Sample tab's auto-sample plays outside gear
+    /// through (the 5-pin jacks, while they are open and Prefs' Send MIDI
+    /// and CV out is on), when it comes (Some) or goes (None)
+    /// (`MidiOut::gear_changed`).
+    Gear(Option<sample_page::GearOut>),
     /// A line for the terminal and the Events log.
     Line(String),
     /// A short press of the power button (power.rs): the power card opens,
@@ -1468,6 +1486,7 @@ impl Player {
         ui.add("options", OptionList::new("Options"));
         ui.add("help", Card::new("About this setting"));
         ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
+        ui.add(TEXTPAD, mpfree_ui::textpad::TextPad::default());
         ui.add(crate::power::CARD, crate::power::PowerCard::default());
         ui.add(HISTORY, mpfree_ui::history::HistoryPanel::default());
         ui.add("guide", Card::new("Button guide"));
@@ -1510,6 +1529,8 @@ impl Player {
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
         ui.add_page(NUMPAD_PAGE, NUMPAD_LAYOUT)
             .expect("number pad layout");
+        ui.add_page(TEXTPAD_PAGE, TEXTPAD_LAYOUT)
+            .expect("text keyboard layout");
         ui.add_page(crate::power::PAGE, crate::power::LAYOUT)
             .expect("power card layout");
         ui.add_page(HISTORY_PAGE, HISTORY_LAYOUT)
@@ -3253,8 +3274,13 @@ impl Player {
                 crate::power::HINT
             }
             .to_string()
-        } else if self.typing.is_some() {
-            NUMPAD_HINT.to_string()
+        } else if let Some(t) = &self.typing {
+            if t.to == TypeTo::SampleName {
+                TEXTPAD_HINT
+            } else {
+                NUMPAD_HINT
+            }
+            .to_string()
         } else if self.history.is_some() {
             HISTORY_HINT.to_string()
         } else if self.kit_list {
@@ -4008,6 +4034,24 @@ impl Player {
         }
     }
 
+    /// Opens the text keyboard for `asks` over the page showing (the
+    /// Sample tab's pad and its sound).
+    fn open_textpad(&mut self, asks: Vec<mpfree_ui::textpad::TextAsk>) {
+        let back = self.ui.page().to_string();
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
+            p.open(asks);
+        }
+        if self.ui.show(TEXTPAD_PAGE).is_ok() {
+            self.looper_page.sync_drag(&mut self.ui, self.status.shift);
+            self.typing = Some(Typing {
+                to: TypeTo::SampleName,
+                back,
+            });
+            self.outbox.push(FromUi::Overlay(true));
+            self.refresh_hint();
+        }
+    }
+
     // ------------------------------------------------------------ the power card
 
     /// Shut down and restart are handed to the system through this file
@@ -4227,6 +4271,9 @@ impl Player {
         if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
             p.close();
         }
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
+            p.close();
+        }
         let _ = self.ui.show(&t.back);
         self.outbox.push(FromUi::Overlay(false));
         self.refresh_hint();
@@ -4236,6 +4283,14 @@ impl Player {
     /// closes; out of range, the pad stays and says the range; with
     /// nothing typed, it closes.
     fn numpad_enter(&mut self) -> Option<FromUi> {
+        if self
+            .typing
+            .as_ref()
+            .is_some_and(|t| t.to == TypeTo::SampleName)
+        {
+            self.textpad_enter();
+            return None;
+        }
         let p = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD)?;
         let value = p.entered();
         if value.is_none() && !p.warning.is_empty() {
@@ -4257,7 +4312,25 @@ impl Player {
                     mpfree_transport::Command::SetTempo(v),
                 )))
             }
+            TypeTo::SampleName => None,
         }
+    }
+
+    /// Enter on the text keyboard: the names typed go to the pad and its
+    /// sound and the keyboard closes; with a name left empty it stays and
+    /// says so.
+    fn textpad_enter(&mut self) {
+        let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) else {
+            return;
+        };
+        let Some(names) = p.entered() else {
+            return;
+        };
+        self.close_numpad();
+        let before = self.sample.page().to_string();
+        self.sample.named(&mut self.ui, &names);
+        self.print_sample_lines();
+        self.sample_after(&before);
     }
 
     /// The number pad for the tempo (a long press on Play's BPM).
@@ -4299,6 +4372,9 @@ impl Player {
             };
             if let Some(d) = nudge {
                 if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+                    p.nudge(d);
+                }
+                if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
                     p.nudge(d);
                 }
                 return;
@@ -5034,6 +5110,10 @@ impl Player {
                 }
             }
             ToUi::SampleGrains(c) => self.sample.cloud_back(&mut self.ui, c),
+            ToUi::Gear(g) => {
+                self.sample.set_gear(&mut self.ui, g);
+                self.print_sample_lines();
+            }
             ToUi::SampleInputBack(f) => {
                 self.sample.input_back(f);
                 self.print_sample_lines();
@@ -7340,6 +7420,9 @@ impl Player {
             if let Some(ask) = self.sample.take_number_ask() {
                 self.open_numpad(ask, TypeTo::Sample);
             }
+            if let Some(asks) = self.sample.take_text_ask() {
+                self.open_textpad(asks);
+            }
             if let Some(plan) = self.sample.take_auto_request() {
                 // A copy of the patch, made here: the audio thread keeps
                 // playing its own and is never asked for anything.
@@ -7458,6 +7541,15 @@ impl Player {
                 None
             }
             (NUMPAD, _) => None,
+            (TEXTPAD, EventKind::Tab(mpfree_ui::textpad::KEY_ENTER)) => {
+                self.textpad_enter();
+                None
+            }
+            (TEXTPAD, EventKind::Tab(mpfree_ui::textpad::KEY_CANCEL)) => {
+                self.close_numpad();
+                None
+            }
+            (TEXTPAD, _) => None,
             (HISTORY, EventKind::Select(row)) => {
                 self.history_jump(row);
                 None
@@ -10529,6 +10621,30 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     empty.apply(ToUi::PadUp(1));
     out.push(("sample-no-sound", empty));
+    // The text keyboard over Wave, from a tap on the pad bar's title:
+    // the pad's name being changed, its sound's on the switch.
+    let mut naming = sample_sampler(fonts());
+    naming.on_event(UiEvent {
+        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+        kind: EventKind::Type(0),
+    });
+    if let Some(t) = naming.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
+        t.typed[0] = "Break 92 kick".to_string();
+        t.caret = 13;
+    }
+    out.push(("sample-name", naming));
+    // The same keyboard with #+= on: the letter keys type symbols.
+    let mut symbols = sample_sampler(fonts());
+    symbols.on_event(UiEvent {
+        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+        kind: EventKind::Type(0),
+    });
+    if let Some(t) = symbols.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
+        t.typed[0] = "Break 92 [#2]".to_string();
+        t.caret = 13;
+        t.symbols = true;
+    }
+    out.push(("sample-name-symbols", symbols));
     // The Pads tab's Pad view: A5 copied onto A2, A5 picked again.
     let mut pads = sample_sampler(fonts());
     open_pads(&mut pads, mpfree_sampler_ui::pads_tab::PAD_VIEW);
@@ -16368,6 +16484,112 @@ mod tests {
         }
     }
 
+    /// The sampler review's R1, names: a tap on the pad bar's title opens
+    /// the text keyboard on the pad's name, with its sound's on the switch.
+    /// Cancel changes nothing; Enter names both, one undo step, and the
+    /// Play page's pads follow; UNDO brings the names back.
+    #[test]
+    fn a_tap_on_the_pad_bars_title_names_the_pad_and_its_sound() {
+        use mpfree_sampler_ui::wave_tab::BAR;
+        use mpfree_sampler_ui::widgets::PadBar;
+        use mpfree_ui::textpad::{char_key, TextPad, KEY_CANCEL, KEY_CLEAR, KEY_ENTER, KEY_FIELD};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            p.touch(7, Touch::Down, x, y);
+            p.touch(7, Touch::Up, x, y);
+        };
+        let title = |p: &Player| p.ui.get::<PadBar>(BAR).unwrap().title.clone();
+        let sound = |p: &Player| {
+            let pr = p.sample.project(0).unwrap();
+            let id = pr.pad(pad).unwrap().layers[0].region.source;
+            pr.source(id).unwrap().name.clone()
+        };
+        let bar = p.ui.rect_of(BAR).unwrap();
+        let b = p.ui.get::<PadBar>(BAR).unwrap();
+        assert!(b.nameable, "a pad with a sound can be named");
+        let name = b.name_rect(bar);
+        let open = |p: &mut Player| {
+            tap(p, (name.x + 60, name.y + name.h / 2));
+            assert_eq!(p.page(), TEXTPAD_PAGE);
+            p.ui.rect_of(TEXTPAD).unwrap()
+        };
+        let r = open(&mut p);
+        {
+            let t = p.ui.get::<TextPad>(TEXTPAD).unwrap();
+            assert_eq!(t.text(), "Break 92");
+            let asks: Vec<(&str, &str)> = t
+                .asks
+                .iter()
+                .map(|a| (a.label.as_str(), a.value.as_str()))
+                .collect();
+            assert_eq!(asks, [("Pad", "Break 92"), ("Sound", "Break 92")]);
+            assert_eq!(t.asks[0].title, "Name pad A5");
+        }
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Tap the letters, then Enter"));
+        // Cancel: the page comes back and nothing is named.
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        tap(&mut p, TextPad::key_at(r, KEY_CANCEL));
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert_eq!(title(&p), "Pad A5 · Break 92");
+        // " kick" on the pad's name; the sound named Amen on the switch.
+        let r = open(&mut p);
+        let type_in = |p: &mut Player, text: &str| {
+            for c in text.chars() {
+                let k = if c == ' ' {
+                    mpfree_ui::textpad::KEY_SPACE
+                } else {
+                    char_key(c).unwrap().0
+                };
+                tap(p, TextPad::key_at(r, k));
+            }
+        };
+        type_in(&mut p, " kick");
+        let field = p.ui.get::<TextPad>(TEXTPAD).unwrap().fields(r)[1].1;
+        tap(&mut p, (field.x + field.w / 2, field.y + field.h / 2));
+        assert_eq!(
+            p.ui.get::<TextPad>(TEXTPAD).unwrap().field,
+            KEY_FIELD + 1 - KEY_FIELD
+        );
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        type_in(&mut p, "Amen");
+        tap(&mut p, TextPad::key_at(r, KEY_ENTER));
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert_eq!(title(&p), "Pad A5 · Break 92 kick");
+        assert_eq!(sound(&p), "Amen");
+        assert_eq!(p.kits[0].pads[pad].as_deref(), Some("Break 92 kick"));
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Pad A5 named Break 92 kick, its sound Amen"));
+        // One undo step brings both names back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(title(&p), "Pad A5 · Break 92");
+        assert_eq!(sound(&p), "Break 92");
+        assert_eq!(p.kits[0].pads[pad].as_deref(), Some("Break 92"));
+        // A name left empty keeps the keyboard open and says so; the
+        // wheel's push is Enter.
+        open(&mut p);
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        p.apply(ToUi::Rows(crate::app::RowKey::Editing(true)));
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+        assert_eq!(
+            p.ui.get::<TextPad>(TEXTPAD).unwrap().warning,
+            "Pad: type a name, or Cancel to keep Break 92"
+        );
+        // A change of page closes it.
+        p.apply(ToUi::Show(View::Play));
+        assert_ne!(p.page(), TEXTPAD_PAGE);
+        assert_eq!(p.kits[0].pads[pad].as_deref(), Some("Break 92"));
+    }
+
     #[test]
     fn the_sample_page_edits_the_pad_hit_last_and_sends_one_view_at_a_time() {
         use mpfree_sampler_ui::wave_tab::{BAR, QLINKS};
@@ -18359,13 +18581,13 @@ mod tests {
         // octave apart, one layer, short notes onto A1-A4.
         let sent = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let to = sent.clone();
-        p.sample.set_gear(
-            &mut p.ui,
-            Some(sample_page::GearOut {
-                name: "MIDI Out (DIN)".into(),
-                send: Arc::new(move |m: &[u8]| to.lock().unwrap().push(m.to_vec())),
-            }),
-        );
+        p.apply(ToUi::Gear(Some(sample_page::GearOut {
+            name: "MIDI Out (DIN)".into(),
+            send: Arc::new(move |m: &[u8]| to.lock().unwrap().push(m.to_vec())),
+        })));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: auto-sample can play outside gear on MIDI Out (DIN)"));
         step(&mut p, Row::Source, 2);
         assert_eq!(source(&p), "Gear · MIDI ch 2");
         step(&mut p, Row::Every, 9);
@@ -18411,6 +18633,11 @@ mod tests {
         while p.sample.auto_running() {
             assert!(t.elapsed() < Duration::from_secs(60), "it finishes");
             for m in sent.lock().unwrap().drain(..) {
+                if m.is_empty() {
+                    // The end of the job.
+                    midi.push(m);
+                    continue;
+                }
                 assert_eq!(m.len(), 3);
                 assert_eq!(m[0] & 0x0f, 1, "channel 2");
                 match m[0] & 0xf0 {
@@ -18437,12 +18664,17 @@ mod tests {
         // What the job sent after the last look, before it ended: once it
         // has landed, everything it sent is in.
         midi.extend(sent.lock().unwrap().drain(..));
-        assert!(midi.iter().all(|m| m[0] & 0x0f == 1), "channel 2");
-        // Two level tests and four notes, each on and off, then All Notes Off.
-        let ons = midi.iter().filter(|m| m[0] == 0x91).count();
-        let offs = midi.iter().filter(|m| m[0] == 0x81).count();
-        assert_eq!((ons, offs), (6, 6));
-        assert_eq!(midi.last().map(|m| m.as_slice()), Some(&[0xb1, 123, 0][..]));
+        let notes: Vec<&Vec<u8>> = midi.iter().filter(|m| !m.is_empty()).collect();
+        assert!(notes.iter().all(|m| m[0] & 0x0f == 1), "channel 2");
+        // Two level tests and four notes, each on and off; the job's All
+        // Notes Off goes to the MIDI out as the end of the job (no bytes,
+        // which ends the notes it left on: it takes notes only), and the
+        // page says the job is over once it has landed.
+        let ons = notes.iter().filter(|m| m[0] == 0x91).count();
+        let offs = notes.iter().filter(|m| m[0] == 0x81).count();
+        assert_eq!((ons, offs, notes.len()), (6, 6, 12));
+        assert_eq!(midi.len(), 14);
+        assert!(midi[12].is_empty() && midi[13].is_empty(), "{midi:?}");
         let log = events_log(&p);
         assert!(
             log.iter().any(|l| l.starts_with(
@@ -18477,15 +18709,25 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
             p.tick(0.033);
         }
-        let sent = sent.lock().unwrap();
         assert_eq!(
-            sent.iter().map(|m| m.as_slice()).collect::<Vec<_>>(),
-            [&[0x91, 60, 127][..], &[0x81, 60, 64], &[0xb1, 123, 0]],
-            "the first test note, let go"
+            sent.lock()
+                .unwrap()
+                .iter()
+                .map(|m| m.as_slice())
+                .collect::<Vec<_>>(),
+            [&[0x91, 60, 127][..], &[0x81, 60, 64], &[], &[]],
+            "the first test note, let go, and the job's end"
         );
         assert!(events_log(&p)
             .iter()
             .any(|l| l == "sample: auto-sample cancelled, keeping the notes done"));
+        // The MIDI out goes (Send MIDI and CV out turned off): the Source
+        // row keeps the gear, and the bar says there is no MIDI out for it.
+        p.apply(ToUi::Gear(None));
+        assert!(events_log(&p).iter().any(|l| l
+            == "sample: auto-sample can't play outside gear now (no MIDI out open and sending)"));
+        assert_eq!(source(&p), "Gear · MIDI ch 2");
+        assert_eq!(title(&p), "Auto-sample: no MIDI out for the gear");
     }
 
     #[test]
