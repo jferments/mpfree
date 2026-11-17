@@ -652,6 +652,10 @@ const WINDOWS: &[(&str, WindowKind)] = &[
     ("exponential", WindowKind::Exponential),
     ("shape", WindowKind::Shape),
 ];
+const SPRAY_SHAPES: &[(&str, GrainSprayShape)] = &[
+    ("even", GrainSprayShape::Even),
+    ("peaked", GrainSprayShape::Peaked),
+];
 
 fn pads_play_text(p: PadsPlay) -> String {
     match p {
@@ -712,6 +716,9 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         gain,
         sync,
         timing,
+        size_spray,
+        level_spray,
+        spray_shape,
     } = g;
     f.num("position", position);
     f.num("spray", spray);
@@ -742,6 +749,10 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
     f.num("gain", gain);
     // Saves before random timing open at the default (a little random).
     f.num("timing", timing);
+    // Saves before variation open with none (as they played).
+    f.num("size_spray", size_spray);
+    f.num("level_spray", level_spray);
+    f.word("spray_shape", spray_shape, SPRAY_SHAPES);
     let none = TempoSync {
         frames_per_beat: 22_050.0,
         grains_per_beat: None,

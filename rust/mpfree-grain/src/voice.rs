@@ -42,6 +42,25 @@ const START_FADE_SECS: f64 = 0.004;
 /// draws never shift the other parameters' draws (and timing 0 plays
 /// exactly as before it existed).
 const TIMING_SEED: u64 = 0x7A3E_D1CE_0F7E_57A3;
+/// Mixed into the seed of the size and level variation's own random
+/// sequence, for the same reason: with no variation a cloud plays exactly
+/// as before variation existed.
+const VARY_SEED: u64 = 0x5EED_0B1A_C0DE_2611;
+/// A grain varied all the way down in level (`Params::level_spray` 1) is
+/// this many decibels down.
+const LEVEL_SPRAY_DB: f32 = 24.0;
+
+/// How [`Params::spray`] spreads grains around the position.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SprayShape {
+    /// Anywhere in the spray's range, as likely at its edges as at the
+    /// position.
+    #[default]
+    Even,
+    /// Most grains near the position and a few far out (the offset is the
+    /// even draw cubed): a focused cloud with stray grains.
+    Peaked,
+}
 
 /// Locks density and size to the tempo. Grains then start on exact frames
 /// of the transport's timeline, so a synced cloud stays on the grid however
@@ -94,6 +113,18 @@ pub struct Params {
     /// periods). The density on average is the same at any setting.
     /// Synced density keeps its grains on the beat grid and ignores it.
     pub timing: f32,
+    /// How each grain's length varies, 0 to 1: at 1 a grain is anywhere
+    /// from half to twice the size (2^(±1), even in octaves). The cloud
+    /// keeps its density.
+    pub size_spray: f32,
+    /// How each grain's level varies, 0 to 1: at 1 a grain is anywhere from
+    /// its full level to 24 dB down (even in decibels). The cloud as a
+    /// whole keeps its level (see [`GrainVoice::render`], "Level"), so
+    /// variation changes its texture, with some grains standing out.
+    pub level_spray: f32,
+    /// How the position spray spreads grains: evenly, or peaked at the
+    /// position.
+    pub spray_shape: SprayShape,
 }
 
 impl Default for Params {
@@ -113,6 +144,9 @@ impl Default for Params {
             gain: 1.0,
             sync: None,
             timing: 0.3,
+            size_spray: 0.0,
+            level_spray: 0.0,
+            spray_shape: SprayShape::Even,
         }
     }
 }
@@ -229,18 +263,49 @@ fn gap_factor(timing: f32, u: f32) -> f64 {
     f64::from(1.0 + t * (2.0 * u - 1.0))
 }
 
+/// A grain's offset from the position, in −1 to 1 of the spray, for an
+/// even draw `r` in −1 to 1.
+fn spray_draw(shape: SprayShape, r: f32) -> f32 {
+    match shape {
+        SprayShape::Even => r,
+        SprayShape::Peaked => r * r * r,
+    }
+}
+
+/// Decibels as a gain.
+fn db_gain(db: f32) -> f32 {
+    (db * (std::f32::consts::LN_10 / 20.0)).exp()
+}
+
 /// The floor under the level's divisor for an overlap: 1 for a sparse
 /// cloud (each grain keeps its window and its level), [`FLOOR_DENSE`] from
 /// overlap 2 (the cloud is held at its source's level), a line between.
-fn floor_for(overlap: f64) -> f32 {
+/// `rms` is the grains' RMS level ([`level_rms`]): grains varied in level
+/// are quieter on average, so a dense cloud's floor comes down with them,
+/// or it would hold a dense cloud of them under its source's level.
+fn floor_for(overlap: f64, rms: f32) -> f32 {
     let o = overlap as f32;
+    let dense = FLOOR_DENSE * rms;
     if o <= 1.0 {
         1.0
     } else if o >= 2.0 {
-        FLOOR_DENSE
+        dense
     } else {
-        1.0 - (o - 1.0) * (1.0 - FLOOR_DENSE)
+        1.0 - (o - 1.0) * (1.0 - dense)
     }
+}
+
+/// The RMS of grain levels varied evenly in decibels from 0 to
+/// `level_spray` × [`LEVEL_SPRAY_DB`] down: 1 with no variation, 0.42 at
+/// full.
+fn level_rms(level_spray: f32) -> f32 {
+    let d = LEVEL_SPRAY_DB * level_spray.clamp(0.0, 1.0);
+    if d.is_nan() || d < 1e-3 {
+        return 1.0;
+    }
+    // The mean of 10^(-x/10) for x even in 0 to d.
+    let k = d / 10.0 * std::f32::consts::LN_10;
+    ((1.0 - (-k).exp()) / k).sqrt()
 }
 
 /// One-pole coefficient for a time constant.
@@ -272,6 +337,8 @@ pub struct GrainVoice {
     rng: Rng,
     /// The timing's own random sequence (see [`TIMING_SEED`]).
     trng: Rng,
+    /// The size and level variation's own (see [`VARY_SEED`]).
+    vrng: Rng,
     /// The gap to the next free-running grain, in density periods.
     gap: f64,
     /// Set by [`GrainVoice::start`]: the next grain comes with the ones a
@@ -334,6 +401,7 @@ impl GrainVoice {
             active: 0,
             rng: Rng::new(seed),
             trng: Rng::new(seed ^ TIMING_SEED),
+            vrng: Rng::new(seed ^ VARY_SEED),
             gap: 1.0,
             prefill: false,
             fit_size: 2.0,
@@ -397,6 +465,7 @@ impl GrainVoice {
     pub fn reseed(&mut self, seed: u64) {
         self.rng = Rng::new(seed);
         self.trng = Rng::new(seed ^ TIMING_SEED);
+        self.vrng = Rng::new(seed ^ VARY_SEED);
     }
 
     /// Starts making grains, the first at the start of the next render.
@@ -488,6 +557,17 @@ impl GrainVoice {
 
     fn base_offset(&self, len: f64) -> f64 {
         (f64::from(self.params.position.clamp(0.0, 1.0)) * len + self.scan_offset).rem_euclid(len)
+    }
+
+    /// How much longer than the size the varied grains are on average:
+    /// the mean of 2^(s·u) for u even in −1 to 1, which is 1.08 at full
+    /// variation.
+    fn size_spray_mean(&self) -> f64 {
+        let s = f64::from(self.params.size_spray.clamp(0.0, 1.0));
+        if s < 1e-6 {
+            return 1.0;
+        }
+        (s.exp2() - (-s).exp2()) / (2.0 * s * std::f64::consts::LN_2)
     }
 
     fn size_frames(&self) -> f64 {
@@ -601,9 +681,11 @@ impl GrainVoice {
         let scan = f64::from(self.params.scan.clamp(-4.0, 4.0)) * src_ratio;
         // As `spawn` shortens a grain whose read wouldn't fit.
         let speed = f64::from((self.params.pitch.clamp(-48.0, 48.0) / 12.0).exp2()) * src_ratio;
-        self.fit_size = self.size_frames().min((len - 4.0) / speed).max(2.0);
+        self.fit_size = (self.size_frames() * self.size_spray_mean())
+            .min((len - 4.0) / speed)
+            .max(2.0);
         let floor_to = if self.spawning {
-            floor_for(self.overlap())
+            floor_for(self.overlap(), level_rms(self.params.level_spray))
         } else {
             1.0
         };
@@ -709,6 +791,8 @@ impl GrainVoice {
         let m = left.len().min(right.len());
         let gain = self.params.gain;
         let (k, km) = (self.k_coherence, self.k_measure);
+        // Grains varied in level cover less window power.
+        let cover = COVER * level_rms(self.params.level_spray).powi(2);
         let kf = if floor_to < self.floor {
             self.k_floor_down
         } else {
@@ -724,7 +808,7 @@ impl GrainVoice {
                 self.es1 = settle(self.es1 + km * (s1 * s1 - self.es1));
                 self.es2 = settle(self.es2 + km * (s2 - self.es2));
                 // Judged every 8 frames of the voice's own clock.
-                if (self.clock + i as u64) & 7 == 0 && self.es2 > COVER && self.eq > 1e-12 {
+                if (self.clock + i as u64) & 7 == 0 && self.es2 > cover && self.eq > 1e-12 {
                     // What grains fully in step would give; near 1 the
                     // two laws agree anyway.
                     let in_step = self.es1 / self.es2;
@@ -764,6 +848,8 @@ impl GrainVoice {
         let r_pitch = self.rng.bipolar();
         let r_rev = self.rng.unit();
         let r_pan = self.rng.bipolar();
+        let r_size = self.vrng.bipolar();
+        let r_level = self.vrng.unit();
         if self.active >= MAX_GRAINS || budget.live >= budget.limit {
             self.stats.skipped += 1;
             budget.skipped += 1;
@@ -785,6 +871,10 @@ impl GrainVoice {
         let lo = start as f64 + 1.0;
         let hi = end as f64 - 3.0;
         let mut size = self.size_frames();
+        let size_spray = p.size_spray.clamp(0.0, 1.0);
+        if size_spray > 0.0 {
+            size *= f64::from((size_spray * r_size).exp2());
+        }
         if size * speed > hi - lo {
             size = (hi - lo) / speed;
         }
@@ -799,7 +889,9 @@ impl GrainVoice {
         }
         let pos = start as f64
             + (self.base_offset(len) - scan * f64::from(age)
-                + f64::from(p.spray.clamp(0.0, 1.0) * r_spray) * len * 0.5)
+                + f64::from(p.spray.clamp(0.0, 1.0) * spray_draw(p.spray_shape, r_spray))
+                    * len
+                    * 0.5)
                 .rem_euclid(len);
         let pos = if reverse {
             pos.clamp(lo + extent, hi)
@@ -815,14 +907,20 @@ impl GrainVoice {
         let pan = p.spread.clamp(0.0, 1.0) * lean;
         let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         // The cloud's level is set as the grains add up (`level`), so each
-        // grain plays at full level here.
+        // grain plays at full level here, or its varied level.
+        let level_spray = p.level_spray.clamp(0.0, 1.0);
+        let lvl = if level_spray > 0.0 {
+            db_gain(-LEVEL_SPRAY_DB * level_spray * r_level)
+        } else {
+            1.0
+        };
         self.grains[self.active] = Grain {
             pos: pos + inc * f64::from(age),
             inc,
             age,
             len: size as u32,
             dphase: 1.0 / (size as f32 - 1.0),
-            lvl: 1.0,
+            lvl,
             pl: angle.cos() * std::f32::consts::SQRT_2,
             pr: angle.sin() * std::f32::consts::SQRT_2,
             aim: src.aim(speed),

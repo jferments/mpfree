@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-pub use mpfree_grain::{Params as GrainParams, TempoSync, Window as GrainWindow};
+pub use mpfree_grain::{
+    Params as GrainParams, SprayShape as GrainSprayShape, TempoSync, Window as GrainWindow,
+};
 
 use crate::dsp::{as_i16, Sample};
 pub use crate::dsp::{Ahdsr, Filter, FilterKind};

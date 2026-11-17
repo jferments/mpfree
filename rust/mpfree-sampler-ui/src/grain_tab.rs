@@ -33,7 +33,8 @@ use std::sync::Arc;
 
 use mpfree_sampler::engine::GrainView;
 use mpfree_sampler::model::{
-    GrainParams, GrainWindow, ModelError, Pad, PlayMode, Project, Region, Source, TempoSync,
+    GrainParams, GrainSprayShape, GrainWindow, ModelError, Pad, PlayMode, Project, Region, Source,
+    TempoSync,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -150,7 +151,10 @@ pub enum Row {
     Mode,
     Scan,
     Spray,
+    SprayShape,
+    SizeSpray,
     PitchSpray,
+    LevelSpray,
     Timing,
     Shape,
     Reverse,
@@ -165,11 +169,14 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 15] = [
+    pub const ALL: [Row; 18] = [
         Row::Mode,
         Row::Scan,
         Row::Spray,
+        Row::SprayShape,
+        Row::SizeSpray,
         Row::PitchSpray,
+        Row::LevelSpray,
         Row::Timing,
         Row::Shape,
         Row::Reverse,
@@ -188,7 +195,10 @@ impl Row {
             Row::Mode => "Mode",
             Row::Scan => "Scan speed",
             Row::Spray => "Spray",
+            Row::SprayShape => "Spray shape",
+            Row::SizeSpray => "Size spray",
             Row::PitchSpray => "Pitch spray",
+            Row::LevelSpray => "Level spray",
             Row::Timing => "Timing",
             Row::Shape => "Shape",
             Row::Reverse => "Reverse chance",
@@ -680,9 +690,18 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
         }
         Row::Scan => g.scan = step_list(&SCANS, g.scan, delta),
         Row::Spray => g.spray = round_to(g.spray + d * 0.05, 0.01).clamp(0.0, 1.0),
+        Row::SprayShape => {
+            let i = SPRAY_SHAPES
+                .iter()
+                .position(|s| s.1 == g.spray_shape)
+                .unwrap_or(0);
+            g.spray_shape = SPRAY_SHAPES[shift(i, delta, SPRAY_SHAPES.len())].1;
+        }
+        Row::SizeSpray => g.size_spray = round_to(g.size_spray + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::PitchSpray => {
             g.pitch_spray = round_to(g.pitch_spray + d * 0.5, 0.1).clamp(0.0, PITCH_SPRAY_LIMIT)
         }
+        Row::LevelSpray => g.level_spray = round_to(g.level_spray + d * 0.05, 0.01).clamp(0.0, 1.0),
         // From any window (a project's older ones too), 5 % a step.
         Row::Shape => {
             g.window = GrainWindow::Shape {
@@ -875,6 +894,12 @@ fn per_beat_text(g: f32) -> String {
     format!("{} /beat", trim(g))
 }
 
+/// How Spray spreads grains: the row's words.
+const SPRAY_SHAPES: [(&str, GrainSprayShape); 2] = [
+    ("Even", GrainSprayShape::Even),
+    ("Peaked", GrainSprayShape::Peaked),
+];
+
 fn shift(i: usize, delta: i32, len: usize) -> usize {
     (i as i32 + delta).clamp(0, len as i32 - 1) as usize
 }
@@ -916,7 +941,14 @@ pub fn value_text(r: &Region, row: Row) -> String {
         Row::Mode => mode_label(r.mode).into(),
         Row::Scan => scan_text(g.scan),
         Row::Spray => format!("{} %", percent(g.spray)),
+        Row::SprayShape => SPRAY_SHAPES
+            .iter()
+            .find(|s| s.1 == g.spray_shape)
+            .map_or("Even", |s| s.0)
+            .into(),
+        Row::SizeSpray => format!("{} %", percent(g.size_spray)),
         Row::PitchSpray => format!("±{:.1} st", g.pitch_spray),
+        Row::LevelSpray => format!("{} %", percent(g.level_spray)),
         Row::Timing => timing_text(g.timing),
         Row::Shape => window_label(g.window),
         Row::Reverse => format!("{} %", percent(g.reverse)),

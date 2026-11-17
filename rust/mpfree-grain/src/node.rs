@@ -21,7 +21,7 @@
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit};
 
 use crate::fx::GrainFx;
-use crate::voice::{Budget, Params};
+use crate::voice::{Budget, Params, SprayShape};
 use crate::window::Window;
 
 /// Parameter ids, stable for project files and automation.
@@ -44,7 +44,16 @@ pub mod param {
     /// The grains' shape, per cent: square (0) to Hann (60) to a swell
     /// (80) and a pluck (100), as `Window::Shape`.
     pub const SHAPE: u16 = 12;
+    /// How each grain's length varies, per cent (100: half to twice).
+    pub const SIZE_SPRAY: u16 = 13;
+    /// How each grain's level varies, per cent (100: down to 24 dB less).
+    pub const LEVEL_SPRAY: u16 = 14;
+    /// Spray peaked at the position (on) or even across its range (off).
+    pub const PEAKED: u16 = 15;
 }
+
+/// Parameters, counting the meter's id.
+const COUNT: usize = 16;
 
 #[allow(clippy::too_many_arguments)]
 const fn p(
@@ -70,7 +79,7 @@ const fn p(
     }
 }
 
-static PARAMS: [ParamInfo; 13] = [
+static PARAMS: [ParamInfo; COUNT] = [
     p(
         param::MIX,
         "Mix",
@@ -112,6 +121,16 @@ static PARAMS: [ParamInfo; 13] = [
         Curve::Linear,
     ),
     p(
+        param::PEAKED,
+        "Peaked spray",
+        "Grains",
+        0.0,
+        1.0,
+        0.0,
+        Unit::None,
+        Curve::Toggle,
+    ),
+    p(
         param::TIMING,
         "Timing",
         "Grains",
@@ -140,6 +159,26 @@ static PARAMS: [ParamInfo; 13] = [
         120.0,
         Unit::Ms,
         Curve::Log,
+    ),
+    p(
+        param::SIZE_SPRAY,
+        "Size spray",
+        "Grains",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    p(
+        param::LEVEL_SPRAY,
+        "Level spray",
+        "Grains",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Curve::Linear,
     ),
     p(
         param::DENSITY,
@@ -216,7 +255,7 @@ pub struct GrainNode {
     fx: Option<GrainFx>,
     budget: Budget,
     /// Every parameter's value, by id (the meter's slot is unused).
-    values: [f32; 13],
+    values: [f32; COUNT],
     rate: u32,
     seed: u64,
 }
@@ -230,7 +269,7 @@ impl GrainNode {
     /// A node with the default settings. `seed` sets its random sequence,
     /// so the same input renders the same.
     pub fn new(seed: u64) -> GrainNode {
-        let mut values = [0.0; 13];
+        let mut values = [0.0; COUNT];
         for p in &PARAMS {
             values[usize::from(p.id)] = p.default;
         }
@@ -260,6 +299,13 @@ impl GrainNode {
             reverse: v[usize::from(param::REVERSE)] / 100.0,
             spread: v[usize::from(param::SPREAD)] / 100.0,
             timing: v[usize::from(param::TIMING)] / 100.0,
+            size_spray: v[usize::from(param::SIZE_SPRAY)] / 100.0,
+            level_spray: v[usize::from(param::LEVEL_SPRAY)] / 100.0,
+            spray_shape: if v[usize::from(param::PEAKED)] >= 0.5 {
+                SprayShape::Peaked
+            } else {
+                SprayShape::Even
+            },
             // 60 % is Hann, kept as such so the default plays as it did.
             window: match v[usize::from(param::SHAPE)] {
                 60.0 => Window::Hann,

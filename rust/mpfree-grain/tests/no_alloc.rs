@@ -115,6 +115,13 @@ fn grains_never_allocate() {
                         size_beats: Some(0.125),
                     }),
                     timing: (k % 3) as f32 * 0.5,
+                    size_spray: (k % 3) as f32 * 0.5,
+                    level_spray: (k % 2) as f32,
+                    spray_shape: if k.is_multiple_of(2) {
+                        SprayShape::Peaked
+                    } else {
+                        SprayShape::Even
+                    },
                 });
                 if k % 4 == 3 {
                     v.stop()

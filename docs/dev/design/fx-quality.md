@@ -635,6 +635,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md); decision 11.1): the Limi
 |---|---|---|---|
 | G1 | `level[pink]/range_lu`, `level[pad]/range_lu` | 3 LU | Loudness against the source's at 40, 80 and 400 ms grains overlapping 2, 4 and 16 times, sprayed (0.3), scanning (1) and both: largest less smallest. The quietest and loudest are shown, not kept |
 | G1 | `level[..., defaults]/offset_lu` | within 1 LU | The defaults against the source |
+| G1 | `vary[...]/level_change_lu` | within 1 LU | Full size spray, full level spray and peaked spray, each against the same cloud without it (40 a second, spray 0.3), on pink and the pad (step B1) |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
 | G3 | `smooth[defaults, 1 kHz]/sideband_db` | -40 dB | The first grain-rate sideband (1 kHz ± the density, ±3 Hz) of a held sine against the tone, from a 65536-point transform (0.7 Hz bins). Until step A3 it used 8192 points, whose window's main lobe (±21.5 Hz) let the tone itself into the band: the -16.4 and -20.9 dB there were mostly the tone. `flutter_db`, the held sine's 10 ms level against its mean, is shown, not kept |
@@ -713,6 +714,13 @@ The window is one control from square to pluck (the plan's decision 2): square a
 
 - **G3 met at every named point, at overlap 2:** square ripples 0.005 dB (modulation -83.3 dB), triangle 0.007 dB (-81.2), swell 0.004 dB (-86.0), pluck 0.16 dB (-71.4). The pluck ripples most because its fast attack leaves the least overlap to even out; the level law keeps it well inside the target.
 - **Unchanged:** every other row (the default stays `Window::Hann`, so every cloud at 60 % plays as before, bit for bit).
+
+### Step B1: variation on every dimension (2026-11-17)
+
+Each way grains differ has its own amount: Spray (with Spray shape, Even or Peaked), Size spray, Pitch spray, Level spray, Spread, Reverse and Timing ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Variation). New rows (G1, `vary[...]`): each new variation at full against the same cloud without it (40 a second, spray 0.3), on pink and the pad.
+
+- **G1 met:** full size spray -0.05 LU on pink and +0.14 on the pad, full level spray -0.08 and -0.01, peaked spray +0.11 and -0.25. Level spray first measured -1.1 LU on pink: the level law's floor (0.3 from overlap 2) held a cloud of quieter grains under its level, so the floor's dense end now comes down with the grains' RMS level.
+- **Unchanged:** every other row, bit for bit (with no variation nothing moves: size and level draw from a sequence of their own).
 
 ## Round 5: movement, pitch and voice
 

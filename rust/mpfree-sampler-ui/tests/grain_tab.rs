@@ -120,7 +120,10 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         (Row::Mode, "Granular"),
         (Row::Scan, "0.25×"),
         (Row::Spray, "16 %"),
+        (Row::SprayShape, "Even"),
+        (Row::SizeSpray, "0 %"),
         (Row::PitchSpray, "±0.5 st"),
+        (Row::LevelSpray, "0 %"),
         (Row::Shape, "Tukey 0.5"),
         (Row::Reverse, "15 %"),
         (Row::Spread, "70 %"),
@@ -300,6 +303,12 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Scan, 1, "0.5×"),
         (Row::Scan, -3, "Frozen"),
         (Row::PitchSpray, 2, "±1.5 st"),
+        (Row::SprayShape, 1, "Peaked"),
+        (Row::SprayShape, -1, "Even"),
+        (Row::SizeSpray, 3, "15 %"),
+        (Row::SizeSpray, 30, "100 %"),
+        (Row::LevelSpray, 10, "50 %"),
+        (Row::LevelSpray, -11, "0 %"),
         // From the old Tukey window (as a trapezoid, 20 %) onto the knob.
         (Row::Shape, 1, "25 % · Trapezoid"),
         (Row::Shape, -9, "0 % · Square"),
@@ -323,6 +332,10 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     assert!(
         step(&mut s, Row::Density, 1).is_none(),
         "200 grains a second is the most"
+    );
+    assert!(
+        step(&mut s, Row::SprayShape, -1).is_none(),
+        "Even is the first"
     );
     assert_eq!(
         s.project.pad(PAD).unwrap().layers[0].region.grain.window,
