@@ -19,7 +19,8 @@
 //!   markers' count);
 //! - the buttons along the bottom: `Tab(k)` for [`SONG_BUTTONS`]`[k]`, or
 //!   for [`AUDIO_BUTTONS`]`[k]` while an audio region is picked;
-//! - Rec song, at the right of the title line: `Tab(REC)`;
+//! - Rec song, at the right of the title line: `Tab(REC)`; List, left of
+//!   it (the song list, Arrange's third view): `Tab(LIST)`;
 //! - an audio region: `Cell { row: audio track, col: region index }` as
 //!   the finger goes down; dragged sideways and let go, `Marker { index:
 //!   audio track * REGION_SLOTS + region index, frame: its new start in
@@ -132,6 +133,10 @@ pub fn input_chip(i: Input) -> &'static str {
 /// What Tab reports for "+ Track" (after the MIDI lanes): well clear of
 /// the panel's, so a step past the panel's last is still nothing.
 pub const ADD_TRACK: usize = 0x100;
+/// What Tab reports for List, left of Rec song: the song list.
+pub const LIST: usize = 0x310;
+/// The List button's width.
+const LIST_W: i32 = 64;
 /// A region drag's `Marker` index is the audio track times this, plus
 /// the region's index (`mpfree_audiotracks::MAX_REGIONS`).
 pub const REGION_SLOTS: usize = mpfree_audiotracks::MAX_REGIONS;
@@ -752,6 +757,12 @@ impl SongLanes {
     pub fn rec_rect(&self, r: Rect) -> Rect {
         let head = r.inset(14).take_top(26).0;
         Rect::new(head.right() - REC_SONG_W, head.y - 4, REC_SONG_W, 30)
+    }
+
+    /// Where List is: left of Rec song.
+    pub fn list_rect(&self, r: Rect) -> Rect {
+        let rec = self.rec_rect(r);
+        Rect::new(rec.x - 8 - LIST_W, rec.y, LIST_W, rec.h)
     }
 
     /// The buttons along the bottom (the audio region's while one is
@@ -1496,16 +1507,26 @@ impl Widget for SongLanes {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, "");
-        // The legend, then Rec song.
+        // The legend, then List and Rec song.
         let rec = self.rec_rect(r);
+        let list = self.list_rect(r);
         let head = r.inset(14).take_top(26).0;
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, rec.x - head.x - 12, head.h),
+            Rect::new(head.x, head.y, list.x - head.x - 12, head.h),
             Align::Right,
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
+        );
+        cx.canvas.fill_round_rect(list, 10, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            list,
+            Align::Center,
+            t.text,
+            "List",
         );
         rec_song_pill(cx, rec, self.rec);
         let g = self.geo(r);
@@ -1817,6 +1838,7 @@ impl Widget for SongLanes {
             })
             .collect();
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
+        out.push(Target::tap("list", 0, "List", self.list_rect(r)));
         if let Some(b) = self.add_track_rect(r) {
             out.push(Target::tap("add-track", 0, "+ Track", b));
         }
@@ -2021,6 +2043,9 @@ impl Widget for SongLanes {
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Tab(REC));
         }
+        if self.list_rect(r).contains(x, y) {
+            return Some(EventKind::Tab(LIST));
+        }
         if self.add_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(ADD_AUDIO));
         }
@@ -2171,6 +2196,12 @@ mod tests {
         assert_eq!(
             s.touch(1, Touch::Down, rec.x + 3, rec.y + 3, r),
             Some(EventKind::Tab(REC))
+        );
+        let list = s.list_rect(r);
+        assert!(list.right() < rec.x, "{list:?}");
+        assert_eq!(
+            s.touch(1, Touch::Down, list.x + 3, list.y + 3, r),
+            Some(EventKind::Tab(LIST))
         );
     }
 
