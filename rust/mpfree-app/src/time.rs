@@ -2694,6 +2694,74 @@ mod tests {
         assert_eq!(h.control.project.check(), Ok(()));
     }
 
+    /// Song mode (loop-tracks.md part 5): a Loop track's blocks turn their
+    /// loops on and off on their own ticks, as its clips' blocks play;
+    /// a cell launched on the track takes it from the song.
+    #[test]
+    fn the_songs_loop_blocks_turn_their_loops_on_their_ticks() {
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::LOOPS;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut t = Track::new_loops("Loops A", 8);
+        t.slots[0] = Some(Clip::new_loop(0, 3840));
+        t.slots[1] = Some(Clip::new_loop(1, 3840));
+        h.control.project.tracks.push(t);
+        // Loop 1 over bars 2 and 3, loop 2 over bar 4.
+        h.control.project.arrangement.placements = vec![
+            Placement::linked(8, 0, 3840, 7680),
+            Placement::linked(8, 1, 11520, 3840),
+        ];
+        h.act(TimeAction::SongMode(true)).unwrap();
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        assert_eq!(&h.loop_plan().on[..3], &[false, false, true]);
+        h.command(Command::Play);
+        let mut said = Vec::new();
+        while pads.frame < 5 * BAR + 4 * u64::from(PERIOD) {
+            let to = pads.frame + u64::from(PERIOD);
+            run(&mut h, &mut pads, to, &[]);
+            let p = h.loop_plan();
+            if p.at[0].is_some() || p.at[1].is_some() {
+                said.push((p.on[0], p.on[1], p.at[0], p.at[1]));
+            }
+        }
+        assert_eq!(
+            said,
+            [
+                (true, false, Some(3840), None),
+                (false, true, Some(11520), Some(11520)),
+                (false, false, None, Some(15360)),
+            ]
+        );
+        // A cell launched on the track: the song leaves it.
+        h.command(Command::Stop);
+        h.command(Command::Locate(3840 + 100));
+        let to = pads.frame + u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert!(h.loop_plan().on[0], "stopped inside loop 1's block");
+        h.act(TimeAction::Launch { track: 8, slot: 1 }).unwrap();
+        let to = pads.frame + u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(&h.loop_plan().on[..2], &[false, true]);
+        // Song mode off: only the launch.
+        h.act(TimeAction::StopAll).unwrap();
+        h.act(TimeAction::SongMode(false)).unwrap();
+        let to = pads.frame + u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(&h.loop_plan().on[..2], &[false, false]);
+        assert!(h.loop_plan().on[2..LOOPS].iter().all(|&on| on));
+        // A loop's block stays on its lane, and says so.
+        let off = h.act(TimeAction::MovePlacement {
+            index: 0,
+            track: 0,
+            start: 0,
+            copy: false,
+        });
+        assert!(off.unwrap_err().contains("stays on its own lane"));
+        assert_eq!(h.control.project.arrangement.placements[0].track, 8);
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// SHIFT + "+ Track" adds an empty Loop track (UNDO takes it away), its
     /// sound line steps its input, and a tap on an empty cell of it arms
     /// that cell: the next loop recorded lands there, playing, and the

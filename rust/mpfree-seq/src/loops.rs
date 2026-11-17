@@ -105,6 +105,54 @@ pub fn playing(p: &Project, launched: impl Iterator<Item = (usize, usize)>) -> [
     std::array::from_fn(|n| on & bit(n as u8) != 0)
 }
 
+/// What song mode plays of the loops (loop-tracks.md part 5): the blocks
+/// on Loop tracks the song plays (`free(t)`: no clip launched there and
+/// not muted, as for a track's notes). Over `spans`, the period's tick
+/// ranges in order (an empty range: the transport stopped there), each
+/// loop is on if a block of it covers the song once the period is over,
+/// and `at` is the tick in the period a block of it starts or ends on, if
+/// one does, so the looper turns it there. Allocates nothing.
+pub fn song_plan(
+    p: &Project,
+    spans: impl Iterator<Item = std::ops::Range<Tick>> + Clone,
+    free: impl Fn(usize) -> bool,
+) -> LoopPlan {
+    let mut plan = LoopPlan::default();
+    let Some(last) = spans.clone().last() else {
+        return plan;
+    };
+    let now = last.end;
+    let rolling = !last.is_empty();
+    for b in &p.arrangement.placements {
+        let Some(n) = b.clip(&p.tracks).and_then(|c| c.looped) else {
+            continue;
+        };
+        let Some(i) = Some(usize::from(n)).filter(|&i| i < LOOPS) else {
+            continue;
+        };
+        if !p.tracks.get(b.track).is_some_and(Track::is_loops) || !free(b.track) {
+            continue;
+        }
+        // Rolling, the period played up to `now`: a block ending there is
+        // still on (its end is the next period's to turn). Stopped at
+        // `now`, the block that starts there plays when PLAY does.
+        let covers = if rolling {
+            b.start < now && now <= b.end()
+        } else {
+            b.start <= now && now < b.end()
+        };
+        plan.on[i] |= covers;
+        for r in spans.clone() {
+            if r.contains(&b.start) {
+                plan.at[i] = Some(b.start);
+            } else if r.contains(&b.end()) && plan.at[i].is_none() {
+                plan.at[i] = Some(b.end());
+            }
+        }
+    }
+    plan
+}
+
 /// Loop `n`'s cells take its new length. How many changed.
 pub fn set_length(p: &mut Project, n: u8, ticks: Tick) -> usize {
     let len = length(ticks);
@@ -196,6 +244,49 @@ mod tests {
             p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
         }
         p
+    }
+
+    /// Song mode: a Loop track's blocks turn their loops on for their
+    /// length, on their own ticks; a launch on the track, or its mute,
+    /// keeps the song off it (loop-tracks.md part 5).
+    #[test]
+    fn the_songs_blocks_turn_their_loops_on_and_off_on_their_ticks() {
+        use crate::arrange::Placement;
+        let mut p = project();
+        let mut a = Track::new_loops("Loops A", 2);
+        a.slots[0] = Some(Clip::new_loop(0, 2 * BAR));
+        a.slots[1] = Some(Clip::new_loop(1, BAR));
+        p.tracks.push(a);
+        // Loop 1 from bar 2 for two bars, then loop 2 for a bar.
+        p.arrangement.placements = vec![
+            Placement::linked(2, 0, BAR, 2 * BAR),
+            Placement::linked(2, 1, 3 * BAR, BAR),
+        ];
+        let free = |_| true;
+        let at = |from: Tick, to: Tick| song_plan(&p, std::iter::once(from..to), free);
+        // Bar 1: nothing yet.
+        assert_eq!(at(0, 100), LoopPlan::default());
+        // The period over bar 2's line: loop 1 on, from that tick.
+        let on = at(BAR - 50, BAR + 50);
+        assert_eq!((on.on[0], on.at[0]), (true, Some(BAR)));
+        // Inside the block: on, with no tick to turn on.
+        let mid = at(2 * BAR, 2 * BAR + 100);
+        assert_eq!((mid.on[0], mid.at[0], mid.on[1]), (true, None, false));
+        // A period ending on the block's end: still on, its end the next
+        // period's.
+        assert!(at(3 * BAR - 100, 3 * BAR).on[0]);
+        // Over bar 4's line: loop 1 off and loop 2 on, both from it.
+        let swap = at(3 * BAR - 50, 3 * BAR + 50);
+        assert_eq!((swap.on[0], swap.at[0]), (false, Some(3 * BAR)));
+        assert_eq!((swap.on[1], swap.at[1]), (true, Some(3 * BAR)));
+        // Stopped at bar 2's line: the block there plays when PLAY does.
+        assert!(at(BAR, BAR).on[0]);
+        assert!(!at(3 * BAR, 3 * BAR).on[0]);
+        // Two spans (a jump back to bar 1): the last one says what plays.
+        let jumped = song_plan(&p, [2 * BAR..2 * BAR + 50, 0..50].into_iter(), free);
+        assert!(!jumped.on[0]);
+        // A launch on the track (or its mute) keeps the song off it.
+        assert!(!song_plan(&p, std::iter::once(2 * BAR..2 * BAR + 9), |t| t != 2).on[0]);
     }
 
     #[test]

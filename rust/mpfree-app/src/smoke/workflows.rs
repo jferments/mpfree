@@ -2595,4 +2595,104 @@ mod tests {
             assert_eq!(s.time.project().check(), Ok(()));
         });
     }
+
+    /// Loop tracks part 5 (loop-tracks.md): Rec song keeps a loop's launch
+    /// and stop on Loops A as a block, and song mode plays it: the loop on
+    /// from the block's start and off on its end's bar line.
+    #[test]
+    fn rec_song_keeps_a_loops_launches_and_song_mode_plays_them() {
+        use crate::gui::FromUi;
+        use mpfree_looper::Phase;
+        use mpfree_time_ui::TimeAction;
+        fn until(s: &mut Session, n: usize, phase: Phase) {
+            let end = s.t() + 6.0;
+            while s.looper.loop_status(n).map(|l| l.phase) != Some(phase) && s.t() < end {
+                s.run_periods(4);
+            }
+            assert_eq!(s.looper.loop_status(n).map(|l| l.phase), Some(phase));
+        }
+        /// The first line from `from` on starting with `prefix`, running
+        /// the session up to `seconds` for it.
+        fn line(s: &mut Session, from: usize, prefix: &str, seconds: f64) -> String {
+            let end = s.t() + seconds;
+            loop {
+                if let Some(l) = s.lines[from..].iter().find(|l| l.starts_with(prefix)) {
+                    return l.clone();
+                }
+                assert!(
+                    s.t() < end,
+                    "no line like {prefix:?}: {:?}",
+                    &s.lines[s.lines.len().saturating_sub(12)..]
+                );
+                s.run_periods(4);
+            }
+        }
+        /// The bar of a "looper: loop 1 on from bar 5" line.
+        fn bar(l: &str) -> u32 {
+            l.rsplit(' ').next().and_then(|b| b.parse().ok()).expect(l)
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("play-transport", "view", "Loop").settle();
+            s.button("REC").button("PLAY");
+            until(&mut s, 0, Phase::Recording);
+            s.pad(0, 120, 0.3);
+            s.run_for(1.7);
+            s.button("REC");
+            until(&mut s, 0, Phase::Playing);
+            s.button("STOP").run_for(0.2);
+
+            // Rec song, from bar 1: the loop plays, Stop all stops it on a
+            // bar line, and STOP keeps it as a block on Loops A.
+            s.route(FromUi::Time(TimeAction::Transport(
+                mpfree_transport::Command::Locate(0),
+            )));
+            s.route(FromUi::Time(TimeAction::RecSong(true)));
+            s.button("PLAY");
+            s.run_for(3.0);
+            let from = s.lines.len();
+            s.route(FromUi::Time(TimeAction::StopAll));
+            let off = line(&mut s, from, "looper: loop 1 off from bar ", 3.0);
+            s.run_for(0.5);
+            let from = s.lines.len();
+            s.button("STOP");
+            line(&mut s, from, "time: rec song", 1.0);
+            let p = s.time.project();
+            let blocks: Vec<_> = p
+                .arrangement
+                .placements
+                .iter()
+                .filter(|b| b.track == 8)
+                .map(|b| (b.start, b.end()))
+                .collect();
+            let bar_ticks = 3840;
+            assert_eq!(
+                blocks,
+                [(0, i64::from(bar(&off) - 1) * bar_ticks)],
+                "{:?}",
+                p.arrangement.placements
+            );
+
+            // Song mode: the block plays the loop from bar 1 and stops it
+            // on its end's bar line.
+            s.route(FromUi::Time(TimeAction::SongMode(true)));
+            s.route(FromUi::Time(TimeAction::Transport(
+                mpfree_transport::Command::Locate(0),
+            )));
+            s.run_periods(4);
+            let from = s.lines.len();
+            s.button("PLAY");
+            let again = line(&mut s, from, "looper: loop 1 off from bar ", 8.0);
+            assert_eq!(bar(&again), bar(&off), "{again}");
+            assert!(
+                s.lines[from..]
+                    .iter()
+                    .all(|l| !l.starts_with("looper: loop 1 on from")),
+                "on from the start, at once: {:?}",
+                &s.lines[from..]
+            );
+            s.button("STOP");
+        });
+    }
 }

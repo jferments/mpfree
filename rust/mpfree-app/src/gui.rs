@@ -10549,6 +10549,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-takes sample: {e}"),
     }
+    // The Song view with Loop tracks (loop-tracks.md part 5): the rows of
+    // clips-loops' grid made into a song, song mode on, so the Loop
+    // tracks' lanes hold their loops' blocks.
+    match mpfree_time_ui::sample::song_loops_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-loops", p));
+        }
+        Err(e) => eprintln!("arrange-song-loops sample: {e}"),
+    }
     // The Song view of the 24-track project, scrolled down to the last
     // tracks and "+ Track".
     match mpfree_time_ui::sample::big_song_state() {
