@@ -426,6 +426,27 @@ pub(super) fn limiter(r: &mut Report) {
         );
     }
 
+    // P3's price: the loudness the programme keeps when pushed 6 dB into
+    // the ceiling (the push less what the limiting takes back), so the
+    // hold's and the release's cost in punch is seen.
+    for (s, push) in [
+        (&lim, li::GAIN),
+        (&tp, li::GAIN),
+        (&fixed, li::GAIN),
+        (&safe, mi::TRIM),
+    ] {
+        let mut d = make_with(s, rate, &[(push, 6.0)]);
+        r.put(
+            "P3",
+            &s.name,
+            "programme_lu_change_6db_push",
+            Some(lu_change(&mut d, &programme(rate, 5.0))),
+            Better::Info,
+            None,
+            0.0,
+        );
+    }
+
     // P4: Auto release comes back slower after a long push than a short
     // one; P5: with it off (and in Master safety) the release means its
     // label.
