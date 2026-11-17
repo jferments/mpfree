@@ -9,7 +9,7 @@
 //!
 //! - A **page** is a layout spec in `mpfree-ui`'s syntax over its sections'
 //!   keys (`row(reverb:520, col(tone:252, row(movement, output)))`) in the
-//!   844 by 540 pixels between the header and the Modulate row. Most
+//!   884 by 540 pixels between the header and the Modulate row. Most
 //!   effects have one page; one with stages it switches (the Channel
 //!   strip) has a Main page and a page for each stage; Perform FX has its
 //!   play controls and two pages of slots.
@@ -1145,7 +1145,10 @@ pub static PLANS: &[Plan] = &[
                         &["Delay", "Feedback", "Width"],
                     )
                 },
-                s("output", "Output", Voice, &["Mix"]),
+                Section {
+                    rows: &["Through zero"],
+                    ..s("output", "Output", Voice, &["Mix", "Through zero"])
+                },
             ],
         )],
         dims: &[sync_dim(&["Rate"], "Sync")],

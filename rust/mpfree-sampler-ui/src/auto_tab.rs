@@ -54,7 +54,7 @@ pub const WHEEL: &str = "smp-auto-wheel";
 /// Rec tab's.
 pub const LAYOUT: &str = "col(header:60, row(smp-auto-bar:*, smp-send:330):60, \
                           row(col(row(smp-auto-view:*, smp-auto-list:340):*, \
-                          row(smp-auto-buttons:*, smp-auto-wheel:340):88):*, smp-auto-qlinks:168):*, hint:26)";
+                          row(smp-auto-buttons:*, smp-auto-wheel:340):88):*, smp-auto-qlinks:128):*, hint:26)";
 
 /// The hint line the app shows under the page.
 pub const HINT: &str =

@@ -2,10 +2,11 @@
 //! (layout spec, "A new Play page"), beside the MPC's four Q-Link knobs.
 //!
 //! [`QLinkColumn`] shows what each knob does on the page shown: four cards,
-//! knob 1 at the top, each with its number, where its target lives ("DRUMS",
-//! "PAD 1 · KICK", a macro's name), the target's name, a ring of dots lit as
-//! far as the value goes, and the value. A card whose knob is touched is
-//! outlined. The card shape is the one the mixer (`mpfree_mixer_ui::qlinks`)
+//! knob 1 at the top, each with its number and the target's name centred
+//! over a ring of dots lit as far as the value goes, and the value in the
+//! ring ([`card_head`]). A card whose knob is touched is outlined. Where the
+//! target lives ("DRUMS", "PAD 1 · KICK") is not drawn, so the column stays
+//! narrow and the page beside it wide (Jay, 17 Nov: the same on every page). The card shape is the one the mixer (`mpfree_mixer_ui::qlinks`)
 //! and the mod thread's bindings (`mpfree_mod`) fill in, so every page draws
 //! its knobs the same way.
 //!
@@ -24,8 +25,9 @@ use crate::geom::Rect;
 use crate::text::{Align, FontId};
 use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 
-/// The column's width on the Play page, in pixels.
-pub const COLUMN_WIDTH: i32 = 168;
+/// The column's width on every page that has it, in pixels (168 until
+/// Jay's 17 Nov ask to give the page beside it the room).
+pub const COLUMN_WIDTH: i32 = 128;
 /// The master bar's width on the Play page, in pixels.
 pub const MASTER_WIDTH: i32 = 66;
 /// Pixels of drag per detent of a card's knob.
@@ -41,8 +43,9 @@ pub struct QLinkCard {
     /// The target's name: "Swing", "Tune", "Wash". Empty when the knob has
     /// nothing to move on this page.
     pub name: String,
-    /// Where the target lives, in capitals on the card: "DRUMS",
-    /// "PAD 1 · KICK", "LOOPER", "MACRO 2".
+    /// Where the target lives: "DRUMS", "PAD 1 · KICK", "LOOPER",
+    /// "MACRO 2". Not drawn on the card (the number and the name are, over
+    /// the knob); kept for the pages' logs and tests.
     pub scope: String,
     /// The value as the target writes it: "56 %", "-2 st", "8.2 kHz".
     pub value: String,
@@ -91,6 +94,48 @@ impl Default for QLinkColumn {
 /// Space between the cards.
 const CARD_GAP: i32 = 10;
 
+/// The space inside a card around its number, name and ring.
+pub fn card_inner(card: Rect) -> Rect {
+    card.inset_xy(10, 10)
+}
+
+/// A card's head, centred over its knob: the knob's number ("Q1") in
+/// `number`'s colour, then the target's name under it in `ink` (a size
+/// smaller when it is long, then cut with "…"). Returns the room left for
+/// the ring. The Sample tabs' knob cards draw the same head.
+pub fn card_head(
+    cx: &mut PaintCx,
+    inner: Rect,
+    knob: usize,
+    name: &str,
+    number: Color,
+    ink: Color,
+) -> Rect {
+    let (top, rest) = inner.take_top(18);
+    cx.text(
+        FontId::Bold,
+        13.0,
+        top,
+        Align::Center,
+        number,
+        &format!("Q{}", knob + 1),
+    );
+    let (line, rest) = rest.take_top(24);
+    let px = fitting(cx, name, line.w);
+    cx.text(FontId::Bold, px, line, Align::Center, ink, name);
+    rest
+}
+
+/// The size for a card's name or value in `w` pixels: 16 px, or 13 when
+/// it would not fit ("Loop start", "12 of 15").
+pub fn fitting(cx: &mut PaintCx, s: &str, w: i32) -> f32 {
+    if cx.measure(FontId::Bold, 16.0, s) > w {
+        13.0
+    } else {
+        16.0
+    }
+}
+
 impl QLinkColumn {
     pub fn new() -> QLinkColumn {
         QLinkColumn {
@@ -133,14 +178,14 @@ impl Widget for QLinkColumn {
             if on {
                 cx.canvas.stroke_round_rect(cr, t.radius, 2, col);
             }
-            let inner = cr.inset_xy(14, 10);
-            let (top, rest) = inner.take_top(18);
+            let inner = card_inner(cr);
             if card.is_free() {
+                let (top, rest) = inner.take_top(18);
                 cx.text(
                     FontId::Bold,
                     13.0,
                     top,
-                    Align::Left,
+                    Align::Center,
                     t.text_faint,
                     &format!("Q{}", k + 1),
                 );
@@ -156,31 +201,15 @@ impl Widget for QLinkColumn {
             }
             cx.canvas
                 .fill_round_rect(Rect::new(cr.x, cr.y + 14, 4, (cr.h - 28).max(0)), 2, col);
-            cx.text(
-                FontId::Bold,
-                13.0,
-                top,
-                Align::Left,
-                col,
-                &format!("Q{}", k + 1),
-            );
-            cx.text(
-                FontId::Sans,
-                12.0,
-                top.take_left(28).1,
-                Align::Right,
-                t.text_faint,
-                &card.scope.to_uppercase(),
-            );
-            let (name, rest) = rest.take_top(24);
-            cx.text(FontId::Bold, 16.0, name, Align::Left, t.text, &card.name);
+            let rest = card_head(cx, inner, k, &card.name, col, t.text);
             // The knob: 270 degrees of dots, open at the bottom.
             let d = rest.h.min(rest.w - 10).max(20);
             let (ox, oy) = (rest.x + rest.w / 2, rest.y + rest.h / 2 + 2);
             let rad = d as f32 / 2.0 - 5.0;
             draw::ring(cx, ox, oy, rad, card.pos, card.bipolar, col);
             let vr = Rect::new(ox - rad as i32, oy - 12, 2 * rad as i32, 24);
-            cx.text(FontId::Bold, 16.0, vr, Align::Center, t.text, &card.value);
+            let px = fitting(cx, &card.value, vr.w - 6);
+            cx.text(FontId::Bold, px, vr, Align::Center, t.text, &card.value);
         }
     }
 
@@ -402,7 +431,7 @@ mod tests {
     use super::*;
 
     fn column() -> Rect {
-        Rect::new(1100, 84, COLUMN_WIDTH, 666)
+        Rect::new(1280 - 12 - COLUMN_WIDTH, 84, COLUMN_WIDTH, 666)
     }
 
     #[test]

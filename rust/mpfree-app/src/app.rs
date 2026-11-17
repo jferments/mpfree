@@ -2982,6 +2982,27 @@ impl App {
         fx
     }
 
+    /// A Loop cell armed on the grid: the looper records its Loop track's
+    /// `input` (loop-tracks.md part 4). Line in switches the line input
+    /// on as its Settings row does; Resample keeps the source (the desk
+    /// makes REC's Record a Resample, which records the other loops).
+    pub fn loop_input(&mut self, input: mpfree_seq::LoopInput) -> Vec<Effect> {
+        use mpfree_seq::LoopInput;
+        let mut fx = match input {
+            LoopInput::Line if !self.settings.line_input => {
+                return self.looper_setting(Item::LineInput, 1)
+            }
+            LoopInput::Line => self.set_loop_source(LoopSource::Line),
+            LoopInput::Pads => self.set_loop_source(LoopSource::Pads),
+            LoopInput::Resample => Vec::new(),
+        };
+        if !fx.is_empty() {
+            self.save_dirty = true;
+            fx.push(Effect::Settings(self.settings.clone()));
+        }
+        fx
+    }
+
     /// Record from `source`, with the latency that goes with it.
     fn set_loop_source(&mut self, source: LoopSource) -> Vec<Effect> {
         if source == self.settings.loop_source {

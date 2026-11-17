@@ -61,9 +61,9 @@ pub const INST: &str = "synth-inst";
 pub const QLINK_COLUMN: &str = "qlinks";
 
 /// The frame Jay approved on 14 Nov: the instrument and its presets on the
-/// left (220), the page in the middle (844), the Q-Link column on the
-/// right (168), the same column as on Play.
-pub const LAYOUT: &str = "col(header:60, row(col(synth-inst:72, synth-presets:*):220, col(synth-title:56, synth-tiles:*):*, qlinks:168):*, hint:26)";
+/// left (220), the page in the middle (884), the Q-Link column on the
+/// right (128), the same column as on Play.
+pub const LAYOUT: &str = "col(header:60, row(col(synth-inst:72, synth-presets:*):220, col(synth-title:56, synth-tiles:*):*, qlinks:128):*, hint:26)";
 /// The presets' slot in [`LAYOUT`], for an app that puts a widget over
 /// them (the pad player's pads heading).
 pub const PRESETS_SLOT: &str = "synth-presets:*";
