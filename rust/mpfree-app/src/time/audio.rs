@@ -580,6 +580,19 @@ impl TimeAudio {
             Some(arps) => {
                 self.player
                     .process(&self.view, &self.block, &mut arps.through_sink());
+                // A track going silent on its line (the mute queue): what
+                // its MIDI effects hold or have waiting ends there.
+                for l in self.player.mutes_landed() {
+                    if l.silent {
+                        let offset = self
+                            .block
+                            .spans()
+                            .iter()
+                            .find_map(|s| s.offset_of(l.at as f64))
+                            .unwrap_or(0);
+                        arps.cut(l.track, offset);
+                    }
+                }
                 let sink = &mut *self.sink;
                 arps.finish_with(&self.block, |o, arp| sink.push(*o, arp));
             }

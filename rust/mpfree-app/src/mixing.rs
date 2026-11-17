@@ -134,6 +134,10 @@ pub enum PlayFx {
     Filter { strip: StripId, position: f32 },
     /// A speaker: mute or unmute a pad.
     PadMute { pad: usize, mute: bool },
+    /// Solo a pad of the kit, or let go of its solo (TRACK MUTE held over
+    /// the kit's pad mutes): while any pad is soloed the others are
+    /// silent.
+    PadSolo { pad: usize, solo: bool },
     /// Drop drums: these pads (a bit each) muted while held, as well.
     Drop(u16),
     /// A throw held or let go.
@@ -226,6 +230,12 @@ pub struct MixHost {
     /// Pads muted by their speakers or the panel, and by Drop drums.
     pad_mutes: u16,
     dropped: u16,
+    /// Pads soloed (a bit each): while any is, the others are silent.
+    pad_solos: u16,
+    /// The pad strips' mutes as `apply_mutes` last set them (a bit each):
+    /// a strip's parameter reads its old value until the next period, so
+    /// two changes in one period compare with what was sent.
+    mutes_sent: u16,
     /// Builds the chain editor's effects, and drops the ones edits take
     /// out, off the audio thread (control.rs). None: here (the tests).
     builder: Option<crate::control::Builder>,
@@ -397,6 +407,8 @@ impl MixHost {
             state_at: None,
             pad_mutes: 0,
             dropped: 0,
+            pad_solos: 0,
+            mutes_sent: 0,
             builder: None,
             landing: None,
             plugins: Arc::new(Plugins::none()),
@@ -714,6 +726,7 @@ impl MixHost {
                     self.mixer.set_key(st, slot, Some(k));
                 }
                 self.pad_mutes = load.pad_mutes;
+                self.pad_solos = load.pad_solos;
                 self.apply_mutes();
                 let effects: usize = self
                     .mixer
@@ -986,7 +999,15 @@ impl MixHost {
                 }
                 self.apply_mutes();
             }
-            PlayFx::PadMute { .. } => {}
+            PlayFx::PadSolo { pad, solo } if pad < PADS => {
+                if solo {
+                    self.pad_solos |= 1 << pad;
+                } else {
+                    self.pad_solos &= !(1 << pad);
+                }
+                self.apply_mutes();
+            }
+            PlayFx::PadMute { .. } | PlayFx::PadSolo { .. } => {}
             PlayFx::Drop(pads) => {
                 self.dropped = pads;
                 self.apply_mutes();
@@ -1040,13 +1061,16 @@ impl MixHost {
     }
 
     fn apply_mutes(&mut self) {
+        let silent = self.pad_mutes | self.dropped | self.solo_silent();
         for p in 0..PADS {
-            let on = (self.pad_mutes | self.dropped) & (1 << p) != 0;
-            let want = if on { 1.0 } else { 0.0 };
-            if self.mixer.param(StripId::Pad(p), mx::MUTE) != want {
+            let bit = 1 << p;
+            let want = if silent & bit != 0 { 1.0 } else { 0.0 };
+            let sent = (self.mutes_sent & bit != 0) == (silent & bit != 0);
+            if !sent || self.mixer.param(StripId::Pad(p), mx::MUTE) != want {
                 self.set(StripId::Pad(p), mx::MUTE, want);
             }
         }
+        self.mutes_sent = silent;
     }
 
     /// Master safety's limiting now, dB (0, or a positive number of dB
@@ -1064,6 +1088,21 @@ impl MixHost {
     /// each; Drop drums' are not counted).
     pub fn pad_mutes(&self) -> u16 {
         self.pad_mutes
+    }
+
+    /// The pads soloed (a bit each).
+    pub fn pad_solos(&self) -> u16 {
+        self.pad_solos
+    }
+
+    /// The pads a solo silences: every pad but the soloed ones, while any
+    /// is (a bit each).
+    pub fn solo_silent(&self) -> u16 {
+        if self.pad_solos == 0 {
+            0
+        } else {
+            !self.pad_solos
+        }
     }
 
     /// What the Play page shows. Cheap: a few reads.
@@ -1611,6 +1650,42 @@ mod tests {
             0.0,
             "dropped, not muted"
         );
+    }
+
+    /// A pad soloed (TRACK MUTE held over the kit's pad mutes): the other
+    /// pads go silent through their strips' mutes, more solos add pads, and
+    /// letting go of the last solo gives back the pads' own mutes. The
+    /// speakers and UNDO keep reading each pad's own mute.
+    #[test]
+    fn a_pad_solo_silences_the_kits_other_pads() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        let muted = |h: &mut MixHost| -> u16 {
+            h.run_silent_period();
+            (0..PADS)
+                .filter(|&p| h.mixer.param(StripId::Pad(p), mx::MUTE) >= 0.5)
+                .fold(0, |m, p| m | 1 << p)
+        };
+        h.play(PlayFx::PadMute { pad: 5, mute: true });
+        h.play(PlayFx::PadSolo { pad: 0, solo: true });
+        assert_eq!((h.pad_solos(), muted(&mut h)), (1, !1));
+        h.play(PlayFx::PadSolo { pad: 2, solo: true });
+        assert_eq!(muted(&mut h), !0b101);
+        assert_eq!(h.value(StripId::Pad(1), mx::MUTE), 0.0, "its own mute");
+        assert_eq!(h.play_levels().pad_mutes, 1 << 5, "the speakers");
+        h.play(PlayFx::PadSolo {
+            pad: 0,
+            solo: false,
+        });
+        h.play(PlayFx::PadSolo {
+            pad: 2,
+            solo: false,
+        });
+        assert_eq!((h.pad_solos(), muted(&mut h)), (0, 1 << 5));
+        h.play(PlayFx::PadSolo {
+            pad: 16,
+            solo: true,
+        });
+        assert_eq!(h.pad_solos(), 0, "no pad 17");
     }
 
     /// Jay, 16 Nov: a delay or reverb put on a send return starts fully

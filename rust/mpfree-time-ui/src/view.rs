@@ -3038,6 +3038,25 @@ pub struct MuteWait {
     pub line: LaunchGrid,
     /// Each track that changes: its mute and solo once the queue lands.
     pub want: Vec<(usize, bool, bool)>,
+    /// Each pad of the kit that changes (SHIFT + TRACK MUTE): its mute
+    /// and solo once the queue lands.
+    pub pads: Vec<(usize, bool, bool)>,
+}
+
+impl MuteWait {
+    /// A queue for line `line` with nothing in it yet.
+    pub fn new(line: LaunchGrid) -> MuteWait {
+        MuteWait {
+            line,
+            want: Vec::new(),
+            pads: Vec::new(),
+        }
+    }
+
+    /// Nothing waits in it: no track and no pad.
+    pub fn is_empty(&self) -> bool {
+        self.want.is_empty() && self.pads.is_empty()
+    }
 }
 
 impl TimeState {
@@ -3064,11 +3083,14 @@ impl TimeState {
         Some(format!("{what} in {}", countdown(left, tp.meter)))
     }
 
-    /// The transport bar's WAITING reading: the tracks waiting and where
-    /// they land ("Hats, Vox at 18.1"). None with nothing waiting.
+    /// The transport bar's WAITING reading: the tracks and the kit's pads
+    /// waiting and where they land ("Hats, Vox at 18.1", "Pad 3 at 9.1").
+    /// None with nothing waiting.
     pub fn waiting_reading(&self) -> Option<String> {
-        let q = self.mute_wait.as_ref().filter(|q| !q.want.is_empty())?;
-        let names: Vec<String> = q.want.iter().map(|w| self.track_name(w.0)).collect();
+        let q = self.mute_wait.as_ref().filter(|q| !q.is_empty())?;
+        let tracks = q.want.iter().map(|w| self.track_name(w.0));
+        let pads = q.pads.iter().map(|w| format!("Pad {}", w.0 + 1));
+        let names: Vec<String> = tracks.chain(pads).collect();
         let shown = if names.len() > 2 {
             format!("{}, {} +{}", names[0], names[1], names.len() - 2)
         } else {
@@ -5926,8 +5948,8 @@ mod tests {
         assert_eq!((st.waiting_reading(), st.mute_waiting(1)), (None, None));
         assert_ne!(bar_of(&st).items[0].label, "WAITING");
         st.mute_wait = Some(MuteWait {
-            line: LaunchGrid::Bars(1),
             want: vec![(1, true, false), (2, false, true)],
+            ..MuteWait::new(LaunchGrid::Bars(1))
         });
         // At 5.2: three beats to bar 6.
         assert_eq!(st.mute_waiting(1).as_deref(), Some("mutes in 3 beats"));
@@ -5944,14 +5966,27 @@ mod tests {
         assert_eq!(g[0].waiting, None);
         // A longer line counts bars; more than two tracks are counted.
         st.mute_wait = Some(MuteWait {
-            line: LaunchGrid::Bars(2),
             want: vec![(0, true, false), (1, true, false), (2, true, false)],
+            ..MuteWait::new(LaunchGrid::Bars(2))
         });
         assert_eq!(st.mute_waiting(0).as_deref(), Some("mutes in 2 bars"));
         assert_eq!(
             st.waiting_reading().as_deref(),
             Some("Drums, Bass +1 at 7.1")
         );
+        // The kit's pads wait with them, named by number; alone, too.
+        st.mute_wait = Some(MuteWait {
+            want: vec![(1, true, false)],
+            pads: vec![(2, true, false)],
+            ..MuteWait::new(LaunchGrid::Bars(1))
+        });
+        assert_eq!(st.waiting_reading().as_deref(), Some("Bass, Pad 3 at 6.1"));
+        st.mute_wait = Some(MuteWait {
+            pads: vec![(0, false, true)],
+            ..MuteWait::new(LaunchGrid::Bars(1))
+        });
+        assert_eq!(st.waiting_reading().as_deref(), Some("Pad 1 at 6.1"));
+        assert_eq!(st.mute_waiting(0), None, "a pad is no track's");
         // Solo: the soloed track is outlined, the others are silent.
         st.mute_wait = None;
         st.tracks[2].solo = true;
@@ -6047,8 +6082,8 @@ mod tests {
         assert_eq!(st.next_reading().as_deref(), Some("Chorus in 2 bars"));
         // WAITING goes before NEXT.
         st.mute_wait = Some(MuteWait {
-            line: LaunchGrid::Bars(1),
             want: vec![(1, true, false)],
+            ..MuteWait::new(LaunchGrid::Bars(1))
         });
         let items = bar_of(&st).items;
         assert_eq!(

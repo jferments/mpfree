@@ -79,7 +79,7 @@ use mpfree_transport::{Block, Command, Transport};
 use std::f32::consts::TAU;
 
 pub use audio::TimeAudio;
-pub use control::{MuteLight, TimeControl};
+pub use control::{MuteLight, PadTap, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
 
@@ -867,6 +867,29 @@ impl TimeHost {
     pub fn mute_or_solo(&mut self, t: usize, wait: bool, solo: bool) -> Result<String, String> {
         let r = self.control.mute_or_solo(t, wait, solo);
         self.sent(r)
+    }
+
+    /// A pad of the kit tapped as a mute key: at once, or waiting in the
+    /// mute queue ([`TimeControl::pad_mute_or_solo`]).
+    pub fn pad_mute_or_solo(
+        &mut self,
+        pad: usize,
+        now: (bool, bool),
+        wait: bool,
+        solo: bool,
+    ) -> PadTap {
+        self.control.pad_mute_or_solo(pad, now, wait, solo)
+    }
+
+    /// The kit's pads whose change in the mute queue came due, for the
+    /// mixer before its next period ([`TimeControl::take_pad_landings`]).
+    pub fn take_pad_landings(&mut self) -> [Option<(bool, bool)>; control::PADS] {
+        self.control.take_pad_landings()
+    }
+
+    /// Whether a change waits for the kit's pad `pad`, for its light.
+    pub fn pad_waiting(&self, pad: usize) -> bool {
+        self.control.pad_waiting(pad)
     }
 
     /// Whether track `t` is muted (None: no such track).
@@ -1920,6 +1943,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         hits: Vec<(u64, usize, u8)>,
+        /// (absolute frame, pad) of each release.
+        releases: Vec<(u64, usize)>,
         frame: u64,
         stops: usize,
         /// (absolute frame, pad, value)
@@ -1940,7 +1965,9 @@ mod tests {
                 .push((self.frame + u64::from(offset), pad, velocity));
             true
         }
-        fn release_at(&mut self, _track: u16, _pad: usize, _offset: u32) {}
+        fn release_at(&mut self, _track: u16, pad: usize, offset: u32) {
+            self.releases.push((self.frame + u64::from(offset), pad));
+        }
         fn stop_all(&mut self) {
             self.stops += 1;
         }
@@ -2620,6 +2647,50 @@ mod tests {
         h.control.project.tracks[1].note_fx.slots[0] = None;
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(4));
         assert!(arps.has_chain(1));
+        assert_eq!((h.dropped(), arps.dropped()), (0, 0));
+    }
+
+    /// A track going silent on its line ends what its MIDI effects have
+    /// on there: a pad held through the track's chain lets go on the bar
+    /// line the mute waited for, not when the finger lifts.
+    #[test]
+    fn a_mute_landing_ends_what_the_tracks_midi_effects_hold() {
+        use mpfree_notefx::{Fx, Slot};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        h.control.project.tracks[1].note_fx.slots[0] = Some(Slot {
+            fx: Fx::Transpose { semitones: 2 },
+            on: true,
+        });
+        let period = |h: &mut TimeHost, pads: &mut Fake, arps: &mut TrackArps| {
+            h.period_arps(PERIOD, pads, arps);
+            pads.frame += u64::from(PERIOD);
+        };
+        assert!(h.command(Command::Play));
+        period(&mut h, &mut pads, &mut arps);
+        arps.pad(
+            1,
+            0,
+            Event::NoteOn {
+                note: 4,
+                velocity: 100,
+            },
+        );
+        while pads.frame < BAR / 2 {
+            period(&mut h, &mut pads, &mut arps);
+        }
+        assert_eq!(pads.hits.last().map(|&(_, pad, _)| pad), Some(6));
+        assert!(pads.releases.is_empty());
+        h.mute_or_solo(1, true, false).unwrap();
+        while pads.frame < BAR + BAR / 2 {
+            period(&mut h, &mut pads, &mut arps);
+        }
+        assert_eq!(h.muted(1), Some(true));
+        let off: Vec<(u64, usize)> = pads.releases.clone();
+        assert_eq!(off.len(), 1, "{off:?}");
+        assert_eq!(off[0].1, 6);
+        assert!(off[0].0.abs_diff(BAR) <= 1, "{off:?} at the bar, {BAR}");
         assert_eq!((h.dropped(), arps.dropped()), (0, 0));
     }
 
@@ -3609,6 +3680,84 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// The kit's pads in the mute queue (SHIFT + TRACK MUTE in Perform):
+    /// a tap waits with the tracks' taps, a second takes it back, and a
+    /// solo waits too. Each comes due in the period before its line, so
+    /// the mixer has it from the period that holds the line; STOP lands
+    /// what waits, and stopped a tap acts at once.
+    #[test]
+    fn the_kits_pad_mutes_wait_for_the_line_and_come_due_just_before_it() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let plays = (false, false);
+        let waits = |s: &str| PadTap::Waits(s.to_string());
+        assert_eq!(
+            h.pad_mute_or_solo(2, plays, true, false),
+            waits("pad mute: pad 3 muted on the next bar")
+        );
+        assert_eq!(
+            h.pad_mute_or_solo(5, plays, true, false),
+            waits("pad mute: pad 6 muted on the next bar")
+        );
+        assert_eq!(
+            h.pad_mute_or_solo(5, plays, true, false),
+            waits("pad mute: pad 6: its change taken back")
+        );
+        assert!(h.pad_waiting(2) && !h.pad_waiting(5));
+        // A track joins the same line.
+        h.mute_or_solo(0, true, false).unwrap();
+        assert_eq!(
+            h.state().waiting_reading().as_deref(),
+            Some("Track 1, Pad 3 at 2.1")
+        );
+        let mut due = None;
+        while pads.frame < BAR + BAR / 2 {
+            let to = pads.frame + u64::from(PERIOD);
+            run(&mut h, &mut pads, to, &[]);
+            let l = h.take_pad_landings();
+            if l.iter().any(Option::is_some) {
+                assert!(due.is_none(), "once");
+                due = Some((pads.frame, l));
+            }
+        }
+        let (at, l) = due.unwrap();
+        // The mixer has it from `at`: never after bar 2, and at most a
+        // period and a tick before it (the period's ticks round up).
+        let tick = BAR.div_ceil(3840);
+        assert!(at <= BAR && BAR - at <= u64::from(PERIOD) + tick, "{at}");
+        assert_eq!(l[2], Some((true, false)));
+        assert_eq!(l.iter().flatten().count(), 1);
+        assert!(!h.pad_waiting(2) && h.mute_wait().is_none());
+        assert_eq!(h.muted(0), Some(true), "the track landed on the line");
+        let note = h.take_later_note().unwrap();
+        assert!(note.starts_with("pad mute: at 2.1, pad 3 muted"), "{note}");
+        // A solo waits, and STOP lands it.
+        assert_eq!(
+            h.pad_mute_or_solo(0, plays, true, true),
+            waits("pad mute: pad 1 solo on the next bar")
+        );
+        h.command(Command::Stop);
+        let to = pads.frame + 4 * u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(h.take_pad_landings()[0], Some((false, true)));
+        assert!(h.take_later_note().unwrap().ends_with("pad 1 solo (STOP)"));
+        // Stopped, at once: the mixer sets it.
+        assert_eq!(
+            h.pad_mute_or_solo(2, (true, false), true, false),
+            PadTap::Now {
+                mute: false,
+                solo: false
+            }
+        );
+        assert!(h.mute_wait().is_none());
+    }
+
     /// Two one-bar rows become a song (Scenes → song), which plays in song
     /// mode; a clip launched on track 1 takes it over, and the song plays
     /// on there after it stops. The song goes back into rows (Song →
@@ -4455,6 +4604,7 @@ mod tests {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake {
             hits: Vec::with_capacity(100_000),
+            releases: Vec::with_capacity(100_000),
             ..Fake::default()
         };
         h.command(Command::SetLoop(Some((0, 2 * 3840))));
@@ -5043,6 +5193,7 @@ mod tests {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake {
             hits: Vec::with_capacity(1000),
+            releases: Vec::with_capacity(1000),
             ..Fake::default()
         };
         let mut c = Clip::new("Beats", 3840);
