@@ -96,6 +96,7 @@ use crate::dsp::{
     Svf, TINY,
 };
 use crate::grain_clip::GrainClip;
+use crate::hits::{self, HitCell};
 use crate::model::{
     edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LoopMode,
     MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
@@ -304,6 +305,9 @@ pub struct ViewLayer {
     /// The sound's octave copies, for a clean read past an octave up
     /// (none for a Vintage pad, a granular region or a stretched copy).
     octaves: Option<Arc<OctaveCell>>,
+    /// The sound's hits, for a region in the Stretch grain mode
+    /// ([`crate::hits`]).
+    hits: Option<Arc<HitCell>>,
 }
 
 impl ViewLayer {
@@ -485,7 +489,12 @@ impl EngineView {
                             copy: false,
                             source_at: None,
                             octaves: None,
+                            hits: None,
                         };
+                        if r.mode == PlayMode::Granular && r.grain_mode == GrainMode::Stretch {
+                            hits::prepare(s.hits(), s.data(), s.channels(), s.rate());
+                            v.hits = Some(s.hits().clone());
+                        }
                         if !p.vintage {
                             v.octaves = Some(s.octaves().clone());
                             // Grains go as far up as their pitch and its
@@ -991,6 +1000,8 @@ struct Voice {
     bl: bool,
     /// Its sound's octave copies, when made by the time it started.
     octaves: Option<Arc<OctaveCell>>,
+    /// A granular Stretch's hits, when found by the time it started.
+    hits: Option<Arc<HitCell>>,
     /// A granular voice's grains read band-limited when pitched up
     /// ([`GrainClip::clean`]): not on a Vintage pad.
     grain_clean: bool,
@@ -2870,6 +2881,7 @@ impl Engine {
             } else {
                 l.octaves.as_ref().filter(|c| c.get().is_some()).cloned()
             },
+            hits: l.hits.as_ref().filter(|c| c.get().is_some()).cloned(),
             grain_clean: !vp.vintage,
             bl_step: 0,
             bl_octave: 0,
@@ -3197,10 +3209,13 @@ fn render_granular(
     let clean = v.grain_clean;
     let cell = v.octaves.take();
     let octaves = cell.as_deref().and_then(OctaveCell::get);
+    // A Stretch's hits, kept sharp.
+    let hit_cell = v.hits.take();
+    let hits = hit_cell.as_deref().and_then(HitCell::get).unwrap_or(&[]);
     match &data {
         Pcm::F32(d) => match GrainClip::new(&d[..], ch, v.src_rate) {
             Some(c) => {
-                let c = c.with_range(start, end);
+                let c = c.with_range(start, end).with_hits(hits);
                 let c = if clean { c.clean(octaves) } else { c };
                 grains(v, g, &c, budget, frame, rate, left, right, sl, sr)
             }
@@ -3208,7 +3223,7 @@ fn render_granular(
         },
         Pcm::I16(d) => match GrainClip::new(&d[..], ch, v.src_rate) {
             Some(c) => {
-                let c = c.with_range(start, end);
+                let c = c.with_range(start, end).with_hits(hits);
                 let c = if clean { c.clean(octaves) } else { c };
                 grains(v, g, &c, budget, frame, rate, left, right, sl, sr)
             }
@@ -3216,6 +3231,7 @@ fn render_granular(
         },
     }
     v.octaves = cell;
+    v.hits = hit_cell;
     if v.active {
         v.data = Some(data);
     }
@@ -3477,6 +3493,10 @@ fn follow_edit(
 
     // A granular voice: the layer's grain settings, with what its hit
     // added (a keygroup's semitones, 16 Levels' position) kept.
+    // Out of Stretch, it stops keeping hits.
+    if l.hits.is_none() {
+        v.hits = None;
+    }
     if v.granular && l.mode == PlayMode::Granular && l.grain != v.layer_grain {
         let mut p = l.grain;
         if v.grain_tone {

@@ -187,6 +187,9 @@ pub struct Source {
     /// ([`crate::bandlimit`]), shared by every clone. Made when a pad
     /// that can play it that high asks for them.
     octaves: Arc<crate::bandlimit::OctaveCell>,
+    /// Its hits, for a granular Stretch ([`crate::hits`]), shared by every
+    /// clone. Found when a pad that stretches it asks for them.
+    hits: Arc<crate::hits::HitCell>,
 }
 
 fn fnv1a(hash: &mut u64, bytes: &[u8]) {
@@ -227,6 +230,7 @@ impl Source {
             channels,
             data: Pcm::new(data),
             octaves: Arc::default(),
+            hits: Arc::default(),
         })
     }
 
@@ -263,6 +267,7 @@ impl Source {
         Source {
             data: Pcm::F32(self.data.to_vec().into()),
             octaves: Arc::default(),
+            hits: Arc::default(),
             ..self.clone()
         }
     }
@@ -275,6 +280,15 @@ impl Source {
     /// offline renders and tests, which mustn't wait on a thread.
     pub fn make_octaves(&self) {
         crate::bandlimit::prepare_now(&self.octaves, &self.data, self.channels);
+    }
+    /// Where its hits are kept ([`crate::hits::prepare`] finds them).
+    pub fn hits(&self) -> &Arc<crate::hits::HitCell> {
+        &self.hits
+    }
+    /// Finds its hits here and now if they aren't found yet: for offline
+    /// renders and tests, which mustn't wait on a thread.
+    pub fn find_hits(&self) {
+        crate::hits::prepare_now(&self.hits, &self.data, self.channels, self.rate);
     }
 
     /// The same sound at `rate` (itself when it is at that rate already),
