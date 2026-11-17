@@ -12883,7 +12883,6 @@ mod tests {
     #[test]
     fn a_held_sample_row_turns_and_its_lift_opens_no_number_pad() {
         use mpfree_sampler_ui::wave_tab::{Row, REGION};
-        use mpfree_sampler_ui::widgets::SettingList;
         let mut p = sample_sampler(Fonts::embedded());
         let row = |r: Row| Row::ALL.iter().position(|k| *k == r).unwrap();
         p.on_event(UiEvent {
@@ -12896,15 +12895,15 @@ mod tests {
         p.apply(ToUi::SampleLift);
         let bpm = |p: &Player| p.sample.state().unwrap().region.warp.as_ref().unwrap().bpm;
         let before = bpm(&p);
+        // Warp tempo's value on the panel.
         let mid = |p: &mut Player| {
             p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
-            let r = p.ui.rect_of(REGION).unwrap();
-            let (_, value) =
-                p.ui.get::<SettingList>(REGION)
-                    .unwrap()
-                    .row_rects(r, row(Row::WarpTempo))
-                    .unwrap();
-            (value.x + value.w / 2, value.y + value.h / 2)
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == REGION && t.target.id == "value")
+                .expect("Warp tempo's value")
+                .target
+                .centre()
         };
         let at = mid(&mut p);
         p.touch(5, Touch::Down, at.0, at.1);
@@ -14795,11 +14794,16 @@ mod tests {
         };
         let open = |p: &mut Player| {
             p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
-            let r = p.ui.rect_of(REGION).unwrap();
             let list = p.ui.get::<SettingList>(REGION).unwrap();
             assert_eq!(list.typed, [row(Row::WarpTempo)], "warped: it can be typed");
-            let (_, value) = list.row_rects(r, row(Row::WarpTempo)).expect("in view");
-            tap(p, (value.x + value.w / 2, value.y + value.h / 2));
+            // The Warp tempo's value on the panel, under its name.
+            let value =
+                p.ui.targets()
+                    .into_iter()
+                    .find(|t| t.widget == REGION && t.target.id == "value")
+                    .expect("in view")
+                    .target;
+            tap(p, value.centre());
             assert_eq!(p.page(), NUMPAD_PAGE);
         };
         let key = |p: &mut Player, k: usize| {

@@ -2,17 +2,21 @@
 //! loops, how it fades, and how loud, tuned and turned round it plays.
 //!
 //! - The **overview** shows the whole source with a box round what the
-//!   waveform shows; a touch moves the box there.
+//!   waveform shows; a touch moves the box there. Beside it, the wheel's
+//!   zoom and the marker it zooms round.
 //! - The **waveform** shows the region bright and the rest dimmed, the loop
 //!   shaded, the fades as curves, bar and beat lines when the source has a
 //!   tempo, and the Start, End and loop markers as tabs to drag. Dragging
 //!   the wave scrolls it, pinching zooms, and a tap plays the pad.
-//! - The **Region** list holds the settings: play mode, loop, crossfade,
-//!   gain, tune, warp (to the project tempo by stretching or repitching,
-//!   from the region's own tempo), reverse, channels, fades, and how
-//!   markers snap. **Normalize** is a button among them: it sets the gain
-//!   so the region's loudest frame plays at 0 dBFS
-//!   ([`WaveAction::Normalize`]; the app reads the audio).
+//! - The **panel** under the wave holds the settings as an instrument's
+//!   controls (Jay, 17 Nov 2026; [`crate::panel`]), in five sections:
+//!   **Mode** (how a hit plays, the loop and its crossfade), **Level**
+//!   (gain, tune, and **Normalize**, which sets the gain so the region's
+//!   loudest frame plays at 0 dBFS: [`WaveAction::Normalize`], the app reads
+//!   the audio), **Fades**, **Warp** (to the project tempo by stretching or
+//!   repitching, from the region's own tempo) and **Options** (reverse, how
+//!   markers snap, channels). The wheel walks them in that order
+//!   ([`Row::ALL`]).
 //! - **Q-Links 1 to 4** move Start, End, Loop start and Loop end: one pixel
 //!   of the current zoom per detent (so zooming in makes them finer), snapped
 //!   in the direction of the turn; with SHIFT, one frame per detent, never
@@ -40,6 +44,7 @@ use mpfree_ui::numpad::NumberAsk;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, Peaks, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
+use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::source::SourceView;
 use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList};
 
@@ -51,11 +56,11 @@ pub const REGION: &str = "smp-region";
 pub const QLINKS: [&str; 4] = ["smp-q1", "smp-q2", "smp-q3", "smp-q4"];
 pub const WHEEL: &str = "smp-wheel";
 
-/// The tab's page: the app's header, the pad bar, the overview, the
-/// waveform beside the Region list, the Q-Link cards and the wheel card,
-/// and the app's hint line.
+/// The tab's page: the app's header, the pad bar, the overview with the
+/// zoom card, the waveform across the page, the panel of settings under
+/// it, the Q-Link cards on the right, and the app's hint line.
 pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
-                          row(col(smp-overview:56, row(smp-wave:*, col(smp-region:*, smp-wheel:56):360):*):*, \
+                          row(col(row(smp-overview:*, smp-wheel:240):56, smp-wave:*, smp-region:242):*, \
                           col(smp-q1, smp-q2, smp-q3, smp-q4):128):*, hint:26)";
 
 /// The pad editor's tabs: the editors for the pad picked. The kit's pads
@@ -303,7 +308,8 @@ impl WaveAction {
     }
 }
 
-/// The Region list's rows, in order.
+/// The settings, as the list's rows. [`Row::ALL`] is the panel's order,
+/// section by section, which the wheel walks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Mode,
@@ -327,15 +333,15 @@ impl Row {
         Row::Loop,
         Row::Crossfade,
         Row::Gain,
-        Row::Normalize,
         Row::Tune,
+        Row::Normalize,
+        Row::FadeIn,
+        Row::FadeOut,
         Row::Warp,
         Row::WarpTempo,
         Row::Reverse,
-        Row::Channels,
-        Row::FadeIn,
-        Row::FadeOut,
         Row::Snap,
+        Row::Channels,
     ];
 
     fn name(self) -> &'static str {
@@ -382,8 +388,12 @@ const FADE_MS: [f64; 13] = [
     0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0,
 ];
 const GAIN_STEP_DB: f32 = 0.5;
-/// What the Normalize row's button says.
+/// What the Normalize row's value says (in a list).
 pub const NORMALIZE_TEXT: &str = "To 0 dB";
+/// What the Normalize button says on the panel.
+pub const NORMALIZE_BUTTON: &str = "Normalize to 0 dB";
+const LOOPS: [&str; 3] = ["Off", "Forward", "Ping-pong"];
+const WARPS: [&str; 3] = ["Off", "Stretch", "Repitch"];
 /// The Gain row's range, in dB (Normalize keeps to it too).
 pub const GAIN_RANGE_DB: (f32, f32) = (-48.0, 24.0);
 const TUNE_LIMIT_CENTS: i32 = 4800;
@@ -701,17 +711,7 @@ impl WaveTab {
             o.set_region(Some((r.start, r.end)));
         }
         self.sync_overview(ui);
-        let rows = self.rows(st);
-        if let Some(list) = ui.get_mut::<SettingList>(REGION) {
-            list.right = mode_label(r.mode).to_string();
-            list.rows = rows;
-            list.typed = if r.warp.is_some() {
-                vec![Row::WarpTempo.index()]
-            } else {
-                Vec::new()
-            };
-            list.buttons = vec![Row::Normalize.index()];
-        }
+        self.show_list(ui, st);
         for (k, m) in Mark::ALL.iter().enumerate() {
             if let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) {
                 match m.frame(r) {
@@ -729,6 +729,94 @@ impl WaveTab {
             }
         }
         self.update_wheel(ui, st);
+    }
+
+    /// The settings' rows, controls and panel.
+    fn show_list(&self, ui: &mut Ui, st: &WaveState) {
+        let r = &st.region;
+        let rows = self.rows(st);
+        let controls = self.controls(st);
+        let panel = panel(r);
+        if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+            list.right = mode_label(r.mode).to_string();
+            list.rows = rows;
+            list.controls = controls;
+            list.panel = Some(panel);
+            list.typed = if r.warp.is_some() {
+                vec![Row::WarpTempo.index()]
+            } else {
+                Vec::new()
+            };
+            list.buttons = vec![Row::Normalize.index()];
+        }
+    }
+
+    /// How each row looks on the panel, in [`Row::ALL`]'s order.
+    fn controls(&self, st: &WaveState) -> Vec<Control> {
+        let r = &st.region;
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let forward = r.sustain_loop.filter(|l| l.mode == LoopMode::Forward);
+        let knob = |list: &[f64], frames: u64, bipolar| Look::Knob {
+            pos: ms_place(list, frames, st.rate),
+            steps: list.len() as u32 - 1,
+            bipolar,
+        };
+        Row::ALL
+            .iter()
+            .map(|k| match k {
+                Row::Mode => Control::new(Look::Choice {
+                    options: MODES.iter().map(|m| mode_label(*m).to_string()).collect(),
+                    on: MODES.iter().position(|m| *m == r.mode).unwrap_or(0),
+                    off: Vec::new(),
+                }),
+                Row::Loop => Control::new(Look::Choice {
+                    options: names(&LOOPS),
+                    on: match r.sustain_loop {
+                        None => 0,
+                        Some(l) if l.mode == LoopMode::Forward => 1,
+                        Some(_) => 2,
+                    },
+                    // Loop mode can't be without a loop.
+                    off: if r.mode == PlayMode::Loop {
+                        vec![0]
+                    } else {
+                        Vec::new()
+                    },
+                }),
+                Row::Crossfade => Control::new(knob(
+                    &CROSSFADE_MS,
+                    forward.map_or(0, |l| u64::from(l.crossfade)),
+                    false,
+                ))
+                .faint_if(forward.is_none()),
+                Row::Gain => Control::new(Look::Knob {
+                    pos: (r.gain_db - GAIN_RANGE_DB.0) / (GAIN_RANGE_DB.1 - GAIN_RANGE_DB.0),
+                    steps: ((GAIN_RANGE_DB.1 - GAIN_RANGE_DB.0) / GAIN_STEP_DB) as u32,
+                    bipolar: false,
+                }),
+                Row::Normalize => Control::new(Look::Button(NORMALIZE_BUTTON.into())),
+                Row::Tune => Control::new(Look::Knob {
+                    pos: (r.tune_cents + TUNE_LIMIT_CENTS) as f32 / (2 * TUNE_LIMIT_CENTS) as f32,
+                    steps: (2 * TUNE_LIMIT_CENTS / 100) as u32,
+                    bipolar: true,
+                }),
+                Row::Warp => Control::new(Look::Choice {
+                    options: names(&WARPS),
+                    on: match r.warp.as_ref().map(|w| w.method) {
+                        None => 0,
+                        Some(WarpMethod::Stretch) => 1,
+                        Some(WarpMethod::Repitch) => 2,
+                    },
+                    off: Vec::new(),
+                }),
+                Row::WarpTempo => Control::new(Look::Stepper).faint_if(r.warp.is_none()),
+                Row::Reverse => Control::new(Look::Toggle(r.reverse)),
+                Row::Channels => Control::new(Look::Chip).faint_if(st.channels == 1),
+                Row::FadeIn => Control::new(knob(&FADE_MS, u64::from(r.fade_in.frames), false)),
+                Row::FadeOut => Control::new(knob(&FADE_MS, u64::from(r.fade_out.frames), false)),
+                Row::Snap => Control::new(Look::Chip),
+            })
+            .collect()
     }
 
     fn rows(&self, st: &WaveState) -> Vec<Setting> {
@@ -981,11 +1069,16 @@ impl WaveTab {
         })
     }
 
-    /// An arrow on a Region row.
+    /// A setting stepped `delta` steps: an arrow or - / + (one), a knob
+    /// dragged (as many as it passed), or a choice's button tapped (from
+    /// the option on to that one). A choice wraps round at its ends.
     fn step(&mut self, ui: &mut Ui, st: &WaveState, row: Row, delta: i32) -> Option<WaveAction> {
         let mut r = st.region.clone();
         let len = r.frames();
-        let d = delta.signum();
+        let d = delta;
+        if d == 0 {
+            return None;
+        }
         match row {
             Row::Mode => {
                 let i = MODES.iter().position(|m| *m == r.mode).unwrap_or(0) as i32;
@@ -1003,7 +1096,7 @@ impl WaveTab {
                     .unwrap_or(0) as i32;
                 let mut next = (now + d).rem_euclid(3) as usize;
                 if states[next].is_none() && r.mode == PlayMode::Loop {
-                    next = (next as i32 + d).rem_euclid(3) as usize;
+                    next = (next as i32 + d.signum()).rem_euclid(3) as usize;
                 }
                 r.sustain_loop = states[next].map(|mode| match r.sustain_loop {
                     Some(l) => Loop {
@@ -1059,7 +1152,8 @@ impl WaveTab {
                 w.fit(r.start, r.end, st.rate);
                 r.warp = Some(w);
             }
-            Row::Reverse => r.reverse = !r.reverse,
+            // An arrow or the switch: each step turns it over.
+            Row::Reverse => r.reverse ^= d % 2 != 0,
             Row::Channels => {
                 if st.channels == 1 {
                     return None;
@@ -1091,15 +1185,65 @@ impl WaveTab {
                 };
                 let i = all.iter().position(|s| *s == self.snap).unwrap_or(0) as i32;
                 self.snap = all[(i + d).rem_euclid(all.len() as i32) as usize];
-                let rows = self.rows(st);
-                if let Some(list) = ui.get_mut::<SettingList>(REGION) {
-                    list.rows = rows;
-                }
+                self.show_list(ui, st);
                 return None;
             }
         }
         self.edit(st, Key::Row(row), r)
     }
+}
+
+/// The panel: the settings in five sections across the band under the
+/// wave, at the widths of the mockup Jay approved (17 Nov).
+fn panel(r: &Region) -> Panel {
+    let it = |k: Row| Item::new(k.index());
+    Panel {
+        sections: vec![
+            Section::new(
+                "Mode",
+                340,
+                vec![
+                    vec![it(Row::Mode)],
+                    vec![it(Row::Loop).labelled(), it(Row::Crossfade).wide(78)],
+                ],
+            )
+            .note("how a hit plays"),
+            Section::new(
+                "Level",
+                186,
+                vec![vec![it(Row::Gain), it(Row::Tune)], vec![it(Row::Normalize)]],
+            ),
+            Section::new("Fades", 156, vec![vec![it(Row::FadeIn), it(Row::FadeOut)]]),
+            Section::new(
+                "Warp",
+                220,
+                vec![vec![it(Row::Warp)], vec![it(Row::WarpTempo).labelled()]],
+            )
+            .note(&warp_label(r.warp.as_ref()).to_lowercase()),
+            Section::new(
+                "Options",
+                174,
+                vec![
+                    vec![it(Row::Reverse)],
+                    vec![it(Row::Snap).labelled()],
+                    vec![it(Row::Channels).labelled()],
+                ],
+            )
+            .from_top(),
+        ],
+    }
+}
+
+/// Where `now` (frames) sits in `list` (ms), 0 to 1: its nearest entry's
+/// place, as a knob shows it.
+fn ms_place(list: &[f64], now: u64, rate: u32) -> f32 {
+    let ms = now as f64 * 1000.0 / f64::from(rate.max(1));
+    let i = list
+        .iter()
+        .enumerate()
+        .min_by(|a, b| (a.1 - ms).abs().total_cmp(&(b.1 - ms).abs()))
+        .map_or(0, |(i, _)| i);
+    i as f32 / (list.len().max(2) - 1) as f32
 }
 
 fn warp_label(w: Option<&Warp>) -> &'static str {

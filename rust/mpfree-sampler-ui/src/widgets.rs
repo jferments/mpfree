@@ -2,6 +2,7 @@
 //! those, they only show what the page put in their fields and report
 //! touches.
 
+use crate::panel::{self, Control, Panel};
 use mpfree_ui::qlink;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
@@ -468,6 +469,14 @@ pub struct SettingList {
     /// A finger on a typed value: the number pad opens when it lifts, not
     /// when the wheel turned the value while it was held.
     typing: Option<(u64, usize)>,
+    /// Drawn as a panel of knobs, buttons and switches in sections
+    /// instead of a list ([`crate::panel`]): each row's control in
+    /// `controls`, in the row's place. The rows, the picked row and the
+    /// events are the list's own.
+    pub panel: Option<Panel>,
+    pub controls: Vec<Control>,
+    /// A knob being dragged on the panel.
+    drag: Option<panel::Drag>,
 }
 
 const SET_ROW_H: i32 = 44;
@@ -485,7 +494,18 @@ impl SettingList {
             typed: Vec::new(),
             buttons: Vec::new(),
             typing: None,
+            panel: None,
+            controls: Vec::new(),
+            drag: None,
         }
+    }
+
+    /// The rows' names and values, for the panel.
+    fn texts(&self) -> (Vec<String>, Vec<String>) {
+        self.rows
+            .iter()
+            .map(|r| (r.name.clone(), r.value.clone()))
+            .unzip()
     }
 
     fn body(r: Rect) -> Rect {
@@ -526,6 +546,21 @@ impl SettingList {
 
 impl Widget for SettingList {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        if let Some(p) = &self.panel {
+            let (names, values) = self.texts();
+            let sel = self.selected;
+            return panel::paint(
+                cx,
+                r,
+                p,
+                &self.controls,
+                &names,
+                &values,
+                &self.typed,
+                sel,
+                self.editing,
+            );
+        }
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, &self.right);
         for k in 0..self.rows.len() {
@@ -605,6 +640,10 @@ impl Widget for SettingList {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some(p) = &self.panel {
+            let (names, _) = self.texts();
+            return panel::targets(p, &self.controls, &names, &self.typed, r);
+        }
         let mut out = Vec::new();
         for k in 0..self.rows.len() {
             let Some((row, value)) = self.row_rects(r, k) else {
@@ -647,8 +686,12 @@ impl Widget for SettingList {
     }
 
     /// A finger resting on a row (not a button) puts its value under the
-    /// wheel, whichever part of the row it is on.
+    /// wheel, whichever part of the row it is on; on a panel, the control
+    /// under it that has a value ([`panel::held`]).
     fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        if let Some(p) = &self.panel {
+            return panel::held(p, &self.controls, &self.texts().0, (x, y), r);
+        }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
                 .is_some_and(|(row, _)| row.contains(x, y))
@@ -673,6 +716,24 @@ impl Widget for SettingList {
     }
 
     fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if let Some(p) = &self.panel {
+            let ev = panel::touch(
+                p,
+                &self.controls,
+                &self.typed,
+                &mut self.drag,
+                (f, phase, x, y),
+                r,
+            )?;
+            if let EventKind::Select(k)
+            | EventKind::Step { index: k, .. }
+            | EventKind::Type(k)
+            | EventKind::Tab(k) = ev
+            {
+                self.selected = k;
+            }
+            return Some(ev);
+        }
         match phase {
             Touch::Down => {}
             // A typed value opens the number pad on the lift, so a value

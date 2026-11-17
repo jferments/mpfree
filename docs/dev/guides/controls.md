@@ -93,8 +93,14 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 - **`smp-wave/wave`**: the waveform. Tap to play from there (a looping pad plays until the next tap); drag to scroll; pinch to zoom. *Test:* `a_tap_on_the_wave_plays_the_pad_and_a_looping_one_until_the_next_tap`.
 - **`smp-wave/marker`**: the Start, End and loop markers. Drag a marker by its tab. *Example:* drag Start past the silence at the front of a sample.
 - **`smp-overview/overview`**: the whole sound in a strip, with a box round what the waveform shows. Tap to move the box there; faint when the whole sound is in view.
-- **`smp-region/row`**, **`smp-region/row-less`**, **`smp-region/row-more`**: the region's settings (Mode, Loop, Crossfade, Gain, ...). Tap a row, then ‹ › or the wheel.
-- **`smp-region/row-button`**: Normalize's "To 0 dB": the gain that brings the region's loudest frame to 0 dBFS, one undo step (a silent region is left, and the line says so). *Example:* a quiet take: tap To 0 dB and it plays as loud as it can without clipping. *Test:* `normalize_sets_the_gain_from_the_peak_in_one_undo_step`.
+- The card beside the overview (`smp-wheel`) is not a control: it says how far the wave is zoomed and which marker the wheel and SHIFT + - / + zoom round.
+- The panel under the wave holds the region's settings in five sections: Mode (play mode, the loop and its crossfade), Level (gain, tune, Normalize), Fades, Warp (warp and its tempo) and Options (reverse, snap, channels). A finger on any control gives it the wheel and - / +, as the outline round it shows. *Tests:* `the_settings_are_a_panel_of_controls_under_a_full_width_wave`, `the_panel_answers_a_finger_as_its_controls_look`.
+- **`smp-region/choice`**: one option of a choice (Mode, Loop, Warp). Tap it to pick it at once; the lit one is the one on, and a faint one can't be picked now (Loop mode keeps its loop). *Example:* tap Granular on a one-shot: it plays as grains, with no loop made on the way.
+- **`smp-region/knob`**: Crossfade, Gain, Tune, Fade in and Fade out. Drag up to turn it up, down to turn it down; one drag is one undo step. Faint when it does nothing now (Crossfade without a forward loop). *Example:* drag Gain up a finger's width for about +3 dB.
+- **`smp-region/less`**, **`smp-region/more`**: the ‹ › arrows of a selector (Snap, Channels) and the − + of a stepper (Warp tempo), a step down or up, round at the ends. Faint when there is nothing to choose (Channels on a mono sound, Warp tempo without warp).
+- **`smp-region/value`**: the Warp tempo's value, dotted underneath: tap it to type a tempo on the number pad, which opens when the finger lifts.
+- **`smp-region/switch`**: Reverse, on or off.
+- **`smp-region/button`**: Normalize to 0 dB: the gain that brings the region's loudest frame to 0 dBFS, one undo step (a silent region is left, and the line says so). *Example:* a quiet take: tap Normalize to 0 dB and it plays as loud as it can without clipping. *Test:* `normalize_sets_the_gain_from_the_peak_in_one_undo_step`.
 
 ### Warp
 
