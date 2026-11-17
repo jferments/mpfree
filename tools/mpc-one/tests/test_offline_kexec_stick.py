@@ -1314,6 +1314,94 @@ class KexecStickTests(unittest.TestCase):
         self.expect_stop("cannot tell which release the MPC runs")
 
 
+class EthernetRetryTests(unittest.TestCase):
+    """ethernet-retry.sh against a fake root under BusyBox's shell: a fake clock (sleep moves /proc/uptime on),
+    a fake kernel log, and a fake ip that notes when it ran and can bring eth0 up."""
+
+    def setUp(self):
+        self.bb = shutil.which("busybox")
+        if not self.bb:
+            if os.environ.get("MPFREE_REQUIRE_BUSYBOX") == "1":
+                self.fail("busybox is missing")
+            self.skipTest("busybox not installed")
+        self.tmp = tempfile.mkdtemp(prefix="mpfree-eth-retry-test-")
+        self.root, self.bin = os.path.join(self.tmp, "root"), os.path.join(self.tmp, "bin")
+        self.log = os.path.join(self.tmp, "log")
+        now = 'cut -d. -f1 "$FAKE_ROOT/proc/uptime"'
+        write(os.path.join(self.bin, "sleep"),
+              f'#!/bin/sh\nt=$(( $({now}) + $1 ))\nprintf \'%s.00 1.00\\n\' "$t" > "$FAKE_ROOT/proc/uptime"\n'
+              'if [ -n "${FAKE_UP_AT:-}" ] && [ "$t" -ge "$FAKE_UP_AT" ]; then\n'
+              '  printf \'0x1003\\n\' > "$FAKE_ROOT/sys/class/net/eth0/flags"\nfi\n', 0o755)
+        write(os.path.join(self.bin, "dmesg"),
+              f'#!/bin/sh\ncat "$FAKE_ROOT/kernel-log"\n'
+              f'if [ -n "${{FAKE_FAIL_AT:-}}" ] && [ "$({now})" -ge "$FAKE_FAIL_AT" ]; then\n'
+              '  echo "[    8.010000] rk_gmac-dwmac ff290000.ethernet eth0: Failed to reset the dma"\nfi\n', 0o755)
+        write(os.path.join(self.bin, "ip"),
+              f'#!/bin/sh\necho "ip $* at $({now})" >> "$FAKE_LOG"\n'
+              'if [ "${FAKE_IP_UP:-}" = 1 ]; then printf \'0x1003\\n\' > "$FAKE_ROOT/sys/class/net/eth0/flags"; fi\n',
+              0o755)
+        write(os.path.join(self.bin, "mount"), '#!/bin/sh\necho "mount $*" >> "$FAKE_LOG"\n', 0o755)
+        for tool in ("cat", "cut", "grep", "sed", "mkdir"):
+            write(os.path.join(self.bin, tool), f'#!/bin/sh\nexec {self.bb} {tool} "$@"\n', 0o755)
+        for rel, text in (("proc/uptime", "7.20 1.00\n"), ("proc/mounts", "proc /proc proc rw 0 0\n"),
+                          ("sys/class/net/eth0/flags", "0x1002\n"), ("sys/class/net/eth0/operstate", "up\n"),
+                          ("kernel-log", "[    0.300000] rk_gmac-dwmac ff290000.ethernet: fake\n")):
+            write(os.path.join(self.root, rel), text)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_script(self, **env):
+        script = stick_module().ETHERNET_SCRIPT.replace("R=''", f"R='{self.root}'", 1)
+        res = subprocess.run([self.bb, "sh", "-c", fakes_first(self.bin) + script],
+                             env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root, **env},
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+        calls = []
+        if os.path.exists(self.log):
+            with open(self.log) as fh:
+                calls = fh.read().splitlines()
+        return res, [c for c in calls if c.startswith("ip ")]
+
+    def recorded(self):
+        return sorted(os.listdir(os.path.join(self.root, "run/mpfree-test-eth")))
+
+    def test_dma_failure_retries_at_once(self):
+        res, ip = self.run_script(FAKE_FAIL_AT="8", FAKE_IP_UP="1")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(ip, ["ip link set eth0 up at 10"])
+        self.assertIn("mpfree-test-ethernet: eth0 failed to start (Failed to reset the dma); "
+                      "starting it again at 10 s", res.stdout)
+        self.assertIn("eth0 is up at 20 s (operstate up); no retry needed", res.stdout)
+        self.assertEqual(self.recorded(), ["ethernet-1-early-7s.txt", "ethernet-2-at-13s-after-early-retry.txt",
+                                           "ethernet-3-at-15s.txt", "ethernet-4-at-20s-eth0-up.txt"])
+
+    def test_up_first_time_needs_no_retry(self):
+        res, ip = self.run_script(FAKE_UP_AT="9")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(ip, [])
+        self.assertNotIn("starting it again", res.stdout)
+        self.assertEqual(self.recorded(), ["ethernet-1-early-7s.txt", "ethernet-2-at-15s.txt",
+                                           "ethernet-3-at-20s-eth0-up.txt"])
+
+    def test_a_failure_from_before_the_service_does_not_count(self):
+        # A soft-reboot keeps the kernel log of the boot before it; only a new failure starts the early retry.
+        with open(os.path.join(self.root, "kernel-log"), "a") as fh:
+            fh.write("[    6.000000] rk_gmac-dwmac ff290000.ethernet eth0: Failed to reset the dma\n")
+        res, ip = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(ip, ["ip link set eth0 up at 20", "ip link set eth0 up at 45", "ip link set eth0 up at 90"])
+        self.assertNotIn("failed to start", res.stdout)
+        self.assertIn("eth0 retries done", res.stdout)
+
+    def test_the_later_retries_stay_when_the_early_one_does_not_help(self):
+        res, ip = self.run_script(FAKE_FAIL_AT="8")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(ip, ["ip link set eth0 up at 10", "ip link set eth0 up at 20",
+                              "ip link set eth0 up at 45", "ip link set eth0 up at 90"])
+        self.assertEqual(res.stdout.count("Failed to reset the dma"), 1)  # one early retry only
+        self.assertIn("eth0 retries done", res.stdout)
+
+
 class StaticTests(unittest.TestCase):
     def test_ethernet_script_changes_only_ram(self):
         spec = importlib.util.spec_from_file_location("kexec_stick", TOOL)
@@ -1332,9 +1420,10 @@ class StaticTests(unittest.TestCase):
         changing = [line for line in lines if re.search(r"\b(mount|ip|mkdir)\b", line)]
         self.assertEqual(changing, [
             'mkdir -p "$out"',
-            "grep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug",
-            "ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'",
+            "grep -q ' /sys/kernel/debug debugfs ' \"$R/proc/mounts\" || mount -t debugfs debugfs /sys/kernel/debug",
+            "start_eth0() { ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'; }",
         ])
+        self.assertEqual(lines.count("R=''"), 1)
         for line in lines:
             for target in re.findall(r">\s*(\S+)", line.replace("2>&1", "").replace("2>/dev/null", "")):
                 self.assertEqual(target, '"$out/ethernet-$1.txt"', line)
