@@ -66,6 +66,10 @@ pub struct PortLive {
     pub about: String,
     pub has_in: bool,
     pub has_out: bool,
+    /// MIDI out sends to it now: Prefs' "Send MIDI and CV out" is on and
+    /// its output is open. Set by the app's MIDI out; a port whose output
+    /// failed or didn't open has it off.
+    pub sending: bool,
     /// When something last arrived on its input (the app's clock).
     pub last_in: Option<Duration>,
 }
@@ -74,7 +78,8 @@ pub struct PortLive {
 /// is kept and says on its row that it does nothing yet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Built {
-    /// Tracks play out of the 5-pin MIDI Out jack.
+    /// MIDI out is on (Prefs' "Send MIDI and CV out"): tracks play out of
+    /// the ports that are sending ([`PortLive::sending`]).
     pub notes_out: bool,
     /// A port's thru works.
     pub thru: bool,
@@ -132,6 +137,7 @@ impl Default for Live {
                 about: "The MPC's 5-pin MIDI In and Out jacks".to_string(),
                 has_in: true,
                 has_out: true,
+                sending: false,
                 last_in: None,
             }],
             tracks: Vec::new(),
