@@ -27,7 +27,8 @@
 //! - **G4, no comb:** a frozen cloud (no scan, no spray, 80 ms grains) of
 //!   the pad and of the sine: how far its level swings as density moves
 //!   from 15 to 60 a second, one at a time.
-//! - **G5, clean pitching:** a sine pitched by the grains (200 ms, 20 a
+//! - **G5, clean pitching:** (read as a pad reads, through
+//!   `mpfree_sampler::grain_clip::GrainClip`) a sine pitched by the grains (200 ms, 20 a
 //!   second, spray 0.3): the worst spur from 20 Hz to 20 kHz (power within
 //!   60 Hz of the loudest bin at least 200 Hz from the wanted tone, and
 //!   never within 140 Hz of it) against the same
@@ -48,7 +49,9 @@
 //! device round). Design: `docs/dev/design/fx-quality.md` ("The grain
 //! engine"); plan: mpfree-claude `sampler/granular/plan.md`.
 
-use mpfree_grain::{Budget, Clip, GrainVoice, Params, Stats, Window};
+use mpfree_grain::{Budget, GrainVoice, Params, Stats, Window};
+use mpfree_sampler::bandlimit::Octaves;
+use mpfree_sampler::grain_clip::GrainClip;
 
 use crate::fft::Fft;
 use crate::loudness;
@@ -186,9 +189,15 @@ fn pad_sound(n: usize, rate: u32) -> Vec<f32> {
 }
 
 /// `secs` of `src` (mono) through a voice with `p` from its start, and
-/// the voice's counters.
+/// the voice's counters. The voice reads `src` as a pad does: grains
+/// pitched more than two semitones up read band-limited, from the
+/// sound's octave copies past an octave (made here only for those).
 fn render(src: &[f32], rate: u32, p: Params, secs: f64, seed: u64) -> (Stereo, Stats) {
-    let clip = Clip::new(src, 1, rate).expect("a lab clip");
+    let up = p.pitch.max(0.0) + p.pitch_spray.max(0.0) > 2.0;
+    let octaves = up.then(|| Octaves::make(src, 1));
+    let clip = GrainClip::new(src, 1, rate)
+        .expect("a lab clip")
+        .clean(octaves.as_ref());
     let mut v = GrainVoice::new(rate, seed);
     v.set_params(p);
     v.start();

@@ -1,6 +1,6 @@
 //! The grain voice: schedules grains and mixes them.
 
-use crate::buffer::GrainSource;
+use crate::buffer::{Aim, GrainSource};
 use crate::rng::Rng;
 use crate::window::{Window, WindowTable};
 
@@ -179,6 +179,8 @@ struct Grain {
     /// Left and right pan gains.
     pl: f32,
     pr: f32,
+    /// How the source reads it ([`GrainSource::aim`]).
+    aim: Aim,
 }
 
 /// What a part's grains add up to, frame by frame, before the level is
@@ -823,6 +825,7 @@ impl GrainVoice {
             lvl: 1.0,
             pl: angle.cos() * std::f32::consts::SQRT_2,
             pr: angle.sin() * std::f32::consts::SQRT_2,
+            aim: src.aim(speed),
         };
         self.active += 1;
         budget.live += 1;
@@ -887,7 +890,20 @@ fn mix<S: GrainSource>(
             }};
         }
         let small = pos.min(last) >= 0.0 && pos.max(last) < SMALL_FRAMES;
+        let aim = g.aim;
         match (small, measure) {
+            // A grain the source reads its own way (band-limited).
+            _ if aim.clean => {
+                if measure {
+                    for k in 0..m {
+                        frame!(k, src.read_aimed(pos, aim), true);
+                    }
+                } else {
+                    for k in 0..m {
+                        frame!(k, src.read_aimed(pos, aim), false);
+                    }
+                }
+            }
             (true, false) => {
                 for k in 0..m {
                     let f = pos as i32;
