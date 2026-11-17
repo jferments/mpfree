@@ -8,9 +8,7 @@
 //! ([`crate::gui::ToUi::PreviewBack`]), so it never frees memory itself.
 //! A file at another rate plays at its own pitch (linear interpolation).
 
-use std::sync::Arc;
-
-use mpfree_sampler::model::Source;
+use mpfree_sampler::model::{Pcm, Source};
 
 /// The preview level the browser starts at, in dB.
 pub const LEVEL_DB: f32 = -6.0;
@@ -23,7 +21,7 @@ const FADE: u32 = 256;
 /// A sound being heard once.
 pub struct Preview {
     pub name: String,
-    data: Arc<[f32]>,
+    data: Pcm,
     channels: usize,
     frames: usize,
     rate: u32,
@@ -87,9 +85,9 @@ impl Preview {
 
     fn frame(&self, i: usize) -> (f32, f32) {
         if self.channels == 2 {
-            (self.data[2 * i], self.data[2 * i + 1])
+            (self.data.get(2 * i), self.data.get(2 * i + 1))
         } else {
-            let v = self.data[i];
+            let v = self.data.get(i);
             (v, v)
         }
     }
@@ -109,7 +107,7 @@ impl std::fmt::Debug for Preview {
 /// The same sound at the same place (for the screen queue's tests).
 impl PartialEq for Preview {
     fn eq(&self, o: &Preview) -> bool {
-        Arc::ptr_eq(&self.data, &o.data) && self.pos == o.pos && self.gain == o.gain
+        self.data.ptr_eq(&o.data) && self.pos == o.pos && self.gain == o.gain
     }
 }
 

@@ -92,6 +92,7 @@ use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
 use mpfree_sampler_ui::send;
+use mpfree_sampler_ui::source::{cache_file, SourceView};
 use mpfree_sampler_ui::warp_tab::{self, WarpTab};
 use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
@@ -496,6 +497,9 @@ type KitLoading = (Receiver<Read>, usize, String);
 /// Kits read from a file, with what was converted to the output's rate
 /// on the way ([`opened_at_rate`]), one log line each.
 type Read = Result<(Opened, Vec<String>), String>;
+/// A project's kits as opened: [`Read`]'s, and the views read from the
+/// sounds' cache files ([`cached_views`]).
+type ProjectRead = Result<(Opened, Vec<String>, Vec<Arc<SourceView>>), String>;
 
 pub type ReadSample = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send>;
 
@@ -653,7 +657,7 @@ pub struct SamplePage {
     /// has one open.
     gear_out: Option<GearOut>,
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
-    opening: Option<Receiver<Read>>,
+    opening: Option<Receiver<ProjectRead>>,
     /// A kit file being read and decoded ([`SamplePage::open_kit`]): it
     /// goes in place of this kit, under this name.
     kit_loading: Option<KitLoading>,
@@ -980,12 +984,12 @@ impl SamplePage {
             .projects
             .iter()
             .flat_map(Project::held)
-            .map(|s| (s.data().as_ptr() as usize, s.data().len()))
+            .map(|s| (s.data().addr(), s.data().bytes()))
             .collect();
         seen.sort_unstable();
         seen.dedup();
         SampleMemory {
-            sounds: seen.iter().map(|&(_, n)| n * 4).sum(),
+            sounds: seen.iter().map(|&(_, n)| n).sum(),
             count: seen.len(),
             copies: self.warps.bytes(),
             input: if self.input.is_some() {
@@ -2542,6 +2546,33 @@ impl SamplePage {
         }
     }
 
+    /// The wheel turned a marker's tab that a finger rests on (Jay, 17 Nov:
+    /// hold a control and turn the wheel): on the Wave page it moves as
+    /// the marker's Q-Link moves it, a screen pixel a detent snapped the
+    /// way it turns, or a frame unsnapped with SHIFT (`fine`). False when
+    /// `widget` is not the Wave page's waveform.
+    pub fn held_marker(
+        &mut self,
+        ui: &mut Ui,
+        widget: &str,
+        index: usize,
+        delta: i32,
+        fine: bool,
+    ) -> bool {
+        if widget != wave_tab::WAVE || self.page() != PAGE {
+            return false;
+        }
+        let Some(k) = self
+            .state
+            .as_ref()
+            .and_then(|st| wave_tab::marker_knob(st, index))
+        else {
+            return false;
+        };
+        self.qlink(ui, k, delta, fine);
+        true
+    }
+
     /// The pad's tuning (semitones) and decay (None: it plays out) in the
     /// playing kit, for the Play page's Q-Links. None when the kit has no
     /// sound on the pad, or the synth has the pads.
@@ -3658,6 +3689,25 @@ impl SamplePage {
         (text, sounds)
     }
 
+    /// The analysis of each sound [`SamplePage::save_part`] names, to keep
+    /// beside it in the project's `samples/` (`<id>.a1.peaks`,
+    /// [`cache_file`]): each sound's view as far as it is worked out
+    /// (ready, with its peaks), so the project opens again without
+    /// analysing them. A sound still being worked out has none yet; the
+    /// next save keeps its file.
+    #[allow(dead_code)] // the app's browser wiring calls it
+    pub fn cache_part(&self) -> Vec<(String, Arc<SourceView>)> {
+        let mut seen = HashSet::new();
+        self.projects
+            .iter()
+            .flat_map(|p| p.sources())
+            .filter(|s| seen.insert(s.id()))
+            .filter_map(|s| self.sources.ready(s.id()))
+            .filter(|v| v.pyramid.is_some())
+            .map(|v| (cache_file(v.id), v))
+            .collect()
+    }
+
     /// Opens the sampler's part of a project (`text`, as
     /// [`SamplePage::save_part`] made it). The sounds are read (`read` gives
     /// a file's bytes from the project's `samples/`) and decoded on a
@@ -3683,7 +3733,11 @@ impl SamplePage {
                     )?;
                     wav::read(f, &bytes)
                 });
-                let _ = tx.send(r.map(|o| opened_at_rate(o, rate, free)));
+                let _ = tx.send(r.map(|o| {
+                    let (o, said) = opened_at_rate(o, rate, free);
+                    let views = cached_views(&o, &read);
+                    (o, said, views)
+                }));
             });
         match spawned {
             Ok(_) => {
@@ -3877,10 +3931,29 @@ impl SamplePage {
         };
         self.opening = None;
         match r {
-            Ok((o, converted)) => {
+            Ok((o, converted, views)) => {
                 self.apply_opened(ui, o);
                 for n in converted {
                     self.lines.push(format!("sample: {n}"));
+                }
+                // The views kept beside the sounds: each sound still here
+                // shows its peaks, hits, tempo and note at once.
+                let here: HashSet<SourceId> = self
+                    .projects
+                    .iter()
+                    .flat_map(|p| p.sources())
+                    .map(|s| s.id())
+                    .collect();
+                let mut n = 0;
+                for v in views.into_iter().filter(|v| here.contains(&v.id)) {
+                    self.sources.known(v);
+                    n += 1;
+                }
+                if n > 0 {
+                    self.lines.push(format!(
+                        "sample: the analysis of {n} sound{} read from the project",
+                        if n == 1 { "" } else { "s" }
+                    ));
                 }
             }
             Err(e) => self
@@ -5520,9 +5593,15 @@ impl ToRate {
         if let Some(m) = self.made.get(&s.id()) {
             return Some(m.clone());
         }
-        // The new sound twice over: made, then moved into place.
+        // The new sound twice over: made, then moved into place; and a
+        // 16-bit sound as floats, which the conversion reads.
         let frames = s.frames() as f64 * f64::from(self.rate) / f64::from(s.rate());
-        let need = (frames.ceil() as u64) * u64::from(s.channels()) * 4 * 2;
+        let floats = if s.data().is_16_bit() {
+            s.data().len() as u64 * 4
+        } else {
+            0
+        };
+        let need = (frames.ceil() as u64) * u64::from(s.channels()) * 4 * 2 + floats;
         if crate::memory::room_in((self.free)(), need).is_err() {
             self.skipped.insert(s.id());
             self.kept.push((s.name.clone(), s.rate()));
@@ -5621,6 +5700,23 @@ fn at_rate(mut l: LoadedSound, rate: u32, free: fn() -> Option<u64>) -> LoadedSo
 /// [`ToRate`]: its sounds at other rates converted, its pads, scenes and
 /// slices moved along), with a log line for each kit that had sounds
 /// converted and one for sounds kept at their rate.
+/// The views of `o`'s sounds kept in their cache files, read with `read`
+/// (a file of the project's `samples/`): each one whose file is there and is
+/// this sound's ([`SourceView::from_cache`]). A sound without one is
+/// analysed when it is shown, as before.
+fn cached_views(o: &Opened, read: &ReadSample) -> Vec<Arc<SourceView>> {
+    let mut seen = HashSet::new();
+    o.kits
+        .iter()
+        .flat_map(|(_, p)| p.sources())
+        .filter(|s| seen.insert(s.id()))
+        .filter_map(|s| {
+            let bytes = read(&cache_file(s.id())).ok()?;
+            SourceView::from_cache(s, &bytes).map(Arc::new)
+        })
+        .collect()
+}
+
 fn opened_at_rate(mut o: Opened, rate: u32, free: fn() -> Option<u64>) -> (Opened, Vec<String>) {
     let mut to = ToRate::new(rate, free);
     let mut said = Vec::new();

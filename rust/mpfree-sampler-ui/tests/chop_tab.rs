@@ -434,6 +434,7 @@ fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
     let plain = SourceView {
         id: v.id,
         peaks: v.peaks.clone(),
+        pyramid: v.pyramid.clone(),
         mono: v.mono.clone(),
         tempo: None,
         root: None,
