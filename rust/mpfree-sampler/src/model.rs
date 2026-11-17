@@ -940,6 +940,9 @@ pub enum ChopMode {
     Silence,
 }
 
+/// The name a chop kept for its sound goes by ([`Project::keep_chop`]).
+pub const KEPT_CHOP: &str = "Kept";
+
 /// A named list of slice points on a source. A source can have several, so
 /// re-chopping never loses an earlier chop.
 #[derive(Clone, Debug, PartialEq)]
@@ -1541,6 +1544,12 @@ pub struct Project {
     /// Scenes A and B: the pads as stored, to morph between and go back
     /// to ([`crate::scene`]). Storing one is not an edit (no undo step).
     pub scenes: [Option<crate::scene::Scene>; 2],
+    /// The Chop tab's slices as they were last left, one set a sound
+    /// ([`Project::keep_chop`]), so a chop isn't lost before it goes on
+    /// pads. Like the scenes, keeping one is not an edit (no undo step);
+    /// it is saved with the project and moves with its sound when the
+    /// sound is converted to another rate.
+    kept_chops: Vec<ChopSet>,
 }
 
 impl Project {
@@ -1577,6 +1586,30 @@ impl Project {
 
     pub fn source(&self, id: SourceId) -> Option<&Source> {
         self.sources.iter().find(|s| s.id() == id)
+    }
+
+    /// Keeps `c` as its sound's chop, in place of the one kept before (not
+    /// an undo step; see [`Project::kept_chop`]).
+    pub fn keep_chop(&mut self, c: ChopSet) -> Result<(), ModelError> {
+        if self.source(c.source).is_none() {
+            return Err(ModelError::UnknownSource);
+        }
+        match self.kept_chops.iter_mut().find(|k| k.source == c.source) {
+            Some(k) => *k = c,
+            None => self.kept_chops.push(c),
+        }
+        Ok(())
+    }
+
+    /// The chop kept for sound `id`: its slices as the Chop tab last left
+    /// them.
+    pub fn kept_chop(&self, id: SourceId) -> Option<&ChopSet> {
+        self.kept_chops.iter().find(|k| k.source == id)
+    }
+
+    /// Every chop kept, a sound each.
+    pub fn kept_chops(&self) -> &[ChopSet] {
+        &self.kept_chops
     }
     pub fn sources(&self) -> &[Source] {
         &self.sources
@@ -2375,6 +2408,11 @@ impl Project {
             }
         }
         let moved = convert_sounds(&mut self.sources, &mut pads, &mut self.chop_sets, convert);
+        for r in &moved {
+            for c in &mut self.kept_chops {
+                c.rescale(r);
+            }
+        }
         let scenes = self.scenes.iter_mut().flatten();
         let mut slots: Vec<&mut Vec<Option<Pad>>> = std::iter::once(&mut self.pads)
             .chain(scenes.map(|s| &mut s.pads))
