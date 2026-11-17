@@ -2296,3 +2296,95 @@ fn a_layer_read_in_bulk_is_what_indexing_gives() {
     r.run(r.frame + bar, &z);
     same(&r, "reversed and nudged");
 }
+
+/// A launch (Loop tracks, sequencer S2): a loop stopped or started from a
+/// bar line goes on the frame the line falls on, fading as a mute does,
+/// and comes back where it would have been had it never stopped. The same
+/// for any period size.
+#[test]
+fn a_launch_lands_on_its_bar_line_and_a_stopped_loop_keeps_its_place() {
+    let mut outs = Vec::new();
+    for period in [128, 100, 333] {
+        let mut r = Rig::new(10, period);
+        record_one_bar(&mut r, &sine);
+        let z = dc(0.0);
+        // The loop at frame `f`, in step with the song.
+        let looped = |f: u64| sine(START + (f - START) % BAR as u64);
+        // Off from bar 4's line (tick 3 bars), queued well before it.
+        let off = START + 3 * BAR as u64;
+        assert!(r.l.launch(0, false, Some(3 * BAR_TICKS)));
+        r.run(START + 2 * BAR as u64 + BAR as u64 / 2, &z);
+        let s = r.l.status();
+        assert_eq!((s.on, s.cue), (true, Some((false, 3 * BAR_TICKS))));
+        r.run(off + BAR as u64 / 2, &z);
+        let f = off - BAR as u64 / 2;
+        assert!(near(&r, f, looped(f)), "still on before the line");
+        assert!(
+            (off + FADE as u64..off + BAR as u64 / 2).all(|f| r.left(f) == 0.0),
+            "off a fade after the line"
+        );
+        assert!(r.max_step(off - 10, off + 2 * FADE as u64) <= 0.5 / FADE as f32 + 0.004);
+        // The fade starts on the line's frame, not before: the same as a
+        // loop never stopped up to it, quieter from it.
+        let mut same = Rig::new(10, period);
+        record_one_bar(&mut same, &sine);
+        same.run(off + 4, &z);
+        let (o, k) = (2 * off as usize, 2 * (off as usize + 4));
+        assert_eq!(r.out[..o], same.out[..o], "untouched before the line");
+        assert!(
+            r.out[o..k]
+                .iter()
+                .zip(&same.out[o..k])
+                .all(|(a, b)| a.abs() < b.abs() || *b == 0.0),
+            "fading from the line's frame"
+        );
+        let s = r.l.status();
+        assert_eq!((s.on, s.cue, s.phase), (false, None, Phase::Playing));
+        // On again from bar 6's line: in step, as if it had played on.
+        let on = START + 5 * BAR as u64;
+        assert!(r.l.launch(0, true, Some(5 * BAR_TICKS)));
+        r.run(on + BAR as u64, &z);
+        assert!((on - BAR as u64 / 2..on).all(|f| r.left(f) == 0.0));
+        for f in (on + 2 * FADE as u64..on + BAR as u64 - FADE as u64).step_by(7) {
+            assert!(
+                near(&r, f, looped(f)),
+                "frame {f}: in step after the launch"
+            );
+        }
+        // At once, with no tick: off now.
+        assert!(r.l.launch(0, false, None));
+        let now = r.frame;
+        r.run(now + 2 * FADE as u64 + 400, &z);
+        assert_eq!(r.left(r.frame - 1), 0.0);
+        assert!(!r.l.status().on);
+        // A first pass recorded after Clear plays: recording turns it on.
+        r.cmd(L::Clear);
+        r.run(r.frame + 2 * FADE as u64, &z);
+        r.cmd(L::Record);
+        r.run(r.frame + 1, &z);
+        assert!(r.l.status().on);
+        outs.push(r.out);
+    }
+    assert!(outs.windows(2).all(|w| w[0] == w[1]), "any period size");
+}
+
+/// A launch for a bar line the song jumps past still lands, on the first
+/// line after it; and a launch for a loop that isn't there is refused.
+#[test]
+fn a_launch_the_song_jumps_past_lands_on_the_next_line() {
+    let mut r = Rig::new(10, 128);
+    record_one_bar(&mut r, &dc(0.25));
+    let z = dc(0.0);
+    assert!(r.l.launch(0, false, Some(3 * BAR_TICKS)));
+    // Locate past it (to bar 8), while playing.
+    let j = START + 2 * BAR as u64 + 500;
+    r.at(j, T::Locate(7 * BAR_TICKS + 100));
+    r.run(j + 2 * BAR as u64, &z);
+    let s = r.l.status();
+    assert_eq!((s.on, s.cue), (false, None));
+    assert_eq!(r.left(r.frame - 1), 0.0);
+    let before = r.l.stats().no_layer;
+    assert!(r.l.launch(MAX_LOOPS, true, None));
+    r.run(r.frame + 128, &z);
+    assert_eq!(r.l.stats().no_layer, before + 1);
+}
