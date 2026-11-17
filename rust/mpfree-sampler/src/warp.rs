@@ -299,7 +299,7 @@ impl Warps {
         let s = project.source(key.source).ok_or(StretchError::Empty)?;
         let ch = usize::from(s.channels());
         let (a, b) = (key.start as usize * ch, key.end as usize * ch);
-        let data = s.data().get(a..b).ok_or(StretchError::Empty)?;
+        let data = s.data().f32s(a..b).ok_or(StretchError::Empty)?;
         let map = match Warps::pinned_warp(project, key) {
             Some(w) => TimeMap::new(CopyMap::new(&w, s.rate(), key).points().to_vec())?,
             None => TimeMap::to_length(key.end - key.start, key.frames)?,
@@ -502,7 +502,7 @@ impl Process {
         let ch = usize::from(s.channels());
         let data = s
             .data()
-            .get(r.start as usize * ch..r.end as usize * ch)
+            .f32s(r.start as usize * ch..r.end as usize * ch)
             .ok_or(StretchError::Empty)?;
         // Pins a stretch would follow are made part of the new audio.
         let map = match r.warp.as_ref().filter(|w| w.pinned()) {

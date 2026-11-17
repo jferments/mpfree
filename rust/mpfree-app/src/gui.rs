@@ -16260,7 +16260,7 @@ mod tests {
             let s = p.sample.project(0).unwrap().source(src).unwrap();
             let ch = usize::from(s.channels());
             (0..s.frames() as usize)
-                .find(|&f| s.data()[f * ch..f * ch + ch].iter().all(|x| *x == 0.0))
+                .find(|&f| (f * ch..f * ch + ch).all(|i| s.data().get(i) == 0.0))
                 .expect("a silent frame in the break") as u64
         };
         p.sample

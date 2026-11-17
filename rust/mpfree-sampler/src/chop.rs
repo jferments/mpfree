@@ -35,11 +35,12 @@ pub struct SourceAnalysis {
 impl SourceAnalysis {
     pub fn analyse(source: &Source) -> SourceAnalysis {
         let ch = usize::from(source.channels());
-        // A Source is always 1 or 2 channels with whole frames, so these hold.
-        let mono =
-            mpfree_analysis::mono(source.data(), ch).expect("source layout is checked on creation");
-        let onsets = OnsetAnalysis::analyse(source.data(), ch, source.rate())
-            .expect("source layout is checked on creation");
+        // A Source is always 1 or 2 channels with whole frames, so these
+        // hold. The hits are found in the mono mix, as they would be from
+        // the channels.
+        let mono = source.data().mono(ch);
+        let onsets =
+            OnsetAnalysis::analyse(&mono, 1, source.rate()).expect("a source's rate isn't 0");
         let tempo = estimate_tempo(&onsets);
         let pitch =
             root_pitch(&mono, 1, source.rate(), PitchSettings::default()).expect("mono input");

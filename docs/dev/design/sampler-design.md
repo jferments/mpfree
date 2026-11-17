@@ -175,7 +175,7 @@ The pool size starts at 64 voices and is set by measurement on the RK3288.
 
 ### Memory
 
-Sources are held in RAM as 32-bit float stereo, about 21 MB a minute; 1.2 GB is about 57 minutes. A 16-bit source can be kept as 16-bit and converted per sample read, halving its memory; the cost of the conversion is measured before deciding. Long sources that don't fit stream from disk: the first second is kept in RAM so a hit starts at once, and a reader thread on core 1 keeps each streaming voice a few hundred milliseconds ahead. Disk streaming is a later step; the first versions keep everything in RAM.
+Sources are held in RAM as 32-bit floats, about 21 MB a minute of stereo; 1.2 GB is about 57 minutes. A 16-bit source (every sample a 16-bit value) is kept as 16 bits and converted as it is read, at half the memory, about 10 MB a minute (built in R2; costs in [sampler-architecture.md](sampler-architecture.md#the-voice)). Long sources that don't fit stream from disk: the first second is kept in RAM so a hit starts at once, and a reader thread on core 1 keeps each streaming voice a few hundred milliseconds ahead. Disk streaming is a later step; the first versions keep everything in RAM.
 
 The MPC One's process limit is 32-bit (about 3 GB of address space) and the board has about 2 GB of RAM. The earlier plan budgets about 1.4 GB for samples once Akai's app is not running; the real figure is measured on the test build.
 

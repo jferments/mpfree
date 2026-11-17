@@ -22,7 +22,7 @@ pub mod tempo;
 pub mod zero;
 
 pub use onsets::{Onset, OnsetAnalysis};
-pub use peaks::{Column, PeakError, PeakPyramid, BASE_BLOCK, LEVELS};
+pub use peaks::{Column, PeakError, PeakPyramid, Samples, BASE_BLOCK, LEVELS};
 pub use pitch::{note_name, root_pitch, yin, Pitch, PitchSettings};
 pub use silence::{sound_spans, SilenceSettings};
 pub use tempo::{estimate_tempo, loop_tempo, Tempo};
