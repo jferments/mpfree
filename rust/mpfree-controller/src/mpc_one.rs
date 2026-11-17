@@ -146,6 +146,47 @@ pub fn pad_index(note: u8) -> Option<u8> {
     PAD_NOTES.iter().position(|&n| n == note).map(|i| i as u8)
 }
 
+/// A button's name as printed on the MPC One's panel, by its note (the
+/// same number as its light's CC). `None` for a number no button sends.
+pub fn button_name(note: u8) -> Option<&'static str> {
+    use button::*;
+    Some(match note {
+        FULL_LEVEL => "FULL LEVEL",
+        SHIFT => "SHIFT",
+        STOP => "STOP",
+        PLAY => "PLAY",
+        TAP_TEMPO => "TAP TEMPO",
+        MENU => "MENU",
+        NOTE_REPEAT => "NOTE REPEAT",
+        MINUS => "-",
+        PLUS => "+",
+        REC => "REC",
+        OVERDUB => "OVERDUB",
+        PLAY_START => "PLAY START",
+        UNDO => "UNDO",
+        BROWSE => "BROWSE",
+        MAIN => "MAIN",
+        DATA_PUSH => "the wheel's push",
+        35 => "PAD BANK A",
+        36 => "PAD BANK B",
+        37 => "PAD BANK C",
+        38 => "PAD BANK D",
+        SIXTEEN_LEVEL => "16 LEVEL",
+        ERASE => "ERASE",
+        COPY => "COPY",
+        TC => "TC",
+        TRACK_MIX => "TRACK MIX",
+        Q_LINK => "Q-LINK",
+        TRACK_MUTE => "TRACK MUTE",
+        NEXT_SEQ => "NEXT SEQ",
+        STEP_SEQ => "STEP SEQ",
+        SAMPLER => "SAMPLER",
+        SAMPLE_EDIT => "SAMPLE EDIT",
+        PROG_EDIT => "PROG EDIT",
+        _ => return None,
+    })
+}
+
 fn index_of(table: &[u8], v: u8) -> Option<u8> {
     table.iter().position(|&n| n == v).map(|i| i as u8)
 }

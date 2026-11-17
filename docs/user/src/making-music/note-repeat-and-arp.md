@@ -38,8 +38,10 @@ You can also set the rate without holding NOTE REPEAT: press **MENU** on the Pla
 
 What a new pad press does while Latch is on is a setting in [Prefs](../reference/prefs.md), **Latch keeps pads**:
 
-- **Replace** (the default): a fresh press after you let go of everything starts a new set of latched pads.
+- **Replace** (the default): a fresh press after you let go of everything starts a new set of latched pads. To latch several pads, hold them down together.
 - **Toggle**: each press adds that pad to the set or takes it out, so you can build a groove pad by pad.
+
+A latched pad repeats at the velocity you struck it with, not at the pressure of your finger as it lifted.
 
 Latched pads stay lit on the MPC, and the top bar says so.
 

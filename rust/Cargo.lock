@@ -1065,9 +1065,11 @@ version = "0.1.0"
 name = "mpfree-midi-ui"
 version = "0.1.0"
 dependencies = [
+ "mpfree-controller",
  "mpfree-library",
  "mpfree-midi",
  "mpfree-mixer-ui",
+ "mpfree-param",
  "mpfree-ui",
 ]
 

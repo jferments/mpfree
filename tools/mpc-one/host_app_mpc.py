@@ -598,10 +598,10 @@ def app_lines(mpc, since):
         if not m or float(m.group(1)) < since:
             continue
         rest = m.group(2)
-        # "sh[1246]: text" or "systemd[1]: text": keep the text, and who wrote it if not the app. The log is
-        # the app unit's only. Its ExecStart is /bin/sh start-app.sh, which execs the app, so journald names
-        # the app's lines "sh" (the final round's creator stick, 16 Nov); a unit that starts the app itself
-        # names them "mpfree", or "mpfree-hello" on a stick built before the rename.
+        # "mpfree[1246]: text" or "systemd[1]: text": keep the text, and who wrote it if not the app. The log is
+        # the app unit's only. Its unit names the app's lines "mpfree" (SyslogIdentifier). A stick built before
+        # that names them "sh", because the unit's ExecStart is /bin/sh start-app.sh, which execs the app (the
+        # final round's creator stick, 16 Nov), and one built before the rename "mpfree-hello".
         ident, sep, message = rest.partition(": ")
         if not sep:
             message = rest

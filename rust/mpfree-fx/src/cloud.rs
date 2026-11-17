@@ -43,6 +43,7 @@ use std::f32::consts::{LN_10, PI};
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
+use crate::kit::{self, Blend};
 use crate::oversample::{IirDown2, IirUp2};
 use crate::svf::Segs;
 use crate::{defaults, flush, lerp, Preset};
@@ -69,6 +70,8 @@ pub mod ids {
     /// reverb rolls off above about a fifth of the rate (9 kHz at 44.1
     /// kHz) for about a quarter of Full's cost.
     pub const QUALITY: u16 = 14;
+    /// How Mix blends ([`crate::kit::MIX_CURVES`]).
+    pub const MIX_CURVE: u16 = 15;
 }
 
 /// The qualities, as [`ids::QUALITY`] values.
@@ -83,7 +86,7 @@ static INFO: NodeInfo = NodeInfo {
     name: "Cloud reverb",
     kind: Kind::Effect,
 };
-static PARAMS: [ParamInfo; 15] = [
+static PARAMS: [ParamInfo; 16] = [
     ParamInfo {
         id: 0,
         name: "Character",
@@ -247,6 +250,17 @@ static PARAMS: [ParamInfo; 15] = [
         default: 2.0,
         unit: Unit::None,
         curve: Curve::Choice(QUALITIES),
+        readonly: false,
+    },
+    ParamInfo {
+        id: 15,
+        name: "Mix curve",
+        group: "Output",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(kit::MIX_CURVES),
         readonly: false,
     },
 ];
@@ -1604,7 +1618,7 @@ struct Tick {
 /// The Cloud reverb: a port of Cloud Seed with five characters, freeze and
 /// gliding controls.
 pub struct Cloud {
-    v: [f32; 15],
+    v: [f32; 16],
     /// The rate the reverb's network runs at: the node's own rate, or half
     /// of it at Eco.
     rate: u32,
@@ -1645,7 +1659,7 @@ pub struct Cloud {
     log_high: Smooth,
     width: Smooth,
     early: Smooth,
-    mix: Smooth,
+    blend: Blend,
     frozen: Smooth,
     damp_a: f32,
     low_a: f32,
@@ -1736,7 +1750,7 @@ impl Cloud {
             log_high: Smooth::new(v[9].log2()),
             width: Smooth::new(v[10] / 100.0),
             early: Smooth::new(v[11] / 100.0),
-            mix: Smooth::new(v[12] / 100.0),
+            blend: Blend::new(v[12] / 100.0, v[15] as usize),
             frozen: Smooth::new(v[13]),
             damp_a: 0.0,
             low_a: 0.0,
@@ -1772,7 +1786,8 @@ impl Cloud {
             ids::HIGH_CUT => self.log_high.target = v.log2(),
             ids::WIDTH => self.width.target = v / 100.0,
             ids::EARLY => self.early.target = v / 100.0,
-            ids::MIX => self.mix.target = v / 100.0,
+            ids::MIX => self.blend.set_mix(v / 100.0),
+            ids::MIX_CURVE => self.blend.set_curve(v),
             ids::FREEZE => self.frozen.target = v,
             _ => {}
         }
@@ -1854,7 +1869,7 @@ impl Cloud {
         for s in [&mut self.width, &mut self.early] {
             s.set_time(rate, 20.0);
         }
-        self.mix.set_time(self.host, 20.0);
+        self.blend.set_time(self.host, 20.0);
         self.frozen.set_time(rate, 30.0);
         self.dip_step = 1.0 / (0.015 * rate as f32);
         self.filters();
@@ -1962,12 +1977,8 @@ impl Cloud {
             high: [0.0; CHUNK],
             pre: [0.0; CHUNK],
         };
-        let (mut gain, mut early, mut width, mut mix) = (
-            [0.0f32; CHUNK],
-            [0.0f32; CHUNK],
-            [0.0f32; CHUNK],
-            [0.0f32; CHUNK],
-        );
+        let (mut gain, mut early, mut width) = ([0.0f32; CHUNK], [0.0f32; CHUNK], [0.0f32; CHUNK]);
+        let mut mix = [(0.0f32, 0.0f32); CHUNK];
         let ms = self.rate as f32 / 1000.0;
         let mut n = 0;
         while n < room.min(left.len()) {
@@ -2022,7 +2033,7 @@ impl Cloud {
             early[n] = self.early.next();
             width[n] = self.width.next();
             if !wet_only {
-                mix[n] = self.mix.next();
+                mix[n] = self.blend.next();
             }
             n += 1;
         }
@@ -2060,8 +2071,8 @@ impl Cloud {
                 left[k] = (m + s) * gain[k];
                 right[k] = (m - s) * gain[k];
             } else {
-                left[k] = lerp(left[k], (m + s) * gain[k], mix[k]);
-                right[k] = lerp(right[k], (m - s) * gain[k], mix[k]);
+                left[k] = kit::blend(left[k], (m + s) * gain[k], mix[k]);
+                right[k] = kit::blend(right[k], (m - s) * gain[k], mix[k]);
             }
         }
         n
@@ -2102,9 +2113,9 @@ impl Cloud {
         }
         for i in 0..take {
             let (wl, wr) = self.eco.pop();
-            let mix = self.mix.next();
-            left[i] = lerp(left[i], wl, mix);
-            right[i] = lerp(right[i], wr, mix);
+            let g = self.blend.next();
+            left[i] = kit::blend(left[i], wl, g);
+            right[i] = kit::blend(right[i], wr, g);
         }
         take
     }
@@ -2170,11 +2181,11 @@ impl Node for Cloud {
             &mut self.log_high,
             &mut self.width,
             &mut self.early,
-            &mut self.mix,
             &mut self.frozen,
         ] {
             s.snap(s.target);
         }
+        self.blend.snap();
         self.dip = 1.0;
         self.tick = 0;
         self.configure(self.want, self.want_q);
@@ -2189,7 +2200,7 @@ impl Node for Cloud {
     }
     fn can_lead(&self, frames: u32) -> bool {
         // Mix must be all wet: any dry signal would come out late.
-        if self.v[12] < 100.0 || self.mix.value != 1.0 {
+        if self.v[12] < 100.0 || !self.blend.all_wet() {
             return false;
         }
         // At Eco the lead is whole network frames, two at the node's rate.

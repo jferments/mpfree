@@ -50,6 +50,8 @@ The buttons above the screen, such as **MENU**, **MAIN**, **STEP SEQ**, **SAMPLE
 - **MENU** opens the options for the page you are on.
 - **SHIFT + MENU** opens **Prefs**, MPFree's settings.
 
+Some mode buttons change what the pads are instead, over whatever page you are on: **STEP SEQ** makes them the steps of a pattern, **TRACK MUTE** makes them mute buttons, and **16 LEVEL** plays one sound at 16 levels. Only one of them has the pads at a time, and its button is lit; press it again to play the pads as usual.
+
 **NOTE REPEAT** makes a pad repeat in time while you hold it; see [Note Repeat, Latch and the arpeggiator](../making-music/note-repeat-and-arp.md).
 
 ## The connectors

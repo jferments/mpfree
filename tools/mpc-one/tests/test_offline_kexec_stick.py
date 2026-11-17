@@ -77,6 +77,16 @@ def fake_elf(machine=40, flags=0x05000400, etype=2, interp=False):
     return head + ph + b"FAKE-SCREEN-LOG" * 100
 
 
+def fake_helper(glibc=b"GLIBC_2.34"):
+    """A stand-in for mpfree-fetch: a position-independent ARM program with the MPC's loader as its interpreter."""
+    interp = b"/lib/ld-linux-armhf.so.3\0"
+    head = b"\x7fELF\x01\x01\x01" + b"\x00" * 9 + struct.pack(
+        "<HHIIIIIHHHHHH", 3, 40, 1, 0x1000, 52, 0, 0x05000400, 52, 32, 2, 40, 0, 0)
+    ph = struct.pack("<8I", 1, 0, 0, 0, 4096, 4096, 5, 0x1000)
+    ph += struct.pack("<8I", 3, 116, 0, 0, len(interp), len(interp), 4, 1)
+    return head + ph + interp + b"GLIBC_2.4\0" + glibc + b"\0" + b"FAKE-FETCH" * 100
+
+
 def new_board(variant=False, phy=True):
     tree = board_tree()
     new_parts(tree, phy)
@@ -408,6 +418,13 @@ class KexecStickTests(unittest.TestCase):
         else:
             for name in ("jump", "cmdline", "kernel.sha256"):
                 self.assertIn("File not found", self.dfs(root_img, f"stat /boot/mpfree-softreboot/{name}"))
+        # Akai's LoadPin trust-points unit fails on every soft-reboot, so a soft-reboot stick masks it; on the
+        # kexec-file route its read pins the stick's root, so it stays.
+        loadpin = self.dfs(root_img, "stat /etc/systemd/system/az0x-loadpin-trustpoints.service")
+        if kexec_file:
+            self.assertIn("File not found", loadpin)
+        else:
+            self.assertIn('Fast link dest: "/dev/null"', loadpin)
         if chain:
             listed += ["/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-chain.service",
                        "/etc/mpfree-test/chain-done.sh", "/etc/systemd/system/mpfree-test-chain-done.service",
@@ -828,6 +845,36 @@ class KexecStickTests(unittest.TestCase):
                               (("--app", app, "--kits", too_big), "is not a kits file"),
                               (("--app", self.key + ".pub", "--kits", kits), "is not a 32-bit little-endian ELF"),
                               (("--app", os.path.join(self.tmp, "missing"), "--kits", kits), "build the pad player")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+
+    def test_download_helper_beside_the_pad_player(self):
+        """--fetch: mpfree-fetch, dynamic (the static pad player can't open libcurl), at FETCH_PROGRAM."""
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        kits = self.kits_file("elsewhere", count=2)
+        helper = os.path.join(self.tmp, "mpfree-fetch")
+        write(helper, fake_helper(), 0o755)
+        res = self.build("--app", app, "--kits", kits, "--fetch", helper)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"download helper: {helper} (", res.stdout)
+        [folder] = self.outputs()
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
+        out = os.path.join(self.tmp, "fetch-back")
+        run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree-fetch {out}", root_img])
+        with open(out, "rb") as fh:
+            self.assertEqual(fh.read(), fake_helper())
+        self.assertIn("Mode:  0755", self.dfs(root_img, "stat /etc/mpfree-test/mpfree-fetch"))
+        bad_glibc = os.path.join(self.tmp, "new-glibc")
+        write(bad_glibc, fake_helper(b"GLIBC_2.43"), 0o755)
+        for args, problem in ((("--fetch", helper), "--fetch needs --app"),
+                              (("--app", app, "--kits", kits, "--fetch", app), "not linked dynamically"),
+                              (("--app", app, "--kits", kits, "--fetch", bad_glibc),
+                               "built against glibc 2.43, newer than the MPC's 2.39"),
+                              (("--app", app, "--kits", kits, "--fetch", os.path.join(self.tmp, "none")),
+                               "build mpfree-fetch first")):
             res = self.build(*args)
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn(problem, res.stdout)
@@ -1267,6 +1314,94 @@ class KexecStickTests(unittest.TestCase):
         self.expect_stop("cannot tell which release the MPC runs")
 
 
+class EthernetRetryTests(unittest.TestCase):
+    """ethernet-retry.sh against a fake root under BusyBox's shell: a fake clock (sleep moves /proc/uptime on),
+    a fake kernel log, and a fake ip that notes when it ran and can bring eth0 up."""
+
+    def setUp(self):
+        self.bb = shutil.which("busybox")
+        if not self.bb:
+            if os.environ.get("MPFREE_REQUIRE_BUSYBOX") == "1":
+                self.fail("busybox is missing")
+            self.skipTest("busybox not installed")
+        self.tmp = tempfile.mkdtemp(prefix="mpfree-eth-retry-test-")
+        self.root, self.bin = os.path.join(self.tmp, "root"), os.path.join(self.tmp, "bin")
+        self.log = os.path.join(self.tmp, "log")
+        now = 'cut -d. -f1 "$FAKE_ROOT/proc/uptime"'
+        write(os.path.join(self.bin, "sleep"),
+              f'#!/bin/sh\nt=$(( $({now}) + $1 ))\nprintf \'%s.00 1.00\\n\' "$t" > "$FAKE_ROOT/proc/uptime"\n'
+              'if [ -n "${FAKE_UP_AT:-}" ] && [ "$t" -ge "$FAKE_UP_AT" ]; then\n'
+              '  printf \'0x1003\\n\' > "$FAKE_ROOT/sys/class/net/eth0/flags"\nfi\n', 0o755)
+        write(os.path.join(self.bin, "dmesg"),
+              f'#!/bin/sh\ncat "$FAKE_ROOT/kernel-log"\n'
+              f'if [ -n "${{FAKE_FAIL_AT:-}}" ] && [ "$({now})" -ge "$FAKE_FAIL_AT" ]; then\n'
+              '  echo "[    8.010000] rk_gmac-dwmac ff290000.ethernet eth0: Failed to reset the dma"\nfi\n', 0o755)
+        write(os.path.join(self.bin, "ip"),
+              f'#!/bin/sh\necho "ip $* at $({now})" >> "$FAKE_LOG"\n'
+              'if [ "${FAKE_IP_UP:-}" = 1 ]; then printf \'0x1003\\n\' > "$FAKE_ROOT/sys/class/net/eth0/flags"; fi\n',
+              0o755)
+        write(os.path.join(self.bin, "mount"), '#!/bin/sh\necho "mount $*" >> "$FAKE_LOG"\n', 0o755)
+        for tool in ("cat", "cut", "grep", "sed", "mkdir"):
+            write(os.path.join(self.bin, tool), f'#!/bin/sh\nexec {self.bb} {tool} "$@"\n', 0o755)
+        for rel, text in (("proc/uptime", "7.20 1.00\n"), ("proc/mounts", "proc /proc proc rw 0 0\n"),
+                          ("sys/class/net/eth0/flags", "0x1002\n"), ("sys/class/net/eth0/operstate", "up\n"),
+                          ("kernel-log", "[    0.300000] rk_gmac-dwmac ff290000.ethernet: fake\n")):
+            write(os.path.join(self.root, rel), text)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_script(self, **env):
+        script = stick_module().ETHERNET_SCRIPT.replace("R=''", f"R='{self.root}'", 1)
+        res = subprocess.run([self.bb, "sh", "-c", fakes_first(self.bin) + script],
+                             env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root, **env},
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+        calls = []
+        if os.path.exists(self.log):
+            with open(self.log) as fh:
+                calls = fh.read().splitlines()
+        return res, [c for c in calls if c.startswith("ip ")]
+
+    def recorded(self):
+        return sorted(os.listdir(os.path.join(self.root, "run/mpfree-test-eth")))
+
+    def test_dma_failure_retries_at_once(self):
+        res, ip = self.run_script(FAKE_FAIL_AT="8", FAKE_IP_UP="1")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(ip, ["ip link set eth0 up at 10"])
+        self.assertIn("mpfree-test-ethernet: eth0 failed to start (Failed to reset the dma); "
+                      "starting it again at 10 s", res.stdout)
+        self.assertIn("eth0 is up at 20 s (operstate up); no retry needed", res.stdout)
+        self.assertEqual(self.recorded(), ["ethernet-1-early-7s.txt", "ethernet-2-at-13s-after-early-retry.txt",
+                                           "ethernet-3-at-15s.txt", "ethernet-4-at-20s-eth0-up.txt"])
+
+    def test_up_first_time_needs_no_retry(self):
+        res, ip = self.run_script(FAKE_UP_AT="9")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(ip, [])
+        self.assertNotIn("starting it again", res.stdout)
+        self.assertEqual(self.recorded(), ["ethernet-1-early-7s.txt", "ethernet-2-at-15s.txt",
+                                           "ethernet-3-at-20s-eth0-up.txt"])
+
+    def test_a_failure_from_before_the_service_does_not_count(self):
+        # A soft-reboot keeps the kernel log of the boot before it; only a new failure starts the early retry.
+        with open(os.path.join(self.root, "kernel-log"), "a") as fh:
+            fh.write("[    6.000000] rk_gmac-dwmac ff290000.ethernet eth0: Failed to reset the dma\n")
+        res, ip = self.run_script()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(ip, ["ip link set eth0 up at 20", "ip link set eth0 up at 45", "ip link set eth0 up at 90"])
+        self.assertNotIn("failed to start", res.stdout)
+        self.assertIn("eth0 retries done", res.stdout)
+
+    def test_the_later_retries_stay_when_the_early_one_does_not_help(self):
+        res, ip = self.run_script(FAKE_FAIL_AT="8")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(ip, ["ip link set eth0 up at 10", "ip link set eth0 up at 20",
+                              "ip link set eth0 up at 45", "ip link set eth0 up at 90"])
+        self.assertEqual(res.stdout.count("Failed to reset the dma"), 1)  # one early retry only
+        self.assertIn("eth0 retries done", res.stdout)
+
+
 class StaticTests(unittest.TestCase):
     def test_ethernet_script_changes_only_ram(self):
         spec = importlib.util.spec_from_file_location("kexec_stick", TOOL)
@@ -1285,9 +1420,10 @@ class StaticTests(unittest.TestCase):
         changing = [line for line in lines if re.search(r"\b(mount|ip|mkdir)\b", line)]
         self.assertEqual(changing, [
             'mkdir -p "$out"',
-            "grep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug",
-            "ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'",
+            "grep -q ' /sys/kernel/debug debugfs ' \"$R/proc/mounts\" || mount -t debugfs debugfs /sys/kernel/debug",
+            "start_eth0() { ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'; }",
         ])
+        self.assertEqual(lines.count("R=''"), 1)
         for line in lines:
             for target in re.findall(r">\s*(\S+)", line.replace("2>&1", "").replace("2>/dev/null", "")):
                 self.assertEqual(target, '"$out/ethernet-$1.txt"', line)
@@ -1390,6 +1526,10 @@ class StaticTests(unittest.TestCase):
             self.assertNotIn(word, unit)
         self.assertEqual(re.findall(r"(?m)^ExecStart\S*=.*$", unit), ["ExecStart=/bin/sh /etc/mpfree-test/start-app.sh"])
         self.assertEqual(tool.APP_UID, 960)
+        # The unit runs `sh start-app.sh`, which execs the app: without SyslogIdentifier journald names every
+        # pad player line `sh[pid]` (the final round, 16 Nov).
+        for unit in (tool.APP_USER_UNIT.format(user="mpfree", after=""), tool.APP_UNIT.format(after="")):
+            self.assertEqual(re.findall(r"(?m)^SyslogIdentifier=.*$", unit), ["SyslogIdentifier=mpfree"])
 
     def test_busybox_find_takes_the_storage_scripts_expression(self):
         """The MPC's shell tools may be BusyBox: its find must understand -xdev, -path ... -prune, ! -user and

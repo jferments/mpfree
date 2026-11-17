@@ -37,6 +37,7 @@ use std::time::Duration;
 
 pub use learn::control_text;
 pub use monitor::words as monitor_words;
+pub use monitor::DevMonitor;
 use mpfree_midi::cv::CV_OUTS;
 pub use mpfree_midi::monitor::Monitor;
 pub use mpfree_midi::setup::MidiSetup;
@@ -44,8 +45,11 @@ pub use mpfree_midi::setup::MidiSetup;
 mod cv;
 mod form;
 mod learn;
+pub mod log;
 mod midi;
 mod monitor;
+mod now;
+mod port_page;
 mod sync;
 
 pub mod sample;
@@ -58,6 +62,8 @@ pub struct PortLive {
     pub name: String,
     /// What the screen says under its name ("5-pin jacks", "USB").
     pub kind: String,
+    /// What its page says about it ("USB · port 2 of 4 on MIO4").
+    pub about: String,
     pub has_in: bool,
     pub has_out: bool,
     /// When something last arrived on its input (the app's clock).
@@ -98,6 +104,23 @@ pub struct Live {
     /// its address.
     pub learn_names: Vec<String>,
     pub built: Built,
+    /// The developer tools are on (Prefs › Show developer tools): the app
+    /// lists the MPC's own controller and its events, and writes the
+    /// monitor's lines to its log in RAM for the workstation console.
+    pub debug: bool,
+    /// The Monitor's Save log can write: the store saves to a data folder
+    /// (its `files/midi-logs/`).
+    pub saves_logs: bool,
+    /// The app's word on the last Save log ("Saved 42 lines to ..."), for
+    /// the Monitor that asked to say once.
+    pub log_saved: Option<String>,
+    /// How early MIDI out can send a message before its frame is heard,
+    /// in ms (the sound's lead): a port's gear delay is made up for up to
+    /// this much.
+    pub early_ms: f32,
+    /// The app's word on the last [`Asks::port_send`] ("Test note C4 sent
+    /// to MIDI on ch 1"), for the port's page to say once.
+    pub port_said: Option<String>,
 }
 
 impl Default for Live {
@@ -106,6 +129,7 @@ impl Default for Live {
             ports: vec![PortLive {
                 name: mpfree_midi::setup::DIN_NAME.to_string(),
                 kind: "5-pin jacks".to_string(),
+                about: "The MPC's 5-pin MIDI In and Out jacks".to_string(),
                 has_in: true,
                 has_out: true,
                 last_in: None,
@@ -115,6 +139,11 @@ impl Default for Live {
             cv_volts: [0.0; CV_OUTS],
             learn_names: Vec::new(),
             built: Built::default(),
+            debug: false,
+            saves_logs: false,
+            log_saved: None,
+            early_ms: 0.0,
+            port_said: None,
         }
     }
 }
@@ -142,6 +171,55 @@ pub struct IoModel {
     /// copies its port table in when ports come and go
     /// ([`Monitor::set_ports`]). Not part of the setup: `gen` doesn't move.
     pub monitor: Monitor,
+    /// What the sections asked the app to do, taken by the app at its next
+    /// look at the model.
+    pub asks: Asks,
+}
+
+/// What a section asks the app for (each is taken once).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Asks {
+    /// The Monitor's "Send note-offs to MIDI out": end every note MPFree
+    /// left on there (only those it sent; never a blind All notes off).
+    pub note_offs: bool,
+    /// The Monitor's Save log: a log for the store to keep as a new file
+    /// in `files/midi-logs/` ([`log::file_name`]). The app answers in
+    /// [`Live::log_saved`].
+    pub save_log: Option<LogToSave>,
+    /// A port page's "Send to it": what to send to which port. The app
+    /// answers in [`Live::port_said`].
+    pub port_send: Option<PortSend>,
+}
+
+/// What a port's page asks MIDI out to send to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortSend {
+    /// The port's name.
+    pub port: String,
+    pub what: ToPort,
+}
+
+/// The port page's two sends. Both are labelled SENDS MIDI on the page and
+/// greyed while MIDI out is off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToPort {
+    /// C4 (note 60) at velocity 100 on this channel (0 to 15), ended half
+    /// a second later.
+    TestNote { channel: u8 },
+    /// The notes MPFree left on there end, then All notes off (CC 123) on
+    /// all 16 channels.
+    AllNotesOff,
+}
+
+/// A log the Monitor asks to be saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogToSave {
+    /// When it was saved, as its file is named ("2026-11-16-1958").
+    pub stamp: String,
+    /// The file's text ([`log::saved`]).
+    pub text: String,
+    /// How many lines it lists.
+    pub lines: usize,
 }
 
 /// The project's `midi` part (`parts/midi.txt`): the song's share of the

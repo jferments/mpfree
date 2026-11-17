@@ -9,8 +9,8 @@ use mpfree_audiotracks::{
 use mpfree_fx::ids;
 use mpfree_fx::{
     CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive,
-    Eq, Flanger, Frozen, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, Perform, Phaser,
-    Print, PrintJob, PrintState, StripId, Tail,
+    Eq, Flanger, Frozen, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap, Perform,
+    Phaser, Print, PrintJob, PrintState, StripId, Tail, TapeDelay,
 };
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
@@ -1129,6 +1129,12 @@ pub fn all(rate: u32) -> Vec<Case> {
     }
     v.push(measured(|| {
         effect("Delay", rate, Box::new(Delay::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Tape delay", rate, Box::new(TapeDelay::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Multi-tap delay", rate, Box::new(MultiTap::new()), &[])
     }));
     v.push(measured(|| {
         effect("Comb", rate, Box::new(Comb::new()), &[])

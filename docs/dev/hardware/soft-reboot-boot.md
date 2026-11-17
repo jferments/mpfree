@@ -97,7 +97,7 @@ On any problem the jump logs `STOP: <reason>` to the kernel log and `/run/mpfree
 
 ### The opt-in kexec-file route
 
-A stick built with `offline-kexec-stick.py --kexec-file` carries three more files in `/boot/mpfree-softreboot/`, all in its `SHA256SUMS`:
+A stick built with `offline-kexec-stick.py --kexec-file`, or by the USB creator with the same flag ([developer routes](../design/usb-creator.md#developer-routes-kexec-file-loadpin-off-the-chain); `--loadpin-off` and `--chain` too), carries three more files in `/boot/mpfree-softreboot/`, all in its `SHA256SUMS`:
 - `jump`: `kexec-file`;
 - `cmdline`: the kernel command line, with `root=` this stick's partition 1; `--loadpin-off` adds `loadpin.enforce=0`;
 - `kernel.sha256`: the hash of Akai's `/boot/zImage-<release>`.
@@ -154,7 +154,7 @@ If any step fails it saves its notes to the stick's log partition and exits 1, a
 | --- | --- | --- |
 | Akai's kernel, device tree, command line and boot ID | The eMMC and SD controllers are on; the stick's userspace must suit the kernel | The switch-off service; the hook's `release` check |
 | Modules loaded in Akai's first 6 s | Sound card, MIDI and Ethernet drivers are already there | Nothing to do; no `--preload-module` was needed |
-| LoadPin, with its pinned root gone | Once Akai's verity root is detached, LoadPin refuses **every** later module, firmware and kexec load | Extra modules only via `preload-modules.txt`, loaded by Akai's system before the switch. Wi-Fi firmware cannot load (not needed for the first release). Akai's `az0x-loadpin-trustpoints` fails, harmlessly |
+| LoadPin, with its pinned root gone | Once Akai's verity root is detached, LoadPin refuses **every** later module, firmware and kexec load | Extra modules only via `preload-modules.txt`, loaded by Akai's system before the switch. Wi-Fi firmware cannot load (not needed for the first release). Akai's `az0x-loadpin-trustpoints` would fail on every power-on, harmlessly, so the soft-reboot stick masks it (a stick with `--kexec-file` keeps it: there its read pins the stick's root) |
 | `/run`, including the udev database | The hook's notes stay readable. The stick's systemd also takes over Akai's device units and the units their udev rules want (`SYSTEMD_WANTS`), which can start on the eMMC or SD card before the switch-off ends | Every Akai unit that can touch a disk is masked; the build report lists all udev-started units |
 | `/dev`, moved into the new root | Stale `/dev/disk/by-*` links to the eMMC | Removed by the switch-off script |
 | `/run/nextroot`, left mounted (systemd treats it as extrinsic) | It becomes the new `/` | Mounted `ro,noload` by the hook |

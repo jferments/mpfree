@@ -11,8 +11,10 @@
 //! cable of the controller's USB-MIDI device) is the app's to set, once
 //! the owner's read-only capture has shown it. Nothing here opens a port.
 
-/// External ports at once: DIN in/out plus up to seven USB devices.
-pub const MAX_PORTS: usize = 8;
+/// External ports at once: the DIN jacks plus up to fifteen USB ports. A
+/// USB device with several ports (an interface with four 5-pin pairs) uses
+/// one for each.
+pub const MAX_PORTS: usize = 16;
 
 /// Index of an external port, below [`MAX_PORTS`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

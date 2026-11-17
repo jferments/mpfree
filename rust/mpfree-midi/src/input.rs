@@ -16,7 +16,14 @@
 //!
 //! A note-off always goes to the tracks its note-on went to, even if the
 //! selection or a track's [`Listen`] changed while the key was held, so a
-//! note is never left hanging.
+//! note is never left hanging. All notes off, All sound off and the mode
+//! changes (CC 120, 123 to 127) let go of every key held on their port
+//! and channel.
+//!
+//! Each port can ignore some kinds coming in ([`IgnoreSet`], the port's
+//! "Ignore coming in"): an ignored message is still [`In::Seen`], then
+//! [`In::Ignored`] instead of being routed; ignored clock bytes never reach
+//! the clock source.
 //!
 //! Real-time and Song Position bytes from the clock source
 //! ([`InputRouter::set_clock_source`]) go out as [`In::ClockByte`], for
@@ -28,6 +35,7 @@ use mpfree_controller::midi::{Message, Parser};
 
 use crate::msg::{Channel, Msg};
 use crate::port::{PortId, MAX_PORTS};
+use crate::setup::{ends_notes, IgnoreSet, Ignored};
 
 /// Tracks the router knows (the same as `mpfree_seq::MAX_TRACKS`).
 pub const MAX_TRACKS: usize = 16;
@@ -99,6 +107,9 @@ pub enum In {
     Seen { port: PortId, msg: Msg, frame: u64 },
     /// A byte from the clock source, for `ClockIn::byte`.
     ClockByte { byte: u8, frame: u64 },
+    /// A channel message the port ignores ([`InputRouter::set_ignore`]),
+    /// after its [`In::Seen`]: nothing else gets it.
+    Ignored { port: PortId, msg: Msg, frame: u64 },
 }
 
 /// Counters for the Dev page.
@@ -111,6 +122,8 @@ pub struct InStats {
     pub foreign_clock: u64,
     /// Bytes for a port number past [`MAX_PORTS`].
     pub bad_port: u64,
+    /// Messages and clock bytes a port's setting ignored.
+    pub ignored: u64,
 }
 
 const NOTES: usize = 128;
@@ -121,6 +134,8 @@ pub struct InputRouter {
     selected: Option<u8>,
     tracks: [Option<Listen>; MAX_TRACKS],
     clock_source: Option<PortId>,
+    /// What each port ignores coming in.
+    ignore: [IgnoreSet; MAX_PORTS],
     parsers: [Parser; MAX_PORTS],
     /// Song Position data bytes still to come, per port.
     spp_left: [u8; MAX_PORTS],
@@ -149,6 +164,7 @@ impl InputRouter {
             selected: None,
             tracks: [None; MAX_TRACKS],
             clock_source: None,
+            ignore: [IgnoreSet::NONE; MAX_PORTS],
             parsers: std::array::from_fn(|_| Parser::new()),
             spp_left: [0; MAX_PORTS],
             held: vec![0u16; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
@@ -191,6 +207,20 @@ impl InputRouter {
         self.clock_source
     }
 
+    /// What `port` ignores coming in (the rig's "Ignore coming in").
+    pub fn set_ignore(&mut self, port: PortId, set: IgnoreSet) {
+        if let Some(slot) = self.ignore.get_mut(usize::from(port.0)) {
+            *slot = set;
+        }
+    }
+
+    pub fn ignores(&self, port: PortId) -> IgnoreSet {
+        self.ignore
+            .get(usize::from(port.0))
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// One byte from `port`, which arrived at `frame`.
     pub fn feed(&mut self, port: PortId, byte: u8, frame: u64, mut out: impl FnMut(In)) {
         let p = usize::from(port.0);
@@ -216,7 +246,11 @@ impl InputRouter {
             false
         };
         if clock_byte {
-            if is_clock_source {
+            if self.ignore[p].has(Ignored::Clock) {
+                if byte >= 0xF8 || byte == 0xF2 {
+                    self.stats.ignored += 1;
+                }
+            } else if is_clock_source {
                 out(In::ClockByte { byte, frame });
             } else if byte >= 0xF8 || byte == 0xF2 {
                 self.stats.foreign_clock += 1;
@@ -236,6 +270,20 @@ impl InputRouter {
                     msg: m,
                     frame,
                 });
+                if self.ignore[p].msg(&m) {
+                    self.stats.ignored += 1;
+                    out(In::Ignored {
+                        port,
+                        msg: m,
+                        frame,
+                    });
+                    return;
+                }
+                if let Msg::Cc { ch, cc, .. } = m {
+                    if ends_notes(cc) {
+                        self.release_channel(port, ch, frame, &mut out);
+                    }
+                }
                 self.route(port, m, frame, &mut out);
             }
         }
@@ -349,6 +397,16 @@ impl InputRouter {
                     msg: Msg::NoteOff { ch, note: n, vel },
                     frame,
                 });
+            }
+        }
+    }
+
+    /// Note-offs for every key held on `port`'s channel `ch` (All notes
+    /// off came on it).
+    fn release_channel(&mut self, port: PortId, ch: Channel, frame: u64, out: &mut impl FnMut(In)) {
+        for note in 0..NOTES as u8 {
+            if self.held[held_index(port, ch, note)] != 0 {
+                self.release(port, ch, note, 64, frame, out);
             }
         }
     }

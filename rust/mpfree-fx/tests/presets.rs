@@ -108,7 +108,7 @@ fn presets_are_in_range_and_change_something() {
                 );
                 assert!(!info.readonly, "{id}: {} sets a meter", p.name);
                 assert!(
-                    !matches!(info.name, "Mix" | "Quality"),
+                    !mpfree_fx::page_keeps(info.name),
                     "{id}: {} sets {}, which the page keeps",
                     p.name,
                     info.name

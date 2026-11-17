@@ -1,11 +1,11 @@
 <!--
 covers: rust/mpfree-mpcstore rust/mpfree-app/src/plugin_store.rs rust/mpfree-app/src/plugin_page.rs rust/mpfree-browser-ui/src/plugins.rs rust/mpfree-plughost/src/rack.rs
-checked: 2026-11-16 d653b57
+checked: 2026-11-16 a994ab4
 -->
 
 # Installing MPC plugins: the Plugins place
 
-**Status:** 2026-11-16. Built and tested on the workstation, including a live run against the real catalog and a real release (fetched, checked, unpacked and loaded). Not yet run on an MPC: whether the soft-boot stick reaches HTTPS (the system's libcurl and CA certificates under Akai's root filesystem) is a read-only check for Jay's next combined device run. The musician's side is [Getting plugins](../../user/src/making-music/plugins.md).
+**Status:** 2026-11-16. Built and tested on the workstation, including a live run against the real catalog and a real release (fetched, checked, unpacked and loaded). On the MPC (16 Nov run) the static pad player could not download (curl's "Insufficient randomness"); downloads now go through the dynamic helper `mpfree-fetch` ([below](#the-download-helper-on-the-mpc)), not yet run on an MPC. The musician's side is [Getting plugins](../../user/src/making-music/plugins.md).
 
 MPFree never ships MPC plugins (Jay, 15 Nov: "I don't want to bundle these plugins"). The musician picks them. Jay asked for an easier install than copying folders, ideally a browser of the [Open MPC catalog](https://open-mpc.github.io) inside MPFree (22:06Z), and chose the route on two cards:
 
@@ -16,7 +16,7 @@ MPFree never ships MPC plugins (Jay, 15 Nov: "I don't want to bundle these plugi
 
 | Piece | What it does |
 |---|---|
-| [`rust/mpfree-mpcstore`](../../../rust/mpfree-mpcstore) | No-dependency library: `catalog` (reads `catalog.json`, picks each plugin's release for 32-bit ARM, says whether it fits), `fetch` (HTTPS through the system's libcurl), `zip` (reads zips, stored and deflate, with CRC checks), `sha256`, and `install` (unpacks a release's plugin folder safely, records what it wrote, updates and removes). |
+| [`rust/mpfree-mpcstore`](../../../rust/mpfree-mpcstore) | No-dependency library: `catalog` (reads `catalog.json`, picks each plugin's release for 32-bit ARM, says whether it fits), `fetch` (HTTPS through the system's libcurl), `zip` (reads zips, stored and deflate, with CRC checks), `sha256`, and `install` (unpacks a release's plugin folder safely, records what it wrote, updates and removes). Its one program, `mpfree-fetch`, is the download helper the static pad player uses ([below](#the-download-helper-on-the-mpc)). |
 | [`plugin_store.rs`](../../../rust/mpfree-app/src/plugin_store.rs) | The app's worker thread: keeps the catalog, downloads, installs, lists what is installed and on the stick, draws the pictures, keeps the favourites. The screen never waits on the network or the stick. |
 | [`plugin_page.rs`](../../../rust/mpfree-app/src/plugin_page.rs) | The place's state: views, chips, order, search, selection, the two-tap Remove, progress, what each row and the Selected column say. |
 | [`mpfree-browser-ui/src/plugins.rs`](../../../rust/mpfree-browser-ui/src/plugins.rs) | Draws the list and the Selected column from a `PluginsScreen` and turns touches into `PluginInput`s. The browser forwards the dial, push, + and - while the place shows (`BrowseAction::Plugins`). |
@@ -31,6 +31,17 @@ The catalog is kept as `files/plugins/.catalog.json`, so the list is there witho
 ## Downloading
 
 `fetch` opens `libcurl.so.4` with `dlopen` (no new build dependency, nothing to cross-compile) and refuses anything but `https://` to `open-mpc.github.io`, `sd88me.github.io`, `github.com`, `raw.githubusercontent.com` and `objects.githubusercontent.com`. Redirects (GitHub's release downloads go through two) must stay on HTTPS and are capped at 8. It fails on an HTTP error, gives up on a stalled transfer (under 1 KB/s for 30 s), caps the size (512 MB for a zip, 32 MB for the catalog, 16 MB for a picture) and removes a partial file. Downloads land in `files/plugins/.downloads/`, named by their SHA-256, and are removed once installed. A catalog entry whose id or version isn't a plain name (letters, digits and `-_.+`, not starting with a dot) is left out, so nothing from the catalog can name a file outside the folder or add a line to an install record; every entry on 16 Nov passes. No libcurl: Install is not offered and the place says to copy zips instead.
+
+### The download helper on the MPC
+
+The pad player for the MPC is linked statically, and glibc's static `dlopen` can't host libcurl. The 16 Nov live run's catalog download stopped with curl's **"Insufficient randomness"**. What was reproduced, under qemu with Ubuntu's ARM libraries standing in for the MPC's: a static build linked against a newer glibc than the system's (Jay's workstation links 2.43, the MPC has 2.39) crashes inside `dlopen` as it opens libcurl. One linked against the same glibc gets through TLS, but libcurl's resolver thread crashes in `pthread_create`: a thread made inside a library that a static program loaded finds no thread setup of its own. So linking against the MPC's glibc alone would not fix it. **Not reproduced:** the MPC's own message. There the pad player didn't crash; OpenSSL's random number generator didn't start, before any network traffic. That this is the same static `dlopen` is an assumption until the next device round. Another possible cause is an OpenSSL config on Akai's system that leaves out OpenSSL's default provider (mpfree #428).
+
+So a static build (`cfg!(target_feature = "crt-static")`) never opens libcurl itself. `fetch` runs **`mpfree-fetch`** from beside the program (`/etc/mpfree-test/mpfree-fetch` on the stick) with the address, the file and the size limit. The helper is linked **dynamically** against the MPC's glibc, so libcurl, OpenSSL and the resolver thread load as in any program, and it runs the same code (`fetch_here`, the same hosts, limits and redirect rules). It says `progress DONE TOTAL` at most ten times a second, then `done BYTES` or `failed WHY`. When the musician cancels, the pad player stops it, and on any failure the file is removed. The Plugins place's first line names what downloads go through: `downloads possible (mpfree-fetch found)` or `downloads off (no mpfree-fetch)` on the MPC, `libcurl` on a workstation. A build without the helper installs from zips only, as one without libcurl does.
+
+- **Build it** for the MPC with `cargo zigbuild` against glibc 2.34 (the [GPU programs' tools](../hardware/firmware-3.10.1-qualification.md), block G1a), never with `+crt-static`: `cargo zigbuild --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf.2.34 -p mpfree-mpcstore --bin mpfree-fetch`. It lands beside the static programs in `rust/target/armv7-unknown-linux-gnueabihf/release/`. A static `mpfree-fetch` refuses to run and says why.
+- **On the stick.** The USB creator copies `mpfree-fetch` from its programs folder when it is there (`stick::FETCH_FILE`; optional), after checking that it is an ARM program for the MPC's loader asking for no glibc newer than 2.39. `offline-kexec-stick.py` takes it as `--fetch FILE` with the same checks.
+- **Checked** on the workstation: the static example (`examples/fetch.rs`, built `+crt-static`) downloads over HTTPS through the helper beside it, and says the helper is missing without it. The helper built for 32-bit ARM with Ubuntu's cross toolchain (it asks for glibc 2.34 at most) downloads over HTTPS under qemu with Ubuntu's armhf libcurl. `tests/helper.rs` runs the real helper; `fetch`'s unit tests drive a stand-in through success, failure, cancel and a crash. It has not run on the MPC yet: the next round's `mpc-plugin-install` check.
+- **Plugins too.** The pad player's plugin hosting (`mpfree plughost`) is the same static program loading shared libraries with the static `dlopen`, so the same glibc mismatch applies to plugins that the MPC loads: see [plugins](plugins.md).
 
 ## Installing
 
@@ -54,7 +65,7 @@ Controls: the dial moves, its push shows the next picture (a tap on the selected
 
 ## What it writes
 
-Only `files/plugins/` under the data folder, and only when the musician acts (or opens the place, which fetches the catalog once per run). Each write site is listed and explained in `PLUGIN_STORE_NEEDLES` in `tools/mpc-one/tests/test_app_mpc.py`, the static check that every place the program writes is reviewed; that check also scans `mpfree-mpcstore` and `mpfree-mpcskin`, and pins `fetch.rs` (the only unsafe code outside `sys.rs`) to `dlopen`, `dlsym` and six libcurl functions.
+Only `files/plugins/` under the data folder, and only when the musician acts (or opens the place, which fetches the catalog once per run). Each write site is listed and explained in `PLUGIN_STORE_NEEDLES` in `tools/mpc-one/tests/test_app_mpc.py`, the static check that every place the program writes is reviewed; that check also scans `mpfree-mpcstore` and `mpfree-mpcskin`, and pins `fetch.rs` (the only unsafe code outside `sys.rs`) to `dlopen`, `dlsym` and six libcurl functions, and its one process to the helper beside the program.
 
 ## Tests
 
@@ -66,7 +77,7 @@ Only `files/plugins/` under the data folder, and only when the musician acts (or
 
 ## Not yet
 
-1. **On the MPC.** Does the soft-boot stick reach HTTPS: libcurl present, CA certificates found, DNS over the Ethernet port. Folded into Jay's next combined device run (check `mpc-plugin-install`).
+1. **On the MPC.** Does the soft-boot stick reach HTTPS: libcurl present, CA certificates found, DNS over the Ethernet port. Folded into Jay's next combined device run (check `mpc-plugin-install`). The 16 Nov run reached the catalog's host but stopped at "Insufficient randomness", inside the static pad player ([the download helper](#the-download-helper-on-the-mpc)); the next run downloads through `mpfree-fetch`.
 2. **Loading from the stick.** The stick mounts the data partition `noexec`, and the kernel won't map a plugin's library from a noexec mount, so a plugin in `files/plugins/` (MPC or CLAP) can't load there until the stick lets that one folder run code. The device rounds thread's stick change (#399) bind-mounts `files/plugins/` with `exec,nosuid,nodev`; without it the check `mpc-plugin` records the error.
 3. **A zip's pictures before installing.** Only the catalog's picture shows until it is installed.
 4. **Wi-Fi.** Needs the firmware loaded before the handover, or the opt-in chain route (`loadpin.enforce=0`), and a Wi-Fi page; the stick's owner thread would carry it.

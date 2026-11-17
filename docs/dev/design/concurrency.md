@@ -23,12 +23,13 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-lights` | The controller's lights and the session ping, queued by the audio loop ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-report` | The report's lines (`/run/mpfree-app/report.txt`), queued by the audio loop |
 | `mpfree-build` | Builds the chain editor's effects, and drops the ones edits take out |
-| `midi-out`, `cv-out` | MIDI Out and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC |
-| `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load` | Helper threads: USB keyboards, loading sounds |
+| `midi-out`, `cv-out` | MIDI Out and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC. Started from the audio loop when Prefs' Send MIDI and CV out goes on; when it goes off, each is set aside (`Closing`) and let go once its last messages have left, never joined from the loop |
+| `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load` | Helper threads: USB MIDI devices (every input of each, opened read only, handed to the audio loop), loading sounds |
 | `mpfree-print` | The looper's prints and buffers, at idle priority ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-screen` | Touch, the raster, the framebuffer. Ticks the pages every 33 ms and sleeps between ([profiling.md](profiling.md#the-screens-cost)) |
 | `mpfree-touch-bell` | The touchscreen's doorbell: sleeps in read(2) on a second read-only handle on the panel and wakes `mpfree-screen` when it sends something |
 | `mpfree-store` | Saved settings and patterns |
+| `mpfree-midilog` | The MIDI monitor's Save log (handed to `mpfree-store`) and, while the developer tools are on, its lines in `/run/mpfree-app/midi.log` for the workstation console; four times a second, holding the I/O model's lock only to take an ask or word new lines (the audio loop only `try_lock`s it) |
 | `mpfree-journal` | The console's log |
 | `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs, at idle priority |
 | `autosample` | An auto-sample: at idle priority for one of MPFree's instruments, at normal priority for external gear |

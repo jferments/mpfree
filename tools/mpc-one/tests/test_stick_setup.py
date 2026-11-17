@@ -404,6 +404,8 @@ class BackupTests(unittest.TestCase):
 
     def test_copies_the_emmc_through_a_read_only_window(self):
         self.kernel = FakeEmmc(self.root)
+        # A made-up serial number, as U-Boot puts it in the tree (NUL at the end).
+        write(os.path.join(self.root, "sys/firmware/devicetree/base/serial-number"), b"TEST-SERIAL-1\x00")
         request = self.request()
         res = self.run_backup()
         self.assertFalse(os.path.exists(request), "the request is taken away, so the path unit stays quiet")
@@ -432,6 +434,12 @@ class BackupTests(unittest.TestCase):
         self.assertIn(f"kernel: {RELEASE}\n", manifest)
         self.assertIn("  p7 content 1024 512\n", manifest)
         self.assertIn("  mmcblk0p8 0 0 0 0 0 0\n", manifest, "the counters it checked are recorded")
+        # The MPC's fingerprint, as the pad player makes it (setup.rs, the_mpc_fingerprint_is_the_shells);
+        # never the serial number.
+        mpc = hashlib.sha256(b"mpfree-mpc:TEST-SERIAL-1").hexdigest()[:16]
+        self.assertEqual(mpc, "ef35dd49421177f8")
+        self.assertIn(f"MPC: {mpc} (a fingerprint of its serial number, not the number)\n", manifest)
+        self.assertNotIn("TEST-SERIAL", manifest)
         backup = os.path.join(self.root, "run/mpfree-data/backup")
         self.assertEqual(self.calls("chown: "), [f"0:960 {backup} {folder}.part",
                                                  f"0:960 {folder}.part/MANIFEST.txt {folder}.part/SHA256SUMS "
@@ -485,6 +493,10 @@ class BackupTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(backup, "notes.part")))
         names = self.backups()
         self.assertEqual(len([n for n in names if re.fullmatch(r"mpc-one-emmc-\d{8}T\d{6}Z", n)]), 2, names)
+        (new,) = [n for n in names if n.startswith("mpc-one-emmc-") and os.path.join(backup, n) != done
+                  and not n.endswith(".part")]
+        with open(os.path.join(backup, new, "MANIFEST.txt")) as fh:
+            self.assertIn("MPC: unknown (", fh.read(), "a tree with no serial number")
 
     def test_zeros_are_left_as_holes_and_read_back_the_same(self):
         """A disk of zeros costs the stick no writes: its image is a hole that reads back as the disk."""
@@ -930,6 +942,11 @@ class FormatTests(unittest.TestCase):
 
 
 AUTORUN_SYSTEMCTL = FAKE_SYSTEMCTL.replace('  *) echo "systemctl stand-in', '  reboot) ;;\n  *) echo "systemctl stand-in')
+# Akai's "developer mode off", as the offline survey of 3.10.1 read it: rm -rf /data/root /data/ssh, then a
+# restart (which a real MPC begins at once, so autorun.sh's own restart after it never comes).
+DEVMODE_OFF = "usr/lib/az0x/user-access/disable.sh"
+FAKE_DEVMODE_OFF = ('#!/bin/sh\necho "disable.sh" >> "$FAKE_LOG"\n'
+                    'rm -rf "$FAKE_ROOT/data/root" "$FAKE_ROOT/data/ssh"\nsystemctl reboot\n')
 
 
 class AutorunTests(HookFixture):
@@ -970,6 +987,8 @@ class AutorunTests(HookFixture):
         self.assertIn("board: MPC One (inmusic,acva)", out)
         self.assertIn("CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it", out)
         self.assertIn("RESULT: MPFree's startup hook is installed. Restarting the MPC in 5 s; leave the stick in.", out)
+        self.assertIn("Akai's /usr/lib/az0x/user-access/disable.sh is missing, so developer mode stays on. Restarting.",
+                      out)
         self.assertTrue(self.read(SCRIPT).startswith("R=''\n"))
         self.assertEqual(self.calls("systemctl: reboot"), ["systemctl: reboot"])
         self.assertEqual(self.calls("sleep: 5"), ["sleep: 5"])
@@ -1006,6 +1025,8 @@ class AutorunTests(HookFixture):
             "not root": (self.plug_in, {"FAKE_UID": "1000"}, "STOP: this must run as root"),
             "no mode": (lambda: write(os.path.join(self.drive, "mode.txt"), "maybe?\n"), {},
                         "STOP: mode.txt must say install or remove."),
+            "a system at /run/nextroot": (lambda: (self.plug_in(), os.makedirs(os.path.join(self.root, "run/nextroot"))),
+                                          {}, "STOP: /run/nextroot exists, so a restart now would not be a plain one."),
         }
         for label, (change, env, message) in cases.items():
             with self.subTest(label):
@@ -1017,6 +1038,54 @@ class AutorunTests(HookFixture):
                 self.assertIn(message, out)
                 self.assertEqual(self.tree(), self.before, "nothing on the MPC changed")
                 self.assertEqual(self.calls("systemctl: reboot"), [])
+
+    def developer_mode_on(self):
+        """Akai's off script, and what developer mode on put in /data (enable.sh's skeleton)."""
+        write(os.path.join(self.root, DEVMODE_OFF), FAKE_DEVMODE_OFF, 0o755)
+        write(os.path.join(self.root, "data/ssh/sshd_config.d/allow-access.conf"), "AuthenticationMethods none\n")
+        write(os.path.join(self.root, "data/root/.profile"), "\n")
+
+    def restarts(self):
+        return [line for line in self.calls("") if line.split(":")[0] in ("disable.sh", "systemctl", "sleep")]
+
+    def test_switches_developer_mode_off_as_it_restarts(self):
+        self.developer_mode_on()
+        self.plug_in()
+        out = self.autorun(0)
+        self.assertIn("RESULT: MPFree's startup hook is installed.", out)
+        self.assertIn("switching developer mode off with Akai's /usr/lib/az0x/user-access/disable.sh, "
+                      "which restarts the MPC", out)
+        self.assertTrue(self.read(SCRIPT).startswith("R=''\n"), "the hook stays")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "data/ssh")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "data/root")))
+        # Akai's script restarts; the plain restart after it is only a fallback.
+        self.assertEqual(self.restarts()[-5:],
+                         ["sleep: 5", "disable.sh", "systemctl: reboot", "sleep: 20", "systemctl: reboot"])
+        # Removing the hook switches it off again too (the musician switched it on to run the removal).
+        self.developer_mode_on()
+        write(os.path.join(self.drive, "mode.txt"), "remove\n")
+        os.unlink(os.path.join(self.drive, "setup-log.txt"))
+        out = self.autorun(0)
+        self.assertIn("RESULT: MPFree's startup hook is removed.", out)
+        self.assertIn("switching developer mode off", out)
+        self.assertFalse(os.path.exists(os.path.join(self.root, SCRIPT)))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "data/ssh")))
+
+    def test_keeps_developer_mode_for_a_developer_stick(self):
+        for label, make in (("developer tools", lambda: os.makedirs(os.path.join(self.drive, "mpfree-dev"))),
+                            ("keep-developer-mode", lambda: write(os.path.join(self.drive, "keep-developer-mode"), ""))):
+            with self.subTest(label):
+                self.tearDown()
+                self.setUp()
+                self.developer_mode_on()
+                make()
+                self.plug_in()
+                out = self.autorun(0)
+                self.assertIn("developer mode stays on: this stick has developer tools (mpfree-dev) or "
+                              "keep-developer-mode. Restarting.", out)
+                self.assertTrue(os.path.exists(os.path.join(self.root, "data/ssh/sshd_config.d/allow-access.conf")))
+                self.assertEqual(self.calls("disable.sh"), [])
+                self.assertEqual(self.restarts()[-2:], ["sleep: 5", "systemctl: reboot"])
 
 
 if __name__ == "__main__":

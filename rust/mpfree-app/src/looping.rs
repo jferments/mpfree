@@ -165,6 +165,9 @@ pub enum LoopAction {
     /// Pick loop `n` (0 to [`MAX_LOOPS`] - 1): the buttons, the layers'
     /// controls and the screens act on it from the next period.
     Select(usize),
+    /// STOP with the transport stopped: an overdub waiting for PLAY is
+    /// let go and an armed loop disarmed ([`LoopHost::stop_waiting`]).
+    StopWaiting,
     /// Pick loop `n`, empty, and resample into it: its first pass records
     /// the other loops as heard ([`Command::Resample`]).
     Resample(usize),
@@ -1712,6 +1715,43 @@ impl LoopHost {
 
     /// Loop `n`'s mute turned over (the picked loop's with None), leaving
     /// the pick as it was: the loop cards' speakers and the Mute button.
+    /// STOP with the transport stopped (the round of 16 Nov: REC on the
+    /// Looper tab's playing loop started an overdub that waits for PLAY,
+    /// OVERDUB and PLAY blinked, and STOP twice left them blinking): an
+    /// overdub waiting for the transport is let go and an armed loop
+    /// disarmed, on every loop. None when nothing waited.
+    pub fn stop_waiting(&mut self) -> Option<String> {
+        let picked = self.picked;
+        let mut said = Vec::new();
+        for n in 0..MAX_LOOPS {
+            let Some(s) = self.looper.loop_status(n) else {
+                continue;
+            };
+            let (c, what) = match s.phase {
+                Phase::Overdubbing => (Command::Overdub, "the overdub waiting for PLAY is off"),
+                Phase::Armed => (Command::Record, "disarmed"),
+                _ => continue,
+            };
+            let need = if n == picked { 1 } else { 3 };
+            if self.looper.room() < need {
+                said.push(format!(
+                    "loop {}: NOT done, the command queue is full",
+                    n + 1
+                ));
+                continue;
+            }
+            if n != picked {
+                self.looper.select_loop(n);
+            }
+            self.looper.command(c);
+            if n != picked {
+                self.looper.select_loop(picked);
+            }
+            said.push(format!("loop {}: {what}", n + 1));
+        }
+        (!said.is_empty()).then(|| format!("looper: STOP: {}", said.join("; ")))
+    }
+
     pub fn toggle_mute(&mut self, n: Option<usize>) -> String {
         let picked = self.picked;
         let n = n.unwrap_or(picked).min(MAX_LOOPS - 1);

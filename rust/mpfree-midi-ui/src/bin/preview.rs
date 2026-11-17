@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use mpfree_midi::setup::{IgnoreSet, Ignored, DIN_NAME};
 use mpfree_midi_ui::{sample, sections, Built, IoModel};
 use mpfree_mixer_ui::sample::{name, play, screen, song_mixer};
 use mpfree_mixer_ui::{MixState, MixView};
@@ -34,6 +35,10 @@ struct Shot {
     wheel: i32,
     /// Taps after the section is picked.
     taps: Vec<(i32, i32)>,
+    /// The app's clock when it is drawn (seconds).
+    at: u64,
+    /// Then the page of this port, opened by its row's Open ›.
+    open: Option<&'static str>,
 }
 
 fn shots() -> Vec<Shot> {
@@ -72,6 +77,15 @@ fn shots() -> Vec<Shot> {
         built.setup.learned(l);
         built.live.learn_names.push(name.into());
     }
+    let rig_port = rig.clone();
+    let mut din_port = sample::monitored(built.clone());
+    din_port.live.early_ms = 8.7;
+    din_port.setup.set_port(DIN_NAME, |p| {
+        p.ignore = IgnoreSet::NONE
+            .with(Ignored::Clock, true)
+            .with(Ignored::Aftertouch, true);
+        p.delay_tenths = 65;
+    });
     vec![
         Shot {
             name: "io-midi",
@@ -80,6 +94,8 @@ fn shots() -> Vec<Shot> {
             model: rig.clone(),
             wheel: 0,
             taps: vec![],
+            at: 1,
+            open: None,
         },
         Shot {
             name: "io-midi-picker",
@@ -88,7 +104,9 @@ fn shots() -> Vec<Shot> {
             model: rig.clone(),
             // The Lead track's Plays on field (the rows' layout is fixed).
             wheel: 0,
-            taps: vec![(186 + 330 + 135, 0)],
+            taps: vec![(186 + 290 + 110, 0)],
+            at: 1,
+            open: None,
         },
         Shot {
             name: "io-sync",
@@ -97,6 +115,8 @@ fn shots() -> Vec<Shot> {
             model: rig.clone(),
             wheel: 0,
             taps: vec![],
+            at: 1,
+            open: None,
         },
         Shot {
             name: "io-cv",
@@ -105,6 +125,8 @@ fn shots() -> Vec<Shot> {
             model: rig,
             wheel: 0,
             taps: vec![],
+            at: 1,
+            open: None,
         },
         Shot {
             name: "io-midi-built",
@@ -113,6 +135,8 @@ fn shots() -> Vec<Shot> {
             model: built.clone(),
             wheel: 0,
             taps: vec![],
+            at: 1,
+            open: None,
         },
         Shot {
             name: "io-midi-learn",
@@ -121,6 +145,8 @@ fn shots() -> Vec<Shot> {
             model: built.clone(),
             wheel: 40,
             taps: vec![],
+            at: 1,
+            open: None,
         },
         Shot {
             name: "io-cv-built",
@@ -129,23 +155,60 @@ fn shots() -> Vec<Shot> {
             model: built.clone(),
             wheel: 0,
             taps: vec![],
+            at: 1,
+            open: None,
         },
         Shot {
             name: "io-monitor",
-            about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo; lights per port and channel, in on top and out below",
+            about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo, each line with where it went; lights per port and channel, in on top and out below",
             section: 4,
             model: sample::monitored(built.clone()),
             wheel: 0,
             taps: vec![],
+            at: 1,
+            open: None,
         },
         Shot {
             name: "io-monitor-channel",
             about: "Monitor after a tap on the keyboard's channel 1 light: only what came in on it",
             section: 4,
-            model: sample::monitored(built),
+            model: sample::monitored(built.clone()),
             wheel: 0,
             // y -1: the keyboard's channel 1 light, in.
             taps: vec![(0, -1)],
+            at: 1,
+            open: None,
+        },
+        Shot {
+            name: "io-monitor-now",
+            about: "Monitor, Now view, 45 s into a session: the keyboard's chord held with E4 pressed harder, the controls that moved (the learned knob says what it moves), program and bank, the clock from the 5-pin jacks with a pulse lost, bend and pressure, and the Bass track's C2 stuck on MIDI out",
+            section: 4,
+            model: sample::held_now(built),
+            wheel: 0,
+            // y -2: the Now half of List | Now.
+            taps: vec![(0, -2)],
+            at: sample::HELD_AT as u64,
+            open: None,
+        },
+        Shot {
+            name: "io-midi-port",
+            about: "A port's page (board 6), the USB keyboard: Learn only, nothing ignored, what it does today; Send to it greyed until MPFree sends to USB devices",
+            section: 1,
+            model: rig_port,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: Some("Keystep 37"),
+        },
+        Shot {
+            name: "io-midi-port-din",
+            about: "The 5-pin jacks' page with MIDI out on: clock and aftertouch ignored, the gear 6.5 ms late so MIDI out sends that early, the newest message in and out, test note and All notes off",
+            section: 1,
+            model: din_port,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: Some(DIN_NAME),
         },
     ]
 }
@@ -172,7 +235,7 @@ fn render(shot: &Shot) -> Result<SoftCanvas, String> {
     if !mpfree_mixer_ui::io_select(&mut ui, shot.section) {
         return Err(format!("{}: no section {}", shot.name, shot.section));
     }
-    mpfree_mixer_ui::io_tick(&mut ui, Duration::from_secs(1));
+    mpfree_mixer_ui::io_tick(&mut ui, Duration::from_secs(shot.at));
     if shot.wheel != 0 {
         mpfree_mixer_ui::io_input(&mut ui, mpfree_mixer_ui::IoInput::Wheel(shot.wheel));
     }
@@ -180,12 +243,26 @@ fn render(shot: &Shot) -> Result<SoftCanvas, String> {
     ui.paint(&mut canvas);
     for &(x, y) in &shot.taps {
         // y 0: the Plays on field of the fourth track row; y -1: the
-        // Monitor's second port's channel 1 light, in.
+        // Monitor's second port's channel 1 light, in; y -2: the Monitor's
+        // Now.
         let (x, y) = match y {
             0 => (x, lead_row_y(&ui, &shot.model)),
             -1 => monitor_light(&ui),
+            -2 => monitor_now(&ui),
             _ => (x, y),
         };
+        tap(&mut ui, x, y);
+        set_hint(&mut ui);
+        ui.paint(&mut canvas);
+    }
+    if let Some(port) = shot.open {
+        let label = format!("{port}: Open ›");
+        let t = ui
+            .targets()
+            .into_iter()
+            .find(|t| t.target.id == "field" && t.target.label == label)
+            .ok_or_else(|| format!("{}: no Open › on {port}'s row", shot.name))?;
+        let (x, y) = t.target.centre();
         tap(&mut ui, x, y);
         set_hint(&mut ui);
         ui.paint(&mut canvas);
@@ -205,13 +282,22 @@ fn lead_row_y(ui: &Ui, m: &IoModel) -> i32 {
 }
 
 /// The middle of the Monitor's channel 1 light, in, on its second port
-/// (the rows' layout is fixed: chips, the channel numbers, then a row of
-/// 40 px and a gap of 6 per port).
+/// (the rows' layout is fixed: two rows of chips, the channel numbers,
+/// then a row of 40 px and a gap of 6 per port).
 fn monitor_light(ui: &Ui) -> (i32, i32) {
     let mixer = ui.rect_of(mpfree_mixer_ui::MIXER).expect("the mixer");
     let x = mixer.x + mpfree_mixer_ui::io::LIST_W + 12;
     let y = mixer.y + mpfree_mixer_ui::view::HEAD_H + 8;
-    (x + 170 + 16, y + 44 + 12 + 22 + 46 + 9)
+    (x + 170 + 16, y + 44 + 8 + 44 + 12 + 22 + 46 + 9)
+}
+
+/// The middle of the Monitor's Now (the second half of List | Now, the
+/// first control on its first row).
+fn monitor_now(ui: &Ui) -> (i32, i32) {
+    let mixer = ui.rect_of(mpfree_mixer_ui::MIXER).expect("the mixer");
+    let x = mixer.x + mpfree_mixer_ui::io::LIST_W + 12;
+    let y = mixer.y + mpfree_mixer_ui::view::HEAD_H + 8;
+    (x + 72 + 36, y + 22)
 }
 
 fn utc_stamp() -> String {
