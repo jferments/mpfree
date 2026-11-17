@@ -11,7 +11,7 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
   - `mutes: Option<u128>`: bit `t` mutes track `t` while the scene plays. `None` leaves the mutes as they are.
   - `follow: Option<Follow>`: what happens after it has played some bars.
   - `values`: parameter values stored with the scene, for the scene morph (T10, below).
-- **`Clip::follow`**: a clip can have a follow action of its own.
+- **`Clip::follow`**: a clip can have a follow action of its own. A one-shot clip (`Clip::once`, S4) stops its track at the end of its pass instead, and its follow waits ([make-perform.md](make-perform.md#one-shot-clips-as-built-the-eighth-part)).
 - **`Follow { bars, action, other, chance }`**: after `bars` bars (1 to 999, counted from where it started), `action` with a chance of `chance` %, and `other` the rest of the time. These are Ableton's A and B.
 - **`FollowAction`**: Stay, Again, Next, Previous, First, Last, Any, Other, Stop.
   - For a clip, Next means the next filled slot down its track, wrapping round to the first after the last. Empty slots are skipped. For a scene, Next is the next row with a clip on any track.

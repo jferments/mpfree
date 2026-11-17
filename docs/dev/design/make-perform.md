@@ -85,19 +85,29 @@ The review's scene settings (mockup D's side card: Rename, Mutes in this scene) 
 - **The control.** `TimeControl::scene_pick` (set by `SceneFocus`, `LaunchScene`, `ListPick`, and a `SceneSettings`); `state()` gives `TimeState::scene_focus` (the pick, else the scene playing, else 0) and `scene` (its settings). `TimeAction::SceneSettings { row, card_row, settings }` joins with `SCENE_JOIN + card_row`, compiles, and says the row's new value ("scene 2 · Follow Next (UNDO takes it back)", "scene 2 · named Drop"). `TakeRow::scene` names the take "Scene 7 · row 2".
 - **On screen.** `SCENE_CARD`, an `OptionList` with the Record panel's tabs (tab 2), on `CLIPS_SCENE_LAYOUT`, `SONG_SCENE_LAYOUT` and `LIST_SCENE_LAYOUT` (`scene-card:*` in place of `record:*`); `TimePage::scene_card` beside `clip_card`. `OptionList::tab_widths` gives the first two tabs their widths (`PANEL_TAB_WIDTHS`, 66 and 104 px), the last taking the rest. `scene_rows`, `scene_step` (`Step` on the rows: the Scene row's `SceneFocus`, Follow through `FOLLOWS`, After, Chance in tens, Or through `OTHERS` below 100 %, Mutes none ↔ as they are) and `scene_buttons`; `Toggle(SCENE_MUTES_NOW)` gives the mutes as they are. Rename (`Toggle(SCENE_RENAME)`) is the app's: `Gui` opens the text keyboard with `TypeTo::SceneName(row)`, and Enter sends `SceneSettings` with `card_row: SCENE_NAME`. `SCENE_HINT` while the tab shows on the grid. Sample screen `clips-scene`.
 
+## One-shot clips, as built (the eighth part)
+
+The review's third launch mode (restart, legato, one-shot; the clip card's Mode row, layout spec 4j).
+
+- **The model.** `Clip::once` (and `ClipSettings::once`), saved as a `once` line in the clip. Legato and once are separate flags; the card's Mode row (`MODES`, `mode_of`) makes them one choice of three.
+- **The stop.** `Perform::due` cues a one-shot's stop (`Cue { slot: None }`) in the bar before the end of the pass its launch started in (`once_end`: passes counted from the launch's origin, so a legato one-shot ends with the pass it took over), on that tick exactly: `LaunchGrid::At(tick)`, a cue line that is never a setting (`LaunchGrid::ok` refuses it) and whose `next` is the tick, or at once when past. The player lands it as any stop: the track's notes end there, and in song mode the track goes back to the song. The clip's follow waits; a cue already waiting on the track wins, as for a follow. While stopped nothing is cued; the stop is cued once the transport rolls.
+
 ## Still to come in S4
 
 In the order they are planned, each as its own part:
 
-1. **Launch quantise and legato**, built (the second part, 17 Nov): the project's `LaunchGrid` (at once, 1/16 to 1/2, 1 to 8 bars) on the Record tab's Launch row and the transport bar's "Launch 1 bar" reading, and a clip's own Launch and Mode (Restart, Legato) on the clip settings card. The player lands each cue on its line, and a legato clip takes over mid-pass: see [playback.md](playback.md#launching-on-the-bar-line-cues-t9) and [scenes.md](scenes.md). It works the same in Make and Perform. Not built: the one-shot mode.
+1. **Launch quantise and legato**, built (the second part, 17 Nov): the project's `LaunchGrid` (at once, 1/16 to 1/2, 1 to 8 bars) on the Record tab's Launch row and the transport bar's "Launch 1 bar" reading, and a clip's own Launch and Mode (Restart, Legato) on the clip settings card. The player lands each cue on its line, and a legato clip takes over mid-pass: see [playback.md](playback.md#launching-on-the-bar-line-cues-t9) and [scenes.md](scenes.md). It works the same in Make and Perform. The one-shot mode came later (the eighth part, below).
 2. **The mute queue and solo**, built (the third part, 17 Nov): see above.
 3. **Perform's guard and big state**, built (the fourth part, 17 Nov): the hold on deletes, Make's and Perform's rows with the countdown, NEXT, and Rec song with REC (above).
 4. **Back to song and Reload clip**, built (the fifth part, 17 Nov): above.
 5. **The song list**, built (the sixth part, 17 Nov): above. Not built: reordering a step by dragging it.
 6. **The scene editor**, built (the seventh part, 17 Nov): above. Not built: a scene's colour, and taking a name off.
-7. Live transpose.
+7. **One-shot clips**, built (the eighth part, 17 Nov): above, the clip card's Mode: Once.
+8. Live transpose.
 
 ## Tests
+
+The eighth part's: the perform crate's `a_one_shot_clip_cues_its_stop_at_the_end_of_its_pass` (the bar before, `At`, the follow waiting, a cue waiting wins, legato and half speed in `once_end`), `time::tests::a_one_shot_clip_plays_one_pass_and_its_track_stops` (three beats, three hits, the stop waiting and landing off the bar line), the time-ui card test (Mode's three values and ends) and the save round trip (`once`).
 
 The seventh part's: `mpfree_seq`'s `scene_settings_set_name_mutes_and_follow`, the takes test `a_scene_edit_is_a_take_and_undo_takes_it_back` (a take, joins, UNDO, REDO, trimmed rows, refusals), `time::tests::the_scene_editor_sets_a_scene_and_undo_takes_it_back` (the said lines, one take for a row turned twice, UNDO, a name and a refusal, the focus following a launch, the follow playing), the time-ui test `the_scene_tab_steps_the_scene_in_focus` (the tab, the rows and each row's step and why not, Mutes now), `mpfree_ui`'s `option_tabs_switch_lists_from_the_title_line` (the tab widths) and `gui::tests::the_scene_tab_edits_the_scene_and_rename_types_its_name` (the tab, its hint, the wheel, Mutes now, Rename on the text keyboard).
 

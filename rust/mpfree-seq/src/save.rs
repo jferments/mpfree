@@ -19,6 +19,7 @@
 //! speed 1 1
 //! launch ticks 960
 //! legato
+//! once
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! lock 480 36 pad36.4 0.25
@@ -172,6 +173,9 @@ fn clip_body(s: &mut String, c: &Clip) {
     if c.legato {
         s.push_str("legato\n");
     }
+    if c.once {
+        s.push_str("once\n");
+    }
     // Pressure first: the notes name runs of it.
     for chunk in c.touch.chunks(TOUCH_PER_LINE) {
         s.push_str("touch");
@@ -287,6 +291,9 @@ fn launch_text(g: LaunchGrid) -> String {
         LaunchGrid::Now => "now".to_string(),
         LaunchGrid::Ticks(t) => format!("ticks {t}"),
         LaunchGrid::Bars(n) => format!("bars {n}"),
+        // Never a setting (`LaunchGrid::ok` refuses it): written as at
+        // once, should one ever reach here.
+        LaunchGrid::At(_) => "now".to_string(),
     }
 }
 
@@ -452,6 +459,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 c.launch = Some(launch(&mut w).ok_or_else(|| bad("launch"))?)
             }
             ("legato", At::Clip(c, _)) => c.legato = true,
+            ("once", At::Clip(c, _)) => c.once = true,
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
                 for x in w {
@@ -757,6 +765,7 @@ mod tests {
         });
         c.launch = Some(crate::LaunchGrid::Ticks(960));
         c.legato = true;
+        c.once = true;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,

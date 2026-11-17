@@ -208,6 +208,20 @@ pub const OTHERS: [FollowAction; 9] = [
 pub const CLIP_ROWS: [&str; 9] = [
     "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After", "Launch", "Mode",
 ];
+/// The clip card's Mode row: Restart, Legato (takes over the playing
+/// clip's place), Once (a one-shot: one pass, then the track stops).
+pub const MODES: [&str; 3] = ["Restart", "Legato", "Once"];
+
+/// A clip's settings' place in [`MODES`] (one-shot over legato).
+pub fn mode_of(s: &ClipSettings) -> usize {
+    if s.once {
+        2
+    } else if s.legato {
+        1
+    } else {
+        0
+    }
+}
 /// The speeds the card's Speed row steps through, slowest first, as
 /// (clip ticks, song ticks): x1/8 to x4.
 pub const SPEEDS: [(u8, u8); 12] = [
@@ -2126,7 +2140,7 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
             7,
             s.launch.map_or_else(|| "project".to_string(), launch_name),
         ),
-        row(8, if s.legato { "Legato" } else { "Restart" }.to_string()),
+        row(8, MODES[mode_of(&s)].to_string()),
     ]
 }
 
@@ -2414,11 +2428,18 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
                 ),
             }
         }
-        // Either way flips it.
-        8 => {
-            s.legato = !s.legato;
-            set(s)
-        }
+        // Restart, Legato, Once.
+        8 => match step(mode_of(&s), MODES.len()) {
+            Some(k) => {
+                s.legato = k == 1;
+                s.once = k == 2;
+                set(s)
+            }
+            None => end(
+                "Mode is at its first, Restart".into(),
+                "Mode is at its last, Once: the clip plays one pass, then its track stops".into(),
+            ),
+        },
         _ => Err(String::new()),
     }
 }
@@ -3087,6 +3108,7 @@ pub fn launch_name(g: LaunchGrid) -> String {
         LaunchGrid::Ticks(t) => grid_name(t),
         LaunchGrid::Bars(1) => "1 bar".to_string(),
         LaunchGrid::Bars(n) => format!("{n} bars"),
+        LaunchGrid::At(_) => "its end".to_string(),
     }
 }
 
@@ -3836,6 +3858,7 @@ mod tests {
             }),
             launch: None,
             legato: true,
+            once: false,
         };
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
         values.extend(
@@ -3859,6 +3882,7 @@ mod tests {
         card.swing = None;
         card.follow = None;
         card.legato = false;
+        card.once = true;
         values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
         // Every launch quantise, the project's and a clip's own.
         for g in LAUNCH_GRIDS {
@@ -5213,11 +5237,31 @@ mod tests {
         cs(&mut st).launch = Some(LaunchGrid::Bars(8));
         assert_eq!(clip_rows(&st)[7].value, "8 bars");
         ends(step(&st, 7, 1), "longest, 8 bars");
-        // Mode: either arrow flips Restart and Legato.
+        // Mode: Restart, Legato, Once.
+        ends(step(&st, 8, -1), "first, Restart");
         assert_eq!(step(&st, 8, 1), set(&st, 8, |s| s.legato = true));
         cs(&mut st).legato = true;
         assert_eq!(clip_rows(&st)[8].value, "Legato");
         assert_eq!(step(&st, 8, -1), set(&st, 8, |s| s.legato = false));
+        assert_eq!(
+            step(&st, 8, 1),
+            set(&st, 8, |s| {
+                s.legato = false;
+                s.once = true;
+            })
+        );
+        cs(&mut st).legato = false;
+        cs(&mut st).once = true;
+        assert_eq!(clip_rows(&st)[8].value, "Once");
+        ends(step(&st, 8, 1), "last, Once: the clip plays one pass");
+        assert_eq!(
+            step(&st, 8, -1),
+            set(&st, 8, |s| {
+                s.once = false;
+                s.legato = true;
+            })
+        );
+        cs(&mut st).once = false;
         // A loop cell: only Follow, After and Launch.
         st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
         ends(step(&st, 1, 1), "loop cell");
@@ -5698,6 +5742,9 @@ mod tests {
         st.launch = LaunchGrid::Bars(4);
         assert_eq!(st.cue_line(2), LaunchGrid::Bars(4), "a stop: the project's");
         assert_eq!(cell_of(&st, 2, 0).detail, "stops 9.1");
+        // A one-shot's stop lands where its pass ends, on no bar line.
+        st.cue_lines = vec![(2, LaunchGrid::At(5 * BAR + 3 * Tick::from(PPQ)))];
+        assert_eq!(cell_of(&st, 2, 0).detail, "stops 6.4");
         st.cue_lines.clear();
         st.launch = LaunchGrid::Bars(1);
         let tap = |track: usize, slot: usize| {
