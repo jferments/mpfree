@@ -37,6 +37,7 @@ use mpfree_looper::{
     Bounce, Command, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase, Print,
     Stats, Status, Step, MAX_LAYERS, MAX_LOOPS,
 };
+use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
 use std::ops::Range;
@@ -1809,6 +1810,79 @@ impl LoopHost {
         )
     }
 
+    /// Loop `n` on or off, as a clip launches (Loop tracks): from the bar
+    /// line at song tick `at`, on the frame it falls on, or with `None` at
+    /// once ([`Looper::launch`]). The line for the log.
+    pub fn launch(&mut self, n: usize, on: bool, at: Option<mpfree_transport::Tick>) -> String {
+        let what = if on { "on" } else { "off" };
+        if n >= MAX_LOOPS {
+            return format!("looper: loop {}: not there", n + 1);
+        }
+        if !self.looper.launch(n, on, at) {
+            return format!(
+                "looper: loop {} {what}: NOT done, the command queue is full",
+                n + 1
+            );
+        }
+        match at {
+            Some(t) => {
+                let bar = mpfree_transport::PPQ as i64 * i64::from(self.beats_per_bar.max(1));
+                format!(
+                    "looper: loop {} {what} from bar {}",
+                    n + 1,
+                    t.div_euclid(bar.max(1)) + 1
+                )
+            }
+            None => format!("looper: loop {} {what}", n + 1),
+        }
+    }
+
+    /// The loops as the Loop tracks need them
+    /// ([`crate::time::TimeHost::loops_are`]): which have a first pass, how
+    /// long and from where. None while an open's loops are going out or
+    /// coming in, so a project's cells aren't emptied by the old loops
+    /// fading out.
+    pub fn grid_now(&self) -> Option<[LoopNow; MAX_LOOPS]> {
+        if self.opening() {
+            return None;
+        }
+        Some(std::array::from_fn(|n| match self.looper.loop_status(n) {
+            Some(s) if matches!(s.phase, Phase::Playing | Phase::Overdubbing) && s.ticks > 0 => {
+                LoopNow {
+                    pass: true,
+                    ticks: s.ticks,
+                    origin: s.origin,
+                }
+            }
+            _ => LoopNow::default(),
+        }))
+    }
+
+    /// The Loop tracks' launches ([`crate::time::TimeHost::loop_plan`]),
+    /// before the period: each loop that isn't where the plan has it goes
+    /// on or off, on the frame of the bar line the plan names, or at once.
+    /// An empty loop waits. Lines for the log; allocates only then. A full
+    /// queue tries again next period.
+    pub fn follow_plan(&mut self, plan: &LoopPlan) -> Vec<String> {
+        let mut lines = Vec::new();
+        for n in 0..MAX_LOOPS {
+            let Some(s) = self.looper.loop_status(n) else {
+                continue;
+            };
+            let (on, at) = (plan.on[n], plan.at[n]);
+            let there = match (s.cue, at) {
+                (None, _) => s.on == on,
+                (Some(cue), Some(t)) => cue == (on, t),
+                (Some(_), None) => false,
+            };
+            if there || s.phase == Phase::Empty || self.looper.room() == 0 {
+                continue;
+            }
+            lines.push(self.launch(n, on, at));
+        }
+        lines
+    }
+
     /// A layer dragged onto another loop ([`Looper::copy_layer`]): what
     /// it does, as the screen says it, and why not when it can't. A loop's
     /// only layer goes as a copy (the loop keeps it).
@@ -2095,6 +2169,12 @@ impl LoopHost {
     #[cfg(test)]
     pub fn phase(&self) -> Phase {
         self.looper.status().phase
+    }
+
+    /// Loop `n` as the looper has it.
+    #[cfg(test)]
+    pub fn loop_status(&self, n: usize) -> Option<Status> {
+        self.looper.loop_status(n)
     }
 
     /// The `status: looper: ...` line.

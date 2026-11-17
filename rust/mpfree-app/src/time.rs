@@ -812,6 +812,23 @@ impl TimeHost {
         self.control.muted(t)
     }
 
+    /// Which loops the Loop tracks have on, and the bar line each change
+    /// lands on ([`TimeControl::loop_plan`]): for the looper, before its
+    /// period, so a launch lands on its line's own frame.
+    pub fn loop_plan(&self) -> mpfree_seq::loops::LoopPlan {
+        self.control.loop_plan()
+    }
+
+    /// What the looper says of its loops ([`TimeControl::loops_are`]):
+    /// recorded loops land on Loop tracks, cells follow their loops.
+    pub fn loops_are(
+        &mut self,
+        now: &[mpfree_seq::loops::LoopNow; mpfree_seq::LOOPS],
+    ) -> Vec<String> {
+        let r = self.control.loops_are(now);
+        self.sent(r)
+    }
+
     /// The project's tracks, for TRACK MUTE's banks.
     pub fn track_count(&self) -> usize {
         self.control.track_count()
@@ -2511,6 +2528,199 @@ mod tests {
         assert!(h.state().launches.is_empty());
         assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Loop tracks: a loop cell launched at once while stopped; while
+    /// playing, the loops switch on the cue's bar line, which the plan
+    /// gives for that one period. TRACK MUTE, a scene and Stop all switch
+    /// them too; a loop in no cell plays throughout.
+    #[test]
+    fn a_loop_cell_launches_its_loop_on_the_bar_line_as_a_clip_does() {
+        use mpfree_seq::LOOPS;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        assert_eq!(h.loop_plan().on, [true; LOOPS], "every loop plays");
+        let mut t = Track::new_loops("Loops A", 8);
+        t.slots[0] = Some(Clip::new_loop(0, 3840));
+        t.slots[1] = Some(Clip::new_loop(1, 3840));
+        h.control.project.tracks.push(t);
+        h.act(TimeAction::Launch { track: 8, slot: 0 }).unwrap();
+        let p = h.loop_plan();
+        assert_eq!(
+            (&p.on[..3], p.at),
+            (&[true, false, true][..], [None; LOOPS])
+        );
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::Launch { track: 8, slot: 1 }).unwrap();
+        assert_eq!(&h.loop_plan().on[..2], &[true, false], "it waits");
+        // One period at a time to bar 2's line: the period with it says.
+        let mut said = Vec::new();
+        let step = |h: &mut TimeHost, pads: &mut Fake| {
+            let to = pads.frame + u64::from(PERIOD);
+            run(h, pads, to, &[]);
+            h.loop_plan()
+        };
+        while pads.frame < BAR + 4 * u64::from(PERIOD) {
+            let p = step(&mut h, &mut pads);
+            if p.at[0].is_some() {
+                said.push((pads.frame, p));
+            }
+        }
+        let [(end, p)] = said[..] else {
+            panic!("one period says the line: {said:?}")
+        };
+        assert!(end - u64::from(PERIOD) <= BAR && BAR < end, "{end}");
+        assert_eq!(&p.on[..3], &[false, true, true]);
+        assert_eq!((p.at[0], p.at[1], p.at[2]), (Some(3840), Some(3840), None));
+        // TRACK MUTE: off at once, and back.
+        h.toggle_mute(8).unwrap();
+        assert_eq!(
+            (&h.loop_plan().on[..2], h.loop_plan().at[1]),
+            (&[false, false][..], None)
+        );
+        h.toggle_mute(8).unwrap();
+        assert!(h.loop_plan().on[1]);
+        // A scene: row 1's loop from the next line.
+        assert_eq!(h.act(TimeAction::LaunchScene(0)).unwrap(), "scene 1");
+        assert_eq!(&h.loop_plan().on[..2], &[false, true]);
+        run(&mut h, &mut pads, 2 * BAR + 4 * u64::from(PERIOD), &[]);
+        assert_eq!(&h.loop_plan().on[..2], &[true, false]);
+        // Stop all: off on the next line.
+        h.act(TimeAction::StopAll).unwrap();
+        run(&mut h, &mut pads, 3 * BAR + 4 * u64::from(PERIOD), &[]);
+        let p = h.loop_plan();
+        assert_eq!(
+            (&p.on[..2], p.on[2..].iter().all(|&on| on)),
+            (&[false, false][..], true)
+        );
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// A loop recorded lands on a Loop track (a new one when every Loop
+    /// track plays), launched; its cells follow its length and empty when
+    /// it is cleared. The pads stay on note tracks, a Loop track takes no
+    /// note clip, and PLAY still starts the Play page's pattern.
+    #[test]
+    fn a_recorded_loop_lands_on_a_loop_track_and_its_cells_follow_it() {
+        use mpfree_seq::loops::LoopNow;
+        use mpfree_seq::{LoopInput, LOOPS};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut now = [LoopNow::default(); LOOPS];
+        assert!(h.loops_are(&now).is_empty());
+        let pass = |ticks, origin| LoopNow {
+            pass: true,
+            ticks,
+            origin,
+        };
+        now[0] = pass(7680, 0);
+        assert_eq!(h.loops_are(&now), ["Loop 1 on Loops A, row 1, playing"]);
+        assert!(h.loops_are(&now).is_empty(), "said once");
+        let st = h.state();
+        assert_eq!(
+            (st.tracks.len(), st.tracks[8].loops),
+            (9, Some(LoopInput::Pads))
+        );
+        let cell = st.clip(8, 0).map(|c| (c.name.clone(), c.length, c.notes));
+        assert_eq!(cell, Some(("Loop 1".to_string(), 7680, 0)));
+        assert_eq!(st.launch(8).map(|l| (l.slot, l.origin)), Some((0, 0)));
+        // Loops A plays it, so the next one gets a Loop track of its own.
+        now[1] = pass(3840, 3840);
+        assert_eq!(h.loops_are(&now), ["Loop 2 on Loops B, row 1, playing"]);
+        assert_eq!(&h.loop_plan().on[..3], &[true, true, true]);
+        // The pads stay on their track; no note clip goes on a Loop track.
+        let armed = h.act(TimeAction::Arm(Some(8))).unwrap();
+        assert_eq!(
+            armed,
+            "armed: Loops A plays loops, the pads stay on Track 1"
+        );
+        assert_eq!(h.armed(), Some(0));
+        assert!(h.act(TimeAction::NewClip { track: 8, slot: 3 }).is_err());
+        let to_notes = TimeAction::DropClip {
+            from: (8, 0),
+            to: (0, 3),
+            copy: false,
+        };
+        assert!(h.act(to_notes).is_err());
+        let to_b = TimeAction::DropClip {
+            from: (8, 0),
+            to: (9, 3),
+            copy: true,
+        };
+        assert!(h.act(to_b).is_err(), "a copy on another Loop track");
+        // PLAY still starts the pattern with the loops launched.
+        h.control.project.tracks[0].slots[0] = Some(Clip::new("Beat", 3840));
+        let play = h.act(TimeAction::Transport(Command::Play)).unwrap();
+        assert!(play.contains("the Play page's pattern"), "{play}");
+        h.act(TimeAction::Transport(Command::Stop)).unwrap();
+        // Half: its cell follows the length.
+        now[0].ticks = 3840;
+        assert!(h.loops_are(&now).is_empty());
+        assert_eq!(h.state().clip(8, 0).map(|c| c.length), Some(3840));
+        // Cleared: its cell empties and its launch goes; loop 2 plays on.
+        now[0] = LoopNow::default();
+        assert_eq!(h.loops_are(&now), ["Loop 1 cleared: its cells are empty"]);
+        let st = h.state();
+        assert!(st.clip(8, 0).is_none() && st.launch(8).is_none());
+        assert_eq!(&h.loop_plan().on[..2], &[true, true]);
+        // Its pass back (the looper's redo): back in the cell it left.
+        now[0] = pass(3840, 0);
+        assert_eq!(h.loops_are(&now), ["Loop 1 on Loops A, row 1, playing"]);
+        // A loop recorded with row 3's scene playing: in row 3, on Loops A,
+        // where nothing plays now.
+        h.act(TimeAction::LaunchScene(2)).unwrap();
+        now[2] = pass(3840, 7680);
+        assert_eq!(h.loops_are(&now), ["Loop 3 on Loops A, row 3, playing"]);
+        // Cleared and recorded anew (another pass): where a new loop lands.
+        now[2] = LoopNow::default();
+        h.loops_are(&now);
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        now[2] = pass(7680, 15360);
+        assert_eq!(h.loops_are(&now), ["Loop 3 on Loops C, row 1, playing"]);
+        assert_eq!(h.control.project.check(), Ok(()));
+    }
+
+    /// A project saved before Loop tracks: its loops come in with it, each
+    /// lands on a Loop track of its own in row 1, and all of them play, as
+    /// they did. A project saved with Loop tracks keeps its cells.
+    #[test]
+    fn an_older_projects_loops_each_land_on_a_loop_track_of_their_own() {
+        use mpfree_seq::loops::LoopNow;
+        use mpfree_seq::LOOPS;
+        let mut four = Project::new();
+        for i in 0..4 {
+            four.tracks.push(Track::new(&format!("Track {}", i + 1), i));
+        }
+        let old = mpfree_seq::save::to_text(&four);
+        assert!(!old.contains("loops "));
+        let read = mpfree_seq::save::from_text(&old).unwrap();
+        let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
+        let mut now = [LoopNow::default(); LOOPS];
+        for (n, l) in now.iter_mut().enumerate().take(3) {
+            *l = LoopNow {
+                pass: true,
+                ticks: 3840 * (n as i64 + 1),
+                origin: 0,
+            };
+        }
+        assert_eq!(
+            h.loops_are(&now),
+            [
+                "Loop 1 on Loops A, row 1, playing",
+                "Loop 2 on Loops B, row 1, playing",
+                "Loop 3 on Loops C, row 1, playing"
+            ]
+        );
+        assert!(h.loop_plan().on.iter().all(|&on| on));
+        // Saved now and opened again: the cells are there, nothing moves.
+        let text = mpfree_seq::save::to_text(h.project());
+        let mut again =
+            TimeHost::with_project(RATE, 120.0, mpfree_seq::save::from_text(&text).unwrap())
+                .unwrap();
+        assert!(again.loops_are(&now).is_empty());
+        assert_eq!(again.project(), h.project());
+        // An opened project launches nothing: its loops wait for a launch.
+        assert_eq!(&again.loop_plan().on[..4], &[false, false, false, true]);
     }
 
     /// TRACK MUTE's keys: track 2 muted halfway through bar 1 goes quiet
