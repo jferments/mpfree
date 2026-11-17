@@ -2,7 +2,7 @@
 //! those, they only show what the page put in their fields and report
 //! touches.
 
-use crate::panel::{self, Control, Panel};
+use crate::panel::{self, Control, Look, Panel};
 use mpfree_ui::qlink;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
@@ -729,6 +729,10 @@ impl Widget for SettingList {
     fn held_step(&mut self, t: &Target, delta: i32, _fine: bool, _r: Rect) -> Option<EventKind> {
         if t.index >= self.rows.len() || delta == 0 {
             return None;
+        }
+        if let Some(Look::Slider { pos }) = self.controls.get(t.index).map(|c| &c.look) {
+            let v = (pos + delta as f32 * 0.01).clamp(0.0, 1.0);
+            return (v != *pos).then_some(EventKind::Value(v));
         }
         self.selected = t.index;
         Some(EventKind::Step {
