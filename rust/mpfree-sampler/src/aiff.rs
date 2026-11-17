@@ -218,7 +218,7 @@ mod tests {
             (s.name.as_str(), s.rate(), s.channels(), s.frames()),
             ("Pad", 44_100, 2, 2)
         );
-        assert_eq!(&s.data()[..], &[-1.0, 32_767.0 / 32_768.0, 0.0, 0.25]);
+        assert_eq!(s.data().to_vec(), [-1.0, 32_767.0 / 32_768.0, 0.0, 0.25]);
         // 8-bit AIFF is signed, unlike WAV's.
         assert_eq!(
             data(&aiff(1, 8, 3, None, &[0x80, 0x7F, 0x40])),

@@ -199,7 +199,7 @@ fn threshold_take_keeps_its_pre_roll_and_stops_on_silence() {
     );
     let last = (0..40_000).rev().find(|&f| signal[f].abs() > 0.02).unwrap() as u64;
     assert_eq!(end, last + 1, "ends after the last loud frame");
-    assert_eq!(t.data(), &signal[start as usize..end as usize]);
+    assert_eq!(t.data().to_vec(), signal[start as usize..end as usize]);
 }
 
 #[test]
@@ -406,7 +406,10 @@ fn a_recording_on_the_next_bar_ends_exactly_on_a_bar_line() {
     assert_eq!(rec.progress(), Progress::Done { frames: 20_000 });
     let s = rec.finish("Take 1", Pick::Stereo).unwrap().unwrap();
     assert_eq!((s.channels(), s.frames(), s.rate()), (2, 20_000, RATE));
-    assert_eq!((s.data()[0], s.data()[39_998]), (10_000.0, 29_999.0));
+    assert_eq!(
+        (s.data().get(0), s.data().get(39_998)),
+        (10_000.0, 29_999.0)
+    );
 }
 
 #[test]
@@ -432,11 +435,11 @@ fn a_press_ends_it_and_the_channels_picked_are_kept() {
     assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 1_920 }));
     let left = rec.clone().finish("L", Pick::Left).unwrap().unwrap();
     assert_eq!((left.channels(), left.frames()), (1, 1_920));
-    assert_eq!((left.data()[0], left.data()[1]), (1_280.0, 1_281.0));
+    assert_eq!((left.data().get(0), left.data().get(1)), (1_280.0, 1_281.0));
     let right = rec.clone().finish("R", Pick::Right).unwrap().unwrap();
-    assert_eq!(right.data()[0], -1_280.0);
+    assert_eq!(right.data().get(0), -1_280.0);
     let mono = rec.finish("M", Pick::Mono).unwrap().unwrap();
-    assert_eq!((mono.channels(), mono.data()[0]), (1, 0.0));
+    assert_eq!((mono.channels(), mono.data().get(0)), (1, 0.0));
 }
 
 #[test]
@@ -693,8 +696,8 @@ fn a_bar_take_that_rings_out_keeps_its_tail_until_it_is_silent() {
     );
     let s = rec.finish("Rung", Pick::Mono).unwrap().unwrap();
     assert_eq!(s.frames(), 23_000);
-    assert_eq!((s.data()[19_999], s.data()[20_000]), (1.0, 0.25));
-    assert_eq!(s.data()[22_999], 0.25);
+    assert_eq!((s.data().get(19_999), s.data().get(20_000)), (1.0, 0.25));
+    assert_eq!(s.data().get(22_999), 0.25);
 }
 
 #[test]
@@ -745,7 +748,7 @@ fn a_loop_folds_its_ringing_onto_its_start_and_keeps_its_length() {
     );
     let s = rec.finish("Loop", Pick::Stereo).unwrap().unwrap();
     assert_eq!(s.frames(), 20_000, "exactly its two bars");
-    let left: Vec<f32> = s.data().iter().step_by(2).copied().collect();
+    let left: Vec<f32> = s.data().iter().step_by(2).collect();
     assert!(
         left[..3_000].iter().all(|x| *x == 1.25),
         "the ringing, folded"
@@ -775,8 +778,8 @@ fn a_loop_whose_music_went_on_keeps_its_second_time_round() {
     );
     let s = rec.finish("Second", Pick::Left).unwrap().unwrap();
     assert_eq!(s.frames(), 10_000);
-    assert!(s.data()[..2_000].iter().all(|x| *x == 1.25));
-    assert!(s.data()[2_000..].iter().all(|x| *x == 1.0));
+    assert!(s.data().to_vec()[..2_000].iter().all(|x| *x == 1.25));
+    assert!(s.data().to_vec()[2_000..].iter().all(|x| *x == 1.0));
 }
 
 #[test]
@@ -798,7 +801,7 @@ fn a_loop_of_music_already_going_round_is_cut_not_folded() {
     assert_eq!(rec.progress(), Progress::Done { frames: 20_000 });
     let s = rec.finish("Going round", Pick::Left).unwrap().unwrap();
     assert_eq!(s.frames(), 20_000);
-    assert!(s.data().iter().all(|x| *x == 1.0), "nothing added twice");
+    assert!(s.data().iter().all(|x| x == 1.0), "nothing added twice");
 }
 
 #[test]
@@ -845,7 +848,7 @@ fn a_poll_after_the_last_bar_line_still_keeps_the_bars() {
     assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 10_000 }));
     assert_eq!(rec.started_at(), Some(10_000));
     let s = rec.finish("Late", Pick::Left).unwrap().unwrap();
-    assert_eq!((s.data()[0], s.data()[9_999]), (10_000.0, 19_999.0));
+    assert_eq!((s.data().get(0), s.data().get(9_999)), (10_000.0, 19_999.0));
     // Taking a single take by hand the same way.
     let (mut w, r) = rolling(2, 100_000);
     let mut t = Take::new(&r, Arm::At(500), Stop::Manual, 100_000);

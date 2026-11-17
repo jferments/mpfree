@@ -465,6 +465,9 @@ pub struct SettingList {
     /// Pad list's Effects: no arrows, and a tap on it is a
     /// [`EventKind::Tab`] with the row's index.
     pub buttons: Vec<usize>,
+    /// A finger on a typed value: the number pad opens when it lifts, not
+    /// when the wheel turned the value while it was held.
+    typing: Option<(u64, usize)>,
 }
 
 const SET_ROW_H: i32 = 44;
@@ -481,6 +484,7 @@ impl SettingList {
             editing: false,
             typed: Vec::new(),
             buttons: Vec::new(),
+            typing: None,
         }
     }
 
@@ -642,9 +646,46 @@ impl Widget for SettingList {
         out
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
-        if phase != Touch::Down {
+    /// A finger resting on a row (not a button) puts its value under the
+    /// wheel, whichever part of the row it is on.
+    fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        let k = (0..self.rows.len()).find(|&k| {
+            self.row_rects(r, k)
+                .is_some_and(|(row, _)| row.contains(x, y))
+        })?;
+        if self.buttons.contains(&k) {
             return None;
+        }
+        let (row, _) = self.row_rects(r, k)?;
+        Some(Target::tap("row", k, self.rows[k].name.clone(), row))
+    }
+
+    /// The held row's value, a step a detent, as its arrows step it.
+    fn held_step(&mut self, t: &Target, delta: i32, _fine: bool, _r: Rect) -> Option<EventKind> {
+        if t.index >= self.rows.len() || delta == 0 {
+            return None;
+        }
+        self.selected = t.index;
+        Some(EventKind::Step {
+            index: t.index,
+            delta,
+        })
+    }
+
+    fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        match phase {
+            Touch::Down => {}
+            // A typed value opens the number pad on the lift, so a value
+            // turned by the wheel while held (a cancel) opens nothing.
+            Touch::Up => {
+                let (_, k) = self.typing.take().filter(|(g, _)| *g == f)?;
+                return (k < self.rows.len()).then_some(EventKind::Type(k));
+            }
+            Touch::Cancel => {
+                self.typing = self.typing.filter(|(g, _)| *g != f);
+                return None;
+            }
+            Touch::Move => return None,
         }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
@@ -662,7 +703,8 @@ impl Widget for SettingList {
         } else if value.contains(x, y) && x >= value.right() - SET_ARROW_W {
             Some(EventKind::Step { index: k, delta: 1 })
         } else if value.contains(x, y) && self.typed.contains(&k) {
-            Some(EventKind::Type(k))
+            self.typing = Some((f, k));
+            Some(EventKind::Select(k))
         } else {
             Some(EventKind::Select(k))
         }

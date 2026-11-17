@@ -989,6 +989,7 @@ name = "mpfree-fxlab"
 version = "0.1.0"
 dependencies = [
  "mpfree-fx",
+ "mpfree-grain",
  "mpfree-node",
  "mpfree-sampler",
 ]
