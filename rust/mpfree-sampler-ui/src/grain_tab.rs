@@ -60,8 +60,8 @@ pub const WHEEL: &str = "smp-grain-wheel";
 /// The tab's page: the cloud, and beside it the touch pad over the Grain
 /// list, between the pad bar and the Q-Link cards.
 pub const LAYOUT: &str = "col(header:60, row(smp-grain-bar:*, smp-send:330):60, \
-                          row(smp-grain-cloud:*, col(smp-grain-xy:236, smp-grain-list:*):340):*, \
-                          row(smp-grain-q1, smp-grain-q2, smp-grain-q3, smp-grain-q4, smp-grain-wheel:210):88, hint:26)";
+                          row(smp-grain-cloud:*, col(smp-grain-xy:236, smp-grain-list:*, smp-grain-wheel:56):340, \
+                          col(smp-grain-q1, smp-grain-q2, smp-grain-q3, smp-grain-q4):168):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 4;
@@ -356,7 +356,8 @@ impl GrainTab {
         for (k, row) in QLINK_ROWS.iter().enumerate() {
             ui.add(
                 QLINKS[k],
-                KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k]),
+                KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k])
+                    .on(k, "Grain"),
             );
         }
         ui.add(WHEEL, InfoCard::new("The row picked"));

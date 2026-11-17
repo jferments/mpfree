@@ -15,6 +15,18 @@ fn body(r: Rect) -> Rect {
     r.inset(14).take_top(34).1
 }
 
+/// `PaintCx::titled_panel`, leaving out the hint at the right when the
+/// panel is too narrow for it beside the title (the keyboard's layout puts
+/// three panels side by side).
+fn titled(cx: &mut PaintCx, r: Rect, title: &str, right: &str) {
+    let px = cx.theme.size_small;
+    let room = r.w - 2 * cx.theme.pad;
+    let need = cx.measure(FontId::Bold, px, &title.to_uppercase())
+        + cx.measure(FontId::Sans, px, right)
+        + 12;
+    cx.titled_panel(r, title, if need <= room { right } else { "" });
+}
+
 /// A dot for a point the finger can drag.
 fn dot(cx: &mut PaintCx, x: i32, y: i32, size: i32, c: Color) {
     cx.canvas.fill_round_rect(
@@ -149,7 +161,7 @@ pub fn fade_cut(cx: &mut PaintCx, b: Rect, x0: i32, x1: i32, rising: bool, bg: C
 impl Widget for LayerMap {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, &self.right);
+        titled(cx, r, &self.title, &self.right);
         let plot = LayerMap::plot(r);
         for v in [0, 32, 64, 96, 127] {
             let x = LayerMap::x_of(plot, v as f32);
@@ -489,7 +501,7 @@ impl EnvelopeView {
 impl Widget for EnvelopeView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, &self.right);
+        titled(cx, r, &self.title, &self.right);
         let plot = EnvelopeView::plot(r);
         let axis = self.axis_ms();
         let ms_at = |x: i32| (x - plot.x) as f32 / plot.w as f32 * axis;
@@ -726,7 +738,7 @@ impl FilterCurve {
 impl Widget for FilterCurve {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, &self.right);
+        titled(cx, r, &self.title, &self.right);
         let plot = FilterCurve::plot(r);
         for (hz, label) in [(100.0, "100"), (1000.0, "1k"), (10_000.0, "10k")] {
             let x = FilterCurve::x_of(plot, hz);

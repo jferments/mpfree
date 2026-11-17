@@ -55,8 +55,8 @@ pub const WHEEL: &str = "smp-warp-wheel";
 /// The tab's page: the picture beside the Warp list and its buttons,
 /// between the pad bar and the Q-Link cards.
 pub const LAYOUT: &str = "col(header:60, row(smp-warp-bar:*, smp-send:330):60, \
-                          row(smp-warp-view:*, col(smp-warp-list:*, smp-warp-buttons:64):360):*, \
-                          row(smp-warp-q1, smp-warp-q2, smp-warp-q3, smp-warp-q4, smp-warp-wheel:210):88, hint:26)";
+                          row(smp-warp-view:*, col(smp-warp-list:*, smp-warp-buttons:64, smp-warp-wheel:56):360, \
+                          col(smp-warp-q1, smp-warp-q2, smp-warp-q3, smp-warp-q4):168):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 1;
@@ -247,13 +247,13 @@ impl WarpTab {
         );
         let t = ui.theme.clone();
         let cards = [
-            ("Q-Link 1 · pin", t.warn),
-            ("Q-Link 2 · pin beat", t.warn.mix(t.bad, 0.4)),
-            ("Q-Link 3 · warp tempo", t.accent),
-            ("Q-Link 4 · scroll", t.good),
+            ("Q-Link 1 · Pin", t.warn),
+            ("Q-Link 2 · Pin beat", t.warn.mix(t.bad, 0.4)),
+            ("Q-Link 3 · Warp tempo", t.accent),
+            ("Q-Link 4 · Scroll", t.good),
         ];
         for (k, (label, color)) in cards.iter().enumerate() {
-            ui.add(QLINKS[k], KnobCard::new(label, *color));
+            ui.add(QLINKS[k], KnobCard::new(label, *color).on(k, "Warp"));
         }
         ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
         ui.add_page(name, LAYOUT)?;
@@ -480,8 +480,8 @@ impl WarpTab {
                 None => ("—".to_string(), String::new(), 0.0),
             },
             (
-                format!("{:.2} BPM", w.bpm),
-                String::new(),
+                format!("{:.2}", w.bpm),
+                "BPM".to_string(),
                 ((w.bpm - WARP_BPM.start()) / (300.0 - WARP_BPM.start())).clamp(0.0, 1.0),
             ),
             match ui.get::<WarpView>(VIEW) {
@@ -489,11 +489,7 @@ impl WarpTab {
                     let first = v.shown().0.max(0.0);
                     // The sixteenth it starts in.
                     let text = beat_text((first * 4.0).floor() / 4.0);
-                    (
-                        format!("from {text}"),
-                        String::new(),
-                        (first / total.max(1e-9)) as f32,
-                    )
+                    (text, "from".to_string(), (first / total.max(1e-9)) as f32)
                 }
                 _ => ("—".to_string(), "zoom in to scroll".to_string(), 0.0),
             },
