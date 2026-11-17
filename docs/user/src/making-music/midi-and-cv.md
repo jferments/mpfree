@@ -73,13 +73,24 @@ MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a d
 
 ## MIDI Learn
 
-MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn an effect's knob.
+MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, an effect's knob, a macro, or a knob on the Synth tab.
 
-1. Open the effect in the [chain editor](effects.md#adding-an-effect-the-chain-editor) and touch the knob.
+**The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
+
+- the mixer's Faders look: a strip's fader, pan and sends;
+- the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
+- the macros panel: a macro's knob;
+- the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads).
+
+Anywhere else SHIFT + a touch keeps its own job, such as SHIFT + drag on an audio region.
+
+**From the chain editor:**
+
+1. Open the effect in the chain editor and touch the knob.
 2. Tap **Learn** in the **Modulate** row under the page. It now reads **Turn a Q-Link**, and the line under the knob's name says it is learning.
 3. Move the control on your keyboard. From now on it turns that knob, as far up and down as the knob goes. (Turn a Q-Link instead, and the Q-Link learns it, as before.)
 
-The move that teaches a control doesn't play a note, and neither does a learned control. Teach a control again and it moves to the new knob.
+The move that teaches a control doesn't play a note, and neither does a learned control. Teach a control again and it moves to the new value.
 
 ### The Learn section
 
@@ -103,7 +114,7 @@ Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
 - **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
 - **Remove** takes the control off.
 
-Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning any value on the screen rather than only effect knobs (SHIFT + touch a value), and controlling PLAY, STOP, REC and the tempo from a controller.
+Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; recording a learned synth knob's moves into a clip; and controlling PLAY, STOP, REC and the tempo from a controller.
 
 ## CV and gate
 

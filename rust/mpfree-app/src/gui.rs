@@ -130,6 +130,21 @@ const CONSOLE_HINT: &str =
 /// tap deletes what is tapped).
 pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (Play) or a layer (Looper) to delete it   ·   \
                               UNDO brings it back";
+/// SHIFT held on the mixer, the chain editor or the macros panel, where
+/// a touch on a value arms MIDI Learn (layout spec 4d).
+const SHIFT_LEARN_HINT: &str =
+    "SHIFT +   touch a value: MIDI Learn   ·   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   \
+     NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
+
+/// The hint line while MIDI Learn waits for a control to take `name`
+/// (SHIFT + a touch on a value armed it).
+fn learning_hint(name: &str) -> String {
+    format!(
+        "LEARNING   {name}: move a knob, a key or a pedal on any controller   ·   \
+         SHIFT + touch it again: cancel"
+    )
+}
+
 const SHIFT_HINT: &str =
     "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held with the pads as steps.
@@ -231,7 +246,7 @@ const PAD_MUTE_HINT: &str =
     "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
                              TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
 const SHIFT_SYNTH_HINT: &str =
-    "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
+    "SHIFT +   touch a knob: MIDI Learn   ·   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_SAMPLE_HINT: &str =
     "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
@@ -655,6 +670,10 @@ pub enum ToUi {
     /// A MIDI control took the knob learn was armed for (M5): the Q-Links
     /// stop waiting for it.
     ChainLearnDone,
+    /// What MIDI Learn waits to give a control, named, after SHIFT + a
+    /// touch on a value armed it (the hint line says so); None once a
+    /// control took it or it was cancelled.
+    Learning(Option<String>),
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
     /// The tempo follows an outside clock arriving on this port ("MIDI
@@ -1054,6 +1073,10 @@ pub enum FromUi {
     OpenMacros(usize),
     /// A Q-Link took the knob learn was armed for.
     ChainLearned,
+    /// SHIFT + a touch on a value (layout spec 4d): MIDI Learn waits for
+    /// the next control moved on a keyboard or controller to take it. The
+    /// same value again cancels.
+    LearnValue(LearnValue),
     /// The Play page: a filter, a send, a fader, a speaker, a throw or the
     /// XY pad, for the mixer (`mixing.rs`).
     PlayFx(PlayFx),
@@ -1088,6 +1111,17 @@ pub enum FromUi {
 
 /// Lines the console keeps while paused, to show when it carries on.
 const CONSOLE_BACKLOG: usize = 600;
+
+/// A value SHIFT + a touch hands to MIDI Learn ([`FromUi::LearnValue`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LearnValue {
+    /// A mixer strip's fader, pan or send, an effect's knob on the chain
+    /// editor, or a macro's knob.
+    Param(ParamAddr),
+    /// A knob of the synth the Synth tab shows (the selected track's), by
+    /// its parameter id.
+    Synth(u16),
+}
 
 pub struct Player {
     pub ui: Ui,
@@ -1295,6 +1329,12 @@ pub struct Player {
     power_request: Option<std::path::PathBuf>,
     /// A finger on Play's BPM: which, how long (s) and where it landed.
     tempo_press: Option<(u64, f32, i32, i32)>,
+    /// The finger whose SHIFT + touch armed MIDI Learn: it does nothing
+    /// else until it lifts.
+    learn_finger: Option<u64>,
+    /// What MIDI Learn waits to give a control, from the app
+    /// ([`ToUi::Learning`]): the hint line says so.
+    learning: Option<String>,
     /// The undo history is open over a page.
     history: Option<HistoryOpen>,
     /// UNDO is held, and for how long (s).
@@ -1493,6 +1533,8 @@ impl Player {
             power: None,
             power_request: None,
             tempo_press: None,
+            learn_finger: None,
+            learning: None,
             history: None,
             undo_held: None,
             seen_loop: (0, 0, 0),
@@ -2856,6 +2898,8 @@ impl Player {
             HISTORY_HINT.to_string()
         } else if self.kit_list {
             KITS_HINT.to_string()
+        } else if let Some(name) = &self.learning {
+            learning_hint(name)
         } else if self.status.shift
             && self.ready
             && matches!(self.view, View::Prefs | View::Options)
@@ -2867,6 +2911,12 @@ impl Player {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
             SHIFT_STEPS_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && matches!(self.view, View::Mixer | View::Chain | View::Macros)
+            && (self.view != View::Mixer || mpfree_mixer_ui::io_hint(&self.ui).is_none())
+        {
+            SHIFT_LEARN_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
         } else if self.status.erase && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
@@ -4337,6 +4387,12 @@ impl Player {
             ToUi::ChainLearnDone => {
                 self.chain_page.cancel_learn();
                 self.refresh_qlinks();
+            }
+            ToUi::Learning(name) => {
+                if self.learning != name {
+                    self.learning = name;
+                    self.refresh_hint();
+                }
             }
             ToUi::QLinkBank => self.next_qlink_bank(),
             ToUi::ClockFrom(port) => {
@@ -6712,6 +6768,21 @@ impl Player {
             }
             return None;
         }
+        // SHIFT + a touch on a value: MIDI Learn waits for a control to
+        // move it (layout spec 4d). That finger does nothing else until it
+        // lifts.
+        if self.learn_finger == Some(finger) {
+            if matches!(phase, Touch::Up | Touch::Cancel) {
+                self.learn_finger = None;
+            }
+            return None;
+        }
+        if phase == Touch::Down && finger != WHEEL_FINGER && self.status.shift {
+            if let Some(v) = self.learnable_at(x, y) {
+                self.learn_finger = Some(finger);
+                return Some(FromUi::LearnValue(v));
+            }
+        }
         if matches!(self.view, View::Play | View::Arrange | View::Chain) {
             self.watch_card_press(finger, phase, x, y);
         }
@@ -6739,6 +6810,34 @@ impl Player {
             self.step_browser();
         }
         action
+    }
+
+    /// The value under (`x`, `y`) that SHIFT + a touch hands to MIDI
+    /// Learn: a mixer strip's fader, pan or send (the Faders look), a knob,
+    /// fader, slider or drawbar on the chain editor or the Synth tab, or a
+    /// macro's knob on the macros panel. None anywhere else (a value that
+    /// learns nothing yet, or no value at all: SHIFT + a touch there keeps
+    /// its own job). The smallest control there, as the outline picks.
+    fn learnable_at(&self, x: i32, y: i32) -> Option<LearnValue> {
+        let pt = self
+            .ui
+            .targets()
+            .into_iter()
+            .filter(|pt| pt.target.rect.contains(x, y))
+            .min_by_key(|pt| pt.target.rect.w as i64 * pt.target.rect.h as i64)?;
+        let (w, t) = (pt.widget.as_str(), &pt.target);
+        if w == mpfree_mixer_ui::MIXER {
+            let (sid, param) = mpfree_mixer_ui::param_of(&self.ui, t)?;
+            let strip = crate::modmix::strip_of(sid)?;
+            return Some(LearnValue::Param(ParamAddr::new(
+                mpfree_play::mpfree_param::Owner::Strip(strip),
+                param,
+            )));
+        }
+        if w == synth_view::TILES {
+            return self.synth.as_ref()?.param_of(t).map(LearnValue::Synth);
+        }
+        mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
     }
 
     /// A finger on a Q-Link card, for the long press on a macro card that
@@ -11797,6 +11896,98 @@ mod tests {
         assert_eq!(
             p.ui.get::<Label>("hint").unwrap().text,
             "Nothing to undo on this page"
+        );
+    }
+
+    /// SHIFT + a touch on a value hands it to MIDI Learn (layout spec 4d):
+    /// a strip's fader on the mixer, a knob on the Synth tab. That finger
+    /// moves nothing, the hint line says what Learn waits for, and without
+    /// SHIFT the fader moves as before.
+    #[test]
+    fn shift_and_a_touch_on_a_value_arms_midi_learn() {
+        use mpfree_play::mpfree_param::Owner;
+        let mut p = sample_player(Fonts::embedded());
+        let mut m = mpfree_mixer_ui::sample::song_mixer();
+        let st = mpfree_mixer_ui::MixState::from_mixer(
+            &mut m,
+            mpfree_mixer_ui::MixView::Tracks,
+            &mpfree_mixer_ui::sample::name,
+        );
+        p.apply(ToUi::Show(View::Mixer));
+        p.apply(ToUi::Mixer(Box::new(st)));
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let fader =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == mpfree_mixer_ui::MIXER && t.target.id == "fader")
+                .expect("a strip's fader");
+        let (sid, param) = mpfree_mixer_ui::param_of(&p.ui, &fader.target).expect("its parameter");
+        assert_eq!(param, mpfree_fx::ids::mixer::VOLUME);
+        let strip = crate::modmix::strip_of(sid).unwrap();
+        let want = LearnValue::Param(ParamAddr::new(Owner::Strip(strip), param));
+        let (x, y) = fader.target.centre();
+        let drag = |p: &mut Player| {
+            let mut acts: Vec<FromUi> = [
+                p.touch(1, Touch::Down, x, y),
+                p.touch(1, Touch::Move, x, y - 80),
+                p.touch(1, Touch::Up, x, y - 80),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch a value: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        assert_eq!(drag(&mut p), [FromUi::LearnValue(want)]);
+        // The app names what Learn waits for, and the hint line says so
+        // until a control takes it.
+        p.apply(ToUi::Learning(Some("Volume (Drums)".into())));
+        assert!(
+            hint(&p).starts_with("LEARNING   Volume (Drums): move a knob"),
+            "{}",
+            hint(&p)
+        );
+        p.apply(ToUi::Learning(None));
+        assert!(!hint(&p).starts_with("LEARNING"));
+        // Without SHIFT the fader moves.
+        p.status.shift = false;
+        let acts = drag(&mut p);
+        assert!(
+            !acts.is_empty() && !acts.iter().any(|a| matches!(a, FromUi::LearnValue(_))),
+            "{acts:?}"
+        );
+        // A knob on the Synth tab: the synth's parameter, by its id.
+        p.apply(ToUi::Show(View::Synth));
+        p.ui.paint(&mut c);
+        let knob =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == synth_view::TILES && t.target.id == "knob")
+                .expect("a synth knob");
+        let id = p.synth.as_ref().unwrap().param_of(&knob.target).unwrap();
+        let (x, y) = knob.target.centre();
+        p.status.shift = true;
+        assert_eq!(
+            p.touch(2, Touch::Down, x, y),
+            Some(FromUi::LearnValue(LearnValue::Synth(id)))
+        );
+        assert_eq!(p.touch(2, Touch::Up, x, y), None);
+        // Something that isn't a value keeps its job with SHIFT: a tab.
+        let header = p.ui.rect_of("header").unwrap();
+        let play = p.ui.get::<Header>("header").unwrap().tab_rect(header, 0);
+        assert_eq!(
+            p.touch(3, Touch::Down, play.x + 20, play.y + 20),
+            Some(FromUi::Tab(0))
         );
     }
 
