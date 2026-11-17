@@ -46,8 +46,25 @@ impl DiskInfo {
     }
 }
 
+/// A system program, by its full path where the system has one fixed, so a
+/// program of the same name in the creator's own folder (Downloads) or on
+/// `PATH` is never run with administrator rights.
+fn command(cmd: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(cmd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // The window is a GUI program with no console: without this, each
+        // call (the disk list every few seconds) flashes a console window.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
 fn run(cmd: &str, args: &[&str]) -> io::Result<String> {
-    let out = Command::new(cmd)
+    let out = command(cmd)
         .args(args)
         .output()
         .map_err(|e| io::Error::new(e.kind(), format!("{cmd}: {e}")))?;
@@ -184,8 +201,14 @@ impl WriteAt for OpenDisk {
 }
 
 impl crate::stick::Disk for OpenDisk {
+    /// Writes everything out to the stick, and lets go of what the system
+    /// keeps of it in memory, so the read-back that follows reads the stick
+    /// itself (Linux reads a disk through its page cache; macOS's raw device
+    /// and Windows' physical drive are read directly).
     fn sync(&self) -> io::Result<()> {
-        self.file.sync_all()
+        self.file.sync_all()?;
+        imp::drop_cache(&self.file);
+        Ok(())
     }
 }
 
@@ -366,27 +389,40 @@ mod imp {
         let _ = run("blockdev", &["--rereadpt", &info.id]);
         let _ = run("udevadm", &["settle", "--timeout=10"]);
     }
+
+    /// Drops the disk's pages from the page cache (they are clean after
+    /// `sync_all`), so the next read comes from the stick.
+    pub fn drop_cache(file: &File) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: a valid descriptor for the file's lifetime; offset 0 and
+        // length 0 mean the whole file.
+        unsafe {
+            libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 mod imp {
     use super::*;
 
+    const DISKUTIL: &str = "/usr/sbin/diskutil";
+
     pub fn list() -> io::Result<Vec<DiskInfo>> {
-        let all = run("diskutil", &["list", "-plist", "external", "physical"])?;
+        let all = run(DISKUTIL, &["list", "-plist", "external", "physical"])?;
         let mut out = Vec::new();
         for disk in plist_strings(&all, "WholeDisks") {
             if !disk.starts_with("disk") || !disk[4..].chars().all(|c| c.is_ascii_digit()) {
                 continue;
             }
-            let info = run("diskutil", &["info", "-plist", &disk])?;
+            let info = run(DISKUTIL, &["info", "-plist", &disk])?;
             if plist_value(&info, "Internal").as_deref() != Some("false")
                 || plist_value(&info, "BusProtocol").as_deref() != Some("USB")
             {
                 continue;
             }
             // The setup partition's FAT label, MPFREE, among its volumes.
-            let mpfree = run("diskutil", &["list", "-plist", &disk]).is_ok_and(|l| {
+            let mpfree = run(DISKUTIL, &["list", "-plist", &disk]).is_ok_and(|l| {
                 l.contains(&format!("<string>{}</string>", crate::stick::SETUP_LABEL))
             });
             out.push(DiskInfo {
@@ -407,7 +443,16 @@ mod imp {
 
     pub fn open(info: DiskInfo, write: bool) -> io::Result<OpenDisk> {
         if write {
-            run("diskutil", &["unmountDisk", &info.id])?;
+            // Spotlight or a Finder window can keep a volume busy for a moment;
+            // the stick is about to be written whole, so the second try forces.
+            if run(DISKUTIL, &["unmountDisk", &info.id]).is_err() {
+                run(DISKUTIL, &["unmountDisk", "force", &info.id]).map_err(|e| {
+                    bad(format!(
+                        "could not unmount {}: {e} (close any window showing the stick)",
+                        info.id
+                    ))
+                })?;
+            }
         }
         // The raw device: much faster, and needs whole sectors.
         let raw = info.id.replacen("/dev/disk", "/dev/rdisk", 1);
@@ -426,6 +471,8 @@ mod imp {
     }
 
     pub fn reread(_info: &DiskInfo) {}
+
+    pub fn drop_cache(_file: &File) {}
 }
 
 #[cfg(windows)]
@@ -435,9 +482,14 @@ mod imp {
     use windows_sys::Win32::System::Ioctl::{FSCTL_DISMOUNT_VOLUME, FSCTL_LOCK_VOLUME};
     use windows_sys::Win32::System::IO::DeviceIoControl;
 
+    /// Windows PowerShell, from the system folder, never from `PATH` or
+    /// the creator's own folder.
     fn powershell(script: &str) -> io::Result<String> {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let exe =
+            std::path::Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
         run(
-            "powershell",
+            &exe.to_string_lossy(),
             &["-NoProfile", "-NonInteractive", "-Command", script],
         )
     }
@@ -549,6 +601,8 @@ mod imp {
             let _ = powershell(&format!("Update-Disk -Number {n}"));
         }
     }
+
+    pub fn drop_cache(_file: &File) {}
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -564,6 +618,8 @@ mod imp {
     }
 
     pub fn reread(_info: &DiskInfo) {}
+
+    pub fn drop_cache(_file: &File) {}
 }
 
 #[cfg(test)]

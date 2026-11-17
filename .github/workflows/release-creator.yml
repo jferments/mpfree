@@ -1,0 +1,395 @@
+name: USB creator release
+
+# Builds the MPFree USB creator for Linux, Windows and macOS, each one file with
+# MPFree's programs for the MPC inside it, and puts them in a DRAFT GitHub
+# release with their SHA-256 sums. Nothing is published until the owner opens
+# the draft and presses Publish. See docs/dev/design/usb-creator.md, "Releases".
+#
+# Started by hand (Actions > USB creator release > Run workflow), or by pushing
+# a tag creator-vX.Y.Z that matches rust/mpfree-creator/Cargo.toml's version.
+# Not on pull requests: the creator itself is built on GitHub's own runners
+# (Linux on Ubuntu 22.04 for an old enough glibc, Windows, macOS), which count
+# against the account's Actions minutes (Windows twice, macOS ten times a Linux
+# minute). MPFree's programs for the MPC and the draft release use the
+# self-hosted runners, as CI does.
+
+on:
+  workflow_dispatch:
+    inputs:
+      windows:
+        description: Build for Windows (a GitHub-hosted runner; about 10 minutes, counted twice)
+        type: boolean
+        default: true
+      macos:
+        description: Build for macOS (a GitHub-hosted runner; about 15 minutes, counted ten times)
+        type: boolean
+        default: true
+  push:
+    tags: ["creator-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: creator-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The same pinned toolchain as CI's lint job, so a release is built by a known compiler.
+  RUSTUP_TOOLCHAIN: "1.97.0"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  programs:
+    name: MPFree's programs for the MPC (ARMv7)
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
+      - uses: actions/checkout@v4
+      - name: The creator's version (and the tag, if a tag started this)
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' rust/mpfree-creator/Cargo.toml | head -n 1)
+          test -n "$version"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "creator-v$version" ]; then
+            echo "The tag ${GITHUB_REF_NAME} does not match rust/mpfree-creator/Cargo.toml's version $version (creator-v$version)."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Creator version $version"
+      - name: Keep the Cargo target between runs (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          all="$RUNNER_WORKSPACE/cargo-target"
+          t="$all/release"
+          mkdir -p "$t"
+          used=$(du -s -BG "$all" | cut -f1 | tr -d G)
+          if [ "$used" -gt 15 ]; then
+            echo "Cargo targets hold ${used} GiB, over 15: starting release afresh"
+            rm -rf "$t" && mkdir -p "$t"
+          fi
+          echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Install the pinned Rust with the ARMv7 target
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup target add --toolchain "$RUSTUP_TOOLCHAIN" armv7-unknown-linux-gnueabihf
+      - name: Build the programs (static, as the device rounds build them)
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-startup -p mpfree-screen-log
+      - name: Build the download helper, mpfree-fetch (linked dynamically)
+        # The static pad player can't open the MPC's libcurl itself (the 16 Nov run's "Insufficient
+        # randomness"), so the Plugins place downloads through this helper beside it (stick::FETCH_FILE):
+        # linked dynamically, against a glibc no newer than the MPC's 2.39, as CI builds and checks it
+        # (mpc-inventory.yml). Its own target folder, so the static programs' build stays as it is.
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target-dir "${CARGO_TARGET_DIR:-rust/target}-fetch" \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-mpcstore --bin mpfree-fetch
+      - name: Collect them, checked against the creator's list (stick::PROGRAM_FILES and FETCH_FILE)
+        run: |
+          out="$RUNNER_TEMP/stick-programs"
+          rm -rf "$out" && mkdir -p "$out"
+          built="${CARGO_TARGET_DIR:-rust/target}/armv7-unknown-linux-gnueabihf/release"
+          # The names the creator needs, read from the source, so a program added there
+          # without a build line here fails this release instead of a musician's stick.
+          names=$(python3 - <<'PY'
+          import re
+          src = open("rust/mpfree-stick/src/stick.rs").read()
+          m = re.search(r"pub const PROGRAM_FILES: \[&str; \d+\] = \[([^\]]*)\];", src)
+          print(" ".join(re.findall(r'"([a-z0-9-]+)"', m.group(1))))
+          PY
+          )
+          test -n "$names"
+          for n in $names; do
+            f="$built/$n"
+            test -f "$f" || { echo "PROGRAM_FILES names $n, which this workflow does not build: add it above."; exit 1; }
+            arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Machine: *ARM'
+            arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+            cp "$f" "$out/$n"
+          done
+          # The download helper: optional for a stick, but every release carries it.
+          fetch=$(python3 - <<'PY'
+          import re
+          src = open("rust/mpfree-stick/src/stick.rs").read()
+          print(re.search(r'pub const FETCH_FILE: &str = "([a-z0-9-]+)";', src).group(1))
+          PY
+          )
+          f="${CARGO_TARGET_DIR:-rust/target}-fetch/armv7-unknown-linux-gnueabihf/release/$fetch"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          arm-linux-gnueabihf-readelf -l "$f" | grep -q 'Requesting program interpreter: /lib/ld-linux-armhf.so.3'
+          newest=$(arm-linux-gnueabihf-readelf -W --version-info "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n | tail -1)
+          echo "$fetch asks for $newest at most"
+          [ "${newest#GLIBC_2.}" -le 39 ] || { echo "$fetch needs a newer glibc than the MPC's 2.39"; exit 1; }
+          cp "$f" "$out/$fetch"
+          (cd "$out" && sha256sum $names "$fetch" | tee SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stick-programs
+          path: ${{ runner.temp }}/stick-programs
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Creator for Linux (x86_64)
+    needs: programs
+    # GitHub's Ubuntu 22.04, not the self-hosted runners: a program built against a
+    # newer glibc (the runners' 2.39) won't start on Ubuntu 22.04 or Debian 12.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: actions/download-artifact@v4
+        with:
+          name: stick-programs
+          path: ${{ runner.temp }}/stick-programs
+      - name: Build the creator with the programs inside
+        run: |
+          export MPFREE_CREATOR_PROGRAMS="$RUNNER_TEMP/stick-programs"
+          (cd "$MPFREE_CREATOR_PROGRAMS" && sha256sum -c SHA256SUMS)
+          cargo test --manifest-path rust/mpfree-creator/Cargo.toml --release --locked
+          cargo build --manifest-path rust/mpfree-creator/Cargo.toml --release --locked
+      - name: Check it, and pack it as one executable in a .tar.gz (tar keeps it executable)
+        run: |
+          version='${{ needs.programs.outputs.version }}'
+          exe=rust/mpfree-creator/target/release/mpfree-creator
+          # The programs are inside it, byte for byte.
+          for n in $(cut -c 67- "$RUNNER_TEMP/stick-programs/SHA256SUMS"); do
+            python3 -c 'import sys; a=open(sys.argv[1],"rb").read(); b=open(sys.argv[2],"rb").read(); sys.exit(0 if a in b else 1)' \
+              "$RUNNER_TEMP/stick-programs/$n" "$exe" || { echo "$n is not inside the creator"; exit 1; }
+          done
+          # The oldest Linux it runs on: the newest glibc symbol version it needs.
+          python3 - "$exe" <<'PY'
+          import re, subprocess, sys
+          versions = subprocess.run(["readelf", "-W", "--version-info", sys.argv[1]],
+                                    check=True, capture_output=True, text=True).stdout
+          needs = [tuple(map(int, m)) for m in re.findall(r"GLIBC_(\d+)\.(\d+)", versions)]
+          assert needs, "no versioned glibc requirements found"
+          print(f"The Linux creator needs glibc {max(needs)[0]}.{max(needs)[1]} or newer")
+          # Ubuntu 22.04 has 2.35, Debian 12 2.36: a creator that needs more leaves them out.
+          assert max(needs) <= (2, 35), "newer than Ubuntu 22.04's glibc 2.35"
+          PY
+          # The command line runs, and lists this machine's USB disks (none here) without failing.
+          "$exe" --cli disks
+          out="$RUNNER_TEMP/out" && rm -rf "$out" && mkdir -p "$out/MPFree-USB-Creator-$version-linux-x86_64"
+          cp "$exe" "$out/MPFree-USB-Creator-$version-linux-x86_64/mpfree-creator"
+          tar -C "$out" -czf "$out/MPFree-USB-Creator-$version-linux-x86_64.tar.gz" "MPFree-USB-Creator-$version-linux-x86_64"
+          echo "PACKAGE=$out/MPFree-USB-Creator-$version-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: creator-linux
+          path: ${{ env.PACKAGE }}
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Creator for Windows (x64)
+    needs: programs
+    if: github.event_name == 'push' || inputs.windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Rust
+        run: rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+      - uses: actions/download-artifact@v4
+        with:
+          name: stick-programs
+          path: ${{ runner.temp }}/stick-programs
+      - name: Build the creator with the programs inside (C runtime linked in, so no Visual C++ package is needed)
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          $env:MPFREE_CREATOR_PROGRAMS = Join-Path $env:RUNNER_TEMP 'stick-programs'
+          cargo test --manifest-path rust/mpfree-creator/Cargo.toml --release --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo build --manifest-path rust/mpfree-creator/Cargo.toml --release --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: The disk code's own tests on Windows
+        run: |
+          cargo test --manifest-path rust/Cargo.toml --locked -p mpfree-stick --lib -- disks:: update::
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Check it lists this machine's USB disks (none here) through PowerShell, and name it
+        run: |
+          $version = '${{ needs.programs.outputs.version }}'
+          $exe = 'rust/mpfree-creator/target/release/mpfree-creator.exe'
+          $listed = & $exe --cli disks 2>&1 | Out-String
+          if ($LASTEXITCODE) { Write-Output $listed; exit 1 }
+          Write-Output $listed
+          $dumpbin = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($dumpbin) {
+            $deps = & $dumpbin.FullName /dependents $exe | Out-String
+            Write-Output $deps
+            if ($deps -match 'VCRUNTIME') { Write-Output 'The creator needs the Visual C++ runtime: it should be linked in.'; exit 1 }
+          }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item $exe "out/MPFree-USB-Creator-$version-windows-x64.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: creator-windows
+          path: out/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: Creator for macOS (Apple silicon and Intel)
+    needs: programs
+    if: github.event_name == 'push' || inputs.macos
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Rust for both kinds of Mac
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup target add --toolchain "$RUSTUP_TOOLCHAIN" aarch64-apple-darwin x86_64-apple-darwin
+      - uses: actions/download-artifact@v4
+        with:
+          name: stick-programs
+          path: ${{ runner.temp }}/stick-programs
+      - name: Build the creator with the programs inside, for both
+        run: |
+          export MPFREE_CREATOR_PROGRAMS="$RUNNER_TEMP/stick-programs"
+          (cd "$MPFREE_CREATOR_PROGRAMS" && shasum -a 256 -c SHA256SUMS)
+          cargo test --manifest-path rust/mpfree-creator/Cargo.toml --release --locked
+          cargo test --manifest-path rust/Cargo.toml --locked -p mpfree-stick --lib -- disks:: update::
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --manifest-path rust/mpfree-creator/Cargo.toml --release --locked --target "$t"
+          done
+      - name: One app for both, signed ad hoc (Apple silicon needs a signature; no Apple ID is paid for)
+        run: |
+          version='${{ needs.programs.outputs.version }}'
+          t=rust/mpfree-creator/target
+          app="out/MPFree USB Creator.app"
+          mkdir -p "$app/Contents/MacOS"
+          lipo -create -output "$app/Contents/MacOS/mpfree-creator" \
+            "$t/aarch64-apple-darwin/release/mpfree-creator" "$t/x86_64-apple-darwin/release/mpfree-creator"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>MPFree USB Creator</string>
+            <key>CFBundleDisplayName</key><string>MPFree USB Creator</string>
+            <key>CFBundleIdentifier</key><string>io.github.jferments.mpfree.creator</string>
+            <key>CFBundleExecutable</key><string>mpfree-creator</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$version</string>
+            <key>CFBundleVersion</key><string>$version</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          lipo -info "$app/Contents/MacOS/mpfree-creator"
+          # The command line runs, and lists this Mac's USB disks (none here) through diskutil.
+          "$app/Contents/MacOS/mpfree-creator" --cli disks
+          (cd out && ditto -c -k --sequesterRsrc --keepParent "MPFree USB Creator.app" "MPFree-USB-Creator-$version-macos.zip")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: creator-macos
+          path: out/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Draft release with SHA-256 sums
+    needs: [programs, linux, windows, macos]
+    # The Windows and macOS jobs may be skipped (Run workflow's boxes), never failed.
+    if: >-
+      always() && needs.programs.result == 'success' && needs.linux.result == 'success' &&
+      needs.windows.result != 'failure' && needs.windows.result != 'cancelled' &&
+      needs.macos.result != 'failure' && needs.macos.result != 'cancelled'
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: creator-*
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: |
+          cd "$RUNNER_TEMP/release"
+          ls -l
+          sha256sum MPFree-USB-Creator-* | tee SHA256SUMS
+      - name: Build attestation (public repositories only; private ones need GitHub Enterprise)
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ runner.temp }}/release/MPFree-USB-Creator-*
+      - name: A draft release (the owner publishes it)
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ needs.programs.outputs.version }}
+          DIR: ${{ runner.temp }}/release
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const version = process.env.VERSION;
+            const dir = process.env.DIR;
+            const tag = `creator-v${version}`;
+            const sums = fs.readFileSync(path.join(dir, 'SHA256SUMS'), 'utf8');
+            const body = [
+              `MPFree USB Creator ${version}: makes the MPFree stick for the MPC One (Gen 1) from your own copy of Akai's MPC 3.10.1 update.`,
+              '',
+              'Tested on the MPC One (Gen 1) only. How to use it: docs/user/src/getting-started/installing.md.',
+              '',
+              '- Linux (x86_64): unpack the .tar.gz and open mpfree-creator.',
+              '- Windows (x64): the .exe. It is not signed: on its first run, click More info, then Run anyway.',
+              '- macOS (11 or newer, Apple silicon or Intel): unzip, and move the app to Applications. It is not signed by Apple: the first time, macOS refuses to open it; open System Settings > Privacy & Security and click Open Anyway.',
+              '',
+              `Built from ${context.sha} by ${context.workflow} run ${context.runId}.`,
+              '',
+              'SHA-256:',
+              '```',
+              sums.trim(),
+              '```',
+            ].join('\n');
+            const existing = (await github.paginate(github.rest.repos.listReleases, context.repo))
+              .find(r => r.tag_name === tag);
+            if (existing && !existing.draft) {
+              core.setFailed(`${tag} is already published; raise the version in rust/mpfree-creator/Cargo.toml`);
+              return;
+            }
+            const release = existing
+              ? (await github.rest.repos.updateRelease({ ...context.repo, release_id: existing.id, body, target_commitish: context.sha })).data
+              : (await github.rest.repos.createRelease({ ...context.repo, tag_name: tag, target_commitish: context.sha,
+                  name: `MPFree USB Creator ${version}`, body, draft: true, prerelease: true })).data;
+            for (const a of release.assets || []) {
+              await github.rest.repos.deleteReleaseAsset({ ...context.repo, asset_id: a.id });
+            }
+            for (const name of fs.readdirSync(dir).sort()) {
+              const data = fs.readFileSync(path.join(dir, name));
+              await github.rest.repos.uploadReleaseAsset({ ...context.repo, release_id: release.id, name, data,
+                headers: { 'content-type': 'application/octet-stream', 'content-length': data.length } });
+              core.info(`uploaded ${name} (${data.length} bytes)`);
+            }
+            core.notice(`Draft release ${tag}: ${release.html_url}`);

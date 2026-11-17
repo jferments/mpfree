@@ -10,11 +10,13 @@ MPFree runs from a USB stick that you make on your computer with the **MPFree US
 
 1. Update your MPC to the factory software MPFree supports, with Akai's own instructions.
 2. Make the stick with the creator, from the update file you used.
-3. Put the stick in the MPC and tap **Yes** once, so the MPC knows to start MPFree when the stick is in.
+3. Switch on the MPC's developer mode, put the stick in and tap **Yes** once, so the MPC knows to start MPFree when the stick is in.
 4. Wait while MPFree's first start backs up your MPC and brings in its drum kits and samples.
 
 > [!WARNING]
 > MPFree has only been tested on the **MPC One (Gen 1)**, the original MPC One. The creator is new: it has been tested on Linux, and the Windows and macOS versions have not yet been tried on a real stick. There are no downloads for musicians yet; this page describes how installing works, and will say where to get the creator when there is a release.
+
+The creator comes as one file for your computer: **Linux** (64-bit PCs, Ubuntu 22.04, Debian 12 or newer), **Windows** (64-bit) or **macOS** (11 or newer, Apple silicon or Intel).
 
 ## What you need
 
@@ -32,9 +34,9 @@ MPFree only works with the exact factory software it was made for. The creator c
 ## 2. Make the stick
 
 1. Open the **MPFree USB creator**.
-   - **Windows:** the first time, Windows may show "Windows protected your PC". Click **More info**, then **Run anyway**.
-   - **macOS:** the first time, macOS refuses to open it. Open **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next to the creator's name, and enter your password.
-   - **Linux:** allow the file to run as a program (in most file managers: right-click, **Properties**, **Allow executing**), then open it.
+   - **Windows:** open the `.exe` you downloaded. The first time, Windows may show "Windows protected your PC". Click **More info**, then **Run anyway**.
+   - **macOS:** open the `.zip` you downloaded and move **MPFree USB Creator** to your Applications folder. The first time, macOS refuses to open it. Open **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next to the creator's name, and enter your password.
+   - **Linux:** unpack the `.tar.gz` you downloaded and open **mpfree-creator** in the folder it makes. If your file manager won't run it, allow it to run as a program (right-click, **Properties**, **Allow executing**).
    The creator opens on **Make a stick**, with three numbered steps. Its other pages are the tabs along the top: **Copy the backup** and **Take MPFree off my MPC**. **Preferences** and **Help** are at the top right.
 2. In step **1, Akai's update file**, the creator shows the update file it found in your Downloads, Desktop or Documents folder, with a green tick and **MPC 3.10.1 (MPC One, Gen 1)**. If it didn't find it, drag the file onto the creator's window, or type where it is (the file, or the folder it is in).
 3. Put the USB stick into the computer. In step **2, Your USB stick**, choose it. The creator lists only USB sticks, never your computer's own disks, with their name and size.
@@ -49,11 +51,12 @@ If the stick already had MPFree on it, your MPFree settings, work and backups on
 
 The MPC needs a small start-up helper so that it starts MPFree when the stick is in. You add it once, with Akai's **developer mode** and one tap:
 
-1. With the MPC switched off, put the stick into one of the MPC's USB ports, and switch on. The factory software starts as usual.
+1. Switch the MPC on without the stick. The factory software starts as usual.
 2. Press **MENU**, open **Preferences**, then **Enhancements**, and switch on the **developer panel**.
 3. Hold **SHIFT** and press **MENU**, then choose **Developer**, and switch developer mode on.
-4. The MPC asks whether to run the script on the stick (`autorun.sh`). Tap **Yes**.
-5. A few seconds later the MPC restarts by itself, and MPFree starts from the stick.
+4. Put the stick into one of the MPC's USB ports. The MPC asks whether to run the script on the stick (`autorun.sh`). Tap **Yes**.
+   If it hasn't asked after a minute, switch the MPC off, and on again with the stick in: it asks once the factory software is up.
+5. A few seconds later the script switches developer mode off again, the MPC restarts by itself, and MPFree starts from the stick.
 
 The helper is three small files in the MPC's own storage. It changes nothing else, and nothing in the factory software. Switch on without the stick, and the factory software starts as before.
 
@@ -74,18 +77,18 @@ When it is done, the Play page opens with the MPC's own drum kits first, then MP
 > [!MPC]
 > The MPC's drum kits and samples are made from your own MPC, on your own stick. MPFree never shares them, and the creator never gives them out.
 
-## 5. Switch developer mode off
+## 5. Check that developer mode is off
 
-While developer mode is on, anyone on the same network as the MPC can get into it with no password. Switch it off once MPFree is set up:
+While developer mode is on, anyone on the same network as the MPC can get into it with no password. The script in step 3 switches it off as it finishes. This is new and hasn't been checked on an MPC yet, so the next time you use the factory software, check:
 
 1. Switch off, take the stick out, and switch on. The factory software starts.
-2. Hold **SHIFT** and press **MENU**, choose **Developer**, and switch developer mode off.
+2. Hold **SHIFT** and press **MENU** and choose **Developer**. If developer mode is on, switch it off.
 
-MPFree's start-up helper should stay on the MPC after this. That has not been checked on an MPC yet: if MPFree no longer starts with the stick in, do step 3 again.
+MPFree's start-up helper stays on the MPC when developer mode goes off. That too hasn't been checked on an MPC yet: if MPFree no longer starts with the stick in, do step 3 again.
 
 ## Keep a copy of the backup on your computer
 
-The backup on the stick is the way back if anything ever goes wrong with your MPC. Keep a copy on your computer too:
+The backup on the stick is the way back if anything ever goes wrong with your MPC. Keep a copy on your computer too. When you put an MPFree stick into the computer and this computer has no copy yet, the creator offers it on its first page: click **Copy it now**. Or:
 
 1. Put the stick into the computer and open the creator.
 2. Choose the **Copy the backup** tab.
@@ -117,9 +120,9 @@ To use the factory software, just switch on without the stick. MPFree changes on
 1. In the creator, choose the **Take MPFree off my MPC** tab. Choose the stick and click **Make it a removal stick**. A removal stick no longer starts MPFree; your MPFree settings, work and backups on it are kept.
 2. Put the stick into the MPC and switch on. The factory software starts, not MPFree.
 3. Switch developer mode on as in step 3 above, and tap **Yes** when the MPC asks to run the script.
-4. The MPC restarts into the factory software. The helper is gone; nothing else on the MPC changed. If the MPC asks to run the script again, tapping **Yes** does nothing, and **No** is fine too.
+4. The script switches developer mode off again, and the MPC restarts into the factory software. The helper is gone; nothing else on the MPC changed. If the MPC asks to run the script again, tapping **Yes** does nothing, and **No** is fine too.
 
-Then switch developer mode off as in step 5.
+Then check that developer mode is off, as in step 5.
 
 **Changed your mind?** On the same page, click **Make it an MPFree stick again**: the stick starts MPFree again, with your settings and work. If you already took the helper off the MPC, do step 3 again to put it back.
 
@@ -139,4 +142,6 @@ The creator can give the stick a way for developers to log in to the MPC over Et
 
    with the MPC's address in place of `ADDRESS`. The first time, `ssh` shows the stick's host key: check it matches the one you noted, then type `yes`.
 
-Only key logins work: there is no password, and only for root, on port 2222. Each stick has its own host key, made when the stick is made. To turn it off, untick **Developer SSH** and make the stick again; the stick then has no SSH server at all.
+Only key logins work: there is no password, and only for root, on port 2222.
+
+The script in step 3 switches Akai's developer mode (and its SSH on port 22) off as it finishes. To keep it on, put an empty file named `keep-developer-mode` on the stick's **MPFREE** drive before you tap **Yes**. A stick made with developer tools keeps it on by itself. Each stick has its own host key, made when the stick is made. To turn it off, untick **Developer SSH** and make the stick again; the stick then has no SSH server at all.
