@@ -709,6 +709,7 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         spread,
         gain,
         sync,
+        timing,
     } = g;
     f.num("position", position);
     f.num("spray", spray);
@@ -735,6 +736,8 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
     f.num("reverse", reverse);
     f.num("spread", spread);
     f.num("gain", gain);
+    // Saves before random timing open at the default (a little random).
+    f.num("timing", timing);
     let none = TempoSync {
         frames_per_beat: 22_050.0,
         grains_per_beat: None,

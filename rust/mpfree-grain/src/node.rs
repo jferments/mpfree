@@ -37,6 +37,9 @@ pub mod param {
     pub const SPREAD: u16 = 9;
     /// A meter: grains playing now.
     pub const GRAINS: u16 = 10;
+    /// How random the gaps between grains are, per cent (added after the
+    /// meter, so the older ids keep their numbers).
+    pub const TIMING: u16 = 11;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -63,7 +66,7 @@ const fn p(
     }
 }
 
-static PARAMS: [ParamInfo; 11] = [
+static PARAMS: [ParamInfo; 12] = [
     p(
         param::MIX,
         "Mix",
@@ -101,6 +104,16 @@ static PARAMS: [ParamInfo; 11] = [
         0.0,
         100.0,
         10.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    p(
+        param::TIMING,
+        "Timing",
+        "Grains",
+        0.0,
+        100.0,
+        30.0,
         Unit::Percent,
         Curve::Linear,
     ),
@@ -189,7 +202,7 @@ pub struct GrainNode {
     fx: Option<GrainFx>,
     budget: Budget,
     /// Every parameter's value, by id (the meter's slot is unused).
-    values: [f32; 11],
+    values: [f32; 12],
     rate: u32,
     seed: u64,
 }
@@ -203,7 +216,7 @@ impl GrainNode {
     /// A node with the default settings. `seed` sets its random sequence,
     /// so the same input renders the same.
     pub fn new(seed: u64) -> GrainNode {
-        let mut values = [0.0; 11];
+        let mut values = [0.0; 12];
         for p in &PARAMS {
             values[usize::from(p.id)] = p.default;
         }
@@ -232,6 +245,7 @@ impl GrainNode {
             pitch_spray: v[usize::from(param::PITCH_SPRAY)],
             reverse: v[usize::from(param::REVERSE)] / 100.0,
             spread: v[usize::from(param::SPREAD)] / 100.0,
+            timing: v[usize::from(param::TIMING)] / 100.0,
             ..Params::default()
         }
     }

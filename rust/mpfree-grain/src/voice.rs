@@ -26,6 +26,10 @@ const COVER: f32 = 0.25;
 /// counted on the voice's own clock), which keeps most grain frames to
 /// the four sums the level needs.
 const MEASURE_EVERY: u64 = 4;
+/// Mixed into the seed of the timing's own random sequence, so timing
+/// draws never shift the other parameters' draws (and timing 0 plays
+/// exactly as before it existed).
+const TIMING_SEED: u64 = 0x7A3E_D1CE_0F7E_57A3;
 
 /// Locks density and size to the tempo. Grains then start on exact frames
 /// of the transport's timeline, so a synced cloud stays on the grid however
@@ -71,6 +75,13 @@ pub struct Params {
     /// Linear output gain.
     pub gain: f32,
     pub sync: Option<TempoSync>,
+    /// How the gaps between grains vary, 0 to 1: 0 regular (every gap one
+    /// density period: grains in lockstep, which buzzes at the grain rate
+    /// and makes a frozen cloud comb, its level rising and falling with
+    /// the density), up to 1 random (each gap anywhere from none to two
+    /// periods). The density on average is the same at any setting.
+    /// Synced density keeps its grains on the beat grid and ignores it.
+    pub timing: f32,
 }
 
 impl Default for Params {
@@ -79,7 +90,7 @@ impl Default for Params {
             position: 0.0,
             spray: 0.0,
             size_ms: 80.0,
-            density: 20.0,
+            density: 25.0,
             pitch: 0.0,
             pitch_spray: 0.0,
             scale: 0,
@@ -89,6 +100,7 @@ impl Default for Params {
             spread: 0.0,
             gain: 1.0,
             sync: None,
+            timing: 0.3,
         }
     }
 }
@@ -188,6 +200,18 @@ impl Scratch {
     }
 }
 
+/// The next gap, in density periods, for `timing` (0 to 1) and a uniform
+/// draw `u` in [0, 1): anywhere from `1 - timing` to `1 + timing`, so the
+/// average stays one period.
+fn gap_factor(timing: f32, u: f32) -> f64 {
+    let t = if timing.is_finite() {
+        timing.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    f64::from(1.0 + t * (2.0 * u - 1.0))
+}
+
 /// The floor under the level's divisor for an overlap: 1 for a sparse
 /// cloud (each grain keeps its window and its level), [`FLOOR_DENSE`] from
 /// overlap 2 (the cloud is held at its source's level), a line between.
@@ -229,6 +253,10 @@ pub struct GrainVoice {
     grains: [Grain; MAX_GRAINS],
     active: usize,
     rng: Rng,
+    /// The timing's own random sequence (see [`TIMING_SEED`]).
+    trng: Rng,
+    /// The gap to the next free-running grain, in density periods.
+    gap: f64,
     /// Output frames rendered.
     clock: u64,
     /// Voice clock frame of the next free-running grain.
@@ -278,6 +306,8 @@ impl GrainVoice {
             grains: [Grain::default(); MAX_GRAINS],
             active: 0,
             rng: Rng::new(seed),
+            trng: Rng::new(seed ^ TIMING_SEED),
+            gap: 1.0,
             clock: 0,
             next_at: 0.0,
             last_spawn: 0.0,
@@ -335,6 +365,7 @@ impl GrainVoice {
     /// Restarts the random sequence.
     pub fn reseed(&mut self, seed: u64) {
         self.rng = Rng::new(seed);
+        self.trng = Rng::new(seed ^ TIMING_SEED);
     }
 
     /// Starts making grains, the first at the start of the next render.
@@ -474,7 +505,7 @@ impl GrainVoice {
         }
         // A faster density takes effect at once, not after a slow wait.
         let gap = f64::from(self.out_rate) / self.density();
-        self.next_at = self.next_at.min(self.last_spawn + gap);
+        self.next_at = self.next_at.min(self.last_spawn + gap * self.gap);
         let off = (self.next_at - self.clock as f64).ceil().max(from as f64);
         (off < n as f64).then_some(off as usize)
     }
@@ -565,7 +596,8 @@ impl GrainVoice {
                     self.spawn(src, budget, src_ratio);
                     let now = self.clock as f64 + off as f64;
                     self.last_spawn = now;
-                    self.next_at = now + f64::from(self.out_rate) / self.density();
+                    self.gap = gap_factor(self.params.timing, self.trng.unit());
+                    self.next_at = now + f64::from(self.out_rate) / self.density() * self.gap;
                     search = off + 1;
                 }
             }

@@ -114,6 +114,7 @@ fn grains_never_allocate() {
                         grains_per_beat: Some(8.0),
                         size_beats: Some(0.125),
                     }),
+                    timing: (k % 3) as f32 * 0.5,
                 });
                 if k % 4 == 3 {
                     v.stop()

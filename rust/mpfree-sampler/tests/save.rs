@@ -149,6 +149,7 @@ fn busy_kit() -> Project {
             grains_per_beat: Some(8.0),
             size_beats: None,
         }),
+        timing: 0.65,
     };
     p.set_pad(5, Some(Pad::new("Cloud", Layer::new(g))), None)
         .unwrap();
