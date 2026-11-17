@@ -32,32 +32,34 @@ compressor/compressor[Sidechain pump]/zipper_db	0.6346
 compressor/compressor[Smash]/zipper_db	0.966
 compressor/compressor[Vocal level]/zipper_db	0.1984
 crush/crush/dither_noise_rise_bits8	4.5933
-crush/crush/image_error_quarter_rate	0.4121
-crush/crush/lu_pink18	-0.2549
-crush/crush/off_grid_10000hz	-11.4691
-crush/crush/off_grid_10000hz_at48k	-13.125
-crush/crush/off_grid_11025hz	-91.2612
-crush/crush/off_grid_11025hz_at48k	-11.4707
-crush/crush/off_grid_22050hz	-91.9216
-crush/crush/off_grid_22050hz_at48k	-13.7397
-crush/crush/off_grid_26040hz	-13.4194
-crush/crush/off_grid_26040hz_at48k	-16.3289
-crush/crush/off_grid_32000hz	-14.3006
-crush/crush/off_grid_32000hz_at48k	-14.5552
-crush/crush/off_grid_8000hz	-13.289
-crush/crush/off_grid_8000hz_at48k	-89.7384
-crush/crush/off_grid_worst_10000hz	-19.7143
-crush/crush/off_grid_worst_10000hz_at48k	-20.7725
-crush/crush/off_grid_worst_11025hz	-117.8179
-crush/crush/off_grid_worst_11025hz_at48k	-19.4516
-crush/crush/off_grid_worst_22050hz	-119.0903
-crush/crush/off_grid_worst_22050hz_at48k	-18.7595
-crush/crush/off_grid_worst_26040hz	-18.2128
-crush/crush/off_grid_worst_26040hz_at48k	-18.3301
-crush/crush/off_grid_worst_32000hz	-20.3194
-crush/crush/off_grid_worst_32000hz_at48k	-17.9316
-crush/crush/off_grid_worst_8000hz	-22.1332
-crush/crush/off_grid_worst_8000hz_at48k	-103.2968
+crush/crush/filters_drawn_vs_heard_db	0.0012
+crush/crush/image_error_quarter_rate	0.0015
+crush/crush/lu_pink18	-0.4611
+crush/crush/m50dbfs_bits8_buzz_out_dbfs	-48.1648
+crush/crush/off_grid_10000hz	-54.5788
+crush/crush/off_grid_10000hz_at48k	-72.8211
+crush/crush/off_grid_11025hz	-91.4488
+crush/crush/off_grid_11025hz_at48k	-60.7001
+crush/crush/off_grid_22050hz	-92.3142
+crush/crush/off_grid_22050hz_at48k	-64.74
+crush/crush/off_grid_26040hz	-63.9745
+crush/crush/off_grid_26040hz_at48k	-69.6097
+crush/crush/off_grid_32000hz	-68.2937
+crush/crush/off_grid_32000hz_at48k	-67.5653
+crush/crush/off_grid_8000hz	-74.3031
+crush/crush/off_grid_8000hz_at48k	-89.9978
+crush/crush/off_grid_worst_10000hz	-55.3705
+crush/crush/off_grid_worst_10000hz_at48k	-79.5323
+crush/crush/off_grid_worst_11025hz	-117.7627
+crush/crush/off_grid_worst_11025hz_at48k	-61.6666
+crush/crush/off_grid_worst_22050hz	-119.1665
+crush/crush/off_grid_worst_22050hz_at48k	-66.9414
+crush/crush/off_grid_worst_26040hz	-66.9545
+crush/crush/off_grid_worst_26040hz_at48k	-74.1675
+crush/crush/off_grid_worst_32000hz	-71.4323
+crush/crush/off_grid_worst_32000hz_at48k	-69.5263
+crush/crush/off_grid_worst_8000hz	-82.5751
+crush/crush/off_grid_worst_8000hz_at48k	-103.4973
 crush/crush/silence_out_dbfs	-140
 crush/crush/sinad_error_bits12	0.1342
 crush/crush/sinad_error_bits16	0.0512
@@ -65,16 +67,22 @@ crush/crush/sinad_error_bits4	-0.1838
 crush/crush/sinad_error_bits8	0.2546
 crush/crush/step_spike_db	0
 crush/crush/thd_m40dbfs_bits8_dither	-35.0928
-crush/crush[12-bit classic]/lu_pink18	-0.0701
-crush/crush[12-bit classic]/off_grid_at_16bits	-13.4194
-crush/crush[Chip]/lu_pink18	-0.0227
-crush/crush[Chip]/off_grid_at_16bits	-91.9216
-crush/crush[Destroyed]/lu_pink18	-0.1005
-crush/crush[Destroyed]/off_grid_at_16bits	-19.5536
-crush/crush[Phone line]/lu_pink18	-0.4538
-crush/crush[Phone line]/off_grid_at_16bits	-13.289
-crush/crush[Soft grit]/lu_pink18	-0.0465
-crush/crush[Soft grit]/off_grid_at_16bits	-14.3006
+crush/crush[12-bit 40k]/lu_pink18	-0.5503
+crush/crush[12-bit 40k]/off_grid_at_16bits	-67.2114
+crush/crush[12-bit classic]/lu_pink18	-0.2044
+crush/crush[12-bit classic]/off_grid_at_16bits	-69.5964
+crush/crush[8-bit sampler]/lu_pink18	-0.0021
+crush/crush[8-bit sampler]/off_grid_at_16bits	-93.2139
+crush/crush[Chip]/lu_pink18	-0.319
+crush/crush[Chip]/off_grid_at_16bits	-92.3142
+crush/crush[Destroyed]/lu_pink18	-0.1043
+crush/crush[Destroyed]/off_grid_at_16bits	-68.4025
+crush/crush[Phone line]/lu_pink18	-0.3753
+crush/crush[Phone line]/off_grid_at_16bits	-81.0166
+crush/crush[Soft grit]/lu_pink18	-0.3847
+crush/crush[Soft grit]/off_grid_at_16bits	-68.2937
+crush/crush[Wobbly clock]/lu_pink18	-0.736
+crush/crush[Wobbly clock]/off_grid_at_16bits	-59.0316
 delay/digital/alias_5k_0_db	-95.5582
 delay/digital/hidden_loss_10k_db	-0.0045
 delay/digital/hidden_loss_15k_db	-0.0102
