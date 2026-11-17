@@ -110,7 +110,7 @@
 374672	Poly Supersaw, 8 voices
 20295	Ring mod
 145867	Room reverb
-115746	Rotary
+108213	Rotary
 546477	Sampler x16 held
 1515282	Sampler x16 held up
 1774420	Sampler x16 held up, 16-bit sound
