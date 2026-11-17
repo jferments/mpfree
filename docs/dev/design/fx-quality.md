@@ -8,9 +8,11 @@ checked: 2026-11-16 ececc7e
 
 An effect is good when it meets its measured targets, wins or ties in blind, level-matched listening, has the controls musicians know, and fits the MPC's budget. This page holds the first of those: each target as a number with its reason, how fxlab measures it, and the ratchet on CI that stops any number getting worse.
 
+**Second round** (measuring built 2026-11-17): drive (Drive and Character), crush, compressor, filters (Multi and DJ) and lo-fi, by the same method, in [Round 2](#round-2-drive-crush-compressor-filters-and-lo-fi) below. Research and plan: jferments/mpfree-claude `fx/quality/` (plan-2.md, research-drive.md, research-crush.md, research-compressor.md, research-filter.md, research-lofi.md, baseline-2026-11-17.md).
+
 ## The report
 
-`fxlab quality [--class delay|eq|reverb]... [--out DIR]` measures every target of a class (all three when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq` and `eq[preset]`. All three classes take about 20 s in a release build.
+`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter` or `lofi`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq` and `eq[preset]`; an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All eight classes take about 35 s in a release build (the round-2 classes 15 s, most of it the Drive's 4x quality).
 
 New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known answers:
 
@@ -119,7 +121,106 @@ What changed (design: [fx.md](fx.md), the Delay, Tape delay and Multi-tap entrie
 ```sh
 cd rust
 cargo build --release --locked -p mpfree-fxlab
-./target/release/fxlab quality --out /tmp/quality                 # all three classes
+./target/release/fxlab quality --out /tmp/quality                 # every class
 ./target/release/fxlab quality --class reverb --out /tmp/quality  # one
 cargo test --release --locked -p mpfree-fxlab --test quality      # the ratchet
 ```
+
+## Round 2: drive, crush, compressor, filters and lo-fi
+
+The targets of plan-2 (ids G, B, K, F and L), measured by `quality/round2.rs`. The measures it adds, beside the first round's:
+
+| Measure | What it reads |
+|---|---|
+| Aliasing grid | The worst alias of 2.5, 5 and 8 kHz sines at 0 dBFS and of 5 kHz at -12 dBFS (the `harmonics` analysis), against the fundamental; in dBFS where the fundamental goes (Rectify) |
+| Switch click | A choice changed halfway through a second of a sine (a mode, a quality, a filter type or slope): the largest second difference around the change over the steady signal's on either side, dB, at least 0 |
+| Slope zipper | A sweep's largest second difference against a clean sine's at the local level (its RMS over two periods), so a filter whose ends attenuate the tone isn't judged against them. fxlab's usual zipper (against the resting ends) reads the DJ filter at 45 dB; this reads 2.3 |
+| Off grid | For crush: a sine through the sample and hold, its spectrum through a 4-term Blackman-Harris window (a rate that doesn't divide the session's puts lines between bins, and a plain spectrum's leakage would read as stray energy); everything not at k R ± f below the session's Nyquist, against the tone |
+| Heard against drawn | The gain of a sine at chosen frequencies (a lock-in over whole periods) against the engine's own `response_db` or `cuts_db` |
+| IMD | SMPTE (60 Hz at -8 dBFS with 7 kHz at -20 dBFS: the sidebands at ±60, ±120, ±180 Hz against 7 kHz) and the CCIF difference tone (19 and 20 kHz at -12 dBFS each) |
+| Null | The largest difference between the output and the input as the node saw it (32-bit), late by the reported latency, dBFS; -140 when they are the same |
+
+### Drive (G)
+
+Subjects: the Drive family's ten modes (`drive/soft` to `drive/soften`) at their defaults, in both qualities where the engine has them, and its presets.
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| G1 | `alias_5k_0dbfs_eco`, `_hq`; Character's `alias_5k_0dbfs` | Smooth curves (Soft, Tube, Console, Tape): ≤ -65 dB in Eco and Character, ≤ -90 dB in HQ; 2.5 kHz, 8 kHz and -12 dBFS held | Inharmonic fizz; 2x oversampling with first-order ADAA reaches -69.5 dB on tanh |
+| G2 | the same for Hard, Fuzz, Foldback; Rectify in dBFS | ≤ -50 dB in Eco, ≤ -60 dB in HQ | A hard edge has harmonics to every order; 4x with ADAA reaches -65 dB |
+| G3 | presets' `alias_5k_0dbfs` | Held | Presets drive hard on purpose |
+| G4 | `lu_pink18_drive0` to `36`, `lu_pink18_amount0` to `100` | Within ±1 LU of the dry on pink at -18 dBFS RMS (Rectify ±3) | More drive is more grit, not louder |
+| G5 | `lu_pink6_*`, `lu_hits_*` | Reported | Rounding loud peaks loses loudness by design |
+| G6 | `bias_change_db` | The output changes by at least -20 dB of itself between Bias 0 and 100 (1 kHz, -12 dBFS) in every mode but Soft, where the knob is dimmed (Jay, 17 Nov) | A control that does nothing is a bug |
+| G7 | `drive/switch/click_*` | ≤ 3 dB, Mode and Quality changes | No clicks when trying modes |
+| G8 | `flat_m40dbfs*`, `flat_mix50` | Within ±0.5 dB from 20 Hz to 20 kHz at -40 dBFS and at Mix 50 % (Tape's colour and Rectify reported) | Clean when quiet |
+| G9 | `subsonic_hits_bias100`, `dc_hits_bias100_dbfs` | Under 15 Hz ≤ -20 dB of the total on hits (Tube and Fuzz, Bias 100, Drive 24); DC ≤ -100 dBFS | Inaudible energy eats headroom |
+| G10 | `h2_minus_h3`, `high_order_share`, `thd_1k_*dbfs`, `imd_smpte`, `imd_ccif` | Reported | A mode's profile becomes a target once it is designed to one |
+| G11 | `zipper_db` | ≤ 3 dB, every mode and preset | Smooth automation |
+
+### Crush (B)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| B1 | `sinad_error_bits4` to `16` | Noise and distortion of a full-scale sine within 1 dB of 6.02 N + 1.76 dB | Bits mean bits |
+| B2 | `dither_noise_rise_bits8`, `thd_m40dbfs_bits8_dither` | TPDF raises the noise 4 to 6 dB; a -40 dBFS sine at 8 bits ≤ -30 dB THD with dither | Dither turns distortion into steady noise |
+| B3 | `off_grid_<R>hz`, `_at48k`; presets' `off_grid_at_16bits` | ≤ -45 dB at 8, 10, 11.025, 22.05, 26.04 and 32 kHz, in this session and at 48 kHz | Stray tones from the session's frame grid and folded images are in no sampler being imitated; a prototype with exact sampling times and band-limited steps reaches about -50 dB |
+| B4 | `image_error_quarter_rate` | Within 1 dB of the zero-order hold's sin(x)/x | The images are the effect |
+| B6 | `m50dbfs_bits8_out_dbfs` | Reported (mid-tread gates under half a step; a mid-riser choice gets a target) | Tails cut off sound broken |
+| B8 | `step_spike_db` | A Bits or Rate change's step ≤ 3 dB over the crushed signal's own (first differences) | Stepping is the sound, a click isn't; fxlab's usual zipper is reported, not judged |
+| B9 | `lu_pink18` | Within ±1 LU, defaults and presets | Fair A/B |
+| B10 | `silence_out_dbfs` | ≤ -120 dBFS | Clean rests |
+
+### Compressor (K)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| K1 | `curve_error_peak`, `_knee0`, `_rms` | A steady 1 kHz sine from -39 to 0 dBFS within 0.25 dB of the drawn curve | The curve on screen is a promise |
+| K2 | `attack_ratio_<ms>` | The gain's 63 % time on a -40 to 0 dBFS step within ±15 % of Attack, 1 to 100 ms (0.1 ms reported) | Settings learned elsewhere must work |
+| K3 | `release_ratio_<ms>` | Within ±10 % of Release, 50 ms to 2 s | The same |
+| K4 | `thd_<hz>hz_gr10_*` | About 10 dB of reduction at the default times, peak: 50 Hz ≤ -50 dB, 100 Hz ≤ -56 dB; RMS and faster times held | Gain riding inside the wave distorts bass |
+| K5 | `meter_error` | ≤ 0.1 dB | Honest meter |
+| K6 | `link_error` | ≤ 0.1 dB | Steady image |
+| K7 | `lu_pink18`, `lu_pink6` | Reported until auto makeup exists | Fair A/B |
+| K8 | `null_ratio1_dbfs`, `null_below_knee_dbfs`, `null_mix0_dbfs` | Bit for bit | Inserting it costs nothing |
+| K9 | `overshoot_db_attack*` | Reported | No look-ahead yet |
+| K10 | `zipper_db` | ≤ 3 dB, defaults and presets | Smooth automation |
+
+### Filters (F)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| F1 | `cutoff_error_pct_12db`, `_24db`; `heard_vs_drawn_*` | The drawn -3 dB point within 1 % of Cutoff from 100 Hz to 16 kHz; heard within 0.1 dB of drawn | The knob means the frequency |
+| F2 | `passband_res<n>_*` | 100 Hz under a 1 kHz low-pass within ±0.5 dB at any Resonance | No hidden level change |
+| F3 | `swept_pink_peak_res100_*` | Pink at -18 dBFS RMS through a low-pass swept 100 Hz to 10 kHz at Resonance 100: peak ≤ -1 dBFS (75 held) | A mix-level source shouldn't clip from Resonance alone |
+| F4 | `peak_gain_m40dbfs_res100_*` | ≥ +28 dB at the cutoff for a -40 dBFS sine | Bounding loud signals mustn't flatten quiet ones |
+| F5 | `click_lp_to_hp_24db`, `click_12_to_24db` | ≤ 3 dB | No clicks when switching |
+| F6 | `sweep50ms_<type><slope>_res0` | ≤ 3 dB (slope zipper, end to end in 50 ms); Resonance 50 reported, as it rings at its own moving pitch | Smooth sweeps |
+| F7 | `drive12_alias_5k_0dbfs` | ≤ -65 dB | As G1 |
+| F8 | DJ: `null_middle_dbfs`, `position_sweep50ms_res0`, the corners, `swept_pink_peak_res100` | Bit for bit off in the middle; ≤ 3 dB; low-pass to 100 Hz or lower, high-pass from 5 kHz or higher; ≤ -1 dBFS | DJ mixers' colour filters |
+| F10 | `zipper_db` | Reported (fxlab's usual zipper reads high where a filter's ends attenuate the tone) | |
+
+### Lo-fi (L)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| L1 | `wf_peak_pct`, `wow_peak_pct_top`, `wf_peak_pct_amount0` | The defaults' wow and flutter within ±20 % of 0.116 % peak; Amount and Wow at 100 at least 2 %; Amount 0 under 0.001 % | From a clean deck to a broken machine |
+| L2 | `flutter_peak_pct_top` | At least 0.5 % | A worn transport |
+| L3 | `mean_pitch_error_pct_*` | ≤ 0.01 % | The track stays in tune |
+| L4 | `wow_line_share` | The pitch track's strongest line holds at most half its power | A plain sine reads as vibrato |
+| L5 | `sat40_alias_5k_0dbfs` | ≤ -65 dB (Saturation 100 held) | As G1 |
+| L6, L7 | `sat*_h3_minus_h2`, `noise_*` | Reported | Tape's distortion is mostly third harmonic; noise levels |
+| L8 | `cuts_heard_vs_drawn_*` | ≤ 0.5 dB | The screen tells the truth |
+| L9 | `lu_pink18` | Within ±1 LU, defaults and presets (Old radio reported) | Fair A/B |
+| L10 | `null_amount0_dbfs` | Bit for bit | Inserting it changes nothing |
+| L11 | `zipper_db` | ≤ 3 dB | Smooth automation |
+
+### Baseline (2026-11-17, before any fix)
+
+76 of 109 drive targets, 19 of 32 crush, 16 of 24 compressor, 25 of 30 filter and 17 of 26 lo-fi targets met. The gaps:
+
+- **Drive:** Eco aliases (-53 dB Soft, -38 Hard, -39 Fuzz at 5 kHz) and Character has no oversampling (Console -41, Tape -34); HQ's hard edges miss too (Hard -50, Fuzz -55). Auto gain keeps a -12 dBFS sine level, so mix-level pink gets louder with Drive (+3.4 LU at 36 dB, Foldback +5.7 at 24). Bias does nothing in Hard, Foldback and Rectify. A mode change clicks (Soft to Foldback 31 dB, to Fuzz 17 dB) and so does a Quality change (68 dB). Tube and Fuzz at Bias 100 put 13 to 14 dB of their hits' energy under 15 Hz.
+- **Crush:** at rates that don't divide the session's, 11 to 16 dB under the tone lies off the sample and hold's grid (8 kHz: -13.3 dB; the 12-bit classic preset's 26.04 kHz: -13.4); rates that divide it are clean (under -89 dB), so the same knob sounds different at 44.1 and 48 kHz.
+- **Compressor:** steady signals get up to 0.95 dB less reduction than drawn and the attack takes 1.6 to 1.9 times its label (peak detection; RMS detection meets the curve within 0.02 dB); 50 Hz distorts at -44 dB and 100 Hz at -50 at the defaults; Ratio 1 is not quite bit for bit (-132 dBFS).
+- **Filters:** a mix-level source through a low-pass swept at full Resonance reaches +2.8 dBFS (12 dB) and +1.0 (24 dB); a type change clicks (64 dB) and a slope change (29 dB); the drive aliases at -20 dB.
+- **Lo-fi:** the wow tops out at 0.39 % and the flutter at 0.13 %; one line holds 81 % of the wow; saturation aliases at -28 dB; the defaults and tape and vinyl presets are 1.2 to 1.6 LU quieter than the dry; at Amount 0 the cuts stay at 20 Hz and 20 kHz (-3 dB there, flat within 0.3 dB from 40 Hz to 16 kHz), so the output isn't the input.

@@ -1,5 +1,5 @@
-//! The FX quality ratchet: every number of the quality report for delay,
-//! EQ and reverb (`mpfree_fxlab::quality`) may stay or get better, never
+//! The FX quality ratchet: every number of the quality report for every
+//! class (`mpfree_fxlab::quality`) may stay or get better, never
 //! worse, against `quality/ratchet.tsv`. Targets not met yet are printed,
 //! not failed. A change that improves a number records it with
 //!
