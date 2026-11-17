@@ -279,10 +279,7 @@ fn the_same_sound_in_two_kits_is_one_file_read_once() {
     assert_eq!(pa.pad(0).unwrap().name, "Shared");
     assert_eq!(pb.pad(3).unwrap().layers[0].region.source, s.id());
     // They share the one copy in memory.
-    assert!(std::sync::Arc::ptr_eq(
-        pa.sources()[0].data(),
-        pb.sources()[0].data()
-    ));
+    assert!(pa.sources()[0].data().ptr_eq(pb.sources()[0].data()));
 }
 
 #[test]

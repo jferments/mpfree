@@ -18,6 +18,30 @@ pub const LEVELS: usize = 4;
 const FACTOR: usize = 4;
 const MAGIC: &[u8; 8] = b"MPFPEAK1";
 
+/// Interleaved samples the pyramid can be built from and read: floats
+/// ([`PeakPyramid::build`] and [`PeakPyramid::columns`] take a slice), or
+/// audio held some other way that reads as floats.
+pub trait Samples {
+    /// Samples, not frames.
+    fn len(&self) -> usize;
+    /// Sample `i` as a float, `i` below [`Samples::len`].
+    fn at(&self, i: usize) -> f32;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Samples for [f32] {
+    #[inline]
+    fn len(&self) -> usize {
+        <[f32]>::len(self)
+    }
+    #[inline]
+    fn at(&self, i: usize) -> f32 {
+        self[i]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Column {
     pub min: f32,
@@ -64,6 +88,14 @@ pub struct PeakPyramid {
 impl PeakPyramid {
     /// Builds the pyramid from interleaved samples.
     pub fn build(data: &[f32], channels: usize) -> Result<PeakPyramid, PeakError> {
+        Self::build_from(data, channels)
+    }
+
+    /// [`PeakPyramid::build`] from samples held any way.
+    pub fn build_from<A: Samples + ?Sized>(
+        data: &A,
+        channels: usize,
+    ) -> Result<PeakPyramid, PeakError> {
         if channels == 0 || channels > 2 {
             return Err(PeakError::BadInput("channels"));
         }
@@ -79,7 +111,7 @@ impl PeakPyramid {
             for ch in 0..channels {
                 let (mut mn, mut mx, mut sq) = (f32::MAX, f32::MIN, 0.0f64);
                 for f in f0..f1 {
-                    let x = data[f * channels + ch];
+                    let x = data.at(f * channels + ch);
                     let x = if x.is_finite() { x } else { 0.0 };
                     mn = mn.min(x);
                     mx = mx.max(x);
@@ -152,6 +184,18 @@ impl PeakPyramid {
         frames_per_column: f64,
         out: &mut [Column],
     ) {
+        self.columns_from(audio, ch, start, frames_per_column, out);
+    }
+
+    /// [`PeakPyramid::columns`] with the audio held any way.
+    pub fn columns_from<A: Samples + ?Sized>(
+        &self,
+        audio: Option<&A>,
+        ch: usize,
+        start: f64,
+        frames_per_column: f64,
+        out: &mut [Column],
+    ) {
         let ch = ch.min(self.channels - 1);
         let fpc = frames_per_column.max(1e-6);
         // Coarsest level whose block is no wider than a column.
@@ -182,7 +226,7 @@ impl PeakPyramid {
                 let a1 = (f1.ceil() as usize).min(self.frames as usize).max(a0 + 1);
                 let (mut mn, mut mx, mut sq) = (f32::MAX, f32::MIN, 0.0f32);
                 for f in a0..a1 {
-                    let x = a[f * self.channels + ch];
+                    let x = a.at(f * self.channels + ch);
                     mn = mn.min(x);
                     mx = mx.max(x);
                     sq += x * x;

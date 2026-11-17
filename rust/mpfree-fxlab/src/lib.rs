@@ -39,6 +39,7 @@ pub mod dynamics;
 pub mod echo;
 pub mod fft;
 pub mod flutter;
+pub mod grain;
 pub mod harmonics;
 pub mod knob;
 pub mod loudness;

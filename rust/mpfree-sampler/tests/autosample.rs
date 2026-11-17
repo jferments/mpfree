@@ -373,7 +373,8 @@ fn a_session_records_every_note_and_builds_keygroups_that_play_them() {
     // Every take starts 2 ms before its own attack, however late it came.
     let pre = (0.002 * RATE as f32).round() as usize;
     for s in &inst.sources {
-        let at = first_over(s.data(), 2, peak(s.data()) * 0.01);
+        let x = s.data().to_vec();
+        let at = first_over(&x, 2, peak(&x) * 0.01);
         assert!(at.abs_diff(pre) <= 2, "{}: attack at {at}", s.name);
     }
     let p = &inst.pads[1];
@@ -489,7 +490,7 @@ fn loops_are_found_in_a_held_tone_and_left_out_of_a_decaying_one() {
         // A long loop inside the held part, its ends matching.
         assert!(l.end - l.start > u64::from(RATE) / 4, "{l:?}");
         assert!(l.end < (1.0 * RATE as f32) as u64);
-        let x = s.data();
+        let x = &s.data().to_vec()[..];
         let (a, b) = (l.start as usize * 2, l.end as usize * 2);
         let diff: f32 = (0..400).map(|k| (x[a + k] - x[b + k]).abs()).sum::<f32>() / 400.0;
         assert!(diff < 0.02 * peak(x), "{diff}");
@@ -557,7 +558,7 @@ fn normalizing_puts_the_loudest_take_at_minus_12_db_and_keeps_the_layers_apart()
     let loudest = inst
         .sources
         .iter()
-        .map(|s| peak(s.data()))
+        .map(|s| peak(&s.data().to_vec()))
         .fold(0.0, f32::max);
     let after = 20.0 * loudest.log10() + inst.gain_db;
     assert!((after - NORMALIZE_TO_DB).abs() < 0.01, "{after}");
@@ -565,8 +566,8 @@ fn normalizing_puts_the_loudest_take_at_minus_12_db_and_keeps_the_layers_apart()
     assert!(p.layers.iter().all(|l| l.region.gain_db == inst.gain_db));
     // The soft layer is quieter as recorded; a hit at its own velocity
     // plays it as recorded.
-    let soft = peak(inst.sources[0].data());
-    let hard = peak(inst.sources[1].data());
+    let soft = peak(&inst.sources[0].data().to_vec());
+    let hard = peak(&inst.sources[1].data().to_vec());
     assert!(soft < hard * 0.5);
     let v: f32 = 64.0 / 127.0;
     assert!((p.layers[0].level_db + 40.0 * v.log10()).abs() < 1e-4);
@@ -748,7 +749,8 @@ fn gear_is_played_over_midi_and_recorded_from_the_line_input() {
     assert_eq!((inst.pads.len(), inst.sources.len()), (3, 6));
     let pre = (0.002 * RATE as f32).round() as usize;
     for s in &inst.sources {
-        let at = first_over(s.data(), 2, peak(s.data()) * 0.01);
+        let x = s.data().to_vec();
+        let at = first_over(&x, 2, peak(&x) * 0.01);
         assert!(at.abs_diff(pre) <= 2, "{}: attack at {at}", s.name);
     }
 }

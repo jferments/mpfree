@@ -108,7 +108,7 @@ fn a_pad_becomes_its_sounds_a_sidecar_and_its_slices() {
     // Each slice is its frames of the sound as they are.
     let s2 = wav::read("x", file(&e, "Break 92 02.wav")).unwrap();
     assert_eq!((s2.channels(), s2.rate(), s2.frames()), (2, RATE, 1_500));
-    assert_eq!(&s2.data()[..], &a.data()[1_500 * 2..3_000 * 2]);
+    assert_eq!(s2.data().to_vec(), a.data().to_vec()[1_500 * 2..3_000 * 2]);
     let s3 = wav::read("x", file(&e, "Break 92 03.wav")).unwrap();
     assert_eq!(s3.frames(), 7_900 - 3_000);
     // Unchopped: the sounds and the sidecar only.
