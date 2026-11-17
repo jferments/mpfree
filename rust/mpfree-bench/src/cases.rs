@@ -503,7 +503,9 @@ fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SamplerPads {
     All,
-    /// Pads 1 to 16: sample voices (Hermite read, envelope, filter).
+    /// Pads 1 to 16: sample voices (Hermite read, the three tuned more
+    /// than two semitones up the clean band-limited read; envelope,
+    /// filter).
     Samples,
     /// Pads 17 to 20: granular voices.
     Grains,
@@ -1373,7 +1375,15 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
         module: "sampler",
         points: [1usize, 4, 8, 16, 32]
             .iter()
-            .map(|&n| (n, held_pads(rate, n)))
+            .map(|&n| (n, held_pads(rate, n, false)))
+            .collect(),
+    });
+    v.push(Scaling {
+        name: "Sampler, pads held pitched up (clean read)".to_string(),
+        module: "sampler",
+        points: [1usize, 4, 8, 16, 32]
+            .iter()
+            .map(|&n| (n, held_pads(rate, n, true)))
             .collect(),
     });
     v.push(Scaling {
@@ -1449,8 +1459,12 @@ fn grain_engine(rate: u32, grains: usize) -> Engine {
 }
 
 /// The sampler with `n` looping, filtered, stereo pads held down, so exactly
-/// `n` voices sound in every block.
-fn held_pads(rate: u32, n: usize) -> Case {
+/// `n` voices sound in every block. Tuned from an octave down to just under
+/// an octave up, half of them at or below their pitch; `up` tunes them all
+/// from 3 to 14.5 semitones up instead, so every voice takes the clean
+/// (band-limited) read, the ones past an octave from the sound's octave
+/// copy.
+fn held_pads(rate: u32, n: usize, up: bool) -> Case {
     let s = Source::new(
         "noise",
         rate,
@@ -1471,7 +1485,11 @@ fn held_pads(rate: u32, n: usize) -> Case {
             crossfade: 200,
             mode: LoopMode::Forward,
         });
-        r.tune_cents = (i as i32 % 24 - 12) * 50;
+        r.tune_cents = if up {
+            300 + (i as i32 % 24) * 50
+        } else {
+            (i as i32 % 24 - 12) * 50
+        };
         let mut pad = Pad::new("p", Layer::new(r));
         pad.polyphony = 1;
         pad.filter = Filter {
@@ -1483,12 +1501,21 @@ fn held_pads(rate: u32, n: usize) -> Case {
         };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
+    if up {
+        // Made now, so every voice finds them (a long sound's copies are
+        // otherwise made on their own thread).
+        s.make_octaves();
+    }
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
     Case {
-        name: format!("Sampler x{n} held"),
+        name: format!("Sampler x{n} held{}", if up { " up" } else { "" }),
         module: "sampler",
-        what: "looping pads held down",
+        what: if up {
+            "looping pads held down, pitched up"
+        } else {
+            "looping pads held down"
+        },
         block: Box::new(move |b, l, r| {
             if b == 0 {
                 for pad in 0..n {
@@ -2956,9 +2983,11 @@ mod tests {
     fn a_line_fits_and_held_pads_sound() {
         let (a, b) = fit(&[(1, 12.0), (2, 14.0), (4, 18.0), (8, 26.0)]);
         assert!((a - 10.0).abs() < 1e-9 && (b - 2.0).abs() < 1e-9, "{a} {b}");
-        let mut c = held_pads(44_100, 4);
-        let (l, _) = run(&mut c, 100);
-        assert!(l.iter().any(|v| v.abs() > 1e-4));
+        for up in [false, true] {
+            let mut c = held_pads(44_100, 4, up);
+            let (l, _) = run(&mut c, 100);
+            assert!(l.iter().any(|v| v.abs() > 1e-4));
+        }
         assert!(scaling(44_100)
             .iter()
             .all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));

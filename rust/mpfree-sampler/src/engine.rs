@@ -9,6 +9,17 @@
 //! optional 2- or 4-pole state-variable filter with its own envelope, and
 //! equal-power pan. Stolen and choked voices fade out instead of clicking.
 //!
+//! **Clean pitching.** Once a voice reads its sound more than two
+//! semitones faster than the sound's own rate ([`CLEAN_ABOVE`]: pitched
+//! up, or a file recorded at a higher rate), it reads it band-limited
+//! instead, for the rest of its life: a windowed sinc stretched to the
+//! speed, from the sound or, past an octave, from one of its octave copies
+//! ([`crate::bandlimit`]), so nothing folds back as aliasing. Up to two
+//! semitones what folds lands above 19 kHz, so a voice there, or at or
+//! below its pitch, reads as before, bit for bit, at the Hermite read's
+//! cost. A pad set to Vintage ([`crate::model::Pad::vintage`]) keeps the
+//! Hermite read whatever its pitch, aliasing and all.
+//!
 //! A region in [`PlayMode::Granular`] plays through the voice's own
 //! [`GrainVoice`] (from `mpfree-grain`) instead of the Hermite read; the
 //! envelope, gain, pan, filter and fades after it are the same. One grain
@@ -53,6 +64,7 @@ pub use mpfree_lanes::{Config as LaneConfig, Setup as LaneSetup, Stats as LaneSt
 use mpfree_lanes::{Lane, Setup};
 use mpfree_node::Cull;
 
+use crate::bandlimit::{self, OctaveCell, Reach};
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
 };
@@ -168,6 +180,25 @@ const OPEN_FILTER: Filter = Filter {
 };
 const ONE: i64 = 1 << 32;
 
+/// The step past which a voice takes the band-limited read: two semitones
+/// up (and a hair more, so a pad tuned exactly two up stays put whatever
+/// the rounding). Up to it, the highest a 44.1 kHz sound holds
+/// (22.05 kHz) moves to under 24.75 kHz and folds back no lower than
+/// 19.35 kHz, above hearing; the band-limited read costs several times the
+/// Hermite read, so a voice detuned a little, bent or swept by vibrato
+/// doesn't pay for it.
+pub const CLEAN_ABOVE: i64 = 4_820_937_788 + (1 << 16);
+
+/// A voice's [`Voice::bl_above`]: never, unless it is started clean.
+#[derive(Clone, Copy, Debug)]
+struct BlAbove(i64);
+
+impl Default for BlAbove {
+    fn default() -> BlAbove {
+        BlAbove(i64::MAX)
+    }
+}
+
 /// Where [`Engine::render_routed`] puts each pad's sound: one stereo pair
 /// per pad, such as a mixer's pad channels.
 pub trait PadOut {
@@ -232,6 +263,9 @@ pub struct ViewLayer {
     copy: bool,
     /// For a stretched copy: where each source frame lands in it.
     source_at: Option<CopyMap>,
+    /// The sound's octave copies, for a clean read past an octave up
+    /// (none for a Vintage pad, a granular region or a stretched copy).
+    octaves: Option<Arc<OctaveCell>>,
 }
 
 impl ViewLayer {
@@ -264,6 +298,8 @@ pub struct ViewPad {
     level_db: f32,
     pan: f32,
     tune_cents: i32,
+    /// Pitched as older samplers do: no band-limited read.
+    vintage: bool,
 }
 
 /// What the audio thread needs from the project, for every pad.
@@ -405,7 +441,14 @@ impl EngineView {
                             warp_bpm: 0.0,
                             copy: false,
                             source_at: None,
+                            octaves: None,
                         };
+                        if !p.vintage && r.mode != PlayMode::Granular {
+                            v.octaves = Some(s.octaves().clone());
+                            if may_pass_an_octave(p, ratio, project.pads_play()) {
+                                bandlimit::prepare(s.octaves(), s.data(), s.channels());
+                            }
+                        }
                         let warp = r.warp.as_ref().filter(|_| r.mode != PlayMode::Granular);
                         if let (Some(w), Some(ws)) = (warp, warps.as_deref_mut()) {
                             // Tune is in the copy, or left out (repitch):
@@ -452,6 +495,8 @@ impl EngineView {
                                 v.warp_bpm *= (r.frames() as f64) / (len as f64);
                                 v.copy = true;
                                 v.source_at = Some(map);
+                                // The copies are of the source, not this.
+                                v.octaves = None;
                             }
                         }
                         Some(v)
@@ -483,6 +528,7 @@ impl EngineView {
                     level_db: p.level_db,
                     pan: p.pan,
                     tune_cents: p.tune_cents,
+                    vintage: p.vintage,
                 }
             }));
         }
@@ -493,6 +539,34 @@ impl EngineView {
             pads_play: project.pads_play(),
         }
     }
+}
+
+/// Whether a layer of pad `p` read `ratio` times its sound's rate (its
+/// rate against the output's, and its tune) may be played more than an
+/// octave faster than that sound, so its octave copies should be made: a
+/// keygroup (its notes can reach anywhere), or tune, pitch pressure, 16
+/// Levels on tune and wow together reaching twice the sound's speed.
+fn may_pass_an_octave(p: &crate::model::Pad, ratio: f64, play: PadsPlay) -> bool {
+    if p.keys.is_some() {
+        return true;
+    }
+    let mut up = ratio;
+    if p.pressure.target == PressureTarget::Pitch {
+        up *= f64::from(p.pressure.depth.abs()).exp2();
+    }
+    if matches!(
+        play,
+        PadsPlay::Levels {
+            by: Levels::Tune,
+            ..
+        }
+    ) {
+        up *= (7.0f64 / 12.0).exp2();
+    }
+    if p.wow > 0.0 {
+        up *= 1.02;
+    }
+    up >= 1.9
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -819,6 +893,20 @@ struct Voice {
     /// Started as a plain one-shot ([`Engine::set_full_voices`]): it may
     /// take a voice past the full-voice limit.
     light: bool,
+    /// The step past which it reads band-limited ([`Voice::bl`]):
+    /// [`CLEAN_ABOVE`], or never for a Vintage pad or a granular voice.
+    bl_above: BlAbove,
+    /// Reads band-limited ([`bandlimit::read2`]), from the first frame its
+    /// step passed [`Voice::bl_above`] on: once set, for the rest of its
+    /// life, so its sound doesn't change as its pitch moves.
+    bl: bool,
+    /// Its sound's octave copies, when made by the time it started.
+    octaves: Option<Arc<OctaveCell>>,
+    /// The step the band-limited read was last aimed for ([`aim_bl`]),
+    /// the octave copy it reads (0: the sound) and the sinc's stretch.
+    bl_step: i64,
+    bl_octave: u32,
+    bl_reach: Reach,
 }
 
 impl Voice {
@@ -1295,6 +1383,8 @@ const TAPE_FADE: f32 = 0.25;
 impl Engine {
     /// `voices` is the size of the fixed pool. All memory is reserved here.
     pub fn new(rate: u32, voices: usize) -> Engine {
+        // Made here, so the audio thread's first clean read finds it.
+        bandlimit::kernel();
         Engine {
             rate: rate as f32,
             view: EngineView::empty(),
@@ -2384,6 +2474,22 @@ impl Engine {
             follow,
             grain_cents: cents,
             light,
+            bl_above: BlAbove(if vp.vintage || granular {
+                i64::MAX
+            } else {
+                CLEAN_ABOVE
+            }),
+            bl: false,
+            // The copies if they are made by now, else none for its life:
+            // what it reads doesn't hang on a thread's timing.
+            octaves: if vp.vintage {
+                None
+            } else {
+                l.octaves.as_ref().filter(|c| c.get().is_some()).cloned()
+            },
+            bl_step: 0,
+            bl_octave: 0,
+            bl_reach: Reach::default(),
         };
         if self.tape != 1.0 {
             // A hit on a stopped (or slowing) tape plays at its speed.
@@ -3072,14 +3178,36 @@ fn finish<const FOLLOW: bool>(
 /// events start that, and they come between calls), so a voice that isn't
 /// following runs the loop it always did.
 fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
-    if v.follow.moving {
-        render_voice_as::<true>(v, rate, left, right);
-    } else if plain_now(v) {
-        render_plain(v, left, right);
+    if v.bl || v.step > v.bl_above.0 {
+        render_voice_bl(v, rate, left, right);
     } else {
-        render_voice_as::<false>(v, rate, left, right);
+        let done = if v.follow.moving {
+            render_voice_as::<true, false>(v, rate, left, right)
+        } else if plain_now(v) {
+            render_plain(v, left, right);
+            left.len()
+        } else {
+            render_voice_as::<false, false>(v, rate, left, right)
+        };
+        if done < left.len() && v.active {
+            // Its step passed CLEAN_ABOVE on a frame (a glide, pressure):
+            // the rest of the block is the band-limited read's.
+            render_voice_bl(v, rate, &mut left[done..], &mut right[done..]);
+        }
     }
     v.heard = (v.heard * HEARD_FALL).max(v.last_l.abs().max(v.last_r.abs()));
+}
+
+/// [`render_voice`] for a voice reading band-limited, from now on. Kept
+/// out of line, so the plain and Hermite paths stay as small as they were.
+#[inline(never)]
+fn render_voice_bl(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
+    v.bl = true;
+    if v.follow.moving {
+        render_voice_as::<true, true>(v, rate, left, right);
+    } else {
+        render_voice_as::<false, true>(v, rate, left, right);
+    }
 }
 
 /// Whether an amp envelope with these settings soon holds a level (its
@@ -3172,33 +3300,103 @@ fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
 /// held up by its output (about 3 dB in four renders).
 const HEARD_FALL: f32 = 0.84;
 
-fn render_voice_as<const FOLLOW: bool>(
+/// Sets which copy a band-limited voice reads and how far its sinc
+/// stretches, for its step now: its sound, or the octave copy that brings
+/// its speed under [`bandlimit::MAX_STRETCH`] (positions and the region
+/// shift right by the copy's octave). Set again whenever its step moves,
+/// on that frame, so the sound doesn't depend on how the blocks fall.
+#[inline]
+fn aim_bl(v: &mut Voice, octaves: Option<&bandlimit::Octaves>) {
+    let mut r = v.step as f32 / ONE as f32;
+    let mut octave = 0u32;
+    if let Some(o) = octaves {
+        while r >= bandlimit::MAX_STRETCH && o.level(octave as usize + 1).is_some() {
+            octave += 1;
+            r *= 0.5;
+        }
+    }
+    v.bl_octave = octave;
+    v.bl_reach = Reach::new(r);
+    v.bl_step = v.step;
+}
+
+/// Both output channels of a band-limited voice at `pos` ([`aim_bl`] says
+/// from what).
+#[inline(always)]
+fn read_bl(
+    v: &Voice,
+    kernel: &bandlimit::Kernel,
+    data: &[f32],
+    octaves: Option<&bandlimit::Octaves>,
+    pos: i64,
+) -> (f32, f32) {
+    let k = v.bl_octave;
+    let src: &[f32] = match octaves.and_then(|o| o.level(k as usize)) {
+        Some(copy) if k > 0 => copy,
+        _ => data,
+    };
+    bandlimit::read2(
+        kernel,
+        src,
+        v.stereo,
+        v.start >> k,
+        (v.end - 1) >> k,
+        pos >> k,
+        v.bl_reach,
+        (v.pick_l, v.pick_r),
+    )
+}
+
+/// A sample voice's next frames, added into `left` and `right`, read with
+/// Hermite or (`BL`) band-limited. Returns the frames it rendered: all of
+/// them, unless the voice ended, or (not `BL`) its pitch went past
+/// [`CLEAN_ABOVE`] on a frame (a glide, pressure), after which the rest of
+/// the block is the band-limited read's ([`render_voice`] carries on with
+/// it).
+fn render_voice_as<const FOLLOW: bool, const BL: bool>(
     v: &mut Voice,
     rate: f32,
     left: &mut [f32],
     right: &mut [f32],
-) {
+) -> usize {
     // Taken out of the voice for the render and put back after (a clone
     // would touch the shared count, which both cores' voices share).
     let Some(data) = v.data.take() else {
         v.active = false;
-        return;
+        return left.len();
     };
-    for (ol, or) in left.iter_mut().zip(right.iter_mut()) {
+    // The band-limited read's copies, taken only by a voice that reads
+    // with them, and its kernel, fetched once a call.
+    let octaves = if BL { v.octaves.take() } else { None };
+    let copies = octaves.as_deref().and_then(OctaveCell::get);
+    let kernel = bandlimit::kernel();
+    let read = |v: &Voice, pos: i64| -> (f32, f32) {
+        if BL {
+            read_bl(v, kernel, &data, copies, pos)
+        } else {
+            v.read2(&data, pos)
+        }
+    };
+    let mut done = left.len();
+    for (k, (ol, or)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
         let i = v.pos >> 32;
         if i < v.start || i >= v.end {
             v.active = false;
+            done = k;
             break;
         }
+        if BL && v.step != v.bl_step {
+            aim_bl(v, copies);
+        }
 
-        let (mut l, mut r) = v.read2(&data, v.pos);
+        let (mut l, mut r) = read(v, v.pos);
 
         // Forward-loop crossfade: blend in the audio before the loop start.
         if v.looping && !v.ping_pong && v.crossfade > 0 && i >= v.loop_end - v.crossfade {
             let x = (i - (v.loop_end - v.crossfade)) as f32 / v.crossfade as f32;
             let (out, inn) = equal_power(x);
             let back = v.pos - ((v.loop_end - v.loop_start) << 32);
-            let (bl, br) = v.read2(&data, back);
+            let (bl, br) = read(v, back);
             l = l * out + bl * inn;
             r = r * out + br * inn;
         }
@@ -3250,12 +3448,22 @@ fn render_voice_as<const FOLLOW: bool>(
         }
 
         if !v.active {
+            done = k + 1;
+            break;
+        }
+        if !BL && v.step > v.bl_above.0 {
+            // Past two semitones up from the next frame on.
+            done = k + 1;
             break;
         }
     }
     if v.active {
         v.data = Some(data);
+        if BL {
+            v.octaves = octaves;
+        }
     }
+    done
 }
 
 #[cfg(test)]
@@ -3361,7 +3569,7 @@ mod tests {
                         let (mut al, mut ar) = ([0.25f32; 128], [-0.5f32; 128]);
                         let (mut bl, mut br) = (al, ar);
                         render_plain(&mut a, &mut al, &mut ar);
-                        render_voice_as::<false>(&mut b, rate, &mut bl, &mut br);
+                        render_voice_as::<false, false>(&mut b, rate, &mut bl, &mut br);
                         let what = format!("stereo {is_stereo}, sustain {sustain}, {start}..{end} from {from}, block {block}");
                         assert_eq!(al.map(f32::to_bits), bl.map(f32::to_bits), "{what}");
                         assert_eq!(ar.map(f32::to_bits), br.map(f32::to_bits), "{what}");
