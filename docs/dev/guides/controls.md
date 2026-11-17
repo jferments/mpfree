@@ -184,7 +184,7 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 - **`leditor/history-step`**: a step of the loop's history: tap to go back (or forward) to it.
 - **`lqlinks/knob-card`**: the looper's Q-Link cards (Level, Pan, Fade old, Seam fade).
 - **`lrecording/setting-less`**, **`lrecording/setting-more`**: the recording settings (Record from, First pass, After recording, Line input).
-- **`luse/use`**: To a pad, To a clip, Save loop, Resample: what to do with the loop.
+- **`luse/use`**: To a pad, Show in Clips, Save loop, Resample: what to do with the loop. Show in Clips (lit while the loop is in a cell on a Loop track) opens the Arrange tab with the loop's cell in view.
 
 ## The mixer, its I/O view and the effects
 

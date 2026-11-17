@@ -72,6 +72,11 @@ const WAVE_SLICE: usize = WAVE_BUDGET;
 const LIVE_EVERY: u64 = 12;
 /// Waves the audio thread makes again in place (see `WavePool`).
 const WAVES: usize = 4;
+/// Columns of a loop's small wave on its Clips grid cells.
+pub use mpfree_time_ui::widgets::CELL_WAVE;
+/// Periods between looks for a loop whose small wave is out of date
+/// (about 23 ms).
+const CELL_WAVE_EVERY: u64 = 8;
 
 /// Where the looper records from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -487,8 +492,18 @@ fn column(a: Acc) -> WaveColumn {
 /// (column `c` starts at frame `ceil(c * len / WAVE_COLUMNS)`), each with
 /// its frames, counted from `from`.
 fn runs(from: usize, n: usize, len: usize) -> impl Iterator<Item = (usize, Range<usize>)> {
+    runs_in(from, n, len, WAVE_COLUMNS)
+}
+
+/// [`runs`] for a wave of `cols` columns.
+fn runs_in(
+    from: usize,
+    n: usize,
+    len: usize,
+    cols: usize,
+) -> impl Iterator<Item = (usize, Range<usize>)> {
     let (start, end, len) = (from as u64, (from + n) as u64, len.max(1) as u64);
-    let cols = WAVE_COLUMNS as u64;
+    let cols = cols as u64;
     let mut f = start;
     std::iter::from_fn(move || {
         if f >= end {
@@ -722,6 +737,107 @@ impl WaveBuilder {
     }
 }
 
+/// A loop's small wave for its cells on the Clips grid: each column's
+/// peak over every layer, 0 to 255.
+pub type CellWave = [u8; CELL_WAVE];
+
+/// Makes each loop's [`CellWave`] in turn, a slice a period ([`WAVE_BUDGET`]
+/// layer-frames, as the loop's own wave), whenever a loop's frames, layers
+/// or sound (`Status::version`) changed. A loop recording or overdubbing
+/// keeps the one it had until it plays.
+struct CellWaves {
+    /// Each loop's wave, and what it is of: frames, layers and version.
+    done: [CellWave; MAX_LOOPS],
+    of: [(usize, usize, u64); MAX_LOOPS],
+    /// The loop being made and what of, how far it is, and its peaks.
+    making: Option<(usize, (usize, usize, u64))>,
+    at: usize,
+    peaks: [f32; CELL_WAVE],
+    buf: Vec<[f32; 2]>,
+}
+
+impl CellWaves {
+    fn new() -> CellWaves {
+        CellWaves {
+            done: [[0; CELL_WAVE]; MAX_LOOPS],
+            of: [(0, 0, 0); MAX_LOOPS],
+            making: None,
+            at: 0,
+            peaks: [0.0; CELL_WAVE],
+            buf: vec![[0.0; 2]; WAVE_SLICE],
+        }
+    }
+
+    /// One slice of the wave being made, or every [`CELL_WAVE_EVERY`]
+    /// periods a look for a loop whose wave is out of date.
+    fn step(&mut self, looper: &Looper, period: u64) {
+        if self.making.is_none() {
+            if !period.is_multiple_of(CELL_WAVE_EVERY) {
+                return;
+            }
+            for n in 0..MAX_LOOPS {
+                let Some(s) = looper.loop_status(n) else {
+                    continue;
+                };
+                let of = (s.frames, s.layers, s.version);
+                let busy = matches!(
+                    s.phase,
+                    Phase::Armed | Phase::Recording | Phase::Overdubbing
+                );
+                if busy || of == self.of[n] {
+                    continue;
+                }
+                if s.frames == 0 || s.phase == Phase::Empty {
+                    self.done[n] = [0; CELL_WAVE];
+                    self.of[n] = of;
+                    continue;
+                }
+                self.making = Some((n, of));
+                self.at = 0;
+                self.peaks = [0.0; CELL_WAVE];
+                break;
+            }
+        }
+        let Some((n, of)) = self.making else {
+            return;
+        };
+        // The loop changed under it: it starts again on the next look.
+        let now = looper
+            .loop_status(n)
+            .map(|s| (s.frames, s.layers, s.version));
+        if now != Some(of) {
+            self.making = None;
+            return;
+        }
+        let (len, layers, _) = of;
+        let from = self.at;
+        let k = (WAVE_BUDGET / layers.max(1))
+            .clamp(WAVE_MIN, WAVE_SLICE)
+            .min(len - from);
+        for layer in 0..layers.min(MAX_LAYERS) {
+            let Some(l) = looper.loop_layer(n, layer) else {
+                continue;
+            };
+            if l.len() < 2 * (from + k) {
+                continue;
+            }
+            let buf = &mut self.buf[..k];
+            l.read(from, buf);
+            for (c, r) in runs_in(from, k, len, CELL_WAVE) {
+                self.peaks[c] = peak_of(self.peaks[c], &buf[r]);
+            }
+        }
+        self.at += k;
+        if self.at >= len {
+            for (d, p) in self.done[n].iter_mut().zip(&self.peaks) {
+                *d = (p.min(1.0) * 255.0).round() as u8;
+            }
+            self.of[n] = of;
+            self.making = None;
+        }
+    }
+}
+
 /// The first pass's waveform as it records, the new frames each period.
 struct LiveWave {
     /// The loop whose first pass it is (None: not making one).
@@ -839,6 +955,8 @@ pub struct LooperView {
     pub rate: u32,
     /// The picked loop's undo history.
     pub history: History,
+    /// Each loop's small wave, for its cells on the Clips grid.
+    pub cell_waves: [CellWave; MAX_LOOPS],
 }
 
 impl Default for LooperView {
@@ -860,6 +978,7 @@ impl Default for LooperView {
             memory: l.memory(),
             rate: 44_100,
             history: l.history(),
+            cell_waves: [[0; CELL_WAVE]; MAX_LOOPS],
         }
     }
 }
@@ -893,6 +1012,8 @@ pub struct LoopHost {
     waves: WavePool,
     /// The screen shows a wave (not the empty one).
     wave_shown: bool,
+    /// Each loop's small wave for its cells on the Clips grid.
+    cells: CellWaves,
     /// The recorded source's peaks since the last view.
     meter: [f32; 2],
     /// The song's meter and tempo as the last period played.
@@ -1211,6 +1332,7 @@ impl LoopHost {
             live: LiveWave::new(),
             waves: WavePool::new(),
             wave_shown: false,
+            cells: CellWaves::new(),
             meter: [0.0; 2],
             beats_per_bar: 4,
             bpm: 120.0,
@@ -2242,6 +2364,7 @@ impl LoopHost {
             memory: self.looper.memory(),
             rate: self.rate,
             history: self.looper.history(),
+            cell_waves: self.cells.done,
         }
     }
 
@@ -2251,8 +2374,18 @@ impl LoopHost {
     /// selected loop's first pass records, its wave so far instead, every
     /// [`LIVE_EVERY`] periods. Costs at most [`WAVE_BUDGET`] layer-frames
     /// a period, and never allocates: the waves are made again in place
-    /// once the screen lets go of them.
+    /// once the screen lets go of them. While that wave is done, each
+    /// loop's small wave for its cells on the Clips grid instead
+    /// ([`LooperView::cell_waves`]), on the same budget.
     pub fn wave_step(&mut self, period: u64, refresh: u64) -> Option<Arc<LoopWave>> {
+        let w = self.loop_wave_step(period, refresh);
+        if w.is_none() && !self.wave.building && self.live.of.is_none() {
+            self.cells.step(&self.looper, period);
+        }
+        w
+    }
+
+    fn loop_wave_step(&mut self, period: u64, refresh: u64) -> Option<Arc<LoopWave>> {
         let sel = self.looper.selected();
         let s = self.looper.status();
         if s.phase == Phase::Recording {
@@ -3433,5 +3566,55 @@ mod tests {
         assert_eq!(shown.map(|w| w.frames), Some(0), "cleared");
         assert_eq!(calls, 0, "allocations or frees making waves");
         assert_eq!(h.waves.waits, 0);
+    }
+
+    /// Each loop's small wave for its cells on the Clips grid: made after
+    /// the loop's own wave, each column the peak of its frames, and
+    /// emptied with the loop.
+    #[test]
+    fn each_loop_gets_a_small_wave_for_its_cells() {
+        let (mut h, mut t, mut b) = wave_rig(Some(1));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let (mut n, mut p) = (0, 0u64);
+        while h.looper.status().phase != Phase::Playing {
+            wave_period(&mut h, &mut t, &mut b, &mut n, pads_at);
+            h.wave_step(p, 0);
+            p += 1;
+        }
+        // The loop's own wave first, then its small one.
+        let mut own = false;
+        while h.view(120.0).cell_waves[0] == [0; CELL_WAVE] {
+            assert!(p < 2_000, "no small wave");
+            wave_period(&mut h, &mut t, &mut b, &mut n, |_| (0.0, 0.0));
+            if h.wave_step(p, 0).is_some() {
+                own = true;
+                assert_eq!(h.view(120.0).cell_waves[0], [0; CELL_WAVE]);
+            }
+            p += 1;
+        }
+        assert!(own);
+        let len = h.looper.status().frames;
+        let mut frames = vec![[0.0f32; 2]; len];
+        h.looper.layer(0).unwrap().read(0, &mut frames);
+        let mut want = [0u8; CELL_WAVE];
+        for (c, w) in want.iter_mut().enumerate() {
+            let from = (c * len).div_ceil(CELL_WAVE);
+            let to = ((c + 1) * len).div_ceil(CELL_WAVE);
+            let peak = frames[from..to]
+                .iter()
+                .fold(0.0f32, |m, x| m.max(x[0].abs()).max(x[1].abs()));
+            *w = (peak.min(1.0) * 255.0).round() as u8;
+        }
+        assert_eq!(h.view(120.0).cell_waves[0], want);
+        assert!(want.iter().all(|&w| w > 100), "{want:?}");
+        // Cleared: empty again.
+        h.command(Command::Clear);
+        for _ in 0..200 {
+            wave_period(&mut h, &mut t, &mut b, &mut n, |_| (0.0, 0.0));
+            h.wave_step(p, 0);
+            p += 1;
+        }
+        assert_eq!(h.view(120.0).cell_waves[0], [0; CELL_WAVE]);
     }
 }
