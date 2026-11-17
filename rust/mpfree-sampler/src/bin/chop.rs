@@ -197,7 +197,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let ch = usize::from(source.channels());
     let mut worst = 0.0f32;
     for f in 0..frames {
-        let (x0, x1) = (data[f * ch], data[f * ch + ch - 1]);
+        let (x0, x1) = (data.get(f * ch), data.get(f * ch + ch - 1));
         worst = worst.max((rl[f] - x0).abs()).max((rr[f] - x1).abs());
     }
     write_wav(&o.out.join("rebuild.wav"), rate, &rl, &rr)?;

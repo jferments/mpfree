@@ -6237,6 +6237,25 @@ impl Player {
                 )
             })
             .collect();
+        // Beside each sound, its analysis as far as it is worked out, so
+        // the project opens again without analysing it (written once, like
+        // the sound: a file already there is kept).
+        let caches: Vec<_> = self
+            .sample
+            .cache_part()
+            .into_iter()
+            .map(|(file, view)| {
+                mpfree_library::NewSample::new(
+                    file,
+                    std::sync::Arc::new(move |w: &mut dyn std::io::Write| match view.to_cache() {
+                        Some(b) => w.write_all(&b),
+                        None => Err(std::io::Error::other("no analysis to keep")),
+                    }),
+                )
+            })
+            .collect();
+        let caches_n = caches.len();
+        samples.extend(caches);
         // The loops: their part, and a WAV a layer.
         if let Some(loops) = c.loops.take() {
             let rate = loops.rate;
@@ -6274,7 +6293,7 @@ impl Player {
             b.autosave_with(snap, samples, now_utc());
             return;
         }
-        self.save_sent = Some((Instant::now(), samples.len(), snap.parts.len()));
+        self.save_sent = Some((Instant::now(), samples.len() - caches_n, snap.parts.len()));
         b.save_with(snap, samples, now_utc());
         mpfree_browser_ui::show(&mut self.ui, b);
         let line = match b.project() {
@@ -15760,6 +15779,53 @@ mod tests {
     }
 
     #[test]
+    fn a_project_keeps_its_sounds_analysis_and_opens_without_analysing_them() {
+        use mpfree_sampler::wav;
+        use std::collections::HashMap;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let p = sample_sampler(Fonts::embedded());
+        let (text, sounds) = p.sample.save_part();
+        // The sound shown has its analysis worked out: it is kept beside
+        // it, named by the sound and the analysis's version.
+        let caches = p.sample.cache_part();
+        assert_eq!(caches.len(), 1);
+        let (file, view) = &caches[0];
+        assert_eq!(*file, format!("{}.a1.peaks", sounds[0].1.id()));
+        assert!(view.ready);
+        let mut files: HashMap<String, Vec<u8>> = sounds
+            .iter()
+            .map(|(f, s)| (f.clone(), wav::bytes(s)))
+            .collect();
+        files.insert(file.clone(), view.to_cache().unwrap());
+        // Another session opens the project: the sound shows its hits,
+        // tempo and note as soon as the kit is there, with nothing left
+        // for the worker.
+        let mut q = sample_player(Fonts::embedded());
+        q.apply(ToUi::SampleKits {
+            projects: vec![Project::new()],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        q.apply(ToUi::Kit(0));
+        q.apply(ToUi::Show(View::Sample));
+        let _ = q.take_actions();
+        q.sample.open_part(
+            text,
+            Box::new(move |f| files.get(f).cloned().ok_or_else(|| "missing".to_string())),
+        );
+        tick_until(&mut q, |q| q.sample.project(0).unwrap().pad(pad).is_some());
+        assert!(!q.sample.analysing(), "nothing analysed again");
+        let log = events_log(&q);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: the analysis of 1 sound read from the project"),
+            "{log:?}"
+        );
+        // And its file is kept again with the next save (the library
+        // leaves it as it is).
+        assert_eq!(q.sample.cache_part().len(), 1);
+    }
+
+    #[test]
     fn the_kits_save_with_their_sounds_and_open_again() {
         use mpfree_sampler::{save, wav};
         use std::collections::HashMap;
@@ -16701,7 +16767,7 @@ mod tests {
             let s = p.sample.project(0).unwrap().source(src).unwrap();
             let ch = usize::from(s.channels());
             (0..s.frames() as usize)
-                .find(|&f| s.data()[f * ch..f * ch + ch].iter().all(|x| *x == 0.0))
+                .find(|&f| (f * ch..f * ch + ch).all(|i| s.data().get(i) == 0.0))
                 .expect("a silent frame in the break") as u64
         };
         p.sample

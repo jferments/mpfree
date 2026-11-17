@@ -663,17 +663,10 @@ fn sampler_engine(
 /// rate, 4 voices a pad), 2 s sounds, hit so that `voices` voices play
 /// all the time (a hit every block, the next pad round, each voice ringing
 /// until a hit on its pad pushes it out). Jay's round 4 kits, with Note
-/// Repeat, kept the pool full like this.
-fn drum_kit(name: &str, rate: u32, voices: usize) -> Case {
-    let s = Source::new(
-        "drum",
-        rate,
-        2,
-        (0..rate as usize * 4)
-            .map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0)
-            .collect(),
-    )
-    .expect("source");
+/// Repeat, kept the pool full like this. `sixteen`: the sounds are 16-bit
+/// (a 16-bit WAV's), held and read as 16 bits.
+fn drum_kit(name: &str, rate: u32, voices: usize, sixteen: bool) -> Case {
+    let s = Source::new("drum", rate, 2, bench_sound(rate as usize * 2, sixteen)).expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
     for i in 0..16usize {
@@ -701,6 +694,21 @@ fn drum_kit(name: &str, rate: u32, voices: usize) -> Case {
         }),
         mem_bytes: 0,
     }
+}
+
+/// The bench's stereo sound, `frames` long: a fixed pattern, as 16-bit
+/// values when `sixteen` (else values no 16 bits hold, so it stays floats).
+fn bench_sound(frames: usize, sixteen: bool) -> Vec<f32> {
+    (0..frames * 2)
+        .map(|i| {
+            let x = ((i * 7919) % 2000) as f32 / 1000.0 - 1.0;
+            if sixteen {
+                ((x * 32_767.0).round() + 0.0) / 32_768.0
+            } else {
+                x
+            }
+        })
+        .collect()
 }
 
 /// The [`sampler`] case's hits: every 4 blocks, a note off on one pad and a
@@ -1096,11 +1104,23 @@ pub fn all(rate: u32) -> Vec<Case> {
         )
     }));
     v.push(measured(|| {
-        drum_kit("Sampler, drum kit, 24 voices", rate, 24)
+        drum_kit("Sampler, drum kit, 24 voices", rate, 24, false)
     }));
     v.push(measured(|| {
-        drum_kit("Sampler, drum kit, 64 voices", rate, 64)
+        drum_kit("Sampler, drum kit, 64 voices", rate, 64, false)
     }));
+    v.push(measured(|| {
+        drum_kit(
+            "Sampler, drum kit, 24 voices, 16-bit sounds",
+            rate,
+            24,
+            true,
+        )
+    }));
+    v.push(measured(|| held_pads(rate, 16, false, false)));
+    v.push(measured(|| held_pads(rate, 16, false, true)));
+    v.push(measured(|| held_pads(rate, 16, true, false)));
+    v.push(measured(|| held_pads(rate, 16, true, true)));
     v.push(measured(|| {
         sampler(
             "Sampler, the 4 granular pads alone",
@@ -1509,7 +1529,7 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
         module: "sampler",
         points: [1usize, 4, 8, 16, 32]
             .iter()
-            .map(|&n| (n, held_pads(rate, n, false)))
+            .map(|&n| (n, held_pads(rate, n, false, false)))
             .collect(),
     });
     v.push(Scaling {
@@ -1517,7 +1537,7 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
         module: "sampler",
         points: [1usize, 4, 8, 16, 32]
             .iter()
-            .map(|&n| (n, held_pads(rate, n, true)))
+            .map(|&n| (n, held_pads(rate, n, true, false)))
             .collect(),
     });
     // A pair for the denormals check (#463): the same filtered pads, once
@@ -1615,17 +1635,9 @@ fn grain_engine(rate: u32, grains: usize) -> Engine {
 /// an octave up, half of them at or below their pitch; `up` tunes them all
 /// from 3 to 14.5 semitones up instead, so every voice takes the clean
 /// (band-limited) read, the ones past an octave from the sound's octave
-/// copy.
-fn held_pads(rate: u32, n: usize, up: bool) -> Case {
-    let s = Source::new(
-        "noise",
-        rate,
-        2,
-        (0..rate as usize * 2)
-            .map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0)
-            .collect(),
-    )
-    .expect("source");
+/// copy. `sixteen`: the sound is 16-bit, held and read as 16 bits.
+fn held_pads(rate: u32, n: usize, up: bool, sixteen: bool) -> Case {
+    let s = Source::new("noise", rate, 2, bench_sound(rate as usize, sixteen)).expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
     for i in 0..n {
@@ -1661,7 +1673,11 @@ fn held_pads(rate: u32, n: usize, up: bool) -> Case {
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
     Case {
-        name: format!("Sampler x{n} held{}", if up { " up" } else { "" }),
+        name: format!(
+            "Sampler x{n} held{}{}",
+            if up { " up" } else { "" },
+            if sixteen { ", 16-bit sound" } else { "" }
+        ),
         module: "sampler",
         what: if up {
             "looping pads held down, pitched up"
@@ -3204,7 +3220,7 @@ mod tests {
         let (a, b) = fit(&[(1, 12.0), (2, 14.0), (4, 18.0), (8, 26.0)]);
         assert!((a - 10.0).abs() < 1e-9 && (b - 2.0).abs() < 1e-9, "{a} {b}");
         for up in [false, true] {
-            let mut c = held_pads(44_100, 4, up);
+            let mut c = held_pads(44_100, 4, up, false);
             let (l, _) = run(&mut c, 100);
             assert!(l.iter().any(|v| v.abs() > 1e-4));
         }

@@ -67,7 +67,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mpfree_grain::{Budget, Clip, GrainFx, GrainVoice};
+use mpfree_grain::{Budget, Clip, GrainFx, GrainSource, GrainVoice};
 pub use mpfree_grain::{GrainView, MAX_GRAINS};
 /// The lane types [`Engine::split`] takes and reports, so callers need no
 /// dependency of their own on `mpfree-lanes`.
@@ -77,12 +77,12 @@ use mpfree_node::Cull;
 
 use crate::bandlimit::{self, OctaveCell, Reach};
 use crate::dsp::{
-    db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
-    TINY,
+    db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Sample,
+    Svf, TINY,
 };
 use crate::model::{
     edge_gain, ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx,
-    PadsPlay, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -248,7 +248,7 @@ pub struct ViewLoop {
 /// A layer resolved into plain numbers and a handle to its audio.
 #[derive(Clone, Debug)]
 pub struct ViewLayer {
-    data: Arc<[f32]>,
+    data: Pcm,
     stereo: bool,
     pick: ChannelPick,
     start: i64,
@@ -482,7 +482,7 @@ impl EngineView {
                                 let map = CopyMap::new(w, s.rate(), &k);
                                 let at = |x: u64| map.at(x as f64).round() as i64;
                                 let len = k.frames as i64;
-                                v.data = data;
+                                v.data = Pcm::F32(data);
                                 v.start = 0;
                                 v.end = len;
                                 v.sustain_loop = r.sustain_loop.map(|lp| {
@@ -847,7 +847,7 @@ struct Voice {
     active: bool,
     pad: u8,
     layer: u8,
-    data: Option<Arc<[f32]>>,
+    data: Option<Pcm>,
     stereo: bool,
     pick_l: u8,
     pick_r: u8,
@@ -969,12 +969,12 @@ struct Voice {
 
 impl Voice {
     #[inline]
-    fn at(&self, data: &[f32], i: i64, ch: u8) -> f32 {
+    fn at<S: Sample>(&self, data: &[S], i: i64, ch: u8) -> f32 {
         let i = i.clamp(self.start, self.end - 1) as usize;
         if self.stereo {
-            data[2 * i + usize::from(ch)]
+            data[2 * i + usize::from(ch)].f()
         } else {
-            data[i]
+            data[i].f()
         }
     }
 
@@ -982,7 +982,7 @@ impl Voice {
     /// every neighbour clamped to the region: the edge case of [`Voice::read2`].
     #[cold]
     #[inline(never)]
-    fn read(&self, data: &[f32], pos: i64, pick: u8) -> f32 {
+    fn read<S: Sample>(&self, data: &[S], pos: i64, pick: u8) -> f32 {
         let i = pos >> 32;
         let t = frac(pos);
         let ch = |k: i64| -> f32 {
@@ -1003,7 +1003,7 @@ impl Voice {
     /// Away from the region's edges (nearly always) the four neighbours are
     /// read straight from the data, once for both channels, with no clamps.
     #[inline(always)]
-    fn read2(&self, data: &[f32], pos: i64) -> (f32, f32) {
+    fn read2<S: Sample>(&self, data: &[S], pos: i64) -> (f32, f32) {
         let i = pos >> 32;
         if i - 1 < self.start || i + 2 >= self.end {
             return (
@@ -1015,7 +1015,8 @@ impl Voice {
         let k = (i - 1) as usize;
         if !self.stereo {
             // Mono plays the same on both sides.
-            let w: &[f32; 4] = data[k..k + 4].try_into().expect("four frames");
+            let w: &[S; 4] = data[k..k + 4].try_into().expect("four frames");
+            let w = w.map(S::f);
             let x = if t == 0.0 {
                 w[1]
             } else {
@@ -1023,7 +1024,8 @@ impl Voice {
             };
             return (x, x);
         }
-        let w: &[f32; 8] = data[2 * k..2 * k + 8].try_into().expect("four frames");
+        let w: &[S; 8] = data[2 * k..2 * k + 8].try_into().expect("four frames");
+        let w = w.map(S::f);
         let side = |pick: u8| -> [f32; 4] {
             match pick {
                 0 => [w[0], w[2], w[4], w[6]],
@@ -1744,7 +1746,7 @@ impl Engine {
             .as_ref()?
             .layers
             .get(usize::from(v.layer))?;
-        let same = v.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &l.data));
+        let same = v.data.as_ref().is_some_and(|d| d.ptr_eq(&l.data));
         l.source_at.as_ref().filter(|_| same)
     }
     pub fn pad_voices(&self, pad: u8) -> usize {
@@ -2943,11 +2945,60 @@ fn render_granular(
         v.active = false;
         return;
     };
-    let Some(clip) = Clip::new(&data, if v.stereo { 2 } else { 1 }, v.src_rate) else {
-        v.active = false;
-        return;
-    };
-    let clip = clip.with_range(v.start.max(0) as u64, v.end.max(0) as u64);
+    let ch = if v.stereo { 2 } else { 1 };
+    let (start, end) = (v.start.max(0) as u64, v.end.max(0) as u64);
+    match &data {
+        Pcm::F32(d) => match Clip::new(d, ch, v.src_rate) {
+            Some(c) => grains(
+                v,
+                g,
+                &c.with_range(start, end),
+                budget,
+                frame,
+                rate,
+                left,
+                right,
+                sl,
+                sr,
+            ),
+            None => v.active = false,
+        },
+        Pcm::I16(d) => match Clip16::new(d, ch, v.src_rate) {
+            Some(c) => grains(
+                v,
+                g,
+                &c.with_range(start, end),
+                budget,
+                frame,
+                rate,
+                left,
+                right,
+                sl,
+                sr,
+            ),
+            None => v.active = false,
+        },
+    }
+    if v.active {
+        v.data = Some(data);
+    }
+}
+
+/// [`render_granular`]'s grains from `clip`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn grains<C: GrainSource>(
+    v: &mut Voice,
+    g: &mut GrainVoice,
+    clip: &C,
+    budget: &mut Budget,
+    frame: u64,
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+    sl: &mut [f32],
+    sr: &mut [f32],
+) {
     let mut at = 0;
     while at < left.len() && v.active {
         let n = (left.len() - at).min(sl.len());
@@ -2962,7 +3013,7 @@ fn render_granular(
             ));
             v.grain_cents = cents;
         }
-        g.render(&clip, budget, frame + at as u64, bl, br);
+        g.render(clip, budget, frame + at as u64, bl, br);
         let follow = v.follow.moving;
         for k in 0..n {
             let (l, r) = if follow {
@@ -2978,8 +3029,92 @@ fn render_granular(
         }
         at += n;
     }
-    if v.active {
-        v.data = Some(data);
+}
+
+/// A region of a sound held as 16 bits, for grains: what
+/// [`mpfree_grain::Clip`] is for floats, read the same way, so a 16-bit
+/// sound's grains are the same as its floats' would be, bit for bit.
+#[derive(Clone, Copy)]
+struct Clip16<'a> {
+    data: &'a [i16],
+    channels: usize,
+    rate: u32,
+    start: i64,
+    end: i64,
+}
+
+impl<'a> Clip16<'a> {
+    fn new(data: &'a [i16], channels: usize, rate: u32) -> Option<Self> {
+        if !(1..=2).contains(&channels) || !data.len().is_multiple_of(channels) || rate == 0 {
+            return None;
+        }
+        let end = (data.len() / channels) as i64;
+        Some(Clip16 {
+            data,
+            channels,
+            rate,
+            start: 0,
+            end,
+        })
+    }
+
+    fn with_range(mut self, start: u64, end: u64) -> Self {
+        let frames = (self.data.len() / self.channels) as i64;
+        self.start = (start.min(i64::MAX as u64) as i64).min(frames);
+        self.end = (end.min(i64::MAX as u64) as i64).clamp(self.start, frames);
+        self
+    }
+}
+
+impl GrainSource for Clip16<'_> {
+    fn rate(&self) -> u32 {
+        self.rate
+    }
+    fn channels(&self) -> usize {
+        self.channels
+    }
+    fn span(&self) -> (i64, i64) {
+        (self.start, self.end)
+    }
+    #[inline]
+    fn sample(&self, ch: usize, frame: i64) -> f32 {
+        if frame < self.start || frame >= self.end {
+            return 0.0;
+        }
+        self.data[frame as usize * self.channels + ch.min(self.channels - 1)].f()
+    }
+    #[inline(always)]
+    fn read(&self, frame: i64, t: f32) -> [f32; 2] {
+        if frame - 1 < self.start || frame + 2 >= self.end {
+            // The trait's own read, as the float clip's edges use.
+            let at = |ch| {
+                mpfree_grain::hermite(
+                    self.sample(ch, frame - 1),
+                    self.sample(ch, frame),
+                    self.sample(ch, frame + 1),
+                    self.sample(ch, frame + 2),
+                    t,
+                )
+            };
+            let l = at(0);
+            return [l, if self.channels == 2 { at(1) } else { l }];
+        }
+        let at = (frame - 1) as usize * self.channels;
+        if self.channels == 2 {
+            let w: &[i16; 8] = self.data[at..at + 8]
+                .try_into()
+                .expect("four stereo frames");
+            let w = w.map(Sample::f);
+            [
+                mpfree_grain::hermite(w[0], w[2], w[4], w[6], t),
+                mpfree_grain::hermite(w[1], w[3], w[5], w[7], t),
+            ]
+        } else {
+            let w: &[i16; 4] = self.data[at..at + 4].try_into().expect("four mono frames");
+            let w = w.map(Sample::f);
+            let l = mpfree_grain::hermite(w[0], w[1], w[2], w[3], t);
+            [l, l]
+        }
     }
 }
 
@@ -3117,7 +3252,7 @@ fn follow_edit(
     };
     let same_sound = v.stereo == l.stereo
         && v.src_rate == l.src_rate
-        && v.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &l.data));
+        && v.data.as_ref().is_some_and(|d| d.ptr_eq(&l.data));
     if !same_sound {
         return;
     }
@@ -3255,9 +3390,11 @@ fn follow_loop(v: &mut Voice, l: &ViewLayer) {
     };
     // The read on each side of the jump, so the step fades out instead
     // of clicking (with what is left of an earlier jump's).
-    if let Some(data) = v.data.as_deref() {
-        let (al, ar) = v.read2(data, v.pos);
-        let (bl, br) = v.read2(data, pos);
+    if let Some(data) = v.data.as_ref() {
+        let ((al, ar), (bl, br)) = match data {
+            Pcm::F32(d) => (v.read2(d, v.pos), v.read2(d, pos)),
+            Pcm::I16(d) => (v.read2(d, v.pos), v.read2(d, pos)),
+        };
         let left = f32::from(v.jump_left) / f32::from(JUMP_FRAMES);
         v.jump = [v.jump[0] * left + al - bl, v.jump[1] * left + ar - br];
         v.jump_left = JUMP_FRAMES;
@@ -3603,6 +3740,18 @@ fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
         v.active = false;
         return;
     };
+    match &data {
+        Pcm::F32(d) => render_plain_from(v, d, left, right),
+        Pcm::I16(d) => render_plain_from(v, d, left, right),
+    }
+    if v.active {
+        v.data = Some(data);
+    }
+}
+
+/// [`render_plain`] from the samples as the sound holds them.
+#[inline(always)]
+fn render_plain_from<S: Sample>(v: &mut Voice, data: &[S], left: &mut [f32], right: &mut [f32]) {
     let i = v.pos >> 32;
     let n = if i < v.start {
         0
@@ -3613,6 +3762,9 @@ fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
     // voice's gain on each side.
     let g = v.amp.as_ref().map_or(1.0, |a| a.level());
     let (gl, gr) = (g * v.gain_l, g * v.gain_r);
+    // Raw samples times the gain with the samples' scale in it: exactly
+    // the scaled samples times the gain (the scale is a power of two).
+    let (sl, sr) = (gl * S::SCALE, gr * S::SCALE);
     if n > 0 {
         let k = i as usize;
         let (left, right) = (&mut left[..n], &mut right[..n]);
@@ -3623,27 +3775,25 @@ fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
                 .zip(right.iter_mut())
                 .zip(src.chunks_exact(2))
             {
-                *ol += f[0] * gl;
-                *or += f[1] * gr;
+                *ol += f[0].raw() * sl;
+                *or += f[1].raw() * sr;
             }
-            v.last_l = src[2 * n - 2] * gl;
-            v.last_r = src[2 * n - 1] * gr;
+            v.last_l = src[2 * n - 2].raw() * sl;
+            v.last_r = src[2 * n - 1].raw() * sr;
         } else {
             let src = &data[k..k + n];
             for ((ol, or), x) in left.iter_mut().zip(right.iter_mut()).zip(src) {
-                *ol += x * gl;
-                *or += x * gr;
+                *ol += x.raw() * sl;
+                *or += x.raw() * sr;
             }
-            v.last_l = src[n - 1] * gl;
-            v.last_r = src[n - 1] * gr;
+            v.last_l = src[n - 1].raw() * sl;
+            v.last_r = src[n - 1].raw() * sr;
         }
         v.pos += (n as i64) << 32;
     }
     if n < left.len() {
         // It reached its end within the block, as the full loop finds.
         v.active = false;
-    } else {
-        v.data = Some(data);
     }
 }
 
@@ -3674,28 +3824,23 @@ fn aim_bl(v: &mut Voice, octaves: Option<&bandlimit::Octaves>) {
 /// Both output channels of a band-limited voice at `pos` ([`aim_bl`] says
 /// from what).
 #[inline(always)]
-fn read_bl(
+fn read_bl<S: Sample>(
     v: &Voice,
     kernel: &bandlimit::Kernel,
-    data: &[f32],
+    data: &[S],
     octaves: Option<&bandlimit::Octaves>,
     pos: i64,
 ) -> (f32, f32) {
     let k = v.bl_octave;
-    let src: &[f32] = match octaves.and_then(|o| o.level(k as usize)) {
-        Some(copy) if k > 0 => copy,
-        _ => data,
-    };
-    bandlimit::read2(
-        kernel,
-        src,
-        v.stereo,
-        v.start >> k,
-        (v.end - 1) >> k,
-        pos >> k,
-        v.bl_reach,
-        (v.pick_l, v.pick_r),
-    )
+    let (lo, hi, at) = (v.start >> k, (v.end - 1) >> k, pos >> k);
+    let picks = (v.pick_l, v.pick_r);
+    match octaves.and_then(|o| o.level(k as usize)) {
+        // The copies are floats, whatever the sound holds.
+        Some(copy) if k > 0 => {
+            bandlimit::read2(kernel, &copy[..], v.stereo, lo, hi, at, v.bl_reach, picks)
+        }
+        _ => bandlimit::read2(kernel, data, v.stereo, lo, hi, at, v.bl_reach, picks),
+    }
 }
 
 /// A sample voice's next frames, added into `left` and `right`, read with
@@ -3716,6 +3861,25 @@ fn render_voice_as<const FOLLOW: bool, const BL: bool>(
         v.active = false;
         return left.len();
     };
+    let done = match &data {
+        Pcm::F32(d) => render_voice_from::<f32, FOLLOW, BL>(v, d, rate, left, right),
+        Pcm::I16(d) => render_voice_from::<i16, FOLLOW, BL>(v, d, rate, left, right),
+    };
+    if v.active {
+        v.data = Some(data);
+    }
+    done
+}
+
+/// [`render_voice_as`] from the samples as the sound holds them.
+#[inline(always)]
+fn render_voice_from<S: Sample, const FOLLOW: bool, const BL: bool>(
+    v: &mut Voice,
+    data: &[S],
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) -> usize {
     // The band-limited read's copies, taken only by a voice that reads
     // with them, and its kernel, fetched once a call.
     let octaves = if BL { v.octaves.take() } else { None };
@@ -3723,9 +3887,9 @@ fn render_voice_as<const FOLLOW: bool, const BL: bool>(
     let kernel = bandlimit::kernel();
     let read = |v: &Voice, pos: i64| -> (f32, f32) {
         if BL {
-            read_bl(v, kernel, &data, copies, pos)
+            read_bl(v, kernel, data, copies, pos)
         } else {
-            v.read2(&data, pos)
+            v.read2(data, pos)
         }
     };
     let mut done = left.len();
@@ -3816,11 +3980,8 @@ fn render_voice_as<const FOLLOW: bool, const BL: bool>(
             break;
         }
     }
-    if v.active {
-        v.data = Some(data);
-        if BL {
-            v.octaves = octaves;
-        }
+    if v.active && BL {
+        v.octaves = octaves;
     }
     done
 }
@@ -3875,6 +4036,50 @@ mod tests {
         }
     }
 
+    /// A sound held as 16 bits reads as its floats do, bit for bit: the
+    /// direct read and the clamped one, mono and stereo, every pick, at
+    /// whole and fractional frames and the region's edges.
+    #[test]
+    fn a_16_bit_sound_reads_as_its_floats_do() {
+        let frames = 64usize;
+        let ints: Vec<i16> = (0..frames * 2)
+            .map(|i| (((i * 7919) % 1000) as i32 * 65 - 32_500) as i16)
+            .collect();
+        let floats: Vec<f32> = ints.iter().map(|&k| f32::from(k) / 32_768.0).collect();
+        let fracs = [0u64, 1, 1 << 31, 0x1234_5678, u64::from(u32::MAX)];
+        for is_stereo in [true, false] {
+            let n = if is_stereo { frames * 2 } else { frames };
+            let (ints, floats) = (&ints[..n], &floats[..n]);
+            for pick in [
+                ChannelPick::Stereo,
+                ChannelPick::MonoSum,
+                ChannelPick::Left,
+                ChannelPick::Right,
+            ] {
+                let (pick_l, pick_r) = picks(is_stereo, pick);
+                let v = Voice {
+                    stereo: is_stereo,
+                    pick_l,
+                    pick_r,
+                    start: 5,
+                    end: 40,
+                    ..Voice::default()
+                };
+                for i in 0..frames as i64 {
+                    for &t in &fracs {
+                        let pos = (i << 32) | t as i64;
+                        let (a, b) = (v.read2(ints, pos), v.read2(floats, pos));
+                        assert_eq!(
+                            (a.0.to_bits(), a.1.to_bits()),
+                            (b.0.to_bits(), b.1.to_bits()),
+                            "{pick:?} stereo {is_stereo} at {i} + {t:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Pressure let go lands on zero: its smoothing never creeps toward
     /// zero through the denormals, which cost far more than a normal
     /// number (7 times, for 16 pads held after pressure).
@@ -3918,7 +4123,23 @@ mod tests {
             .map(|i| ((i * 104_729) % 977) as f32 / 488.5 - 1.0)
             .collect::<Vec<_>>()
             .into();
-        for (data, is_stereo) in [(&stereo, true), (&mono, false)] {
+        // And the same held as 16 bits.
+        let stereo16: Arc<[i16]> = (0..frames * 2)
+            .map(|i| (((i * 7919) % 1000) as i32 * 65 - 32_500) as i16)
+            .collect::<Vec<_>>()
+            .into();
+        let mono16: Arc<[i16]> = (0..frames)
+            .map(|i| (((i * 104_729) % 977) as i32 * 67 - 32_700) as i16)
+            .collect::<Vec<_>>()
+            .into();
+        let sounds = [
+            (Pcm::F32(stereo), true),
+            (Pcm::F32(mono), false),
+            (Pcm::I16(stereo16), true),
+            (Pcm::I16(mono16), false),
+        ];
+        for (data, is_stereo) in &sounds {
+            let is_stereo = *is_stereo;
             for sustain in [1.0f32, 0.7] {
                 for (start, end, from) in [(0i64, 300i64, 0i64), (10, 256, 30), (3, 131, 3)] {
                     let mut amp = Envelope::start(
@@ -3935,7 +4156,7 @@ mod tests {
                     let (pick_l, pick_r) = picks(is_stereo, ChannelPick::Stereo);
                     let v = Voice {
                         active: true,
-                        data: Some(Arc::clone(data)),
+                        data: Some(data.clone()),
                         stereo: is_stereo,
                         pick_l,
                         pick_r,

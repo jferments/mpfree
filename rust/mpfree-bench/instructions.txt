@@ -97,9 +97,14 @@
 33542	Poly Sub Bass, 8 voices
 374672	Poly Supersaw, 8 voices
 145867	Room reverb
+546477	Sampler x16 held
+1515282	Sampler x16 held up
+1774420	Sampler x16 held up, 16-bit sound
+548284	Sampler x16 held, 16-bit sound
 1030233	Sampler, 20 pads
 1549872	Sampler, 20 pads + master grains
 39166	Sampler, drum kit, 24 voices
+41183	Sampler, drum kit, 24 voices, 16-bit sounds
 74456	Sampler, drum kit, 64 voices
 823688	Sampler, the 16 sample pads alone
 235626	Sampler, the 4 granular pads alone
