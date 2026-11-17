@@ -123,7 +123,7 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 - **`smp-chop-list/choice`**: a Method (Transient, Beat with a tempo, Grid, Silence, Manual, Live) or a Put on (Pads, Keys, Phrase with a tempo, Files where files can be written). Tap to pick it; the method chops again at once.
 - **`smp-chop-list/knob`**: the method's setting: Sensitivity, Length, Slices, Threshold or Pull to hits (faint on Manual). Drag up or down.
 - **`smp-chop-list/less`**, **`smp-chop-list/more`**: the ‹ › of Snap, Slice (the slice picked) and Pads (the first pad).
-- **`smp-chop-list/button`**: Split (Start and Stop on Live), Merge, and the main button: Chop to pads, To keys, Phrase on or Export, as Put on says. *Example:* Method Transient, Split at a missed hit, Chop to A2–A16, hit the pads. *Tests:* `the_chop_tab_puts_slices_on_the_kits_pads_and_undo_takes_them_back`, `to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back`, `live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound`, `pads_and_phrase_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot`.
+- **`smp-chop-list/button`**: Split (Start and Stop on Live), Merge, and the main button: Chop to pads, To keys, Phrase on or Export, as Put on says. *Example:* Method Transient, Split at a missed hit, Chop to A6–B4, hit the pads (PAD BANK B for B1 to B4). *Tests:* `the_chop_tab_puts_slices_on_the_kits_pads_and_undo_takes_them_back`, `to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back`, `live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound`, `pads_and_phrase_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot`.
 
 ### Play
 

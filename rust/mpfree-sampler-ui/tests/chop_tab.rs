@@ -8,7 +8,7 @@ use mpfree_sampler::model::{
 use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, ChopTab, Method, Row};
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
 use mpfree_sampler_ui::wave_tab;
-use mpfree_sampler_ui::widgets::{PadBar, SettingList};
+use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
 use mpfree_sampler_ui::SourceView;
 use mpfree_ui::wave::Waveform;
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -101,14 +101,15 @@ fn transient_chop_cuts_the_pads_region_at_its_hits() {
         );
     }
     assert_eq!(s.tab.method(), Method::Transient);
-    // Fifteen slices fill A2-A16, A5 (the pad itself) among them.
-    assert_eq!(s.tab.pads(st), Some(1..16));
-    assert_eq!(s.tab.replaced(st), vec![PAD]);
-    assert_eq!(list_right(&s), "replaces A5");
+    // Fifteen slices go on the empty pads after A5, on into bank B: A6
+    // to B4, A5 (the pad itself) kept.
+    assert_eq!(s.tab.pads(st), Some(5..20));
+    assert!(s.tab.replaced(st).is_empty());
+    assert_eq!(list_right(&s), "no pad replaced");
     assert_eq!(
         buttons(&s),
         (
-            vec!["Split".to_string(), "Merge".into(), "Chop to A2–A16".into()],
+            vec!["Split".to_string(), "Merge".into(), "Chop to A6–B4".into()],
             vec![true, true, true]
         )
     );
@@ -406,7 +407,7 @@ fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
     step(&mut s, Row::Put, 1);
     step(&mut s, Row::Put, 1);
     assert_eq!(list_value(&s), "Pads + phrase");
-    assert_eq!(buttons(&s).0[2], "Phrase on A2–A16");
+    assert_eq!(buttons(&s).0[2], "Phrase on A6–B4");
     step(&mut s, Row::Put, 1);
     assert_eq!(list_value(&s), "Pads");
     step(&mut s, Row::Put, -1);
@@ -434,7 +435,7 @@ fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
     }
     assert_eq!(p.beats, 8, "7.25 beats of slices round up to 8");
     // The pads are filled as by Chop to pads; the phrase is still there.
-    assert_eq!(apply(&mut s, &a), 1..16);
+    assert_eq!(apply(&mut s, &a), 5..20);
     assert!(s.project.pads_play() == PadsPlay::Pads);
     assert_eq!(a.phrase(&s.project).unwrap(), Some(p));
     // Without a tempo there is no phrase to make: the row reads Pads.
@@ -464,7 +465,7 @@ fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
 }
 
 #[test]
-fn the_first_pad_moves_within_the_bank_and_too_many_slices_cant_go_on_pads() {
+fn the_first_pad_moves_across_the_kits_banks_and_slices_run_on_past_a16() {
     let mut s = chop();
     method(&mut s, Method::Grid);
     for _ in 0..4 {
@@ -476,20 +477,39 @@ fn the_first_pad_moves_within_the_bank_and_too_many_slices_cant_go_on_pads() {
     qlink(&mut s, 3, 2, false);
     assert_eq!(s.tab.pads(&s.state), Some(2..6));
     assert_eq!(list_right(&s), "replaces A5");
-    qlink(&mut s, 3, 40, false);
-    assert_eq!(s.tab.pads(&s.state), Some(12..16));
+    // Past A16 into bank B, and on to the kit's last pads, H13 to H16.
+    qlink(&mut s, 3, 12, false);
+    assert_eq!(s.tab.pads(&s.state), Some(14..18));
+    assert_eq!(buttons(&s).0[2], "Chop to A15–B2");
+    qlink(&mut s, 3, 200, false);
+    assert_eq!(s.tab.pads(&s.state), Some(124..128));
     step(&mut s, Row::Pads, -1);
-    assert_eq!(s.tab.pads(&s.state), Some(11..15));
-    // 17 slices don't fit in a bank of 16.
+    assert_eq!(s.tab.pads(&s.state), Some(123..127));
+    let card = |s: &ChopSample| {
+        let c = s.ui.get::<KnobCard>(chop_tab::QLINKS[3]).unwrap();
+        (c.value.clone(), c.sub.clone())
+    };
+    assert_eq!(card(&s), ("H12".to_string(), "to H15".to_string()));
+    // 17 slices, more than a bank, go on from the First pad (held back
+    // to fit the kit) and Chop to pads can be pressed.
     for _ in 0..13 {
         step(&mut s, Row::Amount, 1);
     }
     assert_eq!(s.tab.slices(), 17);
-    assert_eq!(s.tab.pads(&s.state), None);
-    assert_eq!(press(&mut s, Button::ToPads), None);
+    assert_eq!(s.tab.pads(&s.state), Some(111..128));
     let (labels, enabled) = buttons(&s);
-    assert_eq!((labels[2].as_str(), enabled[2]), ("Max 16 slices", false));
-    assert!(list_right(&s).contains("too many"));
+    assert_eq!((labels[2].as_str(), enabled[2]), ("Chop to G16–H16", true));
+    qlink(&mut s, 3, -200, false);
+    assert_eq!(s.tab.pads(&s.state), Some(0..17));
+    assert_eq!(list_right(&s), "replaces A5");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    assert_eq!(apply(&mut s, &a), 0..17);
+    assert!(s.project.pad(16).is_some(), "B1 holds the 17th slice");
+    // Another pad of the kit starts again from the empty pads after it.
+    let mut b1 = s.state.clone();
+    b1.pad = 16;
+    let n = s.tab.slices();
+    assert_eq!(s.tab.pads(&b1), Some(17..17 + n), "from B2");
     // The bar's Wave tab goes back to Wave.
     let bar = s.ui.rect_of(chop_tab::BAR).unwrap();
     let wave =
