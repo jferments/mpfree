@@ -829,44 +829,44 @@ modulation/flanger[Two-bar sweep]/click_db_over_6k	-81.5742
 modulation/flanger[Two-bar sweep]/insert_lu_hits	-0.4209
 modulation/flanger[Two-bar sweep]/insert_lu_pink	-0.1092
 modulation/flanger[Two-bar sweep]/mono_fold_lu	-1.3806
-modulation/phaser/click_db_over_6k	-85.2938
-modulation/phaser/drawn_err_db_st1_c4000_fbp90	0
+modulation/phaser/click_db_over_6k	-89.7777
+modulation/phaser/drawn_err_db_st1_c4000_fbp90	0.0001
 modulation/phaser/drawn_err_db_st1_c700_fbm70	0
 modulation/phaser/drawn_err_db_st1_c700_fbp0	0
 modulation/phaser/drawn_err_db_st1_c700_fbp30	0
 modulation/phaser/drawn_err_db_st4_c300_fbp0	0.0001
-modulation/phaser/feedback_lu_m70	0.7972
-modulation/phaser/feedback_lu_m95	5.6618
-modulation/phaser/feedback_lu_p70	1.9562
-modulation/phaser/feedback_lu_p95	7.354
-modulation/phaser/insert_lu_hits	-1.4513
-modulation/phaser/insert_lu_pink	-1.4942
-modulation/phaser/mono_fold_lu	-0.8095
+modulation/phaser/feedback_lu_m70	-0.584
+modulation/phaser/feedback_lu_m95	-0.997
+modulation/phaser/feedback_lu_p70	0.697
+modulation/phaser/feedback_lu_p95	1.1671
+modulation/phaser/insert_lu_hits	0.2759
+modulation/phaser/insert_lu_pink	0.2323
+modulation/phaser/mono_fold_lu	-0.8132
 modulation/phaser/rest_dbfs_fast_high_fbm95	-140
 modulation/phaser/rest_dbfs_fast_high_fbp95	-140
 modulation/phaser/rest_dbfs_slow_low_fbm95	-140
 modulation/phaser/rest_dbfs_slow_low_fbp95	-140
-modulation/phaser/wet_corr_300hz	0.2318
-modulation/phaser[Deep phase]/click_db_over_6k	-81.0185
-modulation/phaser[Deep phase]/insert_lu_hits	-0.9636
-modulation/phaser[Deep phase]/insert_lu_pink	-0.9229
-modulation/phaser[Deep phase]/mono_fold_lu	-1.2421
-modulation/phaser[Funk wobble]/click_db_over_6k	-90.88
-modulation/phaser[Funk wobble]/insert_lu_hits	-1.7599
-modulation/phaser[Funk wobble]/insert_lu_pink	-1.5995
-modulation/phaser[Funk wobble]/mono_fold_lu	-0.9187
-modulation/phaser[Liquid]/click_db_over_6k	-89.794
-modulation/phaser[Liquid]/insert_lu_hits	-0.9614
-modulation/phaser[Liquid]/insert_lu_pink	-0.923
-modulation/phaser[Liquid]/mono_fold_lu	-1.6716
-modulation/phaser[Quarter pulse]/click_db_over_6k	-84.8089
-modulation/phaser[Quarter pulse]/insert_lu_hits	-1.9339
-modulation/phaser[Quarter pulse]/insert_lu_pink	-1.5608
-modulation/phaser[Quarter pulse]/mono_fold_lu	-1.1628
-modulation/phaser[Slow swirl]/click_db_over_6k	-76.0671
-modulation/phaser[Slow swirl]/insert_lu_hits	-1.6276
-modulation/phaser[Slow swirl]/insert_lu_pink	-1.5391
-modulation/phaser[Slow swirl]/mono_fold_lu	-0.6947
+modulation/phaser/wet_corr_300hz	0.232
+modulation/phaser[Deep phase]/click_db_over_6k	-79.9542
+modulation/phaser[Deep phase]/insert_lu_hits	0.109
+modulation/phaser[Deep phase]/insert_lu_pink	0.1395
+modulation/phaser[Deep phase]/mono_fold_lu	-1.2506
+modulation/phaser[Funk wobble]/click_db_over_6k	-79.5215
+modulation/phaser[Funk wobble]/insert_lu_hits	-0.1518
+modulation/phaser[Funk wobble]/insert_lu_pink	0.0009
+modulation/phaser[Funk wobble]/mono_fold_lu	-0.9202
+modulation/phaser[Liquid]/click_db_over_6k	-89.4322
+modulation/phaser[Liquid]/insert_lu_hits	-0.4136
+modulation/phaser[Liquid]/insert_lu_pink	-0.3604
+modulation/phaser[Liquid]/mono_fold_lu	-1.6787
+modulation/phaser[Quarter pulse]/click_db_over_6k	-83.4319
+modulation/phaser[Quarter pulse]/insert_lu_hits	-0.5098
+modulation/phaser[Quarter pulse]/insert_lu_pink	-0.1675
+modulation/phaser[Quarter pulse]/mono_fold_lu	-1.1706
+modulation/phaser[Slow swirl]/click_db_over_6k	-80.62
+modulation/phaser[Slow swirl]/insert_lu_hits	0.1815
+modulation/phaser[Slow swirl]/insert_lu_pink	0.2712
+modulation/phaser[Slow swirl]/mono_fold_lu	-0.6968
 reverb/cloud/decay_error_pct@1s	-2.3747
 reverb/cloud/decay_error_pct@2.5s	-2.1424
 reverb/cloud/decay_error_pct@6s	-0.1823

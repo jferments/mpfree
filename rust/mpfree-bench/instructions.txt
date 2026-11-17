@@ -79,8 +79,8 @@
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
 37002	Perform FX, the 16 pads in turn
-100523	Phaser (12 stages)
-61610	Phaser (4 stages)
+107343	Phaser (12 stages)
+65998	Phaser (4 stages)
 155797	Plate reverb
 307019	Pluck Bell, 16 voices
 249183	Pluck Harp, 16 voices
