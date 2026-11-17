@@ -459,6 +459,7 @@ mod tests {
             has_out: true,
             sending: false,
             last_in: Some(Duration::from_millis(900)),
+            clock_measured: None,
         });
         live.tracks = vec!["Drums".into(), "Bass".into(), "Keys".into()];
         Arc::new(Mutex::new(IoModel {

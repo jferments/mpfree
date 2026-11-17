@@ -88,6 +88,10 @@ pub struct PortLive {
     pub sending: bool,
     /// When something last arrived on its input (the app's clock).
     pub last_in: Option<Duration>,
+    /// MPFree's clock as it left this port over the last beat: the gap
+    /// between pulses and their spread either side of it, in ms. None
+    /// while no clock goes out.
+    pub clock_measured: Option<(f32, f32)>,
 }
 
 /// Which parts of MIDI work in this run. A setting whose part is missing
@@ -161,6 +165,7 @@ impl Default for Live {
                 has_out: true,
                 sending: false,
                 last_in: None,
+                clock_measured: None,
             }],
             tracks: Vec::new(),
             clock_in: None,

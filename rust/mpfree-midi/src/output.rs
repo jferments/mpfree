@@ -149,6 +149,12 @@ impl Timed {
     pub fn is_realtime(&self) -> bool {
         self.len == 1 && self.bytes[0] >= 0xF8
     }
+
+    /// MPFree's own clock: a pulse, Start, Continue, Stop or Song Position
+    /// no track, page or thru sent.
+    pub fn is_clock(&self) -> bool {
+        self.track == NO_TRACK && matches!(self.bytes[0], 0xF2 | 0xF8 | 0xFA | 0xFB | 0xFC)
+    }
 }
 
 /// One port's messages for one period.
@@ -201,6 +207,20 @@ impl OutQueue {
     /// would swap them).
     pub fn sort_by_frame(&mut self) {
         self.sort_by(|t| (t.offset, false));
+    }
+
+    /// In the order they are due: each at its frame plus `shift(t)` frames
+    /// (a port's clock nudged later or earlier), in the order they are now
+    /// among equal ones. After [`OutQueue::sort_by_frame`].
+    pub fn sort_by_due(&mut self, shift: impl Fn(&Timed) -> i64) {
+        let key = |t: &Timed| i64::from(t.offset) + shift(t);
+        for i in 1..self.len {
+            let mut j = i;
+            while j > 0 && key(&self.buf[j - 1]) > key(&self.buf[j]) {
+                self.buf.swap(j - 1, j);
+                j -= 1;
+            }
+        }
     }
 
     fn sort_by(&mut self, key: impl Fn(&Timed) -> (u32, bool)) {
@@ -559,6 +579,16 @@ mod tests {
         q.sort_by_frame();
         let firsts: Vec<u8> = q.as_slice().iter().map(|t| t.bytes()[0]).collect();
         assert_eq!(firsts, [0xF2, 0xFB, 0xF8, 0x90]);
+        // The clock nudged 15 frames later: after the note, in its order.
+        let mut later = q.clone();
+        later.sort_by_due(|t| if t.is_clock() { 15 } else { 0 });
+        let firsts: Vec<u8> = later.as_slice().iter().map(|t| t.bytes()[0]).collect();
+        assert_eq!(firsts, [0x90, 0xF2, 0xFB, 0xF8]);
+        // A track's or thru's F8 isn't MPFree's clock.
+        assert!(!Timed::realtime(0, 0xF8).by(1).is_clock());
+        assert!(!Timed::realtime(0, 0xF8).thru(PortId(2)).is_clock());
+        assert!(Timed::realtime(0, 0xFC).is_clock());
+        assert!(!Timed::realtime(0, 0xFE).is_clock());
     }
 
     #[test]

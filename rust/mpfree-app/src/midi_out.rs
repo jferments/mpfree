@@ -330,6 +330,12 @@ impl Chords {
 /// One port's clock out: its setting and the clock it makes.
 struct PortClock {
     mode: ClockOut,
+    /// Its clock runs this many times slower (`PortSetup::clock_divide`):
+    /// the gear's ticks are the transport's divided by it.
+    divide: i64,
+    /// The divide changed while it ran: Stop, then it joins again at the
+    /// next sixteenth at the new rate.
+    restart: bool,
     pulses: Pulses,
     /// Always, while stopped: frames from this period's start to the next
     /// pulse.
@@ -340,9 +346,25 @@ impl PortClock {
     fn new() -> PortClock {
         PortClock {
             mode: ClockOut::Off,
+            divide: 1,
+            restart: false,
             pulses: Pulses::new(),
             free_next: 0.0,
         }
+    }
+
+    /// The divide the setup asks for (1 and up).
+    fn set_divide(&mut self, divide: u8) {
+        let d = i64::from(divide.max(1));
+        if d != self.divide {
+            self.restart = self.pulses.running();
+            self.divide = d;
+        }
+    }
+
+    /// A transport tick as the gear's, at this port's divide.
+    fn tick(&self, tick: i64) -> i64 {
+        tick.div_euclid(self.divide)
     }
 
     /// The transport's period as this port's clock: its messages to `out`,
@@ -353,6 +375,9 @@ impl PortClock {
             // Turned off while playing: the other device stops too.
             self.stop(out);
             return;
+        }
+        if std::mem::take(&mut self.restart) {
+            self.stop(out);
         }
         let markers = block.markers();
         let mut next = 0;
@@ -372,14 +397,14 @@ impl PortClock {
 
     fn mark(&mut self, m: &Marker, out: &mut Messages) {
         match m.mark {
-            Mark::Started { tick } => self.pulses.started(m.offset, tick, out),
+            Mark::Started { tick } => self.pulses.started(m.offset, self.tick(tick), out),
             Mark::Stopped { .. } => {
                 self.pulses.stopped(m.offset, out);
                 // Always: pulses go on from here at the tempo.
                 self.free_next = f64::from(m.offset);
             }
-            Mark::Located { to, .. } => self.pulses.located(m.offset, to, out),
-            Mark::Looped { start, .. } => self.pulses.located(m.offset, start, out),
+            Mark::Located { to, .. } => self.pulses.located(m.offset, self.tick(to), out),
+            Mark::Looped { start, .. } => self.pulses.located(m.offset, self.tick(start), out),
             // Back to bar 1 while stopped: the other device's position too.
             Mark::Rewound => self.pulses.located(m.offset, 0, out),
             _ => {}
@@ -392,17 +417,19 @@ impl PortClock {
                 // Clock turned on (or the port opened) while playing: the
                 // other device joins from the next sixteenth.
                 if !self.pulses.running() {
-                    let tick = span.ticks().start;
+                    let tick = self.tick(span.ticks().start);
                     self.pulses.started(span.offset, tick, out);
                 }
-                for (tick, offset) in span.lines(PULSE_TICKS) {
-                    self.pulses.pulse(tick, offset, out);
+                // Divided: a pulse every `divide` of the transport's.
+                for (tick, offset) in span.lines(PULSE_TICKS * self.divide) {
+                    self.pulses.pulse(self.tick(tick), offset, out);
                 }
             }
             // Nothing until playback starts, when Started comes.
             State::CountIn => {}
             State::Stopped if self.mode == ClockOut::Always && !self.pulses.running() => {
-                let every = 60.0 * f64::from(span.rate) / (span.bpm.max(1.0) * 24.0);
+                let every =
+                    60.0 * f64::from(span.rate) * self.divide as f64 / (span.bpm.max(1.0) * 24.0);
                 let (start, end) = (f64::from(span.offset), f64::from(span.offset + span.len));
                 self.free_next = self.free_next.max(start);
                 while self.free_next < end {
@@ -438,6 +465,8 @@ struct PortOut {
     /// Its gear's delay ("This gear's delay" on its page): messages leave
     /// this much before their frame is heard, at most the sound's lead.
     early: Duration,
+    /// Its clock's nudge (`PortSetup::clock_nudge_tenths`): later above 0.
+    nudge_tenths: i16,
     clock: PortClock,
     /// Its page's test note still on: its channel and the frames until its
     /// note-off.
@@ -460,6 +489,7 @@ impl PortOut {
             writer: None,
             closing: None,
             early: Duration::ZERO,
+            nudge_tenths: 0,
             clock: PortClock::new(),
             test_off: None,
             queued: 0,
@@ -769,10 +799,20 @@ impl MidiOut {
         // Which ports MIDI out sends to now, for their rows and pages (the
         // port list is rebuilt when a port comes or goes).
         for lp in m.live.ports.iter_mut() {
-            lp.sending = self
+            let p = self
                 .ports
                 .iter()
-                .any(|p| p.here && p.writer.is_some() && p.name == lp.name);
+                .find(|p| p.here && p.writer.is_some() && p.name == lp.name);
+            lp.sending = p.is_some();
+            // The clock as it left, to a tenth of a ms.
+            let tenth = |x: f32| (x * 10.0).round() / 10.0;
+            let measured = p
+                .and_then(|p| p.writer.as_ref())
+                .and_then(Writer::clock_measured)
+                .map(|(g, s)| (tenth(g), tenth(s)));
+            if lp.clock_measured != measured {
+                lp.clock_measured = measured;
+            }
         }
         if let Some(ask) = m.asks.port_send.take() {
             let (said, sent) = self.port_send(&ask);
@@ -797,6 +837,8 @@ impl MidiOut {
             // Found in place: `MidiSetup::port` would make a copy.
             let s = m.setup.ports.iter().find(|s| s.name == p.name);
             p.clock.mode = s.map_or(ClockOut::default(), |s| s.clock_out);
+            p.clock.set_divide(s.map_or(1, |s| s.clock_divide));
+            p.nudge_tenths = s.map_or(0, |s| s.clock_nudge_tenths);
             p.early = s.map_or(Duration::ZERO, |s| {
                 Duration::from_micros(u64::from(s.delay_tenths) * 100)
             });
@@ -1131,18 +1173,35 @@ impl MidiOut {
                 continue;
             }
             // The clock went in first (`clock` runs before the notes), in
-            // the order it must leave.
+            // the order it must leave; nudged, it leaves that much later
+            // or earlier than the notes on its frame.
             q.sort_by_frame();
+            let nudge = i64::from(p.nudge_tenths) * i64::from(self.rate) / 10_000;
+            if nudge != 0 {
+                q.sort_by_due(|m| if m.is_clock() { nudge } else { 0 });
+            }
             let early = p.early;
             let writer = p.writer.as_ref();
             let sent = &mut self.sent;
             let (mut queued, mut full) = (0u64, 0u64);
             let mut each = |m: &Timed| {
                 let Some(w) = writer else { return };
-                let heard = at + Duration::from_secs_f64(f64::from(m.offset) / rate);
+                let frames = i64::from(m.offset) + if m.is_clock() { nudge } else { 0 };
+                let heard = if frames >= 0 {
+                    at + Duration::from_secs_f64(frames as f64 / rate)
+                } else {
+                    at.checked_sub(Duration::from_secs_f64(-frames as f64 / rate))
+                        .unwrap_or(t0)
+                };
                 // The gear's delay: each message leaves that much before
                 // its frame is heard, never before the period was made.
-                if w.send(Wire::new(leave_at(heard, early, t0), m.bytes())) {
+                let leave = leave_at(heard, early, t0);
+                let wire = if nudge != 0 && m.is_clock() {
+                    Wire::nudged(leave, m.bytes())
+                } else {
+                    Wire::new(leave, m.bytes())
+                };
+                if w.send(wire) {
                     queued += 1;
                     if sent.len() < SENT {
                         sent.push((PortId(i as u8), *m));
@@ -1556,6 +1615,7 @@ mod tests {
             has_out: true,
             sending: false,
             last_in: None,
+            clock_measured: None,
         });
     }
 
@@ -2325,6 +2385,70 @@ mod tests {
         assert!(b[4..].iter().all(|&x| x == 0xF8));
         set(&mut r, ClockOut::Off);
         assert_eq!(r.run(0.5), [0xFC]);
+    }
+
+    /// Divided by 2: half the pulses, and a locate's Song Position in the
+    /// gear's sixteenths; back to 1 while playing: Stop, then it joins
+    /// again at the tempo.
+    #[test]
+    fn clock_out_divided() {
+        use mpfree_transport::Command;
+        let mut r = ClockRig::new(ClockOut::WhilePlaying);
+        let divide = |r: &mut ClockRig, d| {
+            let mut g = r.m.lock().unwrap();
+            g.setup.set_port(DIN_NAME, |p| p.clock_divide = d);
+            g.gen += 1;
+        };
+        divide(&mut r, 2);
+        r.command(Command::Play);
+        let b = r.run(1.0);
+        assert_eq!(b[0], 0xFA, "{b:02X?}");
+        assert!((24..=25).contains(&pulses(&b)), "{}", pulses(&b));
+        // Bar 2 is 16 sixteenths in; the gear is at its 8th.
+        r.command(Command::Locate(3840));
+        let b = r.run(0.1);
+        assert_eq!(&b[..5], [0xFC, 0xF2, 8, 0, 0xFB], "{b:02X?}");
+        divide(&mut r, 1);
+        let b = r.run(0.5);
+        assert_eq!(b[0], 0xFC, "{b:02X?}");
+        assert_eq!((b[1], b[4]), (0xF2, 0xFB), "{b:02X?}");
+        assert!((21..=25).contains(&pulses(&b)), "{}", pulses(&b));
+    }
+
+    /// Nudged later, the clock leaves after the notes on its frame;
+    /// nudged earlier, before them.
+    #[test]
+    fn a_nudged_clock_leaves_later_or_earlier_than_the_notes() {
+        let note = Timed::msg(
+            0,
+            Msg::NoteOn {
+                ch: 0,
+                note: 60,
+                vel: 100,
+            },
+        );
+        let pulse = Timed::realtime(0, 0xF8);
+        for (nudge, pushed, first) in [
+            (0, [pulse, note], 0xF8),
+            (20, [pulse, note], 0x90),
+            (0, [note, pulse], 0x90),
+            (-20, [note, pulse], 0xF8),
+        ] {
+            let (mut mo, sink) = open(Duration::ZERO);
+            let m = model(&[]);
+            m.lock()
+                .unwrap()
+                .setup
+                .set_port(DIN_NAME, |p| p.clock_nudge_tenths = nudge);
+            mo.sync(&m, false);
+            for t in pushed {
+                mo.queue[0].push(t);
+            }
+            mo.period_end(PERIOD, Instant::now());
+            wait_for(&sink, 4);
+            assert_eq!(sink.bytes()[0], first, "nudge {nudge}");
+            assert!(mo.close());
+        }
     }
 
     /// Steady playing on MIDI Out allocates and frees nothing in the sound
