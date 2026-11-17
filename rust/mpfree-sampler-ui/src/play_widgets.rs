@@ -70,6 +70,8 @@ pub struct LayerMap {
 const AXIS_H: i32 = 52;
 const ROW_GAP: i32 = 14;
 const MAX_ROW_H: i32 = 52;
+/// Under this a bar shows its name only, not its velocities.
+const TWO_LINES_H: i32 = 36;
 const EDGE: i32 = 16;
 
 impl LayerMap {
@@ -219,6 +221,11 @@ impl Widget for LayerMap {
                     Align::Right,
                 )
             };
+            // A bar too short for two lines keeps its name only.
+            if b.h < TWO_LINES_H {
+                cx.text(FontId::Bold, t.size_small, text, align, t.text, &l.name);
+                continue;
+            }
             let (top, bottom) = text.take_top(text.h / 2 + 2);
             cx.text(FontId::Bold, t.size_small, top, align, t.text, &l.name);
             cx.text(
