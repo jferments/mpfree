@@ -812,3 +812,57 @@ fn granular_effect_on_a_live_signal_survives_freeze() {
     assert!(energy[2] > 0.5 * energy[0], "{energy:?}");
     assert!(out.iter().all(|x| x.abs() < 4.0));
 }
+
+/// A source that reads 0.25 plainly and 1.0 when a grain is aimed clean
+/// (faster than 1.5 times its rate), and checks the aim comes back.
+struct Aimed;
+
+impl GrainSource for Aimed {
+    fn rate(&self) -> u32 {
+        RATE
+    }
+    fn channels(&self) -> usize {
+        1
+    }
+    fn span(&self) -> (i64, i64) {
+        (0, 96_000)
+    }
+    fn sample(&self, _ch: usize, _frame: i64) -> f32 {
+        0.25
+    }
+    fn aim(&self, speed: f64) -> Aim {
+        Aim {
+            clean: speed > 1.5,
+            octave: 1,
+            step: 7,
+            taps: 9,
+        }
+    }
+    fn read_aimed(&self, pos: f64, aim: Aim) -> [f32; 2] {
+        assert!((0.0..96_000.0).contains(&pos));
+        assert_eq!((aim.clean, aim.octave, aim.step, aim.taps), (true, 1, 7, 9));
+        [1.0; 2]
+    }
+}
+
+#[test]
+fn a_source_reads_each_grain_as_it_aimed_it() {
+    // One grain at a time (overlap under 1, so the level is the read's).
+    let peak = |pitch: f32| {
+        let mut v = GrainVoice::new(RATE, 1);
+        v.set_params(Params {
+            size_ms: 20.0,
+            density: 10.0,
+            pitch,
+            timing: 0.0,
+            ..Params::default()
+        });
+        v.start();
+        let (l, _) = run(&mut v, &Aimed, &mut Budget::new(64), 0, 9_600, 128);
+        l.iter().fold(0.0f32, |m, x| m.max(x.abs()))
+    };
+    assert!((peak(0.0) - 0.25).abs() < 0.01, "{}", peak(0.0));
+    assert!((peak(12.0) - 1.0).abs() < 0.01, "{}", peak(12.0));
+    // Pitched down the plain read again.
+    assert!((peak(-12.0) - 0.25).abs() < 0.01, "{}", peak(-12.0));
+}

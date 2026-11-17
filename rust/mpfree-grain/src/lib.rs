@@ -29,7 +29,7 @@ pub mod rng;
 pub mod voice;
 pub mod window;
 
-pub use buffer::{Clip, GrainSource, LiveBuffer};
+pub use buffer::{Aim, Clip, GrainSource, LiveBuffer};
 pub use fx::GrainFx;
 pub use node::GrainNode;
 pub use rng::Rng;

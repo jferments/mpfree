@@ -15,10 +15,10 @@ grain/onset[pad, 1000 ms grains]/ms	10
 grain/onset[pad, 200 ms grains]/ms	10
 grain/onset[pad, 500 ms grains]/ms	10
 grain/pitch[13.5 kHz a fifth down]/spur_db	-44.1886
-grain/pitch[15 kHz an octave up]/heard_db	-0.3319
-grain/pitch[2 kHz three octaves up]/spur_db	-85.6768
-grain/pitch[6 kHz two octaves up]/heard_db	-68.885
-grain/pitch[9 kHz a fifth up]/spur_db	-30.5042
+grain/pitch[15 kHz an octave up]/heard_db	-82.462
+grain/pitch[2 kHz three octaves up]/spur_db	-85.6694
+grain/pitch[6 kHz two octaves up]/heard_db	-86.0717
+grain/pitch[9 kHz a fifth up]/spur_db	-70.9836
 grain/pitch[9 kHz a semitone up]/spur_db	-29.0479
 grain/smooth[Hann, overlap 2]/modulation_db	-83.1461
 grain/smooth[Hann, overlap 2]/ripple_db	0.0055

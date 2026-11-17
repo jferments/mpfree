@@ -69,9 +69,9 @@ To fill in **Stops** or **Also plays**, tap the row, then hit the pads you want:
 
 ### Pitched up: clean or Vintage
 
-Play a sound higher than it was recorded (**Tune** up, a key above a keygroup's root, pressure on pitch) and its top end moves up past what the MPC can play. On old samplers that part folds back down as harsh, metallic tones that were never in the sound (aliasing): a hi-hat pitched up an octave gains a whine. MPFree filters it out as it plays, so pitched-up hats, breaks and keys stay clean. A sound recorded at a higher rate, such as a 96 kHz file, plays clean too.
+Play a sound higher than it was recorded (**Tune** up, a key above a keygroup's root, pressure on pitch) and its top end moves up past what the MPC can play. On old samplers that part folds back down as harsh, metallic tones that were never in the sound (aliasing): a hi-hat pitched up an octave gains a whine. MPFree filters it out as it plays, so pitched-up hats, breaks and keys stay clean. A sound recorded at a higher rate, such as a 96 kHz file, plays clean too, and so do the grains of a granular pad whose **Pitch** or **Pitch spray** takes them up.
 
-The **Vintage** row of the Pitch section turns that off for one pad. At **On** the pad plays pitched up the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
+The **Vintage** row of the Pitch section turns that off for one pad, its grains included. At **On** the pad plays pitched up the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
 
 Up to two semitones up, clean and Vintage sound exactly the same: what folds back there is above hearing. Past that, a clean pad takes a little more of the MPC's power for each sound it plays, and a Vintage one doesn't.
 
