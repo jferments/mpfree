@@ -5373,6 +5373,12 @@ fn player_session(
             }
         }
         cv_out.tick(&mut |l| out.midi(&l));
+        // The Sample tab's auto-sample of outside gear plays through the
+        // jacks while they are open and sending: the screen hears when
+        // that comes or goes (allocates only then).
+        if let Some(g) = midi_out.gear_changed() {
+            out.show(gui::ToUi::Gear(g));
+        }
         music.sync(&io_model, mt);
         // The Monitor's "Send note-offs to MIDI out": only the notes MPFree
         // left on there, as STOP's panic sends them.

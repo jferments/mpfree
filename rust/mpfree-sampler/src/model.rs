@@ -26,6 +26,8 @@ pub enum ModelError {
     TooManySlices,
     BadSlice,
     BadMasterFx,
+    /// A name with nothing in it.
+    BadName,
 }
 
 impl std::fmt::Display for ModelError {
@@ -46,7 +48,8 @@ impl std::fmt::Display for SourceId {
     }
 }
 
-/// Recorded or imported audio. Never changed after it is made.
+/// Recorded or imported audio. Its audio never changes after it is made;
+/// its name can ([`Project::rename`]).
 #[derive(Clone, Debug)]
 pub struct Source {
     id: SourceId,
@@ -1481,6 +1484,11 @@ enum Undo {
     PadsPlay {
         before: PadsPlay,
     },
+    /// A sound named: its name before.
+    Rename {
+        id: SourceId,
+        before: String,
+    },
     /// Several steps made by one command (chop to pads), undone together.
     Group(Vec<Undo>),
 }
@@ -1503,6 +1511,7 @@ impl Undo {
             Undo::AddSource { .. } => i.sources += 1,
             Undo::AddChop { .. } => i.chop = true,
             Undo::PadsPlay { .. } => i.pads_play = true,
+            Undo::Rename { .. } => i.named += 1,
             Undo::Group(steps) => steps.iter().for_each(|u| u.add_info(i)),
         }
     }
@@ -1523,6 +1532,8 @@ pub struct StepInfo {
     pub chop: bool,
     /// It changes what the pads play.
     pub pads_play: bool,
+    /// How many sounds it names.
+    pub named: usize,
 }
 
 /// The sampler's project: its sources, chop sets, pads and undo history.
@@ -1710,6 +1721,64 @@ impl Project {
         let mut p = self.pad(index).cloned().ok_or(ModelError::BadPad)?;
         f(&mut p);
         self.set_pad(index, Some(p), gesture)
+    }
+
+    /// Names pad `pad`, the sound `sound`, or both, as one undo step (the
+    /// Sample tab's text keyboard). Each name is trimmed of spaces at its
+    /// ends and must keep a character; a name already the same changes
+    /// nothing. A sound's name is every pad's that plays it, and goes with
+    /// the sound when the project is saved.
+    pub fn rename(
+        &mut self,
+        pad: Option<(usize, &str)>,
+        sound: Option<(SourceId, &str)>,
+    ) -> Result<(), ModelError> {
+        let pad = pad.map(|(i, n)| (i, n.trim()));
+        let sound = sound.map(|(id, n)| (id, n.trim()));
+        if let Some((i, n)) = pad {
+            if self.pad(i).is_none() {
+                return Err(ModelError::BadPad);
+            }
+            if n.is_empty() {
+                return Err(ModelError::BadName);
+            }
+        }
+        if let Some((id, n)) = sound {
+            if self.source(id).is_none() {
+                return Err(ModelError::UnknownSource);
+            }
+            if n.is_empty() {
+                return Err(ModelError::BadName);
+            }
+        }
+        let mut steps = Vec::new();
+        if let Some((index, n)) = pad {
+            if let Some(p) = self.pads[index].as_mut().filter(|p| p.name != n) {
+                let before = p.clone();
+                p.name = n.to_string();
+                steps.push(Undo::Pad {
+                    index,
+                    before: Some(Box::new(before)),
+                    gesture: None,
+                });
+            }
+        }
+        if let Some((id, n)) = sound {
+            if let Some(s) = self
+                .sources
+                .iter_mut()
+                .find(|s| s.id() == id && s.name != n)
+            {
+                let before = std::mem::replace(&mut s.name, n.to_string());
+                steps.push(Undo::Rename { id, before });
+            }
+        }
+        match steps.len() {
+            0 => {}
+            1 => self.push_undo(steps.remove(0)),
+            _ => self.push_undo(Undo::Group(steps)),
+        }
+        Ok(())
     }
 
     pub fn master(&self) -> &MasterFx {
@@ -2366,6 +2435,18 @@ impl Project {
             Undo::PadsPlay { before } => Undo::PadsPlay {
                 before: std::mem::replace(&mut self.pads_play, before),
             },
+            Undo::Rename { id, before } => {
+                let s = self
+                    .sources
+                    .iter_mut()
+                    .chain(self.removed.iter_mut())
+                    .find(|s| s.id() == id);
+                let before = match s {
+                    Some(s) => std::mem::replace(&mut s.name, before),
+                    None => before,
+                };
+                Undo::Rename { id, before }
+            }
             Undo::Group(steps) => {
                 Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect())
             }

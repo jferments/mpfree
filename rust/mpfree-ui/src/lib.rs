@@ -39,6 +39,7 @@ pub mod record;
 pub mod shape;
 pub mod style;
 pub mod text;
+pub mod textpad;
 pub mod theme;
 pub mod ui;
 pub mod wave;
