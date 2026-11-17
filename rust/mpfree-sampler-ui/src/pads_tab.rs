@@ -186,9 +186,9 @@ pub struct PadsState {
     /// The clip each pad of the bank launches, if any (none yet: the time
     /// engine doesn't launch clips from pads).
     pub clips: Vec<Option<String>>,
-    /// The effects on the picked pad's mixer strip, in order; None when the
-    /// pad has no strip of its own (only the first 16 pads have one). The
-    /// app fills it from the mixer.
+    /// The effects on the picked pad's mixer strip, in order: none for a
+    /// pad with no strip of its own yet (its + FX lends it one). None
+    /// until the app has heard from the mixer.
     pub effects: Option<Vec<String>>,
     /// Each of the kit's banks A to H: its pads with a sound, pad 1 of the
     /// bank the lowest bit.

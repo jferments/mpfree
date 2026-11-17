@@ -20,8 +20,11 @@
 //!
 //! The tab holds no effects of its own: the app reads the pad's channel
 //! from the mixer ([`FxState::pedals`]) and applies what the tab asks for
-//! ([`FxAction`]), as the chain editor does. Only the pads with a channel
-//! of their own in the mixer have pedals ([`FxState::channel`]).
+//! ([`FxAction`]), as the chain editor does. Kit 1's pads A1 to A16 have a
+//! channel of their own; any other pad is lent one when it is given an
+//! effect (+ Add effect or Whole chain), and gives it back once it is
+//! plain again. With every channel lent, the tab says why
+//! ([`FxState::channel`]).
 
 use std::sync::Arc;
 
@@ -92,7 +95,8 @@ pub struct FxState {
     pub sound: LayerSound,
     pub start: u64,
     pub end: u64,
-    /// Ok when the pad has a channel of its own in the mixer; else why not.
+    /// Ok when the pad can have effects (a channel of its own, or one free
+    /// to lend it); else why not.
     pub channel: Result<(), String>,
     /// The channel's effects, once the mixer has said (None until then).
     pub pedals: Option<Vec<FxPedal>>,
@@ -390,7 +394,7 @@ impl FxTab {
         let n = st.pedals().len();
         if n == 0 {
             let (title, note) = match (&st.channel, &st.pedals) {
-                (Err(_), _) => ("No channel of its own", String::new()),
+                (Err(_), _) => ("No channel free", String::new()),
                 (Ok(()), None) => ("Effects", "reading the channel".to_string()),
                 (Ok(()), Some(_)) => ("No effects yet", "+ Add effect puts one on".to_string()),
             };
