@@ -3980,12 +3980,15 @@ fn time_action(
             return Vec::new();
         }
     }
-    // ERASE + a clip, a drop on the Clips grid or the Song view, a block
-    // deleted, UNDO and REDO: said in place of the hint.
+    // ERASE + a clip, a clip settings card change, a drop on the Clips grid
+    // or the Song view, a block deleted, UNDO and REDO: said in place of
+    // the hint.
     let undo = matches!(a, TimeAction::Undo | TimeAction::Redo);
     let erase = matches!(
         a,
         TimeAction::DeleteClip { .. }
+            | TimeAction::ClipSettings { .. }
+            | TimeAction::ClipLength { .. }
             | TimeAction::DropClip { .. }
             | TimeAction::DropRow { .. }
             | TimeAction::MovePlacement { .. }

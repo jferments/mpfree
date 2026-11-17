@@ -79,6 +79,26 @@ The pads feel how hard you keep pressing after you hit them. While you record, t
 - Turn **Pressure** to **Off** for a track that shouldn't record it, for example drums you want to stay steady. Capture leaves it out on that track too.
 - Coming: editing pressure in the note editor.
 
+## Clip settings
+
+The Record panel has two tabs at its top: **Record**, the record settings, and **Clip**, the settings of one clip. The Clip tab names the clip it sets, such as "Clip · Verse B": the armed track's playing clip, or its first clip when none is playing, the same clip the Play page's Beats and the note editor show.
+
+{{shot: clips-card | The Record panel's Clip tab: the settings of Bass's clip beside the grid.}}
+
+- **Length:** how long the clip is, in steps of a sixteenth. Notes past a shorter end come back with **UNDO**.
+- **Speed:** how fast it plays against the song, from ×1/8 to ×4. **×1/2** plays it at half speed, so it lasts twice as long; **×2** plays it twice as fast. **×2/3** and **×3/2** give triplet feels.
+- **Swing:** **track** swings with its track and the song. Or pick 50 % (straight) to 75 % for this clip alone, on its sixteenths.
+- **Quantise:** pulls the notes into time as the clip plays, to 1/4 notes down to 1/32 notes, triplets too. The notes keep where you played them, so **off** brings your own timing back.
+- **Strength:** how far quantise pulls them, 10 to 100 %.
+- **Follow:** what the track plays after this clip. **Next**, **Previous**, **First** and **Last** pick from the track's clips; **Any** picks one at random, this one included, and **Other** any but this one; **Again** plays it from its start; **Stop** stops the track.
+- **After:** after how many bars, counted from where the clip started. Turning **Follow** on starts it at one pass of the clip.
+
+Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **+**, as on the Record tab. Each change plays at once. A row you change is one take ("Settings 4 · Bass / 2"), however far you turn it, so **UNDO** puts it back in one go.
+
+A Loop track's cell plays its loop as you recorded it, so only **Follow** and **After** apply to it.
+
+Coming: the clip's name and colour, its step size, how it launches (on the bar, or legato), and playing it backwards.
+
 ## Takes
 
 Every recording is a **take**, listed under Takes. **UNDO** takes back the newest take, and **SHIFT + UNDO** puts it back, so you can try a part again and again without worrying about losing the last one.

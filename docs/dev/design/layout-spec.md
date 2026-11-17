@@ -148,7 +148,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - It shows the name, an arm dot (tap to arm), an input chip (L, R, L+R, ST) and a 3 px level bar along its bottom edge.
   - Tapping the name opens a panel over the lanes with Arm, Input (Left by default), Monitor (Auto, In, Off), level, pan, mute, solo and Takes.
 - **Q-Links: Play's Q-Link column, always on Arrange** (Jay's pick on 12 Nov 2026 at 06:01Z, mockup E in /mnt/project-files/audiotracks/mockup/qlinks-right/).
-  - It's the same 128 px column with four vertical cards as on Play, at the right edge from under the top bar to the bottom. The Record and Takes panels narrow to about 250 px to make room, and the arp chip leaves the transport bar on Arrange.
+  - It's the same 128 px column with four vertical cards as on Play, at the right edge from under the top bar to the bottom. The Record and Takes panels narrow to about 250 px to make room, and the arp chip leaves the transport bar on Arrange. (The Record panel's Clip tab, the clip settings card, is in the same place: section 4j.)
   - The cards follow the selection. With an audio region selected, or the track panel open, they are Q1 Level, Q2 Pan (both the track's), Q3 the region's gain and Q4 its fade.
   - With nothing selected, they are Play's knobs, the same cards as on Play. The mockup showed the armed track's level, pan and sends, but a sequencer track has no mixer strip of its own yet: every track plays the kit. Track knobs come when tracks get strips.
   - Q-LINK steps to Macros 1-4 and 5-8 as on Play, and Play and Arrange share the bank. The track panel no longer lists the Q-Links at its foot.
@@ -237,6 +237,15 @@ The sampler review's decision 5 (Jay, 16 Nov: the Sample tab in the shared frame
 - **The cards** are drawn as the column's: Q1 to Q4 in the knob's colour with the sub-page's name (on Play, the section's), the job, and the ring with the value in it (its unit or offset under). A tap gives the wheel to the card where the page has a wheel focus; a drag up or down a card turns its knob, as on Play; a faint card says why on the hint line.
 - **The wheel's card** (the zoom on Wave, Warp and Chop; the row picked on Grain, Rec and Auto-sample) is 56 px, under the page's list. Play has none (its list shows the row picked) and puts the scene fader there instead, beside the section chips' page. On Rec and Auto-sample the Q-Links turn nothing yet, so their cards are blank.
 - **Play in sections:** six chips over the page (Layers, Amp, Filter, Pitch, Mod, Pad), each with a line of what it holds; a section has at most eight rows, so the list never scrolls, and Q-Links 1 to 4 turn the open section's four rows.
+
+## 4j. The clip settings card
+
+The sequencer review's "clip settings card" (Jay's go on the whole roadmap, 16 Nov 20:47Z: "get started actually implementing all of this"; drawn in mockup C, https://claude.ai/artifact/NLTZcfgFDo4A579VMJBLzC). Mockup C draws it in the side panel of Perform; until Perform is built (sequencer S4) it is a tab of Arrange's Record panel, in the same 250 px place.
+- **The tabs:** the Record panel's title line is two tabs, **Record** and **Clip · Verse B** (the focused clip's name, cut with "…" when long, its track being the armed one; "Clip" with no clip; the mockup's "Clip · Bass · Verse B" did not fit beside Record at 250 px). The lit one is underlined; a tap on the other swaps the panel, on the grid and the Song view alike. The note editor keeps its Edit options.
+- **The focused clip:** the armed track's playing clip, else its first, as Beats and the note editor show (the review's "one focused clip").
+- **The rows:** Length (in sixteenths, as Beats' length), Speed (×1/8 to ×4), Swing (the track's, or 50 to 75 %), Quantise (off, 1/4 to 1/32 with triplets), Strength (10 to 100 %, "—" while Quantise is off), Follow (off, Next, Previous, First, Last, Any, Other, Again, Stop), After (in bars, "—" while Follow is off). The wheel picks a row and – / + step it, as on the record settings. A loop cell takes only Follow and After.
+- **Undo:** each change plays at once; one row turned is one take ("Settings 4 · Bass / 2"), which UNDO takes back.
+- **Not built yet** from the mockup's rows: the clip's name and colour, step size, launch quantise and mode (restart, legato, one-shot), play direction, Program, and the Save state and Copy clip buttons.
 
 ## 5. Prefs (SHIFT + MENU)
 

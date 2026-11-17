@@ -34,8 +34,8 @@ use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::{Clip, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow, TimeAction,
-    TimeState, TransportInfo,
+    bars_label, card_rows, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow,
+    TimeAction, TimeState, TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State};
@@ -43,6 +43,10 @@ use mpfree_transport::{Block, Command, State};
 use super::follow::FollowCounts;
 use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
 use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
+
+/// The clip settings card's join keys for its takes, a row each (see
+/// `Takes::set_clip`).
+const CARD_JOIN: u64 = 0xC1_0000;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
@@ -1303,6 +1307,43 @@ impl TimeControl {
                 None => Ok("redo: nothing to redo".into()),
             },
             TimeAction::Capture => self.keep(),
+            TimeAction::ClipSettings {
+                track,
+                slot,
+                row,
+                settings,
+            } => {
+                let name = self
+                    .project
+                    .clip(track, slot)
+                    .map(|c| c.name.clone())
+                    .ok_or_else(|| {
+                        format!("clip: slot {} of track {} is empty", slot + 1, track + 1)
+                    })?;
+                // A row turned again joins its take: the wheel through
+                // many values is one undo.
+                self.takes
+                    .set_clip(
+                        &mut self.project,
+                        track,
+                        slot,
+                        settings,
+                        Some(CARD_JOIN + u64::from(row)),
+                    )
+                    .map_err(|e| format!("clip: {name}: {e:?}"))?;
+                self.compile()?;
+                let length = self.project.clip(track, slot).map_or(0, |c| c.length);
+                let said = card_rows(length, settings)
+                    .get(usize::from(row))
+                    .map_or_else(String::new, |r| format!("{} {}", r.name, r.value));
+                Ok(format!("clip: {name} · {said} (UNDO takes it back)"))
+            }
+            TimeAction::ClipLength { track, slot, steps } => {
+                if self.step_focus() != (track, Some(slot)) {
+                    return Err("clip: the focused clip changed: try again".into());
+                }
+                self.step_action(StepAction::Length { steps, copy: false })
+            }
             TimeAction::RecordPressure { track, on } => {
                 if !self.set_record_touch(track, on) {
                     return Err(format!("pad pressure: no track {}", track + 1));
