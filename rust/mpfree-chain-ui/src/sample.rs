@@ -491,7 +491,7 @@ pub enum Place {
 
 /// The pages: the top bar, the panel and the Q-Link column (under the
 /// pad bar on Sample), the hint line.
-const PREVIEW_SAMPLE: &str = "col(header:60, smp-bar:60, row(chain:*, qlinks:168):*, hint:26)";
+const PREVIEW_SAMPLE: &str = "col(header:60, smp-bar:60, row(chain:*, qlinks:128):*, hint:26)";
 
 /// The app's screen around a panel. For the chain editor, the Q-Links
 /// show the selected effect's first four knobs (bank 0, the page's own);
@@ -2298,7 +2298,7 @@ mod tests {
         assert!(st.eq);
         let mut page = crate::eq_page::EqPage::default();
         page.update(&st.params, None);
-        (page, Rect::new(244, 146, 844, 540))
+        (page, Rect::new(244, 146, 884, 540))
     }
 
     fn sets(out: &[ChainAction]) -> Vec<(u16, f32)> {
