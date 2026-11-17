@@ -1,7 +1,11 @@
-//! A writer thread for one of the controller's USB-MIDI outputs: each
-//! message is written when its frame is heard. MIDI Out (midi_out.rs) and
-//! CV out (cv_out.rs) each run one, so the sound loop never waits on a
-//! port.
+//! A writer thread for one MIDI output: each message is written when its
+//! frame is heard. MIDI out (midi_out.rs) runs one for the 5-pin jacks and
+//! one for each USB device's output, and CV out (cv_out.rs) one, so the
+//! sound loop never waits on a port.
+//!
+//! A USB device's output is opened by its writer thread
+//! ([`Writer::start_opening`]), so the sound loop never waits for the
+//! device either; the thread says in the log whether it opened.
 //!
 //! The sound loop hands each message on with [`Writer::send`], never
 //! waiting: a full queue drops the message and the caller counts it. The
@@ -87,7 +91,33 @@ impl Writer {
     pub fn start<W: Write + Send + 'static>(
         w: W,
         thread_name: &str,
-        label: &'static str,
+        label: &str,
+        describe: fn(&[u8]) -> String,
+        started: Instant,
+    ) -> io::Result<Writer> {
+        Writer::spawn(move || Ok(w), false, thread_name, label, describe, started)
+    }
+
+    /// As [`Writer::start`], but the thread opens the port itself with
+    /// `open` first, so the caller never waits for it, and says in the log
+    /// that it opened ("{label}: open"). A port that won't open is said in
+    /// the log and the writer is [`Writer::gone`]: what was sent to it is
+    /// dropped.
+    pub fn start_opening<W: Write + Send + 'static>(
+        open: impl FnOnce() -> io::Result<W> + Send + 'static,
+        thread_name: &str,
+        label: &str,
+        describe: fn(&[u8]) -> String,
+        started: Instant,
+    ) -> io::Result<Writer> {
+        Writer::spawn(open, true, thread_name, label, describe, started)
+    }
+
+    fn spawn<W: Write + Send + 'static>(
+        open: impl FnOnce() -> io::Result<W> + Send + 'static,
+        announce: bool,
+        thread_name: &str,
+        label: &str,
         describe: fn(&[u8]) -> String,
         started: Instant,
     ) -> io::Result<Writer> {
@@ -96,7 +126,7 @@ impl Writer {
         let stats = Arc::new(Stats::default());
         let s = stats.clone();
         let say = Say {
-            label,
+            label: label.to_string(),
             describe,
             started,
             log: log_tx,
@@ -116,7 +146,21 @@ impl Writer {
                         ));
                     }
                 }
-                write_loop(w, rx, &s, &say)
+                match open() {
+                    Ok(w) => {
+                        if announce {
+                            let _ = say.log.send(format!("{}: open", say.label));
+                        }
+                        write_loop(w, rx, &s, &say)
+                    }
+                    Err(e) => {
+                        let _ = say
+                            .log
+                            .send(format!("{}: could not open its output: {e}", say.label));
+                        // After the line (Release): see `Writer::gone`.
+                        s.gone.store(true, Ordering::Release);
+                    }
+                }
             })?;
         Ok(Writer {
             tx,
@@ -239,7 +283,7 @@ impl Closing {
 
 /// How the thread's log lines read.
 struct Say {
-    label: &'static str,
+    label: String,
     describe: fn(&[u8]) -> String,
     started: Instant,
     log: Sender<String>,
@@ -247,7 +291,7 @@ struct Say {
 
 /// The writer thread: each message when it is due, in the order sent.
 fn write_loop<W: Write>(mut w: W, rx: Receiver<Wire>, stats: &Stats, say: &Say) {
-    let label = say.label;
+    let label = say.label.as_str();
     let mut listed = 0u64;
     while let Ok(m) = rx.recv() {
         let now = Instant::now();
@@ -382,6 +426,48 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert!(
             lines[0].ends_with(" s CV out: BF 02 7F = 3 bytes"),
+            "{}",
+            lines[0]
+        );
+        assert!(w.finish());
+    }
+
+    /// A writer that opens its port says so, then writes; one whose port
+    /// won't open says why and is gone.
+    #[test]
+    fn a_writer_opens_its_port_or_says_why_not() {
+        let t0 = Instant::now();
+        let sink = Sink::default();
+        let s = sink.clone();
+        let w = Writer::start_opening(
+            move || Ok(s),
+            "test-writer",
+            "MIDI out to Digitone",
+            what,
+            t0,
+        )
+        .unwrap();
+        w.send(Wire::new(t0, &[0x90, 60, 100]));
+        assert!(w.finish());
+        assert_eq!(*sink.0.lock().unwrap(), vec![vec![0x90, 60, 100]]);
+        let w = Writer::start_opening(
+            || Err::<Sink, _>(io::Error::from_raw_os_error(16)), // EBUSY
+            "test-writer",
+            "MIDI out to Digitone",
+            what,
+            t0,
+        )
+        .unwrap();
+        let give_up = Instant::now() + Duration::from_secs(2);
+        while !w.gone() && Instant::now() < give_up {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(w.gone());
+        let mut lines = Vec::new();
+        w.log_lines(&mut |l| lines.push(l));
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].starts_with("MIDI out to Digitone: could not open its output: "),
             "{}",
             lines[0]
         );
