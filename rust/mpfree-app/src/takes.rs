@@ -665,12 +665,12 @@ mod tests {
 
     struct Quiet;
     impl crate::time::Pads for Quiet {
-        fn hit_at(&mut self, _: usize, _: u8, _: u32) -> bool {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
             true
         }
-        fn release_at(&mut self, _: usize, _: u32) {}
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
         fn stop_all(&mut self) {}
-        fn pressure_at(&mut self, _: usize, _: u8, _: u32) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
     }
 
     /// The synth's sound: a burst on every beat that depends only on the

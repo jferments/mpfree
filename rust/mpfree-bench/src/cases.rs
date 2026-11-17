@@ -698,6 +698,47 @@ fn drum_kit(name: &str, rate: u32, voices: usize, sixteen: bool) -> Case {
     }
 }
 
+/// [`drum_kit`] on `kits` tracks at once, as a kit per track plays them:
+/// one engine of `voices` voices with a copy of the kit on each of `kits`
+/// kits, a hit every block on the next kit in turn (the next pad round on
+/// each), so the pool stays full and steals across kits.
+fn drum_kits(name: &str, rate: u32, voices: usize, kits: usize) -> Case {
+    let s = Source::new("drum", rate, 2, bench_sound(rate as usize * 2, false)).expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..16usize {
+        let mut pad = Pad::new("kit", Layer::new(Region::whole(&s)));
+        pad.polyphony = 4;
+        pad.level_db = 3.0;
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::with_kits(rate, voices, kits);
+    for k in 0..kits {
+        e.set_kit_view(k, EngineView::build(&p, rate));
+    }
+    let mut b0 = 0u64;
+    Case {
+        name: name.to_string(),
+        module: "sampler",
+        what: "16 kit pads on each of several kits, one-shot and open, every voice playing",
+        block: Box::new(move |_b, l, r| {
+            let k = (b0 % kits as u64) as usize;
+            e.apply_for(
+                k,
+                Event::NoteOn {
+                    pad: ((b0 / kits as u64) % 16) as u8,
+                    velocity: 100,
+                },
+            );
+            b0 += 1;
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 /// The bench's stereo sound, `frames` long: a fixed pattern, as 16-bit
 /// values when `sixteen` (else values no 16 bits hold, so it stays floats).
 fn bench_sound(frames: usize, sixteen: bool) -> Vec<f32> {
@@ -1110,6 +1151,9 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         drum_kit("Sampler, drum kit, 64 voices", rate, 64, false)
+    }));
+    v.push(measured(|| {
+        drum_kits("Sampler, 4 drum kits, 64 voices", rate, 64, 4)
     }));
     v.push(measured(|| {
         drum_kit(

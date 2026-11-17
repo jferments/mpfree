@@ -44,7 +44,7 @@ checked: 2026-11-14 b76c3c7
 
 **Insert** — An effect a sound goes through on its own mixer strip.
 
-**Instrument** — What a track plays: the kit on the pads, one of MPFree's synths, or a plugin synth.
+**Instrument** — What a track plays: its kit, one of MPFree's synths, or a plugin synth.
 
 **Keygroup** — A pad that plays one sample across a range of notes, higher and lower, like a keyboard instrument.
 

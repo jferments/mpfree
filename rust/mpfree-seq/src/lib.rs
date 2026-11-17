@@ -54,7 +54,9 @@ pub mod scenes;
 pub mod steps;
 
 pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source};
-pub use scenes::{Follow, FollowAction, Scene, SCENES};
+pub use scenes::{
+    Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, MAX_SCENE_NAME, SCENES,
+};
 
 pub use mpfree_moves;
 use mpfree_moves::Moves;
@@ -372,6 +374,10 @@ pub enum LaunchGrid {
     Ticks(u32),
     /// The next line of this many bars.
     Bars(u8),
+    /// This song tick, or at once once it is past: where a one-shot
+    /// clip's pass ends ([`Clip::once`]). Never a clip's or the project's
+    /// own setting.
+    At(Tick),
 }
 
 impl Default for LaunchGrid {
@@ -396,19 +402,22 @@ pub const LAUNCH_GRIDS: [LaunchGrid; 9] = [
 
 impl LaunchGrid {
     /// In range: a note grid of a tick to a whole note, or 1 to 16 bars.
+    /// `At` is only ever a cue's, never a setting.
     pub fn ok(self) -> bool {
         match self {
             LaunchGrid::Now => true,
             LaunchGrid::Ticks(t) => (1..=PPQ * 4).contains(&t),
             LaunchGrid::Bars(n) => (1..=16).contains(&n),
+            LaunchGrid::At(_) => false,
         }
     }
 
     /// The distance between its lines, in song ticks, with bars of `bar`
     /// ticks: 1 for at once, so the next line is the next tick.
+    /// `At`'s one line is 1 apart, as at once, past its tick.
     pub fn line(self, bar: Tick) -> Tick {
         match self {
-            LaunchGrid::Now => 1,
+            LaunchGrid::Now | LaunchGrid::At(_) => 1,
             LaunchGrid::Ticks(t) => Tick::from(t.max(1)),
             LaunchGrid::Bars(n) => bar.max(1) * Tick::from(n.max(1)),
         }
@@ -416,6 +425,9 @@ impl LaunchGrid {
 
     /// Its first line at or after song tick `t`, with bars of `bar` ticks.
     pub fn next(self, t: Tick, bar: Tick) -> Tick {
+        if let LaunchGrid::At(at) = self {
+            return at.max(t);
+        }
         let line = self.line(bar);
         t.div_euclid(line) * line + if t.rem_euclid(line) == 0 { 0 } else { line }
     }
@@ -513,6 +525,9 @@ pub struct Clip {
     /// over that clip's place in its pass instead of starting from its
     /// top (sequencer S4).
     pub legato: bool,
+    /// One-shot (sequencer S4): its track stops at the end of the pass it
+    /// started in, in place of looping; a follow action of its own waits.
+    pub once: bool,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -525,9 +540,11 @@ pub struct ClipSettings {
     pub swing: Option<Swing>,
     pub quantise: Option<Quantise>,
     pub follow: Option<Follow>,
-    /// Its launch quantise (None: the project's) and legato (S4).
+    /// Its launch quantise (None: the project's), legato and one-shot
+    /// (S4).
     pub launch: Option<LaunchGrid>,
     pub legato: bool,
+    pub once: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -584,6 +601,7 @@ impl Clip {
             follow: self.follow,
             launch: self.launch,
             legato: self.legato,
+            once: self.once,
         }
     }
 
@@ -617,6 +635,7 @@ impl Clip {
         self.follow = s.follow;
         self.launch = s.launch;
         self.legato = s.legato;
+        self.once = s.once;
         Ok(())
     }
 
@@ -636,6 +655,7 @@ impl Clip {
             looped: None,
             launch: None,
             legato: false,
+            once: false,
         }
     }
 

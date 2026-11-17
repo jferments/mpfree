@@ -23,7 +23,7 @@ The looper is part of the song, not a separate machine running beside it:
 
 The first pass is the loop's first **layer**. Each overdub adds another, up to 16. **Undo** fades out the newest layer and **Redo** brings it back, until you record a new overdub. The loop shows the layers in different colours, and on the Play page each layer has a speaker icon to mute it on its own.
 
-To get rid of a whole loop, first pass included, use **Clear** (on the Play page, or **Clear loop** on the Looper tab). The **×** on a loop's last remaining layer does the same.
+To get rid of a whole loop, first pass included, use **Clear** (on the Play page, or **Clear loop** on the Looper tab). The **×** on a loop's last remaining layer does the same. In Perform these take a half-second hold, so a stray touch can't clear a loop mid-set (see [Make and Perform](playing-live.md#make-and-perform)).
 
 The looper holds five minutes of stereo sound across all its loops and layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so that is room for about 37 four-bar layers, spread over up to eight loops of up to 16 layers each. If you need more or less, **Loop memory** in [Prefs](../reference/prefs.md) (also in the Looper tab's MENU) sets it from 1 to 20 minutes. The memory is set aside when MPFree starts, so a new size takes effect from the next start; the row says "(next start)" until then, and shows how many megabytes it uses.
 

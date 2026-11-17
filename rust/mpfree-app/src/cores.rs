@@ -985,7 +985,7 @@ mod tests {
         // deadline, so a slow machine (qemu in CI) is never late here.
         struct Pads([[[f32; 128]; 2]; 16]);
         impl PadOut for Pads {
-            fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+            fn pad(&mut self, _kit: usize, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
                 let [l, r] = self.0.get_mut(pad)?;
                 Some((&mut l[..], &mut r[..]))
             }
