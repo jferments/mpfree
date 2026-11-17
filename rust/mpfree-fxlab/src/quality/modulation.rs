@@ -598,19 +598,24 @@ pub(super) fn modulation(r: &mut Report) {
 
     // M9: drawn against heard, held.
     let n = 1 << 17;
-    for (frac, fb) in [
-        (0.0, 0.0),
-        (0.5, 0.0),
-        (0.5, 90.0),
-        (0.5, -90.0),
-        (0.0, 90.0),
+    // Through zero held at the crossing, heard wet (at Mix 50 it is
+    // silence): the copy at the dry's wait, round its loop.
+    for (frac, fb, tz) in [
+        (0.0, 0.0, false),
+        (0.5, 0.0, false),
+        (0.5, 90.0, false),
+        (0.5, -90.0, false),
+        (0.0, 90.0, false),
+        (0.0, 0.0, true),
+        (0.0, 90.0, true),
     ] {
         let values = [
             (fl::DEPTH, 0.0),
             (fl::FEEDBACK, fb),
-            (fl::MIX, 50.0),
+            (fl::MIX, if tz { 100.0 } else { 50.0 }),
             (fl::WIDTH, 0.0),
             (fl::DELAY, frames_ms(1.5, frac, rate)),
+            (fl::THROUGH_ZERO, if tz { 1.0 } else { 0.0 }),
         ];
         let resp = fine(&mut engine(FLANGER, rate, &values), n);
         let mut node = Flanger::new();
@@ -624,7 +629,13 @@ pub(super) fn modulation(r: &mut Report) {
             "modulation/flanger",
             format!(
                 "drawn_err_db_{}_fb{}{}",
-                if frac == 0.0 { "whole" } else { "half" },
+                if tz {
+                    "tz"
+                } else if frac == 0.0 {
+                    "whole"
+                } else {
+                    "half"
+                },
                 if fb < 0.0 { "m" } else { "p" },
                 fb.abs()
             ),

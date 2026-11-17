@@ -1145,7 +1145,10 @@ pub static PLANS: &[Plan] = &[
                         &["Delay", "Feedback", "Width"],
                     )
                 },
-                s("output", "Output", Voice, &["Mix"]),
+                Section {
+                    rows: &["Through zero"],
+                    ..s("output", "Output", Voice, &["Mix", "Through zero"])
+                },
             ],
         )],
         dims: &[sync_dim(&["Rate"], "Sync")],
