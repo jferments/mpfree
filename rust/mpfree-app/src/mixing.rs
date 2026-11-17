@@ -1502,7 +1502,7 @@ impl Pads<'_> {
 }
 
 impl PadOut for Pads<'_> {
-    fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+    fn pad(&mut self, _kit: usize, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
         if pad >= PADS {
             return None;
         }
@@ -1547,7 +1547,7 @@ mod tests {
             let i = tone(220.0, line, p * PERIOD);
             if drums > 0.0 {
                 let mut pads = h.pads();
-                let (pl, pr) = pads.pad(0).unwrap();
+                let (pl, pr) = pads.pad(0, 0).unwrap();
                 pl[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
                 pr[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             }
@@ -1678,7 +1678,7 @@ mod tests {
                 if p < 40 {
                     let d = tone(110.0, 0.5, at);
                     let mut pads = h.pads();
-                    let (pl, pr) = pads.pad(0).unwrap();
+                    let (pl, pr) = pads.pad(0, 0).unwrap();
                     pl[..PERIOD].copy_from_slice(&d);
                     pr[..PERIOD].copy_from_slice(&d);
                 }
@@ -1741,7 +1741,7 @@ mod tests {
             let d = tone(110.0, 0.5, at);
             {
                 let mut pads = h.pads();
-                let (pl, pr) = pads.pad(0).unwrap();
+                let (pl, pr) = pads.pad(0, 0).unwrap();
                 pl[..PERIOD].copy_from_slice(&d);
                 pr[..PERIOD].copy_from_slice(&d);
             }
@@ -1872,9 +1872,9 @@ mod tests {
         let mut h = MixHost::new(RATE, 0.0, 0.0);
         // The sampler's pads 1 and 3; pad 17 is not there.
         let mut pads = h.pads();
-        pads.pad(0).unwrap().0[..PERIOD].fill(0.25);
-        pads.pad(2).unwrap().0[..PERIOD].fill(0.5);
-        assert!(pads.pad(PADS).is_none());
+        pads.pad(0, 0).unwrap().0[..PERIOD].fill(0.25);
+        pads.pad(0, 2).unwrap().0[..PERIOD].fill(0.5);
+        assert!(pads.pad(0, PADS).is_none());
         let played = pads.played();
         assert_eq!(played, 0b101);
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
