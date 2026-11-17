@@ -25,10 +25,15 @@ fn set<N: Node>(mut n: N, values: &[(u16, f32)]) -> N {
 /// The gain in dB a steady sine at `hz` gets through `n`, from the RMS of
 /// the last half second of two seconds (left channel).
 fn measure(n: &mut dyn Node, hz: f32) -> f32 {
+    measure_at(n, hz, 0.25)
+}
+
+/// [`measure`] with a sine of amplitude `amp`.
+fn measure_at(n: &mut dyn Node, hz: f32, amp: f32) -> f32 {
     n.reset();
     let frames = 2 * RATE as usize;
     let x: Vec<f32> = (0..frames)
-        .map(|i| 0.25 * (2.0 * std::f32::consts::PI * hz * i as f32 / RATE as f32).sin())
+        .map(|i| amp * (2.0 * std::f32::consts::PI * hz * i as f32 / RATE as f32).sin())
         .collect();
     let (mut l, mut r) = (x.clone(), x.clone());
     let ctx = Ctx::new(RATE, 0);
@@ -72,7 +77,9 @@ fn the_multi_filter_draws_what_it_does() {
             if drawn < -50.0 {
                 continue;
             }
-            let m = measure(&mut f, hz);
+            // Quietly (-40 dBFS): a loud sound at a high Resonance rings
+            // less than drawn, by design (the resonance bends).
+            let m = measure_at(&mut f, hz, 0.01);
             close(
                 &format!("type {ty} slope {slope} at {hz} Hz"),
                 drawn,
