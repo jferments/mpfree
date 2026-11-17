@@ -14931,6 +14931,100 @@ mod tests {
     }
 
     #[test]
+    fn a_sound_at_another_rate_is_converted_to_the_outputs_as_it_loads() {
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        let dir = std::env::temp_dir().join(format!("mpfree-sample-rate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Half a second at 48 kHz, stereo.
+        let data = (0..48_000)
+            .map(|i| 0.25 * (std::f32::consts::TAU * 440.0 * (i / 2) as f32 / 48_000.0).sin())
+            .collect();
+        let s = Source::new("x", 48_000, 2, data).unwrap();
+        let path = dir.join("Snare 48k.wav");
+        std::fs::write(&path, wav::bytes(&s)).unwrap();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.sample.load_file(path, false);
+        tick_until(&mut p, |p| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().name == "Snare 48k"
+        });
+        let kit = p.sample.project(0).unwrap();
+        let region = &kit.pad(pad).unwrap().layers[0].region;
+        let src = kit.source(region.source).unwrap();
+        assert_eq!((src.rate(), src.frames()), (44_100, 22_050));
+        assert_eq!((region.start, region.end), (0, 22_050));
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: Snare 48k: converted from 48 kHz to 44.1 kHz"),
+            "{:?}",
+            events_log(&p)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_kit_with_a_sound_at_another_rate_is_converted_as_it_opens_while_memory_allows() {
+        use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
+        use mpfree_sampler::{save, wav};
+        let dir = std::env::temp_dir().join(format!("mpfree-kit-rate-{}", std::process::id()));
+        let folder = dir.join("Rate Kit");
+        std::fs::create_dir_all(&folder).unwrap();
+        // Half a second at 48 kHz, stereo, as a 16-bit file holds it.
+        let data = (0..48_000)
+            .map(|i| {
+                let x = (std::f32::consts::TAU * 440.0 * (i / 2) as f32 / 48_000.0).sin();
+                (8_000.0 * x).round() / 32_768.0 + 0.0 // no -0.0, so 16-bit
+            })
+            .collect();
+        let s = Source::new("Snare", 48_000, 2, data).unwrap();
+        let mut kit = Project::new();
+        kit.add_source(s.clone());
+        let mut region = Region::whole(&s);
+        region.start = 4_800; // 0.1 s in
+        kit.set_pad(0, Some(Pad::new("Snare", Layer::new(region))), None)
+            .unwrap();
+        let text = save::to_text(&[("Rate Kit", &kit)], 0, &|_| "Snare.wav".to_string());
+        std::fs::write(folder.join(mpfree_library::KIT_FILE), text).unwrap();
+        std::fs::write(folder.join("Snare.wav"), wav::bytes(&s)).unwrap();
+        for short in [false, true] {
+            let mut p = sample_sampler(Fonts::embedded());
+            if short {
+                // Room to read the file, not for its converted copy.
+                p.sample
+                    .set_mem_free(|| Some(crate::memory::FLOOR + 300_000));
+            }
+            p.sample.open_kit(folder.clone());
+            tick_until(&mut p, |p| {
+                events_log(p)
+                    .iter()
+                    .any(|l| l == "sample: kit 1 is now Rate Kit")
+            });
+            let kit = p.sample.project(0).unwrap();
+            let region = &kit.pad(0).unwrap().layers[0].region;
+            let src = kit.source(region.source).unwrap();
+            let log = events_log(&p);
+            let said = |line: &str| log.iter().any(|l| l == line);
+            if short {
+                assert_eq!((src.rate(), region.start), (48_000, 4_800));
+                assert!(
+                    said("sample: kept at its own rate, not enough memory: Snare at 48 kHz"),
+                    "{log:?}"
+                );
+            } else {
+                assert_eq!((src.rate(), src.frames()), (44_100, 22_050));
+                assert_eq!((region.start, region.end), (4_410, 22_050));
+                assert!(
+                    said("sample: Rate Kit: 1 sound converted from 48 kHz to 44.1 kHz"),
+                    "{log:?}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_sample_page_edits_the_pad_hit_last_and_sends_one_view_at_a_time() {
         use mpfree_sampler_ui::wave_tab::{BAR, QLINKS};
         use mpfree_sampler_ui::widgets::{KnobCard, PadBar};

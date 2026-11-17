@@ -1521,9 +1521,15 @@ name = "mpfree-factory"
 version = "0.1.0"
 dependencies = [
  "mpfree-diskimage",
+ "mpfree-flac",
  "mpfree-node",
  "mpfree-synth",
+ "sha2",
 ]
+
+[[package]]
+name = "mpfree-flac"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-node"

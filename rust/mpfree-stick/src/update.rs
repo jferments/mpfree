@@ -143,7 +143,9 @@ impl Update {
         }
         let head = read_at(&mut f, 0, 12)?;
         if &head[..4] != MAGIC {
-            return Err(bad("this is not an Akai update file of the AZ01 kind"));
+            return Err(bad(
+                "this is not an Akai update file of the AZ01 kind (Akai's USB update, a .img file)",
+            ));
         }
         let version = u32::from_le_bytes([head[4], head[5], head[6], head[7]]);
         let header_size = u32::from_le_bytes([head[8], head[9], head[10], head[11]]);
