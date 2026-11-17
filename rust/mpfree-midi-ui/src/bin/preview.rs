@@ -146,7 +146,12 @@ fn shots() -> Vec<Shot> {
             .with(Ignored::Clock, true)
             .with(Ignored::Aftertouch, true);
         p.delay_tenths = 65;
+        p.clock_divide = 2;
+        p.clock_nudge_tenths = 10;
     });
+    if let Some(p) = din_port.live.ports.iter_mut().find(|p| p.name == DIN_NAME) {
+        p.clock_measured = Some((41.7, 0.3));
+    }
     // Routing: the drum machine on the 5-pin jacks' channel 10 plays
     // Drums, and the keyboard (Learn only) plays Bass on channel 2 and Lead
     // on channel 1, whichever track is armed.
@@ -354,7 +359,7 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-midi-port-din",
-            about: "The 5-pin jacks' page with MIDI out on: clock and aftertouch ignored, the gear 6.5 ms late so MIDI out sends that early, the newest message in and out, test note and All notes off",
+            about: "The 5-pin jacks' page with MIDI out on: clock and aftertouch ignored, its clock at half the tempo and nudged 1 ms later, with what was measured as it left, the gear 6.5 ms late so MIDI out sends that early, the newest message in and out, test note and All notes off",
             section: 1,
             model: din_port,
             wheel: 0,

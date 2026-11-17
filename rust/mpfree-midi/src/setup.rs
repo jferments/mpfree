@@ -244,6 +244,14 @@ pub const MAX_DELAY_TENTHS: u16 = 1000;
 /// The port page's - and + step, in tenths of a ms.
 pub const DELAY_STEP_TENTHS: u16 = 5;
 
+/// The most a port's clock can be divided by ([`PortSetup::clock_divide`]).
+pub const MAX_CLOCK_DIVIDE: u8 = 8;
+/// The most a port's clock is nudged either way, in tenths of a ms
+/// (20 ms).
+pub const MAX_NUDGE_TENTHS: i16 = 200;
+/// The port page's - and + step for the nudge, in tenths of a ms.
+pub const NUDGE_STEP_TENTHS: i16 = 5;
+
 /// The most characters a port's shown name ([`PortSetup::shown`]) has.
 pub const MAX_SHOWN: usize = 24;
 
@@ -255,6 +263,13 @@ pub struct PortSetup {
     pub name: String,
     pub input: PortInput,
     pub clock_out: ClockOut,
+    /// Its clock runs this many times slower (1 to [`MAX_CLOCK_DIVIDE`]):
+    /// 2 plays the gear at half the tempo. The song's, as `clock_out`.
+    pub clock_divide: u8,
+    /// Its clock leaves this much later (or earlier, below 0), in tenths
+    /// of a ms, on top of `delay_tenths`: for gear whose clock input lags
+    /// or leads its notes. The rig's, as the delay.
+    pub clock_nudge_tenths: i16,
     /// What its input ignores.
     pub ignore: IgnoreSet,
     /// How late the gear on this port sounds after a message leaves, in
@@ -316,6 +331,8 @@ impl PortSetup {
             name: name.to_string(),
             input: PortInput::default(),
             clock_out: ClockOut::default(),
+            clock_divide: 1,
+            clock_nudge_tenths: 0,
             ignore: IgnoreSet::NONE,
             delay_tenths: 0,
             shown: String::new(),
@@ -326,6 +343,11 @@ impl PortSetup {
     /// The delay in ms.
     pub fn delay_ms(&self) -> f32 {
         f32::from(self.delay_tenths) / 10.0
+    }
+
+    /// The clock's nudge in ms (later above 0).
+    pub fn nudge_ms(&self) -> f32 {
+        f32::from(self.clock_nudge_tenths) / 10.0
     }
 
     fn is_default(&self) -> bool {
@@ -824,6 +846,7 @@ impl MidiSetup {
                 p.input = PortInput::default();
                 p.ignore = IgnoreSet::NONE;
                 p.delay_tenths = 0;
+                p.clock_nudge_tenths = 0;
                 p.shown.clear();
                 p.profile = ProfilePick::Auto;
             });
@@ -847,6 +870,7 @@ impl MidiSetup {
                 q.input = p.input;
                 q.ignore = p.ignore;
                 q.delay_tenths = p.delay_tenths;
+                q.clock_nudge_tenths = p.clock_nudge_tenths;
                 q.shown = p.shown.clone();
                 q.profile = p.profile.clone();
             });
@@ -880,6 +904,7 @@ impl MidiSetup {
                 p.input = want.input;
                 p.ignore = want.ignore;
                 p.delay_tenths = want.delay_tenths;
+                p.clock_nudge_tenths = want.clock_nudge_tenths;
                 p.shown = want.shown;
                 p.profile = want.profile;
             });
@@ -918,6 +943,20 @@ impl MidiSetup {
             line(&mut s, &k, &p.name);
             line(&mut s, &format!("{k}.input"), p.input.word());
             line(&mut s, &format!("{k}.clock-out"), p.clock_out.word());
+            if p.clock_divide != 1 {
+                line(
+                    &mut s,
+                    &format!("{k}.clock-divide"),
+                    &p.clock_divide.to_string(),
+                );
+            }
+            if p.clock_nudge_tenths != 0 {
+                line(
+                    &mut s,
+                    &format!("{k}.clock-nudge-ms"),
+                    &format!("{:+.1}", p.nudge_ms()),
+                );
+            }
             if !p.ignore.is_empty() {
                 line(&mut s, &format!("{k}.ignore"), &p.ignore.text());
             }
@@ -1081,6 +1120,10 @@ impl MidiSetup {
                     }
                     ["ignore"] => p.ignore = IgnoreSet::parse(v)?,
                     ["delay-ms"] => p.delay_tenths = parse_delay(v)?,
+                    ["clock-divide"] => {
+                        p.clock_divide = number(v, 1, u32::from(MAX_CLOCK_DIVIDE))? as u8
+                    }
+                    ["clock-nudge-ms"] => p.clock_nudge_tenths = parse_nudge(v)?,
                     ["shown"] => p.shown = parse_shown(v)?,
                     ["profile"] => p.profile = ProfilePick::from_word(v)?,
                     _ => return Err("unknown key".into()),
@@ -1188,6 +1231,17 @@ fn parse_delay(v: &str) -> Result<u16, String> {
         return Err(format!("{ms} ms is outside 0 to {max} ms"));
     }
     Ok((ms * 10.0).round() as u16)
+}
+
+fn parse_nudge(v: &str) -> Result<i16, String> {
+    let ms: f32 = v
+        .parse()
+        .map_err(|_| format!("\"{v}\" is not a number of ms"))?;
+    let max = f32::from(MAX_NUDGE_TENTHS) / 10.0;
+    if !(-max..=max).contains(&ms) {
+        return Err(format!("{ms} ms is outside -{max} to +{max} ms"));
+    }
+    Ok((ms * 10.0).round() as i16)
 }
 
 fn parse_on(v: &str) -> Result<bool, String> {
@@ -1592,6 +1646,8 @@ mod tests {
         m.set_port(DIN_NAME, |p| {
             p.input = PortInput::LearnOnly;
             p.clock_out = ClockOut::Always;
+            p.clock_divide = 2;
+            p.clock_nudge_tenths = -15;
         });
         m.set_port("Keystep 37", |p| {
             p.input = PortInput::PlaysTracks;
@@ -1607,6 +1663,11 @@ mod tests {
         // The song keeps the clock out, not the input, what a port ignores
         // or its gear's delay.
         assert_eq!(project.port(DIN_NAME).clock_out, ClockOut::Always);
+        // Its clock's divide is the song's; its nudge, the gear's.
+        assert_eq!(project.port(DIN_NAME).clock_divide, 2);
+        assert_eq!(project.port(DIN_NAME).clock_nudge_tenths, 0);
+        assert_eq!(rig.port(DIN_NAME).clock_divide, 1);
+        assert_eq!(rig.port(DIN_NAME).clock_nudge_tenths, -15);
         assert_eq!(project.port(DIN_NAME).input, PortInput::default());
         assert!(project.ports.iter().all(|p| p.name != "Keystep 37"));
         assert!(project.ports.iter().all(|p| p.name != "Digitone"));

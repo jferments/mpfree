@@ -24,6 +24,7 @@ pub fn rig() -> IoModel {
         has_out: true,
         sending: false,
         last_in: None,
+        clock_measured: None,
     });
     live.tracks = ["Drums", "Bass", "Pads", "Lead", "Vox chops", "Perc"]
         .iter()

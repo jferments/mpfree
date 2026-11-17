@@ -8,7 +8,7 @@ checked: 2026-11-16 08282af
 
 The **MIDI IN** and **MIDI OUT** jacks, USB keyboards and synths on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too. Playing gear from **MIDI OUT**, from a USB device and from the CV outputs is built but not yet checked on an MPC One, so it stays off until you turn on **Send MIDI and CV out** in [Prefs](../reference/prefs.md). Its value reads **On (sends MIDI)** while it sends, and MPFree remembers it at the next start.
 
-All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon at the right end of the top bar, in its **MIDI**, **Routing**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. Each port's input, what it ignores and its delay describe your gear, so they stay the same for every project: MPFree keeps them when it quits and puts them back at the next start (with a data folder on the stick). Everything else (what each track plays on, which channels play which tracks and which go thru under Routing, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the song: it is saved with the project and comes back when you open it, and a new project starts from the defaults.
+All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon at the right end of the top bar, in its **MIDI**, **Routing**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. Each port's input, what it ignores, its delay, its clock's nudge and its profile describe your gear, so they stay the same for every project: MPFree keeps them when it quits and puts them back at the next start (with a data folder on the stick). Everything else (what each track plays on, which channels play which tracks and which go thru under Routing, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the song: it is saved with the project and comes back when you open it, and a new project starts from the defaults.
 
 ## Playing MPFree from a keyboard
 
@@ -69,10 +69,13 @@ Each port's row in the MIDI section has **Open ›** at its right; it, or a tap 
 - **What it does** lists, in words, what this port's messages do today and what plays on it: its routes to tracks (*Ch 10 → Drums*) and its thru (*Ch 3 → MIDI out, thru*), where the rest of its notes go, the tracks that play out of it with their channels, thru from other ports, the controls learned from it, and whether the tempo follows it. Change its routes in the Routing section.
 - **Now** shows the newest message in and out and how long ago.
 - **Clock to this port** is **Off**, **While playing** or **Always**: the same setting as **Clock out** under Sync, saved with the project.
+  - **Divide** (1 to 8, – and +, or Q-Link 4) slows the clock this port gets: at 2 the gear hears half the pulses, so it plays at half the tempo, and its song position counts its own (slower) sixteenths. Use it for a drum machine at half time, or gear whose arpeggiator should run slower than the song. Changed while playing, the port gets Stop, then joins again at the next sixteenth at the new rate. Divide is saved with the project.
+  - **Nudge** (up to 20 ms either way, in steps of 0.5 ms) moves this port's clock, start and stop later (+) or earlier (–) than its notes, for gear whose own sequencer runs a little ahead of or behind the clock it follows. It comes on top of the gear's delay, so earlier is limited the same way (about 9 ms in all). Nudge belongs to the gear, so it is kept for every project, like the delay.
+  - The line under them says what the clock did on the way out, measured over the last beat: *Pulses leave every 20.8 ms, ±0.3 ms* (at 120 BPM a pulse is due every 20.8 ms; the ± is how far the pulses strayed). It shows while the port gets clock; otherwise the line says why the clock is only kept (MIDI out is off, the port has no output, or it didn't open).
 - **This gear's delay** is how late the gear on this port sounds after MIDI reaches it, in steps of 0.5 ms (– and +, or Q-Link 3). MPFree sends that port's notes and clock that much early, so they land on the beat. It can send up to about 9 ms early (the sound's buffer, the time between MPFree making a sound and you hearing it); the card says when the delay is more than that.
 - **Send to it** (marked **SENDS MIDI**): **Test note** plays C4 for half a second on the first channel a track plays this port on (else channel 1), to check the cable and the synth's channel. **All notes off** ends MPFree's own notes on this port (other ports' notes go on), then sends All notes off (CC 123) on all 16 channels, for a synth that hangs. Both are greyed while **Send MIDI and CV out** is off, and on a port that isn't plugged in, has no output or whose output didn't open; the greyed line says which.
 
-The wheel picks a setting on the page, – and + change it, and Q-Links 1 to 3 turn **Input**, **Clock** and the delay.
+The wheel picks a setting on the page, – and + change it, and Q-Links 1 to 4 turn **Input**, **Clock**, the delay and **Divide**.
 
 ### Device profiles
 
@@ -107,7 +110,7 @@ MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **
 - With **Position** on, MPFree plays from the same bar as the device, and goes back in step if it drifts away.
 - If its clock stops arriving, MPFree keeps playing at the last tempo.
 
-MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**, and each port with a delay gets its clock that much early.
+MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**, and each port with a delay gets its clock that much early. On a port's page, **Divide** slows the clock one port gets and **Nudge** moves it a little later or earlier than its notes (see [A port's page](#a-ports-page)).
 
 ## MIDI Learn
 
@@ -171,7 +174,7 @@ Transport controls are kept in **Rig**, so they work in every project. Nothing h
 
 With MIDI Follow on, four knobs on one controller turn whatever the MPC's four Q-Links turn on the screen you're looking at: the synth's knobs on the Synth tab, an effect's knobs in the chain editor, the picked strip in the mixer, and so on. Go to another page and the same knobs turn that page's Q-Links, in every song, with nothing to learn.
 
-The **MIDI Follow** card is beside the picked control's card in the **Learn** section:
+The **MIDI Follow** card is in the **Learn** section. Tap **MIDI Follow** by the section's heading to show it (the button is lit while it shows); tap the button again, a row or **Transport and tempo** to go back. On a screen wide enough it sits beside the picked control's card instead. On the card:
 
 - **Controller**: the device whose knobs follow (– and + step through the ports with an input).
 - **Follow**: **Off** or **On**. **On** picks the first device plugged in if none is picked.

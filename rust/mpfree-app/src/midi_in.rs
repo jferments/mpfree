@@ -884,6 +884,7 @@ impl MusicIn {
                     // MIDI out says which it sends to (MidiOut::sync).
                     sending: false,
                     last_in: None,
+                    clock_measured: None,
                 })
                 .collect();
             m.monitor.set_ports(self.ports.all());
