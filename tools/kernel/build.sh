@@ -30,9 +30,9 @@
 #      and the modules.
 # 4. OUT_DIR gets zImage, modules-<release>.tar.xz, config, System.map, build-info.txt, SHA256SUMS.
 #
-# Writes nothing outside OUT_DIR, the cache (MPFREE_KERNEL_CACHE, default ~/.cache/mpfree-kernel:
-# the downloads, and one folder per run for the build tree, removed when the run ends) and the
-# container engine's image store.
+# Writes nothing outside OUT_DIR, the cache (MPFREE_KERNEL_CACHE, default ~/.cache/mpfree-kernel;
+# the CI runners use their tool cache: the downloads, and one folder per run for the build tree,
+# removed when the run ends) and the container engine's image store.
 # Environment: MPFREE_KERNEL_ENGINE (docker, podman or host; else the first container engine that
 # works, else host), MPFREE_KERNEL_JOBS (default: the CPU count).
 set -euo pipefail
@@ -285,14 +285,16 @@ pick_engine() {
 probe() {
   local e u code
   say "machine: $(os_name), $(uname -sm), $(nproc) CPUs, $(awk '/MemTotal/ {printf "%.1f GiB", $2/1048576}' /proc/meminfo) memory"
-  say "disk free in $HOME (the cache: $CACHE): $(df -h --output=avail "$HOME" 2>/dev/null | tail -1 | tr -d ' ')"
+  local d="$CACHE"
+  while [ ! -d "$d" ]; do d=$(dirname "$d"); done
+  say "cache: $CACHE ($( [ -w "$d" ] && echo writable || echo "NOT writable for $(id -un)"), $(df -h --output=avail "$d" 2>/dev/null | tail -1 | tr -d ' ') free)"
   for e in docker podman; do
     if ! has "$e"; then say "$e: not installed"
     elif engine_works "$e"; then say "$e: works ($("$e" --version 2>/dev/null | head -1))"
     else say "$e: installed, but '$e info' fails for $(id -un): $("$e" info 2>&1 | grep -v '^\s*$' | tail -1)"
     fi
   done
-  for e in gcc make perl python3 patch flex bison m4 bc gpg apt-get dpkg-deb; do
+  for e in gcc g++ make perl python3 patch flex bison m4 bc gpg apt-get dpkg-deb; do
     say "host tool $e: $(has "$e" && echo present || echo missing)"
   done
   say "host tool depmod: $(has_depmod && echo present || echo missing)"
@@ -368,7 +370,8 @@ main() {
   if [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then die "$out is not empty"; fi
   probe
   engine=$(pick_engine) || die "MPFREE_KERNEL_ENGINE=$MPFREE_KERNEL_ENGINE does not work here (above); use docker, podman or host"
-  mkdir -p "$out" "$CACHE"
+  mkdir -p "$out" || die "can't make $out"
+  mkdir -p "$CACHE" 2>/dev/null || die "can't make the cache $CACHE for $(id -un); set MPFREE_KERNEL_CACHE to a folder it can write"
   commit=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)
   epoch=$(git -C "$REPO" log -1 --format=%ct 2>/dev/null || date +%s)
   if [ "$engine" = host ]; then
