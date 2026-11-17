@@ -8,9 +8,16 @@
 //!   together, on a log scale from 2 ms to 2 s.
 //! - The **Grain** list holds every setting: the play mode (only Granular
 //!   plays grains), scan speed, spray, pitch spray, the window's shape,
-//!   reverse chance, stereo spread, pitch quantise, and position, size,
-//!   density and pitch. A tap on a row picks it and its arrows step it; the
-//!   **wheel** steps the row picked (Scan, until another is picked).
+//!   reverse chance, stereo spread, pitch quantise, tempo sync, and
+//!   position, size, density, pitch and the cloud's level. A tap on a row
+//!   picks it and its arrows step it; the **wheel** steps the row picked
+//!   (Scan, until another is picked).
+//! - **Tempo sync** locks the density, the size or both to the project
+//!   tempo: Density then steps in grains a beat and Size in beats, and the
+//!   engine starts each grain on the beat grid at the tempo playing now
+//!   (`Engine::frames_per_beat`).
+//! - The layer shown is the one picked on the Play tab's layer map, so
+//!   every layer of a pad can be its own cloud.
 //! - **Q-Links 1 to 4** turn Position, Size, Density and Pitch. With SHIFT,
 //!   Q-Link 1 turns the spray and Q-Link 4 the pitch spray (each the spray
 //!   of its knob), and Q-Links 2 and 3 turn finer.
@@ -26,7 +33,7 @@ use std::sync::Arc;
 
 use mpfree_sampler::engine::GrainView;
 use mpfree_sampler::model::{
-    GrainParams, GrainWindow, ModelError, Pad, PlayMode, Project, Region, Source,
+    GrainParams, GrainWindow, ModelError, Pad, PlayMode, Project, Region, Source, TempoSync,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -113,6 +120,37 @@ const MODES: [PlayMode; 5] = [
     PlayMode::Loop,
     PlayMode::Granular,
 ];
+/// What Tempo sync locks, in the order its row steps: (label, density,
+/// size).
+const SYNCS: [(&str, bool, bool); 4] = [
+    ("Off", false, false),
+    ("Density", true, false),
+    ("Size", false, true),
+    ("Both", true, true),
+];
+/// Grains a beat the synced Density row steps through (a quarter is one a
+/// bar of 4/4).
+const PER_BEAT: [f32; 12] = [
+    0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0,
+];
+/// Grain lengths, in beats, the synced Size row steps through.
+const BEATS: [f32; 9] = [
+    1.0 / 64.0,
+    1.0 / 32.0,
+    1.0 / 16.0,
+    1.0 / 8.0,
+    1.0 / 4.0,
+    1.0 / 2.0,
+    1.0,
+    2.0,
+    4.0,
+];
+/// What a cloud synced on this tab saves as its frames per beat (120 BPM
+/// at 44.1 kHz). The engine plays it at the project tempo whatever this
+/// says.
+pub const SAVED_FRAMES_PER_BEAT: f64 = 22_050.0;
+/// The cloud's level, in dB: the Level row's range.
+pub const LEVEL_RANGE_DB: (f32, f32) = (-24.0, 12.0);
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x4752_4149_0000_0000;
 
@@ -127,14 +165,16 @@ pub enum Row {
     Reverse,
     Spread,
     Quantise,
+    Sync,
     Position,
     Size,
     Density,
     Pitch,
+    Level,
 }
 
 impl Row {
-    pub const ALL: [Row; 12] = [
+    pub const ALL: [Row; 14] = [
         Row::Mode,
         Row::Scan,
         Row::Spray,
@@ -143,10 +183,12 @@ impl Row {
         Row::Reverse,
         Row::Spread,
         Row::Quantise,
+        Row::Sync,
         Row::Position,
         Row::Size,
         Row::Density,
         Row::Pitch,
+        Row::Level,
     ];
 
     pub fn label(self) -> &'static str {
@@ -159,10 +201,12 @@ impl Row {
             Row::Reverse => "Reverse chance",
             Row::Spread => "Stereo spread",
             Row::Quantise => "Pitch quantise",
+            Row::Sync => "Tempo sync",
             Row::Position => "Position",
             Row::Size => "Size",
             Row::Density => "Density",
             Row::Pitch => "Pitch",
+            Row::Level => "Level",
         }
     }
 
@@ -187,6 +231,9 @@ pub struct GrainState {
     /// The layer's region: its grain settings and play mode.
     pub region: Region,
     pub sound: LayerSound,
+    /// The project tempo, for what a synced size or density comes to (120
+    /// until the app says).
+    pub bpm: f64,
 }
 
 impl GrainState {
@@ -213,11 +260,18 @@ impl GrainState {
             settings,
             region,
             sound,
+            bpm: 120.0,
         })
     }
 
     pub fn granular(&self) -> bool {
         self.region.mode == PlayMode::Granular
+    }
+
+    /// The grain size heard, in ms: the size row's, or its beats at the
+    /// tempo when synced.
+    pub fn size_ms(&self) -> f32 {
+        size_ms_at(&self.region.grain, self.bpm)
     }
 }
 
@@ -418,7 +472,7 @@ impl GrainTab {
             );
             c.position = g.position;
             c.spray = g.spray;
-            c.grain_len = g.size_ms * 0.001 * rate / st.region.frames().max(1) as f32;
+            c.grain_len = st.size_ms() * 0.001 * rate / st.region.frames().max(1) as f32;
             c.granular = st.granular();
             c.note = format!(
                 "Mode is {}: tap to play this pad as grains",
@@ -431,8 +485,12 @@ impl GrainTab {
         }
         if let Some(xy) = ui.get_mut::<XyPad>(XY) {
             xy.x = g.position;
-            xy.y = size_place(g.size_ms);
-            xy.right = format!("{} % · {}", percent(g.position), ms_text(g.size_ms));
+            xy.y = size_y(&g);
+            xy.right = format!(
+                "{} % · {}",
+                percent(g.position),
+                value_text(&st.region, Row::Size)
+            );
         }
         let rows = Row::ALL
             .iter()
@@ -456,10 +514,13 @@ impl GrainTab {
             };
             c.focused = *r == row || SHIFT_ROWS[k] == row;
             (c.value, c.sub) = split_unit(&value_text(&st.region, *r));
-            c.pos = match r {
-                Row::Position => g.position,
-                Row::Size => size_place(g.size_ms),
-                Row::Density => {
+            c.pos = match (r, synced(g)) {
+                (Row::Position, _) => g.position,
+                (Row::Size, _) => size_y(g),
+                (Row::Density, (true, _)) => {
+                    list_place(&PER_BEAT, g.sync.and_then(|t| t.grains_per_beat))
+                }
+                (Row::Density, _) => {
                     (g.density / DENSITY_RANGE.0).ln() / (DENSITY_RANGE.1 / DENSITY_RANGE.0).ln()
                 }
                 _ => (g.pitch + PITCH_LIMIT) / (2.0 * PITCH_LIMIT),
@@ -491,7 +552,13 @@ impl GrainTab {
                 let (x, y) = ui.get::<XyPad>(XY).map(|p| (p.x, p.y))?;
                 let mut r = st.region.clone();
                 r.grain.position = round_to(x, 0.001).clamp(0.0, 1.0);
-                r.grain.size_ms = size_at(y);
+                match r.grain.sync.as_mut() {
+                    Some(t) if t.size_beats.is_some() => {
+                        let i = (y.clamp(0.0, 1.0) * (BEATS.len() - 1) as f32).round();
+                        t.size_beats = Some(BEATS[i as usize]);
+                    }
+                    _ => r.grain.size_ms = size_at(y),
+                }
                 self.edit(st, Key::Touch, r)
             }
             (LIST, EventKind::Step { index, delta }) => {
@@ -582,18 +649,32 @@ impl GrainTab {
         if delta == 0 {
             return None;
         }
-        let r = stepped(&st.region, row, delta);
+        let r = stepped(&st.region, row, delta, st.bpm);
         self.edit(st, Key::Row(row), r)
     }
 }
 
 /// `r` with row `row` stepped by `delta` steps (an arrow, or a detent of
-/// the wheel), within its limits.
-pub fn stepped(r: &Region, row: Row, delta: i32) -> Region {
+/// the wheel), within its limits. `bpm`, the project tempo, is where
+/// turning Tempo sync on starts: the beats nearest the size and density
+/// heard.
+pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
     let mut r = r.clone();
     let g = &mut r.grain;
     let d = delta as f32;
+    let (dsync, ssync) = synced(g);
     match row {
+        Row::Sync => {
+            let i = SYNCS
+                .iter()
+                .position(|x| (x.1, x.2) == (dsync, ssync))
+                .unwrap_or(0);
+            let (_, density, size) = SYNCS[shift(i, delta, SYNCS.len())];
+            set_sync(g, density, size, bpm);
+        }
+        Row::Density if dsync => step_sync(g, &PER_BEAT, delta, true),
+        Row::Size if ssync => step_sync(g, &BEATS, delta, false),
+        Row::Level => g.gain = level_gain(level_db(g.gain) + d * 0.5),
         Row::Mode => {
             let i = MODES.iter().position(|m| *m == r.mode).unwrap_or(0);
             r.mode = MODES[shift(i, delta, MODES.len())];
@@ -630,12 +711,16 @@ pub fn stepped(r: &Region, row: Row, delta: i32) -> Region {
 }
 
 /// `g` with a Q-Link's row turned by `d` detents (`fine`: Size a
-/// millisecond and Density a tenth a detent).
+/// millisecond and Density a tenth a detent). Synced, Size and Density
+/// step their beats a detent at a time.
 pub fn turned(g: &GrainParams, row: Row, d: f32, fine: bool) -> GrainParams {
     let mut g = *g;
     let (smin, smax) = SIZE_RANGE_MS;
     let (dmin, dmax) = DENSITY_RANGE;
+    let (dsync, ssync) = synced(&g);
     match row {
+        Row::Size if ssync => step_sync(&mut g, &BEATS, d as i32, false),
+        Row::Density if dsync => step_sync(&mut g, &PER_BEAT, d as i32, true),
         Row::Position => g.position = round_to(g.position + d * 0.005, 0.001).clamp(0.0, 1.0),
         Row::Spray => g.spray = round_to(g.spray + d * 0.01, 0.01).clamp(0.0, 1.0),
         Row::Size if fine => g.size_ms = (g.size_ms.round() + d).clamp(smin, smax),
@@ -671,6 +756,126 @@ fn step_list(list: &[f32], now: f32, delta: i32) -> f32 {
         list.iter().rposition(|&v| v < now).map_or(-1, |i| i as i32) + delta + 1
     };
     list[i.clamp(0, list.len() as i32 - 1) as usize]
+}
+
+/// Whether the density and the size are locked to the tempo.
+pub fn synced(g: &GrainParams) -> (bool, bool) {
+    g.sync.map_or((false, false), |t| {
+        (t.grains_per_beat.is_some(), t.size_beats.is_some())
+    })
+}
+
+/// Locks the density and the size to the tempo or frees them. A newly
+/// locked one starts at the beats nearest what plays at `bpm`; a freed one
+/// keeps what it was set to before.
+fn set_sync(g: &mut GrainParams, density: bool, size: bool, bpm: f64) {
+    let bpm = if bpm.is_finite() && bpm > 0.0 {
+        bpm
+    } else {
+        120.0
+    };
+    let beat_s = (60.0 / bpm) as f32;
+    let old = g.sync;
+    let per_beat = old
+        .and_then(|t| t.grains_per_beat)
+        .unwrap_or_else(|| nearest(&PER_BEAT, g.density * beat_s));
+    let beats = old
+        .and_then(|t| t.size_beats)
+        .unwrap_or_else(|| nearest(&BEATS, g.size_ms * 0.001 / beat_s));
+    g.sync = (density || size).then(|| TempoSync {
+        frames_per_beat: old.map_or(SAVED_FRAMES_PER_BEAT, |t| t.frames_per_beat),
+        grains_per_beat: density.then_some(per_beat),
+        size_beats: size.then_some(beats),
+    });
+}
+
+/// Steps the synced density (`density`) or size through `list`.
+fn step_sync(g: &mut GrainParams, list: &[f32], delta: i32, density: bool) {
+    let Some(t) = g.sync.as_mut() else { return };
+    let slot = if density {
+        &mut t.grains_per_beat
+    } else {
+        &mut t.size_beats
+    };
+    if let Some(v) = slot.as_mut() {
+        let i = list
+            .iter()
+            .position(|x| *x == nearest(list, *v))
+            .unwrap_or(0);
+        *v = list[shift(i, delta, list.len())];
+    }
+}
+
+/// The entry of `list` nearest `x`, on a log scale.
+fn nearest(list: &[f32], x: f32) -> f32 {
+    let x = x.max(1e-6);
+    list.iter()
+        .copied()
+        .min_by(|a, b| {
+            let (da, db) = ((a / x).ln().abs(), (b / x).ln().abs());
+            da.total_cmp(&db)
+        })
+        .unwrap_or(1.0)
+}
+
+/// Where `v` sits in `list`, 0 to 1, for a knob.
+fn list_place(list: &[f32], v: Option<f32>) -> f32 {
+    let Some(v) = v else { return 0.0 };
+    let i = list
+        .iter()
+        .position(|x| *x == nearest(list, v))
+        .unwrap_or(0);
+    i as f32 / (list.len() - 1).max(1) as f32
+}
+
+/// The grain size heard at `bpm`, in ms.
+pub fn size_ms_at(g: &GrainParams, bpm: f64) -> f32 {
+    match g.sync.and_then(|t| t.size_beats) {
+        Some(b) if bpm.is_finite() && bpm > 0.0 => b * (60_000.0 / bpm) as f32,
+        _ => g.size_ms,
+    }
+}
+
+/// Where the size sits on the touch pad's height and its knob, 0 to 1.
+fn size_y(g: &GrainParams) -> f32 {
+    match g.sync.and_then(|t| t.size_beats) {
+        Some(b) => list_place(&BEATS, Some(b)),
+        None => size_place(g.size_ms),
+    }
+}
+
+/// A linear gain in dB (−∞ as the range's floor).
+fn level_db(gain: f32) -> f32 {
+    if gain > 0.0 {
+        20.0 * gain.log10()
+    } else {
+        LEVEL_RANGE_DB.0
+    }
+}
+
+/// The gain for `db`, rounded to a tenth of a dB and within the range.
+fn level_gain(db: f32) -> f32 {
+    let db = round_to(db, 0.1).clamp(LEVEL_RANGE_DB.0, LEVEL_RANGE_DB.1);
+    10f32.powf(db / 20.0)
+}
+
+/// "1/16 beat", "1 beat", "2 beats".
+fn beats_text(b: f32) -> String {
+    if b >= 1.0 {
+        let n = b.round() as i32;
+        if n == 1 {
+            "1 beat".into()
+        } else {
+            format!("{n} beats")
+        }
+    } else {
+        format!("1/{} beat", (1.0 / b).round() as i32)
+    }
+}
+
+/// Grains a beat: "4 /beat", "0.25 /beat" (one a bar of 4/4).
+fn per_beat_text(g: f32) -> String {
+    format!("{} /beat", trim(g))
 }
 
 fn shift(i: usize, delta: i32, len: usize) -> usize {
@@ -709,10 +914,25 @@ pub fn value_text(r: &Region, row: Row) -> String {
         Row::Reverse => format!("{} %", percent(g.reverse)),
         Row::Spread => format!("{} %", percent(g.spread)),
         Row::Quantise => quantise_label(g.scale).into(),
+        Row::Sync => {
+            let on = synced(g);
+            SYNCS
+                .iter()
+                .find(|x| (x.1, x.2) == on)
+                .map_or("Off", |x| x.0)
+                .into()
+        }
         Row::Position => format!("{:.1} %", g.position * 100.0),
-        Row::Size => ms_text(g.size_ms),
-        Row::Density => density_text(g.density),
+        Row::Size => match g.sync.and_then(|t| t.size_beats) {
+            Some(b) => beats_text(b),
+            None => ms_text(g.size_ms),
+        },
+        Row::Density => match g.sync.and_then(|t| t.grains_per_beat) {
+            Some(n) => per_beat_text(n),
+            None => density_text(g.density),
+        },
         Row::Pitch => format!("{:+} st", g.pitch.round() as i32),
+        Row::Level => format!("{:+.1} dB", level_db(g.gain)),
     }
 }
 

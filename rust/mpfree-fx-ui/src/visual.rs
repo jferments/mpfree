@@ -840,10 +840,13 @@ fn comp_cards(s: &mut Strip, st: &FxState, page: &str, c: &mpfree_fx::Compressor
         .collect();
     let now = st.value(comp::REDUCTION);
     let mut caption = format!(
-        "{}:1 · knee {}",
+        "{}:1 · knee {} dB",
         trim_num(st.value(comp::RATIO)),
-        text(st, comp::KNEE)
+        trim_num(c.knee())
     );
+    if st.value(comp::STYLE) >= 0.5 {
+        caption += &format!(" · {}", text(st, comp::STYLE));
+    }
     // The detector, when it isn't plain peak on the full band.
     if st.value(comp::DETECT) >= 0.5 {
         caption += " · RMS";
@@ -854,6 +857,19 @@ fn comp_cards(s: &mut Strip, st: &FxState, page: &str, c: &mpfree_fx::Compressor
         .is_some_and(|i| sc > st.params[i].min)
     {
         caption += &format!(" · SC from {}", hz_text(sc));
+    }
+    let range = st.value(comp::RANGE);
+    if st
+        .index(comp::RANGE)
+        .is_some_and(|i| range < st.params[i].max)
+    {
+        caption += &format!(" · range {}", text(st, comp::RANGE));
+    }
+    if st.value(comp::AUTO_MAKEUP) >= 0.5 {
+        caption += &format!(
+            " · auto makeup {:+.1} dB",
+            c.makeup_db() - st.value(comp::MAKEUP)
+        );
     }
     if now < -0.05 {
         caption += &format!(" · now {now:.1} dB");
@@ -877,7 +893,7 @@ fn comp_cards(s: &mut Strip, st: &FxState, page: &str, c: &mpfree_fx::Compressor
     let tail = 3.0 * rel;
     let lead = 0.1 * (burst + tail);
     let span = lead + burst + tail;
-    let want = (thr + 12.0) - (c.curve_db(thr + 12.0) - st.value(comp::MAKEUP));
+    let want = (thr + 12.0) - (c.curve_db(thr + 12.0) - c.makeup_db());
     let depth = want.max(0.1);
     let gain: Vec<(f32, f32)> = (0..N)
         .map(|k| {
@@ -906,7 +922,16 @@ fn comp_cards(s: &mut Strip, st: &FxState, page: &str, c: &mpfree_fx::Compressor
     s.push(
         Card {
             title: "Timing".into(),
-            caption: format!("{} in · {} out · {want:.1} dB", ms_text(att), ms_text(rel)),
+            caption: format!(
+                "{} in · {} out{} · {want:.1} dB",
+                ms_text(att),
+                ms_text(rel),
+                if c.style().share > 0.0 {
+                    ", slower after long reduction"
+                } else {
+                    ""
+                }
+            ),
             traces: vec![dashed(input, t.text_faint), line(gain, t.good)],
             active: true,
             ..Card::default()

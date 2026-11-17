@@ -602,8 +602,10 @@ pub static PHASER: &[Preset] = &[
     },
 ];
 
-/// Compressor: glue, punch, level and smash. Mix stays where it is, so
-/// "Smash" under a lower Mix is parallel compression.
+/// Compressor: glue, punch, level and smash, each in the style its job
+/// is known for, and each as loud as the dry on a mix-level sound. Mix
+/// stays where it is, so "Smash" under a lower Mix is parallel
+/// compression.
 pub static COMPRESSOR: &[Preset] = &[
     Preset {
         name: "Gentle glue",
@@ -613,10 +615,11 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::ATTACK, 30.0),
             (comp::RELEASE, 300.0),
             (comp::KNEE, 10.0),
-            (comp::MAKEUP, 2.0),
+            (comp::MAKEUP, 0.5),
             // A bus compressor that follows the mix's body, not the kick.
             (comp::SC_FILTER, 90.0),
             (comp::DETECT, 1.0),
+            (comp::STYLE, comp::BUS),
         ],
     },
     Preset {
@@ -627,7 +630,8 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::ATTACK, 20.0),
             (comp::RELEASE, 100.0),
             (comp::KNEE, 4.0),
-            (comp::MAKEUP, 4.0),
+            (comp::MAKEUP, 7.5),
+            (comp::STYLE, comp::BUS),
         ],
     },
     Preset {
@@ -638,20 +642,22 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::ATTACK, 5.0),
             (comp::RELEASE, 120.0),
             (comp::KNEE, 8.0),
-            (comp::MAKEUP, 5.0),
+            (comp::MAKEUP, 6.0),
             // Levels the phrase; consonants still come through.
             (comp::DETECT, 1.0),
+            (comp::STYLE, comp::OPTO),
         ],
     },
     Preset {
         name: "Smash",
         values: &[
-            (comp::THRESHOLD, -35.0),
+            (comp::THRESHOLD, -28.0),
             (comp::RATIO, 12.0),
             (comp::ATTACK, 0.5),
             (comp::RELEASE, 60.0),
             (comp::KNEE, 2.0),
-            (comp::MAKEUP, 12.0),
+            (comp::MAKEUP, 16.0),
+            (comp::STYLE, comp::FET),
         ],
     },
     Preset {
@@ -663,6 +669,30 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::RELEASE, 180.0),
             (comp::KNEE, 0.0),
             (comp::SIDECHAIN, 1.0),
+        ],
+    },
+    Preset {
+        name: "Opto bass",
+        values: &[
+            (comp::THRESHOLD, -24.0),
+            (comp::RATIO, 4.0),
+            (comp::ATTACK, 10.0),
+            (comp::RELEASE, 80.0),
+            (comp::KNEE, 12.0),
+            (comp::MAKEUP, 10.5),
+            (comp::STYLE, comp::OPTO),
+        ],
+    },
+    Preset {
+        name: "FET vocal",
+        values: &[
+            (comp::THRESHOLD, -26.0),
+            (comp::RATIO, 6.0),
+            (comp::ATTACK, 1.0),
+            (comp::RELEASE, 90.0),
+            (comp::KNEE, 2.0),
+            (comp::MAKEUP, 13.5),
+            (comp::STYLE, comp::FET),
         ],
     },
 ];

@@ -40,9 +40,14 @@
 //!   SHIFT one frame), **Q-Link 3** turns the method's setting and **Q-Link
 //!   4** the first pad. The **wheel** zooms round the slice picked.
 //!
-//! The cuts live in the tab until they go on pads, so trying methods
-//! changes nothing in the project. The app makes a [`ChopState`] for the pad
-//! on show, calls [`ChopTab::update`] when the project changes, and applies
+//! The project keeps the cuts for the sound as the tab last left them
+//! ([`ChopTab::take_kept`], `Project::keep_chop`), outside undo: trying
+//! methods changes no pad, but a chop made is there when the tab comes back
+//! to the sound, after another pad or a project opened again
+//! ([`ChopState::kept`]). A chop the tab makes by itself (the first
+//! Transient chop of a sound) is not kept. The app makes a [`ChopState`]
+//! for the pad on show, calls [`ChopTab::update`] when the project changes,
+//! keeps what [`ChopTab::take_kept`] hands it after each touch, and applies
 //! the [`ChopAction`]s it gets back ([`ChopAction::apply`]).
 
 use std::ops::Range;
@@ -160,6 +165,17 @@ impl Method {
             Method::Manual | Method::Live => ChopMode::Manual,
         }
     }
+
+    /// The method a chop the project remembers was made with.
+    pub fn of_mode(m: ChopMode) -> Method {
+        match m {
+            ChopMode::Transient => Method::Transient,
+            ChopMode::Beat => Method::Beat,
+            ChopMode::Grid => Method::Grid,
+            ChopMode::Silence => Method::Silence,
+            ChopMode::Manual => Method::Manual,
+        }
+    }
 }
 
 /// The Chop list's rows, in order.
@@ -232,6 +248,9 @@ pub struct ChopState {
     pub used: Vec<bool>,
     /// The app can write files (Put on Files is offered).
     pub files: bool,
+    /// The chop kept for the sound ([`Project::kept_chop`]): the slices
+    /// as the tab last left them, shown again in place of a fresh chop.
+    pub kept: Option<ChopSet>,
 }
 
 impl ChopState {
@@ -258,6 +277,7 @@ impl ChopState {
             source,
             used: bank_of(pad).map(|i| p.pad(i).is_some()).collect(),
             files: false,
+            kept: p.kept_chop(s.id()).cloned(),
         })
     }
 
@@ -461,6 +481,15 @@ pub struct ChopTab {
     /// source's hits and tempo were worked out then: another pad, a moved
     /// Start or End, or the analysis coming in chops again.
     made_for: Option<(SourceId, u64, u64, bool)>,
+    /// The method and cuts as the project last knew them (kept, or made
+    /// by the tab itself): [`ChopTab::take_kept`] hands on a change from
+    /// it. By [`ChopMode`], so live chopping (kept as Manual) isn't a
+    /// change.
+    told: Option<(SourceId, ChopMode, Vec<u64>)>,
+    /// The chop kept for the sound as the tab last saw or kept it, every
+    /// marker: one the project has that differs (another project opened
+    /// on the same sound) is shown in place of the tab's cuts.
+    heard: Option<(SourceId, ChopMode, Vec<u64>)>,
     shown: Option<SourceId>,
     wave_w: i32,
 }
@@ -514,6 +543,8 @@ impl ChopTab {
             first_pad: None,
             put: Put::Pads,
             made_for: None,
+            told: None,
+            heard: None,
             shown: None,
             wave_w: Waveform::wave_rect(wave).w,
         };
@@ -682,6 +713,17 @@ impl ChopTab {
             st.region.end,
             st.source.ready,
         );
+        // The chop kept for the sound, and its slices inside the region,
+        // shown in place of the tab's own cuts when the tab comes to the
+        // sound or region (a pad come back to, a project opened). One made
+        // on another part of the sound, none of its cuts inside, is left
+        // for that part.
+        let kept = st.kept.as_ref().filter(|k| k.source == key.0);
+        let heard = kept.map(|k| (k.source, k.mode, k.markers().to_vec()));
+        let restore = kept.and_then(|k| {
+            let cuts = ChopTab::inside(st, k.markers());
+            (!cuts.is_empty() || k.markers().is_empty()).then_some((k.mode, cuts))
+        });
         if self.made_for != Some(key) {
             let same_source = self.made_for.is_some_and(|k| k.0 == key.0);
             self.made_for = Some(key);
@@ -692,13 +734,13 @@ impl ChopTab {
                 // Another pad or region: live chop stops.
                 self.stop_due = true;
             }
-            if matches!(self.method, Method::Manual | Method::Live) && same_source {
+            if let Some((mode, cuts)) = restore {
+                // The slices as the tab last left them on this sound.
+                self.method = Method::of_mode(mode);
+                self.cuts = cuts;
+            } else if matches!(self.method, Method::Manual | Method::Live) && same_source {
                 // Keep the hand-made cuts that are still inside.
-                let (lo, hi) = (
-                    st.region.start + wave_tab::MIN_FRAMES,
-                    st.region.end.saturating_sub(wave_tab::MIN_FRAMES),
-                );
-                self.cuts.retain(|&c| c >= lo && c <= hi);
+                self.cuts = ChopTab::inside(st, &self.cuts);
             } else {
                 if self.method == Method::Manual {
                     self.method = Method::Transient;
@@ -710,9 +752,53 @@ impl ChopTab {
                 };
             }
             self.selected = 0;
+            // What the tab made or found by itself is nothing to keep.
+            self.told = Some((key.0, self.method.mode(), self.cuts.clone()));
+        } else if heard.is_some() && heard != self.heard {
+            // The same sound and region, but the project keeps another
+            // chop for it: show that one.
+            if let Some((mode, cuts)) = restore {
+                if self.method.mode() != mode {
+                    self.method = Method::of_mode(mode);
+                }
+                self.cuts = cuts;
+                self.told = Some((key.0, self.method.mode(), self.cuts.clone()));
+            }
         }
+        self.heard = heard;
         self.selected = self.selected.min(self.cuts.len());
         self.show(ui, st);
+    }
+
+    /// The chop to keep for the sound (how it was made, and the slice
+    /// starts), once a touch, a Q-Link, the wheel or a live cut has
+    /// changed the method or the cuts since the project last heard; None
+    /// otherwise. The app keeps it ([`Project::keep_chop`]), so the slices
+    /// are there when the tab comes back to the sound, and in the saved
+    /// project.
+    pub fn take_kept(&mut self, st: &ChopState) -> Option<(ChopMode, Vec<u64>)> {
+        let now = (st.source.id, self.method.mode(), self.cuts.clone());
+        if self.told.as_ref() == Some(&now) {
+            return None;
+        }
+        self.told = Some(now.clone());
+        // What the project will keep: no change to show back.
+        self.heard = Some(now);
+        Some((self.method.mode(), self.cuts.clone()))
+    }
+
+    /// `markers` (sorted) that start a slice of the region: those inside
+    /// it, by the rule hand-made cuts keep to.
+    fn inside(st: &ChopState, markers: &[u64]) -> Vec<u64> {
+        let (lo, hi) = (
+            st.region.start + wave_tab::MIN_FRAMES,
+            st.region.end.saturating_sub(wave_tab::MIN_FRAMES),
+        );
+        markers
+            .iter()
+            .copied()
+            .filter(|&c| c >= lo && c <= hi)
+            .collect()
     }
 
     /// The cuts the method makes in the region.

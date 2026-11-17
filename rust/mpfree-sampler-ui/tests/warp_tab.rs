@@ -366,3 +366,73 @@ fn a_moving_playhead_redraws_only_its_strips() {
         .changed_parts(r)
         .is_none());
 }
+
+#[test]
+fn process_asks_for_a_new_sound_moved_by_shift_and_stops_while_it_runs() {
+    use mpfree_sampler_ui::widgets::SettingList;
+    let mut s = sample();
+    let value = |s: &WarpSample, row: Row| {
+        s.ui.get::<SettingList>(LIST).unwrap().rows[row.index()]
+            .value
+            .clone()
+    };
+    let list = s.ui.get::<SettingList>(LIST).unwrap();
+    assert_eq!(
+        list.buttons,
+        vec![Row::Process.index()],
+        "Process is a button"
+    );
+    assert_eq!(value(&s, Row::Shift), "0 st");
+    assert_eq!(value(&s, Row::Process), warp_tab::PROCESS_TEXT);
+    // Shift steps a semitone at a time, to 24 either way, and changes
+    // nothing in the project.
+    let shift = |s: &mut WarpSample, delta: i32| {
+        act(
+            s,
+            LIST,
+            EventKind::Step {
+                index: Row::Shift.index(),
+                delta,
+            },
+        )
+    };
+    for _ in 0..3 {
+        assert_eq!(shift(&mut s, 1), None);
+    }
+    assert_eq!(value(&s, Row::Shift), "+3 st");
+    for _ in 0..40 {
+        shift(&mut s, -1);
+    }
+    assert_eq!(value(&s, Row::Shift), "-24 st");
+    for _ in 0..21 {
+        shift(&mut s, 1);
+    }
+    // Stepping the button does nothing; pressing it asks for the sound.
+    let process = |s: &mut WarpSample| act(s, LIST, EventKind::Tab(Row::Process.index()));
+    assert_eq!(
+        act(
+            &mut s,
+            LIST,
+            EventKind::Step {
+                index: Row::Process.index(),
+                delta: 1
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        process(&mut s),
+        Some(WaveAction::Process {
+            pad: PAD,
+            layer: 0,
+            semitones: -3
+        })
+    );
+    // While one runs, the button says how far it has got and stops it.
+    let st = s.state.clone();
+    s.tab.set_processing(&mut s.ui, &st, Some(0.4));
+    assert_eq!(value(&s, Row::Process), "Stop · 40 %");
+    assert_eq!(process(&mut s), Some(WaveAction::StopProcess));
+    s.tab.set_processing(&mut s.ui, &st, None);
+    assert_eq!(value(&s, Row::Process), warp_tab::PROCESS_TEXT);
+}

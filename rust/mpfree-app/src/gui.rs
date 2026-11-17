@@ -1155,6 +1155,8 @@ pub struct Player {
     /// The Sample page's Play tab showed its keyboard, and a row that pad
     /// hits edit (each changes its hint).
     sample_keys: (bool, bool),
+    /// What the Play page's Q-Links turn, as its hint names them.
+    sample_qlinks: String,
     /// The Chop tab chopped live (its hint says how).
     sample_live: bool,
     /// The view the mixer last said it shows (its state), if it ever did.
@@ -1244,8 +1246,12 @@ pub struct Player {
     sample_edits: u64,
     /// An opened project's loops being read (the files can be big).
     loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
-    /// Prints being saved: each says where it went, or why not.
-    print_saves: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// Prints and exported pads being saved: each says where it went, or
+    /// why not; beside it, the line if its thread stops without saying.
+    file_saves: Vec<(
+        std::sync::mpsc::Receiver<Result<String, String>>,
+        &'static str,
+    )>,
     /// An opened project's audio tracks being read (the takes' files can
     /// be big).
     audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
@@ -1568,6 +1574,7 @@ impl Player {
             timed,
             menu_editing: false,
             sample_keys: (false, false),
+            sample_qlinks: String::new(),
             sample_live: false,
             mix_view: None,
             mix_pick: None,
@@ -1607,7 +1614,7 @@ impl Player {
             open_actions: 0,
             sample_edits: 0,
             loops_load: None,
-            print_saves: Vec::new(),
+            file_saves: Vec::new(),
             audio_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
@@ -3040,11 +3047,11 @@ impl Player {
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     format!("Press keys to hear the kit   ·   drag the zone edges and root   ·   \
-                     Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   {ROWS_HINT}")
+                     Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
-                    format!("Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
-                     {ROWS_HINT}")
+                    format!("Hit a pad: its velocity shows on the layers   ·   tap a section for its rows   ·   \
+                     Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
                 }
                 View::Sample if self.sample.page() == sample_page::GRAIN_PAGE => {
                     format!("Hit the pad to see its grains   ·   Q-Links 1-4: position, size, density, pitch (SHIFT: sprays, \
@@ -5087,15 +5094,18 @@ impl Player {
             self.sample_changed();
         }
         // The keyboard came or went on the Play tab, a row that pad hits
-        // edit was picked, or the Chop tab went live: its hint with it.
+        // edit was picked, another section (with its own Q-Links) opened,
+        // or the Chop tab went live: its hint with it.
         let keys = (
             self.sample.play_keys_shown(),
             self.sample.play_takes_pads(&self.ui),
         );
+        let qlinks = self.sample.play_qlinks_text();
         let live = self.sample.chop_live_method();
-        if keys != self.sample_keys || live != self.sample_live {
+        if keys != self.sample_keys || live != self.sample_live || qlinks != self.sample_qlinks {
             self.sample_keys = keys;
             self.sample_live = live;
+            self.sample_qlinks = qlinks;
             if self.view == View::Sample {
                 self.refresh_hint();
             }
@@ -5160,6 +5170,8 @@ impl Player {
         b.load_lists(lists);
         b.open_picker(mpfree_browser_ui::Pick::Pads);
         self.browser = Some(Box::new(b));
+        // Exported pads have somewhere to go: the Chop page offers Files.
+        self.sample.set_files(&mut self.ui, true);
         // The start's own news (the empty song, the first states) is not
         // an edit.
         self.opened_at = Some(Instant::now());
@@ -5902,22 +5914,57 @@ impl Player {
                 let _ = tx.send(r);
             });
         match save {
-            Ok(_) => self.print_saves.push(rx),
+            Ok(_) => self
+                .file_saves
+                .push((rx, "mixer: print not saved (its thread stopped)")),
             Err(e) => self.say(format!("mixer: print not saved ({e})")),
         }
     }
 
-    /// Prints saved since the last tick: said, and the browser shows them.
-    fn poll_prints(&mut self) {
+    /// Pads the Sample tab's Chop page exported (Put on Files): each
+    /// written into a folder of its own in Samples / Exports on a thread of
+    /// its own (a long sound's files are many megabytes).
+    fn save_pad_exports(&mut self) {
+        let exports = self.sample.take_exports();
+        if exports.is_empty() {
+            return;
+        }
+        // Files is offered only with a library, so this has one.
+        let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) else {
+            return;
+        };
+        for e in exports {
+            let lib = lib.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let save = std::thread::Builder::new()
+                .name("export-save".into())
+                .spawn(move || {
+                    let r = crate::sample_page::save_export(&lib, &e)
+                        .map(|loc| format!("sample: {} saved in {}", e.name, loc.display()))
+                        .map_err(|err| format!("sample: {} not saved ({err})", e.name));
+                    let _ = tx.send(r);
+                });
+            match save {
+                Ok(_) => self
+                    .file_saves
+                    .push((rx, "sample: export not saved (its thread stopped)")),
+                Err(e) => self.say(format!("sample: export not saved ({e})")),
+            }
+        }
+    }
+
+    /// Prints and exported pads saved since the last tick: said, and the
+    /// browser shows them.
+    fn poll_saves(&mut self) {
         let mut done = Vec::new();
-        self.print_saves.retain(|rx| match rx.try_recv() {
+        self.file_saves.retain(|(rx, stopped)| match rx.try_recv() {
             Ok(r) => {
                 done.push(r);
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => true,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                done.push(Err("mixer: print not saved (its thread stopped)".into()));
+                done.push(Err(stopped.to_string()));
                 false
             }
         });
@@ -6439,6 +6486,9 @@ impl Player {
         // Flatten's hits go after the source it records from.
         let hits = self.sample.take_hits();
         self.outbox.extend(hits);
+        if self.sample.take_unsaved() {
+            self.mark_unsaved();
+        }
         if self.view == View::Sample {
             if let Some(a) = self.sample.take_cloud() {
                 self.outbox.push(a);
@@ -7511,7 +7561,8 @@ impl Player {
             self.step_browser();
         }
         self.poll_export();
-        self.poll_prints();
+        self.save_pad_exports();
+        self.poll_saves();
         self.poll_plugins();
         self.poll_preview();
         self.poll_loops();
@@ -8923,6 +8974,21 @@ pub fn open_sample(p: &mut Player, editor: sample_page::Editor) {
     p.apply(ToUi::SampleEditor(editor));
 }
 
+/// Opens the Sample tab's Play section that holds `row` (a tap on its
+/// chip) and gives the row's place in that section's list.
+pub fn play_row(p: &mut Player, row: mpfree_sampler_ui::play_tab::Row) -> usize {
+    use mpfree_sampler_ui::play_tab::{Section, SECTIONS};
+    let i = Section::ALL
+        .iter()
+        .position(|s| *s == row.section())
+        .unwrap_or(0);
+    p.on_event(UiEvent {
+        widget: SECTIONS.into(),
+        kind: EventKind::Tab(i),
+    });
+    row.place()
+}
+
 pub fn sample_sampler(fonts: Fonts) -> Player {
     let mut p = sample_player(fonts);
     let (project, _) = mpfree_sampler_ui::sample::project();
@@ -10140,8 +10206,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     warp.apply(ToUi::SampleQLink(0, 4));
     warp.take_actions();
     out.push(("sample-warp", warp));
-    // The Play tab on the same pad: hit at 100, Decay turned (Q-Link 2),
-    // the filter turned on from the list.
+    // The Play tab on the same pad: hit at 100, Decay turned (Q-Link 2 on
+    // the Amp section), the filter turned on from the Filter section's
+    // list, then back on Amp.
     let mut play = sample_sampler(fonts());
     play.on_event(UiEvent {
         widget: mpfree_sampler_ui::wave_tab::BAR.into(),
@@ -10152,12 +10219,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         velocity: 100,
     });
     play.apply(ToUi::PadUp(mpfree_sampler_ui::sample::PAD));
+    play.on_event(UiEvent {
+        widget: mpfree_sampler_ui::play_tab::SECTIONS.into(),
+        kind: EventKind::Tab(1),
+    });
     play.apply(ToUi::SampleQLink(1, 40));
     play.apply(ToUi::SampleLift);
-    let filter = mpfree_sampler_ui::play_tab::Row::ALL
-        .iter()
-        .position(|r| *r == mpfree_sampler_ui::play_tab::Row::Filter)
-        .unwrap_or(0);
+    play.on_event(UiEvent {
+        widget: mpfree_sampler_ui::play_tab::SECTIONS.into(),
+        kind: EventKind::Tab(2),
+    });
+    let filter = mpfree_sampler_ui::play_tab::Row::Filter.place();
     play.on_event(UiEvent {
         widget: mpfree_sampler_ui::play_tab::LIST.into(),
         kind: EventKind::Step {
@@ -10165,12 +10237,45 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             delta: 1,
         },
     });
+    play.on_event(UiEvent {
+        widget: mpfree_sampler_ui::play_tab::SECTIONS.into(),
+        kind: EventKind::Tab(1),
+    });
     play.take_actions();
     out.push(("sample-play", play));
+    // The Layers section: a layer added (the upper half of the velocities),
+    // picked, turned down 3 dB and panned left, a hit at 100 on it.
+    {
+        use mpfree_sampler_ui::play_tab::{Row, LAYER_EDIT, LIST};
+        let mut layers = sample_sampler(fonts());
+        layers.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
+        });
+        layers.on_event(UiEvent {
+            widget: LAYER_EDIT.into(),
+            kind: EventKind::Tab(0),
+        });
+        for (row, delta) in [(Row::LayerLevel, -6), (Row::LayerPan, -4)] {
+            let index = play_row(&mut layers, row);
+            layers.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+            layers.apply(ToUi::SampleLift);
+        }
+        layers.apply(ToUi::PadDown {
+            pad: mpfree_sampler_ui::sample::PAD,
+            velocity: 100,
+        });
+        layers.apply(ToUi::PadUp(mpfree_sampler_ui::sample::PAD));
+        layers.take_actions();
+        out.push(("sample-play-layers", layers));
+    }
     // The scene strip: A stored, the pad turned down, B stored, and the
     // crossfader 40 % of the way to B.
     {
-        use mpfree_sampler_ui::play_tab::{Row, FADER, LIST, SCENES};
+        use mpfree_sampler_ui::play_tab::{Row, FADER, LIST, SCENES, SECTIONS};
         let mut scenes = sample_sampler(fonts());
         scenes.on_event(UiEvent {
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
@@ -10183,7 +10288,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             });
         };
         tap(&mut scenes, SCENES, EventKind::Tab(0));
-        let level = Row::ALL.iter().position(|r| *r == Row::Level).unwrap_or(0);
+        tap(&mut scenes, SECTIONS, EventKind::Tab(1));
+        let level = Row::Level.place();
         for _ in 0..4 {
             tap(
                 &mut scenes,
@@ -10294,7 +10400,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     out.push(("sample-auto", auto));
     // The Play tab with the pad a keygroup and the pads playing notes, the
-    // list on the Keys rows.
+    // Pad section open on Pads play.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         use mpfree_sampler_ui::widgets::SettingList;
@@ -10303,31 +10409,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
             kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
         });
-        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
         for (row, delta) in [(Row::Keys, 1), (Row::LowKey, 36), (Row::HighKey, -43)] {
+            let index = play_row(&mut keys, row);
             keys.on_event(UiEvent {
                 widget: LIST.into(),
-                kind: EventKind::Step {
-                    index: index(row),
-                    delta,
-                },
+                kind: EventKind::Step { index, delta },
             });
             keys.apply(ToUi::SampleLift);
         }
+        let index = play_row(&mut keys, Row::PadsPlay);
         keys.on_event(UiEvent {
             widget: LIST.into(),
-            kind: EventKind::Step {
-                index: index(Row::PadsPlay),
-                delta: 1,
-            },
+            kind: EventKind::Step { index, delta: 1 },
         });
         // Pads play picked, as a tap on the row picks it.
         if let Some(list) = keys.ui.get_mut::<SettingList>(LIST) {
-            list.selected = index(Row::PadsPlay);
+            list.selected = index;
         }
         keys.on_event(UiEvent {
             widget: LIST.into(),
-            kind: EventKind::Select(index(Row::PadsPlay)),
+            kind: EventKind::Select(index),
         });
         keys.take_actions();
         out.push(("sample-play-keys", keys));
@@ -10363,6 +10464,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         open_pads(&mut mapped, pads_tab::PAD_VIEW);
         ev(&mut mapped, pads_tab::BUTTONS, EventKind::Tab(3));
         open_sample(&mut mapped, sample_page::Editor::Play);
+        play_row(&mut mapped, play_tab::Row::Keys);
         let held = mapped.ui.rect_of(play_tab::KEYS).and_then(|r| {
             mapped
                 .ui
@@ -10407,10 +10509,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         open_pads(&mut faded, pads_tab::PAD_VIEW);
         ev(&mut faded, pads_tab::BUTTONS, EventKind::Tab(3));
         open_sample(&mut faded, sample_page::Editor::Play);
-        let index = Row::ALL
-            .iter()
-            .position(|r| *r == Row::KeyFade)
-            .unwrap_or(0);
+        let index = play_row(&mut faded, Row::KeyFade);
         if let Some(list) = faded.ui.get_mut::<SettingList>(LIST) {
             list.selected = index;
         }
@@ -10430,18 +10529,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
             kind: EventKind::Tab(play_tab::TAB),
         });
-        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
         for (row, step) in [(Row::Latch, 1), (Row::Links, 0)] {
+            let index = play_row(&mut links, row);
             if let Some(list) = links.ui.get_mut::<SettingList>(LIST) {
-                list.selected = index(row);
+                list.selected = index;
             }
             let kind = if step == 0 {
-                EventKind::Select(index(row))
+                EventKind::Select(index)
             } else {
-                EventKind::Step {
-                    index: index(row),
-                    delta: step,
-                }
+                EventKind::Step { index, delta: step }
             };
             links.on_event(UiEvent {
                 widget: LIST.into(),
@@ -10464,22 +10560,20 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
             kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
         });
-        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
         for (row, delta) in [(Row::PadsPlay, -1), (Row::LevelsBy, 1)] {
+            let index = play_row(&mut levels, row);
             levels.on_event(UiEvent {
                 widget: LIST.into(),
-                kind: EventKind::Step {
-                    index: index(row),
-                    delta,
-                },
+                kind: EventKind::Step { index, delta },
             });
         }
+        let index = Row::LevelsBy.place();
         if let Some(list) = levels.ui.get_mut::<SettingList>(LIST) {
-            list.selected = index(Row::LevelsBy);
+            list.selected = index;
         }
         levels.on_event(UiEvent {
             widget: LIST.into(),
-            kind: EventKind::Select(index(Row::LevelsBy)),
+            kind: EventKind::Select(index),
         });
         levels.take_actions();
         out.push(("sample-play-levels", levels));
@@ -15297,7 +15391,8 @@ mod tests {
     }
 
     #[test]
-    fn an_exported_pad_loads_back_with_its_settings_and_slices() {
+    fn an_exported_pad_goes_to_samples_exports_and_loads_back_with_its_settings_and_slices() {
+        use mpfree_library::{Loc, Place};
         use mpfree_sampler_ui::chop_tab::{self, Row};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
@@ -15312,23 +15407,27 @@ mod tests {
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
             kind: EventKind::Tab(chop_tab::TAB),
         });
-        // Files is offered only once the app can write them.
+        // Files is offered only once the app has a library to write them
+        // in.
         put_on(&mut p, -1);
         assert_ne!(p.sample.chop().unwrap().0.put_text(), "Files");
         put_on(&mut p, 1);
-        p.sample.set_files(&mut p.ui, true);
+        let root = std::env::temp_dir().join(format!("mpfree-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let lib = mpfree_library::Library::at(&root).unwrap();
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
         put_on(&mut p, -1);
         assert_eq!(p.sample.chop().unwrap().0.put_text(), "Files");
         let n = p.sample.chop().unwrap().0.slices();
-        p.on_event(UiEvent {
-            widget: chop_tab::BUTTONS.into(),
-            kind: EventKind::Tab(2),
-        });
-        let exports = p.sample.take_exports();
-        assert_eq!(exports.len(), 1);
-        let e = &exports[0];
-        assert_eq!((e.name.as_str(), e.slices), ("Break 92", n));
-        assert_eq!(e.files.len(), 2 + n, "the sound, its settings, the slices");
+        let export = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: chop_tab::BUTTONS.into(),
+                kind: EventKind::Tab(2),
+            })
+        };
+        export(&mut p);
         assert!(
             events_log(&p).iter().any(|l| l
                 == &format!(
@@ -15339,14 +15438,33 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+        // Written on a thread into a folder of its own in Samples /
+        // Exports, which is made for it.
+        let saved = "sample: Break 92 saved in Samples / Exports / Break 92";
+        tick_until(&mut p, |p| events_log(p).iter().any(|l| l == saved));
         assert!(views(p.take_actions()).0.is_empty(), "the kit is as it was");
-        // Written into a folder of their own, Load to pad brings the pad
-        // back on another pad, slices and all, as one undo step.
-        let dir = std::env::temp_dir().join(format!("mpfree-export-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for (name, bytes) in &e.files {
-            std::fs::write(dir.join(name), bytes).unwrap();
-        }
+        let at = Loc::new(Place::Samples, &["Exports", "Break 92"]).unwrap();
+        let listed = lib.list(&at).unwrap();
+        let mut names: Vec<&str> = listed.iter().map(|e| e.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names.len(), 2 + n, "the sound, its settings, the slices");
+        assert!(names.contains(&"Break 92.wav") && names.contains(&"Break 92.mpfree"));
+        assert!(names.contains(&format!("Break 92 {n:02}.wav").as_str()));
+        // Exported again, it takes the next free name.
+        export(&mut p);
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l == "sample: Break 92 saved in Samples / Exports / Break 92 2")
+        });
+        // Load to pad brings the pad back on another pad, slices and all,
+        // as one undo step.
+        let dir = lib
+            .file_path(&at.join("Break 92.wav").unwrap())
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let chops = p.sample.project(0).unwrap().chop_sets.len();
         p.sample.load_file(dir.join("Break 92.wav"), true);
         tick_until(&mut p, |p| p.sample.assigning().is_some());
@@ -15383,7 +15501,187 @@ mod tests {
                       (not an mpfree-sampler 1 part); the sound alone is loaded"
             })
         });
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn normalize_sets_the_gain_from_the_peak_in_one_undo_step() {
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        let mut p = sample_sampler(Fonts::embedded());
+        let st = p.sample.state().unwrap().clone();
+        let kit = p.sample.project(0).unwrap();
+        let peak = st.region.peak(kit.source(st.region.source).unwrap());
+        assert!(peak > 0.0, "{peak}");
+        let press = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: REGION.into(),
+                kind: EventKind::Tab(Row::Normalize.index()),
+            })
+        };
+        press(&mut p);
+        let gain = p.sample.state().unwrap().region.gain_db;
+        let peak_db = 20.0 * peak.log10();
+        assert_eq!(gain, (-peak_db * 10.0).floor() / 10.0);
+        let loudest = peak * 10f32.powf(gain / 20.0);
+        assert!(loudest <= 1.0 && loudest > 0.988, "{loudest}");
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == &format!(
+                "sample: pad A5 normalized: its peak {peak_db:.1} dB, gain {:+.1} -> {gain:+.1} dB",
+                st.region.gain_db
+            )),
+            "{:?}",
+            events_log(&p)
+        );
+        // Again, it is where it was: the same gain.
+        press(&mut p);
+        assert_eq!(p.sample.state().unwrap().region.gain_db, gain);
+        // One undo step each.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.state().unwrap().region.gain_db, gain);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.state().unwrap().region.gain_db, st.region.gain_db);
+        // A silent region is left as it is, and says so.
+        let src = st.region.source;
+        let silent = {
+            let s = p.sample.project(0).unwrap().source(src).unwrap();
+            let ch = usize::from(s.channels());
+            (0..s.frames() as usize)
+                .find(|&f| s.data()[f * ch..f * ch + ch].iter().all(|x| *x == 0.0))
+                .expect("a silent frame in the break") as u64
+        };
+        p.sample
+            .project_mut(0)
+            .unwrap()
+            .edit_pad(st.pad, None, |pd| {
+                let r = &mut pd.layers[0].region;
+                (r.start, r.end, r.sustain_loop) = (silent, silent + 1, None);
+                r.mode = mpfree_sampler::model::PlayMode::OneShot;
+                (r.fade_in.frames, r.fade_out.frames) = (0, 0);
+            })
+            .unwrap();
+        press(&mut p);
+        let kit = p.sample.project(0).unwrap();
+        let r = &kit.pad(st.pad).unwrap().layers[0].region;
+        assert_eq!((r.start, r.gain_db), (silent, st.region.gain_db));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: pad A5 not normalized: it is silent"));
+    }
+
+    #[test]
+    fn process_makes_a_new_sound_on_a_worker_in_one_undo_step_and_can_be_stopped() {
+        use mpfree_sampler::model::WarpMethod;
+        use mpfree_sampler_ui::warp_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(warp_tab::TAB),
+        });
+        assert_eq!(p.page(), crate::sample_page::WARP_PAGE);
+        let ev = |p: &mut Player, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: LIST.into(),
+                kind,
+            })
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            ev(
+                p,
+                EventKind::Step {
+                    index: row.index(),
+                    delta,
+                },
+            );
+            p.apply(ToUi::SampleLift);
+        };
+        let process = |p: &mut Player| ev(p, EventKind::Tab(Row::Process.index()));
+        let value = |p: &Player, row: Row| {
+            p.ui.get::<SettingList>(LIST).unwrap().rows[row.index()]
+                .value
+                .clone()
+        };
+        let before = p.sample.state().unwrap().region.clone();
+        // Not warped and no Shift: it would come out the same.
+        process(&mut p);
+        assert!(events_log(&p).iter().any(|l| l
+            == "sample: pad A5 not processed (it would come out the same: set Shift, or turn Warp on)"));
+        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+        // Three semitones up: the same length, a new sound.
+        for _ in 0..3 {
+            step(&mut p, Row::Shift, 1);
+        }
+        process(&mut p);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: processing pad A5: 3 semitones higher"));
+        assert!(value(&p, Row::Process).starts_with("Stop · "));
+        tick_until(&mut p, |p| {
+            events_log(p).iter().any(|l| {
+                l.starts_with("sample: pad A5 processed into a new sound, 3 semitones higher: ")
+            })
+        });
+        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+        let after = p.sample.state().unwrap().region.clone();
+        let kit = p.sample.project(0).unwrap();
+        let made = kit.source(after.source).unwrap();
+        assert_ne!(after.source, before.source);
+        assert!(made.name.ends_with(" +3st"), "{}", made.name);
+        assert_eq!((after.start, after.end), (0, before.frames()));
+        assert_eq!(after.mode, before.mode);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.state().unwrap().region, before, "one undo step");
+        // Stretched from its own tempo to the project's.
+        for _ in 0..3 {
+            step(&mut p, Row::Shift, -1);
+        }
+        step(&mut p, Row::Warp, 1);
+        let w = p.sample.state().unwrap().region.warp.clone().unwrap();
+        assert_eq!(w.method, WarpMethod::Stretch);
+        let tempo = p.sample.tempo();
+        assert!((f64::from(w.bpm) - tempo).abs() > 1.0, "{} {tempo}", w.bpm);
+        process(&mut p);
+        let words = format!("stretched from {:.1} to {tempo:.1} BPM", w.bpm);
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == &format!("sample: processing pad A5: {words}")),
+            "{:?}",
+            events_log(&p)
+        );
+        tick_until(&mut p, |p| {
+            events_log(p).iter().any(|l| {
+                l.starts_with(&format!(
+                    "sample: pad A5 processed into a new sound, {words}: "
+                ))
+            })
+        });
+        let r = p.sample.state().unwrap().region.clone();
+        let want = before.frames() as f64 * f64::from(w.bpm) / tempo;
+        assert!(
+            (r.frames() as f64 - want).abs() <= 2.0,
+            "{} {want}",
+            r.frames()
+        );
+        let nw = r.warp.unwrap();
+        assert_eq!(nw.method, WarpMethod::Stretch);
+        assert!(
+            (f64::from(nw.bpm) - tempo).abs() < 0.01,
+            "it is at the project tempo now"
+        );
+        p.apply(ToUi::SampleUndo(false));
+        // Stopped: nothing changes.
+        let now = p.sample.state().unwrap().region.clone();
+        process(&mut p);
+        process(&mut p);
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l == "sample: pad A5 not processed (stopped)")
+        });
+        assert_eq!(p.sample.state().unwrap().region, now);
+        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
     }
 
     #[test]
@@ -15779,7 +16077,7 @@ mod tests {
             mpfree_sampler_ui::wave_tab::BAR,
             EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
         );
-        let level = Row::ALL.iter().position(|r| *r == Row::Level).unwrap();
+        let level = play_row(&mut p, Row::Level);
         let turn_down = |p: &mut Player| {
             p.on_event(UiEvent {
                 widget: LIST.into(),
@@ -15972,6 +16270,94 @@ mod tests {
     }
 
     #[test]
+    fn a_chop_is_kept_for_its_sound_and_shown_again_when_the_pad_comes_back() {
+        use mpfree_sampler::model::{ChopMode, KEPT_CHOP};
+        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let source = p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+            .region
+            .source;
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        assert!(
+            p.sample.project(0).unwrap().kept_chop(source).is_none(),
+            "the tab's first chop of a sound is its own"
+        );
+        // A Grid of 4 is kept for Break 92 as it is made, with no undo
+        // step and nothing sent to the audio thread, but the work unsaved.
+        p.take_actions();
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Method, 1);
+        for _ in 0..4 {
+            step(&mut p, Row::Amount, -1);
+        }
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!((tab.method(), tab.slices()), (Method::Grid, 4));
+        let bounds = tab.bounds(st);
+        let kept = p.sample.project(0).unwrap().kept_chop(source).unwrap();
+        assert_eq!((kept.name.as_str(), kept.mode), (KEPT_CHOP, ChopMode::Grid));
+        assert_eq!(kept.markers(), &bounds[1..4]);
+        assert!(p.sample.take_unsaved());
+        assert!(views(p.take_actions()).0.is_empty());
+        // On A6-A9; A6 plays the first slice, which the kept chop doesn't
+        // cut, so the tab chops it afresh and keeps nothing.
+        tap(&mut p, chop_tab::BUTTONS, 2);
+        p.take_actions();
+        p.apply(ToUi::PadDown {
+            pad: pad + 1,
+            velocity: 100,
+        });
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        assert_eq!(
+            p.ui.get::<PadBar>(chop_tab::BAR).unwrap().title,
+            "Pad A6 · Break 92 1"
+        );
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!(tab.bounds(st)[0], bounds[0]);
+        assert_eq!(*tab.bounds(st).last().unwrap(), bounds[1]);
+        assert!(!p.sample.take_unsaved());
+        assert_eq!(
+            p.sample
+                .project(0)
+                .unwrap()
+                .kept_chop(source)
+                .unwrap()
+                .markers(),
+            &bounds[1..4]
+        );
+        // Back on A5, its four slices are there again, and UNDO of the
+        // chop to pads leaves them kept.
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!(
+            (tab.method(), tab.bounds(st)),
+            (Method::Grid, bounds.clone())
+        );
+        p.apply(ToUi::SampleUndo(false));
+        assert!(p.sample.project(0).unwrap().pad(pad + 1).is_none());
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!(tab.bounds(st), bounds);
+        assert!(p.sample.project(0).unwrap().kept_chop(source).is_some());
+    }
+
+    #[test]
     fn live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound() {
         use mpfree_sampler_ui::chop_tab::{self, Method, Row};
         use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
@@ -16132,10 +16518,7 @@ mod tests {
         });
         p.apply(ToUi::PadUp(1));
         assert_eq!(p.sample.play().unwrap().1.pad, 1);
-        let index = play_tab::Row::ALL
-            .iter()
-            .position(|r| *r == play_tab::Row::PadsPlay)
-            .unwrap();
+        let index = play_row(&mut p, play_tab::Row::PadsPlay);
         p.on_event(UiEvent {
             widget: play_tab::LIST.into(),
             kind: EventKind::Step { index, delta: -1 },
@@ -16226,7 +16609,7 @@ mod tests {
         });
         p.take_actions();
         let step = |p: &mut Player, row: Row, delta: i32| {
-            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            let index = play_row(p, row);
             p.on_event(UiEvent {
                 widget: play_tab::LIST.into(),
                 kind: EventKind::Step { index, delta },
@@ -16389,16 +16772,9 @@ mod tests {
                 kind,
             })
         };
-        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap();
         let step = |p: &mut Player, row: Row, delta: i32| {
-            ev(
-                p,
-                LIST,
-                EventKind::Step {
-                    index: index(row),
-                    delta,
-                },
-            );
+            let index = play_row(p, row);
+            ev(p, LIST, EventKind::Step { index, delta });
             p.apply(ToUi::SampleLift);
         };
         ev(
@@ -16456,7 +16832,6 @@ mod tests {
                 kind,
             })
         };
-        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap();
         ev(
             &mut p,
             mpfree_sampler_ui::wave_tab::BAR,
@@ -16464,10 +16839,11 @@ mod tests {
         );
         let settings = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().clone();
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
-        // A tap on a row picks it, as the list does.
+        // A tap on a row picks it, as the list does (its section opened).
         let pick = |p: &mut Player, row: Row| {
-            p.ui.get_mut::<SettingList>(LIST).unwrap().selected = index(row);
-            ev(p, LIST, EventKind::Select(index(row)));
+            let index = play_row(p, row);
+            p.ui.get_mut::<SettingList>(LIST).unwrap().selected = index;
+            ev(p, LIST, EventKind::Select(index));
         };
         assert!(
             hint(&p).starts_with("Hit a pad: its velocity"),
@@ -16511,7 +16887,7 @@ mod tests {
             &mut p,
             LIST,
             EventKind::Step {
-                index: index(Row::Latch),
+                index: Row::Latch.place(),
                 delta: 1,
             },
         );
@@ -16554,7 +16930,7 @@ mod tests {
             .get::<Label>("hint")
             .unwrap()
             .text
-            .contains("Q-Links 1-4: Attack, Decay, Cutoff, Resonance"));
+            .contains("Q-Links 1-4: layer level, pan, tune, vel low"));
         assert_eq!(
             p.ui.get::<PadBar>(play_tab::BAR).unwrap().title,
             "Pad A5 · Break 92"
@@ -16569,7 +16945,15 @@ mod tests {
             Some(77)
         );
         p.take_actions();
-        // Q-Link 2 turns Decay; letting go writes the log line and the view goes out.
+        // On the Amp section, Q-Link 2 turns Decay; letting go writes the
+        // log line and the view goes out.
+        play_row(&mut p, Row::Decay);
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Q-Links 1-4: attack, decay, sustain, release"));
         p.apply(ToUi::SampleQLink(1, 8));
         p.apply(ToUi::SampleLift);
         let decay = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().amp.decay_ms;
@@ -16610,6 +16994,156 @@ mod tests {
         );
         tap_tab(&mut p, play_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
         assert_eq!(p.page(), sample_page::PAGE);
+    }
+
+    #[test]
+    fn layers_are_added_and_removed_on_the_play_tab_one_undo_step_each() {
+        use mpfree_sampler_ui::play_tab::{self, Row, LAYER_EDIT, LIST};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(play_tab::TAB),
+        );
+        p.take_actions();
+        let layers = |p: &Player| -> Vec<(u8, u8, f32)> {
+            p.sample
+                .project(0)
+                .unwrap()
+                .pad(pad)
+                .unwrap()
+                .layers
+                .iter()
+                .map(|l| (l.vel_lo, l.vel_hi, l.level_db))
+                .collect()
+        };
+        // Add layer: a copy taking the upper velocities, a line, and the
+        // kit goes to the audio thread with it.
+        ev(&mut p, LAYER_EDIT, EventKind::Tab(0));
+        assert_eq!(layers(&p), vec![(1, 63, 0.0), (64, 127, 0.0)]);
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Breaks) pad A5: layer 2 added, a copy of layer 1 (Break 92) on velocities 64-127, layer 1 now 1-63"),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // The new layer is picked: its level row turns it alone.
+        let index = play_row(&mut p, Row::LayerLevel);
+        ev(&mut p, LIST, EventKind::Step { index, delta: -2 });
+        p.apply(ToUi::SampleLift);
+        assert_eq!(layers(&p), vec![(1, 63, 0.0), (64, 127, -1.0)]);
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l
+                    == "sample: kit 1 (Breaks) pad A5 Break 92: layer 2 level +0.0 dB -> -1.0 dB"),
+            "{:?}",
+            events_log(&p)
+        );
+        // Remove layer, then UNDO brings it back as it was.
+        ev(&mut p, LAYER_EDIT, EventKind::Tab(1));
+        assert_eq!(layers(&p), vec![(1, 63, 0.0)]);
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Breaks) pad A5: layer 2 removed (Break 92, velocities 64-127), 1 layer left"),
+            "{:?}",
+            events_log(&p)
+        );
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(layers(&p), vec![(1, 63, 0.0), (64, 127, -1.0)]);
+        p.apply(ToUi::SampleUndo(false));
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(layers(&p), vec![(1, 127, 0.0)], "back to one layer");
+    }
+
+    #[test]
+    fn the_wave_and_grain_tabs_edit_the_layer_picked_on_play() {
+        use mpfree_sampler::model::PlayMode;
+        use mpfree_sampler_ui::play_tab::{self, LAYERS, LAYER_EDIT};
+        use mpfree_sampler_ui::widgets::PadBar;
+        use mpfree_sampler_ui::{grain_tab, wave_tab};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let back = |p: &mut Player| {
+            let (sent, _) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+        };
+        ev(&mut p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
+        // Add layer picks the new layer 2.
+        ev(&mut p, LAYER_EDIT, EventKind::Tab(0));
+        back(&mut p);
+        ev(&mut p, play_tab::BAR, EventKind::Tab(grain_tab::TAB));
+        assert_eq!(
+            p.ui.get::<PadBar>(grain_tab::BAR).unwrap().title,
+            "Pad A5 · Break 92 · layer 2"
+        );
+        let row = |r: grain_tab::Row| grain_tab::Row::ALL.iter().position(|x| *x == r).unwrap();
+        for r in [grain_tab::Row::Mode, grain_tab::Row::Sync] {
+            ev(
+                &mut p,
+                grain_tab::LIST,
+                EventKind::Step {
+                    index: row(r),
+                    delta: 1,
+                },
+            );
+            p.apply(ToUi::SampleLift);
+        }
+        back(&mut p);
+        let regions = |p: &Player| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[..2]
+                .iter()
+                .map(|l| (l.region.mode, l.region.grain.sync.is_some()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            regions(&p),
+            vec![(PlayMode::Loop, false), (PlayMode::Granular, true)],
+            "layer 2 alone plays grains, synced to the tempo"
+        );
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l.contains("tempo sync Off -> Density")),
+            "{:?}",
+            events_log(&p)
+        );
+        // The Wave tab shows the same layer; back on Play, picking layer 1
+        // moves every tab to it.
+        ev(&mut p, grain_tab::BAR, EventKind::Tab(0));
+        assert!(p
+            .ui
+            .get::<PadBar>(wave_tab::BAR)
+            .unwrap()
+            .title
+            .ends_with("· layer 2 of 2"));
+        ev(&mut p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
+        ev(&mut p, LAYERS, EventKind::Select(0));
+        ev(&mut p, play_tab::BAR, EventKind::Tab(0));
+        assert!(p
+            .ui
+            .get::<PadBar>(wave_tab::BAR)
+            .unwrap()
+            .title
+            .ends_with("· layer 1 of 2"));
     }
 
     #[test]
@@ -17714,7 +18248,7 @@ mod tests {
             mpfree_sampler_ui::wave_tab::BAR,
             EventKind::Tab(play_tab::TAB),
         );
-        let stops = Row::ALL.iter().position(|r| *r == Row::Chokes).unwrap();
+        let stops = play_row(&mut p, Row::Chokes);
         p.ui.get_mut::<SettingList>(LIST).unwrap().selected = stops;
         ev(&mut p, LIST, EventKind::Select(stops));
         assert!(p.sample.play_takes_pads(&p.ui));
