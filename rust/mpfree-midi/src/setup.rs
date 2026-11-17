@@ -315,6 +315,62 @@ impl TrackOut {
     }
 }
 
+/// The tracks a route may name: the sequencer's (`mpfree_seq::MAX_TRACKS`).
+pub const ROUTE_TRACKS: usize = 128;
+
+/// A port and channel that play one track, whichever track is armed: a
+/// route to "Tracks by channel" in the I/O view's Routing. Saved with the
+/// project, as `route = track 1 < MIDI · ch 10` (or `· all channels`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackRoute {
+    /// The port, by name, as [`PortSetup::name`].
+    pub port: String,
+    /// None: every channel.
+    pub channel: Option<Channel>,
+    /// The track, from 0, below [`ROUTE_TRACKS`].
+    pub track: u8,
+}
+
+impl TrackRoute {
+    /// "MIDI · ch 10" or "Keystep 37 · all channels".
+    pub fn source(&self) -> String {
+        match self.channel {
+            Some(c) => format!("{} · ch {}", self.port, c + 1),
+            None => format!("{} · all channels", self.port),
+        }
+    }
+
+    fn text(&self) -> String {
+        format!("track {} < {}", u16::from(self.track) + 1, self.source())
+    }
+
+    fn parse(v: &str) -> Result<TrackRoute, String> {
+        let shape = || "not \"track N < port · ch N\"".to_string();
+        let (t, from) = v.split_once(" < ").ok_or_else(shape)?;
+        let t = t.trim().strip_prefix("track ").ok_or_else(shape)?;
+        let track = (number(t.trim(), 1, ROUTE_TRACKS as u32)? - 1) as u8;
+        let (port, ch) = from.rsplit_once(" · ").ok_or_else(shape)?;
+        let channel = match ch.trim() {
+            "all channels" => None,
+            c => Some(
+                (number(c.strip_prefix("ch ").ok_or_else(shape)?.trim(), 1, 16)? - 1) as Channel,
+            ),
+        };
+        let port = port.trim();
+        if port.is_empty() {
+            return Err(shape());
+        }
+        Ok(TrackRoute {
+            port: port.to_string(),
+            channel,
+            track,
+        })
+    }
+}
+
+/// The most routes a project keeps (`mpfree_midi::input::MAX_ROUTES`).
+pub const MAX_TRACK_ROUTES: usize = crate::input::MAX_ROUTES;
+
 /// A project's MIDI, sync and CV settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MidiSetup {
@@ -328,6 +384,9 @@ pub struct MidiSetup {
     pub ports: Vec<PortSetup>,
     /// Each track's MIDI output; `None` plays nothing out.
     pub tracks: [Option<TrackOut>; MAX_TRACKS],
+    /// Ports and channels that play a track whichever track is armed, in
+    /// the order set; at most [`MAX_TRACK_ROUTES`].
+    pub routes: Vec<TrackRoute>,
     /// What each CV/gate output does.
     pub cv: [CvAssign; CV_OUTS],
     /// Controls learned with MIDI Learn, each with its device by name, in
@@ -343,6 +402,7 @@ impl Default for MidiSetup {
             follow_position: true,
             ports: Vec::new(),
             tracks: std::array::from_fn(|_| None),
+            routes: Vec::new(),
             cv: [CvAssign::Off; CV_OUTS],
             learn: Vec::new(),
         }
@@ -400,8 +460,8 @@ impl MidiSetup {
     }
 
     /// The settings that belong to the song, saved in the project's `midi`
-    /// part: tracks' outputs, Tempo from and following, each port's clock
-    /// out, the CV jobs and learned controls. Each port's input and thru
+    /// part: tracks' outputs, the routes to tracks, Tempo from and
+    /// following, each port's clock out, the CV jobs and learned controls. Each port's input and thru
     /// are the rig's ([`MidiSetup::rig`]) and are left at their defaults.
     pub fn project(&self) -> MidiSetup {
         let mut m = self.clone();
@@ -526,6 +586,9 @@ impl MidiSetup {
                 line(&mut s, &format!("{k}.bank"), &b.to_string());
             }
         }
+        for r in &self.routes {
+            line(&mut s, "route", &r.text());
+        }
         for (i, a) in self.cv.iter().enumerate() {
             if *a != CvAssign::Off {
                 line(&mut s, &format!("cv.{}", i + 1), &cv_text(a));
@@ -641,6 +704,16 @@ impl MidiSetup {
                     "bank" => t.bank = Some(number(v, 0, 16383)? as u16),
                     _ => return Err("unknown key".into()),
                 }
+            }
+            ["route"] => {
+                let r = TrackRoute::parse(v)?;
+                if self.routes.contains(&r) {
+                    return Err("the same route twice: the first kept".into());
+                }
+                if self.routes.len() >= MAX_TRACK_ROUTES {
+                    return Err(format!("more than {MAX_TRACK_ROUTES} routes"));
+                }
+                self.routes.push(r);
             }
             ["cv", i] => {
                 let i = index(i, CV_OUTS)?;
@@ -930,6 +1003,48 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn routes_to_tracks_read_back_and_belong_to_the_song() {
+        let m = MidiSetup {
+            routes: vec![
+                TrackRoute {
+                    port: DIN_NAME.to_string(),
+                    channel: Some(9),
+                    track: 0,
+                },
+                TrackRoute {
+                    port: "Keystep 37".to_string(),
+                    channel: None,
+                    track: 127,
+                },
+            ],
+            ..MidiSetup::default()
+        };
+        let text = m.to_text();
+        assert!(text.contains("route = track 1 < MIDI · ch 10\n"), "{text}");
+        assert!(
+            text.contains("route = track 128 < Keystep 37 · all channels\n"),
+            "{text}"
+        );
+        let (back, warn) = MidiSetup::parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.routes, m.routes);
+        assert_eq!(m.project().routes, m.routes);
+        assert!(m.rig().routes.is_empty());
+        let mut kept = m.clone();
+        kept.set_rig(&MidiSetup::default());
+        assert_eq!(kept.routes, m.routes);
+        // Lines it can't read are named, and the rest kept.
+        let (back, warn) = MidiSetup::parse(
+            "mpfree-midi 1\nroute = track 0 < MIDI · ch 1\nroute = track 2 < MIDI · ch 17\n\
+             route = track 2 MIDI\nroute = track 2 < MIDI · ch 3\nroute = track 2 < MIDI · ch 3\n",
+        );
+        assert_eq!(back.routes.len(), 1);
+        assert_eq!(back.routes[0].source(), "MIDI · ch 3");
+        assert_eq!(warn.len(), 4, "{warn:?}");
+        assert!(warn[3].contains("the same route twice"), "{warn:?}");
+    }
+
     #[test]
     fn the_project_and_the_rig_split_and_join_again() {
         let mut m = MidiSetup {

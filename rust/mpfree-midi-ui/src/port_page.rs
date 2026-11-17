@@ -9,7 +9,8 @@
 //!   ([`IgnoreSet`]). Ignored messages still show in the Monitor, marked
 //!   "ignored: this port's setting"; nothing else gets them.
 //! - **What it does:** where its messages go today and what plays on it,
-//!   read only (the Routing section comes later).
+//!   read only (the Routing section changes it): its routes to tracks,
+//!   then where the rest goes.
 //! - **Now:** the newest message in on it and out to it, and how long
 //!   ago.
 //! - **Clock to this port:** Off, While playing or Always: the project's,
@@ -228,12 +229,38 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
         })
         .collect();
     let leads = m.setup.tempo == TempoSource::Port(name.to_string());
+    let routes: Vec<String> = m
+        .setup
+        .routes
+        .iter()
+        .filter(|r| r.port == name)
+        .map(|r| {
+            let ch = r
+                .channel
+                .map_or("All channels".to_string(), |c| format!("Ch {}", c + 1));
+            let t = m
+                .live
+                .tracks
+                .get(usize::from(r.track))
+                .cloned()
+                .unwrap_or_else(|| format!("Track {}", u16::from(r.track) + 1));
+            format!("{ch} → {t}")
+        })
+        .collect();
     let mut does = Vec::new();
+    if !routes.is_empty() {
+        does.push((true, short_list(&routes, 3)));
+    }
+    let rest = if routes.is_empty() {
+        "Its notes"
+    } else {
+        "The rest"
+    };
     does.push((
         true,
         match setup.input {
-            PortInput::LearnOnly => "Its notes play nothing (Learn only)".to_string(),
-            _ => "Its notes play the armed track".to_string(),
+            PortInput::LearnOnly => format!("{rest} play nothing (Learn only)"),
+            _ => format!("{rest} play the armed track"),
         },
     ));
     if setup.input != PortInput::PlaysTracks {
@@ -717,7 +744,7 @@ impl IoSection for PortPage {
         );
         let meaning = match v.setup.input {
             PortInput::PlaysTracks => "Its notes play; Learn doesn't hear it.",
-            PortInput::LearnOnly => "Only MIDI Learn hears it; nothing plays.",
+            PortInput::LearnOnly => "Learn hears it; only its routes play.",
             PortInput::Both => "Its notes play, and its controls can be learned.",
         };
         lines(
@@ -791,7 +818,7 @@ impl IoSection for PortPage {
         lines(
             cx,
             Rect::new(body.x, body.bottom() - LINE_H, body.w, LINE_H),
-            &["The Routing section, for any route, comes later."],
+            &["Change where it goes in the Routing section."],
             t.text_faint,
         );
 
@@ -1306,6 +1333,19 @@ mod tests {
             v.does.iter().any(|d| d.1.starts_with("Learn:")),
             "{:?}",
             v.does
+        );
+        // Its routes come first; the rest goes where its Input says.
+        m.lock().unwrap().setup.routes = vec![mpfree_midi::setup::TrackRoute {
+            port: "Keystep 37".into(),
+            channel: Some(1),
+            track: 1,
+        }];
+        let v = view(&m.lock().unwrap(), "Keystep 37", 0.0);
+        let words: Vec<&str> = v.does.iter().map(|d| d.1.as_str()).collect();
+        assert_eq!(
+            words[..2],
+            ["Ch 2 → Bass", "The rest play nothing (Learn only)"],
+            "{words:?}"
         );
     }
 

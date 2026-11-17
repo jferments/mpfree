@@ -12,7 +12,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_midi::cv::{CvAssign, CvEngine, Priority, Scale};
-use mpfree_midi::input::{In, InputMode, InputRouter, Listen};
+use mpfree_midi::input::{ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route};
 use mpfree_midi::monitor::{Dir, Event, Feed, Monitor, Mpc, To, KEEP};
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed};
 use mpfree_midi::smf::NoteLog;
@@ -68,6 +68,24 @@ fn routing_pacing_and_cv_never_allocate() {
     let mut seen = 0usize;
 
     watch(true);
+    // Routes set while the sound runs: channel 1 of the DIN jack to track
+    // 40, and every channel of port 1 to track 3.
+    input.set_routes(
+        [
+            Route {
+                port: PortFilter::One(DIN),
+                channel: ChanFilter::One(0),
+                track: 40,
+            },
+            Route {
+                port: PortFilter::One(PortId(1)),
+                channel: ChanFilter::Omni,
+                track: 3,
+            },
+        ],
+        0,
+        |_| {},
+    );
     for t in 0..16u8 {
         out.set_route(
             t,
@@ -145,7 +163,8 @@ fn routing_pacing_and_cv_never_allocate() {
         ];
         let mut route = |e: In| {
             seen += 1;
-            if let In::Track { track, msg, .. } = e {
+            if let In::Track { track, msg, .. } | In::Routed { track, msg, .. } = e {
+                let track = track % 16;
                 out.send(track, msg, 3, &mut queues);
                 cv.track_msg(track, msg, 3, &mut |_| {});
             }
