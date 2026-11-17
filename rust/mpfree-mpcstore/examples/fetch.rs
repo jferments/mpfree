@@ -10,6 +10,9 @@ fn main() {
         std::process::exit(2);
     }
     let t = std::time::Instant::now();
+    if let Some(tls) = mpfree_mpcstore::fetch::tls() {
+        println!("TLS: {tls}");
+    }
     let mut shown = 0;
     let r = mpfree_mpcstore::fetch::fetch(
         &a[1],
