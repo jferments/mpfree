@@ -474,6 +474,46 @@ fn peaked_spray_keeps_most_grains_near_the_position() {
 }
 
 #[test]
+fn regular_grains_keep_their_exact_rate_between_frames() {
+    // 700 a second at 48 kHz is a grain every 68.57 frames: started on
+    // whole frames each gap would round up to 69 (696 a second, 10 cents
+    // flat as a tone); kept at their exact times, between frames, the
+    // rate is exact.
+    let data = vec![0.5; 96_000];
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let mut v = GrainVoice::new(RATE, 2);
+    v.set_params(Params {
+        size_ms: 5.0,
+        density: 700.0,
+        timing: 0.0,
+        ..Params::default()
+    });
+    v.start();
+    let mut b = Budget::new(256);
+    // After the running start's few, a second's grains.
+    run(&mut v, &src, &mut b, 0, 4_800, 128);
+    let before = v.stats().spawned;
+    let (l, _) = run(&mut v, &src, &mut b, 4_800, 48_000, 128);
+    let n = v.stats().spawned - before;
+    assert!(n.abs_diff(700) <= 1, "{n}");
+    // The cloud repeats every 48000 / 700 frames: a grain's window on a
+    // steady level, so the level 7 periods on (480 frames) is the same.
+    for k in 4_800..5_000 {
+        assert!((l[k] - l[k + 480]).abs() < 2e-3, "frame {k}");
+    }
+    // Random timing still starts its grains on the frame.
+    let (g, _) = gaps(
+        Params {
+            density: 700.0,
+            timing: 0.3,
+            ..Params::default()
+        },
+        4_800,
+    );
+    assert!(g.iter().all(|&x| x > 0));
+}
+
+#[test]
 fn regular_timing_spaces_grains_evenly() {
     // 100 a second at 48 kHz: every 480 frames.
     let (g, _) = gaps(

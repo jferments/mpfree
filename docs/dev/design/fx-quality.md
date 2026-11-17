@@ -635,6 +635,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md); decision 11.1): the Limi
 |---|---|---|---|
 | G1 | `level[pink]/range_lu`, `level[pad]/range_lu` | 3 LU | Loudness against the source's at 40, 80 and 400 ms grains overlapping 2, 4 and 16 times, sprayed (0.3), scanning (1) and both: largest less smallest. The quietest and loudest are shown, not kept |
 | G1 | `level[..., defaults]/offset_lu` | within 1 LU | The defaults against the source |
+| G11 | `tone[A2, A4, B5]/pitch_cents` | within 5 cents | Short regular grains of one spot of the pad, four cycles long, at the note's density: the spectrum's peak near the note (65536-point transform, parabolic) against the note (step B5) |
 | G1 | `vary[...]/level_change_lu` | within 1 LU | Full size spray, full level spray and peaked spray, each against the same cloud without it (40 a second, spray 0.3), on pink and the pad (step B1) |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
@@ -721,6 +722,13 @@ Each way grains differ has its own amount: Spray (with Spray shape, Even or Peak
 
 - **G1 met:** full size spray -0.05 LU on pink and +0.14 on the pad, full level spray -0.08 and -0.01, peaked spray +0.11 and -0.25. Level spray first measured -1.1 LU on pink: the level law's floor (0.3 from overlap 2) held a cloud of quieter grains under its level, so the floor's dense end now comes down with the grains' RMS level.
 - **Unchanged:** every other row, bit for bit (with no variation nothing moves: size and level draw from a sequence of their own).
+
+### Step B5: grain modes and a tone in tune (2026-11-17)
+
+Grain modes (Cloud, Stretch, Repeat, Tone) set which controls the Grain page shows and where they start ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Modes). Cloud, Stretch and Repeat are today's engine with their own settings. Tone needs the grain rate to be a note in tune, so regular grains now keep their exact times, between frames when the period isn't a whole number of frames (Timing). New rows: G11, a tone's pitch at A2, A4 and B5.
+
+- **G11 met:** A2 +0.01 cents, A4 -0.01, B5 -0.00. Started on whole frames, as before this step, the same tones were -0.4, -13.3 and -13.7 cents flat (each period rounded up to the next frame).
+- **Unchanged:** every other row (only regular, free-running grains start between frames, and the lab's regular rows fall on whole frames).
 
 ## Round 5: movement, pitch and voice
 

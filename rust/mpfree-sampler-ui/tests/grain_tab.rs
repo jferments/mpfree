@@ -413,10 +413,6 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
     // Its rate steps through beat divisions.
     step_apply(&mut s, Row::Density, 1);
     assert_eq!(row_value(&s, Row::Density), "6 /beat");
-    assert!(
-        step(&mut s, Row::GrainMode, 1).is_none(),
-        "Repeat is the last mode"
-    );
 
     // Back to a cloud: every row again, scattered a little.
     step_apply(&mut s, Row::GrainMode, -2);
@@ -441,6 +437,43 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
     let r = &s.project.pad(PAD).unwrap().layers[0].region;
     assert_eq!(r.grain_mode, mpfree_sampler::model::GrainMode::Cloud);
     assert_eq!(r.grain.spray, 0.16);
+}
+
+#[test]
+fn a_tone_plays_a_note_that_steps_by_semitones_and_keeps_its_cycles() {
+    let mut s = grain(true);
+    step_apply(&mut s, Row::GrainMode, 3);
+    assert_eq!(row_value(&s, Row::GrainMode), "Tone");
+    assert!(
+        step(&mut s, Row::GrainMode, 1).is_none(),
+        "Tone is the last mode"
+    );
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    assert_eq!(list.rows.len(), 12);
+    assert_eq!(list.rows[2].name, "Density");
+    assert_eq!(row_value(&s, Row::Density), "A2 · 110 Hz");
+    assert_eq!(row_value(&s, Row::Size), "36 ms · 4.0 cycles");
+    let g = s.state.region.grain;
+    assert_eq!(
+        (g.timing, g.scan, g.spray),
+        (0.0, 0.0, 0.0),
+        "regular and still"
+    );
+    for (row, delta, value) in [
+        (Row::Density, 3, "C3 · 131 Hz"),
+        (Row::Size, 0, "31 ms · 4.0 cycles"),
+        (Row::Size, 2, "38 ms · 5.0 cycles"),
+        (Row::Density, 12, "C4 · 262 Hz"),
+        (Row::Size, 0, "19 ms · 5.0 cycles"),
+        (Row::Density, -60, "A0 · 27.5 Hz"),
+        (Row::Density, 99, "B5 · 988 Hz"),
+        (Row::Size, -20, "1 ms · 1.0 cycles"),
+    ] {
+        if delta != 0 {
+            step_apply(&mut s, row, delta);
+        }
+        assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
+    }
 }
 
 #[test]

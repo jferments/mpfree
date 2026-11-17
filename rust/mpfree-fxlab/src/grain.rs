@@ -43,6 +43,10 @@
 //!   keeps `(1 + ρ) / 2` of the power, so 1.5 dB needs ρ ≥ 0.41.)
 //! - **G8, onset:** from the start to the first 10 ms whose RMS is within
 //!   3 dB of the steady level, on the pad, with 200 ms to 1 s grains.
+//! - **G11, a tone's pitch (step B5):** short regular grains of one spot
+//!   of the pad, four cycles long, at A2, A4 and B5: the note heard (the
+//!   spectrum's peak near it, from a long transform) against the note
+//!   asked for, in cents.
 //! - **G1 again, variation (step B1):** full size, level and peaked
 //!   spray, each against the same cloud without it, on pink and the pad:
 //!   the cloud keeps its loudness.
@@ -86,6 +90,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     width(&mut rows, &lab);
     onsets(&mut rows, &lab);
     variation(&mut rows, &lab);
+    tone(&mut rows, &lab);
     rows
 }
 
@@ -820,5 +825,46 @@ fn variation(rows: &mut Vec<Row>, lab: &Lab) {
                 0.1,
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G11: a tone's pitch (step B5).
+
+fn tone(rows: &mut Vec<Row>, lab: &Lab) {
+    for (name, hz) in [("A2", 110.0f64), ("A4", 440.0), ("B5", 987.767)] {
+        let p = Params {
+            density: hz as f32,
+            size_ms: (4000.0 / hz) as f32,
+            timing: 0.0,
+            ..base()
+        };
+        let (s, _) = steady(&lab.pad, lab.rate, p, 2.0, 11);
+        let sp = welch(&s.left, N_LONG);
+        let bin = f64::from(lab.rate) / N_LONG as f64;
+        // The loudest bin within 60 cents of the note, its place refined
+        // by a parabola through its neighbours' log powers.
+        let lo = (hz * (-0.05f64).exp2() / bin).floor() as usize;
+        let hi = (hz * 0.05f64.exp2() / bin).ceil() as usize;
+        let k = (lo..=hi)
+            .max_by(|&a, &b| sp[a].total_cmp(&sp[b]))
+            .unwrap_or(lo);
+        let (a, b, c) = (
+            sp[k - 1].max(1e-30).ln(),
+            sp[k].max(1e-30).ln(),
+            sp[k + 1].max(1e-30).ln(),
+        );
+        let d = 0.5 * (a - c) / (a - 2.0 * b + c);
+        let heard = (k as f64 + if d.is_finite() { d } else { 0.0 }) * bin;
+        put(
+            rows,
+            "G11",
+            format!("tone[{name}]"),
+            "pitch_cents",
+            1200.0 * (heard / hz).log2(),
+            Better::Near(0.0),
+            Some(5.0),
+            0.5,
+        );
     }
 }

@@ -112,6 +112,47 @@ fn a_granular_pad_plays_the_grain_engine_with_tune_and_reverse_folded_in() {
 }
 
 #[test]
+fn a_tone_pads_tune_moves_its_note_not_its_grains_pitch() {
+    let s = ramp(44_100);
+    // A2 with grains four cycles long, regular, frozen.
+    let base = GrainParams {
+        position: 0.5,
+        density: 110.0,
+        size_ms: 4.0 * 1000.0 / 110.0,
+        timing: 0.0,
+        ..GrainParams::default()
+    };
+    for tune in [1200, -700] {
+        let mut pad = granular_pad(&s, base);
+        pad.layers[0].region.grain_mode = GrainMode::Tone;
+        pad.layers[0].region.tune_cents = tune;
+        let mut e = engine_for(&[(0, pad)], &s, 4);
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        let (l, _) = run(&mut e, 4_410, 128);
+        // The note (the density) moves, with the size, so each grain keeps
+        // its four cycles; the grains' own pitch doesn't.
+        let k = (tune as f32 / 1200.0).exp2();
+        let want = GrainParams {
+            density: base.density * k,
+            size_ms: base.size_ms / k,
+            ..base
+        };
+        let reference = reference(&s, want, 4_410);
+        for f in 0..4_410 {
+            assert!(
+                (l[f] - C * reference[f]).abs() < 1e-6,
+                "tune {tune} frame {f}: {} vs {}",
+                l[f],
+                C * reference[f]
+            );
+        }
+    }
+}
+
+#[test]
 fn lifting_the_pad_stops_grains_and_releases() {
     let s = ramp(44_100);
     let mut e = engine_for(
