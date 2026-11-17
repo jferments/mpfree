@@ -680,6 +680,44 @@ impl Default for MixerView {
 }
 
 impl MixerView {
+    /// The strip a fader, pan or send target (the Faders look) is on, and
+    /// which send (0 for a fader or a pan).
+    fn strip_of(&self, t: &Target, r: Rect) -> Option<(StripId, usize)> {
+        let l = layout(r);
+        let mut strips: Vec<StripId> = self
+            .shown(&l)
+            .into_iter()
+            .map(|(i, _)| self.state.strips[i].id)
+            .collect();
+        strips.push(self.state.master.id);
+        let (k, j) = match t.id {
+            "send" => (t.index / 4, t.index % 4),
+            _ => (t.index, 0),
+        };
+        Some((*strips.get(k)?, j))
+    }
+
+    /// The strip parameter a fader, pan, send, M or S target sets (for
+    /// SHIFT + a touch's MIDI Learn): its strip and the parameter's id.
+    /// None for other targets, and for a send the strip doesn't have.
+    pub fn param_of(&self, t: &Target, r: Rect) -> Option<(StripId, u16)> {
+        let (strip, j) = self.strip_of(t, r)?;
+        let s = self.state.strip(strip)?;
+        match t.id {
+            "fader" => Some((strip, mx::VOLUME)),
+            "pan" => Some((strip, mx::PAN)),
+            "mute" => Some((strip, mx::MUTE)),
+            "solo" => Some((strip, mx::SOLO)),
+            "send" => {
+                s.sends?.get(j)?;
+                Some((strip, mx::send(j)))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl MixerView {
     pub fn new() -> MixerView {
         MixerView {
             state: MixState::default(),
@@ -3669,18 +3707,7 @@ impl Widget for MixerView {
     /// The data wheel on a strip's fader, pan or send: as Q-Links 1 to 4
     /// turn them ([`crate::qlinks::level_turn`], [`crate::qlinks::pan_turn`]).
     fn step(&mut self, t: &Target, delta: i32, r: Rect) -> Option<EventKind> {
-        let l = layout(r);
-        let mut strips: Vec<StripId> = self
-            .shown(&l)
-            .into_iter()
-            .map(|(i, _)| self.state.strips[i].id)
-            .collect();
-        strips.push(self.state.master.id);
-        let (k, j) = match t.id {
-            "send" => (t.index / 4, t.index % 4),
-            _ => (t.index, 0),
-        };
-        let strip = *strips.get(k)?;
+        let (strip, j) = self.strip_of(t, r)?;
         let s = self.state.strip(strip)?;
         let (id, from, to) = match t.id {
             "fader" => (

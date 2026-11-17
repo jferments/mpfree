@@ -348,6 +348,18 @@ impl SynthPanel {
         self.focus.map(|i| self.state.params[i].id)
     }
 
+    /// The id of the parameter a knob, fader, slider or drawbar on the
+    /// tiles sets (`t`, its index the parameter's place in the list), for
+    /// SHIFT + a touch's MIDI Learn; None for other controls and for a
+    /// reading.
+    pub fn param_of(&self, t: &mpfree_ui::Target) -> Option<u16> {
+        if !matches!(t.id, "knob" | "fader" | "slider" | "drawbar") {
+            return None;
+        }
+        let p = self.state.params.get(t.index)?;
+        (!p.readonly).then_some(p.id)
+    }
+
     /// Shows page `i` (wrapping).
     pub fn show_page(&mut self, ui: &mut Ui, i: usize) {
         if self.pages.is_empty() {

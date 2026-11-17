@@ -70,11 +70,6 @@ impl Field {
         }
     }
 
-    pub fn tap_only(mut self) -> Field {
-        self.tap_only = true;
-        self
-    }
-
     pub fn off(mut self, enabled: bool) -> Field {
         self.enabled = enabled;
         self
