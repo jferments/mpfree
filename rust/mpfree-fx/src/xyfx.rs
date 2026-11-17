@@ -214,7 +214,7 @@ static MODES: [Mode; 9] = [
             "Feedback",
             Unit::Percent,
             tape::FEEDBACK,
-            Map::Lin(20.0, 105.0),
+            Map::Lin(20.0, 130.0),
         ),
     },
     // Wash

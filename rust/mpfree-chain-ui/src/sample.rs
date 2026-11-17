@@ -799,6 +799,24 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut tape_presets = drawn("mpfree.fx.tape_delay", Some("Space heads"), 0)?;
     tap_on(&mut tape_presets, |l| l.preset_chip)?;
     let multitap = drawn("mpfree.fx.multitap", None, 0)?;
+    // The Hall with its Mix curve touched and set to Dry first: the chip in
+    // Output, and the hint line saying what the choice does.
+    let hall = {
+        let mut other = Song::new();
+        let mut n = mpfree_fx::registry::make("mpfree.fx.cloud").ok_or("no such effect")?;
+        n.set_param(mpfree_fx::ids::cloud::CHARACTER, 2.0);
+        n.set_param(mpfree_fx::ids::cloud::MIX_CURVE, 1.0);
+        let slot = other.keys.push(n);
+        let uid = other.keys.uid(slot).ok_or("the hall")?;
+        let curve = ParamAddr::new(Owner::Insert(KEYS, uid), mpfree_fx::ids::cloud::MIX_CURVE);
+        let st = from_mixer(other.chain_state(KEYS, slot, 0, Some(curve)));
+        let mut ui = screen(fonts(), &mut other, Place::Mixer, Some(st), None)?;
+        let text = crate::chain_hint(&ui).to_string();
+        if let Some(h) = ui.get_mut::<Label>("hint") {
+            h.text = text;
+        }
+        ui
+    };
     let strip_comp = drawn("mpfree.fx.channel_strip", Some("Vocal"), 2)?;
     let m0 = song.macros_state(0);
     let m1 = song.macros_state(1);
@@ -823,6 +841,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-keys-spring", about: "The Spring (Dub splash preset): its decay, with the spring's echo coming back each Length", ui: spring },
         Sample { name: "chain-mixer-keys-tape", about: "The Tape delay (Space heads preset, three heads): each head's first echo and the loop's repeats from all three; the tone one pass keeps, and four passes' (dashed)", ui: tape },
         Sample { name: "chain-mixer-keys-tape-presets", about: "The preset's name in the header tapped: the Tape delay's presets over the page (Defaults, then its own), the one it plays lit; a tap loads one (its Mix stays), a touch anywhere else closes the list", ui: tape_presets },
+        Sample { name: "chain-mixer-keys-hall", about: "The Reverb in its Hall mode with its Mix curve touched and set to Dry first: the small chip in Output (Equal, Dry first, Linear) and the hint line saying what the choice does; Quality sits in the Reverb section", ui: hall },
         Sample { name: "chain-mixer-keys-multitap", about: "The Multi-tap delay: its four taps on the beat grid (left in the accent, right in green) and the pattern again from the last, as loud as Feedback", ui: multitap },
         Sample { name: "chain-mixer-keys-strip-comp", about: "The Channel strip (Vocal) on its Compressor page: the dynamics curve, the gate's drop under its threshold and the compressor over its own, with makeup", ui: strip_comp },
         Sample { name: "chain-strip-list", about: "The strip button's list over the keys chain: the groups down the left, the tracks as tiles with what each holds (the open one outlined); a tap opens that strip's chain", ui: strips },
@@ -888,7 +907,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 24);
+        assert_eq!(s.len(), 25);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -1232,6 +1251,27 @@ mod tests {
         assert!(st.params.iter().any(|p| p.info.name == "Character"));
     }
 
+    /// Touching a delay's or reverb's Mix curve puts what its choice
+    /// means on the hint line; any other control has the usual hint.
+    #[test]
+    fn the_mix_curve_says_what_its_choice_does_on_the_hint_line() {
+        let mut song = Song::new();
+        let mut room = mpfree_fx::registry::make("mpfree.fx.room").unwrap();
+        room.set_param(ids::room::MIX_CURVE, 1.0);
+        let slot = song.drums.push(room);
+        let st = song.chain_state(DRUMS, slot, 0, None);
+        let addr = |name: &str| st.params.iter().find(|p| p.info.name == name).unwrap().addr;
+        let (curve, mix) = (addr("Mix curve"), addr("Mix"));
+        let hint = |song: &mut Song, focus| {
+            let st = song.chain_state(DRUMS, slot, 0, Some(focus));
+            let ui = screen(Fonts::embedded(), song, Place::Mixer, Some(st), None).unwrap();
+            crate::chain_hint(&ui)
+        };
+        let said = hint(&mut song, curve);
+        assert!(said.starts_with("Dry first: "), "{said}");
+        assert_eq!(hint(&mut song, mix), crate::CHAIN_HINT);
+    }
+
     /// Drive's ten modes: the chip between the arrows opens the list of
     /// them over the page; a row switches the mode and shuts it, and a
     /// touch anywhere else shuts it.
@@ -1279,7 +1319,7 @@ mod tests {
 
     /// The effect's name in the header opens its presets: "Defaults",
     /// then its own (a family's, the mode's). The header names the preset
-    /// its settings are; a row loads one (all but Mix and Quality) and
+    /// its settings are; a row loads one (all but Mix, Mix curve and Quality) and
     /// shuts the list, and a touch anywhere else only shuts it.
     #[test]
     fn the_effects_name_opens_its_presets() {

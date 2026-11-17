@@ -62,7 +62,20 @@ pub fn rig() -> IoModel {
         warnings: Vec::new(),
         gen: 0,
         monitor: Default::default(),
+        asks: Default::default(),
     }
+}
+
+/// The keyboard's CC 74 learned as the Drums filter's Cutoff, unless `m`
+/// has it already. Returns where its moves go.
+fn learn_cutoff(m: &mut IoModel) -> To {
+    let cutoff = "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0 1 | absolute | jump";
+    let cutoff = mpfree_midi::learn::Saved::parse(cutoff).expect("a learned control");
+    let target = cutoff.target;
+    if !m.setup.learn.iter().any(|l| l.target == target) && m.setup.learned(cutoff) {
+        m.live.learn_names.push("Cutoff (Filter, Drums)".into());
+    }
+    To::Learned(target)
 }
 
 /// `m` with its Monitor fed, as though the app had run for a second: a
@@ -74,13 +87,7 @@ pub fn rig() -> IoModel {
 /// jacks at 120 BPM (the tempo follows it) and an Akai SysEx. Each line
 /// says where it went.
 pub fn monitored(mut m: IoModel) -> IoModel {
-    // The knob's MIDI Learn, unless `m` has it already.
-    let cutoff = "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0 1 | absolute | jump";
-    let cutoff = mpfree_midi::learn::Saved::parse(cutoff).expect("a learned control");
-    let target = cutoff.target;
-    if !m.setup.learn.iter().any(|l| l.target == target) && m.setup.learned(cutoff) {
-        m.live.learn_names.push("Cutoff (Filter, Drums)".into());
-    }
+    let learned = learn_cutoff(&mut m);
     let mut ports = Ports::new();
     ports.set_din(true);
     let keys = ports
@@ -110,7 +117,6 @@ pub fn monitored(mut m: IoModel) -> IoModel {
     fed(keys, Dir::In, 0.41, &[0x90, 64, 88, 67, 90], learns);
     fed(keys, Dir::In, 0.55, &[0xB0, 1, 12], learns);
     fed(keys, Dir::In, 0.59, &[0xB0, 1, 30], learns);
-    let learned = To::Learned(target);
     fed(keys, Dir::In, 0.63, &[0xB0, 74, 60], learned);
     fed(keys, Dir::In, 0.67, &[0xB0, 74, 72], learned);
     // The drum machine: pad 1's note, then one no pad of the kit has.
@@ -181,5 +187,75 @@ pub fn debugged(mut m: IoModel) -> IoModel {
     );
     f.mpc(Dir::Out, 1.50, Mpc::KeepAlive);
     f.drain_into(&mut m.monitor, 1.6);
+    m
+}
+
+/// When [`held_now`]'s monitor is looked at (seconds on the app's clock).
+pub const HELD_AT: f64 = 45.0;
+
+/// `m` with 45 seconds of a session behind its Monitor, for the Now view:
+/// clock from the 5-pin jacks the whole time (read on 2.9 ms periods, one
+/// pulse lost at 40 s), the Bass track's C2 still on going out since 4 s
+/// (stuck), and on the keyboard: a C major chord held, E4 pressed harder,
+/// the learned knob and the mod wheel moved, a bend, the sustain pedal
+/// let up, and program 12 in bank 0/1. Look at it at [`HELD_AT`].
+pub fn held_now(mut m: IoModel) -> IoModel {
+    let mut ports = Ports::new();
+    ports.set_din(true);
+    let keys = ports.plugged("Keystep 37", true, true).expect("a port");
+    m.monitor.set_ports(ports.all());
+    m.live.built.monitor = true;
+    m.live.built.notes_out = true;
+    let learned = learn_cutoff(&mut m);
+    let mut f = Feed::new();
+    let period = 128.0 / 44_100.0;
+    let read = |t: f64| (t / period).ceil() * period;
+    let mut k = 0u32;
+    let mut drained = 0.0;
+    loop {
+        let t = 0.5 + f64::from(k) / 48.0;
+        if t >= HELD_AT {
+            break;
+        }
+        k += 1;
+        // One pulse lost at 40 s.
+        if (t - 40.0).abs() < 0.01 {
+            continue;
+        }
+        f.bytes(DIN, Dir::In, read(t), &[0xF8]);
+        if t - drained > 1.0 {
+            f.drain_into(&mut m.monitor, t);
+            drained = t;
+        }
+    }
+    let to = |f: &mut Feed, port, t: f64, b: &[u8], to: To| {
+        if f.bytes(port, Dir::In, t, b) {
+            f.to(to);
+        }
+    };
+    f.sent(DIN, 4.0, &[0x91, 36, 110], To::SentBy(1));
+    let bass = To::Track {
+        track: 1,
+        pad: None,
+    };
+    to(&mut f, keys, 3.0, &[0xB0, 7, 100], bass);
+    to(&mut f, keys, 3.1, &[0xB0, 10, 64], bass);
+    to(&mut f, keys, 36.0, &[0xB0, 64, 0], bass);
+    to(&mut f, keys, 39.0, &[0xB0, 71, 40], bass);
+    to(
+        &mut f,
+        keys,
+        40.0,
+        &[0xB0, 0, 0, 0xB0, 32, 1, 0xC0, 11],
+        bass,
+    );
+    to(&mut f, keys, 43.6, &[0x90, 60, 96], bass);
+    to(&mut f, keys, 43.7, &[0x90, 64, 88], bass);
+    to(&mut f, keys, 43.8, &[0x90, 67, 90], bass);
+    to(&mut f, keys, 44.0, &[0xA0, 64, 34], bass);
+    to(&mut f, keys, 44.2, &[0xE0, 0x00, 0x50], bass);
+    to(&mut f, keys, 44.6, &[0xB0, 1, 47], bass);
+    to(&mut f, keys, 44.8, &[0xB0, 74, 88], learned);
+    f.drain_into(&mut m.monitor, HELD_AT);
     m
 }

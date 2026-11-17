@@ -38,6 +38,7 @@ use mpfree_arp_ui::view as arp_view;
 use mpfree_fx::ids::mixer as mixer_ids;
 use mpfree_fx::StripId;
 use mpfree_seq::steps::{Change, Step, PAGE};
+use mpfree_seq::Cond;
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::time::{Tick, PPQ};
 use mpfree_transport::State;
@@ -349,11 +350,19 @@ pub enum Knob {
     LoopSend,
     LineLevel,
     LoopFilter,
-    /// The step picked in Beats.
+    /// The step picked in Beats, or the step pads held (their Step bank).
     Velocity,
     Length,
     Nudge,
     Chance,
+    /// The step pads held, after Q-LINK (their Trig bank): the trig
+    /// condition, the ratchet and the nudge in ticks.
+    Cond,
+    Ratchet,
+    NudgeTicks,
+    /// No knob: an empty card (the Trig bank's fourth, for the ratchet's
+    /// ramp to come).
+    Empty,
 }
 
 /// A Q-Link turn, for the engines.
@@ -479,6 +488,13 @@ pub struct PlayPage {
     /// The XY pad's logic: the Perform FX pad (the DJ filter across, the
     /// echo up), gliding home when the finger lifts.
     pub xy: mpfree_fx::XyPad,
+    /// STEP SEQ: the sound whose steps the pads are, and their page.
+    pub on_pads: Option<crate::app::StepPads>,
+    /// STEP SEQ: the step pads held (their sound, and the steps, the first
+    /// held first). The Q-Links set them.
+    pub held: Option<(u8, Vec<usize>)>,
+    /// Q-LINK while steps are held: the Trig bank, not the Step bank.
+    pub trig_bank: bool,
 }
 
 impl Default for PlayPage {
@@ -505,6 +521,9 @@ impl Default for PlayPage {
             hits: VecDeque::new(),
             throws: [false; 8],
             xy: mpfree_fx::XyPad::perform(),
+            on_pads: None,
+            held: None,
+            trig_bank: false,
         }
     }
 }
@@ -597,8 +616,16 @@ pub fn position_text(t: &TransportInfo) -> String {
 }
 
 impl PlayPage {
-    /// The Q-Links' targets on the view shown.
+    /// The Q-Links' targets on the view shown: a held step pad's, on any
+    /// view.
     pub fn knobs(&self) -> [Knob; 4] {
+        if self.held.is_some() {
+            return if self.trig_bank {
+                [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Empty]
+            } else {
+                [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance]
+            };
+        }
         match self.view {
             PlayView::Beats if self.selected_step().is_some() => {
                 [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance]
@@ -613,6 +640,44 @@ impl PlayPage {
                 Knob::LoopFilter,
             ],
         }
+    }
+
+    /// The step the Q-Links set: the step pad held first that has a note
+    /// (pad, step, what it is), else the step picked in Beats.
+    pub fn target_step(&self) -> Option<(usize, usize, Step)> {
+        if let Some((sound, steps)) = &self.held {
+            let clip = self.steps.clip.as_ref()?;
+            let row = clip.row(*sound);
+            return steps
+                .iter()
+                .find_map(|&i| Some((usize::from(*sound), i, (*row.get(i)?)?)));
+        }
+        self.selected_step()
+    }
+
+    /// The steps held with a note, as a step action's bits (step 0 the
+    /// lowest), and how many there are.
+    fn held_bits(&self) -> (u128, u32) {
+        let (Some((sound, steps)), Some(clip)) = (&self.held, self.steps.clip.as_ref()) else {
+            return (0, 0);
+        };
+        let row = clip.row(*sound);
+        let bits = steps
+            .iter()
+            .filter(|&&i| i < 128 && row.get(i).copied().flatten().is_some())
+            .fold(0u128, |b, &i| b | (1u128 << i));
+        (bits, bits.count_ones())
+    }
+
+    /// "Step 5", or "Steps 5, 9" when several are held.
+    pub fn held_name(&self) -> Option<String> {
+        let (_, steps) = self.held.as_ref()?;
+        let list: Vec<String> = steps.iter().map(|i| (i + 1).to_string()).collect();
+        Some(if list.len() == 1 {
+            format!("Step {}", list[0])
+        } else {
+            format!("Steps {}", list.join(", "))
+        })
     }
 
     /// The step picked, if it still holds notes.
@@ -709,12 +774,58 @@ impl PlayPage {
                 &db_text(l.line_db),
                 ((l.line_db + 60.0) / 66.0).clamp(0.0, 1.0),
             ),
-            Knob::Velocity | Knob::Length | Knob::Nudge | Knob::Chance => {
-                let Some((pad, i, s)) = self.selected_step() else {
+            Knob::Empty => return QLinkCard::default(),
+            Knob::Velocity
+            | Knob::Length
+            | Knob::Nudge
+            | Knob::Chance
+            | Knob::Cond
+            | Knob::Ratchet
+            | Knob::NudgeTicks => {
+                let Some((pad, i, s)) = self.target_step() else {
                     return QLinkCard::default();
                 };
-                let scope = format!("Step {} · {}", i + 1, self.pad_name(pad));
+                let scope = match self.held_name() {
+                    Some(name) => format!("{name} · {}", self.pad_name(pad)),
+                    None => format!("Step {} · {}", i + 1, self.pad_name(pad)),
+                };
                 match knob {
+                    Knob::Cond => {
+                        let all = Cond::all();
+                        let at = all.iter().position(|&c| c == s.cond).unwrap_or(0);
+                        let text = if s.cond == Cond::Always {
+                            "always".to_string()
+                        } else {
+                            s.cond.to_string()
+                        };
+                        QLinkCard::new(
+                            "Condition",
+                            &scope,
+                            &text,
+                            at as f32 / (all.len() - 1) as f32,
+                        )
+                    }
+                    Knob::Ratchet => QLinkCard::new(
+                        "Ratchet",
+                        &scope,
+                        &if s.ratchet <= 1 {
+                            "off".to_string()
+                        } else {
+                            format!("{}×", s.ratchet)
+                        },
+                        f32::from(s.ratchet.saturating_sub(1))
+                            / f32::from(mpfree_seq::MAX_RATCHET - 1),
+                    ),
+                    Knob::NudgeTicks => {
+                        let mut c = QLinkCard::new(
+                            "Nudge",
+                            &scope,
+                            &format!("{:+} ticks", s.nudge).replace("+0 ticks", "0 ticks"),
+                            (0.5 + s.nudge as f32 / STEP_TICKS as f32).clamp(0.0, 1.0),
+                        );
+                        c.bipolar = true;
+                        c
+                    }
                     Knob::Velocity => QLinkCard::new(
                         "Velocity",
                         &scope,
@@ -819,9 +930,25 @@ impl PlayPage {
                     value: *db,
                 })
             }
-            Knob::Velocity | Knob::Length | Knob::Nudge | Knob::Chance => {
-                let (pad, i, s) = self.selected_step()?;
+            Knob::Empty => return None,
+            Knob::Velocity
+            | Knob::Length
+            | Knob::Nudge
+            | Knob::Chance
+            | Knob::Cond
+            | Knob::Ratchet
+            | Knob::NudgeTicks => {
+                let (pad, i, s) = self.target_step()?;
                 let change = match knob {
+                    Knob::Cond => Change::Cond(s.cond.step(ticks.signum())),
+                    Knob::Ratchet => Change::Ratchet(
+                        (i32::from(s.ratchet) + ticks.signum())
+                            .clamp(1, i32::from(mpfree_seq::MAX_RATCHET))
+                            as u8,
+                    ),
+                    Knob::NudgeTicks => {
+                        Change::Nudge(s.nudge + Tick::from(ticks) * if fine { 1 } else { 2 })
+                    }
                     Knob::Velocity => Change::Velocity(
                         (i32::from(s.velocity) + ticks * if fine { 1 } else { 2 }).clamp(1, 127)
                             as u8,
@@ -844,10 +971,20 @@ impl PlayPage {
                             as u8,
                     ),
                 };
-                let a = StepAction::Change {
-                    pad: pad as u8,
-                    step: i,
-                    change,
+                // Several steps held: they all take it, as one undo.
+                let (bits, n) = self.held_bits();
+                let a = if n > 1 {
+                    StepAction::ChangeSteps {
+                        pad: pad as u8,
+                        steps: bits,
+                        change,
+                    }
+                } else {
+                    StepAction::Change {
+                        pad: pad as u8,
+                        step: i,
+                        change,
+                    }
                 };
                 self.apply_locally(a);
                 Turn::Step(a)
@@ -857,8 +994,10 @@ impl PlayPage {
 
     /// A step change shows at once; the engine's steps follow.
     fn apply_locally(&mut self, a: StepAction) {
-        let StepAction::Change { pad, step, change } = a else {
-            return;
+        let (pad, steps, change) = match a {
+            StepAction::Change { pad, step, change } if step < 128 => (pad, 1u128 << step, change),
+            StepAction::ChangeSteps { pad, steps, change } => (pad, steps, change),
+            _ => return,
         };
         let Some(clip) = self.steps.clip.as_mut() else {
             return;
@@ -866,7 +1005,10 @@ impl PlayPage {
         let Some((_, row)) = clip.rows.iter_mut().find(|(p, _)| *p == pad) else {
             return;
         };
-        if let Some(Some(s)) = row.get_mut(step) {
+        for step in (0..128).filter(|i| steps & (1u128 << i) != 0) {
+            let Some(Some(s)) = row.get_mut(step) else {
+                continue;
+            };
             match change {
                 Change::Velocity(v) => s.velocity = v,
                 Change::Length(t) => s.len = t,
@@ -916,7 +1058,11 @@ impl PlayPage {
         self.steps = s;
         let n = self.steps.clip.as_ref().map_or(16, |c| c.steps);
         let pages = n.div_ceil(PAGE).max(1);
-        self.page = self.page.min(pages - 1);
+        self.page = match self.on_pads {
+            // A clip grown to reach the pads' page shows it.
+            Some(p) => p.page.min(pages - 1),
+            None => self.page.min(pages - 1),
+        };
     }
 
     pub fn hit(&mut self, h: HitInfo) {
@@ -945,12 +1091,21 @@ impl PlayPage {
         let clip = self.steps.clip.as_ref();
         let has_notes = |p: usize| clip.is_some_and(|c| c.row(p as u8).iter().any(Option::is_some));
         let has_sound = |p: usize| self.pads.get(p).is_some_and(|i| i.label.is_some());
-        let mut order: Vec<usize> = (0..16).filter(|&p| has_notes(p)).collect();
-        if !order.contains(&self.last_pad) && has_sound(self.last_pad) {
-            order.push(self.last_pad);
+        // The lane on the pads comes first, so it always shows.
+        let on_pads = self.on_pads.map(|s| usize::from(s.sound));
+        let mut wanted: Vec<usize> = on_pads.into_iter().collect();
+        wanted.extend((0..16).filter(|&p| has_notes(p)));
+        if has_sound(self.last_pad) {
+            wanted.push(self.last_pad);
         }
-        order.extend((0..16).filter(|&p| has_sound(p) && !has_notes(p) && p != self.last_pad));
-        order.extend((0..16).filter(|&p| !has_sound(p) && !has_notes(p) && p != self.last_pad));
+        wanted.extend((0..16).filter(|&p| has_sound(p) && !has_notes(p) && p != self.last_pad));
+        wanted.extend((0..16).filter(|&p| !has_sound(p) && !has_notes(p) && p != self.last_pad));
+        let mut order: Vec<usize> = Vec::with_capacity(16);
+        for p in wanted {
+            if !order.contains(&p) {
+                order.push(p);
+            }
+        }
         let from = self.page * PAGE;
         order
             .into_iter()
@@ -981,7 +1136,11 @@ impl PlayPage {
         let bars = clip.map_or(1, |c| c.steps.div_ceil(16).max(1));
         let pages = clip.map_or(1, |c| c.steps.div_ceil(PAGE).max(1));
         let mut right = format!("1/16 · {bars} bar{}", if bars == 1 { "" } else { "s" });
-        if clip.is_none() {
+        if let Some(s) = self.on_pads {
+            // STEP SEQ: which page the pads are, and its PAD BANK.
+            let letter = (b'A' + (s.page % 4) as u8) as char;
+            right.push_str(&format!(" · pads: page {} · BANK {letter}", s.page + 1));
+        } else if clip.is_none() {
             right.push_str(" · tap a step to start one");
         } else if self.view == PlayView::Beats {
             right.push_str(" · tap a step to edit it");
@@ -1017,10 +1176,45 @@ impl PlayPage {
         if g.selected != selected {
             g.selected = selected;
         }
+        // The step pads held, on the page shown: outlined too.
+        let held: Vec<(usize, usize)> = self
+            .held
+            .as_ref()
+            .map(|(sound, steps)| {
+                steps
+                    .iter()
+                    .filter(|i| *i / PAGE == self.page)
+                    .map(|i| (usize::from(*sound), i % PAGE))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if g.held != held {
+            g.held = held;
+        }
         let length = clip.map_or(0, |c| c.steps);
         if (g.page, g.pages, g.length) != (self.page, pages, length) {
             (g.page, g.pages, g.length) = (self.page, pages, length);
         }
+        let on_pads = self.on_pads.map(|s| usize::from(s.sound));
+        if g.on_pads != on_pads {
+            g.on_pads = on_pads;
+        }
+    }
+
+    /// STEP SEQ turned on or off, or its sound or page changed: Beats
+    /// shows the page the pads are, as far as the clip goes. True when
+    /// the page shown moved.
+    pub fn set_on_pads(&mut self, s: Option<crate::app::StepPads>) -> bool {
+        self.on_pads = s;
+        let Some(s) = s else { return false };
+        let n = self.steps.clip.as_ref().map_or(PAGE, |c| c.steps);
+        let to = s.page.min(n.div_ceil(PAGE).max(1) - 1);
+        let moved = to != self.page;
+        if moved {
+            self.page = to;
+            self.selected = None;
+        }
+        moved
     }
 
     /// The pattern head's ‹ or › (`delta` -1 or 1): the page before or

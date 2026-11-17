@@ -6,6 +6,7 @@
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
+use crate::kit::{self, Blend, FlatRead, Line, Os2};
 use crate::svf::{Segs, Svf, SvfMode};
 use crate::{db_to_gain, defaults, flush, soft};
 
@@ -19,6 +20,9 @@ pub mod ids {
     pub const SATURATION: u16 = 5;
     pub const MIX: u16 = 6;
     pub const FREEZE: u16 = 7;
+    /// How Mix blends: Equal (equal power), Dry first or Linear
+    /// ([`crate::kit::MIX_CURVES`]).
+    pub const MIX_CURVE: u16 = 8;
 }
 
 const SYNCS: &[&str] = &[
@@ -49,7 +53,7 @@ static INFO: NodeInfo = NodeInfo {
     name: "Delay",
     kind: Kind::Effect,
 };
-static PARAMS: [ParamInfo; 8] = [
+static PARAMS: [ParamInfo; 9] = [
     ParamInfo {
         id: 0,
         name: "Sync",
@@ -138,70 +142,36 @@ static PARAMS: [ParamInfo; 8] = [
         curve: Curve::Toggle,
         readonly: false,
     },
+    ParamInfo {
+        id: 8,
+        name: "Mix curve",
+        group: "Output",
+        min: 0.0,
+        max: 2.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(kit::MIX_CURVES),
+        readonly: false,
+    },
 ];
-
-/// One channel's delay line with a cubic (Hermite) fractional read.
-struct Line {
-    buf: Vec<f32>,
-    w: usize,
-}
-
-impl Line {
-    fn new(len: usize) -> Line {
-        Line {
-            buf: vec![0.0; len.max(8)],
-            w: 0,
-        }
-    }
-    #[inline]
-    fn write(&mut self, x: f32) {
-        self.buf[self.w] = x;
-        self.w += 1;
-        if self.w == self.buf.len() {
-            self.w = 0;
-        }
-    }
-    /// The signal `d` frames ago (`d` = 1 is the last sample written),
-    /// interpolated; `d` is kept at 2 or more so every point is in the past.
-    #[inline]
-    fn read(&self, d: f32) -> f32 {
-        let n = self.buf.len();
-        let d = d.clamp(2.0, (n - 3) as f32);
-        // Truncation is floor here (d > 0), with no library call.
-        let di = d as usize as f32;
-        let t = d - di;
-        // `w + n - k` lies in [w + 1, w + n - 1] for 1 <= k < n, so one
-        // conditional subtract wraps it (no integer division per read).
-        let at = |k: usize| -> f32 {
-            let i = self.w + n - k;
-            self.buf[if i >= n { i - n } else { i }]
-        };
-        let k = di as usize;
-        // Points at delays k-1, k, k+1, k+2; t moves from k toward k+1.
-        let (x0, x1, x2, x3) = (at(k - 1), at(k), at(k + 1), at(k + 2));
-        let c1 = 0.5 * (x2 - x0);
-        let c2 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
-        let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
-        ((c3 * t + c2) * t + c1) * t + x1
-    }
-    fn clear(&mut self) {
-        self.buf.fill(0.0);
-        self.w = 0;
-    }
-}
 
 /// Stereo delay with sync, ping-pong, filtered and saturated feedback, and
 /// freeze.
 pub struct Delay {
-    v: [f32; 8],
+    v: [f32; 9],
     rate: u32,
     frames: Smooth,
     fb: Smooth,
     log_tone: Smooth,
     sat: Smooth,
-    mix: Smooth,
+    blend: Blend,
     frozen: Smooth,
     lines: [Line; 2],
+    /// Each side's read: flat while the time holds still.
+    reads: [FlatRead; 2],
+    /// Each side's saturator, at twice the rate so its aliases don't
+    /// circle the loop.
+    os: [Os2; 2],
     tone: Svf,
     hp: Svf,
     /// The tempo of the last block, for `reset`.
@@ -231,9 +201,11 @@ impl Delay {
             fb: Smooth::new(v[2] / 100.0),
             log_tone: Smooth::new(v[4].log2()),
             sat: Smooth::new(v[5] / 100.0),
-            mix: Smooth::new(v[6] / 100.0),
+            blend: Blend::new(v[6] / 100.0, v[8] as usize),
             frozen: Smooth::new(0.0),
             lines: [Line::new(8), Line::new(8)],
+            reads: [FlatRead::default(); 2],
+            os: [Os2::new(), Os2::new()],
             tone: Svf::default(),
             hp: Svf::default(),
             bpm: 120.0,
@@ -252,7 +224,8 @@ impl Delay {
             ids::FEEDBACK => self.fb.target = v / 100.0,
             ids::TONE => self.log_tone.target = v.log2(),
             ids::SATURATION => self.sat.target = v / 100.0,
-            ids::MIX => self.mix.target = v / 100.0,
+            ids::MIX => self.blend.set_mix(v / 100.0),
+            ids::MIX_CURVE => self.blend.set_curve(v),
             ids::FREEZE => self.frozen.target = v,
             _ => {}
         }
@@ -295,13 +268,16 @@ impl Delay {
                 drive = db_to_gain(18.0 * sat);
                 undrive = 1.0 / drive;
             }
-            let mix = self.mix.next();
-            let ya = self.lines[0].read(d);
-            let yb = self.lines[1].read(d);
+            let g = self.blend.next();
+            // `d` frames back from the frame about to be written.
+            let still = self.frames.settled();
+            let back = d - 1.0;
+            let ya = self.reads[0].read(&self.lines[0], back, still);
+            let yb = self.reads[1].read(&self.lines[1], back, still);
             let mut loopv = [ya, yb];
             for (c, y) in loopv.iter_mut().enumerate() {
                 let f = self.tone.run(c, self.hp.run(c, *y));
-                let s = soft(f * drive) * undrive;
+                let s = self.os[c].run(f * drive, soft) * undrive;
                 // Frozen: the loop keeps the raw repeats, so it never decays.
                 *y = flush(s + fz * (*y - s));
             }
@@ -312,10 +288,10 @@ impl Delay {
             } else {
                 (x0 * inp + fb * loopv[0], x1 * inp + fb * loopv[1])
             };
-            self.lines[0].write(wa);
-            self.lines[1].write(wb);
-            l[i] = crate::lerp(x0, ya, mix);
-            r[i] = crate::lerp(x1, yb, mix);
+            self.lines[0].push(wa);
+            self.lines[1].push(wb);
+            l[i] = kit::blend(x0, ya, g);
+            r[i] = kit::blend(x1, yb, g);
         }
     }
 }
@@ -340,15 +316,15 @@ impl Node for Delay {
             self.lines = [Line::new(len), Line::new(len)];
         }
         self.rate = rate;
+        for r in &mut self.reads {
+            r.set_rate(rate);
+            r.reset(true);
+        }
         self.frames.set_time(rate, 60.0);
-        for s in [
-            &mut self.fb,
-            &mut self.log_tone,
-            &mut self.sat,
-            &mut self.mix,
-        ] {
+        for s in [&mut self.fb, &mut self.log_tone, &mut self.sat] {
             s.set_time(rate, 20.0);
         }
+        self.blend.set_time(rate, 20.0);
         self.frozen.set_time(rate, 30.0);
         self.frames.snap(self.target_frames(self.bpm));
         self.hp.set(SvfMode::HighPass, 60.0, 0.707, 0.0, rate);
@@ -365,14 +341,20 @@ impl Node for Delay {
             &mut self.fb,
             &mut self.log_tone,
             &mut self.sat,
-            &mut self.mix,
             &mut self.frozen,
         ] {
             s.snap(s.target);
         }
+        self.blend.snap();
         self.frames.snap(self.target_frames(self.bpm));
         for line in &mut self.lines {
             line.clear();
+        }
+        for r in &mut self.reads {
+            r.reset(true);
+        }
+        for o in &mut self.os {
+            o.reset();
         }
         self.tone.reset();
         self.hp.reset();
@@ -405,14 +387,25 @@ impl Node for Delay {
         if self.v[7] >= 0.5 {
             return u32::MAX;
         }
-        let fb = (self.v[2] / 100.0).clamp(0.0, 0.999);
-        let d = self.frames.target.max(1.0);
-        // Repeats until 60 dB down, capped at 30 s.
-        let repeats = if fb <= 0.001 {
+        // The loop's gain is at most Feedback: the filters and the
+        // saturation (its gain is 1 on quiet repeats) only take away. At
+        // 100 % or more it never dies away on its own, so it rings on
+        // until Feedback comes down.
+        let fb = self.v[2] / 100.0;
+        if fb >= 1.0 {
+            return u32::MAX;
+        }
+        // The time as now set (a change made between blocks lands on
+        // `frames` only in the next block), or the one still gliding away.
+        let d = self.target_frames(self.bpm).max(self.frames.value).max(1.0);
+        // The input's own last echo, then passes until 60 dB down (one at
+        // least, for the filters to ring out), capped at 30 s.
+        let passes = if fb <= 0.001 {
             1.0
         } else {
-            (-60.0 / (20.0 * fb.log10())).ceil() + 1.0
+            (-60.0 / (20.0 * fb.log10())).ceil()
         };
+        let repeats = passes + 1.0;
         (d * repeats).min(30.0 * self.rate as f32) as u32
     }
 }

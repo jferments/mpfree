@@ -17,8 +17,11 @@ const PIECE: usize = 512;
 pub struct Repeat {
     /// 1 for the first echo.
     pub n: usize,
-    /// Where it lands, in frames from the impulse (the energy centroid of
-    /// the repeat, so a fractional time reads as a fraction).
+    /// Where it lands, in frames from the impulse: its group delay from
+    /// 1 to 4 kHz (the slope of its phase), so a fractional time reads as
+    /// a fraction, an all-pass read reads at its true delay (its energy
+    /// centroid sits up to half a frame late) and a low cut's long, quiet
+    /// tail doesn't pull it.
     pub frame: f64,
     /// Its level at each of [`BANDS`] against the impulse, dB (both sides'
     /// power, so a repeat on one side reads 3 dB under one on both).
@@ -57,17 +60,10 @@ pub fn repeats(ir: &Stereo, amp: f64, period: f64, count: usize) -> Vec<Repeat> 
         if energy(peak) <= 1e-24 * amp * amp {
             break;
         }
-        // The energy centroid within 16 frames of the peak.
-        let (a, b) = (peak.saturating_sub(16), (peak + 17).min(n));
-        let (mut sum, mut w) = (0.0, 0.0);
-        for i in a..b {
-            sum += energy(i) * i as f64;
-            w += energy(i);
-        }
-        let frame = sum / w;
         // The repeat's spectrum: PIECE frames centred on it, unwindowed
         // (the echo sits whole inside, the neighbours far outside).
         let start = peak.saturating_sub(PIECE / 2);
+        let frame = start as f64 + group_delay(ir, start, &fft, rate);
         let spectrum = |x: &[f64]| -> Vec<f64> {
             let mut re = vec![0.0; fft.len()];
             let mut im = vec![0.0; fft.len()];
@@ -104,6 +100,41 @@ pub fn repeats(ir: &Stereo, amp: f64, period: f64, count: usize) -> Vec<Repeat> 
         });
     }
     out
+}
+
+/// The group delay of both sides summed, `PIECE` frames from `start`,
+/// in frames: a straight line through the unwrapped phase of every bin
+/// from 1 to 4 kHz.
+fn group_delay(ir: &Stereo, start: usize, fft: &Fft, rate: f64) -> f64 {
+    let len = fft.len();
+    let mut re = vec![0.0; len];
+    let mut im = vec![0.0; len];
+    for j in 0..PIECE.min(ir.len().saturating_sub(start)) {
+        re[j] = ir.left[start + j] + ir.right[start + j];
+    }
+    fft.forward(&mut re, &mut im);
+    let bin = |hz: f64| (hz * len as f64 / rate).round() as usize;
+    let (mut sx, mut sy, mut sxx, mut sxy, mut n) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut was: Option<f64> = None;
+    for k in bin(1000.0)..=bin(4000.0) {
+        let mut p = im[k].atan2(re[k]);
+        if let Some(w) = was {
+            while p - w > std::f64::consts::PI {
+                p -= std::f64::consts::TAU;
+            }
+            while p - w < -std::f64::consts::PI {
+                p += std::f64::consts::TAU;
+            }
+        }
+        was = Some(p);
+        let x = std::f64::consts::TAU * k as f64 / len as f64;
+        sx += x;
+        sy += p;
+        sxx += x * x;
+        sxy += x * p;
+        n += 1.0;
+    }
+    -(n * sxy - sx * sy) / (n * sxx - sx * sx)
 }
 
 /// How much darker each repeat gets at band `b` than the one before,
@@ -174,6 +205,39 @@ mod tests {
         // Each repeat 0.8 times the last at 1 kHz, plus the filter.
         let step = reps[1].gain_db[0] - reps[0].gain_db[0];
         assert!((step - (20.0 * 0.8f64.log10() + h(1000.0))).abs() < 0.01);
+    }
+
+    #[test]
+    fn an_all_pass_read_half_a_frame_late_reads_at_its_delay() {
+        // Repeats every 3000.5 frames, each through a first-order all-pass
+        // (Thiran) for its fraction, as the delays read: from the whole
+        // frame `w` with a fraction d from 0.5 to 1.5 past it, eta =
+        // (1 - d) / (1 + d). At half a frame the energy centroid sits half
+        // a frame late; the group delay is on time.
+        let period = 3000.5;
+        let mut ir = vec![0.0; 4 * 3001 + 64];
+        for k in 1..=3usize {
+            let at = k as f64 * period;
+            let mut w = at.floor();
+            if at - w < 0.5 {
+                w -= 1.0;
+            }
+            let d = at - w;
+            let eta = (1.0 - d) / (1.0 + d);
+            let g = 0.5f64.powi(k as i32);
+            // The all-pass's impulse response: eta, then (1 - eta^2)
+            // (-eta)^(n - 1).
+            ir[w as usize] += eta * g;
+            for n in 1..40 {
+                ir[w as usize + n] += (1.0 - eta * eta) * (-eta).powi(n as i32 - 1) * g;
+            }
+        }
+        let ir = Stereo::mono(ir, 44_100);
+        let reps = repeats(&ir, 1.0, period, 3);
+        assert_eq!(reps.len(), 3);
+        // Within 0.02 frame (the all-pass is exact at low frequencies and
+        // a hundredth of a frame later by 4 kHz).
+        assert!(worst_time_error(&reps, period) < 0.02, "{reps:?}");
     }
 
     #[test]
