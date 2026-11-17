@@ -15,6 +15,8 @@
 //! dest 0
 //! swing 240 58
 //! solo
+//! transpose 5 key
+//! follows
 //! clip 0 7680 Beat 1
 //! speed 1 1
 //! launch ticks 960
@@ -95,6 +97,13 @@ pub fn to_text(p: &Project) -> String {
         }
         if let Some(input) = t.loops() {
             let _ = writeln!(s, "loops {}", input.word());
+        }
+        if !t.transpose.is_none() {
+            let key = if t.transpose.in_key { " key" } else { "" };
+            let _ = writeln!(s, "transpose {}{key}", t.transpose.by);
+        }
+        if t.follows {
+            let _ = writeln!(s, "follows");
         }
         for (slot, c) in t.slots.iter().enumerate() {
             if let Some(c) = c {
@@ -409,6 +418,20 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             }
             ("mute", At::Track) => last(&mut p).mute = flag(w.next()).ok_or_else(|| bad("mute"))?,
             ("solo", At::Track) => last(&mut p).solo = true,
+            ("transpose", At::Track) => {
+                let by: i8 = num(w.next()).ok_or_else(|| bad("transpose"))?;
+                let in_key = match w.next() {
+                    None => false,
+                    Some("key") => true,
+                    Some(_) => return Err(bad("transpose")),
+                };
+                let t = crate::Transpose { by, in_key };
+                if !t.ok() {
+                    return Err(bad("transpose"));
+                }
+                last(&mut p).transpose = t
+            }
+            ("follows", At::Track) => last(&mut p).follows = true,
             ("arp", At::Track) => {
                 last(&mut p).through_arp = flag(w.next()).ok_or_else(|| bad("arp"))?
             }
@@ -752,6 +775,12 @@ mod tests {
         p.tracks[2].through_arp = true;
         p.tracks[2].record_touch = false;
         p.tracks[2].record_quantise = Some(160);
+        p.tracks[1].transpose = crate::Transpose::semitones(-7);
+        p.tracks[2].transpose = crate::Transpose {
+            by: 3,
+            in_key: true,
+        };
+        p.tracks[2].follows = true;
         p.launch = crate::LaunchGrid::Bars(4);
         let mut c = Clip::new("Beat with  spaces", 7680);
         c.speed = Speed::new(2, 1).unwrap();
@@ -901,6 +930,27 @@ mod tests {
         for bad in ["list 16 1", "list 0 0", "list 0 100", "list 0", "list x 1"] {
             assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
         }
+        // A track's transpose (S4): as written writes nothing; past two
+        // octaves, or an unknown word after it, is refused.
+        assert!(!to_text(&full_tracks_plain()).contains("transpose"));
+        for bad in [
+            "transpose 25",
+            "transpose -25",
+            "transpose 3 scale",
+            "transpose x",
+        ] {
+            let text = format!("{FORMAT}\ntrack Bass\ndest 0\n{bad}\n");
+            assert!(from_text(&text).is_err(), "{bad}");
+        }
+    }
+
+    /// Three plain tracks: nothing transposed, nothing following.
+    fn full_tracks_plain() -> Project {
+        let mut p = Project::new();
+        for i in 0..3 {
+            p.tracks.push(Track::new("t", i));
+        }
+        p
     }
 
     #[test]
