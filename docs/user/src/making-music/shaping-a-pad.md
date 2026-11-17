@@ -115,12 +115,16 @@ Grains play only when the pad's **Mode** is **Granular**. Until then a button ov
 
 ## FX: effects on one pad, or on the whole kit
 
-**FX**, in the Sample tab's row of pages, opens the **chain editor** (see [Mixing and effects](effects.md#adding-an-effect-the-chain-editor)) on the pad you are editing, in the Sample tab's place. **Back** comes back to the Sample tab.
+**FX**, in the Sample tab's row of pages, shows the effects on the pad you are editing as a row of pedals under its sound.
 
-- **The pad's own effects.** The editor opens on the pad's own channel, so an effect added there plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 slots (**Slot 1** to **Slot 16**) is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
-- **The whole kit's effects.** The switch at the top goes to **Drums**, the track every pad plays into, so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](effects.md#macros)), and that macro's Q-Link plays them all at once.
+- **The pedals.** Each effect on the pad's own channel is a pedal: its number, its name and what it is set to, an **On** switch, and its first three knobs. Four show at once; with more, **Effects ‹ ›** on the right moves along them. Along the foot of the sound, a line shows the way it goes: the sound, each effect in order (one switched off is faint), then **Drums**.
+- **Turning them.** Touch a pedal to pick it: it is outlined, and **Q-Links 1 to 4** turn its four main knobs. Drag a knob up or down, or touch it and turn the data wheel; a finger resting on a knob lets the wheel turn it until you lift. SHIFT turns a Q-Link finer.
+- **+ Add effect** opens the effect picker on the pad's channel, and **Whole chain** the **chain editor** (see [Mixing and effects](effects.md#adding-an-effect-the-chain-editor)) on it, with every control of every effect, their order, presets and modulation. Both open in the Sample tab's place, and **Back** comes back to the Sample tab.
 
-The effects belong to the pad's place in the kit, not to its sound: put another sound on the pad and it plays through the same effects. Only bank A's 16 pads have a channel of their own for now. **FX** on a pad past them says so in the log.
+- **The pad's own effects.** The pedals are the pad's own channel's, so an effect added there plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 slots (**Slot 1** to **Slot 16**) is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
+- **The whole kit's effects.** In **Whole chain**, the switch at the top goes to **Drums**, the track every pad plays into, so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](effects.md#macros)), and that macro's Q-Link plays them all at once.
+
+The effects belong to the pad's place in the kit, not to its sound: put another sound on the pad and it plays through the same effects. Only kit 1's bank A pads (A1 to A16) have a channel of their own for now. On any other pad, the FX page says so and has no pedals.
 
 ## Playing a kit on keys
 
