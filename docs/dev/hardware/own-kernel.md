@@ -1,6 +1,6 @@
 # MPFree's own kernel on the MPC One (plan)
 
-**As of 2026-11-16** · **Status:** plan, nothing built yet. The owner chose this as the next step on the chain route on 2026-11-15 ("merge #374, then our own kernel"); three choices below are still the owner's. · **Builds on:** the chain to the stick's own device tree ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in), #374) and its one-try guard ([step 7b](stick-autoboot.md#step-7b-round-2026-11-15-zip-215433z-the-guard-passed), #381), both merged and opt-in.
+**As of 2026-11-16** · **Status:** plan; step 1's read-only survey tools are built, and no kernel yet. The owner chose this as the next step on the chain route on 2026-11-15 ("merge #374, then our own kernel"), and made the [three choices](#the-owners-decisions-2026-11-16) on 2026-11-16: 6.18 long-term with the RT patch, no request to inMusic for now, builds on the CI runners in a pinned container. · **Builds on:** the chain to the stick's own device tree ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in), #374) and its one-try guard ([step 7b](stick-autoboot.md#step-7b-round-2026-11-15-zip-215433z-the-guard-passed), #381), both merged and opt-in.
 
 ## Goal
 
@@ -29,7 +29,8 @@ Most of the MPC One runs on drivers that are in mainline Linux. The parts that n
 Other facts that shape the plan:
 
 - Akai's full kernel configuration is built into its `zImage` (IKCONFIG). [`offline-kernel-config.py`](../../../tools/mpc-one/offline-kernel-config.py) reads it on the workstation, so our first kernel can start from Akai's exact settings.
-- Cloud sessions can't reach kernel.org (the proxy refuses it) and have no ARM cross compiler or `dtc`, so kernels are built on the owner's workstation, which already cross-compiles MPFree for the MPC.
+- Cloud sessions can't reach kernel.org (the proxy refuses it) and have no ARM cross compiler or `dtc`. By the owner's choice, kernels are built by CI on the self-hosted mpfree-ci runners, in a pinned container, so agents can build and fix them without the owner; the owner fetches the hash-checked result for the stick. The first build run also shows whether the runners reach kernel.org and have Docker or Podman.
+- Modules are very probably not required to be signed: an offline read of 3.10.0's kernel (2026-11-10) found no `CONFIG_MODULE_SIG`, and 3.10.1 runs the same release (`6.18.44-az01-2026-08-10-rt6`). Step 1 settles it for 3.10.1's own kernel file and running kernel. It matters only for adding modules to Akai's kernel (the kexec-file route); our own kernel builds its own modules.
 - On the chain's second kernel LoadPin is enforcing and pins the stick's root, and modules load from it (step 7). Our modules therefore go on the stick's root.
 - The first kernel loads the second with the old `kexec_load` call, with `loadpin.enforce=0` on its command line (step 7). That call has no signature check, so our `zImage` needs no signature.
 - Sources for the table: [audio and MIDI survey](audio-midi-survey.md), [touchscreen and display](touchscreen-display.md), and the device trees read with [`offline-dtb.py`](../../../tools/mpc-one/offline-dtb.py).
@@ -49,15 +50,14 @@ Our kernel runs from RAM only and never touches the MPC's own storage. Pulling t
 
 Each step is its own small PR with owner blocks, verified before the owner gets them. Each keeps Akai's kernel copy as the default for `--chain`; our kernel is used only when the stick is built with a new opt-in option, so reverting is one rebuild.
 
-1. **Read-only survey (no change to the MPC).**
-   - Akai's kernel config, read offline from the `zImage` with `offline-kernel-config.py`.
-   - The device tree nodes for the display, sound, touch and backlight, with `offline-dtb.py show`.
-   - A new read-only script over SSH that lists every device and the driver bound to it (`/sys/bus/*/devices/*/driver`), so nothing Akai's kernel relies on is missed. The existing read-only scripts list modules and USB drivers only.
-   - Also answer the open question in [boot routes](boot-routes.md#what-the-next-runs-answer): whether `CONFIG_MODULE_SIG_FORCE` is set.
+1. **Read-only survey (no change to the MPC).** Tools built 2026-11-16; [blocks for the owner](#step-1-blocks-for-the-owner) below.
+   - [`offline-own-kernel-survey.py`](../../../tools/mpc-one/offline-own-kernel-survey.py) (workstation only, read-only) reads Akai's kernel file, board file and module lists out of the root filesystem image the stick is built from. It prints the kernel's build settings (the symbols that matter for our kernel first, then the whole config, our starting point), whether modules must be signed, every symbol, module and device-tree node with a vendor name, and for every node of the board file its status and which of Akai's drivers claims it (from the device-tree aliases in the module lists). The nodes for the sound, screen, backlight, touch, GPU, USB, Ethernet and storage follow in full.
+   - [`collect-over-ssh.sh --drivers`](../guides/survey-tools.md) (read-only, Akai's system on port 22) lists every device on every bus with the driver bound to it, the driver's module, and the device-tree node it comes from; the loaded modules, sound cards, screen, backlight, inputs and regulators; the kernel's messages about firmware and failed probes; and the running kernel's build settings from `/proc/config.gz`, with a hash that matches the offline survey's for the same kernel. `--stick-drivers` runs the same script on the stick's system (port 2222), so a `--chain` stick's second kernel (the stick's own device tree) can be compared with Akai's system line by line.
+   - Together they answer the open question in [boot routes](boot-routes.md#what-the-next-runs-answer): whether `CONFIG_MODULE_SIG_FORCE` is set.
    - Result: this page gets the full parts list and the config we start from.
 2. **First own kernel, no sound yet.**
    - Linux 6.18.y with the matching PREEMPT_RT patch, Akai's config as the starting point, minus the MMC drivers and Akai's own drivers.
-   - Built on the workstation by a pinned script in the repository that checks the source hashes.
+   - Built by CI on the mpfree-ci runners, in a pinned container, by a script in the repository that checks the source hashes (kernel.org's signed tarball and the RT patch). The owner fetches the result and checks its hash before the stick builder takes it.
    - The stick builder gets an opt-in option for our kernel and its modules (modules on the stick's root).
    - Passes when it boots on two power-ons with Ethernet and SSH, LoadPin enforcing, no `mmcblk`, the `--app-user` privileges and unchanged boot hashes. The screen works if the panel is mainline. No sound is expected, and the pad player says so.
 3. **Sound.** A replacement for Akai's sound driver (`simple-audio-card` plus a small codec driver for the enable, mute and reset pins), with care over pops at start and stop. Passes with the same latency and underrun measurements as step 7 (8.70 ms pad to sound, 0 underruns) and no audible pop.
@@ -65,15 +65,35 @@ Each step is its own small PR with owner blocks, verified before the owner gets 
 5. **Tuning.** Trim modules, add any firmware the hardware needs, and set the real-time options (timer, CPU frequency, IRQ threads) for MPFree.
 6. **More power-ons, then the owner's decision on the default.** Repeated power-ons with the guard, a comparison with Akai's kernel on the same tests, then a separate small PR if the owner chooses to make the chain the default.
 
-## Decisions for the owner
+## The owner's decisions (2026-11-16)
 
-None blocks the read-only survey in step 1.
-
-| Decision | Options | Recommendation |
+| Decision | Options that were offered | The owner chose |
 | --- | --- | --- |
-| Which kernel version to start from | **6.18.y with the PREEMPT_RT patch**, the series Akai runs, or **mainline 7.1 or later**, where PREEMPT_RT is built in for 32-bit ARM | 6.18.y-rt first, so only one thing changes at a time (our config and drivers, not the kernel version). Mainline can be a later step. |
-| Ask inMusic for their kernel source | Akai ships a GPL kernel, so the source is owed on request. It would include their sound driver and probably the panel driver. | Ask, but don't wait for it: step 3 can go ahead with our own replacement. It is a message outside the project, so the owner sends it. |
-| How builds run on the workstation | A pinned container image (Docker or Podman), or a cross compiler installed directly | The container, so every build uses the same tools and the result can be checked against a hash. |
+| Which kernel version to start from | **6.18.y with the PREEMPT_RT patch**, the series Akai runs, or **mainline 7.1 or later**, where PREEMPT_RT is built in for 32-bit ARM (since 7.1, June 2026) | **6.18 long-term with the RT patch**, so only one thing changes at a time (our config and drivers, not the kernel version). Mainline can be a later step, as a rebuild. |
+| Ask inMusic for their kernel source | Akai ships a GPL kernel, so the source is owed on request; it would include their sound driver and probably the panel driver | **Not now.** The sound driver (and the panel's start-up, if it needs one) is written from the device tree and our own measurements. |
+| Where builds run | A pinned container on the self-hosted CI runners; a pinned container on the owner's workstation; or a cross compiler installed there | **A pinned container on the CI runners**, so agents can build and fix kernels without the owner, and every build is the same and checkable by hash. |
+
+## Step 1: blocks for the owner
+
+Both blocks are **read-only**: the first runs on the workstation only, the second reads the MPC over SSH and changes nothing on it. They need no stick. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable, with developer mode's host key recorded (block Q1). Neither asks for a password. Until this pull request is merged, they fetch its branch; after that, `main` works the same.
+
+**Block K1.1: update, check, the offline survey** (workstation only; nothing contacts the MPC). It reads the image the stick is built from (the newest `~/mpfree-work/akai-unpacked-*` folder) with `debugfs`, read-only.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin claude/project-thread-5ua3l6:refs/remotes/origin/claude/project-thread-5ua3l6 && git switch --no-track -C own-kernel origin/claude/project-thread-5ua3l6 && git log --oneline -1 && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_own_kernel_survey.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_drivers.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run own-kernel-survey -- python3 tools/mpc-one/offline-own-kernel-survey.py
+```
+
+It must say `LOCAL-CHECKS-OK`, then `kernel: /boot/zImage-6.18.44-az01-2026-08-10-rt6, …` and end with `END OF OWN KERNEL SURVEY`. On `STOP: …`, send the zip (below) anyway.
+
+**Block K1.2: the drivers of Akai's system, then the zip** (read-only on the MPC, port 22; switch the MPC on without the stick first).
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run drivers-akai -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --drivers ; python3 tools/mpc-one/results.py zip
+```
+
+It must end with `SUCCESS: …mpc-one-drivers-….txt`. Send the zip. The second kernel's side (`--stick-drivers`) is read in the next chain round ([step 7c](stick-autoboot.md#blocks-for-the-owner-step-7c-more-power-ons)), because it needs a `--chain` power-on.
+
+**Passes when** both reports end with their `END OF …` line, and the `sha256 of the whole config` lines of the two are the same (the running kernel is the image's). The `signed modules:` line answers the open question.
 
 ## Risks
 
@@ -82,7 +102,7 @@ None blocks the read-only survey in step 1.
 | Sound without Akai's driver | Pops at start or stop, or wrong levels | Test at low volume first; switch the mute pin before the clocks start and after they stop; measure latency and underruns against step 7. |
 | A kernel that fails early | A dark screen and no log, because the log partition is not mounted yet | The owner switches off; the guard skips the chain on the next power-on. Keeping the failed boot's messages in RAM (ramoops) would let the next boot save them to the stick. |
 | Panel driver not in mainline | No picture, while SSH and sound still work | Port the panel's start-up sequence in step 4; MPFree stays usable over SSH meanwhile. |
-| Ethernet link timing | One link retry on some power-ons (`Failed to reset the dma`), as in steps 7 and 7b and earlier kexec boots | Watch it each round; our kernel can change it either way. |
+| Ethernet link timing | One link retry on some power-ons (`Failed to reset the dma`), as in steps 7 and 7b and earlier kexec boots | Since 2026-11-16 the stick starts eth0 again 2 s after that failure instead of at 20 s. Watch it each round; our kernel can change it either way (a PHY reset just before the first start is a candidate fix). |
 | Keeping the kernel up to date | Security and stable fixes land upstream | The build script makes a rebuild one command; follow the 6.18 stable and RT releases. |
 | Akai changes MPC OS | A new first kernel that refuses the chain | The chain stops at the first kernel and MPFree starts there, as today; the soft-reboot stays the fallback. |
 
