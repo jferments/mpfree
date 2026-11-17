@@ -4,8 +4,8 @@
 //! apart from system-wide ones):
 //!
 //! - **The rig** (`MidiSetup::rig`): each port's input (Plays tracks, Learn
-//!   only, Both), what it ignores and its gear's delay, and the controls
-//!   learned for every project. They describe the gear on the desk, so they
+//!   only, Both), what it ignores, its gear's delay and the name given to
+//!   it, and the controls learned for every project. They describe the gear on the desk, so they
 //!   are kept here for every project, in the store as `files/midi/rig.txt`.
 //! - **The project** (`MidiSetup::project`): each track's "Plays on", the
 //!   routes and thru, Tempo from and following, each port's clock out, the

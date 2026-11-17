@@ -35,6 +35,10 @@ use crate::output::MAX_TRACKS;
 /// The 5-pin MIDI jacks' name in a project.
 pub const DIN_NAME: &str = "MIDI";
 
+/// What the screens call the 5-pin jacks, as the MPC's panel does. They
+/// can't be renamed, and no other port can take these names.
+pub const DIN_SHOWN: [&str; 2] = ["MIDI In", "MIDI Out"];
+
 /// What a port's input does. Akai calls these Global, Control and Track;
 /// MPFree says what each does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -240,6 +244,9 @@ pub const MAX_DELAY_TENTHS: u16 = 1000;
 /// The port page's - and + step, in tenths of a ms.
 pub const DELAY_STEP_TENTHS: u16 = 5;
 
+/// The most characters a port's shown name ([`PortSetup::shown`]) has.
+pub const MAX_SHOWN: usize = 24;
+
 /// One port's settings. A port with none of its own uses
 /// [`PortSetup::new`]'s defaults. Its clock out is the project's; the rest
 /// is the rig's ([`MidiSetup::rig`]).
@@ -254,6 +261,12 @@ pub struct PortSetup {
     /// tenths of a ms (its MIDI and its own processing): MIDI out sends
     /// this much early, so it lands on the beat. 0 to [`MAX_DELAY_TENTHS`].
     pub delay_tenths: u16,
+    /// The name the musician gave it on its page (board 6's Name: "Juno"
+    /// for a "USB MIDI Interface"), shown on every screen in place of
+    /// `name`; empty shows `name`. `name` stays what the project's routes,
+    /// tracks and learned controls use, so a renamed port keeps them. The
+    /// rig's: the same in every project.
+    pub shown: String,
 }
 
 impl PortSetup {
@@ -264,6 +277,7 @@ impl PortSetup {
             clock_out: ClockOut::default(),
             ignore: IgnoreSet::NONE,
             delay_tenths: 0,
+            shown: String::new(),
         }
     }
 
@@ -342,6 +356,16 @@ impl TrackRoute {
         }
     }
 
+    /// [`TrackRoute::source`] with the port by its name on screen
+    /// ([`MidiSetup::shown`]).
+    pub fn source_in(&self, setup: &MidiSetup) -> String {
+        let port = setup.shown(&self.port);
+        match self.channel {
+            Some(c) => format!("{port} · ch {}", c + 1),
+            None => format!("{port} · all channels"),
+        }
+    }
+
     fn text(&self) -> String {
         format!("track {} < {}", u16::from(self.track) + 1, self.source())
     }
@@ -397,6 +421,16 @@ impl ThruRoute {
         match self.channel {
             Some(c) => format!("{} · ch {}", self.from, c + 1),
             None => format!("{} · all channels", self.from),
+        }
+    }
+
+    /// [`ThruRoute::source`] with the port by its name on screen
+    /// ([`MidiSetup::shown`]).
+    pub fn source_in(&self, setup: &MidiSetup) -> String {
+        let port = setup.shown(&self.from);
+        match self.channel {
+            Some(c) => format!("{port} · ch {}", c + 1),
+            None => format!("{port} · all channels"),
         }
     }
 
@@ -537,6 +571,53 @@ impl MidiSetup {
         }
     }
 
+    /// The name the screens show for the port named `name`: the one the
+    /// musician gave it ([`PortSetup::shown`]), else `name`.
+    pub fn shown<'a>(&'a self, name: &'a str) -> &'a str {
+        self.ports
+            .iter()
+            .find(|p| p.name == name && !p.shown.is_empty())
+            .map_or(name, |p| p.shown.as_str())
+    }
+
+    /// The port page's Name: the port named `name` shows as `typed`
+    /// (trimmed) from now on, in every project. Its own name, or nothing,
+    /// takes the given one off. Refused, with why, when it is longer than
+    /// [`MAX_SHOWN`] or another port is called that (by its own name or
+    /// a given one, whatever the capitals, or the 5-pin jacks'
+    /// [`DIN_SHOWN`]), so no two ports look alike. `known` are the ports
+    /// plugged in now, which may have no settings.
+    pub fn set_shown<'a>(
+        &mut self,
+        name: &str,
+        typed: &str,
+        known: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), String> {
+        let typed = typed.trim();
+        if typed.chars().count() > MAX_SHOWN {
+            return Err(format!("A port's name has at most {MAX_SHOWN} characters"));
+        }
+        let shown = if typed.is_empty() || typed == name {
+            ""
+        } else {
+            typed
+        };
+        let same = |other: &str| other.to_lowercase() == typed.to_lowercase();
+        let others: Vec<String> = self
+            .ports
+            .iter()
+            .map(|p| p.name.clone())
+            .chain(known.into_iter().map(str::to_string))
+            .chain([DIN_NAME].into_iter().chain(DIN_SHOWN).map(str::to_string))
+            .filter(|n| n != name)
+            .collect();
+        if others.iter().any(|o| same(o) || same(self.shown(o))) {
+            return Err(format!("Another port is called {typed}: pick another name"));
+        }
+        self.set_port(name, |p| p.shown = shown.to_string());
+        Ok(())
+    }
+
     /// A control was learned: it replaces one learned before on the same
     /// control (a control moves one thing). False when the project has
     /// [`MAX_LEARNED`] already.
@@ -645,8 +726,8 @@ impl MidiSetup {
     /// The settings that belong to the song, saved in the project's `midi`
     /// part: tracks' outputs, the routes to tracks and thru, Tempo from and
     /// following, each port's clock out, the CV jobs and learned controls.
-    /// Each port's input, what it ignores and its delay are the rig's
-    /// ([`MidiSetup::rig`]) and are left at their defaults.
+    /// Each port's input, what it ignores, its delay and its shown name are
+    /// the rig's ([`MidiSetup::rig`]) and are left at their defaults.
     pub fn project(&self) -> MidiSetup {
         let mut m = self.clone();
         m.rig_learn.clear();
@@ -660,6 +741,7 @@ impl MidiSetup {
                 p.input = PortInput::default();
                 p.ignore = IgnoreSet::NONE;
                 p.delay_tenths = 0;
+                p.shown.clear();
             });
         }
         m
@@ -668,8 +750,8 @@ impl MidiSetup {
     /// The settings that belong to the gear on the desk, kept for every
     /// project (owner, 13 Nov 2026: project settings apart from system-wide
     /// ones): each port's input (Plays tracks, Learn only, Both), what it
-    /// ignores coming in and its gear's delay, and the controls
-    /// learned for every project.
+    /// ignores coming in, its gear's delay and its shown name, and the
+    /// controls learned for every project.
     pub fn rig(&self) -> MidiSetup {
         let mut m = MidiSetup {
             rig_learn: self.rig_learn.clone(),
@@ -680,6 +762,7 @@ impl MidiSetup {
                 q.input = p.input;
                 q.ignore = p.ignore;
                 q.delay_tenths = p.delay_tenths;
+                q.shown = p.shown.clone();
             });
         }
         m
@@ -693,7 +776,7 @@ impl MidiSetup {
         self.set_rig(&rig);
     }
 
-    /// `rig`'s port settings (input, ignore, delay) and controls
+    /// `rig`'s port settings (input, ignore, delay, shown name) and controls
     /// learned for every project, this setup's song settings kept.
     pub fn set_rig(&mut self, rig: &MidiSetup) {
         self.rig_learn = rig.rig_learn.clone();
@@ -709,6 +792,7 @@ impl MidiSetup {
                 p.input = want.input;
                 p.ignore = want.ignore;
                 p.delay_tenths = want.delay_tenths;
+                p.shown = want.shown;
             });
         }
     }
@@ -754,6 +838,9 @@ impl MidiSetup {
                     &format!("{k}.delay-ms"),
                     &format!("{:.1}", p.delay_ms()),
                 );
+            }
+            if !p.shown.is_empty() {
+                line(&mut s, &format!("{k}.shown"), &p.shown);
             }
         }
         for (i, t) in self.tracks.iter().enumerate() {
@@ -888,6 +975,7 @@ impl MidiSetup {
                     }
                     ["ignore"] => p.ignore = IgnoreSet::parse(v)?,
                     ["delay-ms"] => p.delay_tenths = parse_delay(v)?,
+                    ["shown"] => p.shown = parse_shown(v)?,
                     _ => return Err("unknown key".into()),
                 }
             }
@@ -960,6 +1048,13 @@ fn on_off(b: bool) -> &'static str {
 }
 
 /// "6.5" (ms) as tenths of a ms, 0 to [`MAX_DELAY_TENTHS`].
+fn parse_shown(v: &str) -> Result<String, String> {
+    if v.chars().count() > MAX_SHOWN {
+        return Err(format!("longer than {MAX_SHOWN} characters"));
+    }
+    Ok(v.to_string())
+}
+
 fn parse_delay(v: &str) -> Result<u16, String> {
     let ms: f32 = v
         .parse()
@@ -1312,6 +1407,58 @@ mod tests {
     }
 
     #[test]
+    fn a_ports_shown_name_is_the_rigs_and_no_two_ports_look_alike() {
+        let mut m = MidiSetup::default();
+        let plugged = ["MIDI", "USB MIDI Interface", "Keystep 37"];
+        assert_eq!(m.shown("USB MIDI Interface"), "USB MIDI Interface");
+        m.set_shown("USB MIDI Interface", "  Juno ", plugged)
+            .unwrap();
+        assert_eq!(m.shown("USB MIDI Interface"), "Juno");
+        assert_eq!(m.port("USB MIDI Interface").shown, "Juno");
+        // Its routes and tracks still name the port by its own name.
+        assert_eq!(m.shown("Keystep 37"), "Keystep 37");
+        // No two ports look alike, whatever the capitals: not another
+        // port's own name, nor one given to another.
+        let e = m.set_shown("Keystep 37", "juno", plugged).unwrap_err();
+        assert!(e.contains("Another port is called juno"), "{e}");
+        assert!(m.set_shown("Keystep 37", "MIDI", plugged).is_err());
+        assert!(m.set_shown("Keystep 37", "midi out", []).is_err());
+        assert!(m
+            .set_shown("Keystep 37", "x".repeat(MAX_SHOWN + 1).as_str(), plugged)
+            .is_err());
+        // Renaming a port again to what it shows, or to its own name.
+        m.set_shown("USB MIDI Interface", "JUNO", plugged).unwrap();
+        assert_eq!(m.shown("USB MIDI Interface"), "JUNO");
+        m.set_shown("Keystep 37", "Keys", plugged).unwrap();
+        // Kept with the rig, not the song, and read back.
+        assert_eq!(m.project().port("Keystep 37").shown, "");
+        let (rig, warn) = MidiSetup::parse(&m.rig_text());
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(rig.shown("Keystep 37"), "Keys");
+        assert!(
+            m.rig_text().contains("port.2.shown = Keys"),
+            "{}",
+            m.rig_text()
+        );
+        let mut other = MidiSetup::default();
+        other.set_rig(&rig);
+        assert_eq!(other.shown("USB MIDI Interface"), "JUNO");
+        // Its own name takes the given one off, and a port with nothing
+        // else set is dropped.
+        m.set_shown("USB MIDI Interface", "USB MIDI Interface", plugged)
+            .unwrap();
+        assert_eq!(m.shown("USB MIDI Interface"), "USB MIDI Interface");
+        assert!(m.ports.iter().all(|p| p.name != "USB MIDI Interface"));
+        let long = format!(
+            "port.1 = MIDI\nport.1.shown = {}\n",
+            "y".repeat(MAX_SHOWN + 1)
+        );
+        let (back, warn) = MidiSetup::parse(&format!("{HEADER}\n{long}"));
+        assert_eq!(warn.len(), 1, "{warn:?}");
+        assert_eq!(back.shown(DIN_NAME), DIN_NAME);
+    }
+
+    #[test]
     fn the_project_and_the_rig_split_and_join_again() {
         let mut m = MidiSetup {
             tempo: TempoSource::Port(DIN_NAME.into()),
@@ -1326,7 +1473,10 @@ mod tests {
             p.input = PortInput::PlaysTracks;
             p.ignore = IgnoreSet::NONE.with(Ignored::Clock, true);
         });
-        m.set_port("Digitone", |p| p.delay_tenths = 65);
+        m.set_port("Digitone", |p| {
+            p.delay_tenths = 65;
+            p.shown = "Drums".into();
+        });
         m.tracks[0] = Some(TrackOut::new(DIN_NAME, 9));
         let project = m.project();
         let rig = m.rig();
@@ -1341,6 +1491,7 @@ mod tests {
         assert_eq!(rig.port(DIN_NAME).input, PortInput::LearnOnly);
         assert!(rig.port("Keystep 37").ignore.has(Ignored::Clock));
         assert_eq!(rig.port("Digitone").delay_tenths, 65);
+        assert_eq!(rig.shown("Digitone"), "Drums");
         assert_eq!(rig.port(DIN_NAME).clock_out, ClockOut::default());
         assert_eq!(rig.tempo, TempoSource::Internal);
         assert!(rig.tracks.iter().all(Option::is_none));

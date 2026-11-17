@@ -187,6 +187,19 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("live-erase", w))
         self.assertFalse(got["ERASE + pad 1 erased while recording"])
 
+    def test_mute_queue_needs_the_wait_the_landing_and_the_solo(self):
+        w = checks.Window(lines("track mute: Track 1 muted on the next bar",
+                                "time: track mute: at 5.1, Track 1 muted",
+                                "track mute: Track 2 solo on the next bar",
+                                "time: track mute: at 7.1, Track 2 solo"))
+        self.assertTrue(all(ok for ok, _ in self.judge("mute-queue", w)))
+        # In Make the taps act at once: nothing waited or landed.
+        w = checks.Window(lines("track mute: Track 1 muted", "track mute: Track 2 solo"))
+        got = dict((what, ok) for ok, what in self.judge("mute-queue", w))
+        self.assertFalse(got["Perform's tap waited for the line"])
+        self.assertFalse(got["the change landed on a bar line"])
+        self.assertFalse(got["TRACK MUTE held soloed a track"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]

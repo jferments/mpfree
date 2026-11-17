@@ -83,10 +83,14 @@ fn thru_field(m: &IoModel, from: &str) -> (String, Option<usize>) {
             let at = thru_list(m, from)
                 .iter()
                 .position(|o| o.as_deref() == Some(one.to.as_str()));
-            (one.to.clone(), at)
+            (m.setup.shown(&one.to).to_string(), at)
         }
         [one] => (
-            format!("{} · ch {}", one.to, one.channel.unwrap_or(0) + 1),
+            format!(
+                "{} · ch {}",
+                m.setup.shown(&one.to),
+                one.channel.unwrap_or(0) + 1
+            ),
             None,
         ),
         many => (format!("{} routes", many.len()), None),
@@ -103,6 +107,12 @@ fn plays_on_list(m: &IoModel) -> Vec<Option<TrackOut>> {
         }
     }
     v
+}
+
+/// A track's Plays on as the screen says it: its port by the name shown
+/// ([`mpfree_midi::setup::MidiSetup::shown`]) and its channel.
+fn plays_on_text(m: &IoModel, o: &TrackOut) -> String {
+    format!("{} · ch {}", m.setup.shown(&o.port), o.channel + 1)
 }
 
 fn plays_on_index(m: &IoModel, t: &Option<TrackOut>) -> usize {
@@ -172,7 +182,7 @@ impl Form for Midi {
                 .iter()
                 .position(|x| *x == p.input)
                 .unwrap_or(0);
-            let mut row = Row::item(format!("port:{name}"), name.clone())
+            let mut row = Row::item(format!("port:{name}"), m.setup.shown(&name))
                 .field(
                     Field::choice("Input", p.input.label(), input, PortInput::ALL.len())
                         .off(has_in),
@@ -218,20 +228,26 @@ impl Form for Midi {
                     let plugged = live.is_some();
                     row = match live {
                         None => row.note(
-                            format!("sends nothing: {} is not plugged in", o.port),
+                            format!(
+                                "sends nothing: {} is not plugged in",
+                                m.setup.shown(&o.port)
+                            ),
                             Tone::Warn,
                         ),
                         Some(_) if !built.notes_out => {
                             row.note("sends nothing: MIDI out is off", Tone::Warn)
                         }
                         Some(l) if !l.has_out => row.note(
-                            format!("sends nothing: {} has no output", o.port),
+                            format!("sends nothing: {} has no output", m.setup.shown(&o.port)),
                             Tone::Warn,
                         ),
                         Some(l) if !l.sending => {
                             row.note("sends nothing: its output didn't open", Tone::Warn)
                         }
-                        Some(_) => row.note(format!("plays out of {}", o.port), Tone::Normal),
+                        Some(_) => row.note(
+                            format!("plays out of {}", m.setup.shown(&o.port)),
+                            Tone::Normal,
+                        ),
                     };
                     let prog = o
                         .program
@@ -239,7 +255,7 @@ impl Form for Midi {
                     let pat = o.program.map_or(0, |p| p as usize + 1);
                     row = row
                         .field(
-                            Field::choice("Plays on", o.label(), at, n)
+                            Field::choice("Plays on", plays_on_text(m, o), at, n)
                                 .picker()
                                 .warn(!plugged),
                         )
@@ -342,9 +358,9 @@ impl Form for Midi {
         for (p, plugged) in out_ports(m) {
             ports.push(Choice {
                 text: if plugged {
-                    p.clone()
+                    m.setup.shown(&p).to_string()
                 } else {
-                    format!("{p} (not plugged in)")
+                    format!("{} (not plugged in)", m.setup.shown(&p))
                 },
                 on: t.as_ref().is_some_and(|t| t.port == p),
                 enabled: true,
@@ -482,6 +498,21 @@ mod tests {
         assert_eq!(row(&r, "port:MIDI").fields[0].text, "Both");
         assert_eq!(row(&r, "track:1").fields[0].text, INSIDE);
         assert!(!row(&r, "track:1").fields[1].enabled);
+    }
+
+    /// A port named on its page shows that name on its row and in the
+    /// tracks' Plays on; the row is still the port's own.
+    #[test]
+    fn a_named_port_shows_its_name_on_its_rows() {
+        let s = model();
+        {
+            let mut m = s.lock().unwrap();
+            m.setup.set_shown("Keystep 37", "Lead keys", []).unwrap();
+            m.setup.tracks[2] = Some(mpfree_midi::setup::TrackOut::new("Keystep 37", 1));
+        }
+        let r = rows(&s);
+        assert_eq!(row(&r, "port:Keystep 37").title, "Lead keys");
+        assert_eq!(row(&r, "track:2").fields[0].text, "Lead keys · ch 2");
     }
 
     #[test]
