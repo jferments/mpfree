@@ -24,6 +24,9 @@
 //!   on a sampler; keeping them is a later setting.
 //! - **Stereo:** both channels turn their phases together, so the image
 //!   stays where it was.
+//! - **Rate:** [`convert_rate`] puts a whole sound at another sample rate
+//!   through the same resampler (the sampler converts a file at another
+//!   rate to the output's when it is loaded).
 //!
 //! Our own code, MIT, no C++ to cross-build for the MPC.
 
@@ -42,6 +45,91 @@ use vocoder::Vocoder;
 
 /// The furthest the pitch moves, either way.
 pub const MAX_SEMITONES: f32 = 24.0;
+
+/// `input` (`channels` interleaved, 1 or 2) recorded at `from` Hz, as the
+/// same sound at `to` Hz: read through the windowed-sinc resampler
+/// (about 80 dB of stop band, its cut centred at 97 % of the lower
+/// rate's Nyquist: from 48 kHz to 44.1 kHz it is flat to 20 kHz within
+/// 0.3 dB, and what folds back lands above 20.6 kHz or is 60 dB down).
+/// The result holds `frames × to / from` frames, rounded; what lies
+/// before the first frame and after the last counts as silence. It is
+/// heavy work for a long sound (a minute of 48 kHz stereo is about 300
+/// million multiplies), so call it off the audio and screen threads.
+pub fn convert_rate(input: &[f32], channels: usize, from: u32, to: u32) -> Vec<f32> {
+    let ch = channels.clamp(1, 2);
+    if from == to || from == 0 || to == 0 {
+        return input.to_vec();
+    }
+    let frames = (input.len() / ch) as u64;
+    let out_frames = ((frames as f64) * f64::from(to) / f64::from(from)).round() as usize;
+    let mut out = vec![0.0f32; out_frames * ch];
+    // Output frame t reads input frame t × m / l: its fraction repeats
+    // every l frames, so with few enough of them every weight is worked
+    // out once (48 kHz to 44.1 kHz: 147 phases).
+    let g = gcd(from, to);
+    let (m, l) = (u64::from(from / g), u64::from(to / g));
+    let r = Resampler::new(m as f64 / l as f64);
+    if l as usize > MAX_PHASES {
+        let mut r = r;
+        r.run(input, ch, &mut out, out_frames);
+        return out;
+    }
+    let half = r.half();
+    let taps = (2 * half) as usize;
+    let mut table = vec![0.0f32; l as usize * taps];
+    for (k, w) in table.chunks_exact_mut(taps).enumerate() {
+        let frac = k as f64 / l as f64;
+        for (n, x) in w.iter_mut().enumerate() {
+            *x = r.tap((n as i64 - half + 1) as f64 - frac);
+        }
+    }
+    let gain = r.gain();
+    let frames = frames as i64;
+    for (t, o) in out.chunks_exact_mut(ch).enumerate() {
+        let at = t as u64 * m;
+        let (i0, k) = ((at / l) as i64, (at % l) as usize);
+        let w = &table[k * taps..(k + 1) * taps];
+        let first = i0 - half + 1;
+        let mut acc = [0.0f32; 2];
+        if first >= 0 && first + taps as i64 <= frames {
+            let x = &input[first as usize * ch..(first as usize + taps) * ch];
+            if ch == 1 {
+                acc[0] = w.iter().zip(x).map(|(w, x)| w * x).sum();
+            } else {
+                for (w, f) in w.iter().zip(x.chunks_exact(2)) {
+                    acc[0] += w * f[0];
+                    acc[1] += w * f[1];
+                }
+            }
+        } else {
+            for (n, w) in w.iter().enumerate() {
+                let i = first + n as i64;
+                if (0..frames).contains(&i) {
+                    for (c, a) in acc.iter_mut().enumerate().take(ch) {
+                        *a += input[i as usize * ch + c] * w;
+                    }
+                }
+            }
+        }
+        for (o, a) in o.iter_mut().zip(acc) {
+            *o = a * gain;
+        }
+    }
+    out
+}
+
+/// The most phases [`convert_rate`] works its weights out for ahead (a
+/// table of phases × taps); past it, a rate with so few common factors
+/// with the other is read the slow way, a weight at a time.
+const MAX_PHASES: usize = 2048;
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
 
 /// What a [`Job`] does besides following its map.
 #[derive(Clone, Copy, Debug, PartialEq)]
