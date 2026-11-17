@@ -113,6 +113,8 @@ Both buttons are faint while the pad picked has no sound.
 
 The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too). Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** and **reverse**.
 
+**Normalize** (under Gain) turns the gain so the loudest moment between Start and End plays at full level, 0 dB, and never over. Tap it, or push the wheel on it. It only sets the gain, so after moving Start or End you can tap it again for the new part; **UNDO** takes it back. A silent part is left as it is.
+
 MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap and Map to keys) while you work, never holding up the screen. A long sound shows as a flat line for a moment, then its wave, then its hits and tempo a little later: a minute-long sound takes a second or two on the MPC. The pages fill in as soon as each is found, and a sound already looked at is ready at once.
 
 **Warp** plays the sound in time with the project's tempo: **Stretch** keeps its pitch, **Repitch** speeds it up or slows it down like a record. **Warp tempo** is the tempo it was played at.
@@ -129,6 +131,7 @@ The **Warp** page is for a warped sound whose hits don't sit quite on the beat, 
 - **Drag a pin's handle** to move it along the grid.
 - **Pin hits** pins every hit near a grid line onto it, which tightens a loose loop in one go. **Remove pin** takes the picked pin off, and **Clear pins** all of them.
 - The list on the right holds **Warp** and **Warp tempo** (as on the Wave page), the **Grid** (1/4 to 1/32), which **Hits** it finds (**Strongest**, **Most** or **All**), and the picked **Pin** and its **Pin beat**.
+- **Process** makes a new sound from the region. With Warp on, the new sound is at the project's tempo, its pinned hits right on their beats, so it plays without stretching. **Shift** first moves it up or down, in semitones (–24 to +24), keeping its length and its hits sharp; with Warp off, Shift alone is what changes. Tap **New sound**: it is made in the background while you work, the button shows how far it has got, and tapping it again stops it. The new sound takes the region's place; **UNDO** brings the old one back.
 - The Q-Links pick a pin, nudge its beat, fine-tune the warp tempo and scroll. Hold **SHIFT** for finer steps.
 
 Pins only work while the sound is stretched. With Warp on Repitch, the sound plays straight through.
@@ -170,10 +173,9 @@ With **Put on** at **Files**, the button reads **Export** (**Export 15 slices**,
 - **Break 92.mpfree**: the pad's settings, a small text file beside the sound: its trim, loop, warp, envelope, filter, layers and slices.
 - **Break 92 01.wav**, **Break 92 02.wav** and so on: each slice as a file of its own, to use anywhere.
 
-Load **Break 92.wav** back, on this MPC or another, and the pad comes back exactly as you exported it, slices and all, as long as **Break 92.mpfree** is beside it. Without it, the sound loads on its own.
+Load **Break 92.wav** back, on this MPC or another, and the pad comes back exactly as you exported it, slices and all, as long as **Break 92.mpfree** is beside it. Without it, the sound loads on its own. Export the same pad again and it goes into **Break 92 2**, so nothing is written over.
 
-> [!NOTE]
-> **Not yet:** the Put on row doesn't offer **Files** in this build. Exporting is built, and arrives once the Sample tab is connected to the stick.
+**Files** is offered when MPFree has its library on the stick; without one there is nowhere to put them.
 
 ## Auto-sample: a synth or your gear onto the pads
 

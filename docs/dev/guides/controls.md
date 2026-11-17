@@ -85,13 +85,15 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 - **`smp-wave/marker`**: the Start, End and loop markers. Drag a marker by its tab. *Example:* drag Start past the silence at the front of a sample.
 - **`smp-overview/overview`**: the whole sound in a strip, with a box round what the waveform shows. Tap to move the box there; faint when the whole sound is in view.
 - **`smp-region/row`**, **`smp-region/row-less`**, **`smp-region/row-more`**: the region's settings (Mode, Loop, Crossfade, Gain, ...). Tap a row, then ‹ › or the wheel.
+- **`smp-region/row-button`**: Normalize's "To 0 dB": the gain that brings the region's loudest frame to 0 dBFS, one undo step (a silent region is left, and the line says so). *Example:* a quiet take: tap To 0 dB and it plays as loud as it can without clipping. *Test:* `normalize_sets_the_gain_from_the_peak_in_one_undo_step`.
 
 ### Warp
 
 - **`smp-warp-view/wave`**: the warped wave; tap a hit to pin it to the grid. *Test:* `the_warp_tab_pins_the_hits_and_the_copy_goes_through_them`.
 - **`smp-warp-view/pin`**: a pin: tap to pick it, drag its handle along the beats.
 - **`smp-warp-buttons/button`**: Pin hits (all of them), Remove pin, Clear pins. Faint ones say why.
-- **`smp-warp-list/row`**, **`smp-warp-list/row-less`**, **`smp-warp-list/row-more`**: Warp on or off, the warp tempo, the grid, the hits' sensitivity. *Test:* `a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready`.
+- **`smp-warp-list/row`**, **`smp-warp-list/row-less`**, **`smp-warp-list/row-more`**: Warp on or off, the warp tempo, the grid, the hits' sensitivity, and Process's Shift (semitones). *Test:* `a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready`.
+- **`smp-warp-list/row-button`**: Process's "New sound": a new sound of the region at the project's tempo (when warped) and Shift semitones higher or lower, made in the background and put in the region's place, one undo step; while it runs it reads "Stop · 40 %" and a tap stops it. With nothing to change it says so. *Example:* Warp on Stretch, Shift +3, tap New sound. *Test:* `process_makes_a_new_sound_on_a_worker_in_one_undo_step_and_can_be_stopped`.
 
 ### Chop
 

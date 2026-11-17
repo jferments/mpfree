@@ -63,6 +63,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -80,7 +81,7 @@ use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
 use mpfree_sampler::save::{self, Opened};
 use mpfree_sampler::scene;
-use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
+use mpfree_sampler::warp::{CopyKey, Done, Process, Warps, Worker};
 use mpfree_sampler::{sound_file, wav};
 use mpfree_sampler_ui::auto_tab::{
     self, AutoAction, AutoSettings, AutoState, AutoTab, Onto, Running,
@@ -282,6 +283,86 @@ fn take_what(rec: &Recording) -> String {
     }
 }
 
+/// A Process under way (the Warp tab's Process button): the stretch on a
+/// thread of its own, how far it has got, and how to stop it.
+struct Processing {
+    kit: usize,
+    what: Process,
+    /// The pad, as the log names it ("A5").
+    at: String,
+    /// What it does, in words: "stretched from 92.0 to 120.0 BPM and 3
+    /// semitones higher".
+    text: String,
+    rx: Receiver<Result<(Vec<f32>, Duration), String>>,
+    stop: Arc<AtomicBool>,
+    /// How far it has got, 0 to 1, as `f32` bits.
+    done: Arc<AtomicU32>,
+    /// What the Process button shows, as last shown.
+    shown: f32,
+}
+
+/// Output frames a Process makes between looks at whether it was stopped:
+/// a few ms of work on the MPC.
+const PROCESS_STEP: usize = 8192;
+
+/// A region whose loudest frame is under this is silent: Normalize leaves
+/// it as it is.
+const NORMALIZE_SILENT_DB: f32 = -96.0;
+
+/// What Process makes of `r` (layer `layer` of pad `pad`) at the project
+/// tempo `tempo`, moved `semitones`: the job, and what it does in words
+/// ("stretched from 92.0 to 120.0 BPM and 3 semitones higher"), or no
+/// words when the new sound would come out the same as the region plays.
+/// A stretched region goes from its warp tempo to the project's through
+/// its pins; a repitched one is stretched the same way and moved by the
+/// semitones the tape speed would, so it sounds as it plays.
+fn process_of(
+    pad: usize,
+    layer: usize,
+    r: &Region,
+    tempo: f64,
+    semitones: i32,
+) -> (Process, Option<String>) {
+    let mut p = Process {
+        pad,
+        layer,
+        ratio: 1.0,
+        semitones: semitones as f32,
+    };
+    let mut parts = Vec::new();
+    if let Some(w) = r.warp.as_ref() {
+        let from = f64::from(w.bpm);
+        let moved = (from - tempo).abs() > 1e-3;
+        if moved || w.pinned() {
+            p.ratio = from / tempo;
+            let pins = if w.pinned() {
+                ", its pins on their beats"
+            } else {
+                ""
+            };
+            match w.method {
+                model::WarpMethod::Stretch => {
+                    parts.push(format!("stretched from {from:.1} to {tempo:.1} BPM{pins}"))
+                }
+                model::WarpMethod::Repitch => {
+                    p.semitones += (12.0 * (tempo / from).log2()) as f32;
+                    parts.push(format!("repitched from {from:.1} to {tempo:.1} BPM"));
+                }
+            }
+        }
+    }
+    if semitones != 0 {
+        parts.push(format!(
+            "{} semitone{} {}",
+            semitones.abs(),
+            if semitones.abs() == 1 { "" } else { "s" },
+            if semitones > 0 { "higher" } else { "lower" }
+        ));
+    }
+    let text = (!parts.is_empty()).then(|| parts.join(" and "));
+    (p, text)
+}
+
 /// An auto-sample running, and where its instrument goes.
 struct AutoJob {
     job: Job,
@@ -318,6 +399,33 @@ pub struct GearOut {
 
 /// Sends one MIDI message out of a port, from any thread.
 pub type MidiSend = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
+/// The folder in Samples that exported pads go to, each in a folder of
+/// its own named after the pad.
+pub const EXPORTS: &str = "Exports";
+
+/// Writes an exported pad's files into a new folder named after it in
+/// Samples / Exports ("Break 92", or "Break 92 2" when that is taken),
+/// making Exports if it isn't there. Each file is written whole or not at
+/// all; a failure part way leaves the files written so far. Call it off
+/// the screen's thread: a long sound's files are many megabytes. Returns
+/// the folder.
+pub fn save_export(
+    lib: &mpfree_library::Library,
+    e: &export::Export,
+) -> std::io::Result<mpfree_library::Loc> {
+    use mpfree_library::{Loc, Place};
+    let samples = Loc::top(Place::Samples);
+    let exports = samples.join(EXPORTS)?;
+    if lib.list(&exports).is_err() {
+        lib.new_folder(&samples, EXPORTS)?;
+    }
+    let folder = lib.new_folder(&exports, &e.name)?;
+    for (name, bytes) in &e.files {
+        lib.write_new(&folder, name, bytes)?;
+    }
+    Ok(folder)
+}
 
 /// What the Rec tab's Source row offers, by name: the line input, then the
 /// mix as heard (the master after Master safety), each track, the delay's
@@ -507,6 +615,8 @@ pub struct SamplePage {
     /// screen opens the number pad ([`SamplePage::take_number_ask`]).
     number_ask: Option<mpfree_ui::numpad::NumberAsk>,
     auto_job: Option<AutoJob>,
+    /// The Warp tab's Process, while one runs.
+    processing: Option<Processing>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
     /// The FX tab was tapped on this pad: the app opens its chain editor.
@@ -622,6 +732,7 @@ impl SamplePage {
             auto_request: None,
             number_ask: None,
             auto_job: None,
+            processing: None,
             auto_last: String::new(),
             fx_open: None,
             gear_out: None,
@@ -842,6 +953,12 @@ impl SamplePage {
                 0
             },
         }
+    }
+
+    /// Kit `kit`'s project, to change behind the page's back (tests).
+    #[cfg(test)]
+    pub fn project_mut(&mut self, kit: usize) -> Option<&mut Project> {
+        self.projects.get_mut(kit)
     }
 
     #[cfg(test)]
@@ -1931,16 +2048,15 @@ impl SamplePage {
 
     /// Pads exported since the last call, each a folder's worth of files
     /// (named in the files; [`export::Export::name`] names the folder).
-    /// The app writes them together, each in a folder of its own, since a
-    /// sidecar names its sounds by file name.
-    #[allow(dead_code)] // the app's library wiring calls it
+    /// The app writes them together, each in a folder of its own
+    /// ([`save_export`]), since a sidecar names its sounds by file name.
     pub fn take_exports(&mut self) -> Vec<export::Export> {
         std::mem::take(&mut self.exports)
     }
 
     /// The app can write files: the Chop tab offers Put on Files. Off until
-    /// it says so, so nothing is exported that would go nowhere.
-    #[allow(dead_code)] // the app's library wiring calls it
+    /// it says so (the app has a library), so nothing is exported that
+    /// would go nowhere.
     pub fn set_files(&mut self, ui: &mut Ui, on: bool) {
         if self.files != on {
             self.files = on;
@@ -2482,7 +2598,238 @@ impl SamplePage {
             WaveAction::Audition { pad } => self.audition(pad, out),
             WaveAction::Tab(i) => self.open(ui, i),
             WaveAction::Ask(ask) => self.number_ask = Some(ask),
+            WaveAction::Normalize { pad, layer } => self.normalize(ui, pad, layer),
+            WaveAction::Process {
+                pad,
+                layer,
+                semitones,
+            } => self.process(ui, pad, layer, semitones),
+            WaveAction::StopProcess => {
+                if let Some(p) = self.processing.as_ref() {
+                    p.stop.store(true, Ordering::Relaxed);
+                }
+            }
         }
+    }
+
+    /// Normalize: layer `layer` of pad `pad` gets the gain that brings its
+    /// region's loudest frame to 0 dBFS (a tenth of a dB under, rounded
+    /// down, and within the Gain row's range), as one undo step. The log
+    /// says the peak and the gain; a silent region is left as it is.
+    fn normalize(&mut self, ui: &mut Ui, pad: usize, layer: usize) {
+        self.lift();
+        let kit = self.kit;
+        let at = self.pad_text(kit, pad);
+        let Some(project) = self.projects.get_mut(kit) else {
+            return;
+        };
+        let Some(region) = project
+            .pad(pad)
+            .and_then(|p| p.layers.get(layer))
+            .map(|l| l.region.clone())
+        else {
+            return;
+        };
+        let Some(peak) = project.source(region.source).map(|s| region.peak(s)) else {
+            return;
+        };
+        let peak_db = 20.0 * peak.max(1e-12).log10();
+        if peak_db < NORMALIZE_SILENT_DB {
+            let line = format!("sample: pad {at} not normalized: it is silent");
+            self.told
+                .push(format!("Pad {at} is silent: nothing to normalize"));
+            self.lines.push(line);
+            return;
+        }
+        let (lo, hi) = wave_tab::GAIN_RANGE_DB;
+        let gain = ((-peak_db * 10.0).floor() / 10.0).clamp(lo, hi);
+        let was = region.gain_db;
+        let r = project.edit_pad(pad, None, |p| p.layers[layer].region.gain_db = gain);
+        match r {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(d) = self.dirty.get_mut(kit) {
+                    *d = true;
+                }
+                let most = if gain >= hi {
+                    format!(" (the most), its peak now {:.1} dB", peak_db + gain)
+                } else {
+                    String::new()
+                };
+                self.lines.push(format!(
+                    "sample: pad {at} normalized: its peak {peak_db:.1} dB, gain {was:+.1} -> {gain:+.1} dB{most}"
+                ));
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: pad {at} not normalized ({e:?})")),
+        }
+        self.refresh(ui);
+    }
+
+    /// Process: a new sound of layer `layer` of pad `pad`'s region, made on
+    /// a thread of its own: stretched from its warp tempo to the project's
+    /// when it stretches (its pins made part of the audio), or repitched
+    /// to it when it repitches (stretched, then moved by the semitones the
+    /// tape would), and moved `semitones` more. When it is done it takes
+    /// the region's place ([`Self::poll_process`]), one undo step.
+    fn process(&mut self, ui: &mut Ui, pad: usize, layer: usize, semitones: i32) {
+        self.lift();
+        if self.processing.is_some() {
+            return;
+        }
+        let kit = self.kit;
+        let at = self.pad_text(kit, pad);
+        let tempo = self.tempo();
+        let Some(project) = self.projects.get(kit) else {
+            return;
+        };
+        let Some(region) = project
+            .pad(pad)
+            .and_then(|p| p.layers.get(layer))
+            .map(|l| &l.region)
+        else {
+            return;
+        };
+        let (what, text) = process_of(pad, layer, region, tempo, semitones);
+        let say_not = |s: &mut Self, why: String| {
+            s.told.push(format!("Not processed: {why}"));
+            s.lines
+                .push(format!("sample: pad {at} not processed ({why})"));
+        };
+        let Some(text) = text else {
+            say_not(
+                self,
+                "it would come out the same: set Shift, or turn Warp on".to_string(),
+            );
+            return;
+        };
+        let channels = project
+            .source(region.source)
+            .map_or(1, |s| u64::from(s.channels()));
+        // The input's copy, the stretch's working copy and the result.
+        let need = (region.frames() as f64 * (2.0 + what.ratio) * channels as f64 * 4.0) as u64;
+        if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
+            say_not(self, why);
+            return;
+        }
+        let spec = match what.spec(project) {
+            Ok(s) => s,
+            Err(e) => {
+                say_not(self, e.to_string());
+                return;
+            }
+        };
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicU32::new(0));
+        let (stopped, made) = (stop.clone(), done.clone());
+        let run = std::thread::Builder::new()
+            .name("mpfree-process".into())
+            .spawn(move || {
+                // After the sound and the screen, as the warp copies are.
+                mpfree_lanes::os::idle_job();
+                let t = Instant::now();
+                let r = (|| {
+                    let mut job = spec.start().map_err(|e| e.to_string())?;
+                    loop {
+                        if stopped.load(Ordering::Relaxed) {
+                            return Err("stopped".to_string());
+                        }
+                        let p = job.run(PROCESS_STEP);
+                        made.store(p.done.to_bits(), Ordering::Relaxed);
+                        if p.finished {
+                            break;
+                        }
+                    }
+                    job.into_output()
+                        .ok_or_else(|| "nothing came out".to_string())
+                })();
+                let _ = tx.send(r.map(|audio| (audio, t.elapsed())));
+            });
+        match run {
+            Ok(_) => {
+                self.lines
+                    .push(format!("sample: processing pad {at}: {text}"));
+                self.processing = Some(Processing {
+                    kit,
+                    what,
+                    at,
+                    text,
+                    rx,
+                    stop,
+                    done,
+                    shown: 0.0,
+                });
+                if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
+                    tab.set_processing(ui, st, Some(0.0));
+                }
+            }
+            Err(e) => say_not(self, e.to_string()),
+        }
+        self.refresh(ui);
+    }
+
+    /// The Process under way: its progress on the Warp tab while it shows,
+    /// and once it is done, the new sound in the region's place (one undo
+    /// step), or why not.
+    fn poll_process(&mut self, ui: &mut Ui, showing: bool) {
+        let Some(p) = self.processing.as_mut() else {
+            return;
+        };
+        let r = match p.rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => {
+                let done = f32::from_bits(p.done.load(Ordering::Relaxed));
+                // Each per cent, while the Warp tab shows.
+                if showing && self.editor == Editor::Warp && (done - p.shown).abs() >= 0.01 {
+                    p.shown = done;
+                    if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
+                        tab.set_processing(ui, st, Some(done));
+                    }
+                }
+                return;
+            }
+            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+        };
+        let Some(p) = self.processing.take() else {
+            return;
+        };
+        match r {
+            Ok((audio, took)) => {
+                let Some(project) = self.projects.get_mut(p.kit) else {
+                    return;
+                };
+                match p.what.finish(project, audio) {
+                    Ok(id) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(p.kit) {
+                            *d = true;
+                        }
+                        let made = project.source(id).map_or(String::new(), |s| {
+                            format!(": {}, {}", s.name, duration_text(s.frames(), s.rate()))
+                        });
+                        self.lines.push(format!(
+                            "sample: pad {} processed into a new sound, {}{made}, in {:.2} s",
+                            p.at,
+                            p.text,
+                            took.as_secs_f64()
+                        ));
+                    }
+                    Err(e) => self.lines.push(format!(
+                        "sample: pad {} not processed (it changed meanwhile: {e:?})",
+                        p.at
+                    )),
+                }
+            }
+            Err(why) => self
+                .lines
+                .push(format!("sample: pad {} not processed ({why})", p.at)),
+        }
+        if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
+            tab.set_processing(ui, st, None);
+        }
+        self.refresh(ui);
     }
 
     /// A number a tab asked to be typed (Jay after live test 3: the Warp
@@ -4075,6 +4422,7 @@ impl SamplePage {
             self.feed_rec(ui, dt);
         }
         self.poll_auto(ui, showing);
+        self.poll_process(ui, showing);
         self.poll_open(ui);
         self.poll_kit(ui);
         self.poll_load(ui);
