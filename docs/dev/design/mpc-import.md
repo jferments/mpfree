@@ -1,15 +1,15 @@
 # Importing MPC projects
 
-**Status:** scope narrowed on 2026-11-17 by the owner: **sounds and patterns only.** MPFree will not open MPC projects as projects. Musicians bring their kits and programs, their patterns as MIDI files exported from the MPC, and audio stems or bounces. Stage 1 for keygroup programs is built (`rust/mpfree-mpc-import`, 2026-11-14); its field readings were checked against a real factory keygroup program's report on 2026-11-15, not yet played side by side with the MPC. Current plan: [Loading MPC projects into MPFree](https://claude.ai/artifact/EAnubyX8htJKtgHUVJHpvc) (2026-11-17). The earlier assessment and plan docs were on a previous account and no longer open.
+**Status:** scope narrowed on 2026-11-17 by the owner: **sounds and patterns only.** MPFree will not open MPC projects as projects. Musicians bring their kits and programs, their patterns as MIDI files exported from the MPC, and audio stems or bounces. Stage 1 is built in `rust/mpfree-mpc-import`: keygroup programs (2026-11-14; field readings checked against a real factory keygroup program's report on 2026-11-15, not yet played side by side with the MPC) and drum programs (2026-11-17; field readings from community notes, **not yet checked on a real drum program**). The musicians' side is the manual page [Moving your beats from the MPC](../../user/src/making-music/moving-from-the-mpc.md). Current plan: [Loading MPC projects into MPFree](https://claude.ai/artifact/EAnubyX8htJKtgHUVJHpvc) (2026-11-17). The earlier assessment and plan docs were on a previous account and no longer open.
 
 ## Scope (decided 2026-11-17)
 
 A whole MPC project can't come across faithfully: Akai's plugin instruments live in Akai's code, effect settings are an undecoded blob, the sound engines differ, and the format is undocumented and changes between firmware versions. So the importer covers what converts reliably and leaves the rest to Akai's own exports:
 
-- **Kept:** keygroup programs (built), drum programs (next, on the owner's go), expansion and factory programs read from a card, and standalone `.xpm` files. Patterns come in as MIDI files saved with the MPC's *Track as MIDI* or *All Tracks* export, through MPFree's MIDI file import (planned: MIDI powerhouse phase 2, PR 6). Everything else comes in as audio: *Drum Pads as Stems*, *Audio Mixdown* with separate tracks, or bounced tracks.
+- **Kept:** keygroup and drum programs (built), expansion and factory programs read from a card, and standalone `.xpm` files. Patterns come in as MIDI files saved with the MPC's *Track as MIDI* or *All Tracks* export, through MPFree's MIDI file import (planned: MIDI powerhouse phase 2, PR 6). Everything else comes in as audio: *Drum Pads as Stems*, *Audio Mixdown* with separate tracks, or bounced tracks.
 - **Instruments:** bounce Akai plugin tracks to audio on the MPC, or autosample them into a keygroup.
 - **Dropped:** reading `.xpj` sequences, the mixer, songs and Arrange, effect settings and automation (stages 2 to 4 below), and OS 2.x projects.
-- **To write:** a user manual page, "Moving your beats from the MPC", with drum program import.
+- **The manual page:** [Moving your beats from the MPC](../../user/src/making-music/moving-from-the-mpc.md).
 
 The importer only ever reads MPC files and writes a new MPFree project; it never writes to the MPC. The sections below keep the format notes and the earlier staged plan for reference.
 
@@ -60,6 +60,21 @@ cargo run --release -p mpfree-mpc-import -- keygroup "Grand/Grand.xpm" --data /m
 - **The project** has only the sampler's part, so opening it puts the kit on the pads and the other engines keep what they had.
 
 To check against a real program: the field meanings above are inferred, so the first real keygroup program (the owner's own, or one from the factory library copied out for local use) should be imported with `--dry-run` and its report compared with how it plays on the MPC.
+
+## Stage 1: drum programs
+
+`mpfree-mpc-import drum PROGRAM.xpm --data DIR [--place notes|pads] [--name NAME] [--release-ms MS] [--dry-run]` reads a drum program (`<Program type="Drum">`) and the samples beside it and writes a new project holding one kit (`program` instead of `drum` or `keygroup` picks from the file's type). Code: `xpm::read_drum`, `drum::drum_kit`, `import::import_drum`; tests in `tests/drum.rs`, on made-up programs only.
+
+- **What it reads** (from community notes for OS 2.15 and the MPC's file layout; **inferred, not yet checked on a real drum program**):
+  - Each `<Instrument number>` is a pad. Numbers count from 1 (A01 is 1); a program with an instrument 0 is read as counting from 0, and the report says which.
+  - `PadNoteMap` (`<PadNote number="pad"><Note>`) gives each pad's note. Without one, bank A takes the MPC's default notes (37, 36, 42, 82, 40, 38, 46, 44, 48, 47, 45, 43, 49, 55, 51, 53; only the first three are confirmed by community notes) and other banks have none.
+  - Per pad: `Volume`, `Pan`, `TuneCoarse`, `TuneFine`, `MuteGroup`, `MuteTarget1`-`4` and `SimultTarget1`-`4` (notes), `Polyphony`, `Mono`, `OneShot` (else `TriggerMode`, 0 read as one shot), `ZonePlay` (0 read as cycle, 2 random, others by velocity), `VelocitySensitivity`, the envelope (`Volume*`) and the filter.
+  - Per layer, as for keygroups, plus `Direction` 1 (reverse); start and end fall back to `SliceStart` and `SliceEnd` (the last frame played) when `SampleStart` and `SampleEnd` aren't written.
+- **Where the pads go.** `--place notes` (the default) puts each sound on the MPFree pad that plays its MPC note (pad 1 is note 36, `mpfree_sampler::node::DEFAULT_BASE_NOTE`), so MIDI files exported from the MPC play the right sounds. A note below 36, a pad without a note or a second pad on the same note goes on the first free pad and the report marks it. `--place pads` keeps the MPC's order (A01 on pad 1).
+- **The kit.** Layers keep their velocities, start, end, loop, level, pan, tuning and reverse. Mute targets become chokes and simultaneous play becomes links, both through the notes, so they follow the pads wherever they go. Mute groups keep their number when it is 1 to 16; others get a free number (the report says which), and past 16 groups they are left out. Levels are relative to the most common pad volume and the most common layer volume. A pad that plays while held (`OneShot` False) plays its layers in Gate and releases over `--release-ms`; others play one shot. The project's pads play as a drum kit (`PadsPlay::Pads`).
+- **Approximated, and said.** As for keygroups: missing or empty samples leave their velocities to the layers next to them, more than 16 layers keep the first 16, and the envelope, filters and the program's effects are reported, not carried over.
+
+To check against a real program: import one of the factory drum programs with `--dry-run` and compare the report's pads, notes, mute groups and targets with the MPC's own Program Edit page, then play the kit beside the MPC.
 
 ## Inspecting projects
 
