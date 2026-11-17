@@ -225,7 +225,7 @@ A rough estimate, to be measured: 64 grains at 44.1 kHz stereo is about 5.6 mill
 
 ## Analysis and waveforms
 
-All analysis runs on the worker thread, results go into the source's cache file.
+All analysis runs on a worker thread (built: `mpfree-analyse`, peaks first, then hits, tempo and note; see [the architecture](sampler-architecture.md#analysis-mpfree-analysis)); results go into the source's cache file (still to come: they are kept in memory, by the sound's hash, while it is loaded).
 
 | What | How |
 |---|---|
