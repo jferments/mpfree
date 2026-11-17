@@ -249,8 +249,13 @@ impl Perform {
         self.playing = None;
     }
 
-    /// The line the cue on `track` lands on when it isn't its clip's own
-    /// launch quantise (a scene's, a follow's, one kept).
+    /// The mute a scene's cue on `track` sets when it starts, if any.
+    pub fn cue_mute(&self, track: usize) -> Option<bool> {
+        self.cue_mutes.get(track).copied().flatten()
+    }
+
+    /// The line the cue on `track` lands on where a scene, a follow or a
+    /// change of Launch set it; None for the clip's own or the project's.
     pub fn cue_line(&self, track: usize) -> Option<LaunchGrid> {
         self.cue_lines.get(track).copied().flatten()
     }
