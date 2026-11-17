@@ -28,9 +28,10 @@ use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::{ClipDrop, Cue, Includes, Launch, PlayView, SongChange, Started, Takes};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
+use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::steps::{Edit, Grid};
-use mpfree_seq::{Clip, ModelError, Project, TouchPoint, MAX_TRACKS, SLOTS};
+use mpfree_seq::{Clip, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
     bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow, TimeAction,
@@ -155,6 +156,14 @@ pub struct TimeControl {
     spans_lost: u64,
     /// The current period's started cues.
     started: Vec<Started>,
+    /// The bar line a cue started on in the last poll, on each loop's
+    /// Loop track: its loop goes on or off there ([`TimeControl::loop_plan`]).
+    loop_at: [Option<Tick>; LOOPS],
+    /// The loops as the looper last said ([`TimeControl::loops_are`]).
+    loops_seen: [LoopNow; LOOPS],
+    /// Where each loop last went from, and the pass it had: a redo of its
+    /// first pass (the same length from the same place) goes back there.
+    loops_gone: [Option<((usize, usize), LoopNow)>; LOOPS],
     /// The points for the next recorded change.
     touch: Vec<TouchPoint>,
     moves: Vec<(f64, f32, Kind)>,
@@ -230,6 +239,9 @@ impl TimeControl {
             fresh: true,
             spans_lost: 0,
             started: Vec::with_capacity(STARTED_ROOM),
+            loop_at: [None; LOOPS],
+            loops_seen: [LoopNow::default(); LOOPS],
+            loops_gone: [None; LOOPS],
             touch: Vec::with_capacity(TOUCH_POINTS),
             moves: Vec::with_capacity(MOVE_POINTS),
             recorded_now: false,
@@ -297,6 +309,7 @@ impl TimeControl {
             self.send_view(v);
         }
         self.sync_tracks();
+        self.loop_at = [None; LOOPS];
         while let Some(m) = self.rx.recv() {
             match m {
                 ToControl::Played(offset, event) => self.capture.input(offset, event),
@@ -372,6 +385,13 @@ impl TimeControl {
         let mut compile = std::mem::take(&mut self.compile_asked) | thrown;
         for i in 0..self.started.len() {
             let st = self.started[i];
+            // A Loop track's loops go on or off on the cue's bar line.
+            let held = loops::on_track(&self.project, st.track);
+            for (n, at) in self.loop_at.iter_mut().enumerate() {
+                if held & (1 << n) != 0 {
+                    *at = Some(st.at);
+                }
+            }
             self.perform.started(&mut self.project, &st);
             st.apply(&mut self.launches, &mut self.cues);
             if let Some(n) = self.includes.switches.get_mut(st.track) {
@@ -453,7 +473,7 @@ impl TimeControl {
                     .is_none_or(|slot| project.clip(c.track, slot).is_some())
         });
         if self.armed.is_some_and(|t| t >= n) {
-            self.armed = n.checked_sub(1);
+            self.armed = project.tracks.iter().rposition(|t| !t.is_loops());
         }
         let v = self.view()?;
         // Room to record into the armed track's clips without allocating.
@@ -640,7 +660,13 @@ impl TimeControl {
     /// Song mode plays the song instead, and a clip launched on Arrange
     /// is left as it is.
     fn ready_to_play(&mut self) -> Result<Option<String>, String> {
-        if self.song || !self.launches.is_empty() || !self.cues.is_empty() {
+        // The Loop tracks' launches don't count: a pattern still starts
+        // with the loops playing.
+        let loops = |t: usize| self.project.tracks.get(t).is_some_and(|t| t.is_loops());
+        if self.song
+            || self.launches.iter().any(|l| !loops(l.track))
+            || self.cues.iter().any(|c| !loops(c.track))
+        {
             return Ok(None);
         }
         let (track, Some(slot)) = self.step_focus() else {
@@ -1251,6 +1277,16 @@ impl TimeControl {
                     format!("pad pressure: {name} leaves it out")
                 })
             }
+            TimeAction::Arm(Some(t))
+                if self.project.tracks.get(t).is_some_and(|t| t.is_loops()) =>
+            {
+                // A Loop track plays loops: the pads stay on their track.
+                let name = &self.project.tracks[t].name;
+                Ok(match self.armed.and_then(|a| self.project.tracks.get(a)) {
+                    Some(a) => format!("armed: {name} plays loops, the pads stay on {}", a.name),
+                    None => format!("armed: {name} plays loops"),
+                })
+            }
             TimeAction::Arm(track) => {
                 self.armed = track.filter(|&t| t < self.project.tracks.len());
                 self.compile()?;
@@ -1316,6 +1352,15 @@ impl TimeControl {
                 }
                 Ok(format!("clips: {a:?}"))
             }
+            TimeAction::NewClip { track, .. }
+                if self.project.tracks.get(track).is_some_and(|t| t.is_loops()) =>
+            {
+                Err(format!(
+                    "{} is a Loop track: record a loop on Play's Loop view or the Looper tab, \
+                     and it lands here",
+                    self.project.tracks[track].name
+                ))
+            }
             TimeAction::NewClip { track, slot } => {
                 let bar = info.meter.bar_ticks();
                 let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
@@ -1365,6 +1410,18 @@ impl TimeControl {
                 ))
             }
             TimeAction::DropClip { from, to, copy } => {
+                let loops = |t: usize| self.project.tracks.get(t).map(|t| t.is_loops());
+                if loops(from.0) != loops(to.0) {
+                    return Err(
+                        "clips: loops stay on Loop tracks and clips on note tracks".to_string()
+                    );
+                }
+                if copy && from.0 != to.0 && loops(from.0) == Some(true) {
+                    return Err(
+                        "clips: a loop's copy goes in another row of its own Loop track"
+                            .to_string(),
+                    );
+                }
                 let name = |p: &Project, (t, s): (usize, usize)| {
                     let track = p.tracks.get(t).map_or("", |t| t.name.as_str());
                     format!("{track} / {}", s + 1)
@@ -2065,6 +2122,105 @@ impl TimeControl {
     /// pad lights.
     pub fn muted(&self, t: usize) -> Option<bool> {
         self.project.tracks.get(t).map(|tr| tr.mute)
+    }
+
+    /// Which loops the Loop tracks have on (loop-tracks.md): a loop plays
+    /// while its cell is launched on a Loop track that isn't muted, or
+    /// while it is in no cell. A change from the last poll's cues lands on
+    /// the cue's bar line; any other at once. Allocates nothing.
+    pub fn loop_plan(&self) -> LoopPlan {
+        let launched = self.launches.iter().map(|l| (l.track, l.slot));
+        LoopPlan {
+            on: loops::playing(&self.project, launched),
+            at: self.loop_at,
+        }
+    }
+
+    /// What the looper says of its loops, each period. A loop whose first
+    /// pass just ended (or that an open brought) and that is in no cell
+    /// lands on a Loop track with nothing playing, in the row of the scene
+    /// playing (row 1 if none), launched at once: it plays already; a redo
+    /// of a first pass undone goes back to the cell it left, if it can. A
+    /// loop's cells follow its length, and empty when it is cleared. Not
+    /// undo steps: the looper's undo takes a loop back, and its cell goes
+    /// with it. Lines for the log; allocates only when something changed.
+    pub fn loops_are(&mut self, now: &[LoopNow; LOOPS]) -> Vec<String> {
+        let mut lines = Vec::new();
+        if *now == self.loops_seen {
+            return lines;
+        }
+        let mut compile = false;
+        for (n, (&is, was)) in now.iter().zip(self.loops_seen).enumerate() {
+            if is == was {
+                continue;
+            }
+            let k = n as u8;
+            match (was.pass, is.pass) {
+                (false, true) if !loops::in_cell(&self.project, k) => {
+                    let row = self.perform.playing().map_or(0, |p| p.row.min(SLOTS - 1));
+                    let (launches, cues) = (&self.launches, &self.cues);
+                    let busy = |t: usize| {
+                        launches.iter().any(|l| l.track == t) || cues.iter().any(|c| c.track == t)
+                    };
+                    // A redo of the pass that went goes back to its cell,
+                    // if that is free and its Loop track plays nothing.
+                    let project = &mut self.project;
+                    let back = self.loops_gone[n].take().and_then(|((t, s), went)| {
+                        let free = project
+                            .tracks
+                            .get(t)
+                            .is_some_and(|tr| tr.is_loops() && tr.slots[s].is_none());
+                        (went == is && free && !busy(t)).then_some((t, s))
+                    });
+                    let landed = match back {
+                        Some((t, s)) => {
+                            project.tracks[t].slots[s] = Some(Clip::new_loop(k, is.ticks));
+                            Some((t, s))
+                        }
+                        None => loops::place(project, k, is.ticks, row, busy),
+                    };
+                    match landed {
+                        Some((track, slot)) => {
+                            self.launches.push(Launch {
+                                track,
+                                slot,
+                                origin: is.origin,
+                                start: is.origin,
+                            });
+                            lines.push(format!(
+                                "Loop {} on {}, row {}, playing",
+                                n + 1,
+                                self.project.tracks[track].name,
+                                slot + 1
+                            ));
+                            compile = true;
+                        }
+                        None => lines.push(format!(
+                            "Loop {} is on no Loop track: the project has {} tracks",
+                            n + 1,
+                            self.project.tracks.len()
+                        )),
+                    }
+                }
+                (_, true) => compile |= loops::set_length(&mut self.project, k, is.ticks) > 0,
+                (true, false) => {
+                    let first = loops::cells(&self.project, k).next();
+                    self.loops_gone[n] = first.map(|cell| (cell, was));
+                    if loops::remove(&mut self.project, k) > 0 {
+                        lines.push(format!("Loop {} cleared: its cells are empty", n + 1));
+                        compile = true;
+                    }
+                }
+                (false, false) => {}
+            }
+        }
+        self.loops_seen = *now;
+        if compile {
+            if let Err(e) = self.compile() {
+                lines.push(e);
+            }
+        }
+        lines
     }
 
     /// The project's tracks, for TRACK MUTE's banks.

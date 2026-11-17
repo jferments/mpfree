@@ -2330,4 +2330,119 @@ mod tests {
             assert_eq!(s.looper.phase(), Phase::Armed);
         });
     }
+
+    /// Loop tracks (loop-tracks.md, part 2): a loop recorded on Play's
+    /// Loop view lands on Loops A, row 1, playing. Row 2's scene stops it
+    /// on the bar line (Loops A has nothing in row 2), and the next loop
+    /// lands there, in the scene's row. Launching row 1's cell switches the
+    /// two on one bar line; Stop all turns both off; a loop cleared takes
+    /// its cell with it.
+    #[test]
+    fn a_recorded_loop_lands_on_a_loop_track_and_launches_like_a_clip() {
+        use crate::gui::FromUi;
+        use mpfree_looper::{Command, Phase};
+        use mpfree_time_ui::TimeAction;
+        /// The first line from `from` on starting with `prefix`, running
+        /// the session up to `seconds` for it.
+        fn line(s: &mut Session, from: usize, prefix: &str, seconds: f64) -> String {
+            let end = s.t() + seconds;
+            loop {
+                if let Some(l) = s.lines[from..].iter().find(|l| l.starts_with(prefix)) {
+                    return l.clone();
+                }
+                assert!(
+                    s.t() < end,
+                    "no line like {prefix:?}: {:?}",
+                    &s.lines[s.lines.len().saturating_sub(12)..]
+                );
+                s.run_periods(4);
+            }
+        }
+        fn until(s: &mut Session, n: usize, phase: Phase) {
+            let end = s.t() + 6.0;
+            while s.looper.loop_status(n).map(|l| l.phase) != Some(phase) && s.t() < end {
+                s.run_periods(4);
+            }
+            assert_eq!(s.looper.loop_status(n).map(|l| l.phase), Some(phase));
+        }
+        fn on(s: &Session, n: usize) -> bool {
+            s.looper
+                .loop_status(n)
+                .is_some_and(|l| l.on && l.cue.is_none())
+        }
+        /// The bar of a "looper: loop 1 on from bar 5" line.
+        fn bar(l: &str) -> u32 {
+            l.rsplit(' ').next().and_then(|b| b.parse().ok()).expect(l)
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Loop").settle();
+            let from = s.lines.len();
+            s.button("REC").button("PLAY");
+            until(&mut s, 0, Phase::Recording);
+            s.run_for(2.0);
+            s.button("REC");
+            until(&mut s, 0, Phase::Playing);
+            line(&mut s, from, "time: Loop 1 on Loops A, row 1, playing", 1.0);
+            let p = s.time.project();
+            assert_eq!((p.tracks.len(), p.tracks[8].name.as_str()), (9, "Loops A"));
+            let cell = p.clip(8, 0).expect("its cell");
+            assert_eq!((cell.name.as_str(), cell.looped), ("Loop 1", Some(0)));
+            assert_eq!(cell.length, s.looper.loop_status(0).unwrap().ticks);
+            assert_eq!(s.time.state().launch(8).map(|l| l.slot), Some(0));
+            assert!(on(&s, 0));
+            s.run_periods(2);
+            assert_eq!(s.screen.time.tracks[8].sound, "Pads + synth");
+
+            // Row 2's scene: Loops A has nothing there, so loop 1 stops on
+            // the bar line.
+            let from = s.lines.len();
+            s.route(FromUi::Time(TimeAction::LaunchScene(1)));
+            line(&mut s, from, "looper: loop 1 off from bar ", 3.0);
+            s.run_periods(2);
+            assert!(!on(&s, 0) && s.time.state().launch(8).is_none());
+
+            // The next loop records into the scene's row on Loops A.
+            s.looper.select(1);
+            let from = s.lines.len();
+            s.button("REC");
+            until(&mut s, 1, Phase::Recording);
+            s.run_for(2.0);
+            s.button("REC");
+            until(&mut s, 1, Phase::Playing);
+            line(&mut s, from, "time: Loop 2 on Loops A, row 2, playing", 1.0);
+            assert!(on(&s, 1) && !on(&s, 0));
+
+            // Row 1's cell: loop 1 comes in and loop 2 goes, on one line.
+            let from = s.lines.len();
+            s.route(FromUi::Time(TimeAction::Launch { track: 8, slot: 0 }));
+            let one = line(&mut s, from, "looper: loop 1 on from bar ", 3.0);
+            let two = line(&mut s, from, "looper: loop 2 off from bar ", 0.1);
+            assert_eq!(bar(&one), bar(&two), "{one} / {two}");
+            s.run_periods(2);
+            assert!(on(&s, 0) && !on(&s, 1));
+            assert_eq!(s.time.state().launch(8).map(|l| l.slot), Some(0));
+
+            // Stop all: off on the next line.
+            let from = s.lines.len();
+            s.route(FromUi::Time(TimeAction::StopAll));
+            line(&mut s, from, "looper: loop 1 off from bar ", 3.0);
+            s.run_periods(2);
+            assert!(!on(&s, 0) && !on(&s, 1));
+
+            // A loop cleared: its cell empties.
+            s.looper.select(0);
+            let from = s.lines.len();
+            s.looper.command(Command::Clear);
+            line(
+                &mut s,
+                from,
+                "time: Loop 1 cleared: its cells are empty",
+                2.0,
+            );
+            assert!(s.time.project().clip(8, 0).is_none());
+            assert_eq!(s.time.project().clip(8, 1).and_then(|c| c.looped), Some(1));
+            assert_eq!(s.time.project().check(), Ok(()));
+        });
+    }
 }

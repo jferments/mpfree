@@ -36,6 +36,10 @@ The grid shows 8 tracks at a time. With more than 8, the title line shows which 
 
 Tracks past 16 play the kit for now. They have no MIDI out of their own and can't have an instrument of their own yet.
 
+### Loop tracks
+
+The loops you record on the Play page or the Looper tab show on **Loop tracks**, columns named **Loops A**, **Loops B** and on, added at the end of the grid as they are needed, with **Pads + synth** under the name. Each cell names its loop ("Loop 1") and launches like a clip: one loop plays per Loop track, and loops on different Loop tracks play together. The pads don't play a Loop track. See [Loops in the Clips grid](looping.md#loops-in-the-clips-grid).
+
 A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits for the next bar, red while recording.
 
 ## The Q-Links on Arrange

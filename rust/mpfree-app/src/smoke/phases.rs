@@ -1418,6 +1418,39 @@ mod device_log {
     /// the home view REC readies the notes and PLAY records them, played
     /// back on PLAY, UNDO takes the take, and the Loop view arms the loop
     /// for REC.
+    /// The loop-tracks check (`app_checks.py`): a loop recorded on Play's
+    /// Loop view lands on Loops A, row 2's number stops it on its bar line,
+    /// and its cell brings it back on one.
+    #[test]
+    fn loop_tracks_write_their_lines() {
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("play-transport", "view", "Loop").settle();
+            let n = s.lines.len();
+            s.button("REC").button("PLAY");
+            s.run_for(0.5);
+            s.pad(0, 100, 0.05);
+            s.run_for(2.0);
+            s.button("REC");
+            s.run_for(2.5);
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            wrote(&s, n, "time: Loop 1 on Loops A, row 1, playing", "");
+            s.press("header", "tab", "Arrange").settle();
+            s.press("clips", "pager", "Tracks after").settle();
+            s.press("clips", "scene", "Scene 2");
+            s.run_for(2.5);
+            let off = wrote(&s, n, "looper: loop 1 off from bar ", "");
+            s.press("clips", "slot", "Loops A slot 1");
+            s.run_for(2.5);
+            let on = wrote(&s, n, "looper: loop 1 on from bar ", "");
+            let bar = |l: &str| l.rsplit(' ').next().and_then(|b| b.parse::<u32>().ok());
+            assert!(bar(&on) > bar(&off), "{off} / {on}");
+            s.button("STOP");
+        });
+    }
+
     #[test]
     fn rec_arm_writes_its_lines() {
         use mpfree_looper::Phase;
