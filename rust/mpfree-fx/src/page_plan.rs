@@ -792,19 +792,33 @@ pub static PLANS: &[Plan] = &[
                     ..s("filter", "Filter", Tone, &["Cutoff", "Resonance", "Gain"])
                 },
                 Section {
-                    rows: &["Type", "Slope"],
-                    ..s("type", "Type", Tone, &["Type", "Slope"])
+                    rows: &["Model", "Res mode", "Type", "Slope"],
+                    ..s(
+                        "type",
+                        "Type",
+                        Tone,
+                        &["Model", "Res mode", "Type", "Slope"],
+                    )
                 },
                 s("drive", "Drive", Tone, &["Drive"]),
             ],
         )],
-        dims: &[Dim {
-            controls: &["Gain"],
-            by: "Type",
-            when: When::Not(&[4.0, 5.0, 6.0]),
-            reason: "only a bell or a shelf uses it",
-            swap: false,
-        }],
+        dims: &[
+            Dim {
+                controls: &["Type", "Slope", "Gain"],
+                by: "Model",
+                when: When::Is(&[1.0]),
+                reason: "the ladder is a 24 dB low-pass",
+                swap: false,
+            },
+            Dim {
+                controls: &["Gain"],
+                by: "Type",
+                when: When::Not(&[4.0, 5.0, 6.0]),
+                reason: "only a bell or a shelf uses it",
+                swap: false,
+            },
+        ],
     },
     Plan {
         id: "mpfree.fx.dj_filter",
