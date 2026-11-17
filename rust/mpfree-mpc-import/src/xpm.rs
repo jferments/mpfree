@@ -19,6 +19,8 @@
 
 use std::collections::HashMap;
 
+use mpfree_controller::mpc_one::PAD_NOTES;
+
 use crate::xml::{self, Element};
 
 /// One sample of a keygroup, as the file has it.
@@ -376,12 +378,6 @@ pub struct DrumProgram {
     pub inserts: Vec<String>,
 }
 
-/// The MPC's default notes for pads 1 to 16 (bank A), used when a
-/// program has no `PadNoteMap`. Banks after A have no default here.
-pub const DEFAULT_BANK_A_NOTES: [u8; 16] = [
-    37, 36, 42, 82, 40, 38, 46, 44, 48, 47, 45, 43, 49, 55, 51, 53,
-];
-
 /// `PadNoteMap`: the MPC pad (1 to 128) to its note.
 fn pad_notes(prog: &Element) -> Option<HashMap<u32, u8>> {
     let map = prog
@@ -460,7 +456,7 @@ pub fn read_drum(bytes: &[u8]) -> Result<DrumProgram, String> {
         }
         let note = match &map {
             Some(m) => m.get(&pad).copied(),
-            None => DEFAULT_BANK_A_NOTES.get(pad as usize - 1).copied(),
+            None => PAD_NOTES.get(pad as usize - 1).copied(),
         };
         let raw = inst
             .children

@@ -316,7 +316,7 @@ pub fn import_drum(
             "pads placed {}",
             match placement {
                 Placement::Notes =>
-                    "by note, so MIDI exported from the MPC plays them (pad 1 is C2, note 36)",
+                    "by note, so MIDI exported from the MPC plays them (pads 1 to 16 answer the MPC One's pad notes 37, 36, 42, ...)",
                 Placement::Pads =>
                     "as on the MPC (A01 on pad 1); MIDI exported from the MPC plays other pads",
             }

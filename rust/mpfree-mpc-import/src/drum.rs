@@ -3,13 +3,16 @@
 //! targets (chokes) and simultaneous play (links).
 //!
 //! **Where the pads go.** By default ([`Placement::Notes`]) each sound
-//! goes on the pad that plays the MPC pad's note here (pad 1 is note 36,
-//! [`mpfree_sampler::node::DEFAULT_BASE_NOTE`]), so a MIDI file exported
-//! from the MPC plays the right sounds. [`Placement::Pads`] keeps the
-//! MPC's pad order instead (A01 on pad 1), which looks the same on the
-//! pads but makes exported MIDI play other sounds. A pad whose note can't
-//! be placed (below 36, none in the map, or taken) goes on a free pad
-//! and the report says it won't answer its note.
+//! goes on the pad that answers its MPC note: a kit's pads 1 to 16 play
+//! the MPC One's pad notes ([`PAD_NOTES`]: 37, 36, 42, ...), as MIDI file
+//! import and MIDI out read them, so a MIDI file exported from the MPC
+//! plays the right sounds. A program with the MPC's default map keeps its
+//! bank A order; one with its own `PadNoteMap` is reordered to match.
+//! [`Placement::Pads`] keeps the MPC's pad order whatever the map (A01 on
+//! pad 1). A sound whose note no pad here answers (any note outside those
+//! 16, or one a pad already took) goes on a free pad from 17 up and the
+//! report says MIDI from the MPC won't play it. Banks B to H have no
+//! notes here yet: the kit's notes past pad 16 aren't settled.
 //!
 //! What can't be matched exactly is approximated and said in the notes,
 //! as for keygroups ([`crate::kit`]): the envelope, filter and effects
@@ -19,11 +22,11 @@
 
 use std::collections::HashMap;
 
+use mpfree_controller::mpc_one::PAD_NOTES;
 use mpfree_sampler::model::{
     Layer, LayerSelect, Loop, LoopMode, Pad, PlayMode, Project, Region, Source, SourceId,
     MAX_LAYERS, PADS,
 };
-use mpfree_sampler::node::DEFAULT_BASE_NOTE;
 
 use crate::kit::{cover, note_text, Options};
 use crate::xpm::{knob_text, DrumPad, DrumProgram, XpmLayer};
@@ -66,11 +69,9 @@ pub fn mpc_pad_name(n: u32) -> String {
     format!("{bank}{:02}", i % 16 + 1)
 }
 
-/// The kit's pad for note `n` when it plays the note, at the default base.
+/// The kit's pad that answers note `n` ([`PAD_NOTES`]), if one does.
 fn pad_of_note(n: u8) -> Option<usize> {
-    n.checked_sub(DEFAULT_BASE_NOTE)
-        .map(usize::from)
-        .filter(|&i| i < PADS)
+    PAD_NOTES.iter().position(|&p| p == n)
 }
 
 /// Makes the kit. `sound` gives a layer's sound (the same [`Source`] for
@@ -113,7 +114,14 @@ pub fn drum_kit(
         if spots[k].is_some() {
             continue;
         }
-        let Some(i) = (0..PADS).find(|&i| !taken[i]) else {
+        // A free pad past bank A first, so bank A keeps its notes.
+        let free = match placement {
+            Placement::Notes => (PAD_NOTES.len()..PADS)
+                .chain(0..PAD_NOTES.len())
+                .find(|&i| !taken[i]),
+            Placement::Pads => (0..PADS).find(|&i| !taken[i]),
+        };
+        let Some(i) = free else {
             return Err("more pads than the kit holds".into());
         };
         taken[i] = true;
@@ -121,12 +129,10 @@ pub fn drum_kit(
         let why = match (placement, p.note) {
             (Placement::Pads, _) => "its pad is taken".to_string(),
             (_, None) => "the program gives it no note".to_string(),
-            (_, Some(n)) if n < DEFAULT_BASE_NOTE => format!(
-                "its note {} is below the kit's lowest, {}",
-                note_text(n),
-                note_text(DEFAULT_BASE_NOTE)
-            ),
-            (_, Some(n)) => format!("another pad already plays its note {}", note_text(n)),
+            (_, Some(n)) if pad_of_note(n).is_none() => {
+                format!("no pad here answers its note {n} ({})", note_text(n))
+            }
+            (_, Some(n)) => format!("another pad already took its note {n} ({})", note_text(n)),
         };
         notes.push(format!(
             "MPC pad {} goes on pad {}: {why}; MIDI from the MPC won't play it",

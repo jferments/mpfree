@@ -230,43 +230,75 @@ fn pads_go_where_their_notes_play() {
     )
     .unwrap();
     let at = |i: usize| kit.project.pad(i).expect("a pad");
-    // Note 36 is pad 1, 37 pad 2, 42 pad 7, 82 pad 47.
-    assert_eq!(at(0).name, "Snare");
-    assert_eq!(at(1).name, "Kick soft");
-    assert_eq!(at(6).name, "Hat closed");
-    assert_eq!(at(46).name, "Hat open");
+    // The MPC One's pad notes: 37 is pad 1, 36 pad 2, 42 pad 3, 82 pad 4,
+    // so a program with the default map keeps its bank A order.
+    assert_eq!(at(0).name, "Kick soft");
+    assert_eq!(at(1).name, "Snare");
+    assert_eq!(at(2).name, "Hat closed");
+    assert_eq!(at(3).name, "Hat open");
     assert_eq!(kit.project.pads_play(), PadsPlay::Pads);
-    // The tom's note 30 is below the kit: it goes on the first free pad.
+    // No pad answers the tom's note 30: it goes on the first pad past bank A.
     let tom = kit.placed.iter().find(|p| p.mpc_pad == 5).unwrap();
     assert!(!tom.answers_note);
-    assert_eq!(at(tom.index).name, "Low tom");
+    assert_eq!(tom.index, 16);
+    assert_eq!(at(16).name, "Low tom");
     assert!(kit
         .notes
         .iter()
-        .any(|n| n.contains("MPC pad A05") && n.contains("below the kit's lowest")));
+        .any(|n| n.contains("MPC pad A05") && n.contains("no pad here answers its note 30")));
     // Simultaneous play and mute targets follow the notes.
-    assert_eq!(at(0).links, vec![1], "the snare also plays the kick");
-    assert_eq!(at(6).chokes, vec![46], "the closed hat stops the open one");
+    assert_eq!(at(1).links, vec![0], "the snare also plays the kick");
+    assert_eq!(at(2).chokes, vec![3], "the closed hat stops the open one");
     // Mute group 20 doesn't fit 16, so both hats share a free number.
-    let g = at(6).mute_group.expect("a mute group");
-    assert_eq!(at(46).mute_group, Some(g));
+    let g = at(2).mute_group.expect("a mute group");
+    assert_eq!(at(3).mute_group, Some(g));
     assert!(kit
         .notes
         .iter()
         .any(|n| n.contains("mute group 20 is mute group")));
     // Mono, polyphony, play mode, reverse and layer choice.
-    assert_eq!(at(6).polyphony, 1);
-    assert_eq!(at(46).polyphony, 4);
-    assert_eq!(at(46).select, LayerSelect::Random);
-    assert_eq!(at(46).layers[0].region.mode, PlayMode::Gate);
-    assert!(at(46).layers[0].region.reverse);
-    assert_eq!(at(1).layers[0].region.mode, PlayMode::OneShot);
-    assert_eq!(at(1).layers[0].region.end, 800);
+    assert_eq!(at(2).polyphony, 1);
+    assert_eq!(at(3).polyphony, 4);
+    assert_eq!(at(3).select, LayerSelect::Random);
+    assert_eq!(at(3).layers[0].region.mode, PlayMode::Gate);
+    assert!(at(3).layers[0].region.reverse);
+    assert_eq!(at(0).layers[0].region.mode, PlayMode::OneShot);
+    assert_eq!(at(0).layers[0].region.end, 800);
     // Levels: every pad is at the common 0.707946, so 0 dB; the snare's
     // layer is half the common layer volume.
-    assert!(at(0).level_db.abs() < 1e-4);
-    assert!((at(0).layers[0].level_db + 6.0206).abs() < 1e-3);
+    assert!(at(1).level_db.abs() < 1e-4);
+    assert!((at(1).layers[0].level_db + 6.0206).abs() < 1e-3);
     assert_eq!(kit.layers, 6);
+}
+
+#[test]
+fn a_program_with_its_own_note_map_is_reordered_to_match_midi() {
+    // The kick on A01 plays note 36 and the snare on A02 note 37: the
+    // reverse of the MPC One's pads 1 and 2.
+    let pads = vec![
+        p(1, "", vec![(0, 127, "Kick", 1.0, 0)]),
+        p(2, "", vec![(0, 127, "Snare", 1.0, 0)]),
+    ];
+    let text = xpm("Swapped", 1, &pads, Some(&[(1, 36), (2, 37)]));
+    let prog = read_drum(text.as_bytes()).unwrap();
+    let mut sound = |l: &mpfree_mpc_import::xpm::XpmLayer| {
+        Source::new(&l.sample, 44_100, 1, vec![0.5; 100]).map_err(|e| format!("{e:?}"))
+    };
+    let notes = drum_kit(&prog, &mut sound, &Options::default(), Placement::Notes).unwrap();
+    assert_eq!(
+        notes.project.pad(0).unwrap().name,
+        "Snare",
+        "pad 1 answers note 37"
+    );
+    assert_eq!(
+        notes.project.pad(1).unwrap().name,
+        "Kick",
+        "pad 2 answers note 36"
+    );
+    assert!(notes.placed.iter().all(|p| p.answers_note));
+    let order = drum_kit(&prog, &mut sound, &Options::default(), Placement::Pads).unwrap();
+    assert_eq!(order.project.pad(0).unwrap().name, "Kick");
+    assert!(order.placed.iter().all(|p| !p.answers_note));
 }
 
 #[test]
@@ -368,8 +400,8 @@ fn a_drum_program_becomes_a_project() {
     assert_eq!(kits.len(), 1);
     let (name, project) = &kits[0];
     assert_eq!(name, "Test Kit");
-    assert_eq!(project.pad(1).unwrap().name, "Kick soft");
-    assert_eq!(project.pad(6).unwrap().chokes, vec![46]);
+    assert_eq!(project.pad(0).unwrap().name, "Kick soft");
+    assert_eq!(project.pad(2).unwrap().chokes, vec![3]);
     assert_eq!(project.pads_play(), PadsPlay::Pads);
     let again = import_drum(
         &xpm,

@@ -9,6 +9,7 @@ description = "Reads MPC programs (.xpm) and turns them into MPFree kits: stage 
 [dependencies]
 mpfree-sampler = { path = "../mpfree-sampler" }
 mpfree-library = { path = "../mpfree-library" }
+mpfree-controller = { path = "../mpfree-controller" }
 
 [[bin]]
 name = "mpfree-mpc-import"
