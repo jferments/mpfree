@@ -94,7 +94,7 @@ fn the_source_is_analysed_once_for_the_screens() {
     assert_eq!(view.mono.len() as u64, s.frames());
     // Zoomed in, the pyramid draws the samples themselves; zoomed out, its
     // columns hold the same peaks to within its 16-bit storage.
-    let raw = RawPeaks::new(s.data().clone(), 2).unwrap();
+    let raw = RawPeaks::new(s.data().to_vec().into(), 2).unwrap();
     let pyr = PyramidPeaks::new(s.data().clone(), 2).unwrap();
     for (f0, w) in [
         (1000.0, 3.0),

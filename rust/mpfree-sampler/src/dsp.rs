@@ -14,6 +14,56 @@ pub fn hermite(x0: f32, x1: f32, x2: f32, x3: f32, t: f32) -> f32 {
     ((c3 * t + c2) * t + c1) * t + x1
 }
 
+/// A sample as a sound holds it ([`crate::model::Pcm`]), read as a float:
+/// 32-bit floats as they are, 16-bit integers over 32768, which gives
+/// each the float a 16-bit WAV decodes to, exactly.
+pub trait Sample: Copy + Send + Sync + 'static {
+    /// What [`Sample::raw`] is multiplied by to give [`Sample::f`]: a
+    /// power of two, so a sum or product of raw values scaled once at the
+    /// end is exactly the sum or product of the scaled ones (short of the
+    /// denormals). Hot loops scale once instead of once a sample.
+    const SCALE: f32;
+    /// The sample unscaled: for 16 bits, the integer as a float.
+    fn raw(self) -> f32;
+    fn f(self) -> f32;
+}
+
+impl Sample for f32 {
+    const SCALE: f32 = 1.0;
+    #[inline(always)]
+    fn raw(self) -> f32 {
+        self
+    }
+    #[inline(always)]
+    fn f(self) -> f32 {
+        self
+    }
+}
+
+impl Sample for i16 {
+    const SCALE: f32 = 1.0 / 32_768.0;
+    #[inline(always)]
+    fn raw(self) -> f32 {
+        f32::from(self)
+    }
+    #[inline(always)]
+    fn f(self) -> f32 {
+        f32::from(self) * Self::SCALE
+    }
+}
+
+/// `x` as a 16-bit sample, if it is one exactly: `k / 32768` for a whole
+/// `k`, sign of zero included (-0.0 isn't).
+#[inline]
+pub fn as_i16(x: f32) -> Option<i16> {
+    let y = x * 32_768.0;
+    if y != y.trunc() || !(-32_768.0..=32_767.0).contains(&y) {
+        return None;
+    }
+    let k = y as i16;
+    (k.f().to_bits() == x.to_bits()).then_some(k)
+}
+
 /// Linear gain from decibels.
 #[inline]
 pub fn db_to_gain(db: f32) -> f32 {

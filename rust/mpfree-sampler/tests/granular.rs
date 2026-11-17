@@ -48,7 +48,8 @@ fn run(e: &mut Engine, frames: usize, block: usize) -> (Vec<f32>, Vec<f32>) {
 
 /// What a lone grain voice makes from the same source and settings.
 fn reference(s: &Source, p: GrainParams, frames: usize) -> Vec<f32> {
-    let clip = Clip::new(s.data(), 1, s.rate()).unwrap();
+    let data = s.data().to_vec();
+    let clip = Clip::new(&data, 1, s.rate()).unwrap();
     let mut g = GrainVoice::new(RATE, 0);
     g.set_params(p);
     g.start();

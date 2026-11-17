@@ -171,7 +171,7 @@ pub fn pad(project: &Project, pad: usize, layer: usize, cuts: &[u64]) -> Result<
                 &format!("{} {:02}", p.name, i + 1),
                 main.rate(),
                 main.channels(),
-                data[a..b].to_vec(),
+                data.f32s(a..b).map(|d| d.into_owned()).unwrap_or_default(),
             )
             .map_err(|e| format!("slice {}: {e}", i + 1))?;
             files.push((format!("{name} {:02}.wav", i + 1), wav::bytes(&slice)));

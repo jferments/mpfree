@@ -7,7 +7,7 @@ use mpfree_analysis::{
     estimate_tempo, loop_tempo, note_name, root_pitch, Column, OnsetAnalysis, PeakPyramid,
     PitchSettings,
 };
-use mpfree_sampler::model::{Source, SourceId};
+use mpfree_sampler::model::{Pcm, Source, SourceId};
 use mpfree_ui::wave::{Peaks, WaveColumn};
 
 /// A source's peak pyramid as the waveform widgets' [`Peaks`]: one lookup
@@ -15,13 +15,13 @@ use mpfree_ui::wave::{Peaks, WaveColumn};
 /// closer than the pyramid's finest level.
 pub struct PyramidPeaks {
     pyramid: PeakPyramid,
-    audio: Arc<[f32]>,
+    audio: Pcm,
 }
 
 impl PyramidPeaks {
     /// None if the source has more than two channels or isn't whole frames.
-    pub fn new(audio: Arc<[f32]>, channels: usize) -> Option<PyramidPeaks> {
-        let pyramid = PeakPyramid::build(&audio, channels).ok()?;
+    pub fn new(audio: Pcm, channels: usize) -> Option<PyramidPeaks> {
+        let pyramid = PeakPyramid::build_from(&audio, channels).ok()?;
         Some(PyramidPeaks { pyramid, audio })
     }
 
@@ -45,7 +45,7 @@ impl Peaks for PyramidPeaks {
         }
         let mut out = [Column::default()];
         self.pyramid
-            .columns(Some(&self.audio), ch, f0, (f1 - f0).max(1e-6), &mut out);
+            .columns_from(Some(&self.audio), ch, f0, (f1 - f0).max(1e-6), &mut out);
         WaveColumn {
             min: out[0].min,
             max: out[0].max,
@@ -117,7 +117,7 @@ impl SourceView {
             Some(p) => Arc::new(p),
             None => Arc::new(Silent),
         };
-        let mono: Arc<[f32]> = mpfree_analysis::mono(data, ch).unwrap_or_default().into();
+        let mono: Arc<[f32]> = data.mono(ch).into();
         SourceView {
             mono,
             peaks,
@@ -128,11 +128,16 @@ impl SourceView {
     /// The second step: the hits, tempo and root note of `s`, with this
     /// view's peaks and mono mix.
     pub fn finish(&self, s: &Source) -> SourceView {
-        let ch = usize::from(s.channels());
-        let data = s.data();
-        let onsets = OnsetAnalysis::analyse(data, ch, s.rate())
-            .ok()
-            .map(Arc::new);
+        // The hits and the note are found in the mono mix, as they would
+        // be from the channels: this view's, or the sound's own.
+        let own;
+        let mono: &[f32] = if self.mono.len() as u64 == s.frames() {
+            &self.mono
+        } else {
+            own = s.data().mono(usize::from(s.channels()));
+            &own
+        };
+        let onsets = OnsetAnalysis::analyse(mono, 1, s.rate()).ok().map(Arc::new);
         let tempo = onsets.as_deref().and_then(|o| {
             let est = estimate_tempo(o)?.bpm;
             // A loop cut to whole beats has an exact tempo; use it when it
@@ -141,7 +146,7 @@ impl SourceView {
                 .filter(|l| (l / est - 1.0).abs() < 0.03);
             Some(f64::from(exact.unwrap_or(est)))
         });
-        let root_note = root_pitch(data, ch, s.rate(), PitchSettings::default())
+        let root_note = root_pitch(mono, 1, s.rate(), PitchSettings::default())
             .ok()
             .flatten()
             .filter(|p| p.confidence >= ROOT_CONFIDENCE)

@@ -980,12 +980,12 @@ impl SamplePage {
             .projects
             .iter()
             .flat_map(Project::held)
-            .map(|s| (s.data().as_ptr() as usize, s.data().len()))
+            .map(|s| (s.data().addr(), s.data().bytes()))
             .collect();
         seen.sort_unstable();
         seen.dedup();
         SampleMemory {
-            sounds: seen.iter().map(|&(_, n)| n * 4).sum(),
+            sounds: seen.iter().map(|&(_, n)| n).sum(),
             count: seen.len(),
             copies: self.warps.bytes(),
             input: if self.input.is_some() {
@@ -5520,9 +5520,15 @@ impl ToRate {
         if let Some(m) = self.made.get(&s.id()) {
             return Some(m.clone());
         }
-        // The new sound twice over: made, then moved into place.
+        // The new sound twice over: made, then moved into place; and a
+        // 16-bit sound as floats, which the conversion reads.
         let frames = s.frames() as f64 * f64::from(self.rate) / f64::from(s.rate());
-        let need = (frames.ceil() as u64) * u64::from(s.channels()) * 4 * 2;
+        let floats = if s.data().is_16_bit() {
+            s.data().len() as u64 * 4
+        } else {
+            0
+        };
+        let need = (frames.ceil() as u64) * u64::from(s.channels()) * 4 * 2 + floats;
         if crate::memory::room_in((self.free)(), need).is_err() {
             self.skipped.insert(s.id());
             self.kept.push((s.name.clone(), s.rate()));
