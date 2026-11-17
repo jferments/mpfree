@@ -108,7 +108,7 @@ MPFree opens the project you last saved or opened: once the sound is going, it o
 
 **Opening things.** Tap a folder to open it. Tap anything else to pick it (a sound plays once), and tap it again to open it (a project) or load it (a sound, a kit, a preset). Pushing the data wheel does the same as that second tap.
 
-**Kits.** A kit is kept as a folder with its sounds and a `kit.txt` file listing every pad and its settings, so it reads on any computer. Kits show with a green icon wherever they are. Loading one puts it in place of the kit the pads play; **+** opens it to show its sounds. **Save kit** at the top of the **Kits** place saves the kit the pads play there, named after it. MPFree's own drum kits are in **Kits > MPFree**.
+**Kits.** A kit is kept as a folder with its sounds and a `kit.txt` file listing every pad and its settings, so it reads on any computer. Kits show with a green icon wherever they are. Loading one puts it in place of the kit the pads play; **+** opens it to show its sounds. **Save kit** at the top of the **Kits** place saves the kit the pads play there, named after it. MPFree's own drum kits and its free kits of recorded drums ([Sampling](sampling.md)) are in **Kits > MPFree**.
 
 A folder with thousands of sounds lists straight away; the sizes fill in a moment later.
 

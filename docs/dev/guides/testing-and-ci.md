@@ -77,7 +77,7 @@ fails without failing the run (the table is in the run summary anyway).
 
 ### The USB creator's release workflow
 
-[`.github/workflows/release-creator.yml`](../../../.github/workflows/release-creator.yml) is not CI: it runs only by hand (**Run workflow**) or on a `creator-vX.Y.Z` tag, and makes a draft release of the USB creator for Linux, Windows and macOS ([Releases](../design/usb-creator.md#releases)). MPFree's programs for the MPC and the draft itself use the self-hosted runners; the creator is built on GitHub's own Ubuntu 22.04, Windows and macOS runners, which count against the account's Actions minutes (about 180 counted minutes a release). Each build runs the creator's tests on its own system and lists that machine's USB disks, the only place the Windows and macOS disk code runs before a real stick.
+[`.github/workflows/release-creator.yml`](../../../.github/workflows/release-creator.yml) is not CI: it runs only by hand (**Run workflow**) or on a `creator-vX.Y.Z` tag, and makes a draft release of the USB creator for Linux, Windows and macOS ([Releases](../design/usb-creator.md#releases)). MPFree's programs for the MPC, its free drum kits (`mpfree-free-kits`, which fetches the samples `rust/mpfree-factory/free-kits.txt` pins from GitHub and keeps them in the runner's `~/.cache/mpfree-free-kits`) and the draft itself use the self-hosted runners; the creator is built on GitHub's own Ubuntu 22.04, Windows and macOS runners, which count against the account's Actions minutes (about 180 counted minutes a release). Each build runs the creator's tests on its own system and lists that machine's USB disks, the only place the Windows and macOS disk code runs before a real stick.
 
 ### MPFree's kernel build
 

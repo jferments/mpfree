@@ -1,6 +1,106 @@
 # The FX quality ratchet: every number may stay or get better, never worse.
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --release -p mpfree-fxlab --test quality`;
 # see docs/dev/design/fx-quality.md. key<TAB>value
+amp/amp[Bass grit]/alias_5k_m12dbfs	-116.6365
+amp/amp[Bass grit]/lu_pink18	-0.0108
+amp/amp[Classic crunch]/alias_5k_m12dbfs	-92.0887
+amp/amp[Classic crunch]/lu_pink18	0.0069
+amp/amp[Edge of breakup]/alias_5k_m12dbfs	-108.7856
+amp/amp[Edge of breakup]/lu_pink18	0.0254
+amp/amp[Lo-fi radio]/alias_5k_m12dbfs	-83.3129
+amp/amp[Lo-fi radio]/lu_pink18	0.0002
+amp/amp[Modern lead]/alias_5k_m12dbfs	-61.3187
+amp/amp[Modern lead]/lu_pink18	0.0025
+amp/amp[Sparkle clean]/alias_5k_m12dbfs	-140
+amp/amp[Sparkle clean]/lu_pink18	0.0205
+amp/amp[Synth grit]/alias_5k_m12dbfs	-105.1289
+amp/amp[Synth grit]/lu_pink18	-0.0086
+amp/amp[Tight rhythm]/alias_5k_m12dbfs	-57.6188
+amp/amp[Tight rhythm]/lu_pink18	0.0601
+amp/amp[Treble lead]/alias_5k_m12dbfs	-54.1969
+amp/amp[Treble lead]/lu_pink18	-0.048
+amp/bass/alias_1k_m6dbfs_gain10	-93.827
+amp/bass/alias_1k_m6dbfs_gain5	-140
+amp/bass/alias_2k_m6dbfs_gain10	-87.3933
+amp/bass/alias_2k_m6dbfs_gain5	-122.0736
+amp/bass/alias_5k_m12dbfs_gain10	-81.7325
+amp/bass/alias_5k_m12dbfs_gain5	-107.654
+amp/bass/bass_jump_db	0
+amp/bass/boost_change_db	0.3772
+amp/bass/cab_change_db	0
+amp/bass/cleanup_db_gain5	16.4531
+amp/bass/gain_zipper_db	0
+amp/bass/lu_pink18_gain10	-0.0057
+amp/bass/lu_pink18_gain2.5	0.0951
+amp/bass/lu_pink18_gain5	0.0108
+amp/bass/lu_pink18_gain7.5	0.0308
+amp/bass/mid_jump_db	0
+amp/bass/model_change_db	0.4515
+amp/bass/power_chord_sub70_db_gain10_nocab_tight	-18.6024
+amp/bass/silence_out_dbfs_gain10	-140
+amp/bass/treble_jump_db	0
+amp/clean/alias_1k_m6dbfs_gain10	-123.795
+amp/clean/alias_1k_m6dbfs_gain5	-140
+amp/clean/alias_2k_m6dbfs_gain10	-98.7175
+amp/clean/alias_2k_m6dbfs_gain5	-140
+amp/clean/alias_5k_m12dbfs_gain10	-94.1615
+amp/clean/alias_5k_m12dbfs_gain5	-132.2334
+amp/clean/bass_jump_db	0
+amp/clean/boost_change_db	0.7804
+amp/clean/cab_change_db	0
+amp/clean/cleanup_db_gain5	26.1345
+amp/clean/gain_zipper_db	0
+amp/clean/lu_pink18_gain10	0.0038
+amp/clean/lu_pink18_gain2.5	0.0209
+amp/clean/lu_pink18_gain5	0.005
+amp/clean/lu_pink18_gain7.5	0.04
+amp/clean/mid_jump_db	0.0402
+amp/clean/model_change_db	0.1631
+amp/clean/power_chord_sub70_db_gain10_nocab_tight	-17.6569
+amp/clean/silence_out_dbfs_gain10	-140
+amp/clean/treble_jump_db	0
+amp/crunch/alias_1k_m6dbfs_gain10	-82.9837
+amp/crunch/alias_1k_m6dbfs_gain5	-127.2281
+amp/crunch/alias_2k_m6dbfs_gain10	-73.7983
+amp/crunch/alias_2k_m6dbfs_gain5	-105.7427
+amp/crunch/alias_5k_m12dbfs_gain10	-61.5119
+amp/crunch/alias_5k_m12dbfs_gain5	-96.5204
+amp/crunch/bass_jump_db	0
+amp/crunch/boost_change_db	0.469
+amp/crunch/cab_change_db	0
+amp/crunch/cleanup_db_gain5	10.3013
+amp/crunch/gain_zipper_db	0
+amp/crunch/lu_pink18_gain10	-0.002
+amp/crunch/lu_pink18_gain2.5	0.1509
+amp/crunch/lu_pink18_gain5	0.0028
+amp/crunch/lu_pink18_gain7.5	0.0197
+amp/crunch/mid_jump_db	0
+amp/crunch/model_change_db	0.1761
+amp/crunch/power_chord_sub70_db_gain10_nocab_tight	-18.7418
+amp/crunch/silence_out_dbfs_gain10	-140
+amp/crunch/treble_jump_db	0
+amp/lead/alias_1k_m6dbfs_gain10	-64.1209
+amp/lead/alias_1k_m6dbfs_gain5	-103.0896
+amp/lead/alias_2k_m6dbfs_gain10	-64.3217
+amp/lead/alias_2k_m6dbfs_gain5	-93.3125
+amp/lead/alias_5k_m12dbfs_gain10	-57.6134
+amp/lead/alias_5k_m12dbfs_gain5	-91.1376
+amp/lead/bass_jump_db	0
+amp/lead/boost_change_db	0.1005
+amp/lead/cab_change_db	0
+amp/lead/gain_zipper_db	0.0805
+amp/lead/gate_closes_on_decay	1
+amp/lead/gate_hiss_out_dbfs_gain10	-140
+amp/lead/gate_open_ms	1
+amp/lead/lu_pink18_gain10	-0.0176
+amp/lead/lu_pink18_gain2.5	0.3784
+amp/lead/lu_pink18_gain5	0.0037
+amp/lead/lu_pink18_gain7.5	-0.0116
+amp/lead/mid_jump_db	0
+amp/lead/model_change_db	0
+amp/lead/power_chord_sub70_db_gain10_nocab_tight	-27.871
+amp/lead/silence_out_dbfs_gain10	-140
+amp/lead/treble_jump_db	0
 compressor/compressor/attack_ratio_100ms	1.86
 compressor/compressor/attack_ratio_10ms	1.6
 compressor/compressor/attack_ratio_1ms	1
@@ -32,32 +132,34 @@ compressor/compressor[Sidechain pump]/zipper_db	0.6346
 compressor/compressor[Smash]/zipper_db	0.966
 compressor/compressor[Vocal level]/zipper_db	0.1984
 crush/crush/dither_noise_rise_bits8	4.5933
-crush/crush/image_error_quarter_rate	0.4121
-crush/crush/lu_pink18	-0.2549
-crush/crush/off_grid_10000hz	-11.4691
-crush/crush/off_grid_10000hz_at48k	-13.125
-crush/crush/off_grid_11025hz	-91.2612
-crush/crush/off_grid_11025hz_at48k	-11.4707
-crush/crush/off_grid_22050hz	-91.9216
-crush/crush/off_grid_22050hz_at48k	-13.7397
-crush/crush/off_grid_26040hz	-13.4194
-crush/crush/off_grid_26040hz_at48k	-16.3289
-crush/crush/off_grid_32000hz	-14.3006
-crush/crush/off_grid_32000hz_at48k	-14.5552
-crush/crush/off_grid_8000hz	-13.289
-crush/crush/off_grid_8000hz_at48k	-89.7384
-crush/crush/off_grid_worst_10000hz	-19.7143
-crush/crush/off_grid_worst_10000hz_at48k	-20.7725
-crush/crush/off_grid_worst_11025hz	-117.8179
-crush/crush/off_grid_worst_11025hz_at48k	-19.4516
-crush/crush/off_grid_worst_22050hz	-119.0903
-crush/crush/off_grid_worst_22050hz_at48k	-18.7595
-crush/crush/off_grid_worst_26040hz	-18.2128
-crush/crush/off_grid_worst_26040hz_at48k	-18.3301
-crush/crush/off_grid_worst_32000hz	-20.3194
-crush/crush/off_grid_worst_32000hz_at48k	-17.9316
-crush/crush/off_grid_worst_8000hz	-22.1332
-crush/crush/off_grid_worst_8000hz_at48k	-103.2968
+crush/crush/filters_drawn_vs_heard_db	0.0012
+crush/crush/image_error_quarter_rate	0.0015
+crush/crush/lu_pink18	-0.4611
+crush/crush/m50dbfs_bits8_buzz_out_dbfs	-48.1648
+crush/crush/off_grid_10000hz	-54.5788
+crush/crush/off_grid_10000hz_at48k	-72.8211
+crush/crush/off_grid_11025hz	-91.4488
+crush/crush/off_grid_11025hz_at48k	-60.7001
+crush/crush/off_grid_22050hz	-92.3142
+crush/crush/off_grid_22050hz_at48k	-64.74
+crush/crush/off_grid_26040hz	-63.9745
+crush/crush/off_grid_26040hz_at48k	-69.6097
+crush/crush/off_grid_32000hz	-68.2937
+crush/crush/off_grid_32000hz_at48k	-67.5653
+crush/crush/off_grid_8000hz	-74.3031
+crush/crush/off_grid_8000hz_at48k	-89.9978
+crush/crush/off_grid_worst_10000hz	-55.3705
+crush/crush/off_grid_worst_10000hz_at48k	-79.5323
+crush/crush/off_grid_worst_11025hz	-117.7627
+crush/crush/off_grid_worst_11025hz_at48k	-61.6666
+crush/crush/off_grid_worst_22050hz	-119.1665
+crush/crush/off_grid_worst_22050hz_at48k	-66.9414
+crush/crush/off_grid_worst_26040hz	-66.9545
+crush/crush/off_grid_worst_26040hz_at48k	-74.1675
+crush/crush/off_grid_worst_32000hz	-71.4323
+crush/crush/off_grid_worst_32000hz_at48k	-69.5263
+crush/crush/off_grid_worst_8000hz	-82.5751
+crush/crush/off_grid_worst_8000hz_at48k	-103.4973
 crush/crush/silence_out_dbfs	-140
 crush/crush/sinad_error_bits12	0.1342
 crush/crush/sinad_error_bits16	0.0512
@@ -65,16 +167,22 @@ crush/crush/sinad_error_bits4	-0.1838
 crush/crush/sinad_error_bits8	0.2546
 crush/crush/step_spike_db	0
 crush/crush/thd_m40dbfs_bits8_dither	-35.0928
-crush/crush[12-bit classic]/lu_pink18	-0.0701
-crush/crush[12-bit classic]/off_grid_at_16bits	-13.4194
-crush/crush[Chip]/lu_pink18	-0.0227
-crush/crush[Chip]/off_grid_at_16bits	-91.9216
-crush/crush[Destroyed]/lu_pink18	-0.1005
-crush/crush[Destroyed]/off_grid_at_16bits	-19.5536
-crush/crush[Phone line]/lu_pink18	-0.4538
-crush/crush[Phone line]/off_grid_at_16bits	-13.289
-crush/crush[Soft grit]/lu_pink18	-0.0465
-crush/crush[Soft grit]/off_grid_at_16bits	-14.3006
+crush/crush[12-bit 40k]/lu_pink18	-0.5503
+crush/crush[12-bit 40k]/off_grid_at_16bits	-67.2114
+crush/crush[12-bit classic]/lu_pink18	-0.2044
+crush/crush[12-bit classic]/off_grid_at_16bits	-69.5964
+crush/crush[8-bit sampler]/lu_pink18	-0.0021
+crush/crush[8-bit sampler]/off_grid_at_16bits	-93.2139
+crush/crush[Chip]/lu_pink18	-0.319
+crush/crush[Chip]/off_grid_at_16bits	-92.3142
+crush/crush[Destroyed]/lu_pink18	-0.1043
+crush/crush[Destroyed]/off_grid_at_16bits	-68.4025
+crush/crush[Phone line]/lu_pink18	-0.3753
+crush/crush[Phone line]/off_grid_at_16bits	-81.0166
+crush/crush[Soft grit]/lu_pink18	-0.3847
+crush/crush[Soft grit]/off_grid_at_16bits	-68.2937
+crush/crush[Wobbly clock]/lu_pink18	-0.736
+crush/crush[Wobbly clock]/off_grid_at_16bits	-59.0316
 delay/digital/alias_5k_0_db	-95.5582
 delay/digital/hidden_loss_10k_db	-0.0045
 delay/digital/hidden_loss_15k_db	-0.0102
@@ -155,179 +263,179 @@ delay/tape[Space heads]/zipper_worst_db	22.9867
 delay/tape[Worn tape]/alias_5k_0_db	-140
 delay/tape[Worn tape]/tail_cut_db	-76.357
 delay/tape[Worn tape]/zipper_worst_db	10.2662
-drive/console/alias_2k5_0dbfs	-60.6111
-drive/console/alias_5k_0dbfs	-41.1672
-drive/console/alias_5k_m12dbfs	-95.2879
-drive/console/alias_8k_0dbfs	-16.3598
-drive/console/flat_m40dbfs	0
-drive/console/flat_mix50	0
-drive/console/lu_pink18_amount0	-0.0626
-drive/console/lu_pink18_amount100	-0.9368
-drive/console/lu_pink18_amount50	-0.2467
+drive/console/alias_2k5_0dbfs	-67.7646
+drive/console/alias_5k_0dbfs	-98.8903
+drive/console/alias_5k_m12dbfs	-140
+drive/console/alias_8k_0dbfs	-55.404
+drive/console/flat_m40dbfs	0.0072
+drive/console/flat_mix50	0.0037
+drive/console/lu_pink18_amount0	-0.0611
+drive/console/lu_pink18_amount100	-0.9221
+drive/console/lu_pink18_amount50	-0.2422
 drive/console/zipper_db	0
-drive/console[Console warmth]/alias_5k_0dbfs	-49.6772
+drive/console[Console warmth]/alias_5k_0dbfs	-140
 drive/console[Console warmth]/zipper_db	0
-drive/console[Hot console]/alias_5k_0dbfs	-19.2231
+drive/console[Hot console]/alias_5k_0dbfs	-78.0388
 drive/console[Hot console]/zipper_db	0
-drive/foldback/alias_2k5_0dbfs_eco	-54.6421
-drive/foldback/alias_2k5_0dbfs_hq	-56.305
-drive/foldback/alias_5k_0dbfs_eco	-53.4058
-drive/foldback/alias_5k_0dbfs_hq	-79.9236
+drive/foldback/alias_2k5_0dbfs_eco	-52.8746
+drive/foldback/alias_2k5_0dbfs_hq	-55.975
+drive/foldback/alias_5k_0dbfs_eco	-59.5781
+drive/foldback/alias_5k_0dbfs_hq	-79.3071
 drive/foldback/alias_5k_m12dbfs_eco	-140
 drive/foldback/alias_5k_m12dbfs_hq	-140
-drive/foldback/alias_8k_0dbfs_eco	-17.9096
-drive/foldback/alias_8k_0dbfs_hq	-64.7745
-drive/foldback/bias_change_db	-140
-drive/foldback/flat_m40dbfs_eco	0.3462
-drive/foldback/flat_m40dbfs_hq	0.3463
-drive/foldback/flat_mix50	0.3476
-drive/foldback/lu_pink18_drive0	-0.1286
-drive/foldback/lu_pink18_drive12	0.4875
-drive/foldback/lu_pink18_drive24	5.6871
-drive/foldback/lu_pink18_drive36	2.7638
-drive/foldback/zipper_db	1.0903
-drive/foldback[Foldback grit]/alias_5k_0dbfs	-2.5251
-drive/foldback[Foldback grit]/zipper_db	2.264
-drive/fuzz/alias_2k5_0dbfs_eco	-51.8361
-drive/fuzz/alias_2k5_0dbfs_hq	-65.2917
-drive/fuzz/alias_5k_0dbfs_eco	-39.197
-drive/fuzz/alias_5k_0dbfs_hq	-54.7042
-drive/fuzz/alias_5k_m12dbfs_eco	-56.4759
-drive/fuzz/alias_5k_m12dbfs_hq	-77.3789
-drive/fuzz/alias_8k_0dbfs_eco	-27.0461
-drive/fuzz/alias_8k_0dbfs_hq	-44.7023
-drive/fuzz/bias_change_db	-6.2945
-drive/fuzz/dc_hits_bias100_dbfs	-134.8009
-drive/fuzz/flat_m40dbfs_eco	0.3484
-drive/fuzz/flat_m40dbfs_hq	0.3485
-drive/fuzz/flat_mix50	0.3434
-drive/fuzz/lu_pink18_drive0	0.0085
-drive/fuzz/lu_pink18_drive12	0.8641
-drive/fuzz/lu_pink18_drive24	2.7041
-drive/fuzz/lu_pink18_drive36	3.4917
-drive/fuzz/subsonic_hits_bias100	-12.8438
-drive/fuzz/zipper_db	2.3188
-drive/fuzz[Fuzz box]/alias_5k_0dbfs	-22.1354
-drive/fuzz[Fuzz box]/zipper_db	0.4131
-drive/hard/alias_2k5_0dbfs_eco	-47.8389
-drive/hard/alias_2k5_0dbfs_hq	-61.5595
-drive/hard/alias_5k_0dbfs_eco	-38.1333
-drive/hard/alias_5k_0dbfs_hq	-50.1392
-drive/hard/alias_5k_m12dbfs_eco	-140
-drive/hard/alias_5k_m12dbfs_hq	-140
-drive/hard/alias_8k_0dbfs_eco	-28.5439
-drive/hard/alias_8k_0dbfs_hq	-42.7752
-drive/hard/bias_change_db	-140
-drive/hard/flat_m40dbfs_eco	0.3462
-drive/hard/flat_m40dbfs_hq	0.3463
-drive/hard/flat_mix50	0.346
-drive/hard/lu_pink18_drive0	-0.1413
-drive/hard/lu_pink18_drive12	-0.4186
-drive/hard/lu_pink18_drive24	2.7634
-drive/hard/lu_pink18_drive36	3.5123
-drive/hard/zipper_db	0.0509
-drive/hard[Hard clip]/alias_5k_0dbfs	-30.1173
-drive/hard[Hard clip]/zipper_db	0
+drive/foldback/alias_8k_0dbfs_eco	-36.3525
+drive/foldback/alias_8k_0dbfs_hq	-62.3379
+drive/foldback/bias_change_db	2.1478
+drive/foldback/flat_m40dbfs_eco	0.1926
+drive/foldback/flat_m40dbfs_hq	0.1933
+drive/foldback/flat_mix50	0.3097
+drive/foldback/lu_pink18_drive0	-0.0668
+drive/foldback/lu_pink18_drive12	0.3478
+drive/foldback/lu_pink18_drive24	2.6725
+drive/foldback/lu_pink18_drive36	-2.2475
+drive/foldback/zipper_db	1.2188
+drive/foldback[Foldback grit]/alias_5k_0dbfs	-25.9531
+drive/foldback[Foldback grit]/zipper_db	2.775
+drive/fuzz/alias_2k5_0dbfs_eco	-61.7081
+drive/fuzz/alias_2k5_0dbfs_hq	-64.9005
+drive/fuzz/alias_5k_0dbfs_eco	-49.9918
+drive/fuzz/alias_5k_0dbfs_hq	-74.66
+drive/fuzz/alias_5k_m12dbfs_eco	-71.6659
+drive/fuzz/alias_5k_m12dbfs_hq	-101.8775
+drive/fuzz/alias_8k_0dbfs_eco	-40.5758
+drive/fuzz/alias_8k_0dbfs_hq	-60.0175
+drive/fuzz/bias_change_db	-5.9831
+drive/fuzz/dc_hits_bias100_dbfs	-136.035
+drive/fuzz/flat_m40dbfs_eco	0.1925
+drive/fuzz/flat_m40dbfs_hq	0.1932
+drive/fuzz/flat_mix50	0.309
+drive/fuzz/lu_pink18_drive0	0.0705
+drive/fuzz/lu_pink18_drive12	0.32
+drive/fuzz/lu_pink18_drive24	0.7908
+drive/fuzz/lu_pink18_drive36	0.9251
+drive/fuzz/subsonic_hits_bias100	-22.5611
+drive/fuzz/zipper_db	2.6526
+drive/fuzz[Fuzz box]/alias_5k_0dbfs	-52.4815
+drive/fuzz[Fuzz box]/zipper_db	1.09
+drive/hard/alias_2k5_0dbfs_eco	-59.3411
+drive/hard/alias_2k5_0dbfs_hq	-67.3481
+drive/hard/alias_5k_0dbfs_eco	-55.1048
+drive/hard/alias_5k_0dbfs_hq	-68.9044
+drive/hard/alias_5k_m12dbfs_eco	-67.5973
+drive/hard/alias_5k_m12dbfs_hq	-91.6555
+drive/hard/alias_8k_0dbfs_eco	-44.2494
+drive/hard/alias_8k_0dbfs_hq	-59.7164
+drive/hard/bias_change_db	-7.9544
+drive/hard/flat_m40dbfs_eco	0.1927
+drive/hard/flat_m40dbfs_hq	0.1933
+drive/hard/flat_mix50	0.3095
+drive/hard/lu_pink18_drive0	-0.136
+drive/hard/lu_pink18_drive12	0.0517
+drive/hard/lu_pink18_drive24	0.8127
+drive/hard/lu_pink18_drive36	0.9603
+drive/hard/zipper_db	0.3448
+drive/hard[Hard clip]/alias_5k_0dbfs	-45.3691
+drive/hard[Hard clip]/zipper_db	0.4292
 drive/iron/alias_2k5_0dbfs	-140
 drive/iron/alias_5k_0dbfs	-140
 drive/iron/alias_5k_m12dbfs	-140
-drive/iron/alias_8k_0dbfs	-114.035
-drive/iron/flat_m40dbfs	0.2612
-drive/iron/flat_mix50	0.2743
-drive/iron/lu_pink18_amount0	-0.0169
-drive/iron/lu_pink18_amount100	-0.1385
-drive/iron/lu_pink18_amount50	-0.0506
+drive/iron/alias_8k_0dbfs	-140
+drive/iron/flat_m40dbfs	0.0073
+drive/iron/flat_mix50	0.0037
+drive/iron/lu_pink18_amount0	-0.0098
+drive/iron/lu_pink18_amount100	-0.1289
+drive/iron/lu_pink18_amount50	-0.0432
 drive/iron/zipper_db	0
 drive/iron[Iron bass]/alias_5k_0dbfs	-140
 drive/iron[Iron bass]/zipper_db	0
-drive/rectify/alias_dbfs_2k5_0dbfs_eco	-45.9238
-drive/rectify/alias_dbfs_2k5_0dbfs_hq	-60.3263
-drive/rectify/alias_dbfs_5k_0dbfs_eco	-32.7554
-drive/rectify/alias_dbfs_5k_0dbfs_hq	-48.029
-drive/rectify/alias_dbfs_5k_m12dbfs_eco	-46.1809
-drive/rectify/alias_dbfs_5k_m12dbfs_hq	-60.3141
-drive/rectify/alias_dbfs_8k_0dbfs_eco	-26.6643
-drive/rectify/alias_dbfs_8k_0dbfs_hq	-39.2281
-drive/rectify/bias_change_db	-140
-drive/rectify/lu_pink18_drive0	4.1552
-drive/rectify/lu_pink18_drive12	4.488
-drive/rectify/lu_pink18_drive24	6.6234
-drive/rectify/lu_pink18_drive36	3.97
-drive/rectify/zipper_db	0.2851
-drive/rectify[Octave up]/alias_dbfs_5k_0dbfs	-39.8949
-drive/rectify[Octave up]/zipper_db	2.6813
-drive/soft/alias_2k5_0dbfs_eco	-69.3046
-drive/soft/alias_2k5_0dbfs_hq	-70.8384
-drive/soft/alias_5k_0dbfs_eco	-52.6076
-drive/soft/alias_5k_0dbfs_hq	-104.0393
-drive/soft/alias_5k_m12dbfs_eco	-101.3469
+drive/rectify/alias_dbfs_2k5_0dbfs_eco	-61.9593
+drive/rectify/alias_dbfs_2k5_0dbfs_hq	-73.4851
+drive/rectify/alias_dbfs_5k_0dbfs_eco	-49.2559
+drive/rectify/alias_dbfs_5k_0dbfs_hq	-75.327
+drive/rectify/alias_dbfs_5k_m12dbfs_eco	-60.7078
+drive/rectify/alias_dbfs_5k_m12dbfs_hq	-83.8541
+drive/rectify/alias_dbfs_8k_0dbfs_eco	-48.0426
+drive/rectify/alias_dbfs_8k_0dbfs_hq	-68.4369
+drive/rectify/bias_change_db	6.2222
+drive/rectify/lu_pink18_drive0	0.0746
+drive/rectify/lu_pink18_drive12	1.5413
+drive/rectify/lu_pink18_drive24	2.153
+drive/rectify/lu_pink18_drive36	0.9748
+drive/rectify/zipper_db	0.3152
+drive/rectify[Octave up]/alias_dbfs_5k_0dbfs	-66.0153
+drive/rectify[Octave up]/zipper_db	2.6718
+drive/soft/alias_2k5_0dbfs_eco	-67.2712
+drive/soft/alias_2k5_0dbfs_hq	-70.4542
+drive/soft/alias_5k_0dbfs_eco	-68.637
+drive/soft/alias_5k_0dbfs_hq	-103.7412
+drive/soft/alias_5k_m12dbfs_eco	-140
 drive/soft/alias_5k_m12dbfs_hq	-140
-drive/soft/alias_8k_0dbfs_eco	-32.5835
-drive/soft/alias_8k_0dbfs_hq	-61.0053
+drive/soft/alias_8k_0dbfs_eco	-46.7883
+drive/soft/alias_8k_0dbfs_hq	-60.6678
 drive/soft/bias_change_db	-140
-drive/soft/flat_m40dbfs_eco	0.3462
-drive/soft/flat_m40dbfs_hq	0.3463
-drive/soft/flat_mix50	0.3473
-drive/soft/lu_pink18_drive0	-0.1308
-drive/soft/lu_pink18_drive12	0.1781
-drive/soft/lu_pink18_drive24	2.2617
-drive/soft/lu_pink18_drive36	3.4058
-drive/soft/zipper_db	0.1191
-drive/soft[Warm tape]/alias_5k_0dbfs	-96.375
-drive/soft[Warm tape]/zipper_db	0.5626
+drive/soft/flat_m40dbfs_eco	0.1927
+drive/soft/flat_m40dbfs_hq	0.1933
+drive/soft/flat_mix50	0.3097
+drive/soft/lu_pink18_drive0	-0.1232
+drive/soft/lu_pink18_drive12	0.0219
+drive/soft/lu_pink18_drive24	0.628
+drive/soft/lu_pink18_drive36	0.9326
+drive/soft/zipper_db	0.1128
+drive/soft[Warm tape]/alias_5k_0dbfs	-105.9538
+drive/soft[Warm tape]/zipper_db	0.392
 drive/soften/alias_2k5_0dbfs	-140
-drive/soften/alias_5k_0dbfs	-71.9955
-drive/soften/alias_5k_m12dbfs	-119.4083
-drive/soften/alias_8k_0dbfs	-32.797
-drive/soften/flat_m40dbfs	0.0003
-drive/soften/flat_mix50	0
-drive/soften/lu_pink18_amount0	-0.0003
-drive/soften/lu_pink18_amount100	-0.079
-drive/soften/lu_pink18_amount50	-0.0053
+drive/soften/alias_5k_0dbfs	-140
+drive/soften/alias_5k_m12dbfs	-140
+drive/soften/alias_8k_0dbfs	-77.1404
+drive/soften/flat_m40dbfs	0.0073
+drive/soften/flat_mix50	0.0037
+drive/soften/lu_pink18_amount0	0.0003
+drive/soften/lu_pink18_amount100	-0.0651
+drive/soften/lu_pink18_amount50	-0.0034
 drive/soften/zipper_db	0
-drive/soften[Soft highs]/alias_5k_0dbfs	-62.8292
+drive/soften[Soft highs]/alias_5k_0dbfs	-140
 drive/soften[Soft highs]/zipper_db	0
 drive/switch/click_console_to_tape	0
-drive/switch/click_eco_to_hq	67.5675
-drive/switch/click_soft_to_foldback	30.7898
-drive/switch/click_soft_to_fuzz	17.4775
-drive/switch/click_soft_to_hard	1.1312
-drive/switch/click_tube_to_rectify	0.0126
-drive/tape/alias_2k5_0dbfs	-64.3233
-drive/tape/alias_5k_0dbfs	-33.5529
-drive/tape/alias_5k_m12dbfs	-74.9031
-drive/tape/alias_8k_0dbfs	-18.0112
-drive/tape/flat_m40dbfs	1.3729
-drive/tape/flat_mix50	0.4213
-drive/tape/lu_pink18_amount0	-0.326
-drive/tape/lu_pink18_amount100	-1.8608
-drive/tape/lu_pink18_amount50	-0.695
-drive/tape/zipper_db	0
-drive/tape[Pushed tape]/alias_5k_0dbfs	-23.2843
+drive/switch/click_eco_to_hq	0
+drive/switch/click_soft_to_foldback	0.8726
+drive/switch/click_soft_to_fuzz	0.3027
+drive/switch/click_soft_to_hard	0.3164
+drive/switch/click_tube_to_rectify	0.0153
+drive/tape/alias_2k5_0dbfs	-71.9685
+drive/tape/alias_5k_0dbfs	-94.7105
+drive/tape/alias_5k_m12dbfs	-140
+drive/tape/alias_8k_0dbfs	-57.7907
+drive/tape/flat_m40dbfs	1.3751
+drive/tape/flat_mix50	0.44
+drive/tape/lu_pink18_amount0	-0.3104
+drive/tape/lu_pink18_amount100	-1.772
+drive/tape/lu_pink18_amount50	-0.659
+drive/tape/zipper_db	0.0051
+drive/tape[Pushed tape]/alias_5k_0dbfs	-83.4576
 drive/tape[Pushed tape]/zipper_db	0
-drive/tape[Tape glue]/alias_5k_0dbfs	-32.0877
+drive/tape[Tape glue]/alias_5k_0dbfs	-93.5536
 drive/tape[Tape glue]/zipper_db	0
-drive/tube/alias_2k5_0dbfs_eco	-70.1747
-drive/tube/alias_2k5_0dbfs_hq	-71.7104
-drive/tube/alias_5k_0dbfs_eco	-53.8202
-drive/tube/alias_5k_0dbfs_hq	-104.2587
-drive/tube/alias_5k_m12dbfs_eco	-103.1972
+drive/tube/alias_2k5_0dbfs_eco	-68.1464
+drive/tube/alias_2k5_0dbfs_hq	-71.3285
+drive/tube/alias_5k_0dbfs_eco	-65.1519
+drive/tube/alias_5k_0dbfs_hq	-103.9559
+drive/tube/alias_5k_m12dbfs_eco	-140
 drive/tube/alias_5k_m12dbfs_hq	-140
-drive/tube/alias_8k_0dbfs_eco	-33.4551
-drive/tube/alias_8k_0dbfs_hq	-61.0986
-drive/tube/bias_change_db	-10.3743
-drive/tube/dc_hits_bias100_dbfs	-130.003
-drive/tube/flat_m40dbfs_eco	0.3467
-drive/tube/flat_m40dbfs_hq	0.3468
-drive/tube/flat_mix50	0.3472
-drive/tube/lu_pink18_drive0	-0.0909
-drive/tube/lu_pink18_drive12	0.2377
-drive/tube/lu_pink18_drive24	2.2737
-drive/tube/lu_pink18_drive36	3.41
-drive/tube/subsonic_hits_bias100	-13.827
-drive/tube/zipper_db	0.1357
-drive/tube[Tube glow]/alias_5k_0dbfs	-57.913
-drive/tube[Tube glow]/zipper_db	0.1648
+drive/tube/alias_8k_0dbfs_eco	-47.7781
+drive/tube/alias_8k_0dbfs_hq	-60.7627
+drive/tube/bias_change_db	-10.3308
+drive/tube/dc_hits_bias100_dbfs	-131.1612
+drive/tube/flat_m40dbfs_eco	0.1926
+drive/tube/flat_m40dbfs_hq	0.1933
+drive/tube/flat_mix50	0.3096
+drive/tube/lu_pink18_drive0	-0.0857
+drive/tube/lu_pink18_drive12	0.0955
+drive/tube/lu_pink18_drive24	0.6587
+drive/tube/lu_pink18_drive36	0.9417
+drive/tube/subsonic_hits_bias100	-23.4997
+drive/tube/zipper_db	0.1266
+drive/tube[Tube glow]/alias_5k_0dbfs	-80.1329
+drive/tube[Tube glow]/zipper_db	0.5672
 eq/bell_12k_q0.71_width_ratio	0.5775
 eq/bell_12k_q0.71_worst_db	-6.5548
 eq/bell_12k_q1.41_width_ratio	0.5785
@@ -358,7 +466,7 @@ eq/bell_8k_q1.41_width_ratio	0.7907
 eq/bell_8k_q1.41_worst_db	-1.8981
 eq/bell_8k_q4_width_ratio	0.797
 eq/bell_8k_q4_worst_db	-1.3386
-eq/drawn_vs_heard_db	0.0265
+eq/drawn_vs_heard_db	0.0042
 eq/high_cut_12k_24db_worst_db	-14.2988
 eq/high_cut_5k_12db_worst_db	-2.217
 eq/high_cut_5k_24db_worst_db	-1.4194

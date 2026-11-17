@@ -505,6 +505,17 @@ impl std::io::Write for MidiSink {
 /// sound path still never allocates or frees.
 #[test]
 fn a_track_on_midi_out_plays_there_and_never_allocates() {
+    track_on_midi_out_never_allocates(false);
+}
+
+/// The same with the track and the clock on a USB device's output: its
+/// own writer, and the jacks get nothing.
+#[test]
+fn a_track_on_a_usb_device_plays_there_and_never_allocates() {
+    track_on_midi_out_never_allocates(true);
+}
+
+fn track_on_midi_out_never_allocates(usb: bool) {
     use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
     let mut rig = Rig::new(false);
     let mut c =
@@ -521,15 +532,28 @@ fn a_track_on_midi_out_plays_there_and_never_allocates() {
     }
     rig.time.command(Command::Record);
     // Setup, which may allocate: MIDI Out opens and the track goes there.
-    let sink = MidiSink::default();
+    let din = MidiSink::default();
     rig.midi
-        .open(sink.clone(), std::time::Instant::now())
+        .open(din.clone(), std::time::Instant::now())
         .unwrap();
+    let usb_sink = MidiSink::default();
+    let port = if usb {
+        let s = usb_sink.clone();
+        rig.midi.plugged(
+            mpfree_midi::PortId(1),
+            "Digitone",
+            std::sync::Arc::new(move || Ok(Box::new(s.clone()) as Box<dyn std::io::Write + Send>)),
+        );
+        "Digitone"
+    } else {
+        DIN_NAME
+    };
+    let sink = if usb { usb_sink } else { din.clone() };
     {
         let mut m = rig.io.lock().unwrap();
-        m.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 9));
+        m.setup.tracks[0] = Some(TrackOut::new(port, 9));
         m.setup
-            .set_port(DIN_NAME, |p| p.clock_out = ClockOut::WhilePlaying);
+            .set_port(port, |p| p.clock_out = ClockOut::WhilePlaying);
         m.gen += 1;
     }
     for _ in 0..200 {
@@ -582,6 +606,9 @@ fn a_track_on_midi_out_plays_there_and_never_allocates() {
         2 * ons + pulses + 3,
         "only notes and clock went out: {bytes:02X?}"
     );
+    if usb {
+        assert!(din.0.lock().unwrap().is_empty(), "the jacks got none of it");
+    }
 }
 
 /// An arp's note (the pads played live) on a track that plays on MIDI Out:
