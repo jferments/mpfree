@@ -2689,7 +2689,24 @@ fn first_start(
     let data = o.data.as_deref().filter(|_| !timed)?;
     let paths = setup::Paths::on_the_stick(data, Path::new(REPORT_DIR));
     let conf = data.join("settings").join(format!("{}.conf", setup::OWNER));
-    let saved = mpfree_store::Settings::parse(&fs::read_to_string(conf).unwrap_or_default());
+    let mut saved = mpfree_store::Settings::parse(&fs::read_to_string(conf).unwrap_or_default());
+    // What the creator left out, kept before anything runs, so an update of
+    // the stick (which doesn't say) and Prefs go on from it.
+    if let Some(s) = setup::remember_left_out(&paths, &saved).filter(|_| store.saves()) {
+        match store.save_settings(setup::OWNER, &s) {
+            Ok(()) => {
+                store.flush();
+                out.say(&format!(
+                    "first start: left out: {}",
+                    s.get_str("leave-out").unwrap_or("none")
+                ));
+                saved = s;
+            }
+            Err(e) => out.say(&format!(
+                "first start: what was left out was not saved ({e})"
+            )),
+        }
+    }
     let mut made = None;
     if setup::needed(&paths, &saved) && !store.saves() {
         // Nothing it did would be kept, so it would run again at every start.

@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -345,13 +346,35 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(n, 1)
         text, n = re.subn(r"^NEED_KB=\d+$", "NEED_KB=1000", text, count=1, flags=re.M)
         self.assertEqual(n, 1)
+        text, n = re.subn(r"^CONTENT_KB=\d+$", "CONTENT_KB=500", text, count=1, flags=re.M)
+        self.assertEqual(n, 1)
+        # 3c's limits, in the fake sleep's 50 ms steps: 2 s with the counter standing still, 20 s in all.
+        text, n = re.subn(r"^QUIET=\d+\nLONGEST=\d+$", "QUIET=40\nLONGEST=400", text, count=1, flags=re.M)
+        self.assertEqual(n, 1)
         return text.replace("R=''", f"R='{self.root}'", 1)
 
+    def env(self, free_kb, **env):
+        return {"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root, "FAKE_FREE_KB": str(free_kb), **env}
+
     def run_backup(self, free_kb=5000, **env):
-        return subprocess.run([self.dash, "-c", self.script(), "setup-backup.sh"],
-                              env={"PATH": self.bin, "FAKE_LOG": self.log, "FAKE_ROOT": self.root,
-                                   "FAKE_FREE_KB": str(free_kb), **env},
+        return subprocess.run([self.dash, "-c", self.script(), "setup-backup.sh"], env=self.env(free_kb, **env),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+
+    def start_content(self, free_kb=5000):
+        """setup-backup.sh for a content request, in the background: it waits for the pad player."""
+        self.request("setup-content.request")
+        return subprocess.Popen([self.dash, "-c", self.script(), "setup-backup.sh"], env=self.env(free_kb),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    def wait_status(self, state, proc, seconds=20):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if os.path.exists(os.path.join(self.root, "run/mpfree-setup/status")) and self.status()["state"] == state:
+                return self.status()
+            if proc.poll() is not None:
+                break
+            time.sleep(0.02)
+        self.fail(f"no state={state}: " + (proc.stdout.read() if proc.poll() is not None else "still running"))
 
     def calls(self, prefix):
         if not os.path.exists(self.log):
@@ -395,8 +418,8 @@ class BackupTests(unittest.TestCase):
         with open(os.path.join(self.root, "proc/sys/vm/dirty_ratio")) as fh:
             self.assertEqual(fh.read(), "20\n")
 
-    def request(self):
-        path = os.path.join(self.root, "run/mpfree-app/setup-backup.request")
+    def request(self, name="setup-backup.request"):
+        path = os.path.join(self.root, "run/mpfree-app", name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w"):
             pass
@@ -450,7 +473,8 @@ class BackupTests(unittest.TestCase):
         status = self.status()
         total = str((DISK_SECTORS + 2 * BOOT_SECTORS) * 512)
         self.assertEqual(status, {"state": "done", "step": "done", "done": total, "total": total,
-                                  "message": "Backup done", "folder": "/run/mpfree-data/backup/" + name})
+                                  "message": "Backup done", "mode": "backup",
+                                  "folder": "/run/mpfree-data/backup/" + name})
         notes = self.notes()
         self.assertIn("window open: eMMC DG4008, 2048 sectors, all read-only; layout checked", notes)
         self.assertIn("window closed: no eMMC block device is left", notes)
@@ -469,6 +493,84 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(self.kernel.bound, [EMMC])
         self.assertIn("already run this boot", self.notes())
         self.assertEqual(self.backups(), [name])
+
+    def test_lets_the_pad_player_read_only_the_content_partition(self):
+        """A content request (a musician who left the backup out): the same read-only window, then only
+        mmcblk0p7 readable by the pad player's group while it reads, until it says it is done."""
+        self.kernel = FakeEmmc(self.root)
+        proc = self.start_content()
+        status = self.wait_status("open", proc)
+        self.assertEqual(status["step"], "reading")
+        self.assertEqual(status["mode"], "content")
+        self.assertNotIn("folder", status)
+        part = os.path.join(self.root, "dev/mmcblk0p7")
+        self.assertEqual(oct(os.stat(part).st_mode & 0o777), "0o440")
+        self.assertEqual(self.calls("chown: "), [f"0:960 {part}"], "only the content partition, for the group")
+        self.assertEqual(self.kernel.bound, [EMMC])
+        self.assertEqual(self.kernel.unbound, [], "open while the pad player reads")
+        for d in self.kernel.images:
+            self.assertEqual(read_text(os.path.join(self.root, "sys/block", d, "force_ro")), "1\n", d)
+        ask = os.path.join(self.root, "run/mpfree-app")
+        for beat in range(1, 5):   # the pad player's counter moves, so the window stays open past QUIET
+            write(os.path.join(ask, "setup-content.alive"), f"{beat}\n")
+            time.sleep(0.8)
+        self.assertIsNone(proc.poll(), "still open while the counter moves")
+        write(os.path.join(ask, "setup-content.done"), "")
+        out, _ = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, out + self.notes())
+        self.assert_closed()
+        self.assertEqual(self.calls("copy: "), [], "no copy")
+        self.assertEqual(self.backups(), [], "no backup folder")
+        self.assertFalse(os.path.exists(os.path.join(ask, "setup-content.request")))
+        self.assertFalse(os.path.exists(os.path.join(ask, "setup-content.done")))
+        self.assertFalse(os.path.exists(os.path.join(ask, "setup-content.alive")))
+        status = self.status()
+        self.assertEqual((status["state"], status["step"], status["mode"]), ("done", "done", "content"))
+        notes = self.notes()
+        self.assertIn("(content)", notes)
+        self.assertIn("readable by MPFree's group, read-only", notes)
+        self.assertIn("no write or discard on the eMMC", notes)
+        self.assertEqual(self.calls("dirty_bytes: "), [], "vm.dirty_bytes is left alone")
+
+    def test_the_content_window_closes_when_the_pad_player_stops(self):
+        self.kernel = FakeEmmc(self.root)
+        proc = self.start_content()
+        self.wait_status("open", proc)
+        out, _ = proc.communicate(timeout=30)   # no counter, no done: QUIET runs out
+        self.assertEqual(proc.returncode, 1, out)
+        self.assert_closed()
+        status = self.status()
+        self.assertEqual((status["state"], status["step"]), ("failed", "reading"))
+        self.assertIn("MPFree stopped reading", status["message"])
+
+    def test_writes_while_the_pad_player_reads_fail_it(self):
+        self.kernel = FakeEmmc(self.root)
+        proc = self.start_content()
+        self.wait_status("open", proc)
+        self.kernel.bump_writes()
+        write(os.path.join(self.root, "run/mpfree-app/setup-content.done"), "")
+        out, _ = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 1, out)
+        self.assert_closed()
+        self.assertIn("counters moved while MPFree read it", self.status()["message"])
+
+    def test_the_content_needs_room_for_the_kits_and_samples(self):
+        self.kernel = FakeEmmc(self.root)
+        proc = self.start_content(free_kb=400)
+        out, _ = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 1, out)
+        self.assertIn("Akai's kits and samples need", self.status()["message"])
+        self.assertEqual(self.kernel.bound, [], "checked before the window opens")
+
+    def test_the_content_needs_less_room_than_the_backup(self):
+        """600 KiB is enough for the content here (CONTENT_KB 500), though not for a backup (NEED_KB 1000)."""
+        self.kernel = FakeEmmc(self.root)
+        proc = self.start_content(free_kb=600)
+        self.wait_status("open", proc)
+        write(os.path.join(self.root, "run/mpfree-app/setup-content.done"), "")
+        out, _ = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assert_closed()
 
     def test_a_half_copy_from_an_earlier_try_is_removed_first(self):
         """The power went mid-copy once: that .part folder goes before the room is checked; finished backups,
@@ -742,6 +844,11 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(sorted(set(re.findall(r'>\s*"?\$R/proc/[^\s;"]+', code))),
                          ['> "$R/proc/sys/vm/dirty_bytes', '> "$R/proc/sys/vm/dirty_ratio', '> "$R/proc/sys/vm/drop_caches'])
         self.assertEqual(re.findall(r'>\s*"?\$R/dev/[^\s;]+', code), ['> "$R/dev/kmsg"'])
+        # 3c: the only device node it changes is the content partition's, for the pad player's group, read-only.
+        self.assertIn('part="$R/dev/mmcblk0p7"\n', code)
+        self.assertEqual(re.findall(r'\b(?:chown|chmod) [^\n|&]*"\$part"', code),
+                         ['chown 0:"$APP_GID" "$part"', 'chmod 0440 "$part"'])
+        self.assertNotRegex(code, r"chmod [0-7]*[2367][0-7]* \"\$part\"|chmod [0-7]*[0-7][2367] \"\$part\"")
         self.assertEqual(re.findall(r'>\s*"?\$R/sys/[^\s;]+', code), ['> "$R/sys/block/$b/force_ro"',
                                                                      '> "$R/sys/bus/platform/drivers_probe"'])
 
@@ -752,6 +859,7 @@ class StaticTests(unittest.TestCase):
         self.assertIn("Type=oneshot\n", service)
         path = self.read(os.path.join(STICK, "mpfree-setup-backup.path"))
         self.assertIn("PathExists=/run/mpfree-app/setup-backup.request\n", path)
+        self.assertIn("PathExists=/run/mpfree-app/setup-content.request\n", path)
         self.assertIn("Unit=mpfree-setup-backup.service\n", path)
         self.assertIn("WantedBy=sysinit.target\n", path)
         fmt = self.read(os.path.join(STICK, "mpfree-setup-format.service"))

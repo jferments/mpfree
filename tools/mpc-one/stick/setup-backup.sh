@@ -1,9 +1,12 @@
 R=''
-# MPFree first-start setup: back up the MPC's internal eMMC to the stick. READ-ONLY on the eMMC.
+# MPFree first-start setup: back up the MPC's internal eMMC to the stick, or let the pad player read Akai's
+# kits and samples from it. READ-ONLY on the eMMC.
 # (The R='' line is an empty root prefix; only tests change it.)
 #
 # Run once per boot, as root, by mpfree-setup-backup.service, when the pad player's first-start wizard asks
-# for it (it writes /run/mpfree-app/setup-backup.request; mpfree-setup-backup.path starts this). At startup
+# for it (it writes /run/mpfree-app/setup-backup.request, or setup-content.request; mpfree-setup-backup.path
+# starts this). setup-content.request is for a musician who left the backup out but wants Akai's kits and
+# samples: steps 1 and 2 as below, then step 3c instead of 3 and 5. At startup
 # the stick's system switched the eMMC and SD card controllers off (internal-off.sh). This opens a
 # read-only window on the eMMC only, copies it to the stick's partition 4 and closes the window again:
 #   1. checks: partition 4 mounted read-write with room for the copy (after removing a half copy that an
@@ -35,10 +38,18 @@ R=''
 #      and readable by the pad player's group (it reads the factory kits and samples from it). Its "MPC:"
 #      line tells this MPC's backups from another's: a fingerprint of the device tree's serial number (the
 #      first 16 hex digits of the SHA-256 of "mpfree-mpc:" and the number), never the number itself.
+#  3c. (setup-content.request) lets the pad player read the content partition (mmcblk0p7) itself, and nothing
+#      else: its device node, in /dev (RAM), becomes root's and the pad player's group's, read-only (0440), on a
+#      disk the kernel already holds read-only. The pad player reads Akai's kits and samples from it with its
+#      read-only ext4 reader, as it reads them from a backup, writing a counter to setup-content.alive as it
+#      goes, and says it is done with setup-content.done. The window stays open until then, at most LONGEST
+#      seconds, and closes as soon as the counter stops for QUIET seconds (the pad player stopped). Then
+#      step 4: the counters must not have moved, and the window closes. No copy, no backup folder.
 # Nothing is ever written to the eMMC: no mount, no fsck, no write. The only writes are partition 4's
 # backup folder, /run (RAM: the status, the udev rule, and the request, removed), the kernel log, the
-# controller's sysfs bind and unbind files, the eMMC disks' force_ro files (which only switch read-only on)
-# and vm.dirty_bytes (RAM only, put back when the copy ends or fails).
+# controller's sysfs bind and unbind files, the eMMC disks' force_ro files (which only switch read-only on),
+# vm.dirty_bytes (RAM only, put back when the copy ends or fails) and, in 3c, the content partition's device
+# node's owner and mode (in /dev, RAM; gone when the window closes).
 # Every program of Akai's system it runs is in NEEDS: it stops before anything else when one is missing,
 # and the USB creator will not make a stick from an update whose system lacks one. The copy is MPFree's
 # own program (COPY), from the stick.
@@ -53,6 +64,13 @@ S="$R/run/mpfree-setup"
 RULE="$R/run/udev/rules.d/00-mpfree-setup-ro.rules"
 APP_GID=960
 COPY="$R/etc/mpfree-test/mpfree"
+ASK="$R/run/mpfree-app"
+# 3c: the pad player's counter while it reads, and its word that it is done (both in its own folder in /run).
+ALIVE="$ASK/setup-content.alive"
+DONE="$ASK/setup-content.done"
+# 3c: seconds the counter may stand still, and the longest the window stays open for the pad player.
+QUIET=120
+LONGEST=3600
 # The MPC One's eMMC layout (tools/mpc-one/baselines/mpc-one-3.6.0-reference.txt; 3.10.1 keeps it):
 # partition, name, start sector, sectors. The data partition (8) runs to the end of the disk.
 LAYOUT='1 uboot-spl 64 128
@@ -65,6 +83,8 @@ LAYOUT='1 uboot-spl 64 128
 8 data 9430016 -'
 # Room needed on partition 4, in KiB: the 7.8 GB user area, the two 4 MiB boot areas and 256 MiB to spare.
 NEED_KB=7900000
+# 3c: Akai's kits and samples alone (about 3.2 GB) with room to spare.
+CONTENT_KB=4200000
 DISKS='mmcblk0 mmcblk0boot0 mmcblk0boot1'
 NEEDS='awk cat chmod chown cut date df grep mkdir mv readlink rm sed sha256sum sleep stat sync systemctl tr udevadm'
 opened=''
@@ -75,11 +95,14 @@ jobs_running=''
 dirty_set=''
 
 mkdir -p "$S"
+# Which request: the backup's, unless only the content's is there.
+mode=backup
+[ ! -e "$ASK/setup-backup.request" ] && [ -e "$ASK/setup-content.request" ] && mode=content
 # The request has done its job: taken away so the path unit does not start this again when it ends.
-rm -f "$R/run/mpfree-app/setup-backup.request"
+rm -f "$ASK/setup-backup.request" "$ASK/setup-content.request"
 status() {   # state step done total message
   step=$2
-  { echo "state=$1"; echo "step=$2"; echo "done=$3"; echo "total=$4"; echo "message=$5"
+  { echo "state=$1"; echo "step=$2"; echo "done=$3"; echo "total=$4"; echo "message=$5"; echo "mode=$mode"
     if [ -n "$dir" ]; then echo "folder=${dir#$R}"; fi; } > "$S/status.new" && mv "$S/status.new" "$S/status"
 }
 say() { { echo "mpfree-setup-backup: $*" > "$R/dev/kmsg"; } 2>/dev/null; echo "$*" >> "$S/backup-log.txt"; }
@@ -148,7 +171,7 @@ for p in $NEEDS; do command -v "$p" > /dev/null 2>&1 || missing="$missing $p"; d
 [ -z "$missing" ] || fail "this system lacks programs the backup needs:$missing"
 [ -x "$COPY" ] || fail "MPFree's program is missing from the stick ($COPY)"
 status running checking 0 0 "Checking the stick"
-say "started at $(cut -d' ' -f1 "$R/proc/uptime") s"
+say "started at $(cut -d' ' -f1 "$R/proc/uptime") s ($mode)"
 
 # 1. Checks, before the window opens.
 grep -q " $DATA ext4 rw" "$R/proc/mounts" || fail "the stick's partition 4 is not mounted read-write at $DATA"
@@ -172,8 +195,13 @@ for p in "$R$DATA"/backup/mpc-one-emmc-*.part; do
 done
 free=$(df -Pk "$R$DATA" 2>/dev/null | awk 'NR == 2 { print $4 }')
 case "$free" in ''|*[!0-9]*) fail "could not read the free space on partition 4" ;; esac
-[ "$free" -ge "$NEED_KB" ] ||
-  fail "partition 4 has $((free / 1024)) MiB free; the backup needs $((NEED_KB / 1024)) MiB (use a stick of 16 GB or more)"
+if [ "$mode" = content ]; then
+  [ "$free" -ge "$CONTENT_KB" ] ||
+    fail "partition 4 has $((free / 1024)) MiB free; Akai's kits and samples need $((CONTENT_KB / 1024)) MiB"
+else
+  [ "$free" -ge "$NEED_KB" ] ||
+    fail "partition 4 has $((free / 1024)) MiB free; the backup needs $((NEED_KB / 1024)) MiB (use a stick of 16 GB or more)"
+fi
 
 # 2. The read-only window.
 mkdir -p "${RULE%/*}"
@@ -240,6 +268,43 @@ counters() {   # writes and discards of every eMMC block device (block layer sta
 counters > "$S/counters-before.txt"
 total=$(( (size + $(cat "$R/sys/block/mmcblk0boot0/size") + $(cat "$R/sys/block/mmcblk0boot1/size")) * 512 ))
 say "window open: eMMC ${emmc:-?}, $size sectors, all read-only; layout checked"
+
+# 3c. Only Akai's content partition, for the pad player to read itself; then 4, and done.
+if [ "$mode" = content ]; then
+  part="$R/dev/mmcblk0p7"
+  [ -e "$part" ] && [ ! -L "$part" ] || fail "the content partition's device (mmcblk0p7) is missing"
+  rm -f "$ALIVE" "$DONE"
+  chown 0:"$APP_GID" "$part" && chmod 0440 "$part" || fail "could not let MPFree read the content partition"
+  say "content partition ${part#$R} readable by MPFree's group, read-only; waiting for it to finish"
+  status open reading 0 0 "Reading Akai's kits and samples from the MPC, read-only"
+  n=0
+  quiet=0
+  beat=''
+  while [ ! -e "$DONE" ]; do
+    now=$(cat "$ALIVE" 2>/dev/null)
+    if [ "$now" != "$beat" ]; then
+      beat=$now
+      quiet=0
+    else
+      quiet=$((quiet + 1))
+    fi
+    [ "$quiet" -lt "$QUIET" ] || fail "MPFree stopped reading Akai's kits and samples" reading
+    [ "$n" -lt "$LONGEST" ] || fail "reading Akai's kits and samples took more than $LONGEST s" reading
+    sleep 1; n=$((n + 1))
+  done
+  rm -f "$ALIVE" "$DONE"
+  counters > "$S/counters-after.txt"
+  [ "$(cat "$S/counters-before.txt")" = "$(cat "$S/counters-after.txt")" ] ||
+    fail "the eMMC's write or discard counters moved while MPFree read it (see $S/counters-*.txt)" reading
+  for b in $DISKS; do
+    [ "$(cat "$R/sys/block/$b/ro")" = 1 ] || fail "$b stopped being read-only" reading
+  done
+  status running closing 0 0 "Switching the MPC's internal storage off again"
+  close_window
+  say "content read in about $n s; no write or discard on the eMMC"
+  status done done 0 0 "Akai's kits and samples read; the MPC's internal storage is off again"
+  exit 0
+fi
 
 # 3. The copy.
 # Every 30 s the kernel log gets how it goes: what is in the copy, what was read from the eMMC and written
