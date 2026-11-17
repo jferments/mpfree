@@ -72,6 +72,22 @@ impl Resampler {
         self.next
     }
 
+    /// Taps each side of the read position, in input frames.
+    pub(crate) fn half(&self) -> i64 {
+        self.half
+    }
+
+    /// The weight of an input frame `x` frames from the read position
+    /// (before [`Resampler::gain`]).
+    pub(crate) fn tap(&self, x: f64) -> f32 {
+        self.weight(x)
+    }
+
+    /// What every sum is scaled by.
+    pub(crate) fn gain(&self) -> f32 {
+        self.fc as f32
+    }
+
     fn weight(&self, x: f64) -> f32 {
         let u = (x.abs() * self.fc) * STEPS as f64;
         let i = u as usize;

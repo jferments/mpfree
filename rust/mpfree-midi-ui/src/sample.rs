@@ -22,6 +22,7 @@ pub fn rig() -> IoModel {
         about: "USB".into(),
         has_in: true,
         has_out: true,
+        sending: false,
         last_in: None,
     });
     live.tracks = ["Drums", "Bass", "Pads", "Lead", "Vox chops", "Perc"]
@@ -207,6 +208,9 @@ pub fn held_now(mut m: IoModel) -> IoModel {
     m.monitor.set_ports(ports.all());
     m.live.built.monitor = true;
     m.live.built.notes_out = true;
+    for p in m.live.ports.iter_mut() {
+        p.sending = p.has_out;
+    }
     let learned = learn_cutoff(&mut m);
     let mut f = Feed::new();
     let period = 128.0 / 44_100.0;

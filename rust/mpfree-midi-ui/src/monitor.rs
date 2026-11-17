@@ -413,13 +413,16 @@ fn mpc_words(m: Mpc) -> String {
 /// One of MPFree's events, in words (debug mode), naming ports by `name`.
 fn event_words(e: Event, name: impl Fn(PortId) -> String) -> String {
     match e {
-        Event::Plugged(p) => format!("Plugged in: {} · listening, read only", name(p)),
+        Event::Plugged(p) => format!("Plugged in: {}", name(p)),
         Event::Unplugged { port, ended } => match ended {
             0 => format!("Unplugged: {}", name(port)),
             1 => format!("Unplugged: {} · 1 held note let go", name(port)),
             n => format!("Unplugged: {} · {n} held notes let go", name(port)),
         },
-        Event::OutStopped => "MIDI out stopped: its tracks play on the pads again".to_string(),
+        Event::OutStopped { port } => format!(
+            "MIDI out to {} stopped: its tracks play on the pads again",
+            name(port)
+        ),
         Event::Dropped { port, n } => {
             format!("{n} messages to {} dropped: its queue was full", name(port))
         }
@@ -492,6 +495,7 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::PortIgnores => ("ignored: this port's setting".to_string(), Went::Nothing),
         To::SentBy(t) => (format!("sent by {}", track(t)), Went::Sent),
         To::Clock => ("MPFree's clock".to_string(), Went::Clock),
+        To::PortPage => ("sent from its page".to_string(), Went::Sent),
     }
 }
 
@@ -2064,7 +2068,7 @@ mod tests {
             [
                 "MPC out | Keep-alive ping",
                 "System | Unplugged: Keystep 37 · 2 held notes let go",
-                "System | Plugged in: Keystep 37 · listening, read only",
+                "System | Plugged in: Keystep 37",
                 "MPC out | CV 1 = 16383 · 5.000 V if full scale is 5 V",
                 "MPC out | Light PLAY on",
                 "MPC in | PLAY pressed",
