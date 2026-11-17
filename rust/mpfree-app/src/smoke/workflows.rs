@@ -1992,6 +1992,7 @@ mod tests {
                 RecArm {
                     target: Target::Notes,
                     ready: Some(Take::Replace),
+                    pinned: false,
                 }
             );
             assert_eq!(s.looper.phase(), Phase::Empty);
@@ -2042,6 +2043,132 @@ mod tests {
             assert_eq!(s.app.rec.target, Target::Loop);
             assert_eq!(s.looper.phase(), Phase::Armed);
             assert!(s.app.rec.ready.is_none());
+        });
+    }
+
+    /// UNDO while the notes record throws the take so far away: recording
+    /// stops, the music plays on, the clip is as it was, and REDO doesn't
+    /// bring it back.
+    #[test]
+    fn undo_while_recording_throws_the_take_away_and_the_music_plays_on() {
+        use mpfree_transport::State;
+        fn notes(s: &Session) -> usize {
+            s.time.project().tracks[0]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.len())
+                .sum()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.button("REC").button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            s.pad(0, 100, 0.05);
+            s.run_for(0.3);
+            assert!(notes(&s) > 0, "the hit went in as it recorded");
+            s.button("UNDO");
+            s.run_for(0.3);
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            assert_eq!(notes(&s), 0, "the take is gone");
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.starts_with("time: undo: take ") && l.ends_with(" thrown away")),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(
+                s.hint(),
+                "UNDO: the take is thrown away; the music plays on"
+            );
+            s.button_with("SHIFT", "UNDO").run_for(0.2);
+            assert_eq!(notes(&s), 0, "REDO doesn't bring it back");
+            // Not recording, UNDO is the page's again.
+            s.button("STOP").run_for(0.2);
+            assert_eq!(s.app.rec.ready, None);
+        });
+    }
+
+    /// The Arm pills and the REC chip's target list (mockups F to H): a
+    /// pill tapped arms what it heads, red on what REC records; the chip
+    /// opens the list, whose rows arm, whose Pin keeps pages from moving
+    /// the arm, and whose Rec song is the grid's; REC ready on a page
+    /// without a transport bar shows in the header.
+    #[test]
+    fn arm_pills_and_the_target_list_move_the_arm_and_pin_it() {
+        use crate::looper_page::{LoopStrip, LOOP_STRIP};
+        use crate::play_widgets::{ArmPill, StepGrid};
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        fn pills(s: &Session) -> (Option<ArmPill>, Option<ArmPill>) {
+            (
+                s.screen
+                    .ui
+                    .get::<StepGrid>(crate::play_page::STEPS)
+                    .unwrap()
+                    .arm,
+                s.screen.ui.get::<LoopStrip>(LOOP_STRIP).unwrap().arm,
+            )
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            assert_eq!(pills(&s), (Some(ArmPill::Armed), Some(ArmPill::Arm)));
+            // The armed pill says what REC records.
+            s.press("steps", "arm", "Armed").settle();
+            assert!(s.hint().starts_with("REC records Track 1"), "{}", s.hint());
+            // The strip's Arm arms the loop; REC then readies it.
+            s.press("play-loop", "arm", "Arm").settle();
+            assert_eq!(s.app.rec.target, Target::Loop);
+            assert_eq!(pills(&s), (Some(ArmPill::Arm), Some(ArmPill::Armed)));
+            s.button("REC");
+            s.run_periods(12).settle();
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert_eq!(pills(&s).1, Some(ArmPill::Ready));
+            // The pattern's Arm takes the arm back, the ready with it.
+            s.press("steps", "arm", "Arm").settle();
+            s.run_periods(12).settle();
+            assert_eq!(s.app.rec.target, Target::Notes);
+            assert_eq!(pills(&s), (Some(ArmPill::Ready), Some(ArmPill::Arm)));
+            // REC ready shows in the header on a page without the bar.
+            s.press("header", "tab", "Mix").settle();
+            assert!(
+                s.controls().iter().any(|c| c.widget == "header"
+                    && c.target.id == "chip"
+                    && c.target.label.starts_with("READY")),
+                "the header's REC chip"
+            );
+            s.press("header", "tab", "Play").settle();
+            s.button("STOP").settle();
+            // The chip opens the list.
+            let chip = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&chip);
+            s.settle();
+            assert_eq!(s.screen.ui.page(), crate::rec_list::REC_PAGE);
+            // Pin: Beats and the Loop view leave the arm where it is.
+            s.press("rec-list", "switch", "Pin the arm").settle();
+            assert!(s.app.rec.pinned);
+            s.press("rec-list", "row", "Looper · Loop 1").settle();
+            assert_eq!(s.app.rec.target, Target::Loop, "a row arms, pinned or not");
+            s.press("rec-list", "close", "Close").settle();
+            assert_ne!(s.screen.ui.page(), crate::rec_list::REC_PAGE);
+            s.press("play-transport", "view", "Beats").settle();
+            assert_eq!(s.app.rec.target, Target::Loop, "pinned: Beats leaves it");
+            // Rec song is the grid's.
+            let chip = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&chip);
+            s.settle();
+            assert_eq!(s.screen.ui.page(), crate::rec_list::REC_PAGE);
+            s.press("rec-list", "switch", "Rec song").settle();
+            assert!(s.time.state().song_rec, "Rec song on");
+            s.press("rec-list", "switch", "Pin the arm").settle();
+            assert!(!s.app.rec.pinned);
+            // A view picked closes it.
+            s.press("play-transport", "view", "All").settle();
+            assert_eq!(s.screen.ui.page(), "Play");
         });
     }
 

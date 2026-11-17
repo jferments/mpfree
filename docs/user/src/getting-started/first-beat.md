@@ -91,6 +91,8 @@ Programming steps is precise; playing in feels human. Try both.
 
 The REC chip on the transport bar always names what REC records: the notes of the track the pads play (into its clip), or a loop. Opening the **Beats** view arms the notes, the **Loop** view and the **Looper** tab arm the loop, and picking a track on Arrange arms its notes. The All view leaves it as it was, so on the home view REC records whatever you armed last; an empty loop strip says which. Nothing changes it while a take records. If you open the Loop view while the notes are ready, the loop gets the ready (and back again). The **Rec** button on the Arrange tab's transport bar is REC too, and its **Play** and **Stop** start a ready take or let it go.
 
+The loop strip and the pattern each start their heading with an **Arm** pill: red on what REC records, grey on the other. Tap a grey one to record that instead. Tap the REC chip for the list of everything that can record: tap a row to arm it, and turn on **Pin the arm** to keep pages and track picks from moving it, so only a tap on Arm does. If you started recording by mistake, press **UNDO**: the take so far is thrown away and the music plays on.
+
 > [!MPC]
 > As on the MPC, **REC** readies recording and **PLAY** starts it. MPFree's REC chip shows what it will record before you start.
 

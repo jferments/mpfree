@@ -882,7 +882,7 @@ impl Session {
         if let Some(held) = self.step_keys.held_news() {
             self.out.show(ToUi::StepsHeld(held));
         }
-        if let Some(line) = self.time.take_song_note() {
+        if let Some(line) = self.time.take_later_note() {
             self.out.note(&format!("time: {line}"));
         }
         // `|`, not `||`: both flags are taken.

@@ -172,6 +172,11 @@ struct LevelsUi {
     told: Option<(bool, bool)>,
 }
 
+/// The hint while the REC chip's target list is open.
+const REC_LIST_HINT: &str =
+    "Tap a row: record into it   ·   Rec song: the grid into the song   ·   \
+     Pin: only a tap on Arm moves the arm   ·   the chip or Close: close";
+
 /// The hint while the notes are ready ([`crate::rec_arm`]): what PLAY
 /// records and how to let go.
 fn rec_ready_hint(c: &play_widgets::RecChip) -> String {
@@ -892,6 +897,11 @@ pub enum FromUi {
     /// A page that arms what it shows opened: Play's Beats view the notes,
     /// Play's Loop view and the Looper tab the loop ([`crate::rec_arm`]).
     Arm(crate::rec_arm::Target),
+    /// A tap on an Arm pill or a row of the REC chip's target list: arms
+    /// it even when pinned (a take recording refuses it, saying why).
+    ArmTap(crate::rec_arm::Target),
+    /// The target list's Pin the arm: only a tap on Arm moves it.
+    RecPin(bool),
     /// Save the project: the audio loop sends its engines' parts back
     /// (`ToUi::ProjectParts`).
     SaveProject,
@@ -1386,6 +1396,9 @@ pub struct Player {
     /// The page (and Play view) the arm was last moved for, so that a page
     /// shown again doesn't move it twice.
     arm_page: Option<(View, PlayView)>,
+    /// The REC chip's target list is open in place of Play's view
+    /// ([`crate::rec_list`]).
+    rec_list: bool,
     undo_ready: bool,
     /// How many times something was said in place (the control audit
     /// counts a tell as a press that did something, even when the same
@@ -1441,6 +1454,10 @@ impl Player {
         ui.add(play_page::XY, XyPad::default());
         ui.add(play_page::TIMING, YourTiming::default());
         ui.add(play_page::INSPECTOR, StepInspector::default());
+        ui.add(
+            crate::rec_list::REC_LIST,
+            crate::rec_list::RecList::default(),
+        );
         ui.add(play_page::SYNTH_PADS_HEAD, PadsBar::default());
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
@@ -1476,6 +1493,11 @@ impl Player {
             ui.add_page(page, &PlayView::step_layout(timing))
                 .expect("beats with the step inspector");
         }
+        ui.add_page(
+            crate::rec_list::REC_PAGE,
+            &play_page::frame(&format!("{}:*", crate::rec_list::REC_LIST)),
+        )
+        .expect("the REC chip's target list");
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
@@ -1584,6 +1606,7 @@ impl Player {
             turns_ready: (false, false),
             rec: crate::rec_arm::RecArm::default(),
             arm_page: None,
+            rec_list: false,
             undo_ready: false,
             tells: 0,
             outline_told: false,
@@ -2387,6 +2410,8 @@ impl Player {
         if v != self.play.view {
             println!("play view: {}", v.name());
         }
+        // A view picked closes the REC chip's target list.
+        self.rec_list = false;
         self.play.view = v;
         if v != PlayView::Beats {
             self.play.selected = None;
@@ -2406,8 +2431,90 @@ impl Player {
         }
     }
 
-    /// A tap on the REC chip: what REC records, and what arms another
-    /// target.
+    /// Open or close the REC chip's target list in place of Play's view.
+    fn toggle_rec_list(&mut self) {
+        self.rec_list = !self.rec_list;
+        self.refresh_rec_list();
+        if self.view == View::Play {
+            self.show_view(View::Play);
+        }
+        self.refresh_hint();
+    }
+
+    /// The target list's rows and switches, as the arm, the looper and the
+    /// time engine stand.
+    fn refresh_rec_list(&mut self) {
+        use crate::rec_arm::Target;
+        use crate::rec_list::{ListRow, RecList, REC_LIST};
+        use mpfree_looper::Phase;
+        use play_widgets::ArmPill;
+        let chip = self.rec_chip();
+        let pill = |t: Target| {
+            if self.rec.target == t {
+                ArmPill::of(chip.state)
+            } else {
+                ArmPill::Arm
+            }
+        };
+        let notes = self.play.notes_rec_chip(None).what;
+        let count_in = match self.time.transport.count_in {
+            0 => "No count-in".to_string(),
+            1 => "Count-in 1 bar".to_string(),
+            n => format!("Count-in {n} bars"),
+        };
+        let st = &self.looper.status;
+        let looped = if st.phase == Phase::Empty {
+            "empty; starts on PLAY, or on the next bar line while playing".to_string()
+        } else {
+            let bars = crate::looper_page::bars_of(st.ticks, self.looper.beats_per_bar);
+            format!(
+                "{bars} bar{} · {} layer{}; REC overdubs it",
+                if bars == 1 { "" } else { "s" },
+                st.layers,
+                if st.layers == 1 { "" } else { "s" }
+            )
+        };
+        let rows = vec![
+            ListRow {
+                target: Target::Notes,
+                pill: pill(Target::Notes),
+                title: format!("Notes · {notes}"),
+                sub: "the track the pads play; picking another track moves it".to_string(),
+                right: count_in,
+            },
+            ListRow {
+                target: Target::Loop,
+                pill: pill(Target::Loop),
+                title: format!("Looper · Loop {}", self.looper.selected + 1),
+                sub: looped,
+                right: String::new(),
+            },
+        ];
+        let (song, pinned, what) = (self.time.song_rec, self.rec.pinned, chip.what.clone());
+        let fresh = self.ui.get::<RecList>(REC_LIST).is_some_and(|l| {
+            l.rows != rows || l.song != song || l.pinned != pinned || l.what != what
+        });
+        if fresh {
+            if let Some(l) = self.ui.get_mut::<RecList>(REC_LIST) {
+                l.rows = rows;
+                l.song = song;
+                l.pinned = pinned;
+                l.what = what;
+            }
+        }
+    }
+
+    /// A tap on an Arm pill or a target list's row: arms `t`, or, armed
+    /// already, says what REC records.
+    fn arm_tap(&mut self, t: crate::rec_arm::Target) -> Option<FromUi> {
+        if self.rec.target == t {
+            self.tell_rec();
+            return None;
+        }
+        Some(FromUi::ArmTap(t))
+    }
+
+    /// What REC records, and what arms another target, on the hint line.
     fn tell_rec(&mut self) {
         let c = self.rec_chip();
         let line = format!(
@@ -2421,7 +2528,35 @@ impl Player {
     /// The REC chip on both transport bars, when it changed: Play's card
     /// and, as a chip at its right end, Arrange's bar. Returns it.
     fn refresh_rec_chip(&mut self) -> play_widgets::RecChip {
+        use play_widgets::ArmPill;
         let chip = self.rec_chip();
+        if self.rec_list {
+            self.refresh_rec_list();
+        }
+        // The Arm pills: red on what REC records, grey on the other.
+        let (notes, looped) = match self.rec.target {
+            crate::rec_arm::Target::Notes => (ArmPill::of(chip.state), ArmPill::Arm),
+            crate::rec_arm::Target::Loop => (ArmPill::Arm, ArmPill::of(chip.state)),
+        };
+        if self
+            .ui
+            .get::<play_widgets::StepGrid>(play_page::STEPS)
+            .is_some_and(|g| g.arm != Some(notes))
+        {
+            if let Some(g) = self.ui.get_mut::<play_widgets::StepGrid>(play_page::STEPS) {
+                g.arm = Some(notes);
+            }
+        }
+        let strip = crate::looper_page::LOOP_STRIP;
+        if self
+            .ui
+            .get::<crate::looper_page::LoopStrip>(strip)
+            .is_some_and(|g| g.arm != Some(looped))
+        {
+            if let Some(g) = self.ui.get_mut::<crate::looper_page::LoopStrip>(strip) {
+                g.arm = Some(looped);
+            }
+        }
         // The loop strip's empty text says whether REC records it.
         let rec_loop = self.rec.target == crate::rec_arm::Target::Loop;
         self.looper_page.set_rec_loop(&mut self.ui, rec_loop);
@@ -2594,10 +2729,13 @@ impl Player {
             }
         }
         if self.ready && self.view == View::Play && !self.band_showing() && !self.levels.open {
-            let want = self
-                .play
-                .view
-                .page_with(self.settings.timing_strip, self.play.inspecting());
+            let want = if self.rec_list {
+                crate::rec_list::REC_PAGE
+            } else {
+                self.play
+                    .view
+                    .page_with(self.settings.timing_strip, self.play.inspecting())
+            };
             if self.ui.page() != want && self.ui.page().starts_with("Play") {
                 self.show_view(View::Play);
             }
@@ -3006,6 +3144,26 @@ impl Player {
             };
             chips.push(Chip::new(text, Tone::Warn));
         }
+        // REC ready or recording, on a page without a transport bar: the
+        // REC chip in the header (sequencer decision 1).
+        let rec = self.rec_chip();
+        if rec.state != play_widgets::RecState::Armed
+            && !matches!(self.view, View::Play | View::Arrange)
+        {
+            why.push(format!(
+                "REC records {}: the REC chip on Play lists what can record",
+                rec.what
+            ));
+            // Short, beside the kit: "READY → Track 1", "● REC → Loop 1".
+            let head = match (rec.state, rec.add) {
+                (play_widgets::RecState::Ready, false) => "READY",
+                (play_widgets::RecState::Ready, true) => "READY TO ADD",
+                (_, false) => "● REC",
+                (_, true) => "● OVERDUB",
+            };
+            let what = rec.what.split(" · ").next().unwrap_or_default();
+            chips.push(Chip::new(format!("{head} → {what}"), Tone::Bad));
+        }
         if let Some(left) = self.timing.seconds_left {
             why.push(format!("{left} s left in this timed run"));
             chips.push(Chip::new(format!("{left} s left"), Tone::Dim));
@@ -3079,6 +3237,8 @@ impl Player {
             STEP_ERASE_HINT.to_string()
         } else if self.status.erase && self.ready {
             ERASE_HINT.to_string()
+        } else if self.ready && self.view == View::Play && self.rec_list {
+            REC_LIST_HINT.to_string()
         } else if self.ready && self.rec.ready.is_some() {
             rec_ready_hint(&self.rec_chip())
         } else if let Some(s) = self.status.steps.filter(|s| s.copying && !s.picking) {
@@ -4169,6 +4329,7 @@ impl Player {
                     self.rec = a;
                     self.refresh_play();
                     self.refresh_hint();
+                    self.refresh_chips();
                 }
             }
             ToUi::Nav(n) => self.nav(n),
@@ -6673,11 +6834,16 @@ impl Player {
 
     fn show_view(&mut self, v: View) {
         self.close_touch_page();
-        // Any page change closes the list of kits.
+        // Any page change closes the list of kits; another tab, the REC
+        // chip's target list.
         self.kit_list = false;
+        if v != View::Play {
+            self.rec_list = false;
+        }
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
             View::Play if self.levels.open && self.ready => LEVELS_PAGE.to_string(),
+            View::Play if self.rec_list && self.ready => crate::rec_list::REC_PAGE.to_string(),
             View::Play => self
                 .play
                 .view
@@ -6759,8 +6925,14 @@ impl Player {
             self.leave_touch_dev();
         }
         self.switch_page(&page);
+        let tab = self.view != v;
         self.view = v;
         self.arm_for_page();
+        if tab {
+            // The header's REC chip shows on the pages without a transport
+            // bar.
+            self.refresh_chips();
+        }
         self.chain_page.entered(v);
         self.sync_mix_pick();
         if now && !was {
@@ -7195,9 +7367,37 @@ impl Player {
                 Some(FromUi::TapTempo)
             }
             // The REC chip, on Play's card or Arrange's bar (its only chip).
-            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_REC))
-            | (time_view::TRANSPORT, EventKind::Select(0)) => {
+            // The REC chip on Play opens and closes its target list (mockup
+            // H); on Arrange's bar it says what REC records.
+            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_REC)) => {
+                if self.view == View::Play {
+                    self.toggle_rec_list();
+                } else {
+                    // The Arp panel and the pattern workspace keep their
+                    // place: the chip says what REC records.
+                    self.tell_rec();
+                }
+                None
+            }
+            (time_view::TRANSPORT, EventKind::Select(0)) => {
                 self.tell_rec();
+                None
+            }
+            (crate::rec_list::REC_LIST, EventKind::Tab(i)) => {
+                let t = self
+                    .ui
+                    .get::<crate::rec_list::RecList>(crate::rec_list::REC_LIST)
+                    .and_then(|l| l.rows.get(i).map(|r| r.target))?;
+                self.arm_tap(t)
+            }
+            (crate::rec_list::REC_LIST, EventKind::Toggle(crate::rec_list::TAP_SONG)) => {
+                Some(FromUi::Time(TimeAction::RecSong(!self.time.song_rec)))
+            }
+            (crate::rec_list::REC_LIST, EventKind::Toggle(crate::rec_list::TAP_PIN)) => {
+                Some(FromUi::RecPin(!self.rec.pinned))
+            }
+            (crate::rec_list::REC_LIST, EventKind::Select(0)) => {
+                self.toggle_rec_list();
                 None
             }
             (crate::power::CARD, EventKind::Tab(i)) => {
@@ -7254,6 +7454,11 @@ impl Player {
                     self.play_qlink(index, delta);
                 }
                 None
+            }
+            // The Arm pills: the pattern's notes, the loop strip's loop.
+            (play_page::STEPS, EventKind::Select(0)) => self.arm_tap(crate::rec_arm::Target::Notes),
+            (crate::looper_page::LOOP_STRIP, EventKind::Select(0)) => {
+                self.arm_tap(crate::rec_arm::Target::Loop)
             }
             (play_page::STEPS, EventKind::Cell { row, col }) => {
                 let a = self.play.tap_step(row, col);
@@ -9491,8 +9696,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     ready.apply(ToUi::Rec(crate::rec_arm::RecArm {
         target: crate::rec_arm::Target::Notes,
         ready: Some(crate::rec_arm::Take::Replace),
+        ..Default::default()
     }));
     out.push(("play-rec-ready", ready));
+    // The REC chip's target list (mockup H), the loop pinned.
+    let mut list = sample_player(fonts());
+    list.apply(ToUi::Rec(crate::rec_arm::RecArm {
+        pinned: true,
+        ..Default::default()
+    }));
+    list.toggle_rec_list();
+    out.push(("play-rec-list", list));
     // The list of kits the kit chip opens over the page (Jay's card, 13 Nov
     // 14:57Z).
     let mut kits = sample_player(fonts());
@@ -9509,7 +9723,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             // The Loop view arms the loop (the desk says so).
             p.apply(ToUi::Rec(crate::rec_arm::RecArm {
                 target: crate::rec_arm::Target::Loop,
-                ready: None,
+                ..Default::default()
             }));
         }
         out.push((name, p));

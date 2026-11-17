@@ -128,6 +128,7 @@ mod preview;
 mod project;
 mod qlink_touch;
 mod rec_arm;
+mod rec_list;
 mod remote;
 #[cfg(test)]
 mod rt_safety;
@@ -6448,7 +6449,7 @@ fn player_session(
             }
             heads_at = Instant::now();
         }
-        if let Some(line) = time.take_song_note() {
+        if let Some(line) = time.take_later_note() {
             out.note(&format!("time: {line}"));
         }
         // A region just moved is picked again where it went.

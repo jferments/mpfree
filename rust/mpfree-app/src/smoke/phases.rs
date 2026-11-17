@@ -1453,6 +1453,19 @@ mod device_log {
             s.button("UNDO");
             s.run_for(0.2);
             wrote(&s, n, "Undid take ", "");
+            // UNDO while it records throws the take away; the music plays on.
+            s.button("REC").button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            s.pad(0, 100, 0.05);
+            s.run_for(0.3);
+            s.button("UNDO");
+            s.run_for(0.3);
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            let l = wrote(&s, n, "time: undo: take ", " thrown away");
+            assert!(l.starts_with("time: undo: take "), "{l}");
+            s.button("STOP");
+            s.run_for(0.2);
             let n = s.lines.len();
             s.press("play-transport", "view", "Loop").settle();
             s.button("REC");

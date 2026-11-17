@@ -123,8 +123,13 @@ class JudgeTests(unittest.TestCase):
         w = checks.Window(lines(midi("button 73 pressed"), "rec: ready, PLAY records Track 1",
                                 midi("button 82 pressed"), "time: transport: Record, new clip in slot 1 of track 1",
                                 midi("button 67 pressed"), "Undid take 1 \u00b7 Track 1 / 1",
+                                "time: undo: take 2 thrown away",
                                 "rec: the loop armed", "looper: Record: armed, the first pass starts on the next bar"))
         self.assertTrue(all(ok for ok, _ in self.judge("rec-arm", w)))
+        # UNDO after the take (the page's) is not UNDO while it records.
+        w = checks.Window(lines(midi("button 67 pressed"), "Undid take 1 \u00b7 Track 1 / 1"))
+        got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
+        self.assertFalse(got["UNDO while recording threw the take away"])
         # REC on the loop (the old way) is not the notes' ready.
         w = checks.Window(lines(midi("button 73 pressed"), "looper: Record: armed, the first pass ..."))
         got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
