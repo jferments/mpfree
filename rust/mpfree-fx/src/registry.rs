@@ -16,10 +16,11 @@ use mpfree_node::Node;
 use crate::presets as p;
 use crate::{
     Amp, AutoPan, AutoWah, ChannelStrip, Character, Chorus, Cloud, Comb, Compressor, Crush,
-    DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Exciter, Flanger, FreqShifter, Gate, Granulator,
-    Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap, MultibandCompressor, Perform,
-    Phaser, PitchCorrect, PitchShifter, Plate, Preset, RingMod, Room, Rotary, SampleDelay, Spring,
-    StereoWidth, TalkBox, TapeDelay, TransientShaper, Tremolo, Tuner, XyFx,
+    DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Exciter, Flanger, FreqShifter, Fuzz, Gate,
+    Granulator, Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
+    MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Preset, RingMod, Room,
+    Rotary, SampleDelay, Spring, StereoWidth, TalkBox, TapeDelay, TransientShaper, Tremolo, Tuner,
+    XyFx,
 };
 
 /// Where an effect sits in the picker.
@@ -262,6 +263,14 @@ pub static EFFECTS: &[FxEntry] = &[
         DriveColour,
         || Box::new(Amp::new()),
         crate::amp::AMP_PRESETS,
+    ),
+    e(
+        "mpfree.fx.fuzz",
+        "Fuzz",
+        "Face, Muff and octave fuzz pedals",
+        DriveColour,
+        || Box::new(Fuzz::new()),
+        crate::fuzz::FUZZ_PRESETS,
     ),
     e(
         "mpfree.fx.exciter",
