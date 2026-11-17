@@ -760,6 +760,8 @@ pub const TUNINGS_FOLDER: &str = "tunings";
 enum PrefsSection {
     Main,
     Touch,
+    /// The backup of the MPC and Akai's kits (setup.rs), for the next start.
+    Setup,
 }
 
 /// One row of a menu.
@@ -772,6 +774,12 @@ pub enum Item {
     FindButtons,
     /// Prefs: opens the touch screen section.
     TouchSection,
+    /// Prefs: opens the backup and Akai kits section (Jay, 17 Nov 18:12Z).
+    SetupSection,
+    /// That section: a new backup of the MPC at the next start.
+    SetupBackup,
+    /// That section: Akai's kits and samples at the next start.
+    SetupAkaiKits,
     /// Prefs: the theme in use; the arrows step through [`THEMES`].
     Appearance,
     /// The touch screen section: back to the other Prefs.
@@ -830,6 +838,9 @@ fn opens_something(item: Item) -> bool {
         item,
         Item::FindButtons
             | Item::TouchSection
+            | Item::SetupSection
+            | Item::SetupBackup
+            | Item::SetupAkaiKits
             | Item::PrefsBack
             | Item::CalibrateTouch
             | Item::TouchLab
@@ -1057,6 +1068,14 @@ pub enum Effect {
     TouchLab,
     /// Open the Calibrate touch page (four corner taps).
     CalibrateTouch,
+    /// Prefs > Backup and Akai kits: at the next start, a new backup of
+    /// the MPC (`backup`) or Akai's kits and samples, or (`want` false) not
+    /// after all. The first-start setup's store changes (setup.rs); the
+    /// app is told the new state back ([`App::set_setup`]).
+    SetupNextStart {
+        backup: bool,
+        want: bool,
+    },
     /// The Dev tab's Touch page: the wheel picks a value (by detents)...
     TouchWheel(i32),
     /// ...and - / + step it (or run the action picked).
@@ -1189,6 +1208,10 @@ pub struct App {
     tap_light: bool,
     /// The part of Prefs on screen: the main rows or one of its sections.
     prefs_section: PrefsSection,
+    /// The first-start setup's state for Prefs > Backup and Akai kits;
+    /// None where the stick has no setup (not the creator's, or no data
+    /// folder).
+    setup: Option<crate::setup::PrefsState>,
     /// The wheel's push opened the selected menu row (see `wheel_push`).
     menu_editing: bool,
     /// The wheel's push opened the picked row of a page with rows: the
@@ -1338,8 +1361,12 @@ const PREFS_ROWS: &[Item] = &[
     Item::Export,
     Item::ExportFile,
     Item::ExportRate,
+    // Just before Touch screen, which stays last (Jay, 17 Nov 18:12Z).
+    Item::SetupSection,
     Item::TouchSection,
 ];
+/// Prefs' backup and Akai kits section.
+const PREFS_SETUP_ROWS: &[Item] = &[Item::PrefsBack, Item::SetupBackup, Item::SetupAkaiKits];
 /// Prefs' touch screen section.
 const PREFS_TOUCH_ROWS: &[Item] = &[
     Item::PrefsBack,
@@ -1426,6 +1453,7 @@ impl App {
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
+            setup: None,
             menu_editing: false,
             page_editing: false,
             theme_files: Vec::new(),
@@ -3027,6 +3055,7 @@ impl App {
     fn items(&self) -> &'static [Item] {
         match (self.view, self.back) {
             (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => PREFS_TOUCH_ROWS,
+            (View::Prefs, _) if self.prefs_section == PrefsSection::Setup => PREFS_SETUP_ROWS,
             (View::Prefs, _) => PREFS_ROWS,
             (_, View::Looper) => &[
                 Item::LoopSource,
@@ -3097,6 +3126,9 @@ impl App {
             ),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
             Item::TouchSection => ("Touch screen", "Open".to_string()),
+            Item::SetupSection => ("Backup and Akai kits", "Open".to_string()),
+            Item::SetupBackup => ("Backup of your MPC", self.setup_backup_text()),
+            Item::SetupAkaiKits => ("Akai's kits and samples", self.setup_akai_text()),
             Item::Appearance => (
                 "Appearance",
                 self.theme_choices()
@@ -3281,6 +3313,25 @@ impl App {
                 "The touch screen's settings: screen pad",
                 "velocity, Calibrate touch and the Touch lab.",
             ],
+            Item::SetupSection => vec![
+                "A backup of your MPC, and Akai's drum kits",
+                "and samples, if they were left out of the",
+                "first start: each at the next start.",
+            ],
+            Item::SetupBackup => vec![
+                "A full copy of your MPC, kept on the stick,",
+                "so you can always go back. Push or + makes a",
+                "new one at the next start (10 to 20 minutes),",
+                "beside any already there; again, or -, takes",
+                "it back. Restart with the power button.",
+            ],
+            Item::SetupAkaiKits => vec![
+                "The kits and sounds that came with your MPC,",
+                "into BROWSE. Push or + brings them in at the",
+                "next start (about 10 minutes); again, or -,",
+                "takes it back. Without a backup they are read",
+                "from the MPC itself, which is never changed.",
+            ],
             Item::PrefsBack => vec!["Back to the other Prefs. MENU does the same."],
             Item::CalibrateTouch => vec![
                 "Tap a target in each corner to check that",
@@ -3461,6 +3512,9 @@ impl App {
             (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => {
                 "Prefs · Touch screen".to_string()
             }
+            (View::Prefs, _) if self.prefs_section == PrefsSection::Setup => {
+                "Prefs · Backup and Akai kits".to_string()
+            }
             (View::Prefs, _) => "Prefs".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
@@ -3500,13 +3554,79 @@ impl App {
 
     /// From a Prefs section back to Prefs' main rows, on the row that opened it.
     fn leave_prefs_section(&mut self) -> Vec<Effect> {
+        let opener = match self.prefs_section {
+            PrefsSection::Setup => Item::SetupSection,
+            _ => Item::TouchSection,
+        };
         self.prefs_section = PrefsSection::Main;
         self.menu_editing = false;
-        self.selected = PREFS_ROWS
-            .iter()
-            .position(|&i| i == Item::TouchSection)
-            .unwrap_or(0);
+        self.selected = PREFS_ROWS.iter().position(|&i| i == opener).unwrap_or(0);
         vec![self.menu_view()]
+    }
+
+    /// The first-start setup's state, for Prefs > Backup and Akai kits
+    /// (at start, and after each change there); the menu follows.
+    pub fn set_setup(&mut self, state: Option<crate::setup::PrefsState>) -> Vec<Effect> {
+        self.setup = state;
+        if self.view == View::Prefs {
+            vec![self.menu_view()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The backup row's value.
+    fn setup_backup_text(&self) -> String {
+        let Some(st) = &self.setup else {
+            return "Not on this stick".to_string();
+        };
+        let b = &st.backup;
+        match (&st.backup_made, b.next_start, b.done, b.left_out) {
+            (Some(_), true, _, _) => "New one at the next start".to_string(),
+            (None, true, _, _) => "At the next start".to_string(),
+            (Some(day), false, true, _) => format!("Made {day}"),
+            (_, false, _, true) => "Left out".to_string(),
+            _ => "Not made yet".to_string(),
+        }
+    }
+
+    /// The Akai kits row's value.
+    fn setup_akai_text(&self) -> String {
+        let Some(st) = &self.setup else {
+            return "Not on this stick".to_string();
+        };
+        let a = &st.akai;
+        if a.done {
+            "In BROWSE".to_string()
+        } else if a.next_start {
+            "At the next start".to_string()
+        } else if a.left_out {
+            "Left out".to_string()
+        } else {
+            "Not in yet".to_string()
+        }
+    }
+
+    /// A push or + on a row of Prefs > Backup and Akai kits asks for it at
+    /// the next start, or takes the ask back; - takes it back.
+    fn setup_step(&mut self, backup: bool, d: i32) -> Vec<Effect> {
+        let Some(st) = &self.setup else {
+            return vec![Effect::Note(
+                "Prefs: this stick has no first-start setup (it wasn't made by the USB creator)"
+                    .into(),
+            )];
+        };
+        let c = if backup { &st.backup } else { &st.akai };
+        if !backup && c.done {
+            return vec![Effect::Note(
+                "Akai's kits and samples are in already: BROWSE, Kits and Samples".into(),
+            )];
+        }
+        let want = d > 0 && !c.next_start;
+        if want == c.next_start {
+            return Vec::new();
+        }
+        vec![Effect::SetupNextStart { backup, want }]
     }
 
     /// A menu row touched.
@@ -3637,6 +3757,13 @@ impl App {
                 self.selected = 1;
                 return vec![self.menu_view()];
             }
+            Item::SetupSection => {
+                self.prefs_section = PrefsSection::Setup;
+                self.selected = 1;
+                return vec![self.menu_view()];
+            }
+            Item::SetupBackup => return self.setup_step(true, delta),
+            Item::SetupAkaiKits => return self.setup_step(false, delta),
             Item::Appearance => {
                 // A theme file from --theme counts as before the first.
                 let at = themes.iter().position(|t| *t == s.theme);
@@ -4677,6 +4804,126 @@ mod tests {
         assert_eq!(app.view(), View::Play);
         open_prefs(&mut app);
         assert_eq!(app.items(), PREFS_ROWS);
+    }
+
+    /// Prefs > Backup and Akai kits (Jay, 17 Nov 18:12Z): just before
+    /// Touch screen; each row asks for its step at the next start, or takes
+    /// the ask back.
+    #[test]
+    fn prefs_offers_the_backup_and_akais_kits_for_the_next_start() {
+        use crate::setup::{Choice, PrefsState};
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let rows = app.items();
+        assert_eq!(
+            rows[rows.len() - 2],
+            Item::SetupSection,
+            "just before Touch screen"
+        );
+        assert_eq!(rows.last(), Some(&Item::TouchSection), "which stays last");
+        let fx = app.step_item(row(&app, Item::SetupSection), 1);
+        assert!(
+            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs · Backup and Akai kits" && m.selected == 1
+                         && m.rows[1] == ("Backup of your MPC".to_string(), "Not on this stick".to_string())
+                         && m.rows[2] == ("Akai's kits and samples".to_string(), "Not on this stick".to_string())),
+            "{fx:?}"
+        );
+        // Without a creator's stick it says so and changes nothing.
+        assert!(matches!(&app.step_item(1, 1)[..], [Effect::Note(_)]));
+        // Both left out at the first start.
+        let left = Choice {
+            left_out: true,
+            done: false,
+            next_start: false,
+        };
+        app.set_setup(Some(PrefsState {
+            backup: left.clone(),
+            akai: left.clone(),
+            backup_made: None,
+        }));
+        assert_eq!(app.item_text(Item::SetupBackup).1, "Left out");
+        assert_eq!(app.item_text(Item::SetupAkaiKits).1, "Left out");
+        assert_eq!(
+            app.step_item(row(&app, Item::SetupAkaiKits), 1),
+            vec![Effect::SetupNextStart {
+                backup: false,
+                want: true
+            }]
+        );
+        assert_eq!(
+            app.step_item(row(&app, Item::SetupBackup), -1),
+            vec![],
+            "- takes back only what was asked"
+        );
+        // Asked: the row says so, and the push takes it back.
+        let asked = Choice {
+            left_out: false,
+            done: false,
+            next_start: true,
+        };
+        let fx = app.set_setup(Some(PrefsState {
+            backup: left.clone(),
+            akai: asked,
+            backup_made: None,
+        }));
+        assert!(
+            matches!(&fx[..], [Effect::Menu(m)] if m.rows[2].1 == "At the next start"),
+            "{fx:?}"
+        );
+        assert_eq!(
+            app.step_item(row(&app, Item::SetupAkaiKits), 1),
+            vec![Effect::SetupNextStart {
+                backup: false,
+                want: false
+            }]
+        );
+        // Done: a backup made, the kits in.
+        let done = Choice {
+            left_out: false,
+            done: true,
+            next_start: false,
+        };
+        app.set_setup(Some(PrefsState {
+            backup: done.clone(),
+            akai: done.clone(),
+            backup_made: Some("17 Nov 2026".into()),
+        }));
+        assert_eq!(app.item_text(Item::SetupBackup).1, "Made 17 Nov 2026");
+        assert_eq!(app.item_text(Item::SetupAkaiKits).1, "In BROWSE");
+        assert!(matches!(
+            &app.step_item(row(&app, Item::SetupAkaiKits), 1)[..],
+            [Effect::Note(_)]
+        ));
+        assert_eq!(
+            app.step_item(row(&app, Item::SetupBackup), 1),
+            vec![Effect::SetupNextStart {
+                backup: true,
+                want: true
+            }],
+            "a new backup, beside the one there"
+        );
+        app.set_setup(Some(PrefsState {
+            backup: Choice {
+                next_start: true,
+                done: false,
+                left_out: false,
+            },
+            akai: done,
+            backup_made: Some("17 Nov 2026".into()),
+        }));
+        assert_eq!(
+            app.item_text(Item::SetupBackup).1,
+            "New one at the next start"
+        );
+        // MENU goes back to the main rows, on the row that opened the section.
+        let fx = press(&mut app, MENU);
+        assert!(
+            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs" && m.rows[m.selected].0 == "Backup and Akai kits"),
+            "{fx:?}"
+        );
     }
 
     /// Live test 2 (Jay, 13 Nov): on a page with rows the wheel scrolls

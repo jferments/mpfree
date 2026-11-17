@@ -63,6 +63,13 @@ Options for write and build:
   --new-backup       the stick's first start backs the MPC up again even if partition 4 has a backup
                      (from an earlier first start), keeping the backups it has. Without it, a backup of
                      this MPC already there is used, and the first start shows when it was made
+  --no-backup        the stick's first start makes no backup of the MPC (about 10 to 20 minutes saved;
+                     MPFree's Prefs can make one later)
+  --no-akai-kits     the stick's first start brings in none of Akai's kits and samples (about 10 minutes
+                     saved; MPFree's Prefs can bring them in later). Without a backup, they are read
+                     straight from the MPC through the read-only window
+  --akai-kits        with --keep-data: the first start brings in Akai's kits and samples if they were
+                     left out before
 
 Developer options for how the MPC's startup hook starts the stick (without them, the soft-reboot):
   --kexec-file       the hook restarts into Akai's own kernel from the MPC (file-based kexec) with this
@@ -385,8 +392,21 @@ fn inputs(a: &mut Args, out: &mut Out) -> io::Result<Inputs> {
     let (route, live_path) = route(a)?;
     let choices = stick::Choices {
         new_backup: a.flag("--new-backup"),
+        no_backup: a.flag("--no-backup"),
+        no_akai_kits: a.flag("--no-akai-kits"),
+        akai_kits: a.flag("--akai-kits"),
         route,
     };
+    if choices.new_backup && choices.no_backup {
+        return Err(usage(
+            "--new-backup and --no-backup ask for opposite things",
+        ));
+    }
+    if choices.akai_kits && choices.no_akai_kits {
+        return Err(usage(
+            "--akai-kits and --no-akai-kits ask for opposite things",
+        ));
+    }
     let update_path = update_path(&given, any_update, out)?;
     let work = a
         .value("--work")?
