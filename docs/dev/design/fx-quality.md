@@ -577,7 +577,7 @@ The measures it adds, beside the earlier rounds':
 | X4 | `attack_ratio_<ms>` | Within ±15 %, 1 to 30 ms | As K2 |
 | X5 | `release_ratio_<ms>` | Within ±10 %, 60 to 500 ms (90 % reported) | As K3 |
 | X6 | `thd_<hz>hz_12db_over` | 50 Hz 12 dB over the low band's threshold ≤ -50 dB; 100 Hz and the presets reported | As K4 |
-| X7 | `lu_pink` | Reported (once Auto makeup is built: within ±1.5 LU) | As K7 |
+| X7 | `lu_pink_auto`, `lu_pink` | With Auto makeup on, pink at -18 dBFS within ±1.5 LU of the dry, at the defaults and each preset; with it off, reported | As K7 |
 | X8 | `zipper_<control>` | ≤ 3 dB, every control | Smooth automation |
 
 ### Ducker (U)
@@ -626,6 +626,16 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md); decision 11.1): the Limi
 - **Reported:** with True peak off, 0.89 dB over (1.38). Under 12 dB of limiting 50 Hz distorts at -53.9 dB (Limiter) and -63.1 (Master safety); the Soft clip's alias at 12 dB is -62.3 (-17.0). The latency at 44.1 kHz is 81 frames for the Limiter (71) and 85 for Master safety (66): the detector's 15-frame lag and the soft clip's 4-frame pad, the same in every mode and setting. A programme pushed 6 dB keeps 2.61 LU of the push at the Limiter's defaults, 2.40 with True peak, 1.80 with Auto off and 1.86 in Master safety (3.21, 3.08, 2.47 and 2.54 measured on the old engines with this row): they were louder because they rode the gain inside the bass's cycles and let go early. A blind level-matched listening page goes with the pull request.
 - **Blessed worse, and why:** none.
 - **Cost** (the instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz): Limiter 39.5k to 44.9k instructions (1.14 times), Limiter (true peak) 72.6k to 98.3k (1.35), Master safety 29.0k to 30.3k (1.05). The idle mixer fell from 52.8k to 44.8k (0.85): a quiet block passes the core at rest with only its delay, bit for bit. The routing-only mixers rose 1.46 and 1.25 times: a dozen loud tracks keep the master limiting nearly all the time, so it works out every point between samples; the mixers with a song's inserts rose 1.05 to 1.07.
+
+### Multiband PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#multiband-comp)): the Multiband's dry is the bands' sum at unity, so any Mix adds in phase; each band runs the Compressor's detector (the smooth decoupled peak detector in dB, its release solved through the attack); thresholds and ratios glide over 20 ms; Auto makeup is new (id 19, off by default, on in every preset; Drum crush drops its +6 dB a band for it). X7 now measures with Auto makeup on (`lu_pink_auto`, within ±1.5 LU) and reports it off (`lu_pink`). After it: 31 of 32 multiband targets met (15 of 27; the five Auto makeup rows are new targets); the other classes are unchanged.
+
+- **Met now:** ratio 1 at any Mix flat within 0.06 dB (19.7 dB notch at Mix 50, 5.9 at 25 and 75) (X2). The mid band within 0.12 dB of its curve (0.57) (X3). Attack 0.97 and 0.94 of 10 and 30 ms (1.69) (X4); release 1.00 of 60, 150 and 500 ms (0.81 to 0.85) (X5). 50 Hz 12 dB over at -61.7 dB THD (-50.0) (X6). Pink at -18 dBFS with Auto makeup: -0.31 LU at the defaults, -0.31 to +0.79 at the presets (X7). The mid Threshold and Ratio zipper 0.05 and 0.03 dB (10.6 and 6.8) (X8).
+- **Not met:** Attack at 1 ms reads 1.44 of its label (2.08): the mid band builds up through the crossovers for a few tenths of a millisecond before the detector can see it, and only a look-ahead would hide that.
+- **Reported:** the whole output against the curve, 0.51 dB (0.92): the other bands' share of the 1 kHz tone passes uncompressed. With Auto makeup off, pink comes out -1.4 LU at the defaults, Drum crush -11.6 (its gains are gone).
+- **Blessed worse, and why:** the zipper rows' floor rose from 0.018 to 0.023 dB and the crossovers' from 0.48 and 0.55 to 0.54 and 0.58, Release's from 0.02 to 0.07: the detector in dB follows the test tone a hair more closely; all far under 3 dB. Drum crush's 50 Hz THD 12 dB over went from -35.9 to -34.5 dB (reported only): at 1 ms and 8:1 the new detector rides closer to its curve inside the bass's cycles.
+- **Cost:** Multiband compressor 141.5k to 149.9k instructions a block (1.06): the detector in dB and the new glides. Taking the dry from the bands' sum made the Mix fix free (a second pair of all-passes on the dry cost 1.22).
 
 ## The grain engine
 
