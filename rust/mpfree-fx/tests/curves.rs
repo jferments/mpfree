@@ -230,9 +230,20 @@ fn the_static_curves_are_the_effects_own() {
     let raw = set(MasterSafety::new(), &[(master::MODE, 2.0)]);
     assert_eq!(raw.curve(1.5), 1.0, "the converter clips at full scale");
 
-    let d = set(Drive::new(), &[(drive::MODE, 1.0), (drive::DRIVE, 6.0)]);
+    let d = set(
+        Drive::new(),
+        &[(drive::MODE, 1.0), (drive::DRIVE, 6.0), (drive::BIAS, 0.0)],
+    );
     assert!((d.curve(0.25) - 0.25 * 10f32.powf(0.3)).abs() < 1e-4);
     assert_eq!(d.curve(0.9), 1.0, "hard clip");
+    // Bias clips one side sooner (the bias's DC taken off): at 20 %, at
+    // +0.8 and -1.2.
+    let d = set(
+        Drive::new(),
+        &[(drive::MODE, 1.0), (drive::DRIVE, 6.0), (drive::BIAS, 20.0)],
+    );
+    assert!((d.curve(0.9) - 0.8).abs() < 1e-6, "{}", d.curve(0.9));
+    assert!((d.curve(-0.9) + 1.2).abs() < 1e-6, "{}", d.curve(-0.9));
 
     let e = set(Delay::new(), &[(delay::SYNC, 7.0)]);
     assert!((e.time_ms(120.0) - 375.0).abs() < 0.05, "1/8D at 120 BPM");
