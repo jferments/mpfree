@@ -2296,22 +2296,23 @@ fn kit_pad_colours(kit: &kit::Kit, k: usize) -> [[u8; 3]; 16] {
 /// clip, dim green with nothing launched, red while muted or silent while
 /// others are soloed, lit blue while soloed, and amber blinking while a
 /// change waits in the mute queue (`blink` is the phase); dark with no
-/// track. The kit's pads: lit in the kit's colour (`kit`) while they
-/// play, red while muted, dark without a sound. `track(t)` is None past
-/// the last track. Only colours Akai's app was seen sending (a kit's
-/// resting colour, or its hit): there is no dim red, so silent by solo is
-/// the muted red.
+/// track. The kit's pads (`pad(p)`): lit in the kit's colour (`kit`)
+/// while they play, red while muted or silent by a solo, lit blue while
+/// soloed, amber blinking while a change waits, dark without a sound.
+/// `track(t)` is None past the last track. Only colours Akai's app was
+/// seen sending (a kit's resting colour, or its hit): there is no dim
+/// red, so silent by solo is the muted red.
 fn mute_colours(
     keys: app::MuteKeys,
     kit: [[u8; 3]; 16],
     track: impl Fn(usize) -> Option<time::MuteLight>,
-    pad_mutes: u16,
+    pad: impl Fn(usize) -> time::MuteLight,
     blink: bool,
 ) -> [[u8; 3]; 16] {
     let [amber, blue, _, green, red, ..] = akai::KIT_COLOURS;
-    std::array::from_fn(|pad| match keys {
-        app::MuteKeys::Off => kit[pad],
-        app::MuteKeys::Tracks => match track(pad) {
+    std::array::from_fn(|p| match keys {
+        app::MuteKeys::Off => kit[p],
+        app::MuteKeys::Tracks => match track(p) {
             Some(l) if l.waiting && blink => akai::hit_colour(amber),
             Some(l) if l.waiting => amber,
             Some(l) if l.solo => akai::hit_colour(blue),
@@ -2320,9 +2321,14 @@ fn mute_colours(
             Some(_) => green,
             None => [0; 3],
         },
-        app::MuteKeys::Pads if kit[pad] == [0; 3] => [0; 3],
-        app::MuteKeys::Pads if pad_mutes & (1 << pad) != 0 => red,
-        app::MuteKeys::Pads => akai::hit_colour(kit[pad]),
+        app::MuteKeys::Pads if kit[p] == [0; 3] => [0; 3],
+        app::MuteKeys::Pads => match pad(p) {
+            l if l.waiting && blink => akai::hit_colour(amber),
+            l if l.waiting => amber,
+            l if l.solo => akai::hit_colour(blue),
+            l if l.silent => red,
+            _ => akai::hit_colour(kit[p]),
+        },
     })
 }
 
@@ -2396,11 +2402,45 @@ fn transpose_colours(by: Option<i8>) -> [[u8; 3]; 16] {
     })
 }
 
+/// What SHIFT + TRACK MUTE's key for the kit's pad `p` shows: muted or
+/// silent by a solo, soloed, or waiting in the mute queue. Nothing while
+/// the armed track plays another kit (`other`), whose pads have no mutes
+/// of their own.
+fn pad_light(
+    mix: &mixing::MixHost,
+    time: &time::TimeHost,
+    p: usize,
+    other: bool,
+) -> time::MuteLight {
+    let bit = |b: u16| !other && b & (1 << p) != 0;
+    time::MuteLight {
+        silent: bit(mix.pad_mutes() | mix.solo_silent()),
+        solo: bit(mix.pad_solos()),
+        waiting: !other && time.pad_waiting(p),
+        launched: false,
+    }
+}
+
+/// The kit's pads whose change in the mute queue came due ([`mute_key`]):
+/// the mixer takes their mutes and solos, from its next period, which
+/// holds their line.
+fn land_pads(time: &mut time::TimeHost, mix: &mut mixing::MixHost) {
+    for (pad, l) in time.take_pad_landings().into_iter().enumerate() {
+        if let Some((mute, solo)) = l {
+            mix.play(mixing::PlayFx::PadMute { pad, mute });
+            mix.play(mixing::PlayFx::PadSolo { pad, solo });
+        }
+    }
+}
+
 /// TRACK MUTE's key `pad` pressed (`tap` from [`app::App::mute_tap`]):
 /// its track in the tap's bank (A = 0: tracks 1-16, B 17-32 ...) muted or
 /// let play, or soloed with TRACK MUTE held, at once or on the launch
 /// line ([`time::TimeHost::mute_or_solo`]); or the pad itself in the kit,
-/// muted or let play, at once. `other_kit`: the armed track plays that
+/// muted or let play, or soloed with TRACK MUTE held, at once or on the
+/// line with the tracks ([`time::TimeHost::pad_mute_or_solo`]; the mixer
+/// takes a pad's landing before the period that holds its line, in
+/// [`land_pads`]). `other_kit`: the armed track plays that
 /// kit (counted from 0) and not kit 1, whose pads alone have channels (and
 /// mutes) of their own, so a pad's key mutes nothing and says so. The
 /// line for the log.
@@ -2420,13 +2460,22 @@ fn mute_key(
             gui::other_kit_mutes("pad mute", other_kit.unwrap_or(0))
         }
         app::MuteKeys::Pads => {
-            let mute = mix.pad_mutes() & (1 << pad) == 0;
-            mix.play(mixing::PlayFx::PadMute { pad, mute });
-            format!(
-                "pad mute: pad {} {}",
-                pad + 1,
-                if mute { "muted" } else { "plays" }
-            )
+            let bit = |b: u16| b & (1 << pad) != 0;
+            let now = (bit(mix.pad_mutes()), bit(mix.pad_solos()));
+            match time.pad_mute_or_solo(pad, now, tap.wait, tap.solo) {
+                time::PadTap::Waits(line) => line,
+                time::PadTap::Now { mute, solo } => {
+                    mix.play(mixing::PlayFx::PadMute { pad, mute });
+                    mix.play(mixing::PlayFx::PadSolo { pad, solo });
+                    let what = match (tap.solo, mute, solo) {
+                        (true, _, true) => "solo",
+                        (true, _, false) => "solo off",
+                        (false, true, _) => "muted",
+                        (false, false, _) => "plays",
+                    };
+                    format!("pad mute: pad {} {what}", pad + 1)
+                }
+            }
         }
     }
 }
@@ -7180,15 +7229,13 @@ fn player_session(
             let first = app.mute_bank() * 16;
             let track = |t: usize| time.mute_light(first + t);
             let blink = ((t * 4.0) as u64).is_multiple_of(2);
-            let pad_mutes = match other_kit(&track_kits, app.track()) {
-                Some(_) => 0,
-                None => mix.pad_mutes(),
-            };
+            let other = other_kit(&track_kits, app.track()).is_some();
+            let pad = |p: usize| pad_light(&mix, &time, p, other);
             let want = mute_colours(
                 keys,
                 sound_colours(player.sounds(kit), kit),
                 track,
-                pad_mutes,
+                pad,
                 blink,
             );
             for pad in 0..16 {
@@ -7383,7 +7430,7 @@ fn player_session(
             defaults_sent = out
                 .try_show(gui::ToUi::ProjectDefaults(Box::new(project::Defaults {
                     tempo: app.settings.bpm,
-                    mixer: project::mixer_text(&mix.mixer, mix.pad_mutes()),
+                    mixer: project::mixer_text(&mix.mixer, mix.pad_mutes(), mix.pad_solos()),
                     modu: mix.modu.save(),
                     synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 })))
@@ -7442,7 +7489,7 @@ fn player_session(
                 tempo: app.settings.bpm,
                 swing: time.info().swing,
                 clips: time.project().clone(),
-                mixer: project::mixer_text(&mix.mixer, mix.pad_mutes()),
+                mixer: project::mixer_text(&mix.mixer, mix.pad_mutes(), mix.pad_solos()),
                 modu: mix.modu.save(),
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 arp: app.arp_part(),
@@ -7476,6 +7523,9 @@ fn player_session(
         if caught {
             clipped += 1;
         }
+        // The kit's pads whose mute or solo came due land from the next
+        // period, which holds their line.
+        land_pads(&mut time, &mut mix);
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
         engines.stop(engines::MIX, t_mix);
@@ -8736,6 +8786,22 @@ mod tests {
             "pad mute: pad 5 plays"
         );
         assert_eq!(mix.pad_mutes(), 0);
+        // TRACK MUTE held over the kit's pads: a pad solos (at once, as
+        // the transport is stopped), and again lets go of it.
+        let solo = MuteTap {
+            solo: true,
+            ..tap(MuteKeys::Pads, 0)
+        };
+        assert_eq!(
+            mute_key(solo, 2, None, &mut time, &mut mix),
+            "pad mute: pad 3 solo"
+        );
+        assert_eq!((mix.pad_solos(), mix.solo_silent()), (1 << 2, !(1 << 2)));
+        assert_eq!(
+            mute_key(solo, 2, None, &mut time, &mut mix),
+            "pad mute: pad 3 solo off"
+        );
+        assert_eq!(mix.pad_solos(), 0);
         // A track on kit 2: its pads share the track's channel, so a pad's
         // key mutes nothing of kit 1's.
         assert_eq!(
@@ -8754,7 +8820,8 @@ mod tests {
                 launched: t == 0,
             })
         };
-        let c = mute_colours(MuteKeys::Tracks, kit, track, 0, true);
+        let none = |_| time::MuteLight::default();
+        let c = mute_colours(MuteKeys::Tracks, kit, track, none, true);
         assert_eq!(
             (c[0], c[1], c[2], c[3], c[4], c[5], c[8]),
             (
@@ -8767,10 +8834,30 @@ mod tests {
                 [0; 3]
             )
         );
-        let c = mute_colours(MuteKeys::Tracks, kit, track, 0, false);
+        let c = mute_colours(MuteKeys::Tracks, kit, track, none, false);
         assert_eq!(c[5], amber, "waiting blinks");
-        let c = mute_colours(MuteKeys::Pads, kit, track, 1 << 4, false);
-        assert_eq!((c[0], c[4], c[12]), (akai::hit_colour(kit[0]), red, [0; 3]));
+        // The kit's pads: pad 5 muted, pad 2 soloed (pad 4 silent by it),
+        // pad 7 waiting; pad 13 has no sound.
+        let pad = |p: usize| time::MuteLight {
+            silent: p == 4 || p == 3,
+            solo: p == 1,
+            waiting: p == 6,
+            launched: false,
+        };
+        let c = mute_colours(MuteKeys::Pads, kit, track, pad, false);
+        assert_eq!(
+            (c[0], c[1], c[3], c[4], c[6], c[12]),
+            (
+                akai::hit_colour(kit[0]),
+                akai::hit_colour(blue),
+                red,
+                red,
+                amber,
+                [0; 3]
+            )
+        );
+        let c = mute_colours(MuteKeys::Pads, kit, track, pad, true);
+        assert_eq!(c[6], akai::hit_colour(amber), "waiting blinks");
     }
 
     #[test]

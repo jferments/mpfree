@@ -11534,8 +11534,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             let mut st = p.time.clone();
             st.perform = true;
             st.mute_wait = Some(mpfree_time_ui::view::MuteWait {
-                line: mpfree_seq::LaunchGrid::Bars(1),
                 want: vec![(1, true, false), (2, false, true)],
+                ..mpfree_time_ui::view::MuteWait::new(mpfree_seq::LaunchGrid::Bars(1))
             });
             p.apply(ToUi::Time(Box::new(st)));
             p.apply(ToUi::Show(View::Arrange));
@@ -17615,7 +17615,7 @@ mod tests {
             tempo: 98.0,
             swing: mpfree_transport::time::Swing::new(240, 62).unwrap(),
             clips: clips.clone(),
-            mixer: project::mixer_text(&mix.mixer, 0),
+            mixer: project::mixer_text(&mix.mixer, 0, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
@@ -17784,6 +17784,7 @@ mod tests {
                 mixer: project::mixer_text(
                     &crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer,
                     0,
+                    0,
                 ),
                 modu: String::new(),
                 synth: project::synth_text(&Default::default(), &synth.sounds()),
@@ -17911,7 +17912,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lib = mpfree_library::Library::at(&dir).unwrap();
         let synth = crate::synth::Synth::new(44_100);
-        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
+        let mixer =
+            project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0);
         let synth_text = project::synth_text(&Default::default(), &synth.sounds());
         let defaults = || {
             Box::new(Defaults {

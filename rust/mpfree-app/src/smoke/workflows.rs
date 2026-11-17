@@ -3071,6 +3071,66 @@ mod tests {
         });
     }
 
+    /// The kit's pad mutes in Perform (sequencer S4): SHIFT + TRACK MUTE's
+    /// pads wait for the bar line as the tracks' do, and land in the mixer
+    /// there; held TRACK MUTE over them solos a pad of the kit (waiting
+    /// too) and leaves the pads the kit's; STOP lands a change that waits.
+    #[test]
+    fn in_perform_a_kit_pad_mute_waits_for_the_bar_and_held_it_solos() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.3);
+            s.button_with("SHIFT", "MAIN").run_for(0.2);
+            assert!(s.time.project().perform);
+            s.button_with("SHIFT", "TRACK MUTE");
+            assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            s.pad(0, 100, 0.05);
+            assert!(s.time.pad_waiting(0), "it waits");
+            assert_eq!(s.mix.pad_mutes(), 0);
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "pad mute: pad 1 muted on the next bar"),
+                "{:?}",
+                s.said()
+            );
+            s.run_for(0.1);
+            let reading = s.screen.time.waiting_reading();
+            assert_eq!(reading.as_deref(), Some("Pad 1 at 2.1"));
+            s.run_for(2.0);
+            assert_eq!(s.mix.pad_mutes(), 1, "landed on bar 2");
+            assert!(!s.time.pad_waiting(0) && s.time.mute_wait().is_none());
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.contains("pad mute: at 2.1, pad 1 muted")),
+                "{:?}",
+                s.said()
+            );
+            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay the
+            // kit's once TRACK MUTE is let go.
+            s.button_edge("TRACK MUTE", true);
+            s.pad(2, 100, 0.05);
+            s.button_edge("TRACK MUTE", false);
+            assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            assert!(s.time.pad_waiting(2));
+            s.run_for(2.0);
+            assert_eq!(s.mix.pad_solos(), 1 << 2, "soloed on bar 3");
+            assert_eq!(s.mix.solo_silent() & 1, 1, "the kick is silent by it");
+            // STOP lands a change that waits.
+            s.pad(0, 100, 0.05);
+            assert!(s.time.pad_waiting(0));
+            s.button("STOP").run_for(0.1);
+            assert_eq!(s.mix.pad_mutes(), 0, "STOP landed it");
+            assert!(s.time.mute_wait().is_none());
+            s.button("TRACK MUTE");
+        });
+    }
+
     /// Save state and Reload clip (sequencer S4): the clip card keeps the
     /// pattern, two more steps change it, and Reload clip on the morph
     /// bar brings it back on the next bar line; UNDO takes the reload

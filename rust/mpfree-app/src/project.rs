@@ -585,11 +585,14 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 /// insert master 4 1 clap:com.example.verb file=verb.clap key=t1
 /// state AAECAw==
 /// ```
-pub fn mixer_text(mixer: &Mixer, pad_mutes: u16) -> String {
+pub fn mixer_text(mixer: &Mixer, pad_mutes: u16, pad_solos: u16) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(MIXER_FORMAT);
     s.push('\n');
     let _ = writeln!(s, "padmutes {pad_mutes}");
+    if pad_solos != 0 {
+        let _ = writeln!(s, "padsolos {pad_solos}");
+    }
     let strips: Vec<StripId> = mixer
         .strips()
         .filter(|&st| !untouched_channel(mixer, st))
@@ -655,6 +658,8 @@ type Reading = (StripId, u16, bool, Box<dyn Node>, Option<StripId>);
 /// for the audio loop to swap in ([`crate::mixing::MixHost::open`]).
 pub struct MixLoad {
     pub pad_mutes: u16,
+    /// The kit's pads soloed (TRACK MUTE held over pad mutes).
+    pub pad_solos: u16,
     pub strips: Vec<(StripId, Vec<(u16, f32)>)>,
     /// Each strip's inserts, in order.
     pub chains: Vec<(StripId, Vec<Keyed>)>,
@@ -727,6 +732,7 @@ pub fn mixer_load(
     }
     let mut out = MixLoad {
         pad_mutes: 0,
+        pad_solos: 0,
         strips: Vec::new(),
         chains: Vec::new(),
         modu: modu.map(str::to_string),
@@ -759,6 +765,9 @@ pub fn mixer_load(
         match w.next() {
             Some("padmutes") => {
                 out.pad_mutes = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+            }
+            Some("padsolos") => {
+                out.pad_solos = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
             }
             Some("strip") => {
                 finish(&mut open, &mut out);
@@ -1192,7 +1201,7 @@ mod tests {
         for _ in 0..50 {
             a.run_silent_period();
         }
-        let text = mixer_text(&a.mixer, 0b101);
+        let text = mixer_text(&a.mixer, 0b101, 0b10);
         let load = mixer_load(
             &text,
             Some("x = 1\n"),
@@ -1200,7 +1209,7 @@ mod tests {
             &crate::plugins::Plugins::none(),
         )
         .unwrap();
-        assert_eq!(load.pad_mutes, 0b101);
+        assert_eq!((load.pad_mutes, load.pad_solos), (0b101, 0b10));
         assert!(load.notes.is_empty(), "{:?}", load.notes);
         assert_eq!(load.modu.as_deref(), Some("x = 1\n"));
         // The master fader (the Level) isn't the project's.
@@ -1242,7 +1251,7 @@ mod tests {
             b.run_silent_period();
         }
         assert!(!b.opening());
-        let again = mixer_text(&b.mixer, b.pad_mutes());
+        let again = mixer_text(&b.mixer, b.pad_mutes(), b.pad_solos());
         let strip_master = |t: &str| {
             t.lines()
                 .filter(|l| !l.starts_with("strip master"))
@@ -1257,7 +1266,7 @@ mod tests {
     fn a_tracks_own_channel_is_saved_only_once_something_is_set_on_it() {
         let own = |t: usize| StripId::Track(crate::instruments::first_track() + t);
         let mut a = MixHost::new(44_100, -6.0, 0.0);
-        let text = mixer_text(&a.mixer, 0);
+        let text = mixer_text(&a.mixer, 0, 0);
         assert!(
             text.contains("strip t0 "),
             "the engines' tracks are always saved"
@@ -1267,7 +1276,7 @@ mod tests {
             "{text}"
         );
         a.mixer.set_now(own(2), mx::VOLUME, -9.0);
-        let text = mixer_text(&a.mixer, 0);
+        let text = mixer_text(&a.mixer, 0, 0);
         assert!(
             text.contains(&format!("strip {} 0=-9", strip_text(own(2)))),
             "{text}"

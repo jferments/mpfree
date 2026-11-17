@@ -392,7 +392,11 @@ impl Session {
     pub fn defaults(&self) -> crate::project::Defaults {
         crate::project::Defaults {
             tempo: self.app.settings.bpm,
-            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
+            mixer: crate::project::mixer_text(
+                &self.mix.mixer,
+                self.mix.pad_mutes(),
+                self.mix.pad_solos(),
+            ),
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
         }
@@ -1046,6 +1050,8 @@ impl Session {
             &mut l,
             &mut r,
         );
+        // The kit's pads whose mute or solo came due, as main.rs lands them.
+        crate::land_pads(&mut self.time, &mut self.mix);
         if let Some(h) = self.heard.as_mut() {
             h.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
         }
@@ -1161,7 +1167,11 @@ impl Session {
             tempo: self.app.settings.bpm,
             swing: self.time.info().swing,
             clips: self.time.project().clone(),
-            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
+            mixer: crate::project::mixer_text(
+                &self.mix.mixer,
+                self.mix.pad_mutes(),
+                self.mix.pad_solos(),
+            ),
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
