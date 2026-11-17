@@ -127,6 +127,7 @@ mod power;
 mod preview;
 mod project;
 mod qlink_touch;
+mod rec_arm;
 mod remote;
 #[cfg(test)]
 mod rt_safety;
@@ -5000,6 +5001,9 @@ fn player_session(
                     // transport, and held notes would hang.
                     fx.push(app::Effect::Time(TimeAction::Transport(Command::Stop)));
                     fx.push(app::Effect::StopSounds);
+                    // A new or opened project arms the notes (rec_arm.rs).
+                    app.rec = rec_arm::RecArm::default();
+                    out.show(gui::ToUi::Rec(app.rec));
                     // A save under way stops: the project changes under it.
                     if collect_now {
                         looper.cancel_save();

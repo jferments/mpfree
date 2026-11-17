@@ -718,6 +718,9 @@ pub struct LooperPage {
     turned: Option<Instant>,
     /// The undo history is open in the editor.
     history_open: bool,
+    /// REC records the loop ([`crate::rec_arm`]): the strip's empty text
+    /// says what REC does.
+    rec_loop: bool,
 }
 
 impl LooperPage {
@@ -740,9 +743,20 @@ impl LooperPage {
             view: LooperView::default(),
             turned: None,
             history_open: false,
+            rec_loop: false,
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
+    }
+
+    /// Whether REC records the loop (it is armed) or the notes: the
+    /// strip's empty text follows.
+    pub fn set_rec_loop(&mut self, ui: &mut Ui, on: bool) {
+        if self.rec_loop != on {
+            self.rec_loop = on;
+            let v = self.view.clone();
+            self.update_strip(ui, &v);
+        }
     }
 
     /// A pad played a sound of `group` ("Drums", "Bass", "Synth"): it
@@ -1464,7 +1478,10 @@ impl LooperPage {
             Phase::Playing => Some(("PLAYING", Tone::Good)),
         }
         .map(|(a, b)| (a.to_string(), b));
-        let note = if empty {
+        let note = if empty && !self.rec_loop {
+            // The notes are armed: REC records them, not this loop.
+            "Empty: REC records the notes now. Open the Loop view to record a loop here".to_string()
+        } else if empty {
             format!(
                 "Empty: REC records the {}",
                 match v.source {

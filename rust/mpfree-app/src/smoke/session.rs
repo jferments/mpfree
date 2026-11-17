@@ -1114,6 +1114,9 @@ impl Session {
         self.fx
             .push(Effect::Time(TimeAction::Transport(Command::Stop)));
         self.fx.push(Effect::StopSounds);
+        // A new or opened project arms the notes (rec_arm.rs).
+        self.app.rec = crate::rec_arm::RecArm::default();
+        self.out.show(ToUi::Rec(self.app.rec));
         // A save under way stops: the project changes under it.
         if self.collect_now {
             self.looper.cancel_save();

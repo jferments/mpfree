@@ -1026,12 +1026,10 @@ pub enum Effect {
     /// The UNDO button went down (true) or up, on every page: held, the
     /// screen opens the page's undo history (Jay after live test 3).
     UndoButton(bool),
-    /// REC (or OVERDUB) on the Play page: the screen knows the view, so it
-    /// picks (Jay, 13 Nov 14:37Z): the looper on All and Loop, the takes
-    /// on Beats.
-    PlayRec {
-        overdub: bool,
-    },
+    /// REC, OVERDUB, or PLAY or STOP while the notes are ready: for what is
+    /// armed ([`crate::rec_arm`], sequencer decision 1). The desk finds the
+    /// transport and the looper as they are and carries it out.
+    Rec(crate::rec_arm::Press),
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -1262,6 +1260,10 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
+    /// What REC records, and whether the notes wait for PLAY
+    /// ([`crate::rec_arm`]). Not saved: a new or opened project arms the
+    /// notes.
+    pub rec: crate::rec_arm::RecArm,
     /// What the transport buttons' lights last showed, by note
     /// ([`App::transport_lights`]); `None` until first sent.
     lights_shown: [Option<u8>; 128],
@@ -1412,6 +1414,7 @@ impl App {
             sent_notes,
             arp_dirty: true,
             rolling: false,
+            rec: crate::rec_arm::RecArm::default(),
             lights_shown: Self::startup_transport_lights(),
             undo_ready: false,
             overlay: false,
@@ -1554,7 +1557,12 @@ impl App {
         self.outline = shown;
     }
 
-    pub fn transport_lights(&mut self, now: TransportLights, t: f64) -> Vec<Effect> {
+    pub fn transport_lights(&mut self, mut now: TransportLights, t: f64) -> Vec<Effect> {
+        // The notes ready blink REC (or OVERDUB) and PLAY, as an armed
+        // loop does.
+        let (rec, dub) = self.rec.ready_lights();
+        now.recording |= rec;
+        now.overdub |= dub;
         let blink_on = (t / BLINK_HALF_SECONDS).floor().rem_euclid(2.0) < 1.0;
         let blink = |on: bool, low: u8| match (on, blink_on) {
             (false, _) => low,
@@ -1941,6 +1949,9 @@ impl App {
             fx.extend(self.set_pad_level(level));
         } else if note == button::STOP {
             fx.extend(self.fill_off());
+            if self.rec.ready.is_some() {
+                fx.push(Effect::Rec(crate::rec_arm::Press::Stop));
+            }
             if self.timed {
                 fx.push(Effect::Quit);
             } else if shift {
@@ -1980,6 +1991,14 @@ impl App {
             self.fill = fill;
             fx.push(Effect::Fill(fill != Fill::Off));
             fx.push(Effect::Note(line.to_string()));
+        } else if note == button::PLAY && self.rec.ready.is_some() {
+            // The notes are ready: PLAY starts the take (after the
+            // count-in).
+            fx.extend(self.fill_off());
+            self.arps.engine_at_mut(self.track).resume();
+            fx.push(Effect::Rec(crate::rec_arm::Press::Play {
+                from_start: false,
+            }));
         } else if note == button::PLAY {
             fx.extend(self.fill_off());
             self.arps.engine_at_mut(self.track).resume();
@@ -1995,6 +2014,11 @@ impl App {
             if self.in_menu() {
                 fx.push(self.menu_view());
             }
+        } else if Some(note) == self.map.play_start && self.rec.ready.is_some() {
+            self.arps.engine_at_mut(self.track).resume();
+            fx.push(Effect::Rec(crate::rec_arm::Press::Play {
+                from_start: true,
+            }));
         } else if Some(note) == self.map.play_start {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
@@ -2010,10 +2034,12 @@ impl App {
         } else if shift && Some(note) == self.map.rec {
             // SHIFT + REC: Capture, on every page (Jay, 20:40Z).
             fx.push(Effect::Time(TimeAction::Capture));
-        } else if self.view == View::Looper && Some(note) == self.map.rec {
-            fx.extend(self.looper_tap(crate::looper_page::B_RECORD));
-        } else if self.view == View::Looper && Some(note) == self.map.overdub {
-            fx.extend(self.looper_tap(crate::looper_page::B_OVERDUB));
+        } else if Some(note) == self.map.rec {
+            // REC records what is armed, on every page (sequencer
+            // decision 1).
+            fx.push(Effect::Rec(crate::rec_arm::Press::Rec));
+        } else if Some(note) == self.map.overdub {
+            fx.push(Effect::Rec(crate::rec_arm::Press::Overdub));
         } else if self.view == View::Looper && Some(note) == self.map.undo {
             fx.extend(self.looper_tap(if shift {
                 crate::looper_page::B_REDO
@@ -2021,16 +2047,6 @@ impl App {
                 crate::looper_page::B_UNDO
             }));
             fx.push(Effect::UndoButton(true));
-        } else if self.view == View::Play
-            && (Some(note) == self.map.rec || Some(note) == self.map.overdub)
-        {
-            fx.push(Effect::PlayRec {
-                overdub: Some(note) == self.map.overdub,
-            });
-        } else if Some(note) == self.map.rec {
-            fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
-        } else if Some(note) == self.map.overdub {
-            fx.push(Effect::Time(TimeAction::Transport(Command::ToggleOverdub)));
         } else if Some(note) == self.map.undo && self.view.sampler() {
             fx.push(Effect::SampleUndo { redo: shift });
             fx.push(Effect::UndoButton(true));
@@ -5522,10 +5538,10 @@ mod tests {
         let fx = app.open_tab(View::Play);
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.starts_with("map summary: ")
                                              && n.contains("REC button 73") && n.contains("PAD BANK A/E button 35"))));
-        // On Play, the screen picks what REC records (the Play view's).
+        // REC records what is armed.
         assert_eq!(
             press(&mut app, 73),
-            vec![Effect::PlayRec { overdub: false }]
+            vec![Effect::Rec(crate::rec_arm::Press::Rec)]
         );
         assert_eq!(
             press(&mut app, 35),
@@ -5605,12 +5621,13 @@ mod tests {
             fx.contains(&source(LoopSource::Line)) && fx.contains(&latency(512)),
             "{fx:?}"
         );
-        // REC on the Looper tab is the looper's Record.
+        // REC on the Looper tab records what is armed (the screen arms
+        // the loop there).
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Looper);
         assert_eq!(
             press(&mut app, 90),
-            vec![Effect::Looper(LoopAction::Command(LoopCommand::Record))]
+            vec![Effect::Rec(crate::rec_arm::Press::Rec)]
         );
         // The input fails to open: Off again, and the pads.
         let fx = app.line_input_off();
@@ -6539,7 +6556,7 @@ mod tests {
         // REC on the Play page, as the MPC's own REC there.
         assert_eq!(
             app.remote_press(tr::REC, true, 4.0),
-            vec![Effect::PlayRec { overdub: false }]
+            vec![Effect::Rec(crate::rec_arm::Press::Rec)]
         );
         app.remote_press(tr::REC, false, 4.1);
         for k in 0..4 {
@@ -6805,14 +6822,12 @@ mod tests {
         let mut app = App::new(44_100, false);
         assert!(app.start().contains(&Effect::Show(View::Play)));
         let time = |a: TimeAction| Effect::Time(a);
-        // On Play: REC and OVERDUB go to the loop (All, Loop) or the takes (Beats).
-        assert_eq!(
-            press(&mut app, button::REC),
-            vec![Effect::PlayRec { overdub: false }]
-        );
+        // REC and OVERDUB go to what is armed, on every page.
+        use crate::rec_arm::Press;
+        assert_eq!(press(&mut app, button::REC), vec![Effect::Rec(Press::Rec)]);
         assert_eq!(
             press(&mut app, button::OVERDUB),
-            vec![Effect::PlayRec { overdub: true }]
+            vec![Effect::Rec(Press::Overdub)]
         );
         assert_eq!(
             press(&mut app, button::PLAY_START),
@@ -6822,23 +6837,34 @@ mod tests {
             press(&mut app, button::UNDO),
             vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
         );
-        // On the Looper tab they work the loop.
         app.open_tab(View::Looper);
-        let rec = press(&mut app, button::REC);
-        assert!(
-            rec.iter().any(|e| matches!(e, Effect::Looper(_))),
-            "REC records the loop: {rec:?}"
-        );
-        let dub = press(&mut app, button::OVERDUB);
-        assert!(
-            dub.iter().any(|e| matches!(e, Effect::Looper(_))),
-            "OVERDUB overdubs the loop: {dub:?}"
-        );
-        // Elsewhere, the transport records.
+        assert_eq!(press(&mut app, button::REC), vec![Effect::Rec(Press::Rec)]);
         app.open_tab(View::Arrange);
+        assert_eq!(press(&mut app, button::REC), vec![Effect::Rec(Press::Rec)]);
+        // The notes ready (the desk said so): PLAY and PLAY START start the
+        // take, STOP lets go too, and REC and PLAY blink.
+        app.rec.ready = Some(crate::rec_arm::Take::Replace);
         assert_eq!(
-            press(&mut app, button::REC),
-            vec![time(TimeAction::Transport(Command::Record))]
+            press(&mut app, button::PLAY),
+            vec![Effect::Rec(Press::Play { from_start: false })]
+        );
+        assert_eq!(
+            press(&mut app, button::PLAY_START),
+            vec![Effect::Rec(Press::Play { from_start: true })]
+        );
+        let stop = press(&mut app, button::STOP);
+        assert!(stop.contains(&Effect::Rec(Press::Stop)), "{stop:?}");
+        let fx = app.transport_lights(TransportLights::default(), 0.0);
+        assert!(fx.contains(&Effect::Light(button::REC, LIGHT_ON)), "{fx:?}");
+        assert!(
+            fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
+            "{fx:?}"
+        );
+        app.rec.ready = None;
+        let fx = app.transport_lights(TransportLights::default(), 0.0);
+        assert!(
+            fx.contains(&Effect::Light(button::REC, LIGHT_DARK)),
+            "{fx:?}"
         );
         // Their lights: REC blinks while armed and recording, OVERDUB while
         // overdubbing, PLAY while they wait, and every one is sent.
@@ -6885,22 +6911,13 @@ mod tests {
             press(&mut app, 93),
             vec![time(TimeAction::Transport(Command::PlayStart))]
         );
-        // REC and OVERDUB on Play: the screen picks by the view (the loop
-        // on All and Loop, takes on Beats); on Arrange, the takes.
-        assert_eq!(
-            press(&mut app, 90),
-            vec![Effect::PlayRec { overdub: false }]
-        );
-        assert_eq!(press(&mut app, 91), vec![Effect::PlayRec { overdub: true }]);
+        // REC and OVERDUB record what is armed, on Play and Arrange alike.
+        use crate::rec_arm::Press;
+        assert_eq!(press(&mut app, 90), vec![Effect::Rec(Press::Rec)]);
+        assert_eq!(press(&mut app, 91), vec![Effect::Rec(Press::Overdub)]);
         app.open_tab(View::Arrange);
-        assert_eq!(
-            press(&mut app, 90),
-            vec![time(TimeAction::Transport(Command::Record))]
-        );
-        assert_eq!(
-            press(&mut app, 91),
-            vec![time(TimeAction::Transport(Command::ToggleOverdub))]
-        );
+        assert_eq!(press(&mut app, 90), vec![Effect::Rec(Press::Rec)]);
+        assert_eq!(press(&mut app, 91), vec![Effect::Rec(Press::Overdub)]);
         app.open_tab(View::Play);
         // UNDO follows the page: the screen knows the Play view, so it picks.
         assert_eq!(
