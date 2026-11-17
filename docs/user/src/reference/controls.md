@@ -109,7 +109,8 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 
 | Button | Goes to | When |
 |---|---|---|
-| **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop). | Works |
+| **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop). In [Perform](../making-music/playing-live.md#make-and-perform), the Arrange tab's Clips grid; pressed there, the Song view and back. | Works |
+| **SHIFT + MAIN** | Switches between [Make and Perform](../making-music/playing-live.md#make-and-perform), as the MAKE or PERFORM chip on the top bar does. | Works |
 | **STEP SEQ** | The pads become steps of one sound over any page, and the Play page shows Beats: hit an empty step to put a note there, a lit one to take it off. Press it again to play the pads. Hold **STEP SEQ** and hit a pad to pick the sound. **PAD BANK** turns the pages of steps; **SHIFT + STEP SEQ** turns on Follow. Hold a step pad and turn the Q-Links to change that step, or lock its sound on the Q-Links' Sound bank; hold it and hit a later one to make the note last to there. **SHIFT** + an empty step holds it with no note, for a lock alone. With a synth on the pads, the pads are the steps of its whole line: hold **STEP SEQ** and play a pad or a chord to pick what new steps play; hold a step and turn **Q-Link 1** to move its notes, or play a keyboard to put its keys on it. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads) and [Steps on the synth](../making-music/synths.md#steps-on-the-synth). | Works (new: needs a device check) |
 | **NEXT SEQ** | The Arrange tab. | Works |
 | **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. | Works |

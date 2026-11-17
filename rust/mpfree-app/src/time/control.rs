@@ -1804,6 +1804,15 @@ impl TimeControl {
                 }
                 Ok(if on { "song on" } else { "song off" }.into())
             }
+            // Make or Perform (sequencer S4): how the app answers the
+            // hands; nothing playing or waiting changes.
+            TimeAction::Perform(on) => {
+                if self.project.perform != on {
+                    self.project.perform = on;
+                    self.changed = true;
+                }
+                Ok(perform_line(on).into())
+            }
             TimeAction::SelectPlacement(i) => {
                 self.selected = i.filter(|&i| i < self.project.arrangement.placements.len());
                 self.region = None;
@@ -2570,6 +2579,11 @@ impl TimeControl {
         self.song
     }
 
+    /// The project is in Perform, not Make (`Project::perform`).
+    pub fn perform(&self) -> bool {
+        self.project.perform
+    }
+
     /// Everything the screens show.
     pub fn state(&self) -> TimeState {
         let mut st = TimeState::from_engine(
@@ -2649,6 +2663,17 @@ impl TimeControl {
 
 /// "bar 9", or "bar 9 beat 3" off the bar line: song tick `t` as the Song
 /// view's drags and the wheel say where a block or section went.
+/// What Make or Perform switches, for the hint line (sequencer S4; the
+/// design's "Perform: mutes land on the bar, deletes need a hold" as its
+/// parts are built).
+pub fn perform_line(on: bool) -> &'static str {
+    if on {
+        "Perform: MAIN goes to the Clips grid, and only a tap on Arm moves the arm"
+    } else {
+        "Make: MAIN goes to Play, and the arm follows the page"
+    }
+}
+
 fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String {
     let bar = meter.bar_ticks().max(1);
     let beat = meter.beat_ticks().max(1);

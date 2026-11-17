@@ -4078,6 +4078,7 @@ fn time_action(
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
             | TimeAction::DeletePlacement(_)
+            | TimeAction::Perform(_)
     );
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
@@ -6299,6 +6300,9 @@ fn player_session(
         parts.lap(parts::APP);
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
+        if app.set_perform(time.perform()) {
+            out.show(gui::ToUi::Rec(app.rec));
+        }
         app.set_track_count(time.track_count());
         // The transport buttons' lights follow the transport and the
         // loops (only the ones that changed; next period's effects).

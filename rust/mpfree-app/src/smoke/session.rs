@@ -823,6 +823,9 @@ impl Session {
         self.change_kit();
         // The time engine, as player_session runs it.
         self.app.set_rolling(self.time.info().state.rolling());
+        if self.app.set_perform(self.time.perform()) {
+            self.out.show(ToUi::Rec(self.app.rec));
+        }
         self.app.set_track_count(self.time.track_count());
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
