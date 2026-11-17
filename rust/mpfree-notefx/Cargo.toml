@@ -1,0 +1,13 @@
+[package]
+name = "mpfree-notefx"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A track's MIDI effects (the Notes stage): transpose, scale, chord, velocity, note length, echo, humanize and chance on sample-timed notes; no allocation while running"
+
+[lib]
+name = "mpfree_notefx"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-scale = { path = "../mpfree-scale" }

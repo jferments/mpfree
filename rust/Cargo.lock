@@ -1170,6 +1170,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-notefx"
+version = "0.1.0"
+dependencies = [
+ "mpfree-scale",
+]
+
+[[package]]
 name = "mpfree-offload"
 version = "0.1.0"
 dependencies = [

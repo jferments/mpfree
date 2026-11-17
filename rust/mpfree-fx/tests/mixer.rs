@@ -292,7 +292,9 @@ fn tracks_sum_at_unity_with_the_balance_law() {
     let far = (FRAC_PI_2 * 0.5).cos();
     let want = safety(&sum(&[(&a, 1.0, 1.0), (&b, g * far, g), (&c, 1.0, 0.0)]));
     close("unity and balance", &got, &want, 1e-6);
-    assert_eq!(m.latency(), 72);
+    // Master safety's: its 1.5 ms look-ahead, its true-peak detector's 15
+    // frames and its soft clip's 4.
+    assert_eq!(m.latency(), 72 + 15 + 4);
 }
 
 #[test]
