@@ -37,6 +37,9 @@ struct Rig {
     mix: mixing::MixHost,
     events: Events,
     synth_on: bool,
+    /// What each track plays: every track the synth while `synth_on`,
+    /// else the kit.
+    track_kits: sampler::TrackKits,
     left: [f32; PERIOD],
     right: [f32; PERIOD],
     /// The tracks' sounds before the mixer, as `player_session` keeps them.
@@ -94,6 +97,13 @@ impl Rig {
             app,
             events: Events::new(),
             synth_on,
+            track_kits: {
+                let mut k = sampler::TrackKits::new(1);
+                for t in (0..crate::instruments::TRACKS).filter(|_| synth_on) {
+                    k.set(t, k.synth());
+                }
+                k
+            },
             left: [0.0; PERIOD],
             right: [0.0; PERIOD],
             drums: [[0.0; PERIOD]; 2],
@@ -145,6 +155,7 @@ impl Rig {
             mix,
             events,
             synth_on,
+            track_kits,
             left,
             right,
             drums,
@@ -231,7 +242,9 @@ impl Rig {
         let _ = mix.poll_instruments();
         let mut seq = SeqPads {
             player,
-            synth: synth_on.then_some(&mut **synth),
+            synth,
+            kits: track_kits,
+            shown: track_kits.entry(app.track()),
             flashes: [0; 16],
             hits: 0,
             live: app.live_map(),
@@ -630,7 +643,9 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
     let v = live.velocity(100);
     let mut seq = SeqPads {
         player: &mut rig.player,
-        synth: None,
+        synth: &mut rig.synth,
+        kits: &rig.track_kits,
+        shown: 0,
         flashes: [0; 16],
         hits: 0,
         live,
@@ -724,6 +739,7 @@ fn routed_keys_play_their_track_where_its_clips_play() {
                 &mut rig.mix.instruments,
                 None,
                 &mut rig.player,
+                0,
             );
         }
         rig.midi
@@ -808,7 +824,9 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
     let before = rig.player.hits();
     let mut seq = SeqPads {
         player: &mut rig.player,
-        synth: None,
+        synth: &mut rig.synth,
+        kits: &rig.track_kits,
+        shown: 0,
         flashes: [0; 16],
         hits: 0,
         live,
@@ -846,7 +864,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
     // and goes on to the kit.
     assert!(time::Pads::out(&mut seq, &at(0, on)));
     assert!(!time::Pads::out(&mut seq, &at(1, on)));
-    assert!(time::Pads::hit_at(&mut seq, 2, 100, 0));
+    assert!(time::Pads::hit_at(&mut seq, 1, 2, 100, 0));
     assert_eq!(seq.hits, 3);
     assert_eq!(rig.mix.instruments.stats(0).notes, 2);
     let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
@@ -990,4 +1008,60 @@ fn the_browsers_preview_mixes_and_stops_without_allocating() {
     });
     assert!(done, "the stop faded out");
     assert_eq!(calls, 0, "allocations or frees mixing the preview");
+}
+
+/// A kit for each track: in one period, each track's notes play its own
+/// kit (kit 1 on track 1, kit 2 on track 2) or the synth (track 3), never
+/// allocating; only the hits of the kit the pads show flash them.
+#[test]
+fn each_track_plays_its_own_kit_at_once() {
+    let mut rig = Rig::new(false);
+    let a = kit::build(&[(PAD_NOTES[0], "Kick", &tone(6000, 0.01)[..])]);
+    let b = kit::build(&[(PAD_NOTES[1], "Clap", &tone(3000, 0.03)[..])]);
+    let mut kits = kit::parse_kits(&kit::build_kits(&[("House", a), ("Trap", b)])).unwrap();
+    rig.player = sampler::Player::new(&mut kits, &PAD_NOTES, RATE).unwrap();
+    let mut track_kits = sampler::TrackKits::new(rig.player.kits());
+    assert!(track_kits.set(1, 1) && track_kits.set(2, track_kits.synth()));
+    let live = rig.app.live_map();
+    let mut seq = SeqPads {
+        player: &mut rig.player,
+        synth: &mut rig.synth,
+        kits: &track_kits,
+        shown: 0,
+        flashes: [0; 16],
+        hits: 0,
+        live,
+        live_hits: [(0, 0); MAX_LIVE_HITS],
+        n_live: 0,
+        silent: 0,
+        midi: &mut rig.midi,
+        cv: &mut rig.cv,
+        own: &mut rig.mix.instruments,
+        tap: &mut rig.tap,
+        only: None,
+    };
+    let (sounded, calls) = crate::sys::alloc_count::calls(|| {
+        [
+            time::Pads::hit_at(&mut seq, 0, 0, 100, 0),
+            time::Pads::hit_at(&mut seq, 0, 1, 100, 0),
+            time::Pads::hit_at(&mut seq, 1, 1, 100, 0),
+            time::Pads::hit_at(&mut seq, 1, 0, 100, 0),
+            time::Pads::hit_at(&mut seq, 2, 0, 100, 0),
+        ]
+    });
+    assert_eq!(calls, 0, "allocations or frees routing the tracks' notes");
+    assert_eq!(
+        sounded,
+        [true, false, true, false, true],
+        "kit 1's kick, kit 2's clap and the synth; nothing where a kit has no sound"
+    );
+    assert_eq!(seq.hits, 3);
+    assert_eq!(seq.flashes[0], 100, "kit 1's kick shows");
+    assert_eq!(
+        seq.flashes[1], 0,
+        "kit 2's clap doesn't: the pads show kit 1"
+    );
+    let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
+    rig.player.render_dry(&mut l, &mut r);
+    assert_eq!(rig.player.playing(), 2, "both kits sound at once");
 }

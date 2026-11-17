@@ -907,7 +907,7 @@ mod step_seq {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             assert!(s.synth_on, "the pads play the synth");
             s.button("STEP SEQ");
             assert!(s.app.step_pads().is_some_and(|p| p.line()));
@@ -1015,7 +1015,7 @@ mod step_seq {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             s.button("STEP SEQ");
             // The pen: pad 1 (C3), then steps 1 and 5.
             s.button_edge("STEP SEQ", true);
@@ -1334,7 +1334,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             let n = s.lines.len();
             s.button("STEP SEQ");
             wrote(&s, n, "STEP SEQ: the pads are the line's steps", "");
@@ -1368,7 +1368,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             s.button("STEP SEQ");
             s.button_edge("STEP SEQ", true);
             s.pad(0, 100, 0.05);

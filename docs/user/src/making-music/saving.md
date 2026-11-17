@@ -49,6 +49,7 @@ A **project** is one song: everything you need to pick it up again where you lef
 | The kits, with every sound on their pads and each pad's settings |
 | The synth sounds, and the Synth tab's options: the engine on the pads, the scale and its root, each pad bank's layout, In key rows, and the tuning with its root and A4 |
 | Each track's own instrument (Poly, FM, a plugin synth...), with its sound or the plugin's settings |
+| Which kit, or the synth, each other track plays |
 | Each track's arpeggiator: its mode, rate (the rate Note Repeat plays at too), order, octaves, gate, swing, scale and the other options, and its pattern with your edits |
 | The mixer: each strip's level, pan, sends and mutes, the effects and their settings (plugins' too), and the macros |
 | The Looper's loops, with each layer's mix |
