@@ -24,6 +24,7 @@
 use std::time::{Duration, Instant};
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
+use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::{
     ClipDrop, Cue, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started, Takes,
@@ -275,6 +276,11 @@ pub struct TimeControl {
     unsent: Option<Box<PlayView>>,
     /// The tracks' settings the audio half has.
     tracks_sent: Tracks,
+    /// The tracks' MIDI effects the audio half has.
+    note_fx_sent: Box<[TrackFx; MAX_TRACKS]>,
+    /// Tracks the audio half has a chain of MIDI effects for (one is made
+    /// here the first time a track has an effect, and it stays).
+    chains_given: [bool; MAX_TRACKS],
 }
 
 impl TimeControl {
@@ -344,6 +350,8 @@ impl TimeControl {
             rx,
             unsent: None,
             tracks_sent: tracks,
+            note_fx_sent: Box::new([TrackFx::default(); MAX_TRACKS]),
+            chains_given: [false; MAX_TRACKS],
         };
         c.compile()?;
         Ok(c)
@@ -398,6 +406,55 @@ impl TimeControl {
                 *was = *s;
             }
         }
+        self.sync_note_fx();
+    }
+
+    /// Send the tracks' MIDI effects where they changed, one place a
+    /// message, and a chain to run them the first time a track has one
+    /// (made here: it is about 400 KB). A message the full queue hands
+    /// back goes at the next poll.
+    fn sync_note_fx(&mut self) {
+        for t in 0..MAX_TRACKS {
+            let now = self
+                .project
+                .tracks
+                .get(t)
+                .map_or_else(TrackFx::default, |tr| tr.note_fx);
+            if !now.is_empty() && !self.chains_given[t] {
+                let chain = Box::new(Chain::new());
+                self.chains_given[t] = self.tx.send(ToAudio::Chain(t as u16, chain)).is_ok();
+            }
+            let was = &mut self.note_fx_sent[t];
+            if now == *was {
+                continue;
+            }
+            for place in 0..MAX_FX {
+                let slot = now.slots[place];
+                if slot != was.slots[place]
+                    && self
+                        .tx
+                        .send(ToAudio::NoteFx {
+                            track: t as u16,
+                            place: place as u8,
+                            slot,
+                        })
+                        .is_ok()
+                {
+                    was.slots[place] = slot;
+                }
+            }
+            if now.arp_at != was.arp_at
+                && self
+                    .tx
+                    .send(ToAudio::NoteArp {
+                        track: t as u16,
+                        at: now.arp_at,
+                    })
+                    .is_ok()
+            {
+                was.arp_at = now.arp_at;
+            }
+        }
     }
 
     /// Take everything the audio half sent, in order, and do each
@@ -444,6 +501,7 @@ impl TimeControl {
                 ToControl::Follow(c) => self.follow = c,
                 ToControl::Period(end) => self.period(end),
                 ToControl::Done(v) => drop(v),
+                ToControl::Chain(c) => drop(c),
             }
         }
     }

@@ -14,6 +14,7 @@ mpfree-transport = { path = "../mpfree-transport" }
 mpfree-seq = { path = "../mpfree-seq" }
 mpfree-param = { path = "../mpfree-param" }
 mpfree-arp = { path = "../mpfree-arp" }
+mpfree-notefx = { path = "../mpfree-notefx" }
 
 [dev-dependencies]
 mpfree-sampler = { path = "../mpfree-sampler" }
