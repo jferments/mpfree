@@ -1,0 +1,34 @@
+# The grain engine's quality ratchet: every number may stay or get better, never worse.
+# Written by `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test grain`;
+# see docs/dev/design/fx-quality.md ("The grain engine"). key<TAB>value
+grain/cap[2 s grains, 50 a second]/level_change_lu	-4.5264
+grain/cap[2 s grains, 80 a second]/level_change_lu	-5.7405
+grain/coherent[pink, overlap 16]/stretch_over_sprayed_lu	10.4998
+grain/coherent[pink, overlap 64]/stretch_over_sprayed_lu	16.4768
+grain/frozen[1 kHz, density 15 to 60]/swing_db	32.0308
+grain/frozen[pad, density 15 to 60]/swing_db	10.308
+grain/level[pad, defaults]/offset_lu	-4.1713
+grain/level[pad]/range_lu	10.9808
+grain/level[pink, defaults]/offset_lu	-3.7456
+grain/level[pink]/range_lu	10.672
+grain/onset[pad, 1000 ms grains]/ms	483.9229
+grain/onset[pad, 200 ms grains]/ms	97.3016
+grain/onset[pad, 500 ms grains]/ms	192.0862
+grain/pitch[13.5 kHz a fifth down]/spur_db	-43.4499
+grain/pitch[15 kHz an octave up]/heard_db	0
+grain/pitch[2 kHz three octaves up]/spur_db	-94.6336
+grain/pitch[6 kHz two octaves up]/heard_db	-66.3181
+grain/pitch[9 kHz a fifth up]/spur_db	-30.041
+grain/pitch[9 kHz a semitone up]/spur_db	-29.5152
+grain/smooth[Hann, overlap 2]/modulation_db	-77.2549
+grain/smooth[Hann, overlap 2]/ripple_db	0.0039
+grain/smooth[Tukey 0.5, overlap 2]/modulation_db	-12.5491
+grain/smooth[Tukey 0.5, overlap 2]/ripple_db	6.0206
+grain/smooth[defaults, 1 kHz]/sideband_db	-16.3576
+grain/smooth[defaults]/modulation_db	-15.2859
+grain/smooth[defaults]/ripple_db	4.1971
+grain/smooth[trapezoid 0.1, overlap 2]/modulation_db	-15.3876
+grain/smooth[trapezoid 0.1, overlap 2]/ripple_db	6.0206
+grain/spread[full]/correlation	0.7551
+grain/spread[full]/level_change_lu	-1.7771
+grain/spread[full]/mono_fold_lu	0.5835
