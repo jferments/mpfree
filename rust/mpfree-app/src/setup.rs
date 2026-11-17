@@ -349,6 +349,41 @@ pub fn choices(paths: &Paths, saved: &Settings) -> (Choice, Choice) {
     (backup, akai)
 }
 
+/// What Prefs > Backup and Akai kits shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefsState {
+    pub backup: Choice,
+    pub akai: Choice,
+    /// The day the newest backup on the stick was made ("17 Nov 2026").
+    pub backup_made: Option<String>,
+}
+
+/// Prefs' state from the store; None where the stick has no setup.
+pub fn prefs_state(paths: &Paths, saved: &Settings) -> Option<PrefsState> {
+    if !paths.service.is_file() {
+        return None;
+    }
+    let (backup, akai) = choices(paths, saved);
+    let backup_made = finished_backups(paths)
+        .last()
+        .and_then(|f| about(f).made)
+        .map(day_text);
+    Some(PrefsState {
+        backup,
+        akai,
+        backup_made,
+    })
+}
+
+/// "17 Nov 2026".
+fn day_text(secs: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let (y, m, d, _, _) = mpfree_library::project::civil(secs.max(0) as u64);
+    format!("{d} {} {y}", MONTHS[(m as usize - 1) % 12])
+}
+
 /// Prefs' "at the next start" for the backup: a new one, kept beside any
 /// backup the stick has (as the creator's `--new-backup`), or none. `want`
 /// false takes the ask back, and leaves the backup out if there is none.
@@ -2895,6 +2930,29 @@ mod tests {
             std::fs::write(&status, "state=done\nstep=done\nmode=content\n").unwrap();
             !beat.trim().is_empty()
         })
+    }
+
+    #[test]
+    fn the_stick_writes_the_files_where_the_setup_reads_them() {
+        let stick = include_str!("../../mpfree-stick/src/stick.rs");
+        for (name, path) in [
+            ("NEW_BACKUP_FILE", NEW_BACKUP),
+            ("LEAVE_OUT_FILE", LEAVE_OUT),
+            ("AKAI_KITS_FILE", AKAI_KITS),
+        ] {
+            assert!(
+                stick.contains(&format!("pub const {name}: &str = \"{path}\";")),
+                "{name}"
+            );
+        }
+        for w in LEAVE_OUT_WORDS {
+            assert!(stick.contains(&format!("out.push(\"{w}\");")), "{w}");
+        }
+        let script = include_str!("../../../tools/mpc-one/stick/setup-backup.sh");
+        for name in [REQUEST, CONTENT_REQUEST, CONTENT_ALIVE, CONTENT_DONE] {
+            assert!(script.contains(&format!("$ASK/{name}")), "{name}");
+        }
+        assert!(script.contains(&format!("part=\"$R{CONTENT_DEVICE}\"")));
     }
 
     #[test]

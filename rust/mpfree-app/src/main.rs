@@ -2762,6 +2762,61 @@ fn first_start(
     })
 }
 
+/// Prefs > Backup and Akai kits' state, from the first-start setup's
+/// store (None without a data folder or a creator's stick).
+fn setup_prefs(o: &Options, store: &mpfree_store::Store) -> Option<setup::PrefsState> {
+    let data = o.data.as_deref().filter(|_| store.saves())?;
+    let paths = setup::Paths::on_the_stick(data, Path::new(REPORT_DIR));
+    let conf = data.join("settings").join(format!("{}.conf", setup::OWNER));
+    let saved = mpfree_store::Settings::parse(&fs::read_to_string(conf).unwrap_or_default());
+    setup::prefs_state(&paths, &saved)
+}
+
+/// Prefs > Backup and Akai kits: a new backup (`backup`) or Akai's kits and
+/// samples at the next start, or (`want` false) not after all. Saved in
+/// the setup's store; the new state and a line for the musician.
+fn setup_next_start(
+    o: &Options,
+    store: &mpfree_store::Store,
+    backup: bool,
+    want: bool,
+) -> (Option<setup::PrefsState>, String) {
+    let Some(data) = o.data.as_deref().filter(|_| store.saves()) else {
+        return (
+            None,
+            "Prefs: nothing to change without a data folder that saves".into(),
+        );
+    };
+    let paths = setup::Paths::on_the_stick(data, Path::new(REPORT_DIR));
+    let conf = data.join("settings").join(format!("{}.conf", setup::OWNER));
+    let saved = mpfree_store::Settings::parse(&fs::read_to_string(conf).unwrap_or_default());
+    let next = if backup {
+        setup::ask_backup(&paths, &saved, want)
+    } else {
+        setup::ask_akai_kits(&paths, &saved, want)
+    };
+    let what = if backup {
+        "A new backup of your MPC"
+    } else {
+        "Akai's kits and samples"
+    };
+    let said = match store.save_settings(setup::OWNER, &next) {
+        Ok(()) => {
+            store.flush();
+            if want {
+                format!("{what}: at the next start, with the stick in. Press the power button and choose Restart to start it now.")
+            } else {
+                format!("{what}: not at the next start after all.")
+            }
+        }
+        Err(e) => format!("{what}: not saved ({e})"),
+    };
+    (
+        setup::prefs_state(&paths, &next).or_else(|| setup_prefs(o, store)),
+        said,
+    )
+}
+
 /// One loading step on the screen (and in the log).
 fn progress(out: &mut Out, step: usize, message: &str, detail: &str, value: f32) {
     out.show(gui::ToUi::Progress {
@@ -4337,6 +4392,8 @@ fn player_session(
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut app = app::App::new(RATE, timed);
+    // Prefs > Backup and Akai kits: what the first start did or left out.
+    app.set_setup(setup_prefs(o, &store));
     // Saved settings and found buttons, read now from the store (opened
     // before the first start), before the sound starts with the saved audio
     // buffer.
@@ -6022,6 +6079,15 @@ fn player_session(
                 }
                 app::Effect::SixteenLevels => out.show(gui::ToUi::SixteenLevels),
                 app::Effect::SaveProject => save_asked = true,
+                // Prefs > Backup and Akai kits: the first-start setup's store.
+                app::Effect::SetupNextStart { backup, want } => {
+                    let (state, said) = setup_next_start(o, &store, backup, want);
+                    out.note(&said);
+                    if want {
+                        out.show(gui::ToUi::Tell(said));
+                    }
+                    later.extend(app.set_setup(state));
+                }
                 // PROG EDIT: the sound the pads play (Jay, 20:40Z).
                 app::Effect::ProgEdit => {
                     let synth_now = kit_to.map_or(synth_on, |k| k == synth_kit);

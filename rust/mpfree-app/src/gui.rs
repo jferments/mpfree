@@ -9394,7 +9394,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Metronome { .. }
             | Effect::Fill(_)
             | Effect::Mixer(_)
-            | Effect::MixerLast => {}
+            | Effect::MixerLast
+            | Effect::SetupNextStart { .. } => {}
             Effect::MixerFaders => p.apply(ToUi::MixerFaders),
             Effect::MixerWheel(d) => p.apply(if p.io_showing() {
                 ToUi::IoInput(mpfree_mixer_ui::IoInput::Wheel(d))
@@ -10197,6 +10198,40 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     out.push(("prefs-touch", touch));
+    // Prefs' backup and Akai kits section (Jay, 17 Nov 18:12Z), on a stick
+    // whose first start made a backup and left Akai's kits out, with them
+    // asked for at the next start.
+    let mut setup = sample_player(fonts());
+    let mut t = crate::app::App::new(44_100, false);
+    t.map.menu = Some(MENU);
+    let choice = |left_out, done, next_start| crate::setup::Choice {
+        left_out,
+        done,
+        next_start,
+    };
+    t.set_setup(Some(crate::setup::PrefsState {
+        backup: choice(false, true, false),
+        akai: choice(false, false, true),
+        backup_made: Some("17 Nov 2026".into()),
+    }));
+    t.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+    let mut fx = t.button(MENU, true, 0.0);
+    t.button(MENU, false, 0.0);
+    t.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+    if let Some(i) = t.row_of(crate::app::Item::SetupSection) {
+        fx.extend(t.step_item(i, 1));
+    }
+    if let Some(i) = t.row_of(crate::app::Item::SetupAkaiKits) {
+        fx.extend(t.select(i));
+    }
+    for e in fx {
+        match e {
+            crate::app::Effect::Menu(m) => setup.apply(ToUi::Menu(m)),
+            crate::app::Effect::Show(v) => setup.apply(ToUi::Show(v)),
+            _ => {}
+        }
+    }
+    out.push(("prefs-setup", setup));
     // The number pad, typing Play's tempo (a long press on its BPM).
     let mut typing = sample_player(fonts());
     typing.apply(ToUi::Show(View::Play));

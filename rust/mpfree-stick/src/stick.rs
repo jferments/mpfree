@@ -58,6 +58,16 @@ pub const ABOUT_FILE: &str = "/etc/mpfree-test/made-by.txt";
 /// player's setup honours once (mpfree-app's `setup::NEW_BACKUP`, the same
 /// path); readable by the pad player.
 pub const NEW_BACKUP_FILE: &str = "/etc/mpfree-test/new-backup";
+/// `--no-backup`, `--no-akai-kits`: what the first start leaves out, a word
+/// a line (`backup`, `akai-kits`), read once by the pad player's setup
+/// (mpfree-app's `setup::LEAVE_OUT`, the same path); readable by the pad
+/// player. Without a backup, Akai's kits and samples are read straight from
+/// the MPC through the read-only window.
+pub const LEAVE_OUT_FILE: &str = "/etc/mpfree-test/leave-out";
+/// `--akai-kits`: asks the first start of an updated stick for Akai's kits
+/// and samples, when they were left out before. A random token in hex,
+/// honoured once (mpfree-app's `setup::AKAI_KITS`, the same path).
+pub const AKAI_KITS_FILE: &str = "/etc/mpfree-test/akai-kits";
 /// What a write says when the stick's partition 4 (its backups, settings and
 /// files) is kept; the window reads it back to tell an update from a new stick.
 pub const KEPT_NOTE: &str = "partition 4: this stick's saved settings, files and backups are kept";
@@ -730,6 +740,12 @@ pub fn apply<'a>(
     if choices.new_backup {
         new_paths.push(NEW_BACKUP_FILE);
     }
+    if choices.akai_kits {
+        new_paths.push(AKAI_KITS_FILE);
+    }
+    if !choices.left_out().is_empty() {
+        new_paths.push(LEAVE_OUT_FILE);
+    }
     if let Some(x) = &route {
         new_paths.extend(x.mkdirs.iter().map(String::as_str));
         new_paths.extend(x.kexec_sums.iter().map(|k| k.path.as_str()));
@@ -931,6 +947,33 @@ pub fn apply<'a>(
             "first start: backs the MPC up again, keeping the backups partition 4 has (--new-backup)"
                 .into(),
         );
+    }
+    if choices.akai_kits {
+        tree.put(
+            AKAI_KITS_FILE,
+            Body::File(Data::Bytes(
+                format!("{}\n", update::hex(&gpt::random16())).into_bytes(),
+            )),
+            root_meta(0o644),
+        )?;
+        notes.push(
+            "first start: brings in Akai's kits and samples if they were left out (--akai-kits)"
+                .into(),
+        );
+    }
+    let left = choices.left_out();
+    if !left.is_empty() {
+        let text: String = left.iter().map(|w| format!("{w}\n")).collect();
+        tree.put(
+            LEAVE_OUT_FILE,
+            Body::File(Data::Bytes(text.into_bytes())),
+            root_meta(0o644),
+        )?;
+        notes.push(format!(
+            "first start: leaves out {} (as chosen; MPFree's Prefs can bring {} in later)",
+            choices.left_out_text(),
+            if left.len() == 1 { "it" } else { "them" }
+        ));
     }
     let mut links: Vec<(&str, &str)> = r
         .links
@@ -1243,8 +1286,40 @@ pub struct Choices {
     /// `--new-backup`: the first start backs the MPC up again even when
     /// partition 4 has a backup ([`NEW_BACKUP_FILE`]).
     pub new_backup: bool,
+    /// `--no-backup`: the first start makes no backup ([`LEAVE_OUT_FILE`]).
+    pub no_backup: bool,
+    /// `--no-akai-kits`: the first start brings in none of Akai's kits and
+    /// samples ([`LEAVE_OUT_FILE`]).
+    pub no_akai_kits: bool,
+    /// `--akai-kits`: an updated stick's first start brings in Akai's kits
+    /// and samples if they were left out before ([`AKAI_KITS_FILE`]).
+    pub akai_kits: bool,
     /// How the MPC's hook starts the stick (developer options).
     pub route: Route,
+}
+
+impl Choices {
+    /// The words of [`LEAVE_OUT_FILE`].
+    pub fn left_out(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.no_backup {
+            out.push("backup");
+        }
+        if self.no_akai_kits {
+            out.push("akai-kits");
+        }
+        out
+    }
+
+    /// "the backup", "Akai's kits and samples" or both, for notes.
+    pub fn left_out_text(&self) -> String {
+        match (self.no_backup, self.no_akai_kits) {
+            (true, true) => "the backup and Akai's kits and samples".into(),
+            (true, false) => "the backup".into(),
+            (false, true) => "Akai's kits and samples".into(),
+            (false, false) => "nothing".into(),
+        }
+    }
 }
 
 /// How the MPC's startup hook starts the stick's system. The soft-reboot is
@@ -1331,6 +1406,15 @@ pub fn write_head<W: WriteAt + ReadAt>(
     );
     if b.choices.new_backup {
         about.push_str("new backup at the first start: asked\n");
+    }
+    if b.choices.akai_kits {
+        about.push_str("Akai's kits at the first start: asked\n");
+    }
+    if !b.choices.left_out().is_empty() {
+        about.push_str(&format!(
+            "left out of the first start: {}\n",
+            b.choices.left_out_text()
+        ));
     }
     if b.choices.route != Route::SoftReboot {
         about.push_str(&format!(
