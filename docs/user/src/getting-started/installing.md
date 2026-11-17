@@ -23,11 +23,11 @@ The creator comes as one file for your computer: **Linux** (64-bit PCs, Ubuntu 2
 - An **MPC One** (the original model).
 - A **computer** running Linux, macOS or Windows.
 - A **USB stick of 16 GB or more**. 32 GB is better. MPFree runs from it and keeps everything on it: your work, the MPC's own samples, and a backup of your MPC (about 8 GB). Everything already on the stick is erased.
-- The **firmware update file** for the MPC One from Akai's website, version **MPC 3.10.1**. MPFree never comes with any of Akai's files: it uses your own copy.
+- The **firmware update file** for the MPC One from Akai's website, version **MPC 3.10.1**: the **USB** update, a single `.img` file. Akai's download page also offers updates for a computer (PC and Mac); those won't do. MPFree never comes with any of Akai's files: it uses your own copy.
 
 ## 1. Update your MPC to 3.10.1
 
-Follow Akai's instructions to update your MPC One to **MPC 3.10.1**, and keep the update file you downloaded. If your MPC already runs 3.10.1, just download the same update file again from Akai.
+Follow Akai's instructions to update your MPC One to **MPC 3.10.1**, and keep the update file you downloaded. When Akai's page asks how you want to update (PC, Mac, USB and so on), choose **USB**: that download is the `.img` file the creator needs. If your MPC already runs 3.10.1, just download the USB update for 3.10.1 again from Akai.
 
 MPFree only works with the exact factory software it was made for. The creator checks the update file and tells you if it is the wrong one.
 
@@ -72,7 +72,7 @@ The first time MPFree starts, it sets itself up before you can play. It can take
 
 **Keep the stick in and the MPC on until the pads light up.** If the first start is interrupted, nothing is harmed: MPFree tries again at the next start (up to three times), and plays with its own drum kits meanwhile.
 
-When it is done, the Play page opens with the MPC's own drum kits first, then MPFree's own. From now on MPFree starts in about 16 seconds.
+When it is done, the Play page opens with the MPC's own drum kits first, then MPFree's own, then its three free kits of recorded drums (Big Rusty Drums, Swirly Drums and VCSL Percussion). From now on MPFree starts in about 16 seconds.
 
 > [!MPC]
 > The MPC's drum kits and samples are made from your own MPC, on your own stick. MPFree never shares them, and the creator never gives them out.

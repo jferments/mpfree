@@ -123,7 +123,11 @@ fn check_update(path: &Path) -> UpdateCheck {
                 c.problem = Some(format!("This update can't be used: {e}"));
             }
         }
-        Err(e) => c.problem = Some(format!("This is not an Akai update file: {e}")),
+        Err(e) => {
+            c.problem = Some(format!(
+                "This isn't Akai's update for a USB stick ({e}). On Akai's download page, choose the USB update, a .img file."
+            ))
+        }
     }
     c
 }
@@ -844,7 +848,7 @@ impl Creator {
                 .as_ref()
                 .is_some_and(|u| u.problem.is_none() && u.supported.is_some());
             step_head(ui, 1, "Akai's update file", found);
-            ui.label("Update your MPC One to firmware 3.10.1 with Akai's instructions first. Then pick the update file you downloaded from Akai, or drop it on this window.");
+            ui.label("Update your MPC One to firmware 3.10.1 with Akai's instructions first. Then pick the update file you downloaded from Akai (the USB update, a .img file), or drop it on this window.");
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let r = ui.add(
@@ -891,7 +895,7 @@ impl Creator {
             match &self.update {
                 None => {
                     ui.label(
-                        RichText::new("No Akai update file found in Downloads, Desktop or Documents. Type where it is above.")
+                        RichText::new("No Akai update file found in Downloads, Desktop or Documents. On Akai's download page, choose the USB update (a .img file); if it's somewhere else, type where it is above.")
                             .color(look::DIM),
                     );
                 }
