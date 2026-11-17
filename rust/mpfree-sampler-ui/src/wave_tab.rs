@@ -1152,6 +1152,14 @@ fn short_id(id: SourceId) -> String {
 }
 
 /// The markers in the waveform's order: Start and End, then the loop's.
+/// The Q-Link (0 to 3) that moves the waveform's marker `index`, as the
+/// widget numbers its markers: a finger held on that marker's tab turns it
+/// as that Q-Link does (Jay, 17 Nov: hold a control and turn the wheel).
+pub fn marker_knob(st: &WaveState, index: usize) -> Option<usize> {
+    let m = *markers_order(&st.region).get(index)?;
+    Mark::ALL.iter().position(|k| *k == m)
+}
+
 fn markers_order(r: &Region) -> Vec<Mark> {
     Mark::ALL
         .iter()

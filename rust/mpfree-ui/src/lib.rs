@@ -52,4 +52,6 @@ pub use shape::{Part, Shape};
 pub use style::Styled;
 pub use text::{Align, FontId, Fonts};
 pub use theme::{Backdrop, Corners, Startup, Theme, Tone};
-pub use ui::{EventKind, Gesture, PageTarget, PaintCx, Target, Touch, Ui, UiEvent, Widget};
+pub use ui::{
+    EventKind, Gesture, PageTarget, PaintCx, Target, Touch, Ui, UiEvent, Widget, WHEEL_FINGER,
+};

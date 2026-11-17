@@ -683,6 +683,18 @@ impl Widget for Fader {
         true
     }
 
+    /// Held with SHIFT: a thousandth of the travel per detent.
+    fn held_step(&mut self, t: &Target, delta: i32, fine: bool, r: Rect) -> Option<EventKind> {
+        if !fine {
+            return self.step(t, delta, r);
+        }
+        let v = (self.value + delta as f32 * 0.001).clamp(0.0, 1.0);
+        (v != self.value).then(|| {
+            self.value = v;
+            EventKind::Value(v)
+        })
+    }
+
     /// One hundredth of the travel per detent.
     fn step(&mut self, _t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
         let v = (self.value + delta as f32 * 0.01).clamp(0.0, 1.0);
@@ -1478,6 +1490,30 @@ impl Widget for OptionList {
             out.push(Target::tap("row-more", k, format!("{name} ›"), more));
         }
         out
+    }
+
+    /// A finger resting on a row puts its value under the wheel,
+    /// whichever part of the row it is on (a drag that scrolls the list
+    /// lets it go again).
+    fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        let k = (0..self.rows.len()).find(|&k| {
+            self.row_rects(r, k)
+                .is_some_and(|(row, _)| row.contains(x, y))
+        })?;
+        let (row, _) = self.row_rects(r, k)?;
+        Some(Target::tap("row", k, self.rows[k].name.clone(), row))
+    }
+
+    /// The held row's value, a step a detent, as its arrows step it.
+    fn held_step(&mut self, t: &Target, delta: i32, _fine: bool, _r: Rect) -> Option<EventKind> {
+        if t.index >= self.rows.len() || delta == 0 {
+            return None;
+        }
+        self.selected = t.index;
+        Some(EventKind::Step {
+            index: t.index,
+            delta,
+        })
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
