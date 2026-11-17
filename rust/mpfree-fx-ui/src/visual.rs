@@ -414,7 +414,7 @@ pub fn strip(
             );
         }
         Scratch::Phaser(p) => {
-            let off = 0.25 * v(phaser::WIDTH) / 100.0;
+            let off = p.right_offset();
             let sweep = |off: f32| -> Vec<(f32, f32)> {
                 (0..N)
                     .map(|i| {

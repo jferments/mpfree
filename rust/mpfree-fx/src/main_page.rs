@@ -268,6 +268,13 @@ pub static MAIN_PAGES: &[MainPage] = &[
         ["Rate", "Depth", "Delay", "Mix"],
     ),
     main(
+        "mpfree.fx.phaser",
+        &[
+            "Rate", "Depth", "Center", "Feedback", "Sync", "Stages", "Width", "Mix",
+        ],
+        ["Rate", "Depth", "Center", "Feedback"],
+    ),
+    main(
         "mpfree.fx.granulator",
         &[
             "Size", "Density", "Pitch", "Mix", "Detune", "Jitter", "Feedback", "Freeze",

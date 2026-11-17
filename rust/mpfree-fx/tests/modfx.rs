@@ -319,21 +319,115 @@ fn the_phaser_notches_where_the_stages_turn_half_a_cycle() {
         run(p.as_mut(), &mut l, &mut r, &[]);
         20.0 * (rms(&l[12_000..]) / rms(&x[12_000..])).log10()
     };
+    // In phase at the centre, where dry and wet add: the level trim
+    // there, 1 / sqrt(0.25 + 0.25 + 0.5 * 0.3), at Mix 50 % and no
+    // Feedback. The notches are 40 dB under it.
+    let trim_db = -10.0 * 0.65f32.log10();
     assert!(
-        gain_at(414.2) < -40.0,
+        gain_at(414.2) - trim_db < -40.0,
         "notch at 414 Hz: {}",
         gain_at(414.2)
     );
     assert!(
-        gain_at(2414.2) < -40.0,
+        gain_at(2414.2) - trim_db < -40.0,
         "notch at 2414 Hz: {}",
         gain_at(2414.2)
     );
     assert!(
-        gain_at(1000.0).abs() < 0.05,
-        "in phase at the centre: {}",
+        (gain_at(1000.0) - trim_db).abs() < 0.05,
+        "in phase at the centre: {} against {trim_db}",
         gain_at(1000.0)
     );
+}
+
+#[test]
+fn the_phaser_holds_its_level_at_any_feedback() {
+    // Wet only, the loop is all-pass, so white noise comes out at the
+    // dry's level at any Feedback, held or sweeping: the trim takes off
+    // exactly the loop's noise gain, 1 / (1 - g²).
+    use ids::phaser::{DEPTH, FEEDBACK, MIX, STAGES};
+    let x = noise(4 * RATE as usize, 23);
+    let start = RATE as usize / 2;
+    let dry = rms(&x[start..]);
+    for depth in [0.0f32, 70.0] {
+        for stages in [0.0f32, 1.0, 4.0] {
+            for fb in [-95.0f32, -60.0, 0.0, 30.0, 60.0, 95.0] {
+                let mut p = set_up(
+                    Box::new(Phaser::new()),
+                    &[
+                        (DEPTH, depth),
+                        (STAGES, stages),
+                        (FEEDBACK, fb),
+                        (MIX, 100.0),
+                    ],
+                );
+                let (mut l, mut r) = (x.clone(), x.clone());
+                run(p.as_mut(), &mut l, &mut r, &[]);
+                for (side, y) in [("left", &l), ("right", &r)] {
+                    let db = 20.0 * (rms(&y[start..]) / dry).log10();
+                    assert!(
+                        db.abs() < 0.5,
+                        "Depth {depth}, stages {stages}, Feedback {fb}, {side}: {db:.2} dB"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_phaser_goes_in_near_the_dry_level_at_any_feedback() {
+    // At Mix 50 % the dry and wet add below the first notch and cancel
+    // at it; on a noise dulled as music is (pink-ish: each octave 3 dB
+    // down), the trim keeps the level within 2 dB at any Feedback.
+    use ids::phaser::FEEDBACK;
+    let white = noise(4 * RATE as usize, 29);
+    // A rough pink: three one-poles summed (Paul Kellet's economy filter).
+    let (mut b0, mut b1, mut b2) = (0.0f32, 0.0f32, 0.0f32);
+    let x: Vec<f32> = white
+        .iter()
+        .map(|&w| {
+            b0 = 0.99765 * b0 + w * 0.0990460;
+            b1 = 0.96300 * b1 + w * 0.2965164;
+            b2 = 0.57000 * b2 + w * 1.0526913;
+            0.25 * (b0 + b1 + b2 + w * 0.1848)
+        })
+        .collect();
+    let start = RATE as usize / 2;
+    let dry = rms(&x[start..]);
+    for fb in [-95.0f32, -60.0, 0.0, 30.0, 60.0, 95.0] {
+        let mut p = set_up(Box::new(Phaser::new()), &[(FEEDBACK, fb)]);
+        let (mut l, mut r) = (x.clone(), x.clone());
+        run(p.as_mut(), &mut l, &mut r, &[]);
+        for (side, y) in [("left", &l), ("right", &r)] {
+            let db = 20.0 * (rms(&y[start..]) / dry).log10();
+            assert!(db.abs() < 2.5, "Feedback {fb}, {side}: {db:.2} dB");
+        }
+    }
+}
+
+#[test]
+fn the_phasers_feedback_never_lifts_dc() {
+    // The stages pass DC unturned, so a loop without its high-pass rang
+    // there: at +95 % a DC offset came out six times over. Now DC goes
+    // round the loop to nothing, and comes out at no more than it went in.
+    use ids::phaser::{FEEDBACK, MIX};
+    for fb in [-95.0f32, 95.0] {
+        for mix in [50.0f32, 100.0] {
+            let mut p = set_up(Box::new(Phaser::new()), &[(FEEDBACK, fb), (MIX, mix)]);
+            let x = vec![0.1f32; 2 * RATE as usize];
+            let (mut l, mut r) = (x.clone(), x.clone());
+            run(p.as_mut(), &mut l, &mut r, &[]);
+            for (side, y) in [("left", &l), ("right", &r)] {
+                let tail = &y[3 * RATE as usize / 2..];
+                let dc = tail.iter().sum::<f32>() / tail.len() as f32;
+                assert!(
+                    dc.abs() <= 0.1 + 1e-4,
+                    "Feedback {fb}, Mix {mix}, {side}: DC {dc}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
