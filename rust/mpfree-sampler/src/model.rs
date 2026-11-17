@@ -795,6 +795,36 @@ impl Region {
         self.end.saturating_sub(self.start)
     }
 
+    /// The loudest frame between its start and end on the channels it
+    /// plays, from `source` (its sound): the larger |sample| of the two
+    /// sides in Stereo, one side's for Left or Right, |(left + right) / 2|
+    /// for Mono sum. Before its gain, fades and envelope; 0 for silence or
+    /// a region outside the sound. What Normalize brings to 0 dBFS.
+    pub fn peak(&self, source: &Source) -> f32 {
+        let ch = usize::from(source.channels()).max(1);
+        let (start, end) = (
+            self.start as usize,
+            (self.end as usize).min(source.frames() as usize),
+        );
+        let Some(frames) = source.data().get(start * ch..end.max(start) * ch) else {
+            return 0.0;
+        };
+        let pick = if ch == 2 {
+            self.channels
+        } else {
+            ChannelPick::Left
+        };
+        frames
+            .chunks_exact(ch)
+            .map(|f| match pick {
+                ChannelPick::Stereo => f[0].abs().max(f[1].abs()),
+                ChannelPick::MonoSum => (0.5 * (f[0] + f[1])).abs(),
+                ChannelPick::Left => f[0].abs(),
+                ChannelPick::Right => f[1].abs(),
+            })
+            .fold(0.0, f32::max)
+    }
+
     pub fn check(&self, source: &Source) -> Result<(), ModelError> {
         if self.source != source.id() {
             return Err(ModelError::UnknownSource);

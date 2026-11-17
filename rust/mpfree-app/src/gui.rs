@@ -1197,8 +1197,12 @@ pub struct Player {
     sample_edits: u64,
     /// An opened project's loops being read (the files can be big).
     loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
-    /// Prints being saved: each says where it went, or why not.
-    print_saves: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// Prints and exported pads being saved: each says where it went, or
+    /// why not; beside it, the line if its thread stops without saying.
+    file_saves: Vec<(
+        std::sync::mpsc::Receiver<Result<String, String>>,
+        &'static str,
+    )>,
     /// An opened project's audio tracks being read (the takes' files can
     /// be big).
     audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
@@ -1552,7 +1556,7 @@ impl Player {
             open_actions: 0,
             sample_edits: 0,
             loops_load: None,
-            print_saves: Vec::new(),
+            file_saves: Vec::new(),
             audio_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
@@ -5066,6 +5070,8 @@ impl Player {
         b.load_lists(lists);
         b.open_picker(mpfree_browser_ui::Pick::Pads);
         self.browser = Some(Box::new(b));
+        // Exported pads have somewhere to go: the Chop page offers Files.
+        self.sample.set_files(&mut self.ui, true);
         // The start's own news (the empty song, the first states) is not
         // an edit.
         self.opened_at = Some(Instant::now());
@@ -5807,22 +5813,57 @@ impl Player {
                 let _ = tx.send(r);
             });
         match save {
-            Ok(_) => self.print_saves.push(rx),
+            Ok(_) => self
+                .file_saves
+                .push((rx, "mixer: print not saved (its thread stopped)")),
             Err(e) => self.say(format!("mixer: print not saved ({e})")),
         }
     }
 
-    /// Prints saved since the last tick: said, and the browser shows them.
-    fn poll_prints(&mut self) {
+    /// Pads the Sample tab's Chop page exported (Put on Files): each
+    /// written into a folder of its own in Samples / Exports on a thread of
+    /// its own (a long sound's files are many megabytes).
+    fn save_pad_exports(&mut self) {
+        let exports = self.sample.take_exports();
+        if exports.is_empty() {
+            return;
+        }
+        // Files is offered only with a library, so this has one.
+        let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) else {
+            return;
+        };
+        for e in exports {
+            let lib = lib.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let save = std::thread::Builder::new()
+                .name("export-save".into())
+                .spawn(move || {
+                    let r = crate::sample_page::save_export(&lib, &e)
+                        .map(|loc| format!("sample: {} saved in {}", e.name, loc.display()))
+                        .map_err(|err| format!("sample: {} not saved ({err})", e.name));
+                    let _ = tx.send(r);
+                });
+            match save {
+                Ok(_) => self
+                    .file_saves
+                    .push((rx, "sample: export not saved (its thread stopped)")),
+                Err(e) => self.say(format!("sample: export not saved ({e})")),
+            }
+        }
+    }
+
+    /// Prints and exported pads saved since the last tick: said, and the
+    /// browser shows them.
+    fn poll_saves(&mut self) {
         let mut done = Vec::new();
-        self.print_saves.retain(|rx| match rx.try_recv() {
+        self.file_saves.retain(|(rx, stopped)| match rx.try_recv() {
             Ok(r) => {
                 done.push(r);
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => true,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                done.push(Err("mixer: print not saved (its thread stopped)".into()));
+                done.push(Err(stopped.to_string()));
                 false
             }
         });
@@ -7364,7 +7405,8 @@ impl Player {
             self.step_browser();
         }
         self.poll_export();
-        self.poll_prints();
+        self.save_pad_exports();
+        self.poll_saves();
         self.poll_plugins();
         self.poll_preview();
         self.poll_loops();
@@ -14958,7 +15000,8 @@ mod tests {
     }
 
     #[test]
-    fn an_exported_pad_loads_back_with_its_settings_and_slices() {
+    fn an_exported_pad_goes_to_samples_exports_and_loads_back_with_its_settings_and_slices() {
+        use mpfree_library::{Loc, Place};
         use mpfree_sampler_ui::chop_tab::{self, Row};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
@@ -14973,23 +15016,27 @@ mod tests {
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
             kind: EventKind::Tab(chop_tab::TAB),
         });
-        // Files is offered only once the app can write them.
+        // Files is offered only once the app has a library to write them
+        // in.
         put_on(&mut p, -1);
         assert_ne!(p.sample.chop().unwrap().0.put_text(), "Files");
         put_on(&mut p, 1);
-        p.sample.set_files(&mut p.ui, true);
+        let root = std::env::temp_dir().join(format!("mpfree-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let lib = mpfree_library::Library::at(&root).unwrap();
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
         put_on(&mut p, -1);
         assert_eq!(p.sample.chop().unwrap().0.put_text(), "Files");
         let n = p.sample.chop().unwrap().0.slices();
-        p.on_event(UiEvent {
-            widget: chop_tab::BUTTONS.into(),
-            kind: EventKind::Tab(2),
-        });
-        let exports = p.sample.take_exports();
-        assert_eq!(exports.len(), 1);
-        let e = &exports[0];
-        assert_eq!((e.name.as_str(), e.slices), ("Break 92", n));
-        assert_eq!(e.files.len(), 2 + n, "the sound, its settings, the slices");
+        let export = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: chop_tab::BUTTONS.into(),
+                kind: EventKind::Tab(2),
+            })
+        };
+        export(&mut p);
         assert!(
             events_log(&p).iter().any(|l| l
                 == &format!(
@@ -15000,14 +15047,33 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+        // Written on a thread into a folder of its own in Samples /
+        // Exports, which is made for it.
+        let saved = "sample: Break 92 saved in Samples / Exports / Break 92";
+        tick_until(&mut p, |p| events_log(p).iter().any(|l| l == saved));
         assert!(views(p.take_actions()).0.is_empty(), "the kit is as it was");
-        // Written into a folder of their own, Load to pad brings the pad
-        // back on another pad, slices and all, as one undo step.
-        let dir = std::env::temp_dir().join(format!("mpfree-export-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for (name, bytes) in &e.files {
-            std::fs::write(dir.join(name), bytes).unwrap();
-        }
+        let at = Loc::new(Place::Samples, &["Exports", "Break 92"]).unwrap();
+        let listed = lib.list(&at).unwrap();
+        let mut names: Vec<&str> = listed.iter().map(|e| e.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names.len(), 2 + n, "the sound, its settings, the slices");
+        assert!(names.contains(&"Break 92.wav") && names.contains(&"Break 92.mpfree"));
+        assert!(names.contains(&format!("Break 92 {n:02}.wav").as_str()));
+        // Exported again, it takes the next free name.
+        export(&mut p);
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l == "sample: Break 92 saved in Samples / Exports / Break 92 2")
+        });
+        // Load to pad brings the pad back on another pad, slices and all,
+        // as one undo step.
+        let dir = lib
+            .file_path(&at.join("Break 92.wav").unwrap())
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let chops = p.sample.project(0).unwrap().chop_sets.len();
         p.sample.load_file(dir.join("Break 92.wav"), true);
         tick_until(&mut p, |p| p.sample.assigning().is_some());
@@ -15044,7 +15110,187 @@ mod tests {
                       (not an mpfree-sampler 1 part); the sound alone is loaded"
             })
         });
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn normalize_sets_the_gain_from_the_peak_in_one_undo_step() {
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        let mut p = sample_sampler(Fonts::embedded());
+        let st = p.sample.state().unwrap().clone();
+        let kit = p.sample.project(0).unwrap();
+        let peak = st.region.peak(kit.source(st.region.source).unwrap());
+        assert!(peak > 0.0, "{peak}");
+        let press = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: REGION.into(),
+                kind: EventKind::Tab(Row::Normalize.index()),
+            })
+        };
+        press(&mut p);
+        let gain = p.sample.state().unwrap().region.gain_db;
+        let peak_db = 20.0 * peak.log10();
+        assert_eq!(gain, (-peak_db * 10.0).floor() / 10.0);
+        let loudest = peak * 10f32.powf(gain / 20.0);
+        assert!(loudest <= 1.0 && loudest > 0.988, "{loudest}");
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == &format!(
+                "sample: pad A5 normalized: its peak {peak_db:.1} dB, gain {:+.1} -> {gain:+.1} dB",
+                st.region.gain_db
+            )),
+            "{:?}",
+            events_log(&p)
+        );
+        // Again, it is where it was: the same gain.
+        press(&mut p);
+        assert_eq!(p.sample.state().unwrap().region.gain_db, gain);
+        // One undo step each.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.state().unwrap().region.gain_db, gain);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.state().unwrap().region.gain_db, st.region.gain_db);
+        // A silent region is left as it is, and says so.
+        let src = st.region.source;
+        let silent = {
+            let s = p.sample.project(0).unwrap().source(src).unwrap();
+            let ch = usize::from(s.channels());
+            (0..s.frames() as usize)
+                .find(|&f| s.data()[f * ch..f * ch + ch].iter().all(|x| *x == 0.0))
+                .expect("a silent frame in the break") as u64
+        };
+        p.sample
+            .project_mut(0)
+            .unwrap()
+            .edit_pad(st.pad, None, |pd| {
+                let r = &mut pd.layers[0].region;
+                (r.start, r.end, r.sustain_loop) = (silent, silent + 1, None);
+                r.mode = mpfree_sampler::model::PlayMode::OneShot;
+                (r.fade_in.frames, r.fade_out.frames) = (0, 0);
+            })
+            .unwrap();
+        press(&mut p);
+        let kit = p.sample.project(0).unwrap();
+        let r = &kit.pad(st.pad).unwrap().layers[0].region;
+        assert_eq!((r.start, r.gain_db), (silent, st.region.gain_db));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: pad A5 not normalized: it is silent"));
+    }
+
+    #[test]
+    fn process_makes_a_new_sound_on_a_worker_in_one_undo_step_and_can_be_stopped() {
+        use mpfree_sampler::model::WarpMethod;
+        use mpfree_sampler_ui::warp_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(warp_tab::TAB),
+        });
+        assert_eq!(p.page(), crate::sample_page::WARP_PAGE);
+        let ev = |p: &mut Player, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: LIST.into(),
+                kind,
+            })
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            ev(
+                p,
+                EventKind::Step {
+                    index: row.index(),
+                    delta,
+                },
+            );
+            p.apply(ToUi::SampleLift);
+        };
+        let process = |p: &mut Player| ev(p, EventKind::Tab(Row::Process.index()));
+        let value = |p: &Player, row: Row| {
+            p.ui.get::<SettingList>(LIST).unwrap().rows[row.index()]
+                .value
+                .clone()
+        };
+        let before = p.sample.state().unwrap().region.clone();
+        // Not warped and no Shift: it would come out the same.
+        process(&mut p);
+        assert!(events_log(&p).iter().any(|l| l
+            == "sample: pad A5 not processed (it would come out the same: set Shift, or turn Warp on)"));
+        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+        // Three semitones up: the same length, a new sound.
+        for _ in 0..3 {
+            step(&mut p, Row::Shift, 1);
+        }
+        process(&mut p);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: processing pad A5: 3 semitones higher"));
+        assert!(value(&p, Row::Process).starts_with("Stop · "));
+        tick_until(&mut p, |p| {
+            events_log(p).iter().any(|l| {
+                l.starts_with("sample: pad A5 processed into a new sound, 3 semitones higher: ")
+            })
+        });
+        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+        let after = p.sample.state().unwrap().region.clone();
+        let kit = p.sample.project(0).unwrap();
+        let made = kit.source(after.source).unwrap();
+        assert_ne!(after.source, before.source);
+        assert!(made.name.ends_with(" +3st"), "{}", made.name);
+        assert_eq!((after.start, after.end), (0, before.frames()));
+        assert_eq!(after.mode, before.mode);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.state().unwrap().region, before, "one undo step");
+        // Stretched from its own tempo to the project's.
+        for _ in 0..3 {
+            step(&mut p, Row::Shift, -1);
+        }
+        step(&mut p, Row::Warp, 1);
+        let w = p.sample.state().unwrap().region.warp.clone().unwrap();
+        assert_eq!(w.method, WarpMethod::Stretch);
+        let tempo = p.sample.tempo();
+        assert!((f64::from(w.bpm) - tempo).abs() > 1.0, "{} {tempo}", w.bpm);
+        process(&mut p);
+        let words = format!("stretched from {:.1} to {tempo:.1} BPM", w.bpm);
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == &format!("sample: processing pad A5: {words}")),
+            "{:?}",
+            events_log(&p)
+        );
+        tick_until(&mut p, |p| {
+            events_log(p).iter().any(|l| {
+                l.starts_with(&format!(
+                    "sample: pad A5 processed into a new sound, {words}: "
+                ))
+            })
+        });
+        let r = p.sample.state().unwrap().region.clone();
+        let want = before.frames() as f64 * f64::from(w.bpm) / tempo;
+        assert!(
+            (r.frames() as f64 - want).abs() <= 2.0,
+            "{} {want}",
+            r.frames()
+        );
+        let nw = r.warp.unwrap();
+        assert_eq!(nw.method, WarpMethod::Stretch);
+        assert!(
+            (f64::from(nw.bpm) - tempo).abs() < 0.01,
+            "it is at the project tempo now"
+        );
+        p.apply(ToUi::SampleUndo(false));
+        // Stopped: nothing changes.
+        let now = p.sample.state().unwrap().region.clone();
+        process(&mut p);
+        process(&mut p);
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l == "sample: pad A5 not processed (stopped)")
+        });
+        assert_eq!(p.sample.state().unwrap().region, now);
+        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
     }
 
     #[test]
