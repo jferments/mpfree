@@ -239,7 +239,7 @@ The owner asked (2026-11-11) for the next round to bring together what the other
 
 - **The sampler engine** ([`mpfree-sampler`](../../../rust/mpfree-sampler)) plays the kits, plus a Grains kit (the first kit as grain clouds; pressure changes them by row). STOP fades everything out.
 - **The synth** ([`mpfree-synth`](../design/synths.md)): the last entry in the kit list, "Synth: Poly", plays notes from the pads (pad 1 = C3), and the **Synth** tab edits it (Q-Links 1-4 on the marked knobs, the wheel on the selected knob, − / + for pages). SHIFT + wheel on Play moves the pads by octaves.
-- **The time engine** (the table under Round 5): the transport bar, the **Clips** tab, recording, overdub and undo. Clips recorded while the synth has the pads play the synth back.
+- **The time engine** (the table under Round 5): the transport bar, the **Clips** tab, recording, overdub and undo. Clips on a track that plays the synth play the synth back, and each track's clips play its own kit.
 - **Debug mode** (Prefs, off by default) adds the **Debug** tab, with a strip for its three pages; SHIFT + wheel steps through them, and − / + on the first two:
   - **MIDI**: the MIDI log, events and timing (the round 5 Debug page).
   - **Performance**: CPU per thread and for the whole program, memory, load, temperature and clock (read-only from `/proc` and `/sys` by the screen thread every 2 s; [`perf.rs`](../../../rust/mpfree-app/src/perf.rs)), and the audio loop's render time for the sampler and the synth against the 2.9 ms period, the worst period, steals, dropped events and grains, with the last minute drawn. While debug mode is on, a `perf:` line goes to the system log every 30 s.

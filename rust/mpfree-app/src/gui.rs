@@ -580,16 +580,33 @@ pub struct Timing {
 pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
 
 /// Writes what each track plays under its name: its own instrument's
-/// name, or "Kit"; a Loop track's input ("Pads", for the pads and the
-/// synth).
-fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
+/// name, else what it plays of the kit chip's list (`kits`): "Kit" (kit
+/// 1), "Kit 2" and on, or "Synth"; a Loop track's input ("Pads", for the
+/// pads and the synth).
+/// What a pad mute says on a track that plays kit `kit` (counted from
+/// 0, and not kit 1): its pads play through the track's channel, which
+/// has the mute. `what` starts the line ("steps", "pad mute").
+pub fn other_kit_mutes(what: &str, kit: usize) -> String {
+    format!(
+        "{what}: Kit {}'s pads play through their track's channel: mute the track",
+        kit + 1
+    )
+}
+
+fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds, kits: &crate::sampler::TrackKits) {
+    use std::borrow::Cow;
     for (i, t) in st.tracks.iter_mut().enumerate() {
-        let name = match t.loops {
-            Some(input) => input.short(),
-            None => sounds.get(i).copied().flatten().map_or("Kit", |h| h.name),
+        let name: Cow<str> = match (t.loops, sounds.get(i).copied().flatten()) {
+            (Some(input), _) => input.short().into(),
+            (None, Some(h)) => h.name.into(),
+            (None, None) if kits.plays_synth(i) => "Synth".into(),
+            (None, None) => match kits.entry(i) {
+                0 => "Kit".into(),
+                k => format!("Kit {}", k + 1).into(),
+            },
         };
         if t.sound != name {
-            t.sound = name.to_string();
+            t.sound = name.into_owned();
         }
     }
 }
@@ -651,6 +668,8 @@ pub enum ToUi {
     /// What each track plays as its own instrument (None: the kit), for
     /// the line under its name on Arrange. Sent when it changes.
     TrackSounds(Box<TrackSounds>),
+    /// What each track plays of the kit chip's list, when it changes.
+    TrackKits(Box<crate::sampler::TrackKits>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
     /// Something the project keeps changed with the controls (a Synth tab
@@ -1314,6 +1333,9 @@ pub struct Player {
     /// What each track plays ([`ToUi::TrackSounds`]), written under its
     /// name on Arrange.
     track_sounds: TrackSounds,
+    /// What each track without its own instrument plays
+    /// ([`ToUi::TrackKits`]), written under its name too.
+    track_kits: crate::sampler::TrackKits,
     /// STEP SEQ: the Synth tab's values from before steps were held, put
     /// back on it when they are let go (a knob turned there while they
     /// are held is a lock on them, not a change to the sound).
@@ -1738,6 +1760,7 @@ impl Player {
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: false,
             track_sounds: [None; crate::instruments::TRACKS],
+            track_kits: crate::sampler::TrackKits::default(),
             held_synth: None,
             start_checked: false,
             crashed: false,
@@ -2778,6 +2801,10 @@ impl Player {
     /// pattern, the throws, the XY pad and the timing. Only what changed
     /// is marked for drawing.
     fn refresh_play(&mut self) {
+        self.play.pad_strips = !matches!(
+            self.track_kits.kit_of(self.play.steps.track),
+            Some(k) if k > 0
+        );
         let mut look = self.play.transport_look();
         look.rec = Some(self.refresh_rec_chip());
         if self
@@ -5013,8 +5040,15 @@ impl Player {
             ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::TrackSounds(s) => {
                 self.track_sounds = *s;
-                fill_sounds(&mut self.time, &self.track_sounds);
+                fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits);
                 self.time_page.update(&mut self.ui, &self.time);
+            }
+            ToUi::TrackKits(k) => {
+                self.track_kits = *k;
+                fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits);
+                self.time_page.update(&mut self.ui, &self.time);
+                // The step grid's mutes are kit 1's pads' alone.
+                self.refresh_play();
             }
             ToUi::Edited => {}
             // The engines an open replaced: freed here. The open is in:
@@ -5377,7 +5411,7 @@ impl Player {
                     self.undo_loop = false;
                     self.seen_takes = seen;
                 }
-                fill_sounds(&mut st, &self.track_sounds);
+                fill_sounds(&mut st, &self.track_sounds, &self.track_kits);
                 st.loops = loops_info(&self.looper);
                 // The bar's REC chip is the screen's own (refresh_play).
                 st.chips = std::mem::take(&mut self.time.chips);
@@ -7993,6 +8027,13 @@ impl Player {
                     }
                 }
             }
+            (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 && !self.play.pad_strips => {
+                self.tell(&other_kit_mutes(
+                    "steps",
+                    self.track_kits.kit_of(self.play.steps.track).unwrap_or(0),
+                ));
+                None
+            }
             (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 => {
                 let mute = self.play.levels.pad_mutes & (1 << pad) == 0;
                 self.play.levels.pad_mutes ^= 1 << pad;
@@ -9212,12 +9253,12 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
     use crate::time::{Pads, StepAction, TimeHost, STEP_TICKS};
     struct Quiet;
     impl Pads for Quiet {
-        fn hit_at(&mut self, _: usize, _: u8, _: u32) -> bool {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
             true
         }
-        fn release_at(&mut self, _: usize, _: u32) {}
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
         fn stop_all(&mut self) {}
-        fn pressure_at(&mut self, _: usize, _: u8, _: u32) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
     }
     let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
         return;
@@ -9330,12 +9371,12 @@ pub fn sample_beats_synth(fonts: Fonts) -> Player {
     p.apply(ToUi::Settings(settings));
     struct Quiet;
     impl Pads for Quiet {
-        fn hit_at(&mut self, _: usize, _: u8, _: u32) -> bool {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
             true
         }
-        fn release_at(&mut self, _: usize, _: u32) {}
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
         fn stop_all(&mut self) {}
-        fn pressure_at(&mut self, _: usize, _: u8, _: u32) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
     }
     let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
         return p;
@@ -9812,12 +9853,12 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
     use mpfree_play::Event;
     struct Silent;
     impl Pads for Silent {
-        fn hit_at(&mut self, _pad: usize, _velocity: u8, _offset: u32) -> bool {
+        fn hit_at(&mut self, _track: u16, _pad: usize, _velocity: u8, _offset: u32) -> bool {
             true
         }
-        fn release_at(&mut self, _pad: usize, _offset: u32) {}
+        fn release_at(&mut self, _track: u16, _pad: usize, _offset: u32) {}
         fn stop_all(&mut self) {}
-        fn pressure_at(&mut self, _pad: usize, _value: u8, _offset: u32) {}
+        fn pressure_at(&mut self, _track: u16, _pad: usize, _value: u8, _offset: u32) {}
     }
     const RATE: u32 = 44_100;
     const PERIOD: u32 = 128;
@@ -14077,6 +14118,47 @@ mod tests {
     }
 
     #[test]
+    fn a_track_on_another_kit_shows_no_pad_mutes_and_says_why() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let muted = |p: &Player| {
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes
+                .iter()
+                .find(|l| l.pad == 7)
+                .unwrap()
+                .muted
+        };
+        assert!(muted(&p), "kit 1's clap is muted on its pad strip");
+        // Track 1 picks kit 2: its pads play through the track's channel,
+        // so kit 1's mutes aren't theirs.
+        let mut kits = crate::sampler::TrackKits::new(2);
+        assert!(kits.set(0, 1));
+        p.apply(ToUi::TrackKits(Box::new(kits)));
+        assert!(!muted(&p));
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let (x, y) =
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .name_at(r, 0);
+        let down = p.touch(1, Touch::Down, x, y);
+        assert_eq!(
+            down.or(p.touch(1, Touch::Up, x, y)),
+            None,
+            "no pad strip muted"
+        );
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert!(
+            told.contains("Kit 2's pads play through their track's channel"),
+            "{told}"
+        );
+        // Back on kit 1: the mute shows again.
+        p.apply(ToUi::TrackKits(Box::new(crate::sampler::TrackKits::new(2))));
+        assert!(muted(&p));
+    }
+
+    #[test]
     fn the_pattern_throws_and_xy_pad_reach_the_engines() {
         let mut p = sample_play(Fonts::embedded(), PlayView::All);
         p.play.throw(2, false);
@@ -16474,6 +16556,7 @@ mod tests {
             synth: project::synth_text(&Default::default(), &synth.sounds()),
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
             instruments: String::new(),
+            track_kits: String::new(),
             loops: Some(loops),
             audio: Some(audio),
         };
@@ -16787,6 +16870,7 @@ mod tests {
                 synth: synth_text.clone(),
                 arp: String::new(),
                 instruments: String::new(),
+                track_kits: String::new(),
                 loops: None,
                 audio: None,
             })
