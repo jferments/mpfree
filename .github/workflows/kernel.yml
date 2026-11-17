@@ -1,9 +1,10 @@
 name: MPFree kernel build
 
 # Own-kernel step 2 (docs/dev/hardware/own-kernel.md): Linux 6.18 long-term with the
-# PREEMPT_RT patch for the MPC One, built by tools/kernel/build.sh in its pinned container
-# on the self-hosted runners. Not a required check; it runs only when the kernel's files
-# change, or by hand. The result is kept as the run's artifact (zImage, modules, config,
+# PREEMPT_RT patch for the MPC One, built by tools/kernel/build.sh on the self-hosted runners
+# with kernel.org's crosstool compiler, pinned (the runners have no container engine, so it
+# builds on the runner itself, as the runner's user). Not a required check; it runs only when
+# the kernel's files change, or by hand. The result is kept as the run's artifact (zImage, modules, config,
 # SHA256SUMS) for the stick builder; nothing here reaches an MPC.
 
 on:
