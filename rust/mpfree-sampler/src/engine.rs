@@ -33,7 +33,10 @@
 //! while it plays (its level, pan, tune, filter or envelope), as a knob, a
 //! p-lock or a modulation would, without building a new view; the value
 //! replaces the pad's own until it is cleared (NaN) or a new view comes
-//! in. [`Event::ProgramLive`] moves every pad at once by an offset on its
+//! in. [`Event::PadLock`] is a step's parameter lock: a pad's setting
+//! from the sequencer, under any live value, kept through a new view (a
+//! locked Decay also takes the pad's sustain to 0, so the sound decays).
+//! [`Event::ProgramLive`] moves every pad at once by an offset on its
 //! own level, tune or cutoff. New voices start with all of them; playing
 //! voices follow the level, pan, cutoff and resonance and the program's
 //! offsets, gliding there in steps of 16 frames so nothing clicks. Both go
@@ -560,6 +563,21 @@ pub enum Event {
         field: PadField,
         value: f32,
     },
+    /// A step's parameter lock on pad `pad` (the sequencer's
+    /// `Event::Lock` on a pad's sound): `value` takes the place of the
+    /// pad's own `field` until the next lock or its end (NaN), as the
+    /// player sends them on their frames. Under a live value
+    /// ([`Event::PadLive`], the scene crossfader), which still goes over
+    /// it; a new view keeps it. New voices start with it and playing
+    /// voices follow it as they follow a live value, so a lock with no
+    /// note moves the sound still ringing. A locked Decay also makes the
+    /// sound decay to silence (the pad's sustain at 0), as the Play page's
+    /// Decay knob does, so it shortens a sound that plays out.
+    PadLock {
+        pad: u8,
+        field: PadField,
+        value: f32,
+    },
     /// Moves every pad at once by an offset on its own setting (or on its
     /// live one): see [`ProgramField`]. 0 or NaN is no offset. New voices
     /// start with it and playing voices follow every field. It stays when
@@ -681,15 +699,31 @@ impl ProgramField {
 }
 
 /// The live settings: each pad's [`PadField`]s (NaN where the pad's own
-/// applies), and the program's offsets.
+/// applies), its step locks under them, and the program's offsets.
 #[derive(Clone, Copy, Debug)]
 struct Live {
     pads: [[f32; PadField::COUNT]; PADS],
+    locks: [[f32; PadField::COUNT]; PADS],
     program: [f32; ProgramField::COUNT],
 }
 
 impl Live {
     const OWN: [[f32; PadField::COUNT]; PADS] = [[f32::NAN; PadField::COUNT]; PADS];
+
+    /// Pad `p`'s settings in place of its own: each field's live value,
+    /// else its lock (NaN where neither is set).
+    fn row(&self, p: usize) -> [f32; PadField::COUNT] {
+        let (Some(live), Some(locks)) = (self.pads.get(p), self.locks.get(p)) else {
+            return [f32::NAN; PadField::COUNT];
+        };
+        let mut out = *live;
+        for (o, l) in out.iter_mut().zip(locks) {
+            if o.is_nan() {
+                *o = *l;
+            }
+        }
+        out
+    }
 }
 
 /// What a playing voice follows of the live settings: where its gain,
@@ -1321,6 +1355,7 @@ impl Engine {
             tape_moved: false,
             live: Live {
                 pads: Live::OWN,
+                locks: Live::OWN,
                 program: [0.0; ProgramField::COUNT],
             },
             live_k: 1.0 - (-(FILTER_STEP as f32) / (LIVE_SMOOTH_S * rate as f32)).exp(),
@@ -1661,6 +1696,7 @@ impl Engine {
                 velocity,
             } => self.audition(pad, layer, start, end, velocity),
             Event::PadLive { pad, field, value } => self.pad_live(pad, field, value),
+            Event::PadLock { pad, field, value } => self.pad_lock(pad, field, value),
             Event::ProgramLive { field, value } => self.program_live(field, value),
             Event::LiveChop { pad } => {
                 if let (None, Some(was)) = (pad, self.chop_pad) {
@@ -1721,8 +1757,23 @@ impl Engine {
             return;
         };
         row[field as usize] = field.clamp(value);
+        self.follow_pad(pad, field);
+    }
+
+    /// [`Event::PadLock`]: the table, then the playing voices of the pad.
+    fn pad_lock(&mut self, pad: u8, field: PadField, value: f32) {
+        let Some(row) = self.live.locks.get_mut(usize::from(pad)) else {
+            return;
+        };
+        row[field as usize] = field.clamp(value);
+        self.follow_pad(pad, field);
+    }
+
+    /// Pad `pad`'s playing voices go where its settings now say, if they
+    /// follow `field`.
+    fn follow_pad(&mut self, pad: u8, field: PadField) {
         if field.follows() {
-            let (live, program) = (*row, self.live.program);
+            let (live, program) = (self.live.row(usize::from(pad)), self.live.program);
             for (v, _) in self.pool.iter_mut() {
                 if v.active && v.pad == pad {
                     retarget(v, &live, &program);
@@ -1735,10 +1786,10 @@ impl Engine {
     fn program_live(&mut self, field: ProgramField, value: f32) {
         self.live.program[field as usize] = field.clamp(value);
         let program = self.live.program;
-        let pads = &self.live.pads;
+        let live = &self.live;
         for (v, _) in self.pool.iter_mut() {
-            if let Some(live) = pads.get(usize::from(v.pad)).filter(|_| v.active) {
-                retarget(v, live, &program);
+            if v.active && usize::from(v.pad) < PADS {
+                retarget(v, &live.row(usize::from(v.pad)), &program);
             }
         }
     }
@@ -1746,6 +1797,12 @@ impl Engine {
     /// Pad `pad`'s live `field`, or `None` where the pad's own applies.
     pub fn pad_live_value(&self, pad: u8, field: PadField) -> Option<f32> {
         let x = self.live.pads.get(usize::from(pad))?[field as usize];
+        (!x.is_nan()).then_some(x)
+    }
+
+    /// Pad `pad`'s step lock on `field` ([`Event::PadLock`]), if one holds.
+    pub fn pad_lock_value(&self, pad: u8, field: PadField) -> Option<f32> {
+        let x = self.live.locks.get(usize::from(pad))?[field as usize];
         (!x.is_nan()).then_some(x)
     }
 
@@ -2158,15 +2215,23 @@ impl Engine {
                 (l.fade_out.frames > 0).then_some(l.fade_out),
             )
         };
-        // The pad's live settings, where set, in place of its own.
-        let live = self.live.pads[p];
+        // The pad's live settings and locks, where set, in place of its own.
+        let live = self.live.row(p);
         let program = self.live.program;
         let set = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
         let mut amp = vp.amp;
         if let Some(ms) = set(PadField::Attack) {
             amp.attack_ms = ms;
         }
-        if let Some(ms) = set(PadField::Decay) {
+        if self.live.pads[p][PadField::Decay as usize].is_nan() {
+            // A locked decay decays to silence, as the Play page's Decay
+            // knob shortens a sound.
+            if let Some(ms) =
+                Some(self.live.locks[p][PadField::Decay as usize]).filter(|x| !x.is_nan())
+            {
+                (amp.decay_ms, amp.sustain) = (ms, 0.0);
+            }
+        } else if let Some(ms) = set(PadField::Decay) {
             amp.decay_ms = ms;
         }
         if let Some(ms) = set(PadField::Release) {

@@ -833,6 +833,98 @@ mod step_seq {
             assert_eq!(steps, [0, 4, 8], "UNDO: the last copy goes");
         });
     }
+
+    /// Locks on held steps (sequencer S1 locks): Q-LINK steps to the
+    /// Sound bank, a turn there locks the kit pad's tune on the step
+    /// held, and played, the lock reaches the kit before the step's note;
+    /// SHIFT + an empty step takes a lock with no note; ERASE pressed while
+    /// a step is held takes its locks off, and UNDO brings them back.
+    #[test]
+    fn held_step_pads_lock_the_kit_and_erase_takes_the_locks_off() {
+        use mpfree_play::mpfree_param::{OnTrack, Owner, RelAddr};
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            // Pad 5: the kit pad with a sample on the Sample tab.
+            s.pad(4, 100, 0.05);
+            s.button("STEP SEQ");
+            s.pad(0, 100, 0.05);
+            s.pad(4, 100, 0.05);
+            let tune = RelAddr::new(OnTrack::Pad(4), 2);
+            let lock = |s: &Session, step: usize| {
+                s.time
+                    .steps()
+                    .clip
+                    .and_then(|c| c.lock_value(4, step, tune))
+            };
+            // Hold step 1; Q-LINK twice: the Sound bank. Turn its tune.
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            s.button("Q-LINK");
+            s.button("Q-LINK");
+            assert!(s.hint().contains("Q-Links: lock the sound"), "{}", s.hint());
+            s.qlink(0, 3);
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            let locked = lock(&s, 0).expect("a lock on step 1");
+            assert!(locked > 0.0, "tuned up: {locked}");
+            assert_eq!(
+                s.time.steps().clip.unwrap().row(4).iter().flatten().count(),
+                2,
+                "the step stays"
+            );
+            // SHIFT + step 9 (empty): a lock with no note.
+            s.button_edge("SHIFT", true);
+            s.pad_edge(8, 100, true);
+            s.run_periods(4);
+            s.button_edge("SHIFT", false);
+            assert!(s.hint().contains("Q-Links: lock the sound"), "{}", s.hint());
+            s.qlink(0, -2);
+            s.pad_edge(8, 0, false);
+            s.run_periods(4);
+            assert!(lock(&s, 8).is_some_and(|v| v < 0.0), "{:?}", lock(&s, 8));
+            assert_eq!(
+                s.time.steps().clip.unwrap().row(4).iter().flatten().count(),
+                2,
+                "no note on step 9"
+            );
+            // Played: the kit takes the lock, before step 1's note.
+            s.hits.locked.clear();
+            s.button("PLAY");
+            s.run_for(2.2);
+            s.button("STOP");
+            s.run_periods(4);
+            let at = |owner| matches!(owner, Owner::Pad(_, 4));
+            assert!(
+                s.hits
+                    .locked
+                    .iter()
+                    .any(|(a, v)| at(a.owner) && a.param == 2 && *v == Some(locked)),
+                "{:?}",
+                s.hits.locked
+            );
+            // ERASE while step 1 is held: its locks off, the note stays.
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            s.button("ERASE");
+            assert!(
+                s.hint().contains("the locks of step 1 are off"),
+                "{}",
+                s.hint()
+            );
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            assert_eq!(lock(&s, 0), None);
+            assert!(lock(&s, 8).is_some(), "step 9 was not held");
+            assert_eq!(
+                s.time.steps().clip.unwrap().row(4).iter().flatten().count(),
+                2,
+                "its note stays"
+            );
+            s.button("UNDO");
+            assert_eq!(lock(&s, 0), Some(locked), "UNDO brings it back");
+        });
+    }
 }
 
 #[cfg(test)]
@@ -860,6 +952,50 @@ mod device_log {
             .find(|l| l.starts_with(start) && l.contains(has))
             .cloned()
             .unwrap_or_else(|| panic!("no line starting {start:?} with {has:?} in {lines:#?}"))
+    }
+
+    /// STEP SEQ's locks (`^steps: step \d+ of pad \d+: lock `,
+    /// `^ERASE: the locks of step \d+ are off`, `^steps: step \d+ of pad
+    /// \d+ held for a lock with no note`): one lock line a turn, however
+    /// many detents.
+    #[test]
+    fn step_locks_write_their_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.pad(4, 100, 0.05);
+            s.button("STEP SEQ");
+            s.pad(0, 100, 0.05);
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            s.button("Q-LINK");
+            s.button("Q-LINK");
+            let n = s.lines.len();
+            s.qlink(0, 2);
+            s.qlink(0, 2);
+            let l = wrote(&s, n, "steps: step 1 of pad 5: lock ", "");
+            assert!(l.starts_with("steps: step 1 of pad 5: lock pad4.2 "), "{l}");
+            let locks = since(&s, n)
+                .iter()
+                .filter(|l| l.contains(": lock "))
+                .count();
+            assert_eq!(locks, 1, "one line a turn");
+            let n = s.lines.len();
+            s.button("ERASE");
+            wrote(&s, n, "ERASE: the locks of step 1 are off", "");
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            let n = s.lines.len();
+            s.button_edge("SHIFT", true);
+            s.pad(6, 100, 0.05);
+            s.button_edge("SHIFT", false);
+            wrote(
+                &s,
+                n,
+                "steps: step 7 of pad 5 held for a lock with no note",
+                "",
+            );
+        });
     }
 
     /// TRACK MUTE (`^track mute: .* muted`, `^TRACK MUTE \S+ bank [B-H]: `).
