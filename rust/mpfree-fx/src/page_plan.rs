@@ -1410,13 +1410,13 @@ pub static PLANS: &[Plan] = &[
             &[
                 Section {
                     hero: &["Decay", "Size"],
-                    trim: &["Early", "Gate"],
+                    trim: &["Early", "Gate", "Diffusion"],
                     drawings: &["Decay · 60 dB"],
                     ..s(
                         "reverb",
                         "Reverb",
                         Source,
-                        &["Decay", "Size", "Pre-delay", "Early", "Gate"],
+                        &["Decay", "Size", "Pre-delay", "Early", "Gate", "Diffusion"],
                     )
                 },
                 Section {
