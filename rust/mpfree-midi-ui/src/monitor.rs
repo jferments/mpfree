@@ -486,6 +486,12 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         } => (format!("{}, pad {}", track(t), p + 1), Went::Took),
         To::NoPad { track: t } => (format!("nothing: no pad on {}", track(t)), Went::Nothing),
         To::Routed { track: t } => (format!("{}, by its route", track(t)), Went::Took),
+        // Thru sends only while MIDI out is on.
+        To::Thru { to: p } if m.live.built.notes_out => (
+            format!("thru to {}", port_text(&m.monitor, p, Dir::Out)),
+            Went::Took,
+        ),
+        To::Thru { .. } => ("thru: not sent, MIDI out is off".to_string(), Went::Nothing),
         To::Learned(a) => (format!("Learn: {}", param(a)), Went::Learn),
         To::Took(a) => (format!("Learn took it: {}", param(a)), Went::Learn),
         To::LearnOnly => ("not played: Learn only".to_string(), Went::Nothing),
@@ -497,6 +503,14 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::SentBy(t) => (format!("sent by {}", track(t)), Went::Sent),
         To::Clock => ("MPFree's clock".to_string(), Went::Clock),
         To::PortPage => ("sent from its page".to_string(), Went::Sent),
+        To::Sampler => (
+            "sent by the Sample tab's auto-sample".to_string(),
+            Went::Sent,
+        ),
+        To::ThruFrom(p) => (
+            format!("thru from {}", port_text(&m.monitor, p, Dir::In)),
+            Went::Sent,
+        ),
     }
 }
 

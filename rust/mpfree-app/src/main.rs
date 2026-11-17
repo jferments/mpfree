@@ -127,6 +127,8 @@ mod power;
 mod preview;
 mod project;
 mod qlink_touch;
+mod rec_arm;
+mod rec_list;
 mod remote;
 #[cfg(test)]
 mod rt_safety;
@@ -4640,8 +4642,8 @@ fn player_session(
     // What the mixer's I/O view shows and edits (MIDI, Sync and CV). The
     // loop only ever try_locks it (MusicIn::sync).
     let io_model = midi_in::io_model();
-    // The I/O view's rig as it was left (midi_saved.rs): each port's input
-    // and thru, for every project. The song's MIDI settings come with the
+    // The I/O view's rig as it was left (midi_saved.rs): each port's input,
+    // what it ignores and its delay, for every project. The song's MIDI settings come with the
     // project (its `midi` part).
     let rig_text = store
         .read(midi_saved::OWNER, midi_saved::RIG)
@@ -5000,6 +5002,9 @@ fn player_session(
                     // transport, and held notes would hang.
                     fx.push(app::Effect::Time(TimeAction::Transport(Command::Stop)));
                     fx.push(app::Effect::StopSounds);
+                    // A new or opened project arms the notes (rec_arm.rs).
+                    app.rec = rec_arm::RecArm::default();
+                    out.show(gui::ToUi::Rec(app.rec));
                     // A save under way stops: the project changes under it.
                     if collect_now {
                         looper.cancel_save();
@@ -5597,6 +5602,11 @@ fn player_session(
                 }
                 None => {}
             }
+        }
+        // What thru passes on (the I/O view's Routing): out of its output
+        // now, if MIDI out is on.
+        for p in music.take_thru() {
+            midi_out.thru(p.from, p.to, p.msg);
         }
         for (track, k) in routed_keys.drain(..) {
             play_routed(
@@ -6367,6 +6377,10 @@ fn player_session(
         for (due, port, m) in seq.midi.sent() {
             let to = if m.is_from_page() {
                 To::PortPage
+            } else if m.is_from_sampler() {
+                To::Sampler
+            } else if let Some(from) = m.thru_from() {
+                To::ThruFrom(from)
             } else {
                 m.track().map_or(To::Clock, To::SentBy)
             };
@@ -6444,7 +6458,7 @@ fn player_session(
             }
             heads_at = Instant::now();
         }
-        if let Some(line) = time.take_song_note() {
+        if let Some(line) = time.take_later_note() {
             out.note(&format!("time: {line}"));
         }
         // A region just moved is picked again where it went.

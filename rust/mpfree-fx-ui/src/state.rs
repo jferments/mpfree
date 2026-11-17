@@ -126,7 +126,7 @@ pub fn make(id: &str) -> Option<Box<dyn Node>> {
 /// so opening a page never allocates a second reverb.
 pub enum Scratch {
     Eq(Box<Eq>),
-    Filter(MultiFilter),
+    Filter(Box<MultiFilter>),
     Dj(DjFilter),
     Drive(Box<Drive>),
     Comb(Box<Comb>),
@@ -204,7 +204,7 @@ impl Scratch {
     pub fn new(st: &FxState) -> Scratch {
         let mut s = match st.info.id {
             "mpfree.fx.eq" => Scratch::Eq(Box::new(Eq::new())),
-            "mpfree.fx.filter" => Scratch::Filter(MultiFilter::new()),
+            "mpfree.fx.filter" => Scratch::Filter(Box::new(MultiFilter::new())),
             "mpfree.fx.dj_filter" => Scratch::Dj(DjFilter::new()),
             "mpfree.fx.drive" => Scratch::Drive(Box::new(Drive::new())),
             "mpfree.fx.comb" => Scratch::Comb(Box::new(Comb::new())),
@@ -233,7 +233,7 @@ impl Scratch {
     fn node(&mut self) -> Option<&mut dyn Node> {
         Some(match self {
             Scratch::Eq(n) => n.as_mut(),
-            Scratch::Filter(n) => n,
+            Scratch::Filter(n) => n.as_mut(),
             Scratch::Dj(n) => n,
             Scratch::Drive(n) => n.as_mut(),
             Scratch::Comb(n) => n.as_mut(),

@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use mpfree_midi::cv::{Calibration, CvAssign, CvChange, CvEngine, Priority, Scale};
 use mpfree_midi::input::{
-    ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route, MAX_ROUTES,
+    ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route, Thru, MAX_ROUTES, MAX_THRU,
 };
 use mpfree_midi::learn::{Encoding, Input, LearnMap, Mode, Saved, Source, Takeover};
 use mpfree_midi::output::{OutQueue, OutRoute, OutputRouter};
@@ -1300,4 +1300,198 @@ fn a_toggle_starts_from_where_its_value_stands() {
         matches!(second[..], [Input::Write(x)] if x.value == 1.0),
         "{second:?}"
     );
+}
+
+fn thrus(evs: &[In]) -> Vec<(PortId, Msg)> {
+    evs.iter()
+        .filter_map(|e| match *e {
+            In::Thru { to, msg, .. } => Some((to, msg)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn thru(port: PortId, ch: Option<u8>, to: PortId) -> Thru {
+    Thru {
+        port: PortFilter::One(port),
+        channel: ch.map_or(ChanFilter::Omni, ChanFilter::One),
+        to,
+    }
+}
+
+/// Thru sends a port's channel straight on to an output, as it came, and
+/// nothing else plays it; a route and a thru on the same channel both get
+/// it, and the selected track gets what neither takes.
+#[test]
+fn thru_sends_its_channel_out_as_it_came_and_the_selected_track_gets_the_rest() {
+    let mut r = InputRouter::new();
+    r.set_selected(Some(0));
+    assert_eq!(r.set_thru([thru(KEYS, Some(9), DIN)], 0, |_| {}), 0);
+    let ev = feed(
+        &mut r,
+        KEYS,
+        &[0x99, 36, 100, 0xB9, 74, 20, 0xE9, 0, 64, 0x90, 60, 90],
+    );
+    let drum = Msg::NoteOn {
+        ch: 9,
+        note: 36,
+        vel: 100,
+    };
+    assert_eq!(
+        thrus(&ev),
+        vec![
+            (DIN, drum),
+            (
+                DIN,
+                Msg::Cc {
+                    ch: 9,
+                    cc: 74,
+                    value: 20
+                }
+            ),
+            (DIN, Msg::PitchBend { ch: 9, value: 0 }),
+        ]
+    );
+    assert_eq!(
+        to_tracks(&ev),
+        vec![(
+            0,
+            Msg::NoteOn {
+                ch: 0,
+                note: 60,
+                vel: 90
+            }
+        )]
+    );
+    // The note-off follows; a route on the same channel layers with it.
+    r.set_routes([route(KEYS, Some(9), 3)], 0, |_| {});
+    let ev = feed(&mut r, KEYS, &[0x89, 36, 0, 0x99, 38, 80]);
+    let snare = Msg::NoteOn {
+        ch: 9,
+        note: 38,
+        vel: 80,
+    };
+    assert_eq!(
+        thrus(&ev),
+        vec![
+            (
+                DIN,
+                Msg::NoteOff {
+                    ch: 9,
+                    note: 36,
+                    vel: 0
+                }
+            ),
+            (DIN, snare)
+        ]
+    );
+    assert_eq!(routed(&ev), vec![(3, snare)]);
+    assert!(to_tracks(&ev).is_empty());
+    // Clock never goes thru, and neither does a kind the port ignores.
+    r.set_ignore(
+        KEYS,
+        mpfree_midi::setup::IgnoreSet::NONE.with(mpfree_midi::setup::Ignored::Program, true),
+    );
+    let ev = feed(&mut r, KEYS, &[0xF8, 0xFA, 0xC9, 5]);
+    assert!(thrus(&ev).is_empty(), "{ev:?}");
+}
+
+#[test]
+fn a_thru_changed_while_a_key_is_held_ends_the_note_where_it_went() {
+    let mut r = InputRouter::new();
+    let other = PortId(2);
+    r.set_thru([thru(KEYS, None, DIN)], 0, |_| {});
+    feed(&mut r, KEYS, &[0x91, 64, 100]);
+    // The thru moves to another output while the key is down: the first
+    // gets its note-off now, the key's own note-off goes nowhere.
+    let mut offs = Vec::new();
+    r.set_thru([thru(KEYS, None, other)], 7, |e| offs.push(e));
+    assert_eq!(
+        thrus(&offs),
+        vec![(
+            DIN,
+            Msg::NoteOff {
+                ch: 1,
+                note: 64,
+                vel: 64
+            }
+        )]
+    );
+    let ev = feed(&mut r, KEYS, &[0x81, 64, 0]);
+    assert!(thrus(&ev).is_empty());
+    assert_eq!(r.held(), 0);
+    // The port unplugged with a key down ends it at its output; past the
+    // most kept, thru routes are counted.
+    feed(&mut r, KEYS, &[0x91, 65, 100]);
+    let mut gone = Vec::new();
+    r.port_gone(KEYS, 9, |e| gone.push(e));
+    assert_eq!(
+        thrus(&gone),
+        vec![(
+            other,
+            Msg::NoteOff {
+                ch: 1,
+                note: 65,
+                vel: 64
+            }
+        )]
+    );
+    let many = (0..20u8).map(|c| thru(KEYS, Some(c % 16), PortId(c % 4)));
+    assert_eq!(r.set_thru(many, 0, |_| {}), 20 - MAX_THRU);
+    assert_eq!(r.thru().count(), MAX_THRU);
+}
+
+/// MIDI out keeps thru's notes, so stopping, a panic or a port's All notes
+/// off ends exactly the ones still on, and a note-off for a note it never
+/// sent goes nowhere.
+#[test]
+fn thru_notes_out_end_on_a_panic_and_say_where_they_came_from() {
+    let mut out = OutputRouter::new();
+    let mut q: Vec<OutQueue> = (0..MAX_PORTS).map(|_| OutQueue::new()).collect();
+    let on = |note| Msg::NoteOn {
+        ch: 9,
+        note,
+        vel: 100,
+    };
+    out.thru(KEYS, DIN, on(36), 0, &mut q);
+    out.thru(KEYS, DIN, on(38), 0, &mut q);
+    out.thru(
+        KEYS,
+        DIN,
+        Msg::NoteOff {
+            ch: 9,
+            note: 38,
+            vel: 0,
+        },
+        0,
+        &mut q,
+    );
+    out.thru(
+        KEYS,
+        DIN,
+        Msg::NoteOff {
+            ch: 9,
+            note: 40,
+            vel: 0,
+        },
+        0,
+        &mut q,
+    );
+    let din = &q[usize::from(DIN.0)];
+    assert_eq!(din.len(), 3);
+    assert!(din.as_slice().iter().all(|m| m.thru_from() == Some(KEYS)));
+    assert!(din.as_slice().iter().all(|m| m.track().is_none()));
+    assert_eq!(out.sounding(), 1);
+    q[usize::from(DIN.0)].clear();
+    out.all_off(5, &mut q);
+    assert_eq!(
+        q[usize::from(DIN.0)].as_slice()[0].bytes(),
+        &[0x89, 36, 64][..]
+    );
+    assert_eq!(out.sounding(), 0);
+    // A port's All notes off ends only that port's.
+    out.thru(KEYS, PortId(3), on(50), 0, &mut q);
+    out.thru(KEYS, DIN, on(51), 0, &mut q);
+    out.port_off(PortId(3), 0, &mut q);
+    assert_eq!(out.sounding(), 1);
 }

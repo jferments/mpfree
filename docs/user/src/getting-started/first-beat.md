@@ -80,14 +80,21 @@ The chip at the top of the screen says what the pads are ("Pads: steps · Kick")
 
 Programming steps is precise; playing in feels human. Try both.
 
-1. On the Beats view, press **REC**. MPFree starts playing and records what you play on the pads. (On the All and Loop views, REC records a loop instead; see [Your first loop](first-loop.md).)
-2. Play a beat. Keep it simple: kick and snare first.
-3. Press **STOP**. What you played appears on the pattern.
-4. To add a hi-hat without erasing the rest, press **OVERDUB** first to switch overdub on, then **REC**, play the hi-hat, and press **STOP**. With overdub off, a new recording replaces what was there; with it on, it adds. Press **OVERDUB** again to switch it off.
-5. Didn't like it? Press **UNDO** to take back the last recording. **SHIFT + UNDO** brings it back.
+1. On the Beats view, press **REC**. The REC chip on the transport bar turns red and says **READY · PLAY starts**, with the clip it will record into ("→ Drums · Clip 1"). Nothing plays yet.
+2. Press **PLAY**. MPFree starts playing (after a count-in, if you set one on the Arrange tab) and records what you play on the pads. Holding **REC** and pressing **PLAY** does the same in one go. Changed your mind before PLAY? **STOP** (or REC again) lets go.
+3. Play a beat. Keep it simple: kick and snare first.
+4. Press **STOP**. What you played appears on the pattern.
+5. To add a hi-hat without erasing the rest, press **OVERDUB** instead of REC, then **PLAY**: the chip says **READY TO ADD**, and the take adds to what's there. While the music plays, **REC** punches in (replacing) and **OVERDUB** punches in adding; while it records, **REC** punches out and **OVERDUB** switches between replacing and adding.
+6. Didn't like it? Press **UNDO** to take back the last recording. **SHIFT + UNDO** brings it back.
+
+### What REC records
+
+The REC chip on the transport bar always names what REC records: the notes of the track the pads play (into its clip), or a loop. Opening the **Beats** view arms the notes, the **Loop** view and the **Looper** tab arm the loop, and picking a track on Arrange arms its notes. The All view leaves it as it was, so on the home view REC records whatever you armed last; an empty loop strip says which. Nothing changes it while a take records. If you open the Loop view while the notes are ready, the loop gets the ready (and back again). The **Rec** button on the Arrange tab's transport bar is REC too, and its **Play** and **Stop** start a ready take or let it go.
+
+The loop strip and the pattern each start their heading with an **Arm** pill: red on what REC records, grey on the other. Tap a grey one to record that instead, or hold **SHIFT** and tap it to record both in one pass: the pads into the clip and what you play into a loop (the chip says "Track 1 + Loop 1"; a plain tap on one pill goes back to that one alone). Tap the REC chip for the list of everything that can record: tap a row to arm it, and turn on **Pin the arm** to keep pages and track picks from moving it, so only a tap on Arm does (the chip says "REC · PINNED"). If you started recording by mistake, press **UNDO**: the take so far is thrown away and the music plays on.
 
 > [!MPC]
-> On the MPC, **REC** arms recording and **PLAY** starts it. In MPFree, **REC** starts recording straight away (after a count-in, if you set one on the Arrange tab), and **OVERDUB** is a switch that decides whether the next recording adds or replaces.
+> As on the MPC, **REC** readies recording and **PLAY** starts it. MPFree's REC chip shows what it will record before you start.
 
 Every recording is kept as a **take**, so UNDO and SHIFT + UNDO step back and forward through them. There's more on recording, takes and the Arrange tab in [Clips and patterns](../making-music/clips.md).
 

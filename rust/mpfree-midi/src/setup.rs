@@ -4,8 +4,8 @@
 //! The owner's calls (2026-11-12): MIDI and sync are project settings, not
 //! Prefs, because they change from project to project. Facts about the rig
 //! rather than the project are kept apart ([`MidiSetup::rig`], saved by the
-//! app for every project): each port's input, thru, what it ignores coming
-//! in and the delay of the gear on it.
+//! app for every project): each port's input, what it ignores coming in and
+//! the delay of the gear on it.
 //!
 //! - **Ports are named, not numbered.** A project says "Digitone" or
 //!   [`DIN_NAME`]; the app finds the port by that name when the device is
@@ -14,9 +14,14 @@
 //!   so in place.
 //! - **One output setting per track**: the port and the channel together
 //!   ([`TrackOut`]), never two look-alike fields (the owner's rule).
-//! - **Defaults** (agreed 2026-11-12): clock out Off on every port, thru
-//!   Off, a port's input plays tracks and can be learned ([`PortInput::Both`]),
-//!   the tempo is MPFree's own.
+//! - **Defaults** (agreed 2026-11-12): clock out Off on every port, no
+//!   thru, a port's input plays tracks and can be learned
+//!   ([`PortInput::Both`]), the tempo is MPFree's own.
+//! - **Thru** ([`ThruRoute`], the Routing section's squares from a port to
+//!   an output) is a route, saved with the song as the routes to tracks
+//!   are (board 5 of the MIDI mockups, approved 16 Nov 2026). Before it
+//!   was built it was a switch on each port, kept with the rig, which did
+//!   nothing: an old `port.N.thru` line is read and dropped.
 //! - **Text** is `key = value` lines, like every other part. A line that
 //!   can't be read is skipped and named in the warnings that [`MidiSetup::parse`]
 //!   returns, for the app to log and show: a project never fails to open
@@ -243,8 +248,6 @@ pub struct PortSetup {
     pub name: String,
     pub input: PortInput,
     pub clock_out: ClockOut,
-    /// What arrives on this port's input leaves its output too.
-    pub thru: bool,
     /// What its input ignores.
     pub ignore: IgnoreSet,
     /// How late the gear on this port sounds after a message leaves, in
@@ -259,7 +262,6 @@ impl PortSetup {
             name: name.to_string(),
             input: PortInput::default(),
             clock_out: ClockOut::default(),
-            thru: false,
             ignore: IgnoreSet::NONE,
             delay_tenths: 0,
         }
@@ -371,6 +373,78 @@ impl TrackRoute {
 /// The most routes a project keeps (`mpfree_midi::input::MAX_ROUTES`).
 pub const MAX_TRACK_ROUTES: usize = crate::input::MAX_ROUTES;
 
+/// The most thru routes a project keeps (`mpfree_midi::input::MAX_THRU`).
+pub const MAX_THRU_ROUTES: usize = crate::input::MAX_THRU;
+
+/// A port's messages straight on to an output, as they came: the Routing
+/// section's square from a port to a MIDI out port. Saved with the
+/// project, as `thru = MIDI < Keystep 37 · ch 10` (or `· all channels`).
+/// Channel messages only: never clock (each port's clock out is the Sync
+/// section's) or SysEx.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThruRoute {
+    /// The port it comes in on, by name.
+    pub from: String,
+    /// None: every channel.
+    pub channel: Option<Channel>,
+    /// The port it leaves by, by name.
+    pub to: String,
+}
+
+impl ThruRoute {
+    /// "Keystep 37 · ch 10" or "MIDI · all channels".
+    pub fn source(&self) -> String {
+        match self.channel {
+            Some(c) => format!("{} · ch {}", self.from, c + 1),
+            None => format!("{} · all channels", self.from),
+        }
+    }
+
+    fn text(&self) -> String {
+        format!("{} < {}", self.to, self.source())
+    }
+
+    fn parse(v: &str) -> Result<ThruRoute, String> {
+        let shape = || "not \"port < port · ch N\"".to_string();
+        let (to, from) = v.split_once(" < ").ok_or_else(shape)?;
+        let (from, ch) = from.rsplit_once(" · ").ok_or_else(shape)?;
+        let channel = match ch.trim() {
+            "all channels" => None,
+            c => Some(
+                (number(c.strip_prefix("ch ").ok_or_else(shape)?.trim(), 1, 16)? - 1) as Channel,
+            ),
+        };
+        let (from, to) = (from.trim(), to.trim());
+        if from.is_empty() || to.is_empty() {
+            return Err(shape());
+        }
+        let r = ThruRoute {
+            from: from.to_string(),
+            channel,
+            to: to.to_string(),
+        };
+        r.check()?;
+        Ok(r)
+    }
+
+    /// Refused: a USB device's own messages back to it (the 5-pin jacks
+    /// are two pieces of gear, so MIDI in to MIDI out is fine).
+    pub fn check(&self) -> Result<(), String> {
+        if self.from == self.to && self.from != DIN_NAME {
+            return Err(format!(
+                "thru from {} back to itself would send its own messages back to it",
+                self.from
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether a thru from `from` to `to` can be set ([`ThruRoute::check`]).
+pub fn thru_allowed(from: &str, to: &str) -> bool {
+    from != to || from == DIN_NAME
+}
+
 /// A project's MIDI, sync and CV settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MidiSetup {
@@ -387,6 +461,9 @@ pub struct MidiSetup {
     /// Ports and channels that play a track whichever track is armed, in
     /// the order set; at most [`MAX_TRACK_ROUTES`].
     pub routes: Vec<TrackRoute>,
+    /// Ports whose messages go straight on to an output, in the order
+    /// set; at most [`MAX_THRU_ROUTES`].
+    pub thru: Vec<ThruRoute>,
     /// What each CV/gate output does.
     pub cv: [CvAssign; CV_OUTS],
     /// Controls learned with MIDI Learn, each with its device by name, in
@@ -407,6 +484,7 @@ impl Default for MidiSetup {
             ports: Vec::new(),
             tracks: std::array::from_fn(|_| None),
             routes: Vec::new(),
+            thru: Vec::new(),
             cv: [CvAssign::Off; CV_OUTS],
             learn: Vec::new(),
             rig_learn: Vec::new(),
@@ -565,9 +643,10 @@ impl MidiSetup {
     }
 
     /// The settings that belong to the song, saved in the project's `midi`
-    /// part: tracks' outputs, the routes to tracks, Tempo from and
-    /// following, each port's clock out, the CV jobs and learned controls. Each port's input and thru
-    /// are the rig's ([`MidiSetup::rig`]) and are left at their defaults.
+    /// part: tracks' outputs, the routes to tracks and thru, Tempo from and
+    /// following, each port's clock out, the CV jobs and learned controls.
+    /// Each port's input, what it ignores and its delay are the rig's
+    /// ([`MidiSetup::rig`]) and are left at their defaults.
     pub fn project(&self) -> MidiSetup {
         let mut m = self.clone();
         m.rig_learn.clear();
@@ -579,7 +658,6 @@ impl MidiSetup {
         {
             m.set_port(&name, |p| {
                 p.input = PortInput::default();
-                p.thru = false;
                 p.ignore = IgnoreSet::NONE;
                 p.delay_tenths = 0;
             });
@@ -589,8 +667,8 @@ impl MidiSetup {
 
     /// The settings that belong to the gear on the desk, kept for every
     /// project (owner, 13 Nov 2026: project settings apart from system-wide
-    /// ones): each port's input (Plays tracks, Learn only, Both), thru,
-    /// what it ignores coming in and its gear's delay, and the controls
+    /// ones): each port's input (Plays tracks, Learn only, Both), what it
+    /// ignores coming in and its gear's delay, and the controls
     /// learned for every project.
     pub fn rig(&self) -> MidiSetup {
         let mut m = MidiSetup {
@@ -600,7 +678,6 @@ impl MidiSetup {
         for p in &self.ports {
             m.set_port(&p.name, |q| {
                 q.input = p.input;
-                q.thru = p.thru;
                 q.ignore = p.ignore;
                 q.delay_tenths = p.delay_tenths;
             });
@@ -616,7 +693,7 @@ impl MidiSetup {
         self.set_rig(&rig);
     }
 
-    /// `rig`'s port settings (input, thru, ignore, delay) and controls
+    /// `rig`'s port settings (input, ignore, delay) and controls
     /// learned for every project, this setup's song settings kept.
     pub fn set_rig(&mut self, rig: &MidiSetup) {
         self.rig_learn = rig.rig_learn.clone();
@@ -630,7 +707,6 @@ impl MidiSetup {
             let want = rig.port(&name);
             self.set_port(&name, |p| {
                 p.input = want.input;
-                p.thru = want.thru;
                 p.ignore = want.ignore;
                 p.delay_tenths = want.delay_tenths;
             });
@@ -669,7 +745,6 @@ impl MidiSetup {
             line(&mut s, &k, &p.name);
             line(&mut s, &format!("{k}.input"), p.input.word());
             line(&mut s, &format!("{k}.clock-out"), p.clock_out.word());
-            line(&mut s, &format!("{k}.thru"), on_off(p.thru));
             if !p.ignore.is_empty() {
                 line(&mut s, &format!("{k}.ignore"), &p.ignore.text());
             }
@@ -699,6 +774,9 @@ impl MidiSetup {
         }
         for r in &self.routes {
             line(&mut s, "route", &r.text());
+        }
+        for r in &self.thru {
+            line(&mut s, "thru", &r.text());
         }
         for (i, a) in self.cv.iter().enumerate() {
             if *a != CvAssign::Off {
@@ -802,7 +880,12 @@ impl MidiSetup {
                         p.clock_out =
                             ClockOut::from_word(v).ok_or(format!("unknown clock out \"{v}\""))?
                     }
-                    ["thru"] => p.thru = parse_on(v)?,
+                    // Thru was a switch on the port, kept with the rig,
+                    // before it was built: it did nothing, and thru is a
+                    // route now ([`ThruRoute`]).
+                    ["thru"] => {
+                        parse_on(v)?;
+                    }
                     ["ignore"] => p.ignore = IgnoreSet::parse(v)?,
                     ["delay-ms"] => p.delay_tenths = parse_delay(v)?,
                     _ => return Err("unknown key".into()),
@@ -828,6 +911,16 @@ impl MidiSetup {
                     return Err(format!("more than {MAX_TRACK_ROUTES} routes"));
                 }
                 self.routes.push(r);
+            }
+            ["thru"] => {
+                let r = ThruRoute::parse(v)?;
+                if self.thru.contains(&r) {
+                    return Err("the same thru twice: the first kept".into());
+                }
+                if self.thru.len() >= MAX_THRU_ROUTES {
+                    return Err(format!("more than {MAX_THRU_ROUTES} thru routes"));
+                }
+                self.thru.push(r);
             }
             ["cv", i] => {
                 let i = index(i, CV_OUTS)?;
@@ -1166,6 +1259,59 @@ mod tests {
     }
 
     #[test]
+    fn thru_reads_back_belongs_to_the_song_and_an_old_port_switch_is_dropped() {
+        let m = MidiSetup {
+            thru: vec![
+                ThruRoute {
+                    from: "Keystep 37".to_string(),
+                    channel: Some(9),
+                    to: DIN_NAME.to_string(),
+                },
+                ThruRoute {
+                    from: DIN_NAME.to_string(),
+                    channel: None,
+                    to: DIN_NAME.to_string(),
+                },
+            ],
+            ..MidiSetup::default()
+        };
+        let text = m.to_text();
+        assert!(
+            text.contains("thru = MIDI < Keystep 37 · ch 10\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("thru = MIDI < MIDI · all channels\n"),
+            "{text}"
+        );
+        let (back, warn) = MidiSetup::parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.thru, m.thru);
+        assert_eq!(m.project().thru, m.thru);
+        assert!(m.rig().thru.is_empty());
+        let mut kept = m.clone();
+        kept.set_rig(&MidiSetup::default());
+        assert_eq!(kept.thru, m.thru);
+        // A USB device back to itself, a bad channel and the same thru
+        // twice are named and skipped; the old switch on a port is read
+        // and dropped, with nothing to say.
+        let (back, warn) = MidiSetup::parse(
+            "mpfree-midi 1\nport.1 = MIDI\nport.1.thru = on\n\
+             thru = Keystep 37 < Keystep 37 · ch 1\nthru = MIDI < Keystep 37 · ch 17\n\
+             thru = MIDI Keystep 37\nthru = MIDI < Keystep 37 · ch 3\nthru = MIDI < Keystep 37 · ch 3\n",
+        );
+        assert_eq!(back.thru.len(), 1);
+        assert_eq!(back.thru[0].source(), "Keystep 37 · ch 3");
+        assert!(back.ports.is_empty(), "{:?}", back.ports);
+        assert_eq!(warn.len(), 4, "{warn:?}");
+        assert!(warn[0].contains("back to itself"), "{warn:?}");
+        assert!(warn[3].contains("the same thru twice"), "{warn:?}");
+        assert!(thru_allowed(DIN_NAME, DIN_NAME));
+        assert!(!thru_allowed("Digitakt", "Digitakt"));
+        assert!(thru_allowed("Keystep 37", "Digitakt"));
+    }
+
+    #[test]
     fn the_project_and_the_rig_split_and_join_again() {
         let mut m = MidiSetup {
             tempo: TempoSource::Port(DIN_NAME.into()),
@@ -1174,7 +1320,6 @@ mod tests {
         };
         m.set_port(DIN_NAME, |p| {
             p.input = PortInput::LearnOnly;
-            p.thru = true;
             p.clock_out = ClockOut::Always;
         });
         m.set_port("Keystep 37", |p| {
@@ -1185,17 +1330,15 @@ mod tests {
         m.tracks[0] = Some(TrackOut::new(DIN_NAME, 9));
         let project = m.project();
         let rig = m.rig();
-        // The song keeps the clock out, not the input, thru, what a port
-        // ignores or its gear's delay.
+        // The song keeps the clock out, not the input, what a port ignores
+        // or its gear's delay.
         assert_eq!(project.port(DIN_NAME).clock_out, ClockOut::Always);
         assert_eq!(project.port(DIN_NAME).input, PortInput::default());
-        assert!(!project.port(DIN_NAME).thru);
         assert!(project.ports.iter().all(|p| p.name != "Keystep 37"));
         assert!(project.ports.iter().all(|p| p.name != "Digitone"));
         assert_eq!(project.tracks[0], m.tracks[0]);
-        // The rig keeps the inputs, thru, ignores and delays.
+        // The rig keeps the inputs, ignores and delays.
         assert_eq!(rig.port(DIN_NAME).input, PortInput::LearnOnly);
-        assert!(rig.port(DIN_NAME).thru);
         assert!(rig.port("Keystep 37").ignore.has(Ignored::Clock));
         assert_eq!(rig.port("Digitone").delay_tenths, 65);
         assert_eq!(rig.port(DIN_NAME).clock_out, ClockOut::default());
@@ -1294,7 +1437,6 @@ mod tests {
         };
         m.set_port(DIN_NAME, |p| {
             p.clock_out = ClockOut::WhilePlaying;
-            p.thru = true;
         });
         m.set_port("Keystep 37", |p| {
             p.input = PortInput::LearnOnly;
@@ -1454,18 +1596,19 @@ mod tests {
 
     #[test]
     fn rest_of_the_line_is_a_port_name() {
-        let (m, w) =
-            MidiSetup::parse("mpfree-midi 1\nport.1 = My Synth (USB) = 3\nport.1.thru = on\n");
+        let (m, w) = MidiSetup::parse(
+            "mpfree-midi 1\nport.1 = My Synth (USB) = 3\nport.1.clock-out = always\n",
+        );
         assert!(w.is_empty(), "{w:?}");
-        assert!(m.port("My Synth (USB) = 3").thru);
+        assert_eq!(m.port("My Synth (USB) = 3").clock_out, ClockOut::Always);
     }
 
     #[test]
     fn a_port_back_at_its_defaults_is_dropped() {
         let mut m = MidiSetup::default();
-        m.set_port(DIN_NAME, |p| p.thru = true);
+        m.set_port(DIN_NAME, |p| p.delay_tenths = 5);
         assert_eq!(m.ports.len(), 1);
-        m.set_port(DIN_NAME, |p| p.thru = false);
+        m.set_port(DIN_NAME, |p| p.delay_tenths = 0);
         assert!(m.ports.is_empty());
         assert_eq!(m.port("anything"), PortSetup::new("anything"));
     }
@@ -1511,9 +1654,9 @@ mod tests {
     #[test]
     fn the_same_port_twice_keeps_the_first() {
         let (m, w) = MidiSetup::parse(
-            "mpfree-midi 1\nport.1 = MIDI\nport.1.thru = on\nport.2 = MIDI\nport.2.clock-out = always\n",
+            "mpfree-midi 1\nport.1 = MIDI\nport.1.input = learn-only\nport.2 = MIDI\nport.2.clock-out = always\n",
         );
-        assert!(m.port(DIN_NAME).thru);
+        assert_eq!(m.port(DIN_NAME).input, PortInput::LearnOnly);
         assert_eq!(m.port(DIN_NAME).clock_out, ClockOut::Off);
         assert!(w[0].contains("set twice"));
     }

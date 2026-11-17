@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mpfree_midi::learn::Takeover;
-use mpfree_midi::setup::{ClockOut, IgnoreSet, Ignored, Kept, TrackOut, TrackRoute, DIN_NAME};
+use mpfree_midi::setup::{
+    ClockOut, IgnoreSet, Ignored, Kept, ThruRoute, TrackOut, TrackRoute, DIN_NAME,
+};
 use mpfree_midi_ui::{sample, sections, Built, IoModel, LearnLive};
 use mpfree_mixer_ui::sample::{name, play, screen, song_mixer};
 use mpfree_mixer_ui::{MixState, MixView};
@@ -50,7 +52,6 @@ fn shots() -> Vec<Shot> {
     let mut built = sample::rig();
     built.live.built = Built {
         notes_out: true,
-        thru: true,
         clock_in: true,
         clock_out: true,
         cv_outs: 4,
@@ -150,6 +151,17 @@ fn shots() -> Vec<Shot> {
         route("Keystep 37", 1, 1),
         route("Keystep 37", 0, 3),
     ];
+    // Thru: the keyboard's channels 3 and 10 go straight out of the 5-pin
+    // jacks, as they came, to the synth there.
+    let mut thru = routing.clone();
+    thru.setup.thru = [2, 9]
+        .into_iter()
+        .map(|c| ThruRoute {
+            from: "Keystep 37".into(),
+            channel: Some(c),
+            to: DIN_NAME.into(),
+        })
+        .collect();
     vec![
         Shot {
             name: "io-midi",
@@ -184,6 +196,17 @@ fn shots() -> Vec<Shot> {
             at: 1,
             open: None,
             pick: Some("Keystep 37 → Tracks"),
+        },
+        Shot {
+            name: "io-routing-thru",
+            about: "Routing: the keyboard's square under MIDI out picked: its channels 3 and 10 go thru, straight out of the 5-pin jacks as they came",
+            section: 2,
+            model: thru,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Keystep 37 → MIDI out"),
         },
         Shot {
             name: "io-sync",

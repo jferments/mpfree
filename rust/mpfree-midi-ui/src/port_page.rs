@@ -9,8 +9,9 @@
 //!   ([`IgnoreSet`]). Ignored messages still show in the Monitor, marked
 //!   "ignored: this port's setting"; nothing else gets them.
 //! - **What it does:** where its messages go today and what plays on it,
-//!   read only (the Routing section changes it): its routes to tracks,
-//!   then where the rest goes.
+//!   read only (the Routing section changes it): its routes to tracks and
+//!   its thru to outputs, then where the rest goes; what plays on it, thru
+//!   from other ports included.
 //! - **Now:** the newest message in on it and out to it, and how long
 //!   ago.
 //! - **Clock to this port:** Off, While playing or Always: the project's,
@@ -247,6 +248,39 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
             format!("{ch} → {t}")
         })
         .collect();
+    let out_name = |p: &str| {
+        if p == mpfree_midi::setup::DIN_NAME {
+            "MIDI out".to_string()
+        } else {
+            p.to_string()
+        }
+    };
+    let routes: Vec<String> = routes
+        .into_iter()
+        .chain(m.setup.thru.iter().filter(|r| r.from == name).map(|r| {
+            let ch = r
+                .channel
+                .map_or("All channels".to_string(), |c| format!("Ch {}", c + 1));
+            format!("{ch} → {}, thru", out_name(&r.to))
+        }))
+        .collect();
+    let thru_in: Vec<String> = m
+        .setup
+        .thru
+        .iter()
+        .filter(|r| r.to == name)
+        .map(|r| {
+            let from = if r.from == mpfree_midi::setup::DIN_NAME {
+                "MIDI in"
+            } else {
+                r.from.as_str()
+            };
+            match r.channel {
+                Some(c) => format!("{from} · ch {}", c + 1),
+                None => from.to_string(),
+            }
+        })
+        .collect();
     let mut does = Vec::new();
     if !routes.is_empty() {
         does.push((true, short_list(&routes, 3)));
@@ -302,6 +336,9 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
     if tracks.len() > 3 {
         does.push((false, format!("and {} more tracks", tracks.len() - 3)));
     }
+    if !thru_in.is_empty() {
+        does.push((false, format!("Thru from {}", short_list(&thru_in, 2))));
+    }
     if setup.clock_out != ClockOut::Off {
         does.push((
             false,
@@ -309,7 +346,7 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
         ));
     }
     let has_out = live.is_none_or(|l| l.has_out);
-    if tracks.is_empty() && setup.clock_out == ClockOut::Off {
+    if tracks.is_empty() && thru_in.is_empty() && setup.clock_out == ClockOut::Off {
         does.push((
             false,
             if has_out {
@@ -1346,6 +1383,26 @@ mod tests {
             words[..2],
             ["Ch 2 → Bass", "The rest play nothing (Learn only)"],
             "{words:?}"
+        );
+        // Thru is listed with the routes, and on the output's page.
+        m.lock().unwrap().setup.thru = vec![mpfree_midi::setup::ThruRoute {
+            from: "Keystep 37".into(),
+            channel: Some(9),
+            to: DIN_NAME.into(),
+        }];
+        let v = view(&m.lock().unwrap(), "Keystep 37", 0.0);
+        assert_eq!(
+            v.does[0].1, "Ch 2 → Bass, Ch 10 → MIDI out, thru",
+            "{:?}",
+            v.does
+        );
+        let v = view(&m.lock().unwrap(), DIN_NAME, 0.0);
+        assert!(
+            v.does
+                .iter()
+                .any(|d| !d.0 && d.1 == "Thru from Keystep 37 · ch 10"),
+            "{:?}",
+            v.does
         );
     }
 
