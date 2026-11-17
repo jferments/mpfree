@@ -133,9 +133,11 @@ struct GuardPress {
 /// needs [`GUARD_HOLD`] (the design's Delete clip, Clear a lane, Halve,
 /// Clear loop, as far as the screens have them).
 fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
-    use mpfree_time_ui::view::{NOTES, SONG};
+    use mpfree_time_ui::view::{NOTES, SONG, SONG_LIST};
     let label = t.label.as_str();
     match (widget, t.id) {
+        // The song list's Remove.
+        (SONG_LIST, "button") => label == "Remove",
         // The Song view's Delete (a block) and Erase (an audio region),
         // and the note editor's Delete.
         (SONG, "button") | (NOTES, "button") => label == "Delete",
@@ -3229,7 +3231,7 @@ impl Player {
                 LoopAct::Use(crate::looper_page::USE_SHOW) => {
                     if let Some(p) = self.looper_page.place(self.looper.selected) {
                         self.time_page.show_cell(p.track, p.slot);
-                        if self.time.song_view {
+                        if self.time.song_view || self.time.list_view {
                             out.push(FromUi::Time(TimeAction::SongView(false)));
                         }
                         if let Some(tab) = View::Arrange.tab_index(self.settings.debug_mode) {
@@ -3612,6 +3614,7 @@ impl Player {
             && self.status.steps.is_none()
             && self.view == View::Arrange
             && !self.time.song_view
+            && !self.time.list_view
             && self.time.edit.is_none()
         {
             time_view::copy_hint(&self.time)
@@ -3651,6 +3654,7 @@ impl Player {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
                         .to_string()
                 }
+                View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
@@ -4993,9 +4997,18 @@ impl Player {
                 self.show_play_view(v);
             }
             ToUi::ArrangeView(v) => {
-                let song = v.unwrap_or(!self.time.song_view);
-                if song != self.time.song_view {
-                    self.outbox.push(FromUi::Time(TimeAction::SongView(song)));
+                // MAIN in Perform: Clips, Song, the song list, round.
+                let a = match v {
+                    Some(song) if song != self.time.song_view || self.time.list_view => {
+                        Some(TimeAction::SongView(song))
+                    }
+                    Some(_) => None,
+                    None if self.time.list_view => Some(TimeAction::SongView(false)),
+                    None if self.time.song_view => Some(TimeAction::ListView(true)),
+                    None => Some(TimeAction::SongView(true)),
+                };
+                if let Some(a) = a {
+                    self.outbox.push(FromUi::Time(a));
                 }
             }
             ToUi::Library { dir, lists } => self.open_library(&dir, &lists),
@@ -5528,7 +5541,9 @@ impl Player {
             ToUi::Time(mut st) => {
                 // The lens the note editor shows, if it is open.
                 let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
-                let swapped = st.song_view != self.time.song_view || lens(&st) != lens(&self.time);
+                let swapped = st.song_view != self.time.song_view
+                    || st.list_view != self.time.list_view
+                    || lens(&st) != lens(&self.time);
                 let switched = st.perform != self.time.perform;
                 // A take made, undone or redone: UNDO on All takes the takes.
                 let seen = (st.done.len(), st.undone.len());
@@ -8486,6 +8501,7 @@ impl Player {
                 | time_view::TAKES
                 | time_view::MORPH
                 | time_view::SONG
+                | time_view::SONG_LIST
                 | time_view::NOTES
                 | time_view::EDIT_OPTIONS,
                 _,
@@ -11158,6 +11174,50 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-perform sample: {e}"),
     }
+    // The song list (sequencer S4, mockup D), in Perform: seven steps, the
+    // fourth playing its third pass of four, the fifth picked.
+    match mpfree_time_ui::sample::playing() {
+        Ok(s) => {
+            use mpfree_time_ui::list::ListRow;
+            let mut p = quiet_player(fonts());
+            let mut st = s.state();
+            st.perform = true;
+            st.list_view = true;
+            st.song_view = false;
+            let steps = [
+                ("Intro", 0, 2, 4),
+                ("Verse", 1, 4, 4),
+                ("Verse B", 2, 2, 4),
+                ("Drop", 3, 4, 4),
+                ("Break", 4, 1, 8),
+                ("Drop", 3, 4, 4),
+                ("Outro", 5, 1, 4),
+            ];
+            let mut starts = 1;
+            st.list = steps
+                .iter()
+                .enumerate()
+                .map(|(k, &(name, row, times, len))| {
+                    let r = ListRow {
+                        name: name.to_string(),
+                        row,
+                        times,
+                        bars: i64::from(times) * len,
+                        starts,
+                        playing: (k == 3).then_some((3, 0.62)),
+                        waiting: false,
+                    };
+                    starts += r.bars;
+                    r
+                })
+                .collect();
+            st.list_pick = Some(4);
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-list", p));
+        }
+        Err(e) => eprintln!("arrange-list sample: {e}"),
+    }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
     match mpfree_time_ui::sample::loops_playing() {
@@ -12350,6 +12410,91 @@ mod tests {
             a.into_iter().chain(p.take_actions()).collect::<Vec<_>>(),
             deleted
         );
+    }
+
+    /// The song list on Arrange (sequencer S4): MAIN in Perform goes
+    /// Clips, Song, List and round; its hint; a tap on a step picks it;
+    /// Remove needs the hold in Perform.
+    #[test]
+    fn the_song_list_is_mains_third_view_and_remove_needs_a_hold() {
+        use mpfree_time_ui::list::ListRow;
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let mut st = mpfree_time_ui::sample::song_state().unwrap();
+        st.perform = true;
+        st.song_view = false;
+        st.selected = None;
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        // MAIN: Clips → Song → List → Clips.
+        let main = |p: &mut Player, st: &TimeState| {
+            p.apply(ToUi::Time(Box::new(st.clone())));
+            p.apply(ToUi::ArrangeView(None));
+            p.take_actions()
+        };
+        assert_eq!(
+            main(&mut p, &st),
+            [FromUi::Time(TimeAction::SongView(true))]
+        );
+        st.song_view = true;
+        assert_eq!(
+            main(&mut p, &st),
+            [FromUi::Time(TimeAction::ListView(true))]
+        );
+        st.song_view = false;
+        st.list_view = true;
+        assert_eq!(
+            main(&mut p, &st),
+            [FromUi::Time(TimeAction::SongView(false))]
+        );
+        // MAIN from another page: the grid, the list closing.
+        p.apply(ToUi::ArrangeView(Some(false)));
+        assert_eq!(
+            p.take_actions(),
+            [FromUi::Time(TimeAction::SongView(false))]
+        );
+        st.list = vec![ListRow {
+            name: "Verse".into(),
+            row: 0,
+            times: 2,
+            bars: 2,
+            starts: 1,
+            ..ListRow::default()
+        }];
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        let mut c = SoftCanvas::new(1280, 800);
+        p.ui.paint(&mut c);
+        assert_eq!(hint(&p), time_view::LIST_HINT);
+        let find = |p: &Player, label: &str| {
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == time_view::SONG_LIST && t.target.label == label)
+                .unwrap_or_else(|| panic!("{label}"))
+                .target
+                .rect
+        };
+        let step = find(&p, "Step 1");
+        let (x, y) = (step.x + 6, step.y + step.h / 2);
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        assert_eq!(
+            p.touch(1, Touch::Up, x, y),
+            Some(FromUi::Time(TimeAction::ListPick(Some(0))))
+        );
+        st.list_pick = Some(0);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.ui.paint(&mut c);
+        let b = find(&p, "Remove");
+        let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.2);
+        assert_eq!(p.touch(1, Touch::Up, x, y), None);
+        assert!(p.take_actions().is_empty());
+        assert_eq!(hint(&p), GUARD_HINT);
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.3);
+        p.tick(0.25);
+        assert_eq!(p.take_actions(), [FromUi::Time(TimeAction::ListRemove(0))]);
+        p.touch(1, Touch::Up, x, y);
     }
 
     #[test]

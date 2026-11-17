@@ -31,6 +31,10 @@ use crate::editor::{
     drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox, NoteGrid,
     PEN, STEP_FALLBACK,
 };
+use crate::list::{
+    ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LOOP, LIST_PLAY, LIST_REMOVE, LIST_SONG,
+    LIST_TO_SONG, SCENE_STEP,
+};
 use crate::song::{
     AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
@@ -65,6 +69,8 @@ pub const CLIP_CARD: &str = "clip-card";
 pub const TAKES: &str = "takes";
 pub const MORPH: &str = "morph";
 pub const SONG: &str = "song";
+/// The song list (sequencer S4): Arrange's third view.
+pub const SONG_LIST: &str = "song-list";
 /// Play's Q-Link column, at Arrange's right edge too: the app's
 /// `QLinkColumn` (its `play_page::QLINKS`), one widget on both pages.
 pub const QLINKS: &str = "qlinks";
@@ -87,6 +93,15 @@ pub const CLIPS_LAYOUT: &str =
 /// The same page in its Song view: the timeline in place of the grid.
 pub const SONG_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+/// The same page with the song list in place of the grid and the morph
+/// (mockup D), and with the Record panel on its Clip tab.
+pub const LIST_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(song-list:*, col(record:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+pub const LIST_CARD_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(song-list:*, col(clip-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+/// The hint line under the song list.
+pub const LIST_HINT: &str =
+    "Tap a step to pick it   ·   ‹ ›: its scene   ·   – / +: times   ·   + Add a scene: after the pick   ·   Play from here: on the next launch line   ·   List → song: onto the timeline";
 /// The Clips view and the Song view with the Record panel on its Clip tab:
 /// the clip settings card in the record settings' place.
 pub const CLIPS_CARD_LAYOUT: &str =
@@ -410,7 +425,8 @@ impl TakeRow {
     /// What it is: "take", "capture", "edit", "delete", "paste",
     /// "settings", "reload", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
-    /// "length", "delete", "unique" or "scenes".
+    /// "length", "delete", "unique" or "scenes", and "list" for the song
+    /// list.
     pub fn word(&self) -> &'static str {
         if let Some(c) = self.song {
             return match c {
@@ -420,6 +436,7 @@ impl TakeRow {
                 SongChange::Deleted { .. } => "delete",
                 SongChange::Unique { .. } => "unique",
                 SongChange::Scenes { .. } => "scenes",
+                SongChange::List | SongChange::ListToSong { .. } => "list",
             };
         }
         if let Some(d) = self.dropped {
@@ -498,6 +515,18 @@ pub struct TimeState {
     /// The page shows the song (the timeline) in place of the grid. The
     /// app sets it.
     pub song_view: bool,
+    /// The page shows the song list in place of the grid (it wins over
+    /// `song_view`). The app sets it.
+    pub list_view: bool,
+    /// The song list's steps as it shows them, the step picked, and
+    /// whether it goes round. The app sets them.
+    pub list: Vec<ListRow>,
+    pub list_pick: Option<usize>,
+    pub list_looped: bool,
+    /// While the list plays: the step after the one playing (None: it
+    /// stops) and the line it comes in on, for Perform's NEXT. The app
+    /// sets it.
+    pub list_next: Option<(Option<usize>, Tick)>,
     /// Song mode: the song plays on tracks with no clip launched. The app
     /// sets it.
     pub song_on: bool,
@@ -684,6 +713,11 @@ impl TimeState {
             scenes: project.scenes.iter().map(|s| s.name.clone()).collect(),
             morph: MorphInfo::default(),
             song_view: false,
+            list_view: false,
+            list: Vec::new(),
+            list_pick: None,
+            list_looped: false,
+            list_next: None,
             song_on: false,
             perform: project.perform,
             launch: project.launch,
@@ -906,6 +940,35 @@ pub enum TimeAction {
     SaveScene(usize),
     /// Show the Song view (the timeline) or the grid.
     SongView(bool),
+    /// Show the song list (Arrange's third view, sequencer S4), or (false)
+    /// the grid.
+    ListView(bool),
+    /// Pick a step of the song list, or none.
+    ListPick(Option<usize>),
+    /// Play the song list from this step: its scene as a scene launch
+    /// does, then each step after it in turn
+    /// (`mpfree_perform::Perform::play_list`).
+    ListPlay(usize),
+    /// Step `step`'s times one more or fewer (1 to 99).
+    ListTimes {
+        step: usize,
+        delta: i32,
+    },
+    /// Step `step`'s scene the next or the previous row with a clip.
+    ListScene {
+        step: usize,
+        delta: i32,
+    },
+    /// A step after the one picked (at the end with none): the next row
+    /// with a clip after its scene, two times.
+    ListAdd,
+    /// Take this step out of the list.
+    ListRemove(usize),
+    /// The list goes round after its last step, or stops.
+    ListLoop(bool),
+    /// The list onto the end of the song, each step its scene's clips its
+    /// times (`mpfree_seq::Arrangement::list_to_song`).
+    ListToSong,
     /// Song mode on or off: the song plays on tracks with no clip launched.
     SongMode(bool),
     /// Make (false) or Perform (true): the top bar's chip, or SHIFT + MAIN
@@ -1309,6 +1372,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         }),
         (SONG, EventKind::Tab(ADD_AUDIO)) => Some(TimeAction::Audio(AudioAction::Add)),
         (SONG, EventKind::Tab(crate::song::ADD_TRACK)) => Some(TimeAction::AddTrack),
+        (SONG, EventKind::Tab(crate::song::LIST)) => Some(TimeAction::ListView(true)),
         (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
             let track = st.audio_panel?;
             let lane = st.audio.iter().find(|l| l.track == track);
@@ -1374,6 +1438,38 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 track: *row,
                 index: *col,
             }))))
+        }
+        (SONG_LIST, EventKind::Toggle(k)) => match *k {
+            LIST_LOOP => Some(TimeAction::ListLoop(!st.list_looped)),
+            LIST_CLIPS => Some(TimeAction::SongView(false)),
+            LIST_SONG => Some(TimeAction::SongView(true)),
+            LIST_ADD => {
+                (st.list.len() < mpfree_seq::scenes::MAX_LIST_STEPS).then_some(TimeAction::ListAdd)
+            }
+            LIST_TO_SONG => (!st.list.is_empty()).then_some(TimeAction::ListToSong),
+            LIST_PLAY => st.list_pick.map(TimeAction::ListPlay),
+            LIST_REMOVE => st.list_pick.map(TimeAction::ListRemove),
+            _ => None,
+        },
+        (SONG_LIST, EventKind::Step { index, delta }) if *index >= SCENE_STEP => {
+            let step = index - SCENE_STEP;
+            (step < st.list.len()).then_some(TimeAction::ListScene {
+                step,
+                delta: *delta,
+            })
+        }
+        (SONG_LIST, EventKind::Step { index, delta }) => {
+            let r = st.list.get(*index)?;
+            let to = i32::from(r.times) + delta;
+            (1..=mpfree_seq::scenes::MAX_TIMES as i32)
+                .contains(&to)
+                .then_some(TimeAction::ListTimes {
+                    step: *index,
+                    delta: *delta,
+                })
+        }
+        (SONG_LIST, EventKind::Select(k)) => {
+            (*k < st.list.len()).then_some(TimeAction::ListPick(Some(*k)))
         }
         (SONG, EventKind::Tab(k)) => match k {
             0 => Some(TimeAction::SongView(false)),
@@ -1534,6 +1630,21 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
                 "Save state on the Clip card first: Reload clip brings that state back".to_string()
             }
         }),
+        (SONG_LIST, EventKind::Toggle(LIST_PLAY | LIST_REMOVE)) if st.list_pick.is_none() => {
+            Some("Tap a step first".to_string())
+        }
+        (SONG_LIST, EventKind::Toggle(LIST_TO_SONG)) => {
+            Some("Add a scene to the list first".to_string())
+        }
+        (SONG_LIST, EventKind::Toggle(LIST_ADD)) => Some(format!(
+            "The list is full: {} steps",
+            mpfree_seq::scenes::MAX_LIST_STEPS
+        )),
+        (SONG_LIST, EventKind::Step { index, delta }) if *index < SCENE_STEP => Some(end(
+            *delta,
+            "Once is the fewest",
+            &format!("{} times is the most", mpfree_seq::scenes::MAX_TIMES),
+        )),
         (TAKES, EventKind::Tab(0)) => Some("Nothing to undo yet".to_string()),
         (TAKES, EventKind::Tab(1)) => Some("Nothing to redo: Undo something first".to_string()),
         (TAKES, EventKind::Tab(2)) => {
@@ -2083,7 +2194,8 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
                 .map_or("section", |m| m.1.as_str());
             return format!("{word} {} · {name}", row.number);
         }
-        Some(SongChange::Scenes { .. }) | None => {}
+        Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
+        | None => {}
     }
     match (row.at, row.dropped) {
         (Some((track, slot)), _) => format!(
@@ -2120,6 +2232,8 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
             return format!("{:.1} bars", length as f64 / bar as f64)
         }
         Some(SongChange::Scenes { rows }) => return format!("{rows} rows"),
+        Some(SongChange::List) => return "song list".into(),
+        Some(SongChange::ListToSong { steps }) => return format!("{steps} steps → song"),
         None => {}
     }
     match row.dropped {
@@ -2377,6 +2491,26 @@ pub fn countdown(left: Tick, meter: Meter) -> String {
     }
 }
 
+/// The song list's title line: "Song list · 7 steps · 76 bars · 2:27"
+/// (the time at the tempo now), or "Song list" while it is empty.
+pub fn list_title(st: &TimeState) -> String {
+    if st.list.is_empty() {
+        return "Song list".to_string();
+    }
+    let n = st.list.len();
+    let bars: i64 = st.list.iter().map(|r| r.bars).sum();
+    let t = &st.transport;
+    let quarters = (bars * t.meter.bar_ticks()) as f64 / PPQ as f64;
+    let secs = (quarters * 60.0 / t.bpm.max(1.0)).round() as i64;
+    format!(
+        "Song list · {n} {} · {bars} {} · {}:{:02}",
+        if n == 1 { "step" } else { "steps" },
+        if bars == 1 { "bar" } else { "bars" },
+        secs / 60,
+        secs % 60
+    )
+}
+
 /// The scene playing's follow action, for Perform's NEXT (S4): on song
 /// tick `at` it plays `follow` from row `row`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2455,6 +2589,16 @@ impl TimeState {
                 .clip(track, slot)
                 .map_or_else(|| self.track_name(track), |c| c.name.clone());
             Some((format!("{name} reloads"), at))
+        } else if let Some((step, at)) = self.list_next.filter(|n| n.1 > t.position) {
+            // The song list's next step, or its end (a list that goes
+            // round names its first step).
+            Some((
+                match step.and_then(|k| self.list.get(k)) {
+                    Some(r) => r.name.clone(),
+                    None => "Stop all".to_string(),
+                },
+                at,
+            ))
         } else if let Some(f) = self.follow_next.filter(|f| f.at > t.position) {
             self.follow_words(f).map(|w| (w, f.at))
         } else if self.song_on {
@@ -2837,6 +2981,7 @@ impl TimePage {
         ui.add(TAKES, TakeList::new("Takes"));
         ui.add(MORPH, MorphBar::new());
         ui.add(SONG, SongLanes::new());
+        ui.add(SONG_LIST, SongListView::new());
         ui.add(NOTES, NoteGrid::new());
         ui.add(EDIT_OPTIONS, OptionList::new("Edit"));
         ui.add_page(CLIPS_PAGE, CLIPS_LAYOUT)?;
@@ -2913,6 +3058,13 @@ impl TimePage {
             self.first_bar = (self.first_bar + i64::from(delta)).max(0);
             return None;
         }
+        if matches!(
+            ui.layout_of(CLIPS_PAGE),
+            Some(LIST_LAYOUT | LIST_CARD_LAYOUT)
+        ) {
+            // The list scrolls with a drag.
+            return None;
+        }
         let rows = self.visible_rows(ui).max(1);
         let last = SLOTS.saturating_sub(rows) as i64;
         self.first_row = (self.first_row as i64 + i64::from(delta)).clamp(0, last) as usize;
@@ -2925,7 +3077,7 @@ impl TimePage {
     pub fn wheel_list(&self, ui: &Ui) -> &'static str {
         match ui.layout_of(CLIPS_PAGE) {
             Some(EDIT_LAYOUT) => EDIT_OPTIONS,
-            Some(CLIPS_CARD_LAYOUT | SONG_CARD_LAYOUT) => CLIP_CARD,
+            Some(CLIPS_CARD_LAYOUT | SONG_CARD_LAYOUT | LIST_CARD_LAYOUT) => CLIP_CARD,
             _ => RECORD,
         }
     }
@@ -3027,6 +3179,8 @@ impl TimePage {
         // The grid, the song or the note editor, as the app has it.
         let want = match (st.edit.is_some(), st.song_view, self.clip_card) {
             (true, ..) => EDIT_LAYOUT,
+            _ if st.list_view && self.clip_card => LIST_CARD_LAYOUT,
+            _ if st.list_view => LIST_LAYOUT,
             (false, true, false) => SONG_LAYOUT,
             (false, true, true) => SONG_CARD_LAYOUT,
             (false, false, false) => CLIPS_LAYOUT,
@@ -3034,6 +3188,25 @@ impl TimePage {
         };
         if ui.layout_of(CLIPS_PAGE).is_some_and(|l| l != want) {
             let _ = ui.set_layout(CLIPS_PAGE, want);
+        }
+        // The song list.
+        let title = list_title(st);
+        let can_add = st.list.len() < mpfree_seq::scenes::MAX_LIST_STEPS;
+        let same_list = ui.get::<SongListView>(SONG_LIST).is_some_and(|l| {
+            l.rows == st.list
+                && l.title == title
+                && l.picked == st.list_pick
+                && l.looped == st.list_looped
+                && l.can_add == can_add
+        });
+        if !same_list {
+            if let Some(l) = ui.get_mut::<SongListView>(SONG_LIST) {
+                l.rows = st.list.clone();
+                l.title = title;
+                l.picked = st.list_pick;
+                l.looped = st.list_looped;
+                l.can_add = can_add;
+            }
         }
         let mut lanes = song_lanes(st, self.first_bar);
         let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
@@ -3694,6 +3867,156 @@ mod tests {
             action(&ev(CLIPS, EventKind::Toggle(SLOTS + 2)), &st),
             Some(TimeAction::RecSong(false))
         );
+    }
+
+    /// The song list (S4): List on the Song view shows it in place of the
+    /// grid and the morph; its title counts the steps, bars and time;
+    /// each touch is its action or says why not; NEXT names the next
+    /// step.
+    #[test]
+    fn the_song_list_swaps_in_and_its_touches_act() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        assert_eq!(
+            action(&ev(SONG, EventKind::Tab(crate::song::LIST)), &st),
+            Some(TimeAction::ListView(true))
+        );
+        st.list_view = true;
+        page.update(&mut ui, &st);
+        assert!(ui.rect_of(SONG_LIST).is_some());
+        assert!(ui.rect_of(SONG).is_none() && ui.rect_of(MORPH).is_none());
+        assert_eq!(
+            ui.get::<SongListView>(SONG_LIST).unwrap().title,
+            "Song list"
+        );
+        let list = |k: EventKind, st: &TimeState| action(&ev(SONG_LIST, k), st);
+        let why = |k: EventKind, st: &TimeState| why_not(&ev(SONG_LIST, k), st);
+        assert_eq!(
+            list(EventKind::Toggle(LIST_ADD), &st),
+            Some(TimeAction::ListAdd)
+        );
+        assert_eq!(list(EventKind::Toggle(LIST_TO_SONG), &st), None);
+        assert_eq!(
+            why(EventKind::Toggle(LIST_TO_SONG), &st).as_deref(),
+            Some("Add a scene to the list first")
+        );
+        // Two steps: 2 × 4 bars and 1 × 2 bars at 120 BPM.
+        st.list = vec![
+            ListRow {
+                name: "Intro".into(),
+                row: 0,
+                times: 2,
+                bars: 8,
+                starts: 1,
+                ..ListRow::default()
+            },
+            ListRow {
+                name: "Drop".into(),
+                row: 3,
+                times: 1,
+                bars: 2,
+                starts: 9,
+                ..ListRow::default()
+            },
+        ];
+        page.update(&mut ui, &st);
+        assert_eq!(
+            ui.get::<SongListView>(SONG_LIST).unwrap().title,
+            "Song list · 2 steps · 10 bars · 0:20"
+        );
+        assert_eq!(list(EventKind::Toggle(LIST_PLAY), &st), None);
+        assert_eq!(
+            why(EventKind::Toggle(LIST_REMOVE), &st).as_deref(),
+            Some("Tap a step first")
+        );
+        assert_eq!(
+            list(EventKind::Select(1), &st),
+            Some(TimeAction::ListPick(Some(1)))
+        );
+        st.list_pick = Some(1);
+        assert_eq!(
+            list(EventKind::Toggle(LIST_PLAY), &st),
+            Some(TimeAction::ListPlay(1))
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_REMOVE), &st),
+            Some(TimeAction::ListRemove(1))
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_TO_SONG), &st),
+            Some(TimeAction::ListToSong)
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_LOOP), &st),
+            Some(TimeAction::ListLoop(true))
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_CLIPS), &st),
+            Some(TimeAction::SongView(false))
+        );
+        assert_eq!(
+            list(EventKind::Toggle(LIST_SONG), &st),
+            Some(TimeAction::SongView(true))
+        );
+        assert_eq!(
+            list(EventKind::Step { index: 0, delta: 1 }, &st),
+            Some(TimeAction::ListTimes { step: 0, delta: 1 })
+        );
+        assert_eq!(
+            list(
+                EventKind::Step {
+                    index: 1,
+                    delta: -1
+                },
+                &st
+            ),
+            None
+        );
+        assert_eq!(
+            why(
+                EventKind::Step {
+                    index: 1,
+                    delta: -1
+                },
+                &st
+            )
+            .as_deref(),
+            Some("Once is the fewest")
+        );
+        assert_eq!(
+            list(
+                EventKind::Step {
+                    index: SCENE_STEP + 1,
+                    delta: -1
+                },
+                &st
+            ),
+            Some(TimeAction::ListScene { step: 1, delta: -1 })
+        );
+        // The Clip tab keeps the list.
+        page.clip_card = true;
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(LIST_CARD_LAYOUT));
+        assert_eq!(page.wheel_list(&ui), CLIP_CARD);
+        page.clip_card = false;
+        // NEXT: the step after the one playing, then the list's end.
+        st.perform = true;
+        st.transport.state = State::Playing;
+        let bar = st.transport.meter.bar_ticks();
+        st.transport.position = 3 * bar;
+        st.list_next = Some((Some(1), 4 * bar));
+        assert_eq!(st.next_reading().as_deref(), Some("Drop in 1 bar"));
+        st.list_next = Some((None, 4 * bar));
+        assert_eq!(st.next_reading().as_deref(), Some("Stop all in 1 bar"));
+        st.list_view = false;
+        st.song_view = false;
+        page.update(&mut ui, &st);
+        assert!(ui.rect_of(CLIPS).is_some() && ui.rect_of(SONG_LIST).is_none());
     }
 
     /// Jay, 14 Nov: drag and drop on the Song view. Blocks, their ends

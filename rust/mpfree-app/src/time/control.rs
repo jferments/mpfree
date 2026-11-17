@@ -29,12 +29,15 @@ use mpfree_play::{
     ClipDrop, Cue, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started, Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
-use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
+use mpfree_seq::arrange::{list_spans, list_to_song, scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
+use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::steps::{Edit, Grid};
+use mpfree_seq::ListStep;
 use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
+use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, grid_name, AudioAction, EditInfo, FollowNext, MorphInfo,
     MuteWait, RegionId, TakeRow, TimeAction, TimeState, TransportInfo,
@@ -189,6 +192,10 @@ pub struct TimeControl {
     /// The Arrange page shows the Song view, and the placement selected
     /// on it.
     song_view: bool,
+    /// The Arrange page shows the song list (S4), and the step picked on
+    /// it.
+    list_view: bool,
+    list_pick: Option<usize>,
     selected: Option<usize>,
     /// The audio region picked on the Song view; it and `selected` are
     /// never both set (`TimeState::pick`).
@@ -336,6 +343,8 @@ impl TimeControl {
             morph: MorphInfo::default(),
             song: false,
             song_view: false,
+            list_view: false,
+            list_pick: None,
             selected: None,
             region: None,
             section: None,
@@ -1016,6 +1025,8 @@ impl TimeControl {
                 return format!("{} · a section of the song", r.short())
             }
             Some(SongChange::Scenes { .. }) => return format!("{} → song", r.short()),
+            Some(SongChange::List) => return format!("{} · the song list", r.short()),
+            Some(SongChange::ListToSong { .. }) => return format!("{} · list → song", r.short()),
             None => {}
         }
         match r.at {
@@ -1670,7 +1681,10 @@ impl TimeControl {
                     None => "armed: none".into(),
                 })
             }
-            TimeAction::LaunchScene(_) | TimeAction::StopAll | TimeAction::BackToSong => {
+            TimeAction::LaunchScene(_)
+            | TimeAction::StopAll
+            | TimeAction::BackToSong
+            | TimeAction::ListPlay(_) => {
                 let when = if info.state.rolling() {
                     When::Cued
                 } else {
@@ -1690,13 +1704,26 @@ impl TimeControl {
                 let (launches, cues) = (&mut self.launches, &mut self.cues);
                 let line = match a {
                     TimeAction::LaunchScene(row) => {
+                        // A scene by hand: the song list stops going on.
+                        self.perform.end_list();
                         if !self
                             .perform
                             .launch_scene(&mut self.project, row, when, launches, cues)
                         {
+                            self.perform = before.2;
                             return Err(format!("no scene {}", row + 1));
                         }
                         format!("scene {}", row + 1)
+                    }
+                    TimeAction::ListPlay(step) => {
+                        if !self
+                            .perform
+                            .play_list(&mut self.project, step, when, launches, cues)
+                        {
+                            return Err(format!("song list: no step {}", step + 1));
+                        }
+                        let row = self.project.arrangement.list.steps[step].row;
+                        format!("song list from step {} (row {})", step + 1, row + 1)
                     }
                     TimeAction::BackToSong => {
                         // Every clip stops on the line, and the song plays
@@ -2043,8 +2070,25 @@ impl TimeControl {
             TimeAction::Edit(e) => self.edit(e),
             TimeAction::SongView(on) => {
                 self.song_view = on;
+                self.list_view = false;
                 self.changed = true;
                 Ok(if on { "song view" } else { "clips view" }.into())
+            }
+            TimeAction::ListView(on) => {
+                self.list_view = on;
+                if on {
+                    self.song_view = false;
+                }
+                self.changed = true;
+                Ok(if on { "song list" } else { "clips view" }.into())
+            }
+            TimeAction::ListPick(k) => {
+                self.list_pick = k.filter(|&k| k < self.project.arrangement.list.steps.len());
+                self.changed = true;
+                Ok(match self.list_pick {
+                    Some(k) => format!("song list: step {} picked", k + 1),
+                    None => "song list: nothing picked".into(),
+                })
             }
             TimeAction::SongMode(on) => {
                 self.song = on;
@@ -2110,7 +2154,13 @@ impl TimeControl {
                 }
                 Ok(line)
             }
-            TimeAction::ScenesToSong
+            TimeAction::ListTimes { .. }
+            | TimeAction::ListScene { .. }
+            | TimeAction::ListAdd
+            | TimeAction::ListRemove(_)
+            | TimeAction::ListLoop(_)
+            | TimeAction::ListToSong
+            | TimeAction::ScenesToSong
             | TimeAction::MakeUnique(_)
             | TimeAction::DeletePlacement(_)
             | TimeAction::MovePlacement { .. }
@@ -2119,7 +2169,20 @@ impl TimeControl {
                 // Edits of the song alone, each one UNDO takes back.
                 let bar = info.meter.bar_ticks();
                 let before = self.project.arrangement.clone();
-                let (line, change) = match self.edit_song(a, bar) {
+                let edited = if matches!(
+                    a,
+                    TimeAction::ListTimes { .. }
+                        | TimeAction::ListScene { .. }
+                        | TimeAction::ListAdd
+                        | TimeAction::ListRemove(_)
+                        | TimeAction::ListLoop(_)
+                        | TimeAction::ListToSong
+                ) {
+                    self.edit_list(a, bar)
+                } else {
+                    self.edit_song(a, bar)
+                };
+                let (line, change) = match edited {
                     Ok(done) => done,
                     Err(e) => {
                         self.project.arrangement = before;
@@ -2475,6 +2538,116 @@ impl TimeControl {
                         track: p.track,
                         start: p.start,
                     }),
+                ))
+            }
+            _ => Ok((String::new(), None)),
+        }
+    }
+
+    /// A song list edit: a step's times or scene, a step put in or taken
+    /// out, the loop switch, or List → song. A line for the log, and what
+    /// changed for the take UNDO takes back.
+    fn edit_list(
+        &mut self,
+        a: TimeAction,
+        bar: Tick,
+    ) -> Result<(String, Option<SongChange>), String> {
+        let filled: Vec<usize> = (0..SLOTS).filter(|&r| self.project.row_filled(r)).collect();
+        let n = self.project.arrangement.list.steps.len();
+        let list = &mut self.project.arrangement.list;
+        match a {
+            TimeAction::ListTimes { step, delta } => {
+                let s = list.steps.get_mut(step).ok_or("song list: no such step")?;
+                let to = (i32::from(s.times) + delta).clamp(1, i32::from(MAX_TIMES)) as u16;
+                if to == s.times {
+                    return Ok((format!("song list: step {} ×{to}", step + 1), None));
+                }
+                s.times = to;
+                Ok((
+                    format!("song list: step {} ×{to}", step + 1),
+                    Some(SongChange::List),
+                ))
+            }
+            TimeAction::ListScene { step, delta } => {
+                let s = list.steps.get_mut(step).ok_or("song list: no such step")?;
+                let row = next_filled(&filled, s.row, delta).ok_or(
+                    "song list: make a clip on the grid first: a step plays a row with clips",
+                )?;
+                if row == s.row {
+                    return Err("song list: no other row has a clip".into());
+                }
+                s.row = row;
+                Ok((
+                    format!("song list: step {} plays row {}", step + 1, row + 1),
+                    Some(SongChange::List),
+                ))
+            }
+            TimeAction::ListAdd => {
+                if n >= MAX_LIST_STEPS {
+                    return Err(format!("song list: full ({MAX_LIST_STEPS} steps)"));
+                }
+                // After the pick (the end with none), the next row with a
+                // clip after the scene there.
+                let at = self.list_pick.map_or(n, |k| (k + 1).min(n));
+                let after = at.checked_sub(1).map(|k| list.steps[k].row);
+                let row = match after {
+                    Some(r) => next_filled(&filled, r, 1),
+                    None => filled.first().copied(),
+                }
+                .ok_or("song list: make a clip on the grid first: a step plays a row with clips")?;
+                list.steps.insert(at, ListStep { row, times: 1 });
+                self.list_pick = Some(at);
+                self.perform.list_edited(at, true);
+                Ok((
+                    format!("song list: step {} plays row {}", at + 1, row + 1),
+                    Some(SongChange::List),
+                ))
+            }
+            TimeAction::ListRemove(step) => {
+                if step >= n {
+                    return Err("song list: no such step".into());
+                }
+                list.steps.remove(step);
+                self.perform.list_edited(step, false);
+                self.list_pick = (n > 1).then(|| step.min(n - 2));
+                Ok((
+                    format!("song list: step {} taken out (UNDO puts it back)", step + 1),
+                    Some(SongChange::List),
+                ))
+            }
+            TimeAction::ListLoop(on) => {
+                list.looped = on;
+                Ok((
+                    if on {
+                        "song list: goes round"
+                    } else {
+                        "song list: stops after its last step"
+                    }
+                    .into(),
+                    Some(SongChange::List),
+                ))
+            }
+            TimeAction::ListToSong => {
+                if n == 0 {
+                    return Err("list → song: the list is empty".into());
+                }
+                let end = self.project.arrangement.end();
+                let at = (end + bar - 1) / bar.max(1) * bar;
+                let add = list_to_song(&self.project, at, bar)
+                    .map_err(|e| format!("list → song: {e:?}"))?;
+                self.selected = None;
+                self.section = None;
+                let song = &mut self.project.arrangement;
+                for p in add.placements {
+                    song.place(p).map_err(|e| format!("list → song: {e:?}"))?;
+                }
+                for m in add.markers {
+                    song.mark(m.at, &m.name)
+                        .map_err(|e| format!("list → song: {e:?}"))?;
+                }
+                Ok((
+                    format!("list → song: {n} steps from bar {}", at / bar.max(1) + 1),
+                    Some(SongChange::ListToSong { steps: n }),
                 ))
             }
             _ => Ok((String::new(), None)),
@@ -3267,6 +3440,13 @@ impl TimeControl {
         st.loop_cell = self.loop_cell();
         st.morph = self.morph;
         st.song_view = self.song_view;
+        st.list_view = self.list_view;
+        st.list = self.list_rows(&st.scenes);
+        st.list_pick = self.list_pick.filter(|&k| k < st.list.len());
+        st.list_looped = self.project.arrangement.list.looped;
+        st.list_next = self
+            .perform
+            .list_next(&self.project, self.info.meter.bar_ticks());
         st.song_on = self.song;
         st.selected = self.selected;
         st.region = self.region;
@@ -3288,6 +3468,37 @@ impl TimeControl {
             }))
         });
         st
+    }
+
+    /// The song list's steps as the screen shows them, with the scenes'
+    /// names `scenes` (a plain row is "Row 3").
+    fn list_rows(&self, scenes: &[String]) -> Vec<ListRow> {
+        let bar = self.info.meter.bar_ticks().max(1);
+        let now = self.info.position;
+        let pass = self.perform.list_pass(&self.project, now, bar);
+        let waiting = self.perform.list_waiting(now);
+        let spans = list_spans(&self.project, bar);
+        self.project
+            .arrangement
+            .list
+            .steps
+            .iter()
+            .zip(spans)
+            .enumerate()
+            .map(|(k, (s, (at, len)))| ListRow {
+                name: scenes
+                    .get(s.row)
+                    .filter(|n| !n.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| format!("Row {}", s.row + 1)),
+                row: s.row,
+                times: s.times,
+                bars: len / bar,
+                starts: at / bar + 1,
+                playing: pass.filter(|p| p.0 == k).map(|p| (p.1, p.2)),
+                waiting: waiting == Some(k),
+            })
+            .collect()
     }
 
     /// The time engine's part of the status line, with the audio half's
@@ -3341,6 +3552,26 @@ pub fn perform_line(on: bool) -> &'static str {
         "Perform: mutes land on the bar, deletes need a hold, MAIN goes to the Clips grid"
     } else {
         "Make: mutes and deletes act at once, MAIN goes to Play"
+    }
+}
+
+/// The row with a clip after `row` (`delta` > 0) or before it, going
+/// round, from the rows with a clip `filled` in order; `row` itself when
+/// it is the only one, None when no row has a clip.
+fn next_filled(filled: &[usize], row: usize, delta: i32) -> Option<usize> {
+    if delta >= 0 {
+        filled
+            .iter()
+            .find(|&&r| r > row)
+            .or_else(|| filled.first())
+            .copied()
+    } else {
+        filled
+            .iter()
+            .rev()
+            .find(|&&r| r < row)
+            .or_else(|| filled.last())
+            .copied()
     }
 }
 
