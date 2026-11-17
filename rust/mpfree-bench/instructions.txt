@@ -15,6 +15,8 @@
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
+28533	Auto wah
+21968	Auto-pan
 339781	Chain: drive, filter, delay, comp
 104245	Character (Console)
 120120	Character (Iron)
@@ -52,9 +54,11 @@
 188280	EQ (4 bands and both cuts), HQ 2x
 64907	Flanger
 92618	Flanger, through zero
+55287	Frequency shifter
 386476	Fuzz
 17437	Gate
 473617	Grains FX (dense)
+99325	Harmonizer
 188538	Keys Dusty Keys, 16 voices
 169967	Keys Init, 16 voices
 117314	Keys Init, 8 voices
@@ -87,6 +91,8 @@
 37002	Perform FX, the 16 pads in turn
 107805	Phaser (12 stages)
 66460	Phaser (4 stages)
+60128	Pitch correct
+58972	Pitch shifter
 155797	Plate reverb
 307019	Pluck Bell, 16 voices
 249183	Pluck Harp, 16 voices
@@ -102,7 +108,9 @@
 209421	Poly Pluck, 8 voices
 33542	Poly Sub Bass, 8 voices
 374672	Poly Supersaw, 8 voices
+24644	Ring mod
 145867	Room reverb
+115746	Rotary
 546477	Sampler x16 held
 1515282	Sampler x16 held up
 1774420	Sampler x16 held up, 16-bit sound
@@ -119,12 +127,15 @@
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
 64328	Squelch Square Acid, a line
+37255	Talk box
 87944	Tape delay
 8130	Time with trig conditions and ratchets, 8 clips, arp
 8528	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices
 26028	Transient shaper
+16713	Tremolo
+32159	Tuner
 476604	Wavetable Digital Bell, 8 voices
 479074	Wavetable FM Keys, 8 voices
 77780	Wavetable Growl Bass, 8 voices
