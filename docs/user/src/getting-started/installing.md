@@ -105,6 +105,8 @@ When there is a new version of MPFree, put it on the same stick with the new cre
 3. Leave **Keep my backup, settings and files** chosen, and click **Update MPFree**. Approve your computer's password prompt.
 4. When the creator says **MPFree is updated**, put the stick back into the MPC and turn it on. MPFree starts with your settings and files.
 
+If you'd like a new backup of your MPC as well (after an Akai update, say), tick **Back up my MPC again too** under **Keep my backup, settings and files**. The next start then backs up your MPC again, which takes 20 to 30 minutes and about 8 GB on the stick, and the backup already there stays. Without it, if MPFree's first start uses the backup already on the stick, the screen says for a few seconds when that backup was made and whether on this MPC. A backup of another MPC is never used for yours: MPFree backs up yours too.
+
 You don't need developer mode again: the helper is already on the MPC. If the stick was set up by an earlier MPFree, its first start after the update may sort the Akai samples into a folder per kit, which takes a minute or two; what is left of the old folders goes to the **Trash**. If the creator can't keep what is on the stick (a stick from a much older or newer MPFree), it stops before writing anything and says so: copy the backup to your computer first, then choose **Erase everything and start over**.
 
 To start the stick afresh instead, choose **Erase everything and start over** in step 3. That erases the backup on the stick, your MPFree settings and work too, and the next start backs up your MPC again. (For a stick the creator doesn't recognise as MPFree's, the same choice is **Start the stick's data fresh** in **Preferences**.)

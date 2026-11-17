@@ -412,6 +412,65 @@ struct Prefs {
     ssh_key: String,
     any_update: bool,
     fresh_data: bool,
+    /// Back the MPC up again at the first start (`--new-backup`), when
+    /// updating a stick that keeps its partition 4.
+    new_backup: bool,
+    /// How the MPC's startup hook starts the stick (developer option).
+    route: Route,
+    /// With the chain: the MPC's running tree (`--live-dtb`).
+    live_dtb: String,
+}
+
+/// The startup hook's routes into the stick, as `mpfree-stick` takes them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Route {
+    #[default]
+    SoftReboot,
+    KexecFile,
+    LoadpinOff,
+    Chain,
+}
+
+impl Route {
+    const ALL: [(Route, &'static str, &'static str); 4] = [
+        (Route::SoftReboot, "Soft-reboot (MPFree's own)", "The MPC restarts into the stick's system. What MPFree supports."),
+        (Route::KexecFile, "Akai's kernel by kexec-file", "The MPC restarts into its own kernel with the stick as its root, and soft-reboots if that is refused (--kexec-file)."),
+        (Route::LoadpinOff, "Akai's kernel, LoadPin off", "As above, with loadpin.enforce=0 on that kernel's command line (--kexec-file --loadpin-off)."),
+        (Route::Chain, "Chain to the stick's own kernel", "As above, then the stick's system restarts once more into its own kernel and a device tree made for this MPC: the eMMC and SD card hidden in it, Ethernet's PHY ID (--chain). One try per power-on."),
+    ];
+
+    fn flags(self) -> &'static [&'static str] {
+        match self {
+            Route::SoftReboot => &[],
+            Route::KexecFile => &["--kexec-file"],
+            Route::LoadpinOff => &["--kexec-file", "--loadpin-off"],
+            Route::Chain => &["--kexec-file", "--loadpin-off", "--chain"],
+        }
+    }
+}
+
+/// Whether `path` holds a device tree, for the Preferences panel.
+fn check_live_dtb(path: &str) -> Result<String, String> {
+    if path.trim().is_empty() {
+        return Err("Type where live.dtb is".into());
+    }
+    let p = Path::new(path.trim());
+    let mut head = [0u8; 4];
+    std::fs::File::open(p)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head))
+        .map_err(|e| e.to_string())?;
+    if head != [0xd0, 0x0d, 0xfe, 0xed] {
+        return Err("Not a device tree".into());
+    }
+    Ok(
+        match std::fs::read_to_string(p.with_file_name("release.txt")) {
+            Ok(r) => format!("A device tree, read on an MPC running {}", r.trim()),
+            Err(_) => {
+                "A device tree (no release.txt beside it to say which release it was read on)"
+                    .into()
+            }
+        },
+    )
 }
 
 struct Creator {
@@ -484,6 +543,10 @@ impl Creator {
             };
             if page == "done-update" {
                 c.last_log = vec![format!("note {}", mpfree_stick::stick::KEPT_NOTE)];
+            }
+            if page == "prefs-chain" {
+                c.prefs_open = true;
+                c.prefs.route = Route::Chain;
             }
             if page == "update" {
                 c.disks = vec![DiskInfo {
@@ -619,12 +682,19 @@ impl Creator {
         if self.prefs.any_update {
             args.push("--any-update".into());
         }
+        args.extend(self.prefs.route.flags().iter().map(|f| f.to_string()));
+        if self.prefs.route == Route::Chain {
+            args.extend(["--live-dtb".into(), self.prefs.live_dtb.trim().to_string()]);
+        }
         if self.prefs.fresh_data {
             args.push("--fresh-data".into());
         } else if self.chosen_disk().is_some_and(|d| d.mpfree) {
             // "Keep my backup, settings and files": stop rather than erase a
             // partition 4 this version can't keep.
             args.push("--keep-data".into());
+            if self.prefs.new_backup {
+                args.push("--new-backup".into());
+            }
         }
         self.start(JobKind::Make, args);
     }
@@ -864,6 +934,10 @@ impl Creator {
                 );
                 ui.indent("keep", |ui| {
                     ui.label(RichText::new("The backup of your MPC, your settings, projects and samples, and the Akai kits stay on the stick. The MPC starts straight into MPFree, without the long first start.").color(look::DIM));
+                    if !self.prefs.fresh_data {
+                        ui.checkbox(&mut self.prefs.new_backup, "Back up my MPC again too");
+                        ui.label(RichText::new("The next start makes a new backup (20 to 30 minutes, about 8 GB on the stick) and keeps the one there. Without it, the MPC says when the backup on the stick was made.").color(look::DIM));
+                    }
                 });
                 ui.add_space(4.0);
                 ui.radio_value(
@@ -881,12 +955,26 @@ impl Creator {
             if self.prefs.ssh {
                 ui.label(RichText::new("Developer SSH is on (Preferences).").color(look::WARN));
             }
+            if self.prefs.route != Route::SoftReboot {
+                let name = Route::ALL
+                    .iter()
+                    .find(|r| r.0 == self.prefs.route)
+                    .map_or("", |r| r.1);
+                ui.label(
+                    RichText::new(format!(
+                        "The MPC starts it another way: {name} (Preferences)."
+                    ))
+                    .color(look::WARN),
+                );
+            }
             ui.add_space(8.0);
             let ready = update_ok
                 && self.chosen.is_some()
                 && self.job.is_none()
                 && self.programs.is_some()
-                && (!self.prefs.ssh || !self.prefs.ssh_key.is_empty());
+                && (!self.prefs.ssh || !self.prefs.ssh_key.is_empty())
+                && (self.prefs.route != Route::Chain
+                    || check_live_dtb(&self.prefs.live_dtb).is_ok());
             let go = if has_mpfree && !self.prefs.fresh_data {
                 "Update MPFree"
             } else {
@@ -1200,6 +1288,27 @@ impl Creator {
                 option(ui, &mut self.prefs.fresh_data, "Start the stick's data fresh", "When making a stick that already has MPFree: erase its settings, files and backup too. Step 3 asks this itself when it recognises the stick.");
                 ui.add_space(8.0);
                 option(ui, &mut self.prefs.any_update, "Take any Akai update (not supported)", "Only for testing a new Akai version. Such a stick may not start.");
+                ui.add_space(8.0);
+                ui.label(RichText::new("How the MPC starts the stick").strong());
+                ui.indent("route", |ui| {
+                    for (route, name, what) in Route::ALL {
+                        ui.radio_value(&mut self.prefs.route, route, name);
+                        ui.indent(name, |ui| {
+                            ui.label(RichText::new(what).color(look::DIM));
+                        });
+                    }
+                    if self.prefs.route == Route::Chain {
+                        ui.horizontal(|ui| {
+                            ui.label("The MPC's running tree:");
+                            ui.text_edit_singleline(&mut self.prefs.live_dtb);
+                        });
+                        match check_live_dtb(&self.prefs.live_dtb) {
+                            Ok(t) => status(ui, Tone::Good, &t),
+                            Err(e) => status(ui, Tone::Bad, &e),
+                        }
+                        ui.label(RichText::new("live.dtb from collect-over-ssh.sh --kexec-preflight, read on the MPC's installed system. The chain's device tree is made from it and the update's board file.").color(look::DIM));
+                    }
+                });
             });
         self.prefs_open = open;
     }
@@ -1226,6 +1335,9 @@ impl Creator {
             if keep {
                 ui.label("MPFree on the stick is replaced by this version.");
                 ui.label(RichText::new("Kept: the backup of your MPC, your settings and files, and the Akai kits and samples.").color(look::DIM));
+                if self.prefs.new_backup {
+                    ui.label(RichText::new("The next start backs up your MPC again.").color(look::DIM));
+                }
             } else if has_mpfree {
                 ui.label("Everything on it is erased and replaced by MPFree, including the backup of your MPC and your MPFree settings and files.");
             } else {
@@ -1233,6 +1345,9 @@ impl Creator {
                 if !self.prefs.fresh_data {
                     ui.label(RichText::new("If it is already an MPFree stick, its MPFree settings, files and backups are kept.").color(look::DIM));
                 }
+            }
+            if self.prefs.route != Route::SoftReboot {
+                ui.label(RichText::new(format!("Developer option: the MPC starts it with {}.", self.prefs.route.flags().join(" "))).color(look::WARN));
             }
             ui.add_space(8.0);
             if !keep {

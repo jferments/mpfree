@@ -89,7 +89,18 @@ jobs:
         run: |
           cargo build --manifest-path rust/Cargo.toml --release --locked \
             --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-startup -p mpfree-screen-log
-      - name: Collect them, checked against the creator's list (stick::PROGRAM_FILES)
+      - name: Build the download helper, mpfree-fetch (linked dynamically)
+        # The static pad player can't open the MPC's libcurl itself (the 16 Nov run's "Insufficient
+        # randomness"), so the Plugins place downloads through this helper beside it (stick::FETCH_FILE):
+        # linked dynamically, against a glibc no newer than the MPC's 2.39, as CI builds and checks it
+        # (mpc-inventory.yml). Its own target folder, so the static programs' build stays as it is.
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          cargo build --manifest-path rust/Cargo.toml --release --locked \
+            --target-dir "${CARGO_TARGET_DIR:-rust/target}-fetch" \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-mpcstore --bin mpfree-fetch
+      - name: Collect them, checked against the creator's list (stick::PROGRAM_FILES and FETCH_FILE)
         run: |
           out="$RUNNER_TEMP/stick-programs"
           rm -rf "$out" && mkdir -p "$out"
@@ -111,7 +122,21 @@ jobs:
             arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
             cp "$f" "$out/$n"
           done
-          (cd "$out" && sha256sum $names | tee SHA256SUMS)
+          # The download helper: optional for a stick, but every release carries it.
+          fetch=$(python3 - <<'PY'
+          import re
+          src = open("rust/mpfree-stick/src/stick.rs").read()
+          print(re.search(r'pub const FETCH_FILE: &str = "([a-z0-9-]+)";', src).group(1))
+          PY
+          )
+          f="${CARGO_TARGET_DIR:-rust/target}-fetch/armv7-unknown-linux-gnueabihf/release/$fetch"
+          arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
+          arm-linux-gnueabihf-readelf -l "$f" | grep -q 'Requesting program interpreter: /lib/ld-linux-armhf.so.3'
+          newest=$(arm-linux-gnueabihf-readelf -W --version-info "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n | tail -1)
+          echo "$fetch asks for $newest at most"
+          [ "${newest#GLIBC_2.}" -le 39 ] || { echo "$fetch needs a newer glibc than the MPC's 2.39"; exit 1; }
+          cp "$f" "$out/$fetch"
+          (cd "$out" && sha256sum $names "$fetch" | tee SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: stick-programs
