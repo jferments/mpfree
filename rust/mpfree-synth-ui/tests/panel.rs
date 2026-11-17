@@ -368,7 +368,7 @@ fn the_qlink_column_shows_what_the_qlinks_turn() {
     assert_eq!(marked, [0, 1, 2, 3]);
     // The app passes a drag on card 3 to the panel: it turns Sub.
     let col = r.ui.rect_of(QLINK_COLUMN).unwrap();
-    assert_eq!(col.w, 168);
+    assert_eq!(col.w, mpfree_ui::qlink::COLUMN_WIDTH);
     let a = r.panel.qlink(&mut r.ui, 2, -4).unwrap();
     assert!(matches!(
         a,
@@ -688,7 +688,7 @@ fn every_sample_lays_out_inside_the_screen_and_paints() {
         assert_eq!(s.panel.layout(), LAYOUT);
         let tiles_r = s.ui.rect_of(TILES).unwrap();
         assert_eq!(tiles_r.intersect(screen), tiles_r);
-        assert_eq!(tiles_r.w, 844, "{}", s.name);
+        assert_eq!(tiles_r.w, 884, "{}", s.name);
         let v = view(&s.ui);
         let geo = v.geometry(tiles_r);
         for (k, (sec, g)) in v.sections.iter().zip(&geo).enumerate() {

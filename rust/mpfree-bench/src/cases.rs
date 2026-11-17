@@ -1267,6 +1267,14 @@ pub fn all(rate: u32) -> Vec<Case> {
         effect("Flanger", rate, Box::new(Flanger::new()), &[])
     }));
     v.push(measured(|| {
+        effect(
+            "Flanger, through zero",
+            rate,
+            Box::new(Flanger::new()),
+            &[(ids::flanger::THROUGH_ZERO, 1.0)],
+        )
+    }));
+    v.push(measured(|| {
         effect("Phaser (4 stages)", rate, Box::new(Phaser::new()), &[])
     }));
     v.push(measured(|| {

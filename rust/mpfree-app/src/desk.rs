@@ -220,6 +220,25 @@ impl Desk<'_> {
                     Transport(Command::Stop) if ready => fx.push(app::Effect::Rec(Press::Stop)),
                     _ => {}
                 }
+                // An empty Loop cell tapped: the next loop lands there.
+                if let mpfree_time_ui::TimeAction::LoopCell(Some(cell)) = a {
+                    fx.extend(arm_loop_cell(app, time, tracks, looper, mix, out, cell));
+                    return None;
+                }
+                // SHIFT + a loop's cell dropped on another Loop track: a
+                // new loop, a copy of its audio (loop-tracks.md part 6).
+                if let mpfree_time_ui::TimeAction::DropClip {
+                    from,
+                    to,
+                    copy: true,
+                } = a
+                {
+                    let loops = |t: usize| time.project().tracks.get(t).is_some_and(|t| t.is_loops());
+                    if from.0 != to.0 && loops(from.0) && loops(to.0) {
+                        fx.extend(copy_loop_cell(time, looper, out, from, to));
+                        return None;
+                    }
+                }
                 let picked = matches!(a, mpfree_time_ui::TimeAction::Arm(Some(_)));
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a));
                 // Picking a track arms its notes, as Bitwig's auto-arm.
@@ -249,7 +268,7 @@ impl Desk<'_> {
                     out.note(&format!("rec: {} armed", app.rec.name()));
                 }
                 out.show(gui::ToUi::Rec(app.rec));
-                fx.extend(rec_effects(done));
+                fx.extend(rec_effects(done, time, looper));
             }
             gui::FromUi::RecPin(on) => {
                 app.rec.pinned = on;
@@ -406,7 +425,7 @@ impl Desk<'_> {
                 let now = rec_now(time, looper);
                 match app.rec.throw(&now).filter(|_| !redo) {
                     Some(done) => {
-                        later.extend(rec_effects(done));
+                        later.extend(rec_effects(done, time, looper));
                         out.show(gui::ToUi::Rec(app.rec));
                     }
                     None => out.show(gui::ToUi::Undo(redo)),
@@ -416,7 +435,7 @@ impl Desk<'_> {
             app::Effect::Rec(p) => {
                 let now = rec_now(time, looper);
                 let done = app.rec.press(p, &now);
-                later.extend(rec_effects(done));
+                later.extend(rec_effects(done, time, looper));
                 out.show(gui::ToUi::Rec(app.rec));
             }
             app::Effect::Nav(n) => out.show(gui::ToUi::Nav(n)),
@@ -523,22 +542,220 @@ fn arm(
         out.note(&format!("rec: {} armed", app.rec.name()));
     }
     out.show(gui::ToUi::Rec(app.rec));
-    rec_effects(done)
+    let mut fx = rec_effects(done, time, looper);
+    // The notes armed alone: a Loop cell armed on the grid lets go.
+    if !app.rec.armed(crate::rec_arm::Target::Loop) && time.loop_cell().is_some() {
+        fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::LoopCell(
+            None,
+        )));
+    }
+    fx
+}
+
+/// An empty Loop cell tapped on the grid (loop-tracks.md part 4): the
+/// next loop recorded lands there. The loop is armed for REC, an empty
+/// loop picked for it and the looper set to record the track's input.
+/// With no loop free, the memory full or a take recording, it says why
+/// and arms nothing.
+fn arm_loop_cell(
+    app: &mut app::App,
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    looper: &mut looping::LoopHost,
+    mix: &mut mixing::MixHost,
+    out: &mut Out,
+    (t, s): (usize, usize),
+) -> Vec<app::Effect> {
+    use crate::rec_arm::{Mover, Target};
+    let n = match looper.free_loop() {
+        Ok(n) => n,
+        Err(why) => return vec![app::Effect::Tell(why)],
+    };
+    let now = rec_now(time, looper);
+    let was = app.rec;
+    let done = app.rec.move_to(Target::Loop, Mover::Tap, &now);
+    if !app.rec.armed(Target::Loop) {
+        return rec_effects(done, time, looper);
+    }
+    if app.rec != was {
+        out.note(&format!("rec: {} armed", app.rec.name()));
+    }
+    let mut fx = crate::time_action(
+        out,
+        time,
+        tracks,
+        looper,
+        app,
+        mix,
+        mpfree_time_ui::TimeAction::LoopCell(Some((t, s))),
+    );
+    out.show(gui::ToUi::Rec(app.rec));
+    let input = time
+        .project()
+        .tracks
+        .get(t)
+        .and_then(|tr| tr.loops())
+        .unwrap_or_default();
+    fx.push(app::Effect::Looper(looping::LoopAction::Select(n)));
+    fx.extend(app.loop_input(input));
+    fx.extend(rec_effects(done, time, looper));
+    if let Some(name) = mpfree_time_ui::view::loop_cell_name(&time.state()) {
+        fx.push(app::Effect::Tell(format!(
+            "REC \u{2192} {name}: REC records a loop there, from {}",
+            input.name().to_lowercase()
+        )));
+    }
+    fx
+}
+
+/// SHIFT + a loop's cell dropped on an empty cell of another Loop track
+/// (loop-tracks.md part 6): the cell there takes an empty loop, and the
+/// looper copies the loop's layers into it, silent until the cell is
+/// launched. Says why not: no loop free, the memory, the loop busy.
+fn copy_loop_cell(
+    time: &mut time::TimeHost,
+    looper: &mut looping::LoopHost,
+    out: &mut Out,
+    from: (usize, usize),
+    to: (usize, usize),
+) -> Vec<app::Effect> {
+    use mpfree_time_ui::TimeAction::{LoopCopy, LoopCopyOff};
+    let tell = |s: String| vec![app::Effect::Tell(s)];
+    let Some(n) = time
+        .project()
+        .clip(from.0, from.1)
+        .and_then(|c| c.looped)
+        .map(usize::from)
+    else {
+        return tell("clips: nothing to copy there".to_string());
+    };
+    let m = match looper.free_loop() {
+        Ok(m) => m,
+        Err(why) => return tell(why),
+    };
+    // The cell first: the time engine checks both cells.
+    let said = match time.act(LoopCopy {
+        from,
+        to,
+        into: m as u8,
+    }) {
+        Ok(line) => line,
+        Err(why) => return tell(why),
+    };
+    match looper.copy_loop(n, m) {
+        Ok(line) => out.note(&line),
+        Err(why) => {
+            let _ = time.act(LoopCopyOff(m as u8));
+            return tell(why);
+        }
+    }
+    tell(said)
+}
+
+/// A loop's copy onto another Loop track ended
+/// ([`looping::LoopHost::copy_ended`]): all in, or stopped with some of
+/// its layers, or with none, so its cell goes.
+pub fn copy_ended(time: &mut time::TimeHost, e: looping::CopyEnd) -> Vec<app::Effect> {
+    let (from, to) = (e.from + 1, e.to + 1);
+    if e.layers == 0 {
+        let mut fx = Vec::new();
+        if let Ok(line) = time.act(mpfree_time_ui::TimeAction::LoopCopyOff(e.to as u8)) {
+            if !line.is_empty() {
+                fx.push(app::Effect::Note(format!("time: {line}")));
+            }
+        }
+        fx.push(app::Effect::Tell(format!(
+            "Loop {from} didn't copy into Loop {to}: the loops were busy, so try again"
+        )));
+        return fx;
+    }
+    let s = if e.of == 1 { "" } else { "s" };
+    if e.layers < e.of {
+        return vec![app::Effect::Tell(format!(
+            "Loop {to} has {} of Loop {from}'s {} layers: the copy stopped",
+            e.layers, e.of
+        ))];
+    }
+    vec![app::Effect::Note(format!(
+        "looper: loop {to} is a copy of loop {from}, {} layer{s}",
+        e.of
+    ))]
 }
 
 /// What the arm does, as the app's effects (in order).
-fn rec_effects(done: Vec<crate::rec_arm::Do>) -> Vec<app::Effect> {
+fn rec_effects(
+    done: Vec<crate::rec_arm::Do>,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+) -> Vec<app::Effect> {
     use crate::rec_arm::Do;
-    done.into_iter()
-        .map(|d| match d {
-            Do::Transport(c) => app::Effect::Time(mpfree_time_ui::TimeAction::Transport(c)),
-            Do::Looper(c) => app::Effect::Looper(looping::LoopAction::Command(c)),
-            Do::StopWaiting => app::Effect::Looper(looping::LoopAction::StopWaiting),
-            Do::ThrowTake => app::Effect::Time(mpfree_time_ui::TimeAction::ThrowTake),
-            Do::Tell(s) => app::Effect::Tell(s),
-            Do::Note(s) => app::Effect::Note(s),
-        })
-        .collect()
+    let mut fx = Vec::new();
+    for d in done {
+        match d {
+            Do::Transport(c) => {
+                fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::Transport(c)))
+            }
+            Do::Looper(c) => fx.extend(loop_take(c, time, looper)),
+            Do::StopWaiting => fx.push(app::Effect::Looper(looping::LoopAction::StopWaiting)),
+            Do::ThrowTake => fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::ThrowTake)),
+            Do::Tell(s) => fx.push(app::Effect::Tell(s)),
+            Do::Note(s) => fx.push(app::Effect::Note(s)),
+        }
+    }
+    fx
+}
+
+/// The loop's Record or Overdub from REC with a Loop cell armed on the
+/// grid (loop-tracks.md part 4): Record makes a new loop in an empty one,
+/// from the track's input (Resample: the other loops as heard), or says
+/// why it can't; Overdub layers the loop playing on that Loop track. A
+/// first pass or an overdub under way takes them as the looper does.
+fn loop_take(
+    c: mpfree_looper::Command,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+) -> Vec<app::Effect> {
+    use looping::LoopAction;
+    use mpfree_looper::{Command, Phase};
+    let plain = vec![app::Effect::Looper(LoopAction::Command(c))];
+    let Some((t, _)) = time.loop_cell() else {
+        return plain;
+    };
+    if matches!(
+        looper.phase(),
+        Phase::Armed | Phase::Recording | Phase::Overdubbing
+    ) {
+        return plain;
+    }
+    let track = time.project().tracks.get(t);
+    match c {
+        Command::Record => match looper.free_loop() {
+            Ok(n) => {
+                let resample =
+                    track.and_then(|tr| tr.loops()) == Some(mpfree_seq::LoopInput::Resample);
+                vec![
+                    app::Effect::Looper(LoopAction::Select(n)),
+                    app::Effect::Looper(LoopAction::Command(if resample {
+                        Command::Resample
+                    } else {
+                        Command::Record
+                    })),
+                ]
+            }
+            Err(why) => vec![app::Effect::Tell(why)],
+        },
+        Command::Overdub => match time.loop_on(t) {
+            Some(n) => vec![
+                app::Effect::Looper(LoopAction::Select(n)),
+                app::Effect::Looper(LoopAction::Command(Command::Overdub)),
+            ],
+            None => vec![app::Effect::Tell(format!(
+                "Nothing plays on {} to overdub: REC records a loop into its armed cell",
+                track.map_or("the Loop track", |tr| tr.name.as_str())
+            ))],
+        },
+        _ => plain,
+    }
 }
 
 /// What a Q-Link turned on the controller (`ticks` steps of knob `k`)

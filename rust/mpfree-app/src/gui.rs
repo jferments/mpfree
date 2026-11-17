@@ -90,7 +90,7 @@ use std::time::{Duration, Instant};
 
 pub const CONSOLE_LAYOUT: &str = "col(header:60, log:*, hint:26)";
 /// The mixer, and the Q-Link column beside it as on the Play page.
-pub const MIXER_LAYOUT: &str = "col(header:60, row(mixer:*, qlinks:168):*, hint:26)";
+pub const MIXER_LAYOUT: &str = "col(header:60, row(mixer:*, qlinks:128):*, hint:26)";
 pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 /// Prefs > System info: the software on the left, the hardware on the right.
 pub const SYSTEM_LAYOUT: &str = "col(header:60, row(syssw:*, syshw:*):*, hint:26)";
@@ -585,17 +585,45 @@ pub struct Timing {
 pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
 
 /// Writes what each track plays under its name: its own instrument's
-/// name, or "Kit"; a Loop track's input ("Pads + synth").
+/// name, or "Kit"; a Loop track's input ("Pads", for the pads and the
+/// synth).
 fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
     for (i, t) in st.tracks.iter_mut().enumerate() {
         let name = match t.loops {
-            Some(input) => input.name(),
+            Some(input) => input.short(),
             None => sounds.get(i).copied().flatten().map_or("Kit", |h| h.name),
         };
         if t.sound != name {
             t.sound = name.to_string();
         }
     }
+}
+
+/// The loops as the Loop tracks' cells show them, from the Looper's view:
+/// each loop's layers and whether it overdubs, how many hold a loop, and
+/// the memory in use.
+fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo {
+    use mpfree_looper::Phase;
+    let mut info = mpfree_time_ui::view::LoopsInfo::default();
+    for (n, ((f, s), w)) in info
+        .loops
+        .iter_mut()
+        .zip(&v.loops)
+        .zip(&v.cell_waves)
+        .enumerate()
+    {
+        f.overdubbing = s.phase == Phase::Overdubbing;
+        f.copying = v.copy_into == Some(n) || s.copying.is_some();
+        f.wave = *w;
+    }
+    info.in_use = v.loops.iter().filter(|s| s.phase != Phase::Empty).count();
+    info.waiting = v.loops.iter().any(|s| s.phase == Phase::Armed);
+    info.recording = v.loops.iter().any(|s| s.phase == Phase::Recording);
+    let m = v.memory;
+    info.memory_pct = (m.used * 100)
+        .checked_div(m.capacity)
+        .map_or(0, |p| p.min(100) as u8);
+    info
 }
 
 pub enum ToUi {
@@ -1365,7 +1393,7 @@ pub struct Player {
     /// letting go of a pad, the wheel in the workspace), for the audio thread.
     outbox: Vec<FromUi>,
     /// The time engine's bar and Arrange page, and what they show.
-    time_page: TimePage,
+    pub(crate) time_page: TimePage,
     pub time: TimeState,
     /// The Debug tab's Performance and Map controls pages.
     debug: DebugPages,
@@ -2744,7 +2772,9 @@ impl Player {
                         Phase::Armed => RecState::Ready,
                         Phase::Empty | Phase::Playing => RecState::Armed,
                     },
-                    what: format!("Loop {}", self.looper.selected + 1),
+                    // A Loop cell armed on the grid: "Loops C · Drop".
+                    what: time_view::loop_cell_name(&self.time)
+                        .unwrap_or_else(|| self.looper_page.loop_name(self.looper.selected)),
                     add: phase == Phase::Overdubbing,
                     pinned: false,
                 }
@@ -3048,7 +3078,21 @@ impl Player {
                         out.push(FromUi::LoopResample(n));
                     }
                 }
-                // The bounce to a pad, a clip or a file comes next.
+                // Show in Clips: the Arrange page's grid, with the loop's
+                // cell in view.
+                LoopAct::Use(crate::looper_page::USE_SHOW) => {
+                    if let Some(p) = self.looper_page.place(self.looper.selected) {
+                        self.time_page.show_cell(p.track, p.slot);
+                        if self.time.song_view {
+                            out.push(FromUi::Time(TimeAction::SongView(false)));
+                        }
+                        if let Some(tab) = View::Arrange.tab_index(self.settings.debug_mode) {
+                            out.push(FromUi::Tab(tab));
+                        }
+                        self.time_page.update(&mut self.ui, &self.time);
+                    }
+                }
+                // The bounce to a pad or a file comes next.
                 LoopAct::Use(_) => {}
                 // Faint ones say why in place (Jay, 12 Nov).
                 LoopAct::FaintTool(i) => {
@@ -4828,6 +4872,14 @@ impl Player {
                 if matches!(self.view, View::Looper | View::Play) {
                     self.refresh_looper();
                 }
+                // The Loop tracks' cells follow the loops.
+                let loops = loops_info(&self.looper);
+                if loops != self.time.loops {
+                    self.time.loops = loops;
+                    if self.time.tracks.iter().any(|t| t.loops.is_some()) {
+                        self.time_page.update(&mut self.ui, &self.time);
+                    }
+                }
                 if self.rec.target == crate::rec_arm::Target::Loop {
                     self.refresh_rec_chip();
                 }
@@ -5313,9 +5365,20 @@ impl Player {
                     self.seen_takes = seen;
                 }
                 fill_sounds(&mut st, &self.track_sounds);
+                st.loops = loops_info(&self.looper);
                 // The bar's REC chip is the screen's own (refresh_play).
                 st.chips = std::mem::take(&mut self.time.chips);
                 self.time = *st;
+                // Play's strip and the Looper tab name a loop by its place.
+                let places = time_view::loop_places(&self.time);
+                if self.looper_page.set_places(places) {
+                    if matches!(self.view, View::Looper | View::Play) {
+                        self.refresh_looper();
+                    }
+                    if self.rec.target == crate::rec_arm::Target::Loop {
+                        self.refresh_rec_chip();
+                    }
+                }
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
@@ -7967,11 +8030,15 @@ impl Player {
                 }
                 a.map(FromUi::Arp)
             }
-            // A track's sound line: its instrument on the Synth tab.
+            // A track's sound line: its instrument on the Synth tab; a Loop
+            // track's input steps to the next (Pads, Line in, Resample).
             (time_view::CLIPS, EventKind::Tab(k)) if k >= mpfree_time_ui::widgets::SOUND_TAP => {
-                Some(FromUi::TrackInstrument(
-                    k - mpfree_time_ui::widgets::SOUND_TAP,
-                ))
+                let t = k - mpfree_time_ui::widgets::SOUND_TAP;
+                if self.time.tracks.get(t).is_some_and(|tr| tr.loops.is_some()) {
+                    Some(FromUi::Time(TimeAction::LoopInput(t)))
+                } else {
+                    Some(FromUi::TrackInstrument(t))
+                }
             }
             (time_view::CLIPS, EventKind::Toggle(_))
                 if self.time_page.page_tracks(&ev, &self.time) =>
@@ -8017,6 +8084,8 @@ impl Player {
                         TimeAction::Audio(AudioAction::Move { region, to, .. }) => {
                             TimeAction::Audio(AudioAction::Move { region, to, fine })
                         }
+                        // SHIFT + "+ Track": a Loop track.
+                        TimeAction::AddTrack if fine => TimeAction::AddLoopTrack,
                         // SHIFT held as the finger lifts: a copy, not a move.
                         TimeAction::DropClip { from, to, .. } => TimeAction::DropClip {
                             from,
@@ -10487,6 +10556,45 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips sample: {e}"),
     }
+    // Loop tracks: Loops A to C after three note tracks, row 2 playing,
+    // Loop 2 overdubbing (its third layer), the loops' memory a third used.
+    match mpfree_time_ui::sample::loops_playing() {
+        Ok(s) => {
+            use mpfree_looper::Phase;
+            let mut p = quiet_player(fonts());
+            let mut v = crate::looping::LooperView::default();
+            for (n, layers, phase) in [
+                (0, 2, Phase::Playing),
+                (1, 3, Phase::Overdubbing),
+                (2, 1, Phase::Playing),
+                (3, 4, Phase::Playing),
+            ] {
+                v.loops[n].phase = phase;
+                v.loops[n].layers = layers;
+                // A beat's hits on every fourth column, the loop's own
+                // way, as the looper's small waves draw them.
+                for (c, w) in v.cell_waves[n].iter_mut().enumerate() {
+                    let hit = (c + n) % 4 == 0;
+                    let tail = 255 - 50 * ((c + n) % 4) as i32;
+                    *w = if hit {
+                        240
+                    } else {
+                        (tail / (2 + n as i32)) as u8
+                    };
+                }
+            }
+            v.memory.capacity = 300;
+            v.memory.used = 114;
+            p.apply(ToUi::Looper(Box::new(v)));
+            // Loops C's row 1 armed: REC records a loop there.
+            let mut st = s.state();
+            st.loop_cell = Some((5, 0));
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-loops", p));
+        }
+        Err(e) => eprintln!("clips-loops sample: {e}"),
+    }
     // A 24-track project (up to 128, Jay 14 Nov): the grid follows the
     // armed track to its page, tracks 9-16 with Keys 2... armed, then the
     // last page.
@@ -10576,6 +10684,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-takes sample: {e}"),
     }
+    // The Song view with Loop tracks (loop-tracks.md part 5): the rows of
+    // clips-loops' grid made into a song, song mode on, so the Loop
+    // tracks' lanes hold their loops' blocks.
+    match mpfree_time_ui::sample::song_loops_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-loops", p));
+        }
+        Err(e) => eprintln!("arrange-song-loops sample: {e}"),
+    }
     // The Song view of the 24-track project, scrolled down to the last
     // tracks and "+ Track".
     match mpfree_time_ui::sample::big_song_state() {
@@ -10604,6 +10724,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("looper-history", p));
         }
         Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // The same on Loop tracks (clips-loops' grid): each loop named by its
+    // place, and Show in Clips lit.
+    match (
+        sample_looper(fonts()),
+        mpfree_time_ui::sample::loops_playing(),
+    ) {
+        (Ok(mut p), Ok(s)) => {
+            p.apply(ToUi::Time(Box::new(s.state())));
+            p.apply(ToUi::Show(View::Looper));
+            out.push(("looper-loops", p));
+        }
+        (Err(e), _) | (_, Err(e)) => eprintln!("looper-loops sample: {e}"),
     }
     // The synth on the pads (the kit list's last entry), then its page.
     let synth_kit = sample_kits().len();
@@ -13160,7 +13293,7 @@ mod tests {
             tap(&mut p, seg(v.index()));
             let throws = p.ui.rect_of(play_page::THROWS).unwrap();
             assert!(
-                throws.y > 168 && throws.bottom() <= 750 && throws.right() <= 1010,
+                throws.y > 168 && throws.bottom() <= 750 && throws.right() <= 1050,
                 "{v:?}: {throws:?}"
             );
             assert!(p.ui.rect_of(play_page::PADS).is_none(), "{v:?}: no pads");
@@ -14473,7 +14606,7 @@ mod tests {
         let r =
             p.ui.rect_of(play_page::QLINKS)
                 .expect("the column is on Arrange");
-        assert_eq!((r.x, r.w), (1100, 168), "at the right edge, 168 px");
+        assert_eq!((r.x, r.w), (1140, 128), "at the right edge, 128 px");
         // Q-Link 1 is Play's first knob, and a turn of it does what it does on Play.
         p.apply(ToUi::PlayQLink(0, 6));
         assert!(
@@ -14671,7 +14804,7 @@ mod tests {
         // the Q-Link cards at the right edge, beside the knobs.
         assert!(p.ui.rect_of(play_page::PADS).is_none());
         let steps = p.ui.rect_of(play_page::STEPS).unwrap();
-        assert!(steps.w == 998 && steps.h > 250, "{steps:?}");
+        assert!(steps.w == 1038 && steps.h > 250, "{steps:?}");
         assert_eq!(
             p.ui.rect_of(play_page::TRANSPORT).map(|r| (r.y, r.h)),
             Some((84, 84))
@@ -16571,7 +16704,7 @@ mod tests {
             .map(|q| p.ui.rect_of(q).unwrap())
             .collect();
         for (k, r) in cards.iter().enumerate() {
-            assert_eq!((r.w, r.right()), (168, w - p.ui.theme.gap), "card {k}");
+            assert_eq!((r.w, r.right()), (128, w - p.ui.theme.gap), "card {k}");
             if k > 0 {
                 assert!(r.y > cards[k - 1].bottom());
             }
@@ -19654,7 +19787,7 @@ mod tests {
             let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
             (q.title.clone(), q.cards.clone())
         };
-        assert!(p.ui.rect_of(play_page::QLINKS).is_some_and(|r| r.w == 168));
+        assert!(p.ui.rect_of(play_page::QLINKS).is_some_and(|r| r.w == 128));
         assert_eq!(column(&p).0, "Q-Links · Synth");
         assert_eq!(column(&p).1, p.synth.as_ref().unwrap().qlink_cards());
         let before = column(&p).1[0].value.clone();

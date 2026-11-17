@@ -7,7 +7,7 @@
 //!   it, and its ON pill (bypass with spillover). A tap selects an effect
 //!   and a drag moves it along the chain; under the list, Add effect opens
 //!   the effect picker, and Up, Down and Remove act on the selected one.
-//! - **The effect** (the rest: 844 px on the MPC): a header with the
+//! - **The effect** (the rest: 884 px on the MPC): a header with the
 //!   effect's name and its Mode chooser (a button per mode, or ‹ › round a
 //!   chip that opens the list of them), or its page tabs when it has more
 //!   than one page; then the page, its controls in labelled sections in
@@ -141,8 +141,8 @@ pub enum ChainAction {
     },
 }
 
-/// The chain column's width (the effect column takes the rest: 844 px on
-/// the MPC, beside the app's 168 px Q-Link column).
+/// The chain column's width (the effect column takes the rest: 884 px on
+/// the MPC, beside the app's 128 px Q-Link column).
 pub const LIST_W: i32 = 220;
 /// Space between the columns, and between the chain column's cards.
 const GAP: i32 = 12;

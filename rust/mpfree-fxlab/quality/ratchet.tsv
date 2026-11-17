@@ -783,46 +783,52 @@ modulation/chorus[Subtle widen]/click_db_over_6k	-84.3067
 modulation/chorus[Subtle widen]/insert_lu_hits	0.0599
 modulation/chorus[Subtle widen]/insert_lu_pink	-0.2473
 modulation/chorus[Subtle widen]/mono_fold_lu	-0.8499
-modulation/flanger/click_db_over_6k	-77.9885
-modulation/flanger/drawn_err_db_half_fbm90	46.3333
-modulation/flanger/drawn_err_db_half_fbp0	8.9369
-modulation/flanger/drawn_err_db_half_fbp90	16.2841
-modulation/flanger/drawn_err_db_whole_fbp0	0.0005
-modulation/flanger/drawn_err_db_whole_fbp90	0.0005
-modulation/flanger/feedback_lu_m70	1.4125
-modulation/flanger/feedback_lu_m95	6.4533
-modulation/flanger/feedback_lu_p70	1.5191
-modulation/flanger/feedback_lu_p95	6.0206
-modulation/flanger/half_frame_notch_db_12k_16k	-21.4374
-modulation/flanger/insert_lu_hits	-2.3342
-modulation/flanger/insert_lu_pink	-2.368
-modulation/flanger/longest_delay_ms	40
-modulation/flanger/mono_fold_lu	-1.177
+modulation/flanger/click_db_over_6k	-71.6272
+modulation/flanger/drawn_err_db_half_fbm90	0.0002
+modulation/flanger/drawn_err_db_half_fbp0	0.0003
+modulation/flanger/drawn_err_db_half_fbp90	0.0002
+modulation/flanger/drawn_err_db_tz_fbp0	0
+modulation/flanger/drawn_err_db_tz_fbp90	0.0007
+modulation/flanger/drawn_err_db_whole_fbp0	0.0003
+modulation/flanger/drawn_err_db_whole_fbp90	0.0002
+modulation/flanger/feedback_lu_m70	-0.2522
+modulation/flanger/feedback_lu_m95	-0.8257
+modulation/flanger/feedback_lu_p70	-0.1448
+modulation/flanger/feedback_lu_p95	-1.195
+modulation/flanger/half_frame_notch_db_12k_16k	-54.8163
+modulation/flanger/insert_lu_hits	0.0288
+modulation/flanger/insert_lu_pink	0.0164
+modulation/flanger/longest_delay_ms	20
+modulation/flanger/mono_fold_lu	-1.1919
 modulation/flanger/rest_dbfs_fast_short_fbm95	-140
 modulation/flanger/rest_dbfs_fast_short_fbp95	-140
-modulation/flanger/rest_dbfs_slow_long_fbm95	-89.358
-modulation/flanger/rest_dbfs_slow_long_fbp95	-89.1098
+modulation/flanger/rest_dbfs_slow_long_fbm95	-78.4374
+modulation/flanger/rest_dbfs_slow_long_fbp95	-79.2498
 modulation/flanger/wet_corr_300hz	0.0043
-modulation/flanger[Gentle flange]/click_db_over_6k	-83.7706
-modulation/flanger[Gentle flange]/insert_lu_hits	-2.9411
-modulation/flanger[Gentle flange]/insert_lu_pink	-2.9182
-modulation/flanger[Gentle flange]/mono_fold_lu	-1.0497
-modulation/flanger[Hollow flange]/click_db_over_6k	-77.9355
-modulation/flanger[Hollow flange]/insert_lu_hits	-1.651
-modulation/flanger[Hollow flange]/insert_lu_pink	-1.63
-modulation/flanger[Hollow flange]/mono_fold_lu	-1.5396
-modulation/flanger[Jet sweep]/click_db_over_6k	-54.4268
-modulation/flanger[Jet sweep]/insert_lu_hits	-1.4089
-modulation/flanger[Jet sweep]/insert_lu_pink	-1.3564
-modulation/flanger[Jet sweep]/mono_fold_lu	-1.745
-modulation/flanger[Metallic]/click_db_over_6k	-82.471
-modulation/flanger[Metallic]/insert_lu_hits	-0.4861
-modulation/flanger[Metallic]/insert_lu_pink	-0.2646
-modulation/flanger[Metallic]/mono_fold_lu	-1.2521
-modulation/flanger[Two-bar sweep]/click_db_over_6k	-83.328
-modulation/flanger[Two-bar sweep]/insert_lu_hits	-2.419
-modulation/flanger[Two-bar sweep]/insert_lu_pink	-2.1118
-modulation/flanger[Two-bar sweep]/mono_fold_lu	-1.359
+modulation/flanger[Gentle flange]/click_db_over_6k	-77.4118
+modulation/flanger[Gentle flange]/insert_lu_hits	-0.0101
+modulation/flanger[Gentle flange]/insert_lu_pink	0.0368
+modulation/flanger[Gentle flange]/mono_fold_lu	-1.0618
+modulation/flanger[Hollow flange]/click_db_over_6k	-66.6442
+modulation/flanger[Hollow flange]/insert_lu_hits	-0.2557
+modulation/flanger[Hollow flange]/insert_lu_pink	-0.2434
+modulation/flanger[Hollow flange]/mono_fold_lu	-1.562
+modulation/flanger[Jet sweep]/click_db_over_6k	-55.0035
+modulation/flanger[Jet sweep]/insert_lu_hits	-0.4545
+modulation/flanger[Jet sweep]/insert_lu_pink	-0.3869
+modulation/flanger[Jet sweep]/mono_fold_lu	-1.7729
+modulation/flanger[Metallic]/click_db_over_6k	-80.7858
+modulation/flanger[Metallic]/insert_lu_hits	-0.0607
+modulation/flanger[Metallic]/insert_lu_pink	0.0895
+modulation/flanger[Metallic]/mono_fold_lu	-1.2892
+modulation/flanger[Tape flange]/click_db_over_6k	-63.4158
+modulation/flanger[Tape flange]/insert_lu_hits	-0.3438
+modulation/flanger[Tape flange]/insert_lu_pink	0.2336
+modulation/flanger[Tape flange]/mono_fold_lu	-1.3027
+modulation/flanger[Two-bar sweep]/click_db_over_6k	-81.5742
+modulation/flanger[Two-bar sweep]/insert_lu_hits	-0.4209
+modulation/flanger[Two-bar sweep]/insert_lu_pink	-0.1092
+modulation/flanger[Two-bar sweep]/mono_fold_lu	-1.3806
 modulation/phaser/click_db_over_6k	-85.2938
 modulation/phaser/drawn_err_db_st1_c4000_fbp90	0
 modulation/phaser/drawn_err_db_st1_c700_fbm70	0

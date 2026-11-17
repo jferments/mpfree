@@ -56,7 +56,7 @@ pub const WHEEL: &str = "smp-warp-wheel";
 /// between the pad bar and the Q-Link cards.
 pub const LAYOUT: &str = "col(header:60, row(smp-warp-bar:*, smp-send:330):60, \
                           row(smp-warp-view:*, col(smp-warp-list:*, smp-warp-buttons:64, smp-warp-wheel:56):360, \
-                          col(smp-warp-q1, smp-warp-q2, smp-warp-q3, smp-warp-q4):168):*, hint:26)";
+                          col(smp-warp-q1, smp-warp-q2, smp-warp-q3, smp-warp-q4):128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 1;
