@@ -56,7 +56,7 @@ use std::sync::TryLockError;
 use std::time::Duration;
 
 use mpfree_midi::input::{ChanFilter, In, InputRouter, PortFilter, Route};
-use mpfree_midi::learn::{Input, LearnMap, Saved, Write};
+use mpfree_midi::learn::{Input, LearnMap, Mode, Saved, Source, Write};
 use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
@@ -65,7 +65,7 @@ use mpfree_midi::setup::{Ignored, Kept, PortInput, TempoSource};
 use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
 use mpfree_node::ParamInfo;
-use mpfree_play::mpfree_param::ParamAddr;
+use mpfree_play::mpfree_param::{transport, Owner, ParamAddr};
 
 use crate::time::Follow;
 
@@ -151,6 +151,19 @@ pub enum Learning {
     Took { target: ParamAddr, control: String },
     /// A learned control moved: set this.
     Set(Write),
+}
+
+/// Whether a key learned on `target` flips it on each press (as the MPC's
+/// TRACK MUTE pads do) rather than holding it while held: PLAY and STOP,
+/// and a mixer strip's mute and solo. Works as changes it on the Learn
+/// section.
+pub fn key_toggles(target: ParamAddr) -> bool {
+    use mpfree_fx::ids::mixer as mx;
+    match target.owner {
+        Owner::Transport => target.param == transport::PLAYING,
+        Owner::Strip(_) => matches!(target.param, mx::MUTE | mx::SOLO),
+        _ => false,
+    }
 }
 
 /// Clock counted as "stopped" this long after its last tick.
@@ -561,7 +574,13 @@ impl MusicIn {
         };
         if !self.unsaved.is_empty() {
             for mut l in self.unsaved.drain(..) {
-                let mut kept = Kept::Project;
+                // The transport and the tempo work in every song; the rest
+                // belongs to this one.
+                let mut kept = if l.target.owner == Owner::Transport {
+                    Kept::Rig
+                } else {
+                    Kept::Project
+                };
                 // Learn again: the new control takes the old one's place,
                 // with its range, how it takes over and where it is kept;
                 // the way it works carries over when it is the same kind
@@ -586,7 +605,11 @@ impl MusicIn {
             self.armed_by = ArmedBy::Chain;
             m.gen += 1;
         }
-        // The Learn section's Learn again and Cancel.
+        // The Learn section's Learn again, its transport buttons and
+        // Cancel.
+        if let Some(target) = m.asks.learn_target.take() {
+            self.arm_from(target, ArmedBy::Io);
+        }
         if let Some(k) = m.asks.learn_again.take() {
             if let Some((kept, l)) = m.setup.learned_at(k) {
                 self.learn.arm(l.target);
@@ -973,6 +996,16 @@ impl MusicIn {
                     _ => To::Ignored,
                 };
                 self.feed.to(to);
+            }
+            // A key learned on a switch you flip (PLAY and STOP, a mute,
+            // a solo) flips it on each press, before the key comes up.
+            if let Some(i) = learned {
+                let flips = self.learn.get(i).is_some_and(|m| {
+                    matches!(m.control.source, Source::Note(_)) && key_toggles(m.target)
+                });
+                if flips {
+                    self.learn.set_mode(i, Mode::Toggle);
+                }
             }
             if let Some(m) = learned.and_then(|i| self.learn.get(i).copied()) {
                 let name = self.ports.get(port).map(|p| p.name.clone());
@@ -2021,6 +2054,69 @@ mod tests {
         m.arm(cutoff());
         assert_eq!(m.armed_by(), Some(ArmedBy::Chain));
         assert!(!m.waits());
+    }
+
+    /// The Learn section's transport card arms Learn on PLAY and STOP; a
+    /// key takes it as a button that flips it, kept for every project. A
+    /// key on a track's mute flips it too and stays with the song; a key on
+    /// anything else works while held.
+    #[test]
+    fn a_key_on_play_and_stop_or_a_mute_flips_it_and_the_transport_is_the_rigs() {
+        use mpfree_midi::learn::Mode;
+        let mut m = MusicIn::new();
+        let usb = m.plugged("Keystep 37").unwrap();
+        let s = model();
+        m.sync(&s, 0.0);
+        let play_stop = ParamAddr::new(Owner::Transport, transport::PLAYING);
+        s.lock().unwrap().asks.learn_target = Some(play_stop);
+        m.sync(&s, 0.1);
+        assert_eq!(m.armed(), Some(play_stop));
+        assert_eq!(m.armed_by(), Some(ArmedBy::Io), "it waits");
+        // Note on, then off: the release flips nothing.
+        run(&mut m, usb, &[0x90, 48, 100]);
+        run(&mut m, usb, &[0x80, 48, 0]);
+        let got: Vec<_> = m.learning().collect();
+        assert!(
+            matches!(got[..], [Learning::Took { target, .. }] if target == play_stop),
+            "{got:?}"
+        );
+        m.sync(&s, 0.2);
+        {
+            let v = s.lock().unwrap();
+            assert!(v.setup.learn.is_empty());
+            assert_eq!(v.setup.rig_learn.len(), 1);
+            assert_eq!(v.setup.rig_learn[0].mode, Mode::Toggle);
+        }
+        // Each press flips it: on, then off.
+        for want in [1.0, 0.0] {
+            run(&mut m, usb, &[0x90, 48, 100]);
+            run(&mut m, usb, &[0x80, 48, 0]);
+            let got: Vec<_> = m.learning().collect();
+            assert!(
+                matches!(got[..], [Learning::Set(w)] if w.target == play_stop && w.value == want),
+                "{got:?}"
+            );
+        }
+        // A track's mute: a toggle too, in the song.
+        let mute = ParamAddr::new(
+            Owner::Strip(mpfree_play::mpfree_param::Strip::Track(1)),
+            mpfree_fx::ids::mixer::MUTE,
+        );
+        m.arm_from(mute, ArmedBy::Touch);
+        run(&mut m, usb, &[0x90, 50, 100]);
+        m.sync(&s, 0.3);
+        // A synth's knob on a key works while held.
+        m.arm_from(cutoff(), ArmedBy::Touch);
+        run(&mut m, usb, &[0x90, 52, 100]);
+        m.sync(&s, 0.4);
+        let v = s.lock().unwrap();
+        let modes: Vec<_> = v.setup.learn.iter().map(|l| (l.target, l.mode)).collect();
+        assert_eq!(modes, [(mute, Mode::Toggle), (cutoff(), Mode::Momentary)]);
+        assert!(key_toggles(mute) && key_toggles(play_stop));
+        assert!(!key_toggles(ParamAddr::new(
+            Owner::Transport,
+            transport::REC
+        )));
     }
 
     /// A switch of mode moves a control learned on the insert to the new

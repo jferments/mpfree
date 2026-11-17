@@ -17,6 +17,11 @@
 //!   Scale; for knobs and faders) and **Kept in** (Rig, Project).
 //! - **Learning:** while MIDI Learn waits for a control ([`Live::learning`]),
 //!   a banner names what it will take, with **Cancel** ([`Asks::cancel_learn`]).
+//! - **Transport and tempo** (the button by the heading, and the card
+//!   while nothing is learned yet): PLAY and STOP, PLAY, STOP, PLAY START,
+//!   REC, OVERDUB, TAP TEMPO and Tempo. A tap arms Learn on one
+//!   ([`Asks::learn_target`]); the control that takes it works in every
+//!   project.
 //!
 //! The wheel picks a row, - and + step Works as, and Q-Links 1 to 4 turn
 //! the range's two ends, Works as and Takeover.
@@ -24,6 +29,7 @@
 //! [`MidiSetup::rig_learn`]: mpfree_midi::setup::MidiSetup::rig_learn
 //! [`Asks::learn_again`]: crate::Asks::learn_again
 //! [`Asks::cancel_learn`]: crate::Asks::cancel_learn
+//! [`Asks::learn_target`]: crate::Asks::learn_target
 //! [`Live::learning`]: crate::Live::learning
 //! [`LearnLive`]: crate::LearnLive
 
@@ -32,11 +38,12 @@ use std::cell::Cell;
 use mpfree_midi::learn::{Encoding, Mode, Saved, Source, Takeover};
 use mpfree_midi::setup::{Kept, PortInput, DIN_NAME};
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
+use mpfree_param::{transport, Owner, ParamAddr};
 use mpfree_ui::{Align, FontId, PaintCx, Rect, Target, Touch};
 
 use crate::{note_name, IoModel, Shared};
 
-const HEAD_H: i32 = 30;
+const HEAD_H: i32 = 42;
 const BANNER_H: i32 = 48;
 const GAP: i32 = 10;
 const TABLE_HEAD_H: i32 = 28;
@@ -48,6 +55,10 @@ const STEP_W: i32 = 40;
 const LABEL_W: i32 = 110;
 const LINE_H: i32 = 40;
 const SEG_W: i32 = 104;
+/// The heading's Transport and tempo button.
+const TRANSPORT_W: i32 = 190;
+/// The transport card's buttons: four a row.
+const PICK_H: i32 = 44;
 /// A range end's step, a tap or a Q-Link detent (SHIFT: a tenth).
 const RANGE_STEP: f32 = 0.01;
 
@@ -102,12 +113,21 @@ enum Hit {
     Mode(i32),
     Takeover(usize),
     Kept(usize),
+    /// The heading's Transport and tempo: the card shows them, or the
+    /// picked row again.
+    Transport,
+    /// The transport card's Back to the picked row.
+    Back,
+    /// One of the transport card's buttons ([`transport::ALL`]).
+    Pick(usize),
 }
 
 struct Layout {
     banner: Option<Rect>,
     cancel: Rect,
     head: Rect,
+    /// The heading's Transport and tempo button.
+    transport: Rect,
     table: Rect,
     /// The rows' area, under the table's column heads.
     body: Rect,
@@ -128,7 +148,8 @@ fn layout(r: Rect, learning: bool) -> Layout {
     let cancel = banner.map_or(Rect::new(0, 0, 0, 0), |b| {
         Rect::new(b.right() - 10 - 100, b.y + 7, 100, b.h - 14)
     });
-    let head = Rect::new(r.x + 4, y, r.w - 8, HEAD_H - 6);
+    let head = Rect::new(r.x + 4, y, r.w - 8, HEAD_H - 8);
+    let transport = Rect::new(head.right() - TRANSPORT_W, head.y, TRANSPORT_W, head.h);
     y += HEAD_H;
     let card = Rect::new(r.x, r.bottom() - CARD_H, r.w, CARD_H);
     let table = Rect::new(r.x, y, r.w, (card.y - GAP - y).max(0));
@@ -154,6 +175,7 @@ fn layout(r: Rect, learning: bool) -> Layout {
         banner,
         cancel,
         head,
+        transport,
         table,
         body,
         card,
@@ -161,6 +183,23 @@ fn layout(r: Rect, learning: bool) -> Layout {
         remove,
         line,
     }
+}
+
+/// The transport card's buttons, in [`transport::ALL`]'s order: two rows
+/// of four under the card's title and its line of words.
+fn pick_rects(l: &Layout) -> [Rect; 8] {
+    let ci = l.card.inset(14);
+    let w = (ci.w - 3 * 8) / 4;
+    let y = ci.y + BUTTON_H + 34;
+    std::array::from_fn(|i| {
+        let (row, col) = ((i / 4) as i32, (i % 4) as i32);
+        Rect::new(ci.x + col * (w + 8), y + row * (PICK_H + 8), w, PICK_H)
+    })
+}
+
+/// The address a transport card button arms.
+fn pick_target(i: usize) -> ParamAddr {
+    ParamAddr::new(Owner::Transport, transport::ALL[i].0)
 }
 
 /// The table's columns: Control, Moves, Now, Kept in (x and width).
@@ -278,6 +317,11 @@ pub(crate) struct Learn {
     note: Option<String>,
     /// The row whose Learn again was tapped, lit while Learn waits.
     again: Option<usize>,
+    /// The card shows the transport's buttons, not the picked row (it
+    /// does while nothing is learned too).
+    transport: bool,
+    /// The transport button tapped, lit while Learn waits.
+    armed: Option<usize>,
     /// What was drawn last: the model's generation, whether Learn waited
     /// and the values now (to draw again when they change).
     drawn: (u64, bool, u64),
@@ -292,6 +336,8 @@ impl Learn {
             down: None,
             note: None,
             again: None,
+            transport: false,
+            armed: None,
             drawn: (u64::MAX, false, 0),
         }
     }
@@ -331,14 +377,26 @@ impl Learn {
             return Some(Hit::Cancel);
         }
         let n = m.setup.all_learned().count();
+        if n > 0 && l.transport.contains(x, y) {
+            return Some(Hit::Transport);
+        }
         let top = self.top_for(n, Self::rows_shown(l.body));
         for k in 0..n {
             if Self::row_rect(&l, top, k).is_some_and(|rr| rr.contains(x, y)) {
                 return Some(Hit::Row(k));
             }
         }
-        if n == 0 || !l.card.contains(x, y) {
+        if !l.card.contains(x, y) {
             return None;
+        }
+        if self.transport || n == 0 {
+            if n > 0 && l.remove.contains(x, y) {
+                return Some(Hit::Back);
+            }
+            return pick_rects(&l)
+                .iter()
+                .position(|p| p.contains(x, y))
+                .map(Hit::Pick);
         }
         if l.again.contains(x, y) {
             return Some(Hit::Again);
@@ -456,21 +514,47 @@ impl Learn {
         match h {
             Hit::Row(k) => {
                 self.pick = k;
+                self.transport = false;
                 IoReply::Redraw
             }
             Hit::Cancel => {
                 let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
                 m.asks.cancel_learn = true;
                 m.asks.learn_again = None;
+                m.asks.learn_target = None;
                 self.again = None;
+                self.armed = None;
+                IoReply::Redraw
+            }
+            Hit::Transport => {
+                self.transport = !self.transport;
+                IoReply::Redraw
+            }
+            Hit::Back => {
+                self.transport = false;
+                IoReply::Redraw
+            }
+            Hit::Pick(i) => {
+                let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+                m.asks.learn_target = Some(pick_target(i));
+                m.asks.learn_again = None;
+                m.asks.cancel_learn = false;
+                self.again = None;
+                self.armed = Some(i);
+                self.note = Some(format!(
+                    "{}: press a button or move a knob on your controller",
+                    transport::ALL[i].1
+                ));
                 IoReply::Redraw
             }
             Hit::Again => {
                 let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
                 if m.setup.learned_at(self.pick).is_some() {
                     m.asks.learn_again = Some(self.pick);
+                    m.asks.learn_target = None;
                     m.asks.cancel_learn = false;
                     self.again = Some(self.pick);
+                    self.armed = None;
                     self.note =
                         Some("Move a knob, a key or a pedal on your controller".to_string());
                 }
@@ -507,6 +591,47 @@ impl Learn {
             let x = v.now.map_or(u64::MAX, |x| (x * 1000.0) as u64);
             h.wrapping_mul(31).wrapping_add(x)
         })
+    }
+
+    /// The transport card: a button for each of the transport's controls,
+    /// the one Learn waits for lit.
+    fn paint_transport(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        let ci = l.card.inset(14);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            Rect::new(ci.x, ci.y, l.again.x - ci.x - 8, BUTTON_H),
+            Align::Left,
+            t.text_dim,
+            "TRANSPORT AND TEMPO",
+        );
+        if back {
+            button(cx, l.remove, "Back", false);
+        }
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(ci.x, ci.y + BUTTON_H + 2, ci.w, 28),
+            Align::Left,
+            t.text_dim,
+            "Tap one, then press a button or move a knob on your controller. It works in every project.",
+        );
+        let waiting = m.asks.learn_target.is_some() || m.live.learning.is_some();
+        for (i, r) in pick_rects(l).into_iter().enumerate() {
+            button(cx, r, transport::ALL[i].1, waiting && self.armed == Some(i));
+        }
+        let last = pick_rects(l)[7];
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(ci.x, last.bottom() + 6, ci.w, 22),
+            Align::Left,
+            t.text_faint,
+            "A key on PLAY and STOP plays, then stops. Tempo wants a knob or a fader. \
+             Mutes: hold SHIFT and touch a strip's M.",
+        );
     }
 
     fn paint_card(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, k: usize) {
@@ -708,7 +833,10 @@ impl IoSection for Learn {
             t.text_dim,
             &format!("WHAT YOUR CONTROLLERS MOVE · {}", all.len()),
         );
-        let key = Rect::new(l.head.right() - 300, l.head.y, 300, l.head.h);
+        if !all.is_empty() {
+            button(cx, l.transport, "Transport and tempo", self.transport);
+        }
+        let key = Rect::new(l.transport.x - 12 - 300, l.head.y, 300, l.head.h);
         cx.text(
             FontId::Sans,
             t.size_small * 0.85,
@@ -747,8 +875,9 @@ impl IoSection for Learn {
                 lr,
                 Align::Left,
                 t.text_faint,
-                "In the chain editor, touch a control and tap Learn, then move a knob on your controller.",
+                "Hold SHIFT and touch a value on any page, then move a knob on your controller.",
             );
+            self.paint_transport(cx, &m, &l, false);
             return;
         }
         let shown = Self::rows_shown(l.body);
@@ -877,6 +1006,10 @@ impl IoSection for Learn {
                 ),
             );
         }
+        if self.transport {
+            self.paint_transport(cx, &m, &l, true);
+            return;
+        }
         let k = self.pick.min(all.len() - 1);
         self.paint_card(cx, &m, &l, k);
     }
@@ -889,6 +1022,14 @@ impl IoSection for Learn {
             out.push(Target::tap("learn-cancel", 0, "Cancel learning", l.cancel));
         }
         let all: Vec<(Kept, &Saved)> = m.setup.all_learned().collect();
+        if !all.is_empty() {
+            out.push(Target::tap(
+                "learn-transport",
+                0,
+                "Transport and tempo",
+                l.transport,
+            ));
+        }
         let top = self.top_for(all.len(), Self::rows_shown(l.body));
         for (k, (_, s)) in all.iter().enumerate() {
             if let Some(rr) = Self::row_rect(&l, top, k) {
@@ -904,6 +1045,15 @@ impl IoSection for Learn {
                     rr,
                 ));
             }
+        }
+        if self.transport || all.is_empty() {
+            if !all.is_empty() {
+                out.push(Target::tap("learn-back", 0, "Back", l.remove));
+            }
+            for (i, r) in pick_rects(&l).into_iter().enumerate() {
+                out.push(Target::tap("learn-pick", i, transport::ALL[i].1, r));
+            }
+            return out;
         }
         let Some((_, s)) = all.get(self.pick.min(all.len().saturating_sub(1))) else {
             return out;
@@ -979,6 +1129,7 @@ impl IoSection for Learn {
                 self.pick = to;
                 IoReply::Redraw
             }
+            IoInput::Step(_) if self.transport || n == 0 => IoReply::Handled,
             IoInput::Step(d) if d != 0 => self.mode(d.signum()),
             IoInput::Step(_) => IoReply::Handled,
         }
@@ -1006,7 +1157,7 @@ impl IoSection for Learn {
             pos: 0.0,
             enabled: false,
         };
-        let Some((_, s)) = m.setup.learned_at(self.pick) else {
+        let Some((_, s)) = m.setup.learned_at(self.pick).filter(|_| !self.transport) else {
             return Some([off(), off(), off(), off()]);
         };
         let live = m.live.learn_live.get(self.pick);
@@ -1048,7 +1199,7 @@ impl IoSection for Learn {
     }
 
     fn qlink_turn(&mut self, knob: usize, detents: i32, fine: bool) -> IoReply {
-        if detents == 0 {
+        if detents == 0 || self.transport {
             return IoReply::Ignored;
         }
         let step = if fine { RANGE_STEP / 10.0 } else { RANGE_STEP };
@@ -1154,10 +1305,91 @@ mod tests {
                 );
             }
         }
-        // With nothing learned it says how to learn one.
+        // With nothing learned it says how to learn one, and the card
+        // offers the transport.
         let s = Learn::new(Arc::new(Mutex::new(crate::sample::rig())));
         let _ = paint(&s);
-        assert!(s.targets(AREA).is_empty());
+        let ids: Vec<&str> = s.targets(AREA).iter().map(|t| t.id).collect();
+        assert_eq!(ids, ["learn-pick"; 8]);
+        // The transport card fits too.
+        let mut s = Learn::new(model());
+        assert_eq!(tap(&mut s, "learn-transport", 0), IoReply::Redraw);
+        let _ = paint(&s);
+        for t in s.targets(AREA) {
+            assert!(
+                AREA.contains(t.rect.x, t.rect.y)
+                    && t.rect.right() <= AREA.right()
+                    && t.rect.bottom() <= AREA.bottom(),
+                "{} \"{}\" at {:?} is outside {AREA:?}",
+                t.id,
+                t.label,
+                t.rect
+            );
+        }
+    }
+
+    #[test]
+    fn the_transport_card_arms_learn_on_play_and_stop_the_tempo_and_the_rest() {
+        let m = model();
+        let mut s = Learn::new(m.clone());
+        let _ = paint(&s);
+        // The row's card until the heading's button swaps it.
+        assert!(!s.targets(AREA).iter().any(|t| t.id == "learn-pick"));
+        tap(&mut s, "learn-transport", 0);
+        let labels: Vec<String> = s
+            .targets(AREA)
+            .into_iter()
+            .filter(|t| t.id == "learn-pick")
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "PLAY and STOP",
+                "PLAY",
+                "STOP",
+                "PLAY START",
+                "REC",
+                "OVERDUB",
+                "TAP TEMPO",
+                "Tempo"
+            ]
+        );
+        // The Q-Links have nothing to turn while it shows.
+        assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
+        assert_eq!(s.qlink_turn(0, 1, false), IoReply::Ignored);
+        // PLAY and STOP: Learn waits for a control to take it.
+        assert_eq!(tap(&mut s, "learn-pick", 0), IoReply::Redraw);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Transport, transport::PLAYING))
+        );
+        assert_eq!(
+            s.take_note().unwrap(),
+            "PLAY and STOP: press a button or move a knob on your controller"
+        );
+        // Tempo in its place; Cancel takes it back.
+        tap(&mut s, "learn-pick", 7);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Transport, transport::TEMPO))
+        );
+        m.lock().unwrap().live.learning = Some("Tempo".into());
+        let _ = paint(&s);
+        tap(&mut s, "learn-cancel", 0);
+        {
+            let v = m.lock().unwrap();
+            assert_eq!(v.asks.learn_target, None);
+            assert!(v.asks.cancel_learn);
+        }
+        m.lock().unwrap().live.learning = None;
+        // Back, or a tap on a row, shows the row's card again.
+        tap(&mut s, "learn-back", 0);
+        assert!(s.targets(AREA).iter().any(|t| t.id == "learn-again"));
+        tap(&mut s, "learn-transport", 0);
+        tap(&mut s, "learn-row", 1);
+        assert!(s.targets(AREA).iter().any(|t| t.id == "learn-again"));
+        assert_eq!(s.pick, 1);
     }
 
     #[test]

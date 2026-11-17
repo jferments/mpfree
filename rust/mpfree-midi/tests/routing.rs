@@ -1258,3 +1258,46 @@ fn routes_past_the_most_kept_are_counted() {
     assert_eq!(r.set_routes(many, 0, |_| {}), 40 - MAX_ROUTES);
     assert_eq!(r.routes().count(), MAX_ROUTES);
 }
+
+/// A key made a toggle on a value that is already on (PLAY and STOP while
+/// playing, a muted track) turns it off on its first press.
+#[test]
+fn a_toggle_starts_from_where_its_value_stands() {
+    let mut map = LearnMap::new();
+    let a = addr(3);
+    map.observe(a, 1.0);
+    map.arm(a);
+    let key = |down: bool| {
+        if down {
+            Msg::NoteOn {
+                ch: 0,
+                note: 36,
+                vel: 100,
+            }
+        } else {
+            Msg::NoteOff {
+                ch: 0,
+                note: 36,
+                vel: 0,
+            }
+        }
+    };
+    assert!(matches!(
+        writes(&mut map, KEYS, key(true))[..],
+        [Input::Learned(0)]
+    ));
+    // The app makes it a toggle as it learns, before the key comes up.
+    map.set_mode(0, Mode::Toggle);
+    assert!(writes(&mut map, KEYS, key(false)).is_empty());
+    let first = writes(&mut map, KEYS, key(true));
+    assert!(
+        matches!(first[..], [Input::Write(x)] if x.value == 0.0),
+        "{first:?}"
+    );
+    assert!(writes(&mut map, KEYS, key(false)).is_empty());
+    let second = writes(&mut map, KEYS, key(true));
+    assert!(
+        matches!(second[..], [Input::Write(x)] if x.value == 1.0),
+        "{second:?}"
+    );
+}

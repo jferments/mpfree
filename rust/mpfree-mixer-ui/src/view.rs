@@ -697,15 +697,17 @@ impl MixerView {
         Some((*strips.get(k)?, j))
     }
 
-    /// The strip parameter a fader, pan or send target sets (for SHIFT + a
-    /// touch's MIDI Learn): its strip and the parameter's id. None for
-    /// other targets, and for a send the strip doesn't have.
+    /// The strip parameter a fader, pan, send, M or S target sets (for
+    /// SHIFT + a touch's MIDI Learn): its strip and the parameter's id.
+    /// None for other targets, and for a send the strip doesn't have.
     pub fn param_of(&self, t: &Target, r: Rect) -> Option<(StripId, u16)> {
         let (strip, j) = self.strip_of(t, r)?;
         let s = self.state.strip(strip)?;
         match t.id {
             "fader" => Some((strip, mx::VOLUME)),
             "pan" => Some((strip, mx::PAN)),
+            "mute" => Some((strip, mx::MUTE)),
+            "solo" => Some((strip, mx::SOLO)),
             "send" => {
                 s.sends?.get(j)?;
                 Some((strip, mx::send(j)))

@@ -144,8 +144,8 @@ pub fn qlink_to(ui: &mut Ui, knob: usize, pos: f32) -> Option<MixAction> {
 }
 
 /// The strip parameter the control `t` sets, for SHIFT + a touch's MIDI
-/// Learn: (strip, parameter id) for a strip's fader, pan or send on the
-/// Faders look, else None.
+/// Learn: (strip, parameter id) for a strip's fader, pan, send, M or S on
+/// the Faders look, else None.
 pub fn param_of(ui: &Ui, t: &mpfree_ui::Target) -> Option<(mpfree_fx::StripId, u16)> {
     let r = ui.rect_of(MIXER)?;
     ui.get::<MixerView>(MIXER)?.param_of(t, r)
