@@ -89,7 +89,8 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     changes: the pad player runs as root, as before
   - a service that records the Ethernet details (read-only-ethernet.sh, the
     same script collect-over-ssh.sh --ethernet runs on 3.6) before the network
-    starts and after, and if eth0 failed to start, starts it again at 20, 45
+    starts and after, and if eth0 failed to start, starts it again: 2 s after
+    a "Failed to reset the dma" in the kernel log, else at 20, 45
     and 90 seconds; it changes only RAM (it mounts debugfs if systemd has not)
     and writes only /run/mpfree-test-eth, which the log service copies
   - root's password field, only if it marks the account locked ("!"), is set
@@ -1041,32 +1042,53 @@ WantedBy=sysinit.target
 
 # Records the Ethernet details (tools/mpc-one/read-only-ethernet.sh, copied in as
 # ethernet-details.sh) early, before the network starts, and later; and if eth0 failed to
-# start, starts it again a few times. It changes only RAM: it mounts debugfs if systemd has
-# not, and runs `ip link set eth0 up`. It writes only to /run/mpfree-test-eth, which the log
-# service copies to the stick.
+# start, starts it again. It changes only RAM: it mounts debugfs if systemd has not, and runs
+# `ip link set eth0 up`. It writes only to /run/mpfree-test-eth, which the log service copies
+# to the stick. After a kexec the first start of eth0 can fail with "Failed to reset the dma"
+# (the PHY gives the controller no clock yet); the driver resets the PHY as it lets go of it,
+# and the next start works (the kexec test boots since 3.6.0, chain steps 7 and 7b). So the
+# script starts eth0 again 2 s after that failure, instead of waiting for its checks at 20, 45
+# and 90 s, which stay as the fallback. A failure logged before it started does not count.
 ETHERNET_SCRIPT = """#!/bin/sh
 # MPFree kexec test boot: record the Ethernet details; start eth0 again if it failed to start.
-out=/run/mpfree-test-eth
+R=''
+# (The R='' line is an empty root prefix; only tests change it.)
+out="$R/run/mpfree-test-eth"
 mkdir -p "$out"
 say() { echo "mpfree-test-ethernet: $*"; }
-grep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug
-uptime_s() { cut -d. -f1 /proc/uptime; }
+grep -q ' /sys/kernel/debug debugfs ' "$R/proc/mounts" || mount -t debugfs debugfs /sys/kernel/debug
+uptime_s() { cut -d. -f1 "$R/proc/uptime"; }
 wait_until() { while [ "$(uptime_s)" -lt "$1" ]; do sleep 1; done; }
 details() { sh /etc/mpfree-test/ethernet-details.sh > "$out/ethernet-$1.txt" 2>&1; say "recorded ethernet-$1.txt"; }
-eth0_up() { f=$(cat /sys/class/net/eth0/flags 2>/dev/null) || return 1; [ $((f & 1)) = 1 ]; }
+eth0_up() { f=$(cat "$R/sys/class/net/eth0/flags" 2>/dev/null) || return 1; [ $((f & 1)) = 1 ]; }
+start_eth0() { ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'; }
+dma_failures() { dmesg 2>/dev/null | grep -c 'Failed to reset the dma'; }
 details "1-early-$(uptime_s)s"
-wait_until 15
-details 2-at-15s
-n=3
+seen=$(dma_failures)
+n=2
+while [ "$(uptime_s)" -lt 15 ]; do
+  sleep 1
+  if [ "$seen" != done ] && ! eth0_up && [ "$(dma_failures)" -gt "$seen" ]; then
+    seen=done
+    sleep 2
+    say "eth0 failed to start (Failed to reset the dma); starting it again at $(uptime_s) s"
+    start_eth0
+    sleep 3
+    details "$n-at-$(uptime_s)s-after-early-retry"
+    n=$((n + 1))
+  fi
+done
+details "$n-at-15s"
+n=$((n + 1))
 for at in 20 45 90; do
   wait_until "$at"
   if eth0_up; then
-    say "eth0 is up at $at s (operstate $(cat /sys/class/net/eth0/operstate)); no retry needed"
+    say "eth0 is up at $at s (operstate $(cat "$R/sys/class/net/eth0/operstate")); no retry needed"
     details "$n-at-${at}s-eth0-up"
     exit 0
   fi
   say "eth0 is not up at $at s; starting it again"
-  ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'
+  start_eth0
   sleep 3
   details "$n-at-${at}s-after-retry"
   n=$((n + 1))
