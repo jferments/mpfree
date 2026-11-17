@@ -6,12 +6,15 @@
 //!   for each grain. A tap or drag on it moves the position.
 //! - The **touch pad** moves the position (across) and the grain size (up)
 //!   together, on a log scale from 2 ms to 2 s.
-//! - The **Grain** list holds every setting: the play mode (only Granular
-//!   plays grains), scan speed, spray, pitch spray, the window's shape,
-//!   reverse chance, stereo spread, pitch quantise, tempo sync, and
-//!   position, size, density, pitch and the cloud's level. A tap on a row
-//!   picks it and its arrows step it; the **wheel** steps the row picked
-//!   (Scan, until another is picked).
+//! - The **panel** beside the touch pad ([`crate::panel`]) has two
+//!   sections: **Cloud** (how grains scatter: scan speed, spray, pitch
+//!   spray, reverse chance and stereo spread, and the cloud's level, as
+//!   knobs) and **Shape** (the play mode, only Granular playing grains; the
+//!   window's shape; pitch quantise; tempo sync). Position, size, density
+//!   and pitch are the Q-Links' (and the touch pad's). A touch on a control
+//!   or a Q-Link card picks it; the **wheel** and - / + step the one
+//!   picked (Scan, until another is), and a finger resting on a control
+//!   lets the wheel turn it.
 //! - **Tempo sync** locks the density, the size or both to the project
 //!   tempo: Density then steps in grains a beat and Size in beats, and the
 //!   engine starts each grain on the beat grid at the tempo playing now
@@ -39,10 +42,11 @@ use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
 use crate::grain_widgets::{GrainCloud, XyPad, GRAIN_COLOR};
+use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::LayerSound;
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
-use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList};
+use crate::widgets::{KnobCard, PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-grain-bar";
@@ -55,20 +59,19 @@ pub const QLINKS: [&str; 4] = [
     "smp-grain-q3",
     "smp-grain-q4",
 ];
-pub const WHEEL: &str = "smp-grain-wheel";
 
-/// The tab's page: the cloud, and beside it the touch pad over the Grain
-/// list, between the pad bar and the Q-Link cards.
+/// The tab's page: the cloud across the page, and under it the touch pad
+/// beside the panel, between the pad bar and the Q-Link cards.
 pub const LAYOUT: &str = "col(header:60, row(smp-grain-bar:*, smp-send:330):60, \
-                          row(smp-grain-cloud:*, col(smp-grain-xy:236, smp-grain-list:*, smp-grain-wheel:56):340, \
+                          row(col(smp-grain-cloud:*, row(smp-grain-xy:236, smp-grain-list:*):242):*, \
                           col(smp-grain-q1, smp-grain-q2, smp-grain-q3, smp-grain-q4):128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 4;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Hit the pad to hear the cloud · drag on the sound for the position, on the pad for position and \
-                        size · the wheel picks a row, - / + change it · SHIFT + Q-Link 1 / 4: spray, pitch spray";
+pub const HINT: &str = "Hit the pad to hear the cloud · drag the sound for the position, the touch pad for position \
+                        and size · touch a control, then turn the wheel · SHIFT + Q-Link 1 / 4: the sprays";
 
 /// Grain sizes the arrows step through, in ms.
 const SIZES_MS: [f32; 19] = [
@@ -154,7 +157,8 @@ pub const LEVEL_RANGE_DB: (f32, f32) = (-24.0, 12.0);
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x4752_4149_0000_0000;
 
-/// The Grain list's rows, in order.
+/// The Grain list's rows: the panel's, in its order (which the wheel
+/// walks), then the Q-Links'.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Mode,
@@ -175,20 +179,20 @@ pub enum Row {
 
 impl Row {
     pub const ALL: [Row; 14] = [
-        Row::Mode,
         Row::Scan,
         Row::Spray,
         Row::PitchSpray,
-        Row::Window,
         Row::Reverse,
         Row::Spread,
+        Row::Level,
+        Row::Mode,
+        Row::Window,
         Row::Quantise,
         Row::Sync,
         Row::Position,
         Row::Size,
         Row::Density,
         Row::Pitch,
-        Row::Level,
     ];
 
     pub fn label(self) -> &'static str {
@@ -210,10 +214,41 @@ impl Row {
         }
     }
 
-    fn index(self) -> usize {
+    /// Its name over its knob on the panel (and in the list's rows): the
+    /// label, shorter where a knob is too narrow for it.
+    pub fn short(self) -> &'static str {
+        match self {
+            Row::Scan => "Scan",
+            Row::Reverse => "Reverse",
+            Row::Spread => "Stereo",
+            other => other.label(),
+        }
+    }
+
+    /// Its place in [`Row::ALL`]: the list's row.
+    pub fn index(self) -> usize {
         Row::ALL.iter().position(|r| *r == self).unwrap_or(0)
     }
 }
+
+/// The order [`describe`] says the changes in: the mode first, the level
+/// last (the log's, which the panel's order doesn't change).
+const LOG_ORDER: [Row; 14] = [
+    Row::Mode,
+    Row::Scan,
+    Row::Spray,
+    Row::PitchSpray,
+    Row::Window,
+    Row::Reverse,
+    Row::Spread,
+    Row::Quantise,
+    Row::Sync,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+    Row::Level,
+];
 
 /// The rows the Q-Links turn, in knob order.
 pub const QLINK_ROWS: [Row; 4] = [Row::Position, Row::Size, Row::Density, Row::Pitch];
@@ -346,7 +381,7 @@ impl GrainTab {
         let mut cloud = GrainCloud::new("Grains over the sound");
         cloud.right = "drag for the position".into();
         ui.add(CLOUD, cloud);
-        ui.add(XY, XyPad::new("Touch: position × size", "position", "size"));
+        ui.add(XY, XyPad::new("Touch", "position", "size"));
         let mut list = SettingList::new("Grain");
         list.right = "this layer".into();
         list.selected = Row::Scan.index();
@@ -360,7 +395,6 @@ impl GrainTab {
                     .on(k, "Grain"),
             );
         }
-        ui.add(WHEEL, InfoCard::new("The row picked"));
         ui.add_page(name, LAYOUT)?;
         let mut tab = GrainTab {
             name: name.to_string(),
@@ -373,7 +407,7 @@ impl GrainTab {
         Ok(tab)
     }
 
-    /// The row picked in the Grain list.
+    /// The row picked: a control on the panel, or a Q-Link card.
     pub fn row(&self, ui: &Ui) -> Row {
         ui.get::<SettingList>(LIST)
             .and_then(|l| Row::ALL.get(l.selected).copied())
@@ -496,12 +530,14 @@ impl GrainTab {
         let rows = Row::ALL
             .iter()
             .map(|r| Setting {
-                name: r.label().into(),
+                name: r.short().into(),
                 value: value_text(&st.region, *r),
             })
             .collect();
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
+            list.controls = controls(&st.region);
+            list.panel = Some(panel());
         }
         self.show_cards(ui, st);
     }
@@ -527,10 +563,6 @@ impl GrainTab {
                 _ => (g.pitch + PITCH_LIMIT) / (2.0 * PITCH_LIMIT),
             }
             .clamp(0.0, 1.0);
-        }
-        let text = format!("{}: {}", row.label(), value_text(&st.region, row));
-        if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
-            card.text = text;
         }
     }
 
@@ -652,6 +684,79 @@ impl GrainTab {
         }
         let r = stepped(&st.region, row, delta, st.bpm);
         self.edit(st, Key::Row(row), r)
+    }
+}
+
+/// How each row looks on the panel, in [`Row::ALL`]'s order (the
+/// Q-Links' rows aren't on it, and are chips).
+fn controls(r: &Region) -> Vec<Control> {
+    let g = &r.grain;
+    let knob = |pos: f32, steps: u32, bipolar: bool| {
+        Control::new(Look::Knob {
+            pos: pos.clamp(0.0, 1.0),
+            steps,
+            bipolar,
+        })
+    };
+    let (lo, hi) = LEVEL_RANGE_DB;
+    Row::ALL
+        .iter()
+        .map(|row| match row {
+            Row::Scan => knob(
+                (g.scan + SCAN_LIMIT) / (2.0 * SCAN_LIMIT),
+                SCANS.len() as u32 - 1,
+                true,
+            ),
+            Row::Spray => knob(g.spray, 20, false),
+            Row::PitchSpray => knob(g.pitch_spray / PITCH_SPRAY_LIMIT, 24, false),
+            Row::Reverse => knob(g.reverse, 20, false),
+            Row::Spread => knob(g.spread, 20, false),
+            Row::Level => knob(
+                (level_db(g.gain) - lo) / (hi - lo),
+                ((hi - lo) * 2.0) as u32,
+                false,
+            ),
+            Row::Mode
+            | Row::Window
+            | Row::Quantise
+            | Row::Sync
+            | Row::Position
+            | Row::Size
+            | Row::Density
+            | Row::Pitch => Control::new(Look::Chip),
+        })
+        .collect()
+}
+
+/// The panel: Cloud and Shape beside the touch pad, as the mockup Jay
+/// approved (17 Nov), with the play mode in Shape.
+fn panel() -> Panel {
+    let it = |k: Row| Item::new(k.index());
+    Panel {
+        sections: vec![
+            Section::new(
+                "Cloud",
+                500,
+                vec![vec![
+                    it(Row::Scan),
+                    it(Row::Spray),
+                    it(Row::PitchSpray),
+                    it(Row::Reverse),
+                    it(Row::Spread),
+                    it(Row::Level),
+                ]],
+            )
+            .note("how grains scatter"),
+            Section::new(
+                "Shape",
+                360,
+                vec![
+                    vec![it(Row::Mode).labelled(), it(Row::Window).labelled()],
+                    vec![it(Row::Quantise).labelled(), it(Row::Sync).labelled()],
+                ],
+            )
+            .note("this layer"),
+        ],
     }
 }
 
@@ -1000,7 +1105,7 @@ fn split_unit(text: &str) -> (String, String) {
 /// the log: "size 80 ms -> 120 ms, scan 0.25× -> Frozen". Empty if nothing
 /// did.
 pub fn describe(a: &Region, b: &Region) -> String {
-    Row::ALL
+    LOG_ORDER
         .iter()
         .filter_map(|&row| {
             let (x, y) = (value_text(a, row), value_text(b, row));
