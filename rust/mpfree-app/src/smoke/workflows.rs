@@ -3015,4 +3015,55 @@ mod tests {
             s.button("TRACK MUTE");
         });
     }
+
+    /// Rec song with REC (sequencer S4): in Perform the take REC records
+    /// brings Rec song with it, and the REC chip says "+ Rec song"; what
+    /// the grid played goes into the song when the take ends. The target
+    /// list's switch takes it off for the next take.
+    #[test]
+    fn in_perform_rec_brings_rec_song_with_the_take() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button_with("SHIFT", "MAIN").settle();
+            assert!(s.time.project().perform);
+            let chip = |s: &mut Session| {
+                s.control("play-transport", "rec", "")
+                    .map(|c| c.target.label)
+                    .unwrap_or_default()
+            };
+            assert!(chip(&mut s).ends_with(" + Rec song"), "{}", chip(&mut s));
+            s.button("REC").button("PLAY");
+            s.run_for(2.5);
+            assert!(s.time.state().song_rec, "the take turned Rec song on");
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "time: rec song: on with REC (Perform)"),
+                "{:?}",
+                s.said()
+            );
+            s.pad(2, 100, 0.05);
+            s.run_for(2.0);
+            s.button("STOP").run_for(0.3);
+            assert!(!s.time.state().song_rec, "off with the take");
+            assert!(
+                !s.time.state().placements.is_empty(),
+                "what the grid played is in the song"
+            );
+            // The list's switch: off for the next take.
+            let c = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&c);
+            s.settle();
+            s.press("rec-list", "switch", "Rec song").settle();
+            assert!(!s.time.state().song_with_take);
+            assert!(!chip(&mut s).ends_with(" + Rec song"), "{}", chip(&mut s));
+            s.press("rec-list", "switch", "Rec song").settle();
+            assert!(s.time.state().song_with_take, "and back");
+            s.press("rec-list", "close", "Close").settle();
+        });
+    }
 }

@@ -43,7 +43,7 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song â€
 - Under each track's name is what it plays: **Kit**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).
 - **Loop tracks** have lanes too, and Song on plays their loops' blocks as it plays clips (see [Loops in the song](looping.md#loops-in-the-song)).
 
-A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back.
+A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block, and **UNDO** puts it back. In Perform, Delete takes a half-second hold (see [Make and Perform](playing-live.md#make-and-perform)).
 
 ### Moving blocks and sections
 
@@ -77,6 +77,7 @@ Audio you record from the INPUTS goes on **audio tracks**, with lanes of their o
 - A track you didn't touch keeps what the song already had there. Where you launched a clip, it records over the song, like recording over tape.
 - With the loop on, each time round records over the last.
 - Rec song records which clips played, not new notes. To record notes, use **REC** on a clip (see [Clips and patterns](clips.md)).
+- **In Perform, REC brings Rec song with it**: each take you record (a clip or a loop) also records the grid into the song for as long as it lasts, and the REC chip says "+ Rec song". To leave it out of a take, tap the REC chip and turn off **Rec song with REC**; it's back for the take after. Rec song turned on by hand stays on as usual (see [Make and Perform](playing-live.md#make-and-perform)).
 
 > [!NOTE]
 > A track that is muted when you stop stays muted. Its silent parts are already left out of the song, so unmute it to hear the song as you played it.

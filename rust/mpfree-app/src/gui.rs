@@ -109,6 +109,47 @@ const TEXTPAD_LAYOUT: &str = "col(header:60, textpad:*, hint:26)";
 const TEXTPAD_HINT: &str = "Tap the letters, then Enter   ·   wheel or - / +: move the cursor   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
 /// How long a finger stays on Play's BPM to type the tempo, seconds.
 const TEMPO_HOLD: f32 = 0.6;
+/// How long a finger holds a button that deletes or clears in Perform
+/// before it acts (Perform's guard, sequencer decision 5), seconds.
+pub const GUARD_HOLD: f32 = 0.5;
+/// What the hint line says when such a button is touched in Perform.
+pub const GUARD_HINT: &str = "Hold to delete";
+
+/// A finger holding a button that deletes or clears, in Perform (the
+/// guard): which finger, how long it has held (s), where it landed, and
+/// the button (its widget and rectangle) the red fill crosses.
+#[derive(Clone, Debug, PartialEq)]
+struct GuardPress {
+    finger: u64,
+    held: f32,
+    at: (i32, i32),
+    widget: String,
+    rect: mpfree_ui::Rect,
+    /// The button's name, for the log.
+    label: String,
+}
+
+/// Whether target `t` of widget `widget` deletes or clears: in Perform it
+/// needs [`GUARD_HOLD`] (the design's Delete clip, Clear a lane, Halve,
+/// Clear loop, as far as the screens have them).
+fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
+    use mpfree_time_ui::view::{NOTES, SONG};
+    let label = t.label.as_str();
+    match (widget, t.id) {
+        // The Song view's Delete (a block) and Erase (an audio region),
+        // and the note editor's Delete.
+        (SONG, "button") | (NOTES, "button") => label == "Delete",
+        (SONG, "region-button") => label == "Erase",
+        // The Looper tab's Clear loop, a layer's ×, and ½ length.
+        (crate::looper_tab::LOOPS, "clear") => true,
+        (crate::looper_tab::EDITOR, "layer-delete") => true,
+        (crate::looper_tab::EDITOR, "tool") => label == crate::looper_tab::TOOLS[0],
+        // Play's loop strip's Clear, and the step inspector's Clear.
+        (crate::looper_page::LOOP_STRIP, "button") => label == "Clear",
+        (play_page::INSPECTOR, "clear") => true,
+        _ => false,
+    }
+}
 /// The undo history (Jay after live test 3: hold UNDO to see the page's
 /// history and jump back several steps at once), over the page it was
 /// opened from.
@@ -185,6 +226,18 @@ const REC_LIST_HINT: &str =
 
 /// The hint while the notes are ready ([`crate::rec_arm`]): what PLAY
 /// records and how to let go.
+/// The target list's Rec song switch tapped: in Make, Rec song on or
+/// off; in Perform (sequencer S4), "with REC" taken off for the take or
+/// put back, or Rec song turned on by hand off.
+fn rec_song_switch(st: &TimeState) -> TimeAction {
+    match (st.perform, st.song_with_take, st.song_rec) {
+        (true, true, _) => TimeAction::RecSongWithTake(false),
+        (true, false, true) => TimeAction::RecSong(false),
+        (true, false, false) => TimeAction::RecSongWithTake(true),
+        (false, _, on) => TimeAction::RecSong(!on),
+    }
+}
+
 fn rec_ready_hint(c: &play_widgets::RecChip) -> String {
     let what = if c.add { "add to" } else { "record" };
     format!(
@@ -1468,6 +1521,11 @@ pub struct Player {
     power_request: Option<std::path::PathBuf>,
     /// A finger on Play's BPM: which, how long (s) and where it landed.
     tempo_press: Option<(u64, f32, i32, i32)>,
+    /// Perform's guard: a finger holding a button that deletes or clears,
+    /// and a finger whose hold has acted (the rest of its touch is its
+    /// own).
+    guard_press: Option<GuardPress>,
+    guard_done: Option<u64>,
     /// The finger whose SHIFT + touch armed MIDI Learn: it does nothing
     /// else until it lifts.
     learn_finger: Option<u64>,
@@ -1696,6 +1754,8 @@ impl Player {
             power: None,
             power_request: None,
             tempo_press: None,
+            guard_press: None,
+            guard_done: None,
             learn_finger: None,
             learning: None,
             history: None,
@@ -2673,14 +2733,20 @@ impl Player {
                 right: String::new(),
             },
         ];
-        let (song, pinned, what) = (self.time.song_rec, self.rec.pinned, chip.what.clone());
+        let song = self.time.song_rec || self.time.song_with_take;
+        let (perform, pinned, what) = (self.time.perform, self.rec.pinned, chip.what.clone());
         let fresh = self.ui.get::<RecList>(REC_LIST).is_some_and(|l| {
-            l.rows != rows || l.song != song || l.pinned != pinned || l.what != what
+            l.rows != rows
+                || l.song != song
+                || l.perform != perform
+                || l.pinned != pinned
+                || l.what != what
         });
         if fresh {
             if let Some(l) = self.ui.get_mut::<RecList>(REC_LIST) {
                 l.rows = rows;
                 l.song = song;
+                l.perform = perform;
                 l.pinned = pinned;
                 l.what = what;
             }
@@ -2798,6 +2864,10 @@ impl Player {
             self.rec_chip_of(self.rec.target)
         };
         chip.pinned = self.rec.pinned;
+        // Perform: the take brings Rec song (sequencer S4), or it is on.
+        if self.time.perform && (self.time.song_with_take || self.time.song_rec) {
+            chip.what.push_str(" + Rec song");
+        }
         chip
     }
 
@@ -7583,6 +7653,10 @@ impl Player {
             }
             return None;
         }
+        // Perform's guard: a button that deletes or clears needs a hold.
+        if self.watch_guard(finger, phase, x, y) {
+            return None;
+        }
         // SHIFT + a touch on a value: MIDI Learn waits for a control to
         // move it (layout spec 4d). That finger does nothing else until it
         // lifts.
@@ -7773,6 +7847,86 @@ impl Player {
         }
     }
 
+    /// Perform's guard (sequencer decision 5): in Perform, a finger down
+    /// on a button that deletes or clears ([`guarded`]) is kept from it;
+    /// the hint says to hold, a red fill crosses the button, and after
+    /// [`GUARD_HOLD`] ([`Self::tick`]) the button is pressed. Let go
+    /// early, or slid off, nothing happens. True when the touch was the
+    /// guard's.
+    fn watch_guard(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> bool {
+        if self.guard_done == Some(finger) {
+            if matches!(phase, Touch::Up | Touch::Cancel) {
+                self.guard_done = None;
+            }
+            return true;
+        }
+        if let Some(g) = self.guard_press.as_ref().filter(|g| g.finger == finger) {
+            match phase {
+                Touch::Move if g.rect.inset(-20).contains(x, y) => {}
+                Touch::Move | Touch::Up | Touch::Cancel => {
+                    // Slid off or let go early: nothing happens.
+                    println!("guard: {}: let go early, nothing done", g.label);
+                    self.guard_press = None;
+                    self.ui.set_hold_fill(None);
+                    if phase != Touch::Move {
+                        self.tell(GUARD_HINT);
+                    }
+                }
+                Touch::Down => {}
+            }
+            return true;
+        }
+        if phase != Touch::Down || finger == WHEEL_FINGER || !self.time.perform {
+            return false;
+        }
+        let hit = self
+            .ui
+            .targets()
+            .into_iter()
+            .filter(|pt| pt.target.rect.contains(x, y) && pt.target.enabled)
+            .min_by_key(|pt| pt.target.rect.w as i64 * pt.target.rect.h as i64);
+        let Some(pt) = hit.filter(|pt| guarded(&pt.widget, &pt.target)) else {
+            return false;
+        };
+        self.ui
+            .set_hold_fill(Some((&pt.widget, pt.target.rect, 0.0)));
+        self.guard_press = Some(GuardPress {
+            finger,
+            held: 0.0,
+            at: (x, y),
+            widget: pt.widget,
+            rect: pt.target.rect,
+            label: pt.target.label,
+        });
+        self.tell(GUARD_HINT);
+        true
+    }
+
+    /// The guard's hold, from `tick`: the fill crosses the button, and
+    /// once it is across the button is pressed, as a tap would.
+    fn guard_tick(&mut self, dt: f32) {
+        let Some(mut g) = self.guard_press.take() else {
+            return;
+        };
+        g.held += dt.max(0.0);
+        if g.held < GUARD_HOLD {
+            self.ui
+                .set_hold_fill(Some((&g.widget, g.rect, g.held / GUARD_HOLD)));
+            self.guard_press = Some(g);
+            return;
+        }
+        self.ui.set_hold_fill(None);
+        self.guard_done = Some(g.finger);
+        println!("guard: {}: held half a second", g.label);
+        let (x, y) = g.at;
+        for phase in [Touch::Down, Touch::Up] {
+            let ev = self.ui.touch(g.finger, phase, x, y);
+            if let Some(a) = ev.and_then(|ev| self.on_event(ev)) {
+                self.outbox.push(a);
+            }
+        }
+    }
+
     /// A finger on Play's BPM (its tap taps the tempo): held still for
     /// [`TEMPO_HOLD`], it opens the number pad for the tempo
     /// ([`Self::tick`]). A slide or a lift lets it go.
@@ -7937,7 +8091,7 @@ impl Player {
                 self.arm_tap(t)
             }
             (crate::rec_list::REC_LIST, EventKind::Toggle(crate::rec_list::TAP_SONG)) => {
-                Some(FromUi::Time(TimeAction::RecSong(!self.time.song_rec)))
+                Some(FromUi::Time(rec_song_switch(&self.time)))
             }
             (crate::rec_list::REC_LIST, EventKind::Toggle(crate::rec_list::TAP_PIN)) => {
                 Some(FromUi::RecPin(!self.rec.pinned))
@@ -8403,6 +8557,7 @@ impl Player {
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
         self.power_tick(dt);
+        self.guard_tick(dt);
         // UNDO held: the page's undo history.
         if let Some(held) = self.undo_held {
             let held = held + dt.max(0.0);
@@ -10981,6 +11136,24 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-solo sample: {e}"),
     }
+    // Perform's grid (sequencer S4, mockup C): five big rows, the chords
+    // queued for the next bar with a countdown ring, the glitch ending
+    // there, and NEXT on the transport bar.
+    match mpfree_time_ui::sample::playing() {
+        Ok(s) => {
+            let mut p = quiet_player(fonts());
+            let mut st = s.state();
+            st.perform = true;
+            st.scenes = ["Intro", "Verse", "Break", "Drop"]
+                .iter()
+                .map(|n| n.to_string())
+                .collect();
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-perform", p));
+        }
+        Err(e) => eprintln!("clips-perform sample: {e}"),
+    }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
     match mpfree_time_ui::sample::loops_playing() {
@@ -12112,6 +12285,69 @@ mod tests {
         p.apply(ToUi::Rows(RowKey::Editing(false)));
     }
 
+    /// Perform's guard (sequencer decision 5): the Song view's Delete
+    /// needs a half-second hold in Perform, a red fill crossing it; a tap
+    /// or a slide off does nothing; in Make one tap deletes.
+    #[test]
+    fn perform_guards_deletes_with_a_half_second_hold() {
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let mut st = mpfree_time_ui::sample::song_state().unwrap();
+        let sel = st.selected.expect("a block selected");
+        st.perform = true;
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        let mut c = SoftCanvas::new(1280, 800);
+        p.ui.paint(&mut c);
+        let b =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == time_view::SONG && t.target.label == "Delete")
+                .expect("the Song view's Delete")
+                .target
+                .rect;
+        let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+        let deleted = vec![FromUi::Time(TimeAction::DeletePlacement(sel))];
+        // A tap: nothing, and the hint says to hold.
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.2);
+        assert_eq!(p.touch(1, Touch::Up, x, y), None);
+        assert!(p.take_actions().is_empty());
+        assert_eq!(hint(&p), GUARD_HINT);
+        // Held: the red fill crosses it, and at half a second it deletes.
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.3);
+        assert!(p.take_actions().is_empty());
+        p.ui.paint(&mut c);
+        let rgb = c.to_rgb();
+        let i = ((y * 1280 + b.x + 6) * 3) as usize;
+        assert!(
+            rgb[i] > rgb[i + 1].saturating_add(40),
+            "{:?}",
+            &rgb[i..i + 3]
+        );
+        p.tick(0.25);
+        assert_eq!(p.take_actions(), deleted);
+        assert_eq!(p.touch(1, Touch::Up, x, y), None);
+        assert!(p.take_actions().is_empty());
+        // Slid off the button: nothing.
+        p.touch(1, Touch::Down, x, y);
+        p.touch(1, Touch::Move, x, y - 80);
+        p.tick(0.6);
+        p.touch(1, Touch::Up, x, y - 80);
+        assert!(p.take_actions().is_empty());
+        // In Make, one tap.
+        st.perform = false;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.ui.paint(&mut c);
+        let a = p.touch(1, Touch::Down, x, y);
+        let a = a.or(p.touch(1, Touch::Up, x, y));
+        assert_eq!(
+            a.into_iter().chain(p.take_actions()).collect::<Vec<_>>(),
+            deleted
+        );
+    }
+
     #[test]
     fn the_clips_page_shows_the_engine_and_turns_taps_into_actions() {
         use mpfree_time_ui::widgets::{BarButton, ClipGrid, TransportBar};
@@ -12179,7 +12415,7 @@ mod tests {
         });
         assert_eq!(
             p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().title,
-            "Clips · slots 2–6 of 16"
+            "Clips · slots 2–9 of 16"
         );
         assert!(p.take_actions().is_empty());
         // The Record panel's Clip tab: the clip settings card for the

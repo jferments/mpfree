@@ -1,6 +1,6 @@
 # Make and Perform
 
-**Status:** sequencer roadmap S4, parts one to three (`rust/mpfree-app`, `rust/mpfree-seq`, `rust/mpfree-play`, `rust/mpfree-time-ui`, 2026-11-17). Jay's sequencer decisions 4 and 5 (16 Nov 2026): Make and Perform as designed, with mutes landing on the bar in Perform. Design: the sequencer review (mpfree-claude `sequencer/rethink/README.md`, "Make and Perform: the toggle and when mutes land", mockups C and K). Not run on the MPC One yet.
+**Status:** sequencer roadmap S4, parts one to four (`rust/mpfree-app`, `rust/mpfree-seq`, `rust/mpfree-play`, `rust/mpfree-perform`, `rust/mpfree-time-ui`, `rust/mpfree-ui`, 2026-11-17). Jay's sequencer decisions 4 and 5 (16 Nov 2026): Make and Perform as designed, with mutes landing on the bar in Perform. Design: the sequencer review (mpfree-claude `sequencer/rethink/README.md`, "Make and Perform: the toggle and when mutes land", mockups C and K). Not run on the MPC One yet.
 
 ## The rule
 
@@ -20,8 +20,13 @@ Make and Perform change how MPFree answers your hands, never what is in the proj
 | The top bar's chip | MAKE | PERFORM, the second accent colour's dot (`Tone::Accent2`) |
 | MAIN | Play; on Play, the next view | Arrange's Clips grid; on Arrange, the Song view and back (`Effect::ArrangeView`, `ToUi::ArrangeView`) |
 | The arm | Moves as [rec-arm.md](rec-arm.md) says | Pinned: `App::set_perform` turns `RecArm::pinned` on when Perform starts and off when Make does, so the target list's Pin the arm still works by hand between switches |
+| TRACK MUTE's pads | At once; SHIFT waits for the launch line | Wait for the launch line; SHIFT acts at once (below) |
+| Rec song | Off until turned on | On with REC's take (below) |
+| Delete and clear buttons | One tap; UNDO brings it back | A half-second hold (Perform's guard, below) |
+| The Clips grid | 8 compact rows (`ROW_MIN_H_MAKE`): names and lengths, a small ring | 5 big rows (`ROW_MIN_H`), and a queued cell's countdown (below) |
+| The transport bar | As before | NEXT after WAITING (below) |
 
-The switch: a tap on the chip (`header/chip`, the leftmost; `perform_chip` in `gui.rs`) or **SHIFT + MAIN** (`App::mode_button`). Both send `TimeAction::Perform` with the other mode; the chip follows the next `TimeState`.
+The switch: a tap on the chip (`header/chip`, the leftmost; `perform_chip` in `gui.rs`) or **SHIFT + MAIN** (`App::mode_button`). Both send `TimeAction::Perform` with the other mode; the chip follows the next `TimeState`, and the hint line says what changed (`perform_line`: "Perform: mutes land on the bar, deletes need a hold, MAIN goes to the Clips grid").
 
 ## When mutes land, as built (the third part)
 
@@ -38,16 +43,33 @@ TRACK MUTE's pads (layout spec section 6) mute or solo a track at once or on the
 - **Not undo steps.** A mute or solo changes no take, as before.
 - **Not built yet:** the kit's pads (SHIFT + TRACK MUTE) mute at once and have no solo, since the mixer's `PadMute` has no line to wait for. During count-in a change lands with the queue's line as the player gives it (the first bar line after it), not checked on the MPC. A tap taking a change back in the period between its landing and the landing's report acts at once.
 
+## Rec song with REC, as built (the fourth part)
+
+The design's "Rec song is on with REC in Perform":
+
+- **The take.** The host says each period whether a take records (`rec_arm::Now::taking`: the notes, their count-in, or a loop's first pass or overdub; `desk::rec_now`), through `TimeHost::take_follows`, called by the main loop and the smoke session after `App::set_perform`. In Perform, a take starting with Rec song off turns it on (`SongTake::Armed`, "rec song: on with REC (Perform)"); the take ending turns it off and keeps what it recorded in the song ("rec song: off with the take, 3 placements ..."). Rec song on by hand isn't touched.
+- **"+ Rec song".** `TimeState::song_with_take` says the take recording, or the next, brings it; the REC chip's `what` then ends "+ Rec song" (`Gui::rec_chip`, in Perform with Rec song on as well). The target list's switch reads **Rec song with REC** in Perform (`RecList::perform`), and `gui::rec_song_switch` picks what a tap does: `TimeAction::RecSongWithTake(false)` takes it off for the take recording or the next (`SongTake::Off`; a take's Rec song stops there and keeps what it had), `RecSongWithTake(true)` puts it back (arming it at once during a take), and Rec song on by hand goes off as before. `RecSong(false)` during a take that turned it on is off for that take too. After the take, `Off` goes back to `Idle`.
+- **Make** is as before: a take changes nothing, and `RecSongWithTake` is refused.
+
+## Perform's guard and big state, as built (the fourth part)
+
+- **The guard.** In Perform a finger down on a button that deletes or clears is kept from it (`Gui::watch_guard`, before MIDI Learn and the widgets): `guarded(widget, target)` lists the Song view's Delete and an audio region's Erase, the note editor's Delete, the Looper tab's Clear loop, a layer's × and ½ length, Play's loop strip's Clear and the step inspector's Clear. The hint line says "Hold to delete" (`GUARD_HINT`), and `Ui::set_hold_fill` draws a red fill (the theme's `bad`, part see-through) crossing the button from the left, drawing that widget again whole as it moves. `Gui::guard_tick`, from `tick`, fills it over `GUARD_HOLD` (0.5 s), then presses the button: the touch's Down and Up go to the widget where the finger landed, as a tap would, and the rest of that finger's touch is the guard's (`guard_done`). Lifted early, or slid more than 20 px off the button, nothing happens and the hint says to hold. The wheel's push and ERASE + a tap are not guarded. The design's Delete clip has no on-screen button (ERASE + a clip), and its Halve is the clip card's SHIFT + ‹, two hands; the song list's Remove comes with the song list.
+- **The grid's rows.** `ClipGrid::big` (set from `TimeState::perform` by `TimePage::update`, before it counts the rows in view, keeping the first row within the slots): Perform's rows are at least `ROW_MIN_H` (76 px, 5 on the MPC's screen), Make's `ROW_MIN_H_MAKE` (44 px, 8). A cell under `COMPACT_H` (64 px) is drawn compact (`paint_compact`): its name, then its length, or its foot while queued ("from 7.1", amber), or a loop's wave; a playing clip's ring is `SMALL_RING` (18 px) at its right.
+- **The countdown.** In Perform, while the transport rolls, a queued cell's `GridCell::progress` is how near its line is over its launch grid's span (`TimeState::queued_foot`; a launch with no grid, a bar), at least 1/64 so it shows from the tap; `paint_cell` draws it as an amber bar along the cell's foot. The foot still says where it starts ("from 6.1", as mockup C).
+- **NEXT.** `TimeState::next_reading` (Perform, rolling): a scene cued (its name, at its cues' line or the project's Launch), else the cues (the first clip's name or "Bass stops", "+N" for more, at the soonest line), else `TimeState::follow_next` (the scene playing's follow action: `Perform::scene_follow` gives its row, point and follow while no scene is cued; `follow_words` names the row a Next, Previous, First or Last plays with `follow_target`, "row 1 again", "Stop all", "Any scene", "Another scene", "Drop or stay" with a chance between, nothing for Stay), else in song mode the next marker. Each says how soon with `countdown` (beats rounded up under a bar, then bars; the mute header's words too). `bar_of` puts it after WAITING with `Tone::Accent`, and the transport bar cuts its first reading to fit rather than leaving it out.
+
 ## Still to come in S4
 
 In the order they are planned, each as its own part:
 
 1. **Launch quantise and legato**, built (the second part, 17 Nov): the project's `LaunchGrid` (at once, 1/16 to 1/2, 1 to 8 bars) on the Record tab's Launch row and the transport bar's "Launch 1 bar" reading, and a clip's own Launch and Mode (Restart, Legato) on the clip settings card. The player lands each cue on its line, and a legato clip takes over mid-pass: see [playback.md](playback.md#launching-on-the-bar-line-cues-t9) and [scenes.md](scenes.md). It works the same in Make and Perform. Not built: the one-shot mode.
 2. **The mute queue and solo**, built (the third part, 17 Nov): see above.
-3. **Perform's guard**: on-screen buttons that delete or clear need a half-second hold in Perform; Rec song goes on with REC; the Clips grid shows five big rows with rings and countdowns, and the transport bar what comes next.
+3. **Perform's guard and big state**, built (the fourth part, 17 Nov): the hold on deletes, Make's and Perform's rows with the countdown, NEXT, and Rec song with REC (above).
 4. Reload clip, live transpose, the song list (MAIN's third view in Perform), the scene editor and Back to song.
 
 ## Tests
+
+The fourth part's: `gui::tests::perform_guards_deletes_with_a_half_second_hold` (a tap in Perform does nothing and says to hold, a hold deletes, sliding off cancels, Make is one tap), the time-ui tests `perform_shows_big_rows_countdowns_and_what_comes_next` (8 rows and 5, the countdown, each NEXT and WAITING first) and `countdowns_round_up_to_beats_then_bars`, the widget test `grid_cells_and_names_report_where_they_are` (both row heights), `mpfree_ui`'s `a_hold_fill_draws_over_its_widget_and_goes`, the perform crate's `a_scene_follow_fires_in_the_bar_before_its_point` (`scene_follow`), `time::tests::in_perform_a_take_brings_rec_song_for_its_length` (a take arms and keeps, "+ Rec song" off skips one take, off by hand during a take, put back during a take, by hand stays, Make refuses) and the smoke test `in_perform_rec_brings_rec_song_with_the_take` (the chip's "+ Rec song", REC and PLAY, the placements kept on STOP, the list's switch off and back).
 
 The third part's:
 

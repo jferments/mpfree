@@ -330,6 +330,16 @@ impl Perform {
         }
     }
 
+    /// The scene playing's follow action while no scene is cued, for
+    /// Perform's NEXT (sequencer S4): its row, its point (the bar line it
+    /// lands on, with bars of `bar` ticks) and the follow. It is cued a
+    /// bar before the point ([`Perform::due`]), and the cue shows from then.
+    pub fn scene_follow(&self, project: &Project, bar: Tick) -> Option<(usize, Tick, Follow)> {
+        let p = self.playing.filter(|_| self.cued.is_none())?;
+        let f = project.scene(p.row)?.follow?;
+        Some((p.row, point(p.start, f, p.stays, bar.max(1)), f))
+    }
+
     /// The follow actions due at song tick `now` (the next tick the
     /// playhead plays), with bars of `bar` ticks: see the module notes.
     /// Call it after each period while the transport rolls; the host
@@ -586,6 +596,12 @@ mod tests {
         };
         perf.started(&mut p, &st);
         cues.clear();
+        // NEXT's reading (S4): the scene's follow lands on bar 3.
+        let next = perf.scene_follow(&p, BAR);
+        assert_eq!(
+            next,
+            Some((0, 3 * BAR, Follow::after(2, FollowAction::Next)))
+        );
         // Due at bar 3 (two bars from bar 1): queued once past bar 2.
         for now in [BAR, 2 * BAR] {
             let f = perf.due(&mut p, &mut launches, &mut cues, now, BAR);
@@ -595,6 +611,8 @@ mod tests {
         assert_eq!(f.scene, Some(Some(1)));
         assert_eq!(cues.len(), 2);
         assert_eq!(perf.cued(), Some(1));
+        // Cued, the cue is what comes next.
+        assert_eq!(perf.scene_follow(&p, BAR), None);
         // Waiting for its bar line, it does not fire again.
         let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR + 2, BAR);
         assert_eq!(f, Fired::default());
