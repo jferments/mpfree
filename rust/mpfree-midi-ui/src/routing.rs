@@ -703,8 +703,9 @@ impl Routing {
                         (false, true) => PortInput::LearnOnly,
                         (false, false) => {
                             return Err(format!(
-                                "{name} would neither play the armed track nor be heard by Learn: \
-                                 turn the other on first"
+                                "{} would neither play the armed track nor be heard by Learn: \
+                                 turn the other on first",
+                                m.setup.shown(&name)
                             ))
                         }
                     };
@@ -737,7 +738,10 @@ impl Routing {
                         let used =
                             |c: u8| mine.iter().any(|&i| m.setup.routes[i].channel == Some(c));
                         let Some(channel) = (0..16u8).find(|&c| !used(c)) else {
-                            return Err(format!("Every channel of {name} has a route"));
+                            return Err(format!(
+                                "Every channel of {} has a route",
+                                m.setup.shown(&name)
+                            ));
                         };
                         let taken = |t: u8| mine.iter().any(|&i| m.setup.routes[i].track == t);
                         let track = (0..tracks as u8).find(|&t| !taken(t)).unwrap_or(0);
@@ -758,7 +762,10 @@ impl Routing {
                     let c = self.edit(|m| {
                         let mine = routes_from(m, &name);
                         let Some(&i) = mine.get(k) else {
-                            return Err(format!("{name} has no route to take away"));
+                            return Err(format!(
+                                "{} has no route to take away",
+                                m.setup.shown(&name)
+                            ));
                         };
                         m.setup.routes.remove(i);
                         Ok(())
@@ -787,12 +794,17 @@ impl Routing {
                             None
                         } else if chans.contains(&None) {
                             return Err(format!(
-                                "Every channel of {name} goes thru to {out} already: \
-                                 pick one with - and + first"
+                                "Every channel of {} goes thru to {} already: \
+                                 pick one with - and + first",
+                                m.setup.shown(&name),
+                                out_said(m, &out)
                             ));
                         } else {
                             let Some(c) = (0..16u8).find(|c| !chans.contains(&Some(*c))) else {
-                                return Err(format!("Every channel of {name} goes thru already"));
+                                return Err(format!(
+                                    "Every channel of {} goes thru already",
+                                    m.setup.shown(&name)
+                                ));
                             };
                             Some(c)
                         };
@@ -813,7 +825,11 @@ impl Routing {
                     let c = self.edit(|m| {
                         let mine = thru_to(m, &name, &out);
                         let Some(&i) = mine.get(k.min(mine.len().saturating_sub(1))) else {
-                            return Err(format!("{name} has no thru to {out} to take away"));
+                            return Err(format!(
+                                "{} has no thru to {} to take away",
+                                m.setup.shown(&name),
+                                out_said(m, &out)
+                            ));
                         };
                         m.setup.thru.remove(i);
                         Ok(())
@@ -833,8 +849,9 @@ impl Routing {
                     let here = slot.as_ref().is_some_and(|o| o.port == name);
                     if on == here {
                         return Err(format!(
-                            "It {} on {name} already",
-                            if on { "plays" } else { "doesn't play" }
+                            "It {} on {} already",
+                            if on { "plays" } else { "doesn't play" },
+                            out_said(m, &name)
                         ));
                     }
                     *slot = if on {
@@ -847,7 +864,8 @@ impl Routing {
                 })
             }
             _ => {
-                self.note = Some(why_not_here(&src, &dest));
+                let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+                self.note = Some(why_not_here(&m, &src, &dest));
                 false
             }
         };
@@ -951,13 +969,14 @@ impl Routing {
             return IoReply::Handled;
         };
         let changed = self.edit(|m| {
+            let said = out_said(m, &name);
             let o = m
                 .setup
                 .tracks
                 .get_mut(usize::from(t))
                 .and_then(|o| o.as_mut())
                 .filter(|o| o.port == name)
-                .ok_or_else(|| format!("It doesn't play on {name}: + or a tap sets it"))?;
+                .ok_or_else(|| format!("It doesn't play on {said}: + or a tap sets it"))?;
             let to = i32::from(o.channel) + d.signum();
             if !(0..16).contains(&to) {
                 return Err(format!(
@@ -1002,7 +1021,8 @@ impl Routing {
                         self.switch(true).max(IoReply::Redraw)
                     }
                     Some((sq, s, d)) if matches!(sq.kind, Kind::None | Kind::Later) => {
-                        self.note = Some(why_not_here(&s, &d));
+                        let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+                        self.note = Some(why_not_here(&m, &s, &d));
                         IoReply::Redraw
                     }
                     _ => IoReply::Redraw,
@@ -1041,7 +1061,7 @@ fn set_route(m: &mut IoModel, i: usize, r: TrackRoute) -> Result<(), String> {
     {
         return Err(format!(
             "{} → {} is a route already",
-            r.source(),
+            r.source_in(&m.setup),
             track_name(m, r.track)
         ));
     }
@@ -1058,7 +1078,11 @@ fn set_thru(m: &mut IoModel, i: usize, r: ThruRoute) -> Result<(), String> {
         .enumerate()
         .any(|(j, o)| j != i && *o == r)
     {
-        return Err(format!("{} goes thru to {} already", r.source(), r.to));
+        return Err(format!(
+            "{} goes thru to {} already",
+            r.source_in(&m.setup),
+            out_said(m, &r.to)
+        ));
     }
     m.setup.thru[i] = r;
     Ok(())
@@ -1094,10 +1118,13 @@ fn has_lines(src: &Src, dest: &Dest) -> bool {
 }
 
 /// Why nothing can be set on a square, in words.
-fn why_not_here(src: &Src, dest: &Dest) -> String {
+fn why_not_here(m: &IoModel, src: &Src, dest: &Dest) -> String {
     match (src, dest) {
         (Src::Port { name, .. }, Dest::Out { .. }) => {
-            format!("{name}'s messages never go back to it: thru goes to another output")
+            format!(
+                "{}'s messages never go back to it: thru goes to another output",
+                m.setup.shown(name)
+            )
         }
         (Src::Port { .. }, Dest::Cv) => {
             "CV outputs follow a track: pick its job and track in the CV section".to_string()
@@ -1127,7 +1154,7 @@ fn src_text(m: &IoModel, s: &Src) -> (String, String) {
                 if name == mpfree_midi::setup::DIN_NAME {
                     "MIDI in".to_string()
                 } else {
-                    name.clone()
+                    m.setup.shown(name).to_string()
                 },
                 if *plugged {
                     kind
@@ -1144,7 +1171,17 @@ fn src_text(m: &IoModel, s: &Src) -> (String, String) {
     }
 }
 
-fn dest_text(d: &Dest) -> (String, String) {
+/// An output port in words: "MIDI out" for the 5-pin jacks, else its
+/// name on screen.
+fn out_said(m: &IoModel, name: &str) -> String {
+    if name == mpfree_midi::setup::DIN_NAME {
+        "MIDI out".to_string()
+    } else {
+        m.setup.shown(name).to_string()
+    }
+}
+
+fn dest_text(m: &IoModel, d: &Dest) -> (String, String) {
     match d {
         Dest::Armed => ("Armed track".to_string(), "on screen".to_string()),
         Dest::ByChannel => ("Tracks".to_string(), "by channel".to_string()),
@@ -1154,7 +1191,7 @@ fn dest_text(d: &Dest) -> (String, String) {
             if *plugged { "5-pin" } else { "unplugged" }.to_string(),
         ),
         Dest::Out { name, plugged } => (
-            name.clone(),
+            m.setup.shown(name).to_string(),
             if *plugged { "USB" } else { "USB · unplugged" }.to_string(),
         ),
         Dest::Cv => ("CV out".to_string(), "8 jacks".to_string()),
@@ -1262,7 +1299,7 @@ impl Routing {
         let t = cx.theme.clone();
         cx.canvas.fill_round_rect(l.panel, 10, t.surface);
         let (s, _) = src_text(m, src);
-        let (d, _) = dest_text(dest);
+        let (d, _) = dest_text(m, dest);
         let title = format!("{} → {}", s, d).to_uppercase();
         let head = Rect::new(
             l.panel.x + 14,
@@ -1311,7 +1348,7 @@ impl Routing {
                     {
                         say.push(format!(
                             "Learned: {}",
-                            crate::control_text(&l.source, l.channel, name)
+                            crate::control_text(&l.source, l.channel, m.setup.shown(name))
                         ));
                     }
                 }
@@ -1498,7 +1535,7 @@ impl Routing {
                 lines(cx, l.lines, &say, t.text_dim);
             }
             _ => {
-                lines(cx, l.lines, &[why_not_here(src, dest)], t.text_dim);
+                lines(cx, l.lines, &[why_not_here(m, src, dest)], t.text_dim);
             }
         }
     }
@@ -1556,7 +1593,7 @@ impl IoSection for Routing {
         cx.canvas.fill_round_rect(l.grid, 10, t.surface);
         for (c, d) in g.cols.iter().enumerate() {
             let x = l.body.x + NAME_W + c as i32 * l.col_w;
-            let (name, sub) = dest_text(d);
+            let (name, sub) = dest_text(&m, d);
             let a = Rect::new(x + 6, l.body.y - COL_HEAD_H, l.col_w - 8, COL_HEAD_H / 2);
             let b = Rect::new(x + 6, a.bottom(), l.col_w - 8, COL_HEAD_H / 2 - 4);
             let plugged = !matches!(d, Dest::Out { plugged: false, .. });
@@ -1654,7 +1691,7 @@ impl IoSection for Routing {
                 };
                 let sq = square(&m, s, d);
                 let (sn, _) = src_text(&m, s);
-                let (dn, _) = dest_text(d);
+                let (dn, _) = dest_text(&m, d);
                 out.push(Target::tap(
                     "routing-square",
                     row * g.cols.len() + col,
@@ -2066,6 +2103,27 @@ mod tests {
     /// there; the card narrows it to a channel and adds more, and a USB
     /// device's own output is never offered.
     #[test]
+    fn a_named_ports_row_says_its_name_and_its_routes_keep_its_own() {
+        let m = model();
+        m.lock()
+            .unwrap()
+            .setup
+            .set_shown("Keystep 37", "Lead keys", [])
+            .unwrap();
+        let mut s = Routing::new(m.clone());
+        let _ = paint(&s);
+        let (x, y) = centre(square_at(&s, "Lead keys", "MIDI out"));
+        assert_eq!(tap(&mut s, x, y), IoReply::Redraw);
+        let thru = m.lock().unwrap().setup.thru.clone();
+        assert_eq!(thru[0].from, "Keystep 37", "the setup names it by its own");
+        let _ = paint(&s);
+        assert!(s
+            .targets(AREA)
+            .iter()
+            .any(|t| t.label == "Lead keys → MIDI out: thru"));
+    }
+
+    #[test]
     fn a_tap_under_an_output_sends_the_port_thru_and_the_card_picks_its_channels() {
         let m = model();
         let mut s = Routing::new(m.clone());
@@ -2148,7 +2206,7 @@ mod tests {
             plugged: true,
         };
         assert_eq!(square(&m.lock().unwrap(), &keys, &own).kind, Kind::None);
-        assert!(why_not_here(&keys, &own).contains("never go back to it"));
+        assert!(why_not_here(&IoModel::default(), &keys, &own).contains("never go back to it"));
         // MIDI in to MIDI out is two pieces of gear: allowed.
         let (x, y) = centre(square_at(&s, "MIDI in", "MIDI out"));
         tap(&mut s, x, y);

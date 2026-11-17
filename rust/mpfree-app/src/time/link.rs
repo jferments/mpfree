@@ -15,7 +15,7 @@
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 
-use mpfree_play::{Event, PlayView, Rec, Started};
+use mpfree_play::{Event, MuteLanded, PlayView, Rec, Started};
 use mpfree_seq::mpfree_moves::{Input, Kind};
 use mpfree_seq::{DestId, Lock, Note, TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
@@ -205,6 +205,8 @@ pub enum ToControl {
     Moved(u32, Input),
     /// A cue started on its bar line.
     Started(Started),
+    /// A mute cue landed on its line (the mute queue).
+    MuteLanded(MuteLanded),
     /// Pressure values for the next [`ToControl::Rec`], in order.
     Touch([TouchPoint; TOUCH_CHUNK], u8),
     /// Gesture points for the next [`ToControl::Rec`], in order.

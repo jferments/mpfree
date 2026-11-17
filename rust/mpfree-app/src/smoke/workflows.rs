@@ -3011,4 +3011,61 @@ mod tests {
             s.button("STOP");
         });
     }
+
+    /// The mute queue and solo (sequencer S4): in Perform TRACK MUTE's
+    /// pad waits for the next bar line (the transport bar says WAITING),
+    /// and the kick goes quiet there; TRACK MUTE held with a pad solos
+    /// (SHIFT: at once), and letting go leaves the mute keys on.
+    #[test]
+    fn in_perform_a_track_mute_waits_for_the_bar_and_held_it_solos() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.3);
+            s.button_with("SHIFT", "MAIN").run_for(0.2);
+            assert!(s.time.project().perform);
+            s.button("TRACK MUTE");
+            s.pad(0, 100, 0.05);
+            assert!(s.time.mute_light(0).unwrap().waiting, "it waits");
+            assert_eq!(s.time.muted(0), Some(false));
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.starts_with("track mute: ") && l.ends_with(" muted on the next bar")),
+                "{:?}",
+                s.said()
+            );
+            s.run_for(0.1);
+            let reading = s.screen.time.waiting_reading();
+            assert!(
+                reading.as_deref().is_some_and(|r| r.ends_with(" at 2.1")),
+                "{reading:?}"
+            );
+            // The bar line: muted, and the kick is silent after it.
+            s.run_for(2.0);
+            assert_eq!(s.time.muted(0), Some(true), "landed on bar 2");
+            assert!(s.time.mute_wait().is_none());
+            let from = s.hits.on.len();
+            s.run_for(2.0);
+            assert_eq!(hits_on(&s, 0, from), 0, "muted, the kick is silent");
+            // Held with SHIFT + a pad: a solo at once.
+            s.button_edge("TRACK MUTE", true);
+            s.button_edge("SHIFT", true);
+            s.pad(0, 100, 0.05);
+            s.button_edge("SHIFT", false);
+            assert!(s.time.mute_light(0).unwrap().solo, "soloed at once");
+            s.button_edge("TRACK MUTE", false);
+            assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Tracks, "still on");
+            // STOP lands a change that waits.
+            s.pad(0, 100, 0.05);
+            assert!(s.time.mute_light(0).unwrap().waiting);
+            s.button("STOP").run_for(0.1);
+            assert_eq!(s.time.muted(0), Some(false), "STOP landed it");
+            assert!(s.time.mute_wait().is_none());
+            s.button("TRACK MUTE");
+        });
+    }
 }

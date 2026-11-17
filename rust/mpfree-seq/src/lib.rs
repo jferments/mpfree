@@ -822,6 +822,9 @@ pub struct Track {
     /// none of its own.
     pub swing: Option<Swing>,
     pub mute: bool,
+    /// Soloed (sequencer S4): while any track is, the tracks that aren't
+    /// are silent ([`Project::silent`]). A muted track stays silent soloed.
+    pub solo: bool,
     /// "Clips through the arp": the track's clips play through its arp,
     /// as the live pads do, and recording keeps the pads as pressed (on:
     /// melodic tracks, which record the chord). Off (the default; drum
@@ -906,6 +909,7 @@ impl Track {
             dest,
             swing: None,
             mute: false,
+            solo: false,
             through_arp: false,
             record_touch: true,
             record_quantise: None,
@@ -956,6 +960,15 @@ pub struct Project {
 impl Project {
     pub fn new() -> Project {
         Project::default()
+    }
+
+    /// Whether track `t` is silent: muted, or not soloed while another
+    /// track is (sequencer S4's solo). False past the last track.
+    pub fn silent(&self, t: usize) -> bool {
+        let soloing = self.tracks.iter().any(|t| t.solo);
+        self.tracks
+            .get(t)
+            .is_some_and(|tr| tr.mute || (soloing && !tr.solo))
     }
 
     /// Every track and clip in range.

@@ -215,6 +215,9 @@ pub struct Session {
     kits: usize,
     /// STEP SEQ's pads held as steps (step_keys.rs).
     step_keys: crate::step_keys::StepKeys,
+    /// The pads pressed as TRACK MUTE's keys, so their release is theirs
+    /// too.
+    mute_pressed: [bool; 16],
     out: Out,
     to_screen: Receiver<ToUi>,
     fx: Vec<Effect>,
@@ -317,6 +320,7 @@ impl Session {
             quit: false,
             kits: n,
             step_keys: crate::step_keys::StepKeys::default(),
+            mute_pressed: [false; 16],
             out,
             to_screen,
             fx: Vec::new(),
@@ -758,20 +762,17 @@ impl Session {
             self.out.show(ToUi::PadUp(pad));
             return;
         }
-        if self.app.mute_keys() != app::MuteKeys::Off {
-            if down {
-                let line = crate::mute_key(
-                    self.app.mute_keys(),
-                    self.app.mute_bank(),
-                    pad,
-                    crate::other_kit(&self.track_kits, self.app.track()),
-                    &mut self.time,
-                    &mut self.mix,
-                );
-                self.out.note(&line);
-            } else {
-                self.out.show(ToUi::PadUp(pad));
-            }
+        if down && pad < 16 && self.app.pads_mute() {
+            self.mute_pressed[pad] = true;
+            let (tap, more) = self.app.mute_tap();
+            self.fx.extend(more);
+            let other = crate::other_kit(&self.track_kits, self.app.track());
+            let line = crate::mute_key(tap, pad, other, &mut self.time, &mut self.mix);
+            self.out.note(&line);
+            return;
+        }
+        if !down && pad < 16 && std::mem::take(&mut self.mute_pressed[pad]) {
+            self.out.show(ToUi::PadUp(pad));
             return;
         }
         // Live erase: ERASE held while recording.

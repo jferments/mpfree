@@ -2,9 +2,12 @@
 //! 16 Nov 2026): one MIDI port's settings and state on one screen, opened
 //! from its row in the MIDI section (a tap on its name, or its Page field).
 //!
-//! - **This port:** what it is (the 5-pin jacks, or a USB device and which
-//!   of its ports) and its **Input** (Plays tracks, Learn only, Both), the
-//!   same setting as on its row.
+//! - **This port:** its **Name** (a USB port's, typed on the text keyboard
+//!   through [`Asks::name_port`]: "Juno" for a "USB MIDI Interface", shown
+//!   on every screen; the 5-pin jacks keep the panel's MIDI In and MIDI
+//!   Out), what it is (the 5-pin jacks, or a USB device and which of its
+//!   ports, and the name it calls itself) and its **Input** (Plays tracks,
+//!   Learn only, Both), the same setting as on its row.
 //! - **Ignore coming in:** Clock, Program, Aftertouch and All notes off
 //!   ([`IgnoreSet`]). Ignored messages still show in the Monitor, marked
 //!   "ignored: this port's setting"; nothing else gets them.
@@ -23,11 +26,13 @@
 //!   ([`PortLive::sending`]: MIDI out on, the port plugged in and its
 //!   output open).
 //!
-//! Input, Ignore coming in and the delay belong to the rig (kept for every
-//! project, `MidiSetup::rig`); Clock to this port belongs to the project.
+//! The name, Input, Ignore coming in and the delay belong to the rig (kept
+//! for every project, `MidiSetup::rig`); Clock to this port belongs to the
+//! project.
 //! The wheel picks a control, - and + step it, and the Q-Links take Input,
 //! Clock and the delay. ‹ MIDI or Back closes the page.
 //!
+//! [`Asks::name_port`]: crate::Asks::name_port
 //! [`Live::early_ms`]: crate::Live::early_ms
 //! [`PortLive::sending`]: crate::PortLive::sending
 
@@ -51,13 +56,16 @@ const VALUE_W: i32 = 168;
 const BOX_H: i32 = 40;
 const STEP_W: i32 = 44;
 const LINE_H: i32 = 19;
+/// The Name row's word, left of its box.
+const NAME_W: i32 = 72;
 
 /// The hint line while a port's page shows.
-pub(crate) const HINT: &str = "Tap a setting to change it  ·  wheel: pick one  ·  - and +: step it  ·  Q-Links: Input, Clock, Delay  ·  ‹ MIDI or Back closes";
+pub(crate) const HINT: &str = "Tap a setting to change it (Name: type one)  ·  wheel: pick one  ·  - and +: step it  ·  Q-Links: Input, Clock, Delay  ·  ‹ MIDI or Back closes";
 
 /// What the wheel picks, in its order down the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sel {
+    Name,
     Input,
     Ignore(usize),
     Clock,
@@ -66,7 +74,8 @@ enum Sel {
     AllOff,
 }
 
-const SELS: [Sel; 9] = [
+const SELS: [Sel; 10] = [
+    Sel::Name,
     Sel::Input,
     Sel::Ignore(0),
     Sel::Ignore(1),
@@ -82,6 +91,7 @@ const SELS: [Sel; 9] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hit {
     Back,
+    Name,
     Input,
     Ignore(usize),
     Clock,
@@ -95,6 +105,7 @@ struct Layout {
     back: Rect,
     head: Rect,
     this: Rect,
+    name: Rect,
     input: Rect,
     ignore: Rect,
     chips: [Rect; 4],
@@ -120,7 +131,7 @@ fn layout(r: Rect) -> Layout {
     let rx = r.x + lw + GAP;
     let rw = r.w - lw - GAP;
     // Left: this port, ignore coming in, what it does.
-    let this = Rect::new(r.x, body_y, lw, 150);
+    let this = Rect::new(r.x, body_y, lw, 196);
     let ignore = Rect::new(r.x, this.bottom() + GAP, lw, 158);
     let does = Rect::new(
         r.x,
@@ -130,7 +141,8 @@ fn layout(r: Rect) -> Layout {
     );
     let inner = |c: Rect| Rect::new(c.x + 14, c.y + 38, c.w - 28, (c.h - 46).max(0));
     let ti = inner(this);
-    let input = Rect::new(ti.right() - VALUE_W, ti.y + 26, VALUE_W, BOX_H);
+    let name = Rect::new(ti.x + NAME_W, ti.y, ti.w - NAME_W, BOX_H);
+    let input = Rect::new(ti.right() - VALUE_W, ti.y + BOX_H + 8, VALUE_W, BOX_H);
     let ii = inner(ignore);
     let cw = (ii.w - 8) / 2;
     let chips = std::array::from_fn(|k| {
@@ -161,6 +173,7 @@ fn layout(r: Rect) -> Layout {
         back,
         head,
         this,
+        name,
         input,
         ignore,
         chips,
@@ -181,6 +194,8 @@ fn layout(r: Rect) -> Layout {
 /// Everything the page shows, read from the model once a paint.
 struct View {
     name: String,
+    /// Its name on screen ([`mpfree_midi::setup::MidiSetup::shown`]).
+    shown: String,
     setup: PortSetup,
     plugged: bool,
     usb: bool,
@@ -252,7 +267,7 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
         if p == mpfree_midi::setup::DIN_NAME {
             "MIDI out".to_string()
         } else {
-            p.to_string()
+            m.setup.shown(p).to_string()
         }
     };
     let routes: Vec<String> = routes
@@ -273,7 +288,7 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
             let from = if r.from == mpfree_midi::setup::DIN_NAME {
                 "MIDI in"
             } else {
-                r.from.as_str()
+                m.setup.shown(&r.from)
             };
             match r.channel {
                 Some(c) => format!("{from} · ch {}", c + 1),
@@ -298,7 +313,7 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
         },
     ));
     if setup.input != PortInput::PlaysTracks {
-        let label = if din { "MIDI In" } else { name };
+        let label = if din { "MIDI In" } else { m.setup.shown(name) };
         let learned: Vec<String> = m
             .setup
             .learn
@@ -379,6 +394,7 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
     }
     View {
         name: name.to_string(),
+        shown: m.setup.shown(name).to_string(),
         plugged: live.is_some(),
         usb: !din,
         about: live.map_or_else(
@@ -453,6 +469,9 @@ impl PortPage {
         if l.back.contains(x, y) {
             return Some(Hit::Back);
         }
+        if l.name.contains(x, y) {
+            return Some(Hit::Name);
+        }
         if l.input.contains(x, y) {
             return Some(Hit::Input);
         }
@@ -497,11 +516,27 @@ impl PortPage {
             return IoReply::Handled;
         }
         let v = self.view();
+        if s == Sel::Name {
+            if !v.usb {
+                self.note = Some(
+                    "The 5-pin jacks keep the names on the MPC's panel: MIDI In and MIDI Out"
+                        .to_string(),
+                );
+                return IoReply::Handled;
+            }
+            if d < 0 {
+                self.note = Some("+ or a tap types its name".to_string());
+                return IoReply::Handled;
+            }
+            let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+            m.asks.name_port = Some(self.name.clone());
+            return IoReply::Redraw;
+        }
         let no_in = matches!(s, Sel::Input | Sel::Ignore(_)) && !v.has_in;
         if no_in || (s == Sel::Clock && !v.has_out) {
             self.note = Some(format!(
                 "{} has no {}: nothing to set",
-                v.name,
+                v.shown,
                 if no_in { "input" } else { "output" }
             ));
             return IoReply::Handled;
@@ -557,6 +592,8 @@ impl PortPage {
                 }
                 c
             }
+            // Asked of the app above.
+            Sel::Name => false,
             Sel::TestNote | Sel::AllOff => {
                 if d < 0 {
                     self.note = Some("+ or a tap sends it".to_string());
@@ -596,6 +633,7 @@ impl PortPage {
                 self.done = true;
                 return IoReply::Redraw;
             }
+            Hit::Name => Sel::Name,
             Hit::Input => Sel::Input,
             Hit::Ignore(k) => Sel::Ignore(k),
             Hit::Clock => Sel::Clock,
@@ -650,7 +688,7 @@ fn why_not(v: &View) -> String {
     if !v.out_on {
         "Not sent: MIDI out is off (Prefs > Send MIDI and CV out)".to_string()
     } else if !v.plugged {
-        format!("Not sent: {} is not plugged in", v.name)
+        format!("Not sent: {} is not plugged in", v.shown)
     } else if !v.has_out {
         "Not sent: this port has no output".to_string()
     } else {
@@ -752,7 +790,7 @@ impl IoSection for PortPage {
             l.head,
             Align::Left,
             t.text,
-            &v.name,
+            &v.shown,
         );
         let (pill, ink) = match (v.plugged, v.usb) {
             (true, true) => ("PLUGGED IN · USB", t.good),
@@ -769,7 +807,9 @@ impl IoSection for PortPage {
             "kept for every project",
             t.text_faint,
         );
-        lines(cx, body, &[&v.about], t.text_dim);
+        let row = Rect::new(body.x, l.name.y, NAME_W, BOX_H);
+        cx.text(FontId::Sans, t.size_body, row, Align::Left, t.text, "Name");
+        value_box(cx, l.name, &v.shown, picked == Sel::Name, v.usb);
         let row = Rect::new(body.x, l.input.y, body.w - VALUE_W, BOX_H);
         cx.text(FontId::Sans, t.size_body, row, Align::Left, t.text, "Input");
         value_box(
@@ -793,6 +833,17 @@ impl IoSection for PortPage {
                 "It has no input."
             }],
             t.text_faint,
+        );
+        let calls = if v.shown != v.name {
+            format!("{} · it calls itself {}", v.about, v.name)
+        } else {
+            v.about.clone()
+        };
+        lines(
+            cx,
+            Rect::new(body.x, l.input.bottom() + 6 + LINE_H + 4, body.w, LINE_H),
+            &[&calls],
+            t.text_dim,
         );
 
         // Ignore coming in.
@@ -1018,6 +1069,7 @@ impl IoSection for PortPage {
         let l = layout(r);
         let mut out = vec![
             Target::tap("port-back", 0, "‹ MIDI", l.back),
+            Target::tap("port-name", 0, format!("Name: {}", v.shown), l.name).disabled_if(!v.usb),
             Target::tap(
                 "port-input",
                 0,
@@ -1219,7 +1271,7 @@ mod tests {
             let p = PortPage::new(m.clone(), name);
             let _ = paint(&p);
             let ts = p.targets(AREA);
-            assert_eq!(ts.len(), 11, "{name}");
+            assert_eq!(ts.len(), 12, "{name}");
             for t in ts {
                 let r = t.rect;
                 assert!(
@@ -1264,7 +1316,7 @@ mod tests {
         assert_eq!(port(&m, "Keystep 37").delay_tenths, 2 * DELAY_STEP_TENTHS);
         // The wheel picks Clock, + steps it.
         p.sel = 0;
-        p.input(IoInput::Wheel(5));
+        p.input(IoInput::Wheel(6));
         assert_eq!(SELS[p.sel], Sel::Clock);
         let was = port(&m, "Keystep 37").clock_out;
         p.input(IoInput::Step(1));
@@ -1288,6 +1340,50 @@ mod tests {
         let (x, y) = centre(l.back);
         tap(&mut p, x, y);
         assert!(p.done());
+    }
+
+    /// A USB device's Name asks the app for the text keyboard (the app
+    /// sets the name); the 5-pin jacks keep the panel's names. The name
+    /// given shows on the page, which still says the one it calls itself.
+    #[test]
+    fn a_usb_ports_name_asks_the_app_and_the_jacks_keep_theirs() {
+        let m = model();
+        let l = layout(AREA);
+        let (x, y) = centre(l.name);
+        let mut din = PortPage::new(m.clone(), DIN_NAME);
+        tap(&mut din, x, y);
+        assert_eq!(m.lock().unwrap().asks.name_port, None);
+        assert!(din
+            .take_note()
+            .unwrap()
+            .contains("keep the names on the MPC's panel"));
+        let mut p = PortPage::new(m.clone(), "Keystep 37");
+        assert_eq!(tap(&mut p, x, y), IoReply::Redraw);
+        let asked = m.lock().unwrap().asks.name_port.take();
+        assert_eq!(asked.as_deref(), Some("Keystep 37"));
+        // Name is the wheel's first: - says how, + asks.
+        p.sel = 0;
+        assert_eq!(SELS[p.sel], Sel::Name);
+        p.input(IoInput::Step(-1));
+        assert!(p.take_note().unwrap().contains("types its name"));
+        assert_eq!(m.lock().unwrap().asks.name_port, None);
+        p.input(IoInput::Step(1));
+        assert!(m.lock().unwrap().asks.name_port.is_some());
+        // Named Keys by the app: the page and its Name say so.
+        {
+            let mut g = m.lock().unwrap();
+            g.setup.set_shown("Keystep 37", "Keys", []).unwrap();
+            g.gen += 1;
+        }
+        let v = view(&m.lock().unwrap(), "Keystep 37", 0.0);
+        assert_eq!((v.name.as_str(), v.shown.as_str()), ("Keystep 37", "Keys"));
+        let _ = paint(&p);
+        let ts = p.targets(AREA);
+        let name = ts.iter().find(|t| t.id == "port-name").unwrap();
+        assert_eq!(name.label, "Name: Keys");
+        assert!(name.enabled);
+        let ts = din.targets(AREA);
+        assert!(!ts.iter().find(|t| t.id == "port-name").unwrap().enabled);
     }
 
     /// MIDI out on, sending to every port with an output.
