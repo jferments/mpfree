@@ -147,6 +147,7 @@ mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
 mod undo;
+mod views;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
