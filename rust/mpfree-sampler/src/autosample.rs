@@ -766,7 +766,7 @@ impl Instrument {
 
     /// Bytes its audio holds.
     pub fn bytes(&self) -> u64 {
-        self.sources.iter().map(|s| s.data().len() as u64 * 4).sum()
+        self.sources.iter().map(|s| s.data().bytes() as u64).sum()
     }
 }
 

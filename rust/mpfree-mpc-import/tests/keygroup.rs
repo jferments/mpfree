@@ -215,7 +215,7 @@ fn a_program_folder_becomes_a_project_with_a_keygroup_kit() {
     let src = p.source(low.layers[1].region.source).unwrap();
     assert_eq!(src.frames(), 1200);
     assert!(
-        (src.data()[0] - 0.2).abs() < 1e-3,
+        (src.data().get(0) - 0.2).abs() < 1e-3,
         "the hard C3 sample, found as .WAV"
     );
     let high = p.pad(1).unwrap();

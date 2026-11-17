@@ -288,7 +288,7 @@ fn processing_a_pinned_region_makes_its_hits_land_on_the_beat() {
     assert!(w.pins.is_empty(), "the pins are in the audio now");
     assert!((w.bpm - 60.0).abs() < 0.01);
     let new = p.source(r.source).unwrap();
-    let left: Vec<f32> = new.data().iter().step_by(2).copied().collect();
+    let left: Vec<f32> = new.data().iter().step_by(2).collect();
     assert_near(&onsets(&left), &[0, 2 * BEAT, 4 * BEAT, 6 * BEAT], 160);
 }
 

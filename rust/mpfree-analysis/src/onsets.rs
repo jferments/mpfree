@@ -174,6 +174,72 @@ impl OnsetAnalysis {
         &self.candidates
     }
 
+    /// The analysis as bytes, for a cache file beside its source: magic,
+    /// rate, frames, the strength curve and the candidates, little-endian.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(32 + 4 * self.flux.len() + 12 * self.candidates.len());
+        out.extend_from_slice(CACHE_MAGIC);
+        out.extend_from_slice(&self.rate.to_le_bytes());
+        out.extend_from_slice(&self.frames.to_le_bytes());
+        out.extend_from_slice(&(self.flux.len() as u32).to_le_bytes());
+        for x in &self.flux {
+            out.extend_from_slice(&x.to_le_bytes());
+        }
+        out.extend_from_slice(&(self.candidates.len() as u32).to_le_bytes());
+        for c in &self.candidates {
+            out.extend_from_slice(&c.frame.to_le_bytes());
+            out.extend_from_slice(&c.score.to_le_bytes());
+        }
+        out
+    }
+
+    /// Reads [`OnsetAnalysis::to_bytes`]. Anything that doesn't add up (a
+    /// strength curve of the wrong length for its frames, candidates out of
+    /// order or past the end, a score that isn't from 0 to 1, bytes left
+    /// over) is an error, and the caller analyses again.
+    pub fn from_bytes(b: &[u8]) -> Result<OnsetAnalysis, AnalysisError> {
+        let bad = || AnalysisError::BadInput("cache");
+        let mut r = Reader { b, at: 0 };
+        if r.take(8).ok_or_else(bad)? != CACHE_MAGIC {
+            return Err(bad());
+        }
+        let rate = r.u32().ok_or_else(bad)?;
+        let frames = r.u64().ok_or_else(bad)?;
+        let n = r.u32().ok_or_else(bad)? as usize;
+        if rate == 0 || n != flux_len(frames) || n > r.left() / 4 {
+            return Err(bad());
+        }
+        let flux: Vec<f32> = (0..n)
+            .map(|_| r.f32().filter(|x| x.is_finite()))
+            .collect::<Option<_>>()
+            .ok_or_else(bad)?;
+        let m = r.u32().ok_or_else(bad)? as usize;
+        if m > r.left() / 12 {
+            return Err(bad());
+        }
+        let candidates: Vec<Onset> = (0..m)
+            .map(|_| {
+                let frame = r.u64()?;
+                let score = r.f32()?;
+                Some(Onset { frame, score })
+            })
+            .collect::<Option<_>>()
+            .ok_or_else(bad)?;
+        let in_order = candidates.windows(2).all(|w| w[0].frame <= w[1].frame);
+        let fit = candidates
+            .iter()
+            .all(|c| c.frame < frames.max(1) && (0.0..=1.0).contains(&c.score));
+        if r.left() != 0 || !in_order || !fit {
+            return Err(bad());
+        }
+        Ok(OnsetAnalysis {
+            rate,
+            frames,
+            flux,
+            candidates,
+        })
+    }
+
     /// Onset frames for a sensitivity from 0 (only the strongest hits) to 1
     /// (every candidate), at least [`MIN_GAP_MS`] apart, in time order. More
     /// sensitivity never gives fewer onsets.
@@ -257,6 +323,42 @@ fn refine(mono: &[f32], lo: usize, hi: usize) -> Option<usize> {
     Some(previous_zero_crossing(mono, start, BLOCK).unwrap_or(start))
 }
 
+/// The first bytes of [`OnsetAnalysis::to_bytes`].
+const CACHE_MAGIC: &[u8; 8] = b"MPFONS01";
+
+/// The strength curve's length for `frames`, as [`OnsetAnalysis::analyse`]
+/// makes it.
+fn flux_len(frames: u64) -> usize {
+    usize::try_from(frames / HOP as u64).map_or(usize::MAX, |h| h.saturating_add(1))
+}
+
+/// Little-endian reads from a cache file's bytes.
+struct Reader<'a> {
+    b: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let end = self.at.checked_add(n)?;
+        let s = self.b.get(self.at..end)?;
+        self.at = end;
+        Some(s)
+    }
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+    fn f32(&mut self) -> Option<f32> {
+        Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn left(&self) -> usize {
+        self.b.len() - self.at
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -332,6 +434,41 @@ pub(crate) mod tests {
             }
         }
         (out, hits)
+    }
+
+    #[test]
+    fn reads_back_from_its_cache_bytes_and_refuses_broken_ones() {
+        let (audio, _) = beat(100.0, 2, 44_100.0);
+        let a = OnsetAnalysis::analyse(&audio, 1, 44_100).unwrap();
+        assert!(!a.candidates().is_empty());
+        let b = a.to_bytes();
+        let back = OnsetAnalysis::from_bytes(&b).unwrap();
+        assert_eq!(back.rate(), a.rate());
+        assert_eq!(back.frames(), a.frames());
+        assert_eq!(back.flux(), a.flux());
+        assert_eq!(back.candidates(), a.candidates());
+        assert_eq!(back.pick(0.6), a.pick(0.6));
+        // Cut short, one byte over, another magic, a curve that doesn't fit
+        // its frames, a score past 1: all refused.
+        assert!(OnsetAnalysis::from_bytes(&b[..b.len() - 1]).is_err());
+        let mut over = b.clone();
+        over.push(0);
+        assert!(OnsetAnalysis::from_bytes(&over).is_err());
+        let mut magic = b.clone();
+        magic[0] ^= 1;
+        assert!(OnsetAnalysis::from_bytes(&magic).is_err());
+        let mut frames = b.clone();
+        frames[13] ^= 0x40; // the frames' second byte: 16 k frames off
+        assert!(OnsetAnalysis::from_bytes(&frames).is_err());
+        let mut score = b.clone();
+        let last = score.len() - 4;
+        score[last..].copy_from_slice(&1.5f32.to_le_bytes());
+        assert!(OnsetAnalysis::from_bytes(&score).is_err());
+        // Silence: no candidates, still read back.
+        let quiet = OnsetAnalysis::analyse(&[0.0; 5_000], 1, 44_100).unwrap();
+        let q = OnsetAnalysis::from_bytes(&quiet.to_bytes()).unwrap();
+        assert!(q.candidates().is_empty());
+        assert_eq!(q.flux().len(), quiet.flux().len());
     }
 
     #[test]

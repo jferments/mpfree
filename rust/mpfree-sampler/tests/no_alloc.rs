@@ -87,8 +87,22 @@ fn render_and_events_never_allocate() {
             .collect(),
     )
     .unwrap();
+    // The same noise as 16-bit values: every pad's second layer and two
+    // grain clouds read 16-bit samples.
+    let s16 = Source::new(
+        "noise 16",
+        rate,
+        2,
+        s.data()
+            .iter()
+            .map(|x| ((x * 32_767.0).round() + 0.0) / 32_768.0)
+            .collect(),
+    )
+    .unwrap();
+    assert!(s16.data().is_16_bit());
     let mut p = Project::new();
     p.add_source(s.clone());
+    p.add_source(s16.clone());
     for i in 0..16usize {
         let mut r = Region::whole(&s);
         r.mode = [
@@ -121,6 +135,7 @@ fn render_and_events_never_allocate() {
             _ => None,
         };
         let mut pad = Pad::new("p", Layer::new(r.clone()));
+        r.source = s16.id();
         pad.layers.push(Layer::new(r));
         pad.select = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random][i % 3];
         pad.polyphony = 2;
@@ -177,7 +192,7 @@ fn render_and_events_never_allocate() {
     // Four granular pads: busy clouds, one reversed, one synced, so the grain
     // budget fills and voices are stolen while grains play.
     for i in 16..20usize {
-        let mut r = Region::whole(&s);
+        let mut r = Region::whole(if i % 2 == 0 { &s } else { &s16 });
         r.mode = PlayMode::Granular;
         r.reverse = i == 17;
         r.tune_cents = (i as i32 - 18) * 700;
