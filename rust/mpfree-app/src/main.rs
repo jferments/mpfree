@@ -2366,6 +2366,36 @@ fn step_press(
     keys.press(s, pad, p, time)
 }
 
+/// A keyboard's key (`velocity` None: let go) while the pads are the
+/// synth's line's steps: with step pads held, its note goes on them
+/// (step_keys.rs). Some when it did, or to say why it can't.
+fn step_key(
+    app: &app::App,
+    keys: &mut step_keys::StepKeys,
+    time: &mut time::TimeHost,
+    note: u8,
+    velocity: Option<u8>,
+) -> Option<step_keys::Pressed> {
+    if !app.pads_are_steps() {
+        return None;
+    }
+    match (velocity, app.pad_of_key(note)) {
+        (None, Some(pad)) => {
+            keys.key_up(pad);
+            None
+        }
+        (Some(v), Some(pad)) => keys.key_down(pad, app.velocity(v), time),
+        (Some(_), None) if keys.line_held() => Some(step_keys::Pressed {
+            tell: Some(format!(
+                "STEP SEQ: {} isn't a note of the pads, so a step can't hold it",
+                synth::note_name(note)
+            )),
+            ..step_keys::Pressed::default()
+        }),
+        _ => None,
+    }
+}
+
 /// STEP SEQ: ERASE pressed while step pads are held takes their locks
 /// off (step_keys.rs); what to tell.
 fn erase_held_steps(
@@ -5519,10 +5549,16 @@ fn player_session(
             let pad_event = match k {
                 midi_in::Key::Down { note, velocity } if key_notes => {
                     app.key_down(note, velocity);
+                    // Step pads of the line held: the key goes on them.
+                    let p = step_key(&app, &mut step_keys, &mut time, note, Some(velocity));
+                    if let Some(p) = p {
+                        fx.extend(sound_step(p, out, &mut player, &mut synth, synth_on));
+                    }
                     None
                 }
                 midi_in::Key::Up { note } if key_notes => {
                     app.key_up(note);
+                    step_key(&app, &mut step_keys, &mut time, note, None);
                     None
                 }
                 midi_in::Key::Pressure { note, value } if key_notes => {
