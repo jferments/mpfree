@@ -328,60 +328,105 @@ drive/tube/subsonic_hits_bias100	-13.827
 drive/tube/zipper_db	0.1357
 drive/tube[Tube glow]/alias_5k_0dbfs	-57.913
 drive/tube[Tube glow]/zipper_db	0.1648
-eq/bell_12k_q0.71_width_ratio	0.5775
-eq/bell_12k_q0.71_worst_db	-6.5548
-eq/bell_12k_q1.41_width_ratio	0.5785
-eq/bell_12k_q1.41_worst_db	-4.1929
-eq/bell_12k_q4_width_ratio	0.5792
-eq/bell_12k_q4_worst_db	-3.1293
-eq/bell_16k_q0.71_width_ratio	0.349
-eq/bell_16k_q0.71_worst_db	-7.879
-eq/bell_16k_q1.41_width_ratio	0.3371
-eq/bell_16k_q1.41_worst_db	-7.3493
-eq/bell_16k_q4_width_ratio	0.3304
-eq/bell_16k_q4_worst_db	-5.8631
-eq/bell_1k_q0.71_width_ratio	0.996
-eq/bell_1k_q0.71_worst_db	-0.0984
-eq/bell_1k_q1.41_width_ratio	0.9974
-eq/bell_1k_q1.41_worst_db	-0.0307
-eq/bell_1k_q4_width_ratio	0.9972
-eq/bell_1k_q4_worst_db	-0.0203
-eq/bell_5k_q0.71_width_ratio	0.9006
-eq/bell_5k_q0.71_worst_db	-1.7758
-eq/bell_5k_q1.41_width_ratio	0.9128
-eq/bell_5k_q1.41_worst_db	-0.754
-eq/bell_5k_q4_width_ratio	0.9175
-eq/bell_5k_q4_worst_db	-0.5122
-eq/bell_8k_q0.71_width_ratio	0.7773
-eq/bell_8k_q0.71_worst_db	-3.7268
-eq/bell_8k_q1.41_width_ratio	0.7907
-eq/bell_8k_q1.41_worst_db	-1.8981
-eq/bell_8k_q4_width_ratio	0.797
-eq/bell_8k_q4_worst_db	-1.3386
-eq/drawn_vs_heard_db	0.0265
+eq/bell_12k_q0.71_width_ratio	1.009
+eq/bell_12k_q0.71_worst_db	0.9284
+eq/bell_12k_q1.41_width_ratio	1.0342
+eq/bell_12k_q1.41_worst_db	0.7957
+eq/bell_12k_q4_width_ratio	1.0077
+eq/bell_12k_q4_worst_db	0.2503
+eq/bell_16k_q0.71_width_ratio	1.0541
+eq/bell_16k_q0.71_worst_db	0.5095
+eq/bell_16k_q1.41_width_ratio	1.03
+eq/bell_16k_q1.41_worst_db	0.674
+eq/bell_16k_q4_width_ratio	1.0191
+eq/bell_16k_q4_worst_db	0.4827
+eq/bell_1k_q0.71_width_ratio	1
+eq/bell_1k_q0.71_worst_db	0.0313
+eq/bell_1k_q1.41_width_ratio	1
+eq/bell_1k_q1.41_worst_db	0.0081
+eq/bell_1k_q4_width_ratio	1
+eq/bell_1k_q4_worst_db	0.001
+eq/bell_5k_q0.71_width_ratio	1.0029
+eq/bell_5k_q0.71_worst_db	0.5329
+eq/bell_5k_q1.41_width_ratio	1.0014
+eq/bell_5k_q1.41_worst_db	0.1955
+eq/bell_5k_q4_width_ratio	1
+eq/bell_5k_q4_worst_db	0.028
+eq/bell_8k_q0.71_width_ratio	1.0268
+eq/bell_8k_q0.71_worst_db	0.862
+eq/bell_8k_q1.41_width_ratio	1.0027
+eq/bell_8k_q1.41_worst_db	0.4626
+eq/bell_8k_q4_width_ratio	1
+eq/bell_8k_q4_worst_db	0.084
+eq/drawn_vs_heard_db	0.0266
 eq/high_cut_12k_24db_worst_db	-14.2988
 eq/high_cut_5k_12db_worst_db	-2.217
 eq/high_cut_5k_24db_worst_db	-1.4194
-eq/high_shelf_12k_worst_db	1.0323
-eq/high_shelf_2k_worst_db	0.0302
-eq/high_shelf_5k_worst_db	0.1873
-eq/high_shelf_8k_worst_db	0.4732
+eq/high_shelf_12k_worst_db	-0.306
+eq/high_shelf_2k_worst_db	-0.0001
+eq/high_shelf_5k_worst_db	-0.009
+eq/high_shelf_8k_worst_db	-0.0628
 eq/low_cut_100_12db_worst_db	-0.0002
 eq/low_cut_100_24db_worst_db	-0.0003
-eq/low_shelf_100_worst_db	-0.0001
-eq/low_shelf_200_worst_db	-0.0003
-eq/low_shelf_500_worst_db	-0.0019
+eq/low_shelf_100_worst_db	0
+eq/low_shelf_200_worst_db	0
+eq/low_shelf_500_worst_db	0
 eq/low_shelf_50_worst_db	0.0001
-eq/mirror_db	0
-eq/q_convention_oct	-0.0046
+eq/mirror_db	0.0001
+eq/q_convention_oct	-0.0004
 eq/shelf_midpoint_db	0
 eq/thd_100_db	-140
-eq/zipper_worst_db	0.0131
-eq[Kick weight]/zipper_worst_db	3.1806
-eq[Snare crack]/zipper_worst_db	4.1976
-eq[Telephone]/zipper_worst_db	6.2214
-eq[Thin for layering]/zipper_worst_db	0.1326
-eq[Vocal clarity]/zipper_worst_db	3.1276
+eq/zipper_worst_db	0.013
+eq[HQ 2x]/bell_12k_q0.71_width_ratio	1
+eq[HQ 2x]/bell_12k_q0.71_worst_db	0.0291
+eq[HQ 2x]/bell_12k_q1.41_width_ratio	1
+eq[HQ 2x]/bell_12k_q1.41_worst_db	0.0213
+eq[HQ 2x]/bell_12k_q4_width_ratio	1
+eq[HQ 2x]/bell_12k_q4_worst_db	0.006
+eq[HQ 2x]/bell_16k_q0.71_width_ratio	1.0022
+eq[HQ 2x]/bell_16k_q0.71_worst_db	0.0158
+eq[HQ 2x]/bell_16k_q1.41_width_ratio	1.0017
+eq[HQ 2x]/bell_16k_q1.41_worst_db	0.0097
+eq[HQ 2x]/bell_16k_q4_width_ratio	1
+eq[HQ 2x]/bell_16k_q4_worst_db	0.0058
+eq[HQ 2x]/bell_1k_q0.71_width_ratio	1
+eq[HQ 2x]/bell_1k_q0.71_worst_db	0.0014
+eq[HQ 2x]/bell_1k_q1.41_width_ratio	1
+eq[HQ 2x]/bell_1k_q1.41_worst_db	0.0004
+eq[HQ 2x]/bell_1k_q4_width_ratio	1
+eq[HQ 2x]/bell_1k_q4_worst_db	-0.0001
+eq[HQ 2x]/bell_5k_q0.71_width_ratio	1
+eq[HQ 2x]/bell_5k_q0.71_worst_db	0.0238
+eq[HQ 2x]/bell_5k_q1.41_width_ratio	1
+eq[HQ 2x]/bell_5k_q1.41_worst_db	0.0083
+eq[HQ 2x]/bell_5k_q4_width_ratio	1
+eq[HQ 2x]/bell_5k_q4_worst_db	0.0012
+eq[HQ 2x]/bell_8k_q0.71_width_ratio	1.0007
+eq[HQ 2x]/bell_8k_q0.71_worst_db	0.035
+eq[HQ 2x]/bell_8k_q1.41_width_ratio	1
+eq[HQ 2x]/bell_8k_q1.41_worst_db	0.0171
+eq[HQ 2x]/bell_8k_q4_width_ratio	1
+eq[HQ 2x]/bell_8k_q4_worst_db	0.0029
+eq[HQ 2x]/drawn_vs_heard_db	0.0043
+eq[HQ 2x]/high_cut_12k_24db_worst_db	-14.2988
+eq[HQ 2x]/high_cut_5k_12db_worst_db	-2.217
+eq[HQ 2x]/high_cut_5k_24db_worst_db	-1.4194
+eq[HQ 2x]/high_shelf_12k_worst_db	-0.0027
+eq[HQ 2x]/high_shelf_2k_worst_db	0
+eq[HQ 2x]/high_shelf_5k_worst_db	-0.0001
+eq[HQ 2x]/high_shelf_8k_worst_db	-0.0005
+eq[HQ 2x]/low_cut_100_12db_worst_db	-0.0002
+eq[HQ 2x]/low_cut_100_24db_worst_db	-0.0003
+eq[HQ 2x]/low_shelf_100_worst_db	0.0001
+eq[HQ 2x]/low_shelf_200_worst_db	0
+eq[HQ 2x]/low_shelf_500_worst_db	0
+eq[HQ 2x]/low_shelf_50_worst_db	0.0001
+eq[HQ 2x]/zipper_worst_db	0.0129
+eq[Kick weight]/zipper_worst_db	3.1671
+eq[Snare crack]/zipper_worst_db	4.19
+eq[Telephone]/zipper_worst_db	6.1776
+eq[Thin for layering]/zipper_worst_db	0.1324
+eq[Vocal clarity]/zipper_worst_db	3.1106
 eq[Warm and dark]/zipper_worst_db	0.0384
 filter/dj/highpass_corner_hz_at_right	8000
 filter/dj/lowpass_corner_hz_at_left	80

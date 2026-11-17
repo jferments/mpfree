@@ -23,6 +23,191 @@ pub enum SvfMode {
     HighShelf,
 }
 
+/// A design for [`Svf`]: the analog prototype it is the bilinear transform
+/// of, `H(s) = m0 + (m2 + m1 s) / (s^2 + k s + 1)` with `s` scaled so
+/// the prewarped corner `g = tan(pi hz / rate)` is 1. Any stable digital
+/// biquad is one of these, so a design made another way (`matched`) runs
+/// in the same filter, sweeps as safely, and [`Svf::response`] stays exact.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SvfCoefs {
+    pub g: f32,
+    pub k: f32,
+    pub m0: f32,
+    pub m1: f32,
+    pub m2: f32,
+}
+
+impl SvfCoefs {
+    /// The bilinear transform of the analog filter (Simper's design): exact
+    /// at low frequencies, but the bell and shelves cramp toward Nyquist (a
+    /// 12 kHz, Q 0.71 bell at 44.1 kHz is 6.6 dB short at 20 kHz). The
+    /// cutoff is kept between 5 Hz and 45 % of the sample rate.
+    #[inline]
+    pub fn bilinear(mode: SvfMode, hz: f32, q: f32, gain_db: f32, rate: u32) -> SvfCoefs {
+        let fs = rate as f32;
+        let hz = hz.clamp(5.0, 0.45 * fs);
+        let q = q.max(0.05);
+        let t = (PI * hz / fs).tan();
+        // The square root of the linear gain, for the modes that have one.
+        let a = || db_to_gain(gain_db * 0.5);
+        let (g, k, m0, m1, m2) = match mode {
+            SvfMode::LowPass => (t, 1.0 / q, 0.0, 0.0, 1.0),
+            SvfMode::HighPass => (t, 1.0 / q, 1.0, -1.0 / q, -1.0),
+            SvfMode::BandPass => (t, 1.0 / q, 0.0, 1.0, 0.0),
+            SvfMode::Notch => (t, 1.0 / q, 1.0, -1.0 / q, 0.0),
+            SvfMode::Bell => {
+                let a = a();
+                let k = 1.0 / (q * a);
+                (t, k, 1.0, k * (a * a - 1.0), 0.0)
+            }
+            SvfMode::LowShelf => {
+                let (a, k) = (a(), 1.0 / q);
+                (t / a.sqrt(), k, 1.0, k * (a - 1.0), a * a - 1.0)
+            }
+            SvfMode::HighShelf => {
+                let (a, k) = (a(), 1.0 / q);
+                (t * a.sqrt(), k, a * a, k * (1.0 - a) * a, 1.0 - a * a)
+            }
+        };
+        SvfCoefs { g, k, m0, m1, m2 }
+    }
+
+    /// The bell and shelves matched to their analog curves instead of
+    /// bilinear (FX quality E3); every other mode as [`SvfCoefs::bilinear`].
+    /// The poles are the analog poles mapped by impulse invariance (`z =
+    /// e^(sT)`), so a resonance sits where the analog one does and keeps its
+    /// width. A bell's zeros then match its analog magnitude at DC, its gain
+    /// at the centre and a flat top there (Vicanek, "Matched Second Order
+    /// Digital Filters", 2016); a shelf's zeros are its analog zeros mapped
+    /// the same way, scaled to its gain at DC. Worked in `f64`, which the
+    /// mapping needs at low frequencies; a few `exp`, `cos` and `sqrt`, so
+    /// a gliding EQ designs at a control rate and glides between designs
+    /// ([`SvfCoefs::toward`]).
+    pub fn matched(mode: SvfMode, hz: f32, q: f32, gain_db: f32, rate: u32) -> SvfCoefs {
+        let fs = f64::from(rate);
+        let hz = f64::from(hz).clamp(5.0, 0.45 * fs);
+        let q = f64::from(q.max(0.05));
+        let w0 = std::f64::consts::TAU * hz / fs;
+        // The square root of the linear gain, as the bilinear design's `a`.
+        let a = 10f64.powf(f64::from(gain_db) / 40.0);
+        let (b, d) = match mode {
+            SvfMode::Bell => matched_bell(w0, q, a),
+            SvfMode::LowShelf | SvfMode::HighShelf => {
+                matched_shelf(mode == SvfMode::LowShelf, w0, q, a)
+            }
+            _ => return SvfCoefs::bilinear(mode, hz as f32, q as f32, gain_db, rate),
+        };
+        from_biquad(b, d)
+    }
+
+    /// One step of a glide from `self` to `to`: `t` of the way (0 to 1).
+    /// Between two designs every step is a stable filter (g and k stay
+    /// positive), and its curve moves smoothly from one to the other.
+    #[inline]
+    pub fn toward(self, to: SvfCoefs, t: f32) -> SvfCoefs {
+        let l = |x: f32, y: f32| x + t * (y - x);
+        SvfCoefs {
+            g: l(self.g, to.g),
+            k: l(self.k, to.k),
+            m0: l(self.m0, to.m0),
+            m1: l(self.m1, to.m1),
+            m2: l(self.m2, to.m2),
+        }
+    }
+}
+
+/// The poles of `s^2 + 2 zeta wp s + wp^2` (`wp` in radians a sample)
+/// mapped by impulse invariance: the denominator `1 + d1 z^-1 + d2 z^-2`.
+/// A pole pair past Nyquist (`wp` near or above pi) is held at Nyquist's
+/// angle, where the digital filter can put it.
+fn impulse_poles(wp: f64, zeta: f64) -> (f64, f64) {
+    let r = (-zeta * wp).exp();
+    let d1 = if zeta < 1.0 {
+        -2.0 * r
+            * (wp * (1.0 - zeta * zeta).sqrt())
+                .min(std::f64::consts::PI)
+                .cos()
+    } else {
+        -2.0 * r * (wp * (zeta * zeta - 1.0).sqrt()).cosh()
+    };
+    (d1, r * r)
+}
+
+/// A bell `(s^2 + (A/q) s + 1) / (s^2 + s/(A q) + 1)` (its peak `A^2`),
+/// as a biquad `(b0, b1, b2), (d1, d2)`: impulse-invariant poles, then the
+/// zeros from the magnitude at DC (1), at the centre (`A^2`) and a zero
+/// slope there (Vicanek 2016, the peaking EQ). The squared magnitudes are
+/// written in `p = sin^2(w/2)`: `(B0 (1-p) + B1 p + 4 B2 p (1-p)) / (the
+/// same with A0, A1, A2)`.
+fn matched_bell(w0: f64, q: f64, a: f64) -> ((f64, f64, f64), (f64, f64)) {
+    let g2 = a.powi(4); // the squared magnitude at the centre
+    let (d1, d2) = impulse_poles(w0, 1.0 / (2.0 * q * a));
+    let a0 = (1.0 + d1 + d2).powi(2);
+    let a1 = (1.0 - d1 + d2).powi(2);
+    let a2 = -4.0 * d2;
+    let p1 = (0.5 * w0).sin().powi(2);
+    let p0 = 1.0 - p1;
+    let p2 = 4.0 * p0 * p1;
+    let r1 = (a0 * p0 + a1 * p1 + a2 * p2) * g2;
+    let r2 = (-a0 + a1 + 4.0 * (p0 - p1) * a2) * g2;
+    let b0 = a0;
+    let b2 = (r1 - r2 * p1 - b0) / (4.0 * p1 * p1);
+    let b1 = (r2 + b0 + 4.0 * (p1 - p0) * b2).max(0.0);
+    (zeros(b0, b1, b2), (d1, d2))
+}
+
+/// A shelf, RBJ's analog form (gain `A^2` below the corner for a low shelf,
+/// above it for a high one, half that in dB at the corner), as a biquad:
+/// poles and zeros each a pair at `w0` times or over `sqrt(A)` with damping
+/// `1/(2q)`, mapped by impulse invariance, and scaled to the analog gain
+/// at DC.
+fn matched_shelf(low: bool, w0: f64, q: f64, a: f64) -> ((f64, f64, f64), (f64, f64)) {
+    let zeta = 1.0 / (2.0 * q);
+    let sa = a.sqrt();
+    let (wp, wz, dc) = if low {
+        (w0 / sa, w0 * sa, a * a)
+    } else {
+        (w0 * sa, w0 / sa, 1.0)
+    };
+    let (d1, d2) = impulse_poles(wp, zeta);
+    let (n1, n2) = impulse_poles(wz, zeta);
+    let scale = dc * (1.0 + d1 + d2) / (1.0 + n1 + n2);
+    ((scale, scale * n1, scale * n2), (d1, d2))
+}
+
+/// The minimum-phase numerator `(b0, b1, b2)` whose squared magnitude is
+/// `B0 (1-p) + B1 p + 4 B2 p (1-p)` (`B0 = (b0+b1+b2)^2`, `B1 =
+/// (b0-b1+b2)^2`, `B2 = -4 b0 b2`).
+fn zeros(bb0: f64, bb1: f64, bb2: f64) -> (f64, f64, f64) {
+    let (s0, s1) = (bb0.sqrt(), bb1.sqrt());
+    let w = 0.5 * (s0 + s1);
+    let b0 = 0.5 * (w + (w * w + bb2).max(0.0).sqrt());
+    let b1 = 0.5 * (s0 - s1);
+    let b2 = -bb2 / (4.0 * b0);
+    (b0, b1, b2)
+}
+
+/// A stable biquad `(b0 + b1 z^-1 + b2 z^-2) / (1 + d1 z^-1 + d2 z^-2)` as
+/// the analog prototype the trapezoidal SVF runs: with `u = 1 - d1 + d2`,
+/// `g^2 = (1 + d1 + d2) / u`, `k = 2 (1 - d2) / (u g)`; `m0` is the gain at
+/// Nyquist, `m0 + m2` at DC, and `m1` the rest.
+fn from_biquad((b0, b1, b2): (f64, f64, f64), (d1, d2): (f64, f64)) -> SvfCoefs {
+    let u = 1.0 - d1 + d2;
+    let g = ((1.0 + d1 + d2) / u).sqrt();
+    let k = 2.0 * (1.0 - d2) / (u * g);
+    let m0 = (b0 - b1 + b2) / u;
+    let m2 = (b0 + b1 + b2) / (1.0 + d1 + d2) - m0;
+    let a0 = 4.0 / u;
+    let m1 = (a0 * (m0 * d2 - b2) + m2 * g * g) / g;
+    SvfCoefs {
+        g: g as f32,
+        k: k as f32,
+        m0: m0 as f32,
+        m1: m1 as f32,
+        m2: m2 as f32,
+    }
+}
+
 /// One stereo state-variable filter stage (12 dB per octave).
 #[derive(Clone, Copy, Debug)]
 pub struct Svf {
@@ -58,35 +243,18 @@ impl Svf {
     /// low-pass), `gain_db` is used by the bell and shelves. The cutoff is
     /// kept between 5 Hz and 45 % of the sample rate.
     pub fn set(&mut self, mode: SvfMode, hz: f32, q: f32, gain_db: f32, rate: u32) {
-        let fs = rate as f32;
-        let hz = hz.clamp(5.0, 0.45 * fs);
-        let q = q.max(0.05);
-        let t = (PI * hz / fs).tan();
-        let a = db_to_gain(gain_db * 0.5); // sqrt of the linear gain
-        let (g, k, m0, m1, m2) = match mode {
-            SvfMode::LowPass => (t, 1.0 / q, 0.0, 0.0, 1.0),
-            SvfMode::HighPass => (t, 1.0 / q, 1.0, -1.0 / q, -1.0),
-            SvfMode::BandPass => (t, 1.0 / q, 0.0, 1.0, 0.0),
-            SvfMode::Notch => (t, 1.0 / q, 1.0, -1.0 / q, 0.0),
-            SvfMode::Bell => {
-                let k = 1.0 / (q * a);
-                (t, k, 1.0, k * (a * a - 1.0), 0.0)
-            }
-            SvfMode::LowShelf => {
-                let k = 1.0 / q;
-                (t / a.sqrt(), k, 1.0, k * (a - 1.0), a * a - 1.0)
-            }
-            SvfMode::HighShelf => {
-                let k = 1.0 / q;
-                (t * a.sqrt(), k, a * a, k * (1.0 - a) * a, 1.0 - a * a)
-            }
-        };
-        self.a1 = 1.0 / (1.0 + g * (g + k));
-        self.a2 = g * self.a1;
-        self.a3 = g * self.a2;
-        self.m0 = m0;
-        self.m1 = m1;
-        self.m2 = m2;
+        self.set_coefs(SvfCoefs::bilinear(mode, hz, q, gain_db, rate));
+    }
+
+    /// Takes a design from [`SvfCoefs`] as it is.
+    #[inline]
+    pub fn set_coefs(&mut self, c: SvfCoefs) {
+        self.a1 = 1.0 / (1.0 + c.g * (c.g + c.k));
+        self.a2 = c.g * self.a1;
+        self.a3 = c.g * self.a2;
+        self.m0 = c.m0;
+        self.m1 = c.m1;
+        self.m2 = c.m2;
     }
 
     /// Filters one sample of channel `ch` (0 or 1).
@@ -749,6 +917,81 @@ mod tests {
             }
         }
         (sy / sx).sqrt() as f32
+    }
+
+    /// The response of `c` at `hz`, dB.
+    fn coefs_db(c: SvfCoefs, hz: f32, rate: u32) -> f64 {
+        let mut f = Svf::default();
+        f.set_coefs(c);
+        let (re, im) = f.response(hz, rate);
+        10.0 * (re * re + im * im).log10()
+    }
+
+    #[test]
+    fn a_biquad_maps_onto_the_svf_exactly() {
+        // RBJ's bell is the bilinear transform of the same analog bell the
+        // SVF's own design is, so mapped across it must give that design.
+        let (rate, hz, q, gain_db) = (48_000u32, 3000.0f64, 1.3f64, 7.0f64);
+        let a = 10f64.powf(gain_db / 40.0);
+        let w0 = std::f64::consts::TAU * hz / f64::from(rate);
+        let alpha = w0.sin() / (2.0 * q);
+        let a0 = 1.0 + alpha / a;
+        let b = (
+            (1.0 + alpha * a) / a0,
+            -2.0 * w0.cos() / a0,
+            (1.0 - alpha * a) / a0,
+        );
+        let d = (-2.0 * w0.cos() / a0, (1.0 - alpha / a) / a0);
+        let mapped = from_biquad(b, d);
+        let own = SvfCoefs::bilinear(SvfMode::Bell, hz as f32, q as f32, gain_db as f32, rate);
+        for (x, y) in [
+            (mapped.g, own.g),
+            (mapped.k, own.k),
+            (mapped.m0, own.m0),
+            (mapped.m1, own.m1),
+            (mapped.m2, own.m2),
+        ] {
+            assert!((x - y).abs() < 1e-4 * (1.0 + y.abs()), "{mapped:?} {own:?}");
+        }
+    }
+
+    #[test]
+    fn matched_designs_are_the_bilinear_ones_down_low() {
+        // Far below Nyquist the two designs are the same filter; the
+        // other modes are bilinear either way.
+        let rate = 48_000;
+        for mode in [SvfMode::Bell, SvfMode::LowShelf, SvfMode::HighShelf] {
+            for hz in [60.0f32, 250.0] {
+                let (m, b) = (
+                    SvfCoefs::matched(mode, hz, 0.9, 9.0, rate),
+                    SvfCoefs::bilinear(mode, hz, 0.9, 9.0, rate),
+                );
+                for f in [20.0f32, hz, 4.0 * hz, 2000.0] {
+                    let (dm, db) = (coefs_db(m, f, rate), coefs_db(b, f, rate));
+                    assert!(
+                        (dm - db).abs() < 0.02,
+                        "{mode:?} {hz} Hz at {f}: {dm:.3} {db:.3}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            SvfCoefs::matched(SvfMode::LowPass, 9000.0, 2.0, 0.0, rate),
+            SvfCoefs::bilinear(SvfMode::LowPass, 9000.0, 2.0, 0.0, rate)
+        );
+    }
+
+    #[test]
+    fn a_glide_between_designs_ends_on_the_last() {
+        let a = SvfCoefs::matched(SvfMode::Bell, 1000.0, 1.0, 6.0, 48_000);
+        let b = SvfCoefs::matched(SvfMode::Bell, 9000.0, 3.0, -9.0, 48_000);
+        assert_eq!(a.toward(b, 0.0), a);
+        let mid = a.toward(b, 0.5);
+        assert!(mid.g > 0.0 && mid.k > 0.0);
+        let end = a.toward(b, 1.0);
+        for (x, y) in [(end.g, b.g), (end.k, b.k), (end.m1, b.m1)] {
+            assert!((x - y).abs() < 1e-6);
+        }
     }
 
     #[test]

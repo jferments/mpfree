@@ -153,7 +153,7 @@ pub use rooms::{Plate, Room, Spring};
 pub use shift::FreqShifter;
 pub use stereo::{SampleDelay, StereoWidth};
 pub use strip::ChannelStrip;
-pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
+pub use svf::{DjFilter, MultiFilter, Svf, SvfCoefs, SvfMode};
 pub use transient::TransientShaper;
 pub use tuner::Tuner;
 pub use vocal::{

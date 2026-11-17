@@ -727,8 +727,8 @@ pub static PLANS: &[Plan] = &[
                     band!(3),
                     band!(4),
                     Section {
-                        rows: &["Listen"],
-                        ..s("output", "Output", Voice, &["Output", "Listen"])
+                        rows: &["Listen", "Quality"],
+                        ..s("output", "Output", Voice, &["Output", "Listen", "Quality"])
                     },
                 ],
             ),

@@ -14,6 +14,8 @@
 //!   shelf, High cut: picking a cut for a band moves it to that cut, and
 //!   back), its Freq, Gain (a cut: its Slope, a tap steps it) and Q, On
 //!   (Bypassed keeps it but isn't heard) and Remove (Unused; a cut: off).
+//!   Apart, at the type row's end, the whole EQ's Quality (Normal or HQ
+//!   2x; a tap swaps them).
 //!
 //! The picked band is the one whose control was last touched (the chain
 //! editor's focus), so the Modulate row and the Q-Links follow it: the
@@ -33,7 +35,7 @@ use crate::state::ParamView;
 use crate::view::ChainAction;
 
 /// How many parameters the EQ has.
-const N: usize = ids::LISTEN as usize + 1;
+const N: usize = ids::QUALITY as usize + 1;
 /// The graph's axes.
 const F_LO: f32 = 20.0;
 const F_HI: f32 = 20_000.0;
@@ -54,6 +56,8 @@ const TYPE_W: i32 = 98;
 const TYPE_H: i32 = 40;
 const FIELD_W: i32 = 150;
 const ROW_H: i32 = 44;
+/// The Quality chip, at the type row's end.
+const QUALITY_W: i32 = 112;
 
 /// A band's colour (bands 1 to 4 wear the Q-Links' colours).
 pub const BAND_COLORS: [Color; 8] = [
@@ -184,6 +188,8 @@ pub enum Button {
     /// Hear the picked band alone (the EQ's Listen); a tap again stops.
     Listen,
     Remove,
+    /// The whole EQ's Quality: a tap swaps Normal and HQ 2x.
+    Quality,
 }
 
 /// Where the page's parts go in its rectangle.
@@ -290,6 +296,12 @@ pub fn layout(r: Rect, page: &EqPage) -> EqLayout {
         let b = Rect::new(rest.x + k as i32 * (TYPE_W + 6), ty, TYPE_W, TYPE_H);
         buttons.push((b, Button::Kind(*kind)));
     }
+    // Quality is the whole EQ's, not the band's: apart, at the row's end,
+    // under its caption on the title line.
+    buttons.push((
+        Rect::new(rest.right() - QUALITY_W, ty, QUALITY_W, TYPE_H),
+        Button::Quality,
+    ));
     let fields = [0, 1, 2].map(|k| Rect::new(rest.x + k * (FIELD_W + 8), vy, FIELD_W, ROW_H));
     if page.picked().is_some_and(|b| page.is_cut(b)) {
         buttons.push((fields[1], Button::Slope));
@@ -330,6 +342,11 @@ impl EqPage {
 
     fn v(&self, id: u16) -> f32 {
         self.vals.get(id as usize).copied().unwrap_or(0.0)
+    }
+
+    /// The EQ's Quality is HQ 2x.
+    pub fn hq(&self) -> bool {
+        self.v(ids::QUALITY) >= 0.5
     }
 
     /// True once a state with the EQ has come.
@@ -678,6 +695,10 @@ impl EqPage {
                 };
                 self.set(ids::LISTEN, to, out);
             }
+            (Button::Quality, _) => {
+                let to = if self.hq() { ids::NORMAL } else { ids::HQ };
+                self.set(ids::QUALITY, to, out);
+            }
             (Button::Remove, Some(b)) => match b {
                 Band::Low => self.set(ids::LOW_SLOPE, 0.0, out),
                 Band::High => self.set(ids::HIGH_SLOPE, 0.0, out),
@@ -975,6 +996,7 @@ impl EqPage {
                     !matches!(picked, Some(Band::Band(_))),
                 ),
                 Button::Remove => ("eq-remove", "Remove".to_string(), picked.is_none()),
+                Button::Quality => ("eq-quality", "Quality".to_string(), false),
             };
             out.push(Target::tap(id, k, label, *rect).disabled_if(off));
         }
@@ -1104,6 +1126,17 @@ impl EqPage {
         cx.panel(l.panel);
         for &(rect, button) in &l.buttons {
             self.paint_button(cx, rect, button, picked);
+            if button == Button::Quality {
+                let cap = Rect::new(rect.x, l.title.y, rect.w, l.title.h);
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 4.0,
+                    cap,
+                    Align::Center,
+                    t.text_faint,
+                    "QUALITY",
+                );
+            }
         }
         let Some(b) = picked else {
             cx.text(
@@ -1243,6 +1276,21 @@ impl EqPage {
                     Align::Center,
                     ink,
                     "Listen",
+                );
+            }
+            Button::Quality => {
+                let hq = self.hq();
+                cx.canvas.fill_round_rect(rect, 8, t.raised);
+                if hq {
+                    cx.canvas.stroke_round_rect(rect, 8, 2, t.accent);
+                }
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 3.0,
+                    rect,
+                    Align::Center,
+                    if hq { t.text } else { t.text_dim },
+                    if hq { "HQ 2x" } else { "Normal" },
                 );
             }
             Button::Remove => {

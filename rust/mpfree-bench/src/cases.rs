@@ -147,6 +147,44 @@ fn effect(name: &str, rate: u32, mut n: Box<dyn Node>, params: &[(u16, f32)]) ->
     }
 }
 
+/// The EQ as its bench case sets it, with every band's Freq moving: a new
+/// target every 8 blocks, half an octave up and back, so the bands never
+/// settle and each block pays for its designs (FX quality E11).
+fn eq_gliding(rate: u32) -> Case {
+    let mut n = Eq::new();
+    n.prepare(rate, MAX_BLOCK);
+    for (id, v) in [
+        (ids::eq::LOW_SLOPE, 2.0),
+        (ids::eq::HIGH_SLOPE, 2.0),
+        (ids::eq::gain(0), 3.0),
+        (ids::eq::gain(1), -4.0),
+        (ids::eq::gain(2), 5.0),
+        (ids::eq::gain(3), 2.0),
+    ] {
+        n.set_param(id, v);
+    }
+    n.reset();
+    let base: [f32; 4] = std::array::from_fn(|k| n.param(ids::eq::freq(k)));
+    let prog = program(rate);
+    Case {
+        name: "EQ (4 bands and both cuts), Freq gliding".to_string(),
+        module: "fx",
+        what: "tone and noise bursts every 0.5 s, every band's Freq moving",
+        block: Box::new(move |b, l, r| {
+            let f0 = b * l.len() as u64;
+            if b % 8 == 0 {
+                let up = if (b / 8) % 2 == 0 { 1.414 } else { 1.0 };
+                for (k, f) in base.iter().enumerate() {
+                    n.set_param(ids::eq::freq(k), f * up);
+                }
+            }
+            prog.play(f0, l, r);
+            n.process(&Ctx::new(rate, f0), &[], l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 /// Perform FX on a song: `pads` held from the start, or (with `cycle`) one
 /// pad after another, a new one every half second, so entries, releases
 /// and seams are all in the numbers.
@@ -1157,6 +1195,23 @@ pub fn all(rate: u32) -> Vec<Case> {
             ],
         )
     }));
+    v.push(measured(|| {
+        effect(
+            "EQ (4 bands and both cuts), HQ 2x",
+            rate,
+            Box::new(Eq::new()),
+            &[
+                (ids::eq::QUALITY, ids::eq::HQ),
+                (ids::eq::LOW_SLOPE, 2.0),
+                (ids::eq::HIGH_SLOPE, 2.0),
+                (ids::eq::gain(0), 3.0),
+                (ids::eq::gain(1), -4.0),
+                (ids::eq::gain(2), 5.0),
+                (ids::eq::gain(3), 2.0),
+            ],
+        )
+    }));
+    v.push(measured(|| eq_gliding(rate)));
     v.push(measured(|| {
         effect("Chorus (2 voices)", rate, Box::new(Chorus::new()), &[])
     }));
