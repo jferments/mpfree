@@ -1023,33 +1023,33 @@ movement/autopan/click_db_rate	-105.782
 movement/autopan/click_db_shape	-78.6699
 movement/autopan/click_db_sync	-75.9208
 movement/autopan/power_swing_db	0.0092
-movement/autowah/click_db_attack	-87.514
-movement/autowah/click_db_center	-75.0656
-movement/autowah/click_db_depth	-61.6632
-movement/autowah/click_db_filter	-8.4291
-movement/autowah/click_db_high	-63.1606
-movement/autowah/click_db_low	-70.0613
-movement/autowah/click_db_mix	-105.7603
-movement/autowah/click_db_rate	-101.2058
-movement/autowah/click_db_release	-86.7648
-movement/autowah/click_db_resonance	-42.2719
-movement/autowah/click_db_sensitivity	-62.9123
-movement/autowah/click_db_source	-54.0629
-movement/autowah/click_db_sync	-101.2058
-movement/autowah/lu_pink	-5.7402
-movement/autowah/lu_vs_res60_band-pass_res0	3.6354
-movement/autowah/lu_vs_res60_band-pass_res100	-2.1543
-movement/autowah/lu_vs_res60_band-pass_res30	2.4979
-movement/autowah/lu_vs_res60_wah_res0	0.4909
-movement/autowah/lu_vs_res60_wah_res100	1.7886
-movement/autowah/lu_vs_res60_wah_res30	0.0744
-movement/autowah/peak_error_pct_res0	3.017
-movement/autowah/peak_error_pct_res100	0.1418
-movement/autowah/peak_error_pct_res60	0.5761
-movement/autowah[Down wah]/lu_pink	-6.9558
-movement/autowah[Eighth sweep]/lu_pink	-5.3438
-movement/autowah[Funk quack]/lu_pink	-4.4083
-movement/autowah[Pedal]/lu_pink	-5.8737
+movement/autowah/click_db_attack	-89.4743
+movement/autowah/click_db_center	-88.9551
+movement/autowah/click_db_depth	-98.8173
+movement/autowah/click_db_filter	-87.2201
+movement/autowah/click_db_high	-94.961
+movement/autowah/click_db_low	-85.5368
+movement/autowah/click_db_mix	-105.3095
+movement/autowah/click_db_rate	-88.9578
+movement/autowah/click_db_release	-86.6482
+movement/autowah/click_db_resonance	-97.0602
+movement/autowah/click_db_sensitivity	-90.5229
+movement/autowah/click_db_source	-88.9599
+movement/autowah/click_db_sync	-88.9578
+movement/autowah/lu_pink	-0.1968
+movement/autowah/lu_vs_res60_band-pass_res0	-0.6146
+movement/autowah/lu_vs_res60_band-pass_res100	-0.0841
+movement/autowah/lu_vs_res60_band-pass_res30	-0.1342
+movement/autowah/lu_vs_res60_wah_res0	-1.1404
+movement/autowah/lu_vs_res60_wah_res100	0.6969
+movement/autowah/lu_vs_res60_wah_res30	-0.5171
+movement/autowah/peak_error_pct_res0	1.1439
+movement/autowah/peak_error_pct_res100	0.0483
+movement/autowah/peak_error_pct_res60	0.1465
+movement/autowah[Down wah]/lu_pink	-1.3769
+movement/autowah[Eighth sweep]/lu_pink	0.1981
+movement/autowah[Funk quack]/lu_pink	0.849
+movement/autowah[Pedal]/lu_pink	-0.8366
 movement/autowah[Slow bloom]/lu_pink	0.1278
 movement/freqshift/click_db_mix	-103.0425
 movement/freqshift/click_db_mode	-13.374
