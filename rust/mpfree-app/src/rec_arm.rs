@@ -21,6 +21,10 @@
 //! take first"). Pinned, only a tap moves it. When the arm moves while
 //! ready, the ready goes with it.
 //!
+//! SHIFT + a tap on Arm adds the other target ([`RecArm::add`]), so REC
+//! records the pads into a clip and the line into a loop in one pass, each
+//! as it would alone; SHIFT + a tap on one of the two lets go of it.
+//!
 //! UNDO while a take records throws the take so far away
 //! ([`RecArm::throw`]): recording stops and the music plays on.
 //!
@@ -47,6 +51,14 @@ impl Target {
         match self {
             Target::Notes => "the notes",
             Target::Loop => "the loop",
+        }
+    }
+
+    /// The other target.
+    pub fn other(self) -> Target {
+        match self {
+            Target::Notes => Target::Loop,
+            Target::Loop => Target::Notes,
         }
     }
 }
@@ -123,7 +135,11 @@ pub enum Do {
 /// The arm: what REC records, and whether the notes are ready.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecArm {
+    /// What REC records; with [`RecArm::both`], always the notes.
     pub target: Target,
+    /// SHIFT + Arm added the other target: REC records the notes and the
+    /// loop in one pass.
+    pub both: bool,
     /// The notes wait for PLAY to record (only with [`Target::Notes`]; a
     /// loop's ready is the looper's own armed loop).
     pub ready: Option<Take>,
@@ -136,7 +152,30 @@ fn mode(take: Take, overdub: bool) -> Option<Do> {
     (overdub != (take == Take::Add)).then_some(Do::Transport(Command::ToggleOverdub))
 }
 
+/// The looper's own command for `take`: Record, or Overdub.
+fn looped(take: Take) -> Do {
+    Do::Looper(match take {
+        Take::Replace => LoopCommand::Record,
+        Take::Add => LoopCommand::Overdub,
+    })
+}
+
 impl RecArm {
+    /// Whether REC records `t` (alone or with the other).
+    pub fn armed(&self, t: Target) -> bool {
+        self.both || self.target == t
+    }
+
+    /// What REC records, for what is said: "the notes", "the loop", or
+    /// "the notes and the loop".
+    pub fn name(&self) -> &'static str {
+        if self.both {
+            "the notes and the loop"
+        } else {
+            self.target.name()
+        }
+    }
+
     /// A press of REC, OVERDUB, PLAY or STOP, as it finds the transport.
     pub fn press(&mut self, p: Press, now: &Now) -> Vec<Do> {
         let take = match p {
@@ -158,12 +197,17 @@ impl RecArm {
                 return out;
             }
         };
-        if self.target == Target::Loop {
-            return vec![Do::Looper(match take {
-                Take::Replace => LoopCommand::Record,
-                Take::Add => LoopCommand::Overdub,
-            })];
+        if self.both {
+            return self.press_both(take, now);
         }
+        if self.target == Target::Loop {
+            return vec![looped(take)];
+        }
+        self.press_notes(take, now)
+    }
+
+    /// REC or OVERDUB on the notes alone.
+    fn press_notes(&mut self, take: Take, now: &Now) -> Vec<Do> {
         match now.state {
             State::Stopped => {
                 self.ready = (self.ready != Some(take)).then_some(take);
@@ -192,23 +236,60 @@ impl RecArm {
         }
     }
 
+    /// REC or OVERDUB with both armed: each does what it does alone, in
+    /// step. Stopped, the notes get ready and the loop waits for PLAY (or
+    /// both let go). Playing, what records punches out (the loop's first
+    /// pass closes on the bar line) or, with nothing recording, both start.
+    fn press_both(&mut self, take: Take, now: &Now) -> Vec<Do> {
+        if now.state == State::Stopped {
+            let was = self.ready;
+            let mut out = self.press_notes(take, now);
+            match (was, self.ready) {
+                (None, Some(_)) if !now.loop_armed => out.push(looped(take)),
+                (Some(_), None) => out.push(Do::StopWaiting),
+                _ => {}
+            }
+            return out;
+        }
+        let notes = matches!(now.state, State::Recording | State::CountIn);
+        let looping = now.loop_taking || now.loop_armed;
+        if notes || looping {
+            let mut out = Vec::new();
+            if notes {
+                out.extend(self.press_notes(take, now));
+            }
+            if looping {
+                out.push(looped(take));
+            }
+            return out;
+        }
+        let mut out = self.press_notes(take, now);
+        out.push(looped(take));
+        out
+    }
+
     /// Arm `target`, as `by` moves it. Refused while a take records (a tap
     /// says why, a page or a pick says nothing) and, pinned, unless by a
     /// tap. A ready goes with the arm: the notes' to the loop as Record (or
     /// Overdub), an armed loop's to the notes.
     pub fn move_to(&mut self, target: Target, by: Mover, now: &Now) -> Vec<Do> {
-        if target == self.target || (self.pinned && by != Mover::Tap) {
+        if self.pinned && by != Mover::Tap {
+            return Vec::new();
+        }
+        // Both armed: a page or a pick finds its target armed already; a
+        // tap keeps only the one tapped.
+        if self.both {
+            if by != Mover::Tap {
+                return Vec::new();
+            }
+            return self.drop(target.other(), now);
+        }
+        if target == self.target {
             return Vec::new();
         }
         if now.taking() {
             return match by {
-                Mover::Tap => vec![Do::Tell(format!(
-                    "Finish the take first: REC records {} until it stops",
-                    match self.target {
-                        Target::Notes => now.notes.as_str(),
-                        Target::Loop => "the loop",
-                    }
-                ))],
+                Mover::Tap => vec![self.busy(now)],
                 _ => Vec::new(),
             };
         }
@@ -224,6 +305,71 @@ impl RecArm {
                 vec![Do::StopWaiting]
             }
             Target::Notes => Vec::new(),
+        }
+    }
+
+    /// What a tap says while a take records.
+    fn busy(&self, now: &Now) -> Do {
+        let what = if self.both {
+            format!("{} and the loop", now.notes)
+        } else if self.target == Target::Notes {
+            now.notes.clone()
+        } else {
+            "the loop".to_string()
+        };
+        Do::Tell(format!(
+            "Finish the take first: REC records {what} until it stops"
+        ))
+    }
+
+    /// SHIFT + a tap on Arm: add `target` to what REC records, or, with
+    /// both armed, let go of it. The only target can't be let go of. A
+    /// ready is shared: the loop added to the notes ready waits for PLAY
+    /// too, the notes added to an armed loop get ready. Refused while a take
+    /// records, pinned or not.
+    pub fn add(&mut self, target: Target, now: &Now) -> Vec<Do> {
+        if now.taking() {
+            return vec![self.busy(now)];
+        }
+        if self.both {
+            return self.drop(target, now);
+        }
+        if target == self.target {
+            return vec![Do::Tell(format!(
+                "REC records {}: SHIFT + Arm on another records both",
+                self.name()
+            ))];
+        }
+        self.both = true;
+        self.target = Target::Notes;
+        let mut out = Vec::new();
+        match (target, self.ready) {
+            (Target::Loop, Some(take)) => out.push(looped(take)),
+            (Target::Notes, None) if now.loop_armed => self.ready = Some(Take::Replace),
+            _ => {}
+        }
+        out.push(Do::Note(format!(
+            "rec: {} and the loop armed: REC records both",
+            now.notes
+        )));
+        out
+    }
+
+    /// With both armed, let go of `t`: the other records alone. The
+    /// notes let go of their ready; the loop of its wait for PLAY.
+    fn drop(&mut self, t: Target, now: &Now) -> Vec<Do> {
+        if now.taking() {
+            return vec![self.busy(now)];
+        }
+        self.both = false;
+        self.target = t.other();
+        match t {
+            Target::Notes => {
+                self.ready = None;
+                Vec::new()
+            }
+            Target::Loop if self.ready.is_some() => vec![Do::StopWaiting],
+            Target::Loop => Vec::new(),
         }
     }
 
@@ -437,6 +583,106 @@ mod tests {
             "{said:?}"
         );
         assert_eq!(b.target, Target::Notes);
+    }
+
+    #[test]
+    fn shift_arm_adds_the_other_target_and_rec_records_both_in_step() {
+        let stopped = now(State::Stopped);
+        let mut a = RecArm::default();
+        // SHIFT + Arm on the only target says how to add one.
+        let said = a.add(Target::Notes, &stopped);
+        assert!(matches!(&said[..], [Do::Tell(l)] if l.contains("SHIFT + Arm")));
+        assert!(!a.both);
+        // On the loop: both are armed.
+        let said = a.add(Target::Loop, &stopped);
+        assert!(matches!(&said[..], [Do::Note(l)] if l.contains("Drums and the loop armed")));
+        assert!(a.both && a.armed(Target::Notes) && a.armed(Target::Loop));
+        assert_eq!(a.name(), "the notes and the loop");
+        // Stopped: REC readies the notes and arms the loop; again lets go.
+        let said = a.press(Press::Rec, &stopped);
+        assert_eq!(a.ready, Some(Take::Replace));
+        assert_eq!(said.last(), Some(&Do::Looper(LoopCommand::Record)));
+        let waiting = Now {
+            loop_armed: true,
+            ..stopped.clone()
+        };
+        let said = a.press(Press::Rec, &waiting);
+        assert_eq!(a.ready, None);
+        assert_eq!(said.last(), Some(&Do::StopWaiting));
+        // PLAY starts the notes' take; the armed loop starts with the
+        // transport, as it does alone.
+        a.press(Press::Rec, &stopped);
+        assert_eq!(
+            a.press(Press::Play { from_start: false }, &waiting),
+            [t(Command::Record)]
+        );
+        // Playing, nothing recording: both start.
+        let playing = now(State::Playing);
+        assert_eq!(
+            a.press(Press::Rec, &playing),
+            [t(Command::Record), Do::Looper(LoopCommand::Record)]
+        );
+        // Recording both: REC punches both out.
+        let both = Now {
+            loop_taking: true,
+            ..now(State::Recording)
+        };
+        assert_eq!(
+            a.press(Press::Rec, &both),
+            [t(Command::Record), Do::Looper(LoopCommand::Record)]
+        );
+        // Only the loop recording (the notes punched out): only the loop.
+        let looping = Now {
+            loop_taking: true,
+            ..playing.clone()
+        };
+        assert_eq!(
+            a.press(Press::Rec, &looping),
+            [Do::Looper(LoopCommand::Record)]
+        );
+        // A page or a pick finds its target armed already.
+        assert!(a.move_to(Target::Loop, Mover::Page, &stopped).is_empty());
+        assert!(a.move_to(Target::Notes, Mover::Track, &stopped).is_empty());
+        assert!(a.both);
+        // Nothing changes while a take records.
+        let said = a.add(Target::Loop, &both);
+        assert!(matches!(&said[..], [Do::Tell(l)] if l.contains("Drums and the loop")));
+        assert!(a.both);
+    }
+
+    #[test]
+    fn a_plain_tap_keeps_one_of_two_and_shift_lets_go_of_one() {
+        let stopped = now(State::Stopped);
+        // Both ready: a tap on the notes lets go of the loop's wait.
+        let mut a = RecArm::default();
+        a.add(Target::Loop, &stopped);
+        a.press(Press::Rec, &stopped);
+        assert_eq!(
+            a.move_to(Target::Notes, Mover::Tap, &stopped),
+            [Do::StopWaiting]
+        );
+        assert_eq!(
+            (a.target, a.both, a.ready),
+            (Target::Notes, false, Some(Take::Replace))
+        );
+        // SHIFT + Arm on the notes with both: the loop records alone, and
+        // the notes let go of their ready.
+        a.add(Target::Loop, &stopped);
+        assert!(a.both);
+        assert!(a.add(Target::Notes, &stopped).is_empty());
+        assert_eq!((a.target, a.both, a.ready), (Target::Loop, false, None));
+        // The notes added to an armed loop get ready with it.
+        let waiting = Now {
+            loop_armed: true,
+            ..stopped.clone()
+        };
+        a.add(Target::Notes, &waiting);
+        assert_eq!((a.both, a.ready), (true, Some(Take::Replace)));
+        // The loop added to the notes ready to add waits to overdub.
+        let mut b = RecArm::default();
+        b.press(Press::Overdub, &stopped);
+        let said = b.add(Target::Loop, &stopped);
+        assert_eq!(said[0], Do::Looper(LoopCommand::Overdub));
     }
 
     #[test]

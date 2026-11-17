@@ -47,8 +47,8 @@ pub struct TransportLook {
     pub rec: Option<RecChip>,
 }
 
-/// Where a take stands, for the REC chip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where a take stands, for the REC chip; ordered by how far along it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RecState {
     /// REC would record it: grey, with a red dot.
     Armed,
@@ -67,12 +67,16 @@ pub struct RecChip {
     pub what: String,
     /// The take adds (OVERDUB) rather than replaces.
     pub add: bool,
+    /// Only a tap on Arm moves the arm (the target list's Pin the arm).
+    pub pinned: bool,
 }
 
 impl RecChip {
-    /// Its first line: "REC", "READY · PLAY starts", "● REC", "● OVERDUB".
+    /// Its first line: "REC" ("REC · PINNED"), "READY · PLAY starts",
+    /// "● REC", "● OVERDUB".
     pub fn head(&self) -> String {
         match (self.state, self.add) {
+            (RecState::Armed, _) if self.pinned => "REC · PINNED".into(),
             (RecState::Armed, _) => "REC".into(),
             (RecState::Ready, false) => "READY · PLAY starts".into(),
             (RecState::Ready, true) => "READY TO ADD · PLAY starts".into(),

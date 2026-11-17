@@ -1992,7 +1992,7 @@ mod tests {
                 RecArm {
                     target: Target::Notes,
                     ready: Some(Take::Replace),
-                    pinned: false,
+                    ..RecArm::default()
                 }
             );
             assert_eq!(s.looper.phase(), Phase::Empty);
@@ -2169,6 +2169,116 @@ mod tests {
             // A view picked closes it.
             s.press("play-transport", "view", "All").settle();
             assert_eq!(s.screen.ui.page(), "Play");
+        });
+    }
+
+    /// SHIFT + Arm: REC records the pads into a clip and a loop in one
+    /// pass. The chip names both; REC readies the notes and arms the loop,
+    /// PLAY starts both after the count-in, REC closes both, and a plain
+    /// tap on one pill keeps only that one.
+    #[test]
+    fn shift_arm_records_the_notes_and_a_loop_in_one_pass() {
+        use crate::looper_page::{LoopStrip, LOOP_STRIP};
+        use crate::play_widgets::{ArmPill, PlayTransport, RecState, StepGrid};
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        use mpfree_transport::State;
+        fn pills(s: &Session) -> (Option<ArmPill>, Option<ArmPill>) {
+            (
+                s.screen
+                    .ui
+                    .get::<StepGrid>(crate::play_page::STEPS)
+                    .unwrap()
+                    .arm,
+                s.screen.ui.get::<LoopStrip>(LOOP_STRIP).unwrap().arm,
+            )
+        }
+        fn chip(s: &Session) -> crate::play_widgets::RecChip {
+            s.screen
+                .ui
+                .get::<PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.clone())
+                .expect("the REC chip")
+        }
+        fn notes(s: &Session) -> usize {
+            s.time.project().tracks[0]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.len())
+                .sum()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            // SHIFT + the strip's Arm: both are armed.
+            s.button_edge("SHIFT", true);
+            s.press("play-loop", "arm", "Arm").settle();
+            s.button_edge("SHIFT", false);
+            assert!(s.app.rec.both, "{:?}", s.app.rec);
+            assert_eq!(pills(&s), (Some(ArmPill::Armed), Some(ArmPill::Armed)));
+            assert!(chip(&s).what.ends_with(" + Loop 1"), "{:?}", chip(&s));
+            // Beats finds the notes armed already: both stay.
+            s.press("play-transport", "view", "Beats").settle();
+            s.press("play-transport", "view", "All").settle();
+            assert!(s.app.rec.both);
+            // A bar's count-in: the loop waits for it too.
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::SetCountIn(1)),
+            ));
+            s.run_periods(2);
+            // REC: the notes ready, the loop armed to wait for PLAY.
+            s.button("REC");
+            s.run_periods(12).settle();
+            assert!(s.app.rec.ready.is_some());
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert_eq!(chip(&s).state, RecState::Ready);
+            assert_eq!(pills(&s), (Some(ArmPill::Ready), Some(ArmPill::Ready)));
+            // PLAY: both record once the count-in is over.
+            s.button("PLAY");
+            let end = s.t() + 6.0;
+            let mut counted = false;
+            while (s.time.info().state != State::Recording || s.looper.phase() != Phase::Recording)
+                && s.t() < end
+            {
+                s.run_periods(1);
+                if s.time.info().state == State::CountIn {
+                    counted = true;
+                    assert_ne!(
+                        s.looper.phase(),
+                        Phase::Recording,
+                        "the loop doesn't record the count-in"
+                    );
+                }
+            }
+            assert!(counted, "a bar's count-in");
+            assert_eq!(s.time.info().state, State::Recording);
+            assert_eq!(s.looper.phase(), Phase::Recording, "the loop's first pass");
+            assert_eq!(chip(&s).state, RecState::Recording);
+            s.pad(0, 100, 0.05);
+            s.run_for(1.0);
+            // A tap while both record says to finish first.
+            s.press("steps", "arm", "Rec").settle();
+            assert!(s.app.rec.both);
+            assert!(
+                s.hint().starts_with("Finish the take first"),
+                "{}",
+                s.hint()
+            );
+            // REC: the notes punch out, the loop's pass closes on the bar.
+            s.button("REC");
+            let end = s.t() + 6.0;
+            while s.looper.phase() != Phase::Playing && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            assert_eq!(s.looper.phase(), Phase::Playing, "the loop plays");
+            assert!(notes(&s) > 0, "the pad went into the clip");
+            s.button("STOP").settle();
+            // A plain tap on the pattern's pill keeps only the notes.
+            s.press("steps", "arm", "Armed").settle();
+            assert!(!s.app.rec.both);
+            assert_eq!(s.app.rec.target, Target::Notes);
+            assert_eq!(pills(&s), (Some(ArmPill::Armed), Some(ArmPill::Arm)));
         });
     }
 
