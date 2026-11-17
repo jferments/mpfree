@@ -45,7 +45,7 @@ pub const PAGE: usize = 16;
 /// audio loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StepPads {
-    /// The sound (a pad of the kit, 0 to 15) whose steps the pads are, or
+    /// The sound (a pad of the kit, 0 to 127) whose steps the pads are, or
     /// on the synth [`LINE`], the whole line.
     pub sound: u8,
     /// On the synth: the pads a new step plays (a note, or a chord).
@@ -206,14 +206,18 @@ impl App {
     /// STEP SEQ, and while STEP SEQ is held, the sound picked; on the
     /// synth, the pen (pads held together are a chord).
     pub(super) fn step_pad_played(&mut self, slot: usize) {
-        let Ok(pad) = u8::try_from(slot) else { return };
-        if pad >= 16 {
+        if slot >= 16 {
             return;
         }
-        self.step_seq.last_pad = pad;
+        // A kit's pad on the page (pads 1 to 128); on the synth, the slot.
+        let Ok(sound) = u8::try_from(self.kit_pad(slot)) else {
+            return;
+        };
+        let pad = slot as u8;
+        self.step_seq.last_pad = sound;
         if self.step_seq.held {
             self.step_seq.picked = true;
-            self.step_seq.sound = pad;
+            self.step_seq.sound = sound;
             if self.pad_layout.is_some() {
                 let s = &mut self.step_seq;
                 if s.pen_down == 0 {
@@ -324,7 +328,7 @@ impl App {
     /// STEP SEQ always did.
     fn steps_on(&mut self, sound: u8, open: bool) -> Vec<Effect> {
         self.step_seq.on = true;
-        self.step_seq.sound = sound.min(15);
+        self.step_seq.sound = sound.min(127);
         let mut fx = Vec::new();
         if self.mute_keys != MuteKeys::Off {
             self.mute_keys = MuteKeys::Off;
@@ -348,7 +352,7 @@ impl App {
             ),
             _ => format!(
                 "STEP SEQ: the pads are pad {}'s steps, page {}",
-                self.step_seq.sound + 1,
+                super::kit_pad_name(usize::from(self.step_seq.sound)),
                 self.step_seq.page + 1
             ),
         };

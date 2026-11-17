@@ -1886,20 +1886,20 @@ impl Engine {
     /// The pads whose hit keeps a latched voice playing, as bits (pad `k`
     /// is bit `k`): a pad lights while it is latched. Hits only: a latched
     /// keygroup note or 16 Levels step isn't a pad of its own. Kit 0's.
-    pub fn latched_pads(&self) -> u16 {
+    pub fn latched_pads(&self) -> u128 {
         self.kit_latched_pads(0)
     }
 
     /// [`Engine::latched_pads`] of kit `kit`.
-    pub fn kit_latched_pads(&self, kit: usize) -> u16 {
-        let mut bits = 0u16;
+    pub fn kit_latched_pads(&self, kit: usize) -> u128 {
+        let mut bits = 0u128;
         for (v, _) in self.pool.iter() {
             if v.active
                 && usize::from(v.kit) == kit
                 && v.latch
                 && v.held
                 && v.note == NO_NOTE
-                && v.by < 16
+                && usize::from(v.by) < PADS
             {
                 bits |= 1 << v.by;
             }

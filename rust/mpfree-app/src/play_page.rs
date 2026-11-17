@@ -662,6 +662,9 @@ pub struct PlayPage {
     /// Another kit plays through its track's channel, so its pads have no
     /// mutes of their own, as a synth's haven't.
     pub pad_strips: bool,
+    /// The kit's page on the pads (PAD BANK A = 0): its empty pads fill
+    /// the lanes left after the sounds.
+    pub pad_page: usize,
     turned_at: Option<Instant>,
     pub transport: TransportInfo,
     hits: VecDeque<HitInfo>,
@@ -759,6 +762,7 @@ impl Default for PlayPage {
                 pad_mutes: 0,
             },
             pad_strips: true,
+            pad_page: 0,
             turned_at: None,
             transport: TransportInfo::default(),
             hits: VecDeque::new(),
@@ -1816,6 +1820,12 @@ impl PlayPage {
     }
 
     /// The pattern's lanes, most wanted first: the sounds with notes, the
+    /// The pads of the pattern's lanes, most wanted first ([`Self::lanes`]).
+    #[cfg(test)]
+    pub fn lane_pads(&self) -> Vec<usize> {
+        self.lanes().iter().map(|l| l.pad).collect()
+    }
+
     /// pad hit last, then the kit's other sounds, then the rest. On a
     /// synth track, the line (STEP SEQ's) and then the scale rows, lowest
     /// first (the grid shows them high on top).
@@ -1829,12 +1839,17 @@ impl PlayPage {
             wanted.extend(self.note_rows());
             return wanted.into_iter().map(|p| self.lane(p)).collect();
         }
-        wanted.extend((0..16).filter(|&p| has_notes(p)));
+        // Any of a kit's 128 pads (the synth's 16); the empty ones of the
+        // page on the pads last.
+        let all = 0..self.pads.len().max(16);
+        let page =
+            (self.pad_page * 16..self.pad_page * 16 + 16).filter(|&p| p < self.pads.len().max(16));
+        wanted.extend(all.clone().filter(|&p| has_notes(p)));
         if has_sound(self.last_pad) {
             wanted.push(self.last_pad);
         }
-        wanted.extend((0..16).filter(|&p| has_sound(p) && !has_notes(p) && p != self.last_pad));
-        wanted.extend((0..16).filter(|&p| !has_sound(p) && !has_notes(p) && p != self.last_pad));
+        wanted.extend(all.filter(|&p| has_sound(p) && !has_notes(p) && p != self.last_pad));
+        wanted.extend(page.filter(|&p| !has_sound(p) && !has_notes(p) && p != self.last_pad));
         let mut order: Vec<usize> = Vec::with_capacity(16);
         for p in wanted {
             if !order.contains(&p) {

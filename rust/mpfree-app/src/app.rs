@@ -160,6 +160,15 @@ pub fn tabs(dev: bool) -> Vec<View> {
     t
 }
 
+/// The pages of a kit's 128 pads on the 16 pads: PAD BANK A to H.
+pub const KIT_PAGES: usize = 8;
+
+/// A kit pad's name: its page's letter and its number there, as Akai's
+/// MPC names them ("A1" is pad 1, "B5" pad 21).
+pub fn kit_pad_name(pad: usize) -> String {
+    format!("{}{}", bank_letter(pad / 16), pad % 16 + 1)
+}
+
 /// The bank a PAD BANK button picks (0 = A ... 7 = H): SHIFT picks E-H,
 /// and pressing the button of the bank playing again swaps A and E (an
 /// assumption from other MPCs, to try on the MPC One).
@@ -1199,6 +1208,13 @@ pub struct App {
     mute_bank: usize,
     /// TRACK MUTE held (without SHIFT): a pad tapped solos its track.
     mute_hold: Option<MuteHold>,
+    /// The kit's page on the pads (PAD BANK A = 0 to H = 7): pad n plays
+    /// the kit's pad 16 * page + n (sampler R3 part 2b). One page for
+    /// every kit, as Akai's MPC has one pad bank.
+    pad_page: usize,
+    /// The kit pad each pad held pressed, so it lets go of that one even
+    /// if the page turned while it was down.
+    kit_held: [Option<u8>; 16],
     /// The project's tracks (the audio loop tells it).
     track_count: usize,
     /// The 16 Levels panel shows on Play: the wheel picks its kind.
@@ -1419,6 +1435,8 @@ impl App {
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
             mute_hold: None,
+            pad_page: 0,
+            kit_held: [None; 16],
             track_count: 0,
             levels_open: false,
             levels_on: false,
@@ -1563,6 +1581,30 @@ impl App {
     /// `16 * bank + 16`.
     pub fn mute_bank(&self) -> usize {
         self.mute_bank
+    }
+
+    /// The kit's page on the pads: PAD BANK A = 0 to H = 7.
+    pub fn pad_page(&self) -> usize {
+        self.pad_page
+    }
+
+    /// PAD BANK picked page `page` of the kit (0 = A, up to 7 = H). Pads
+    /// held keep the kit pads they pressed until let go.
+    pub fn set_pad_page(&mut self, page: usize) {
+        self.pad_page = page.min(KIT_PAGES - 1);
+    }
+
+    /// The kit pad that pad `slot` (0 to 15) plays: the one it pressed
+    /// while held, else the page's, 16 * page + slot. With the synth's
+    /// pad layout on the pads, the slot itself.
+    pub fn kit_pad(&self, slot: usize) -> usize {
+        if self.pad_layout.is_some() {
+            return slot;
+        }
+        match self.kit_held.get(slot).copied().flatten() {
+            Some(k) => usize::from(k),
+            None => self.pad_page * 16 + slot,
+        }
     }
 
     /// What TRACK MUTE's pads are in the bank picked, for the log.
@@ -1754,12 +1796,13 @@ impl App {
     /// A pad pressed: it plays, and writes a step while recording a pattern.
     pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
         self.step_pad_played(slot);
+        let pad = self.kit_pad(slot) as u8;
         if !self.free_time_recording() {
             // In Free time the pads only write steps; the pattern keeps
             // playing the latched notes.
             self.press_pad(slot, velocity.max(1));
         }
-        self.record_press(slot as u8, velocity)
+        self.record_press(pad, velocity)
     }
 
     /// What a pad press gives the clip recorder "as pressed" (a track whose
@@ -1775,7 +1818,8 @@ impl App {
         if self.free_time_recording() || slot >= 16 {
             return None;
         }
-        let note = slot as u8;
+        // A kit's pad on the page (or the one it pressed), else the slot.
+        let note = self.kit_pad(slot) as u8;
         Some(if down {
             mpfree_play::Event::NoteOn {
                 note,
@@ -1788,17 +1832,20 @@ impl App {
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
         self.step_pad_let_go(slot);
+        let pad = self.kit_pad(slot) as u8;
         if !self.free_time_recording() {
             self.release_pad(slot);
         }
-        self.record_release(slot as u8)
+        if let Some(h) = self.kit_held.get_mut(slot) {
+            *h = None;
+        }
+        self.record_release(pad)
     }
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
         if self.pad_layout.is_none() {
-            self.arps
-                .engine_at_mut(self.track)
-                .pressure(slot as u8, value);
+            let pad = self.kit_pad(slot) as u8;
+            self.arps.engine_at_mut(self.track).pressure(pad, value);
             return;
         }
         // Every note of a chord pad gets the pad's pressure.
@@ -1825,7 +1872,7 @@ impl App {
                 .arps
                 .engine_at(self.track)
                 .active()
-                .contains(slot as u8),
+                .contains(self.kit_pad(slot) as u8),
             Some(l) => l.get(slot).is_some_and(|p| {
                 p.notes()
                     .iter()
@@ -5895,6 +5942,54 @@ mod tests {
         );
     }
 
+    /// R3 part 2b: PAD BANK pages a kit's 128 pads. Pad 5 on bank B is
+    /// the kit's pad B5 (21) for the arp, the recorder and STEP SEQ, and a
+    /// pad held while the page turns lets go of the pad it pressed.
+    #[test]
+    fn pad_bank_pages_the_kit_and_a_held_pad_lets_go_where_it_pressed() {
+        let mut app = ready();
+        assert_eq!((app.pad_page(), app.kit_pad(4)), (0, 4));
+        assert_eq!(
+            (kit_pad_name(0), kit_pad_name(20), kit_pad_name(127)),
+            ("A1".into(), "B5".into(), "H16".into())
+        );
+        app.set_pad_page(1);
+        assert_eq!(app.kit_pad(4), 20);
+        assert_eq!(
+            app.pressed_event(4, 100, true),
+            Some(mpfree_play::Event::NoteOn {
+                note: 20,
+                velocity: 100
+            })
+        );
+        app.pad_down(4, 100);
+        assert!(app.eng().active().contains(20) && !app.eng().active().contains(4));
+        assert!(app.active(4), "pad 5 lights for B5");
+        // The page turns while it is down: it still lets go of B5.
+        app.set_pad_page(0);
+        assert_eq!(app.kit_pad(4), 20, "held: the pad it pressed");
+        assert_eq!(
+            app.pressed_event(4, 0, false),
+            Some(mpfree_play::Event::NoteOff { note: 20 })
+        );
+        app.pad_up(4);
+        assert!(app.eng().active().is_empty());
+        assert_eq!(app.kit_pad(4), 4, "let go: bank A's again");
+        // STEP SEQ's sound is the pad played last, on any bank.
+        app.set_pad_page(7);
+        app.pad_down(15, 100);
+        app.pad_up(15);
+        assert_eq!(app.step_pads(), None);
+        let fx = click(&mut app, button::STEP_SEQ);
+        assert_eq!(app.step_pads().map(|s| s.sound), Some(127));
+        assert!(fx.contains(&Effect::Note(
+            "STEP SEQ: the pads are pad H16's steps, page 1".into()
+        )));
+        // The page never goes past H.
+        app.set_pad_page(9);
+        assert_eq!(app.pad_page(), 7);
+    }
+
     #[test]
     fn the_guide_learns_buttons_by_name() {
         let mut app = ready();
@@ -7267,7 +7362,7 @@ mod tests {
     /// wheel, its push and - / + go to the outline, never to the kit; on
     /// the mixer and the chain editor once the outline is on a control.
     #[test]
-    fn the_wheel_moves_the_outline_and_kits_stay_on_the_pad_bank_buttons() {
+    fn the_wheel_moves_the_outline_and_never_the_kit() {
         let mut app = ready();
         let nav = |n| vec![Effect::Nav(n)];
         for v in [View::Play, View::Looper] {
