@@ -112,6 +112,148 @@ fn a_granular_pad_plays_the_grain_engine_with_tune_and_reverse_folded_in() {
 }
 
 #[test]
+fn key_tracking_moves_the_grains_size_and_the_scan_with_the_pitch() {
+    let s = ramp(44_100);
+    let base = GrainParams {
+        position: 0.5,
+        size_ms: 10.0,
+        density: 1.0,
+        scan: 0.25,
+        ..GrainParams::default()
+    };
+    for (keys, want) in [
+        (
+            GrainKeys {
+                size: true,
+                scan: false,
+            },
+            GrainParams {
+                pitch: 12.0,
+                size_ms: 5.0,
+                ..base
+            },
+        ),
+        (
+            GrainKeys {
+                size: false,
+                scan: true,
+            },
+            GrainParams {
+                pitch: 12.0,
+                scan: 0.5,
+                ..base
+            },
+        ),
+    ] {
+        let mut pad = granular_pad(&s, base);
+        pad.layers[0].region.tune_cents = 1200;
+        pad.layers[0].region.grain_keys = keys;
+        let mut e = engine_for(&[(0, pad)], &s, 4);
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        let (l, _) = run(&mut e, 600, 128);
+        let reference = reference(&s, want, 600);
+        for k in 0..600 {
+            assert!(
+                (l[k] - C * reference[k]).abs() < 1e-6,
+                "{keys:?} frame {k}: {} vs {}",
+                l[k],
+                C * reference[k]
+            );
+        }
+        assert!(l[100] != 0.0);
+    }
+}
+
+/// A keygroup pad over the whole keyboard (root 60) whose scan follows the
+/// key, gliding a second to each new key, with `voices` voices.
+fn gliding_keys(s: &Source, voices: u8) -> Engine {
+    let mut pad = granular_pad(
+        s,
+        GrainParams {
+            scan: 0.25,
+            ..GrainParams::default()
+        },
+    );
+    pad.keys = Some(Keys::all(60));
+    pad.polyphony = voices;
+    let r = &mut pad.layers[0].region;
+    r.grain_keys.scan = true;
+    r.grain_glide_ms = 1000.0;
+    engine_for(&[(0, pad)], s, 8)
+}
+
+/// How far the playhead moves over the next `frames`, a frame (the
+/// scan's speed), and how many voices play.
+fn scan_speed(e: &mut Engine, frames: usize) -> (f64, usize) {
+    let at = |e: &Engine| e.playheads().map(|h| h.2).max().unwrap_or(0);
+    let from = at(e);
+    run(e, frames, 128);
+    let n = e.playheads().count();
+    ((at(e) as f64 - from as f64) / frames as f64, n)
+}
+
+#[test]
+fn a_mono_pad_glides_its_cloud_to_each_new_key() {
+    let s = ramp(441_000);
+    let mut e = gliding_keys(&s, 1);
+    e.apply(Event::Key {
+        note: 60,
+        velocity: 100,
+    });
+    let (v, n) = scan_speed(&mut e, 4_410);
+    assert!((v - 0.25).abs() < 0.01 && n == 1, "{v} {n}");
+    // An octave up while it holds: the same voice, sliding there over a
+    // second, the scan's speed twice as fast at the end. The slide is even
+    // in semitones, so the speed rises by a power of two: on average 0.299
+    // over the first half second and 0.423 over the second.
+    e.apply(Event::Key {
+        note: 72,
+        velocity: 100,
+    });
+    let (v, n) = scan_speed(&mut e, 22_050);
+    assert!((v - 0.299).abs() < 0.01 && n == 1, "first half: {v} {n}");
+    let (v, n) = scan_speed(&mut e, 22_050);
+    assert!((v - 0.423).abs() < 0.01 && n == 1, "second half: {v} {n}");
+    let (v, _) = scan_speed(&mut e, 4_410);
+    assert!((v - 0.5).abs() < 0.01, "there: {v}");
+    // Letting go of the first key leaves it playing; the second's stops it.
+    e.apply(Event::KeyOff { note: 60 });
+    run(&mut e, 4_410, 128);
+    assert!(e.playheads().count() == 1);
+    e.apply(Event::KeyOff { note: 72 });
+    run(&mut e, 44_100, 128);
+    assert_eq!(e.playheads().count(), 0);
+}
+
+#[test]
+fn with_more_voices_each_new_one_glides_from_the_last_key() {
+    let s = ramp(441_000);
+    let mut e = gliding_keys(&s, 4);
+    e.apply(Event::Key {
+        note: 72,
+        velocity: 100,
+    });
+    let (v, _) = scan_speed(&mut e, 4_410);
+    assert!((v - 0.5).abs() < 0.01, "the first key plays as it is: {v}");
+    e.apply(Event::KeyOff { note: 72 });
+    run(&mut e, 44_100, 128);
+    assert_eq!(e.playheads().count(), 0);
+    // The next starts from the key before and slides down to its own.
+    e.apply(Event::Key {
+        note: 60,
+        velocity: 100,
+    });
+    let (v, _) = scan_speed(&mut e, 4_410);
+    assert!(v > 0.42, "it starts near the last key: {v}");
+    run(&mut e, 44_100, 128);
+    let (v, _) = scan_speed(&mut e, 4_410);
+    assert!((v - 0.25).abs() < 0.01, "and lands on its own: {v}");
+}
+
+#[test]
 fn a_tone_pads_tune_moves_its_note_not_its_grains_pitch() {
     let s = ramp(44_100);
     // A2 with grains four cycles long, regular, frozen.
