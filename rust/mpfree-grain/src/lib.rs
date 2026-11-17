@@ -10,6 +10,7 @@
 //!
 //! A [`GrainVoice`] spawns grains from either, each with its own position,
 //! length, pitch, direction, pan and window, and mixes them into the output.
+//! Its LFO and envelope ([`motion`]) move its settings as it plays.
 //! Architecture: `docs/dev/design/sampler-architecture.md` ("Granular engine").
 //!
 //! Real-time rules, checked by `tests/no_alloc.rs`:
@@ -24,6 +25,7 @@
 
 pub mod buffer;
 pub mod fx;
+pub mod motion;
 pub mod node;
 pub mod rng;
 pub mod voice;
@@ -31,6 +33,7 @@ pub mod window;
 
 pub use buffer::{Aim, Clip, GrainSource, LiveBuffer};
 pub use fx::GrainFx;
+pub use motion::{GrainEnv, GrainLfo, LfoShape, MotionTarget};
 pub use node::GrainNode;
 pub use rng::Rng;
 pub use voice::{

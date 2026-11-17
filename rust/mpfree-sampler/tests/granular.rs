@@ -362,6 +362,46 @@ fn bursts(x: &[f32]) -> Vec<usize> {
 }
 
 #[test]
+fn a_pads_lfo_moves_its_grains_with_the_tempo_and_starts_again_each_hit() {
+    let s = ramp(44_100);
+    let g = GrainParams {
+        position: 0.5,
+        lfo: GrainLfo {
+            shape: LfoShape::Square,
+            rate_hz: 1.0,
+            beats: Some(1.0),
+            target: MotionTarget::Position,
+            depth: 0.25,
+        },
+        ..GrainParams::default()
+    };
+    let mut e = engine_for(&[(0, granular_pad(&s, g))], &s, 4);
+    let head = |e: &Engine| e.playheads().next().map(|h| h.2);
+    let hit = |e: &mut Engine| {
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 100,
+        })
+    };
+    // 120 BPM: up a quarter of the sound for half a beat, then down.
+    hit(&mut e);
+    run(&mut e, 5_000, 128);
+    assert_eq!(head(&e), Some(33_075));
+    run(&mut e, 8_000, 128);
+    assert_eq!(head(&e), Some(11_025));
+    // At 60 BPM the beat is twice as long; a new hit starts the LFO again.
+    e.apply(Event::NoteOff { pad: 0 });
+    run(&mut e, 22_050, 128);
+    assert_eq!(head(&e), None, "the first hit is over");
+    e.set_tempo(60.0);
+    hit(&mut e);
+    run(&mut e, 20_000, 128);
+    assert_eq!(head(&e), Some(33_075));
+    run(&mut e, 5_000, 128);
+    assert_eq!(head(&e), Some(11_025));
+}
+
+#[test]
 fn a_synced_cloud_follows_the_project_tempo_not_its_saved_one() {
     let s = Source::new("dc", RATE, 1, vec![0.5; RATE as usize * 2]).unwrap();
     // Saved at some other tempo: the engine's is the one that counts.

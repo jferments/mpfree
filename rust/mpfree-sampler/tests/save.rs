@@ -154,6 +154,20 @@ fn busy_kit() -> Project {
         size_spray: 0.45,
         level_spray: 0.7,
         spray_shape: GrainSprayShape::Peaked,
+        lfo: GrainLfo {
+            shape: LfoShape::Drift,
+            rate_hz: 3.5,
+            beats: Some(0.75),
+            target: MotionTarget::Position,
+            depth: -0.25,
+        },
+        env: GrainEnv {
+            attack_ms: 250.0,
+            decay_ms: 4_000.0,
+            sustain: 0.3,
+            target: MotionTarget::Size,
+            depth: 0.6,
+        },
     };
     g.grain_mode = GrainMode::Repeat;
     p.set_pad(5, Some(Pad::new("Cloud", Layer::new(g))), None)

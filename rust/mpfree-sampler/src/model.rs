@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 pub use mpfree_grain::{
-    Params as GrainParams, SprayShape as GrainSprayShape, TempoSync, Window as GrainWindow,
+    GrainEnv, GrainLfo, LfoShape, MotionTarget, Params as GrainParams,
+    SprayShape as GrainSprayShape, TempoSync, Window as GrainWindow,
 };
 
 use crate::dsp::{as_i16, Sample};
@@ -1060,7 +1061,16 @@ fn grain_ok(g: &GrainParams) -> bool {
         g.reverse,
         g.spread,
         g.gain,
+        g.lfo.rate_hz,
+        g.lfo.depth,
+        g.env.attack_ms,
+        g.env.decay_ms,
+        g.env.sustain,
+        g.env.depth,
     ];
+    if g.lfo.beats.is_some_and(|b| !b.is_finite()) {
+        return false;
+    }
     let sync_ok = g.sync.is_none_or(|t| {
         t.frames_per_beat.is_finite()
             && t.grains_per_beat.is_none_or(f32::is_finite)

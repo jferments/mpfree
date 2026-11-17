@@ -662,6 +662,23 @@ const SPRAY_SHAPES: &[(&str, GrainSprayShape)] = &[
     ("even", GrainSprayShape::Even),
     ("peaked", GrainSprayShape::Peaked),
 ];
+const MOTION_TARGETS: &[(&str, MotionTarget)] = &[
+    ("off", MotionTarget::Off),
+    ("position", MotionTarget::Position),
+    ("size", MotionTarget::Size),
+    ("density", MotionTarget::Density),
+    ("pitch", MotionTarget::Pitch),
+    ("spray", MotionTarget::Spray),
+];
+const LFO_SHAPES: &[(&str, LfoShape)] = &[
+    ("sine", LfoShape::Sine),
+    ("triangle", LfoShape::Triangle),
+    ("saw_up", LfoShape::SawUp),
+    ("saw_down", LfoShape::SawDown),
+    ("square", LfoShape::Square),
+    ("hold", LfoShape::Hold),
+    ("drift", LfoShape::Drift),
+];
 
 fn pads_play_text(p: PadsPlay) -> String {
     match p {
@@ -727,6 +744,8 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         size_spray,
         level_spray,
         spray_shape,
+        lfo,
+        env,
     } = g;
     f.num("position", position);
     f.num("spray", spray);
@@ -761,6 +780,35 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
     f.num("size_spray", size_spray);
     f.num("level_spray", level_spray);
     f.word("spray_shape", spray_shape, SPRAY_SHAPES);
+    // Saves before movement open with it off.
+    f.scope("lfo", |f| {
+        let GrainLfo {
+            shape,
+            rate_hz,
+            beats,
+            target,
+            depth,
+        } = lfo;
+        f.word("shape", shape, LFO_SHAPES);
+        f.num("rate_hz", rate_hz);
+        f.opt_num("beats", beats);
+        f.word("target", target, MOTION_TARGETS);
+        f.num("depth", depth);
+    });
+    f.scope("env", |f| {
+        let GrainEnv {
+            attack_ms,
+            decay_ms,
+            sustain,
+            target,
+            depth,
+        } = env;
+        f.num("attack_ms", attack_ms);
+        f.num("decay_ms", decay_ms);
+        f.num("sustain", sustain);
+        f.word("target", target, MOTION_TARGETS);
+        f.num("depth", depth);
+    });
     let none = TempoSync {
         frames_per_beat: 22_050.0,
         grains_per_beat: None,
