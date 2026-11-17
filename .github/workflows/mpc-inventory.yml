@@ -1324,11 +1324,21 @@ jobs:
           # The smoke module (the control sweep over every screen, the workflows and the song workflows)
           # took about 32 minutes of this job under qemu (14 Nov). It runs natively above on every run;
           # as ARM only by hand, with Run workflow's full_arm box ticked.
+          # The test programs link with --sort-section=name, which puts glibc's code first in .text.
+          # GNU ld 2.42 mislinks glibc's memcpy chooser (an IFUNC) once Thumb glibc code that
+          # calls memcpy lies over 16 MiB past the .iplt at the start of .text: the long-branch
+          # stub it adds (__memcpy_from_thumb) costs the IRELATIVE entry its Thumb bit, and the
+          # program dies at its first instructions. mpfree-app's unit-test program passed 16 MiB
+          # on 17 Nov (PR #503 on Train 79); mpfree itself is about 9.8 MiB and links as it ships.
+          # The test build relinks mpfree too (the cli tests run it), so the preview below runs a
+          # copy of the program as built and checked above.
+          cp "$f" "$RUNNER_TEMP/mpfree" && f="$RUNNER_TEMP/mpfree"
+          test_flags="$RUSTFLAGS -C link-arg=-Wl,--sort-section=name"
           if [ "$FULL_ARM" = true ]; then
-            cargo test --manifest-path rust/Cargo.toml --release --locked \
+            RUSTFLAGS="$test_flags" cargo test --manifest-path rust/Cargo.toml --release --locked \
               --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-ui
           else
-            cargo test --manifest-path rust/Cargo.toml --release --locked \
+            RUSTFLAGS="$test_flags" cargo test --manifest-path rust/Cargo.toml --release --locked \
               --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-ui -- --skip smoke::
           fi
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
