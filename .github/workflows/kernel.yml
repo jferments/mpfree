@@ -47,18 +47,24 @@ jobs:
         run: |
           { echo '### MPFree kernel'; echo '```'; cat "$RUNNER_TEMP/mpfree-kernel/build-info.txt"
             echo; cat "$RUNNER_TEMP/mpfree-kernel/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      # The account's artifact storage is shared by every workflow and can be full; the kernel
-      # built either way, and its hashes are in the summary above, so a full store warns instead
-      # of failing the build.
+      # Artifacts count against the account's storage (shared by every private repository and
+      # billed by the hour), so a pull request's build is only summarised; main and a
+      # hand-started run (Run workflow, on any branch) keep the kernel for 7 days. The storage
+      # can be full; the kernel built either way, and its hashes are in the summary above, so a
+      # full store warns instead of failing the build.
       - name: Keep the kernel
         id: keep
+        if: github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: mpfree-kernel-${{ github.sha }}
           path: ${{ runner.temp }}/mpfree-kernel/
-          retention-days: 30
+          retention-days: 7
           if-no-files-found: error
+      - name: Say that a pull request's kernel is not kept
+        if: github.event_name == 'pull_request'
+        run: echo "**Not kept as an artifact:** a pull request's build is only summarised. Run workflow on this branch keeps the kernel for 7 days." >> "$GITHUB_STEP_SUMMARY"
       - name: Say if the kernel was not kept
         if: steps.keep.outcome == 'failure'
         run: |

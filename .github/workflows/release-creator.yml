@@ -40,6 +40,9 @@ env:
   RUSTUP_TOOLCHAIN: "1.97.0"
   CARGO_TERM_COLOR: never
 
+# The jobs hand files to each other as artifacts, kept 1 day: they count against the
+# account's artifact storage, and the draft release holds the files that matter.
+
 jobs:
   programs:
     name: MPFree's programs for the MPC (ARMv7)
@@ -156,14 +159,14 @@ jobs:
           name: stick-programs
           path: ${{ runner.temp }}/stick-programs
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
       - name: Where the free kits' sounds came from, for the release
         uses: actions/upload-artifact@v4
         with:
           name: creator-free-kits-credits
           path: ${{ runner.temp }}/free-kits/free-kits-credits.txt
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   linux:
     name: Creator for Linux (x86_64)
@@ -217,7 +220,7 @@ jobs:
           name: creator-linux
           path: ${{ env.PACKAGE }}
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   windows:
     name: Creator for Windows (x64)
@@ -269,7 +272,7 @@ jobs:
           name: creator-windows
           path: out/*.exe
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   macos:
     name: Creator for macOS (Apple silicon and Intel)
@@ -333,7 +336,7 @@ jobs:
           name: creator-macos
           path: out/*.zip
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   release:
     name: Draft release with SHA-256 sums

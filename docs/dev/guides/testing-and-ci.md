@@ -37,9 +37,9 @@ filters, so the check always reports.
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 | `soak` | The `mpfree-bench` song for 2^21 periods (about 101 minutes of sound), failing on any allocation in any block (see [profiling](../design/profiling.md#the-soak-the-soak-ci-job)); only by hand, with **Run workflow**'s Soak box ticked | ~15 min |
 
-The coverage table appears in the run's summary page, and the lcov file is
-kept as an artifact for 7 days. If the account's artifact storage is full,
-the upload fails without failing the run.
+The coverage table appears in the run's summary page. Only a hand-started
+run (**Run workflow**) keeps the lcov file, as an artifact for 3 days. If the
+account's artifact storage is full, the upload fails without failing the run.
 
 ### Where it runs
 
@@ -72,8 +72,28 @@ for a runner is waiting, not failed. GitHub's list of runs can show a run as
 queued while its jobs are already running: to see what the runners are doing,
 look at the jobs of each run, not the run's status.
 
-If the account's artifact storage is full, the coverage job's lcov upload
-fails without failing the run (the table is in the run summary anyway).
+### Artifacts
+
+Artifacts count against the GitHub account's storage: one allowance (500 MB
+on Free, 1 GB on Pro, shared with GitHub Packages) for every private
+repository on the account, Project After's and PlantGen's included, billed by
+the hour over the month. When the month's allowance is used, every upload on
+the account fails ("Artifact storage quota has been hit") until usage is
+recalculated or the next billing month starts, unless the account has an
+Actions budget above $0. Deleting artifacts stops more usage piling up but
+does not give back what the month has used. So MPFree's workflows keep few
+artifacts, for a short time, and the run summary is the record:
+
+| Workflow | Kept | For |
+|---|---|---|
+| `mpc-inventory.yml`, coverage | the lcov file, from a hand-started run only | 3 days |
+| `kernel.yml` | the kernel, from `main` or a hand-started run (never a pull request) | 7 days |
+| `release-creator.yml` | the files its jobs hand to each other (the draft release keeps the creator) | 1 day |
+
+An upload that fails because the storage is full only warns. A new upload
+should do the same, keep its results in the run summary, and keep files only
+as long as someone needs to fetch them; files meant to last go in a release,
+which does not count against this storage.
 
 ### The USB creator's release workflow
 
@@ -86,7 +106,7 @@ fails without failing the run (the table is in the run summary anyway).
 - **The compiler** is kernel.org's crosstool gcc 14 for 32-bit ARM (gcc and binutils, the toolchain kernel developers use, made to run on any x86-64 Linux), never the machine's own, so the kernel comes out the same wherever it is built.
 - **Where it runs:** in the pinned container ([`tools/kernel/Dockerfile`](../../../tools/kernel/Dockerfile): Debian pinned by digest, packages from one day's snapshot.debian.org) where Docker or Podman works; otherwise on the machine itself, as its user, never as root. The mpfree-ci runners have neither engine (first run, 2026-11-17), so they build on the runner. A host tool the runner lacks (flex, bison, m4, patch, bc, depmod, the OpenSSL headers) is fetched with `apt-get download`, which checks it against the runner's own signed package lists, and unpacked into the run's folder; nothing is installed. These tools only build the kernel's own helper programs, not the kernel.
 - **Checks:** the kernel, the RT patch and the compiler are taken by the sha256 pinned in [`versions.env`](../../../tools/kernel/versions.env). With nothing pinned, the newest 6.18 RT patch and its kernel and the newest gcc 14 crosstool are taken after kernel.org's PGP signatures check out (the kernel's must be Greg Kroah-Hartman's or Linus Torvalds's key, the compiler's Arnd Bergmann's, who builds the crosstool compilers), and `build-info.txt` lists the lines to pin. [`check-config.py`](../../../tools/kernel/check-config.py) stops the build if any setting in [`mpfree.config`](../../../tools/kernel/mpfree.config) did not take, or the eMMC and SD drivers ended up built in.
-- **Result:** the run's summary shows `build-info.txt` (what was built, from what, how it was checked) and `SHA256SUMS`. The run keeps `zImage`, the modules, the config, `build-info.txt` and `SHA256SUMS` as its artifact for 30 days. The account's artifact storage is shared by every workflow; when it is full the upload only warns ("Kernel not kept"), because the kernel itself built. Downloads live in the runner's tool cache (`_work/_tool/mpfree-kernel`; the runners' home folder is read-only to jobs); each run builds in its own folder there, removed when the run ends, so two builds at once don't meet.
+- **Result:** the run's summary shows `build-info.txt` (what was built, from what, how it was checked) and `SHA256SUMS`. A run on `main` or started by hand (**Run workflow**, on any branch) keeps `zImage`, the modules, the config, `build-info.txt` and `SHA256SUMS` as its artifact for 7 days; a pull request's run keeps nothing (see [Artifacts](#artifacts)). When the account's artifact storage is full the upload only warns ("Kernel not kept"), because the kernel itself built. Downloads live in the runner's tool cache (`_work/_tool/mpfree-kernel`; the runners' home folder is read-only to jobs); each run builds in its own folder there, removed when the run ends, so two builds at once don't meet.
 
 ## Running it locally
 
