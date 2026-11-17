@@ -134,7 +134,7 @@ Left different on purpose:
 
 ## Step 2: the first power-on with our kernel (blocks for the owner)
 
-Two power-ons with a `--chain --own-kernel` stick. The kernel is the one CI built from `main` after #459 (run 44114092739, commit 359c6eef): `6.18.57-rt9-mpfree`, kept on the CI VM in `/srv/mpfree-store/kernel/runs/44114092739.1`. The hook on the MPC is the one installed in block 7.3: an own-kernel stick lists the same files for it as any `--chain` stick, so there is no install step. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable. The round asks for your password twice, at the stick write and at the log read.
+Two power-ons with a `--chain --own-kernel` stick. The kernel is the one CI built from `main` after #459 (run 44114092739, commit 359c6eef): `6.18.57-rt9-mpfree`, kept on the CI VM in `/srv/mpfree-store/kernel/runs/44114092739.1`. The hook on the MPC is the one installed in block 7.3: an own-kernel stick lists the same files for it as any `--chain` stick, so there is no install step. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable. An SD card can stay in its slot: the stick's device tree leaves the slot out. The round asks for your password twice, at the stick write and at the log read.
 
 **What to expect.** This kernel has no driver for the panel (step 4) or the sound card (step 3), so:
 - **No picture from our kernel.** After the MPC logo the screen stays as the first kernel left it, or goes dark, or shows noise. Nothing on the screen says our kernel is up; SSH does, about a minute after power-on.
