@@ -1395,6 +1395,9 @@ pub mod phaser {
     pub const FEEDBACK: u16 = 5;
     pub const WIDTH: u16 = 6;
     pub const MIX: u16 = 7;
+    /// How far apart the sides sweep at Width 100 %: a quarter cycle (0,
+    /// as saved projects had it) or half (1, opposite sweeps).
+    pub const STEREO: u16 = 8;
 }
 
 const STAGE_NAMES: &[&str] = &["2", "4", "6", "8", "12"];
@@ -1402,13 +1405,41 @@ const STAGE_COUNTS: [usize; 5] = [2, 4, 6, 8, 12];
 const MAX_STAGES: usize = 12;
 /// The sweep at full depth: two and a half octaves each way.
 const PHASE_OCTAVES: f32 = 2.5;
+const PHASER_STEREO: &[&str] = &["Quarter", "Opposite"];
+
+/// The phaser's dry and wet together, on music, carry `2 m (1 - m) C` of
+/// its power on top of what each carries alone: the wet is the dry
+/// turned in phase, so below the first notch, where most of a mix's
+/// loudness is, they add. 0.3 is that share measured on pink noise
+/// through a K-weighting, over the sweep, at the defaults; with it the
+/// defaults and every preset go in within 0.6 LU of the dry, and any
+/// Centre and stage count within about 2 LU (FX quality PR M3).
+const PHASER_CROSS: f32 = 0.3;
+
+/// The corner of the high-pass in the phaser's feedback path, Hz. The
+/// stages pass DC unturned, so without it the loop rings at DC: at +95 %
+/// Feedback a sound's lowest few Hz came out 26 dB up (and its DC
+/// offset with them), which an analogue phaser's coupled feedback never
+/// does.
+const PHASER_FB_HP_HZ: f32 = 10.0;
+
+/// The phaser's level trim at Feedback `g` and Mix `m` (0 to 1): the
+/// loop is all-pass, so its noise gain is `1 / (1 - g²)`, and the dry
+/// and the wet together carry `(1 - m)² + m² / (1 - g²) + 2 m (1 - m)
+/// C`. On dry and wet together, so the notches keep their depth. 1 at
+/// Mix 0; at Mix 100 % it holds the level exactly at any Feedback.
+#[inline]
+fn phaser_trim(g: f32, m: f32) -> f32 {
+    let dry = 1.0 - m;
+    1.0 / (dry * dry + m * m / (1.0 - g * g) + 2.0 * m * dry * PHASER_CROSS).sqrt()
+}
 
 static PHASER_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.phaser",
     name: "Phaser",
     kind: Kind::Effect,
 };
-static PHASER_PARAMS: [ParamInfo; 8] = [
+static PHASER_PARAMS: [ParamInfo; 9] = [
     ParamInfo {
         id: 0,
         name: "Rate",
@@ -1497,24 +1528,47 @@ static PHASER_PARAMS: [ParamInfo; 8] = [
         curve: Curve::Linear,
         readonly: false,
     },
+    ParamInfo {
+        id: 8,
+        name: "Stereo",
+        group: "Phaser",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(PHASER_STEREO),
+        readonly: false,
+    },
 ];
 
 /// A stereo phaser: 2 to 12 first-order all-pass stages (zero-delay
 /// feedback, so a fast sweep stays clean) swept in octaves around a centre,
-/// with feedback for resonance. Each pair of stages adds a notch.
+/// with feedback for resonance. Each pair of stages adds a notch. A level
+/// trim ([`phaser_trim`]) holds it near the dry's level at any Feedback
+/// and Mix.
 pub struct Phaser {
-    v: [f32; 8],
+    v: [f32; 9],
     rate: u32,
     lfo: Lfo,
     depth: Smooth,
     log_center: Smooth,
     feedback: Smooth,
+    /// The right side's LFO offset in cycles: Width times a quarter, or
+    /// a half on Opposite.
     width: Smooth,
     mix: Smooth,
+    /// The dry's and the wet's gains, Mix times the level trim, and the
+    /// (Feedback, Mix) they were worked out for.
+    trim: [f32; 2],
+    trim_at: (f32, f32),
     /// Crossfade weights for the taps after 2, 4, 6, 8 and 12 stages.
     taps: [Smooth; 5],
     state: [[f32; MAX_STAGES]; 2],
     last: [f32; 2],
+    /// The feedback path's high-pass ([`PHASER_FB_HP_HZ`]): its pole and,
+    /// for each side, its last input (its output is `last`).
+    hp_r: f32,
+    hp_x: [f32; 2],
     /// The stages' coefficient for each side, worked out every [`CTL`]
     /// frames (an exp2 and a tan each) and glided to between.
     gg: [f32; 2],
@@ -1537,6 +1591,21 @@ impl Default for Phaser {
 }
 
 impl Phaser {
+    /// How far the right side's sweep runs behind the left's, in cycles,
+    /// for the settings set. For drawing.
+    pub fn right_offset(&self) -> f32 {
+        self.reach() * self.v[phaser::WIDTH as usize] / 100.0
+    }
+
+    /// The right side's offset at Width 100 %.
+    fn reach(&self) -> f32 {
+        if self.v[phaser::STEREO as usize] >= 0.5 {
+            0.5
+        } else {
+            0.25
+        }
+    }
+
     /// The all-pass corner in Hz at LFO phase `phase` (0 to 1 a cycle),
     /// for the settings set. For drawing.
     pub fn center_hz(&self, phase: f32) -> f32 {
@@ -1568,10 +1637,14 @@ impl Phaser {
         for _ in 0..n {
             chain = crate::svf::cmul(chain, stage);
         }
-        // out = A^n x / (1 - fb z^-1 A^n): the feedback is one frame late.
-        let loop_ = crate::svf::cmul(z, chain);
+        // out = A^n x / (1 - fb z^-1 HP A^n): the feedback is one frame
+        // late, through the high-pass (1 - z^-1) / (1 - r z^-1).
+        let r = f64::from(self.hp_r);
+        let hp = cdiv((1.0 - z.0, -z.1), (1.0 - r * z.0, -r * z.1));
+        let loop_ = crate::svf::cmul(crate::svf::cmul(z, hp), chain);
         let wet = cdiv(chain, (1.0 - fb * loop_.0, -fb * loop_.1));
-        crate::svf::power_db((1.0 - mix + mix * wet.0, mix * wet.1))
+        let trim = f64::from(phaser_trim(fb as f32, mix as f32));
+        crate::svf::power_db((trim * (1.0 - mix + mix * wet.0), trim * mix * wet.1))
     }
 
     pub fn new() -> Phaser {
@@ -1583,11 +1656,15 @@ impl Phaser {
             depth: Smooth::new(v[2] / 100.0),
             log_center: Smooth::new(v[3].log2()),
             feedback: Smooth::new(v[5] / 100.0),
-            width: Smooth::new(v[6] / 100.0),
+            width: Smooth::new(0.25 * v[6] / 100.0),
             mix: Smooth::new(v[7] / 100.0),
+            trim: [0.0; 2],
+            trim_at: (f32::NAN, f32::NAN),
             taps: [Smooth::new(0.0); 5],
             state: [[0.0; MAX_STAGES]; 2],
             last: [0.0; 2],
+            hp_r: 1.0,
+            hp_x: [0.0; 2],
             gg: [0.0; 2],
             gg_step: [0.0; 2],
             ctl: 0,
@@ -1617,7 +1694,7 @@ impl Phaser {
             phaser::CENTER => self.log_center.target = v.log2(),
             phaser::STAGES => self.stages(),
             phaser::FEEDBACK => self.feedback.target = v / 100.0,
-            phaser::WIDTH => self.width.target = v / 100.0,
+            phaser::WIDTH | phaser::STEREO => self.width.target = self.right_offset(),
             phaser::MIX => self.mix.target = v / 100.0,
             _ => {}
         }
@@ -1631,8 +1708,14 @@ impl Phaser {
             let depth = PHASE_OCTAVES * self.depth.next();
             let center = self.log_center.next();
             let fb = self.feedback.next();
-            let off_r = 0.25 * self.width.next();
+            let off_r = self.width.next();
             let mix = self.mix.next();
+            if (fb, mix) != self.trim_at {
+                let trim = phaser_trim(fb, mix);
+                self.trim = [trim * (1.0 - mix), trim * mix];
+                self.trim_at = (fb, mix);
+            }
+            let [dry, wet] = self.trim;
             let mut w = [0.0f32; 5];
             for (w, t) in w.iter_mut().zip(&mut self.taps) {
                 *w = t.next();
@@ -1684,8 +1767,11 @@ impl Phaser {
                 for s in &mut st[used..] {
                     *s = 0.0;
                 }
-                self.last[ch] = flush(out);
-                y[ch] = lerp(x[ch], out, mix);
+                // What goes round again, through the high-pass.
+                let fed = out - self.hp_x[ch] + self.hp_r * self.last[ch];
+                self.hp_x[ch] = out;
+                self.last[ch] = flush(fed);
+                y[ch] = dry * x[ch] + wet * out;
             }
             l[i] = y[0];
             r[i] = y[1];
@@ -1722,6 +1808,7 @@ impl Node for Phaser {
         for t in &mut self.taps {
             t.set_time(self.rate, 20.0);
         }
+        self.hp_r = 1.0 - 2.0 * PI * PHASER_FB_HP_HZ / self.rate as f32;
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
     }
     fn reset(&mut self) {
@@ -1739,6 +1826,7 @@ impl Node for Phaser {
         }
         self.state = [[0.0; MAX_STAGES]; 2];
         self.last = [0.0; 2];
+        self.hp_x = [0.0; 2];
         self.gg_step = [0.0; 2];
         self.ctl = 0;
         self.land = true;
@@ -1769,8 +1857,14 @@ impl Node for Phaser {
         } else {
             0.0
         };
+        // The feedback's high-pass rings out too: round the loop its pole
+        // moves to (r - g) / (1 - g), slowest at -95 % (31 ms at 48 kHz),
+        // so 80 dB down takes 9.2 (1 - g) / (1 - r) frames.
+        let g = self.v[5] / 100.0;
+        let hp = 9.2 * (1.0 - g) / (1.0 - self.hp_r).max(1e-6);
         // At least 8 time constants of the slowest stage, plus the rings.
-        ((8.0 / (2.0 * PI * low) + lp * rings) * self.rate as f32) as u32 + 2
+        let stages_frames = (8.0 / (2.0 * PI * low) + lp * rings) * self.rate as f32;
+        (stages_frames + hp) as u32 + 2
     }
 }
 
@@ -1784,6 +1878,48 @@ mod tests {
             let p = i as f32 / 1000.0;
             assert!((sine(p) - (2.0 * PI * p).sin()).abs() < 0.002, "{p}");
         }
+    }
+
+    #[test]
+    fn the_phasers_stereo_puts_the_right_sweep_a_quarter_or_half_behind() {
+        // Each side's corner, from its coefficient the frame after a
+        // reset (it lands there at once), with the LFO a fifth of the way
+        // round. Opposite at Width 100 % mirrors the sweep about the
+        // centre; Quarter (and every saved project) keeps a quarter.
+        let corner = |stereo: f32, width: f32| {
+            let mut p = Phaser::new();
+            p.set_param(phaser::DEPTH, 100.0);
+            p.set_param(phaser::CENTER, 700.0);
+            p.set_param(phaser::WIDTH, width);
+            p.set_param(phaser::STEREO, stereo);
+            p.reset();
+            p.lfo.phase = 0.2 - p.lfo.inc;
+            p.run(&mut [0.0], &mut [0.0]);
+            p.gg.map(|gg| {
+                let g = f64::from(gg / (1.0 - gg));
+                (g.atan() * f64::from(p.rate) / std::f64::consts::PI) as f32
+            })
+        };
+        let at = |ph: f32| 700.0 * (PHASE_OCTAVES * sine(wrap(ph))).exp2();
+        let close = |a: f32, b: f32| (a / b - 1.0).abs() < 1e-3;
+        for (stereo, width, off) in [
+            (0.0, 100.0, 0.25),
+            (1.0, 100.0, 0.5),
+            (1.0, 50.0, 0.25),
+            (1.0, 0.0, 0.0),
+        ] {
+            let [l, r] = corner(stereo, width);
+            assert!(close(l, at(0.2)), "left {l} against {}", at(0.2));
+            assert!(
+                close(r, at(0.2 + off)),
+                "Stereo {stereo}, Width {width}: right {r} against {}",
+                at(0.2 + off)
+            );
+        }
+        // Opposite at Width 100 %: the two corners sit an equal number of
+        // octaves either side of the centre.
+        let [l, r] = corner(1.0, 100.0);
+        assert!(((l * r).sqrt() / 700.0 - 1.0).abs() < 1e-3, "{l} and {r}");
     }
 
     #[test]
