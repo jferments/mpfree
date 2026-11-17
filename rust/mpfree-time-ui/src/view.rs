@@ -638,6 +638,9 @@ pub enum TimeAction {
     /// Keep what was just played (CAPTURE): into the armed track's playing
     /// clip, or as a new clip (see `mpfree_capture::keep`).
     Capture,
+    /// UNDO while recording: punch out and throw the take so far away (the
+    /// music plays on); during the count-in, stop.
+    ThrowTake,
     /// Play a whole row of the grid (a scene) from the next bar line, with
     /// its mutes (`mpfree_perform::Perform::launch_scene`).
     LaunchScene(usize),

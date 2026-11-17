@@ -83,14 +83,14 @@ To open it, tap the small **I/O icon** (an arrow in over an arrow out) at the ri
 
 Under Audio come more sections, for the gear around the MPC (see [Playing other gear](midi-and-cv.md)):
 
-- **MIDI** lists the ports plugged in, each with what its **Input** does and its **Thru**, then **Tracks out**: where each track plays (**Plays on**, the port and the channel together, or **Inside MPFree**) and the **Program** it sends.
-- **Routing** shows where each port's, the pads' and each track's MIDI goes, on one grid, and sends a channel of a port to a track of its own (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)).
+- **MIDI** lists the ports plugged in, each with what its **Input** does and its **Thru** (the output its messages go straight on to, if any), then **Tracks out**: where each track plays (**Plays on**, the port and the channel together, or **Inside MPFree**) and the **Program** it sends.
+- **Routing** shows where each port's, the pads' and each track's MIDI goes, on one grid, sends a channel of a port to a track of its own (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)), and sends a port straight out of another (see [Thru](midi-and-cv.md#thru-a-keyboard-straight-to-a-synth)).
 - **Learn** lists every control learned with MIDI Learn: what it moves, where it stands, its range, how it takes over, and whether it is kept with the song or for every project (see [The Learn section](midi-and-cv.md#the-learn-section)).
 - **Sync** sets **Tempo from** (MPFree itself or a port's clock), what following does with start, stop and the position, the clock arriving now, and which ports send **Clock out**.
 - **CV** has a row for each of the eight CV/gate outputs: its **Job**, the **Track** it follows and its setting, with the volts it gives now.
 - **Monitor** shows every MIDI message in and out as it happens (see [Seeing what comes in and goes out](midi-and-cv.md#seeing-what-comes-in-and-goes-out)).
 
-A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. The MIDI, Routing, Learn, Sync and CV settings are saved with the project (a port's input, thru, ignores and delay, and controls learned for every project, stay with your rig instead), and so is the rest of the mixer: levels, pans, sends, mutes and every effect with its settings (see [Saving your work](saving.md#projects)). The line input's source, monitoring and arming are not part of a project, so opening one never turns the input on.
+A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. The MIDI, Routing, Learn, Sync and CV settings are saved with the project (a port's input, ignores and delay, and controls learned for every project, stay with your rig instead), and so is the rest of the mixer: levels, pans, sends, mutes and every effect with its settings (see [Saving your work](saving.md#projects)). The line input's source, monitoring and arming are not part of a project, so opening one never turns the input on.
 
 ## Using the Q-Links in the mixer
 

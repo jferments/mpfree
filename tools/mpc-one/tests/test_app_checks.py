@@ -119,6 +119,27 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no line like '^looper: Record' followed", detail)
 
+    def test_rec_arm_needs_the_ready_the_take_and_the_loop_armed(self):
+        w = checks.Window(lines(midi("button 73 pressed"), "rec: ready, PLAY records Track 1",
+                                midi("button 82 pressed"), "time: transport: Record, new clip in slot 1 of track 1",
+                                midi("button 67 pressed"), "Undid take 1 \u00b7 Track 1 / 1",
+                                "time: undo: take 2 thrown away",
+                                "rec: the loop armed", "looper: Record: armed, the first pass starts on the next bar"))
+        self.assertTrue(all(ok for ok, _ in self.judge("rec-arm", w)))
+        # UNDO after the take (the page's) is not UNDO while it records.
+        w = checks.Window(lines(midi("button 67 pressed"), "Undid take 1 \u00b7 Track 1 / 1"))
+        got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
+        self.assertFalse(got["UNDO while recording threw the take away"])
+        # REC on the loop (the old way) is not the notes' ready.
+        w = checks.Window(lines(midi("button 73 pressed"), "looper: Record: armed, the first pass ..."))
+        got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
+        self.assertFalse(got["REC (73) readied the notes"])
+        self.assertFalse(got["the Loop view armed the loop"])
+        # A loop with a take already: REC's overdub waits for PLAY.
+        w = checks.Window(lines("rec: the loop armed", "looper: overdub on (layer 2)"))
+        got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
+        self.assertTrue(got["REC then went to the loop"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]
@@ -218,6 +239,17 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(got["the key played and stopped MPFree"])
         got = dict((what, ok) for ok, what in self.judge("midi-learn", checks.Window(lines(key))))
         self.assertFalse(got["Learn took the knob"])
+
+    def test_midi_thru_needs_sending_on_a_note_in_and_out_and_sending_off(self):
+        """midi-thru passes on Prefs' switch on, a note read, the same note out of MIDI OUT (the writer's line) and
+        the switch off again; without the note out it fails."""
+        note_in = "+3.210 s MIDI In: 90 3C 64 = note on \u00b7 ch 1 \u00b7 C4 \u00b7 vel 100"
+        note_out = "+3.219 s MIDI Out: 90 3C 64 = note on, ch 1, C4, velocity 100"
+        on, off = "MIDI and CV out: on (the MIDI Out jack and the CV jacks send)", "MIDI and CV out: off (nothing is sent)"
+        self.assertTrue(all(ok for ok, _ in self.judge("midi-thru", checks.Window(lines(on, note_in, note_out, off)))))
+        got = dict((what, ok) for ok, what in self.judge("midi-thru", checks.Window(lines(on, note_in, off))))
+        self.assertFalse(got["thru sent them out of MIDI OUT"])
+        self.assertTrue(got["notes came in"])
 
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),

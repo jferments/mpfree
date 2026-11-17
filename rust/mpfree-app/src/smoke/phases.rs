@@ -1412,6 +1412,76 @@ mod device_log {
         });
     }
 
+    /// REC records what is armed (`^rec: ready, PLAY records `, `^time:
+    /// transport: Record, `, `^Undid take `, `^rec: the loop armed$`,
+    /// `^looper: Record: armed`), as the `rec-arm` check has them done: on
+    /// the home view REC readies the notes and PLAY records them, played
+    /// back on PLAY, UNDO takes the take, and the Loop view arms the loop
+    /// for REC.
+    #[test]
+    fn rec_arm_writes_its_lines() {
+        use mpfree_looper::Phase;
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("play-transport", "view", "Beats").settle();
+            s.press("play-transport", "view", "All").settle();
+            let n = s.lines.len();
+            s.button("REC");
+            s.run_for(0.1);
+            wrote(&s, n, "rec: ready, PLAY records ", "");
+            assert_eq!(s.time.info().state, State::Stopped, "nothing starts");
+            s.button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            s.pad(0, 100, 0.05);
+            s.run_for(2.0);
+            s.button("STOP");
+            s.run_for(0.2);
+            wrote(&s, n, "time: transport: Record, ", "");
+            // PLAY plays the take back.
+            let from = s.hits.on.len();
+            s.button("PLAY");
+            s.run_for(4.5);
+            assert!(
+                s.hits.on[from..].iter().any(|h| h.0 == 0),
+                "the take played back"
+            );
+            s.button("STOP");
+            s.run_for(0.2);
+            s.button("UNDO");
+            s.run_for(0.2);
+            wrote(&s, n, "Undid take ", "");
+            // UNDO while it records throws the take away; the music plays on.
+            s.button("REC").button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            s.pad(0, 100, 0.05);
+            s.run_for(0.3);
+            s.button("UNDO");
+            s.run_for(0.3);
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            let l = wrote(&s, n, "time: undo: take ", " thrown away");
+            assert!(l.starts_with("time: undo: take "), "{l}");
+            s.button("STOP");
+            s.run_for(0.2);
+            let n = s.lines.len();
+            s.press("play-transport", "view", "Loop").settle();
+            s.button("REC");
+            s.run_for(0.2);
+            assert_eq!(
+                wrote(&s, n, "rec: the loop armed", ""),
+                "rec: the loop armed"
+            );
+            wrote(&s, n, "looper: Record: armed", "");
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            s.button("STOP");
+            s.run_for(0.2);
+            assert_eq!(s.looper.phase(), Phase::Empty, "STOP disarms");
+        });
+    }
+
     /// TRACK MUTE (`^track mute: .* muted`, `^TRACK MUTE \S+ bank [B-H]: `).
     #[test]
     fn track_mute_writes_its_mutes_and_its_bank() {

@@ -8,7 +8,10 @@ use std::f32::consts::PI;
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
-use crate::{db_to_gain, defaults, flush, soft};
+use crate::adaa::{Adaa, Flat2x};
+use crate::character::soft_big;
+use crate::oversample::IirPair;
+use crate::{db_to_gain, defaults, flush, lerp, soft, FixedDelay};
 
 /// What a [`Svf`] outputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +214,7 @@ fn from_biquad((b0, b1, b2): (f64, f64, f64), (d1, d2): (f64, f64)) -> SvfCoefs 
 /// One stereo state-variable filter stage (12 dB per octave).
 #[derive(Clone, Copy, Debug)]
 pub struct Svf {
+    g: f32,
     a1: f32,
     a2: f32,
     a3: f32,
@@ -224,6 +228,7 @@ pub struct Svf {
 impl Default for Svf {
     fn default() -> Svf {
         let mut s = Svf {
+            g: 0.0,
             a1: 0.0,
             a2: 0.0,
             a3: 0.0,
@@ -249,6 +254,7 @@ impl Svf {
     /// Takes a design from [`SvfCoefs`] as it is.
     #[inline]
     pub fn set_coefs(&mut self, c: SvfCoefs) {
+        self.g = c.g;
         self.a1 = 1.0 / (1.0 + c.g * (c.g + c.k));
         self.a2 = c.g * self.a1;
         self.a3 = c.g * self.a2;
@@ -267,6 +273,62 @@ impl Svf {
         self.ic1[ch] = flush(2.0 * v1 - ic1);
         self.ic2[ch] = flush(2.0 * v2 - ic2);
         self.m0 * v0 + self.m1 * v1 + self.m2 * v2
+    }
+
+    /// [`Svf::run`] with the band-pass state bounded: past `knee` it bends
+    /// smoothly toward `knee + room`, as an analog filter's resonance loop
+    /// saturates. Below the knee it is [`Svf::run`] exactly. The band-pass
+    /// state is what a resonance builds up (`Q` times the input at the
+    /// cutoff, and the low-pass and high-pass outputs follow it), so
+    /// bounding it bounds the peak while the passband is left alone.
+    #[inline]
+    pub(crate) fn run_bounded(&mut self, ch: usize, v0: f32, knee: f32, room: f32) -> f32 {
+        let (ic1, ic2) = (self.ic1[ch], self.ic2[ch]);
+        let v3 = v0 - ic2;
+        let v1 = bend(self.a1 * ic1 + self.a2 * v3, knee, room);
+        // The low-pass integrates the (bounded) band-pass: `v2 = ic2 + g v1`,
+        // the same as `run`'s `ic2 + a2 ic1 + a3 v3` when nothing bends.
+        let v2 = ic2 + self.g * v1;
+        self.ic1[ch] = flush(2.0 * v1 - ic1);
+        self.ic2[ch] = flush(2.0 * v2 - ic2);
+        self.m0 * v0 + self.m1 * v1 + self.m2 * v2
+    }
+
+    /// [`Svf::run`] over a block of channel `ch`, in place, with the state
+    /// held in registers: the same numbers as frame by frame.
+    #[inline]
+    pub(crate) fn run_slice(&mut self, ch: usize, x: &mut [f32]) {
+        let (mut ic1, mut ic2) = (self.ic1[ch], self.ic2[ch]);
+        let (a1, a2, a3) = (self.a1, self.a2, self.a3);
+        let (m0, m1, m2) = (self.m0, self.m1, self.m2);
+        for v0 in x {
+            let v3 = *v0 - ic2;
+            let v1 = a1 * ic1 + a2 * v3;
+            let v2 = ic2 + a2 * ic1 + a3 * v3;
+            ic1 = flush(2.0 * v1 - ic1);
+            ic2 = flush(2.0 * v2 - ic2);
+            *v0 = m0 * *v0 + m1 * v1 + m2 * v2;
+        }
+        self.ic1[ch] = ic1;
+        self.ic2[ch] = ic2;
+    }
+
+    /// [`Svf::run_bounded`] over a block of channel `ch`, in place.
+    #[inline]
+    pub(crate) fn run_bounded_slice(&mut self, ch: usize, x: &mut [f32], knee: f32, room: f32) {
+        let (mut ic1, mut ic2) = (self.ic1[ch], self.ic2[ch]);
+        let (a1, a2, g) = (self.a1, self.a2, self.g);
+        let (m0, m1, m2) = (self.m0, self.m1, self.m2);
+        for v0 in x {
+            let v3 = *v0 - ic2;
+            let v1 = bend(a1 * ic1 + a2 * v3, knee, room);
+            let v2 = ic2 + g * v1;
+            ic1 = flush(2.0 * v1 - ic1);
+            ic2 = flush(2.0 * v2 - ic2);
+            *v0 = m0 * *v0 + m1 * v1 + m2 * v2;
+        }
+        self.ic1[ch] = ic1;
+        self.ic2[ch] = ic2;
     }
 
     pub fn reset(&mut self) {
@@ -292,6 +354,18 @@ impl Svf {
             (ni * dr - nr * di) / den,
         )
     }
+}
+
+/// `v` unchanged up to `knee` in size, then bending smoothly (no corner:
+/// the slope is 1 at the knee and falls away) toward `knee + room`.
+#[inline]
+fn bend(v: f32, knee: f32, room: f32) -> f32 {
+    let a = v.abs();
+    if a <= knee {
+        return v;
+    }
+    let u = (a - knee) / room;
+    (knee + room * u / (1.0 + u)).copysign(v)
 }
 
 /// Resonance 0 to 1 as a filter Q: 0 is flat (0.707), 1 is 40 (rings
@@ -438,10 +512,126 @@ pub(crate) fn power_db(h: (f64, f64)) -> f32 {
     (10.0 * (h.0 * h.0 + h.1 * h.1).max(1e-24).log10()) as f32
 }
 
+/// Where the resonance starts to bend, and how much more it can give, in
+/// the band-pass state's units (full scale 1), at Resonance 25 % and up.
+/// Below 25 % both rise as 1 / (Resonance / 25 %), so a gentle filter never
+/// bends a mix-level sound, and at 0 nothing bends at all.
+const BEND_KNEE: f32 = 0.35;
+const BEND_ROOM: f32 = 0.3;
+const BEND_FULL_RES: f32 = 0.25;
+/// A type or slope change crossfades from the old filter over this long.
+const FADE_MS: f32 = 10.0;
+/// The drive's 2x path: Drive's Eco half-bands (flat to 0.19 of the
+/// doubled rate, 71 dB down from 0.31), and ADAA's compensation after the
+/// curve, which together delay the sound by this many frames.
+const OS_SECTIONS: usize = 5;
+const OS_TBW: f64 = 0.06;
+const ADAA_FRAMES: usize = Flat2x::STEPS / 2;
+/// The Multi filter's latency, frames: the drive's path, so the drive can
+/// come and go without moving the sound in time.
+pub(crate) const MULTI_LATENCY: u32 = (2 + ADAA_FRAMES) as u32;
+/// How long the dry side takes to move between the plain delay and the
+/// half-bands' phase match as the drive comes in or leaves, frames.
+const PATH_FADE: u32 = 256;
+/// The frame grid the half-bands' states are flushed on.
+const GRID: u32 = 64;
+
+/// The drive for one channel, at twice the rate: the soft curve averaged
+/// by first-order ADAA between polyphase IIR half-bands; and the dry
+/// side's match (the half-bands' phase, then ADAA's delay), so the two
+/// blend in phase.
+#[derive(Clone, Debug)]
+struct DriveOs {
+    iir: IirPair<OS_SECTIONS>,
+    adaa: Adaa,
+    flat: Flat2x,
+    dry_pad: FixedDelay,
+}
+
+impl DriveOs {
+    fn new() -> DriveOs {
+        DriveOs {
+            iir: IirPair::new(OS_TBW),
+            adaa: Adaa::default(),
+            flat: Flat2x::default(),
+            dry_pad: FixedDelay::new(ADAA_FRAMES),
+        }
+    }
+    /// The driven and the dry (phase-matched) frame for input `x`, gain `g`.
+    #[inline]
+    fn run(&mut self, x: f32, g: f32) -> (f32, f32) {
+        let [a, b] = self.iir.up(x);
+        let ya = self.flat.run(self.adaa.run(g * a, soft, soft_big));
+        let yb = self.flat.run(self.adaa.run(g * b, soft, soft_big));
+        let wet = self.iir.down([ya, yb]);
+        (wet, self.dry_pad.run(self.iir.phase(x)))
+    }
+    fn reset(&mut self) {
+        self.iir.reset();
+        self.adaa.reset();
+        self.flat.reset();
+        self.dry_pad.reset();
+    }
+}
+
+/// One filter's stages as set: the two `Svf`s, whether the second runs,
+/// and which of them bend (the resonant ones).
+#[derive(Clone, Copy, Debug)]
+struct Stages {
+    a: Svf,
+    b: Svf,
+    cascaded: bool,
+    bend_a: bool,
+    bend_b: bool,
+}
+
+impl Stages {
+    /// One sample of channel `ch`; with an infinite `knee` (Resonance 0)
+    /// every stage is the plain linear one.
+    #[inline]
+    fn run(&mut self, ch: usize, x: f32, knee: f32, room: f32) -> f32 {
+        let bends = knee.is_finite();
+        let mut x = if self.bend_a && bends {
+            self.a.run_bounded(ch, x, knee, room)
+        } else {
+            self.a.run(ch, x)
+        };
+        if self.cascaded {
+            x = if self.bend_b && bends {
+                self.b.run_bounded(ch, x, knee, room)
+            } else {
+                self.b.run(ch, x)
+            };
+        }
+        x
+    }
+
+    /// [`Stages::run`] over a block of channel `ch`, in place, a stage at a
+    /// time (each stage hears only the one before it, so the numbers are
+    /// the same as frame by frame).
+    fn run_block(&mut self, ch: usize, x: &mut [f32], knee: f32, room: f32) {
+        let bends = knee.is_finite();
+        if self.bend_a && bends {
+            self.a.run_bounded_slice(ch, x, knee, room);
+        } else {
+            self.a.run_slice(ch, x);
+        }
+        if self.cascaded {
+            if self.bend_b && bends {
+                self.b.run_bounded_slice(ch, x, knee, room);
+            } else {
+                self.b.run_slice(ch, x);
+            }
+        }
+    }
+}
+
 /// A multi-mode filter: low-pass, high-pass, band-pass and notch at 12 or
 /// 24 dB per octave, plus a bell and two shelves; resonance up to a long
-/// ring; optional drive into a soft saturator before the filter
-/// (deliberate distortion, off at 0 dB).
+/// ring that bends (saturates) instead of clipping when the sound is loud;
+/// optional drive into a soft saturator before the filter (deliberate
+/// distortion, off at 0 dB), at twice the rate with ADAA. A type or slope
+/// change crossfades over 10 ms. Latency: a fixed 4 frames.
 pub struct MultiFilter {
     v: [f32; 6],
     rate: u32,
@@ -449,8 +639,25 @@ pub struct MultiFilter {
     res: Smooth,
     gain: Smooth,
     drive: Smooth,
-    a: Svf,
-    b: Svf,
+    st: Stages,
+    /// The filter being faded out after a type or slope change, and the
+    /// frames of the fade left and in all.
+    old: Stages,
+    fade_left: u32,
+    fade_len: u32,
+    knee: f32,
+    room: f32,
+    os: [DriveOs; 2],
+    /// The plain delay the sound takes while the drive is off.
+    dly: [FixedDelay; 2],
+    /// The drive's gain for the last drive in dB.
+    drive_db: f32,
+    drive_gain: f32,
+    /// Where the dry side is between the plain delay (0) and the
+    /// half-bands' phase match (1), and whether the 2x path is running.
+    path: u32,
+    os_on: bool,
+    grid: u32,
 }
 
 impl Default for MultiFilter {
@@ -462,6 +669,13 @@ impl Default for MultiFilter {
 impl MultiFilter {
     pub fn new() -> MultiFilter {
         let v = defaults(&MULTI_PARAMS);
+        let st = Stages {
+            a: Svf::default(),
+            b: Svf::default(),
+            cascaded: false,
+            bend_a: false,
+            bend_b: false,
+        };
         let mut f = MultiFilter {
             v,
             rate: 48_000,
@@ -469,8 +683,22 @@ impl MultiFilter {
             res: Smooth::new(v[3] / 100.0),
             gain: Smooth::new(v[4]),
             drive: Smooth::new(v[5]),
-            a: Svf::default(),
-            b: Svf::default(),
+            st,
+            old: st,
+            fade_left: 0,
+            fade_len: 1,
+            knee: f32::INFINITY,
+            room: 1.0,
+            os: [DriveOs::new(), DriveOs::new()],
+            dly: [
+                FixedDelay::new(MULTI_LATENCY as usize),
+                FixedDelay::new(MULTI_LATENCY as usize),
+            ],
+            drive_db: 0.0,
+            drive_gain: 1.0,
+            path: 0,
+            os_on: false,
+            grid: 0,
         };
         f.prepare(48_000, mpfree_node::MAX_BLOCK);
         f
@@ -497,8 +725,8 @@ impl MultiFilter {
         let hz = self.log_hz.value.exp2();
         let (res, gain, rate) = (self.res.value, self.gain.value, self.rate);
         set_stages(
-            &mut self.a,
-            &mut self.b,
+            &mut self.st.a,
+            &mut self.st.b,
             mode,
             cascaded,
             hz,
@@ -506,6 +734,25 @@ impl MultiFilter {
             gain,
             rate,
         );
+        self.st.cascaded = cascaded;
+        // The resonant stages bend: a low-pass's or high-pass's only stage
+        // (the second at 24 dB; the first is a flat Butterworth one), and
+        // both of a band-pass's. The notch, bell and shelves don't ring up
+        // at their output, so they stay linear.
+        let resonant = matches!(
+            mode,
+            SvfMode::LowPass | SvfMode::HighPass | SvfMode::BandPass
+        );
+        self.st.bend_a = resonant && (!cascaded || mode == SvfMode::BandPass);
+        self.st.bend_b = resonant && cascaded;
+        let r = (res / BEND_FULL_RES).min(1.0);
+        if r > 0.0 {
+            self.knee = BEND_KNEE / r;
+            self.room = BEND_ROOM / r;
+        } else {
+            self.knee = f32::INFINITY;
+            self.room = 1.0;
+        }
     }
 
     /// The response in dB at `hz` for the settings the filter is heading
@@ -529,6 +776,7 @@ impl MultiFilter {
         };
         let v = p.clamp(value);
         let was_cascaded = self.cascaded();
+        let was = self.v[id as usize];
         self.v[id as usize] = v;
         match id {
             multi::CUTOFF => self.log_hz.target = v.log2(),
@@ -536,10 +784,21 @@ impl MultiFilter {
             multi::GAIN => self.gain.target = v,
             multi::DRIVE => self.drive.target = v,
             _ => {
-                // Type or slope: new coefficients now; a second stage that
-                // was idle starts from silence.
+                if v == was {
+                    return;
+                }
+                // Type or slope: the new filter takes over over 10 ms. It
+                // carries on from the old one's state (a 12 dB filter's
+                // types share it); a second stage that was idle starts from
+                // silence. A change in the first half of a fade fades from
+                // the same old filter; later, from the one that was coming
+                // in.
+                if self.fade_left == 0 || 2 * self.fade_left < self.fade_len {
+                    self.old = self.st;
+                }
+                self.fade_left = self.fade_len;
                 if self.cascaded() && !was_cascaded {
-                    self.b.reset();
+                    self.st.b.reset();
                 }
                 self.update();
             }
@@ -547,7 +806,25 @@ impl MultiFilter {
     }
 
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
-        let cascaded = self.cascaded();
+        // At rest with the drive off (most of the time): the delay and the
+        // stages a block at a time, the same numbers as the loop below.
+        let resting = self.fade_left == 0
+            && self.path == 0
+            && self.drive.settled()
+            && self.drive.value <= 0.0
+            && self.log_hz.settled()
+            && self.res.settled()
+            && self.gain.settled();
+        if resting {
+            self.os_on = false;
+            self.grid = (self.grid + l.len() as u32) % GRID;
+            let (knee, room) = (self.knee, self.room);
+            self.dly[0].run_block(l);
+            self.st.run_block(0, l, knee, room);
+            self.dly[1].run_block(r);
+            self.st.run_block(1, r, knee, room);
+            return;
+        }
         for i in 0..l.len() {
             let moving = !(self.log_hz.settled() && self.res.settled() && self.gain.settled());
             if moving {
@@ -557,22 +834,64 @@ impl MultiFilter {
                 self.update();
             }
             let d = self.drive.next();
-            let (mut x, mut y) = (l[i], r[i]);
-            if d > 0.0 {
-                // Deliberate: blend into the saturator over the first 3 dB.
-                let g = db_to_gain(d);
+            let x = [l[i], r[i]];
+            // The plain delay always runs, so it is current when the drive
+            // leaves.
+            let plain = [self.dly[0].run(x[0]), self.dly[1].run(x[1])];
+            let driving = d > 0.0 || !self.drive.settled();
+            let mut y = plain;
+            if driving || self.path > 0 {
+                if !self.os_on {
+                    for os in &mut self.os {
+                        os.reset();
+                    }
+                    self.os_on = true;
+                }
+                if d != self.drive_db {
+                    self.drive_db = d;
+                    self.drive_gain = db_to_gain(d);
+                }
+                // Deliberate: blend into the saturator over the first 3 dB,
+                // against the dry side matched to the half-bands' phase.
                 let amt = (d / 3.0).min(1.0);
-                x += amt * (soft(x * g) - x);
-                y += amt * (soft(y * g) - y);
+                self.path = if driving {
+                    (self.path + 1).min(PATH_FADE)
+                } else {
+                    self.path - 1
+                };
+                let p = self.path as f32 / PATH_FADE as f32;
+                for c in 0..2 {
+                    let (wet, dry) = self.os[c].run(x[c], self.drive_gain);
+                    y[c] = lerp(lerp(plain[c], dry, p), wet, amt);
+                }
+            } else if self.os_on {
+                self.os_on = false;
             }
-            x = self.a.run(0, x);
-            y = self.a.run(1, y);
-            if cascaded {
-                x = self.b.run(0, x);
-                y = self.b.run(1, y);
+            self.grid += 1;
+            if self.grid == GRID {
+                self.grid = 0;
+                if self.os_on {
+                    for os in &mut self.os {
+                        os.iir.settle();
+                    }
+                }
             }
-            l[i] = x;
-            r[i] = y;
+            let (knee, room) = (self.knee, self.room);
+            for c in 0..2 {
+                let new = self.st.run(c, y[c], knee, room);
+                y[c] = if self.fade_left > 0 {
+                    let old = self.old.run(c, y[c], knee, room);
+                    let t = 1.0 - self.fade_left as f32 / self.fade_len as f32;
+                    // A raised cosine, smooth at both ends.
+                    let w = t * t * (3.0 - 2.0 * t);
+                    lerp(old, new, w)
+                } else {
+                    new
+                };
+            }
+            self.fade_left = self.fade_left.saturating_sub(1);
+            l[i] = y[0];
+            r[i] = y[1];
         }
     }
 }
@@ -596,6 +915,8 @@ impl Node for MultiFilter {
         self.res.set_time(self.rate, 10.0);
         self.gain.set_time(self.rate, 10.0);
         self.drive.set_time(self.rate, 10.0);
+        self.fade_len = ((FADE_MS * 0.001 * self.rate as f32) as u32).max(1);
+        self.fade_left = 0;
         self.update();
     }
     fn reset(&mut self) {
@@ -603,9 +924,27 @@ impl Node for MultiFilter {
         self.res.snap(self.res.target);
         self.gain.snap(self.gain.target);
         self.drive.snap(self.drive.target);
-        self.a.reset();
-        self.b.reset();
+        self.st.a.reset();
+        self.st.b.reset();
+        self.fade_left = 0;
+        for d in &mut self.dly {
+            d.reset();
+        }
+        for os in &mut self.os {
+            os.reset();
+        }
+        self.os_on = false;
+        self.path = if self.drive.target > 0.0 {
+            PATH_FADE
+        } else {
+            0
+        };
+        self.drive_db = f32::NAN;
+        self.grid = 0;
         self.update();
+    }
+    fn latency(&self) -> u32 {
+        MULTI_LATENCY
     }
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());
@@ -626,7 +965,7 @@ impl Node for MultiFilter {
         // A high-Q ring: about Q / (pi * f) seconds to fall 27 dB; allow 4x.
         let q = res_to_q(self.res.target);
         let hz = self.log_hz.target.exp2().max(20.0);
-        (4.0 * q / (PI * hz) * self.rate as f32) as u32
+        MULTI_LATENCY + (4.0 * q / (PI * hz) * self.rate as f32) as u32
     }
 }
 

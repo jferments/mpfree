@@ -118,8 +118,14 @@ pub struct TimeControl {
     /// Live to song: records what the grid plays into the song.
     song_rec: SongRecorder,
     /// What happened to the last recording when the transport stopped,
-    /// for the log ([`TimeControl::take_song_note`]).
-    song_note: Option<String>,
+    /// or to a take thrown away, for the log
+    /// ([`TimeControl::take_later_note`]).
+    later_note: Option<String>,
+    /// UNDO while recording: the take recording is thrown away once the
+    /// punch out lands (`TimeAction::ThrowTake`).
+    throw: bool,
+    /// The take the pass recording now (or last) recorded into.
+    pass_take: Option<u32>,
     scene_morph: SceneMorph,
     /// The note editor on the Arrange page, while it is open.
     editor: Option<Editor>,
@@ -205,7 +211,9 @@ impl TimeControl {
             region: None,
             section: None,
             song_rec: SongRecorder::default(),
-            song_note: None,
+            later_note: None,
+            throw: false,
+            pass_take: None,
             scene_morph: SceneMorph::default(),
             editor: None,
             armed: tracks.armed,
@@ -302,6 +310,7 @@ impl TimeControl {
                 }
                 ToControl::Rec(number, rec) => {
                     self.includes.recorded = number;
+                    self.pass_take = Some(rec.take());
                     let done = self
                         .takes
                         .record(&mut self.project, &rec, &self.touch, &self.moves);
@@ -337,6 +346,15 @@ impl TimeControl {
         self.block.frames = end.frames;
         self.info = end.info;
         self.counts = end.counts;
+        // Out of recording: a take UNDO threw away goes now that all of
+        // it has come.
+        let mut thrown = false;
+        if !matches!(self.info.state, State::Recording | State::CountIn) {
+            if std::mem::take(&mut self.throw) {
+                thrown = self.throw_pass();
+            }
+            self.pass_take = None;
+        }
         self.capture.process(&self.block);
         self.move_log.process(&self.block);
         // The Capture button shows what it would keep: a new phrase, or one
@@ -351,7 +369,7 @@ impl TimeControl {
         self.song_rec.period(&self.block, &self.started);
         // Cues that started on a bar line become the tracks' launches: the
         // view is compiled again.
-        let mut compile = std::mem::take(&mut self.compile_asked);
+        let mut compile = std::mem::take(&mut self.compile_asked) | thrown;
         for i in 0..self.started.len() {
             let st = self.started[i];
             self.perform.started(&mut self.project, &st);
@@ -380,7 +398,7 @@ impl TimeControl {
         // The transport stopped: what live to song recorded goes into the
         // song (it compiles).
         if song_was && !self.song_rec.recording() && self.song_rec.waiting() {
-            self.song_note = Some(match self.keep_song() {
+            self.later_note = Some(match self.keep_song() {
                 Ok(line) => format!("rec song: {line}"),
                 Err(e) => e,
             });
@@ -1169,6 +1187,22 @@ impl TimeControl {
                 }
                 Ok(format!("transport: {cmd:?}"))
             }
+            TimeAction::ThrowTake => match info.state {
+                State::Recording => {
+                    if !self.command(Command::Record) {
+                        return Err("transport: command queue full".into());
+                    }
+                    self.throw = true;
+                    Ok("transport: punch out, the take thrown away".into())
+                }
+                State::CountIn => {
+                    if !self.command(Command::Stop) {
+                        return Err("transport: command queue full".into());
+                    }
+                    Ok("transport: count-in stopped, nothing recorded".into())
+                }
+                _ => Ok("transport: nothing records".into()),
+            },
             TimeAction::Undo => match self.takes.undo(&mut self.project) {
                 Some(_) => {
                     let row = self.takes.undone().last().map(TakeRow::of);
@@ -1530,8 +1564,29 @@ impl TimeControl {
     /// What live to song put into the song when the transport stopped
     /// (or why it could not: the recording is then kept, and goes in when
     /// Rec song is turned off), once, for the log.
-    pub fn take_song_note(&mut self) -> Option<String> {
-        self.song_note.take()
+    pub fn take_later_note(&mut self) -> Option<String> {
+        self.later_note.take()
+    }
+
+    /// The pass just recorded, thrown away (UNDO while it recorded): its
+    /// take undone and forgotten, so REDO can't bring it back. True if
+    /// there was one.
+    fn throw_pass(&mut self) -> bool {
+        let Some(n) = self.pass_take.take() else {
+            self.later_note = Some("undo: nothing was recorded".into());
+            return false;
+        };
+        let last = self.takes.done().last();
+        if !last.is_some_and(|t| t.number == n && !t.captured && !t.edited) {
+            self.later_note = Some("undo: nothing was recorded".into());
+            return false;
+        }
+        self.takes.undo(&mut self.project);
+        self.takes.forget_undone();
+        self.changed = true;
+        self.steps_changed = true;
+        self.later_note = Some(format!("undo: take {n} thrown away"));
+        true
     }
 
     /// Live to song: the passes recorded so far into the song, compiled

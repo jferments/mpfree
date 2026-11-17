@@ -16,13 +16,16 @@
 //!
 //! In either mode, **routes** ([`InputRouter::set_routes`], the I/O view's
 //! "Tracks by channel") send a port and channel to one of the app's tracks
-//! whichever track is selected, as [`In::Routed`]. A message a route takes
-//! goes only to its routes, so a keyboard's channel given to a track never
-//! also plays the selected one (no doubled notes).
+//! whichever track is selected, as [`In::Routed`]. **Thru**
+//! ([`InputRouter::set_thru`], the Routing section's squares from a port to
+//! an output) sends a port and channel's messages straight on to an
+//! output, as [`In::Thru`]. A message a route or a thru takes goes only to
+//! them, so a keyboard's channel given to a track or an output never also
+//! plays the selected one (no doubled notes).
 //!
-//! A note-off always goes to the tracks its note-on went to, even if the
-//! selection or a track's [`Listen`] changed while the key was held, so a
-//! note is never left hanging. All notes off, All sound off and the mode
+//! A note-off always goes to the tracks and outputs its note-on went to,
+//! even if the selection, a route or a track's [`Listen`] changed while the
+//! key was held, so a note is never left hanging. All notes off, All sound off and the mode
 //! changes (CC 120, 123 to 127) let go of every key held on their port
 //! and channel.
 //!
@@ -123,6 +126,27 @@ impl Route {
     }
 }
 
+/// The most thru routes [`InputRouter::set_thru`] keeps.
+pub const MAX_THRU: usize = 16;
+
+/// A port and channel whose messages go straight on to an output port:
+/// the Routing section's square from a port to a MIDI out port. Channel
+/// messages only (notes, pressure, bend, controls, program change); clock
+/// and SysEx never go thru.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Thru {
+    pub port: PortFilter,
+    pub channel: ChanFilter,
+    /// The output, by the same port numbers as the inputs.
+    pub to: PortId,
+}
+
+impl Thru {
+    pub fn takes(&self, port: PortId, ch: Channel) -> bool {
+        self.port.matches(port) && self.channel.matches(ch)
+    }
+}
+
 /// What [`InputRouter::feed`] hands back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum In {
@@ -131,6 +155,14 @@ pub enum In {
     /// Play this on the track a route names ([`Route`]), whichever track
     /// is selected.
     Routed { track: u8, msg: Msg, frame: u64 },
+    /// Send this, as it came in on `from`, to the output port `to`
+    /// ([`Thru`]).
+    Thru {
+        from: PortId,
+        to: PortId,
+        msg: Msg,
+        frame: u64,
+    },
     /// Every channel message on every port, before routing: for MIDI
     /// Learn, the MIDI monitor and the port activity lights.
     Seen { port: PortId, msg: Msg, frame: u64 },
@@ -159,13 +191,16 @@ const NOTES: usize = 128;
 const CHANNELS: usize = 16;
 /// A held key's bit for route `r` in `held`, after the tracks' bits.
 const ROUTE_BIT: usize = MAX_TRACKS;
-const _: () = assert!(ROUTE_BIT + MAX_ROUTES <= 64);
+/// A held key's bit for thru `r` in `held`, after the routes' bits.
+const THRU_BIT: usize = ROUTE_BIT + MAX_ROUTES;
+const _: () = assert!(THRU_BIT + MAX_THRU <= 64);
 
 pub struct InputRouter {
     mode: InputMode,
     selected: Option<u8>,
     tracks: [Option<Listen>; MAX_TRACKS],
     routes: [Option<Route>; MAX_ROUTES],
+    thru: [Option<Thru>; MAX_THRU],
     clock_source: Option<PortId>,
     /// What each port ignores coming in.
     ignore: [IgnoreSet; MAX_PORTS],
@@ -173,8 +208,8 @@ pub struct InputRouter {
     /// Song Position data bytes still to come, per port.
     spp_left: [u8; MAX_PORTS],
     /// For each port, channel and incoming note: the tracks (a bit per
-    /// track) and routes (a bit per route, from `ROUTE_BIT`) its note-on
-    /// went to.
+    /// track), routes (a bit per route, from `ROUTE_BIT`) and thru (a bit
+    /// each, from `THRU_BIT`) its note-on went to.
     held: Box<[u64]>,
     /// The note each track was sent for a held key (after transpose).
     sent_note: Box<[u8]>,
@@ -198,6 +233,7 @@ impl InputRouter {
             selected: None,
             tracks: [None; MAX_TRACKS],
             routes: [None; MAX_ROUTES],
+            thru: [None; MAX_THRU],
             clock_source: None,
             ignore: [IgnoreSet::NONE; MAX_PORTS],
             parsers: std::array::from_fn(|_| Parser::new()),
@@ -277,6 +313,57 @@ impl InputRouter {
             let note = (hi % NOTES) as u8;
             out(In::Routed {
                 track: route.track,
+                msg: Msg::NoteOff { ch, note, vel: 64 },
+                frame,
+            });
+        }
+    }
+
+    /// Where thru sends each port and channel's messages, in order; past
+    /// [`MAX_THRU`] they are left out (the count left out is returned). A
+    /// key held through a thru that changes or goes is let go first, at
+    /// the output it went to (a note-off to `out`), so no note hangs.
+    pub fn set_thru(
+        &mut self,
+        thru: impl IntoIterator<Item = Thru>,
+        frame: u64,
+        mut out: impl FnMut(In),
+    ) -> usize {
+        let mut next = [None; MAX_THRU];
+        let mut left_out = 0;
+        for (i, r) in thru.into_iter().enumerate() {
+            match next.get_mut(i) {
+                Some(slot) => *slot = Some(r),
+                None => left_out += 1,
+            }
+        }
+        for r in 0..MAX_THRU {
+            if self.thru[r] != next[r] {
+                self.let_go_thru(r, frame, &mut out);
+            }
+        }
+        self.thru = next;
+        left_out
+    }
+
+    pub fn thru(&self) -> impl Iterator<Item = &Thru> {
+        self.thru.iter().flatten()
+    }
+
+    /// Note-offs for every key held through thru `r`, at its output.
+    fn let_go_thru(&mut self, r: usize, frame: u64, out: &mut impl FnMut(In)) {
+        let Some(thru) = self.thru[r] else { return };
+        let bit = 1u64 << (THRU_BIT + r);
+        for (hi, mask) in self.held.iter_mut().enumerate() {
+            if *mask & bit == 0 {
+                continue;
+            }
+            *mask &= !bit;
+            let ch = ((hi / NOTES) % CHANNELS) as Channel;
+            let note = (hi % NOTES) as u8;
+            out(In::Thru {
+                from: PortId((hi / (NOTES * CHANNELS)) as u8),
+                to: thru.to,
                 msg: Msg::NoteOff { ch, note, vel: 64 },
                 frame,
             });
@@ -404,6 +491,17 @@ impl InputRouter {
                     self.release(port, ch, note, 64, frame, out);
                 }
                 let mut mask = 0u64;
+                for (r, thru) in self.thru.iter().enumerate() {
+                    if let Some(x) = thru.filter(|x| x.takes(port, ch)) {
+                        mask |= 1 << (THRU_BIT + r);
+                        out(In::Thru {
+                            from: port,
+                            to: x.to,
+                            msg: m,
+                            frame,
+                        });
+                    }
+                }
                 for (r, route) in self.routes.iter().enumerate() {
                     if route.is_some_and(|x| x.takes(port, ch)) {
                         mask |= 1 << (ROUTE_BIT + r);
@@ -444,6 +542,14 @@ impl InputRouter {
             Msg::PolyPressure { note, value, .. } => {
                 let hi = held_index(port, ch, note);
                 let mask = self.held[hi];
+                self.each_thru(mask, |to| {
+                    out(In::Thru {
+                        from: port,
+                        to,
+                        msg: m,
+                        frame,
+                    })
+                });
                 self.each_route(mask, |track| {
                     out(In::Routed {
                         track,
@@ -464,6 +570,17 @@ impl InputRouter {
             }
             _ => {
                 let mut any = false;
+                for thru in self.thru.iter().flatten() {
+                    if thru.takes(port, ch) {
+                        any = true;
+                        out(In::Thru {
+                            from: port,
+                            to: thru.to,
+                            msg: m,
+                            frame,
+                        });
+                    }
+                }
                 for route in self.routes.iter().flatten() {
                     if route.takes(port, ch) {
                         any = true;
@@ -503,6 +620,14 @@ impl InputRouter {
     ) {
         let hi = held_index(port, ch, note);
         let mask = std::mem::take(&mut self.held[hi]);
+        self.each_thru(mask, |to| {
+            out(In::Thru {
+                from: port,
+                to,
+                msg: Msg::NoteOff { ch, note, vel },
+                frame,
+            })
+        });
         self.each_route(mask, |track| {
             out(In::Routed {
                 track,
@@ -528,6 +653,17 @@ impl InputRouter {
             if mask & (1 << (ROUTE_BIT + r)) != 0 {
                 if let Some(route) = route {
                     f(route.track);
+                }
+            }
+        }
+    }
+
+    /// The output of each thru whose bit is in `mask`.
+    fn each_thru(&self, mask: u64, mut f: impl FnMut(PortId)) {
+        for (r, thru) in self.thru.iter().enumerate() {
+            if mask & (1 << (THRU_BIT + r)) != 0 {
+                if let Some(thru) = thru {
+                    f(thru.to);
                 }
             }
         }

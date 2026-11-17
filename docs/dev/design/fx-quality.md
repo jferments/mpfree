@@ -379,6 +379,15 @@ What changed (design: [fx-lofi.md](fx-lofi.md); decision 10.5): the wow follows 
 - **Changed measures:** the pitch rows listen 60 s and the level 9 s (above); a short window can't tell a random wander from a line (two sines read 0.68 over a few seconds, the random path 0.1 to 0.25) and one dropout more or less moves a 1 s level by a dB.
 - **Cost** (the instruction gate's `Lo-fi` case, rustc 1.97.0, a 128-frame block at 44.1 kHz, Amount 100): 117.0k to 222.0k instructions (1.9 times), next to Drive Eco's 202.6k: the saturation at 2x with ADAA is about half of it.
 
+### Filters PR
+
+What changed (design: [fx-filter.md](fx-filter.md); fx.md, the Multi filter entry; decision 10.4): the Multi filter's resonance bends instead of clipping (its band-pass state bent past a knee that falls with Resonance, at Resonance 0 and in the notch, bell and shelves nothing bends); a type or slope change crossfades over 10 ms; the drive runs at twice the rate with ADAA against a phase-matched dry side; the latency is a fixed 4 frames, drive on or off. The DJ filter is unchanged. After it: all 30 filter targets met (25 of 30 before); the other classes are unchanged.
+
+- **Met now:** pink at -18 dBFS RMS through a low-pass swept 100 Hz to 10 kHz at Resonance 100 peaks at -2.01 dBFS (12 dB) and -3.09 (24 dB) (F3; were +2.77 and +1.03; at Resonance 75, -2.77 and -3.24, were -0.83 and -2.53). A type change from low-pass to high-pass at 24 dB reads 0 dB and 12 to 24 dB 1.19 (F5; were 63.5 and 29.3). At Drive 12 a 5 kHz sine at 0 dBFS aliases at -71.3 dB (F7; was -19.7; Drive 24, reported, -41.1, was -15.4).
+- **Kept:** a -40 dBFS sine at the cutoff at Resonance 100 rings up 31.15 dB (12 dB) and 31.10 (24 dB) (F4; were 32.04 and 32.04: below the knee the filter is linear, and the bend takes the top of the ring). The cutoffs, the passband and the Resonance-0 sweeps read as before (F1, F2, F6; the sweeps within 0.02 dB).
+- **Blessed worse, and why:** the 12 and 24 dB low-pass sweeps at Resonance 0 read 0.516 and 1.448 dB (were 0.515 and 1.435), and the 24 dB band-pass 1.290 (was 1.287): the sound is now 4 frames late against the same sweep of the cutoff, all well inside 3 dB.
+- **Cost** (the instruction gate's cases, rustc 1.97.0, a 128-frame block at 44.1 kHz): Multi filter (LP 12) 11.3k to 8.5k instructions (0.75 times; at rest the filter runs a block at a time), Multi filter (LP 24, drive) 33.7k to 139.8k (4.1 times: the drive at twice the rate with ADAA, as Drive's Eco), the drive, filter, delay and compressor chain 333.9k to 339.8k.
+
 ## Round 3: chorus, flanger and phaser
 
 Measuring built 2026-11-17 with the chorus's PR (M1), class `modulation`, target ids M; research and plan in jferments/mpfree-claude `fx/quality/` (research-modulation.md, plan-3.md); the design is [fx-modulation.md](fx-modulation.md). Subjects are `modulation/chorus`, `modulation/flanger` and `modulation/phaser` at their defaults and each preset (`modulation/chorus[Lush ensemble]`), at 44.1 kHz.

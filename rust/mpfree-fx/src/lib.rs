@@ -433,6 +433,28 @@ impl FixedDelay {
         }
         y
     }
+    /// [`FixedDelay::run`] over a block, in place: the same numbers as
+    /// frame by frame.
+    pub(crate) fn run_block(&mut self, x: &mut [f32]) {
+        let d = self.buf.len();
+        if d == 0 {
+            return;
+        }
+        if x.len() < d {
+            for v in x {
+                *v = self.run(*v);
+            }
+            return;
+        }
+        // The ring oldest first, the block's last `d` frames to its front,
+        // then the two swapped: the block is the ring and then its own
+        // start, and the ring is its end.
+        self.buf.rotate_left(self.pos);
+        self.pos = 0;
+        x.rotate_right(d);
+        self.buf.swap_with_slice(&mut x[..d]);
+    }
+
     pub(crate) fn reset(&mut self) {
         self.buf.fill(0.0);
         self.pos = 0;
@@ -575,5 +597,25 @@ mod tests {
         assert_eq!(out, [0.0, 0.0, 0.0, 1.0, 2.0]);
         let mut z = FixedDelay::new(0);
         assert_eq!(z.run(7.0), 7.0);
+    }
+
+    #[test]
+    fn a_fixed_delay_by_the_block_is_the_same_as_frame_by_frame() {
+        let x: Vec<f32> = (1..=200).map(|i| i as f32).collect();
+        let mut one = FixedDelay::new(4);
+        let want: Vec<f32> = x.iter().map(|&v| one.run(v)).collect();
+        // Blocks shorter and longer than the delay, in a mixed order.
+        let mut blocks = FixedDelay::new(4);
+        let mut got = x.clone();
+        let mut at = 0;
+        for n in [1usize, 3, 4, 5, 37, 2, 64, 84].iter().cycle() {
+            if at == got.len() {
+                break;
+            }
+            let end = (at + n).min(got.len());
+            blocks.run_block(&mut got[at..end]);
+            at = end;
+        }
+        assert_eq!(got, want);
     }
 }
