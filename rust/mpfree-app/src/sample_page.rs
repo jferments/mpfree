@@ -836,6 +836,12 @@ impl SamplePage {
         self.refresh(ui);
     }
 
+    /// Kit `kit`'s name as the page has it (a kit loaded or opened names
+    /// it).
+    pub fn kit_name(&self, kit: usize) -> Option<&str> {
+        self.names.get(kit).map(String::as_str)
+    }
+
     /// The kits' names, for the page and the log.
     pub fn set_names(&mut self, names: Vec<String>) {
         if let Some((_, n)) = self.factory.as_mut().filter(|(_, n)| n.is_empty()) {
@@ -3859,6 +3865,17 @@ impl SamplePage {
                 .push("Pick a drum kit first: the pads play the synth".to_string());
             return;
         };
+        self.open_kit_into(dir, k);
+    }
+
+    /// As [`SamplePage::open_kit`], into kit `k`: an empty user kit the
+    /// armed track moves to when other tracks play the kit on the pads.
+    pub fn open_kit_into(&mut self, dir: PathBuf, k: usize) {
+        if k >= self.projects.len() {
+            self.lines
+                .push(format!("sample: no kit {} to load into", k + 1));
+            return;
+        }
         let name = dir
             .file_name()
             .and_then(|n| n.to_str())

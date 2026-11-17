@@ -26,7 +26,7 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 
 **The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). Three of them do something when tapped:
 
-- **The kit chip** (such as **Classic House · Bank A**) opens a list of every kit over the page. Tap a kit to load it on the pads; the list closes and you are back where you were. The last row is the synth. **Back**, the kit chip again or any tab closes the list and keeps the kit that is playing.
+- **The kit chip** (such as **Classic House · Bank A**) opens a list of every kit over the page. Tap a kit to load it on the pads; the list closes and you are back where you were. The synth comes after the kits, and the last row, **New kit**, puts an empty kit on the selected track. **Back**, the kit chip again or any tab closes the list and keeps the kit that is playing.
 - **The Full level or Half level chip** turns that level off, as pressing **FULL LEVEL** again would: the pads play as hard as you hit them again.
 - **The Pads: steps chip** (such as **Pads: steps · Kick**) shows while **STEP SEQ** has made the pads the steps of a sound. With a synth on the pads it names the synth and the note or chord new steps play (**Pads: steps · Poly · C3 + G3**). Tap it to play the pads again, as pressing **STEP SEQ** again would. See [Program a pattern on the pads](first-beat.md#program-a-pattern-on-the-pads).
 

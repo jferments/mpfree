@@ -166,6 +166,7 @@ use mpfree_ui::fb::FbTarget;
 use mpfree_ui::{Fonts, SoftCanvas, Theme, Tone};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
+use std::ops::Range;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -2806,7 +2807,9 @@ fn qlink_level(level: f32, max: f32, port: &str, bytes: &[u8], delta: i8) -> f32
 }
 
 /// What the pad player's screen shows about each kit, then the synth.
-fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
+/// Kits `users` are the empty slots kept for New kit
+/// ([`sampler::USER_KITS`]).
+fn kit_views(kits: &[kit::Kit], users: Range<usize>, synth: &synth::Synth) -> Vec<gui::KitView> {
     let mut views: Vec<gui::KitView> = kits
         .iter()
         .enumerate()
@@ -2825,11 +2828,38 @@ fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
                 chip: None,
                 synth: None,
                 pitches: Vec::new(),
+                user: users.contains(&k),
             }
         })
         .collect();
     views.push(synth.kit_view());
     views
+}
+
+/// The entry SHIFT + wheel turns to from `from`, `d` detents on among `n`
+/// (the kits, then the synth): a user kit slot (`users`) counts only once
+/// it is in use, with sounds (`sounds(k)`) or a track playing it, so the
+/// wheel never stops on an empty spare slot.
+fn kit_turned(
+    from: usize,
+    d: i32,
+    n: usize,
+    users: &Range<usize>,
+    sounds: impl Fn(usize) -> u128,
+    kits: &sampler::TrackKits,
+) -> usize {
+    let n = n.max(1);
+    let spare = |k: usize| users.contains(&k) && sounds(k) == 0 && !kits.plays(k);
+    let mut at = from;
+    for _ in 0..d.unsigned_abs() {
+        for _ in 0..n {
+            at = (at as i64 + i64::from(d.signum())).rem_euclid(n as i64) as usize;
+            if !spare(at) {
+                break;
+            }
+        }
+    }
+    at
 }
 
 /// The loading steps, for the progress bar.
@@ -4409,15 +4439,29 @@ fn player_session(
         "Handing the sounds to the sampler",
         0.4,
     );
-    let mut player = sampler::Player::new(&mut kits, &mpc_one::PAD_NOTES, RATE)?;
+    let mut player =
+        sampler::Player::with_user_kits(&mut kits, &mpc_one::PAD_NOTES, RATE, sampler::USER_KITS)?;
+    // The empty kits kept for New kit, after the others and Grains.
+    let user_kits = player.user_kits();
     let sounds: usize = kits.iter().map(|k| k.sounds.len()).sum();
     out.say(&format!("pad player: {} kits, {sounds} sounds", kits.len()));
-    for (k, kit) in kits.iter().enumerate() {
+    for (k, kit) in kits
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| !user_kits.contains(k))
+    {
         out.say(&format!(
             "kit {}: {} ({} sounds)",
             k + 1,
             kit.name,
             kit.sounds.len()
+        ));
+    }
+    if !user_kits.is_empty() {
+        out.say(&format!(
+            "kits {} to {}: empty, for the kit list's New kit",
+            user_kits.start + 1,
+            user_kits.end
         ));
     }
     // The synth: one more entry after the kits, and the Synth tab.
@@ -4426,7 +4470,7 @@ fn player_session(
     let mut synth = cores::SynthSlot::new(synth::Synth::new(RATE));
     out.say(&format!("synth: {}, preset {}, as kit list entry {} ({}); the Synth tab edits it and picks Poly or FM",
                      synth.engine().name(), synth.preset_name(), kits.len() + 1, synth.range_text()));
-    out.show(gui::ToUi::Kits(kit_views(&kits, &synth)));
+    out.show(gui::ToUi::Kits(kit_views(&kits, user_kits.clone(), &synth)));
     out.show(gui::ToUi::Synth(synth.state()));
     // The Sample tab edits the kits' projects on the screen thread.
     out.show(gui::ToUi::SampleKits {
@@ -6182,10 +6226,12 @@ fn player_session(
                         mute_shown = None;
                     }
                 }
-                // SHIFT + wheel with a drum kit: the kit, as before.
+                // SHIFT + wheel with a drum kit: the kit, as before (past
+                // the empty kits New kit hasn't used yet).
                 app::Effect::Octave(d) => {
-                    let from = kit_to.unwrap_or(player.kit()) as i64;
-                    kit_to = Some((from + d as i64).rem_euclid(n as i64) as usize);
+                    let from = kit_to.unwrap_or(player.kit());
+                    let sounds = |k| player.sounds(k);
+                    kit_to = Some(kit_turned(from, d, n, &user_kits, sounds, &track_kits));
                 }
                 // The Synth tab's options: the engine, the scale and the
                 // pad layouts.
@@ -9004,6 +9050,31 @@ mod tests {
     /// read from where the transport stands; a mute reads from the mixer.
     /// R3 part 2b: the 16 pads show the kit's page; PAD BANK says which
     /// pads it put there and how many sounds they hold.
+    #[test]
+    fn shift_wheel_passes_the_empty_user_kits_until_one_is_in_use() {
+        // Kits 0-2, user kits 3-5, the synth 6.
+        let users = 3..6;
+        let mut kits = sampler::TrackKits::new(6);
+        let none = |_| 0u128;
+        assert_eq!(
+            kit_turned(2, 1, 7, &users, none, &kits),
+            6,
+            "on to the synth"
+        );
+        assert_eq!(kit_turned(6, -1, 7, &users, none, &kits), 2, "and back");
+        assert_eq!(kit_turned(6, 1, 7, &users, none, &kits), 0, "round");
+        // A user kit with sounds, or one a track plays, is a stop.
+        let b1 = |k| if k == 4 { 1u128 << 16 } else { 0 };
+        assert_eq!(kit_turned(2, 1, 7, &users, b1, &kits), 4);
+        assert!(kits.set(3, 3));
+        assert_eq!(kit_turned(2, 1, 7, &users, none, &kits), 3);
+        assert_eq!(
+            kit_turned(2, 3, 7, &users, b1, &kits),
+            6,
+            "3, 4, then past 5 to the synth"
+        );
+    }
+
     #[test]
     fn the_page_shows_its_own_pads_and_says_what_it_holds() {
         assert_eq!(pad_cell(20, 1, true), Some(4));

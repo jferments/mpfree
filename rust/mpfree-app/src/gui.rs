@@ -126,6 +126,9 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 /// The list of kits, over whatever page showed: a tap on the header's kit
 /// chip opens it (Jay's card, 13 Nov 14:57Z).
 pub const KITS_PAGE: &str = "Kits";
+/// The list of kits' last row while an empty user kit is left: it puts
+/// one on the armed track.
+pub const NEW_KIT: &str = "New kit";
 pub const KITS_LAYOUT: &str = "col(header:60, row(kits:*, kits-card:400):*, hint:26)";
 const KITS_HINT: &str =
     "Tap a kit: load it on the pads   ·   Back, the kit chip or a tab: close the list";
@@ -562,6 +565,10 @@ pub struct KitView {
     /// The synth's pads' notes, for Beats' scale rows (pad 1 first);
     /// empty for a kit and the Drums engine.
     pub pitches: Vec<Option<play_page::PadPitch>>,
+    /// One of the empty kits kept for New kit (`sampler::USER_KITS`): the
+    /// list of kits shows it once it is in use, with sounds or a track
+    /// playing it.
+    pub user: bool,
 }
 
 /// Timing numbers from the audio thread.
@@ -1460,6 +1467,8 @@ pub struct Player {
     /// The list of kits is open over the page (the kit chip); the view
     /// underneath stays `view`.
     kit_list: bool,
+    /// The list of kits' rows: each a kit (or the synth), None for New kit.
+    kit_rows: Vec<Option<usize>>,
     /// What each header chip that only shows (CPU, RAM, session, time
     /// left) says when tapped, by its place; empty for the others.
     chip_why: Vec<String>,
@@ -1838,6 +1847,7 @@ impl Player {
             steps_chip: None,
             perform_chip: None,
             kit_list: false,
+            kit_rows: Vec::new(),
             chip_why: Vec::new(),
             fingers: Vec::new(),
             outbox: Vec::new(),
@@ -1871,18 +1881,92 @@ impl Player {
     }
 
     fn set_kits(&mut self, kits: Vec<KitView>) {
-        if let Some(l) = self.ui.get_mut::<ListView>("kits") {
-            l.items = kits
-                .iter()
-                .map(|k| ListItem {
-                    text: k.name.clone(),
-                    detail: format!("{} pads", k.pads.iter().filter(|p| p.is_some()).count()),
-                    color: Some(Color::from_pad(k.colour)),
-                })
-                .collect();
-        }
         self.kits = kits;
         self.set_kit(0);
+    }
+
+    /// Whether kit `k` is one of the empty kits kept for New kit and
+    /// still out of use: no sounds, no track playing it, not on the pads.
+    fn spare_kit(&self, k: usize) -> bool {
+        self.kits.get(k).is_some_and(|v| {
+            v.user
+                && k != self.kit
+                && !self.track_kits.plays(k)
+                && v.pads.iter().all(Option::is_none)
+        })
+    }
+
+    /// The list of kits the kit chip opens: every kit and the synth, but
+    /// the spare user kits, then **New kit** while one is left (None).
+    fn kit_rows(&self) -> Vec<Option<usize>> {
+        let mut rows: Vec<Option<usize>> = (0..self.kits.len())
+            .filter(|&k| !self.spare_kit(k))
+            .map(Some)
+            .collect();
+        if (0..self.kits.len()).any(|k| self.spare_kit(k)) {
+            rows.push(None);
+        }
+        rows
+    }
+
+    /// The list of kits again: its rows, and the kit on the pads picked.
+    fn refresh_kit_list(&mut self) {
+        let rows = self.kit_rows();
+        let items = rows
+            .iter()
+            .map(|&r| match r.and_then(|k| self.kits.get(k)) {
+                Some(k) => ListItem {
+                    text: k.name.clone(),
+                    detail: match k.pads.iter().filter(|p| p.is_some()).count() {
+                        0 if k.user => "empty".to_string(),
+                        n => format!("{n} pads"),
+                    },
+                    color: Some(Color::from_pad(k.colour)),
+                },
+                None => ListItem {
+                    text: NEW_KIT.to_string(),
+                    detail: "an empty kit for this track".to_string(),
+                    color: None,
+                },
+            })
+            .collect();
+        if let Some(l) = self.ui.get_mut::<ListView>("kits") {
+            l.items = items;
+            l.selected = rows.iter().position(|&r| r == Some(self.kit)).unwrap_or(0);
+        }
+        self.kit_rows = rows;
+    }
+
+    /// The kit for a kit loaded from the browser (`Ok(None)`: the one on
+    /// the pads). When another track with a clip plays the pads' kit, a
+    /// spare user kit takes the load, for the armed track alone, so
+    /// loading never changes another track's sound; Err says why not when
+    /// none is left.
+    fn kit_for_load(&self) -> Result<Option<usize>, String> {
+        let armed = self.time.armed;
+        let shared: Vec<usize> = (0..self.time.tracks.len())
+            .filter(|&t| Some(t) != armed && self.track_kits.kit_of(t) == Some(self.kit))
+            .filter(|&t| self.track_sounds.get(t).copied().flatten().is_none())
+            .filter(|&t| {
+                self.time
+                    .tracks
+                    .get(t)
+                    .is_some_and(|i| i.loops.is_none() && i.slots.iter().any(Option::is_some))
+            })
+            .collect();
+        if shared.is_empty() {
+            return Ok(None);
+        }
+        let tracks: Vec<String> = shared.iter().map(|t| (t + 1).to_string()).collect();
+        match (0..self.kits.len()).find(|&k| self.spare_kit(k)) {
+            Some(u) => Ok(Some(u)),
+            None => Err(format!(
+                "Track{} {} play{} this kit too, and no empty kit is left for this track: load it on a kit no other track plays",
+                if tracks.len() > 1 { "s" } else { "" },
+                tracks.join(", "),
+                if tracks.len() > 1 { "" } else { "s" }
+            )),
+        }
     }
 
     /// The kit pad pad `cell` (0 to 15) plays on the page shown: 16 *
@@ -1916,9 +2000,7 @@ impl Player {
             }
         }
         self.label_pads();
-        if let Some(l) = self.ui.get_mut::<ListView>("kits") {
-            l.selected = k;
-        }
+        self.refresh_kit_list();
         self.refresh_chips();
         self.refresh_pads_bar();
     }
@@ -5209,6 +5291,8 @@ impl Player {
                 self.track_kits = *k;
                 fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits);
                 self.time_page.update(&mut self.ui, &self.time);
+                // A user kit a track plays is in the list of kits.
+                self.refresh_kit_list();
                 // The step grid's mutes are kit 1's pads' alone.
                 self.refresh_play();
             }
@@ -5846,10 +5930,17 @@ impl Player {
     /// changed.
     fn sample_names(&mut self) {
         while let Some((kit, pads)) = self.sample.take_renamed() {
+            let name = self.sample.kit_name(kit).map(str::to_string);
             if let Some(k) = self.kits.get_mut(kit) {
                 k.pads = pads;
+                // A kit loaded or opened on it names it.
+                if let Some(n) = name.filter(|n| !n.is_empty() && *n != k.name) {
+                    k.name = n;
+                }
                 if kit == self.kit {
                     self.set_kit(kit);
+                } else {
+                    self.refresh_kit_list();
                 }
             }
         }
@@ -6021,7 +6112,19 @@ impl Player {
             A::PickerClosed { .. } => {}
             // Kit files (mpfree_library::kit): a kit loads in place of the
             // kit the pads play; Save kit saves that kit as a kit folder.
-            A::LoadKit { path, .. } => self.sample.open_kit(path),
+            // A kit other tracks play too: a spare user kit takes it, for
+            // the armed track alone (sampler R3 part 3).
+            A::LoadKit { path, .. } => match self.kit_for_load() {
+                Ok(None) => self.sample.open_kit(path),
+                Ok(Some(u)) => {
+                    self.sample.open_kit_into(path, u);
+                    self.outbox.push(FromUi::Kit(u));
+                }
+                Err(why) => {
+                    self.say(format!("sample: the kit wasn't loaded ({why})"));
+                    self.tell(&why);
+                }
+            },
             A::SaveKitRequested => self.save_kit(),
             A::Note(line) => self.say(line),
             // Projects (project.rs).
@@ -8010,11 +8113,19 @@ impl Player {
                 Some(FromUi::Pad { pad: index, down })
             }
             (play_page::PADS, EventKind::Tab(i)) => Some(FromUi::PadsLayout { in_key: i == 1 }),
-            ("kits", EventKind::Select(k)) => {
+            // A kit, or New kit: the first spare user kit, empty, for the
+            // armed track.
+            ("kits", EventKind::Select(row)) => {
                 if self.kit_list {
                     self.show_view(self.view);
                 }
-                Some(FromUi::Kit(k))
+                match self.kit_rows.get(row).copied() {
+                    Some(Some(k)) => Some(FromUi::Kit(k)),
+                    Some(None) => (0..self.kits.len())
+                        .find(|&k| self.spare_kit(k))
+                        .map(FromUi::Kit),
+                    None => None,
+                }
             }
             // The list of kits' Back.
             ("kits-card", EventKind::Tab(_)) => {
@@ -9200,6 +9311,7 @@ pub fn sample_kits() -> Vec<KitView> {
         chip: None,
         synth: None,
         pitches: Vec::new(),
+        user: false,
     };
     // Kit 2 is the Play mockups' kit (F to I), so the previews show it.
     let mut boom_bap = kit("Boom Bap", [0x00, 0x2A, 0x3F], 16);
@@ -16176,6 +16288,98 @@ mod tests {
             None
         );
         assert_eq!(p.page(), "Loading");
+    }
+
+    #[test]
+    fn new_kit_puts_an_empty_kit_on_the_track_and_a_shared_kit_loads_into_one() {
+        use crate::sampler::TrackKits;
+        let mut p = sample_player(Fonts::embedded());
+        // Two empty user kits after the six, the synth last.
+        let synth = crate::synth::Synth::new(44_100);
+        let mut kits = sample_kits();
+        let n = kits.len();
+        for k in 0..2 {
+            kits.push(KitView {
+                name: format!("Kit {}", n + k + 1),
+                pads: vec![None; 128],
+                colour: [0x10, 0x10, 0x10],
+                chip: None,
+                synth: None,
+                pitches: Vec::new(),
+                user: true,
+            });
+        }
+        kits.push(synth.kit_view());
+        p.apply(ToUi::Kits(kits));
+        p.apply(ToUi::TrackKits(Box::new(TrackKits::new(n + 2))));
+        let list = |p: &Player| -> Vec<(String, String)> {
+            p.ui.get::<ListView>("kits")
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| (i.text.clone(), i.detail.clone()))
+                .collect()
+        };
+        // The spare kits are left out: New kit stands for them, last.
+        let l = list(&p);
+        assert_eq!(l.len(), n + 2, "{l:?}");
+        assert_eq!(l[n].0, synth.kit_view().name);
+        assert_eq!(l[n + 1].0, NEW_KIT);
+        let select = |p: &mut Player, row: usize| {
+            p.on_event(UiEvent {
+                widget: "kits".into(),
+                kind: EventKind::Select(row),
+            })
+        };
+        // New kit: the first spare kit goes on the armed track.
+        assert_eq!(select(&mut p, n + 1), Some(FromUi::Kit(n)));
+        let mut tk = TrackKits::new(n + 2);
+        assert!(tk.set(0, n));
+        p.apply(ToUi::TrackKits(Box::new(tk.clone())));
+        p.apply(ToUi::Kit(n));
+        let l = list(&p);
+        assert_eq!(l.len(), n + 3, "{l:?}");
+        assert_eq!(
+            l[n],
+            (format!("Kit {}", n + 1), "empty".to_string()),
+            "listed, empty"
+        );
+        assert_eq!(l[n + 2].0, NEW_KIT, "the other one is still free");
+        assert_eq!(p.ui.get::<ListView>("kits").unwrap().selected, n);
+        // A kit row picks that kit.
+        assert_eq!(select(&mut p, 1), Some(FromUi::Kit(1)));
+        // Loading a kit onto the pads' kit while another track with a clip
+        // plays it: the next spare kit takes it, for the armed track.
+        p.apply(ToUi::Kit(0));
+        p.apply(ToUi::TrackKits(Box::new(TrackKits::new(n + 2))));
+        sample_pattern(&mut p, 0);
+        let with_clip = p
+            .time
+            .tracks
+            .iter()
+            .position(|t| t.loops.is_none() && t.slots.iter().any(Option::is_some))
+            .expect("a track with a clip");
+        p.time.armed = Some(with_clip + 1);
+        assert_eq!(p.kit_for_load(), Ok(Some(n)));
+        p.take_actions();
+        p.browse_action(mpfree_browser_ui::BrowseAction::LoadKit {
+            loc: mpfree_library::Loc::new(mpfree_library::Place::Kits, &["Lent"]).unwrap(),
+            path: std::env::temp_dir().join("mpfree-no-such-kit"),
+        });
+        assert_eq!(p.take_actions(), vec![FromUi::Kit(n)]);
+        // Only the armed track plays it: the load goes onto the pads' kit.
+        p.time.armed = Some(with_clip);
+        assert_eq!(p.kit_for_load(), Ok(None));
+        // With no spare kit left, the load is refused and says why.
+        p.time.armed = Some(with_clip + 1);
+        let mut full = TrackKits::new(n + 2);
+        assert!(full.set(with_clip + 2, n) && full.set(with_clip + 3, n + 1));
+        p.apply(ToUi::TrackKits(Box::new(full)));
+        let why = p.kit_for_load().unwrap_err();
+        assert!(
+            why.starts_with(&format!("Track {} plays this kit too", with_clip + 1)),
+            "{why}"
+        );
     }
 
     #[test]
