@@ -1,6 +1,87 @@
 # The FX quality ratchet: every number may stay or get better, never worse.
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --release -p mpfree-fxlab --test quality`;
 # see docs/dev/design/fx-quality.md. key<TAB>value
+amp/amp[Bass grit]/alias_5k_m12dbfs	-82.7005
+amp/amp[Bass grit]/lu_pink18	-1.5208
+amp/amp[Classic crunch]/alias_5k_m12dbfs	-66.0544
+amp/amp[Classic crunch]/lu_pink18	2.1979
+amp/amp[Lo-fi radio]/alias_5k_m12dbfs	-71.5993
+amp/amp[Lo-fi radio]/lu_pink18	4.0981
+amp/amp[Modern lead]/alias_5k_m12dbfs	-35.3549
+amp/amp[Modern lead]/lu_pink18	8.9784
+amp/amp[Sparkle clean]/alias_5k_m12dbfs	-119.2318
+amp/amp[Sparkle clean]/lu_pink18	0.4617
+amp/bass/alias_1k_m6dbfs_gain10	-82.5989
+amp/bass/alias_1k_m6dbfs_gain5	-117.4414
+amp/bass/alias_2k_m6dbfs_gain10	-80.2408
+amp/bass/alias_2k_m6dbfs_gain5	-95.7784
+amp/bass/alias_5k_m12dbfs_gain10	-67.2615
+amp/bass/alias_5k_m12dbfs_gain5	-75.5072
+amp/bass/bass_jump_db	1.0708
+amp/bass/cab_change_db	21.786
+amp/bass/cleanup_db_gain5	16.4808
+amp/bass/gain_zipper_db	5.0786
+amp/bass/lu_pink18_gain10	0.2276
+amp/bass/lu_pink18_gain2.5	-0.4177
+amp/bass/lu_pink18_gain5	0.2331
+amp/bass/lu_pink18_gain7.5	0.6034
+amp/bass/mid_jump_db	13.4896
+amp/bass/model_change_db	0
+amp/bass/silence_out_dbfs_gain10	-140
+amp/bass/treble_jump_db	22.0147
+amp/clean/alias_1k_m6dbfs_gain10	-100.8614
+amp/clean/alias_1k_m6dbfs_gain5	-140
+amp/clean/alias_2k_m6dbfs_gain10	-91.5218
+amp/clean/alias_2k_m6dbfs_gain5	-137.0172
+amp/clean/alias_5k_m12dbfs_gain10	-76.728
+amp/clean/alias_5k_m12dbfs_gain5	-101.9532
+amp/clean/bass_jump_db	16.2768
+amp/clean/cab_change_db	37.9795
+amp/clean/cleanup_db_gain5	26.1498
+amp/clean/gain_zipper_db	0.9045
+amp/clean/lu_pink18_gain10	0.7391
+amp/clean/lu_pink18_gain2.5	-0.4635
+amp/clean/lu_pink18_gain5	0.1845
+amp/clean/lu_pink18_gain7.5	0.5372
+amp/clean/mid_jump_db	28.4973
+amp/clean/model_change_db	0
+amp/clean/silence_out_dbfs_gain10	-140
+amp/clean/treble_jump_db	38.7652
+amp/crunch/alias_1k_m6dbfs_gain10	-67.7925
+amp/crunch/alias_1k_m6dbfs_gain5	-96.2127
+amp/crunch/alias_2k_m6dbfs_gain10	-48.1118
+amp/crunch/alias_2k_m6dbfs_gain5	-85.0067
+amp/crunch/alias_5k_m12dbfs_gain10	-35.9794
+amp/crunch/alias_5k_m12dbfs_gain5	-67.0513
+amp/crunch/bass_jump_db	0
+amp/crunch/cab_change_db	12.7758
+amp/crunch/cleanup_db_gain5	10.3102
+amp/crunch/gain_zipper_db	5.93
+amp/crunch/lu_pink18_gain10	2.0519
+amp/crunch/lu_pink18_gain2.5	0.7732
+amp/crunch/lu_pink18_gain5	1.9118
+amp/crunch/lu_pink18_gain7.5	1.8502
+amp/crunch/mid_jump_db	2.9348
+amp/crunch/model_change_db	0
+amp/crunch/silence_out_dbfs_gain10	-140
+amp/crunch/treble_jump_db	6.1351
+amp/lead/alias_1k_m6dbfs_gain10	-38.1598
+amp/lead/alias_1k_m6dbfs_gain5	-93.2813
+amp/lead/alias_2k_m6dbfs_gain10	-38.257
+amp/lead/alias_2k_m6dbfs_gain5	-87.6255
+amp/lead/alias_5k_m12dbfs_gain10	-31.7935
+amp/lead/alias_5k_m12dbfs_gain5	-70.9548
+amp/lead/bass_jump_db	0
+amp/lead/cab_change_db	0
+amp/lead/gain_zipper_db	8.1866
+amp/lead/lu_pink18_gain10	8.4722
+amp/lead/lu_pink18_gain2.5	12.4822
+amp/lead/lu_pink18_gain5	12.3057
+amp/lead/lu_pink18_gain7.5	9.8131
+amp/lead/mid_jump_db	0
+amp/lead/model_change_db	0
+amp/lead/silence_out_dbfs_gain10	-140
+amp/lead/treble_jump_db	1.1939
 compressor/compressor/attack_ratio_100ms	1.86
 compressor/compressor/attack_ratio_10ms	1.6
 compressor/compressor/attack_ratio_1ms	1
