@@ -1673,6 +1673,7 @@ impl App {
     }
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
+        self.step_pad_let_go(slot);
         if !self.free_time_recording() {
             self.release_pad(slot);
         }
@@ -7029,6 +7030,70 @@ mod tests {
             .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));
     }
 
+    /// STEP SEQ on the synth (the sequencer design's "Synth tracks"): the
+    /// pads are the whole line's steps, and the pen starts as the pad
+    /// played last. Held, the pads play the synth: pads held together are
+    /// the new pen (a chord), a pad played once all are up starts a new
+    /// one; its notes name it.
+    #[test]
+    fn step_seq_on_the_synth_takes_the_line_and_the_pen_from_the_pads_held() {
+        use crate::time::LINE;
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        const STEP_SEQ: u8 = button::STEP_SEQ;
+        let mut app = ready();
+        app.set_pad_layout(Some(layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        })));
+        app.pad_down(2, 100);
+        app.pad_up(2);
+        let fx = click(&mut app, STEP_SEQ);
+        let s = app.step_pads().expect("the pads are steps");
+        assert_eq!((s.sound, s.pen.pads()), (LINE, &[2][..]));
+        assert!(s.line());
+        let name = app.pen_name(&s.pen);
+        assert!(
+            fx.iter().any(
+                |e| matches!(e, Effect::Note(n) if n.contains("line's steps") && n.contains(&name))
+            ),
+            "{fx:?}"
+        );
+        // Held: pads 1 and 5 together are the pen; then 8 alone replaces it.
+        let t = 0.0;
+        app.button(STEP_SEQ, true, t);
+        assert!(!app.pads_are_steps(), "held, the pads play the synth");
+        assert!(app.step_pads().is_some_and(|p| p.picking && p.line()));
+        app.pad_down(0, 100);
+        app.pad_down(4, 100);
+        app.pad_down(4, 100);
+        assert_eq!(app.step_pads().unwrap().pen.pads(), [0, 4]);
+        app.pad_up(0);
+        app.pad_up(4);
+        app.pad_down(7, 100);
+        app.pad_up(7);
+        app.button(STEP_SEQ, false, t);
+        let s = app.step_pads().expect("still steps");
+        assert!(app.pads_are_steps());
+        assert_eq!(s.pen.pads(), [7]);
+        // A chord, named by its notes, lowest first.
+        app.button(STEP_SEQ, true, t);
+        for p in [4, 0, 7] {
+            app.pad_down(p, 100);
+        }
+        for p in [4, 0, 7] {
+            app.pad_up(p);
+        }
+        app.button(STEP_SEQ, false, t);
+        let s = app.step_pads().unwrap();
+        assert_eq!(s.pen.pads(), [4, 0, 7]);
+        let name = app.pen_name(&s.pen);
+        assert_eq!(name.split(' ').count(), 3, "{name}");
+        // A kit on the pads again: a sound's steps, the pen kept.
+        app.set_pad_layout(None);
+        assert_ne!(app.step_pads().unwrap().sound, LINE);
+        assert_eq!(app.step_pads().unwrap().pen.pads(), [4, 0, 7]);
+    }
+
     /// STEP SEQ (sequencer decision 2, Jay 16 Nov): the pads are the
     /// steps of the pad played last, over any page; PAD BANK picks pages
     /// (a second press or SHIFT: 5 to 8); SHIFT + STEP SEQ is Follow;
@@ -7058,6 +7123,7 @@ mod tests {
             app.status_now().steps,
             Some(StepPads {
                 sound: 4,
+                pen: step_pads::Pen::of(4),
                 page: 0,
                 follow: false,
                 picking: false,

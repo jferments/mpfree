@@ -168,12 +168,25 @@ fn track_mute_hint(bank: usize, tracks: usize) -> String {
 /// STEP SEQ's hint line: while held, how to pick a sound; on, what a
 /// press does.
 fn step_seq_hint(s: crate::app::StepPads) -> String {
+    if s.picking && s.line() {
+        return "STEP SEQ held:   play a pad, or hold a chord: new steps play it   ·   \
+                let go alone: steps on or off"
+            .to_string();
+    }
     if s.picking {
         return "STEP SEQ held:   tap a pad: its steps go on the pads   ·   PAD BANK: the kit's bank   ·   \
                 let go alone: steps on or off"
             .to_string();
     }
     let follow = if s.follow { "Follow off" } else { "Follow" };
+    if s.line() {
+        return format!(
+            "STEP SEQ · page {}   ·   tap: the note on a step, or off   ·   PAD BANK: page   ·   \
+             hold STEP SEQ + pads: the note or chord   ·   SHIFT + STEP SEQ: {follow}   ·   \
+             ERASE + step or PAD BANK: clear   ·   STEP SEQ: the pads play again",
+            s.page + 1
+        );
+    }
     format!(
         "STEP SEQ · page {}   ·   tap: a step on or off   ·   PAD BANK: page   ·   hold STEP SEQ + pad: sound   ·   \
          SHIFT + STEP SEQ: {follow}   ·   ERASE + step or PAD BANK: clear   ·   STEP SEQ: the pads play again",
@@ -2794,8 +2807,33 @@ impl Player {
         if let Some(s) = self.status.steps {
             why.push(String::new());
             self.steps_chip = Some(chips.len());
-            let text = if s.picking {
+            let text = if s.picking && s.line() {
+                "Pads: pick the note".to_string()
+            } else if s.picking {
                 "Pads: pick a sound".to_string()
+            } else if s.line() {
+                // The synth's line: what a new step plays.
+                let pen: Vec<String> = s
+                    .pen
+                    .pads()
+                    .iter()
+                    .map(|&p| {
+                        self.play
+                            .pads
+                            .get(usize::from(p))
+                            .and_then(|i| i.label.clone())
+                            .unwrap_or_else(|| format!("Pad {}", p + 1))
+                    })
+                    .collect();
+                let follow = if s.follow { " · Follow" } else { "" };
+                // The design's "Pads: steps · Bass · C2": the synth, then
+                // what a new step plays.
+                let synth = self
+                    .synth
+                    .as_ref()
+                    .map(|p| format!("{} · ", p.state.info.name))
+                    .unwrap_or_default();
+                format!("Pads: steps · {synth}{}{follow}", pen.join(" + "))
             } else {
                 let name = self
                     .play

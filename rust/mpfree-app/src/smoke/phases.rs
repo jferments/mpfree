@@ -896,6 +896,115 @@ mod step_seq {
         });
     }
 
+    /// STEP SEQ on the synth (sequencer S1, sixth part): the pads are the
+    /// whole line's steps. STEP SEQ held, pads 1 and 5 played together
+    /// are the pen; a step tapped gets that chord and a lit one comes off
+    /// whole; Beats' lane on the pads is the line, and the chip names the
+    /// pen; played, the clip plays the chord.
+    #[test]
+    fn step_seq_on_the_synth_puts_the_pen_on_the_line() {
+        use crate::time::LINE;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("header", "tab", "Synth");
+            assert!(s.synth_on, "the pads play the synth");
+            s.button("STEP SEQ");
+            assert!(s.app.step_pads().is_some_and(|p| p.line()));
+            assert_eq!(s.view(), View::Play, "STEP SEQ shows Beats");
+            // The pen: STEP SEQ held, pads 1 and 5 together.
+            s.button_edge("STEP SEQ", true);
+            assert!(s.hint().contains("hold a chord"), "{}", s.hint());
+            s.pad_edge(0, 100, true);
+            s.pad_edge(4, 100, true);
+            s.run_periods(2);
+            s.pad_edge(0, 0, false);
+            s.pad_edge(4, 0, false);
+            s.button_edge("STEP SEQ", false);
+            assert_eq!(s.app.step_pads().unwrap().pen.pads(), [0, 4]);
+            assert!(s.app.pads_are_steps());
+            let chip = s
+                .controls()
+                .into_iter()
+                .find(|c| c.widget == "header" && c.target.label.starts_with("Pads: steps"))
+                .map(|c| c.target.label);
+            assert!(
+                chip.as_deref()
+                    .is_some_and(|c| c.matches(" · ").count() == 2 && c.contains(" + ")),
+                "{chip:?}"
+            );
+            // Steps 1 and 9 get the chord.
+            s.pad(0, 100, 0.05);
+            s.pad(8, 100, 0.05);
+            let rows = |s: &Session| -> Vec<Vec<usize>> {
+                let c = s.time.steps().clip.expect("a clip");
+                [0u8, 4, LINE]
+                    .iter()
+                    .map(|&p| {
+                        c.row(p)
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, st)| st.map(|_| i + 1))
+                            .collect()
+                    })
+                    .collect()
+            };
+            assert_eq!(rows(&s), [vec![1, 9], vec![1, 9], vec![1, 9]]);
+            let g = s
+                .screen
+                .ui
+                .get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS)
+                .expect("the step grid");
+            let lane = &g.lanes[0];
+            assert_eq!((lane.pad, lane.name.as_str()), (usize::from(LINE), "Line"));
+            assert!(lane.steps[0] > 0 && lane.steps[8] > 0);
+            // Played: both pads of the chord sound on step 1.
+            s.hits.on.clear();
+            s.button("PLAY");
+            s.run_for(0.3);
+            s.button("STOP");
+            for pad in [0, 4] {
+                assert!(
+                    s.hits.on.iter().any(|h| h.0 == pad),
+                    "pad {pad}: {:?}",
+                    s.hits.on
+                );
+            }
+            // Step 9 pressed alone: off whole; UNDO brings it back.
+            s.pad(8, 100, 0.05);
+            assert_eq!(rows(&s), [vec![1], vec![1], vec![1]]);
+            s.button("UNDO");
+            assert_eq!(rows(&s), [vec![1, 9], vec![1, 9], vec![1, 9]]);
+            // A tap on the line's lane on Beats puts the pen there too.
+            s.press("steps", "step", "Line step 13");
+            assert_eq!(rows(&s)[2], [1, 9, 13]);
+            // Held, Q-LINK twice: the synth's Sound bank; a turn locks the
+            // whole step.
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            s.button("Q-LINK");
+            s.button("Q-LINK");
+            let title = s
+                .screen
+                .ui
+                .get::<mpfree_ui::qlink::QLinkColumn>(crate::play_page::QLINKS)
+                .map(|q| q.title.clone())
+                .unwrap_or_default();
+            assert!(title.ends_with("Sound"), "{title}");
+            s.qlink(0, 3);
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            let c = s.time.steps().clip.unwrap();
+            assert!(
+                c.lock_values.iter().any(|l| (l.0, l.1) == (LINE, 0)),
+                "{:?}",
+                c.lock_values
+            );
+            assert_eq!(c.locks(LINE)[0], 1);
+            assert_eq!(rows(&s)[2], [1, 9, 13], "the step stays");
+        });
+    }
+
     /// Step pads held (sequencer S1): Q-Link 1 turned on the controller
     /// sets the step held, which stays on its release; a later step tapped
     /// while one is held is a tie; COPY + a step, then others, copies it,
@@ -1118,6 +1227,39 @@ mod device_log {
                 "steps: step 7 of pad 5 held for a lock with no note",
                 "",
             );
+        });
+    }
+
+    /// STEP SEQ on the synth (`^STEP SEQ: the pads are the line's steps`,
+    /// `step \d+ of the line: pads 1, 5 on$`, `^steps: step 5 of the line
+    /// erased$`), as the `step-synth` check has them do it.
+    #[test]
+    fn step_synth_writes_its_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("header", "tab", "Synth");
+            let n = s.lines.len();
+            s.button("STEP SEQ");
+            wrote(&s, n, "STEP SEQ: the pads are the line's steps", "");
+            s.button_edge("STEP SEQ", true);
+            s.pad_edge(0, 100, true);
+            s.pad_edge(4, 100, true);
+            s.run_periods(2);
+            s.pad_edge(0, 0, false);
+            s.pad_edge(4, 0, false);
+            s.button_edge("STEP SEQ", false);
+            let n = s.lines.len();
+            for pad in [0, 4, 8, 12] {
+                s.pad(pad, 100, 0.05);
+            }
+            let l = wrote(&s, n, "steps: ", "of the line: pads 1, 5 on");
+            assert!(l.ends_with("step 1 of the line: pads 1, 5 on"), "{l}");
+            wrote(&s, n, "steps: step 13 of the line: pads 1, 5 on", "");
+            let n = s.lines.len();
+            s.pad(4, 100, 0.05);
+            let l = wrote(&s, n, "steps: step 5 of the line erased", "");
+            assert_eq!(l, "steps: step 5 of the line erased");
         });
     }
 
