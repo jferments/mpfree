@@ -1,11 +1,11 @@
 <!--
 covers: rust/mpfree-app/src/app/step_pads.rs rust/mpfree-app/src/step_keys.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/locks.rs rust/mpfree-seq/src/steps.rs
-checked: 2026-11-17 5be7b53
+checked: 2026-11-17 dc4da93
 -->
 
 # STEP SEQ: the pads as steps
 
-**Status:** S1 of the sequencer roadmap: the pads as steps (first part), then holding a step, ties and COPY (second part), 2026-11-16; locks (third part), 2026-11-17; step edits in place (fourth part), 2026-11-17. Decided by the owner on 16 Nov 2026 (sequencer decision 2, card "Pads become steps, as designed", 20:00Z). The design notes, with mockup I (`step-pads.png`) and the Beats mockup, are in the private notes repository (`sequencer/rethink/README.md`, "STEP SEQ: the pads as steps"). The buttons and the screen are in the [layout spec](layout-spec.md) (sections 2, 4 and 6). Tested on the host; not yet run on the MPC (device checks `step-pads`, `step-hold`, `step-locks` and `step-speed`).
+**Status:** S1 of the sequencer roadmap: the pads as steps (first part), then holding a step, ties and COPY (second part), 2026-11-16; locks (third part), 2026-11-17; step edits in place (fourth part), 2026-11-17; full step cells and the step inspector on Beats (fifth part), 2026-11-17. Decided by the owner on 16 Nov 2026 (sequencer decision 2, card "Pads become steps, as designed", 20:00Z). The design notes, with mockup I (`step-pads.png`) and the Beats mockup, are in the private notes repository (`sequencer/rethink/README.md`, "STEP SEQ: the pads as steps"). The buttons and the screen are in the [layout spec](layout-spec.md) (sections 2, 4 and 6). Tested on the host; not yet run on the MPC (device checks `step-pads`, `step-hold`, `step-locks` and `step-speed`).
 
 This builds on the [step sequencer](steps.md): steps are a view of a clip's notes, and each edit is one take.
 
@@ -65,6 +65,18 @@ A lock is a value a step's sound plays with in place of its own. Clips kept them
 - **The Synth tab.** With steps held on a track that plays the synth the tab shows (its own instrument, or the synth on the pads), a knob turned there goes out as a `StepAction::Lock` on the steps held instead of a change to the sound (`as_held_lock` in `gui.rs`, on every action the screen sends). While they are held the tab shows the first step's locks, and once they are let go its own values again (`held_synth_values`).
 - **SHIFT + an empty step** holds it with no note (`Press::shift`). **ERASE pressed while steps are held** sends `ClearLocks` for them (`erase_held_steps` in `main.rs`, before the app's own ERASE, and `StepKeys::erase_locks`).
 
+## The step inspector and the cells
+
+The Beats mockup (A) shows a step whole, on its cell and under the pattern. Each lane carries the marks of its page (`play_widgets::Marks`, made by `play_page::marks` from the clip's row and `StepClip::locks`): condition, chance, ratchet, the nudge's side, a tie into the next step, the empty steps a note lasts over, and the lock count. `paint_cell` draws them, and the grid's paint cache (`StepLook`) compares the lanes with their marks, so a mark that changes is drawn again.
+
+The inspector (`play_widgets::StepInspector`, filled by `PlayPage::inspect`) shows while a step is picked on Beats or held with STEP SEQ (`PlayPage::inspecting`). It takes the throws' place on two more pages, `Play · Beats · step` and `Play · Beats · timing · step` (`PlayView::page_with`, `PlayView::step_layout`), the same 196 px, so nothing else moves; `Player::refresh_play` swaps the page when the step comes and goes. Its taps (`PlayPage::inspector_tap`):
+
+- **Step, Trig, Sound** set the bank the Q-Links show (`PlayPage::bank`), as Q-LINK does; a picked step has Step and Trig (Q-LINK steps between them, `HeldBank::Trig` giving `knobs()` the condition, ratchet and nudge in ticks), Sound only while held.
+- **A lock's ×**: `StepAction::Lock` with no value for that parameter, on every step held or the step picked. Unlike a turn's detents, it joins no take (`TimeControl::step_action`), so UNDO brings the lock back.
+- **Copy** keeps the step (`PlayPage::copy_from`); the next step tapped on the lane is `StepAction::CopySteps` with a count of 1 (locks along), and any other tap lets it go.
+- **Clear**: `StepAction::ClearSteps` of that step, locks too.
+- **×** (a step picked, not held): picks it off and keeps it (`InspectTap::Close`), so the throws and Q-LINK's macro banks come back.
+
 ## Speed: edits in place
 
 Every press edits a clip that plays, so a tap or a turn must not cost the audio thread a compile of the whole view (a turn sends many detents). Since the fourth part, a tap, a change on a held step and a lock go into the playing view in place: the control half sends the notes and locks added and erased, and the audio half makes them where a compile would, without allocating ([time threads](time-threads.md#step-edits-in-place)). A new pattern, a length change, a big erase or copy, song mode and anything while recording still compile. The status line says what step edits and compiles cost, and the `step-speed` device check measures it on the MPC (Gate 0 of the roadmap).
@@ -86,4 +98,4 @@ The colours go out on the pad colour message Akai's app uses (`akai::pad_colour`
 ## Coming next in S1
 
 - Locks from the mixer's and the effects' knobs turned on their own pages with a step held (the mod engine already plays them).
-- Full step cells and the held step's inspector on Beats; synth tracks on the step pads (the pen: a note or chord).
+- Synth tracks on the step pads (the pen: a note or chord).
