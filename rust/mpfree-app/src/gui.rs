@@ -8970,6 +8970,49 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
     titles
 }
 
+/// The stack for a thread that calls [`sample_screens`]. Every screen's
+/// `Player` sits in its one frame, which in a debug build is about 7 MiB
+/// (17 Nov 2026): more than a test thread's 2 MiB, and so near the main
+/// thread's 8 MiB that one more screen ran the control sweep out of stack.
+/// Twice that leaves room for the screens to come.
+pub const SCREENS_STACK: usize = 16 << 20;
+
+/// Run `f` on a thread with [`SCREENS_STACK`], for the commands that draw
+/// every sample screen (`--preview`, `--display-lists`). It may borrow.
+pub fn on_screens_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(SCREENS_STACK)
+            .spawn_scoped(s, f)
+            .expect("a thread for the sample screens")
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e))
+    })
+}
+
+/// A sample screen of the mixer's I/O view on the section titled
+/// `section`, with `model` (its own function, so `sample_screens`' frame
+/// doesn't grow with each screen).
+#[inline(never)]
+fn io_section_screen(
+    fonts: Fonts,
+    io_state: &mpfree_mixer_ui::MixState,
+    model: mpfree_midi_ui::IoModel,
+    section: &str,
+) -> Player {
+    let mut p = sample_player(fonts);
+    p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+        model,
+    ))));
+    p.apply(ToUi::Show(View::Mixer));
+    p.apply(ToUi::Mixer(Box::new(io_state.clone())));
+    p.open_io_section(section);
+    let _ = p.take_actions();
+    // Drawn whole again, as a screen first shown is.
+    p.ui.invalidate();
+    p
+}
+
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -9106,22 +9149,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // The I/O view's Routing section (board 5 of the MIDI mockups, without
     // blocks): the drum machine on the 5-pin jacks' channel 10 plays Drums
     // whichever track is armed.
-    let mut routing = sample_player(fonts());
     let mut rig = mpfree_midi_ui::sample::rig();
     rig.setup.routes.push(mpfree_midi::setup::TrackRoute {
         port: mpfree_midi::setup::DIN_NAME.to_string(),
         channel: Some(9),
         track: 0,
     });
-    routing.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
-        rig,
-    ))));
-    routing.apply(ToUi::Show(View::Mixer));
-    routing.apply(ToUi::Mixer(Box::new(io_state.clone())));
-    routing.open_io_section(mpfree_midi_ui::ROUTING);
-    let _ = routing.take_actions();
-    routing.ui.invalidate();
-    out.push(("mixer-io-routing", routing));
+    out.push((
+        "mixer-io-routing",
+        io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::ROUTING),
+    ));
     // The FX chain editor in the mixer's place (a strip's insert row): the
     // drum bus, Drive selected, Tone touched; and the macros panel over the
     // page (a long press on a macro card), layout spec 4b.
@@ -18008,11 +18045,10 @@ mod tests {
     #[test]
     fn every_sample_screen_draws() {
         // sample_screens builds every screen's Player in one frame, which in
-        // a debug build outgrows the 2 MiB test thread (the binary's
-        // --screens runs on the 8 MiB main thread), so draw them on a thread
-        // with the main thread's stack.
+        // a debug build outgrows the 2 MiB test thread, so draw them on a
+        // thread with SCREENS_STACK.
         std::thread::Builder::new()
-            .stack_size(8 << 20)
+            .stack_size(SCREENS_STACK)
             .spawn(|| {
                 for (name, mut p) in sample_screens(Fonts::embedded) {
                     let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
@@ -18048,7 +18084,7 @@ mod tests {
     #[test]
     fn every_sample_screen_plays_back_the_same_from_its_display_list() {
         std::thread::Builder::new()
-            .stack_size(8 << 20)
+            .stack_size(SCREENS_STACK)
             .spawn(|| {
                 let direct = sample_screens(Fonts::embedded);
                 let recorded = sample_screens(Fonts::embedded);
@@ -18271,7 +18307,7 @@ mod tests {
         // The sample screens outgrow the 2 MiB test thread in a debug build
         // (as above).
         std::thread::Builder::new()
-            .stack_size(8 << 20)
+            .stack_size(SCREENS_STACK)
             .spawn(idle_pages_stay_still)
             .unwrap()
             .join()
