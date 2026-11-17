@@ -1435,6 +1435,34 @@ mod tests {
         });
     }
 
+    /// The Pads tab's strip of banks turns the kit's bank as PAD BANK
+    /// does: the pads, the log, the kit chip and the tab all go to B, and
+    /// a hit on pad 5 is then B5.
+    #[test]
+    fn the_pads_tabs_strip_puts_bank_b_on_the_pads() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Pads");
+            let n = s.lines.len();
+            s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank B")
+                .run_for(0.1);
+            assert_eq!(s.app.pad_page(), 1);
+            assert!(
+                s.lines[n..].iter().any(|l| l == "pad bank B: pads B1-B16"),
+                "{:?}",
+                &s.lines[n..]
+            );
+            assert!(kit_chip(&mut s).label.ends_with("Bank B"));
+            assert_eq!(s.screen.sample.pad() / 16, 1, "the tab is on bank B");
+            s.pad(4, 100, 0.05);
+            assert_eq!(s.screen.sample.pad(), 20, "pad 5 is B5");
+            s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank A")
+                .run_for(0.1);
+            assert_eq!(s.app.pad_page(), 0);
+            assert_eq!(s.screen.sample.pad(), 4, "and back to A5");
+        });
+    }
+
     /// The Kick's speaker on Play and Pad 1's M in the pad mixer are one
     /// mute: each shows what the other did.
     #[test]

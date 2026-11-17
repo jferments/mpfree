@@ -1083,6 +1083,11 @@ pub struct PadCell {
 /// enough to sit beside the pad's settings. A tap on a pad picks it
 /// ([`EventKind::Select`]); a tap on the pad already picked plays it while
 /// the finger is down ([`EventKind::Pad`]).
+///
+/// With [`PadMap::banks`] set, a strip of the kit's banks A to H sits over
+/// the pads, each with a dot for every pad of it that has a sound, and the
+/// bank shown outlined; a tap on a bank is [`EventKind::Tab`] with its
+/// number (the strip answers over its whole width, no gaps).
 pub struct PadMap {
     pub title: String,
     pub right: String,
@@ -1090,11 +1095,20 @@ pub struct PadMap {
     pub selected: usize,
     /// Pads held down now (on the hardware or here).
     pub lit: Vec<bool>,
+    /// Each bank's pads with a sound, pad 1 of the bank the lowest bit;
+    /// empty for no strip.
+    pub banks: Vec<u16>,
+    /// The bank the pads are of, in [`PadMap::banks`].
+    pub bank: usize,
     held: Option<(u64, usize)>,
 }
 
 const MAP_COLS: usize = 4;
 const MAP_GAP: i32 = 8;
+/// The bank strip's height, and the gap under it.
+const BANKS_H: i32 = 52;
+const BANKS_GAP: i32 = 10;
+const BANKS_CELL_GAP: i32 = 4;
 
 impl PadMap {
     pub fn new(title: &str) -> PadMap {
@@ -1104,13 +1118,45 @@ impl PadMap {
             cells: Vec::new(),
             selected: 0,
             lit: Vec::new(),
+            banks: Vec::new(),
+            bank: 0,
             held: None,
         }
     }
 
+    /// The panel's room under its title: the bank strip (if any), then
+    /// the pads.
+    fn body(&self, r: Rect) -> (Rect, Rect) {
+        let b = r.inset(14).take_top(34).1;
+        if self.banks.is_empty() {
+            return (Rect::new(b.x, b.y, b.w, 0), b);
+        }
+        let (strip, rest) = b.take_top(BANKS_H);
+        (strip, rest.take_top(BANKS_GAP).1)
+    }
+
+    /// Bank `k`'s cell on the strip, as drawn, and the slice of the strip
+    /// that answers a tap for it.
+    pub fn bank_rect(&self, r: Rect, k: usize) -> (Rect, Rect) {
+        let strip = self.body(r).0;
+        let n = self.banks.len().max(1) as i32;
+        let (k, gap) = (k as i32, BANKS_CELL_GAP);
+        let w = (strip.w - gap * (n - 1)) / n;
+        let x = strip.x + k * (w + gap);
+        let cell = Rect::new(x, strip.y, w.max(0), strip.h);
+        // The answer runs to the middle of the gaps either side.
+        let left = if k == 0 { strip.x } else { x - gap / 2 };
+        let right = if k == n - 1 {
+            strip.right()
+        } else {
+            x + w + gap - gap / 2
+        };
+        (cell, Rect::new(left, strip.y, right - left, strip.h))
+    }
+
     /// Pad `i`'s rectangle.
     pub fn cell_rect(&self, r: Rect, i: usize) -> Rect {
-        let b = r.inset(14).take_top(34).1;
+        let b = self.body(r).1;
         let rows = self.cells.len().div_ceil(MAP_COLS).max(1) as i32;
         let cols = MAP_COLS as i32;
         let w = (b.w - MAP_GAP * (cols - 1)) / cols;
@@ -1129,6 +1175,37 @@ impl Widget for PadMap {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, &self.right);
+        for (k, &sounds) in self.banks.iter().enumerate() {
+            let b = self.bank_rect(r, k).0;
+            let shown = k == self.bank;
+            cx.canvas
+                .fill_round_rect(b, 8, if shown { t.surface } else { t.raised });
+            if shown {
+                cx.canvas.stroke_round_rect(b, 8, 2, t.accent);
+            }
+            let inner = b.inset_xy(6, 5);
+            let (top, rest) = inner.take_top(16);
+            let letter = (b'A' + (k % 26) as u8) as char;
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                top,
+                Align::Left,
+                if shown { t.text } else { t.text_dim },
+                &letter.to_string(),
+            );
+            // A 4 x 4 dot per pad, pad 1 bottom left as on the MPC.
+            let (dot, step) = (5, 7);
+            let x0 = rest.right() - 4 * step + (step - dot);
+            let y0 = rest.bottom() - 4 * step + (step - dot);
+            for p in 0..16 {
+                let (col, row) = ((p % 4) as i32, 3 - (p / 4) as i32);
+                let on = sounds & (1 << p) != 0;
+                let d = Rect::new(x0 + col * step, y0 + row * step, dot, dot);
+                let c = crate::wave_tab::pad_color(k * 16 + p);
+                cx.canvas.fill_rect(d, if on { c } else { t.outline });
+            }
+        }
         for (i, c) in self.cells.iter().enumerate() {
             let b = self.cell_rect(r, i);
             let filled = !c.name.is_empty();
@@ -1208,12 +1285,21 @@ impl Widget for PadMap {
                 };
                 Target::tap("pad", k, label, self.cell_rect(r, k))
             })
+            .chain((0..self.banks.len()).map(|k| {
+                let letter = (b'A' + (k % 26) as u8) as char;
+                Target::tap("bank", k, format!("Bank {letter}"), self.bank_rect(r, k).1)
+            }))
             .collect()
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
+                if let Some(k) =
+                    (0..self.banks.len()).find(|&k| self.bank_rect(r, k).1.contains(x, y))
+                {
+                    return Some(EventKind::Tab(k));
+                }
                 let k = (0..self.cells.len()).find(|&k| self.cell_rect(r, k).contains(x, y))?;
                 if k == self.selected {
                     self.held = Some((finger, k));

@@ -1006,11 +1006,15 @@ pub enum FromUi {
         down: bool,
     },
     /// A finger on a scale row's name on Beats: the synth's pad sounds
-    /// until it lifts, never recorded and never a step press.
+    /// until it lifts, never recorded and never a step press. Also a tap on
+    /// the Sample or Pads tab playing a kit pad off the bank on the pads.
     Audition {
         pad: usize,
         down: bool,
     },
+    /// A tap on bank `b` (0 to 7: A to H) of the Pads tab's strip: put
+    /// that bank of the kit on the pads, as PAD BANK does.
+    PadBank(usize),
     /// A page that arms what it shows opened: Play's Beats view the notes,
     /// Play's Loop view and the Looper tab the loop ([`crate::rec_arm`]).
     Arm(crate::rec_arm::Target),
@@ -1888,6 +1892,12 @@ impl Player {
             Some(k) if k.synth.is_some() => cell,
             _ => self.pad_page * 16 + cell,
         }
+    }
+
+    /// The bank of the kit on the pads, or None while the synth has them.
+    fn kit_page(&self) -> Option<usize> {
+        let synth = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
+        (!synth).then_some(self.pad_page)
     }
 
     fn set_kit(&mut self, k: usize) {
@@ -3683,8 +3693,8 @@ impl Player {
                      PLAY: hear it   ·   Wheel: move   ·   push: open or load   ·   - / +: up / into a folder".to_string()
                 }
                 View::Pads if self.sample.page() == sample_page::PADS_PAGE => {
-                    format!("Hit or tap a pad to pick it, again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
-                     {ROWS_HINT}")
+                    format!("Hit or tap a pad to pick it, again to hear it   ·   A-H: the kit's banks   ·   \
+                     Q-Links 1-4: level, pan, tune, voices   ·   {ROWS_HINT}")
                 }
                 View::Pads => format!("Pick a drum kit on Play to see its pads here   ·   {stop}"),
                 View::Sample if self.sample.play_takes_pads(&self.ui) => {
@@ -4895,6 +4905,7 @@ impl Player {
             ToUi::Kit(k) => {
                 self.set_kit(k);
                 self.sample.set_kit(k);
+                self.sample.set_pad_page(self.kit_page());
                 self.sample_changed();
             }
             ToUi::PadPage(page) => {
@@ -4906,6 +4917,10 @@ impl Player {
                     self.play.pad_page = page;
                     self.set_kit(self.kit);
                     self.refresh_play();
+                    // The Sample and Pads tabs go to the same pad of the
+                    // bank, so the pad they edit is one the pads play.
+                    self.sample.set_pad_page(self.kit_page());
+                    self.sample_changed();
                 }
             }
             ToUi::Level { db, .. } => {
@@ -7339,6 +7354,8 @@ impl Player {
         let edit = !matches!(
             a,
             FromUi::Pad { .. }
+                | FromUi::Audition { .. }
+                | FromUi::PadBank(_)
                 | FromUi::PadsView(_)
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
@@ -14406,6 +14423,110 @@ mod tests {
         );
         p.apply(ToUi::PadPage(0));
         assert_eq!(shown(&p), ("Pads · Bank A".into(), "Break 92".into()));
+    }
+
+    /// The Pads tab's strip of banks (sampler R3 part 3): a tap on bank B
+    /// asks the app to put it on the pads, and the app's answer moves the
+    /// tabs to the same pad of B. A tap on a pad of the bank on the pads
+    /// plays it as one of the 16 (so it records and lights); a pad of
+    /// another bank, reached with SHIFT + wheel, is only heard.
+    #[test]
+    fn the_pads_tabs_strip_turns_the_bank_and_its_taps_play_that_bank() {
+        use mpfree_sampler_ui::pads_tab;
+        use mpfree_sampler_ui::widgets::{PadBar, PadMap};
+        let mut p = sample_sampler(Fonts::embedded());
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let mut b5 = project.pad(pad).unwrap().clone();
+        b5.name = "Break B5".to_string();
+        project.set_pad(16 + pad, Some(b5), None).unwrap();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.apply(ToUi::PadDown { pad, velocity: 90 });
+        p.apply(ToUi::PadUp(pad));
+        open_pads(&mut p, pads_tab::PAD_VIEW);
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        assert!(
+            p.ui.get::<Label>("hint")
+                .unwrap()
+                .text
+                .contains("A-H: the kit's banks"),
+            "{}",
+            p.ui.get::<Label>("hint").unwrap().text
+        );
+        let map = |p: &Player| {
+            let m = p.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+            (m.bank, m.banks[1], m.selected)
+        };
+        assert_eq!(map(&p), (0, 1 << pad, pad), "bank A, and B's dot on B5");
+        p.take_actions();
+        let r = p.ui.rect_of(pads_tab::MAP).unwrap();
+        let b = p.ui.get::<PadMap>(pads_tab::MAP).unwrap().bank_rect(r, 1).0;
+        p.touch(3, Touch::Down, b.x + 10, b.y + 10);
+        p.touch(3, Touch::Up, b.x + 10, b.y + 10);
+        assert_eq!(p.take_actions(), vec![FromUi::PadBank(1)]);
+        // The app turns the bank: the tabs go to B5.
+        p.apply(ToUi::PadPage(1));
+        assert_eq!(p.sample.pad(), 16 + pad);
+        assert_eq!(map(&p), (1, 1 << pad, pad));
+        assert!(p
+            .ui
+            .get::<PadBar>(pads_tab::BAR)
+            .unwrap()
+            .title
+            .starts_with("Pad B5 · Break B5"));
+        // A tap on B5 (picked) is pad 5 on the pads, bank B.
+        let cell = |p: &Player| {
+            let r = p.ui.rect_of(pads_tab::MAP).unwrap();
+            p.ui.get::<PadMap>(pads_tab::MAP).unwrap().cell_rect(r, pad)
+        };
+        let c = cell(&p);
+        p.touch(4, Touch::Down, c.x + 10, c.y + 10);
+        p.touch(4, Touch::Up, c.x + 10, c.y + 10);
+        let taps = |p: &mut Player| -> Vec<FromUi> {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| matches!(a, FromUi::Pad { .. } | FromUi::Audition { .. }))
+                .collect()
+        };
+        assert_eq!(
+            taps(&mut p),
+            [
+                FromUi::Pad { pad, down: true },
+                FromUi::Pad { pad, down: false }
+            ]
+        );
+        // Bank A on the pads, B5 picked by SHIFT + wheel: only heard.
+        p.apply(ToUi::PadPage(0));
+        assert_eq!(p.sample.pad(), pad, "back to A5 with the bank");
+        for _ in 0..16 {
+            if p.sample.pad() == 16 + pad {
+                break;
+            }
+            p.sample.step_pad(1);
+        }
+        p.apply(ToUi::Show(View::Play));
+        open_pads(&mut p, pads_tab::PAD_VIEW);
+        assert_eq!(p.sample.pad(), 16 + pad);
+        p.take_actions();
+        let c = cell(&p);
+        p.touch(5, Touch::Down, c.x + 10, c.y + 10);
+        p.touch(5, Touch::Up, c.x + 10, c.y + 10);
+        assert_eq!(
+            taps(&mut p),
+            [
+                FromUi::Audition {
+                    pad: 16 + pad,
+                    down: true
+                },
+                FromUi::Audition {
+                    pad: 16 + pad,
+                    down: false
+                }
+            ]
+        );
     }
 
     #[test]

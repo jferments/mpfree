@@ -5032,6 +5032,16 @@ fn player_session(
                     audition(pad, down, &mut player, &mut synth, synth_on);
                 }
                 gui::FromUi::Audition { .. } => {}
+                // The Pads tab's strip: the kit's bank on the pads, as PAD
+                // BANK turns it (the synth's pads have layouts, not banks).
+                gui::FromUi::PadBank(b) if b < app::KIT_PAGES && !synth_on => {
+                    app.set_pad_page(b);
+                    let kit = kit_to.unwrap_or(player.kit());
+                    out.note(&pad_page_note(b, &kits[kit].name, player.sounds(kit)));
+                    page_turned = true;
+                    bank_lights = true;
+                }
+                gui::FromUi::PadBank(_) => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {
