@@ -98,6 +98,8 @@ pub struct Player {
     peak_grains: usize,
     /// Each kit's project, until the screen thread takes them.
     projects: Vec<Project>,
+    /// The empty kit slots kept after the others ([`USER_KITS`]).
+    users: std::ops::Range<usize>,
 }
 
 /// What each track plays when it has no instrument of its own: an entry
@@ -143,6 +145,11 @@ impl TrackKits {
             }
             _ => false,
         }
+    }
+
+    /// Whether any track plays entry `entry` (a kit, or the synth).
+    pub fn plays(&self, entry: usize) -> bool {
+        self.entries.iter().any(|&e| usize::from(e) == entry)
     }
 
     /// Whether track `track` plays the synth.
@@ -326,6 +333,14 @@ pub const POOL_VOICES: usize = 64;
 /// sound is already more than the ear tells apart.
 pub const KIT_POLYPHONY: u8 = 4;
 
+/// Empty kit slots the app keeps after the kits and Grains (sampler R3
+/// part 3): the kit chip's **New kit** puts the next one on the armed
+/// track, and a kit loaded onto a kit other tracks play goes into one, so
+/// loading never changes another track's sound. A slot is only arrays
+/// until sounds go on it; the slots are fixed, so the kits' places (and
+/// the synth's after them) never move while MPFree runs.
+pub const USER_KITS: usize = 8;
+
 fn kit_pad(name: &str, region: Region) -> Pad {
     kit_pad_with(name, Layer::new(region))
 }
@@ -374,13 +389,26 @@ impl Player {
     /// own audio is handed over to the engine, so their `audio` is empty
     /// afterwards. `pad_notes[p]` is the note pad `p` sends. Call it before
     /// the sound starts: it allocates.
+    #[cfg(test)]
     pub fn new(kits: &mut Vec<Kit>, pad_notes: &[u8; 16], rate: u32) -> Result<Player, String> {
+        Player::with_user_kits(kits, pad_notes, rate, 0)
+    }
+
+    /// As [`Player::new`], with `user` empty kits after the others (as
+    /// many as fit the engine), each added to `kits` as "Kit N" with no
+    /// sounds ([`USER_KITS`]).
+    pub fn with_user_kits(
+        kits: &mut Vec<Kit>,
+        pad_notes: &[u8; 16],
+        rate: u32,
+        user: usize,
+    ) -> Result<Player, String> {
         if kits.is_empty() {
             return Err("no kits".to_string());
         }
-        let mut views = Vec::with_capacity(kits.len() + 1);
-        let mut sounds = Vec::with_capacity(kits.len() + 1);
-        let mut projects = Vec::with_capacity(kits.len() + 1);
+        let mut views = Vec::with_capacity(kits.len() + 1 + user);
+        let mut sounds = Vec::with_capacity(kits.len() + 1 + user);
+        let mut projects = Vec::with_capacity(kits.len() + 1 + user);
         let mut first: Vec<(usize, Source)> = Vec::new();
         for (k, kit) in kits.iter_mut().enumerate() {
             let mut project = Project::new();
@@ -434,6 +462,16 @@ impl Player {
                 sounds: grain_sounds,
             });
         }
+        let first_user = kits.len();
+        for _ in 0..user.min(mpfree_sampler::engine::MAX_KITS.saturating_sub(kits.len())) {
+            views.push(Some(EngineView::build(&Project::new(), rate)));
+            sounds.push(0);
+            projects.push(Project::new());
+            kits.push(Kit {
+                name: format!("Kit {}", kits.len() + 1),
+                sounds: Vec::new(),
+            });
+        }
         let mut engine = Engine::with_kits(rate, POOL_VOICES, views.len());
         engine.set_full_voices(MAX_VOICES);
         for (k, view) in views.into_iter().enumerate() {
@@ -445,7 +483,13 @@ impl Player {
             sounds,
             peak_grains: 0,
             projects,
+            users: first_user..kits.len(),
         })
+    }
+
+    /// The empty kit slots kept for New kit ([`Player::with_user_kits`]).
+    pub fn user_kits(&self) -> std::ops::Range<usize> {
+        self.users.clone()
     }
 
     #[cfg(test)]
@@ -1280,6 +1324,36 @@ mod tests {
         p.release_at(5, 0);
         run(&mut p, 150); // the 250 ms release and the last grains
         assert_eq!(p.playing(), 0);
+    }
+
+    #[test]
+    fn user_kits_wait_empty_after_grains_and_play_once_they_have_sounds() {
+        let mut ks = kits();
+        let mut p = Player::with_user_kits(&mut ks, &NOTES, 44_100, USER_KITS).unwrap();
+        // Two kits, Grains, then the empty ones New kit hands out.
+        assert_eq!(p.user_kits(), 3..3 + USER_KITS);
+        assert_eq!((ks.len(), p.kits()), (3 + USER_KITS, 3 + USER_KITS));
+        assert_eq!(ks[3].name, "Kit 4");
+        assert!(p
+            .user_kits()
+            .all(|k| p.sounds(k) == 0 && ks[k].sounds.is_empty()));
+        let mut projects = p.take_projects();
+        assert_eq!(projects.len(), 3 + USER_KITS);
+        // A user kit plays nothing until a sound goes on it; then its
+        // view swaps in like any kit's.
+        p.select(3);
+        assert!(!p.hit_at(0, 127, 0));
+        let kick = projects[0].pad(0).unwrap().clone();
+        let source = projects[0].sources()[0].clone();
+        projects[3].add_source(source);
+        projects[3].set_pad(16, Some(kick), None).unwrap();
+        let mut swap = ViewSwap {
+            kit: 3,
+            view: Some(EngineView::build(&projects[3], 44_100)),
+        };
+        assert!(p.swap_view(&mut swap));
+        assert!(p.has_sound(3, 16), "B1 of the new kit");
+        assert!(p.hit_kit_at(3, 16, 127, 0));
     }
 
     #[test]

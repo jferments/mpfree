@@ -1026,6 +1026,7 @@ impl Synth {
             chip: Some(self.chip()),
             synth: Some(synth),
             pitches: self.pad_pitches(),
+            user: false,
         }
     }
 
