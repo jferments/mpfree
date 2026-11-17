@@ -489,6 +489,7 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::NotFollowed => ("not followed".to_string(), Went::Nothing),
         To::Nothing => ("nothing takes it".to_string(), Went::Nothing),
         To::Ignored => ("ignored".to_string(), Went::Nothing),
+        To::PortIgnores => ("ignored: this port's setting".to_string(), Went::Nothing),
         To::SentBy(t) => (format!("sent by {}", track(t)), Went::Sent),
         To::Clock => ("MPFree's clock".to_string(), Went::Clock),
     }
