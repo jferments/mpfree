@@ -45,7 +45,7 @@ fn preset_sets(s: &Subject, id: u16, v: f32) -> bool {
 /// A fresh node for `s` with `values` on top of its preset and fixed
 /// values, for the measures that read a meter, feed a side-chain or move
 /// the song position.
-fn node_with(s: &Subject, rate: u32, values: &[(u16, f64)]) -> Box<dyn Node> {
+pub(super) fn node_with(s: &Subject, rate: u32, values: &[(u16, f64)]) -> Box<dyn Node> {
     let mut n =
         mpfree_fx::registry::make(s.id).unwrap_or_else(|| panic!("{} is in the registry", s.id));
     n.prepare(rate, MAX_BLOCK);

@@ -8,10 +8,12 @@ use mpfree_audiotracks::{
 };
 use mpfree_fx::ids;
 use mpfree_fx::{
-    Amp, CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay,
-    DjFilter, Drive, Ducker, Eq, Flanger, Frozen, Fuzz, Gate, Limiter, LoFi, MasterSafety, Mixer,
-    MixerConfig, MultiFilter, MultiTap, MultibandCompressor, Perform, Phaser, Plate, Print,
-    PrintJob, PrintState, Room, Spring, StripId, Tail, TapeDelay, TransientShaper,
+    Amp, AutoPan, AutoWah, CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush,
+    DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Flanger, FreqShifter, Frozen, Fuzz, Gate,
+    Harmonizer, Limiter, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap,
+    MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Print, PrintJob,
+    PrintState, RingMod, Room, Rotary, Spring, StripId, Tail, TalkBox, TapeDelay, TransientShaper,
+    Tremolo, Tuner,
 };
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
@@ -1364,6 +1366,41 @@ pub fn all(rate: u32) -> Vec<Case> {
             Box::new(TransientShaper::new()),
             &[],
         )
+    }));
+    // The movement, pitch and voice effects (FX quality round 5), each at
+    // its defaults.
+    v.push(measured(|| {
+        effect("Tremolo", rate, Box::new(Tremolo::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Auto-pan", rate, Box::new(AutoPan::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Rotary", rate, Box::new(Rotary::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Ring mod", rate, Box::new(RingMod::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Frequency shifter", rate, Box::new(FreqShifter::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Auto wah", rate, Box::new(AutoWah::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Pitch shifter", rate, Box::new(PitchShifter::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Pitch correct", rate, Box::new(PitchCorrect::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Harmonizer", rate, Box::new(Harmonizer::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Tuner", rate, Box::new(Tuner::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect("Talk box", rate, Box::new(TalkBox::new()), &[])
     }));
     // Perform FX: idle (no pad held), the default bank one pad at a time,
     // the heaviest stack (pitch drop with a gate, both sweeps, crush, the
