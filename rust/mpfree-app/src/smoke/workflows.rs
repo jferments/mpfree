@@ -3077,6 +3077,49 @@ mod tests {
         });
     }
 
+    /// The song list (sequencer S4, mockup D): in Perform MAIN goes
+    /// Clips, Song, List; scenes added to the list, a step's times, and
+    /// Play from here plays it from the next bar line, the step lit with
+    /// its pass.
+    #[test]
+    fn the_song_list_plays_from_a_step_in_perform() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button_with("SHIFT", "MAIN").settle();
+            assert!(s.time.project().perform);
+            s.button("MAIN").settle();
+            s.button("MAIN").settle();
+            assert!(s.time.state().song_view);
+            s.button("MAIN").settle();
+            let st = s.time.state();
+            assert!(st.list_view && !st.song_view);
+            assert!(s.control("song-list", "add", "+ Add a scene").is_some());
+            s.press("song-list", "add", "+ Add a scene").settle();
+            s.press("song-list", "add", "+ Add a scene").settle();
+            s.press("song-list", "times-more", "Step 1 +").settle();
+            let list = &s.time.project().arrangement.list;
+            assert_eq!(list.steps.len(), 2);
+            assert_eq!(list.steps[0].times, 2);
+            s.press("song-list", "step", "Step 1").settle();
+            assert_eq!(s.time.state().list_pick, Some(0));
+            s.button("PLAY").run_for(0.3);
+            s.press("song-list", "button", "Play from here").settle();
+            assert!(
+                s.time.state().list[0].waiting,
+                "it waits for the next bar line"
+            );
+            s.run_for(2.2);
+            let st = s.time.state();
+            assert_eq!(st.list[0].playing.map(|p| p.0), Some(1), "pass 1");
+            assert!(s.said().iter().any(|l| l.contains("song list from step 1")));
+            s.button("STOP");
+        });
+    }
+
     /// Rec song with REC (sequencer S4): in Perform the take REC records
     /// brings Rec song with it, and the REC chip says "+ Rec song"; what
     /// the grid played goes into the song when the take ends. The target

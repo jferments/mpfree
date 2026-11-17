@@ -1112,7 +1112,8 @@ pub enum Effect {
     /// MAIN on the Play page (None: the next view) and STEP SEQ (Beats).
     PlayView(Option<crate::play_page::PlayView>),
     /// Arrange's view: the Song view (`Some(true)`), the Clips grid
-    /// (`Some(false)`), or the next of the two (`None`): MAIN in Perform.
+    /// (`Some(false)`), or the next of the three (`None`: Clips, Song, the
+    /// song list): MAIN in Perform.
     ArrangeView(Option<bool>),
     /// SAMPLE EDIT: the Sample tab opens on this editor.
     SampleEditor(crate::sample_page::Editor),
@@ -2327,7 +2328,7 @@ impl App {
             vec![Effect::Time(TimeAction::Perform(!self.perform))]
         } else if is(m.main) && self.perform {
             // MAIN in Perform: Arrange's Clips; on Arrange, the next view
-            // (Clips, Song).
+            // (Clips, Song, the song list).
             if self.view == View::Arrange {
                 vec![Effect::ArrangeView(None)]
             } else {

@@ -1,12 +1,12 @@
 <!--
 status: changing
-covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs
+covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-time-ui/src/list.rs
 checked: 2026-11-14 b76c3c7
 -->
 
 # Arranging a song
 
-The Arrange tab turns clips into a song in two ways. You can play it live, launching whole rows of clips (scenes) and morphing between their sounds. Or you can lay the clips out on a timeline and let the song play itself. You can also do both at once: jam on the grid and record the jam as a song.
+The Arrange tab turns clips into a song in three ways. You can play it live, launching whole rows of clips (scenes) and morphing between their sounds. You can line scenes up in a song list ("Intro × 2, Verse × 4"), as on an MPC. Or you can lay the clips out on a timeline and let the song play itself. You can also do both at once: jam on the grid and record the jam as a song.
 
 ## Scenes
 
@@ -64,6 +64,21 @@ You can move the song around with your finger:
 ### Audio in the song
 
 Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
+
+## The song list
+
+The song list plays scenes one after another, each so many times: "Intro × 2, Verse × 4, Drop × 4, Break × 1". It's the quick way to sketch a song's shape without laying out blocks, and a scene can come back as often as you like. Tap **List** at the top of the Song view to see it; in Perform, **MAIN** goes Clips, Song, List. **Clips** and **Song** at the top go back.
+
+{{shot: arrange-list | The song list: seven steps with their times, bars and where each starts; the Drop playing its third pass of four.}}
+
+- **+ Add a scene** puts a step after the one you picked (at the end if none is), playing the next row that has clips. Tap **‹** or **›** on a step's scene to change it, and **–** or **+** to change how many times it plays (1 to 99). **Bars** says how long the step lasts, and **Starts** the bar it starts on.
+- Tap a step to pick it. **Play from here** plays the list from that step, starting on the next Launch line (at once while stopped). Each step's scene plays its times, and the next comes in on the bar line, so you can play pads or turn knobs over it. The step playing is lit green with "pass 3 of 4"; the one about to start is outlined amber.
+- After the last step everything stops, unless **Loop the list** is on: then it starts again from the top.
+- Launch a scene yourself, stop all, or tap **Back to song**, and the list stops leading; what plays carries on.
+- **Remove** takes the picked step out (in Perform, hold it for half a second). Every change to the list is undoable with **UNDO**.
+- **List → song** writes the whole list onto the end of the timeline, each step's clips for its bars, with the scene's name above where it starts, so you can carry on in the Song view.
+
+A scene's length is its follow action's bars if it has one, else its longest clip, rounded up to whole bars. Moving a row on the grid takes the list's steps with it.
 
 ## Recording a performance into the song
 

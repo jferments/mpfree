@@ -155,6 +155,13 @@ pub enum SongChange {
     Scenes {
         rows: usize,
     },
+    /// The song list edited (sequencer S4): a step put in, taken out or
+    /// changed, or the list's loop switch.
+    List,
+    /// List → song: the list's `steps` steps onto the song's end.
+    ListToSong {
+        steps: usize,
+    },
 }
 
 /// A Song view edit: what it did, and the song before and after it.

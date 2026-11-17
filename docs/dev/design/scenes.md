@@ -36,6 +36,7 @@ The host calls `due` after every period while the transport rolls, with the next
 - **A scene's follow goes first.** It cues every track. A clip follow on a track that already has a cue waits, so whatever is cued wins: the user's launch, a stop or a scene.
 - **Stay** keeps playing and rolls again `bars` bars later. A follow with a chance between Next and Stay therefore plays on for a random number of passes. **Again** starts the same clip or scene again, which gives it a new start to count from.
 - The rolls come from a small xorshift generator seeded at `Perform::new`, so a test gets the same rolls every time.
+- **The song list** (S4's sixth part, [make-perform.md](make-perform.md#the-song-list-as-built-the-sixth-part)) goes before them: while it plays, `due` cues each step's scene in the bar before the step before it ends (its scene's length times its times), on that bar line, and the scenes' own follow actions wait.
 
 ## On the Clips page (`mpfree-time-ui`)
 
@@ -95,7 +96,8 @@ The project keeps the rows' values (`Project::scenes`), so a saved morph comes b
   - Stay rolling again;
   - chances picking both ways;
   - Stop all;
-  - a scene's cues taking the project's launch quantise, a follow's the bar, and a line kept when Launch changes (`scene_cues_take_the_projects_line_and_follows_the_bar`).
+  - a scene's cues taking the project's launch quantise, a follow's the bar, and a line kept when Launch changes (`scene_cues_take_the_projects_line_and_follows_the_bar`);
+  - the song list's steps in order, then the stop or the first again (`the_song_list_plays_its_steps_in_order_then_stops`).
 - `mpfree-perform/tests/scenes.rs` plays scenes through the transport and the player at periods of 1, 64, 128, 1000 and 4096 frames. Every period size must give the same events. It checks that:
   - a scene's clips start together on the bar line and its mute silences a track from exactly that tick;
   - clip follow actions chain on their bar lines (Next after 1 bar, Next after 2, then First);

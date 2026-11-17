@@ -54,7 +54,7 @@ pub mod scenes;
 pub mod steps;
 
 pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source};
-pub use scenes::{Follow, FollowAction, Scene, SCENES};
+pub use scenes::{Follow, FollowAction, ListStep, Scene, SongList, SCENES};
 
 pub use mpfree_moves;
 use mpfree_moves::Moves;
