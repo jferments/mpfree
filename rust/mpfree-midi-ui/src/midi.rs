@@ -1,4 +1,5 @@
-//! The MIDI section: each port's input and thru, where each track plays
+//! The MIDI section: each port's input and thru (the Routing section's
+//! squares from the port to an output, as one choice here), where each track plays
 //! ("Plays on", the port and channel as one setting, the owner's rule),
 //! with its program. The controls learned with MIDI Learn are in the
 //! Learn section (`crate::learn_section`).
@@ -6,7 +7,7 @@
 use std::time::Duration;
 
 use mpfree_midi::output::MAX_TRACKS;
-use mpfree_midi::setup::{PortInput, TrackOut};
+use mpfree_midi::setup::{thru_allowed, PortInput, ThruRoute, TrackOut};
 
 use crate::form::{clamp_step, Choice, Field, Form, Group, Page, Picker, Row, Tone};
 use crate::port_page::PortPage;
@@ -18,7 +19,9 @@ pub(crate) struct Midi;
 pub(crate) const INSIDE: &str = "Inside MPFree";
 
 /// Every port the section shows: the ones plugged in now, then the ones
-/// the project names that aren't.
+/// the project names that aren't (in a port's settings, a track's Plays on,
+/// Tempo from, a route or a thru), so what waits for a device stays in
+/// view.
 pub(crate) fn ports(m: &IoModel) -> Vec<(String, Option<&PortLive>)> {
     let mut out: Vec<(String, Option<&PortLive>)> = m
         .live
@@ -35,7 +38,9 @@ pub(crate) fn ports(m: &IoModel) -> Vec<(String, Option<&PortLive>)> {
         .chain(match &s.tempo {
             mpfree_midi::setup::TempoSource::Port(p) => Some(p.as_str()),
             _ => None,
-        });
+        })
+        .chain(s.routes.iter().map(|r| r.port.as_str()))
+        .chain(s.thru.iter().flat_map(|r| [r.from.as_str(), r.to.as_str()]));
     for n in named {
         if !out.iter().any(|p| p.0 == n) {
             out.push((n.to_string(), None));
@@ -52,6 +57,40 @@ fn out_ports(m: &IoModel) -> Vec<(String, bool)> {
         .filter(|p| p.1.is_none_or(|l| l.has_out))
         .map(|p| (p.0, p.1.is_some()))
         .collect()
+}
+
+/// A port's Thru choices: Off, then each output it can send to, all
+/// channels.
+fn thru_list(m: &IoModel, from: &str) -> Vec<Option<String>> {
+    let mut v = vec![None];
+    v.extend(
+        out_ports(m)
+            .into_iter()
+            .filter(|(to, _)| thru_allowed(from, to))
+            .map(|(to, _)| Some(to)),
+    );
+    v
+}
+
+/// A port's Thru field: where its thru goes, and its place among
+/// [`thru_list`]; None when it is more than one output or one channel,
+/// set on the Routing section.
+fn thru_field(m: &IoModel, from: &str) -> (String, Option<usize>) {
+    let mine: Vec<&ThruRoute> = m.setup.thru.iter().filter(|r| r.from == from).collect();
+    match mine.as_slice() {
+        [] => ("Off".to_string(), Some(0)),
+        [one] if one.channel.is_none() => {
+            let at = thru_list(m, from)
+                .iter()
+                .position(|o| o.as_deref() == Some(one.to.as_str()));
+            (one.to.clone(), at)
+        }
+        [one] => (
+            format!("{} · ch {}", one.to, one.channel.unwrap_or(0) + 1),
+            None,
+        ),
+        many => (format!("{} routes", many.len()), None),
+    }
 }
 
 /// A track's "Plays on" choices in order: inside, then each output port's
@@ -129,7 +168,6 @@ impl Form for Midi {
         for (name, live) in ports(m) {
             let p = m.setup.port(&name);
             let has_in = live.is_none_or(|l| l.has_in);
-            let has_out = live.is_none_or(|l| l.has_out);
             let input = PortInput::ALL
                 .iter()
                 .position(|x| *x == p.input)
@@ -139,19 +177,22 @@ impl Form for Midi {
                     Field::choice("Input", p.input.label(), input, PortInput::ALL.len())
                         .off(has_in),
                 )
-                .field(
-                    Field::choice(
-                        "Thru",
-                        if p.thru { "On" } else { "Off" },
-                        p.thru as usize,
-                        2,
-                    )
-                    .off(has_in && has_out),
-                )
+                .field({
+                    let (text, at) = thru_field(m, &name);
+                    let n = thru_list(m, &name).len();
+                    Field::choice("Thru", text, at.unwrap_or(0), n)
+                        .off(has_in && n > 1 && at.is_some())
+                })
                 .field(Field::page("Open ›"));
+            let thrus = m.setup.thru.iter().any(|r| r.from == name);
             row = match live {
                 None => row.note("not plugged in: its settings are kept", Tone::Warn),
-                Some(_) if p.thru && !built.thru => row.note("thru does nothing yet", Tone::Warn),
+                Some(_) if thrus && !built.notes_out => {
+                    row.note("thru sends nothing: MIDI out is off", Tone::Warn)
+                }
+                Some(_) if thru_field(m, &name).1.is_none() => {
+                    row.note("thru: set on the Routing section", Tone::Normal)
+                }
                 Some(l) => row.note(l.kind.clone(), Tone::Normal),
             };
             if let Some(l) = live.filter(|l| l.has_in) {
@@ -218,21 +259,41 @@ impl Form for Midi {
     fn step(&self, m: &mut IoModel, key: &str, col: usize, delta: i32) -> bool {
         if let Some(name) = parse_key(key, "port") {
             let name = name.to_string();
-            let before = m.setup.port(&name);
-            m.setup.set_port(&name, |p| match col {
-                0 => {
-                    let n = PortInput::ALL.len() as i32;
-                    let i = PortInput::ALL
-                        .iter()
-                        .position(|x| *x == p.input)
-                        .unwrap_or(0) as i32;
-                    p.input = PortInput::ALL[(i + delta).rem_euclid(n) as usize];
+            if col == 1 {
+                // Thru: the port's one thru, to the output picked, every
+                // channel (the Routing section sets more).
+                let (_, Some(at)) = thru_field(m, &name) else {
+                    return false;
+                };
+                let list = thru_list(m, &name);
+                let to = clamp_step(at, delta, list.len());
+                if to == at {
+                    return false;
                 }
-                _ => {
-                    if delta != 0 {
-                        p.thru = !p.thru;
+                m.setup.thru.retain(|r| r.from != name);
+                if let Some(out) = list[to].clone() {
+                    if m.setup.thru.len() >= mpfree_midi::setup::MAX_THRU_ROUTES {
+                        return true;
                     }
+                    m.setup.thru.push(ThruRoute {
+                        from: name,
+                        channel: None,
+                        to: out,
+                    });
                 }
+                return true;
+            }
+            if col != 0 {
+                return false;
+            }
+            let before = m.setup.port(&name);
+            m.setup.set_port(&name, |p| {
+                let n = PortInput::ALL.len() as i32;
+                let i = PortInput::ALL
+                    .iter()
+                    .position(|x| *x == p.input)
+                    .unwrap_or(0) as i32;
+                p.input = PortInput::ALL[(i + delta).rem_euclid(n) as usize];
             });
             return m.setup.port(&name) != before;
         }
@@ -458,7 +519,7 @@ mod tests {
 
     /// A USB device plays its tracks once MIDI out sends to it; one with
     /// no output says so on the track that names it, and thru says when it
-    /// does nothing.
+    /// sends nothing.
     #[test]
     fn a_usb_port_plays_or_says_it_has_no_output_and_thru_says_so() {
         let s = model();
@@ -470,7 +531,11 @@ mod tests {
             };
             m.live.ports[1].sending = true;
             m.setup.tracks[0] = Some(TrackOut::new("Keystep 37", 0));
-            m.setup.set_port(DIN_NAME, |p| p.thru = true);
+            m.setup.thru.push(ThruRoute {
+                from: DIN_NAME.to_string(),
+                channel: None,
+                to: DIN_NAME.to_string(),
+            });
         }
         let r = rows(&s);
         assert_eq!(row(&r, "track:0").note, "plays out of Keystep 37");
@@ -484,10 +549,13 @@ mod tests {
             row(&r, "track:0").note,
             "sends nothing: Keystep 37 has no output"
         );
-        assert_eq!(row(&r, "port:MIDI").note, "thru does nothing yet");
-        s.lock().unwrap().live.built.thru = true;
-        let r = rows(&s);
         assert_eq!(row(&r, "port:MIDI").note, "5-pin jacks");
+        s.lock().unwrap().live.built.notes_out = false;
+        let r = rows(&s);
+        assert_eq!(
+            row(&r, "port:MIDI").note,
+            "thru sends nothing: MIDI out is off"
+        );
     }
 
     #[test]
@@ -506,6 +574,62 @@ mod tests {
         tap(&mut sec, f.0, f.1);
         // Back to Both, the default: nothing kept for that port.
         assert!(s.lock().unwrap().setup.ports.is_empty());
+    }
+
+    /// A port's Thru field steps through Off and each output it can send
+    /// to, all channels: never a USB device's own output. A thru of one
+    /// channel is set on the Routing section, and its row says so; an
+    /// output only a thru names is listed, unplugged.
+    #[test]
+    fn thru_is_off_or_one_output_and_more_is_set_on_routing() {
+        let s = model();
+        let mut sec = FormSection::new(Midi, s.clone());
+        let _ = paint(&sec);
+        let r = rows(&s);
+        assert_eq!(row(&r, "port:Keystep 37").fields[1].text, "Off");
+        assert_eq!(row(&r, "port:Keystep 37").fields[1].at, Some((0, 2)));
+        let f = sec_field(&sec, "port:Keystep 37", 1);
+        assert_eq!(tap(&mut sec, f.0, f.1), IoReply::Redraw);
+        let thru = |s: &Shared| s.lock().unwrap().setup.thru.clone();
+        assert_eq!(
+            thru(&s),
+            vec![ThruRoute {
+                from: "Keystep 37".into(),
+                channel: None,
+                to: DIN_NAME.into(),
+            }]
+        );
+        assert_eq!(row(&rows(&s), "port:Keystep 37").fields[1].text, DIN_NAME);
+        // Never the keyboard itself: MIDI is the last, until a drum
+        // machine a track plays on is named.
+        assert!(!Midi.step(&mut s.lock().unwrap(), "port:Keystep 37", 1, 1));
+        s.lock().unwrap().setup.tracks[2] = Some(TrackOut::new("Digitakt", 0));
+        assert!(Midi.step(&mut s.lock().unwrap(), "port:Keystep 37", 1, 1));
+        assert_eq!(thru(&s)[0].to, "Digitakt");
+        // MIDI out off: the row says thru sends nothing.
+        assert_eq!(
+            row(&rows(&s), "port:Keystep 37").note,
+            "thru sends nothing: MIDI out is off"
+        );
+        // One channel, with MIDI out on: shown, set on Routing.
+        s.lock().unwrap().live.built.notes_out = true;
+        s.lock().unwrap().setup.thru[0].channel = Some(9);
+        let r = rows(&s);
+        let k = row(&r, "port:Keystep 37");
+        assert_eq!(k.fields[1].text, "Digitakt · ch 10");
+        assert!(!k.fields[1].enabled);
+        assert_eq!(k.note, "thru: set on the Routing section");
+        // A port only a thru names is still listed.
+        s.lock().unwrap().setup.thru.push(ThruRoute {
+            from: "Launchkey".into(),
+            channel: None,
+            to: DIN_NAME.into(),
+        });
+        let r = rows(&s);
+        assert_eq!(
+            row(&r, "port:Launchkey").note,
+            "not plugged in: its settings are kept"
+        );
     }
 
     #[test]

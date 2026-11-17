@@ -6,14 +6,16 @@
 //! mixer (`mpfree-mixer-ui`) owns the view and its Audio section; this crate
 //! gives it six more through [`mpfree_mixer_ui::IoSection`]:
 //!
-//! - **MIDI**: each port's input (Plays tracks, Learn only, Both) and thru,
-//!   and each track's one output setting, "Plays on", the port and the
-//!   channel together, with its program.
+//! - **MIDI**: each port's input (Plays tracks, Learn only, Both) and thru
+//!   (to one output, every channel: the Routing section sets more), and
+//!   each track's one output setting, "Plays on", the port and the channel
+//!   together, with its program.
 //! - **Routing** (board 5, without blocks yet): a grid of where things go.
 //!   Its rows are the inputs, the pads and the tracks; its columns are the
 //!   armed track, tracks by channel, Learn, each MIDI out port and CV. A
 //!   square under Tracks by channel sends a port's channel to one track,
-//!   whichever track is armed.
+//!   whichever track is armed; a port's square under a MIDI out port sends
+//!   its messages straight out of it (thru).
 //! - **Learn** (board 8, without its MIDI Follow card yet): what your
 //!   controllers move: each learned control with its range, how it works
 //!   and takes over, and whether it is kept with the song or for every
@@ -93,8 +95,6 @@ pub struct Built {
     /// MIDI out is on (Prefs' "Send MIDI and CV out"): tracks play out of
     /// the ports that are sending ([`PortLive::sending`]).
     pub notes_out: bool,
-    /// A port's thru works.
-    pub thru: bool,
     /// The tempo can follow another device's clock.
     pub clock_in: bool,
     /// Ports send clock.
@@ -273,10 +273,11 @@ pub struct LogToSave {
 }
 
 /// The project's `midi` part (`parts/midi.txt`): the song's share of the
-/// setup the sections edit ([`MidiSetup::project`]: tracks' outputs, Tempo
-/// from, clock out, CV jobs, learned controls), saved and opened with the
-/// project. Each port's input and thru are the rig's, kept for every
-/// project by the app ([`MidiSetup::rig`]); opening a project leaves them.
+/// setup the sections edit ([`MidiSetup::project`]: tracks' outputs, routes
+/// and thru, Tempo from, clock out, CV jobs, learned controls), saved and
+/// opened with the project. Each port's input, what it ignores and its
+/// delay are the rig's, kept for every project by the app
+/// ([`MidiSetup::rig`]); opening a project leaves them.
 pub struct MidiPart(pub Shared);
 
 /// The part's file name in a project.

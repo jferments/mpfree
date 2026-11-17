@@ -12,7 +12,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_midi::cv::{CvAssign, CvEngine, Priority, Scale};
-use mpfree_midi::input::{ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route};
+use mpfree_midi::input::{ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route, Thru};
 use mpfree_midi::monitor::{Dir, Event, Feed, Monitor, Mpc, To, KEEP};
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed};
 use mpfree_midi::smf::NoteLog;
@@ -83,6 +83,16 @@ fn routing_pacing_and_cv_never_allocate() {
                 track: 3,
             },
         ],
+        0,
+        |_| {},
+    );
+    // And thru: channel 2 of port 1 straight out of the DIN jack.
+    input.set_thru(
+        [Thru {
+            port: PortFilter::One(PortId(1)),
+            channel: ChanFilter::One(1),
+            to: DIN,
+        }],
         0,
         |_| {},
     );
@@ -168,9 +178,18 @@ fn routing_pacing_and_cv_never_allocate() {
                 out.send(track, msg, 3, &mut queues);
                 cv.track_msg(track, msg, 3, &mut |_| {});
             }
+            if let In::Thru { from, to, msg, .. } = e {
+                out.thru(from, to, msg, 0, &mut queues);
+            }
         };
         input.feed_all(DIN, &burst, u64::from(period) * 128, &mut route);
         input.feed_all(PortId(1), &burst, u64::from(period) * 128, &mut route);
+        // The same burst on channel 2 of port 1, which goes thru.
+        let mut on_two = burst;
+        for b in on_two.iter_mut().filter(|b| (0x80..0xF0).contains(*b)) {
+            *b |= 1;
+        }
+        input.feed_all(PortId(1), &on_two, u64::from(period) * 128, &mut route);
         cv.clock(24, 0, &mut |_| {});
         if period % 50 == 49 {
             out.all_off(100, &mut queues);

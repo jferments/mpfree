@@ -179,6 +179,9 @@ pub enum To {
     /// A route (the Routing section's Tracks by channel) played this track
     /// (from 0), whichever track is armed.
     Routed { track: u8 },
+    /// Thru (the Routing section's square from a port to an output) sent
+    /// it straight on to this output port.
+    Thru { to: PortId },
     /// A learned control: it moved this parameter.
     Learned(ParamAddr),
     /// MIDI Learn was armed: this control now moves this parameter.
@@ -204,6 +207,10 @@ pub enum To {
     Clock,
     /// Out: the port's page sent it (its test note or All notes off).
     PortPage,
+    /// Out: thru passed it on from this input port.
+    ThruFrom(PortId),
+    /// Out: the Sample tab's auto-sample played it on outside gear.
+    Sampler,
 }
 
 /// The monitor's filter groups, as bits of [`Filter::kinds`].

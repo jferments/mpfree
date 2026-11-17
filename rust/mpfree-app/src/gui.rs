@@ -5775,10 +5775,11 @@ impl Player {
         self.say(format!("project: opening {}", loc.name()));
     }
 
-    /// The I/O setup's song settings (tracks' outputs, Tempo from, clock
-    /// out, CV jobs, learned controls): the project's `midi` part, or the
-    /// defaults for New or a project without one, never the last
-    /// project's. The rig's (each port's input and thru) stay as they are.
+    /// The I/O setup's song settings (tracks' outputs, routes and thru,
+    /// Tempo from, clock out, CV jobs, learned controls): the project's
+    /// `midi` part, or the defaults for New or a project without one,
+    /// never the last project's. The rig's (each port's input, what it
+    /// ignores and its delay) stay as they are.
     /// The audio loop follows the model's change.
     fn open_midi(&mut self, text: Option<&str>) {
         use mpfree_library::Part as _;
@@ -9490,12 +9491,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     out.push(("mixer-io-port", port));
     // The I/O view's Routing section (board 5 of the MIDI mockups, without
     // blocks): the drum machine on the 5-pin jacks' channel 10 plays Drums
-    // whichever track is armed.
+    // whichever track is armed, and the keyboard's channel 3 goes thru to
+    // the 5-pin jacks (MIDI out is off, so its square says so).
     let mut rig = mpfree_midi_ui::sample::rig();
     rig.setup.routes.push(mpfree_midi::setup::TrackRoute {
         port: mpfree_midi::setup::DIN_NAME.to_string(),
         channel: Some(9),
         track: 0,
+    });
+    rig.setup.thru.push(mpfree_midi::setup::ThruRoute {
+        from: "Keystep 37".to_string(),
+        channel: Some(2),
+        to: mpfree_midi::setup::DIN_NAME.to_string(),
     });
     out.push((
         "mixer-io-routing",

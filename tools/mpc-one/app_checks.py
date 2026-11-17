@@ -717,6 +717,23 @@ CHECKS = (
          "learn_again_replaces_a_control_and_the_rigs_work_in_every_song"],
         needs=['TRACK MIX / PAD MIX', 'SHIFT']),
     Check(
+        "midi-thru", "Thru: a keyboard on MIDI IN playing a synth on MIDI OUT (only with both)",
+        "new: thru sends a port's channels straight out of another, set on Routing; STATE-CHANGING: notes go to the "
+        "synth while Send MIDI and CV out is on", "hands",
+        ["Only with a keyboard's MIDI OUT in the MPC's MIDI IN and a synth's MIDI IN on the MPC's MIDI OUT.",
+         "1. SHIFT + MENU for Prefs, turn Send MIDI and CV out on.",
+         "2. Press TRACK MIX, tap I/O, then Routing. Tap the square in the MIDI in row under MIDI out: the card",
+         "   shows thru, every channel. Play a few keys and a chord, and let go: the synth plays them.",
+         "3. Tap Remove route. SHIFT + MENU for Prefs, turn Send MIDI and CV out off again. Don't save."],
+        [("sending was turned on", seen(r"^MIDI and CV out: on")),
+         ("notes came in", seen(NOTE_IN)),
+         ("thru sent them out of MIDI OUT", seen(r"^\+\d+\.\d+ s MIDI Out: [89][0-9A-F]( [0-9A-F]{2}){2} = note on")),
+         ("sending was turned off again", seen(r"^MIDI and CV out: off"))],
+        "Did the synth play each key as you played it, and stop when you let go?",
+        ["thru_sends_a_channel_on_as_it_came_and_learn_keeps_what_it_learned",
+         "thru_passes_a_keyboards_channel_out_as_it_came"],
+        needs=['TRACK MIX / PAD MIX', 'SHIFT', 'MENU']),
+    Check(
         "map-controls", "Map controls: find buttons the app does not know yet",
         "only when a round needs a button that has no number yet", "hands",
         ["1. SHIFT + MENU for Prefs, the wheel to Map controls, +. Tap a control still to find (or pick it",
