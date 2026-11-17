@@ -745,6 +745,12 @@ pub struct Track {
     /// "Record pad pressure": while the track records, the pads' pressure
     /// goes into its notes ([`Note::touch`]). On by default.
     pub record_touch: bool,
+    /// "Record quantise" (sequencer S3, the MPC's Timing Correct while
+    /// recording): the notes recorded on this track go in on the nearest
+    /// line of this grid, at full strength, in place of where they were
+    /// played; none (the default) keeps them as played. The clip's own
+    /// quantise ([`Clip::quantise`]) still applies on playback.
+    pub record_quantise: Option<u32>,
     /// A note track (the pads play it and its clips hold notes), or a Loop
     /// track, whose cells launch the looper's loops ([`loops`]).
     pub kind: TrackKind,
@@ -815,6 +821,7 @@ impl Track {
             mute: false,
             through_arp: false,
             record_touch: true,
+            record_quantise: None,
             kind: TrackKind::Notes,
             slots: Default::default(),
         }

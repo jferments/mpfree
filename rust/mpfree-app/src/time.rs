@@ -2006,6 +2006,54 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// Record quantise (sequencer S3): with the Record list's Quantise at
+    /// 1/16, a note played between two lines goes in on the nearest; off,
+    /// the notes go in as played.
+    #[test]
+    fn record_quantise_puts_the_recorded_notes_on_the_grid() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        let said = h
+            .act(TimeAction::RecordQuantise {
+                track: 0,
+                grid: Some(240),
+            })
+            .unwrap();
+        assert_eq!(
+            said,
+            "record quantise: Track 1 records each note on the nearest 1/16"
+        );
+        assert_eq!(h.state().tracks[0].record_quantise, Some(240));
+        // Ticks 1000 and 1150: nearest 960 and 1200.
+        run(
+            &mut h,
+            &mut pads,
+            BAR - 1000,
+            &[(22_969, 5, 100, 2000), (26_414, 6, 100, 2000)],
+        );
+        let clip = h.control.project.clip(0, 0).unwrap();
+        let mut ticks: Vec<_> = clip.notes.iter().map(|n| (n.note, n.tick)).collect();
+        ticks.sort();
+        assert_eq!(ticks, [(5, 960), (6, 1200)]);
+        assert_eq!(
+            h.act(TimeAction::RecordQuantise {
+                track: 0,
+                grid: None
+            })
+            .unwrap(),
+            "record quantise: Track 1 records the notes as played"
+        );
+        assert_eq!(h.state().tracks[0].record_quantise, None);
+        assert!(h
+            .act(TimeAction::RecordQuantise {
+                track: 0,
+                grid: Some(0)
+            })
+            .is_err());
+    }
+
     /// Pad pressure while recording goes on the pad's note in the clip
     /// (the Record list's "Pressure" row is on for a new track), plays
     /// back to the pads on the next pass, and is left out with the row off.

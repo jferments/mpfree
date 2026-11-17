@@ -376,6 +376,50 @@ fn a_recorded_note_does_not_play_again_right_after_it_was_heard() {
     );
 }
 
+/// Record quantise (sequencer S3): a track with a grid records each note
+/// on the grid's nearest line, its length kept; one played just before
+/// the clip's end goes in at its start. None plays again straight after
+/// it was heard live.
+#[test]
+fn record_quantise_puts_the_notes_on_the_grid_as_they_are_recorded() {
+    let mut s = session(Clip::new("take", 3840), 0);
+    s.project.tracks[0].record_quantise = Some(240);
+    s.live = vec![
+        (at(0, 230.0), on(1)),
+        (at(0, 260.0), off(1)),
+        (at(0, 970.0), on(2)),
+        (at(0, 1000.0), off(2)),
+        (at(0, 3830.0), on(3)),
+        (at(0, 3838.0), off(3)),
+    ];
+    s.frames = 3 * 88_200;
+    let r = run(&s, || 128);
+    assert_eq!(
+        notes(&r.taken),
+        vec![(240, 30, 1), (960, 30, 2), (0, 8, 3)]
+    );
+    assert_eq!(clip_notes(&r), vec![(0, 3), (240, 1), (960, 2)]);
+    // The first pass plays none of them, the second all but the one heard
+    // just before it began, the third all three.
+    assert_eq!(
+        ons(&r.played),
+        vec![
+            (at(88_200, 240.0), 1),
+            (at(88_200, 960.0), 2),
+            (at(176_400, 0.0), 3),
+            (at(176_400, 240.0), 1),
+            (at(176_400, 960.0), 2),
+        ]
+    );
+    // Without a grid, the same notes keep the ticks they were played on.
+    s.project.tracks[0].record_quantise = None;
+    let r = run(&s, || 128);
+    assert_eq!(
+        notes(&r.taken),
+        vec![(230, 30, 1), (970, 30, 2), (3830, 8, 3)]
+    );
+}
+
 #[test]
 fn replace_recording_erases_the_old_notes_for_one_pass() {
     // Play, punch in at 1000 with overdub off, play note 5 at 2000.

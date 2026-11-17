@@ -61,7 +61,8 @@ Set up the recording in the Record panel, beside the grid:
 - **Count-in:** a count before recording starts, so you can come in on time.
 - **Loop:** plays the same bars round and round while you record, so you can keep trying a part. It counts in bars from bar 1.
 - **Tempo:** the song's tempo, in BPM.
-- **Pressure:** whether the armed track records how hard you press the pads while they're held (**Recorded**, the setting for a new track, or **Off**). It's the last row: pick Loop or Tempo and the list moves up to show it.
+- **Pressure:** whether the armed track records how hard you press the pads while they're held (**Recorded**, the setting for a new track, or **Off**).
+- **Quantise:** puts each note you record on the nearest line of a grid, from **1/4** to **1/32** with triplets, as the MPC's Timing Correct does while recording. **Off** (the setting for a new track) keeps the notes exactly as you played them. It belongs to the armed track, so drums can go in on 1/16 while the bass keeps its feel. The clip's own **Quantise** (see [Clip settings](#clip-settings)) still moves the notes as they play, and you can change that later; this one moves them for good, so they sit on the steps in Beats and the note editor. **Pressure** and **Quantise** are the last rows: pick Loop or Tempo and the list moves up to show them.
 
 Tap a row's arrows, or the left or right of its value, to change it. Or turn the data wheel to pick a row and press **–** or **+**. Push the wheel and turning it changes the row picked; push again to go back to picking rows.
 

@@ -246,6 +246,7 @@ The sequencer review's "clip settings card" (Jay's go on the whole roadmap, 16 N
 - **The rows:** Length (in sixteenths, as Beats' length), Speed (×1/8 to ×4), Swing (the track's, or 50 to 75 %), Quantise (off, 1/4 to 1/32 with triplets), Strength (10 to 100 %, "—" while Quantise is off), Follow (off, Next, Previous, First, Last, Any, Other, Again, Stop), After (in bars, "—" while Follow is off). The wheel picks a row and – / + step it, as on the record settings. A loop cell takes only Follow and After.
 - **Undo:** each change plays at once; one row turned is one take ("Settings 4 · Bass / 2"), which UNDO takes back.
 - **SHIFT + an arrow** on Length doubles the clip, its notes repeated in the new half, or halves it (the notes past the end come back on UNDO); on Speed it doubles or halves the speed. These are the roadmap's double and speed buttons; the hint line under the grid says so while the card shows.
+- **The Record tab's Quantise row** (the roadmap's record quantise, the MPC's Timing Correct while recording): a seventh row after Pressure, for the armed track: Off (the notes go in as played, the default) or 1/4 to 1/32 with triplets, the grid the notes it records start on (their lengths kept). "–" with no track armed. The clip's own Quantise on the Clip tab still moves them on playback.
 - **Not built yet** from the mockup's rows: the clip's name and colour, step size, launch quantise and mode (restart, legato, one-shot), play direction, Program, and the Save state and Copy clip buttons.
 
 ## 5. Prefs (SHIFT + MENU)

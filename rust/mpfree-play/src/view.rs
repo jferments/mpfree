@@ -402,6 +402,9 @@ pub(crate) struct TrackView {
     pub cue: Option<CueView>,
     /// The track's placements, in order, in song mode (else none).
     pub regions: Vec<RegionView>,
+    /// Its record quantise grid (`Track::record_quantise`): the recorder
+    /// puts the notes it records on this grid's nearest line.
+    pub record_quantise: Option<u32>,
 }
 
 impl TrackView {
@@ -465,6 +468,7 @@ impl PlayView {
                 clip: None,
                 cue: None,
                 regions: Vec::new(),
+                record_quantise: t.record_quantise,
             })
             .collect();
         for l in launches {
