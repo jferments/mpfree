@@ -2169,6 +2169,7 @@ impl PlayPage {
             } else {
                 ready == Some(crate::rec_arm::Take::Add)
             },
+            pinned: false,
         }
     }
 

@@ -240,6 +240,17 @@ impl Desk<'_> {
             gui::FromUi::ArmTap(t) => {
                 fx.extend(arm(app, time, looper, out, t, crate::rec_arm::Mover::Tap))
             }
+            // SHIFT + Arm: REC records both, or lets go of one of the two.
+            gui::FromUi::ArmAdd(t) => {
+                let now = rec_now(time, looper);
+                let was = app.rec;
+                let done = app.rec.add(t, &now);
+                if app.rec != was && !app.rec.both {
+                    out.note(&format!("rec: {} armed", app.rec.name()));
+                }
+                out.show(gui::ToUi::Rec(app.rec));
+                fx.extend(rec_effects(done));
+            }
             gui::FromUi::RecPin(on) => {
                 app.rec.pinned = on;
                 out.note(if on {
@@ -258,7 +269,7 @@ impl Desk<'_> {
                 // ready: the tap is the loop's record.
                 use crate::looper_page::{B_OVERDUB, B_RECORD};
                 if matches!(k, B_RECORD | B_OVERDUB)
-                    && app.rec.target != crate::rec_arm::Target::Loop
+                    && !app.rec.armed(crate::rec_arm::Target::Loop)
                 {
                     app.rec.ready = None;
                     fx.extend(arm(
@@ -507,7 +518,7 @@ fn arm(
     let was = app.rec;
     let done = app.rec.move_to(t, by, &now);
     if app.rec != was {
-        out.note(&format!("rec: {} armed", app.rec.target.name()));
+        out.note(&format!("rec: {} armed", app.rec.name()));
     }
     out.show(gui::ToUi::Rec(app.rec));
     rec_effects(done)

@@ -174,7 +174,7 @@ struct LevelsUi {
 
 /// The hint while the REC chip's target list is open.
 const REC_LIST_HINT: &str =
-    "Tap a row: record into it   ·   Rec song: the grid into the song   ·   \
+    "Tap a row: record into it   ·   SHIFT + tap: both   ·   Rec song: the grid into the song   ·   \
      Pin: only a tap on Arm moves the arm   ·   the chip or Close: close";
 
 /// The hint while the notes are ready ([`crate::rec_arm`]): what PLAY
@@ -900,6 +900,9 @@ pub enum FromUi {
     /// A tap on an Arm pill or a row of the REC chip's target list: arms
     /// it even when pinned (a take recording refuses it, saying why).
     ArmTap(crate::rec_arm::Target),
+    /// SHIFT + a tap on an Arm pill or a row: REC records both targets, or,
+    /// with both armed, lets go of the one tapped.
+    ArmAdd(crate::rec_arm::Target),
     /// The target list's Pin the arm: only a tap on Arm moves it.
     RecPin(bool),
     /// Save the project: the audio loop sends its engines' parts back
@@ -2447,15 +2450,8 @@ impl Player {
         use crate::rec_arm::Target;
         use crate::rec_list::{ListRow, RecList, REC_LIST};
         use mpfree_looper::Phase;
-        use play_widgets::ArmPill;
         let chip = self.rec_chip();
-        let pill = |t: Target| {
-            if self.rec.target == t {
-                ArmPill::of(chip.state)
-            } else {
-                ArmPill::Arm
-            }
-        };
+        let pill = |t: Target| self.arm_pill(t);
         let notes = self.play.notes_rec_chip(None).what;
         let count_in = match self.time.transport.count_in {
             0 => "No count-in".to_string(),
@@ -2506,12 +2502,27 @@ impl Player {
 
     /// A tap on an Arm pill or a target list's row: arms `t`, or, armed
     /// already, says what REC records.
+    /// SHIFT held: adds `t` to what REC records, or lets go of it (both
+    /// armed); a plain tap on one of two keeps only that one.
     fn arm_tap(&mut self, t: crate::rec_arm::Target) -> Option<FromUi> {
-        if self.rec.target == t {
+        if self.status.shift {
+            return Some(FromUi::ArmAdd(t));
+        }
+        if self.rec.target == t && !self.rec.both {
             self.tell_rec();
             return None;
         }
         Some(FromUi::ArmTap(t))
+    }
+
+    /// The Arm pill of `t`: red with its own state when REC records it,
+    /// grey when it doesn't.
+    fn arm_pill(&self, t: crate::rec_arm::Target) -> play_widgets::ArmPill {
+        if self.rec.armed(t) {
+            play_widgets::ArmPill::of(self.rec_chip_of(t).state)
+        } else {
+            play_widgets::ArmPill::Arm
+        }
     }
 
     /// What REC records, and what arms another target, on the hint line.
@@ -2519,7 +2530,7 @@ impl Player {
         let c = self.rec_chip();
         let line = format!(
             "REC records {}. The Beats view and picking a track arm the notes; the Loop view and \
-             the Looper tab arm the loop",
+             the Looper tab arm the loop; SHIFT + Arm records both",
             c.what
         );
         self.tell(&line);
@@ -2534,10 +2545,10 @@ impl Player {
             self.refresh_rec_list();
         }
         // The Arm pills: red on what REC records, grey on the other.
-        let (notes, looped) = match self.rec.target {
-            crate::rec_arm::Target::Notes => (ArmPill::of(chip.state), ArmPill::Arm),
-            crate::rec_arm::Target::Loop => (ArmPill::Arm, ArmPill::of(chip.state)),
-        };
+        let (notes, looped): (ArmPill, ArmPill) = (
+            self.arm_pill(crate::rec_arm::Target::Notes),
+            self.arm_pill(crate::rec_arm::Target::Loop),
+        );
         if self
             .ui
             .get::<play_widgets::StepGrid>(play_page::STEPS)
@@ -2558,7 +2569,7 @@ impl Player {
             }
         }
         // The loop strip's empty text says whether REC records it.
-        let rec_loop = self.rec.target == crate::rec_arm::Target::Loop;
+        let rec_loop = self.rec.armed(crate::rec_arm::Target::Loop);
         self.looper_page.set_rec_loop(&mut self.ui, rec_loop);
         let bar = vec![Chip::new(chip.line(), Tone::Bad)];
         if self.time.chips != bar {
@@ -2576,12 +2587,39 @@ impl Player {
     }
 
     /// The REC chip ([`crate::rec_arm`]): the notes' clip or the picked
-    /// loop, armed, ready or recording.
+    /// loop (or both: "Track 1 + Loop 1", the track without its clip so it
+    /// fits, as far along as the one further on), armed, ready or
+    /// recording; "PINNED" while pinned.
     fn rec_chip(&self) -> play_widgets::RecChip {
+        use crate::rec_arm::Target;
+        let mut chip = if self.rec.both {
+            let (n, l) = (
+                self.rec_chip_of(Target::Notes),
+                self.rec_chip_of(Target::Loop),
+            );
+            play_widgets::RecChip {
+                state: n.state.max(l.state),
+                what: format!(
+                    "{} + {}",
+                    n.what.split(" · ").next().unwrap_or_default(),
+                    l.what
+                ),
+                add: if n.state >= l.state { n.add } else { l.add },
+                pinned: false,
+            }
+        } else {
+            self.rec_chip_of(self.rec.target)
+        };
+        chip.pinned = self.rec.pinned;
+        chip
+    }
+
+    /// One target's part of the REC chip.
+    fn rec_chip_of(&self, t: crate::rec_arm::Target) -> play_widgets::RecChip {
         use crate::rec_arm::Target;
         use mpfree_looper::Phase;
         use play_widgets::{RecChip, RecState};
-        match self.rec.target {
+        match t {
             Target::Notes => self.play.notes_rec_chip(self.rec.ready),
             Target::Loop => {
                 let phase = self.looper.status.phase;
@@ -2593,6 +2631,7 @@ impl Player {
                     },
                     what: format!("Loop {}", self.looper.selected + 1),
                     add: phase == Phase::Overdubbing,
+                    pinned: false,
                 }
             }
         }
@@ -2614,7 +2653,7 @@ impl Player {
             (View::Play, PlayView::Loop) | (View::Looper, _) => Target::Loop,
             _ => return,
         };
-        if target != self.rec.target {
+        if !self.rec.armed(target) {
             // Taken as armed until the desk says otherwise (ToUi::Rec), so
             // the page doesn't ask twice.
             self.rec.target = target;
@@ -3161,8 +3200,16 @@ impl Player {
                 (_, false) => "● REC",
                 (_, true) => "● OVERDUB",
             };
-            let what = rec.what.split(" · ").next().unwrap_or_default();
-            chips.push(Chip::new(format!("{head} → {what}"), Tone::Bad));
+            // The track's name without the clip: "Track 1 + Loop 1".
+            let what: Vec<&str> = rec
+                .what
+                .split(" + ")
+                .map(|p| p.split(" · ").next().unwrap_or_default())
+                .collect();
+            chips.push(Chip::new(
+                format!("{head} → {}", what.join(" + ")),
+                Tone::Bad,
+            ));
         }
         if let Some(left) = self.timing.seconds_left {
             why.push(format!("{left} s left in this timed run"));
@@ -9699,6 +9746,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ..Default::default()
     }));
     out.push(("play-rec-ready", ready));
+    // SHIFT + Arm: the notes and the loop both armed, ready.
+    let mut both = sample_player(fonts());
+    both.apply(ToUi::Rec(crate::rec_arm::RecArm {
+        both: true,
+        ready: Some(crate::rec_arm::Take::Replace),
+        ..Default::default()
+    }));
+    out.push(("play-rec-both", both));
     // The REC chip's target list (mockup H), the loop pinned.
     let mut list = sample_player(fonts());
     list.apply(ToUi::Rec(crate::rec_arm::RecArm {

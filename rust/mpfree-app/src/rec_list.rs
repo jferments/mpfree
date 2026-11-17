@@ -55,8 +55,9 @@ struct Hits {
 }
 
 /// What moves the arm, as the right-hand panel lists it.
-pub const MOVES: [&str; 7] = [
+pub const MOVES: [&str; 8] = [
     "A tap on Arm: the loop strip, the pattern, here",
+    "SHIFT + Arm: both, in one pass",
     "The Beats view: the notes",
     "The Loop view and the Looper tab: the loop",
     "Picking a track: its notes",
@@ -241,7 +242,7 @@ impl Widget for RecList {
         let (_, body) = draw::card_head(top);
         let mut y = body.y;
         for (i, line) in MOVES.iter().enumerate() {
-            let ink = if i < 4 { t.text } else { t.text_dim };
+            let ink = if i < 5 { t.text } else { t.text_dim };
             cx.text(
                 FontId::Sans,
                 13.0,
@@ -277,6 +278,7 @@ impl Widget for RecList {
                     state,
                     what: what.clone(),
                     add: false,
+                    pinned: false,
                 },
             );
             cx.text(
