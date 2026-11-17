@@ -145,6 +145,19 @@ class FragmentTests(unittest.TestCase):
                     "CONFIG_DEVTMPFS"):
             self.assertEqual(self.frag.get(sym), "y", sym)
 
+    def test_the_board_as_akais_kernel_drives_it(self):
+        # Blocks K1.1 and K1.2 (2026-11-17): the drivers Akai's kernel binds on the MPC One.
+        for sym in ("CONFIG_REGULATOR_ACT8865", "CONFIG_REGULATOR_FAN53555", "CONFIG_RTC_DRV_HYM8563",
+                    "CONFIG_PHY_ROCKCHIP_USB", "CONFIG_ROCKCHIP_PM_DOMAINS", "CONFIG_ROCKCHIP_IOMMU",
+                    "CONFIG_POWER_RESET_GPIO_RESTART", "CONFIG_SYSCON_REBOOT_MODE", "CONFIG_PL330_DMA",
+                    "CONFIG_PWM_ROCKCHIP", "CONFIG_CMDLINE_EXTEND", "CONFIG_PANIC_ON_OOPS"):
+            self.assertEqual(self.frag.get(sym), "y", sym)
+        # Not the MPC One's power chip (an ACT8846 with two SYR827/828).
+        self.assertNotIn("CONFIG_REGULATOR_RK808", self.frag)
+        # MPFree's audio keeps cores 2 and 3, as on Akai's kernel.
+        self.assertIn("isolcpus=2-3", self.frag["CONFIG_CMDLINE"].strip('"').split())
+        self.assertIn("loadpin", self.frag["CONFIG_LSM"].strip('"').split(","))
+
     def test_the_fragment_passes_against_itself(self):
         self.assertEqual(cc.check(self.text, self.text), [])
 
