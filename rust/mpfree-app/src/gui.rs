@@ -6391,6 +6391,9 @@ impl Player {
         // Flatten's hits go after the source it records from.
         let hits = self.sample.take_hits();
         self.outbox.extend(hits);
+        if self.sample.take_unsaved() {
+            self.mark_unsaved();
+        }
         if self.view == View::Sample {
             if let Some(a) = self.sample.take_cloud() {
                 self.outbox.push(a);
@@ -15925,6 +15928,94 @@ mod tests {
         assert_eq!(p.page(), sample_page::EMPTY_PAGE, "A8 has no sound");
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         assert_eq!(p.page(), sample_page::CHOP_PAGE);
+    }
+
+    #[test]
+    fn a_chop_is_kept_for_its_sound_and_shown_again_when_the_pad_comes_back() {
+        use mpfree_sampler::model::{ChopMode, KEPT_CHOP};
+        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let source = p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+            .region
+            .source;
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        assert!(
+            p.sample.project(0).unwrap().kept_chop(source).is_none(),
+            "the tab's first chop of a sound is its own"
+        );
+        // A Grid of 4 is kept for Break 92 as it is made, with no undo
+        // step and nothing sent to the audio thread, but the work unsaved.
+        p.take_actions();
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Method, 1);
+        for _ in 0..4 {
+            step(&mut p, Row::Amount, -1);
+        }
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!((tab.method(), tab.slices()), (Method::Grid, 4));
+        let bounds = tab.bounds(st);
+        let kept = p.sample.project(0).unwrap().kept_chop(source).unwrap();
+        assert_eq!((kept.name.as_str(), kept.mode), (KEPT_CHOP, ChopMode::Grid));
+        assert_eq!(kept.markers(), &bounds[1..4]);
+        assert!(p.sample.take_unsaved());
+        assert!(views(p.take_actions()).0.is_empty());
+        // On A6-A9; A6 plays the first slice, which the kept chop doesn't
+        // cut, so the tab chops it afresh and keeps nothing.
+        tap(&mut p, chop_tab::BUTTONS, 2);
+        p.take_actions();
+        p.apply(ToUi::PadDown {
+            pad: pad + 1,
+            velocity: 100,
+        });
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        assert_eq!(
+            p.ui.get::<PadBar>(chop_tab::BAR).unwrap().title,
+            "Pad A6 · Break 92 1"
+        );
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!(tab.bounds(st)[0], bounds[0]);
+        assert_eq!(*tab.bounds(st).last().unwrap(), bounds[1]);
+        assert!(!p.sample.take_unsaved());
+        assert_eq!(
+            p.sample
+                .project(0)
+                .unwrap()
+                .kept_chop(source)
+                .unwrap()
+                .markers(),
+            &bounds[1..4]
+        );
+        // Back on A5, its four slices are there again, and UNDO of the
+        // chop to pads leaves them kept.
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!(
+            (tab.method(), tab.bounds(st)),
+            (Method::Grid, bounds.clone())
+        );
+        p.apply(ToUi::SampleUndo(false));
+        assert!(p.sample.project(0).unwrap().pad(pad + 1).is_none());
+        let (tab, st) = p.sample.chop().unwrap();
+        assert_eq!(tab.bounds(st), bounds);
+        assert!(p.sample.project(0).unwrap().kept_chop(source).is_some());
     }
 
     #[test]

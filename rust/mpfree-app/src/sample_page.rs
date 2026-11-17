@@ -74,8 +74,8 @@ use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    self as model, ChannelPick, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project, Region,
-    Source, SourceId, Warp, WARP_BPM,
+    self as model, ChannelPick, ChopSet, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project,
+    Region, Source, SourceId, Warp, KEPT_CHOP, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -561,6 +561,9 @@ pub struct SamplePage {
     /// Edits applied, and views sent to the audio thread.
     pub edits: u64,
     pub views_sent: u64,
+    /// A change saved with the project that the audio thread doesn't
+    /// hear of (a chop kept): the work is unsaved, though no view goes.
+    unsaved: bool,
     /// The project tempo and the stretched copies warped pads play.
     warps: Warps,
     /// The thread that makes them, started the first time one is wanted.
@@ -706,6 +709,7 @@ impl SamplePage {
             told: Vec::new(),
             edits: 0,
             views_sent: 0,
+            unsaved: false,
             warps: Warps::default(),
             stretcher: None,
             stretching: Vec::new(),
@@ -1694,6 +1698,7 @@ impl SamplePage {
             if let Some(note) = tab.take_note() {
                 self.told.push(note);
             }
+            self.keep_chop();
             if let Some(a) = self.took(a) {
                 self.act_chop(ui, a, out);
             }
@@ -1929,6 +1934,38 @@ impl SamplePage {
             self.lift();
             self.editor = editor;
             self.refresh(ui);
+        }
+    }
+
+    /// Keeps the Chop tab's slices for its sound once they change
+    /// (`ChopTab::take_kept`): not an undo step, but saved with the
+    /// project, so they are there when the tab comes back to the sound.
+    fn keep_chop(&mut self) {
+        let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_mut()) else {
+            return;
+        };
+        let Some((mode, cuts)) = tab.take_kept(st) else {
+            return;
+        };
+        let id = st.source.id;
+        let Some(project) = self.projects.get_mut(self.kit) else {
+            return;
+        };
+        let Some(source) = project.source(id) else {
+            return;
+        };
+        let kept =
+            ChopSet::from_markers(KEPT_CHOP, source, mode, cuts).and_then(|c| project.keep_chop(c));
+        match kept {
+            Ok(()) => {
+                st.kept = project.kept_chop(id).cloned();
+                // The work is unsaved; the audio thread's view is the same.
+                self.edits += 1;
+                self.unsaved = true;
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: the chop wasn't kept ({e})")),
         }
     }
 
@@ -2431,6 +2468,7 @@ impl SamplePage {
             if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
                 tab.qlink(ui, st, knob, ticks, fine);
             }
+            self.keep_chop();
             return;
         }
         if self.editor == Editor::Warp {
@@ -2593,6 +2631,7 @@ impl SamplePage {
                 if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
                     tab.wheel(ui, st, delta);
                 }
+                self.keep_chop();
             }
             Editor::Wave => {
                 if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
@@ -4915,9 +4954,16 @@ impl SamplePage {
                 }
             }
         }
+        self.keep_chop();
         if ended {
             self.stop_live("over: the sound ended");
         }
+    }
+
+    /// Whether a change sent nowhere (a chop kept) left the work unsaved
+    /// since the last call.
+    pub fn take_unsaved(&mut self) -> bool {
+        std::mem::take(&mut self.unsaved)
     }
 
     /// The cloud's box, naming the Grain tab's pad and layer, for the audio
