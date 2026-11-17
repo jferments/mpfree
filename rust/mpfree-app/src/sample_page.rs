@@ -2542,6 +2542,33 @@ impl SamplePage {
         }
     }
 
+    /// The wheel turned a marker's tab that a finger rests on (Jay, 17 Nov:
+    /// hold a control and turn the wheel): on the Wave page it moves as
+    /// the marker's Q-Link moves it, a screen pixel a detent snapped the
+    /// way it turns, or a frame unsnapped with SHIFT (`fine`). False when
+    /// `widget` is not the Wave page's waveform.
+    pub fn held_marker(
+        &mut self,
+        ui: &mut Ui,
+        widget: &str,
+        index: usize,
+        delta: i32,
+        fine: bool,
+    ) -> bool {
+        if widget != wave_tab::WAVE || self.page() != PAGE {
+            return false;
+        }
+        let Some(k) = self
+            .state
+            .as_ref()
+            .and_then(|st| wave_tab::marker_knob(st, index))
+        else {
+            return false;
+        };
+        self.qlink(ui, k, delta, fine);
+        true
+    }
+
     /// The pad's tuning (semitones) and decay (None: it plays out) in the
     /// playing kit, for the Play page's Q-Links. None when the kit has no
     /// sound on the pad, or the synth has the pads.

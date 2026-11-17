@@ -189,6 +189,7 @@ impl Desk<'_> {
             gui::FromUi::UndoReady(ready) => app.set_undo_ready(ready),
             gui::FromUi::Overlay(on) => app.set_overlay(on),
             gui::FromUi::Outline(shown) => app.set_outline(shown),
+            gui::FromUi::Held(on) => app.set_held(on),
             gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
             gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
@@ -439,6 +440,7 @@ impl Desk<'_> {
                 out.show(gui::ToUi::Rec(app.rec));
             }
             app::Effect::Nav(n) => out.show(gui::ToUi::Nav(n)),
+            app::Effect::Held { delta, fine } => out.show(gui::ToUi::Held { delta, fine }),
             app::Effect::Menu(m) => out.show(gui::ToUi::Menu(m)),
             app::Effect::Guide(g) => out.show(gui::ToUi::Guide(g)),
             app::Effect::Status(s) => out.show(gui::ToUi::Status(s)),
