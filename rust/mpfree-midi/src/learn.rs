@@ -16,9 +16,11 @@
 //! - a [`Mode`]: absolute (a fader or knob with an end stop), relative (an
 //!   endless encoder, in one of the three usual encodings), toggle or
 //!   momentary (a button or a key);
-//! - a [`Takeover`] for absolute controls: jump, or pickup, which waits
-//!   until the control passes the parameter's value before it moves it,
-//!   so nothing leaps when the knob and the screen disagree.
+//! - a [`Takeover`] for absolute controls: jump; pickup, which waits
+//!   until the control passes the parameter's value before it moves it;
+//!   or scale, which moves the value at once but in proportion, so it
+//!   meets the knob at the end the knob turns to. With pickup and scale
+//!   nothing leaps when the knob and the screen disagree.
 //!
 //! The MPC's own pads and knobs never come here (the app gives only
 //! external ports). This is control-thread code: it may allocate.
@@ -122,6 +124,11 @@ pub enum Mode {
 pub enum Takeover {
     Jump,
     Pickup,
+    /// Until the control meets the value, each move takes the value the
+    /// same share of the way to the end the control moves towards (as
+    /// the Deluge's MIDI Follow does): turn a knob at 20 % up by half of
+    /// what's left and a value at 60 % goes up by half of its 40 %.
+    Scale,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -229,6 +236,7 @@ impl Saved {
         let take = match self.takeover {
             Takeover::Jump => "jump",
             Takeover::Pickup => "pickup",
+            Takeover::Scale => "scale",
         };
         format!(
             "{port} | ch {} | {src} | {} | {:.4} {:.4} | {mode} | {take}",
@@ -279,6 +287,7 @@ impl Saved {
         let takeover = match take {
             "jump" => Takeover::Jump,
             "pickup" => Takeover::Pickup,
+            "scale" => Takeover::Scale,
             _ => return None,
         };
         Some(Saved {
@@ -300,6 +309,8 @@ struct State {
     picked: bool,
     /// The control's last position (0 to 1), for pickup crossing.
     last_in: Option<f32>,
+    /// Scale: the control's last position (0 to 1, before the range).
+    last_pos: Option<f32>,
     /// Toggle: on.
     on: bool,
 }
@@ -400,6 +411,7 @@ impl LearnMap {
         if let Some((m, s)) = self.maps.get_mut(i) {
             m.takeover = t;
             s.picked = false;
+            s.last_pos = None;
         }
     }
 
@@ -468,6 +480,34 @@ impl LearnMap {
         let (m, s) = &mut self.maps[k];
         let span = |x: f32| m.lo + (m.hi - m.lo) * x;
         let value = match m.mode {
+            Mode::Absolute if m.takeover == Takeover::Scale && !s.picked => {
+                let last = s.last_pos.replace(pos);
+                let Some(c) = current else {
+                    s.picked = true;
+                    return Some(Write {
+                        target: m.target,
+                        value: span(pos).clamp(0.0, 1.0),
+                    });
+                };
+                // The value as a place in the range, like the control's.
+                let at = if (m.hi - m.lo).abs() > f32::EPSILON {
+                    ((c - m.lo) / (m.hi - m.lo)).clamp(0.0, 1.0)
+                } else {
+                    pos
+                };
+                let to = match last {
+                    // The first move only says where the control is.
+                    None if (pos - at).abs() > PICKUP_WINDOW => return None,
+                    None => pos,
+                    Some(l) if pos > l => at + (pos - l) * (1.0 - at) / (1.0 - l),
+                    Some(l) if pos < l => at - (l - pos) * at / l,
+                    Some(_) => return None,
+                };
+                if (to - pos).abs() <= PICKUP_WINDOW {
+                    s.picked = true;
+                }
+                span(to.clamp(0.0, 1.0))
+            }
             Mode::Absolute => {
                 let v = span(pos);
                 if m.takeover == Takeover::Pickup && !s.picked {

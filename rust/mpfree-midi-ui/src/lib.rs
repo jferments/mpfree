@@ -1,9 +1,10 @@
-//! The MIDI, Routing, Sync, CV and Monitor sections of the mixer's I/O view.
+//! The MIDI, Routing, Learn, Sync, CV and Monitor sections of the mixer's
+//! I/O view.
 //!
 //! The owner's calls (2026-11-12): a project's routing lives in an I/O view
 //! inside the mixer, opened by the I/O icon beside the mixer icon. The
 //! mixer (`mpfree-mixer-ui`) owns the view and its Audio section; this crate
-//! gives it five more through [`mpfree_mixer_ui::IoSection`]:
+//! gives it six more through [`mpfree_mixer_ui::IoSection`]:
 //!
 //! - **MIDI**: each port's input (Plays tracks, Learn only, Both) and thru,
 //!   and each track's one output setting, "Plays on", the port and the
@@ -13,6 +14,10 @@
 //!   armed track, tracks by channel, Learn, each MIDI out port and CV. A
 //!   square under Tracks by channel sends a port's channel to one track,
 //!   whichever track is armed.
+//! - **Learn** (board 8, without its MIDI Follow card yet): what your
+//!   controllers move: each learned control with its range, how it works
+//!   and takes over, and whether it is kept with the song or for every
+//!   project; Learn again and Remove.
 //! - **Sync**: where the tempo comes from, what following does, the clock
 //!   arriving now, and each port's clock out (Off, While playing, Always).
 //! - **CV**: the eight CV/gate outputs: each one's job, track and main
@@ -50,6 +55,7 @@ pub use mpfree_midi::setup::MidiSetup;
 mod cv;
 mod form;
 mod learn;
+mod learn_section;
 pub mod log;
 mod midi;
 mod monitor;
@@ -111,9 +117,15 @@ pub struct Live {
     /// The volts each CV output gives now.
     pub cv_volts: [f32; CV_OUTS],
     /// What each learned control moves, in words, in the order of
-    /// `MidiSetup::learn` ("Cutoff (Drums)"). One without a name shows
-    /// its address.
+    /// `MidiSetup::all_learned` (the song's, then the rig's): "Cutoff
+    /// (Drums)". One without a name shows its address.
     pub learn_names: Vec<String>,
+    /// Each learned control's parameter now and its range's ends, in the
+    /// order of `learn_names`, as the app reads them ([`LearnLive`]).
+    pub learn_live: Vec<LearnLive>,
+    /// MIDI Learn is armed: what the next control moved will take, in
+    /// words ("Drive (Filter, Bass)").
+    pub learning: Option<String>,
     pub built: Built,
     /// The developer tools are on (Prefs › Show developer tools): the app
     /// lists the MPC's own controller and its events, and writes the
@@ -150,6 +162,8 @@ impl Default for Live {
             clock_in: None,
             cv_volts: [0.0; CV_OUTS],
             learn_names: Vec::new(),
+            learn_live: Vec::new(),
+            learning: None,
             built: Built::default(),
             debug: false,
             saves_logs: false,
@@ -158,6 +172,19 @@ impl Default for Live {
             port_said: None,
         }
     }
+}
+
+/// A learned control's parameter as the app reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LearnLive {
+    /// Its value now, 0 to 1 over the parameter's range (None: not one
+    /// the app can read). The app updates it in place a few times a
+    /// second.
+    pub now: Option<f32>,
+    /// The range's two ends in the parameter's units ("200 Hz", "8.0
+    /// kHz"); empty where the app can't say.
+    pub lo_text: String,
+    pub hi_text: String,
 }
 
 impl Live {
@@ -201,6 +228,13 @@ pub struct Asks {
     /// A port page's "Send to it": what to send to which port. The app
     /// answers in [`Live::port_said`].
     pub port_send: Option<PortSend>,
+    /// The Learn section's Learn again: arm MIDI Learn on this learned
+    /// control's parameter (its place in `MidiSetup::all_learned`); the
+    /// next control moved replaces it, keeping its range, takeover and
+    /// where it is kept.
+    pub learn_again: Option<usize>,
+    /// The Learn section's Cancel: MIDI Learn stops listening.
+    pub cancel_learn: bool,
 }
 
 /// What a port's page asks MIDI out to send to it.
@@ -277,16 +311,18 @@ pub type Shared = Arc<Mutex<IoModel>>;
 /// (`mpfree_mixer_ui::io_select` takes its place in the list).
 pub const MIDI: &str = "MIDI";
 pub const ROUTING: &str = "Routing";
+pub const LEARN: &str = "Learn";
 pub const SYNC: &str = "Sync";
 pub const CV: &str = "CV";
 pub const MONITOR: &str = "Monitor";
 
-/// The five sections, in the order the I/O view lists them, all on one
+/// The six sections, in the order the I/O view lists them, all on one
 /// model. Hand each to `mpfree_mixer_ui::add_io_section`.
 pub fn sections(model: &Shared) -> Vec<Box<dyn mpfree_mixer_ui::IoSection>> {
     vec![
         Box::new(form::FormSection::new(midi::Midi, model.clone())),
         Box::new(routing::Routing::new(model.clone())),
+        Box::new(learn_section::Learn::new(model.clone())),
         Box::new(form::FormSection::new(sync::Sync, model.clone())),
         Box::new(form::FormSection::new(cv::Cv, model.clone())),
         Box::new(monitor::MonitorSection::new(model.clone())),
@@ -340,7 +376,15 @@ mod tests {
         // gets less than the screen's width; a field past its edge was
         // drawn over the master and a tap on it went to the master.
         use form::testing::{paint, AREA};
-        let model: Shared = Arc::new(Mutex::new(sample::rig()));
+        // With a control learned, so the Learn section has its card.
+        let mut rig = sample::rig();
+        rig.setup.learned(
+            mpfree_midi::learn::Saved::parse(
+                "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0 1 | absolute | jump",
+            )
+            .unwrap(),
+        );
+        let model: Shared = Arc::new(Mutex::new(rig));
         for s in sections(&model) {
             let _ = paint(s.as_ref());
             let ts = s.targets(AREA);

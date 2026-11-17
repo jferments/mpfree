@@ -9284,6 +9284,28 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         "mixer-io-routing",
         io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::ROUTING),
     ));
+    // The Learn section (board 8, without MIDI Follow): the keyboard's
+    // filter knob for this song, picking up over part of its range, and
+    // the drum machine's mute key kept for every project.
+    let mut rig = mpfree_midi_ui::sample::rig();
+    for (kept, text) in [
+        (
+            mpfree_midi::setup::Kept::Project,
+            "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0.35 0.8 | absolute | pickup",
+        ),
+        (
+            mpfree_midi::setup::Kept::Rig,
+            "port MIDI | ch 10 | note 36 | t6.mix.2 | 0 1 | toggle | jump",
+        ),
+    ] {
+        let l = mpfree_midi::learn::Saved::parse(text).expect("a learned control");
+        rig.setup.learned_in(kept, l);
+    }
+    rig.live.learn_names = vec!["Cutoff (Filter, Drums)".into(), "Mute (Perc)".into()];
+    out.push((
+        "mixer-io-learn",
+        io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN),
+    ));
     // The FX chain editor in the mixer's place (a strip's insert row): the
     // drum bus, Drive selected, Tone touched; and the macros panel over the
     // page (a long press on a macro card), layout spec 4b.
@@ -12452,8 +12474,9 @@ mod tests {
         assert_eq!(p.touch(2, Touch::Down, cr.x + 5, cr.y + 5), None);
         assert_eq!(p.take_actions(), [FromUi::OpenIo]);
         assert!(!p.open_io_section("Sync"), "no Sync section yet");
-        // The model arrives (once, at start): MIDI, Routing, Sync, CV and
-        // Monitor join the list after Audio, and the chip's tap opens Sync.
+        // The model arrives (once, at start): MIDI, Routing, Learn, Sync,
+        // CV and Monitor join the list after Audio, and the chip's tap
+        // opens Sync.
         // A second model adds nothing.
         let model = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::sample::rig()));
         p.apply(ToUi::IoModel(model.clone()));
@@ -12463,6 +12486,7 @@ mod tests {
             [
                 mpfree_midi_ui::MIDI,
                 mpfree_midi_ui::ROUTING,
+                mpfree_midi_ui::LEARN,
                 mpfree_midi_ui::SYNC,
                 mpfree_midi_ui::CV,
                 mpfree_midi_ui::MONITOR
@@ -12473,8 +12497,8 @@ mod tests {
             p.ui.get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER);
         assert_eq!(
             v.map(|v| v.io_section()),
-            Some(3),
-            "Audio, MIDI, Routing, Sync"
+            Some(4),
+            "Audio, MIDI, Routing, Learn, Sync"
         );
         let fx = app.open_io();
         assert_eq!(
@@ -18220,6 +18244,12 @@ mod tests {
                     let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
                     let d = p.ui.paint(&mut c);
                     assert_eq!(d.len(), 1, "{name}: a first paint covers the screen");
+                    if name == "mixer-io-learn" {
+                        assert!(
+                            p.ui.targets().iter().any(|t| t.target.id == "learn-row"),
+                            "{name}: the Learn section shows"
+                        );
+                    }
                     if name == "mixer-io-routing" {
                         assert!(
                             p.ui.targets()
