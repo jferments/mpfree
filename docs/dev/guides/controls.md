@@ -105,8 +105,10 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 ### Play
 
-- **`smp-play-list/row`**, **`smp-play-list/row-less`**, **`smp-play-list/row-more`**: how the pad plays: pressure, envelope, filter, keys, latch, also plays, 16 Levels. *Tests:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`, `hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row`, `sixteen_levels_make_every_pad_play_the_pad_and_hits_pick_it`.
-- **`smp-play-env/point`**: the envelope's points (Attack, Hold, Decay, Sustain, Release): drag one.
+- **`smp-play-sections/chip`**: the Play tab's sections (Layers, Amp, Filter, Pitch, Mod, Pad), each with a line of what it holds: tap one for its rows and its four Q-Links. *Test:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`.
+- **`smp-play-layer-edit/button`**: Add layer (a copy of the picked layer, sharing its velocities) and Remove layer (the picked one). Faint at 16 layers, or with one left. *Test:* `layers_are_added_and_removed_on_the_play_tab_one_undo_step_each`.
+- **`smp-play-list/row`**, **`smp-play-list/row-less`**, **`smp-play-list/row-more`**: the open section's rows: the picked layer's sound, velocities, level, pan and tune; the amp and filter envelopes; filter, keys, pressure, latch, also plays, 16 Levels. *Tests:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`, `hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row`, `sixteen_levels_make_every_pad_play_the_pad_and_hits_pick_it`.
+- **`smp-play-env/point`**: the envelope's points (Attack, Hold, Decay, Sustain, Release): drag one. The Filter section shows the filter envelope instead. *Test:* `the_filter_section_steps_and_drags_the_filter_envelope`.
 - **`smp-play-filter/cutoff`**: the filter's dot: drag for cutoff and resonance. Faint while the filter is off.
 - **`smp-play-layers/layer`**, **`smp-play-layers/layer-low`**, **`smp-play-layers/layer-high`**: the pad's velocity layers: tap one to pick it, drag its edges for the velocities it plays. *Test:* `key_fade_is_the_kits_and_vel_fade_the_pads_each_one_undo_step`.
 - **`smp-play-keys/keys`**: the keyboard: press keys to hear the kit's keygroups. *Test:* `map_to_keys_makes_the_bank_one_instrument_and_the_play_tab_plays_its_keys`.

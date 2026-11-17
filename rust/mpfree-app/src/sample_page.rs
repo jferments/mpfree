@@ -880,6 +880,14 @@ impl SamplePage {
         self.play.as_ref().is_some_and(PlayTab::keys_shown)
     }
 
+    /// What Q-Links 1 to 4 turn on the Play page now, for the hint line
+    /// (they follow its section): "Attack, Decay, Sustain, Release".
+    pub fn play_qlinks_text(&self) -> String {
+        self.play
+            .as_ref()
+            .map_or_else(String::new, PlayTab::qlinks_text)
+    }
+
     /// The pad hit last was hit at `velocity` (after [`SamplePage::hit`]):
     /// the Play tab's layer map shows it.
     pub fn hit_velocity(&mut self, ui: &mut Ui, pad: usize, velocity: u8) {
@@ -2207,6 +2215,41 @@ impl SamplePage {
                 self.refresh(ui);
             }
             PlayAction::Scene(s) => self.scene(ui, *s, out),
+            PlayAction::AddLayer { pad, .. }
+            | PlayAction::RemoveLayer { pad, .. }
+            | PlayAction::LayerSound { pad, .. } => {
+                self.lift();
+                let (kit, pad) = (self.kit, *pad);
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
+                let before = project.pad(pad).cloned();
+                let what = match a.apply(project) {
+                    Ok(()) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(kit) {
+                            *d = true;
+                        }
+                        layers_text(&a, before.as_ref(), project)
+                    }
+                    Err(e) => {
+                        let line = format!(
+                            "sample: layers of pad {} not changed ({e:?})",
+                            self.pad_text(kit, pad)
+                        );
+                        self.told.push(line.clone());
+                        self.lines.push(line);
+                        self.refresh(ui);
+                        return;
+                    }
+                };
+                let kit_text = self.kit_text_of(kit);
+                self.lines.push(format!(
+                    "sample: {kit_text} pad {}: {what}",
+                    self.pad_text(kit, pad)
+                ));
+                self.refresh(ui);
+            }
             PlayAction::Pad { pad, gesture, .. } => {
                 let (kit, pad, gesture) = (self.kit, *pad, *gesture);
                 if self.gesture.as_ref().is_some_and(|g| g.id != gesture) {
@@ -2327,8 +2370,8 @@ impl SamplePage {
     /// Q-Link `knob` (0-3) turned by `ticks` detents; `fine` (SHIFT held)
     /// turns finer. On Wave they move Start, End, Loop start and Loop end
     /// (one frame a detent with SHIFT); on Chop the slice, its start, the
-    /// setting and the first pad; on Play Attack, Decay, Cutoff and
-    /// Resonance; on Grain position, size, density and pitch (with SHIFT
+    /// setting and the first pad; on Play the open section's four rows;
+    /// on Grain position, size, density and pitch (with SHIFT
     /// the sprays, and size and density finer).
     pub fn qlink(&mut self, ui: &mut Ui, knob: usize, ticks: i32, fine: bool) {
         self.turned();
@@ -4937,6 +4980,61 @@ pub fn describe_slot(before: Option<&Pad>, after: Option<&Pad>) -> String {
             }
             what.join(", ")
         }
+    }
+}
+
+/// What a change to a pad's layers did, for the log: "layer 2 added, a
+/// copy of layer 1 (Break 92) on velocities 64-127, layer 1 now 1-63".
+fn layers_text(a: &PlayAction, before: Option<&Pad>, project: &Project) -> String {
+    let sound = |p: &Pad, k: usize| {
+        p.layers
+            .get(k)
+            .and_then(|l| project.source(l.region.source))
+            .map_or_else(String::new, |s| s.name.clone())
+    };
+    let vels = |p: &Pad, k: usize| {
+        p.layers
+            .get(k)
+            .map_or_else(String::new, |l| format!("{}-{}", l.vel_lo, l.vel_hi))
+    };
+    let (Some(b), Some(now)) = (
+        before,
+        project.pad(match a {
+            PlayAction::AddLayer { pad, .. }
+            | PlayAction::RemoveLayer { pad, .. }
+            | PlayAction::LayerSound { pad, .. } => *pad,
+            _ => return String::new(),
+        }),
+    ) else {
+        return String::new();
+    };
+    match a {
+        PlayAction::AddLayer { after, .. } => format!(
+            "layer {} added, a copy of layer {} ({}) on velocities {}, layer {} now {}",
+            after + 2,
+            after + 1,
+            sound(now, after + 1),
+            vels(now, after + 1),
+            after + 1,
+            vels(now, *after)
+        ),
+        PlayAction::RemoveLayer { layer, .. } => format!(
+            "layer {} removed ({}, velocities {}), {} left",
+            layer + 1,
+            sound(b, *layer),
+            vels(b, *layer),
+            match now.layers.len() {
+                1 => "1 layer".to_string(),
+                n => format!("{n} layers"),
+            }
+        ),
+        PlayAction::LayerSound { layer, .. } => format!(
+            "layer {} plays {} (was {}), start to end",
+            layer + 1,
+            sound(now, *layer),
+            sound(b, *layer)
+        ),
+        _ => String::new(),
     }
 }
 
