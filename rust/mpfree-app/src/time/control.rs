@@ -2084,6 +2084,42 @@ impl TimeControl {
         ))
     }
 
+    /// Clips made elsewhere for several tracks at once (a MIDI file's
+    /// tracks, `midi_file.rs`): each into the first empty slot of its
+    /// track, as one take that one UNDO on the Clips page takes away. None
+    /// is launched. `clips` are (track, clip), a track at most once. All
+    /// go in or none: a track with no empty slot, or a clip the model
+    /// refuses, is the error. Returns a line for the log.
+    pub fn put_clips(&mut self, clips: Vec<(usize, Clip)>) -> Result<String, String> {
+        let mut placed = Vec::with_capacity(clips.len());
+        let mut notes = 0;
+        for (track, clip) in clips {
+            let t = self
+                .project
+                .tracks
+                .get(track)
+                .ok_or_else(|| format!("no track {}", track + 1))?;
+            let slot = (0..SLOTS)
+                .find(|&s| t.slots[s].is_none())
+                .ok_or_else(|| format!("{} has no empty slot", t.name))?;
+            notes += clip.notes.len();
+            placed.push((track, slot, clip));
+        }
+        let n = placed.len();
+        let first = placed.first().map(|p| (p.0, p.1));
+        self.takes
+            .capture_clips(&mut self.project, placed)
+            .map_err(|e| format!("clips refused: {e:?}"))?;
+        self.compile()?;
+        let (track, slot) = first.expect("one at least, or refused");
+        Ok(format!(
+            "{n} clip{} with {notes} notes, from slot {} of {}",
+            if n == 1 { "" } else { "s" },
+            slot + 1,
+            self.project.tracks[track].name
+        ))
+    }
+
     /// "Record pad pressure" for `track` (`Track::record_touch`). False if
     /// there is no such track.
     pub fn set_record_touch(&mut self, track: usize, on: bool) -> bool {

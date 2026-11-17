@@ -360,6 +360,20 @@ impl Instruments {
         }
     }
 
+    /// The pad of track `track`'s own instrument that plays `note` alone
+    /// (its pad map's), for a MIDI file's notes (`midi_file.rs`): None if
+    /// the track holds no instrument, Some(None) if no pad does.
+    pub fn pad_of_note(&self, track: usize, note: u8) -> Option<Option<u8>> {
+        let s = self.slot(track)?;
+        Some(
+            self.slots[s]
+                .pads
+                .iter()
+                .position(|p| p.notes() == [note])
+                .map(|p| p as u8),
+        )
+    }
+
     /// Pad `pad` down on track `track`, `offset` frames into the next
     /// block. False if the track holds no instrument (it plays the pads).
     pub fn pad_on(&mut self, track: usize, pad: usize, velocity: u8, offset: u32) -> bool {

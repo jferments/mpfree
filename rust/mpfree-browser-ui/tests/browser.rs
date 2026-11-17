@@ -1070,6 +1070,40 @@ fn a_kit_loads_whole_and_plus_shows_its_sounds() {
 }
 
 #[test]
+fn a_midi_file_loads_as_clips() {
+    let (mut b, lib) = browser();
+    let dir = lib.root().join("Patterns");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Sequence01.mid"), b"MThd").unwrap();
+    b.go_source(src("Patterns"));
+    select(&mut b, "Sequence01.mid");
+    let s = b.screen();
+    assert_eq!(s.detail.kind, "MIDI file");
+    assert_eq!(
+        s.detail.buttons,
+        [
+            Button::Load,
+            Button::Rename,
+            Button::Copy,
+            Button::Cut,
+            Button::Delete
+        ]
+    );
+    assert!(s.detail.lines.iter().any(|l| l.1.contains("As clips")));
+    b.take_actions();
+    b.push();
+    let a = b.take_actions();
+    let loc = Loc::new(Place::Patterns, &["Sequence01.mid"]).unwrap();
+    assert!(
+        matches!(&a[0], BrowseAction::LoadMidi { loc: l, path } if *l == loc && path.is_file()),
+        "{a:?}"
+    );
+    // It is remembered in Recent, as a sound is.
+    assert!(matches!(&a[1], BrowseAction::SaveLists(t) if t.contains("Patterns/Sequence01.mid")));
+    assert!(b.screen().status.unwrap().0.contains("as clips"));
+}
+
+#[test]
 fn the_pads_tab_browser_loads_and_saves_kits() {
     let (mut b, _) = browser();
     b.open_picker(Pick::Pads);

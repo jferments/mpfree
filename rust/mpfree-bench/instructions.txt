@@ -69,8 +69,10 @@
 52828	Mixer, idle (63 strips, nothing playing)
 107876	Mod: 8 macros x 8, 16 rows, morph, locks
 9033	Moves: 16 lanes playing, the move log taking 3 controls
-8536	Multi filter (LP 12)
-139789	Multi filter (LP 24, drive)
+8590	Multi filter (LP 12)
+80358	Multi filter (LP 12, Hard)
+143678	Multi filter (LP 24, drive)
+92010	Multi filter (ladder)
 95212	Multi-tap delay
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held

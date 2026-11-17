@@ -461,6 +461,40 @@ impl Takes {
         Ok(take.number)
     }
 
+    /// Several clips into empty slots at once (a MIDI file's tracks, in
+    /// the app's import), as one capture: one UNDO takes them all away.
+    /// `clips` are (track, slot, clip). The capture's number. Every clip
+    /// is checked and every slot must be there, empty and named once,
+    /// before any goes in: `BadSlot` or the clip's own refusal, and nothing
+    /// changes, otherwise. An empty list is `BadSlot` too.
+    pub fn capture_clips(
+        &mut self,
+        project: &mut Project,
+        clips: Vec<(usize, usize, Clip)>,
+    ) -> Result<u32, ModelError> {
+        if clips.is_empty() {
+            return Err(ModelError::BadSlot);
+        }
+        for (i, (track, slot, c)) in clips.iter().enumerate() {
+            c.check()?;
+            let free = project
+                .tracks
+                .get(*track)
+                .and_then(|t| t.slots.get(*slot))
+                .is_some_and(Option::is_none);
+            let twice = clips[..i].iter().any(|o| (o.0, o.1) == (*track, *slot));
+            if !free || twice {
+                return Err(ModelError::BadSlot);
+            }
+        }
+        for (track, slot, c) in &clips {
+            *slot_mut(project, *track, *slot).expect("checked") = Some(c.clone());
+        }
+        let take = self.next_capture();
+        take.made.extend(clips);
+        Ok(take.number)
+    }
+
     /// ERASE + a clip (Jay after live test 3): take clip `slot` of
     /// `track` out of its slot, as an edit of its own that undo puts back.
     /// The edit's number. `BadSlot` if there is no clip there; nothing
@@ -1189,6 +1223,40 @@ mod tests {
             t.capture_clip(&mut p, 0, SLOTS, c),
             Err(ModelError::BadSlot)
         );
+    }
+
+    #[test]
+    fn clips_captured_together_are_one_take_or_none_go_in() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("t1", 0));
+        p.tracks.push(Track::new("t2", 1));
+        let mut t = Takes::default();
+        let c = |name: &str| Clip::new(name, 3840);
+        p.tracks[1].slots[0] = Some(c("taken"));
+        // A full slot, a slot named twice, a track past the end, a bad
+        // clip or nothing: refused, and nothing goes in.
+        for bad in [
+            vec![(0, 0, c("a")), (1, 0, c("b"))],
+            vec![(0, 0, c("a")), (0, 0, c("b"))],
+            vec![(0, 0, c("a")), (p.tracks.len(), 0, c("b"))],
+            vec![(0, 0, c("a")), (1, 1, Clip::new("short", 1))],
+            vec![],
+        ] {
+            assert!(t.capture_clips(&mut p, bad).is_err());
+            assert!(p.clip(0, 0).is_none() && p.clip(1, 1).is_none());
+            assert_eq!(p.clip(1, 0).map(|c| c.name.as_str()), Some("taken"));
+        }
+        assert!(t.done().is_empty());
+        let made = vec![(0, 0, c("Drums")), (1, 1, c("Bass"))];
+        assert_eq!(t.capture_clips(&mut p, made), Ok(1));
+        assert_eq!(p.clip(0, 0).map(|c| c.name.as_str()), Some("Drums"));
+        assert_eq!(p.clip(1, 1).map(|c| c.name.as_str()), Some("Bass"));
+        assert_eq!(t.done().len(), 1);
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert!(p.clip(0, 0).is_none() && p.clip(1, 1).is_none());
+        assert_eq!(p.clip(1, 0).map(|c| c.name.as_str()), Some("taken"));
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert!(p.clip(0, 0).is_some() && p.clip(1, 1).is_some());
     }
 
     #[test]
