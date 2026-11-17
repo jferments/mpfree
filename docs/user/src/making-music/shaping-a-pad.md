@@ -99,6 +99,8 @@ Grains play only when the pad's **Mode** is **Granular**. Until then a button ov
 
 **Timing.** **Timing** sets how evenly the grains come. At **Regular** they arrive in lockstep, which gives a frozen sound a buzz at the grain rate and makes its level rise and fall as you turn **Density**; that buzz can be what you want for a pitched, mechanical tone. Each step toward **Random** loosens the gaps between grains, so a cloud sounds smoother and its level holds as you turn **Density**, though a single held tone shimmers a little. New grain pads start at 30 % random.
 
+**Shape.** **Shape** sets how each grain fades in and out, from hard-edged to plucked, in one turn. At **0 %** (Square) a grain starts and stops almost at once, a buzzy, clicky cloud; toward **40 %** the fades lengthen to a **Triangle**; at **60 %** (Hann, where new grain pads start) the grain swells and fades smoothly, the softest blend; at **80 %** (Swell) it rises slowly and stops short, like a sound played backwards; at **100 %** (Pluck) it starts at once and dies away, so each grain is a little hit. Between 80 % and 100 % the swell turns into the pluck, passing a smooth fade on the way. The cloud keeps its level whatever the shape. A pad from an older project shows its window by its old name (Tukey, Trapezoid, Percussive) until you turn **Shape**.
+
 **Stereo spread** places each grain somewhere between left and right. At 100 % the cloud is wide, yet it keeps its level and still sounds full when played in mono.
 
 **Every layer its own cloud.** The Grain page (and the Wave, Warp and Chop pages) work on the layer picked on the Play page's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.

@@ -49,6 +49,12 @@ fn windows_are_zero_at_the_ends_and_shaped_right() {
         Window::Tukey { taper: 0.3 },
         Window::Trapezoid { ramp: 0.1 },
         Window::Exponential { decay: 6.0 },
+        Window::Shape { shape: 0.0 },
+        Window::Shape { shape: 0.3 },
+        Window::Shape { shape: 0.5 },
+        Window::Shape { shape: 0.7 },
+        Window::Shape { shape: 0.9 },
+        Window::Shape { shape: 1.0 },
     ];
     for s in shapes {
         let t = WindowTable::new(s);
@@ -83,6 +89,53 @@ fn windows_are_zero_at_the_ends_and_shaped_right() {
             && e.at(0.03) > 0.9
             && e.at(0.5) < 0.1
     );
+}
+
+#[test]
+fn the_shape_knob_goes_from_square_to_hann_to_swell_and_pluck() {
+    let at = |shape: f32, x: f32| value(Window::Shape { shape }, x);
+    let peak = |shape: f32| {
+        (0..=1000)
+            .map(|i| i as f32 / 1000.0)
+            .fold((0.0, 0.0), |(px, pw), x| {
+                let w = at(shape, x);
+                if w > pw {
+                    (x, w)
+                } else {
+                    (px, pw)
+                }
+            })
+            .0
+    };
+    for i in 0..=100 {
+        let x = i as f32 / 100.0;
+        // Square: full but for 1 % fades. Triangle at 40 %, Hann at 60 %.
+        if (0.01..=0.99).contains(&x) {
+            assert!((at(0.0, x) - 1.0).abs() < 1e-5, "square at {x}");
+        }
+        assert!((at(0.4, x) - (1.0 - (2.0 * x - 1.0).abs())).abs() < 1e-5);
+        assert!((at(0.6, x) - value(Window::Hann, x)).abs() < 1e-5);
+    }
+    // It never jumps as the knob turns: a 1 % turn moves the window by
+    // under 5 % of its height on average (the pluck sweep moves most).
+    for k in 0..100 {
+        let s = k as f32 / 100.0;
+        let moved: f32 = (0..=1000)
+            .map(|i| (at(s, i as f32 / 1000.0) - at(s + 0.01, i as f32 / 1000.0)).abs())
+            .sum::<f32>()
+            / 1001.0;
+        assert!(moved < 0.05, "{s}: {moved}");
+    }
+    // The swell peaks late, the pluck early.
+    assert!((peak(0.8) - 0.92).abs() < 0.005, "{}", peak(0.8));
+    assert!((peak(1.0) - 0.04).abs() < 0.005, "{}", peak(1.0));
+    // Where the older windows sit on the knob.
+    assert_eq!(Window::Hann.shape_value(), 0.6);
+    assert!((Window::Trapezoid { ramp: 0.5 }.shape_value() - 0.4).abs() < 1e-6);
+    assert_eq!(Window::Trapezoid { ramp: 0.01 }.shape_value(), 0.0);
+    assert_eq!(Window::Tukey { taper: 1.0 }.shape_value(), 0.6);
+    assert_eq!(Window::Exponential { decay: 6.0 }.shape_value(), 1.0);
+    assert_eq!(Window::Shape { shape: f32::NAN }.shape_value(), 0.6);
 }
 
 #[test]

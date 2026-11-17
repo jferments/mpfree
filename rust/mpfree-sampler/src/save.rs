@@ -643,12 +643,14 @@ enum WindowKind {
     Tukey,
     Trapezoid,
     Exponential,
+    Shape,
 }
 const WINDOWS: &[(&str, WindowKind)] = &[
     ("hann", WindowKind::Hann),
     ("tukey", WindowKind::Tukey),
     ("trapezoid", WindowKind::Trapezoid),
     ("exponential", WindowKind::Exponential),
+    ("shape", WindowKind::Shape),
 ];
 
 fn pads_play_text(p: PadsPlay) -> String {
@@ -724,6 +726,7 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         GrainWindow::Tukey { taper } => (WindowKind::Tukey, taper),
         GrainWindow::Trapezoid { ramp } => (WindowKind::Trapezoid, ramp),
         GrainWindow::Exponential { decay } => (WindowKind::Exponential, decay),
+        GrainWindow::Shape { shape } => (WindowKind::Shape, shape),
     };
     f.word("window", &mut kind, WINDOWS);
     f.num("window_shape", &mut shape);
@@ -732,6 +735,7 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         WindowKind::Tukey => GrainWindow::Tukey { taper: shape },
         WindowKind::Trapezoid => GrainWindow::Trapezoid { ramp: shape },
         WindowKind::Exponential => GrainWindow::Exponential { decay: shape },
+        WindowKind::Shape => GrainWindow::Shape { shape },
     };
     f.num("reverse", reverse);
     f.num("spread", spread);

@@ -27,6 +27,14 @@ grain/smooth[Tukey 0.5, overlap 2]/ripple_db	0.0042
 grain/smooth[defaults, 1 kHz]/sideband_db	-19.4878
 grain/smooth[defaults]/modulation_db	-83.1461
 grain/smooth[defaults]/ripple_db	0.0055
+grain/smooth[shape 0 %, square, overlap 2]/modulation_db	-83.274
+grain/smooth[shape 0 %, square, overlap 2]/ripple_db	0.0046
+grain/smooth[shape 100 %, pluck, overlap 2]/modulation_db	-71.425
+grain/smooth[shape 100 %, pluck, overlap 2]/ripple_db	0.1584
+grain/smooth[shape 40 %, triangle, overlap 2]/modulation_db	-81.187
+grain/smooth[shape 40 %, triangle, overlap 2]/ripple_db	0.0066
+grain/smooth[shape 80 %, swell, overlap 2]/modulation_db	-85.9917
+grain/smooth[shape 80 %, swell, overlap 2]/ripple_db	0.0041
 grain/smooth[trapezoid 0.1, overlap 2]/modulation_db	-83.83
 grain/smooth[trapezoid 0.1, overlap 2]/ripple_db	0.004
 grain/spread[full]/correlation	0.441

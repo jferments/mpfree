@@ -22,6 +22,7 @@ use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed,
 
 use crate::fx::GrainFx;
 use crate::voice::{Budget, Params};
+use crate::window::Window;
 
 /// Parameter ids, stable for project files and automation.
 pub mod param {
@@ -40,6 +41,9 @@ pub mod param {
     /// How random the gaps between grains are, per cent (added after the
     /// meter, so the older ids keep their numbers).
     pub const TIMING: u16 = 11;
+    /// The grains' shape, per cent: square (0) to Hann (60) to a swell
+    /// (80) and a pluck (100), as `Window::Shape`.
+    pub const SHAPE: u16 = 12;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -66,7 +70,7 @@ const fn p(
     }
 }
 
-static PARAMS: [ParamInfo; 12] = [
+static PARAMS: [ParamInfo; 13] = [
     p(
         param::MIX,
         "Mix",
@@ -114,6 +118,16 @@ static PARAMS: [ParamInfo; 12] = [
         0.0,
         100.0,
         30.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    p(
+        param::SHAPE,
+        "Shape",
+        "Grains",
+        0.0,
+        100.0,
+        60.0,
         Unit::Percent,
         Curve::Linear,
     ),
@@ -202,7 +216,7 @@ pub struct GrainNode {
     fx: Option<GrainFx>,
     budget: Budget,
     /// Every parameter's value, by id (the meter's slot is unused).
-    values: [f32; 12],
+    values: [f32; 13],
     rate: u32,
     seed: u64,
 }
@@ -216,7 +230,7 @@ impl GrainNode {
     /// A node with the default settings. `seed` sets its random sequence,
     /// so the same input renders the same.
     pub fn new(seed: u64) -> GrainNode {
-        let mut values = [0.0; 12];
+        let mut values = [0.0; 13];
         for p in &PARAMS {
             values[usize::from(p.id)] = p.default;
         }
@@ -246,6 +260,13 @@ impl GrainNode {
             reverse: v[usize::from(param::REVERSE)] / 100.0,
             spread: v[usize::from(param::SPREAD)] / 100.0,
             timing: v[usize::from(param::TIMING)] / 100.0,
+            // 60 % is Hann, kept as such so the default plays as it did.
+            window: match v[usize::from(param::SHAPE)] {
+                60.0 => Window::Hann,
+                shape => Window::Shape {
+                    shape: shape / 100.0,
+                },
+            },
             ..Params::default()
         }
     }

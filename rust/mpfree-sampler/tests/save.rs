@@ -174,7 +174,7 @@ fn busy_kit() -> Project {
     p.keep_chop(kept.unwrap()).unwrap();
     let mut m = *p.master();
     m.mix = 0.35;
-    m.grain.window = GrainWindow::Exponential { decay: 6.0 };
+    m.grain.window = GrainWindow::Shape { shape: 0.85 };
     m.grain.density = 44.0;
     p.set_master(m, None).unwrap();
     p.set_pads_play(PadsPlay::Levels {

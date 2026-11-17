@@ -91,16 +91,6 @@ const SCANS: [f32; 13] = [
 pub const SCAN_LIMIT: f32 = 2.0;
 /// Q-Link detents for a doubling of the size or the density.
 const DOUBLING_DETENTS: f32 = 8.0;
-/// Window shapes the Window row steps through.
-const WINDOWS: [GrainWindow; 7] = [
-    GrainWindow::Hann,
-    GrainWindow::Tukey { taper: 0.5 },
-    GrainWindow::Tukey { taper: 0.2 },
-    GrainWindow::Trapezoid { ramp: 0.25 },
-    GrainWindow::Trapezoid { ramp: 0.05 },
-    GrainWindow::Exponential { decay: 4.0 },
-    GrainWindow::Exponential { decay: 10.0 },
-];
 /// Pitch quantise: the notes grains may take, from the sound's own pitch
 /// (bit 0) up (see `mpfree_grain::quantise`).
 const SCALES: [(&str, u16); 7] = [
@@ -162,7 +152,7 @@ pub enum Row {
     Spray,
     PitchSpray,
     Timing,
-    Window,
+    Shape,
     Reverse,
     Spread,
     Quantise,
@@ -181,7 +171,7 @@ impl Row {
         Row::Spray,
         Row::PitchSpray,
         Row::Timing,
-        Row::Window,
+        Row::Shape,
         Row::Reverse,
         Row::Spread,
         Row::Quantise,
@@ -200,7 +190,7 @@ impl Row {
             Row::Spray => "Spray",
             Row::PitchSpray => "Pitch spray",
             Row::Timing => "Timing",
-            Row::Window => "Window",
+            Row::Shape => "Shape",
             Row::Reverse => "Reverse chance",
             Row::Spread => "Stereo spread",
             Row::Quantise => "Pitch quantise",
@@ -693,9 +683,11 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
         Row::PitchSpray => {
             g.pitch_spray = round_to(g.pitch_spray + d * 0.5, 0.1).clamp(0.0, PITCH_SPRAY_LIMIT)
         }
-        Row::Window => {
-            let i = WINDOWS.iter().position(|w| *w == g.window).unwrap_or(0);
-            g.window = WINDOWS[shift(i, delta, WINDOWS.len())];
+        // From any window (a project's older ones too), 5 % a step.
+        Row::Shape => {
+            g.window = GrainWindow::Shape {
+                shape: round_to(g.window.shape_value() + d * 0.05, 0.01).clamp(0.0, 1.0),
+            }
         }
         Row::Timing => g.timing = round_to(g.timing + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Reverse => g.reverse = round_to(g.reverse + d * 0.05, 0.01).clamp(0.0, 1.0),
@@ -926,7 +918,7 @@ pub fn value_text(r: &Region, row: Row) -> String {
         Row::Spray => format!("{} %", percent(g.spray)),
         Row::PitchSpray => format!("±{:.1} st", g.pitch_spray),
         Row::Timing => timing_text(g.timing),
-        Row::Window => window_label(g.window),
+        Row::Shape => window_label(g.window),
         Row::Reverse => format!("{} %", percent(g.reverse)),
         Row::Spread => format!("{} %", percent(g.spread)),
         Row::Quantise => quantise_label(g.scale).into(),
@@ -987,12 +979,27 @@ pub fn density_text(d: f32) -> String {
     }
 }
 
+/// The grains' shape: a Shape value as a per cent and what it is near
+/// (Square, Trapezoid, Triangle, Hann, Swell, Pluck); a window from before
+/// the Shape knob by its old name.
 pub fn window_label(w: GrainWindow) -> String {
     match w {
         GrainWindow::Hann => "Hann".into(),
         GrainWindow::Tukey { taper } => format!("Tukey {}", trim(taper)),
         GrainWindow::Trapezoid { ramp } => format!("Trapezoid {}", trim(ramp)),
         GrainWindow::Exponential { decay } => format!("Percussive {}", trim(decay)),
+        GrainWindow::Shape { .. } => {
+            let s = w.shape_value();
+            let name = match s {
+                s if s < 0.1 => "Square",
+                s if s < 0.3 => "Trapezoid",
+                s if s < 0.5 => "Triangle",
+                s if s < 0.7 => "Hann",
+                s if s < 0.9 => "Swell",
+                _ => "Pluck",
+            };
+            format!("{} % · {name}", percent(s))
+        }
     }
 }
 
