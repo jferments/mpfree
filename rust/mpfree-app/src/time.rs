@@ -722,6 +722,14 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// Clips for several tracks at once (a MIDI file's tracks), each into
+    /// its track's first empty slot, as one take that one UNDO on the
+    /// Clips page takes away; all or none. Returns a line for the log.
+    pub fn put_clips(&mut self, clips: Vec<(usize, Clip)>) -> Result<String, String> {
+        let r = self.control.put_clips(clips);
+        self.sent(r)
+    }
+
     /// A pad note as pressed, before any arp, in the coming period at
     /// `offset`. When the armed track's clips play through its arp, this
     /// is what it records, and what the capture history keeps.
@@ -1052,6 +1060,35 @@ mod tests {
             h.control.project.tracks[2].slots[s] = Some(Clip::new("full", 960));
         }
         assert!(h.put_clip(clip).unwrap_err().contains("no empty slot"));
+    }
+
+    #[test]
+    fn clips_for_several_tracks_go_in_as_one_take_or_not_at_all() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut drums = Clip::new("Drums", 4 * 960);
+        drums
+            .add_note(mpfree_seq::Note::new(0, 240, 1, 100))
+            .unwrap();
+        let bass = Clip::new("Bass", 4 * 960);
+        h.control.project.tracks[1].slots[0] = Some(Clip::new("taken", 960));
+        let line = h
+            .put_clips(vec![(0, drums.clone()), (1, bass.clone())])
+            .unwrap();
+        assert_eq!(line, "2 clips with 1 notes, from slot 1 of Track 1");
+        assert_eq!(h.control.project.clip(0, 0), Some(&drums));
+        assert_eq!(h.control.project.clip(1, 1), Some(&bass));
+        assert!(h.control.launches.is_empty(), "not launched");
+        // One UNDO takes both.
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.control.project.clip(0, 0).is_none());
+        assert!(h.control.project.clip(1, 1).is_none());
+        // A track with no empty slot: none goes in.
+        for s in 0..SLOTS {
+            h.control.project.tracks[1].slots[s] = Some(Clip::new("full", 960));
+        }
+        let e = h.put_clips(vec![(0, drums), (1, bass)]).unwrap_err();
+        assert!(e.contains("no empty slot"), "{e}");
+        assert!(h.control.project.clip(0, 0).is_none());
     }
 
     /// REC on a fresh project (found by the UI audit): the armed track gets

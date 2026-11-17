@@ -94,6 +94,28 @@ UNDO takes a capture back like any other take.
 > [!MPC]
 > Capture is like the MPC's Retro Rec, but it keeps whole bars, works whether the music was playing or stopped, and can add to the clip that's playing instead of always making a new one.
 
+## Bringing in a MIDI file
+
+A MIDI file (`.mid`) from another sequencer, a computer or your MPC loads as clips, so a beat you made somewhere else plays on your pads.
+
+1. Put the file on the stick, in **Patterns** or any folder of the browser (see [Getting files on and off the stick](saving.md#getting-files-on-and-off-the-stick)).
+2. Arm the track it should go on: tap its name on Arrange, or set the Record panel's **Armed** row.
+3. Press **BROWSE**, find the file, tap it to pick it and tap it again to load it (or push the data wheel).
+
+Each track of the file becomes a clip in the first empty slot of a track: the first on the armed track, the next on the track after it, and so on. A file with all its parts on one track, as many are, gets a clip for each channel. The clips are as long as the file, in whole bars, and wait in their slots for you to play them. The line under the screen says how many clips came in, where, and what was left out. **UNDO** takes the whole file away again.
+
+**Its notes go on the pads that play them.** A clip holds pads, as a recording does, so each note goes on the pad of its track that plays that note:
+
+- **On a kit**, by the MPC's pad notes: C#2 is pad 1, C2 pad 2 and so on, as the MPC sends and receives them. So a drum track exported from an MPC comes back on the same pads, and so does a drum part from a computer that uses those notes.
+- **On a synth** or a track's own instrument, by its pad layout: a note goes on the pad that plays that note. Set the layout to cover the notes first (a scale, the right octave), then load the file.
+
+A note no pad plays is left out, and counted. A melody that goes past what the 16 pads reach comes in as far as they reach.
+
+**Left out** for now: controllers, pitch bend, pressure and program changes (they come with lanes), and SysEx. The file's tempo is said but not set, so set the project's tempo to match if you want it. A file in clock time (made for video) is read at 120 BPM.
+
+> [!MPC]
+> To bring a sequence over from your MPC, export it there with *Track as MIDI* (one track) or *All Tracks* (every track in one file), copy the file to MPFree's stick, arm the track the first part should go on, and load the file. Drum tracks land on the pads they were played on. Load the kit too ([Sampling](sampling.md)), and the beat plays as it did.
+
 ## Steps
 
 The pattern on the Play page's **Beats** view is a clip shown as a grid of steps, 16 to a page. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). The **+** and **–** at the top right of the pattern double or halve its steps (16, 32, 64 or 128), and **‹** and **›** turn its pages. See [Your first beat](../getting-started/first-beat.md#program-a-pattern). **STEP SEQ** puts one sound's steps on the pads, a page of 16 at a time, where you hold a step to change it or lock its sound on the Q-Links, hold one and hit a later one for a longer note, and copy steps with **COPY**: see [Program a pattern on the pads](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
