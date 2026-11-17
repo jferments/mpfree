@@ -1108,6 +1108,9 @@ pub fn value_text(r: &Region, row: Row) -> String {
             .find(|m| m.1 == r.grain_mode)
             .map_or("Cloud", |m| m.0)
             .into(),
+        Row::Scan if r.grain_mode == GrainMode::Stretch && r.warp.is_some() && g.scan != 0.0 => {
+            format!("{} · in time", scan_text(g.scan))
+        }
         Row::Scan => scan_text(g.scan),
         Row::Spray => format!("{} %", percent(g.spray)),
         Row::SprayShape => SPRAY_SHAPES

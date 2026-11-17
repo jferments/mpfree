@@ -322,6 +322,38 @@ fn the_playhead_shows_where_grains_read_and_view_swaps_keep_playing() {
     assert!(e.live_grains() > 0);
 }
 
+#[test]
+fn a_stretch_of_a_sound_with_a_tempo_plays_in_time() {
+    let s = ramp(441_000);
+    let stretch = |warp: Option<Warp>, bpm: f64| {
+        let mut pad = granular_pad(
+            &s,
+            GrainParams {
+                position: 0.0,
+                scan: 1.0,
+                ..GrainParams::default()
+            },
+        );
+        pad.layers[0].region.grain_mode = GrainMode::Stretch;
+        pad.layers[0].region.warp = warp;
+        let mut e = engine_for(&[(0, pad)], &s, 4);
+        e.set_tempo(bpm);
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 100,
+        });
+        run(&mut e, 44_100, 128);
+        let heads: Vec<_> = e.playheads().collect();
+        heads[0].2
+    };
+    // Played at 100 BPM: at 120 it reads 1.2 s of sound a second.
+    let at = stretch(Some(Warp::new(100.0)), 120.0);
+    assert!(at.abs_diff(52_920) <= 128, "{at}");
+    // Without a tempo, or as a cloud, the scan is as set.
+    let at = stretch(None, 120.0);
+    assert!(at.abs_diff(44_100) <= 128, "{at}");
+}
+
 /// Where each burst of sound starts (silence before it).
 fn bursts(x: &[f32]) -> Vec<usize> {
     (0..x.len())

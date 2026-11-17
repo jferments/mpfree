@@ -105,6 +105,11 @@ pub struct Params {
     pub spread: f32,
     /// Linear output gain.
     pub gain: f32,
+    /// The tempo (BPM) the source was played at, for a stretch that keeps
+    /// time: with a tempo set on the voice ([`GrainVoice::set_tempo`]) the
+    /// scan moves the transport's tempo over this times as fast, so scan 1
+    /// plays the source in time at any tempo. None: the scan is as set.
+    pub scan_tempo: Option<f32>,
     pub sync: Option<TempoSync>,
     /// How the gaps between grains vary, 0 to 1: 0 regular (every gap one
     /// density period: grains in lockstep, which buzzes at the grain rate
@@ -144,6 +149,7 @@ impl Default for Params {
             reverse: 0.0,
             spread: 0.0,
             gain: 1.0,
+            scan_tempo: None,
             sync: None,
             timing: 0.3,
             size_spray: 0.0,
@@ -567,6 +573,19 @@ impl GrainVoice {
     /// How much longer than the size the varied grains are on average:
     /// the mean of 2^(s·u) for u even in −1 to 1, which is 1.08 at full
     /// variation.
+    /// How much faster the scan moves for the tempo ([`Params::scan_tempo`]):
+    /// the transport's tempo over the source's, 1 without both (held to
+    /// 1/8 to 8).
+    fn scan_tempo_ratio(&self) -> f64 {
+        match (self.params.scan_tempo, self.beat) {
+            (Some(bpm), Some(beat)) if bpm.is_finite() && bpm > 0.0 => {
+                let now = 60.0 * f64::from(self.out_rate) / beat;
+                (now / f64::from(bpm)).clamp(0.125, 8.0)
+            }
+            _ => 1.0,
+        }
+    }
+
     /// Free-running grains at regular times (timing 0), which keep their
     /// exact times.
     fn exact(&self) -> bool {
@@ -689,7 +708,8 @@ impl GrainVoice {
         self.span = (start, end);
         let len = (end - start) as f64;
         let src_ratio = f64::from(src.rate()) / f64::from(self.out_rate);
-        let scan = f64::from(self.params.scan.clamp(-4.0, 4.0)) * src_ratio;
+        let scan =
+            f64::from(self.params.scan.clamp(-4.0, 4.0)) * src_ratio * self.scan_tempo_ratio();
         // As `spawn` shortens a grain whose read wouldn't fit.
         let speed = f64::from((self.params.pitch.clamp(-48.0, 48.0) / 12.0).exp2()) * src_ratio;
         self.fit_size = (self.size_frames() * self.size_spray_mean())

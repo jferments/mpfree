@@ -144,6 +144,7 @@ fn busy_kit() -> Project {
         reverse: 0.5,
         spread: 0.8,
         gain: 0.9,
+        scan_tempo: None,
         sync: Some(TempoSync {
             frames_per_beat: 28_604.3,
             grains_per_beat: Some(8.0),

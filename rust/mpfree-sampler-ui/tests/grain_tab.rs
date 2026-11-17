@@ -401,6 +401,10 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
         "nothing random, so the grains stay in step"
     );
     assert_eq!(s.tab.row(&s.ui), Row::Pitch);
+    // A sound with a tempo (from the Warp page) stretches in time.
+    let mut r = s.state.region.clone();
+    r.warp = Some(mpfree_sampler::model::Warp::new(92.0));
+    assert_eq!(grain_tab::value_text(&r, Row::Scan), "1× · in time");
 
     step_apply(&mut s, Row::GrainMode, 1);
     assert_eq!(row_value(&s, Row::GrainMode), "Repeat");
