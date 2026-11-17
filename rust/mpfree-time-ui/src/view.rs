@@ -94,6 +94,21 @@ pub const SONG_CARD_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(clip-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 pub const CLIPS_HINT: &str =
     "Tap a clip: it plays from the next bar, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
+/// The hint line under the Clips grid with the Record panel's Clip tab.
+pub const CLIPS_CARD_HINT: &str =
+    "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   SHIFT + ‹ ›: Length and Speed halve or double   ·   COPY + a clip, then an empty slot: a copy";
+
+/// The hint line while COPY is held on the Clips grid: what a tap copies
+/// or pastes.
+pub fn copy_hint(st: &TimeState) -> String {
+    match &st.clipboard {
+        Some(name) => format!(
+            "COPY held: tap an empty slot, on any track: a copy of {name} goes there   ·   tap a clip: copy that one instead   ·   UNDO takes a paste back"
+        ),
+        None => "COPY held: tap a clip to copy it   ·   then, COPY held again, an empty slot on any track: the copy goes there".to_string(),
+    }
+}
+
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
     "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   Song on: the song plays where no clip is launched   ·   SHIFT + wheel: bars";
@@ -338,6 +353,8 @@ pub struct TakeRow {
     pub song: Option<SongChange>,
     /// A clip's settings changed (the clip settings card).
     pub settings: bool,
+    /// COPY + an empty slot pasted a clip there.
+    pub pasted: bool,
 }
 
 impl TakeRow {
@@ -374,10 +391,12 @@ impl TakeRow {
             dropped: t.dropped,
             song: t.song.as_ref().map(|e| e.change),
             settings: t.settings.is_some(),
+            pasted: t.pasted,
         }
     }
 
-    /// What it is: "take", "capture", "edit", "delete", for a drop "move",
+    /// What it is: "take", "capture", "edit", "delete", "paste",
+    /// "settings", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
     /// "length", "delete", "unique" or "scenes".
     pub fn word(&self) -> &'static str {
@@ -400,6 +419,8 @@ impl TakeRow {
         }
         if self.deleted {
             "delete"
+        } else if self.pasted {
+            "paste"
         } else if self.settings {
             "settings"
         } else if self.captured {
@@ -435,6 +456,9 @@ pub struct TimeState {
     /// Launches and stops waiting for the next bar line. The app sets them.
     pub cues: Vec<Cue>,
     pub armed: Option<usize>,
+    /// The clip COPY + a clip copied last, by its name, for COPY + an
+    /// empty slot to paste. The app sets it.
+    pub clipboard: Option<String>,
     /// The takes that can be undone, oldest first, and the ones that can be
     /// redone, the next one last (as [`Takes`] keeps them).
     pub done: Vec<TakeRow>,
@@ -606,6 +630,7 @@ impl TimeState {
             launches: launches.to_vec(),
             cues: Vec::new(),
             armed,
+            clipboard: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
             undone: takes.undone().iter().map(TakeRow::of).collect(),
             chips: Vec::new(),
@@ -858,11 +883,25 @@ pub enum TimeAction {
         settings: ClipSettings,
     },
     /// The card's Length row: the clip made `steps` sixteenths long, as
-    /// Beats' length does (the notes past the end come back on UNDO).
+    /// Beats' length does (the notes past the end come back on UNDO); with
+    /// `copy` (SHIFT + its ›, doubling) the new steps repeat the notes
+    /// before them.
     ClipLength {
         track: usize,
         slot: usize,
         steps: usize,
+        copy: bool,
+    },
+    /// COPY + a clip: keep a copy of it for COPY + an empty slot.
+    CopyClip {
+        track: usize,
+        slot: usize,
+    },
+    /// COPY + an empty slot: the clip copied last goes there, as a take
+    /// UNDO takes away.
+    PasteClip {
+        track: usize,
+        slot: usize,
     },
     /// A touch on the note editor (`crate::editor`).
     Edit(EditAction),
@@ -1493,6 +1532,89 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
     ]
 }
 
+/// What a step of the card's row `index` asks for, with SHIFT held or
+/// not, or why it asks for nothing (empty when there is nothing to say).
+/// With SHIFT, Length doubles (the notes repeated) or halves, and Speed
+/// doubles or halves; the other rows step as without it.
+pub fn card_action(
+    st: &TimeState,
+    index: usize,
+    delta: i32,
+    shift: bool,
+) -> Result<TimeAction, String> {
+    if !shift || index > 1 {
+        return card_step(st, index, delta);
+    }
+    let (track, slot) = st
+        .focus()
+        .ok_or("No clip to set: arm a track with a clip, or make one")?;
+    let c = st.clip(track, slot).ok_or("No clip to set")?;
+    if c.looped.is_some() {
+        return Err("A loop cell plays its loop as recorded: only Follow and After apply".into());
+    }
+    let up = delta > 0;
+    if index == 0 {
+        let max = (MAX_CLIP_TICKS / CARD_STEP) as usize;
+        let now = ((c.length + CARD_STEP - 1) / CARD_STEP) as usize;
+        let steps = if up { now * 2 } else { now / 2 };
+        if steps == 0 || steps > max {
+            return Err(if up {
+                format!("The clip can't double: {max} steps at most")
+            } else {
+                "The clip can't halve: it is 1 step long".to_string()
+            });
+        }
+        return Ok(TimeAction::ClipLength {
+            track,
+            slot,
+            steps,
+            copy: up,
+        });
+    }
+    let sp = c.settings.speed;
+    let (num, den) = if up {
+        (u16::from(sp.num) * 2, u16::from(sp.den))
+    } else {
+        (u16::from(sp.num), u16::from(sp.den) * 2)
+    };
+    let g = gcd(num, den);
+    let speed = u8::try_from(num / g)
+        .ok()
+        .zip(u8::try_from(den / g).ok())
+        .and_then(|(n, d)| Speed::new(n, d))
+        .ok_or_else(|| {
+            let ratio = f64::from(num) / f64::from(den);
+            let way = if up { "double" } else { "halve" };
+            match ratio {
+                r if r > 4.0 => format!("{} can't double: ×4 is the fastest", speed_name(sp)),
+                r if r < 0.125 => format!("{} can't halve: ×1/8 is the slowest", speed_name(sp)),
+                _ => format!(
+                    "{} can't {way}: ×{}/{} is not a speed (the Speed row's arrows step it)",
+                    speed_name(sp),
+                    num / g,
+                    den / g
+                ),
+            }
+        })?;
+    Ok(TimeAction::ClipSettings {
+        track,
+        slot,
+        row: 1,
+        settings: ClipSettings {
+            speed,
+            ..c.settings
+        },
+    })
+}
+
+fn gcd(a: u16, b: u16) -> u16 {
+    if b == 0 {
+        a.max(1)
+    } else {
+        gcd(b, a % b)
+    }
+}
+
 /// What a step of the card's row `index` asks for, or why it asks for
 /// nothing (no clip, a loop cell, a setting at its end).
 fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, String> {
@@ -1528,6 +1650,7 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
                     track,
                     slot,
                     steps: k + 1,
+                    copy: false,
                 }),
                 None => end(
                     "The clip is at its shortest, 1 step".into(),
@@ -1803,6 +1926,9 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
     }
     if row.settings {
         return "clip settings".into();
+    }
+    if row.pasted {
+        return "a copy".into();
     }
     let new = if row.made { "new " } else { "" };
     if row.erased > 0 {
@@ -3749,6 +3875,7 @@ mod tests {
                     track: 1,
                     slot: 1,
                     steps,
+                    copy: false,
                 }),
                 None,
             )
@@ -3859,6 +3986,79 @@ mod tests {
         assert!(clip_rows(&st).is_empty());
         assert_eq!(panel_tabs(&st)[1], "Clip");
         ends(step(&st, 0, 1), "No clip to set");
+    }
+
+    /// SHIFT + the card's arrows: Length doubles with its notes repeated or
+    /// halves, Speed doubles or halves; the other rows step as without it.
+    #[test]
+    fn shift_doubles_or_halves_the_cards_length_and_speed() {
+        let mut st = state();
+        st.armed = Some(1);
+        // Bass's clip B: 7 sixteenths, at x1.
+        let act = |st: &TimeState, index, delta| card_action(st, index, delta, true);
+        assert_eq!(
+            act(&st, 0, 1),
+            Ok(TimeAction::ClipLength {
+                track: 1,
+                slot: 1,
+                steps: 14,
+                copy: true
+            })
+        );
+        assert_eq!(
+            act(&st, 0, -1),
+            Ok(TimeAction::ClipLength {
+                track: 1,
+                slot: 1,
+                steps: 3,
+                copy: false
+            })
+        );
+        let speed = |st: &TimeState, delta| match act(st, 1, delta) {
+            Ok(TimeAction::ClipSettings { row: 1, settings, .. }) => Ok(speed_name(settings.speed)),
+            other => Err(format!("{other:?}")),
+        };
+        assert_eq!(speed(&st, 1).as_deref(), Ok("×2"));
+        assert_eq!(speed(&st, -1).as_deref(), Ok("×1/2"));
+        let set = |st: &mut TimeState, n, d| {
+            st.tracks[1].slots[1].as_mut().unwrap().settings.speed = Speed::new(n, d).unwrap();
+        };
+        set(&mut st, 3, 4);
+        assert_eq!(speed(&st, 1).as_deref(), Ok("×3/2"));
+        set(&mut st, 3, 1);
+        assert!(speed(&st, 1).unwrap_err().contains("fastest"));
+        set(&mut st, 1, 8);
+        assert!(speed(&st, -1).unwrap_err().contains("slowest"));
+        set(&mut st, 1, 3);
+        assert!(speed(&st, -1).unwrap_err().contains("not a speed"));
+        // The other rows as without SHIFT.
+        assert_eq!(act(&st, 3, 1), card_step(&st, 3, 1));
+        // A clip a sixteenth long can't halve.
+        st.tracks[1].slots[1].as_mut().unwrap().length = CARD_STEP;
+        assert!(act(&st, 0, -1).unwrap_err().contains("can't halve"));
+        // A loop cell: neither.
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert!(act(&st, 1, 1).unwrap_err().contains("loop cell"));
+    }
+
+    /// COPY held: the hint says what a tap copies or pastes, and a paste
+    /// is named in the takes list.
+    #[test]
+    fn copy_says_what_a_tap_copies_or_pastes() {
+        let mut st = state();
+        assert!(copy_hint(&st).starts_with("COPY held: tap a clip to copy it"));
+        st.clipboard = Some("Verse B".into());
+        assert!(copy_hint(&st).contains("a copy of Verse B goes there"));
+        let row = TakeRow {
+            number: 5,
+            at: Some((1, 2)),
+            made: true,
+            pasted: true,
+            ..TakeRow::of(&Take::default())
+        };
+        assert_eq!(row.short(), "paste 5");
+        assert_eq!(take_title(&st, &row), "Paste 5 · Bass / 3");
+        assert_eq!(take_detail(&st, &row), "a copy");
     }
 
     /// The Record panel's Clip tab swaps the clip settings card in for the

@@ -177,14 +177,15 @@ impl App {
         self.step_seq.copy_held
     }
 
-    /// COPY pressed or let go. Its job is STEP SEQ's for now (the layout
-    /// spec's section 6): while the pads are steps, the screen says what
-    /// it does.
+    /// COPY pressed or let go. While the pads are steps it is STEP SEQ's
+    /// (the layout spec's section 6), and the screen says what it does;
+    /// on Arrange, a tap on a clip copies it and one on an empty slot
+    /// pastes (sequencer S3): the status carries it either way.
     pub(super) fn copy_button(&mut self, pressed: bool) -> Vec<Effect> {
         self.step_seq.copy_held = pressed;
         self.step_seq.copy_page = None;
         if !self.step_seq.on {
-            return Vec::new();
+            return vec![self.status()];
         }
         let mut fx = vec![self.status()];
         if pressed {

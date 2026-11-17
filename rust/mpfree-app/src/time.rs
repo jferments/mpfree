@@ -1608,6 +1608,7 @@ mod tests {
                 track: 0,
                 slot: 0,
                 steps: 12,
+                copy: false,
             })
             .unwrap();
         assert!(said.contains("12 steps"), "{said}");
@@ -1617,6 +1618,7 @@ mod tests {
                 track: 0,
                 slot: 1,
                 steps: 4,
+                copy: false,
             })
             .unwrap_err()
             .contains("focused clip changed"));
@@ -1630,6 +1632,51 @@ mod tests {
             })
             .unwrap_err()
             .contains("empty"));
+    }
+
+    /// COPY + a clip, then COPY + an empty slot (sequencer S3): a copy
+    /// goes there as a take UNDO takes away; a full slot, a Loop track or
+    /// nothing copied says why. SHIFT + Length's › doubles the clip with
+    /// its notes repeated.
+    #[test]
+    fn copy_and_paste_a_clip_and_double_it() {
+        use mpfree_seq::Note;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("beat", 3840);
+        beat.notes = vec![Note::new(0, 100, 0, 100), Note::new(960, 100, 2, 100)];
+        h.control.project.tracks[0].slots[0] = Some(beat.clone());
+        assert!(h
+            .act(TimeAction::PasteClip { track: 1, slot: 0 })
+            .unwrap_err()
+            .contains("nothing copied"));
+        let said = h.act(TimeAction::CopyClip { track: 0, slot: 0 }).unwrap();
+        assert!(said.contains("beat copied"), "{said}");
+        assert_eq!(h.state().clipboard.as_deref(), Some("beat"));
+        assert!(h.state().done.is_empty(), "a copy is no take");
+        let said = h.act(TimeAction::PasteClip { track: 1, slot: 2 }).unwrap();
+        assert!(said.contains("a copy of beat in"), "{said}");
+        assert_eq!(h.control.project.clip(1, 2), Some(&beat));
+        assert_eq!(h.state().done.last().unwrap().short(), "paste 1");
+        assert!(h
+            .act(TimeAction::PasteClip { track: 0, slot: 0 })
+            .unwrap_err()
+            .contains("holds a clip"));
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.control.project.clip(1, 2).is_none(), "UNDO takes it away");
+        // Doubled, the notes repeat in the new bar.
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.act(TimeAction::ClipLength {
+            track: 0,
+            slot: 0,
+            steps: 32,
+            copy: true,
+        })
+        .unwrap();
+        let c = h.control.project.clip(0, 0).unwrap();
+        assert_eq!(c.length, 7680);
+        let mut ticks: Vec<_> = c.notes.iter().map(|n| n.tick).collect();
+        ticks.sort();
+        assert_eq!(ticks, [0, 960, 3840, 4800]);
     }
 
     /// Jay, 14 Nov: drag and drop on the Clips grid. A playing clip
