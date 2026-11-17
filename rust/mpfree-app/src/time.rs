@@ -566,6 +566,12 @@ impl TimeHost {
         (0..mpfree_seq::LOOPS).find(|&n| plan.on[n] && mask & (1u8 << n) != 0)
     }
 
+    /// Each track's live transpose (sequencer S4) as the audio half has
+    /// it: where the pads become notes (`SeqPads`), its notes shift by it.
+    pub fn transposes(&self) -> [mpfree_seq::Transpose; mpfree_seq::MAX_TRACKS] {
+        self.audio.transposes()
+    }
+
     /// The project the clips are in (for a save: `project.rs`).
     pub fn project(&self) -> &Project {
         &self.control.project
@@ -2855,6 +2861,64 @@ mod tests {
         assert_eq!(h.state().cue_line(0), LaunchGrid::Bars(4));
         h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
         assert_eq!(h.state().cue_line(0), LaunchGrid::Bars(1));
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Live transpose (sequencer S4): the track and every track that
+    /// follows move together, a track that doesn't follow stays, and past
+    /// two octaves is refused. The audio half has it for the pads, and
+    /// the screen's state shows it.
+    #[test]
+    fn transpose_moves_the_track_and_the_tracks_that_follow_it() {
+        use mpfree_seq::Transpose;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let five = Transpose::semitones(5);
+        assert_eq!(
+            h.act(TimeAction::Transpose { track: 0, to: five }).unwrap(),
+            "transpose: Track 1 +5 st"
+        );
+        assert_eq!(
+            h.act(TimeAction::FollowsTranspose { track: 2, on: true })
+                .unwrap(),
+            "follows transpose: Track 3 moves with the armed track's transpose"
+        );
+        let key = Transpose {
+            by: -3,
+            in_key: true,
+        };
+        assert_eq!(
+            h.act(TimeAction::Transpose { track: 0, to: key }).unwrap(),
+            "transpose: Track 1 -3 in key, with Track 3"
+        );
+        let st = h.state();
+        assert_eq!(st.tracks[0].transpose, key);
+        assert_eq!(st.tracks[1].transpose, Transpose::NONE);
+        assert!(st.tracks[2].follows);
+        assert_eq!(st.tracks[2].transpose, key);
+        let mut pads = Fake::default();
+        run(&mut h, &mut pads, 512, &[]);
+        let audio = h.transposes();
+        assert_eq!((audio[0], audio[1], audio[2]), (key, Transpose::NONE, key));
+        assert!(h
+            .act(TimeAction::Transpose {
+                track: 0,
+                to: Transpose::semitones(25)
+            })
+            .is_err());
+        assert!(h
+            .act(TimeAction::Transpose {
+                track: 99,
+                to: five
+            })
+            .is_err());
+        assert_eq!(
+            h.act(TimeAction::FollowsTranspose {
+                track: 2,
+                on: false
+            })
+            .unwrap(),
+            "follows transpose: Track 3 keeps its own"
+        );
         assert_eq!(h.dropped(), 0);
     }
 

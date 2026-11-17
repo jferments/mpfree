@@ -1820,6 +1820,35 @@ mod device_log {
         });
     }
 
+    /// Live transpose (`^transpose: .* \+5 st$`, `^transpose: .* as
+    /// written$`), as the `live-transpose` check has it done: with the
+    /// synth on the pads, 16 LEVEL opens Transpose, pad 14 moves the armed
+    /// track up a fourth and pad 9 brings it back.
+    #[test]
+    fn live_transpose_writes_its_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.pick_synth();
+            s.button("16 LEVEL");
+            assert!(s.app.pads_transpose(), "16 LEVEL on the synth: Transpose");
+            let n = s.lines.len();
+            s.pad(13, 100, 0.05);
+            let l = wrote(&s, n, "transpose: ", " +5 st");
+            assert_eq!(l, "transpose: Track 1 +5 st");
+            let n = s.lines.len();
+            s.pad(8, 100, 0.05);
+            wrote(&s, n, "transpose: Track 1 as written", "");
+            s.button("16 LEVEL");
+            let n = s.lines.len();
+            s.pad(13, 100, 0.05);
+            assert!(
+                !since(&s, n).iter().any(|l| l.starts_with("transpose: ")),
+                "16 LEVEL gave the pads back"
+            );
+        });
+    }
+
     /// The clip grid and the Song view: a clip moved, a copy, a block
     /// moved (`^clips: .* moved to `, `^clips: a copy of `,
     /// `^song: .* moved to `).

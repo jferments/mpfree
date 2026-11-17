@@ -217,8 +217,12 @@ struct LevelsUi {
     picking: bool,
     /// The pad held now, lit bright on the panel.
     lit: Option<usize>,
-    /// What the app was last told (on, open), so it hears each change once.
-    told: Option<(bool, bool)>,
+    /// Transpose is the kind (sequencer S4, live transpose): the pads move
+    /// the armed track, not the kit's levels, while 16 Levels are on.
+    transpose: bool,
+    /// What the app was last told (on, open, transpose), so it hears each
+    /// change once.
+    told: Option<(bool, bool, bool)>,
 }
 
 /// The hint while the REC chip's target list is open.
@@ -623,6 +627,9 @@ pub struct KitView {
     /// The synth's pads' notes, for Beats' scale rows (pad 1 first);
     /// empty for a kit and the Drums engine.
     pub pitches: Vec<Option<play_page::PadPitch>>,
+    /// The synth's scale while its pads play In key or chords of it ("A
+    /// Minor"): what Transpose steps through. None for a kit.
+    pub key: Option<String>,
 }
 
 /// Timing numbers from the audio thread.
@@ -650,10 +657,6 @@ pub struct Timing {
 /// What each track plays as its own instrument (None: the kit).
 pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
 
-/// Writes what each track plays under its name: its own instrument's
-/// name, else what it plays of the kit chip's list (`kits`): "Kit" (kit
-/// 1), "Kit 2" and on, or "Synth"; a Loop track's input ("Pads", for the
-/// pads and the synth).
 /// What a pad mute says on a track that plays kit `kit` (counted from
 /// 0, and not kit 1): its pads play through the track's channel, which
 /// has the mute. `what` starts the line ("steps", "pad mute").
@@ -664,10 +667,23 @@ pub fn other_kit_mutes(what: &str, kit: usize) -> String {
     )
 }
 
-fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds, kits: &crate::sampler::TrackKits) {
+/// Writes what each track plays under its name: its own instrument's
+/// name, else what it plays of the kit chip's list (`kits`): "Kit" (kit
+/// 1), "Kit 2" and on, or "Synth"; a Loop track's input ("Pads", for the
+/// pads and the synth). And which tracks play notes, so transpose moves
+/// them (`TrackInfo::melodic`): one with its own instrument (not the drum
+/// engine), or one that plays the synth while it plays notes
+/// (`synth_notes`).
+fn fill_sounds(
+    st: &mut TimeState,
+    sounds: &TrackSounds,
+    kits: &crate::sampler::TrackKits,
+    synth_notes: bool,
+) {
     use std::borrow::Cow;
     for (i, t) in st.tracks.iter_mut().enumerate() {
-        let name: Cow<str> = match (t.loops, sounds.get(i).copied().flatten()) {
+        let own = sounds.get(i).copied().flatten();
+        let name: Cow<str> = match (t.loops, own) {
             (Some(input), _) => input.short().into(),
             (None, Some(h)) => h.name.into(),
             (None, None) if kits.plays_synth(i) => "Synth".into(),
@@ -679,8 +695,16 @@ fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds, kits: &crate::sampler::
         if t.sound != name {
             t.sound = name.into_owned();
         }
+        t.melodic = t.loops.is_none()
+            && match own {
+                Some(h) => h.id != DRUMS_ENGINE,
+                None => synth_notes && kits.plays_synth(i),
+            };
     }
 }
+
+/// The drum synth's id: its notes are drums, so it never transposes.
+const DRUMS_ENGINE: &str = "mpfree.drums";
 
 /// The loops as the Loop tracks' cells show them, from the Looper's view:
 /// each loop's layers and whether it overdubs, how many hold a loop, and
@@ -1130,10 +1154,13 @@ pub enum FromUi {
     /// page too.
     StepPage(usize),
     /// 16 Levels are on the playing kit (`on`; 16 LEVEL lights) and the
-    /// panel shows on Play (`open`; the wheel turns its kind).
+    /// panel shows on Play (`open`; the wheel turns its kind). With
+    /// `transpose` the pads transpose the armed track instead (sequencer
+    /// S4): `on` and no kit levels.
     Levels {
         on: bool,
         open: bool,
+        transpose: bool,
     },
     /// A touch on the transport bar or the Arrange page.
     Time(TimeAction),
@@ -1863,7 +1890,7 @@ impl Player {
             arp_panel,
             // 16 Levels start off: the app hears only a change.
             levels: LevelsUi {
-                told: Some((false, false)),
+                told: Some((false, false, false)),
                 ..LevelsUi::default()
             },
             workspace,
@@ -1947,6 +1974,42 @@ impl Player {
         self.refresh_pads_bar();
     }
 
+    /// The synth is not the drum engine: the tracks that play it play
+    /// notes, so they transpose.
+    fn synth_plays_notes(&self) -> bool {
+        !self
+            .synth
+            .as_ref()
+            .is_some_and(|p| p.state.info.id == DRUMS_ENGINE)
+    }
+
+    /// The pads play the synth (the armed track's entry is the synth's),
+    /// and it plays notes: 16 LEVEL transposes.
+    fn synth_has_pads(&self) -> bool {
+        self.synth_plays_notes() && self.kits.get(self.kit).is_some_and(|k| k.synth.is_some())
+    }
+
+    /// What each track plays changed (a kit, the synth, a track's own
+    /// instrument): its name under it, and which tracks transpose, on the
+    /// Record tab and on 16 Levels' Transpose.
+    fn refill_sounds(&mut self) {
+        let synth = self.synth_plays_notes();
+        fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits, synth);
+        self.time_page.update(&mut self.ui, &self.time);
+        if self.levels.transpose {
+            self.refresh_levels();
+        }
+    }
+
+    /// The synth's scale while it has the pads and one ("A Minor"): the
+    /// key Transpose steps through In key; None, it moves by semitones.
+    fn pads_key(&self) -> Option<String> {
+        if !self.synth_has_pads() {
+            return None;
+        }
+        self.kits.get(self.kit).and_then(|k| k.key.clone())
+    }
+
     /// The pads panel's heading: the bank and the kit, or the synth with
     /// its Chromatic | In key switch (not for Drums, whose pads are
     /// sounds). The Synth tab's copy always shows the synth. The Play
@@ -1955,7 +2018,7 @@ impl Player {
         let drums_engine = self
             .synth
             .as_ref()
-            .is_some_and(|p| p.state.info.id == "mpfree.drums");
+            .is_some_and(|p| p.state.info.id == DRUMS_ENGINE);
         let switch = |s: Option<SynthPads>| s.filter(|_| !drums_engine);
         let now = self.kits.get(self.kit);
         let (title, right, synth) = match now {
@@ -3341,6 +3404,19 @@ impl Player {
                     self.play.last_pad + 1
                 ));
             }
+            Some(Turn::Transpose(by)) => {
+                // 16 Levels' Transpose: the armed track, as its pads would.
+                if let Some((track, now)) = self
+                    .time
+                    .armed
+                    .and_then(|a| Some((a, self.time.tracks.get(a)?.transpose)))
+                {
+                    self.outbox.push(FromUi::Time(TimeAction::Transpose {
+                        track,
+                        to: mpfree_seq::Transpose { by, ..now },
+                    }));
+                }
+            }
             Some(Turn::Pad(knob, d)) => {
                 let pad = self.play.last_pad;
                 let which = if knob == Knob::Tune {
@@ -3478,6 +3554,13 @@ impl Player {
                 self.sample.pad_names(pad).0
             ));
             chips.push(Chip::new(format!("16 Levels · {by}"), Tone::Warn));
+        } else if self.levels.transpose {
+            // Transpose (sequencer S4): the pads move the armed track.
+            why.push(
+                "16 Levels: the pads transpose the armed track, pad 9 as written: 16 LEVEL gives them back"
+                    .to_string(),
+            );
+            chips.push(Chip::new("16 Levels · transpose", Tone::Warn));
         }
         // STEP SEQ: the pads are a sound's steps; a tap gives them back.
         self.steps_chip = None;
@@ -4935,6 +5018,9 @@ impl Player {
                 self.set_kit(k);
                 self.sample.set_kit(k);
                 self.sample_changed();
+                // The synth taking the pads (or giving them up) changes
+                // which tracks transpose.
+                self.refill_sounds();
             }
             ToUi::Level { db, .. } => {
                 let text = format!("{db:.1}");
@@ -5224,13 +5310,11 @@ impl Player {
             ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::TrackSounds(s) => {
                 self.track_sounds = *s;
-                fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits);
-                self.time_page.update(&mut self.ui, &self.time);
+                self.refill_sounds();
             }
             ToUi::TrackKits(k) => {
                 self.track_kits = *k;
-                fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits);
-                self.time_page.update(&mut self.ui, &self.time);
+                self.refill_sounds();
                 // The step grid's mutes are kit 1's pads' alone.
                 self.refresh_play();
             }
@@ -5510,6 +5594,9 @@ impl Player {
                     }
                 }
                 self.refresh_pads_bar();
+                // The synth's engine or scale: which tracks transpose, and
+                // the key In key moves through.
+                self.refill_sounds();
             }
             ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
             ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
@@ -5551,8 +5638,15 @@ impl Player {
             }
             ToUi::SixteenLevels => self.toggle_levels(),
             ToUi::LevelsWheel(d) => {
-                let by = LevelsPanel::wheel(self.levels.by, d);
-                self.levels_by(by);
+                let now = if self.levels.transpose {
+                    levels_panel::Kind::Transpose
+                } else {
+                    levels_panel::Kind::Level(self.levels.by)
+                };
+                match LevelsPanel::wheel(now, d) {
+                    levels_panel::Kind::Level(by) => self.levels_by(by),
+                    levels_panel::Kind::Transpose => self.levels_transpose(),
+                }
             }
             ToUi::Patterns(list) => {
                 self.arp.patterns = list;
@@ -5597,11 +5691,16 @@ impl Player {
                     self.undo_loop = false;
                     self.seen_takes = seen;
                 }
-                fill_sounds(&mut st, &self.track_sounds, &self.track_kits);
+                let synth = self.synth_plays_notes();
+                fill_sounds(&mut st, &self.track_sounds, &self.track_kits, synth);
                 st.loops = loops_info(&self.looper);
                 // The bar's REC chip is the screen's own (refresh_play).
                 st.chips = std::mem::take(&mut self.time.chips);
                 self.time = *st;
+                if self.levels.transpose {
+                    // The armed track, and where it is transposed to.
+                    self.refresh_levels();
+                }
                 // Play's strip and the Looper tab name a loop by its place.
                 let places = time_view::loop_places(&self.time);
                 if self.looper_page.set_places(places) {
@@ -7184,6 +7283,18 @@ impl Player {
     /// 16 LEVEL: on (of the pad hit last, by the kind picked last, with the
     /// panel) or, while on, off.
     fn toggle_levels(&mut self) {
+        if self.levels.transpose {
+            // Off: the pads play again (the transpose stays where it is).
+            self.levels.transpose = false;
+            self.levels.open = false;
+            self.after_levels_change();
+            return;
+        }
+        if self.sample.levels().is_none() && self.synth_has_pads() {
+            // The synth's pads have no kit levels: they transpose.
+            self.levels_transpose();
+            return;
+        }
         let want = match self.sample.levels() {
             Some(_) => None,
             None => Some((self.sample.pad(), self.levels.by)),
@@ -7201,9 +7312,34 @@ impl Player {
         self.after_levels_change();
     }
 
+    /// Transpose is the kind (sequencer S4): the kit's levels go off and
+    /// the pads transpose the armed track, the panel showing it.
+    fn levels_transpose(&mut self) {
+        if self.sample.levels().is_some() {
+            self.sample.set_levels(&mut self.ui, None);
+        }
+        self.levels.transpose = true;
+        self.levels.open = true;
+        self.levels.picking = false;
+        self.levels.lit = None;
+        self.after_levels_change();
+    }
+
     /// The levels step through `by` from now on.
     fn levels_by(&mut self, by: Levels) {
         self.levels.by = by;
+        if self.levels.transpose {
+            // From Transpose back to the kit's levels, of the pad hit last.
+            self.levels.transpose = false;
+            if !self
+                .sample
+                .set_levels(&mut self.ui, Some((self.sample.pad(), by)))
+            {
+                self.tell("16 Levels: there is no kit to play 16 Levels of here");
+            }
+            self.after_levels_change();
+            return;
+        }
         if let Some((pad, _)) = self.sample.levels() {
             self.sample.set_levels(&mut self.ui, Some((pad, by)));
             self.after_levels_change();
@@ -7215,7 +7351,8 @@ impl Player {
     /// A pad down (`down`) or up: lit on the panel while held, and with
     /// Pick pad armed, the pad the levels play from now on.
     fn levels_hit(&mut self, pad: usize, down: bool) {
-        if pad >= 16 || self.sample.levels().is_none() {
+        // Transpose lights the step it is on, not the pad hit.
+        if pad >= 16 || self.sample.levels().is_none() || self.levels.transpose {
             return;
         }
         if down && self.levels.picking {
@@ -7237,7 +7374,7 @@ impl Player {
     /// The kit's pads changed between their own sounds and 16 Levels: the
     /// panel, its page, the names on Play and the edits go out.
     fn after_levels_change(&mut self) {
-        let on = self.sample.levels().is_some();
+        let on = self.sample.levels().is_some() || self.levels.transpose;
         if !on {
             self.levels.open = false;
             self.levels.picking = false;
@@ -7256,7 +7393,7 @@ impl Player {
     /// the panel turned on or off.
     fn refresh_levels(&mut self) {
         let levels = self.sample.levels();
-        if levels.is_none() && self.levels.open {
+        if levels.is_none() && self.levels.open && !self.levels.transpose {
             self.levels.open = false;
             self.levels.picking = false;
             if self.view == View::Play {
@@ -7275,13 +7412,33 @@ impl Player {
             picking: self.levels.picking,
             lit: self.levels.lit,
             colour: crate::akai::kit_colour(self.sample.kit()),
+            transpose: self.levels.transpose.then(|| self.transpose_view()),
         };
         if let Some(w) = self.ui.get_mut::<LevelsPanel>(levels_panel::PANEL) {
             if w.model != model {
                 w.model = model;
             }
         }
-        let now = (levels.is_some(), self.levels.open);
+        // Transpose's Q-Link, in Tune's place while it is the kind.
+        let knob = self
+            .time
+            .armed
+            .and_then(|a| self.time.tracks.get(a))
+            .filter(|t| self.levels.transpose && t.melodic)
+            .map(|t| play_page::TransposeKnob {
+                track: t.name.clone(),
+                by: t.transpose.by,
+                in_key: t.transpose.in_key,
+            });
+        if self.play.transpose != knob {
+            self.play.transpose = knob;
+            self.refresh_qlinks();
+        }
+        let now = (
+            levels.is_some() || self.levels.transpose,
+            self.levels.open,
+            self.levels.transpose,
+        );
         if self.levels.told != Some(now) {
             self.levels.told = Some(now);
             // The 16 Levels chip comes or goes.
@@ -7289,7 +7446,30 @@ impl Player {
             self.outbox.push(FromUi::Levels {
                 on: now.0,
                 open: now.1,
+                transpose: now.2,
             });
+        }
+    }
+
+    /// What 16 Levels' Transpose shows: the armed track, where it is, the
+    /// tracks that follow it, and whether it plays notes.
+    fn transpose_view(&self) -> levels_panel::TransposeView {
+        let st = &self.time;
+        let Some(tr) = st.armed.and_then(|a| st.tracks.get(a)) else {
+            return levels_panel::TransposeView::default();
+        };
+        levels_panel::TransposeView {
+            track: tr.name.clone(),
+            with: st
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(i, t)| Some(*i) != st.armed && t.follows && t.melodic)
+                .map(|(_, t)| t.name.clone())
+                .collect(),
+            melodic: tr.melodic,
+            by: tr.transpose.by,
+            key: tr.transpose.in_key.then(|| self.pads_key()).flatten(),
         }
     }
 
@@ -8411,6 +8591,7 @@ impl Player {
                 for a in actions {
                     match a {
                         LevelsAction::By(by) => self.levels_by(by),
+                        LevelsAction::Transpose => self.levels_transpose(),
                         LevelsAction::PickPad => {
                             self.levels.picking = !self.levels.picking;
                             self.refresh_levels();
@@ -8425,6 +8606,7 @@ impl Player {
                             self.refresh_hint();
                         }
                         LevelsAction::Off => {
+                            self.levels.transpose = false;
                             self.sample.set_levels(&mut self.ui, None);
                             self.after_levels_change();
                         }
@@ -9319,6 +9501,7 @@ pub fn sample_kits() -> Vec<KitView> {
         chip: None,
         synth: None,
         pitches: Vec::new(),
+        key: None,
     };
     // Kit 2 is the Play mockups' kit (F to I), so the previews show it.
     let mut boom_bap = kit("Boom Bap", [0x00, 0x2A, 0x3F], 16);
@@ -19274,7 +19457,7 @@ mod tests {
             acts.iter()
                 .rev()
                 .filter_map(|a| match a {
-                    FromUi::Levels { on, open } => Some((*on, *open)),
+                    FromUi::Levels { on, open, .. } => Some((*on, *open)),
                     _ => None,
                 })
                 .next()
@@ -19352,7 +19535,10 @@ mod tests {
             }
         );
         // A tap on Decay.
-        tap(&mut p, LevelsPanel::kind_rect(r, Levels::Decay));
+        tap(
+            &mut p,
+            LevelsPanel::kind_rect(r, levels_panel::Kind::Level(Levels::Decay)),
+        );
         assert_eq!(
             p.sample.project(0).unwrap().pads_play(),
             PadsPlay::Levels {
@@ -19378,6 +19564,86 @@ mod tests {
         tap(&mut p, LevelsPanel::button_rect(r, 2));
         assert_eq!(p.sample.project(0).unwrap().pads_play(), PadsPlay::Pads);
         assert_ne!(p.page(), LEVELS_PAGE);
+    }
+
+    /// 16 Levels' Transpose (sequencer S4): with the synth on the pads,
+    /// 16 LEVEL opens the Transpose kind. The heading names the armed track
+    /// and where it is, the step it is on is lit, Tune's Q-Link turns it,
+    /// and 16 LEVEL again gives the pads back.
+    #[test]
+    fn sixteen_level_on_the_synth_transposes_the_armed_track() {
+        use mpfree_seq::Transpose;
+        let mut p = sample_beats_synth(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        // The armed track plays the synth (a kit for each track).
+        let mut kits = crate::sampler::TrackKits::new(sample_kits().len());
+        assert!(kits.set(p.time.armed.unwrap(), kits.synth()));
+        p.apply(ToUi::TrackKits(Box::new(kits)));
+        p.take_actions();
+        p.apply(ToUi::SixteenLevels);
+        let acts = p.take_actions();
+        assert!(
+            acts.iter().any(|a| matches!(
+                a,
+                FromUi::Levels {
+                    on: true,
+                    open: true,
+                    transpose: true
+                }
+            )),
+            "{acts:?}"
+        );
+        let panel = |p: &Player| {
+            p.ui.get::<LevelsPanel>(levels_panel::PANEL)
+                .unwrap()
+                .model
+                .clone()
+        };
+        let armed = p.time.armed.unwrap();
+        let name = p.time.tracks[armed].name.clone();
+        let v = panel(&p).transpose.unwrap();
+        assert_eq!(
+            (v.track.as_str(), v.melodic, v.by),
+            (name.as_str(), true, 0)
+        );
+        assert_eq!(v.pad(), Some(8), "pad 9: as written");
+        assert_eq!(p.play.knobs()[1], Knob::Transpose);
+        let chips: Vec<String> =
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect();
+        assert!(
+            chips.contains(&"16 Levels · transpose".to_string()),
+            "{chips:?}"
+        );
+        // The time engine moves it 5 notes of the key: the panel follows.
+        let mut st = p.time.clone();
+        st.tracks[armed].transpose = Transpose {
+            by: 5,
+            in_key: true,
+        };
+        p.apply(ToUi::Time(Box::new(st)));
+        let v = panel(&p).transpose.unwrap();
+        assert_eq!((v.by, v.key.as_deref()), (5, Some("C Minor")));
+        assert_eq!(v.pad(), Some(13));
+        // Tune's Q-Link turns it, two octaves either way.
+        p.apply(ToUi::PlayQLink(1, 2));
+        let acts = p.take_actions();
+        assert!(
+            acts.iter().any(|a| matches!(
+                a,
+                FromUi::Time(TimeAction::Transpose { track, to })
+                    if *track == armed && *to == Transpose { by: 7, in_key: true }
+            )),
+            "{acts:?}"
+        );
+        // 16 LEVEL again: the pads play, Tune is back.
+        p.apply(ToUi::SixteenLevels);
+        assert!(!p.levels.transpose);
+        assert_eq!(p.play.knobs()[1], Knob::Tune);
     }
 
     #[test]

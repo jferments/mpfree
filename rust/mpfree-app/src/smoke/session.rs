@@ -733,7 +733,8 @@ impl Session {
     }
 
     /// A pad pressed or let go on the controller, as `player_session` hands
-    /// it over (the step pads, then the mute keys first).
+    /// it over (the step pads, then the mute keys and 16 Levels' Transpose
+    /// first).
     pub fn pad_edge(&mut self, pad: usize, velocity: u8, down: bool) {
         if down && self.app.pads_are_steps() {
             let v = self.app.velocity(velocity);
@@ -768,6 +769,16 @@ impl Session {
             self.fx.extend(more);
             let other = crate::other_kit(&self.track_kits, self.app.track());
             let line = crate::mute_key(tap, pad, other, &mut self.time, &mut self.mix);
+            self.out.note(&line);
+            return;
+        }
+        if down && pad < 16 && self.app.pads_transpose() {
+            // 16 Levels' Transpose (sequencer S4): the pad moves the armed
+            // track; its release plays nothing.
+            self.mute_pressed[pad] = true;
+            let own = &self.mix.instruments;
+            let kits = &self.track_kits;
+            let line = crate::transpose_pad(pad, &mut self.time, &self.synth, kits, own);
             self.out.note(&line);
             return;
         }
@@ -1553,11 +1564,13 @@ impl Session {
                     Effect::Quit => self.quit = true,
                     Effect::SavePatterns(_) => {}
                     Effect::SaveProject => self.save_asked = true,
-                    // 16 LEVEL, as main.rs: the synth's pads have none.
-                    Effect::SixteenLevels if self.synth_on || self.kit_to == Some(self.kits) => {
-                        self.out.note(
-                            "16 LEVEL: 16 Levels plays a kit; pick a kit with the wheel first",
-                        )
+                    // 16 LEVEL, as main.rs: the synth's pads open Transpose;
+                    // the Drums engine's have neither.
+                    Effect::SixteenLevels
+                        if (self.synth_on || self.kit_to == Some(self.kits))
+                            && !self.synth.plays_notes() =>
+                    {
+                        self.out.note(crate::DRUMS_NO_LEVELS)
                     }
                     Effect::SixteenLevels => self.out.show(ToUi::SixteenLevels),
                     // A track's own instrument is built beside the audio
