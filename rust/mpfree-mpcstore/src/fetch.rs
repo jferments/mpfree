@@ -689,13 +689,27 @@ mod tests {
         format!("http://{addr}/x.zip")
     }
 
-    /// A stand-in for the helper: a shell script that says `lines` and
-    /// writes `body` to its OUT argument.
+    /// A stand-in for the helper: a shell script that runs `script`, under a
+    /// name of its own.
+    ///
+    /// A child `sh` writes it, so this process never has it open for writing.
+    /// The tests run on parallel threads, and a process another test starts
+    /// holds a copy of every open file until its own exec: running a script
+    /// this process had just written could fail with "Text file busy".
     fn fake_helper(dir: &Path, script: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let p = dir.join("fake-fetch");
-        std::fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static MADE: AtomicUsize = AtomicUsize::new(0);
+        let n = MADE.fetch_add(1, Ordering::Relaxed);
+        let p = dir.join(format!("fake-fetch-{n}"));
+        let wrote = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf '#!/bin/sh\\n%s\\n' \"$1\" > \"$2\" && chmod 755 \"$2\"")
+            .arg("sh")
+            .arg(script)
+            .arg(&p)
+            .status()
+            .unwrap();
+        assert!(wrote.success(), "{}: {wrote}", p.display());
         p
     }
 
