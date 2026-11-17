@@ -20616,13 +20616,15 @@ mod tests {
         press(&mut p, send::CHOP_TO_PADS);
         assert_eq!(p.page(), sample_page::CHOP_PAGE);
         assert!(
-            p.sample.project(0).unwrap().pad(1).is_none(),
+            p.sample.project(0).unwrap().pad(5).is_none(),
             "nothing chopped yet"
         );
         press(&mut p, send::CHOP_TO_PADS);
+        // The 15 slices go on the empty pads after A5, A6 to B4.
+        let kit = p.sample.project(0).unwrap();
         assert!(
-            p.sample.project(0).unwrap().pad(1).is_some(),
-            "chopped onto pads"
+            kit.pad(5).is_some() && kit.pad(19).is_some() && kit.pad(20).is_none(),
+            "chopped onto A6 to B4"
         );
         // A pad without a sound has nothing to send: the buttons are faint.
         p.apply(ToUi::SampleUndo(false));

@@ -173,14 +173,14 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 
 ## Chop: slice across the pads
 
-{{shot: sample-chop | The Chop page: the break cut into 15 slices at its hits, with the method, the slice, the pads and the Chop button in the panel under it, ready to put on pads A2 to A16.}}
+{{shot: sample-chop | The Chop page: the break cut into 15 slices at its hits, with the method, the slice, the pads and the Chop button in the panel under it, ready to put on pads A6 to B4.}}
 
 **Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits.
 
 1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
 2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid and Silence the knob sets the slice length, the number of slices or the threshold).
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; drag a cut's tab, or turn the Q-Links, to move it. The first marker and **END** are the pad's own start and end, so they stay put here: move them on the Wave page.
-4. Tap the big **Chop to** button to put the slices on the pads, starting at the first pad you chose under **Pads**. **Put on** picks where they go: the pads, the pads and **Keys**, the pads and a **Phrase** that plays them in time, or **Files**.
+4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the pads, the pads and **Keys**, the pads and a **Phrase** that plays them in time, or **Files**.
 
 **Your chop stays with the sound.** Once you change the cuts (a method, a split, a cut moved, a live take), MPFree keeps them for that sound: pick another pad and come back, or open the project tomorrow, and the Chop page shows your slices as you left them, not a fresh chop. Keeping them isn't an edit, so **UNDO** leaves them be; they go on pads only when you tap **Chop to**.
 

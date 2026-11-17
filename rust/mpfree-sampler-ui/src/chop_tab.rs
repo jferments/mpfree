@@ -24,9 +24,10 @@
 //!   the pad made from it will ([`ChopAction::Audition`]).
 //! - **Split** cuts the slice picked in two, **Merge** joins it to the one
 //!   before, and **Chop to pads** puts the slices on consecutive pads of the
-//!   pad's bank as one undo step. Each new pad is the chopped pad (level,
-//!   envelopes, filter, its sound's gain, tune and channels) playing one
-//!   slice once. The button names the pads it fills; the list says how many
+//!   kit as one undo step: the first empty run after the chopped pad, on
+//!   past a bank's last pad (B1 after A16), or from the First pad picked.
+//!   Each new pad is the chopped pad (level, envelopes, filter, its
+//!   sound's gain, tune and channels) playing one slice once. The button names the pads it fills; the list says how many
 //!   of them have a sound already. With **Put on** at Keys, the button
 //!   reads **To keys** and also makes each slice a keygroup of one note,
 //!   from C2 up, and the kit's pads then play those notes, so the slices
@@ -97,7 +98,7 @@ pub const TAB: usize = 2;
 pub const HINT: &str = "Tap a slice to pick and hear it · drag a marker to move a cut · Split, Merge, then Chop to pads (UNDO takes \
                         it back) · SHIFT + Q-Link 2: one frame at a time";
 
-/// Pads in a bank: the most slices one chop can put on pads.
+/// Pads in a bank: PAD BANK A to H each play 16 of a kit's pads.
 pub const BANK: usize = 16;
 /// The most slices the tab cuts.
 pub const MAX_CUT_SLICES: usize = 64;
@@ -269,7 +270,7 @@ impl Button {
 }
 
 /// Everything the tab chops: one layer of one pad, its source, and which
-/// pads of its bank have a sound.
+/// pads of its kit have a sound.
 #[derive(Clone)]
 pub struct ChopState {
     pub pad: usize,
@@ -282,7 +283,7 @@ pub struct ChopState {
     /// The source's length.
     pub frames: u64,
     pub source: Arc<SourceView>,
-    /// Which pads of the bank (the 16 the pad is among) have a sound.
+    /// Which of the kit's pads have a sound, by pad.
     pub used: Vec<bool>,
     /// The app can write files (Put on Files is offered).
     pub files: bool,
@@ -313,15 +314,20 @@ impl ChopState {
             channels: s.channels(),
             frames: s.frames(),
             source,
-            used: bank_of(pad).map(|i| p.pad(i).is_some()).collect(),
+            used: (0..PADS).map(|i| p.pad(i).is_some()).collect(),
             files: false,
             kept: p.kept_chop(s.id()).cloned(),
         })
     }
 
-    /// The pads slices may go on: the 16 of the pad's bank.
-    pub fn bank(&self) -> Range<usize> {
-        bank_of(self.pad)
+    /// The pads slices may go on: all of the kit's, across its banks.
+    pub fn room(&self) -> Range<usize> {
+        0..PADS
+    }
+
+    /// Whether pad `pad` has a sound.
+    fn used(&self, pad: usize) -> bool {
+        self.used.get(pad).copied().unwrap_or(false)
     }
 
     fn frames_per_beat(&self) -> Option<f64> {
@@ -508,9 +514,11 @@ pub struct ChopTab {
     /// Slice starts strictly inside the region, sorted.
     cuts: Vec<u64>,
     selected: usize,
-    /// The first pad chosen with Q-Link 4 or the Pads row; None takes the
-    /// pads after the chopped one.
-    first_pad: Option<usize>,
+    /// The first pad chosen with Q-Link 4 or the Pads row, or filled by
+    /// the last Chop to pads, for the chopped pad named (so chopping it
+    /// again replaces those slices); otherwise the first run of empty pads
+    /// after the chopped one.
+    first_pad: Option<(usize, usize)>,
     /// The Put row: the pads; also notes from [`SLICE_KEYS_FROM`], as
     /// keygroups of a note each, the pads then playing those notes; or the
     /// pads and a phrase of them in time.
@@ -641,29 +649,31 @@ impl ChopTab {
         self.cuts.len() + 1
     }
 
-    /// The pads Chop to pads fills, if the slices fit in the bank.
+    /// The pads Chop to pads fills, if the slices fit on the kit's pads.
+    /// Unless a First pad was picked, they start after the chopped pad, at
+    /// the first run of empty pads long enough (into the next banks: B1
+    /// after A16); with none, right after the chopped pad, or as late as
+    /// they fit.
     pub fn pads(&self, st: &ChopState) -> Option<Range<usize>> {
         let n = self.slices();
-        let bank = st.bank();
-        if n > bank.len() {
+        let room = st.room();
+        if n > room.len() {
             return None;
         }
-        let last = bank.end - n;
-        let first = match self.first_pad {
-            Some(f) => f.clamp(bank.start, last),
-            None if st.pad < last => st.pad + 1,
-            None => last,
+        let last = room.end - n;
+        let first = match self.first_pad.filter(|&(pad, _)| pad == st.pad) {
+            Some((_, f)) => f.clamp(room.start, last),
+            None => (st.pad + 1..=last)
+                .find(|&f| !(f..f + n).any(|i| st.used(i)))
+                .unwrap_or_else(|| (st.pad + 1).clamp(room.start, last)),
         };
         Some(first..first + n)
     }
 
     /// The pads Chop to pads fills that have a sound already.
     pub fn replaced(&self, st: &ChopState) -> Vec<usize> {
-        let bank = st.bank();
-        self.pads(st).map_or_else(Vec::new, |r| {
-            r.filter(|&i| st.used.get(i - bank.start).copied().unwrap_or(false))
-                .collect()
-        })
+        self.pads(st)
+            .map_or_else(Vec::new, |r| r.filter(|&i| st.used(i)).collect())
     }
 
     /// Whether live chop is on (Start pressed, the sound not yet over).
@@ -931,7 +941,7 @@ impl ChopTab {
         let rows = self.rows(st);
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.right = match (pads.is_some(), replaced.len()) {
-                (false, _) => format!("{n} slices: too many for a bank"),
+                (false, _) => format!("{n} slices: more than the kit's {PADS} pads"),
                 (true, 0) => "no pad replaced".into(),
                 (true, 1..=3) => {
                     let names: Vec<String> =
@@ -966,7 +976,7 @@ impl ChopTab {
             Button::ToPads => match (self.pads(st).map(|p| self.range_text(&p)), self.put(st)) {
                 (_, Put::Files) if n == 1 => "Export the pad".to_string(),
                 (_, Put::Files) => format!("Export {n} slices"),
-                (None, _) => format!("Max {BANK} slices"),
+                (None, _) => format!("Max {PADS} slices"),
                 (Some(t), Put::Pads) => format!("Chop to {t}"),
                 (Some(t), Put::Phrase) => format!("Phrase on {t}"),
                 (Some(_), Put::Keys) => {
@@ -1223,7 +1233,7 @@ impl ChopTab {
         let n = self.slices();
         let (amount, value, pos) = self.amount();
         let pads = self.pads(st);
-        let bank = st.bank();
+        let room = st.room();
         if let Some(c) = ui.get_mut::<KnobCard>(QLINKS[0]) {
             c.value = (self.selected + 1).to_string();
             c.sub = format!("of {n}");
@@ -1256,9 +1266,9 @@ impl ChopTab {
                     } else {
                         String::new()
                     };
-                    let room = bank.len() - p.len();
-                    c.pos = if room > 0 {
-                        (p.start - bank.start) as f32 / room as f32
+                    let free = room.len() - p.len();
+                    c.pos = if free > 0 {
+                        (p.start - room.start) as f32 / free as f32
                     } else {
                         0.0
                     };
@@ -1423,6 +1433,8 @@ impl ChopTab {
             }),
             Button::ToPads => {
                 let pads = self.pads(st)?;
+                // Chopping this pad again replaces these slices.
+                self.first_pad = Some((st.pad, pads.start));
                 Some(ChopAction::ToPads {
                     pad: st.pad,
                     layer: st.layer,
@@ -1537,9 +1549,10 @@ impl ChopTab {
 
     fn turn_first_pad(&mut self, st: &ChopState, delta: i32) {
         let Some(p) = self.pads(st) else { return };
-        let bank = st.bank();
-        let last = (bank.end - p.len()) as i32;
-        self.first_pad = Some((p.start as i32 + delta).clamp(bank.start as i32, last) as usize);
+        let room = st.room();
+        let last = (room.end - p.len()) as i32;
+        let first = (p.start as i32 + delta).clamp(room.start as i32, last) as usize;
+        self.first_pad = Some((st.pad, first));
     }
 
     /// A Q-Link turned: `knob` 0 picks a slice, 1 moves its start, 2 turns
