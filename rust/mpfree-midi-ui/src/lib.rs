@@ -235,6 +235,10 @@ pub struct Asks {
     pub learn_again: Option<usize>,
     /// The Learn section's Cancel: MIDI Learn stops listening.
     pub cancel_learn: bool,
+    /// The Learn section's transport card: arm MIDI Learn on this (PLAY
+    /// and STOP, the tempo and the rest: `mpfree_param::transport`); it
+    /// waits until a control takes it or Cancel.
+    pub learn_target: Option<mpfree_param::ParamAddr>,
 }
 
 /// What a port's page asks MIDI out to send to it.

@@ -6813,9 +6813,10 @@ impl Player {
     }
 
     /// The value under (`x`, `y`) that SHIFT + a touch hands to MIDI
-    /// Learn: a mixer strip's fader, pan or send (the Faders look), a knob,
-    /// fader, slider or drawbar on the chain editor or the Synth tab, or a
-    /// macro's knob on the macros panel. None anywhere else (a value that
+    /// Learn: a mixer strip's fader, pan, send, M or S (the Faders look), a
+    /// knob, fader, slider or drawbar on the chain editor or the Synth tab,
+    /// a macro's knob on the macros panel, or Play's tempo. None anywhere
+    /// else (a value that
     /// learns nothing yet, or no value at all: SHIFT + a touch there keeps
     /// its own job). The smallest control there, as the outline picks.
     fn learnable_at(&self, x: i32, y: i32) -> Option<LearnValue> {
@@ -6826,6 +6827,14 @@ impl Player {
             .filter(|pt| pt.target.rect.contains(x, y))
             .min_by_key(|pt| pt.target.rect.w as i64 * pt.target.rect.h as i64)?;
         let (w, t) = (pt.widget.as_str(), &pt.target);
+        // Play's tempo (remote control). The transport's buttons are no
+        // values (layout spec 4d): the Learn section offers them.
+        if w == play_page::TRANSPORT && t.id == "tempo" {
+            return Some(LearnValue::Param(ParamAddr::new(
+                mpfree_play::mpfree_param::Owner::Transport,
+                mpfree_play::mpfree_param::transport::TEMPO,
+            )));
+        }
         if w == mpfree_mixer_ui::MIXER {
             let (sid, param) = mpfree_mixer_ui::param_of(&self.ui, t)?;
             let strip = crate::modmix::strip_of(sid)?;
@@ -11988,6 +11997,76 @@ mod tests {
         assert_eq!(
             p.touch(3, Touch::Down, play.x + 20, play.y + 20),
             Some(FromUi::Tab(0))
+        );
+    }
+
+    /// Remote control: SHIFT + a touch on Play's tempo or a strip's M arms
+    /// MIDI Learn on it. Arrange's PLAY is no value: it keeps its job.
+    #[test]
+    fn shift_and_a_touch_on_the_tempo_or_a_mute_arms_midi_learn() {
+        use mpfree_play::mpfree_param::{transport as tr, Owner};
+        use mpfree_time_ui::widgets::{BarButton, TransportBar};
+        use mpfree_ui::Rect;
+        let on = |owner, id| FromUi::LearnValue(LearnValue::Param(ParamAddr::new(owner, id)));
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            assert_eq!(
+                p.touch(1, Touch::Up, x, y),
+                None,
+                "the finger does nothing else"
+            );
+            down
+        };
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let bar = p.ui.rect_of(time_view::TRANSPORT).unwrap();
+        p.status.shift = true;
+        let play = TransportBar::button_rect(bar, BarButton::Play).unwrap();
+        let (x, y) = centre(play);
+        let down = p.touch(1, Touch::Down, x, y);
+        assert_eq!(
+            down.or(p.touch(1, Touch::Up, x, y)),
+            Some(FromUi::Time(TimeAction::Transport(
+                mpfree_transport::Command::Play
+            )))
+        );
+        // Play's tempo.
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let tempo =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == play_page::TRANSPORT && t.target.id == "tempo")
+                .expect("Play's tempo");
+        p.status.shift = true;
+        assert_eq!(
+            press(&mut p, tempo.target.centre()),
+            Some(on(Owner::Transport, tr::TEMPO))
+        );
+        // A strip's M: its mute.
+        let mut m = mpfree_mixer_ui::sample::song_mixer();
+        let st = mpfree_mixer_ui::MixState::from_mixer(
+            &mut m,
+            mpfree_mixer_ui::MixView::Tracks,
+            &mpfree_mixer_ui::sample::name,
+        );
+        p.apply(ToUi::Show(View::Mixer));
+        p.apply(ToUi::Mixer(Box::new(st)));
+        p.ui.paint(&mut c);
+        let mute =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == mpfree_mixer_ui::MIXER && t.target.id == "mute")
+                .expect("a strip's M");
+        let (sid, param) = mpfree_mixer_ui::param_of(&p.ui, &mute.target).unwrap();
+        assert_eq!(param, mpfree_fx::ids::mixer::MUTE);
+        let strip = crate::modmix::strip_of(sid).unwrap();
+        assert_eq!(
+            press(&mut p, mute.target.centre()),
+            Some(on(Owner::Strip(strip), param))
         );
     }
 

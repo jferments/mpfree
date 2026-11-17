@@ -73,11 +73,12 @@ MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a d
 
 ## MIDI Learn
 
-MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, an effect's knob, a macro, or a knob on the Synth tab.
+MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
 
 **The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
 
-- the mixer's Faders look: a strip's fader, pan and sends;
+- the mixer's Faders look: a strip's fader, pan and sends, and its **M** (mute) and **S** (solo);
+- the tempo on the Play page;
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
 - the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads).
@@ -105,16 +106,28 @@ Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
   - **Knob or fader**: the knob follows it. Every control but a key starts as this.
   - **Endless**: for a knob that turns forever. Each click moves the knob one step on from where it is, even after you changed it on the screen. Controllers send these three ways, so if the knob jumps or runs backwards, try the next one: **1 up, 127 down**, **65 up, 63 down** or **1 up, 65 down**.
   - **Button: on, then off**: each press switches between the range's top and bottom.
-  - **Button: while held**: top while held, bottom when let go. A key starts as this.
+  - **Button: while held**: top while held, bottom when let go. A key starts as this, except on a mute, a solo or **PLAY and STOP**, where it starts as **Button: on, then off**.
 - **Takeover** (Q-Link 4), for a knob or fader, says what happens when it and the screen disagree, after you changed the value on the screen or opened another song:
   - **Jump**: the value goes straight to where the knob is.
   - **Pick up**: the value waits until the knob passes it, so nothing jumps.
   - **Scale**: the value moves at once, but in step with the knob, so the two meet at the end the knob turns to.
-- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. While a song has its own mapping for the same control, the song's wins.
+- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. A control learned on the transport or the tempo starts in **Rig**, anything else in **Project**. While a song has its own mapping for the same control, the song's wins.
 - **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
 - **Remove** takes the control off.
 
-Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; recording a learned synth knob's moves into a clip; and controlling PLAY, STOP, REC and the tempo from a controller.
+Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; recording a learned synth knob's moves into a clip; and launching clips and scenes from a controller.
+
+### Playing and stopping from your controller
+
+A button, pad, key or footswitch on your controller can press MPFree's transport buttons, and a knob or fader can set the tempo. In the Learn section, tap **Transport and tempo** by the heading (the card shows them straight away while nothing is learned yet), tap one, then press the button or move the knob:
+
+- **PLAY and STOP**: one button for both. It plays when MPFree is stopped and stops it when it plays. A key or a pad flips it on each press; a footswitch that sends a CC plays while held, so set its **Works as** to **Button: on, then off**.
+- **PLAY**, **STOP**, **PLAY START**, **REC**, **OVERDUB** and **TAP TEMPO**: each does just what the MPC's own button does on the page you're on: PLAY while playing is FILL, and tapping TAP TEMPO in time sets the tempo. A press counts when the control goes past halfway and lets go when it comes back, so leave these as **Button: while held** or **Knob or fader**.
+- **Tempo**: from 30 to 300 BPM over the control's travel. Narrow it with **Range**, such as 110 to 130 for a fader that nudges, and use **Pick up** so the tempo doesn't jump when you first touch the fader. While the tempo follows another device's clock (Sync's **Tempo from**), the learned tempo control does nothing.
+
+For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it.
+
+Transport controls are kept in **Rig**, so they work in every project. Nothing here sends anything to your controller.
 
 ## CV and gate
 

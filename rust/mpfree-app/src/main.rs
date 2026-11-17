@@ -127,6 +127,7 @@ mod power;
 mod preview;
 mod project;
 mod qlink_touch;
+mod remote;
 #[cfg(test)]
 mod rt_safety;
 mod sample_page;
@@ -3215,17 +3216,21 @@ fn learned_set(
 }
 
 /// A parameter MIDI Learn can move, described with its value now: the
-/// mixer's and its effects' ([`modmix::describe`]), or a track's synth's
+/// mixer's and its effects' ([`modmix::describe`]), a track's synth's
 /// (`Owner::Inst`): its own instrument while it holds one, else the synth
-/// on the pads, as the Synth tab shows it.
+/// on the pads, as the Synth tab shows it; or the transport's tempo and
+/// PLAY and STOP ([`remote::describe`], from `now`).
 fn learn_describe(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
+    now: remote::Now,
     addr: mpfree_play::mpfree_param::ParamAddr,
 ) -> Option<(mpfree_node::ParamInfo, f32)> {
     use mpfree_play::mpfree_param::Owner;
-    let Owner::Inst(t) = addr.owner else {
-        return modmix::describe(&mix.mixer, addr);
+    let t = match addr.owner {
+        Owner::Inst(t) => t,
+        Owner::Transport => return remote::describe(addr.param, now),
+        _ => return modmix::describe(&mix.mixer, addr),
     };
     let t = usize::from(t);
     if mix.instruments.holds(t) {
@@ -3237,16 +3242,19 @@ fn learn_describe(
 }
 
 /// What a learned control moves, named for the I/O view and the hint line:
-/// "Poly cutoff (Track 2)" for a synth's knob, else as the chain editor names
-/// it ([`modpanels::label`]).
+/// "Poly cutoff (Track 2)" for a synth's knob, "PLAY and STOP" or "Tempo"
+/// for the transport, else as the chain editor names it
+/// ([`modpanels::label`]).
 fn learn_label(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
     addr: mpfree_play::mpfree_param::ParamAddr,
 ) -> String {
-    use mpfree_play::mpfree_param::Owner;
-    let Owner::Inst(t) = addr.owner else {
-        return modpanels::label(mix, addr);
+    use mpfree_play::mpfree_param::{transport, Owner};
+    let t = match addr.owner {
+        Owner::Inst(t) => t,
+        Owner::Transport => return transport::name(addr.param).unwrap_or("?").to_string(),
+        _ => return modpanels::label(mix, addr),
     };
     // As the time engine and the I/O view name the tracks.
     let track = format!("Track {}", usize::from(t) + 1);
@@ -3285,7 +3293,7 @@ fn learned_synth(
     let Owner::Inst(t) = w.target.owner else {
         return None;
     };
-    let (info, _) = learn_describe(mix, synth, w.target)?;
+    let (info, _) = learn_describe(mix, synth, remote::Now::default(), w.target)?;
     if info.readonly {
         return None;
     }
@@ -4459,6 +4467,10 @@ fn player_session(
     // MIDI Learn: values for parameters a control can't set yet, and the
     // I/O view's names taken at this generation of the model.
     let mut learn_misses = 0u64;
+    // Learned controls on the transport (remote.rs): the presses they hold,
+    // and whether the log said a learned tempo waits for a followed clock.
+    let mut remote = remote::Remote::new();
+    let mut remote_tempo_waits = false;
     let mut learn_names_gen: Option<u64> = None;
     let mut learn_now_at = 0.0_f64;
     let mut learning_shown: Option<(mpfree_play::mpfree_param::ParamAddr, midi_in::ArmedBy)> = None;
@@ -5338,6 +5350,7 @@ fn player_session(
         // chain editor knob does.
         let recording = time.info().state == mpfree_transport::State::Recording;
         let by_touch = learning_shown.is_some_and(|(_, by)| by == midi_in::ArmedBy::Touch);
+        let following = music.leader_name().is_some();
         for l in music.learning() {
             match l {
                 midi_in::Learning::Took { .. } if panels.learning() => {
@@ -5352,6 +5365,44 @@ fn player_session(
                 }
                 // The I/O view's Learn again: its section says so.
                 midi_in::Learning::Took { .. } => {}
+                // The transport: PLAY, STOP and the rest as the MPC's own
+                // buttons, and the tempo as Play's.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Transport =>
+                {
+                    let now = remote::Now {
+                        rolling: app.rolling(),
+                        bpm: app.bpm(),
+                    };
+                    match remote.write(w.target.param, w.value, now) {
+                        remote::Act::Nothing => {}
+                        remote::Act::Press(id, down) => fx.extend(app.remote_press(id, down, t)),
+                        remote::Act::Tap(id) => {
+                            fx.extend(app.remote_press(id, true, t));
+                            fx.extend(app.remote_press(id, false, t));
+                        }
+                        // Following another device's clock, its tempo wins.
+                        remote::Act::Tempo(_) if following => {
+                            if !remote_tempo_waits {
+                                remote_tempo_waits = true;
+                                out.midi(
+                                    "MIDI Learn: the tempo follows another device's clock, \
+                                     so a learned tempo control does nothing until it stops",
+                                );
+                            }
+                        }
+                        remote::Act::Tempo(bpm) => {
+                            remote_tempo_waits = false;
+                            // Without set_tempo's log line: a knob would
+                            // fill the log.
+                            fx.extend(
+                                app.set_tempo(bpm)
+                                    .into_iter()
+                                    .filter(|e| !matches!(e, app::Effect::Note(_))),
+                            );
+                        }
+                    }
+                }
                 // A synth's knob: as the Synth tab turns it, and the tab
                 // follows (a few times a second at most).
                 midi_in::Learning::Set(w)
@@ -5396,7 +5447,11 @@ fn player_session(
         }
         // Where each learned control's parameter stands, when something
         // else moved it: an endless encoder steps on from there.
-        music.observe_learned(mt, |addr| learn_describe(&mix, &synth, addr));
+        let remote_now = remote::Now {
+            rolling: app.rolling(),
+            bpm: app.bpm(),
+        };
+        music.observe_learned(mt, |addr| learn_describe(&mix, &synth, remote_now, addr));
         // The I/O view names what each learned control moves, whenever
         // the project's learned controls change.
         if let Ok(mut m) = io_model.try_lock() {
@@ -5413,14 +5468,16 @@ fn player_session(
                 // section's card).
                 live.learn_live = setup
                     .all_learned()
-                    .map(|(_, l)| match learn_describe(&mix, &synth, l.target) {
-                        Some((info, _)) => mpfree_midi_ui::LearnLive {
-                            now: None,
-                            lo_text: mpfree_mod::text::value_text(&info, info.from_unit(l.lo)),
-                            hi_text: mpfree_mod::text::value_text(&info, info.from_unit(l.hi)),
+                    .map(
+                        |(_, l)| match learn_describe(&mix, &synth, remote_now, l.target) {
+                            Some((info, _)) => mpfree_midi_ui::LearnLive {
+                                now: None,
+                                lo_text: mpfree_mod::text::value_text(&info, info.from_unit(l.lo)),
+                                hi_text: mpfree_mod::text::value_text(&info, info.from_unit(l.hi)),
+                            },
+                            None => mpfree_midi_ui::LearnLive::default(),
                         },
-                        None => mpfree_midi_ui::LearnLive::default(),
-                    })
+                    )
                     .collect();
                 learn_now_at = 0.0;
             }
@@ -5429,7 +5486,8 @@ fn player_session(
             if mt >= learn_now_at {
                 learn_now_at = mt + 0.25;
                 for ((_, l), v) in setup.all_learned().zip(live.learn_live.iter_mut()) {
-                    v.now = learn_describe(&mix, &synth, l.target).map(|(i, x)| i.to_unit(x));
+                    v.now = learn_describe(&mix, &synth, remote_now, l.target)
+                        .map(|(i, x)| i.to_unit(x));
                 }
             }
             // What Learn waits to give a control, named: on the Learn
@@ -8398,7 +8456,8 @@ mod tests {
                 value: unit,
             };
             assert_eq!(learned_synth(&mut synth, &mut mix, w), Some(()));
-            let (got_info, got) = learn_describe(&mix, &synth, knob).unwrap();
+            let (got_info, got) =
+                learn_describe(&mix, &synth, remote::Now::default(), knob).unwrap();
             assert_eq!(got_info.id, info.id);
             let want = info.from_unit(unit);
             assert!(
@@ -8421,5 +8480,35 @@ mod tests {
             };
             assert_eq!(learned_synth(&mut synth, &mut mix, reading), None);
         }
+    }
+
+    /// The transport's learned controls are named for the I/O view and
+    /// read from where the transport stands; a mute reads from the mixer.
+    #[test]
+    fn the_transport_and_a_mute_are_named_and_read_for_learn() {
+        use mpfree_play::mpfree_param::{transport, Owner, ParamAddr, Strip};
+        let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let synth = synth::Synth::new(44_100);
+        let now = remote::Now {
+            rolling: true,
+            bpm: 98.5,
+        };
+        let at = |id| ParamAddr::new(Owner::Transport, id);
+        assert_eq!(
+            learn_label(&mix, &synth, at(transport::PLAYING)),
+            "PLAY and STOP"
+        );
+        assert_eq!(
+            learn_label(&mix, &synth, at(transport::TAP_TEMPO)),
+            "TAP TEMPO"
+        );
+        let (info, bpm) = learn_describe(&mix, &synth, now, at(transport::TEMPO)).unwrap();
+        assert_eq!((info.name, bpm), ("Tempo", 98.5));
+        let (_, on) = learn_describe(&mix, &synth, now, at(transport::PLAYING)).unwrap();
+        assert_eq!(on, 1.0);
+        assert!(learn_describe(&mix, &synth, now, at(transport::REC)).is_none());
+        let mute = ParamAddr::new(Owner::Strip(Strip::Track(0)), mpfree_fx::ids::mixer::MUTE);
+        let (info, v) = learn_describe(&mix, &synth, now, mute).unwrap();
+        assert_eq!((info.curve, v), (mpfree_node::Curve::Toggle, 0.0));
     }
 }

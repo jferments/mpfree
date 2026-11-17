@@ -381,12 +381,26 @@ impl LearnMap {
     /// Adds a mapping; one that has the same control is replaced (a
     /// control moves one thing). Returns its index.
     pub fn add(&mut self, m: Mapping) -> usize {
+        let s = self.fresh(&m);
         if let Some(i) = self.maps.iter().position(|(x, _)| x.control == m.control) {
-            self.maps[i] = (m, State::default());
+            self.maps[i] = (m, s);
             i
         } else {
-            self.maps.push((m, State::default()));
+            self.maps.push((m, s));
             self.maps.len() - 1
+        }
+    }
+
+    /// A mapping's state from the start: a toggle is on when its
+    /// parameter's value is nearer `hi`, so its first press flips it from
+    /// where it stands.
+    fn fresh(&self, m: &Mapping) -> State {
+        State {
+            on: self
+                .values
+                .get(&m.target)
+                .is_some_and(|&v| (v - m.hi).abs() < (v - m.lo).abs()),
+            ..State::default()
         }
     }
 
@@ -401,10 +415,12 @@ impl LearnMap {
     }
 
     pub fn set_mode(&mut self, i: usize, mode: Mode) {
-        if let Some((m, s)) = self.maps.get_mut(i) {
-            m.mode = mode;
-            *s = State::default();
-        }
+        let Some(mut m) = self.get(i).copied() else {
+            return;
+        };
+        m.mode = mode;
+        let fresh = self.fresh(&m);
+        self.maps[i] = (m, fresh);
     }
 
     pub fn set_takeover(&mut self, i: usize, t: Takeover) {
