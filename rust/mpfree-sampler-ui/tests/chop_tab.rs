@@ -8,7 +8,7 @@ use mpfree_sampler::model::{
 use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, ChopTab, Method, Row};
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
 use mpfree_sampler_ui::wave_tab;
-use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, SettingList};
+use mpfree_sampler_ui::widgets::{PadBar, SettingList};
 use mpfree_sampler_ui::SourceView;
 use mpfree_ui::wave::Waveform;
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -64,9 +64,17 @@ fn apply(s: &mut ChopSample, a: &ChopAction) -> std::ops::Range<usize> {
     pads
 }
 
+/// What Split, Merge and Chop say on the panel, and whether each can be
+/// pressed (not faint).
 fn buttons(s: &ChopSample) -> (Vec<String>, Vec<bool>) {
-    let b = s.ui.get::<ButtonRow>(chop_tab::BUTTONS).unwrap();
-    (b.labels.clone(), b.enabled.clone())
+    let l = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
+    Button::ALL
+        .iter()
+        .map(|b| {
+            let k = b.row().index();
+            (l.rows[k].value.clone(), !l.controls[k].faint)
+        })
+        .unzip()
 }
 
 fn list_right(s: &ChopSample) -> String {
@@ -343,7 +351,7 @@ fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
     let b = s.tab.bounds(&s.state);
     step(&mut s, Row::Put, 1);
     let list = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
-    assert_eq!(list.rows[5].value, "Keys from C2");
+    assert_eq!(list.rows[Row::Put.index()].value, "Keys from C2");
     assert_eq!(buttons(&s).0[2], "To keys C2–D#2");
     let a = press(&mut s, Button::ToPads).unwrap();
     let ChopAction::ToPads { keys_from, .. } = a else {
@@ -390,7 +398,7 @@ fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
     step(&mut s, Row::Amount, -1);
     assert_eq!(s.tab.slices(), 15);
     let list_value = |s: &ChopSample| {
-        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[5]
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[Row::Put.index()]
             .value
             .clone()
     };
@@ -794,4 +802,58 @@ fn a_changed_chop_is_kept_for_its_sound_and_comes_back() {
     assert_eq!(&b[1..b.len() - 1], &inside[..]);
     again.update(&mut ui, &st);
     assert_eq!(again.bounds(&st), bounds);
+}
+
+/// A finger's tap on the panel's control labelled `label`; what the tab
+/// makes of it.
+fn tap_panel(s: &mut ChopSample, label: &str) -> Option<ChopAction> {
+    let t =
+        s.ui.targets()
+            .into_iter()
+            .find(|t| t.widget == chop_tab::LIST && t.target.label == label)
+            .unwrap_or_else(|| panic!("no \"{label}\""))
+            .target;
+    let (x, y) = t.centre();
+    let ev = s.ui.touch(5, Touch::Down, x, y)?;
+    s.ui.touch(5, Touch::Up, x, y);
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &ev, &st)
+}
+
+#[test]
+fn the_chop_panel_has_the_methods_the_slice_buttons_and_chop() {
+    let mut s = chop();
+    let wave = s.ui.rect_of(chop_tab::WAVE).unwrap();
+    let band = s.ui.rect_of(chop_tab::LIST).unwrap();
+    assert!(wave.w >= 1100, "{wave:?}");
+    assert_eq!((band.x, band.w, band.h), (wave.x, wave.w, 242));
+    let l = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
+    let panel = l.panel.as_ref().unwrap();
+    let titles: Vec<&str> = panel.sections.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["Method", "Slice", "Pads", "Chop"]);
+    let placed: Vec<usize> = panel
+        .place(band, &l.controls)
+        .iter()
+        .map(|p| p.row)
+        .collect();
+    assert_eq!(
+        placed,
+        (0..Row::ALL.len()).collect::<Vec<_>>(),
+        "the wheel's order"
+    );
+    // A method's button chops with it at once.
+    assert_eq!(tap_panel(&mut s, "Method: Grid"), None);
+    assert_eq!(s.tab.method(), Method::Grid);
+    assert_eq!(s.tab.slices(), 8);
+    // Split on the panel adds a slice by hand.
+    assert_eq!(tap_panel(&mut s, "Split"), None);
+    assert_eq!((s.tab.method(), s.tab.slices()), (Method::Manual, 9));
+    // Manual has no setting: its knob is faint.
+    let l = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
+    assert!(l.controls[Row::Amount.index()].faint);
+    // The main button names the pads, and puts the slices there.
+    let (labels, on) = buttons(&s);
+    assert_eq!((labels[2].as_str(), on[2]), ("Chop to A6–A14", true));
+    let a = tap_panel(&mut s, "Chop to A6–A14");
+    assert!(matches!(a, Some(ChopAction::ToPads { .. })), "{a:?}");
 }

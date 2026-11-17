@@ -500,6 +500,20 @@ impl SettingList {
         }
     }
 
+    /// Where row `k`'s control is on the panel drawn in `r`.
+    pub fn control_rect(&self, r: Rect, k: usize) -> Option<Rect> {
+        self.panel.as_ref()?.control_rect(r, &self.controls, k)
+    }
+
+    /// Why the panel's control for row `k` is faint, when it is and says.
+    pub fn why_faint(&self, k: usize) -> Option<&str> {
+        self.panel.as_ref()?;
+        self.controls
+            .get(k)
+            .filter(|c| c.faint && !c.why.is_empty())
+            .map(|c| c.why.as_str())
+    }
+
     /// The rows' names and values, for the panel.
     fn texts(&self) -> (Vec<String>, Vec<String>) {
         self.rows
@@ -730,7 +744,10 @@ impl Widget for SettingList {
             | EventKind::Type(k)
             | EventKind::Tab(k) = ev
             {
-                self.selected = k;
+                // A faint control tapped only says why: the wheel stays.
+                if !self.controls.get(k).is_some_and(|c| c.faint) {
+                    self.selected = k;
+                }
             }
             return Some(ev);
         }

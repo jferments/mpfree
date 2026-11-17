@@ -11449,8 +11449,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     warp.apply(ToUi::SampleLift);
     warp.on_event(UiEvent {
-        widget: mpfree_sampler_ui::warp_tab::BUTTONS.into(),
-        kind: EventKind::Tab(0),
+        widget: mpfree_sampler_ui::warp_tab::LIST.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::Row::PinHits.index()),
     });
     warp.apply(ToUi::SampleQLink(0, 4));
     warp.take_actions();
@@ -11901,7 +11901,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Live chop on the same pad: Start pressed, the break playing halfway,
     // and four pads hit so far.
     {
-        use mpfree_sampler_ui::chop_tab::{Row, BUTTONS, LIST};
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
         let mut live = sample_sampler(fonts());
         live.on_event(UiEvent {
             widget: mpfree_sampler_ui::wave_tab::BAR.into(),
@@ -11915,8 +11915,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             },
         });
         live.on_event(UiEvent {
-            widget: BUTTONS.into(),
-            kind: EventKind::Tab(0),
+            widget: LIST.into(),
+            kind: EventKind::Tab(Row::Split.index()),
         });
         let (project, _) = mpfree_sampler_ui::sample::project();
         if let Some(r) = project
@@ -16239,8 +16239,8 @@ mod tests {
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
         p.apply(ToUi::SampleLift);
         p.on_event(UiEvent {
-            widget: warp_tab::BUTTONS.into(),
-            kind: EventKind::Tab(0),
+            widget: warp_tab::LIST.into(),
+            kind: EventKind::Tab(Row::PinHits.index()),
         });
         let w = p.sample.state().unwrap().region.warp.clone().unwrap();
         assert!(w.pins.len() >= 4, "{:?}", w.pins);
@@ -17192,8 +17192,8 @@ mod tests {
         let n = p.sample.chop().unwrap().0.slices();
         let export = |p: &mut Player| {
             p.on_event(UiEvent {
-                widget: chop_tab::BUTTONS.into(),
-                kind: EventKind::Tab(2),
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Tab(chop_tab::Row::Chop.index()),
             })
         };
         export(&mut p);
@@ -18183,13 +18183,18 @@ mod tests {
     #[test]
     fn the_chop_tab_puts_slices_on_the_kits_pads_and_undo_takes_them_back() {
         use mpfree_sampler_ui::chop_tab::{self, Row};
-        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                chop_tab::LIST => {
+                    p.ui.get::<SettingList>(widget)
+                        .unwrap()
+                        .control_rect(r, i)
+                        .unwrap()
+                }
                 _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
             };
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
@@ -18229,7 +18234,7 @@ mod tests {
         assert_eq!((tab.slices(), tab.pads(st)), (4, Some(0..4)));
         let bounds = tab.bounds(st);
         assert_eq!(
-            p.ui.get::<ButtonRow>(chop_tab::BUTTONS).unwrap().labels[2],
+            p.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[Row::Chop.index()].value,
             "Chop to A1–A4"
         );
         assert!(
@@ -18257,7 +18262,7 @@ mod tests {
                 end: bounds[2]
             }]
         );
-        tap(&mut p, chop_tab::BUTTONS, 2);
+        tap(&mut p, chop_tab::LIST, Row::Chop.index());
         let kit = p.sample.project(0).unwrap();
         assert_eq!(kit.pad(2).unwrap().name, "Break 92 3");
         assert_eq!(kit.pad(2).unwrap().layers[0].region.start, bounds[2]);
@@ -18311,7 +18316,7 @@ mod tests {
     fn a_chop_is_kept_for_its_sound_and_shown_again_when_the_pad_comes_back() {
         use mpfree_sampler::model::{ChopMode, KEPT_CHOP};
         use mpfree_sampler_ui::chop_tab::{self, Method, Row};
-        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let source = p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
@@ -18320,7 +18325,12 @@ mod tests {
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                chop_tab::LIST => {
+                    p.ui.get::<SettingList>(widget)
+                        .unwrap()
+                        .control_rect(r, i)
+                        .unwrap()
+                }
                 _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
             };
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
@@ -18356,7 +18366,7 @@ mod tests {
         assert!(views(p.take_actions()).0.is_empty());
         // On A6-A9; A6 plays the first slice, which the kept chop doesn't
         // cut, so the tab chops it afresh and keeps nothing.
-        tap(&mut p, chop_tab::BUTTONS, 2);
+        tap(&mut p, chop_tab::LIST, Row::Chop.index());
         p.take_actions();
         p.apply(ToUi::PadDown {
             pad: pad + 1,
@@ -18398,20 +18408,28 @@ mod tests {
     #[test]
     fn live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound() {
         use mpfree_sampler_ui::chop_tab::{self, Method, Row};
-        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                chop_tab::LIST => {
+                    p.ui.get::<SettingList>(widget)
+                        .unwrap()
+                        .control_rect(r, i)
+                        .unwrap()
+                }
                 _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
             };
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
             p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         };
-        let label =
-            |p: &Player| p.ui.get::<ButtonRow>(chop_tab::BUTTONS).unwrap().labels[0].clone();
+        let label = |p: &Player| {
+            p.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[Row::Split.index()]
+                .value
+                .clone()
+        };
         tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
         // Transient steps back round to Live, and the hint says how it goes.
         let index = Row::ALL.iter().position(|r| *r == Row::Method).unwrap();
@@ -18426,7 +18444,7 @@ mod tests {
         p.take_actions();
         // Start: the pad's region plays, marking.
         assert_eq!(label(&p), "Start");
-        tap(&mut p, chop_tab::BUTTONS, 0);
+        tap(&mut p, chop_tab::LIST, Row::Split.index());
         let (start, end) = {
             let (tab, st) = p.sample.chop().unwrap();
             assert!(tab.live());
@@ -18487,7 +18505,7 @@ mod tests {
         );
         // A new take, then the Wave tab: it stops, and the cuts it made stay
         // for Chop to.
-        tap(&mut p, chop_tab::BUTTONS, 0);
+        tap(&mut p, chop_tab::LIST, Row::Split.index());
         p.take_actions();
         tap(&mut p, chop_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
         assert!(matches!(
@@ -18504,13 +18522,18 @@ mod tests {
         use mpfree_sampler::model::{Keys, PadsPlay};
         use mpfree_sampler_ui::chop_tab::{self, Row};
         use mpfree_sampler_ui::play_tab;
-        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                chop_tab::LIST => {
+                    p.ui.get::<SettingList>(widget)
+                        .unwrap()
+                        .control_rect(r, i)
+                        .unwrap()
+                }
                 _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
             };
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
@@ -18533,7 +18556,7 @@ mod tests {
         p.apply(ToUi::SampleQLink(3, -16));
         step(&mut p, Row::Put, 1);
         p.take_actions();
-        tap(&mut p, chop_tab::BUTTONS, 2);
+        tap(&mut p, chop_tab::LIST, Row::Chop.index());
         let kit = p.sample.project(0).unwrap();
         assert_eq!(kit.pad(1).unwrap().keys, Some(Keys::one(37)));
         assert_eq!(kit.pads_play(), PadsPlay::Keys { from: 36 });
@@ -18582,12 +18605,17 @@ mod tests {
     #[test]
     fn pads_and_phrase_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot() {
         use mpfree_sampler_ui::chop_tab::{self, Row};
-        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let mut p = sample_sampler(Fonts::embedded());
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                chop_tab::LIST => {
+                    p.ui.get::<SettingList>(widget)
+                        .unwrap()
+                        .control_rect(r, i)
+                        .unwrap()
+                }
                 _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
             };
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
@@ -18607,7 +18635,7 @@ mod tests {
         p.apply(ToUi::SampleQLink(3, -16));
         step(&mut p, Row::Put, -1);
         p.take_actions();
-        tap(&mut p, chop_tab::BUTTONS, 2);
+        tap(&mut p, chop_tab::LIST, Row::Chop.index());
         let (sent, rest) = views(p.take_actions());
         assert_eq!(sent.len(), 1, "the pads go to the audio thread as ever");
         let [FromUi::SamplePhrase(clip)] = &rest[..] else {

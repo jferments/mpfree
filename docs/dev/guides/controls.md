@@ -106,17 +106,23 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 - **`smp-warp-view/wave`**: the warped wave; tap a hit to pin it to the grid. *Test:* `the_warp_tab_pins_the_hits_and_the_copy_goes_through_them`.
 - **`smp-warp-view/pin`**: a pin: tap to pick it, drag its handle along the beats.
-- **`smp-warp-buttons/button`**: Pin hits (all of them), Remove pin, Clear pins. Faint ones say why.
-- **`smp-warp-list/row`**, **`smp-warp-list/row-less`**, **`smp-warp-list/row-more`**: Warp on or off, the warp tempo, the grid, the hits' sensitivity, and Process's Shift (semitones). *Test:* `a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready`.
-- **`smp-warp-list/row-button`**: Process's "New sound": a new sound of the region at the project's tempo (when warped) and Shift semitones higher or lower, made in the background and put in the region's place, one undo step; while it runs it reads "Stop · 40 %" and a tap stops it. With nothing to change it says so. *Example:* Warp on Stretch, Shift +3, tap New sound. *Test:* `process_makes_a_new_sound_on_a_worker_in_one_undo_step_and_can_be_stopped`.
+- The panel under the picture (layout spec 4i) holds the settings and the pin buttons in four sections: Warp (Off, Stretch, Repitch; Warp tempo; Grid), Hits (which hits; Pin hits), Pin (the pin picked and its beat; Remove pin, Clear pins) and Pitch and process (Shift; Process). A finger on a control gives it the wheel and - / +. *Test:* `the_settings_and_pin_buttons_are_a_panel_under_the_picture`.
+- **`smp-warp-list/choice`**: Warp's Off, Stretch and Repitch. *Test:* `a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready`.
+- **`smp-warp-list/less`**, **`smp-warp-list/more`**: the − + of Warp tempo (a BPM a step) and the ‹ › of Grid, Hits, Pin (the pin picked) and Pin beat (a grid step). Faint ones (no warp, no pins, no pin picked) say why when tapped.
+- **`smp-warp-list/value`**: the Warp tempo's value: tap it to type a tempo.
+- **`smp-warp-list/knob`**: Shift, in semitones from −24 to +24, for Process. Drag up or down.
+- **`smp-warp-list/button`**: Pin hits (every hit near a grid line onto it), Remove pin (the one picked), Clear pins (all), and Process's "New sound": a new sound of the region at the project's tempo (when warped) and Shift semitones higher or lower, made in the background and put in the region's place, one undo step; while it runs it reads "Stop · 40 %" and a tap stops it. With nothing to change it says so. A faint button says why. *Example:* Warp on Stretch, Shift +3, tap New sound. *Test:* `process_makes_a_new_sound_on_a_worker_in_one_undo_step_and_can_be_stopped`.
 
 ### Chop
 
 - **`smp-chop-wave/wave`**: tap a slice to pick and hear it. *Test:* `the_chop_tab_puts_slices_on_the_kits_pads_and_undo_takes_them_back`.
 - **`smp-chop-wave/marker`**: a cut between slices; drag its tab to move the cut. The first marker and END are the pad's Start and End: they stay put, and a touch says to move them on the Wave tab.
 - **`smp-chop-overview/overview`**: as the Wave tab's overview.
-- **`smp-chop-buttons/button`**: Split, Merge, Chop to pads, To keys, Live chop. *Example:* Method Transient, Split at a missed hit, Chop to A2–A16, hit the pads. *Tests:* `the_chop_tab_puts_slices_on_the_kits_pads_and_undo_takes_them_back`, `to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back`, `live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound`, `pads_and_phrase_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot`.
-- **`smp-chop-list/row`**, **`smp-chop-list/row-less`**, **`smp-chop-list/row-more`**: Method, Sensitivity, Snap, Slice, Put and the other chop settings.
+- The panel under the wave (layout spec 4i) has four sections: Method (the methods; the method's setting; Snap), Slice (the slice picked; Split, Merge), Pads (the first pad; Put on) and Chop (the button that puts the slices on the pads). A finger on a control gives it the wheel and - / +; a faint button says why on the hint line. *Test:* `the_chop_panel_has_the_methods_the_slice_buttons_and_chop`.
+- **`smp-chop-list/choice`**: a Method (Transient, Beat with a tempo, Grid, Silence, Manual, Live) or a Put on (Pads, Keys, Phrase with a tempo, Files where files can be written). Tap to pick it; the method chops again at once.
+- **`smp-chop-list/knob`**: the method's setting: Sensitivity, Length, Slices, Threshold or Pull to hits (faint on Manual). Drag up or down.
+- **`smp-chop-list/less`**, **`smp-chop-list/more`**: the ‹ › of Snap, Slice (the slice picked) and Pads (the first pad).
+- **`smp-chop-list/button`**: Split (Start and Stop on Live), Merge, and the main button: Chop to pads, To keys, Phrase on or Export, as Put on says. *Example:* Method Transient, Split at a missed hit, Chop to A2–A16, hit the pads. *Tests:* `the_chop_tab_puts_slices_on_the_kits_pads_and_undo_takes_them_back`, `to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back`, `live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound`, `pads_and_phrase_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot`.
 
 ### Play
 

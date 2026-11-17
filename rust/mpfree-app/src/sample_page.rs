@@ -1686,8 +1686,8 @@ impl SamplePage {
         }
         let before = touched_row(ui, ev);
         let card = touched_card(ui, ev);
-        // A faint button or Q-Link card tapped: why it is faint, and nothing
-        // else.
+        // A faint button, panel control or Q-Link card tapped: why it is
+        // faint, and nothing else.
         if let EventKind::Select(i) = ev.kind {
             let card = ui
                 .get::<mpfree_sampler_ui::widgets::KnobCard>(&ev.widget)
@@ -1696,6 +1696,10 @@ impl SamplePage {
             let why = ui
                 .get::<mpfree_sampler_ui::widgets::ButtonRow>(&ev.widget)
                 .and_then(|b| b.why_faint(i))
+                .or_else(|| {
+                    ui.get::<mpfree_sampler_ui::widgets::SettingList>(&ev.widget)
+                        .and_then(|l| l.why_faint(i))
+                })
                 .map(str::to_string)
                 .or(card);
             if let Some(why) = why {
