@@ -46,12 +46,12 @@ Every block runs in a terminal on the workstation, from the clone at `/home/jess
 **Block C0: update, check, build** (workstation only; no sudo; about 15 minutes):
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C creator-round origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py status && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_stick_setup.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app && cd rust/target/armv7-unknown-linux-gnueabihf/release && sha256sum mpfree-screen-log mpfree-startup mpfree' && python3 tools/mpc-one/results.py run build-creator -- bash -c 'cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-stick && cargo build --manifest-path rust/mpfree-creator/Cargo.toml --release --locked && sha256sum rust/target/release/mpfree-stick rust/mpfree-creator/target/release/mpfree-creator'
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C creator-round origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py status && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_stick_setup.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app && cd rust/target/armv7-unknown-linux-gnueabihf/release && sha256sum mpfree-screen-log mpfree-startup mpfree' && python3 tools/mpc-one/results.py run build-fetch -- bash -c 'CARGO_ZIGBUILD_PYTHON_PATH=/home/jesse/.local/share/mpfree-zig/bin/python3 cargo zigbuild --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf.2.34 -p mpfree-mpcstore --bin mpfree-fetch && sha256sum rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-fetch' && python3 tools/mpc-one/results.py run build-creator -- bash -c 'cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-stick && cargo build --manifest-path rust/mpfree-creator/Cargo.toml --release --locked && sha256sum rust/target/release/mpfree-stick rust/mpfree-creator/target/release/mpfree-creator'
 ```
 
 - `results.py status` lists what is already in the results folder. If an earlier round left files there, run `python3 tools/mpc-one/results.py zip` first, so this round gets its own zip.
 - `test_stick_setup.py` runs the setup script's tests, among them the new ending: Akai's off script, the restart if it returns, and a developer's stick keeping developer mode on. It ends `LOCAL-CHECKS-OK`.
-- Then five hashes: the three programs for the MPC, `mpfree-stick` (the creator's command line, for C9) and the window. A developer's build of the window carries no programs inside it; it finds the three just built in `rust/target/armv7-unknown-linux-gnueabihf/release`.
+- Then six hashes: the three programs for the MPC, `mpfree-fetch` (the Plugins place's download helper, linked dynamically with `cargo zigbuild`; it needs the 3.10.1 round's block G1a tools, installed on 16 Nov), `mpfree-stick` (the creator's command line, for C9) and the window. A developer's build of the window carries no programs inside it; it finds the four just built in `rust/target/armv7-unknown-linux-gnueabihf/release`.
 - **Undo:** none needed. The builds stay in the clone.
 
 **Block C1: Akai's system as the last round left it** (read-only; the stick out; Akai's app up, developer mode on):
@@ -203,7 +203,7 @@ It should list partitions 1 to 5, `made: MPFree stick, made by MPFree USB creato
 
 ## Passes when
 
-- C0 ends `LOCAL-CHECKS-OK` and prints five hashes.
+- C0 ends `LOCAL-CHECKS-OK` and prints six hashes.
 - C2 ends `RESULT: the hook is gone.`
 - C3 and C8 end with no answer on port 22 or with both logins refused, and the menu shows developer mode off.
 - C4 ends with "The stick is ready" and the new steps 5 and 6.
