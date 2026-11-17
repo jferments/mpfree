@@ -101,7 +101,7 @@
 823688	Sampler, the 16 sample pads alone
 235626	Sampler, the 4 granular pads alone
 3482546	Song: sampler, 2 synths, mixer+FX, time, looper
-185575	Spring reverb
+137967	Spring reverb
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
 64328	Squelch Square Acid, a line
