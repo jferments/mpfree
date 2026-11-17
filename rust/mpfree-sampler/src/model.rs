@@ -795,6 +795,36 @@ impl Region {
         self.end.saturating_sub(self.start)
     }
 
+    /// The loudest frame between its start and end on the channels it
+    /// plays, from `source` (its sound): the larger |sample| of the two
+    /// sides in Stereo, one side's for Left or Right, |(left + right) / 2|
+    /// for Mono sum. Before its gain, fades and envelope; 0 for silence or
+    /// a region outside the sound. What Normalize brings to 0 dBFS.
+    pub fn peak(&self, source: &Source) -> f32 {
+        let ch = usize::from(source.channels()).max(1);
+        let (start, end) = (
+            self.start as usize,
+            (self.end as usize).min(source.frames() as usize),
+        );
+        let Some(frames) = source.data().get(start * ch..end.max(start) * ch) else {
+            return 0.0;
+        };
+        let pick = if ch == 2 {
+            self.channels
+        } else {
+            ChannelPick::Left
+        };
+        frames
+            .chunks_exact(ch)
+            .map(|f| match pick {
+                ChannelPick::Stereo => f[0].abs().max(f[1].abs()),
+                ChannelPick::MonoSum => (0.5 * (f[0] + f[1])).abs(),
+                ChannelPick::Left => f[0].abs(),
+                ChannelPick::Right => f[1].abs(),
+            })
+            .fold(0.0, f32::max)
+    }
+
     pub fn check(&self, source: &Source) -> Result<(), ModelError> {
         if self.source != source.id() {
             return Err(ModelError::UnknownSource);
@@ -909,6 +939,9 @@ pub enum ChopMode {
     Manual,
     Silence,
 }
+
+/// The name a chop kept for its sound goes by ([`Project::keep_chop`]).
+pub const KEPT_CHOP: &str = "Kept";
 
 /// A named list of slice points on a source. A source can have several, so
 /// re-chopping never loses an earlier chop.
@@ -1511,6 +1544,12 @@ pub struct Project {
     /// Scenes A and B: the pads as stored, to morph between and go back
     /// to ([`crate::scene`]). Storing one is not an edit (no undo step).
     pub scenes: [Option<crate::scene::Scene>; 2],
+    /// The Chop tab's slices as they were last left, one set a sound
+    /// ([`Project::keep_chop`]), so a chop isn't lost before it goes on
+    /// pads. Like the scenes, keeping one is not an edit (no undo step);
+    /// it is saved with the project and moves with its sound when the
+    /// sound is converted to another rate.
+    kept_chops: Vec<ChopSet>,
 }
 
 impl Project {
@@ -1547,6 +1586,30 @@ impl Project {
 
     pub fn source(&self, id: SourceId) -> Option<&Source> {
         self.sources.iter().find(|s| s.id() == id)
+    }
+
+    /// Keeps `c` as its sound's chop, in place of the one kept before (not
+    /// an undo step; see [`Project::kept_chop`]).
+    pub fn keep_chop(&mut self, c: ChopSet) -> Result<(), ModelError> {
+        if self.source(c.source).is_none() {
+            return Err(ModelError::UnknownSource);
+        }
+        match self.kept_chops.iter_mut().find(|k| k.source == c.source) {
+            Some(k) => *k = c,
+            None => self.kept_chops.push(c),
+        }
+        Ok(())
+    }
+
+    /// The chop kept for sound `id`: its slices as the Chop tab last left
+    /// them.
+    pub fn kept_chop(&self, id: SourceId) -> Option<&ChopSet> {
+        self.kept_chops.iter().find(|k| k.source == id)
+    }
+
+    /// Every chop kept, a sound each.
+    pub fn kept_chops(&self) -> &[ChopSet] {
+        &self.kept_chops
     }
     pub fn sources(&self) -> &[Source] {
         &self.sources
@@ -2345,6 +2408,11 @@ impl Project {
             }
         }
         let moved = convert_sounds(&mut self.sources, &mut pads, &mut self.chop_sets, convert);
+        for r in &moved {
+            for c in &mut self.kept_chops {
+                c.rescale(r);
+            }
+        }
         let scenes = self.scenes.iter_mut().flatten();
         let mut slots: Vec<&mut Vec<Option<Pad>>> = std::iter::once(&mut self.pads)
             .chain(scenes.map(|s| &mut s.pads))

@@ -10,13 +10,13 @@ use mpfree_sampler::model::{
     Source, KEYGROUP_POLYPHONY,
 };
 use mpfree_sampler_ui::keys_widgets::KeyZones;
-use mpfree_sampler_ui::play_tab::{self, describe, PlayAction, PlayState, Row};
+use mpfree_sampler_ui::play_tab::{self, describe, PlayAction, PlayState, Row, Section};
 use mpfree_sampler_ui::play_widgets::{
     env_level, filter_db, EnvPoint, EnvelopeView, FilterCurve, LayerMap,
 };
 use mpfree_sampler_ui::sample::{self, layered_project, play_samples, PlaySample, PAD, RATE};
 use mpfree_sampler_ui::source::SourceView;
-use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
+use mpfree_sampler_ui::widgets::{ButtonRow, KnobCard, PadBar, SectionChips, SettingList};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
 
 /// The Play tab on the layered pad (or the plain one), drawn once so every
@@ -40,15 +40,30 @@ fn play(layered: bool) -> PlaySample {
     s
 }
 
-fn row_value(s: &PlaySample, row: Row) -> String {
-    let list = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
-    list.rows[Row::ALL.iter().position(|r| *r == row).unwrap()]
-        .value
-        .clone()
+/// A tap on the chip of section `section`.
+fn open(s: &mut PlaySample, section: Section) {
+    let i = Section::ALL.iter().position(|x| *x == section).unwrap();
+    let ev = UiEvent {
+        widget: play_tab::SECTIONS.into(),
+        kind: EventKind::Tab(i),
+    };
+    let st = s.state.clone();
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
+    assert_eq!(s.tab.section(), section);
 }
 
+/// Row `row`'s value as its section's list shows it (the section opened).
+fn row_value(s: &mut PlaySample, row: Row) -> String {
+    open(s, row.section());
+    let list = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    assert_eq!(list.rows[row.place()].name, row.label());
+    list.rows[row.place()].value.clone()
+}
+
+/// An arrow of row `row` tapped (its section opened first).
 fn step(s: &mut PlaySample, row: Row, delta: i32) -> Option<PlayAction> {
-    let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+    open(s, row.section());
+    let index = row.place();
     let ev = UiEvent {
         widget: play_tab::LIST.into(),
         kind: EventKind::Step { index, delta },
@@ -99,7 +114,7 @@ fn lift(s: &mut PlaySample) {
 
 #[test]
 fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
-    let s = play(true);
+    let mut s = play(true);
     let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
     assert_eq!(bar.title, "Pad A5 · Break 92");
     assert_eq!(
@@ -112,7 +127,37 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();
     assert_eq!(ranges, vec![(1, 63), (64, 109), (110, 127)]);
     assert_eq!(map.layers[1].name, "Layer 2 · Break 92");
+    assert_eq!(map.layers[0].sub, "velocity 1–63 · -9.0 dB · stacked");
     assert_eq!(map.last_velocity, Some(108));
+    // The sections, each with what is in it now; Layers is open.
+    let chips = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+    let chips: Vec<(&str, &str)> = chips
+        .chips
+        .iter()
+        .map(|c| (c.name.as_str(), c.sub.as_str()))
+        .collect();
+    assert_eq!(
+        chips,
+        vec![
+            ("Layers", "3 · stacked"),
+            ("Amp", "A 2 · D 310 · S 60 %"),
+            ("Filter", "LP 2-pole · 2.40 kHz"),
+            ("Pitch", "+0 st"),
+            ("Mod", "pressure → filter cutoff"),
+            ("Pad", "4 voices · group 1"),
+        ]
+    );
+    assert_eq!(s.tab.section(), Section::Layers);
+    for section in Section::ALL {
+        assert!(section.rows().len() <= 8, "{section:?} scrolls");
+    }
+    for row in Row::ALL {
+        let n = Section::ALL
+            .iter()
+            .filter(|x| x.rows().contains(&row))
+            .count();
+        assert_eq!(n, 1, "{row:?} is in one section");
+    }
     let env = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap();
     assert_eq!(
         env.caption,
@@ -127,7 +172,30 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
     let filter = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
     assert_eq!(filter.title, "Filter · LP 2-pole");
     assert_eq!(filter.caption, "cutoff 2.40 kHz · res 35 % · env +0.50 oct");
+    let cards = |s: &PlaySample| -> Vec<(String, String, String, bool)> {
+        play_tab::QLINKS
+            .iter()
+            .map(|q| {
+                let c = s.ui.get::<KnobCard>(q).unwrap();
+                (c.label.clone(), c.value.clone(), c.sub.clone(), c.enabled)
+            })
+            .collect()
+    };
+    let card = |l: &str, v: &str, u: &str| (l.to_string(), v.to_string(), u.to_string(), true);
+    assert_eq!(
+        cards(&s),
+        vec![
+            card("Q-Link 1 · Layer level", "-9.0", "dB"),
+            card("Q-Link 2 · Layer pan", "Center", ""),
+            card("Q-Link 3 · Layer tune", "+0", "st"),
+            card("Q-Link 4 · Vel low", "1", ""),
+        ]
+    );
     for (row, value) in [
+        (Row::Sound, "Break 92"),
+        (Row::VelLow, "1"),
+        (Row::VelHigh, "63"),
+        (Row::LayerLevel, "-9.0 dB"),
         (Row::Polyphony, "4 voices"),
         (Row::MuteGroup, "Group 1"),
         (Row::Layers, "Stacked"),
@@ -147,30 +215,44 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         (Row::Cutoff, "2.40 kHz"),
         (Row::FilterEnv, "+0.50 oct"),
     ] {
-        assert_eq!(row_value(&s, row), value, "{row:?}");
+        assert_eq!(row_value(&mut s, row), value, "{row:?}");
     }
-    let cards: Vec<(String, String, bool)> = play_tab::QLINKS
-        .iter()
-        .map(|q| {
-            let c = s.ui.get::<KnobCard>(q).unwrap();
-            (c.value.clone(), c.sub.clone(), c.enabled)
-        })
-        .collect();
+    // The Q-Links follow the section open.
+    open(&mut s, Section::Amp);
     assert_eq!(
-        cards,
+        cards(&s),
         vec![
-            ("2".into(), "ms".into(), true),
-            ("310".into(), "ms".into(), true),
-            ("2.40".into(), "kHz".into(), true),
-            ("35".into(), "%".into(), true)
+            card("Q-Link 1 · Attack", "2", "ms"),
+            card("Q-Link 2 · Decay", "310", "ms"),
+            card("Q-Link 3 · Sustain", "60", "%"),
+            card("Q-Link 4 · Release", "900", "ms"),
         ]
+    );
+    open(&mut s, Section::Filter);
+    assert_eq!(
+        cards(&s),
+        vec![
+            card("Q-Link 1 · Cutoff", "2.40", "kHz"),
+            card("Q-Link 2 · Resonance", "35", "%"),
+            card("Q-Link 3 · Env depth", "+0.50", "oct"),
+            card("Q-Link 4 · Env decay", "0", "ms"),
+        ]
+    );
+    assert_eq!(
+        s.tab.qlinks_text(),
+        "cutoff, resonance, env depth, env decay"
+    );
+    let env = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap();
+    assert_eq!(
+        env.title, "Filter envelope",
+        "the Filter section shows its envelope"
     );
 }
 
 #[test]
 fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let mut s = play(false);
-    assert_eq!(row_value(&s, Row::Filter), "Off");
+    assert_eq!(row_value(&mut s, Row::Filter), "Off");
     // Turning the filter on starts a low-pass where it is heard.
     let a = step(&mut s, Row::Filter, 1).unwrap();
     let g = gesture(&a);
@@ -180,7 +262,7 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let a = step(&mut s, Row::Filter, 1).unwrap();
     assert_eq!(gesture(&a), g, "a second tap on the row merges");
     apply(&mut s, &a);
-    assert_eq!(row_value(&s, Row::Filter), "LP 4-pole");
+    assert_eq!(row_value(&mut s, Row::Filter), "LP 4-pole");
     // A lift ends the step; another row is another step anyway.
     s.tab.lift();
     let a = step(&mut s, Row::Cutoff, -3).unwrap();
@@ -225,7 +307,7 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::FilterEnv, 3, "+0.75 oct"),
     ] {
         step_apply(&mut s, row, delta);
-        assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
+        assert_eq!(row_value(&mut s, row), value, "{row:?} {delta:+}");
     }
     assert_eq!(s.state.settings.select, LayerSelect::Random);
     assert!(s.state.settings.vintage, "Vintage reaches the pad");
@@ -233,13 +315,16 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let targets: Vec<String> = (0..4)
         .map(|_| {
             step_apply(&mut s, Row::Pressure, 1);
-            row_value(&s, Row::Pressure)
+            row_value(&mut s, Row::Pressure)
         })
         .collect();
     assert_eq!(targets, vec!["Level", "Pitch", "Filter cutoff", "Off"]);
     step_apply(&mut s, Row::Pressure, 1);
     assert_eq!(
-        (s.state.settings.pressure.target, row_value(&s, Row::Depth)),
+        (
+            s.state.settings.pressure.target,
+            row_value(&mut s, Row::Depth)
+        ),
         (PressureTarget::Level, "+50 %".into())
     );
     // Stepping past the ends stays there: nothing to undo.
@@ -258,8 +343,7 @@ fn tune_and_times_between_steps_go_to_the_next_step() {
     let state = PlayState::from_project(&project, PAD, |_| view.clone()).unwrap();
     let mut ui = sample::app_ui_with(Fonts::embedded(), &project, play_tab::HINT);
     let mut tab = play_tab::PlayTab::add(&mut ui, sample::PLAY_PAGE, &state).unwrap();
-    let tune = Row::ALL.iter().position(|r| *r == Row::Tune).unwrap();
-    let attack = Row::ALL.iter().position(|r| *r == Row::Attack).unwrap();
+    let (tune, attack) = (Row::Tune.place(), Row::Attack.place());
     let after = |a: Option<PlayAction>| match a {
         Some(PlayAction::Pad { after, .. }) => *after,
         a => panic!("{a:?}"),
@@ -268,6 +352,7 @@ fn tune_and_times_between_steps_go_to_the_next_step() {
         widget: play_tab::LIST.into(),
         kind: EventKind::Step { index, delta },
     };
+    tab.open_section(&mut ui, &state, Section::Pitch);
     assert_eq!(
         after(tab.action(&mut ui, &ev(tune, 1), &state)).tune_cents,
         200
@@ -276,6 +361,7 @@ fn tune_and_times_between_steps_go_to_the_next_step() {
         after(tab.action(&mut ui, &ev(tune, -1), &state)).tune_cents,
         100
     );
+    tab.open_section(&mut ui, &state, Section::Amp);
     assert_eq!(
         after(tab.action(&mut ui, &ev(attack, 1), &state))
             .amp
@@ -299,7 +385,8 @@ fn tune_and_times_between_steps_go_to_the_next_step() {
 #[test]
 fn the_wheel_steps_the_row_picked_and_qlinks_turn_their_four() {
     let mut s = play(false);
-    // A tap on Q-Link 2's card picks Decay for the wheel.
+    // On Amp, a tap on Q-Link 2's card picks Decay for the wheel.
+    open(&mut s, Section::Amp);
     let card = s.ui.rect_of(play_tab::QLINKS[1]).unwrap();
     let ev =
         s.ui.touch(1, Touch::Down, card.x + 10, card.y + 10)
@@ -337,31 +424,54 @@ fn the_wheel_steps_the_row_picked_and_qlinks_turn_their_four() {
         "SHIFT: a millisecond a detent"
     );
     assert_eq!(s.tab.row(&s.ui), Row::Attack, "a turn picks its row");
-    // Cutoff and resonance wait for a filter.
-    assert_eq!(turn(&mut s, 2, 1, false), None);
-    assert!(!s.ui.get::<KnobCard>(play_tab::QLINKS[2]).unwrap().enabled);
+    // Sustain and release turn smoothly.
+    turn(&mut s, 2, -15, false);
+    turn(&mut s, 3, 24, false);
+    assert_eq!(
+        (
+            s.state.settings.amp.sustain,
+            s.state.settings.amp.release_ms
+        ),
+        (0.85, 40.0),
+        "1 % a detent; 5 ms doubled three times"
+    );
+    // On Filter, cutoff and resonance wait for a filter.
+    open(&mut s, Section::Filter);
+    assert_eq!(turn(&mut s, 0, 1, false), None);
+    assert!(!s.ui.get::<KnobCard>(play_tab::QLINKS[0]).unwrap().enabled);
     step_apply(&mut s, Row::Filter, 1);
-    turn(&mut s, 2, 12, false);
+    turn(&mut s, 0, 12, false);
     assert_eq!(
         s.state.settings.filter.cutoff_hz, 4000.0,
         "an octave up from 2 kHz"
     );
-    turn(&mut s, 2, -10, true);
+    turn(&mut s, 0, -10, true);
     assert_eq!(
         s.state.settings.filter.cutoff_hz, 3775.0,
         "SHIFT: a tenth of a semitone a detent"
     );
-    turn(&mut s, 3, 30, false);
-    turn(&mut s, 3, 5, true);
+    turn(&mut s, 1, 30, false);
+    turn(&mut s, 1, 5, true);
     assert!(
         (s.state.settings.filter.resonance - 0.31).abs() < 1e-4,
         "{}",
         s.state.settings.filter.resonance
     );
     assert_eq!(
-        s.ui.get::<KnobCard>(play_tab::QLINKS[3]).unwrap().value,
+        s.ui.get::<KnobCard>(play_tab::QLINKS[1]).unwrap().value,
         "31"
     );
+    // The filter envelope: its depth and decay.
+    turn(&mut s, 2, 40, false);
+    turn(&mut s, 3, 1, false);
+    turn(&mut s, 3, 16, false);
+    let f = &s.state.settings;
+    assert_eq!((f.filter.env_octaves, f.filter_env.decay_ms), (2.0, 4.0));
+    // A choice on a Q-Link steps as its arrows do: Pad's voices.
+    open(&mut s, Section::Pad);
+    let voices = s.state.settings.polyphony;
+    turn(&mut s, 0, 1, false).unwrap();
+    assert!(s.state.settings.polyphony > voices);
 }
 
 #[test]
@@ -596,7 +706,7 @@ fn keys_make_the_pad_a_keygroup_rooted_at_the_note_it_is_heard_at() {
     // Nothing to step while Keys are off.
     assert_eq!(step(&mut s, Row::LowKey, 1), None);
     assert_eq!(step(&mut s, Row::KeyFade, 1), None);
-    assert_eq!(row_value(&s, Row::KeyFade), "–");
+    assert_eq!(row_value(&mut s, Row::KeyFade), "–");
     step_apply(&mut s, Row::Keys, 1);
     assert_eq!(s.state.settings.keys, Some(Keys::all(57)), "A3, as heard");
     assert_eq!(
@@ -609,7 +719,7 @@ fn keys_make_the_pad_a_keygroup_rooted_at_the_note_it_is_heard_at() {
         (Row::HighKey, "G9"),
         (Row::RootKey, "A3"),
     ] {
-        assert_eq!(row_value(&s, row), value, "{row:?}");
+        assert_eq!(row_value(&mut s, row), value, "{row:?}");
     }
     // The zone narrows; the low key never passes the high one.
     for (row, delta, value) in [
@@ -624,7 +734,7 @@ fn keys_make_the_pad_a_keygroup_rooted_at_the_note_it_is_heard_at() {
         (Row::KeyFade, -21, "3 notes"),
     ] {
         step_apply(&mut s, row, delta);
-        assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
+        assert_eq!(row_value(&mut s, row), value, "{row:?} {delta:+}");
     }
     let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
     assert!(
@@ -657,7 +767,10 @@ fn the_kits_pads_play_notes_from_the_keygroups_octave_an_octave_a_step() {
     apply(&mut s, &a);
     assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 48 });
     assert_eq!(
-        (row_value(&s, Row::PadsPlay), row_value(&s, Row::PadsFrom)),
+        (
+            row_value(&mut s, Row::PadsPlay),
+            row_value(&mut s, Row::PadsFrom)
+        ),
         ("Notes".into(), "C3".into())
     );
     let view = EngineView::build(&s.project, RATE);
@@ -667,7 +780,7 @@ fn the_kits_pads_play_notes_from_the_keygroups_octave_an_octave_a_step() {
     );
     for (delta, value) in [(1, "C4"), (-9, "C-1"), (20, "C8")] {
         step_apply(&mut s, Row::PadsFrom, delta);
-        assert_eq!(row_value(&s, Row::PadsFrom), value, "{delta:+}");
+        assert_eq!(row_value(&mut s, Row::PadsFrom), value, "{delta:+}");
     }
     let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
     assert!(
@@ -678,7 +791,7 @@ fn the_kits_pads_play_notes_from_the_keygroups_octave_an_octave_a_step() {
     // Past the top, nothing changes.
     assert_eq!(step(&mut s, Row::PadsFrom, 1), None);
     step_apply(&mut s, Row::PadsPlay, -1);
-    assert_eq!(row_value(&s, Row::PadsPlay), "Their sounds");
+    assert_eq!(row_value(&mut s, Row::PadsPlay), "Their sounds");
     assert!(s.project.undo());
     assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 108 });
 }
@@ -686,7 +799,7 @@ fn the_kits_pads_play_notes_from_the_keygroups_octave_an_octave_a_step() {
 #[test]
 fn sixteen_levels_spread_the_pad_over_the_kits_pads() {
     let mut s = tone();
-    assert_eq!(row_value(&s, Row::LevelsBy), "–");
+    assert_eq!(row_value(&mut s, Row::LevelsBy), "–");
     // Pads play goes round: their sounds, notes, 16 Levels of this pad.
     step_apply(&mut s, Row::PadsPlay, -1);
     assert_eq!(
@@ -697,15 +810,18 @@ fn sixteen_levels_spread_the_pad_over_the_kits_pads() {
         }
     );
     assert_eq!(
-        (row_value(&s, Row::PadsPlay), row_value(&s, Row::LevelsBy)),
+        (
+            row_value(&mut s, Row::PadsPlay),
+            row_value(&mut s, Row::LevelsBy)
+        ),
         ("16 Levels".into(), "Velocity".into())
     );
-    assert_eq!(row_value(&s, Row::PadsFrom), "–");
+    assert_eq!(row_value(&mut s, Row::PadsFrom), "–");
     let view = EngineView::build(&s.project, RATE);
     assert!((0..16).all(|i| view.has_pad(i)), "every pad plays A5");
     for (delta, by) in [(1, "Tune"), (3, "Start"), (1, "Velocity"), (-2, "Decay")] {
         step_apply(&mut s, Row::LevelsBy, delta);
-        assert_eq!(row_value(&s, Row::LevelsBy), by, "{delta:+}");
+        assert_eq!(row_value(&mut s, Row::LevelsBy), by, "{delta:+}");
     }
     let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
     assert!(
@@ -716,7 +832,7 @@ fn sixteen_levels_spread_the_pad_over_the_kits_pads() {
     // Tune at pad 16: seven semitones up from A3 is E4.
     let mut e = Engine::new(RATE, 8);
     step_apply(&mut s, Row::LevelsBy, -2);
-    assert_eq!(row_value(&s, Row::LevelsBy), "Tune");
+    assert_eq!(row_value(&mut s, Row::LevelsBy), "Tune");
     e.set_view(EngineView::build(&s.project, RATE));
     e.apply(Event::NoteOn {
         pad: 15,
@@ -733,7 +849,7 @@ fn sixteen_levels_spread_the_pad_over_the_kits_pads() {
     // Once more round: back to their sounds.
     step_apply(&mut s, Row::PadsPlay, 1);
     assert_eq!(s.project.pads_play(), PadsPlay::Pads);
-    assert_eq!(row_value(&s, Row::LevelsBy), "–");
+    assert_eq!(row_value(&mut s, Row::LevelsBy), "–");
 }
 
 #[test]
@@ -786,7 +902,7 @@ fn a_keygroup_shows_the_kits_keyboard_to_drag_its_zone_pick_a_pad_and_play_notes
     assert!(s.tab.keys_shown());
     assert_eq!(s.tab.hint(), play_tab::KEYS_HINT);
     let (_, r) = keyboard(&s);
-    assert!(r.w > 800 && r.h >= 200, "{r:?}");
+    assert!(r.w > 800 && r.h >= 190, "{r:?}");
     // Narrow it to C2–G4 with the rows, and add a second keygroup on the
     // next pad, C5 to the top.
     step_apply(&mut s, Row::LowKey, 36);
@@ -904,13 +1020,13 @@ fn key_fade_overlaps_the_kits_zones_and_the_keyboard_draws_their_curves() {
         .into_iter()
         .find(|s| s.name == "play-keys")
         .unwrap();
-    assert_eq!(row_value(&s, Row::KeyFade), "Off");
+    assert_eq!(row_value(&mut s, Row::KeyFade), "Off");
     // One step for the whole kit: each zone fades over 4 notes and the
     // ones that met overlap by 4.
     let a = step(&mut s, Row::KeyFade, 4).unwrap();
     assert_eq!(a, PlayAction::KeyFade(4));
     apply(&mut s, &a);
-    assert_eq!(row_value(&s, Row::KeyFade), "4 notes");
+    assert_eq!(row_value(&mut s, Row::KeyFade), "4 notes");
     let (z, r) = keyboard(&s);
     assert!(z.zones.iter().all(|z| z.fade == 4));
     let (a1, a2) = (z.zones[0].keys, z.zones[1].keys);
@@ -932,7 +1048,7 @@ fn key_fade_overlaps_the_kits_zones_and_the_keyboard_draws_their_curves() {
     let (z, _) = keyboard(&s);
     assert_eq!(z.zones[0].keys.hi + 1, z.zones[1].keys.lo);
     let mut plain = play(false);
-    assert_eq!(row_value(&plain, Row::KeyFade), "–");
+    assert_eq!(row_value(&mut plain, Row::KeyFade), "–");
     assert_eq!(step(&mut plain, Row::KeyFade, 1), None);
 }
 
@@ -1013,7 +1129,7 @@ fn the_scene_strip_stores_fades_and_returns() {
 fn stops_also_plays_and_latch() {
     let mut s = play(false);
     for row in [Row::Chokes, Row::Links, Row::Latch] {
-        assert_eq!(row_value(&s, row), "Off", "{row:?}");
+        assert_eq!(row_value(&mut s, row), "Off", "{row:?}");
     }
     // Arrows and the wheel: a step up adds the pad after the highest, never
     // the pad shown (A5); a step down takes the highest out.
@@ -1024,19 +1140,19 @@ fn stops_also_plays_and_latch() {
         (-2, "A1 A2 A3"),
     ] {
         step_apply(&mut s, Row::Links, delta);
-        assert_eq!(row_value(&s, Row::Links), value, "{delta:+}");
+        assert_eq!(row_value(&mut s, Row::Links), value, "{delta:+}");
     }
     assert_eq!(s.state.settings.links, [0, 1, 2]);
     step_apply(&mut s, Row::Links, -3);
-    assert_eq!(row_value(&s, Row::Links), "Off");
+    assert_eq!(row_value(&mut s, Row::Links), "Off");
     assert_eq!(step(&mut s, Row::Links, -1), None, "nothing to take out");
 
     // Latch: any step turns it over.
     step_apply(&mut s, Row::Latch, 1);
-    assert_eq!(row_value(&s, Row::Latch), "On");
+    assert_eq!(row_value(&mut s, Row::Latch), "On");
     assert!(s.state.settings.latch);
     step_apply(&mut s, Row::Latch, 1);
-    assert_eq!(row_value(&s, Row::Latch), "Off");
+    assert_eq!(row_value(&mut s, Row::Latch), "Off");
 
     // With Stops or Also plays picked, a hit adds a pad or takes it out,
     // an undo step each; the pad shown changes nothing.
@@ -1070,7 +1186,7 @@ fn stops_also_plays_and_latch() {
     }
     gestures.dedup();
     assert_eq!(gestures.len(), 3, "each hit is its own undo step");
-    assert_eq!(row_value(&s, Row::Chokes), "A10");
+    assert_eq!(row_value(&mut s, Row::Chokes), "A10");
     assert_eq!(describe(&before, &s.state.settings), "stops Off -> A10");
     pick(&mut s, Row::Links);
     let st = s.state.clone();
@@ -1081,4 +1197,162 @@ fn stops_also_plays_and_latch() {
     assert!(s.project.pad(PAD).unwrap().links.is_empty());
     assert!(s.project.undo());
     assert_eq!(s.project.pad(PAD).unwrap().chokes, [3, 9]);
+}
+
+/// A tap on Add layer (0) or Remove layer (1).
+fn layer_button(s: &mut PlaySample, i: usize) -> Option<PlayAction> {
+    let ev = UiEvent {
+        widget: play_tab::LAYER_EDIT.into(),
+        kind: EventKind::Tab(i),
+    };
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &ev, &st)
+}
+
+fn ranges(s: &PlaySample) -> Vec<(u8, u8)> {
+    s.state
+        .settings
+        .layers
+        .iter()
+        .map(|l| (l.vel_lo, l.vel_hi))
+        .collect()
+}
+
+#[test]
+fn layers_are_added_and_removed_and_each_has_its_velocities_level_pan_and_tune() {
+    let mut s = play(false);
+    let buttons = |s: &PlaySample| {
+        s.ui.get::<ButtonRow>(play_tab::LAYER_EDIT)
+            .unwrap()
+            .enabled
+            .clone()
+    };
+    assert_eq!(buttons(&s), vec![true, false], "a pad keeps one layer");
+    // Add layer: a copy of the layer picked, taking the upper half of its
+    // velocities, picked once it is there.
+    let a = layer_button(&mut s, 0).unwrap();
+    assert_eq!(a, PlayAction::AddLayer { pad: PAD, after: 0 });
+    apply(&mut s, &a);
+    assert_eq!(ranges(&s), vec![(1, 63), (64, 127)]);
+    assert_eq!(s.tab.layer(), 1);
+    assert_eq!(buttons(&s), vec![true, true]);
+    let l = &s.state.settings.layers;
+    assert_eq!(l[1].region, l[0].region, "the same sound");
+    // Its own level, pan and tune, on the Layers section's rows.
+    let before = s.state.settings.clone();
+    step_apply(&mut s, Row::LayerLevel, -4);
+    step_apply(&mut s, Row::LayerPan, -2);
+    step_apply(&mut s, Row::LayerTune, 1);
+    let l = &s.state.settings.layers;
+    assert_eq!(
+        (l[1].level_db, l[1].pan, l[1].tune_cents),
+        (-2.0, -0.1, 100)
+    );
+    assert_eq!((l[0].level_db, l[0].pan, l[0].tune_cents), (0.0, 0.0, 0));
+    assert_eq!(row_value(&mut s, Row::LayerPan), "L 10");
+    let list = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    assert_eq!(list.title, "Layer 2 · Break 92");
+    assert_eq!(
+        s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap().layers[1].sub,
+        "velocity 64–127 · -2.0 dB · L 10 · +1 st · stacked"
+    );
+    assert_eq!(
+        describe(&before, &s.state.settings),
+        "layer 2 level +0.0 dB -> -2.0 dB, layer 2 pan Center -> L 10, layer 2 tune +0 st -> +1 st"
+    );
+    // Its velocities, low edge up to its high one and no further.
+    step_apply(&mut s, Row::VelLow, 8);
+    assert_eq!(ranges(&s), vec![(1, 63), (72, 127)]);
+    let a = step(&mut s, Row::VelHigh, -100).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(ranges(&s), vec![(1, 63), (72, 72)]);
+    // A second Add on a layer of one velocity: both play it.
+    let a = layer_button(&mut s, 0).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(ranges(&s), vec![(1, 63), (72, 72), (72, 72)]);
+    assert_eq!(s.tab.layer(), 2);
+    // Remove layer takes the one picked out and picks the one below.
+    let a = layer_button(&mut s, 1).unwrap();
+    assert_eq!(a, PlayAction::RemoveLayer { pad: PAD, layer: 2 });
+    apply(&mut s, &a);
+    assert_eq!(ranges(&s), vec![(1, 63), (72, 72)]);
+    assert_eq!(s.tab.layer(), 1);
+    // Each add and remove is one undo step.
+    assert!(s.project.undo());
+    assert_eq!(s.project.pad(PAD).unwrap().layers.len(), 3);
+}
+
+#[test]
+fn a_layers_sound_steps_through_the_kits_sounds() {
+    let mut s = play(false);
+    // With one sound in the kit there is nothing to step to.
+    let a = layer_button(&mut s, 0).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(step(&mut s, Row::Sound, 1), None);
+    // A second sound: the layer picked plays it whole, keeping its mode.
+    let data = vec![0.25f32; RATE as usize / 2];
+    let tone = Source::new("Tone", RATE, 1, data).unwrap();
+    let id = s.project.add_source(tone);
+    apply(&mut s, &PlayAction::Tab(play_tab::TAB));
+    let a = step(&mut s, Row::Sound, 1).unwrap();
+    assert_eq!(
+        a,
+        PlayAction::LayerSound {
+            pad: PAD,
+            layer: 1,
+            source: id
+        }
+    );
+    a.apply(&mut s.project).unwrap();
+    let pad = s.project.pad(PAD).unwrap();
+    let (first, second) = (&pad.layers[0].region, &pad.layers[1].region);
+    assert_eq!(
+        (second.source, second.start, second.end),
+        (id, 0, RATE as u64 / 2)
+    );
+    assert_eq!(second.mode, first.mode);
+    assert_ne!(first.source, id, "the other layer keeps its sound");
+    assert_eq!(pad.name, "Break 92", "the pad keeps its name");
+}
+
+#[test]
+fn the_filter_section_steps_and_drags_the_filter_envelope() {
+    let mut s = play(true);
+    open(&mut s, Section::Filter);
+    for (row, delta) in [
+        (Row::EnvAttack, 4),
+        (Row::EnvDecay, 9),
+        (Row::EnvSustain, -10),
+        (Row::EnvRelease, 7),
+    ] {
+        step_apply(&mut s, row, delta);
+        s.tab.lift();
+    }
+    let e = s.state.settings.filter_env;
+    assert_eq!(
+        (e.attack_ms, e.decay_ms, e.sustain, e.release_ms),
+        (10.0, 500.0, 0.5, 1000.0)
+    );
+    assert_eq!(s.state.settings.amp.attack_ms, 2.0, "the amp's untouched");
+    assert_eq!(row_value(&mut s, Row::EnvDecay), "500 ms");
+    // The picture is the filter envelope's: dragging its points sets it.
+    let env = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap();
+    assert_eq!(env.env, e);
+    assert_eq!(
+        env.caption,
+        "A 10 ms · H 0 ms · D 500 ms · S 50 % · R 1.00 s · over layer 1"
+    );
+    let r = s.ui.rect_of(play_tab::ENV).unwrap();
+    let (x, y) = env.point_xy(r, EnvPoint::Sustain);
+    let a = drag(&mut s, (x, y), (x, y - 40)).unwrap();
+    lift(&mut s);
+    apply(&mut s, &a);
+    assert!(s.state.settings.filter_env.sustain > 0.5);
+    assert_eq!(s.state.settings.amp.sustain, 0.6, "the amp's untouched");
+    // Back on Amp the picture is the amp's again.
+    open(&mut s, Section::Amp);
+    assert_eq!(
+        s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap().env,
+        s.state.settings.amp
+    );
 }

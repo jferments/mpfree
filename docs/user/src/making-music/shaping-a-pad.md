@@ -12,7 +12,7 @@ As everywhere on the Sample tab, **hit a pad** to pick the one you are shaping.
 
 ## Play: layers, envelope and filter
 
-{{shot: sample-play | The Play page: velocity layers, the volume envelope drawn over the sound, and the filter.}}
+{{shot: sample-play | The Play page on its Amp section: velocity layers, the volume envelope drawn over the sound, and the filter.}}
 
 The **Play** page shapes how the picked pad sounds each time you hit it:
 
@@ -20,13 +20,41 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
 - **Filter:** darken or thin out the sound. Drag the dot.
 
+Its settings come in six **sections**, a button each across the top of the page, with what is in each one written under its name: **Layers**, **Amp**, **Filter**, **Pitch**, **Mod** and **Pad**. Tap one and the list on the right shows its rows (never more than eight, so nothing scrolls), and **Q-Links 1 to 4** turn that section's four main settings. The hint line names them.
+
+| Section | Its rows | Q-Links 1 to 4 |
+| --- | --- | --- |
+| **Layers** | how a hit picks layers, Vel fade, and the picked layer's Sound, Vel low, Vel high, Level, Pan and Tune | the layer's level, pan, tune and lowest velocity |
+| **Amp** | the pad's Level and Pan, Attack, Hold, Decay, Sustain and Release | attack, decay, sustain, release |
+| **Filter** | the filter's type, Cutoff, Resonance, and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
+| **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade | tune, wow, low key, high key |
+| **Mod** | Vel → level, Vel → start, Pressure and its Depth | all four |
+| **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
+
+On a Q-Link, SHIFT turns finer. A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its card faint, and says why.
+
+On the **Filter** section the drawing shows the filter's own envelope instead of the volume's: how far and how fast the cutoff moves on each hit. **Env depth** says how far, up to 4 octaves up or down; drag the points for its times, or use the rows.
+
 A cutoff or resonance change reaches a sound that is still playing, gliding there; a new envelope or filter type plays from the next hit.
+
+### Layers: more than one sound on a pad
+
+{{shot: sample-play-layers | The Layers section: a second layer added for the hard hits, picked, turned down 3 dB and panned left; a hit at 100 lands on it.}}
+
+A pad can hold up to 16 sounds, its **layers**: soft and hard hits of a snare, a kick with a click on top, round robins that take turns.
+
+- **Add layer**, under the layer map, adds a copy of the picked layer just after it. The copy takes the upper half of its velocities, so a soft hit plays the first and a hard hit the new one. Change its sound on the **Sound** row: it steps through the kit's sounds, and the new sound plays from start to end, keeping the layer's play mode.
+- **Tap a layer** on the map to pick it. The Layers section's rows then set that layer alone: **Sound**, **Vel low** and **Vel high** (the velocities it plays; dragging its edges on the map does the same), and its own **Level**, **Pan** and **Tune**, on top of the pad's. The **Wave**, **Warp**, **Chop** and **Grain** pages then work on that layer too: its trim, loop, warp, slices and grains.
+- **Remove layer** takes the picked layer out. A pad keeps one layer at least.
+- The **Layers** row says how the layers that match a hit play: all together (**Stacked**), in turn (**Cycle**), or one at random (**Random**).
+
+Each add, remove and change is one step for **UNDO**.
 
 ### Pads that stop, play or hold others
 
-{{shot: sample-play-links | The Play page's Pad list with Also plays picked: hits on A1 and A3 put them on it, so a hit on A5 plays all three, and A5 latches.}}
+{{shot: sample-play-links | The Play page's Pad section with Also plays picked: hits on A1 and A3 put them on it, so a hit on A5 plays all three, and A5 latches.}}
 
-Three rows of the Play page's **Pad** list set how a pad works with the others, and with your hands:
+Three rows of the Play page's **Pad** section set how a pad works with the others, and with your hands:
 
 - **Stops:** the pads this one cuts off when you hit it. It works one way: the closed hi-hat stops the open one, and the open one leaves the closed one alone. (A **mute group** cuts both ways.)
 - **Also plays:** the pads that play whenever you hit this one, at the same strength, as the MPC's Simultaneous Play does: a kick with its own sub, a stab with a noise burst, a chord from three pads. Each plays as a hit on it would, with its own layers, stops and latch, and lets go when you let go of this pad. The pads it plays don't play their own Also plays pads in turn. While the pads play notes or 16 Levels, Also plays does nothing.
@@ -43,7 +71,7 @@ To fill in **Stops** or **Also plays**, tap the row, then hit the pads you want:
 
 Play a sound higher than it was recorded (**Tune** up, a key above a keygroup's root, pressure on pitch) and its top end moves up past what the MPC can play. On old samplers that part folds back down as harsh, metallic tones that were never in the sound (aliasing): a hi-hat pitched up an octave gains a whine. MPFree filters it out as it plays, so pitched-up hats, breaks and keys stay clean. A sound recorded at a higher rate, such as a 96 kHz file, plays clean too.
 
-The **Vintage** row of the Pad list turns that off for one pad. At **On** the pad plays pitched up the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
+The **Vintage** row of the Pitch section turns that off for one pad. At **On** the pad plays pitched up the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
 
 Up to two semitones up, clean and Vintage sound exactly the same: what folds back there is above hearing. Past that, a clean pad takes a little more of the MPC's power for each sound it plays, and a Vintage one doesn't.
 
@@ -51,7 +79,7 @@ Up to two semitones up, clean and Vintage sound exactly the same: what folds bac
 
 {{shot: sample-play-scenes | The scene strip on the Play page: scenes A and B stored, the crossfader 40 % of the way to B.}}
 
-The strip above the Q-Links on the **Play** page holds two **scenes** of the whole kit, as on the Octatrack:
+The strip under the layer map on the **Play** page holds two **scenes** of the whole kit, as on the Octatrack:
 
 - **Store A** keeps every pad of the kit as it is now: its sound, trim, level, tune, filter, envelope, everything. **Store B** keeps a second version. Make A, change some pads (tune the snare down, close the hats' filter, push the kick), then make B.
 - The **crossfader** morphs the kit from A to B as it plays: each pad's level, pan, tune, filter and envelope times move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
@@ -66,6 +94,10 @@ The scenes are saved with the kit.
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
 
 Grains play only when the pad's **Mode** is **Granular**. Until then a button over the picture says which mode the pad is in: tap it to play the pad as grains. The **Mode** row steps through every mode to **Granular** too (on the way, **Loop** gets a loop region of its own, as on the Wave page).
+
+**In time with the beat.** **Tempo sync** locks the grains to the project tempo: **Density** starts them on the beat grid (grains per beat, from one a bar to 32 a beat), **Size** makes each one a length in beats (1/64 of a beat to 4 beats), and **Both** does both. Change the tempo and a cloud that is playing follows at once. Turn it **Off** and the density and size come back as they were. **Level** sets how loud the cloud plays (−24 to +12 dB), for a dense cloud that gets too loud or a sparse one that is too quiet.
+
+**Every layer its own cloud.** The Grain page (and the Wave, Warp and Chop pages) work on the layer picked on the Play page's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.
 
 ## FX: effects on one pad, or on the whole kit
 
@@ -92,14 +124,14 @@ While the pad is a keygroup, or the pads play notes, the Play page shows a keybo
 - Tap a bar to pick its pad. Drag the picked pad's ends to set its lowest and highest keys, and its dot to move the root.
 - Press the keys to hear the kit. The line under the keys shows the 16 notes the pads play.
 
-The Keys rows in the Pad list do the same with numbers: Keys makes one pad a keygroup, Low key, High key and Root key set its range, and Pads play switches the pads between their own sounds and notes.
+The Pitch section's Keys rows do the same with numbers: Keys makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
 
 ### Crossfades
 
 Where one zone ends and the next begins, the sound can switch at a hard edge or blend from one sample into the other. The same goes for a pad's velocity layers, from soft to hard.
 
-- **Key fade**, a row of the Pad list, sets the blend for the whole kit: every keygroup fades in and out over that many notes, and where two zones meet they are moved to overlap by as much, so one fades out while the next fades in. The level stays even across the blend.
-- **Vel fade** does the same for the picked pad's velocity layers. Round robins keep taking turns while their layers blend.
+- **Key fade**, a row of the Pitch section, sets the blend for the whole kit: every keygroup fades in and out over that many notes, and where two zones meet they are moved to overlap by as much, so one fades out while the next fades in. The level stays even across the blend.
+- **Vel fade**, in the Layers section, does the same for the picked pad's velocity layers. Round robins keep taking turns while their layers blend.
 - Set either one back to Off and the edges go back to where they met. Each change is one UNDO.
 
 The keyboard and the layer map draw each fade as a curve at the ends of its bar.

@@ -155,6 +155,9 @@ pub struct GrainVoice {
     scan_offset: f64,
     span: (i64, i64),
     stats: Stats,
+    /// The transport's frames per beat, set by [`GrainVoice::set_tempo`]:
+    /// a synced cloud follows it in place of its own `frames_per_beat`.
+    beat: Option<f64>,
 }
 
 impl GrainVoice {
@@ -174,7 +177,27 @@ impl GrainVoice {
             scan_offset: 0.0,
             span: (0, 0),
             stats: Stats::default(),
+            beat: None,
         }
+    }
+
+    /// The tempo a synced cloud follows, as output frames per beat (60 ×
+    /// rate / BPM), whatever its [`TempoSync::frames_per_beat`] says: a
+    /// player sets it from the transport, so a tempo change moves the
+    /// grains at once. Ignored unless finite and at least one frame.
+    pub fn set_tempo(&mut self, frames_per_beat: f64) {
+        if frames_per_beat.is_finite() && frames_per_beat >= 1.0 {
+            self.beat = Some(frames_per_beat);
+        }
+    }
+
+    /// The tempo sync in force: the params', at the tempo set.
+    fn sync(&self) -> Option<TempoSync> {
+        let mut s = self.params.sync?;
+        if let Some(b) = self.beat {
+            s.frames_per_beat = b;
+        }
+        Some(s)
     }
 
     pub fn params(&self) -> &Params {
@@ -259,8 +282,8 @@ impl GrainVoice {
     fn size_frames(&self) -> f64 {
         let p = &self.params;
         let rate = f64::from(self.out_rate);
-        let frames = match p
-            .sync
+        let frames = match self
+            .sync()
             .and_then(|s| s.size_beats.map(|b| f64::from(b) * s.frames_per_beat))
         {
             Some(f) => f,
@@ -272,7 +295,7 @@ impl GrainVoice {
     /// Grains per second, synced or not.
     fn density(&self) -> f64 {
         let p = &self.params;
-        let d = match p.sync.and_then(|s| s.grains_per_beat.map(|g| (s, g))) {
+        let d = match self.sync().and_then(|s| s.grains_per_beat.map(|g| (s, g))) {
             Some((s, g)) if s.frames_per_beat > 0.0 => {
                 f64::from(g) * f64::from(self.out_rate) / s.frames_per_beat
             }
@@ -283,7 +306,7 @@ impl GrainVoice {
 
     /// Synced grain interval in output frames, if density is synced.
     fn sync_interval(&self) -> Option<f64> {
-        let s = self.params.sync?;
+        let s = self.sync()?;
         let g = s.grains_per_beat?;
         if s.frames_per_beat <= 0.0 || g <= 0.0 {
             return None;

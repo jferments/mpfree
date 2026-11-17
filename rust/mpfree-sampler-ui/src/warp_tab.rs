@@ -13,7 +13,14 @@
 //!   **Clear pins** all of them.
 //! - The **Warp** list holds Warp (Off, Stretch, Repitch) and Warp tempo as
 //!   on the Wave tab, the grid, how many hits are found, and the pin picked
-//!   and its beat.
+//!   and its beat. Under them, **Process** makes a new sound of the
+//!   region: stretched (or repitched) from its warp tempo to the project's
+//!   when it is warped, with its pins made part of the audio, and moved by
+//!   **Shift** semitones (−24 to +24) keeping its length and hits. Its
+//!   button gives [`WaveAction::Process`]; the app runs it on a worker and
+//!   puts the new sound in the region's place, one undo step. While it
+//!   runs ([`WarpTab::set_processing`]) the button stops it
+//!   ([`WaveAction::StopProcess`]).
 //! - **Q-Link 1** picks a pin, **2** nudges its beat (a 64th of a beat a
 //!   detent; with SHIFT, a 960th), **3** fine-tunes the warp tempo (a tenth
 //!   of a BPM; with SHIFT, a hundredth) and **4** scrolls. The **wheel**
@@ -60,6 +67,11 @@ pub const HINT: &str = "Tap a hit to pin it to the grid · drag a pin's handle a
 
 /// What the picture says while the layer isn't warped.
 pub const OFF_NOTE: &str = "Warp is off: turn it to Stretch to pin hits to the beat";
+
+/// What the Process button says while nothing runs.
+pub const PROCESS_TEXT: &str = "New sound";
+/// Shift goes this many semitones either way.
+pub const SHIFT_LIMIT: i32 = 24;
 
 /// A hit this near a grid line, in grid steps, is pinned by Pin hits.
 pub const REACH: f64 = 0.45;
@@ -147,16 +159,20 @@ pub enum Row {
     Hits,
     Pin,
     PinBeat,
+    Shift,
+    Process,
 }
 
 impl Row {
-    pub const ALL: [Row; 6] = [
+    pub const ALL: [Row; 8] = [
         Row::Warp,
         Row::WarpTempo,
         Row::Grid,
         Row::Hits,
         Row::Pin,
         Row::PinBeat,
+        Row::Shift,
+        Row::Process,
     ];
 
     pub fn label(self) -> &'static str {
@@ -167,6 +183,8 @@ impl Row {
             Row::Hits => "Hits",
             Row::Pin => "Pin",
             Row::PinBeat => "Pin beat",
+            Row::Shift => "Shift",
+            Row::Process => "Process",
         }
     }
 
@@ -202,6 +220,10 @@ pub struct WarpTab {
     found: Option<(SourceId, Hits, Arc<[u64]>)>,
     /// The region last shown, so a new one starts zoomed out.
     shown: Option<(usize, usize, SourceId)>,
+    /// Process moves the new sound this many semitones.
+    pub shift: i32,
+    /// How far a Process under way has got (0 to 1), while one runs.
+    processing: Option<f32>,
 }
 
 impl WarpTab {
@@ -245,9 +267,20 @@ impl WarpTab {
             next_gesture: GESTURE_BASE,
             found: None,
             shown: None,
+            shift: 0,
+            processing: None,
         };
         tab.update(ui, st);
         Ok(tab)
+    }
+
+    /// A Process runs and has got this far (0 to 1), or none runs: the
+    /// Process button says so, and stops it while it runs.
+    pub fn set_processing(&mut self, ui: &mut Ui, st: &WaveState, done: Option<f32>) {
+        if self.processing != done {
+            self.processing = done;
+            self.update(ui, st);
+        }
     }
 
     /// The pin picked.
@@ -412,6 +445,7 @@ impl WarpTab {
             } else {
                 Vec::new()
             };
+            list.buttons = vec![Row::Process.index()];
         }
         let warped = r.warp.is_some();
         let has_pins = !w.pins.is_empty();
@@ -518,6 +552,14 @@ impl WarpTab {
                 }
                 _ => "—".to_string(),
             },
+            Row::Shift => match self.shift {
+                0 => "0 st".to_string(),
+                n => format!("{n:+} st"),
+            },
+            Row::Process => match self.processing {
+                Some(done) => format!("Stop · {:.0} %", done.clamp(0.0, 1.0) * 100.0),
+                None => PROCESS_TEXT.to_string(),
+            },
         }
     }
 
@@ -585,6 +627,17 @@ impl WarpTab {
             }
             (LIST, EventKind::Type(index)) if Row::ALL.get(*index) == Some(&Row::WarpTempo) => {
                 warp_tempo_ask(r).map(WaveAction::Ask)
+            }
+            (LIST, EventKind::Tab(index)) if Row::ALL.get(*index) == Some(&Row::Process) => {
+                self.lift();
+                Some(match self.processing {
+                    Some(_) => WaveAction::StopProcess,
+                    None => WaveAction::Process {
+                        pad: st.pad,
+                        layer: st.layer,
+                        semitones: self.shift,
+                    },
+                })
             }
             (LIST, EventKind::Select(_)) => None,
             (name, EventKind::Select(_)) if QLINKS.contains(&name) => None,
@@ -710,6 +763,13 @@ impl WarpTab {
                 let to = snap(p.beat, grid) + f64::from(d) * grid;
                 n.warp = Some(w.pin_moved(i, to, r.start, r.end, st.rate));
             }
+            Row::Shift => {
+                self.shift = (self.shift + d).clamp(-SHIFT_LIMIT, SHIFT_LIMIT);
+                self.update(ui, st);
+                return None;
+            }
+            // A button: pressed, not stepped.
+            Row::Process => return None,
         }
         let out = self.edit(st, Key::Row(row), n);
         if out.is_none() {

@@ -10,7 +10,9 @@
 //! - The **Region** list holds the settings: play mode, loop, crossfade,
 //!   gain, tune, warp (to the project tempo by stretching or repitching,
 //!   from the region's own tempo), reverse, channels, fades, and how
-//!   markers snap.
+//!   markers snap. **Normalize** is a button among them: it sets the gain
+//!   so the region's loudest frame plays at 0 dBFS
+//!   ([`WaveAction::Normalize`]; the app reads the audio).
 //! - **Q-Links 1 to 4** move Start, End, Loop start and Loop end: one pixel
 //!   of the current zoom per detent (so zooming in makes them finer), snapped
 //!   in the direction of the turn; with SHIFT, one frame per detent, never
@@ -231,6 +233,21 @@ pub enum WaveAction {
     /// Ask for a number to be typed (the Warp tempo's value tapped); the
     /// number comes back through the tab's `typed`.
     Ask(NumberAsk),
+    /// Set the layer's gain so its region's loudest frame, on the channels
+    /// it plays, lands at 0 dBFS (Normalize, one undo step). The app reads
+    /// the audio: the tab has only its picture.
+    Normalize { pad: usize, layer: usize },
+    /// Make a new sound of the layer's region, `semitones` higher and
+    /// stretched from its warp tempo to `bpm` when it is warped, and put
+    /// it in the region's place (the Warp tab's Process; one undo step).
+    /// The app runs it on a worker.
+    Process {
+        pad: usize,
+        layer: usize,
+        semitones: i32,
+    },
+    /// Stop the Process under way; nothing changes.
+    StopProcess,
 }
 
 /// The key a typed Warp tempo comes back with ([`NumberAsk::key`]).
@@ -293,6 +310,7 @@ pub enum Row {
     Loop,
     Crossfade,
     Gain,
+    Normalize,
     Tune,
     Warp,
     WarpTempo,
@@ -304,11 +322,12 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 12] = [
+    pub const ALL: [Row; 13] = [
         Row::Mode,
         Row::Loop,
         Row::Crossfade,
         Row::Gain,
+        Row::Normalize,
         Row::Tune,
         Row::Warp,
         Row::WarpTempo,
@@ -325,6 +344,7 @@ impl Row {
             Row::Loop => "Loop",
             Row::Crossfade => "Crossfade",
             Row::Gain => "Gain",
+            Row::Normalize => "Normalize",
             Row::Tune => "Tune",
             Row::Warp => "Warp",
             Row::WarpTempo => "Warp tempo",
@@ -334,6 +354,11 @@ impl Row {
             Row::FadeOut => "Fade out",
             Row::Snap => "Snap",
         }
+    }
+
+    /// Its place in [`Row::ALL`], the list's row.
+    pub fn index(self) -> usize {
+        Row::ALL.iter().position(|r| *r == self).unwrap_or(0)
     }
 }
 
@@ -357,7 +382,10 @@ const FADE_MS: [f64; 13] = [
     0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0,
 ];
 const GAIN_STEP_DB: f32 = 0.5;
-const GAIN_RANGE_DB: (f32, f32) = (-48.0, 24.0);
+/// What the Normalize row's button says.
+pub const NORMALIZE_TEXT: &str = "To 0 dB";
+/// The Gain row's range, in dB (Normalize keeps to it too).
+pub const GAIN_RANGE_DB: (f32, f32) = (-48.0, 24.0);
 const TUNE_LIMIT_CENTS: i32 = 4800;
 
 pub fn mode_label(m: PlayMode) -> &'static str {
@@ -677,14 +705,11 @@ impl WaveTab {
             list.right = mode_label(r.mode).to_string();
             list.rows = rows;
             list.typed = if r.warp.is_some() {
-                Row::ALL
-                    .iter()
-                    .position(|k| *k == Row::WarpTempo)
-                    .into_iter()
-                    .collect()
+                vec![Row::WarpTempo.index()]
             } else {
                 Vec::new()
             };
+            list.buttons = vec![Row::Normalize.index()];
         }
         for (k, m) in Mark::ALL.iter().enumerate() {
             if let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) {
@@ -728,6 +753,7 @@ impl WaveTab {
                         _ => "—".into(),
                     },
                     Row::Gain => format!("{:+.1} dB", r.gain_db).replace("+0.0", "0.0"),
+                    Row::Normalize => NORMALIZE_TEXT.into(),
                     Row::Tune => tune_text(r.tune_cents),
                     Row::Warp => warp_label(r.warp.as_ref()).into(),
                     Row::WarpTempo => match &r.warp {
@@ -814,6 +840,15 @@ impl WaveTab {
             }
             (REGION, EventKind::Type(index)) if Row::ALL.get(*index) == Some(&Row::WarpTempo) => {
                 warp_tempo_ask(&st.region).map(WaveAction::Ask)
+            }
+            (REGION, EventKind::Tab(index)) if Row::ALL.get(*index) == Some(&Row::Normalize) => {
+                // A press ends the turn before it: Normalize is a step of
+                // its own.
+                self.gesture = None;
+                Some(WaveAction::Normalize {
+                    pad: st.pad,
+                    layer: st.layer,
+                })
             }
             (name, EventKind::Select(_)) if QLINKS.contains(&name) => {
                 let k = QLINKS.iter().position(|q| *q == name)?;
@@ -996,6 +1031,8 @@ impl WaveTab {
                 let g = ((r.gain_db / GAIN_STEP_DB).round() + d as f32) * GAIN_STEP_DB;
                 r.gain_db = g.clamp(GAIN_RANGE_DB.0, GAIN_RANGE_DB.1);
             }
+            // A button: pressed, not stepped.
+            Row::Normalize => return None,
             Row::Tune => {
                 r.tune_cents = (r.tune_cents + 100 * d).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS)
             }
