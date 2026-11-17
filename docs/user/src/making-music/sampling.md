@@ -68,7 +68,7 @@ The **Rec** page records onto a pad: from the INPUTS on the back of the MPC, or 
 
 {{shot: sample-rec | The Rec page recording the line input onto pad A6: a take that started on the bar line is two bars in, and the blue span is what Skip back would keep.}}
 
-1. Pick what to record in the **Source** row. **Line in** is the INPUTS; turn the line input on first (**Prefs > Line input**, or the Looper tab's options), and set **REC VOL** so the meters stay out of the red. The other sources are MPFree's own sound: **Master** (everything you hear), a track (**Drums**, **Synth**, **Loop**), the delay's return, or one pad's channel.
+1. Pick what to record with **Source**, in the panel's **Input** section. **Line in** is the INPUTS; turn the line input on first (**Prefs > Line input**, or the Looper tab's options), and set **REC VOL** so the meters stay out of the red. The other sources are MPFree's own sound: **Master** (everything you hear), a track (**Drums**, **Synth**, **Loop**), the delay's return, or one pad's channel.
 2. Set how the take starts and ends (below), or leave them: by default it starts when you press **Record** and ends when you press **Stop**.
 3. Tap **Record**, play, and tap **Stop**.
 
@@ -78,17 +78,17 @@ The picture shows the source's level on two meters, and the last 30 seconds of i
 
 ### Skip back: keep what you just played
 
-The Rec page is always listening while its source is on. **Skip back** keeps what has already come in, without your having pressed Record: the last 10 seconds to begin with, or whatever the **Skip back** row says (5 seconds to a minute, or 1 to 8 whole bars cut on the bar lines). The blue span on the picture shows what it would keep. It is the sampler's version of [Capture](clips.md#capture-keep-what-you-just-played): play something good, then keep it.
+The Rec page is always listening while its source is on. **Skip back** keeps what has already come in, without your having pressed Record: the last 10 seconds to begin with, or whatever the selector beside the **Skip back** button says (5 seconds to a minute, or 1 to 8 whole bars cut on the bar lines). The blue span on the picture shows what it would keep. It is the sampler's version of [Capture](clips.md#capture-keep-what-you-just-played): play something good, then keep it.
 
 ### How a take starts and ends
 
-The Record list on the right sets up the take. Pick a row with the data wheel or a tap, and change it with **–** and **+** or the arrows.
+The panel under the picture sets up the take, in five sections: **Input** (Source and Channels), **Start**, **End**, **Take** (Record, Skip back and Onto) and **Resample** (Flatten and Auto-sample). Tap a choice's button to pick it, drag a knob up or down, or tap a selector's arrows; the data wheel and **–** / **+** change the control you touched last, and a finger resting on a control lets the wheel turn it.
 
-| Row | What it does |
+| Control | What it does |
 |---|---|
 | **Source** | What it records (above). |
 | **Channels** | **Left + right**, **Left**, **Right** or **Mono mix** (both mixed into one). |
-| **Start** | **Now**: when you tap Record. **Threshold**: when the sound gets louder than the Threshold row, for catching a hit without missing its start. **Next bar**: on the next bar line, in time with the music. |
+| **Start** | **Now**: when you tap Record. **Threshold**: when the sound gets louder than the Threshold knob, for catching a hit without missing its start. **Next bar**: on the next bar line, in time with the music. |
 | **Threshold** | How loud the sound must be to start a take (and quiet, to end one on silence), from -60 to -6 dB. |
 | **Pre-roll** | With Start on Threshold, how much from just before the sound to keep as well (0 to 500 ms), so the attack isn't cut. |
 | **End** | **Stop**: when you tap Stop. **Silence**: when the sound has been under the threshold for the Silence time. **Length**: after a number of bars. |

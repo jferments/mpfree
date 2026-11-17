@@ -1791,6 +1791,9 @@ impl SamplePage {
                 return;
             };
             let a = tab.action(ui, ev, st);
+            if let Some(note) = tab.take_note() {
+                self.told.push(note);
+            }
             if let Some(a) = self.took(a) {
                 self.act_rec(ui, a);
             }
@@ -2736,6 +2739,9 @@ impl SamplePage {
                 let mut source = None;
                 if let (Some(tab), Some(st)) = (self.rec.as_mut(), self.rec_state.as_ref()) {
                     source = tab.wheel(ui, st, delta);
+                    if let Some(note) = tab.take_note() {
+                        self.told.push(note);
+                    }
                 }
                 if let Some(a) = source {
                     self.act_rec(ui, a);

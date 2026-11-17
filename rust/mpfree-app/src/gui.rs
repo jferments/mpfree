@@ -11614,8 +11614,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             });
         }
         rec.on_event(UiEvent {
-            widget: mpfree_sampler_ui::rec_tab::BUTTONS.into(),
-            kind: EventKind::Tab(0),
+            widget: LIST.into(),
+            kind: EventKind::Tab(Row::BUTTONS[0].index()),
         });
         feed_input(&mut feed.0, 2.2 * bar_frames() / f64::from(RATE), 0.4, true);
         rec.tick(0.033);
@@ -11632,8 +11632,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             kind: EventKind::Tab(mpfree_sampler_ui::rec_tab::TAB),
         });
         auto.on_event(UiEvent {
-            widget: mpfree_sampler_ui::rec_tab::BUTTONS.into(),
-            kind: EventKind::Tab(3),
+            widget: mpfree_sampler_ui::rec_tab::LIST.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::rec_tab::Row::Auto.index()),
         });
         auto.on_event(UiEvent {
             widget: LIST.into(),
@@ -19212,12 +19212,33 @@ mod tests {
             .ends_with("· layer 1 of 2"));
     }
 
+    /// The Rec tab's buttons on its panel: what each says, and whether it
+    /// can be pressed.
+    fn rec_buttons(p: &Player) -> (Vec<String>, Vec<bool>) {
+        use mpfree_sampler_ui::panel::Look;
+        use mpfree_sampler_ui::rec_tab::{Row, LIST};
+        let l =
+            p.ui.get::<mpfree_sampler_ui::widgets::SettingList>(LIST)
+                .unwrap();
+        Row::BUTTONS
+            .iter()
+            .map(|r| {
+                let c = &l.controls[r.index()];
+                let text = match &c.look {
+                    Look::Button(t) | Look::Primary(t) => t.clone(),
+                    _ => String::new(),
+                };
+                (text, !c.faint)
+            })
+            .unzip()
+    }
+
     #[test]
     fn the_rec_tab_records_the_line_input_onto_a_pad_and_frees_the_buffer_when_it_goes_off() {
         use mpfree_sampler_ui::rec_tab;
         use mpfree_sampler_ui::rec_widgets::InputView;
         use mpfree_sampler_ui::sample::feed_input;
-        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::widgets::PadBar;
         let mut p = sample_sampler(Fonts::embedded());
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
             p.on_event(UiEvent {
@@ -19265,7 +19286,7 @@ mod tests {
             rec_tab::OFF_NOTE
         );
         assert_eq!(
-            p.ui.get::<ButtonRow>(rec_tab::BUTTONS).unwrap().enabled,
+            rec_buttons(&p).1,
             [false, false, true, true],
             "Flatten and Auto-sample don't need the line input"
         );
@@ -19297,14 +19318,19 @@ mod tests {
         assert_eq!(v.skip.as_ref().unwrap().label, "Skip back 10 s");
         // Record, a second and a half, Stop: Take 1 lands on A6, one undo
         // step, and the editor picks it; the Play page's pad names follow.
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(0));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[0].index()),
+        );
         feed_input(&mut feed.0, 1.5, 0.4, true);
         p.tick(0.033);
-        assert_eq!(
-            p.ui.get::<ButtonRow>(rec_tab::BUTTONS).unwrap().labels[0],
-            "Stop"
+        assert_eq!(rec_buttons(&p).0[0], "Stop");
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[0].index()),
         );
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(0));
         let log = events_log(&p);
         assert!(
             log.iter()
@@ -19325,7 +19351,11 @@ mod tests {
             "the next take goes after it"
         );
         // Skip back keeps the last 10 s onto A7.
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[1].index()),
+        );
         assert!(events_log(&p)
             .iter()
             .any(|l| l == "sample: skip back 10 s: Take 2, 10.00 s stereo on pad A7"));
@@ -19421,7 +19451,11 @@ mod tests {
             p.ui.get::<PadBar>(rec_tab::BAR).unwrap().subtitle,
             "Left + right · resampling Master"
         );
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[1].index()),
+        );
         assert!(
             events_log(&p)
                 .iter()
@@ -19501,7 +19535,11 @@ mod tests {
         assert_eq!((tab.bars, tab.tail), (1, TailAt::Loop));
         feed_input(&mut feed.0, 2.0, 0.4, true);
         p.tick(0.033);
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(0));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[0].index()),
+        );
         feed_input(&mut feed.0, 6.0, 0.4, true);
         p.tick(0.033);
         let log = events_log(&p);
@@ -19528,10 +19566,18 @@ mod tests {
         // Skip back by bars lands warped too; by seconds it doesn't.
         step(&mut p, Row::SkipBack, 4);
         assert_eq!(p.sample.rec_settings().unwrap().skip, Skip::Bars(1));
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[1].index()),
+        );
         assert_eq!(region(&p, 6).warp.map(|w| w.bpm), Some(tempo as f32));
         step(&mut p, Row::SkipBack, -4);
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[1].index()),
+        );
         assert_eq!(region(&p, 7).warp, None);
     }
 
@@ -19541,7 +19587,7 @@ mod tests {
         use mpfree_fx::{CapturePoint, StripId};
         use mpfree_sampler_ui::rec_tab;
         use mpfree_sampler_ui::sample::{feed_input, PAD};
-        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::widgets::PadBar;
         let mut p = sample_sampler(Fonts::embedded());
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
             p.on_event(UiEvent {
@@ -19562,15 +19608,19 @@ mod tests {
             EventKind::Tab(rec_tab::TAB),
         );
         assert!(take(&mut p).is_empty());
-        let b = p.ui.get::<ButtonRow>(rec_tab::BUTTONS).unwrap();
-        assert_eq!(b.labels[2], "Flatten");
+        let (labels, enabled) = rec_buttons(&p);
+        assert_eq!(labels[2], "Flatten");
         assert_eq!(
-            b.enabled,
+            enabled,
             [false, false, true, true],
             "Flatten needs no line input"
         );
         // Flatten: the input turns to A5's own channel, after its inserts.
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(2));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[2].index()),
+        );
         let channel = RecSource::Mix(StripId::Pad(PAD), CapturePoint::BeforeFader);
         let acts = take(&mut p);
         assert!(
@@ -19601,9 +19651,9 @@ mod tests {
         };
         assert_eq!(take(&mut p), [hit(true)]);
         // Record, Skip back and Auto-sample wait; the first button stops it.
-        let b = p.ui.get::<ButtonRow>(rec_tab::BUTTONS).unwrap();
+        let (labels, enabled) = rec_buttons(&p);
         assert_eq!(
-            (b.labels[0].as_str(), b.enabled.clone()),
+            (labels[0].as_str(), enabled),
             ("Stop", vec![true, false, false, false])
         );
         // The pad sounds; after the hold it is let go.
@@ -19670,7 +19720,11 @@ mod tests {
             mpfree_sampler_ui::wave_tab::BAR,
             EventKind::Tab(rec_tab::TAB),
         );
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(2));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[2].index()),
+        );
         take(&mut p);
         let mut acts = take(&mut p);
         let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
@@ -19682,7 +19736,11 @@ mod tests {
         // Stop while it sounds: the pad is let go, nothing is kept.
         feed_input(&mut feed.0, 0.3, 0.5, false);
         p.tick(0.3);
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(0));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[0].index()),
+        );
         let acts = take(&mut p);
         assert!(
             matches!(
@@ -19701,7 +19759,11 @@ mod tests {
         p.apply(ToUi::SampleInputBack(feed));
         // Again, and the pad makes no sound: it gives up after the hold
         // and two seconds more.
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(2));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[2].index()),
+        );
         take(&mut p);
         let mut acts = take(&mut p);
         let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
@@ -19939,7 +20001,11 @@ mod tests {
             mpfree_sampler_ui::wave_tab::BAR,
             EventKind::Tab(rec_tab::TAB),
         );
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(3));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[3].index()),
+        );
         // No MIDI out yet: the Source row keeps the synth.
         step(&mut p, Row::Source, 1);
         assert_eq!(source(&p), "Poly Pluck");
@@ -20135,7 +20201,11 @@ mod tests {
             mpfree_sampler_ui::wave_tab::BAR,
             EventKind::Tab(rec_tab::TAB),
         );
-        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(3));
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(rec_tab::Row::BUTTONS[3].index()),
+        );
         assert_eq!(
             (p.page(), p.sample.editor()),
             (sample_page::AUTO_PAGE, sample_page::Editor::Auto)

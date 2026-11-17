@@ -148,8 +148,10 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 ### Rec and Auto
 
-- **`smp-rec-buttons/button`**: Record or Stop, Skip back 10 s (keep what just played), Flatten (record the pad as it plays), Auto-sample. *Tests:* `the_rec_tab_records_the_line_input_onto_a_pad_and_frees_the_buffer_when_it_goes_off`, `flatten_records_the_pads_own_channel_as_it_plays_once_and_keeps_it_on_the_next_pad`.
-- **`smp-rec-list/row`**, **`smp-rec-list/row-less`**, **`smp-rec-list/row-more`**: Source, Channels, Start, Threshold and the rest. *Test:* `the_rec_tab_resamples_the_master_and_lets_go_of_it_for_the_line_input`.
+- **`smp-rec-list/button`**: the Take and Resample sections' buttons: Record (Stop while a take or a Flatten runs), Skip back (keep what just came in, as far as the selector beside it says), Flatten (record the pad as it plays) and Auto-sample. A faint one says why when tapped (the line input off, no empty pad, a take running). *Tests:* `the_rec_tab_records_the_line_input_onto_a_pad_and_frees_the_buffer_when_it_goes_off`, `flatten_records_the_pads_own_channel_as_it_plays_once_and_keeps_it_on_the_next_pad`.
+- **`smp-rec-list/choice`**: Start (Now, Threshold, Next bar), End (Stop, Silence, Length), Tail (Cut, Ring out, Loop) and Onto (Next empty, This pad). *Test:* `a_threshold_take_from_the_wheel_waits_for_the_input_and_ends_after_its_bars`.
+- **`smp-rec-list/knob`**: Threshold and Pre-roll. Drag up or down.
+- **`smp-rec-list/less`**, **`smp-rec-list/more`**: the ‹ › of Source, Channels, Length, Silence for, Skip back's reach, Flatten velocity and Flatten hold. Source is faint while a take is made (a take keeps its source). *Test:* `the_rec_tab_resamples_the_master_and_lets_go_of_it_for_the_line_input`.
 - **`smp-auto-buttons/button`**: Start and Rec for auto-sampling. *Tests:* `auto_sample_plays_external_gear_over_midi_and_records_it_from_the_line_input`, `auto_sample_plays_a_copy_of_the_synth_onto_empty_pads_and_undo_takes_it_off`.
 - **`smp-auto-list/row`**, **`smp-auto-list/row-less`**, **`smp-auto-list/row-more`**: Source, Lowest note, Highest note, Every and the rest.
 
