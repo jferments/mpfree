@@ -10,9 +10,12 @@
 //!   bottom row (pads 1-4) makes it denser, pads 5-8 make the grains longer,
 //!   pads 9-12 move where they read, and the top row (pads 13-16) raises the
 //!   pitch up to an octave.
-//! - Every engine view is built here, before the sound starts. Picking a kit
-//!   swaps views, so the audio loop never builds, allocates or frees one;
-//!   sounds already playing finish, as before.
+//! - Every engine view is built here, before the sound starts, and every
+//!   kit sits in the engine at once (`Engine::with_kits`), sharing its
+//!   voices: a kit per track. The clips' notes play their track's kit
+//!   ([`Player::hit_kit_at`]); the pads play the kit [`Player::select`]
+//!   picked (the armed track's), and nothing is built, allocated or freed
+//!   in the audio loop when it changes.
 //! - The kits' projects go to the screen thread for the Sample tab
 //!   ([`Player::take_projects`]). An edit there builds the kit's view again
 //!   on the screen thread and sends it here in a [`ViewSwap`];
@@ -86,16 +89,110 @@ pub struct Counters {
 }
 
 pub struct Player {
+    /// Every kit's view, one kit slot each ([`Engine::with_kits`]).
     engine: Engine,
-    /// One view per kit. The playing kit's view is inside the engine, so its
-    /// place here is empty.
-    views: Vec<Option<EngineView>>,
+    /// The kit the pads play (the armed track's).
     kit: usize,
     /// Pads with a sound, per kit.
     sounds: Vec<[bool; 16]>,
     peak_grains: usize,
     /// Each kit's project, until the screen thread takes them.
     projects: Vec<Project>,
+}
+
+/// What each track plays when it has no instrument of its own: an entry
+/// of the kit chip's list, a kit (the Grains kit among them) or the synth
+/// after them. Every track plays kit 1 until a pick changes it; then the
+/// pads play the armed track's entry, and each track's clips play its own
+/// (a kit per track, the sampler review's decision 1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackKits {
+    entries: [u8; mpfree_seq::MAX_TRACKS],
+    /// The synth's entry: the one after the kits.
+    synth: u8,
+}
+
+impl Default for TrackKits {
+    /// Every track on kit 1, before the kits are known.
+    fn default() -> TrackKits {
+        TrackKits::new(usize::MAX)
+    }
+}
+
+impl TrackKits {
+    /// For `kits` kits (the Grains kit counted), the synth after them.
+    pub fn new(kits: usize) -> TrackKits {
+        TrackKits {
+            entries: [0; mpfree_seq::MAX_TRACKS],
+            synth: kits.min(usize::from(u8::MAX)) as u8,
+        }
+    }
+
+    /// Track `track`'s entry (kit 1's, 0, for a track out of range).
+    pub fn entry(&self, track: usize) -> usize {
+        self.entries.get(track).map_or(0, |&e| usize::from(e))
+    }
+
+    /// Track `track` plays `entry` from now on. False, and nothing
+    /// changes, for a track or entry out of range.
+    pub fn set(&mut self, track: usize, entry: usize) -> bool {
+        match self.entries.get_mut(track) {
+            Some(e) if entry <= usize::from(self.synth) => {
+                *e = entry as u8;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether track `track` plays the synth.
+    pub fn plays_synth(&self, track: usize) -> bool {
+        self.entry(track) == usize::from(self.synth)
+    }
+
+    /// The kit track `track` plays, or None if it plays the synth.
+    pub fn kit_of(&self, track: usize) -> Option<usize> {
+        let e = self.entry(track);
+        (e != usize::from(self.synth)).then_some(e)
+    }
+
+    /// The synth's entry.
+    pub fn synth(&self) -> usize {
+        usize::from(self.synth)
+    }
+
+    /// The project's track kits part ([`crate::project::TRACK_KITS`]): a
+    /// line for each track that plays another kit than kit 1, or the
+    /// synth, numbered from 1 as the screen shows them. Only the first
+    /// line while every track plays kit 1, so the part isn't saved.
+    pub fn text(&self) -> String {
+        use std::fmt::Write as _;
+        let mut s = format!("{}\n", crate::project::TRACK_KITS_FORMAT);
+        for (t, &e) in self.entries.iter().enumerate().filter(|(_, &e)| e != 0) {
+            let _ = if e == self.synth {
+                writeln!(s, "track {} synth", t + 1)
+            } else {
+                writeln!(s, "track {} kit {}", t + 1, e + 1)
+            };
+        }
+        s
+    }
+
+    /// Where each kit plays in the mixer (`MixHost::pads_homed`): `homes[k]`
+    /// is 1 + the first track that plays kit `k` (`plays(t)`: track `t`
+    /// plays its entry, not an instrument of its own or MIDI Out), or 0:
+    /// kit 1, and a kit no track plays, sound on the pad channels. Tracks
+    /// that share a kit share its channel. Never allocates.
+    pub fn homes(&self, plays: impl Fn(usize) -> bool) -> [u8; mpfree_sampler::engine::MAX_KITS] {
+        let mut homes = [0u8; mpfree_sampler::engine::MAX_KITS];
+        for (t, &e) in self.entries.iter().enumerate() {
+            let k = usize::from(e);
+            if k > 0 && e != self.synth && homes.get(k) == Some(&0) && plays(t) {
+                homes[k] = (t + 1) as u8;
+            }
+        }
+        homes
+    }
 }
 
 /// A kit's engine view, built again after an edit on the Sample tab, on its
@@ -337,12 +434,13 @@ impl Player {
                 sounds: grain_sounds,
             });
         }
-        let mut engine = Engine::new(rate, POOL_VOICES);
+        let mut engine = Engine::with_kits(rate, POOL_VOICES, views.len());
         engine.set_full_voices(MAX_VOICES);
-        engine.set_view(views[0].take().expect("built above"));
+        for (k, view) in views.into_iter().enumerate() {
+            engine.set_kit_view(k, view.expect("built above"));
+        }
         Ok(Player {
             engine,
-            views,
             kit: 0,
             sounds,
             peak_grains: 0,
@@ -352,7 +450,7 @@ impl Player {
 
     #[cfg(test)]
     pub fn kits(&self) -> usize {
-        self.views.len()
+        self.engine.kits()
     }
 
     pub fn kit(&self) -> usize {
@@ -364,17 +462,16 @@ impl Player {
         self.sounds.get(kit).copied().unwrap_or([false; 16])
     }
 
-    /// Play kit `k` from the next hit on. Sounds already playing finish.
-    /// Swaps views: it never allocates or frees.
+    /// The pads play kit `k` from the next hit on (the armed track's).
+    /// Every kit's clips go on playing, and so do sounds already playing;
+    /// the master grain effect takes kit `k`'s settings. Never allocates
+    /// or frees.
     pub fn select(&mut self, k: usize) {
-        if k == self.kit || k >= self.views.len() {
+        if k == self.kit || k >= self.engine.kits() {
             return;
         }
-        let Some(view) = self.views[k].take() else {
-            return;
-        };
-        self.views[self.kit] = Some(self.engine.set_view(view));
         self.kit = k;
+        self.engine.set_master_kit(k);
     }
 
     /// Every kit's project, in kit order (the Grains kit last), for the
@@ -384,15 +481,17 @@ impl Player {
         std::mem::take(&mut self.projects)
     }
 
-    /// Puts `swap`'s view in place for kit `swap.kit` (in the engine, if
-    /// that kit is playing) and leaves the view it replaces in `swap`, to
-    /// be freed off the audio thread. It is an edit of that kit, so sounds
-    /// already playing hear it ([`Engine::edit_view`]: loop points, level,
-    /// pan, filter and tune), and the next hit plays the new view; the pads
-    /// with a sound are the view's (a chop adds some). Never allocates or
-    /// frees.
+    /// Puts `swap`'s view in place for kit `swap.kit` in the engine and
+    /// leaves the view it replaces in `swap`, to be freed off the audio
+    /// thread. It is an edit of that kit, so its sounds already playing
+    /// hear it ([`Engine::edit_kit_view`]: loop points, level, pan, filter
+    /// and tune), and the next hit plays the new view; the pads with a
+    /// sound are the view's (a chop adds some). Never allocates or frees.
     /// Returns false, leaving `swap` as it was, if there is no such kit.
     pub fn swap_view(&mut self, swap: &mut ViewSwap) -> bool {
+        if swap.kit >= self.engine.kits() {
+            return false;
+        }
         let Some(view) = swap.view.take() else {
             return false;
         };
@@ -402,14 +501,7 @@ impl Player {
                 *h = view.has_pad(p);
             }
         }
-        if swap.kit == self.kit {
-            swap.view = Some(self.engine.edit_view(view));
-        } else if let Some(slot) = self.views.get_mut(swap.kit) {
-            swap.view = slot.replace(view);
-        } else {
-            swap.view = Some(view);
-            return false;
-        }
+        swap.view = Some(self.engine.edit_kit_view(swap.kit, view));
         true
     }
 
@@ -419,7 +511,7 @@ impl Player {
             kit: self.kit.min(usize::from(u16::MAX)) as u16,
             ..Playheads::default()
         };
-        for (pad, layer, at) in self.engine.playheads() {
+        for (pad, layer, at) in self.engine.kit_playheads(self.kit) {
             let n = usize::from(p.len);
             if layer != 0 || n >= PLAYHEADS {
                 continue;
@@ -428,7 +520,7 @@ impl Player {
             p.frame[n] = at.min(u64::from(u32::MAX)) as u32;
             p.len += 1;
         }
-        p.marking = self.engine.marking().is_some();
+        p.marking = self.engine.marking().is_some() && self.engine.marking_kit() == self.kit;
         p.marks_made = self.engine.marks_made();
         let first = p.marks_made.saturating_sub(PLAYHEADS as u64);
         for i in first..p.marks_made {
@@ -440,18 +532,20 @@ impl Player {
     }
 
     /// Copies the grains `c` asks for (its kit, pad and layer) into it, with
-    /// that layer's playhead and the grains playing on every pad. A kit
-    /// that isn't playing has none. Never allocates.
+    /// that layer's playhead and the grains playing on every pad of every
+    /// kit. Never allocates.
     pub fn fill_cloud(&self, c: &mut Cloud) {
         c.live = self.engine.live_grains();
         (c.len, c.head) = (0, None);
-        if c.kit != self.kit {
+        if c.kit >= self.engine.kits() {
             return;
         }
-        c.len = self.engine.grains_of(c.pad, c.layer, &mut c.grains);
+        c.len = self
+            .engine
+            .kit_grains_of(c.kit, c.pad, c.layer, &mut c.grains);
         c.head = self
             .engine
-            .playheads()
+            .kit_playheads(c.kit)
             .find(|&(pad, layer, _)| pad == c.pad && layer == c.layer)
             .map(|(_, _, at)| at);
     }
@@ -460,7 +554,7 @@ impl Player {
     /// frames `start..end` of its layer `layer` once at `velocity` (as a
     /// tap on a slice does) and, while that plays, live hits
     /// ([`Player::live_hit_at`]) mark cuts in it instead of playing. Off
-    /// stops it. Another kit than the one playing does nothing.
+    /// stops it. A kit out of range does nothing.
     #[allow(clippy::too_many_arguments)]
     pub fn live_chop(
         &mut self,
@@ -472,50 +566,63 @@ impl Player {
         on: bool,
         velocity: u8,
     ) {
-        if kit != self.kit || pad >= 128 {
+        if kit >= self.engine.kits() || pad >= 128 {
             return;
         }
         // In order, after anything already queued.
         if on {
             self.audition(kit, pad, layer, start, end, velocity);
-            self.engine.schedule(
+            self.engine.schedule_for(
+                kit,
                 0,
                 Event::LiveChop {
                     pad: Some(pad as u8),
                 },
             );
         } else {
-            self.engine.schedule(0, Event::LiveChop { pad: None });
+            self.engine
+                .schedule_for(kit, 0, Event::LiveChop { pad: None });
         }
     }
 
-    /// A pad played live (by hand, or a latched arp): it marks a cut
-    /// while live chop takes them, and plays otherwise
-    /// ([`Player::hit_at`]).
-    pub fn live_hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
-        if self.engine.marking().is_some() {
-            return self.engine.schedule(offset, Event::Mark);
+    /// Kit `kit`'s pad played live (by hand, or a latched arp): it marks
+    /// a cut while live chop takes them on that kit, and plays otherwise
+    /// ([`Player::hit_kit_at`]).
+    pub fn live_hit_at(&mut self, kit: usize, pad: usize, velocity: u8, offset: u32) -> bool {
+        if self.marking(kit) {
+            return self.engine.schedule_for(kit, offset, Event::Mark);
         }
-        self.hit_at(pad, velocity, offset)
+        self.hit_kit_at(kit, pad, velocity, offset)
     }
 
-    /// A pad let go live: nothing while live chop takes cuts (the hit
-    /// played nothing), else [`Player::release_at`].
-    pub fn live_release_at(&mut self, pad: usize, offset: u32) {
-        if self.engine.marking().is_none() {
-            self.release_at(pad, offset);
+    /// Kit `kit`'s pad let go live: nothing while live chop takes cuts on
+    /// that kit (the hit played nothing), else [`Player::release_kit_at`].
+    pub fn live_release_at(&mut self, kit: usize, pad: usize, offset: u32) {
+        if !self.marking(kit) {
+            self.release_kit_at(kit, pad, offset);
         }
     }
 
-    /// Starts pad `pad`'s sound `offset` frames into the next render.
-    /// Returns false if the playing kit has no sound on that pad.
+    /// Whether live chop takes cuts on kit `kit` now.
+    fn marking(&self, kit: usize) -> bool {
+        self.engine.marking().is_some() && self.engine.marking_kit() == kit
+    }
+
+    /// Starts pad `pad`'s sound `offset` frames into the next render, on
+    /// the kit the pads play. Returns false if it has no sound on that pad.
     pub fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
-        if pad >= 16 || !self.sounds[self.kit][pad] {
+        self.hit_kit_at(self.kit, pad, velocity, offset)
+    }
+
+    /// [`Player::hit_at`] on kit `kit` (a clip's note on its track's kit).
+    pub fn hit_kit_at(&mut self, kit: usize, pad: usize, velocity: u8, offset: u32) -> bool {
+        if pad >= 16 || !self.sounds.get(kit).is_some_and(|s| s[pad]) {
             return false;
         }
         let velocity = engine_velocity(velocity);
         if velocity > 0 {
-            self.engine.schedule(
+            self.engine.schedule_for(
+                kit,
                 offset,
                 Event::NoteOn {
                     pad: pad as u8,
@@ -534,7 +641,8 @@ impl Player {
         if velocity == 0 {
             return false;
         }
-        self.engine.schedule(
+        self.engine.schedule_for(
+            self.kit,
             offset,
             Event::Key {
                 note: note.min(127),
@@ -546,7 +654,8 @@ impl Player {
 
     /// The key `note` was let go, `offset` frames into the next render.
     pub fn key_off_at(&mut self, note: u8, offset: u32) {
-        self.engine.schedule(
+        self.engine.schedule_for(
+            self.kit,
             offset,
             Event::KeyOff {
                 note: note.min(127),
@@ -554,39 +663,46 @@ impl Player {
         );
     }
 
-    /// The pad was let go, `offset` frames into the next render. One-shot
-    /// sounds ignore it; a Grains pad stops making grains and fades out.
+    /// The pad was let go, `offset` frames into the next render, on the
+    /// kit the pads play. One-shot sounds ignore it; a Grains pad stops
+    /// making grains and fades out.
     pub fn release_at(&mut self, pad: usize, offset: u32) {
+        self.release_kit_at(self.kit, pad, offset);
+    }
+
+    /// [`Player::release_at`] on kit `kit`.
+    pub fn release_kit_at(&mut self, kit: usize, pad: usize, offset: u32) {
         if pad < 16 {
             self.engine
-                .schedule(offset, Event::NoteOff { pad: pad as u8 });
+                .schedule_for(kit, offset, Event::NoteOff { pad: pad as u8 });
         }
     }
 
     /// Live values on kit `kit`'s pads (the scene crossfader's), applied
-    /// before the next render, while that kit is the one playing: each
-    /// replaces the pad's own until it is NaN or the kit's next view comes.
+    /// before the next render: each replaces the pad's own until it is NaN
+    /// or the kit's next view comes.
     pub fn pad_live(&mut self, kit: usize, values: &[(u8, PadField, f32)]) {
-        if kit != self.kit {
-            return;
-        }
         for &(pad, field, value) in values {
-            self.engine.apply(Event::PadLive { pad, field, value });
+            self.engine
+                .apply_for(kit, Event::PadLive { pad, field, value });
         }
     }
 
-    /// A step's parameter lock on pad `pad`'s `field` (`Some`), or its end
-    /// (`None`), `offset` frames into the next render: the clips' locks on
-    /// a kit pad's sound (`Owner::Pad`). False for no such pad.
+    /// A step's parameter lock on kit `kit`'s pad `pad`'s `field` (`Some`),
+    /// or its end (`None`), `offset` frames into the next render: the
+    /// clips' locks on a kit pad's sound (`Owner::Pad`, on the kit of the
+    /// lock's track). False for no such pad.
     pub fn pad_lock(
         &mut self,
+        kit: usize,
         pad: usize,
         field: PadField,
         value: Option<f32>,
         offset: u32,
     ) -> bool {
         pad < 16
-            && self.engine.schedule(
+            && self.engine.schedule_for(
+                kit,
                 offset,
                 Event::PadLock {
                     pad: pad as u8,
@@ -598,8 +714,8 @@ impl Player {
 
     /// Plays source frames `start..end` of pad `pad`'s layer `layer` once,
     /// from the next render, as the pad made from that slice will play it
-    /// (a tap on the Chop page). Only while kit `kit` is the one playing;
-    /// returns whether it went to the engine.
+    /// (a tap on the Chop page), on kit `kit`; returns whether it went to
+    /// the engine.
     pub fn audition(
         &mut self,
         kit: usize,
@@ -609,13 +725,14 @@ impl Player {
         end: u64,
         velocity: u8,
     ) -> bool {
-        if kit != self.kit || pad >= 16 || layer > usize::from(u8::MAX) {
+        if pad >= 16 || layer > usize::from(u8::MAX) {
             return false;
         }
         let clip = |f: u64| u32::try_from(f).unwrap_or(u32::MAX);
         let velocity = engine_velocity(velocity);
         velocity > 0
-            && self.engine.schedule(
+            && self.engine.schedule_for(
+                kit,
                 0,
                 Event::Audition {
                     pad: pad as u8,
@@ -627,11 +744,17 @@ impl Player {
             )
     }
 
-    /// Pad pressure, 0 to 127, `offset` frames into the next render (a
-    /// clip's recorded pressure).
+    /// Pad pressure, 0 to 127, `offset` frames into the next render, on the
+    /// kit the pads play.
     pub fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+        self.pressure_kit_at(self.kit, pad, value, offset);
+    }
+
+    /// [`Player::pressure_at`] on kit `kit` (a clip's recorded pressure).
+    pub fn pressure_kit_at(&mut self, kit: usize, pad: usize, value: u8, offset: u32) {
         if pad < 16 {
-            self.engine.schedule(
+            self.engine.schedule_for(
+                kit,
                 offset,
                 Event::Pressure {
                     pad: pad as u8,
@@ -641,10 +764,12 @@ impl Player {
         }
     }
 
-    /// Pad pressure, 0 to 127, from the next render on.
+    /// Pad pressure, 0 to 127, from the next render on, on the kit the pads
+    /// play.
     pub fn pressure(&mut self, pad: usize, value: u8) {
         if pad < 16 {
-            self.engine.schedule(
+            self.engine.schedule_for(
+                self.kit,
                 0,
                 Event::Pressure {
                     pad: pad as u8,
@@ -667,9 +792,9 @@ impl Player {
     }
 
     /// The pads whose hit keeps a latched sound playing, as bits (pad `k`
-    /// is bit `k`): their lights stay on.
+    /// is bit `k`) of the kit the pads play: their lights stay on.
     pub fn latched_pads(&self) -> u16 {
-        self.engine.latched_pads()
+        self.engine.kit_latched_pads(self.kit)
     }
 
     pub fn playing(&self) -> usize {
@@ -721,9 +846,9 @@ impl Player {
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
     }
 
-    /// The next `frames` frames with each pad of the playing kit apart, for
-    /// the mixer's pad channels: pad `p` (0 to 15) adds its sound into
-    /// `out.pad(p)` (see [`Engine::render_routed`]). The pads add up to what
+    /// The next `frames` frames with each pad of every kit apart, for the
+    /// mixer: pad `p` of kit `k` adds its sound into `out.pad(k, p)` (see
+    /// [`Engine::render_routed`]). The pads add up to what
     /// [`Player::render_dry`] renders. (The tests; the audio loop renders
     /// with [`Player::render_routed_until`].)
     #[cfg(test)]
@@ -924,7 +1049,7 @@ mod tests {
     struct Channels([[[f32; 128]; 2]; 16]);
 
     impl PadOut for Channels {
-        fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+        fn pad(&mut self, _kit: usize, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
             let [l, r] = self.0.get_mut(pad)?;
             Some((&mut l[..], &mut r[..]))
         }
@@ -1013,11 +1138,10 @@ mod tests {
     }
 
     #[test]
-    fn a_slice_plays_once_on_the_playing_kit_only() {
+    fn a_slice_plays_once_on_its_own_kit() {
         let mut ks = kits();
         let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
         // Kick (pad 1) is 3000 frames: frames 1000 to 1500 of it.
-        assert!(!p.audition(1, 0, 0, 1000, 1500, 127), "kit 2 isn't playing");
         assert!(!p.audition(0, 16, 0, 1000, 1500, 127));
         assert!(!p.audition(0, 0, 0, 1000, 1500, 0));
         assert!(p.audition(0, 0, 0, 1000, 1500, 127));
@@ -1027,6 +1151,13 @@ mod tests {
             (490..500).contains(&last),
             "the slice is 500 frames (its sine may touch zero at the end): {last}"
         );
+        assert_eq!(p.playing(), 0);
+        // Every kit is in the engine: kit 2's clap (1500 frames) plays its
+        // slice too, whichever kit the pads play.
+        assert!(p.audition(1, 0, 0, 1000, 1500, 127));
+        run(&mut p, 1);
+        assert_eq!(p.playing(), 1);
+        run(&mut p, 8);
         assert_eq!(p.playing(), 0);
     }
 
@@ -1310,21 +1441,70 @@ mod tests {
         assert_eq!(heads.of(3).count(), 0);
     }
 
+    /// Every track plays kit 1 until a pick; a track picks a kit or the
+    /// synth; its kit's home is the first track that plays it there, and
+    /// a track that plays something else (its own instrument) is passed
+    /// over. The project's part lists only the picks.
+    #[test]
+    fn each_track_plays_its_own_entry_and_a_kit_lives_on_its_first_track() {
+        let mut k = TrackKits::new(3);
+        assert!((0..mpfree_seq::MAX_TRACKS).all(|t| k.entry(t) == 0 && k.kit_of(t) == Some(0)));
+        assert_eq!(k.synth(), 3);
+        assert!(k.set(1, 2) && k.set(2, 2) && k.set(4, 3) && k.set(5, 1));
+        assert!(!k.set(6, 4), "past the synth");
+        assert!(!k.set(mpfree_seq::MAX_TRACKS, 1), "past the tracks");
+        assert_eq!((k.kit_of(1), k.kit_of(4)), (Some(2), None));
+        assert!(k.plays_synth(4) && !k.plays_synth(1));
+        let homes = k.homes(|_| true);
+        assert_eq!(
+            &homes[..4],
+            &[0, 6, 2, 0],
+            "kit 1 on the pads, kits 2 and 3 on tracks 6 and 2"
+        );
+        // Track 2 has its own instrument: kit 3 lives on track 3.
+        assert_eq!(k.homes(|t| t != 1)[2], 3);
+        assert_eq!(
+            k.text(),
+            format!(
+                "{}\ntrack 2 kit 3\ntrack 3 kit 3\ntrack 5 synth\ntrack 6 kit 2\n",
+                crate::project::TRACK_KITS_FORMAT
+            )
+        );
+        assert_eq!(
+            crate::project::track_kits_parse(&k.text()),
+            Ok(vec![(1, Some(2)), (2, Some(2)), (4, None), (5, Some(1))])
+        );
+        assert_eq!(TrackKits::new(3).text().lines().count(), 1);
+    }
+
+    /// Every kit is in the engine: hits on two kits in one period both
+    /// sound, each from its own kit's pads.
+    #[test]
+    fn two_kits_sound_at_once() {
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        assert!(p.kits() >= 2);
+        let pad_of = |p: &Player, k: usize| (0..16).find(|&i| p.sounds(k)[i]).unwrap();
+        let (a, b) = (pad_of(&p, 0), pad_of(&p, 1));
+        assert!(p.hit_kit_at(0, a, 100, 0));
+        assert!(p.hit_kit_at(1, b, 100, 0));
+        run(&mut p, 1);
+        assert_eq!(p.playing(), 2, "one voice on each kit");
+    }
+
     #[test]
     fn live_chop_marks_cuts_instead_of_playing_and_the_playheads_carry_them() {
         let mut ks = kits();
         let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
         // Kick (pad 1, 3000 frames) from frame 200 to its end.
-        p.live_chop(1, 0, 0, 200, 3000, true, 127);
-        assert_eq!(p.playheads().marks_made, 0, "kit 2 isn't playing");
         p.live_chop(0, 0, 0, 200, 3000, true, 127);
         run(&mut p, 1);
         let heads = p.playheads();
         assert!(heads.marking);
         // The snare hit 10 frames into the next period marks a cut there
         // (128 + 10 frames from 200) and plays nothing.
-        assert!(p.live_hit_at(5, 127, 10));
-        p.live_release_at(5, 20);
+        assert!(p.live_hit_at(0, 5, 127, 10));
+        p.live_release_at(0, 5, 20);
         run(&mut p, 1);
         let heads = p.playheads();
         assert_eq!(heads.marks_made, 1);
@@ -1335,7 +1515,7 @@ mod tests {
         run(&mut p, 2);
         assert!(!p.playheads().marking);
         assert_eq!(p.playing(), 0);
-        assert!(p.live_hit_at(5, 127, 0));
+        assert!(p.live_hit_at(0, 5, 127, 0));
         run(&mut p, 1);
         assert_eq!(p.playheads().of(5).count(), 1);
         assert_eq!(p.playheads().marks_made, 1);

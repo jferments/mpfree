@@ -240,6 +240,10 @@ pub struct MixHost {
     /// Each track's own instrument (instruments.rs), rendered into its
     /// mixer track before the mixer runs.
     pub instruments: Instruments,
+    /// The tracks whose channels a kit plays into (a kit other than kit
+    /// 1, on the first track that plays it), a bit each, as the last
+    /// period's [`MixHost::pads_homed`] had them.
+    kit_tracks: u128,
     /// How long the tracks' own instruments took in the last period (0
     /// when no track has one), for load shedding's cost a voice (shed.rs).
     pub instrument_time: Duration,
@@ -398,6 +402,7 @@ impl MixHost {
             plugins: Arc::new(Plugins::none()),
             opening: None,
             instruments: Instruments::new(rate, PERIOD),
+            kit_tracks: 0,
             instrument_time: Duration::ZERO,
             made: Vec::new(),
             plugin_presets: Vec::new(),
@@ -1205,12 +1210,35 @@ impl MixHost {
         }
     }
 
-    /// The pad channels for the sampler's `render_routed` this period.
+    /// The pad channels for the sampler's `render_routed` this period,
+    /// every kit on them (the tests).
+    #[cfg(test)]
     pub fn pads(&mut self) -> Pads<'_> {
+        self.pads_homed(&[])
+    }
+
+    /// The pad channels and the kits' tracks for the sampler's
+    /// `render_routed` this period: kit `k` plays into track
+    /// `homes[k] - 1`'s channel, or the pad channels where that is 0 or
+    /// past `homes` (`sampler::TrackKits::homes`). Those tracks' channels
+    /// show while it is so. Never allocates.
+    pub fn pads_homed<'a>(&'a mut self, homes: &'a [u8]) -> Pads<'a> {
+        self.kit_tracks = homes
+            .iter()
+            .filter(|&&h| h > 0)
+            .fold(0, |m, &h| m | 1 << (h - 1));
         Pads {
             mixer: &mut self.mixer,
             played: 0,
+            homes,
         }
+    }
+
+    /// The tracks whose own channels are in use, a bit each: playing their
+    /// own instrument (or ringing out an old one), or a kit
+    /// ([`MixHost::pads_homed`]).
+    pub fn channels_in_use(&self) -> u128 {
+        self.instruments.in_use() | self.kit_tracks
     }
 
     /// The drums as the sampler made them: the pads that played (`played`,
@@ -1363,7 +1391,7 @@ impl MixHost {
     /// The tracks' strips as the mixer's Tracks view shows them: the
     /// engines' tracks, then each track's own instrument's while in use.
     pub fn track_strips(&self) -> Vec<StripId> {
-        let used = self.instruments.in_use();
+        let used = self.channels_in_use();
         (0..self.mixer.tracks())
             .filter(|&t| t < TRACKS || used & (1 << (t - TRACKS)) != 0)
             .map(StripId::Track)
@@ -1379,9 +1407,9 @@ impl MixHost {
             return None;
         }
         self.state_at = Some(now);
-        // Tracks' own instruments' channels show only while in use; the
-        // others aren't read.
-        let used = self.instruments.in_use();
+        // Tracks' own channels show only while in use (an instrument or a
+        // kit plays there); the others aren't read.
+        let used = self.channels_in_use();
         let shown = |s: StripId| match s {
             StripId::Track(t) if t >= TRACKS => used & (1 << (t - TRACKS)) != 0,
             _ => true,
@@ -1487,11 +1515,14 @@ impl MixHost {
     }
 }
 
-/// The pad channels as the sampler sees them (`PadOut`): pad `p` of the
-/// playing kit adds into pad channel `p`. It notes which pads played.
+/// The pad channels as the sampler sees them (`PadOut`): pad `p` of kit 1
+/// adds into pad channel `p`, and every pad of another kit into its
+/// track's channel (`homes`, [`MixHost::pads_homed`]), or into pad
+/// channel `p` if no track has it. It notes which pad channels played.
 pub struct Pads<'a> {
     mixer: &'a mut Mixer,
     played: u32,
+    homes: &'a [u8],
 }
 
 impl Pads<'_> {
@@ -1502,12 +1533,17 @@ impl Pads<'_> {
 }
 
 impl PadOut for Pads<'_> {
-    fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
-        if pad >= PADS {
-            return None;
+    fn pad(&mut self, kit: usize, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+        match self.homes.get(kit).copied().unwrap_or(0) {
+            0 if pad < PADS => {
+                self.played |= 1 << pad;
+                self.mixer.pad_input(pad)
+            }
+            0 => None,
+            home => self
+                .mixer
+                .track_input(crate::instruments::first_track() + usize::from(home) - 1),
         }
-        self.played |= 1 << pad;
-        self.mixer.pad_input(pad)
     }
 }
 
@@ -1547,7 +1583,7 @@ mod tests {
             let i = tone(220.0, line, p * PERIOD);
             if drums > 0.0 {
                 let mut pads = h.pads();
-                let (pl, pr) = pads.pad(0).unwrap();
+                let (pl, pr) = pads.pad(0, 0).unwrap();
                 pl[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
                 pr[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             }
@@ -1644,6 +1680,41 @@ mod tests {
         assert!((0.12..0.13).contains(&peak), "{peak}");
     }
 
+    /// Kit 1's pads go into their pad channels; another kit's into the
+    /// channel of the first track that plays it (`homes`), which then
+    /// shows in the Tracks view; a kit no track has goes onto the pads.
+    #[test]
+    fn a_kit_plays_into_its_tracks_channel() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        // Kit 2 on track 3; kit 3 on no track.
+        let homes = [0u8, 3, 0];
+        let mut pads = h.pads_homed(&homes);
+        pads.pad(0, 5).unwrap().0[0] = 0.25;
+        pads.pad(1, 5).unwrap().0[0] = 0.5;
+        pads.pad(1, 9).unwrap().0[1] = 0.125;
+        pads.pad(2, 7).unwrap().0[0] = 1.0;
+        assert!(
+            pads.pad(1, PADS).is_some(),
+            "every pad of kit 2 reaches its track"
+        );
+        assert_eq!(
+            pads.played(),
+            1 << 5 | 1 << 7,
+            "the pad channels kit 1 and kit 3 played"
+        );
+        let track = crate::instruments::first_track() + 2;
+        let (l, _) = h.mixer.track_input(track).unwrap();
+        assert_eq!((l[0], l[1]), (0.5, 0.125), "both of kit 2's pads, added");
+        assert_eq!(h.mixer.pad_input(5).unwrap().0[0], 0.25);
+        assert_eq!(h.mixer.pad_input(7).unwrap().0[0], 1.0);
+        assert_eq!(h.channels_in_use(), 1 << 2);
+        assert!(h.track_strips().contains(&StripId::Track(track)));
+        // Kit 2 on no track again: its channel goes.
+        let _ = h.pads_homed(&[0, 0]);
+        assert_eq!(h.channels_in_use(), 0);
+        assert!(!h.track_strips().contains(&StripId::Track(track)));
+    }
+
     /// The looper's pads, wet: the master's input without the loops, the
     /// same whether a loop plays or not, with the Drums' echo from the
     /// delay on Return A in it; and the reason it can't be had once the
@@ -1678,7 +1749,7 @@ mod tests {
                 if p < 40 {
                     let d = tone(110.0, 0.5, at);
                     let mut pads = h.pads();
-                    let (pl, pr) = pads.pad(0).unwrap();
+                    let (pl, pr) = pads.pad(0, 0).unwrap();
                     pl[..PERIOD].copy_from_slice(&d);
                     pr[..PERIOD].copy_from_slice(&d);
                 }
@@ -1741,7 +1812,7 @@ mod tests {
             let d = tone(110.0, 0.5, at);
             {
                 let mut pads = h.pads();
-                let (pl, pr) = pads.pad(0).unwrap();
+                let (pl, pr) = pads.pad(0, 0).unwrap();
                 pl[..PERIOD].copy_from_slice(&d);
                 pr[..PERIOD].copy_from_slice(&d);
             }
@@ -1872,9 +1943,9 @@ mod tests {
         let mut h = MixHost::new(RATE, 0.0, 0.0);
         // The sampler's pads 1 and 3; pad 17 is not there.
         let mut pads = h.pads();
-        pads.pad(0).unwrap().0[..PERIOD].fill(0.25);
-        pads.pad(2).unwrap().0[..PERIOD].fill(0.5);
-        assert!(pads.pad(PADS).is_none());
+        pads.pad(0, 0).unwrap().0[..PERIOD].fill(0.25);
+        pads.pad(0, 2).unwrap().0[..PERIOD].fill(0.5);
+        assert!(pads.pad(0, PADS).is_none());
         let played = pads.played();
         assert_eq!(played, 0b101);
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);

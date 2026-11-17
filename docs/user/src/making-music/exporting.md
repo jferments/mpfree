@@ -53,7 +53,7 @@ Some songs **always listen**, because part of their sound only exists in real ti
 **Stems by Track** (the default) makes one stem for each track that plays, named after the track, as the MPC does:
 
 - A track with its own instrument plays through its own channel, so its stem comes straight from the first pass.
-- The tracks that play the pads all play into the same channel (the drum kit's, or the synth's when the pads play the synth). To give each its own stem, the export plays the range again with only that track playing, once for each. The audio tracks share the Audio channel and get a pass each the same way. A track that is the only one on its channel needs no extra pass.
+- Tracks that play the same kit, or the synth, play into the same channel: kit 1's is Drums, another kit's is the channel of the first track that plays it, and the synth's is Synth. To give each its own stem, the export plays the range again with only that track playing, once for each. The audio tracks share the Audio channel and get a pass each the same way. A track that is the only one on its channel needs no extra pass.
 - The Loop and each return get a stem too, as with Channel.
 - A track that is muted, has no notes, or plays outside gear over MIDI gets no stem (its notes are still in the MIDI file).
 
