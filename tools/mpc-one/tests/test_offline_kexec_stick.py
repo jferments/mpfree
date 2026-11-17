@@ -6,6 +6,7 @@ MPFREE_REQUIRE_OFFLINE_TOOLS=1 (CI does) to fail instead of skip without them.
 """
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -512,9 +514,12 @@ class KexecStickTests(unittest.TestCase):
         self.assertIn("STOP: --loadpin-off goes with --kexec-file", res.stdout)
         self.assertEqual(self.outputs(), [])
 
-    def chain_image(self, shutdown=b"\x00/usr/sbin/kexec\x00-e\x00/sys/kernel/kexec_loaded\x00", kexec=True):
+    def chain_image(self, shutdown=b"\x00/usr/sbin/kexec\x00-e\x00/sys/kernel/kexec_loaded\x00", kexec=True,
+                    extra=None):
         unpacked = os.path.join(self.work, "akai-unpacked-20260101T000000Z-abc")
-        extra = {"usr/sbin/kexec": "#!/bin/sh\n# AKAI-KEXEC\n"} if kexec else {}
+        extra = dict(extra or {})
+        if kexec:
+            extra["usr/sbin/kexec"] = "#!/bin/sh\n# AKAI-KEXEC\n"
         if shutdown is not None:
             extra["usr/lib/systemd/systemd-shutdown"] = b"\x7fELF-FAKE" + shutdown
         build_rootfs(unpacked, extra=extra)
@@ -621,6 +626,180 @@ class KexecStickTests(unittest.TestCase):
             res = self.build("--kexec-file", "--loadpin-off", "--chain")
             self.assertEqual(res.returncode, 0, res.stdout)
             self.assertIn("runs no kexec program (it starts the loaded kernel itself)", res.stdout)
+
+    OWN = "6.18.57-rt9-mpfree"
+
+    def own_kernel(self, name="own-kernel", release=OWN, info=None, config=None, zimage=None, members=None,
+                   sums=None):
+        """A kernel folder as tools/kernel/build.sh makes it (and CI keeps it on the VM), with fake parts."""
+        folder = os.path.join(self.tmp, name)
+        os.makedirs(folder)
+        if zimage is None:
+            zimage = bytearray(os.urandom(3 << 20))
+            zimage[0x24:0x28] = (0x016F2818).to_bytes(4, "little")
+        write(os.path.join(folder, "zImage"), bytes(zimage))
+        if members is None:
+            members = [(f"lib/modules/{release}", None), (f"lib/modules/{release}/kernel", None),
+                       (f"lib/modules/{release}/kernel/drivers", None),
+                       (f"lib/modules/{release}/kernel/drivers/ili210x.ko", os.urandom(2 << 20)),
+                       (f"lib/modules/{release}/kernel/drivers/pwrseq_emmc.ko", os.urandom(4096)),
+                       (f"lib/modules/{release}/kernel/fs", None),
+                       (f"lib/modules/{release}/kernel/fs/exfat.ko", b"exfat" * 100),
+                       (f"lib/modules/{release}/modules.dep", b"kernel/fs/exfat.ko:\n"),
+                       (f"lib/modules/{release}/modules.order", b"kernel/fs/exfat.ko\n"),
+                       (f"lib/modules/{release}/modules.builtin", b"kernel/drivers/usb/storage.ko\n")]
+        tar_path = os.path.join(folder, f"modules-{release}.tar.xz")
+        with tarfile.open(tar_path, "w:xz") as tar:
+            for path, data in members:
+                ti = tarfile.TarInfo(path)
+                if data is None:
+                    ti.type, ti.mode = tarfile.DIRTYPE, 0o755
+                    tar.addfile(ti)
+                elif isinstance(data, str):
+                    ti.type, ti.linkname = tarfile.SYMTYPE, data
+                    tar.addfile(ti)
+                else:
+                    ti.size, ti.mode = len(data), 0o600
+                    tar.addfile(ti, io.BytesIO(data))
+        modules = sum(1 for p, d in members if p.endswith(".ko") and isinstance(d, bytes))
+        write(os.path.join(folder, "config"), config if config is not None else (
+            '# Linux/arm 6.18.57 Kernel Configuration\nCONFIG_ARCH_ROCKCHIP=y\nCONFIG_LOCALVERSION="-mpfree"\n'
+            "CONFIG_SECURITY_LOADPIN_ENFORCE=y\n# CONFIG_KEXEC is not set\nCONFIG_MMC=m\nCONFIG_MMC_DW=m\n"))
+        write(os.path.join(folder, "System.map"), "c0008000 T stext\n")
+        write(os.path.join(folder, "build-info.txt"), info if info is not None else (
+            f"release: {release}\nlinux: linux-6.18.57.tar.xz sha256 {'1' * 64} (pinned)\n"
+            f"rt: patch-6.18.57-rt9.patch.xz sha256 {'2' * 64} (pinned)\n"
+            "config: multi_v7_defconfig + tools/kernel/mpfree.config sha256 abc; check-config: CONFIG-OK\n"
+            f"modules: {modules}\nzImage: {len(zimage)} bytes\npinned: yes\n"))
+        names = ("zImage", f"modules-{release}.tar.xz", "config", "System.map", "build-info.txt")
+        with open(os.path.join(folder, "SHA256SUMS"), "w") as fh:
+            fh.write(sums if sums is not None else
+                     "".join(f"{sha(os.path.join(folder, n))}  {n}\n" for n in names))
+        return folder, bytes(zimage), members
+
+    def test_own_kernel_on_the_chain(self):
+        """--own-kernel: the chain's second kernel is ours (a file in /boot/mpfree-kexec, hashed in its list),
+        its modules on the stick's root, udev kept from the eMMC and SD card modules; the root grows for them."""
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new())
+        self.chain_image(extra={f"usr/lib/modules/{NEW}/kernel/akai.ko": b"AKAI-MODULE"})
+        mod = stick_module()
+        folder, zimage, members = self.own_kernel()
+        res = self.build("--kexec-file", "--loadpin-off", "--chain", "--own-kernel", folder)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"  --own-kernel: the chain's second kernel is MPFree's own, {self.OWN}, from {folder}: "
+                      f"/boot/mpfree-kexec/zImage ({len(zimage)} bytes, sha256 {hashlib.sha256(zimage).hexdigest()}), "
+                      "not Akai's\n", res.stdout)
+        self.assertIn(f"  --own-kernel: 3 modules in /usr/lib/modules/{self.OWN} (6 files, ", res.stdout)
+        self.assertRegex(res.stdout, r"the root filesystem grew by \d+ MiB for them\n")
+        self.assertIn(f"  --own-kernel: rt: patch-6.18.57-rt9.patch.xz sha256 {'2' * 64} (pinned)\n", res.stdout)
+        self.assertIn("  --own-kernel: config: multi_v7_defconfig + tools/kernel/mpfree.config", res.stdout)
+        [out] = self.outputs()
+        out = os.path.join(self.work, out)
+        root_img = os.path.join(self.tmp, "p1.img")
+        part = self.partition(os.path.join(out, "stick.img"), 1, root_img)
+        self.assertGreater(part["size"] * 512, 24 << 20, "partition 1 grew with the root filesystem")
+        self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
+        # Our zImage, not the link to Akai's, and the chain's list has its hash.
+        self.assertRegex(self.dfs(root_img, "stat /boot/mpfree-kexec/zImage"), r"Type: regular\s+Mode:\s+0644")
+        copy = os.path.join(self.tmp, "own-zImage")
+        run(["debugfs", "-R", f"dump /boot/mpfree-kexec/zImage {copy}", root_img])
+        with open(copy, "rb") as fh:
+            self.assertEqual(fh.read(), zimage)
+        sums = self.dfs(root_img, "cat /boot/mpfree-kexec/SHA256SUMS")
+        self.assertTrue(sums.startswith(f"{hashlib.sha256(zimage).hexdigest()}  zImage\n"), sums)
+        self.assertEqual(len(sums.splitlines()), 3)
+        with open(os.path.join(out, "cmdline.txt")) as fh:
+            cmdline = fh.read().strip()
+        first = cmdline.replace(" sysctl.kernel.kexec_load_disabled=1", "") + " loadpin.enforce=0 mpfree.chain=1"
+        self.check_softreboot_files(root_img, NEW, kexec_file=first, chain=True)
+        # The modules, as in the tarball, root's, 0644 and 0755; Akai's own stay as they were.
+        for path, data in members:
+            target = "/usr/" + path
+            if data is None:
+                self.assertRegex(self.dfs(root_img, f"stat {target}"), r"Type: directory\s+Mode:\s+0755")
+            else:
+                self.assertRegex(self.dfs(root_img, f"stat {target}"), r"Type: regular\s+Mode:\s+0644")
+                self.assertRegex(self.dfs(root_img, f"stat {target}"), r"User:\s+0\s+Group:\s+0")
+                copy = os.path.join(self.tmp, "module-copy")
+                run(["debugfs", "-R", f"dump {target} {copy}", root_img])
+                with open(copy, "rb") as fh:
+                    self.assertEqual(fh.read(), data, target)
+        self.assertEqual(self.dfs(root_img, f"cat /usr/lib/modules/{NEW}/kernel/akai.ko"), "AKAI-MODULE")
+        self.assertEqual(self.dfs(root_img, "cat /etc/modprobe.d/mpfree-own-kernel.conf"), mod.OWN_MODPROBE_TEXT)
+        for name in ("pwrseq_emmc", "pwrseq_simple", "dw_mmc_rockchip", "dw_mmc"):
+            self.assertIn(f"\nblacklist {name}\n", mod.OWN_MODPROBE_TEXT)
+        with open(os.path.join(folder, "build-info.txt")) as fh:
+            self.assertEqual(self.dfs(root_img, "cat /boot/mpfree-kexec/build-info.txt"), fh.read())
+        # The source image is untouched, and without --own-kernel the stick is the chain stick as before.
+        shutil.rmtree(out)
+        res = self.build("--kexec-file", "--loadpin-off", "--chain")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertNotIn("--own-kernel", res.stdout)
+        [out] = self.outputs()
+        self.partition(os.path.join(self.work, out, "stick.img"), 1, root_img)
+        self.assertIn('Fast link dest: "../zImage-' + NEW + '"', self.dfs(root_img, "stat /boot/mpfree-kexec/zImage"))
+        self.assertIn("File not found", self.dfs(root_img, f"stat /usr/lib/modules/{self.OWN}"))
+        self.assertIn("File not found", self.dfs(root_img, "stat /etc/modprobe.d/mpfree-own-kernel.conf"))
+        self.assertIn("File not found", self.dfs(root_img, "stat /boot/mpfree-kexec/build-info.txt"))
+
+    def test_own_kernel_stops(self):
+        write(os.path.join(self.pre, "release.txt"), NEW + "\n")
+        write(os.path.join(self.pre, "live.dtb"), live_tree_new())
+        self.chain_image(extra={f"usr/lib/modules/{NEW}/kernel/akai.ko": b"AKAI-MODULE"})
+        good, _, members = self.own_kernel(name="good")
+        with self.subTest("without --chain"):
+            res = self.build("--kexec-file", "--loadpin-off", "--own-kernel", good)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn("STOP: --own-kernel goes with --chain", res.stdout)
+        rel = self.OWN
+        bad_zimage = b"\x00" * (2 << 20)
+        cases = (
+            ("not ours", dict(release="6.18.44-az01-2026-08-10-rt6"), "names release '6.18.44-az01-2026-08-10-rt6'"),
+            ("not pinned", dict(info=f"release: {rel}\ncheck-config: CONFIG-OK\nmodules: 3\npinned: no\n"),
+             'does not say "pinned: yes"'),
+            ("config not checked", dict(info=f"release: {rel}\nmodules: 3\npinned: yes\n"),
+             "does not say its config was checked"),
+            ("a file changed", dict(sums="0" * 64 + "  zImage\n"), "SHA256SUMS lists zImage, not"),
+            ("kexec on", dict(config='CONFIG_ARCH_ROCKCHIP=y\nCONFIG_LOCALVERSION="-mpfree"\n'
+                                     "CONFIG_SECURITY_LOADPIN_ENFORCE=y\nCONFIG_KEXEC=y\nCONFIG_MMC=m\n"),
+             "kexec must be off"),
+            ("MMC built in", dict(config='CONFIG_ARCH_ROCKCHIP=y\nCONFIG_LOCALVERSION="-mpfree"\n'
+                                         "CONFIG_SECURITY_LOADPIN_ENFORCE=y\nCONFIG_MMC=y\n"),
+             "the eMMC and SD card drivers must not be built in (its config has CONFIG_MMC=y)"),
+            ("LoadPin not enforcing", dict(config='CONFIG_ARCH_ROCKCHIP=y\nCONFIG_LOCALVERSION="-mpfree"\n'
+                                                  "CONFIG_MMC=m\n"),
+             "LoadPin must be enforcing"),
+            ("not a zImage", dict(zimage=bad_zimage), "zImage is not a 32-bit ARM kernel"),
+            ("a link in the modules", dict(members=members + [(f"lib/modules/{rel}/build", "/home/x/linux")]),
+             f"has 'lib/modules/{rel}/build', which is not a plain file or folder"),
+            ("outside the release", dict(members=members + [("etc/passwd", b"x")]), "has 'etc/passwd', outside"),
+            ("a name going up", dict(members=members + [(f"lib/modules/{rel}/../x.ko", b"x")]),
+             "a name this tool does not take"),
+            ("no modules.dep", dict(members=[m for m in members if not m[0].endswith("modules.dep")]),
+             "has no lib/modules/" + rel + "/modules.dep"),
+            ("a file without its folder", dict(members=members + [(f"lib/modules/{rel}/extra/x.ko", b"x")]),
+             "but not its folder"),
+        )
+        for n, (name, kw, stop) in enumerate(cases):
+            with self.subTest(name):
+                folder, _, _ = self.own_kernel(name=f"bad{n}", **kw)
+                res = self.build("--kexec-file", "--loadpin-off", "--chain", "--own-kernel", folder)
+                self.assertEqual(res.returncode, 1, res.stdout)
+                self.assertIn("STOP: --own-kernel: ", res.stdout)
+                self.assertIn(stop, res.stdout)
+                self.assertEqual(self.outputs(), [])
+        with self.subTest("the module count is not build-info's"):
+            folder, _, _ = self.own_kernel(name="count", info=f"release: {rel}\ncheck-config: CONFIG-OK\n"
+                                                              "modules: 9\npinned: yes\n")
+            res = self.build("--kexec-file", "--loadpin-off", "--chain", "--own-kernel", folder)
+            self.assertIn("STOP: --own-kernel: modules-" + rel + ".tar.xz holds 3 modules, build-info.txt says 9",
+                          res.stdout)
+        with self.subTest("the image has our release's folder already"):
+            self.chain_image(extra={f"usr/lib/modules/{rel}/x.ko": b"x"})
+            res = self.build("--kexec-file", "--loadpin-off", "--chain", "--own-kernel", good)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(f"STOP: /usr/lib/modules/{rel} already exists in the image", res.stdout)
 
     def test_same_release_installed(self):
         """An installed 3.10.1 starting the 3.10.1 stick: the running tree is U-Boot's for the same release."""
