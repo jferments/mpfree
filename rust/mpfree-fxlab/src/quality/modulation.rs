@@ -387,6 +387,26 @@ pub(super) fn modulation(r: &mut Report) {
         }
     }
 
+    // M13: a change of LFO shape (M4), Sine to Triangle and back, at the
+    // defaults: the two shapes crossfade, so it should click no more than
+    // a knob does.
+    for (id, name, shape) in [
+        (CHORUS, "chorus", ch::SHAPE),
+        (FLANGER, "flanger", fl::SHAPE),
+        (PHASER, "phaser", ph::SHAPE),
+    ] {
+        let mut d = engine(id, rate, &[]);
+        r.put(
+            "M13",
+            &format!("modulation/{name}"),
+            "click_db_over_6k_shape",
+            Some(hf_click(&mut d, shape, 0.0, 1.0, false)),
+            Better::Lower,
+            Some(-60.0),
+            3.0,
+        );
+    }
+
     // M2: level across Feedback at the default Mix, against Feedback 0.
     for (id, name, fb_id) in [
         (FLANGER, "flanger", fl::FEEDBACK),
@@ -471,6 +491,29 @@ pub(super) fn modulation(r: &mut Report) {
             2.0,
         );
     }
+    // The Triangle (M4) at the fastest and deepest: its bend is steady
+    // between the corners, and no more than the sine's peak.
+    let mut d = engine(
+        CHORUS,
+        rate,
+        &[
+            (ch::VOICES, 1.0),
+            (ch::MIX, 100.0),
+            (ch::DEPTH, 100.0),
+            (ch::RATE, 10.0),
+            (ch::DELAY, 40.0),
+            (ch::SHAPE, 1.0),
+        ],
+    );
+    r.put(
+        "M5",
+        sn,
+        "bend_cents_depth100_r10_d40_triangle",
+        Some(bend(&mut d, 10.0)),
+        Better::Lower,
+        Some(100.0),
+        2.0,
+    );
     let mut d = engine(
         FLANGER,
         rate,
