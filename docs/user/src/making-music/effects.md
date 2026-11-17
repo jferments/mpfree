@@ -175,6 +175,20 @@ The **Spring** reverb is the tank in a guitar amp or an old organ: the sound sen
 > [!NOTE]
 > The Spring was rebuilt, so projects saved before it sound a little different on a Spring: Decay is what it says, an echo comes back every Length, and a sound keeps its side. Every setting and preset still loads and does what it did.
 
+### Hall, Cloud and Echoes
+
+The **Hall**, **Cloud** and **Echoes** reverbs are the large ones. The **Hall** is a concert hall: a spread of early reflections, then a smooth tail that builds slowly. The **Cloud** is an endless ambient wash for pads and long fades. **Echoes** is a few distinct repeats that blur as they fade, somewhere between a reverb and a delay.
+
+- **Decay** is how long the tail takes to fall away (60 dB, to near silence) in the mids, and low notes no longer ring on after the rest. **Damping** makes the highs die sooner.
+- Turning **Decay** changes how long the tail rings, not how loud it is, so you can set the length without riding the level.
+- **Size** makes the space bigger; **Pre-delay** waits before it answers. Turning either never bends the pitch: the reverb fades over to the new size or time.
+- **Diffusion** sets how quickly the echoes blur into a wash; **Modulation** and **Mod rate** keep the tail from ringing on a note with a slow drift.
+- **Early** sets the level of the first reflections; **Width** goes from mono to wide; **Low cut** and **High cut** shape what goes in.
+- A sound on the left stays on the left as the reverb starts.
+
+> [!NOTE]
+> Projects saved before this change sound a little different on a Hall, Cloud or Echoes (and on a Cloud reverb set to its own Plate or Room): Decay is what it says at every setting, a long Decay is no louder than a short one, and the Hall's tail is smoother at big sizes. Every setting and preset still loads and does what it did.
+
 ### The EQ's page
 
 {{shot: chain-mixer-drums-eq | The EQ on the drum bus: its curve with a dot for each band and the cuts, band 2 picked in the panel underneath.}}

@@ -378,6 +378,12 @@ const EARLY_DEPTH_MS: f32 = 1.0;
 /// decay time: the early stages run in a long series outside the loops.
 const EARLY_RING: f32 = 0.15;
 const LATE_RING: f32 = 0.4;
+/// How long a Pre-delay change crossfades, and a Size change, ms: both
+/// fade to the new time rather than slide to it, so neither bends the
+/// pitch (a slide of a line up to 1.5 s long plays it backwards, faster
+/// than it was recorded).
+const PRE_FADE_MS: f32 = 20.0;
+const SIZE_FADE_MS: f32 = 25.0;
 /// All-pass feedback at 100 % diffusion.
 const LATE_FB: f32 = 0.88;
 const EARLY_FB: f32 = 0.82;
@@ -399,6 +405,12 @@ struct Character {
     tap_ms: f32,
     /// How strongly later taps fade (0: not at all).
     tap_decay: f32,
+    /// What the lines take: (the diffused input, the taps). The taps make
+    /// the early sound; fed to the lines too, they spread each line's
+    /// input through the pattern's time, so long lines leave no gaps
+    /// between passes, but their colour tints the whole tail. Echoes takes
+    /// the taps alone, so its pattern repeats.
+    lines_take: (f32, f32),
     /// How much of each input side reaches the other side's reverb.
     input_mix: f32,
     /// Shelves inside every line's loop: (Hz, dB); 0 dB is off.
@@ -407,6 +419,12 @@ struct Character {
     /// Seeds for the taps, the early diffuser, the lines and the line
     /// diffusers, as in Cloud Seed (0 to 999).
     seeds: [u64; 4],
+    /// The lines' modulation depth, a share of [`LINE_DEPTH_MS`]: the
+    /// lines' slow pitch drift builds up pass after pass, so the
+    /// characters whose tails are heard most (Cloud) or straight from the
+    /// lines (Echoes) take less, and a held note stays within 3 cents at
+    /// the default Modulation.
+    line_mod: f32,
     /// Output level, so the characters sound about as loud as each other
     /// (at the default settings, steady white noise in comes out about
     /// 4 dB down).
@@ -456,11 +474,13 @@ static CHARS: [Character; 5] = [
         taps: 0,
         tap_ms: 0.0,
         tap_decay: 0.0,
+        lines_take: (1.0, 0.0),
         input_mix: 0.235,
         low_shelf: (0.0, 0.0),
         high_shelf: (4520.0, -4.6),
         seeds: [333, 184, 218, 365],
-        trim_db: 0.3,
+        line_mod: 1.0,
+        trim_db: 3.0,
     },
     // Room: a dense, quick pattern of early reflections into 8 short lines.
     Character {
@@ -473,11 +493,13 @@ static CHARS: [Character; 5] = [
         taps: 24,
         tap_ms: 40.0,
         tap_decay: 1.0,
+        lines_take: (1.0, 0.0),
         input_mix: 0.3,
         low_shelf: (200.0, -2.0),
         high_shelf: (6000.0, -3.0),
         seeds: [511, 96, 742, 258],
-        trim_db: -4.2,
+        line_mod: 1.0,
+        trim_db: 0.0,
     },
     // Hall: wider early reflections and a smooth, slowly built tail.
     Character {
@@ -490,11 +512,13 @@ static CHARS: [Character; 5] = [
         taps: 40,
         tap_ms: 90.0,
         tap_decay: 0.8,
+        lines_take: (0.9, 0.2),
         input_mix: 0.25,
         low_shelf: (0.0, 0.0),
         high_shelf: (5000.0, -3.0),
         seeds: [127, 873, 405, 619],
-        trim_db: -2.4,
+        line_mod: 1.0,
+        trim_db: 1.55,
     },
     // Cloud: heavy diffusion everywhere, the endless ambient wash.
     Character {
@@ -507,11 +531,13 @@ static CHARS: [Character; 5] = [
         taps: 0,
         tap_ms: 0.0,
         tap_decay: 0.0,
+        lines_take: (1.0, 0.0),
         input_mix: 0.5,
         low_shelf: (0.0, 0.0),
         high_shelf: (6500.0, -2.5),
         seeds: [942, 333, 777, 155],
-        trim_db: 0.6,
+        line_mod: 0.5,
+        trim_db: 2.83,
     },
     // Echoes: few lines heard before their diffusers, and long taps, so
     // repeats stay distinct and blur as they fade.
@@ -525,11 +551,13 @@ static CHARS: [Character; 5] = [
         taps: 12,
         tap_ms: 600.0,
         tap_decay: 0.5,
-        input_mix: 0.15,
+        lines_take: (0.0, 1.0),
+        input_mix: 0.08,
         low_shelf: (250.0, -3.0),
         high_shelf: (3500.0, -5.0),
         seeds: [64, 0, 909, 488],
-        trim_db: -5.5,
+        line_mod: 0.5,
+        trim_db: -3.58,
     },
 ];
 
@@ -585,6 +613,89 @@ fn one_pole_as(hz: f32, host: u32, rate: u32) -> f32 {
     // [`one_pole`] becomes nn = 1 / (1 - g2).
     let nn = 1.0 / (1.0 - g2);
     nn - (nn * nn - 1.0).max(0.0).sqrt()
+}
+
+/// The energy a lossy all-pass stage keeps of white noise: feedback `g`,
+/// `loss` on each trip round its delay. Its impulse is `-g` at once, then
+/// `loss (1 - g^2) (g loss)^(k - 1)` after `k` trips: lossless it keeps
+/// everything; lossy, the part that goes straight through keeps its `g^2`
+/// whatever the loss, so a short Decay keeps more than its delay suggests.
+fn stage_energy(g: f32, loss: f32) -> f32 {
+    let (g2, l2) = (g * g, loss * loss);
+    g2 + l2 * (1.0 - g2) * (1.0 - g2) / (1.0 - g2 * l2)
+}
+
+/// The loss per frame (nepers) of a line `trip` frames round (its delay
+/// and its diffuser's), so that the 500 Hz and 1 kHz octaves fall 60 dB in
+/// `decay` frames on average, when a pass through the line's shelves and
+/// damping also loses `mid` (nepers, at those two).
+///
+/// The loss is spread over the line and every diffuser stage in
+/// proportion to its delay, so a pitch the diffuser holds back longer
+/// loses that much more: every pitch fades at the same rate in time. (A
+/// loss per pass, as in Cloud Seed, lets the pitches a diffuser holds
+/// longest ring on; at 70 % Diffusion the Cloud character's tail measured
+/// 20 % longer than Decay.) Each octave then falls at `a + mid / trip` per
+/// frame, and the mean of `3 ln 10 / that` over the two is `decay`: a
+/// quadratic in `a`. Never below 0: a loop's EQ that already loses more
+/// than Decay asks for sets the decay itself.
+fn loss_rate(trip: f32, decay: f32, mid: [f32; 2]) -> f32 {
+    let k = 3.0 * LN_10;
+    let (m1, m2) = (mid[0] / trip, mid[1] / trip);
+    let t = decay;
+    let a = (k - t * (m1 + m2) + (t * t * (m1 - m2) * (m1 - m2) + k * k).sqrt()) / (2.0 * t);
+    a.max(0.0)
+}
+
+/// What one pass through a line's shelves (`eq`) and damping (one-pole
+/// coefficient `damp`) loses at 500 Hz and 1 kHz at `rate`, nepers.
+fn mid_loss(eq: &Eq, damp: f32, rate: u32) -> [f32; 2] {
+    pass_loss(eq, damp, rate, [500.0, 1000.0])
+}
+
+/// The octaves the tail's level is kept steady over, and their weights:
+/// pink noise as the loudness meter hears it (K-weighting's lift above
+/// 1.5 kHz, its slight dip low down), so a change of Decay keeps the
+/// loudness rather than one octave's level.
+const LEVEL_BANDS: [(f64, f32); 6] = [
+    (125.0, 0.8),
+    (250.0, 1.0),
+    (500.0, 1.0),
+    (1000.0, 1.0),
+    (2000.0, 1.6),
+    (4000.0, 2.5),
+];
+
+/// What one pass through the shelves and damping loses in each of
+/// [`LEVEL_BANDS`], nepers.
+fn level_loss(eq: &Eq, damp: f32, rate: u32) -> [f32; LEVEL_BANDS.len()] {
+    pass_loss(eq, damp, rate, LEVEL_BANDS.map(|b| b.0))
+}
+
+/// What one pass through a line's shelves and damping loses at each of
+/// `hz` at `rate`, nepers.
+fn pass_loss<const N: usize>(eq: &Eq, damp: f32, rate: u32, hz: [f64; N]) -> [f32; N] {
+    hz.map(|hz| {
+        let w = std::f64::consts::TAU * hz / rate as f64;
+        let z = (w.cos(), -w.sin()); // z^-1
+        let mul = |a: (f64, f64), b: (f64, f64)| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+        let div = |a: (f64, f64), b: (f64, f64)| {
+            let m = b.0 * b.0 + b.1 * b.1;
+            ((a.0 * b.0 + a.1 * b.1) / m, (a.1 * b.0 - a.0 * b.1) / m)
+        };
+        // A one-pole low-pass `y += a (x - y)`, as the loop runs them.
+        let lp = |a: f64| div((a, 0.0), (1.0 - (1.0 - a) * z.0, -(1.0 - a) * z.1));
+        let mut h = lp(1.0 - damp as f64);
+        if eq.low_on {
+            let (l, g) = (lp(eq.low_a as f64), eq.low_g as f64);
+            h = mul(h, (1.0 + (g - 1.0) * l.0, (g - 1.0) * l.1));
+        }
+        if eq.high_on {
+            let (l, g) = (lp(eq.high_a as f64), eq.high_g as f64);
+            h = mul(h, (g + (1.0 - g) * l.0, (1.0 - g) * l.1));
+        }
+        (-0.5 * (h.0 * h.0 + h.1 * h.1).ln()).max(0.0) as f32
+    })
 }
 
 /// Hermite interpolation between `x1` (t = 0) and `x2` (t = 1), with
@@ -963,6 +1074,20 @@ struct Allpass {
     /// The most feedback this stage takes: enough that its own ring dies
     /// in half the decay time, so a long stage cannot outlast Decay.
     cap: f32,
+    /// In a line's loop, what the stage's delay loses: the loop's loss per
+    /// frame over its delay, so every pitch fades at the same rate in time
+    /// however long the stage holds it ([`loss_rate`]). 1 in the early
+    /// diffuser, outside the loops. `loss_from` is the last update's: a
+    /// moving loss glides from one to the other across the interval.
+    loss: f32,
+    loss_from: f32,
+    /// While Size fades: the delay faded from, its read this chunk (as
+    /// `d`, `taps` and `eta`) and its all-pass read's last output.
+    old: f32,
+    od: usize,
+    old_taps: [f32; 4],
+    old_eta: f32,
+    last_old: f32,
 }
 
 impl Allpass {
@@ -973,6 +1098,8 @@ impl Allpass {
         self.lfo.depth_k = 0.85 + 0.3 * m;
         self.lfo.rate_k = 0.85 + 0.3 * q;
         self.phase0 = 0.01 + 0.98 * p;
+        self.loss = 1.0;
+        self.loss_from = 1.0;
     }
     fn restart(&mut self) {
         self.buf.forget();
@@ -982,11 +1109,14 @@ impl Allpass {
     /// Moves the read point: `span` is the diffuser delay in frames, `depth`
     /// the modulation depth in frames, `step` the LFO step (0 holds it);
     /// with `decay` (frames), also refreshes the feedback cap; `u` gives
-    /// the longest stage. With `u.thiran` (Eco) the fraction is read by a first-order all-pass
-    /// (Thiran) instead of the cubic: a cubic read loses the top of the
-    /// band on every pass round the stage, and at half rate that top is
-    /// the 5 to 10 kHz the ear still hears; the all-pass read loses none.
+    /// the longest stage. `fade` says a Size fade runs (true: it starts
+    /// here, from the delay the stage had). With `u.thiran` (Eco) the
+    /// fraction is read by a first-order all-pass (Thiran) instead of the
+    /// cubic: a cubic read loses the top of the band on every pass round
+    /// the stage, and at half rate that top is the 5 to 10 kHz the ear
+    /// still hears; the all-pass read loses none.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn update(
         &mut self,
         span: f32,
@@ -995,8 +1125,13 @@ impl Allpass {
         decay: Option<f32>,
         ring: f32,
         u: &Tick,
+        fade: Option<bool>,
     ) {
         let (max, thiran) = (u.stage_max, u.thiran);
+        if fade == Some(true) {
+            self.old = self.delay;
+            self.last_old = self.last;
+        }
         // Whole frames, as in Cloud Seed: unmodulated, a stage is exactly
         // all-pass (a fractional read would dull every pass).
         self.delay = (span * self.share).round().clamp(MIN_STAGE, max);
@@ -1004,9 +1139,8 @@ impl Allpass {
             // 60 dB down after decay * ring: feedback^(decay * ring / delay) = 1e-3.
             self.cap = (-3.0 * LN_10 * self.delay / (decay * ring)).exp();
         }
-        let amt = (depth * self.lfo.depth_k)
-            .min(self.delay - MIN_STAGE)
-            .max(0.0);
+        let depth = depth * self.lfo.depth_k;
+        let amt = depth.min(self.delay - MIN_STAGE).max(0.0);
         let m = if step > 0.0 {
             self.lfo.advance(step)
         } else {
@@ -1020,12 +1154,62 @@ impl Allpass {
             self.d = r.d;
             self.taps = hermite_taps(r.t);
         }
+        if fade.is_some() {
+            let amt = depth.min(self.old - MIN_STAGE).max(0.0);
+            let r = Read::new(self.old + amt * m, MIN_STAGE, self.buf.len());
+            if thiran {
+                (self.od, self.old_eta) = r.thiran();
+            } else {
+                self.od = r.d;
+                self.old_taps = hermite_taps(r.t);
+            }
+        }
     }
-    /// Runs the stage over a chunk in place.
+    /// Runs the stage over a chunk in place. `keep` (1 less Freeze, per
+    /// frame) eases the loss off while the tail freezes; None is unfrozen.
+    /// `fade` (per frame) is how far a Size fade has gone from the old
+    /// delay to the new.
     #[inline]
-    fn run(&mut self, x: &mut [f32], fb: &[f32]) {
+    fn run(
+        &mut self,
+        x: &mut [f32],
+        fb: &[f32],
+        keep: Option<&[f32]>,
+        fade: Option<&[f32]>,
+        at: usize,
+    ) {
         let (d, h) = (self.d, self.taps);
         let n = x.len();
+        let (loss, from) = (self.loss, self.loss_from);
+        let glide = (loss - from) / CHUNK as f32;
+        let moving = glide != 0.0;
+        let lose = |k: usize| {
+            let l = if moving {
+                from + glide * (at + k + 1) as f32
+            } else {
+                loss
+            };
+            keep.map_or(l, |p| 1.0 + (l - 1.0) * p[k])
+        };
+        if let Some(w) = fade {
+            // Both delays read a frame at a time, crossfaded.
+            let (od, oh) = (self.od, self.old_taps);
+            for (k, (x, &g)) in x.iter_mut().zip(fb).enumerate() {
+                let g = g.min(self.cap);
+                let (a, b) = if self.thiran {
+                    self.last_old = self.buf.thiran(od, self.old_eta, self.last_old);
+                    self.last = self.buf.thiran(d, self.eta, self.last);
+                    (self.last_old, self.last)
+                } else {
+                    (self.buf.cubic_taps(od, &oh), self.buf.cubic_taps(d, &h))
+                };
+                let y = (a + w[k] * (b - a)) * lose(k);
+                let v = flush(*x + y * g);
+                self.buf.push(v);
+                *x = y - v * g;
+            }
+            return;
+        }
         if d > n {
             // Longer than the chunk: read it all, then write it all.
             let (mut y, mut v) = ([0.0f32; CHUNK], [0.0f32; CHUNK]);
@@ -1036,21 +1220,36 @@ impl Allpass {
                 self.buf.cubic_run(d, &h, &mut y[..n]);
             }
             let cap = self.cap;
-            for (((x, &y), v), &g) in x.iter_mut().zip(&y[..n]).zip(&mut v[..n]).zip(fb) {
-                let g = g.min(cap);
-                *v = flush(*x + y * g);
-                *x = y - *v * g;
+            if keep.is_none() && !moving {
+                // The usual case: a fixed loss, in the same pass.
+                for (((x, &y), v), &g) in x.iter_mut().zip(&y[..n]).zip(&mut v[..n]).zip(fb) {
+                    let (y, g) = (y * loss, g.min(cap));
+                    *v = flush(*x + y * g);
+                    *x = y - *v * g;
+                }
+            } else {
+                for (k, (((x, &y), v), &g)) in x
+                    .iter_mut()
+                    .zip(&y[..n])
+                    .zip(&mut v[..n])
+                    .zip(fb)
+                    .enumerate()
+                {
+                    let (y, g) = (y * lose(k), g.min(cap));
+                    *v = flush(*x + y * g);
+                    *x = y - *v * g;
+                }
             }
             self.buf.push_run(&v[..n]);
         } else {
-            for (x, &g) in x.iter_mut().zip(fb) {
+            for (k, (x, &g)) in x.iter_mut().zip(fb).enumerate() {
                 let g = g.min(self.cap);
                 let y = if self.thiran {
                     self.last = self.buf.thiran(d, self.eta, self.last);
                     self.last
                 } else {
                     self.buf.cubic_taps(d, &h)
-                };
+                } * lose(k);
                 let v = flush(*x + y * g);
                 self.buf.push(v);
                 *x = y - v * g;
@@ -1068,13 +1267,20 @@ struct Line {
     size_k: f32,
     phase0: f32,
     lfo: Lfo,
+    /// The delay for the Size set, whole frames, which sets the gain.
     delay: f32,
+    /// The delay read, before modulation (Size's last placed length, which
+    /// a fade runs to), and `old`, the one a fade runs from.
+    base: f32,
+    old: f32,
     /// The read point (frames back, modulated) at the last update and at
     /// this one; reads glide from one to the other across the chunk.
     from: f32,
     to: f32,
-    /// Feedback gain for the current loop length and decay.
+    /// Feedback gain for the current loop length and decay, and the last
+    /// update's: a moving gain glides from one to the other.
     gain: f32,
+    gain_from: f32,
     /// The loop's output last frame.
     state: f32,
     stages: [Allpass; MAX_LATE_STAGES],
@@ -1103,7 +1309,17 @@ impl Line {
     /// before it: read the chunk, run it through the diffuser and EQ, then
     /// write it back with the input.
     #[inline]
-    fn run(&mut self, x: &[f32], at: usize, c: &Character, f: &Frames, eq: &Eq, out: &mut [f32]) {
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        x: &[f32],
+        at: usize,
+        c: &Character,
+        f: &Frames,
+        eq: &Eq,
+        fade: Option<&[f32]>,
+        out: &mut [f32],
+    ) {
         let n = x.len();
         let mut y = [0.0f32; CHUNK];
         let glide = (self.to - self.from) / CHUNK as f32;
@@ -1111,12 +1327,24 @@ impl Line {
         // of this chunk. The read point depends only on the frame's place
         // in the update interval, so any chunking rounds it the same way.
         self.buf.cubic_glide(self.from, glide, at, &mut y[..n]);
+        if let Some(w) = fade {
+            // Fading from the old length: the same read, that much further.
+            let mut a = [0.0f32; CHUNK];
+            let back = self.old - self.base;
+            self.buf
+                .cubic_glide(self.from + back, glide, at, &mut a[..n]);
+            for ((y, a), w) in y[..n].iter_mut().zip(&a[..n]).zip(w) {
+                *y = a + w * (*y - a);
+            }
+        }
         let mut z = y;
+        let keep = (!f.thawed).then_some(&f.keep[..n]);
         for st in &mut self.stages[..c.late_stages] {
-            st.run(&mut z[..n], &f.late_fb[..n]);
+            st.run(&mut z[..n], &f.late_fb[..n], keep, fade, at);
         }
         let mut prev = self.state;
         let mut v = [0.0f32; CHUNK];
+        let dg = (self.gain - self.gain_from) / CHUNK as f32;
         for k in 0..n {
             let mut e = z[k];
             if eq.low_on {
@@ -1128,7 +1356,12 @@ impl Line {
                 e = self.high + eq.high_g * (e - self.high);
             }
             self.damp = flush((1.0 - f.damp[k]) * e + f.damp[k] * self.damp);
-            let g = lerp(self.gain, 1.0, f.freeze[k]);
+            let g = if dg != 0.0 {
+                self.gain_from + dg * (at + k + 1) as f32
+            } else {
+                self.gain
+            };
+            let g = lerp(g, 1.0, f.freeze[k]);
             v[k] = flush(x[k] + prev * g);
             // Frozen: the loop skips its EQ and damping, so it never fades.
             prev = flush(lerp(self.damp, z[k], f.freeze[k]));
@@ -1176,14 +1409,19 @@ impl Eq {
 struct Frames {
     late_fb: [f32; CHUNK],
     early_fb: [f32; CHUNK],
-    /// 0 to 1: how frozen the tail is.
+    /// 0 to 1: how frozen the tail is, and 1 less that.
     freeze: [f32; CHUNK],
+    keep: [f32; CHUNK],
+    /// No frame of the chunk is frozen at all.
+    thawed: bool,
     /// One-pole coefficients: damping, input low cut, input high cut.
     damp: [f32; CHUNK],
     low: [f32; CHUNK],
     high: [f32; CHUNK],
-    /// The pre-delay, frames.
+    /// The pre-delay read, frames, the one it fades to and how far.
     pre: [f32; CHUNK],
+    pre_to: [f32; CHUNK],
+    pre_k: [f32; CHUNK],
 }
 
 /// One side of the reverb (Cloud Seed's ReverbChannel).
@@ -1196,13 +1434,30 @@ struct Side {
     tap_pos: [f32; MAX_TAPS],
     tap_gain: [f32; MAX_TAPS],
     tap_read: [Read; MAX_TAPS],
+    /// Each tap's read point (frames back) at the last update and at this
+    /// one: while Size moves, a tap glides from one to the other across
+    /// the chunk instead of jumping at the update.
+    tap_from: [f32; MAX_TAPS],
+    tap_to: [f32; MAX_TAPS],
     /// Eco: the taps read with a Thiran fraction, as [`Allpass`]: their
     /// coefficients and last outputs.
     tap_thiran: bool,
+    /// The character's tap count.
+    taps_used: usize,
     tap_eta: [f32; MAX_TAPS],
     tap_last: [f32; MAX_TAPS],
     early: [Allpass; MAX_EARLY_STAGES],
     lines: [Line; MAX_LINES],
+    /// Where Size fades: the size (frames) the lengths are placed for,
+    /// and how many update intervals of the fade to it are left.
+    placed: f32,
+    fade_left: u32,
+    /// A fade's length, update intervals.
+    fade_len: u32,
+    /// The lines' input level: a longer decay rings longer rather than
+    /// louder ([`Side::update`]); the last update's, and this one's.
+    norm_from: f32,
+    norm: f32,
 }
 
 impl Default for Side {
@@ -1215,11 +1470,19 @@ impl Default for Side {
             tap_pos: [0.0; MAX_TAPS],
             tap_gain: [0.0; MAX_TAPS],
             tap_read: [Read::default(); MAX_TAPS],
+            tap_from: [0.0; MAX_TAPS],
+            tap_to: [0.0; MAX_TAPS],
             tap_thiran: false,
+            taps_used: 0,
             tap_eta: [0.0; MAX_TAPS],
             tap_last: [0.0; MAX_TAPS],
             early: Default::default(),
             lines: Default::default(),
+            placed: 0.0,
+            fade_left: 0,
+            fade_len: 1,
+            norm_from: 1.0,
+            norm: 1.0,
         }
     }
 }
@@ -1329,8 +1592,37 @@ impl Side {
     /// gains. `step` advances the modulators (0 holds them).
     fn update(&mut self, c: &Character, u: &Tick, step: f32, gains: bool) {
         self.tap_thiran = u.thiran;
+        self.taps_used = c.taps;
+        // Size fades: the lengths stay placed for one size while a fade to
+        // it runs, then fade on to wherever Size has got to. A held update
+        // (a reset or a new character) places them at once.
+        let mut fading = false;
+        self.fade_len = u.fade_len;
+        if step == 0.0 {
+            self.placed = u.size;
+            self.fade_left = 0;
+        } else {
+            self.fade_left = self.fade_left.saturating_sub(1);
+            if self.fade_left == 0 && u.size != self.placed {
+                self.placed = u.size;
+                self.fade_left = u.fade_len;
+                fading = true;
+            }
+        }
+        let stage_fade = (self.fade_left > 0).then_some(fading);
+        // The spans for that size, frames.
+        let size = self.placed;
+        let scale = size / (REF_SIZE_MS * u.ms);
+        let early_span = c.early_ms * scale * u.ms;
+        let late_span = c.late_ms * scale * u.ms;
+        let tap_scale = (c.tap_ms * scale).min(MAX_TAP_S * 1000.0) * u.ms / c.taps.max(1) as f32;
         for j in 0..c.taps {
-            let r = Read::new(self.tap_pos[j] * u.tap_scale + 1.0, 1.0, self.taps.len());
+            let to = (self.tap_pos[j] * tap_scale + 1.0).clamp(1.0, (self.taps.len() - 2) as f32);
+            if fading {
+                self.tap_from[j] = self.tap_to[j];
+            }
+            self.tap_to[j] = to;
+            let r = Read::new(to, 1.0, self.taps.len());
             self.tap_read[j] = r;
             if u.thiran {
                 // The taps are fixed, but a linear read of a fraction dulls
@@ -1341,49 +1633,108 @@ impl Side {
             }
         }
         let decay = gains.then_some(u.decay);
+        // The lines' output energy for noise in, summed over the lines
+        // and the loudness-weighted octaves.
+        let mut energy = 0.0f32;
         for st in &mut self.early[..c.early_stages] {
             st.update(
-                u.early_span,
+                early_span,
                 u.early_depth,
                 step * u.early_rate,
                 decay,
                 EARLY_RING,
                 u,
+                stage_fade,
             );
         }
         for line in &mut self.lines[..c.lines] {
-            let mut lp = 0.0;
+            let mut lp = 0.0f32;
             for st in &mut line.stages[..c.late_stages] {
                 st.update(
-                    u.late_span,
+                    late_span,
                     u.late_depth,
                     step * u.late_rate,
                     decay,
                     LATE_RING,
                     u,
+                    stage_fade,
                 );
                 lp += st.delay;
             }
             let amt = u.line_depth * line.lfo.depth_k;
             // Whole frames, as in Cloud Seed, so an unmodulated loop is
             // lossless (Freeze then holds for good).
-            line.delay = (u.size * line.size_k).round().max((amt + MIN_LINE).ceil());
+            let whole = |size: f32| (size * line.size_k).round().max((amt + MIN_LINE).ceil());
+            line.delay = whole(u.size);
+            let base = whole(size);
+            if fading {
+                line.old = line.base;
+            }
+            // A new base is a jump the fade covers: the read glides only
+            // with the modulation.
+            let moved = base - line.base;
+            line.base = base;
             let m = if step > 0.0 {
                 line.lfo.advance(step)
             } else {
                 lfo(line.lfo.phase)
             };
-            let to = (line.delay + amt * m).clamp(MIN_LINE, (line.buf.len() - 2) as f32);
+            let to = (base + amt * m).clamp(MIN_LINE, (line.buf.len() - 2) as f32);
             // A held update (a reset or a new character) jumps; a moving
             // one glides from the last point.
-            line.from = if step > 0.0 { line.to } else { to };
+            line.from = if step > 0.0 { line.to + moved } else { to };
             line.to = to;
             if gains {
-                // 60 dB down after `decay` frames, counting the diffuser in
-                // the loop length.
-                line.gain = (-3.0 * LN_10 * (line.delay + lp) / u.decay).exp();
+                // The loss per frame for the middle to fall 60 dB in
+                // `decay` frames, spread over the line and its diffuser in
+                // proportion to their delays.
+                // A held update sets them; a moving one glides to them.
+                let a = loss_rate(line.delay + lp, u.decay, u.mid_loss);
+                let gain = (-a * line.delay).exp();
+                line.gain_from = if step > 0.0 { line.gain } else { gain };
+                line.gain = gain;
+                // The energy a pass through the diffuser keeps.
+                let mut through = 1.0f32;
+                for st in &mut line.stages[..c.late_stages] {
+                    let loss = (-a * st.delay).exp();
+                    st.loss_from = if step > 0.0 { st.loss } else { loss };
+                    st.loss = loss;
+                    through *= stage_energy(u.late_fb.min(st.cap), loss);
+                }
+                // Noise in, octave by octave: the first pass out (after the
+                // diffuser and EQ, or straight from the delay), then that
+                // again for every trip round the loop.
+                for (&(_, w), &eq_loss) in LEVEL_BANDS.iter().zip(&u.level_loss) {
+                    let kept = through * (-2.0 * eq_loss).exp();
+                    let first = if c.post { kept } else { 1.0 };
+                    let pass = gain * gain * kept;
+                    energy += w * first / (1.0 - pass).max(1e-6);
+                }
+            } else {
+                line.gain_from = line.gain;
+                for st in &mut line.stages[..c.late_stages] {
+                    st.loss_from = st.loss;
+                }
             }
         }
+        if gains {
+            let weight: f32 = LEVEL_BANDS.iter().map(|b| b.1).sum();
+            let norm = (c.lines as f32 * weight / energy).sqrt();
+            self.norm_from = if step > 0.0 { self.norm } else { norm };
+            self.norm = norm;
+        } else {
+            self.norm_from = self.norm;
+        }
+    }
+
+    /// The Size fade's weights for this update interval, when one runs:
+    /// at frame `k` of the interval the new length weighs `w0 + dw (k + 1)`.
+    fn fade(&self) -> Option<(f32, f32)> {
+        (self.fade_left > 0).then(|| {
+            let len = self.fade_len as f32;
+            let done = (self.fade_len - self.fade_left) as f32;
+            (done / len, 1.0 / (len * CHUNK as f32))
+        })
     }
 
     /// The input's low and high cut, in place, with per-frame coefficients
@@ -1408,6 +1759,45 @@ impl Side {
         self.pre.push_run(x);
     }
 
+    /// The early taps over a chunk: writes `x` and returns the taps' sum.
+    #[inline]
+    fn run_taps(&mut self, x: &[f32], fade: Option<&[f32]>) -> [f32; CHUNK] {
+        let n = x.len();
+        let taps = self.taps_used;
+        self.taps.push_run(x);
+        let mut y = [0.0f32; CHUNK];
+        for j in 0..taps {
+            let g = self.tap_gain[j];
+            if let Some(w) = fade {
+                // Fading between two lengths: linear reads of both, which
+                // also keep the all-pass read's state for when it ends.
+                let lin = |r: f32, k: usize| {
+                    let d = r as usize;
+                    self.taps.lin(d + n - 1 - k, r - d as f32)
+                };
+                let (from, to) = (self.tap_from[j], self.tap_to[j]);
+                for (k, y) in y[..n].iter_mut().enumerate() {
+                    let a = lin(from, k);
+                    let v = a + w[k] * (lin(to, k) - a);
+                    *y += g * v;
+                    self.tap_last[j] = v;
+                }
+            } else if self.tap_thiran {
+                self.taps.add_run_thiran(
+                    self.tap_read[j].d + n - 1,
+                    self.tap_eta[j],
+                    g,
+                    &mut self.tap_last[j],
+                    &mut y[..n],
+                );
+            } else {
+                let r = self.tap_read[j];
+                self.taps.add_run(r.d + n - 1, r.t, g, &mut y[..n]);
+            }
+        }
+        y
+    }
+
     /// One chunk: `x` is this side's input; adds the early signal to
     /// `early` and the late signal to `late`. `lag` is how many frames the
     /// input is behind (the lead, [`Cloud::lead_in`]): the pre-delay reads
@@ -1429,47 +1819,59 @@ impl Side {
         late: &mut [f32],
     ) {
         let n = x.len();
+        let mut weights = [0.0f32; CHUNK];
+        let fade = self.fade().map(|(w0, dw)| {
+            for (k, w) in weights[..n].iter_mut().enumerate() {
+                *w = w0 + dw * (at + k + 1) as f32;
+            }
+            &weights[..n]
+        });
         if !hold {
             self.filter_in(x, &f.low[..n], &f.high[..n]);
             // Writes before reads: frame k's read sits n - 1 - k frames
             // further back from the end of the chunk.
             self.pre.push_run(x);
         }
-        for (k, x) in x.iter_mut().enumerate() {
+        let read = |at: f32, k: usize| {
             // The fraction comes from the pre-delay alone, so any chunking
             // rounds it the same way, late or not.
-            let r = Read::new(f.pre[k] + 1.0, 1.0, self.pre.len() - CHUNK);
-            *x = self
-                .pre
-                .lin((r.d + n - 1 - k).saturating_sub(lag).max(1), r.t);
-        }
-        if c.taps > 0 {
-            self.taps.push_run(x);
-            let mut y = [0.0f32; CHUNK];
-            if self.tap_thiran {
-                for j in 0..c.taps {
-                    self.taps.add_run_thiran(
-                        self.tap_read[j].d + n - 1,
-                        self.tap_eta[j],
-                        self.tap_gain[j],
-                        &mut self.tap_last[j],
-                        &mut y[..n],
-                    );
-                }
+            let r = Read::new(at + 1.0, 1.0, self.pre.len() - CHUNK);
+            self.pre
+                .lin((r.d + n - 1 - k).saturating_sub(lag).max(1), r.t)
+        };
+        for (k, x) in x.iter_mut().enumerate() {
+            let a = read(f.pre[k], k);
+            *x = if f.pre_k[k] > 0.0 {
+                a + f.pre_k[k] * (read(f.pre_to[k], k) - a)
             } else {
-                for (r, &g) in self.tap_read[..c.taps].iter().zip(&self.tap_gain) {
-                    self.taps.add_run(r.d + n - 1, r.t, g, &mut y[..n]);
-                }
-            }
-            x.copy_from_slice(&y[..n]);
+                a
+            };
         }
         for st in &mut self.early[..c.early_stages] {
-            st.run(x, &f.early_fb[..n]);
+            st.run(x, &f.early_fb[..n], None, fade, at);
         }
-        early[..n].copy_from_slice(x);
+        // The taps after the diffuser (the same sound as before it, both
+        // being linear) make the early sound; the lines take the blend
+        // `lines_take` asks for.
+        if c.taps > 0 {
+            let y = self.run_taps(x, fade);
+            early[..n].copy_from_slice(&y[..n]);
+            let (d, t) = c.lines_take;
+            for (x, y) in x.iter_mut().zip(&y[..n]) {
+                *x = d * *x + t * y;
+            }
+        } else {
+            early[..n].copy_from_slice(x);
+        }
+        // Into the lines at the level that keeps the tail's loudness the
+        // same whatever its decay, gliding as the gains do.
+        let glide = (self.norm - self.norm_from) / CHUNK as f32;
+        for (k, x) in x.iter_mut().enumerate() {
+            *x *= self.norm_from + glide * (at + k + 1) as f32;
+        }
         let mut sum = [0.0f32; CHUNK];
         for line in &mut self.lines[..c.lines] {
-            line.run(x, at, c, f, eq, &mut sum[..n]);
+            line.run(x, at, c, f, eq, fade, &mut sum[..n]);
         }
         let norm = 1.0 / (c.lines as f32).sqrt();
         for (l, s) in late.iter_mut().zip(&sum[..n]) {
@@ -1596,10 +1998,10 @@ impl EcoRate {
 
 /// The values a modulator update needs.
 struct Tick {
+    /// Frames a millisecond.
+    ms: f32,
     /// Size in frames.
     size: f32,
-    early_span: f32,
-    late_span: f32,
     stage_max: f32,
     line_depth: f32,
     late_depth: f32,
@@ -1609,8 +2011,16 @@ struct Tick {
     late_rate: f32,
     /// Decay in frames.
     decay: f32,
-    /// Early taps: frames per unit of tap position.
-    tap_scale: f32,
+    /// What a pass through a line's shelves and damping loses at 500 Hz
+    /// and 1 kHz, nepers ([`mid_loss`]).
+    mid_loss: [f32; 2],
+    /// What that pass loses in each of [`LEVEL_BANDS`], nepers.
+    level_loss: [f32; LEVEL_BANDS.len()],
+    /// The line diffusers' feedback that Diffusion asks for (before each
+    /// stage's cap).
+    late_fb: f32,
+    /// A Size fade's length, update intervals.
+    fade_len: u32,
     /// The stages read their fractions with an all-pass (Eco).
     thiran: bool,
 }
@@ -1650,7 +2060,13 @@ pub struct Cloud {
     eco: Box<EcoRate>,
     size: Smooth,
     log_decay: Smooth,
-    pre: Smooth,
+    /// The pre-delay read (ms), the one it crossfades to, how far (0 to 1)
+    /// and by how much a network frame: a change of Pre-delay fades
+    /// rather than slides, so it never bends the pitch.
+    pre_at: f32,
+    pre_to: f32,
+    pre_k: f32,
+    pre_step: f32,
     diff: Smooth,
     modu: Smooth,
     log_rate: Smooth,
@@ -1666,8 +2082,11 @@ pub struct Cloud {
     high_a: f32,
     /// Frames until the next modulator update.
     tick: u32,
-    /// The size and decay the gains were last computed for.
-    gain_for: (f32, f32),
+    /// The size, decay and damping the gains were last computed for.
+    gain_for: (f32, f32, f32, f32),
+    /// [`mid_loss`] for the character and damping in use.
+    mid_loss: [f32; 2],
+    level_loss: [f32; LEVEL_BANDS.len()],
     /// The character's output trim, linear.
     trim: f32,
     eq: Eq,
@@ -1741,7 +2160,10 @@ impl Cloud {
             eco: Box::new(EcoRate::new()),
             size: Smooth::new(v[1]),
             log_decay: Smooth::new(v[2].log2()),
-            pre: Smooth::new(v[3]),
+            pre_at: v[3],
+            pre_to: v[3],
+            pre_k: 0.0,
+            pre_step: 0.0,
             diff: Smooth::new(v[4] / 100.0),
             modu: Smooth::new(v[5] / 100.0),
             log_rate: Smooth::new(v[6].log2()),
@@ -1756,7 +2178,9 @@ impl Cloud {
             low_a: 0.0,
             high_a: 0.0,
             tick: 0,
-            gain_for: (0.0, 0.0),
+            gain_for: (f32::NAN, f32::NAN, f32::NAN, f32::NAN),
+            mid_loss: [0.0; 2],
+            level_loss: [0.0; LEVEL_BANDS.len()],
             trim: 1.0,
             eq: Eq::default(),
             sides: Box::default(),
@@ -1777,7 +2201,6 @@ impl Cloud {
             ids::QUALITY => self.want_q = v as usize,
             ids::SIZE => self.size.target = v,
             ids::DECAY => self.log_decay.target = v.log2(),
-            ids::PRE_DELAY => self.pre.target = v,
             ids::DIFFUSION => self.diff.target = v / 100.0,
             ids::MODULATION => self.modu.target = v / 100.0,
             ids::MOD_RATE => self.log_rate.target = v.log2(),
@@ -1851,21 +2274,19 @@ impl Cloud {
         self.rate = rate;
         for s in [
             &mut self.size,
-            &mut self.pre,
             &mut self.log_damp,
             &mut self.log_low,
             &mut self.log_high,
         ] {
             s.set_time(rate, 60.0);
         }
-        for s in [
-            &mut self.log_decay,
-            &mut self.diff,
-            &mut self.modu,
-            &mut self.log_rate,
-        ] {
+        self.pre_step = 1.0 / (PRE_FADE_MS * 0.001 * rate as f32);
+        for s in [&mut self.log_decay, &mut self.diff, &mut self.log_rate] {
             s.set_time(rate, 100.0);
         }
+        // The diffusers' read points step at each update, so their depth
+        // moves slowly enough that no step is heard.
+        self.modu.set_time(rate, 300.0);
         for s in [&mut self.width, &mut self.early] {
             s.set_time(rate, 20.0);
         }
@@ -1902,29 +2323,29 @@ impl Cloud {
             side.seed(ch, cross);
             side.wake(&old, ch);
         }
-        self.gain_for = (0.0, 0.0);
+        // NaN: the gains and the EQ's loss are worked out afresh.
+        self.gain_for = (f32::NAN, f32::NAN, f32::NAN, f32::NAN);
         self.update(false);
     }
 
     fn tick_values(&self) -> Tick {
         let fs = self.rate as f32;
         let ms = fs / 1000.0;
-        let c = &self.c;
-        let scale = self.size.value / REF_SIZE_MS;
         let m = self.modu.value;
-        let tap_span = (c.tap_ms * scale).min(MAX_TAP_S * 1000.0);
         Tick {
+            ms,
             size: self.size.value * ms,
-            early_span: c.early_ms * scale * ms,
-            late_span: c.late_ms * scale * ms,
             stage_max: (MAX_STAGE_S * fs).max(MIN_STAGE),
-            line_depth: LINE_DEPTH_MS * m * ms,
+            line_depth: LINE_DEPTH_MS * self.c.line_mod * m * ms,
             late_depth: LATE_DEPTH_MS * m * ms,
             early_depth: EARLY_DEPTH_MS * m * ms,
             early_rate: 1.1,
             late_rate: 0.6,
             decay: self.log_decay.value.exp2() * ms,
-            tap_scale: tap_span * ms / c.taps.max(1) as f32,
+            mid_loss: self.mid_loss,
+            level_loss: self.level_loss,
+            late_fb: LATE_FB * self.diff.target,
+            fade_len: ((SIZE_FADE_MS * ms / CHUNK as f32).round() as u32).max(1),
             thiran: self.rate != self.host,
         }
     }
@@ -1932,15 +2353,24 @@ impl Cloud {
     /// Refreshes every read point (and the gains when size or decay moved);
     /// `advance` steps the modulators.
     fn update(&mut self, advance: bool) {
+        let now = (
+            self.size.value,
+            self.log_decay.value,
+            self.damp_a,
+            self.diff.target,
+        );
+        let gains = now != self.gain_for;
+        if gains && now.2 != self.gain_for.2 {
+            self.mid_loss = mid_loss(&self.eq, self.damp_a, self.rate);
+            self.level_loss = level_loss(&self.eq, self.damp_a, self.rate);
+        }
+        self.gain_for = now;
         let u = self.tick_values();
         let step = if advance {
             self.log_rate.value.exp2() / self.rate as f32 * UPDATE as f32
         } else {
             0.0
         };
-        let now = (self.size.value, self.log_decay.value);
-        let gains = now != self.gain_for;
-        self.gain_for = now;
         let c = &self.c;
         for side in self.sides.iter_mut() {
             side.update(c, &u, step, gains);
@@ -1972,10 +2402,14 @@ impl Cloud {
             late_fb: [0.0; CHUNK],
             early_fb: [0.0; CHUNK],
             freeze: [0.0; CHUNK],
+            keep: [0.0; CHUNK],
+            thawed: true,
             damp: [0.0; CHUNK],
             low: [0.0; CHUNK],
             high: [0.0; CHUNK],
             pre: [0.0; CHUNK],
+            pre_to: [0.0; CHUNK],
+            pre_k: [0.0; CHUNK],
         };
         let (mut gain, mut early, mut width) = ([0.0f32; CHUNK], [0.0f32; CHUNK], [0.0f32; CHUNK]);
         let mut mix = [(0.0f32, 0.0f32); CHUNK];
@@ -2025,10 +2459,26 @@ impl Cloud {
             f.late_fb[n] = LATE_FB * diff;
             f.early_fb[n] = EARLY_FB * diff;
             f.freeze[n] = self.frozen.next();
+            f.keep[n] = 1.0 - f.freeze[n];
+            f.thawed &= f.freeze[n] == 0.0;
             f.damp[n] = self.damp_a;
             f.low[n] = self.low_a;
             f.high[n] = self.high_a;
-            f.pre[n] = self.pre.next() * ms;
+            // Pre-delay: a fade to a new time starts when none runs.
+            let want = self.v[ids::PRE_DELAY as usize];
+            if self.pre_k == 0.0 && want != self.pre_at {
+                self.pre_to = want;
+                self.pre_k = self.pre_step.min(1.0);
+            } else if self.pre_k > 0.0 {
+                self.pre_k += self.pre_step;
+            }
+            if self.pre_k >= 1.0 {
+                self.pre_at = self.pre_to;
+                self.pre_k = 0.0;
+            }
+            f.pre[n] = self.pre_at * ms;
+            f.pre_to[n] = self.pre_to * ms;
+            f.pre_k[n] = self.pre_k;
             gain[n] = self.trim * self.dip;
             early[n] = self.early.next();
             width[n] = self.width.next();
@@ -2172,7 +2622,6 @@ impl Node for Cloud {
         for s in [
             &mut self.size,
             &mut self.log_decay,
-            &mut self.pre,
             &mut self.diff,
             &mut self.modu,
             &mut self.log_rate,
@@ -2186,6 +2635,7 @@ impl Node for Cloud {
             s.snap(s.target);
         }
         self.blend.snap();
+        (self.pre_at, self.pre_to, self.pre_k) = (self.v[3], self.v[3], 0.0);
         self.dip = 1.0;
         self.tick = 0;
         self.configure(self.want, self.want_q);
@@ -2210,7 +2660,7 @@ impl Node for Cloud {
         }
         // The pre-delay, as it is and as it glides to: the late input must
         // still be in time for the nearest read.
-        let ms = self.pre.value.min(self.pre.target);
+        let ms = self.pre_at.min(self.pre_to).min(self.v[3]);
         (ms * self.host as f32 / 1000.0).floor() >= frames as f32
     }
     fn lead(&self) -> u32 {

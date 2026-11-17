@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-fx/src/rooms.rs rust/mpfree-fx/src/cloud.rs rust/mpfree-fx/src/oversample.rs
-checked: 2026-11-17 16091ed
+checked: 2026-11-17 dcbbe51
 -->
 # Reverbs: Room, Plate, Spring and the Cloud engine
 
-**Status:** built; FX quality PR B (16 Nov: the Mix curve, the Room's level) and PRs E1 to E3 (17 Nov: the Room, the Plate and the Spring rebuilt) are in. The reworked Cloud engine (PR E4) is written, measured and in review: its section below describes it, and until it merges `main` runs the port described there. The engines the rebuilds replaced are under [History and next](#10-history-and-next). With all four: 113 of 113 measured reverb targets met (102 of 114 on `main` with PRs E1 to E3).
+**Status:** built; FX quality PR B (16 Nov: the Mix curve, the Room's level) and PRs E1 to E4 (17 Nov: the Room, the Plate and the Spring rebuilt, the Cloud engine reworked) are in. The engines the rebuilds replaced are under [History and next](#10-history-and-next). 113 of 113 measured reverb targets are met.
 
 This page is the design of MPFree's reverbs as one effect type: what a reverb is for, the ideas underneath it, the research behind ours, which algorithms each engine uses and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter-by-parameter summary lives in [fx.md](fx.md) (the Room, Plate, Spring and Cloud reverb entries); the measured targets and their history in [fx-quality.md](fx-quality.md#reverb). The research notes, plan and baselines are in jferments/mpfree-claude `fx/quality/` (research-reverb.md, plan.md section 7, baseline-2026-11-16.md).
 
@@ -138,7 +138,7 @@ Its 45 parameters became 15. A **Character** picks the hidden structure (the Pla
 
 What the port changed from Cloud Seed: feedback per frame (Cloud Seed feeds back one buffer late, so its output depends on the block size), deterministic modulator phases, cubic reads and whole-frame base delays (so Modulation 0 is lossless and Freeze holds without dulling), an O(1) reset, and every control glides. **Freeze** mutes the input and holds the tail; a frozen reverb's tail is endless, so it keeps ringing when bypassed.
 
-From PR E4 (until it merges, `main` has the port as described above, with Cloud Seed's loss and level):
+Since PR E4 (17 Nov; before it, the port kept Cloud Seed's loss and level):
 
 - **Decay for every pitch.** Cloud Seed loses a fixed share each pass. But an all-pass diffuser inside the loop delays some pitches far more than others (its group delay swings with its feedback), so with a fixed loss per pass those pitches ring longest and T30 follows the slowest: the Cloud character ran 22 % long at 2.5 s and Echoes' tail fell in steps. Now the loss is a rate per frame, spread over each line and inside each diffuser stage's feedback in proportion to its delay, so every path loses exactly in proportion to the time it takes, and the impulse response is the lossless one times one exponential. The rate is solved for the 500 Hz and 1 kHz octaves with the loop's shelves and damping counted in: `a = (K - T (m1 + m2) + sqrt(T² (m1 - m2)² + K²)) / 2T`, with `K = 3 ln 10`, `T` Decay in frames and `m` each octave's EQ loss over a trip (`loss_rate`, `mid_loss`).
 - **A steady level.** Scaling the input by `1 / Σ 1 / (1 - pass)` holds the level at long decays but not at short ones, where a pass through a lossy all-pass keeps more than its delay suggests (the straight-through part keeps its `g²` whatever the loss): wide open, the Cloud read 9 dB down at 0.3 s. The lines' input now follows the energy each loop keeps for noise: each stage's own energy, `g² + loss² (1 - g²)² / (1 - g² loss²)` (`stage_energy`), the first pass out, over six octaves weighted as the loudness meter hears pink noise. At the defaults the wet loudness stays within 0.1 LU from 0.3 to 8 s (it rose 3.5 to 5.2 LU).
@@ -288,7 +288,7 @@ PR E4 adds 7 to 11 % to every Cloud character and quality: each diffuser stage's
 - **PR E1** (17 Nov): the Room rebuilt, 87 of 114.
 - **PR E2** (17 Nov): the Plate on the Room's network, 98 of 114.
 - **PR E3** (17 Nov): the Spring, 102 of 114.
-- **PR E4** (17 Nov, in review): the Cloud engine's decay, level and crossfades (113 of 113, Echoes' R3 reported only).
+- **PR E4** (17 Nov): the Cloud engine's decay, level and crossfades (113 of 113, Echoes' R3 reported only).
 - **Next** (plan section 7.2, P2, each its own pull request): measure R2 (Damping's ratio) and R13 (Freeze, spillover); **Ducking** (Amount, Release) on every reverb; **Pre-delay sync** (Free, 1/64, 1/32, 1/16); **Diffusion** on the Plate; a **bass multiplier** and crossover on the Room and Hall; **Freeze** on the Room and Plate; the wobble at Full quality; and the MPC's own numbers from the next device round.
 
 ## 11. Sources
