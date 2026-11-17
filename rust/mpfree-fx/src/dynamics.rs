@@ -225,20 +225,41 @@ pub mod gate {
     pub const KEY: u16 = 7;
     /// Meter: the gate's gain now, in dB (0 open, Range shut).
     pub const GAIN: u16 = 8;
+    /// Key listen: plays the key as the filters leave it, to set them by
+    /// ear.
+    pub const LISTEN: u16 = 9;
+    /// Mode: 0 Gate (shuts to Range), 1 Expander (turns down by Ratio
+    /// under the threshold, at most to Range).
+    pub const MODE: u16 = 10;
+    /// The expander's ratio: dB down per dB under the threshold, plus one
+    /// (2: a sound 3 dB under comes out 6 dB under).
+    pub const RATIO: u16 = 11;
 }
+
+const GATE_MODES: &[&str] = &["Gate", "Expander"];
 
 const KEYS: &[&str] = &["Self", "Sidechain"];
 const GATE_AHEAD_MS: f32 = 1.0;
 /// The gate shuts this far under the threshold it opens at, so a level
 /// hovering at the threshold doesn't chatter.
 const HYSTERESIS_DB: f32 = 4.0;
+/// The shortest hold: the gate stays open at least this long after the key
+/// last reached the level it shuts at, so the gaps between a bass note's
+/// peaks (12.5 ms at 40 Hz) never shut it.
+const GATE_MIN_HOLD_MS: f32 = 20.0;
+/// How fast the gain rises to a Range raised while the gate is shut.
+const GATE_RANGE_RISE_MS: f32 = 10.0;
+/// The expander's level: each peak of the key is held for Hold (at least
+/// 20 ms); a lower peak within this much of it takes over (so a fading
+/// note is followed peak by peak), and with none it falls 60 dB in 20 ms.
+const EXPAND_REARM_DB: f32 = -1.0;
 
 static GATE_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.gate",
     name: "Gate",
     kind: Kind::Effect,
 };
-static GATE_PARAMS: [ParamInfo; 9] = [
+static GATE_PARAMS: [ParamInfo; 12] = [
     param(0, "Threshold", "Gate", -80.0, 0.0, -40.0, Db, Linear),
     param(1, "Range", "Gate", -80.0, 0.0, -80.0, Db, Linear),
     param(2, "Attack", "Gate", 0.1, 50.0, 0.5, Ms, Log),
@@ -248,6 +269,9 @@ static GATE_PARAMS: [ParamInfo; 9] = [
     param(6, "Key LP", "Key", 500.0, 20_000.0, 20_000.0, Hz, Log),
     param(7, "Key", "Key", 0.0, 1.0, 0.0, NONE, Choice(KEYS)),
     meter(8, "Gain", "Gate", -80.0, 0.0, Db),
+    param(9, "Listen", "Key", 0.0, 1.0, 0.0, NONE, Toggle),
+    param(10, "Mode", "Gate", 0.0, 1.0, 0.0, NONE, Choice(GATE_MODES)),
+    param(11, "Ratio", "Gate", 1.2, 10.0, 2.0, NONE, Log),
 ];
 
 /// Gate factory presets.
@@ -275,6 +299,8 @@ pub static GATE_PRESETS: &[Preset] = &[
             (gate::THRESHOLD, -50.0),
             (gate::RANGE, -12.0),
             (gate::RELEASE, 300.0),
+            (gate::MODE, 1.0),
+            (gate::RATIO, 2.0),
         ],
     },
     Preset {
@@ -291,27 +317,41 @@ pub static GATE_PRESETS: &[Preset] = &[
 
 /// A gate: silences (or turns down by Range) everything under the
 /// threshold. It opens a little before each hit (1 ms of look-ahead), so
-/// the first edge survives, holds, then fades over Release. The key can be
-/// filtered (so the kick's thump or the hi-hat's hiss doesn't open it) or
-/// come from the sidechain, for rhythmic gating.
+/// the first edge survives, holds, then fades over Release. It opens when
+/// the key reaches the threshold and shuts once the key hasn't reached
+/// 4 dB under it for Hold (at least 20 ms, so a bass note's cycles read as
+/// one steady level). The key can be filtered (so the kick's thump or the
+/// hi-hat's hiss doesn't open it) or come from the sidechain, for rhythmic
+/// gating; Listen plays it. As an expander it turns the sound down by
+/// Ratio under the threshold instead (at most to Range), for a softer
+/// clean-up.
 pub struct Gate {
-    v: [f32; 9],
+    v: [f32; 12],
     rate: u32,
     ahead: usize,
     delay: [kit::Line; 2],
     key_hp: Svf,
     key_lp: Svf,
-    env: f32,
-    env_fall: f32,
     open_at: f32,
     shut_at: f32,
     open: bool,
-    held: u32,
+    /// Frames since the key last reached `shut_at` while open.
+    since: u32,
     hold_frames: u32,
     g: f32,
     floor: f32,
     att_step: f32,
     rel_mult: f32,
+    /// The one-pole that lifts the gain to a Range raised while shut.
+    rise: f32,
+    /// The expander's held peak of the key, the frames it has left to
+    /// hold, what it falls by each frame after, the key's last level and
+    /// whether it was rising.
+    peak: f32,
+    peak_left: u32,
+    peak_fall: f32,
+    last: f32,
+    rising: bool,
     least: f32,
 }
 
@@ -331,17 +371,21 @@ impl Gate {
             delay: [kit::Line::default(), kit::Line::default()],
             key_hp: Svf::default(),
             key_lp: Svf::default(),
-            env: 0.0,
-            env_fall: 0.0,
             open_at: 0.0,
             shut_at: 0.0,
             open: false,
-            held: 0,
+            since: 0,
             hold_frames: 0,
             g: 0.0,
             floor: 0.0,
             att_step: 1.0,
             rel_mult: 0.0,
+            rise: 1.0,
+            peak: 0.0,
+            peak_left: 0,
+            peak_fall: 1.0,
+            last: 0.0,
+            rising: false,
             least: 1.0,
         };
         g.setup(48_000);
@@ -367,7 +411,9 @@ impl Gate {
         let nr = (self.v[gate::RELEASE as usize] * 0.001 * fs).max(1.0);
         let depth = self.v[gate::RANGE as usize].clamp(-80.0, -0.01);
         self.rel_mult = db_to_gain(depth / nr);
-        self.hold_frames = (self.v[gate::HOLD as usize] * 0.001 * fs) as u32;
+        let hold = self.v[gate::HOLD as usize].max(GATE_MIN_HOLD_MS);
+        self.hold_frames = (hold * 0.001 * fs) as u32;
+        self.rise = 1.0 - (-1.0 / (GATE_RANGE_RISE_MS * 0.001 * fs)).exp();
         self.key_hp.set(
             SvfMode::HighPass,
             self.v[gate::KEY_HP as usize],
@@ -392,6 +438,11 @@ impl Gate {
         };
         let hp_on = self.v[gate::KEY_HP as usize] > 21.0;
         let lp_on = self.v[gate::KEY_LP as usize] < 19_900.0;
+        let listen = self.v[gate::LISTEN as usize] >= 0.5;
+        let expand = self.v[gate::MODE as usize] >= 0.5;
+        let thr = self.v[gate::THRESHOLD as usize];
+        let slope = self.v[gate::RATIO as usize] - 1.0;
+        let rearm = db_to_gain(EXPAND_REARM_DB);
         for i in 0..l.len() {
             let (kl, kr) = match side {
                 Some((sl, sr)) => (
@@ -410,19 +461,69 @@ impl Gate {
                 }
             }
             let level = k[0].abs().max(k[1].abs());
-            self.env = if level > self.env {
-                level
-            } else {
-                flush(self.env * self.env_fall)
-            };
-            if self.env >= self.open_at {
-                self.open = true;
-                self.held = self.hold_frames;
-            } else if self.env < self.shut_at {
-                if self.held > 0 {
-                    self.held -= 1;
+            if expand {
+                // The key's peaks, each held (a lower one within 1 dB
+                // takes over), then falling.
+                if self.rising && level < self.last && self.last >= self.peak * rearm {
+                    self.peak = self.last;
+                    self.peak_left = self.hold_frames;
+                }
+                self.rising = level > self.last;
+                self.last = level;
+                if level >= self.peak {
+                    self.peak = level;
+                    self.peak_left = self.hold_frames;
+                } else if self.peak_left > 0 {
+                    self.peak_left -= 1;
                 } else {
-                    self.open = false;
+                    self.peak = flush(self.peak * self.peak_fall);
+                }
+                // Under the threshold, Ratio's dB down per dB, at most to
+                // Range; up at Attack's pace, down at Release's.
+                let want = if self.peak >= self.open_at {
+                    1.0
+                } else {
+                    let db = (fast_level_db(self.peak) - thr) * slope;
+                    if db <= -80.0 {
+                        self.floor
+                    } else {
+                        fast_db_to_gain(db).max(self.floor)
+                    }
+                };
+                if self.g < want {
+                    self.g = (self.g + self.att_step).min(want);
+                } else if self.g > want {
+                    self.g = (self.g * self.rel_mult).max(want);
+                    if self.g < 1e-4 && want == 0.0 {
+                        self.g = 0.0;
+                    }
+                }
+                self.least = self.least.min(self.g);
+                self.delay[0].push(l[i]);
+                self.delay[1].push(r[i]);
+                if listen {
+                    l[i] = k[0];
+                    r[i] = k[1];
+                } else {
+                    l[i] = self.delay[0].tap(self.ahead + 1) * self.g;
+                    r[i] = self.delay[1].tap(self.ahead + 1) * self.g;
+                }
+                continue;
+            }
+            // Open at the threshold; shut once the key hasn't reached the
+            // threshold less the hysteresis for Hold (at least 20 ms), so
+            // the dips between a low note's peaks don't count.
+            if level >= self.open_at {
+                self.open = true;
+                self.since = 0;
+            } else if self.open {
+                if level >= self.shut_at {
+                    self.since = 0;
+                } else {
+                    self.since += 1;
+                    if self.since > self.hold_frames {
+                        self.open = false;
+                    }
                 }
             }
             if self.open {
@@ -432,25 +533,32 @@ impl Gate {
                 if self.g < 1e-4 && self.floor == 0.0 {
                     self.g = 0.0;
                 }
+            } else if self.g < self.floor {
+                // Range raised while shut: rise to it.
+                self.g = (self.g + (self.floor - self.g) * self.rise).min(self.floor);
             }
             self.least = self.least.min(self.g);
             self.delay[0].push(l[i]);
             self.delay[1].push(r[i]);
-            l[i] = self.delay[0].tap(self.ahead + 1) * self.g;
-            r[i] = self.delay[1].tap(self.ahead + 1) * self.g;
+            if listen {
+                l[i] = k[0];
+                r[i] = k[1];
+            } else {
+                l[i] = self.delay[0].tap(self.ahead + 1) * self.g;
+                r[i] = self.delay[1].tap(self.ahead + 1) * self.g;
+            }
         }
         self.v[gate::GAIN as usize] = gain_to_db(self.least).max(-80.0);
         self.least = 1.0;
     }
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
+        self.peak_fall = db_to_gain(-60.0 / (0.02 * rate as f32));
         self.ahead = ((GATE_AHEAD_MS * 0.001 * rate as f32).round() as usize).max(1);
         self.delay = [
             kit::Line::new(self.ahead + 4),
             kit::Line::new(self.ahead + 4),
         ];
-        // The level detector falls 60 dB in about 20 ms.
-        self.env_fall = db_to_gain(-60.0 / (0.02 * rate as f32));
         self.derive();
         self.clear();
     }
@@ -460,9 +568,12 @@ impl Gate {
         }
         self.key_hp.reset();
         self.key_lp.reset();
-        self.env = 0.0;
         self.open = false;
-        self.held = 0;
+        self.since = 0;
+        self.peak = 0.0;
+        self.peak_left = 0;
+        self.last = 0.0;
+        self.rising = false;
         self.g = self.floor;
         self.least = 1.0;
         self.v[gate::GAIN as usize] = 0.0;
@@ -475,14 +586,37 @@ impl Gate {
         if self.v[gate::KEY as usize] >= 0.5 {
             return u32::MAX;
         }
-        // The detector falls under any threshold within 100 ms (60 dB in
-        // 20), then Hold and Release take the gain down to Range, where a
-        // reset puts it.
-        let ms = self.v[gate::HOLD as usize] + self.v[gate::RELEASE as usize] + 100.0;
+        // Hold (at least 20 ms) and Release take the gain down to Range,
+        // where a reset puts it; 100 ms more for the key's filters to ring
+        // out and a raised Range to be reached.
+        let hold = self.v[gate::HOLD as usize].max(GATE_MIN_HOLD_MS);
+        let ms = hold + self.v[gate::RELEASE as usize] + 100.0;
         (ms * 0.001 * self.rate as f32) as u32
     }
     fn lat(&self) -> u32 {
         self.ahead as u32
+    }
+
+    /// For the Channel strip while its gate is switched off: keeps the
+    /// look-ahead filled with the sound passing by, so the gate comes back
+    /// on without a gap.
+    pub(crate) fn feed(&mut self, l: &[f32], r: &[f32]) {
+        for (a, b) in l.iter().zip(r) {
+            self.delay[0].push(*a);
+            self.delay[1].push(*b);
+        }
+    }
+
+    /// For the Channel strip switching its gate back on: open, as the
+    /// sound passed while it was off, and shutting from there over Hold
+    /// and Release if the key is quiet.
+    pub(crate) fn resume_open(&mut self) {
+        self.key_hp.reset();
+        self.key_lp.reset();
+        self.open = true;
+        self.since = 0;
+        self.g = 1.0;
+        self.least = 1.0;
     }
 }
 

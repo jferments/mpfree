@@ -68,7 +68,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
-| **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
+| **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing; as an **Expander** it turns quiet sound down gently instead. It can open from another strip's sound, for rhythmic gating. |
 | **De-esser** | Turns down harsh "s" and "t" sounds ([more](#the-de-esser)). **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs ([more](#the-multiband-comp)). |
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Main**, shows the three as sections, each with its switch, then the **Signal path** (**Order**: the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
@@ -277,6 +277,24 @@ It holds the sound back 2 ms so it is already turning down when each "s" arrives
 
 > [!NOTE]
 > Projects saved before this change sound a little different through the Multiband comp: it compresses as far as its curve says (it used to fall short, and react about 1.7 times slower than Attack showed), a Mix under 100 % no longer dips around the split points, and turning a threshold or ratio is smooth. The Drum crush preset now uses Auto makeup instead of +6 dB on each band.
+
+### The Gate
+
+**Threshold** is the level that opens it. It shuts again 4 dB under, so a sound hovering at the threshold doesn't flutter, once the sound has stayed under that for **Hold**. Hold is at least 20 ms even at 0, so a bass note never shuts it between the peaks of its waves. **Attack** is how fast it opens; it looks 1 ms ahead, so the front of a hit is kept. **Release** is how long it takes to fall to **Range**, the most it turns down (at the bottom, silence). Moving Range while the gate is shut takes effect at once.
+
+**Mode** picks how it turns down. **Gate** shuts all the way to Range. **Expander** turns the sound down gradually under the threshold, by **Ratio**: at 2, a sound 3 dB under the threshold comes out 6 dB under, at most down to Range. It is a gentler clean-up for guitars, vocals and room noise; the Soft cleanup preset uses it.
+
+**Key HP** and **Key LP** filter what it listens to, so a kick's thump or a hi-hat's hiss doesn't open it, and **Key** picks the strip's own sound or another strip's (**Sidechain**), for rhythmic gating. **Listen** plays what it listens to, so you can set the filters by ear.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Gate: with Hold under 20 ms it now stays open through low notes (it used to flutter on bass under 100 Hz), it shuts closer to 4 dB under the threshold, and a Range moved while it is shut takes effect. Saved gates stay gates.
+
+### The Channel strip
+
+The **Gate**, **Comp** and **EQ** switches fade their stage in or out over 20 ms, so switching one mid-note doesn't click; the gate comes back on open and shuts from there if the sound is quiet. Changing **Order** dips the sound for a moment (about 20 ms) and swaps the stages in the gap. The compressor has the Compressor's **Style** (Clean, Opto, Bus, FET) and **Auto makeup**, which turns it back up by what it takes from a sound at a mix level, so comparing with bypass is fair; Auto makeup is off at first and on in every preset. Its gate holds open through low notes as the Gate does.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Channel strip: its gate stays open through bass notes and shuts closer to 4 dB under its threshold. They keep the Clean style and their own Makeup. The presets now use Auto makeup instead of their own makeup, and a style each: Vocal and Bass Opto, Snare FET, Gentle glue Bus, Kick Clean.
 
 ### Master safety
 

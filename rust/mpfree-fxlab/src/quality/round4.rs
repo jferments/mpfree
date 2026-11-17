@@ -777,6 +777,33 @@ pub(super) fn gate(r: &mut Report) {
         Some(1.0),
         0.2,
     );
+
+    // N6: the expander's curve: a steady tone 3 to 12 dB under the
+    // threshold comes out Ratio less one dB down per dB under (40 Hz and
+    // 1 kHz, Ratio 2 and 4).
+    let n = rate as usize;
+    let mut worst = 0.0f64;
+    for hz in [40.0, 1000.0] {
+        for ratio in [2.0, 4.0] {
+            for under in [3.0, 6.0, 12.0] {
+                let mut d = make_with(&main, rate, &[(g::MODE, 1.0), (g::RATIO, ratio)]);
+                let x = sine(hz, db_to_amp(thr - under), n, rate);
+                let lat = d.latency();
+                let y = d.render(&Stereo::mono(x.clone(), rate), lat).left;
+                let got = db_amp(rms_of(&y[n / 2 + lat..n + lat]) / rms_of(&x[n / 2..]));
+                worst = worst.max((got + under * (ratio - 1.0)).abs());
+            }
+        }
+    }
+    r.put(
+        "N6",
+        name,
+        "expander_curve_error_db",
+        Some(worst),
+        Better::Lower,
+        Some(0.5),
+        0.1,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1687,11 +1714,22 @@ pub(super) fn strip(r: &mut Report) {
         1.0,
     );
 
-    // C2: the insert's loudness on pink (Auto makeup's target once on its
-    // page).
+    // C2: the insert's loudness on pink at -18 dBFS: with Auto makeup on
+    // it stays near the dry; off (as saved before it was on the page),
+    // reported.
     let pink18 = pink_rms(rate, -18.0, 6.0);
     for s in std::iter::once(&main).chain(&presets) {
-        let mut d = make(s, rate);
+        let mut d = make_with(s, rate, &[(cs::AUTO_MAKEUP, 1.0)]);
+        r.put(
+            "C2",
+            &s.name,
+            "lu_pink_auto",
+            Some(lu_change(&mut d, &pink18)),
+            Better::Near(0.0),
+            Some(1.5),
+            0.1,
+        );
+        let mut d = make_with(s, rate, &[(cs::AUTO_MAKEUP, 0.0)]);
         r.put(
             "C2",
             &s.name,
