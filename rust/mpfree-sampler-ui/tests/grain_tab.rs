@@ -8,10 +8,11 @@ use mpfree_sampler_ui::grain_tab::{
     self, describe, size_at, size_place, GrainAction, GrainState, Row,
 };
 use mpfree_sampler_ui::grain_widgets::{GrainCloud, XyPad};
+use mpfree_sampler_ui::panel::Look;
 use mpfree_sampler_ui::sample::{
     self, grain_project, grain_samples, grains_after, GrainSample, PAD, RATE,
 };
-use mpfree_sampler_ui::widgets::{InfoCard, KnobCard, PadBar, SettingList};
+use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
 use mpfree_ui::{EventKind, Fonts, Rect, SoftCanvas, Touch, UiEvent};
 
 /// The Grain tab on the granular pad (or on the loop, not granular yet),
@@ -155,10 +156,38 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         Row::Scan,
         "the wheel starts on the scan speed"
     );
+    assert_eq!(row_value(&s, Row::Scan), "0.25×");
+    // The panel: Cloud's knobs and Shape's selectors; the Q-Links' rows
+    // are on their cards and the touch pad.
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    let panel = list.panel.as_ref().unwrap();
+    let titles: Vec<&str> = panel.sections.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["Cloud", "Shape"]);
+    let placed: Vec<Row> = panel
+        .sections
+        .iter()
+        .flat_map(|s| s.lines.iter().flatten().map(|i| Row::ALL[i.row]))
+        .collect();
     assert_eq!(
-        s.ui.get::<InfoCard>(grain_tab::WHEEL).unwrap().text,
-        "Scan speed: 0.25×"
+        placed,
+        [
+            Row::Scan,
+            Row::Spray,
+            Row::PitchSpray,
+            Row::Reverse,
+            Row::Spread,
+            Row::Level,
+            Row::Mode,
+            Row::Window,
+            Row::Quantise,
+            Row::Sync
+        ]
     );
+    assert!(grain_tab::QLINK_ROWS.iter().all(|r| !placed.contains(r)));
+    assert!(matches!(
+        list.controls[Row::Scan.index()].look,
+        Look::Knob { bipolar: true, .. }
+    ));
     let xy = s.ui.get::<XyPad>(grain_tab::XY).unwrap();
     assert_eq!((xy.x, xy.y), (0.56, size_place(150.0)));
     // The cloud: the engine's own grains, all inside the region.
@@ -488,9 +517,9 @@ fn the_wheel_steps_the_row_picked() {
     let a = s.tab.wheel(&mut s.ui, &st, 1).unwrap();
     apply(&mut s, &a);
     assert_eq!(row_value(&s, Row::Density), "150 /s");
-    assert_eq!(
-        s.ui.get::<InfoCard>(grain_tab::WHEEL).unwrap().text,
-        "Density: 150 /s"
+    assert!(
+        s.ui.get::<KnobCard>(grain_tab::QLINKS[2]).unwrap().focused,
+        "its card shows the wheel is on it"
     );
 }
 
