@@ -32,9 +32,13 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 4. Tap more squares while it plays. Changes play the next time round.
 5. Press **STOP** to stop.
 
-{{shot: play-beats | The Beats view: the pattern, one row per pad, with your timing under it. The picked step's velocity, length, nudge and chance are on the Q-Links.}}
+{{shot: play-beats | The Beats view: the pattern, one row per pad, with your timing under it and the picked step in the step inspector at the bottom. Its velocity, length, nudge and chance are on the Q-Links.}}
 
-**Fine-tune a step.** Tap a lit square once to pick it: the Q-Links now show its **velocity** (how hard it plays), **length**, **nudge** (a little early or late) and **chance** (how often it plays, for variations). Tap it again to turn it off.
+**Fine-tune a step.** Tap a lit square once to pick it: the Q-Links now show its **velocity** (how hard it plays), **length**, **nudge** (a little early or late) and **chance** (how often it plays, for variations). Press **Q-LINK** for its **condition** (play only on some passes, or only with FILL), **ratchet** (repeats within the step) and a finer nudge, and again to come back. Tap it again to turn it off.
+
+**The step inspector.** While a step is picked, the bottom of the Beats view (where the throws were) shows everything about it: its six settings, with the ones the Q-Links turn outlined; **Step**, **Trig** and **Sound**, which you can tap instead of pressing **Q-LINK**; its locks, each with a **×** that takes it off; **Copy**, then tap the step on the same row that should get a copy; and **Clear**, which takes the step out. **UNDO** brings back whatever a tap there changed. Tap **×** at its top right to close it: the step stays, the throws come back, and **Q-LINK** reaches your macros again.
+
+**Reading the pattern.** Each square shows its step: the brighter bar is the velocity, a small label at the top left is a condition ("1:2", "FILL"), a dashed outline with a percentage is a chance, little ticks are a ratchet, a triangle at the bottom is a nudge (left for early, right for late), a bar running into the next square is a long note, and purple dots at the top right are locks.
 
 **Mute a row.** Each row's name is its mute button (the speaker in the box beside the name shows it): tap the name to mute that pad, so you can drop the kick out and bring it back.
 
@@ -55,7 +59,7 @@ The chip at the top of the screen says what the pads are ("Pads: steps · Kick")
 
 **Longer patterns.** **PAD BANK A** to **D** show steps 1–16, 17–32, 33–48 and 49–64 on the pads, and **SHIFT** (or a second press) the four after. The lit **PAD BANK** button is the page on the pads, and the page playing blinks. **SHIFT + STEP SEQ** turns on Follow: the pads turn the page as the pattern plays. **‹** and **›** on the screen turn the pads' page too.
 
-**Changing a step.** Hold a step pad and turn the Q-Links: the cards say "Step 5" and turn its velocity, length, nudge (how early or late it plays) and chance. Press **Q-LINK** while you still hold it for its condition (play only on some passes, or only with FILL), its ratchet (repeats within the step) and a finer nudge. Hold several step pads to change them all at once. A step you turned stays when you let go of it. Touch a Q-Link without turning it to read the step's value.
+**Changing a step.** Hold a step pad and turn the Q-Links: the cards say "Step 5" and turn its velocity, length, nudge (how early or late it plays) and chance. Press **Q-LINK** while you still hold it for its condition (play only on some passes, or only with FILL), its ratchet (repeats within the step) and a finer nudge. Hold several step pads to change them all at once. A step you turned stays when you let go of it. On the Beats view, the step inspector shows the step you hold, and its **Sound** works only while you hold it. Touch a Q-Link without turning it to read the step's value.
 
 **Locks.** A step can play its sound differently: tuned up, shorter, darker or quieter. Hold a step pad and press **Q-LINK** until the cards say "Sound": they show the sound's tune, decay, filter and level (on the synth, its first four knobs). Turn one and the step plays with that value while the rest play the sound as it is; the card and the step pad turn purple. Hold several steps to lock them all at once. To lock a step without playing a note there (to change a sound that is still ringing), hold **SHIFT** and hit an empty step: it holds with no note, and the cards show "Sound" straight away. With a synth, you can also hold a step and turn the knobs on the Synth tab. Hold a step and press **ERASE** to take its locks off and keep its note.
 
