@@ -433,6 +433,8 @@ pub enum CellState {
     Playing,
     /// Playing, and the transport records into it.
     Recording,
+    /// An empty Loop cell armed: the next loop recorded lands here.
+    Armed,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1381,7 +1383,7 @@ impl Widget for ClipGrid {
                     let filled = self.tracks[track]
                         .cells
                         .get(slot)
-                        .is_some_and(|c| c.state != CellState::Empty);
+                        .is_some_and(|c| !matches!(c.state, CellState::Empty | CellState::Armed));
                     if !filled {
                         return Some(EventKind::Select(track * self.slots + slot));
                     }
@@ -1606,9 +1608,40 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     let fill = match cell.state {
         CellState::Playing => t.raised.mix(base, 0.36),
         CellState::Recording => t.raised.mix(t.bad, 0.24),
+        CellState::Armed => t.raised.mix(t.bad, 0.12),
         _ => t.raised.mix(base, 0.16),
     };
     cx.canvas.fill_round_rect(cr, 10, fill);
+    if cell.state == CellState::Armed {
+        // The armed Loop cell: a red edge and a red dot before "Armed".
+        cx.canvas
+            .fill_round_rect(Rect::new(cr.x, cr.y + 6, 4, cr.h - 12), 2, t.bad);
+        let inner = cr.inset_xy(10, 8);
+        let (name, rest) = inner.take_top(20);
+        cx.canvas
+            .fill_round_rect(Rect::new(name.x, name.y + name.h / 2 - 4, 8, 8), 4, t.bad);
+        let name = name.take_left(13).1;
+        cx.text(
+            FontId::Bold,
+            t.size_small + 1.0,
+            name,
+            Align::Left,
+            t.bad,
+            &cell.name,
+        );
+        let (detail, rest) = rest.take_top(20);
+        for (r, line) in [(detail, &cell.detail), (rest.take_top(20).0, &cell.foot)] {
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                r,
+                Align::Left,
+                t.text,
+                line,
+            );
+        }
+        return;
+    }
     match cell.state {
         CellState::Queued => cx.canvas.stroke_round_rect(cr, 10, 2, t.warn),
         CellState::Recording => cx.canvas.stroke_round_rect(cr, 10, 2, t.bad),

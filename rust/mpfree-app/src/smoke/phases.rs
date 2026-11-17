@@ -1451,6 +1451,35 @@ mod device_log {
         });
     }
 
+    /// `loop-cell`'s lines: SHIFT + "+ Track" adds a Loop track, a tap on
+    /// its row 2 cell arms it, and REC, PLAY and REC record a loop there.
+    #[test]
+    fn loop_cell_writes_its_lines() {
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("header", "tab", "Arrange").settle();
+            let n = s.lines.len();
+            s.button_edge("SHIFT", true);
+            s.press("clips", "add-track", "+ Track").settle();
+            s.button_edge("SHIFT", false);
+            wrote(&s, n, "time: Loops A added, a Loop track", "");
+            s.press("clips", "pager", "Tracks after").settle();
+            s.press("clips", "slot", "Loops A slot 2").settle();
+            wrote(&s, n, "time: loop cell: Loops A row 2 armed", "");
+            s.button("REC").button("PLAY");
+            s.run_for(0.5);
+            s.pad(0, 100, 0.05);
+            s.run_for(2.0);
+            s.button("REC");
+            s.run_for(2.5);
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            wrote(&s, n, "time: Loop 1 on Loops A, row 2, playing", "");
+            s.button("STOP");
+        });
+    }
+
     #[test]
     fn rec_arm_writes_its_lines() {
         use mpfree_looper::Phase;

@@ -147,9 +147,21 @@ Every loop you record also shows on the **Arrange** tab's Clips grid, on a **Loo
 - **A loop that isn't playing keeps its place** in the song: launch it again and it comes back in step.
 - **Clear** a loop, or undo its first pass, and its cell empties (Redo of the first pass puts it back). **½ length**, **× 2** and **Trim** change the cell's length with the loop's.
 - **A Loop track past the first 8 tracks** is on the grid's next page: tap **›** over the grid, or **Show in Clips** on the Looper tab (see below).
-- **The pads never play a Loop track.** Picking one keeps the pads on the track they were on, and **+** in an empty Loop cell says to record the loop on the Play page or the Looper tab instead. Drag a loop's cell to another row or another Loop track, or SHIFT-drop a copy into another row of its own Loop track (both rows play the same loop). Loops stay on Loop tracks, and clips on the other tracks.
+- **The pads never play a Loop track.** Picking one keeps the pads on the track they were on; a tap on an empty Loop cell records a loop there instead (below). Drag a loop's cell to another row or another Loop track, or SHIFT-drop a copy into another row of its own Loop track (both rows play the same loop). Loops stay on Loop tracks, and clips on the other tracks.
 
 A project saved before Loop tracks opens with each of its loops on a Loop track of its own, in row 1, all playing as they did. A project saved with Loop tracks opens with nothing launched, as its clips do: tap a loop's cell, or its scene, to play it.
+
+### Recording a loop into a cell
+
+1. To add a Loop track, hold **SHIFT** and tap **+ Track** over the grid: it is named Loops A, Loops B and so on. **UNDO** takes it away again.
+2. Tap the line under a Loop track's name to choose what its new loops record: **Pads** (the pads and the synth), **Line in** (the MPC's inputs; it turns **Line input** on) or **Resample** (the other loops, as you hear them).
+3. Tap an empty cell of the Loop track. It turns red and says **Armed**, and the REC chip names it ("REC → Loops C · Drop", the row's scene name or "row 3").
+4. Press **REC**: the cell says **Ready**. Press **PLAY** if the music is stopped; the loop starts on the next bar line. The cell says **REC** while it records.
+5. Press **REC** again: the loop closes on the next bar line and plays in that cell. If another loop was playing on that Loop track, it stops, since one loop plays per Loop track.
+
+With a cell armed, **OVERDUB** adds a layer to the loop that Loop track is playing. Tap the armed cell again, or arm the notes (a track's Arm pill, the Beats view), to let go of it. When all eight loops hold something, or the loop memory is nearly full, the tap and REC say so: clear a loop on the Looper tab first. A new project starts with no Loop track; the first loop you record makes Loops A, as before.
+
+### A loop's name
 
 The Play page's loop strip, the Looper tab and the REC chip name a loop by its place on the grid: **Loops B · Loop 2 · Verse** is Loop 2, on Loops B, in the row of the Verse scene ("row 2" for a row with no scene name). In the Looper tab's list, a loop on a Loop track shows its track and length ("Loops B · 2 bars"); its layers are in the editor. **Show in Clips**, in the Use the loop panel, opens the Arrange tab with the loop's cell in view.
 
@@ -171,7 +183,6 @@ Recording MPFree's own pads needs nothing made up: they are already in time. For
 
 ## Coming next
 
-- **Recording from the grid**: tap an empty Loop cell to arm it, and REC records a loop there, from the Loop track's input (the pads and synth, the line input, or the other loops). **+ Track** will also add a Loop track, and a new project will start with an empty Loops A.
 - **Loops in the song**: a lane per Loop track in the Song view, and Rec song keeping the loops you launch.
 - **To a pad**: send a loop to a pad as a sample on the Sample tab. You will also be able to drag a single layer onto it.
 - **Save loop**: keep it on the stick with its layers. Your loops are also saved with your project, every layer with its mix (see [Saving your work](saving.md)).

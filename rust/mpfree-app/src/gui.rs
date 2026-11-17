@@ -600,6 +600,8 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
         f.wave = *w;
     }
     info.in_use = v.loops.iter().filter(|s| s.phase != Phase::Empty).count();
+    info.waiting = v.loops.iter().any(|s| s.phase == Phase::Armed);
+    info.recording = v.loops.iter().any(|s| s.phase == Phase::Recording);
     let m = v.memory;
     info.memory_pct = (m.used * 100)
         .checked_div(m.capacity)
@@ -2669,7 +2671,9 @@ impl Player {
                         Phase::Armed => RecState::Ready,
                         Phase::Empty | Phase::Playing => RecState::Armed,
                     },
-                    what: self.looper_page.loop_name(self.looper.selected),
+                    // A Loop cell armed on the grid: "Loops C · Drop".
+                    what: time_view::loop_cell_name(&self.time)
+                        .unwrap_or_else(|| self.looper_page.loop_name(self.looper.selected)),
                     add: phase == Phase::Overdubbing,
                     pinned: false,
                 }
@@ -7892,11 +7896,15 @@ impl Player {
                 }
                 a.map(FromUi::Arp)
             }
-            // A track's sound line: its instrument on the Synth tab.
+            // A track's sound line: its instrument on the Synth tab; a Loop
+            // track's input steps to the next (Pads, Line in, Resample).
             (time_view::CLIPS, EventKind::Tab(k)) if k >= mpfree_time_ui::widgets::SOUND_TAP => {
-                Some(FromUi::TrackInstrument(
-                    k - mpfree_time_ui::widgets::SOUND_TAP,
-                ))
+                let t = k - mpfree_time_ui::widgets::SOUND_TAP;
+                if self.time.tracks.get(t).is_some_and(|tr| tr.loops.is_some()) {
+                    Some(FromUi::Time(TimeAction::LoopInput(t)))
+                } else {
+                    Some(FromUi::TrackInstrument(t))
+                }
             }
             (time_view::CLIPS, EventKind::Toggle(_))
                 if self.time_page.page_tracks(&ev, &self.time) =>
@@ -7942,6 +7950,8 @@ impl Player {
                         TimeAction::Audio(AudioAction::Move { region, to, .. }) => {
                             TimeAction::Audio(AudioAction::Move { region, to, fine })
                         }
+                        // SHIFT + "+ Track": a Loop track.
+                        TimeAction::AddTrack if fine => TimeAction::AddLoopTrack,
                         // SHIFT held as the finger lifts: a copy, not a move.
                         TimeAction::DropClip { from, to, .. } => TimeAction::DropClip {
                             from,
@@ -10441,7 +10451,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             v.memory.capacity = 300;
             v.memory.used = 114;
             p.apply(ToUi::Looper(Box::new(v)));
-            p.apply(ToUi::Time(Box::new(s.state())));
+            // Loops C's row 1 armed: REC records a loop there.
+            let mut st = s.state();
+            st.loop_cell = Some((5, 0));
+            p.apply(ToUi::Time(Box::new(st)));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("clips-loops", p));
         }

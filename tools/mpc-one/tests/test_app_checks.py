@@ -151,6 +151,19 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(got["row 2 stopped it on its bar line"], "off at once is not on the bar line")
         self.assertFalse(got["its cell brought it back on a bar line"])
 
+    def test_loop_cell_needs_the_track_the_arm_and_the_landing(self):
+        w = checks.Window(lines("time: Loops B added, a Loop track: tap a cell of it to record a loop there",
+                                "time: loop cell: Loops B row 2 armed, the next loop recorded lands there",
+                                "time: Loop 2 on Loops B, row 2, playing"))
+        self.assertTrue(all(ok for ok, _ in self.judge("loop-cell", w)))
+        # A loop landing in row 1 (no cell armed) is not this one.
+        w = checks.Window(lines("time: Track 9 added and armed (UNDO takes it away)",
+                                "time: Loop 1 on Loops A, row 1, playing"))
+        got = dict((what, ok) for ok, what in self.judge("loop-cell", w))
+        self.assertFalse(got["SHIFT + + Track made a Loop track"])
+        self.assertFalse(got["its row 2 cell armed"])
+        self.assertFalse(got["the loop landed in it"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]

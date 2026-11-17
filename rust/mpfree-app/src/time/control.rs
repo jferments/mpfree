@@ -164,6 +164,9 @@ pub struct TimeControl {
     /// Where each loop last went from, and the pass it had: a redo of its
     /// first pass (the same length from the same place) goes back there.
     loops_gone: [Option<((usize, usize), LoopNow)>; LOOPS],
+    /// The Loop cell armed (`TimeAction::LoopCell`): the next loop
+    /// recorded lands there.
+    loop_cell: Option<(usize, usize)>,
     /// The points for the next recorded change.
     touch: Vec<TouchPoint>,
     moves: Vec<(f64, f32, Kind)>,
@@ -242,6 +245,7 @@ impl TimeControl {
             loop_at: [None; LOOPS],
             loops_seen: [LoopNow::default(); LOOPS],
             loops_gone: [None; LOOPS],
+            loop_cell: None,
             touch: Vec::with_capacity(TOUCH_POINTS),
             moves: Vec::with_capacity(MOVE_POINTS),
             recorded_now: false,
@@ -266,6 +270,18 @@ impl TimeControl {
     /// follow), if any.
     pub fn armed(&self) -> Option<usize> {
         self.armed
+    }
+
+    /// The Loop cell armed on the grid while it is still an empty cell of
+    /// a Loop track (`TimeAction::LoopCell`): the next loop recorded
+    /// lands there.
+    pub fn loop_cell(&self) -> Option<(usize, usize)> {
+        self.loop_cell.filter(|&(t, s)| {
+            self.project
+                .tracks
+                .get(t)
+                .is_some_and(|tr| tr.is_loops() && tr.slots.get(s).is_some_and(|c| c.is_none()))
+        })
     }
 
     /// A view for the audio half; one its full queue hands back waits for
@@ -1499,6 +1515,61 @@ impl TimeControl {
                 self.compile()?;
                 Ok(format!("{name} added and armed (UNDO takes it away)"))
             }
+            TimeAction::AddLoopTrack => {
+                let name = loops::new_name(&self.project);
+                let track = mpfree_seq::Track::new_loops(&name, 0);
+                self.takes
+                    .add_track_as(&mut self.project, track)
+                    .map_err(|_| format!("{MAX_TRACKS} tracks is the most a project holds"))?;
+                self.compile()?;
+                Ok(format!(
+                    "{name} added, a Loop track: tap a cell of it to record a loop there (UNDO takes it away)"
+                ))
+            }
+            TimeAction::LoopCell(None) => {
+                if self.loop_cell.take().is_some() {
+                    self.changed = true;
+                }
+                Ok("loop cell: none armed".into())
+            }
+            TimeAction::LoopCell(Some((t, s))) => {
+                let tr = self
+                    .project
+                    .tracks
+                    .get(t)
+                    .filter(|tr| tr.is_loops())
+                    .ok_or_else(|| format!("track {} is not a Loop track", t + 1))?;
+                match tr.slots.get(s) {
+                    None => return Err(format!("{} has no row {}", tr.name, s + 1)),
+                    Some(Some(_)) => {
+                        return Err(format!("row {} of {} holds a loop", s + 1, tr.name))
+                    }
+                    Some(None) => {}
+                }
+                self.loop_cell = Some((t, s));
+                self.changed = true;
+                Ok(format!(
+                    "loop cell: {} row {} armed, the next loop recorded lands there",
+                    tr.name,
+                    s + 1
+                ))
+            }
+            TimeAction::LoopInput(t) => {
+                let tr = self
+                    .project
+                    .tracks
+                    .get_mut(t)
+                    .ok_or_else(|| format!("no track {}", t + 1))?;
+                let Some(now) = tr.loops() else {
+                    return Err(format!("{} is not a Loop track", tr.name));
+                };
+                let all = mpfree_seq::LoopInput::ALL;
+                let at = all.iter().position(|&i| i == now).unwrap_or(0);
+                let next = all[(at + 1) % all.len()];
+                tr.kind = mpfree_seq::TrackKind::Loops(next);
+                self.changed = true;
+                Ok(format!("{} records {}", tr.name, next.name()))
+            }
             TimeAction::Chip(_) => Ok(String::new()),
             TimeAction::MorphRows { a, b } => {
                 self.morph.a = a.min(SLOTS - 1);
@@ -2172,9 +2243,24 @@ impl TimeControl {
                             .is_some_and(|tr| tr.is_loops() && tr.slots[s].is_none());
                         (went == is && free && !busy(t)).then_some((t, s))
                     });
-                    let landed = match back {
+                    // Else the armed Loop cell takes it, if it is still
+                    // empty.
+                    let loop_cell = &mut self.loop_cell;
+                    let armed = || {
+                        loop_cell.take().filter(|&(t, s)| {
+                            project
+                                .tracks
+                                .get(t)
+                                .is_some_and(|tr| tr.is_loops() && tr.slots[s].is_none())
+                        })
+                    };
+                    let landed = match back.or_else(armed) {
                         Some((t, s)) => {
                             project.tracks[t].slots[s] = Some(Clip::new_loop(k, is.ticks));
+                            // One loop plays per Loop track: the one there
+                            // stops as this one plays.
+                            self.launches.retain(|l| l.track != t);
+                            self.cues.retain(|c| c.track != t);
                             Some((t, s))
                         }
                         None => loops::place(project, k, is.ticks, row, busy),
@@ -2258,6 +2344,7 @@ impl TimeControl {
         st.cues = self.cues.clone();
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();
+        st.loop_cell = self.loop_cell();
         st.morph = self.morph;
         st.song_view = self.song_view;
         st.song_on = self.song;

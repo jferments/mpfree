@@ -229,6 +229,10 @@ pub struct LoopsInfo {
     pub loops: [LoopFacts; mpfree_seq::LOOPS],
     pub in_use: usize,
     pub memory_pct: u8,
+    /// A new loop's first pass waits for PLAY or the bar line, or
+    /// records: the armed Loop cell says so.
+    pub waiting: bool,
+    pub recording: bool,
 }
 
 impl ClipInfo {
@@ -379,6 +383,9 @@ pub struct TimeState {
     /// (`mpfree_perform::Perform`). The app sets them.
     pub scene_playing: Option<usize>,
     pub scene_cued: Option<usize>,
+    /// The Loop track cell armed: the next loop recorded lands there
+    /// (`TimeAction::LoopCell`).
+    pub loop_cell: Option<(usize, usize)>,
     /// Each row's scene name, as far as the project names them (empty: a
     /// plain row, shown as its number).
     pub scenes: Vec<String>,
@@ -539,6 +546,7 @@ impl TimeState {
             capture: None,
             scene_playing: None,
             scene_cued: None,
+            loop_cell: None,
             scenes: project.scenes.iter().map(|s| s.name.clone()).collect(),
             morph: MorphInfo::default(),
             song_view: false,
@@ -665,6 +673,16 @@ pub enum TimeAction {
     /// "+ Track": a new empty track at the end (up to 128), armed, as a
     /// take that UNDO takes away again (Jay, 14 Nov: up to 128 tracks).
     AddTrack,
+    /// SHIFT + "+ Track": a new empty Loop track at the end ("Loops C"),
+    /// as a take that UNDO takes away again (loop-tracks.md part 4).
+    AddLoopTrack,
+    /// Arm an empty cell of a Loop track, or none: the next loop
+    /// recorded lands there (loop-tracks.md part 4). The app arms the loop
+    /// for REC with it.
+    LoopCell(Option<(usize, usize)>),
+    /// A Loop track's input to the next one (Pads, Line in, Resample):
+    /// what a loop recorded into its cells records.
+    LoopInput(usize),
     /// Chip `i` on the bar was tapped.
     Chip(usize),
     /// Keep what was just played (CAPTURE): into the armed track's playing
@@ -1129,6 +1147,12 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             let (track, slot) = (i / SLOTS, i % SLOTS);
             if track >= st.tracks.len() {
                 None
+            } else if st.clip(track, slot).is_none() && st.tracks[track].loops.is_some() {
+                // An empty Loop cell arms (again: lets go of) a loop there.
+                let cell = (track, slot);
+                Some(TimeAction::LoopCell(
+                    (st.loop_cell != Some(cell)).then_some(cell),
+                ))
             } else if st.clip(track, slot).is_none() {
                 Some(TimeAction::NewClip { track, slot })
             } else if st.cue(track).is_some_and(|c| {
@@ -1457,6 +1481,20 @@ impl LoopPlace {
     }
 }
 
+/// Row `slot`'s name: its scene's, or "row 2".
+pub fn row_name(st: &TimeState, slot: usize) -> String {
+    match st.scenes.get(slot).filter(|s| !s.is_empty()) {
+        Some(name) => name.clone(),
+        None => format!("row {}", slot + 1),
+    }
+}
+
+/// The armed Loop cell as the REC chip names it: "Loops C · Drop".
+pub fn loop_cell_name(st: &TimeState) -> Option<String> {
+    let (t, s) = st.loop_cell?;
+    Some(format!("{} · {}", st.tracks.get(t)?.name, row_name(st, s)))
+}
+
 /// Each loop's place on the grid; None for a loop in no cell.
 pub fn loop_places(st: &TimeState) -> [Option<LoopPlace>; mpfree_seq::LOOPS] {
     let mut out: [Option<LoopPlace>; mpfree_seq::LOOPS] = Default::default();
@@ -1468,15 +1506,11 @@ pub fn loop_places(st: &TimeState) -> [Option<LoopPlace>; mpfree_seq::LOOPS] {
             let Some(place @ None) = out.get_mut(usize::from(n)) else {
                 continue;
             };
-            let row = match st.scenes.get(slot).filter(|s| !s.is_empty()) {
-                Some(name) => name.clone(),
-                None => format!("row {}", slot + 1),
-            };
             *place = Some(LoopPlace {
                 track,
                 slot,
                 track_name: t.name.clone(),
-                row,
+                row: row_name(st, slot),
             });
         }
     }
@@ -1486,6 +1520,24 @@ pub fn loop_places(st: &TimeState) -> [Option<LoopPlace>; mpfree_seq::LOOPS] {
 /// Cell `slot` of `track` for `st`.
 pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     let Some(clip) = st.clip(track, slot) else {
+        if st.loop_cell == Some((track, slot)) {
+            // The armed Loop cell: the next loop recorded lands here.
+            // Short: the column is 86 px.
+            let (name, detail, foot) = if st.loops.recording {
+                ("REC", "REC ends", "the pass")
+            } else if st.loops.waiting {
+                ("Ready", "bar line", "or PLAY")
+            } else {
+                ("Armed", "REC here", "")
+            };
+            return GridCell {
+                state: CellState::Armed,
+                name: name.to_string(),
+                detail: detail.to_string(),
+                foot: foot.to_string(),
+                ..GridCell::default()
+            };
+        }
         return GridCell::default();
     };
     let t = &st.transport;
@@ -2344,6 +2396,41 @@ mod tests {
         page.show_cell(4, 14);
         assert_eq!(page.first_track, 0);
         assert!(page.first_row > 0 && page.first_row <= 14);
+    }
+
+    /// A tap on an empty Loop cell arms it and a second lets go; the
+    /// armed cell says what REC does there as the first pass goes, and
+    /// the REC chip names it (loop-tracks.md part 4).
+    #[test]
+    fn an_empty_loop_cell_arms_and_says_what_rec_does() {
+        let mut st = crate::sample::loops_playing().unwrap().state();
+        let tap = |st: &TimeState, track: usize, slot: usize| {
+            action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), st)
+        };
+        assert!(st.clip(3, 5).is_none() && st.tracks[3].loops.is_some());
+        assert_eq!(tap(&st, 3, 5), Some(TimeAction::LoopCell(Some((3, 5)))));
+        assert!(
+            matches!(tap(&st, 0, 5), Some(TimeAction::NewClip { .. })),
+            "a note track's empty cell makes a clip"
+        );
+        assert_eq!(cell_of(&st, 3, 5).state, CellState::Empty);
+        st.loop_cell = Some((3, 5));
+        assert_eq!(tap(&st, 3, 5), Some(TimeAction::LoopCell(None)));
+        let said = |st: &TimeState| {
+            let c = cell_of(st, 3, 5);
+            assert_eq!(c.state, CellState::Armed);
+            format!("{} / {} / {}", c.name, c.detail, c.foot)
+        };
+        assert_eq!(said(&st), "Armed / REC here / ");
+        st.loops.waiting = true;
+        assert_eq!(said(&st), "Ready / bar line / or PLAY");
+        st.loops.recording = true;
+        assert_eq!(said(&st), "REC / REC ends / the pass");
+        st.scenes = vec![String::new(); 6];
+        st.scenes[5] = "Drop".into();
+        assert_eq!(loop_cell_name(&st).as_deref(), Some("Loops A · Drop"));
+        st.scenes[5].clear();
+        assert_eq!(loop_cell_name(&st).as_deref(), Some("Loops A · row 6"));
     }
 
     #[test]
