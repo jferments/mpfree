@@ -21,7 +21,7 @@ use mpfree_transport::{Block, Command, Mark, State, Transport};
 
 use super::follow::{Follow, FollowCounts, Follower};
 use super::link::{
-    Counts, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx, POINTS_CHUNK, TOUCH_CHUNK,
+    Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx, POINTS_CHUNK, TOUCH_CHUNK,
 };
 use super::{Click, Collect, HitInfo, LaneOut, LockOut, Pads, MAX_HITS, MAX_LOCKS, MAX_OUT};
 
@@ -74,6 +74,11 @@ pub struct TimeAudio {
     behind: u64,
     kept: u64,
     refused: u64,
+    /// Step edits the view could not take in place.
+    missed: u64,
+    /// A step edit missed and asked for a compile, which brings it: the
+    /// next view taken ends it, so a run of misses asks once.
+    asked: bool,
 }
 
 impl TimeAudio {
@@ -126,6 +131,8 @@ impl TimeAudio {
             behind: 0,
             kept: 0,
             refused: 0,
+            missed: 0,
+            asked: false,
         }
     }
 
@@ -152,6 +159,32 @@ impl TimeAudio {
                         *set = s;
                     }
                 }
+                ToAudio::Edit {
+                    track,
+                    slot,
+                    change,
+                } => self.edit(usize::from(track), usize::from(slot), change),
+            }
+        }
+    }
+
+    /// One change of a step edit, made to the view in place where a
+    /// compile would put it, without allocating. One the view cannot take
+    /// (no room left, or what it erases is not there) asks for a compile,
+    /// which brings it and the changes after it: once, until a new view
+    /// comes.
+    fn edit(&mut self, track: usize, slot: usize, change: InPlace) {
+        let v = &mut self.view;
+        let done = match change {
+            InPlace::AddNote(n) => v.add_note(track, slot, &n),
+            InPlace::EraseNote(n) => v.remove_note(track, slot, &n),
+            InPlace::AddLock(l) => v.add_lock(track, slot, &l, None),
+            InPlace::EraseLock(l) => v.remove_lock(track, slot, &l),
+        };
+        if !done {
+            self.missed += 1;
+            if !std::mem::replace(&mut self.asked, true) {
+                self.send(ToControl::Compile);
             }
         }
     }
@@ -164,6 +197,7 @@ impl TimeAudio {
             Ok(()) => {
                 let old = std::mem::replace(&mut self.view, v);
                 self.give_back(old);
+                self.asked = false;
             }
             Err(_) => {
                 self.behind += 1;
@@ -617,6 +651,7 @@ impl TimeAudio {
             behind: self.behind,
             kept: self.kept,
             refused: self.refused,
+            missed: self.missed,
         }
     }
 

@@ -17,7 +17,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 
 use mpfree_play::{Event, PlayView, Rec, Started};
 use mpfree_seq::mpfree_moves::{Input, Kind};
-use mpfree_seq::{DestId, TouchPoint, MAX_TRACKS};
+use mpfree_seq::{DestId, Lock, Note, TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::{Command, Span};
 
@@ -140,6 +140,28 @@ pub enum ToAudio {
     Tracks { n: usize, armed: Option<usize> },
     /// One track's settings changed.
     Track(usize, TrackSet),
+    /// A step edit made to clip `slot` of `track`, one change a message,
+    /// in the order the clip took them ([`InPlace`]).
+    Edit {
+        track: u16,
+        slot: u16,
+        change: InPlace,
+    },
+}
+
+/// One change of a step edit, for the audio half to make to the view it
+/// plays in place, as the clip took it (`mpfree_seq::Clip::apply`: the
+/// notes and locks erased, then those added). The queue keeps them in
+/// order with the views: a view sent before them was compiled without
+/// them, and one sent after them has them, so they need no number and no
+/// catch-up. A change the view cannot take (no room, or what it erases is
+/// not there) asks for a compile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InPlace {
+    AddNote(Note),
+    EraseNote(Note),
+    AddLock(Lock),
+    EraseLock(Lock),
 }
 
 /// The audio half's counts of things lost, with each period.
@@ -158,6 +180,9 @@ pub struct Counts {
     pub kept: u64,
     /// Transport commands the transport's queue refused.
     pub refused: u64,
+    /// Step edits the view could not take in place, sent back to compile
+    /// (should stay 0).
+    pub missed: u64,
 }
 
 /// The end of a period.
