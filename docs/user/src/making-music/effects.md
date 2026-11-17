@@ -86,7 +86,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Ring mod** | Bells, clangs and robot voices. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one. |
 | **Freq shifter** | Moves every frequency up or down by the same number of hertz, so a sound stops being in tune with itself: a few hertz is a slow, endless swirl, more makes drums metallic and voices robotic. **Feedback** sends it round again, climbing or falling. |
-| **Delay** | Echoes in time with the tempo. **Digital** is clean; **Tape** echoes from a tape loop with up to three heads, wow and flutter, that darken and thicken as they repeat; **Multi-tap** is four echoes on the beat, each with its own level and pan. |
+| **Delay** | Echoes in time with the tempo. **Digital** is clean; **Tape** echoes from a tape loop with up to three heads, wow and flutter: the first echo already sounds like tape, and each repeat darkens and thickens on from it; **Multi-tap** is four echoes on the beat, each with its own level and pan. |
 | **Reverb** | **Room**, **Plate** and **Spring** are the smaller, classic reverbs (the room's **Gate** cuts its tail short, for the 1980s gated snare); **Hall**, **Cloud** and **Echoes** are large and lush. **Freeze** holds the tail for as long as it is on. |
 | **Granulator** | Cuts the sound into tiny grains and plays them back as a cloud: higher or lower, scattered, backwards, spread wide. **Freeze** holds what's in it, so a moment hangs in the air while you play over it. |
 | **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
@@ -111,6 +111,16 @@ Changing the curve glides from one blend to the other, so it doesn't click. A pr
 
 > [!NOTE]
 > Projects saved before the Mix curve open at **Equal**, so a delay or reverb set between 0 and 100 % sounds a little louder and wetter than it did (at Mix 35 %, about 3 dB). Pick **Linear** for the blend it had before. The Room reverb is also about 4 dB louder than before, as loud as the other reverbs.
+
+### A delay's repeats
+
+- The repeats keep their brightness at any time and tempo. Only **Tone** (and on the Tape and Multi-tap, **Low cut**) takes the top and bottom off them, by as much as the page draws.
+- **Saturation** roughens the repeats without making them louder, so **Feedback** is how much of each repeat the next one keeps: at 50 % each repeat is half as loud as the one before (or quieter, where Tone and Low cut take some away).
+- On the **Tape**, every echo goes onto the tape, the first one too. So the first echo already has the tape's tone, head bump and saturation, and each repeat has been round once more than the one before. The Tone card draws one time round, filled, and four times round, dashed.
+- Over 100 % Feedback the echoes grow until they meet a soft ceiling, and howl there until you bring Feedback down. The Tape's Feedback goes to 150 %, so it can run away fast (its Runaway preset is at 130 %); the Digital's goes to 110 %, a slow build.
+
+> [!NOTE]
+> Projects saved before this change sound a little different on the Tape delay: the first echo has the tape's tone now, and quiet repeats no longer grow louder at high Saturation, so the Dub echo preset dies away instead of ringing on.
 
 ### The EQ's page
 
