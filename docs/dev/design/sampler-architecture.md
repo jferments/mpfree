@@ -466,7 +466,7 @@ Jay, 2026-11-12: stutter and bus FX on pads. Worked out with the FX thread (no r
 
 | Analysis | Method | Output |
 |---|---|---|
-| Peak pyramid | Per channel min, max, RMS as `i16` at block sizes 64, 256, 1024, 4096 frames, built and drawn from floats or from a sound's own 16-bit samples (`build_from`, `columns_from`, any `Samples`) | `PeakPyramid`, saved as `<source>.peaks` |
+| Peak pyramid | Per channel min, max, RMS as `i16` at block sizes 64, 256, 1024, 4096 frames, built and drawn from floats or from a sound's own 16-bit samples (`build_from`, `columns_from`, any `Samples`) | `PeakPyramid`, kept in a saved project with the rest of the view as `<id>.a1.peaks` |
 | Onsets | 1024-point FFT, hop 256 (5.8 ms); spectral flux on log-magnitude; adaptive threshold = median over ±8 hops × (1 + sensitivity); peak-picking with a 30 ms minimum gap; refine each onset to the nearest preceding low-energy frame | sorted frame positions with strength (so sensitivity can change without recomputing) |
 | Tempo | Autocorrelation of the onset strength curve over 60-200 BPM, with a preference curve around 90-120 and octave checks; offered, not forced | BPM and confidence |
 | Pitch | YIN on up to 24 windows of 100 ms within 24 dB of the loudest; voiced windows grouped by note, weighted by loudness × periodicity × steadiness (built: `mpfree_analysis::root_pitch`, also per slice via `SourceAnalysis::pitch_of`) | root note and cents, with confidence |
@@ -475,7 +475,7 @@ Jay, 2026-11-12: stutter and bus FX on pads. Worked out with the FX thread (no r
 
 **Built: off the screen thread** (`mpfree-app/src/views.rs`, the sampler review's engine item 3). The Sample tab asks `Views` for a sound's `SourceView` each time it shows one. The first time, it gets `SourceView::pending` at once (a flat line of the sound's length, `ready` false) and the sound goes first in the `mpfree-analyse` thread's queue; the worker sends `SourceView::quick` (the peak pyramid and mono mix) and then `SourceView::finish` (onsets, tempo, root note; `ready` true), and the page is built again as each lands (`SamplePage::tick`). Measured on the workstation, release build, a minute of stereo: peaks and mono 27 ms, the rest 170 ms (onsets 127 ms, root note 37 ms, tempo 6 ms); three minutes: 83 ms and 470 ms. The MPC is several times slower (not measured). What waits on the analysis: the Chop tab chops again and the Warp tab finds its hits once it is ready, and the Wave tab's 16ths snap isn't dropped for want of a tempo before then. Map to keys needs the note heard at once, so it works out any view not ready itself (`Views::full`). Views are kept by source id (the hash of the audio) while the sound is in a kit, so a kit loaded again or a sound in two kits is analysed once; the rest are forgotten when the kits change.
 
-Still to come: the results in the source's cache file with a version number (below), so a project opened again needs no analysis, and a newer analyser re-runs old caches in the background.
+**Built: kept with the project** (the sampler review's engine item 3, its last part). A save keeps each sound's view, once it is ready, in the project's `samples/` beside the sound: `<id>.a1.peaks` (`source::cache_file`; `SamplePage::cache_part`, written by the library's save as a `NewSample` like the sound, so once and whole). It holds the sound's id, frames and channels, the tempo and root note, the peak pyramid (`PeakPyramid::to_bytes`) and the onsets (`OnsetAnalysis::to_bytes`: the strength curve and every candidate, so Sensitivity still moves without analysing again), about 3 % of the sound's size as floats. Opening the project reads each sound's file on the open's own thread (`cached_views`, `SourceView::from_cache`), works out only the mono mix again (one pass over the sound), and hands the views to `Views::known`, so the Sample tab shows the sound ready at once and the worker never takes it. A file that is another sound's, cut short or of another layout is ignored and the sound is analysed as before. The analysis's version is in the file's name (`CACHE_VERSION`): a newer analysis doesn't find an older one's file, analyses the sound in the background as for a new one, and its next save writes its own.
 
 ## Files
 
@@ -485,7 +485,7 @@ MyBeat.mpfree/
   undo.log              append-only command log, one record per line, fsync on each gesture end
   samples/
     3f9a…c2.wav         sources, named by content hash; WAV 24-bit or float, or .flac
-    3f9a…c2.peaks       analysis cache (rebuildable)
+    3f9a…c2.a1.peaks    analysis cache, version 1 (rebuildable; built: see Analysis)
     3f9a…c2.toml        name, tags, original file name, analysis version
   takes/                recordings not yet assigned (kept until the project is cleaned)
 ```
