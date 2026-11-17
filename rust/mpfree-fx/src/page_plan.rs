@@ -1110,9 +1110,14 @@ pub static PLANS: &[Plan] = &[
             &[
                 Section {
                     hero: &["Rate", "Depth"],
-                    rows: &["Sync"],
+                    rows: &["Sync", "Shape"],
                     drawings: &["Sweep"],
-                    ..s("lfo", "Movement", Motion, &["Rate", "Depth", "Sync"])
+                    ..s(
+                        "lfo",
+                        "Movement",
+                        Motion,
+                        &["Rate", "Depth", "Sync", "Shape"],
+                    )
                 },
                 s("voices", "Voices", Source, &["Delay", "Voices", "Width"]),
                 s("tone", "Tone", Tone, &["Tone"]),
@@ -1132,9 +1137,14 @@ pub static PLANS: &[Plan] = &[
             &[
                 Section {
                     hero: &["Rate", "Depth"],
-                    rows: &["Sync"],
+                    rows: &["Sync", "Shape"],
                     drawings: &["Sweep"],
-                    ..s("lfo", "Movement", Motion, &["Rate", "Depth", "Sync"])
+                    ..s(
+                        "lfo",
+                        "Movement",
+                        Motion,
+                        &["Rate", "Depth", "Sync", "Shape"],
+                    )
                 },
                 Section {
                     drawings: &["Comb"],
@@ -1163,13 +1173,13 @@ pub static PLANS: &[Plan] = &[
                 // draws the right side's offset).
                 Section {
                     hero: &["Rate", "Depth"],
-                    rows: &["Sync", "Stereo"],
+                    rows: &["Sync", "Shape", "Stereo"],
                     drawings: &["Sweep"],
                     ..s(
                         "lfo",
                         "Movement",
                         Motion,
-                        &["Rate", "Depth", "Sync", "Stereo"],
+                        &["Rate", "Depth", "Sync", "Shape", "Stereo"],
                     )
                 },
                 Section {
