@@ -725,10 +725,19 @@ pub enum LoopInput {
 impl LoopInput {
     pub const ALL: [LoopInput; 3] = [LoopInput::Pads, LoopInput::Line, LoopInput::Resample];
 
-    /// As the screens say it, under the track's name.
+    /// As the screens say it in full.
     pub fn name(self) -> &'static str {
         match self {
             LoopInput::Pads => "Pads + synth",
+            LoopInput::Line => "Line in",
+            LoopInput::Resample => "Resample",
+        }
+    }
+
+    /// As the Clips grid says it, under the track's name.
+    pub fn short(self) -> &'static str {
+        match self {
+            LoopInput::Pads => "Pads",
             LoopInput::Line => "Line in",
             LoopInput::Resample => "Resample",
         }

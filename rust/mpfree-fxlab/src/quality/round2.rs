@@ -1520,6 +1520,37 @@ fn swept_pink_peak(d: &mut NodeDut, id: u16, from: f64, to: f64, log: bool) -> f
     db_amp(peak_of(&y.left).max(peak_of(&y.right)))
 }
 
+/// The pitch (Hz, by rising zero crossings) and level (dBFS RMS) of what
+/// `d` sings on its own: a click, then the last second of four of silence.
+fn self_oscillation(d: &mut NodeDut) -> (f64, f64) {
+    let rate = d.rate();
+    let n = 4 * rate as usize;
+    let mut x = vec![0.0; n];
+    x[0] = 0.1;
+    d.reset();
+    let y = d.process(&Stereo::mono(x, rate), &[]).left;
+    let tail = &y[n - rate as usize..];
+    let mut first = None;
+    let (mut last, mut count) = (0.0, 0usize);
+    for i in 1..tail.len() {
+        if tail[i - 1] < 0.0 && tail[i] >= 0.0 {
+            let t = (i - 1) as f64 + -tail[i - 1] / (tail[i] - tail[i - 1]);
+            if first.is_none() {
+                first = Some(t);
+            } else {
+                count += 1;
+            }
+            last = t;
+        }
+    }
+    let hz = match first {
+        Some(f) if count > 0 => count as f64 * rate as f64 / (last - f),
+        _ => f64::NAN,
+    };
+    let rms = (tail.iter().map(|v| v * v).sum::<f64>() / tail.len() as f64).sqrt();
+    (hz, db_amp(rms))
+}
+
 pub(super) fn filter(r: &mut Report) {
     use ids::dj_filter as dj;
     use ids::filter as m;
@@ -1698,6 +1729,306 @@ pub(super) fn filter(r: &mut Report) {
             1.0,
         );
     }
+
+    // F9 and the ladder model: in tune on its own with a steady level; the
+    // resonance bounded and quiet sounds still ringing; heard as drawn; a
+    // Model change; its drive.
+    let lname = "filter/ladder";
+    let ladder = |values: &[(u16, f64)]| {
+        let mut v = vec![(m::MODEL, 1.0)];
+        v.extend_from_slice(values);
+        make_with(multi, rate, &v)
+    };
+    let mut levels = Vec::new();
+    for hz in [100.0, 300.0, 1000.0, 3000.0, 5000.0] {
+        let mut d = ladder(&[(m::CUTOFF, hz), (m::RESONANCE, 100.0)]);
+        let (sung, level) = self_oscillation(&mut d);
+        r.put(
+            "F9",
+            lname,
+            format!("selfosc_cents_{hz}"),
+            Some(1200.0 * (sung / hz).log2()),
+            Better::Near(0.0),
+            Some(5.0),
+            0.5,
+        );
+        levels.push(level);
+    }
+    let (lo, hi) = levels
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
+    r.put(
+        "F9",
+        lname,
+        "selfosc_level_spread_db",
+        Some(hi - lo),
+        Better::Lower,
+        Some(1.0),
+        0.2,
+    );
+    r.put(
+        "F9",
+        lname,
+        "selfosc_level_dbfs_1k",
+        Some(levels[2]),
+        Better::Info,
+        None,
+        0.5,
+    );
+    for res in [75.0, 100.0] {
+        let mut d = ladder(&[(m::RESONANCE, res)]);
+        r.put(
+            "F3",
+            lname,
+            format!("swept_pink_peak_res{res}"),
+            Some(swept_pink_peak(&mut d, m::CUTOFF, 100.0, 10_000.0, true)),
+            Better::Lower,
+            (res == 100.0).then_some(-1.0),
+            0.3,
+        );
+    }
+    let mut d = ladder(&[(m::CUTOFF, 1000.0), (m::RESONANCE, 90.0)]);
+    r.put(
+        "F4",
+        lname,
+        "peak_gain_m40dbfs_res90",
+        Some(gain_at(&mut d, 1000.0, -40.0)),
+        Better::Info,
+        None,
+        0.5,
+    );
+    let mut d = ladder(&[(m::CUTOFF, 1000.0), (m::RESONANCE, 100.0)]);
+    r.put(
+        "F2",
+        lname,
+        "passband_res100",
+        Some(gain_at(&mut d, 100.0, -24.0)),
+        Better::Info,
+        None,
+        0.1,
+    );
+    let values = [(m::MODEL, 1.0), (m::CUTOFF, 1000.0), (m::RESONANCE, 50.0)];
+    let f = multi_with(&values, rate);
+    let mut d = make_with(multi, rate, &values);
+    let worst = [100.0, 300.0, 700.0, 1000.0, 1400.0, 3000.0]
+        .iter()
+        .map(|hz| (gain_at(&mut d, *hz, -40.0) - f.response_db(*hz as f32) as f64).abs())
+        .fold(0.0, f64::max);
+    r.put(
+        "F1",
+        lname,
+        "heard_vs_drawn_res50",
+        Some(worst),
+        Better::Lower,
+        Some(0.2),
+        0.05,
+    );
+    let mut d = make_with(multi, rate, &[(m::CUTOFF, 1000.0), (m::RESONANCE, 50.0)]);
+    r.put(
+        "F5",
+        lname,
+        "click_multi_to_ladder",
+        Some(switch_click(&mut d, m::MODEL, 1.0, 100.0)),
+        Better::Lower,
+        Some(3.0),
+        1.0,
+    );
+    for drv in [0.0, 12.0] {
+        let mut d = ladder(&[(m::DRIVE, drv)]);
+        r.put(
+            "F7",
+            lname,
+            format!("drive{drv}_alias_5k_0dbfs"),
+            Some(alias(&mut d, 5000.0, 0.0).0),
+            Better::Lower,
+            None,
+            1.0,
+        );
+    }
+
+    // F12: the Res mode. Hard holds a loud sound and rings a quiet one up,
+    // and plays as drawn (at twice the rate); Clean is the linear filter,
+    // with no ceiling (reported); the ladder sings in tune and in bounds on
+    // Hard and never on Clean; no change clicks.
+    let hname = "filter/multi_hard";
+    let cname = "filter/multi_clean";
+    let lhname = "filter/ladder_hard";
+    let lcname = "filter/ladder_clean";
+    let with_mode = |model: f64, mode: f64, values: &[(u16, f64)]| {
+        let mut v = vec![(m::MODEL, model), (m::RES_MODE, mode)];
+        v.extend_from_slice(values);
+        v
+    };
+    for (slope, sl) in [(0.0, "12"), (1.0, "24")] {
+        let v = with_mode(0.0, 1.0, &[(m::SLOPE, slope), (m::RESONANCE, 100.0)]);
+        let mut d = make_with(multi, rate, &v);
+        r.put(
+            "F12",
+            hname,
+            format!("swept_pink_peak_res100_{sl}db"),
+            Some(swept_pink_peak(&mut d, m::CUTOFF, 100.0, 10_000.0, true)),
+            Better::Lower,
+            Some(-1.0),
+            0.3,
+        );
+        let v = with_mode(
+            0.0,
+            1.0,
+            &[
+                (m::SLOPE, slope),
+                (m::CUTOFF, 1000.0),
+                (m::RESONANCE, 100.0),
+            ],
+        );
+        let mut d = make_with(multi, rate, &v);
+        r.put(
+            "F12",
+            hname,
+            format!("peak_gain_m40dbfs_res100_{sl}db"),
+            Some(gain_at(&mut d, 1000.0, -40.0)),
+            Better::Higher,
+            Some(28.0),
+            0.5,
+        );
+        let values = with_mode(
+            0.0,
+            1.0,
+            &[(m::SLOPE, slope), (m::CUTOFF, 1000.0), (m::RESONANCE, 50.0)],
+        );
+        let f = multi_with(&values, rate);
+        let mut d = make_with(multi, rate, &values);
+        let worst = [100.0, 300.0, 700.0, 1000.0, 1400.0, 3000.0, 8000.0]
+            .iter()
+            .map(|hz| (gain_at(&mut d, *hz, -24.0) - f.response_db(*hz as f32) as f64).abs())
+            .fold(0.0, f64::max);
+        r.put(
+            "F12",
+            hname,
+            format!("heard_vs_drawn_lp_res50_{sl}db"),
+            Some(worst),
+            Better::Lower,
+            Some(0.1),
+            0.02,
+        );
+        let v = with_mode(0.0, 2.0, &[(m::SLOPE, slope), (m::RESONANCE, 100.0)]);
+        let mut d = make_with(multi, rate, &v);
+        r.put(
+            "F12",
+            cname,
+            format!("swept_pink_peak_res100_{sl}db"),
+            Some(swept_pink_peak(&mut d, m::CUTOFF, 100.0, 10_000.0, true)),
+            Better::Info,
+            None,
+            0.3,
+        );
+    }
+    // A loud sine at a resonant high-pass's cutoff, where the ceiling works
+    // hardest and nothing after it filters what it adds: Soft at the
+    // session rate, Hard at twice it.
+    for (name, mode) in [(mname, 0.0), (hname, 1.0)] {
+        let v = with_mode(
+            0.0,
+            mode,
+            &[
+                (m::TYPE, 1.0),
+                (m::SLOPE, 1.0),
+                (m::CUTOFF, 2000.0),
+                (m::RESONANCE, 100.0),
+            ],
+        );
+        let mut d = make_with(multi, rate, &v);
+        r.put(
+            "F12",
+            name,
+            "alias_hp24_res100_2k_m12dbfs",
+            Some(alias(&mut d, 2000.0, -12.0).0),
+            Better::Info,
+            None,
+            1.0,
+        );
+    }
+    for (model, name, to, tn) in [
+        (0.0, hname, 1.0, "hard"),
+        (0.0, cname, 2.0, "clean"),
+        (1.0, lhname, 1.0, "hard"),
+        (1.0, lcname, 2.0, "clean"),
+    ] {
+        let v = with_mode(model, 0.0, &[(m::CUTOFF, 1000.0), (m::RESONANCE, 50.0)]);
+        let mut d = make_with(multi, rate, &v);
+        r.put(
+            "F12",
+            name,
+            format!("click_soft_to_{tn}"),
+            Some(switch_click(&mut d, m::RES_MODE, to, 100.0)),
+            Better::Lower,
+            Some(3.0),
+            1.0,
+        );
+    }
+    let v = with_mode(1.0, 1.0, &[(m::CUTOFF, 1000.0), (m::RESONANCE, 100.0)]);
+    let mut d = make_with(multi, rate, &v);
+    let (sung, level) = self_oscillation(&mut d);
+    r.put(
+        "F12",
+        lhname,
+        "selfosc_cents_1000",
+        Some(1200.0 * (sung / 1000.0).log2()),
+        Better::Near(0.0),
+        Some(5.0),
+        0.5,
+    );
+    r.put(
+        "F12",
+        lhname,
+        "selfosc_level_dbfs_1k",
+        Some(level),
+        Better::Info,
+        None,
+        0.5,
+    );
+    let v = with_mode(1.0, 1.0, &[(m::RESONANCE, 100.0)]);
+    let mut d = make_with(multi, rate, &v);
+    r.put(
+        "F12",
+        lhname,
+        "swept_pink_peak_res100",
+        Some(swept_pink_peak(&mut d, m::CUTOFF, 100.0, 10_000.0, true)),
+        Better::Lower,
+        Some(-1.0),
+        0.3,
+    );
+    let mut d = make_with(multi, rate, &with_mode(1.0, 1.0, &[]));
+    r.put(
+        "F12",
+        lhname,
+        "drive0_alias_5k_0dbfs",
+        Some(alias(&mut d, 5000.0, 0.0).0),
+        Better::Info,
+        None,
+        1.0,
+    );
+    let v = with_mode(1.0, 2.0, &[(m::CUTOFF, 1000.0), (m::RESONANCE, 100.0)]);
+    let mut d = make_with(multi, rate, &v);
+    r.put(
+        "F12",
+        lcname,
+        "selfosc_level_dbfs_1k",
+        Some(floor(self_oscillation(&mut d).1)),
+        Better::Lower,
+        Some(-100.0),
+        1.0,
+    );
+    let v = with_mode(1.0, 2.0, &[(m::RESONANCE, 100.0)]);
+    let mut d = make_with(multi, rate, &v);
+    r.put(
+        "F12",
+        lcname,
+        "swept_pink_peak_res100",
+        Some(swept_pink_peak(&mut d, m::CUTOFF, 100.0, 10_000.0, true)),
+        Better::Info,
+        None,
+        0.3,
+    );
 
     // F8: the DJ filter.
     let dname = djs.name.as_str();

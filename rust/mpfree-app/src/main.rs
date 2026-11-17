@@ -106,6 +106,7 @@ mod looper_page;
 mod looper_tab;
 mod looping;
 mod memory;
+mod midi_file;
 mod midi_in;
 mod midi_log;
 mod midi_out;
@@ -4868,6 +4869,17 @@ fn player_session(
                 gui::FromUi::TrackInstrument(track) => {
                     out.note(&format!("arrange: no track {}", track + 1));
                 }
+                // A MIDI file from BROWSE: its tracks as clips, each note on
+                // the pad that plays it (midi_file.rs).
+                gui::FromUi::MidiFile(m) => {
+                    let synth_has = synth_on.then_some(&*synth);
+                    let r = midi_file::put(&mut time, &m, |t, n| {
+                        midi_file::pad_on_track(&mix.instruments, synth_has, t, n)
+                    });
+                    let (Ok(line) | Err(line)) = r;
+                    out.note(&line);
+                    out.show(gui::ToUi::Tell(line));
+                }
                 gui::FromUi::SaveTouch(t) => {
                     let mut settings = mpfree_store::Settings::default();
                     for (k, v) in t.to_pairs() {
@@ -6928,6 +6940,10 @@ fn player_session(
             for line in time.loops_are(&now) {
                 out.note(&format!("time: {line}"));
             }
+        }
+        // A loop's copy onto another Loop track ended.
+        if let Some(end) = looper.copy_ended() {
+            fx.extend(desk::copy_ended(&mut time, end));
         }
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));

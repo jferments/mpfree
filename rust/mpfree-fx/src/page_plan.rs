@@ -9,7 +9,7 @@
 //!
 //! - A **page** is a layout spec in `mpfree-ui`'s syntax over its sections'
 //!   keys (`row(reverb:520, col(tone:252, row(movement, output)))`) in the
-//!   844 by 540 pixels between the header and the Modulate row. Most
+//!   884 by 540 pixels between the header and the Modulate row. Most
 //!   effects have one page; one with stages it switches (the Channel
 //!   strip) has a Main page and a page for each stage; Perform FX has its
 //!   play controls and two pages of slots.
@@ -792,19 +792,33 @@ pub static PLANS: &[Plan] = &[
                     ..s("filter", "Filter", Tone, &["Cutoff", "Resonance", "Gain"])
                 },
                 Section {
-                    rows: &["Type", "Slope"],
-                    ..s("type", "Type", Tone, &["Type", "Slope"])
+                    rows: &["Model", "Res mode", "Type", "Slope"],
+                    ..s(
+                        "type",
+                        "Type",
+                        Tone,
+                        &["Model", "Res mode", "Type", "Slope"],
+                    )
                 },
                 s("drive", "Drive", Tone, &["Drive"]),
             ],
         )],
-        dims: &[Dim {
-            controls: &["Gain"],
-            by: "Type",
-            when: When::Not(&[4.0, 5.0, 6.0]),
-            reason: "only a bell or a shelf uses it",
-            swap: false,
-        }],
+        dims: &[
+            Dim {
+                controls: &["Type", "Slope", "Gain"],
+                by: "Model",
+                when: When::Is(&[1.0]),
+                reason: "the ladder is a 24 dB low-pass",
+                swap: false,
+            },
+            Dim {
+                controls: &["Gain"],
+                by: "Type",
+                when: When::Not(&[4.0, 5.0, 6.0]),
+                reason: "only a bell or a shelf uses it",
+                swap: false,
+            },
+        ],
     },
     Plan {
         id: "mpfree.fx.dj_filter",
@@ -1131,7 +1145,10 @@ pub static PLANS: &[Plan] = &[
                         &["Delay", "Feedback", "Width"],
                     )
                 },
-                s("output", "Output", Voice, &["Mix"]),
+                Section {
+                    rows: &["Through zero"],
+                    ..s("output", "Output", Voice, &["Mix", "Through zero"])
+                },
             ],
         )],
         dims: &[sync_dim(&["Rate"], "Sync")],

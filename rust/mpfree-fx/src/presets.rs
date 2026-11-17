@@ -183,6 +183,25 @@ pub static FILTER: &[Preset] = &[
             (filter::GAIN, 6.0),
         ],
     },
+    Preset {
+        name: "Ladder bass",
+        values: &[
+            (filter::MODEL, 1.0),
+            (filter::CUTOFF, 500.0),
+            (filter::RESONANCE, 70.0),
+            (filter::DRIVE, 6.0),
+        ],
+    },
+    Preset {
+        name: "Screaming low-pass",
+        values: &[
+            (filter::TYPE, LOW_PASS),
+            (filter::CUTOFF, 1200.0),
+            (filter::RESONANCE, 85.0),
+            (filter::DRIVE, 6.0),
+            (filter::RES_MODE, 1.0),
+        ],
+    },
 ];
 
 // Drive modes.
@@ -540,6 +559,19 @@ pub static FLANGER: &[Preset] = &[
             (flanger::DEPTH, 75.0),
             (flanger::DELAY, 2.0),
             (flanger::FEEDBACK, 60.0),
+        ],
+    },
+    // Two tape machines, one slowed by a thumb on its reel: the copy
+    // passes the dry and the sound cancels there. No Feedback, so the
+    // crossing is silent at Mix 50.
+    Preset {
+        name: "Tape flange",
+        values: &[
+            (flanger::RATE, 0.12),
+            (flanger::DEPTH, 80.0),
+            (flanger::DELAY, 3.0),
+            (flanger::FEEDBACK, 0.0),
+            (flanger::THROUGH_ZERO, 1.0),
         ],
     },
 ];
