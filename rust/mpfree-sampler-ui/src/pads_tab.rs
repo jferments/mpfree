@@ -9,6 +9,11 @@
 //!   beside the pad map ([`browse_layout`]); Pad shows the pad's settings
 //!   and the kit's sounds ([`LAYOUT`]). The switch gives
 //!   [`PadsAction::View`]; the app shows the page.
+//! - The **Kit of** row under it ([`KITS`], the sampler review's mockup
+//!   5) lists the tracks that play kits, each with its kit, the armed one
+//!   outlined, and **+ Kit track**; the app fills it and answers its taps
+//!   (a track: arm it, so the pads play its kit; + Kit track: a new track
+//!   with a new empty kit).
 //! - The **pad map** shows the bank's 16 pads as on the MPC (pad 1 bottom
 //!   left): name, layers and play mode, and the clip a pad launches. A tap
 //!   picks a pad for every tab (Wave, Chop and Play edit it next); a tap on
@@ -41,7 +46,7 @@ use mpfree_ui::{EventKind, Ui, UiEvent};
 use crate::chop_tab::{bank_of, pad_text, BANK};
 use crate::play_tab::{self, stepped, value_text};
 use crate::wave_tab::{default_loop, duration_text, mode_label, pad_color};
-use crate::widgets::{ButtonRow, PadBar, PadCell, PadMap, Setting, SettingList};
+use crate::widgets::{ButtonRow, KitTracks, PadBar, PadCell, PadMap, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-pads-bar";
@@ -50,10 +55,13 @@ pub const BUTTONS: &str = "smp-pads-buttons";
 pub const LIST: &str = "smp-pads-list";
 pub const SOUNDS: &str = "smp-pads-sounds";
 pub const PUT: &str = "smp-pads-put";
+/// The "Kit of" row: the tracks that play kits and + Kit track
+/// ([`KitTracks`]). The app fills it and answers its taps.
+pub const KITS: &str = "smp-pads-kits";
 
 /// The Pad view's page: the pad map with its buttons, the Pad list, and
 /// the kit's sounds with the button that puts one on the pad.
-pub const LAYOUT: &str = "col(header:60, smp-pads-bar:60, \
+pub const LAYOUT: &str = "col(header:60, smp-pads-bar:60, smp-pads-kits:52, \
                           row(col(smp-pads-map:*, smp-pads-buttons:64):440, smp-pads-list:*, \
                           col(smp-pads-sounds:*, smp-pads-put:64):340):*, hint:26)";
 
@@ -70,7 +78,7 @@ pub const BROWSE_MAP_W: i32 = 400;
 /// the app's widget `beside` (the browser) in the rest of the room.
 pub fn browse_layout(beside: &str) -> String {
     format!(
-        "col(header:60, {BAR}:60, row(col({MAP}:*, {BUTTONS}:64):{BROWSE_MAP_W}, \
+        "col(header:60, {BAR}:60, {KITS}:52, row(col({MAP}:*, {BUTTONS}:64):{BROWSE_MAP_W}, \
          {beside}:*):*, hint:26)"
     )
 }
@@ -398,6 +406,7 @@ impl PadsTab {
         let mut bar = PadBar::new(&VIEWS);
         bar.active = BROWSE;
         ui.add(BAR, bar);
+        ui.add(KITS, KitTracks::new());
         ui.add(MAP, PadMap::new("Pads"));
         ui.add(
             BUTTONS,
