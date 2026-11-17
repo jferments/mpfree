@@ -40,16 +40,23 @@ env:
   RUSTUP_TOOLCHAIN: "1.97.0"
   CARGO_TERM_COLOR: never
 
-# The jobs hand files to each other as artifacts, kept 1 day: they count against the
-# account's artifact storage, and the draft release holds the files that matter.
+# Nothing goes to GitHub's artifact storage (one allowance for the whole account, billed by
+# the hour, and full since 2026-11-11). The jobs hand files to each other through the draft
+# release (tools/ci/release_assets.js): the programs go up as build-stick-programs.tar, each
+# creator comes back into the draft, and the last job takes the .tar out again. Release files
+# don't count against that storage. A copy of the programs and of the release stays on the CI
+# VM (tools/ci/store.py: /srv/mpfree-store/creator).
 
 jobs:
   programs:
     name: MPFree's programs for the MPC (ARMv7)
     runs-on: [self-hosted, linux, x64, mpfree-ci]
     timeout-minutes: 90
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
+      release_id: ${{ steps.draft.outputs.release_id }}
     steps:
       - name: Clear the last job's /tmp files (self-hosted only)
         if: runner.environment == 'self-hosted'
@@ -97,8 +104,10 @@ jobs:
         run: |
           # Each file is fetched from raw.githubusercontent.com at its pinned commit and checked
           # against its SHA-256, and each library's licence against CC0's text. The runner keeps
-          # the fetched files (about 15 MB), so a second release fetches nothing.
-          cache="${XDG_CACHE_HOME:-$HOME/.cache}/mpfree-free-kits"
+          # the fetched files (about 15 MB) in its tool cache, so a second release fetches
+          # nothing (the runner account's ~/.cache is not writable to mpfree jobs: the kernel
+          # build's run of 2026-11-17).
+          cache="${RUNNER_TOOL_CACHE:?}/mpfree-free-kits"
           [ "$RUNNER_ENVIRONMENT" = self-hosted ] || cache="$RUNNER_TEMP/free-kits-cache"
           kits="$RUNNER_TEMP/free-kits" && rm -rf "$kits" && mkdir -p "$kits"
           cargo run --manifest-path rust/Cargo.toml --release --locked -p mpfree-factory --bin mpfree-free-kits -- \
@@ -154,19 +163,32 @@ jobs:
           # programs, and the stick builder adds them after MPFree's own kits.
           cp "$RUNNER_TEMP/free-kits/free-kits" "$out/free-kits"
           (cd "$out" && sha256sum $names "$fetch" free-kits | tee SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - name: Pack the programs for the creator builds
+        run: tar -C "$RUNNER_TEMP" -cf "$RUNNER_TEMP/build-stick-programs.tar" stick-programs
+      - name: The draft release, with the programs for the creator builds and the free kits' credits
+        id: draft
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PROGRAMS: ${{ runner.temp }}/build-stick-programs.tar
+          CREDITS: ${{ runner.temp }}/free-kits/free-kits-credits.txt
         with:
-          name: stick-programs
-          path: ${{ runner.temp }}/stick-programs
-          if-no-files-found: error
-          retention-days: 1
-      - name: Where the free kits' sounds came from, for the release
-        uses: actions/upload-artifact@v4
-        with:
-          name: creator-free-kits-credits
-          path: ${{ runner.temp }}/free-kits/free-kits-credits.txt
-          if-no-files-found: error
-          retention-days: 1
+          script: |
+            const assets = require('./tools/ci/release_assets.js');
+            const ctx = { github, context, core };
+            const version = process.env.VERSION;
+            const release = await assets.draft(ctx, `creator-v${version}`, `MPFree USB Creator ${version}`,
+              `Being built by ${context.workflow} run ${context.runId}.`);
+            // An earlier run's files go: the creators are built afresh by this run.
+            await assets.remove(ctx, release.id, () => true);
+            await assets.upload(ctx, release.id, process.env.PROGRAMS);
+            await assets.upload(ctx, release.id, process.env.CREDITS);
+            core.setOutput('release_id', String(release.id));
+      - name: Keep the programs on the CI VM
+        continue-on-error: true
+        run: |
+          python3 tools/ci/store.py keep creator "$RUNNER_TEMP/stick-programs" \
+            "$RUNNER_TEMP/free-kits/free-kits-credits.txt" --max-runs 10
 
   linux:
     name: Creator for Linux (x86_64)
@@ -175,14 +197,23 @@ jobs:
     # newer glibc (the runners' 2.39) won't start on Ubuntu 22.04 or Debian 12.
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - uses: actions/download-artifact@v4
+      - name: The programs, from the draft release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.programs.outputs.release_id }}
+          DEST: ${{ runner.temp }}/build-stick-programs.tar
         with:
-          name: stick-programs
-          path: ${{ runner.temp }}/stick-programs
+          script: |
+            const assets = require('./tools/ci/release_assets.js');
+            await assets.download({ github, context, core }, Number(process.env.RELEASE_ID), assets.PROGRAMS, process.env.DEST);
+      - name: Unpack them
+        run: tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/build-stick-programs.tar"
       - name: Build the creator with the programs inside
         run: |
           export MPFREE_CREATOR_PROGRAMS="$RUNNER_TEMP/stick-programs"
@@ -215,12 +246,15 @@ jobs:
           cp "$exe" "$out/MPFree-USB-Creator-$version-linux-x86_64/mpfree-creator"
           tar -C "$out" -czf "$out/MPFree-USB-Creator-$version-linux-x86_64.tar.gz" "MPFree-USB-Creator-$version-linux-x86_64"
           echo "PACKAGE=$out/MPFree-USB-Creator-$version-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@v4
+      - name: Into the draft release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.programs.outputs.release_id }}
+          FILE: ${{ env.PACKAGE }}
         with:
-          name: creator-linux
-          path: ${{ env.PACKAGE }}
-          if-no-files-found: error
-          retention-days: 1
+          script: |
+            const assets = require('./tools/ci/release_assets.js');
+            await assets.upload({ github, context, core }, Number(process.env.RELEASE_ID), process.env.FILE);
 
   windows:
     name: Creator for Windows (x64)
@@ -228,6 +262,8 @@ jobs:
     if: github.event_name == 'push' || inputs.windows
     runs-on: windows-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
     defaults:
       run:
         shell: pwsh
@@ -235,10 +271,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install the pinned Rust
         run: rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
-      - uses: actions/download-artifact@v4
+      - name: The programs, from the draft release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.programs.outputs.release_id }}
+          DEST: ${{ runner.temp }}/build-stick-programs.tar
         with:
-          name: stick-programs
-          path: ${{ runner.temp }}/stick-programs
+          script: |
+            const assets = require('./tools/ci/release_assets.js');
+            await assets.download({ github, context, core }, Number(process.env.RELEASE_ID), assets.PROGRAMS, process.env.DEST);
+      - name: Unpack them
+        run: |
+          tar -C $env:RUNNER_TEMP -xf (Join-Path $env:RUNNER_TEMP 'build-stick-programs.tar')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Build the creator with the programs inside (C runtime linked in, so no Visual C++ package is needed)
         env:
           RUSTFLAGS: -C target-feature=+crt-static
@@ -267,12 +312,15 @@ jobs:
           }
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item $exe "out/MPFree-USB-Creator-$version-windows-x64.exe"
-      - uses: actions/upload-artifact@v4
+      - name: Into the draft release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.programs.outputs.release_id }}
+          FILE: out/MPFree-USB-Creator-${{ needs.programs.outputs.version }}-windows-x64.exe
         with:
-          name: creator-windows
-          path: out/*.exe
-          if-no-files-found: error
-          retention-days: 1
+          script: |
+            const assets = require('./tools/ci/release_assets.js');
+            await assets.upload({ github, context, core }, Number(process.env.RELEASE_ID), process.env.FILE);
 
   macos:
     name: Creator for macOS (Apple silicon and Intel)
@@ -280,16 +328,25 @@ jobs:
     if: github.event_name == 'push' || inputs.macos
     runs-on: macos-14
     timeout-minutes: 60
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned Rust for both kinds of Mac
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           rustup target add --toolchain "$RUSTUP_TOOLCHAIN" aarch64-apple-darwin x86_64-apple-darwin
-      - uses: actions/download-artifact@v4
+      - name: The programs, from the draft release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.programs.outputs.release_id }}
+          DEST: ${{ runner.temp }}/build-stick-programs.tar
         with:
-          name: stick-programs
-          path: ${{ runner.temp }}/stick-programs
+          script: |
+            const assets = require('./tools/ci/release_assets.js');
+            await assets.download({ github, context, core }, Number(process.env.RELEASE_ID), assets.PROGRAMS, process.env.DEST);
+      - name: Unpack them
+        run: tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/build-stick-programs.tar"
       - name: Build the creator with the programs inside, for both
         run: |
           export MPFREE_CREATOR_PROGRAMS="$RUNNER_TEMP/stick-programs"
@@ -331,12 +388,15 @@ jobs:
           # The command line runs, and lists this Mac's USB disks (none here) through diskutil.
           "$app/Contents/MacOS/mpfree-creator" --cli disks
           (cd out && ditto -c -k --sequesterRsrc --keepParent "MPFree USB Creator.app" "MPFree-USB-Creator-$version-macos.zip")
-      - uses: actions/upload-artifact@v4
+      - name: Into the draft release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.programs.outputs.release_id }}
+          FILE: out/MPFree-USB-Creator-${{ needs.programs.outputs.version }}-macos.zip
         with:
-          name: creator-macos
-          path: out/*.zip
-          if-no-files-found: error
-          retention-days: 1
+          script: |
+            const assets = require('./tools/ci/release_assets.js');
+            await assets.upload({ github, context, core }, Number(process.env.RELEASE_ID), process.env.FILE);
 
   release:
     name: Draft release with SHA-256 sums
@@ -353,11 +413,19 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - name: The creators and the free kits' credits, from the draft release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.programs.outputs.release_id }}
+          DIR: ${{ runner.temp }}/release
         with:
-          pattern: creator-*
-          path: ${{ runner.temp }}/release
-          merge-multiple: true
+          script: |
+            const assets = require('./tools/ci/release_assets.js');
+            const names = await assets.downloadAll({ github, context, core }, Number(process.env.RELEASE_ID),
+              n => n.startsWith('MPFree-USB-Creator-') || n === 'free-kits-credits.txt', process.env.DIR);
+            if (!names.some(n => n.endsWith('-linux-x86_64.tar.gz'))) core.setFailed('the draft has no Linux creator');
+            if (!names.includes('free-kits-credits.txt')) core.setFailed('the draft has no free-kits-credits.txt');
       - name: SHA256SUMS
         run: |
           cd "$RUNNER_TEMP/release"
@@ -368,15 +436,18 @@ jobs:
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: ${{ runner.temp }}/release/MPFree-USB-Creator-*
-      - name: A draft release (the owner publishes it)
+      - name: The draft release, finished (the owner publishes it)
         uses: actions/github-script@v7
         env:
           VERSION: ${{ needs.programs.outputs.version }}
+          RELEASE_ID: ${{ needs.programs.outputs.release_id }}
           DIR: ${{ runner.temp }}/release
         with:
           script: |
             const fs = require('fs');
             const path = require('path');
+            const assets = require('./tools/ci/release_assets.js');
+            const ctx = { github, context, core };
             const version = process.env.VERSION;
             const dir = process.env.DIR;
             const tag = `creator-v${version}`;
@@ -399,23 +470,15 @@ jobs:
               sums.trim(),
               '```',
             ].join('\n');
-            const existing = (await github.paginate(github.rest.repos.listReleases, context.repo))
-              .find(r => r.tag_name === tag);
-            if (existing && !existing.draft) {
-              core.setFailed(`${tag} is already published; raise the version in rust/mpfree-creator/Cargo.toml`);
+            const release = await assets.draft(ctx, tag, `MPFree USB Creator ${version}`, body);
+            if (release.id !== Number(process.env.RELEASE_ID)) {
+              core.setFailed(`the draft for ${tag} is now id ${release.id}, not this run's ${process.env.RELEASE_ID}`);
               return;
             }
-            const release = existing
-              ? (await github.rest.repos.updateRelease({ ...context.repo, release_id: existing.id, body, target_commitish: context.sha })).data
-              : (await github.rest.repos.createRelease({ ...context.repo, tag_name: tag, target_commitish: context.sha,
-                  name: `MPFree USB Creator ${version}`, body, draft: true, prerelease: true })).data;
-            for (const a of release.assets || []) {
-              await github.rest.repos.deleteReleaseAsset({ ...context.repo, asset_id: a.id });
-            }
-            for (const name of fs.readdirSync(dir).sort()) {
-              const data = fs.readFileSync(path.join(dir, name));
-              await github.rest.repos.uploadReleaseAsset({ ...context.repo, release_id: release.id, name, data,
-                headers: { 'content-type': 'application/octet-stream', 'content-length': data.length } });
-              core.info(`uploaded ${name} (${data.length} bytes)`);
-            }
+            await assets.upload(ctx, release.id, path.join(dir, 'SHA256SUMS'));
+            // The programs only travelled through the draft for the creator builds.
+            await assets.remove(ctx, release.id, n => n === assets.PROGRAMS);
             core.notice(`Draft release ${tag}: ${release.html_url}`);
+      - name: Keep the release on the CI VM
+        continue-on-error: true
+        run: python3 tools/ci/store.py keep creator "$RUNNER_TEMP/release" --max-runs 10
