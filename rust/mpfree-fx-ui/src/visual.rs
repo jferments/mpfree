@@ -210,7 +210,9 @@ pub fn strip(
         Scratch::Eq(e) => eq_card(&mut s, st, page, focus, e, t),
         Scratch::Filter(f) => {
             let ty = text(st, filter::TYPE);
-            let kind = if v(filter::TYPE) < 4.0 {
+            let kind = if v(filter::MODEL) >= 0.5 {
+                "Ladder low-pass 24 dB".to_string()
+            } else if v(filter::TYPE) < 4.0 {
                 format!("{ty} {}", text(st, filter::SLOPE))
             } else {
                 format!("{ty} {}", text(st, filter::GAIN))
