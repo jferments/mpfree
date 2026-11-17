@@ -229,6 +229,15 @@ pub enum StepAction {
         keys: [(u8, u8); MAX_PEN],
         n: u8,
     },
+    /// Keys of a keyboard played while step pads of the line are held:
+    /// the first `n` of `keys` (pad, velocity) go on each of `steps` (a bit
+    /// a step, step 0 the lowest) as `Enter` does. The keys of one chord,
+    /// played one after another, join one undo (`steps::enter_key`).
+    Keys {
+        steps: u128,
+        keys: [(u8, u8); MAX_PEN],
+        n: u8,
+    },
     /// The pattern's - / + on Play (Jay after live test 3: 32, 64 and 128
     /// steps): make the clip `steps` steps long. With `copy`, new steps
     /// repeat the ones before them; steps that go take their notes along.

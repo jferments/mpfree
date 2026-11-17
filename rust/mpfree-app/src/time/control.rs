@@ -843,7 +843,10 @@ impl TimeControl {
         let (slot, made) = match slot {
             Some(s) => (s, None),
             None => {
-                let (StepAction::Tap { .. } | StepAction::Enter { n: 1.., .. }) = a else {
+                let (StepAction::Tap { .. }
+                | StepAction::Enter { n: 1.., .. }
+                | StepAction::Keys { n: 1.., .. }) = a
+                else {
                     return Ok(String::new());
                 };
                 let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
@@ -885,10 +888,26 @@ impl TimeControl {
                     },
                 )
             }
+            StepAction::Keys { steps, keys, n } => {
+                let keys = &keys[..usize::from(n).min(keys.len())];
+                let pads: Vec<String> = keys.iter().map(|k| (k.0 + 1).to_string()).collect();
+                let list = step_list(steps);
+                let names: Vec<String> = list.iter().map(|i| (i + 1).to_string()).collect();
+                let s = if list.len() == 1 { "" } else { "s" };
+                (
+                    grid.enter_steps(clip, &list, keys),
+                    Some(mpfree_seq::steps::enter_key(steps)),
+                    format!(
+                        "step{s} {} of the line: pads {} from the keys",
+                        names.join(", "),
+                        pads.join(", ")
+                    ),
+                )
+            }
             StepAction::Change { pad, step, change } if pad == LINE => (
                 grid.change_all(clip, step, change),
                 Some(change.key_all(step)),
-                format!("step {} of the line: {change:?}", step + 1),
+                format!("step {} of the line: {}", step + 1, change_name(change)),
             ),
             StepAction::Change { pad, step, change } => (
                 grid.change(clip, pad, step, change),
@@ -905,12 +924,13 @@ impl TimeControl {
                     },
                     Some(change.key_steps(pad, steps)),
                     format!(
-                        "steps {} of {}: {change:?}",
+                        "steps {} of {}: {}",
                         held.iter()
                             .map(|i| (i + 1).to_string())
                             .collect::<Vec<_>>()
                             .join(", "),
-                        row_name(pad)
+                        row_name(pad),
+                        change_name(change)
                     ),
                 )
             }
@@ -1021,7 +1041,7 @@ impl TimeControl {
                 "steps: new clip {name} in {}, {what} {on}",
                 self.project.tracks[track].name
             ),
-            (None, StepAction::Tap { .. } | StepAction::Enter { .. }) => {
+            (None, StepAction::Tap { .. } | StepAction::Enter { .. } | StepAction::Keys { .. }) => {
                 format!("steps: {what} {on}")
             }
             (None, StepAction::ClearPad { .. } | StepAction::ClearSteps { .. }) => {
@@ -1032,6 +1052,18 @@ impl TimeControl {
             (None, StepAction::Lock { .. }) if joined => String::new(),
             (None, StepAction::Lock { .. }) => format!("steps: {what}"),
             (None, StepAction::ClearLocks { .. }) => format!("steps: {what}: locks erased"),
+            // The Note knob: a line a detent (a pad each).
+            (
+                None,
+                StepAction::Change {
+                    change: mpfree_seq::steps::Change::Note(_),
+                    ..
+                }
+                | StepAction::ChangeSteps {
+                    change: mpfree_seq::steps::Change::Note(_),
+                    ..
+                },
+            ) => format!("steps: {what}"),
             (None, StepAction::Length { steps, copy }) => {
                 let bars = steps.div_ceil(16);
                 let s = if bars == 1 { "" } else { "s" };
@@ -2096,6 +2128,15 @@ fn row_name(pad: u8) -> String {
         "the line".to_string()
     } else {
         format!("pad {}", pad + 1)
+    }
+}
+
+/// A step change for the lines: as Debug says it, but the Note knob's pad
+/// counted from 1, as the lines count pads.
+fn change_name(change: mpfree_seq::steps::Change) -> String {
+    match change {
+        mpfree_seq::steps::Change::Note(to) => format!("lowest note on pad {}", u16::from(to) + 1),
+        c => format!("{c:?}"),
     }
 }
 

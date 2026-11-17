@@ -82,6 +82,10 @@ pub struct Step {
     pub ratchet: u8,
     /// Notes of the sound in the step, 1 or more.
     pub notes: usize,
+    /// The lowest and highest note in the step (its sound's on a row; on
+    /// the whole line, a chord's bottom and top).
+    pub low: u8,
+    pub high: u8,
 }
 
 /// A change to a clip: take `erase` and `erase_locks` out, change the
@@ -221,6 +225,11 @@ pub enum Change {
     Cond(Cond),
     /// Hits, kept within 1 to `MAX_RATCHET`.
     Ratchet(u8),
+    /// The step's notes move so its lowest is this note (pad or note
+    /// number) and the others keep their distance above it: a melodic
+    /// step's Note knob. Refused (no change) where a note would pass 127,
+    /// or, on one row, where the new row already has a note on the step.
+    Note(u8),
 }
 
 impl Change {
@@ -235,6 +244,7 @@ impl Change {
             Change::Chance(_) => 4,
             Change::Cond(_) => 6,
             Change::Ratchet(_) => 7,
+            Change::Note(_) => 8,
         };
         (kind << 56) | (u64::from(pitch) << 48) | (i as u64 & 0xFFFF_FFFF_FFFF)
     }
@@ -253,6 +263,14 @@ impl Change {
         let folded = (steps as u64) ^ ((steps >> 64) as u64).rotate_left(23);
         (self.key(pitch, 0) & !0xFFFF_FFFF_FFFF) | (1 << 47) | (folded & 0x7FFF_FFFF_FFFF)
     }
+}
+
+/// A key naming notes entered from a keyboard on steps `steps` (bits, step
+/// 0 the lowest) of the whole line, so that the keys of a chord, played one
+/// after another while the steps are held, join one undo.
+pub fn enter_key(steps: u128) -> u64 {
+    let folded = (steps as u64) ^ ((steps >> 64) as u64).rotate_left(23);
+    (9 << 56) | (u64::from(ALL) << 48) | (folded & 0xFFFF_FFFF_FFFF)
 }
 
 /// A key naming a lock of `addr` on step `i` of row `sound`, so that a
@@ -453,6 +471,8 @@ impl Grid {
                 cond: n.cond,
                 ratchet: n.ratchet,
                 notes: 1,
+                low: n.note,
+                high: n.note,
             };
             *slot = Some(match *slot {
                 None => step,
@@ -466,6 +486,8 @@ impl Grid {
                     };
                     Step {
                         notes: s.notes + 1,
+                        low: s.low.min(n.note),
+                        high: s.high.max(n.note),
                         ..first
                     }
                 }
@@ -690,6 +712,14 @@ impl Grid {
     /// Change step `i` of sound `pitch`. Values are kept in range; an
     /// empty step, or one already so, gives an empty edit.
     pub fn change(self, clip: &Clip, pitch: u8, i: usize, change: Change) -> Edit {
+        if let Change::Note(to) = change {
+            // Onto a row the step already sounds: refused, so no two notes
+            // of one sound share a step.
+            if to == pitch || to > 127 || !self.notes(clip, to, i).is_empty() {
+                return Edit::default();
+            }
+            return self.transpose(clip, &[pitch], i, i16::from(to) - i16::from(pitch));
+        }
         let notes = self.notes(clip, pitch, i);
         let Some(first) = notes.first() else {
             return Edit::default();
@@ -709,6 +739,7 @@ impl Grid {
                 Change::Cond(c) if c.ok() => new.cond = c,
                 Change::Cond(_) => {}
                 Change::Ratchet(r) => new.ratchet = r.clamp(1, MAX_RATCHET),
+                Change::Note(_) => {}
                 Change::Nudge(_) => {
                     let nudge = (self.place(clip.length, n.tick).1 + shift).clamp(lo, hi);
                     new.tick = self.tick(clip.length, i, nudge);
@@ -733,6 +764,14 @@ impl Grid {
     /// Change step `i` of every sound in it, as [`Grid::change`] does for
     /// one sound. Each sound's notes move by their own nudge.
     pub fn change_all(self, clip: &Clip, i: usize, change: Change) -> Edit {
+        if let Change::Note(to) = change {
+            // The chord moves as one: its lowest note to `to`.
+            let sounds = self.sounds_in(clip, i);
+            let Some(&low) = sounds.first() else {
+                return Edit::default();
+            };
+            return self.transpose(clip, &sounds, i, i16::from(to) - i16::from(low));
+        }
         let mut edit = Edit::default();
         for pitch in self.sounds_in(clip, i) {
             edit.join(self.change(clip, pitch, i, change));
@@ -743,6 +782,35 @@ impl Grid {
             let tick = self.tick(clip.length, i, n.clamp(lo, hi));
             for l in self.locks(clip, None, i) {
                 edit.move_lock(l, Lock { tick, ..l });
+            }
+        }
+        edit
+    }
+
+    /// Move the notes of `sounds` on step `i` by `by` (pads or semitones),
+    /// with their rows' locks there; nothing when `by` is 0 or a note would
+    /// leave 0 to 127. The caller makes sure no moved note lands on a row
+    /// the step keeps.
+    fn transpose(self, clip: &Clip, sounds: &[u8], i: usize, by: i16) -> Edit {
+        let moved = |p: u8| u8::try_from(i16::from(p) + by).ok().filter(|&q| q <= 127);
+        if by == 0 || sounds.iter().any(|&p| moved(p).is_none()) {
+            return Edit::default();
+        }
+        let mut edit = Edit::default();
+        for &p in sounds {
+            let Some(q) = moved(p) else { continue };
+            for n in self.notes(clip, p, i) {
+                edit.erase.push(n);
+                edit.add.push(Note { note: q, ..n });
+            }
+            for l in self.locks(clip, Some(p), i) {
+                edit.move_lock(
+                    l,
+                    Lock {
+                        sound: Some(q),
+                        ..l
+                    },
+                );
             }
         }
         edit
@@ -801,6 +869,20 @@ impl Grid {
                 edit.move_lock(l, Lock { tick, ..l });
             } else {
                 edit.erase_locks.push(l);
+            }
+        }
+        edit
+    }
+
+    /// [`Grid::enter`] on each of steps `steps`, as one edit: the keys of
+    /// a keyboard played while several step pads are held.
+    pub fn enter_steps(self, clip: &Clip, steps: &[usize], keys: &[(u8, u8)]) -> Edit {
+        let mut edit = Edit::default();
+        let mut done: Vec<usize> = Vec::new();
+        for &i in steps {
+            if !done.contains(&i) {
+                done.push(i);
+                edit.join(self.enter(clip, i, keys));
             }
         }
         edit
@@ -2070,6 +2152,62 @@ mod tests {
         assert!(g.line(&c)[4].is_none());
         assert_eq!(g.line(&c)[1].map(|s| s.notes), Some(3));
         assert!(g.clear_line(&c, 16, 20).is_empty(), "past the end");
+    }
+
+    #[test]
+    fn a_steps_note_moves_its_chord_and_its_rows_locks_along() {
+        use mpfree_param::OnTrack;
+        let g = Grid::new(240).unwrap();
+        // Step 2: a chord on pads 4, 7 and 11, the middle one a little late.
+        let mut c = clip(BAR, &[(240, 4), (250, 7), (240, 11), (960, 2)]);
+        let cutoff = RelAddr::new(OnTrack::Inst, 3);
+        c.apply(&g.lock(&c, Some(7), 1, cutoff, 0.2)).unwrap();
+        c.apply(&g.lock(&c, None, 1, cutoff, 0.5)).unwrap();
+        let s = g.line(&c)[1].unwrap();
+        assert_eq!((s.low, s.high, s.notes), (4, 11, 3));
+        assert_eq!(g.row(&c, 7)[1].map(|s| (s.low, s.high)), Some((7, 7)));
+
+        // The whole step to 6: every note two up, the nudge and the row's
+        // lock along, the step's own lock where it was.
+        let e = g.change_all(&c, 1, Change::Note(6));
+        c.apply(&e).unwrap();
+        let chord: Vec<(Tick, u8)> = g.chord(&c, 1).iter().map(|n| (n.tick, n.note)).collect();
+        assert_eq!(chord, [(240, 6), (250, 9), (240, 13)]);
+        assert_eq!(g.locks(&c, Some(9), 1).len(), 1, "the row's lock moved");
+        assert!(g.locks(&c, Some(7), 1).is_empty());
+        assert_eq!(g.locks(&c, None, 1).len(), 1, "the step's own stays");
+        assert_eq!(g.line(&c)[4].map(|s| s.low), Some(2), "other steps stay");
+        c.apply(&e.inverse()).unwrap();
+        assert_eq!(g.line(&c)[1].map(|s| (s.low, s.high)), Some((4, 11)));
+
+        // Not past 127, and the same note is no change.
+        assert!(g.change_all(&c, 1, Change::Note(121)).is_empty());
+        assert!(g.change_all(&c, 1, Change::Note(4)).is_empty());
+        assert!(
+            g.change_all(&c, 3, Change::Note(4)).is_empty(),
+            "empty step"
+        );
+
+        // One row: to a free row only.
+        assert!(
+            g.change(&c, 7, 1, Change::Note(11)).is_empty(),
+            "11 is there"
+        );
+        c.apply(&g.change(&c, 7, 1, Change::Note(8))).unwrap();
+        assert_eq!(g.line(&c)[1].map(|s| s.notes), Some(3));
+        assert_eq!(g.row(&c, 8)[1].map(|s| s.nudge), Some(10));
+        assert_eq!(g.locks(&c, Some(8), 1).len(), 1);
+
+        // Several steps held: each step's lowest note goes there.
+        c.apply(&g.change_line(&c, &[1, 4], Change::Note(3)))
+            .unwrap();
+        assert_eq!(g.line(&c)[1].map(|s| (s.low, s.high)), Some((3, 10)));
+        assert_eq!(g.line(&c)[4].map(|s| (s.low, s.high)), Some((3, 3)));
+
+        // Keys entered on steps join under one key, which no change has.
+        assert_eq!(enter_key(0b10010), enter_key(0b10010));
+        assert_ne!(enter_key(0b10010), enter_key(0b10));
+        assert_ne!(enter_key(0b10), Change::Note(1).key_all(1));
     }
 
     #[test]
