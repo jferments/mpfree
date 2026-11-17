@@ -628,6 +628,13 @@ pub struct Settings {
     /// The line input (the MPC's capture device) is open. Always off at
     /// start; nothing saves it.
     pub line_input: bool,
+    /// Prefs "Send MIDI and CV out": tracks set to a port play out of it,
+    /// clock goes out as each port says, and the CV jacks follow the
+    /// project. Off by default; kept between starts once on (Jay's pick on
+    /// the MIDI thread's card, 16 Nov 23:16Z). State-changing on the MPC:
+    /// bytes leave the MIDI Out jack and the CV jacks, in RAM only, never
+    /// SysEx.
+    pub sends_midi: bool,
     /// The line input is heard through the outputs.
     pub loop_monitor: bool,
     /// What the looper records: the pads (the default) or the line input.
@@ -706,6 +713,7 @@ impl Default for Settings {
             console_paused: false,
             debug_mode: false,
             line_input: false,
+            sends_midi: false,
             loop_monitor: false,
             loop_source: LoopSource::Pads,
             loop_bars: Some(2),
@@ -782,6 +790,8 @@ pub enum Item {
     ConsoleFollow,
     ClearConsole,
     LineInput,
+    /// Prefs: MIDI and CV out on or off.
+    SendsMidi,
     LoopSource,
     LoopMonitor,
     LoopBars,
@@ -1317,6 +1327,7 @@ const PREFS_ROWS: &[Item] = &[
     // Layout spec 4c: the line input's latency, shared by the looper and
     // the audio tracks.
     Item::LoopLatency,
+    Item::SendsMidi,
     Item::SystemInfo,
     Item::Appearance,
     Item::AtStart,
@@ -3067,6 +3078,15 @@ impl App {
                 "Line input",
                 if s.line_input { "On" } else { "Off" }.to_string(),
             ),
+            Item::SendsMidi => (
+                "Send MIDI and CV out",
+                if s.sends_midi {
+                    "On (sends MIDI)"
+                } else {
+                    "Off"
+                }
+                .to_string(),
+            ),
             Item::LoopSource => ("Record from", s.loop_source.name().to_string()),
             Item::LoopMonitor => (
                 "Monitor the input",
@@ -3265,6 +3285,13 @@ impl App {
                 "Off at every start. Which jacks it reads is",
                 "not checked yet (line in L and R, most",
                 "likely). Turning it off closes the input.",
+            ],
+            Item::SendsMidi => vec![
+                "On: tracks set to play on MIDI play out of",
+                "the MIDI Out jack, clock goes out as each",
+                "port says, and the CV jacks follow the",
+                "project's CV outputs. Off: nothing is sent,",
+                "every track plays inside MPFree. Kept.",
             ],
             Item::LoopSource => vec![
                 "What the looper records: the pads and the",
@@ -3625,6 +3652,20 @@ impl App {
                 fx.extend(self.arp_changed());
             }
             Item::ShowPressure => s.show_pressure = d > 0,
+            Item::SendsMidi => {
+                let on = d > 0;
+                if on != s.sends_midi {
+                    s.sends_midi = on;
+                    fx.push(Effect::Note(format!(
+                        "MIDI and CV out: {}",
+                        if on {
+                            "on (the MIDI Out jack and the CV jacks send)"
+                        } else {
+                            "off (nothing is sent)"
+                        }
+                    )));
+                }
+            }
             Item::ClearLogs => fx.push(Effect::ClearLogs),
             Item::ConsoleFollow => s.console_paused = d > 0,
             Item::ClearConsole => fx.push(Effect::ClearConsole),
@@ -4393,6 +4434,32 @@ mod tests {
         assert_eq!(l.items().last(), Some(&Item::LoopMemory));
     }
 
+    /// Prefs "Send MIDI and CV out" (layout spec 5, Jay's card of 16 Nov
+    /// 23:16Z): after Line input latency, off until turned on, and it says
+    /// what it does when it changes.
+    #[test]
+    fn prefs_send_midi_and_cv_out_is_off_until_turned_on() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::SendsMidi);
+        assert_eq!(at, row(&app, Item::LoopLatency) + 1);
+        assert_eq!(at + 1, row(&app, Item::SystemInfo));
+        assert!(!app.settings.sends_midi);
+        assert_eq!(app.item_text(Item::SendsMidi).0, "Send MIDI and CV out");
+        assert_eq!(app.item_text(Item::SendsMidi).1, "Off");
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.sends_midi);
+        assert_eq!(app.item_text(Item::SendsMidi).1, "On (sends MIDI)");
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.starts_with("MIDI and CV out: on"))));
+        app.step_item(at, -1);
+        assert!(!app.settings.sends_midi);
+    }
+
     /// Layout spec 4c: Prefs "Line input latency", after Line input and
     /// before System info, is the looper's "Latency to make up for": one
     /// setting, which the audio tracks follow too.
@@ -4405,7 +4472,7 @@ mod tests {
         app.button(button::SHIFT, false, 0.0);
         let at = row(&app, Item::LoopLatency);
         assert_eq!(at, row(&app, Item::LineInput) + 1);
-        assert_eq!(at + 1, row(&app, Item::SystemInfo));
+        assert!(at < row(&app, Item::SystemInfo));
         assert_eq!(app.item_text(Item::LoopLatency).0, "Line input latency");
         let before = app.settings.loop_latency;
         let fx = app.step_item(at, 1);

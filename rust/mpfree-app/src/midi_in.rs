@@ -59,7 +59,7 @@ use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
 use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
-use mpfree_midi::setup::{PortInput, TempoSource};
+use mpfree_midi::setup::{Ignored, PortInput, TempoSource};
 use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
 use mpfree_node::ParamInfo;
@@ -214,6 +214,9 @@ pub struct MusicIn {
     armed: (u8, bool),
     /// The Monitor asked for MIDI Out's note-offs ([`MusicIn::take_note_offs`]).
     note_offs: bool,
+    /// Per port: what its page says about it ("USB · port 2 of 4 on
+    /// MIO4"), set when it is plugged in.
+    about: Vec<String>,
 }
 
 impl Default for MusicIn {
@@ -258,6 +261,7 @@ impl MusicIn {
             feed: Feed::new(),
             armed: (0, true),
             note_offs: false,
+            about: vec![String::new(); MAX_PORTS],
         }
     }
 
@@ -456,9 +460,11 @@ impl MusicIn {
         }
         if self.applied != Some(m.gen) {
             for p in self.ports.all() {
+                let set = m.setup.port(&p.name);
                 if let Some(i) = self.input.get_mut(usize::from(p.id.0)) {
-                    *i = m.setup.port(&p.name).input;
+                    *i = set.input;
                 }
+                self.router.set_ignore(p.id, set.ignore);
             }
             let learned = std::mem::take(&mut m.setup.learn);
             self.build_learn(&learned);
@@ -493,6 +499,15 @@ impl MusicIn {
                 .map(|p| PortLive {
                     name: p.name.clone(),
                     kind: if p.id == DIN { "5-pin jacks" } else { "USB" }.to_string(),
+                    about: if p.id == DIN {
+                        "The MPC's 5-pin MIDI In and Out jacks".to_string()
+                    } else {
+                        self.about
+                            .get(usize::from(p.id.0))
+                            .filter(|a| !a.is_empty())
+                            .cloned()
+                            .unwrap_or_else(|| "USB".to_string())
+                    },
                     has_in: p.has_in,
                     has_out: p.has_out,
                     last_in: None,
@@ -549,13 +564,28 @@ impl MusicIn {
             .map_or_else(|| format!("port {}", port.0), |p| p.name.clone())
     }
 
-    /// A USB keyboard was opened for reading: its port number, or None when
-    /// every port number is taken.
-    pub fn plugged(&mut self, name: &str) -> Option<PortId> {
+    /// A USB device's port was found (its input opened for reading, if it
+    /// has one): its port number, or None when every port number is taken.
+    pub fn plug(&mut self, p: &UsbPort) -> Option<PortId> {
         self.ports_changed = true;
-        // Its input setting is the project's, by name.
+        // Its input setting is the rig's, by name.
         self.applied = None;
-        self.ports.plugged(name, true, false)
+        let id = self.ports.plugged(&p.name, p.input.is_some(), p.has_out)?;
+        if let Some(a) = self.about.get_mut(usize::from(id.0)) {
+            a.clone_from(&p.about);
+        }
+        Some(id)
+    }
+
+    /// A USB keyboard with one port, its input open (the tests' way).
+    #[cfg(test)]
+    pub fn plugged(&mut self, name: &str) -> Option<PortId> {
+        self.plug(&UsbPort {
+            name: name.to_string(),
+            input: Some(0),
+            has_out: false,
+            about: "USB".to_string(),
+        })
     }
 
     /// A USB keyboard went away: every key it held is let go. Returns how
@@ -594,7 +624,9 @@ impl MusicIn {
         if p >= MAX_PORTS {
             return;
         }
-        if self.leader == Some(port) {
+        // A port set to ignore clock leads nothing.
+        let clock_ignored = self.router.ignores(port).has(Ignored::Clock);
+        if self.leader == Some(port) && !clock_ignored {
             for &b in data {
                 self.keep_leader_byte(b);
             }
@@ -611,7 +643,9 @@ impl MusicIn {
         let armed = self.armed;
         // What following this port takes: its clock, and its Start, Stop
         // and Song Position as the project says.
-        let led = self.follow.filter(|_| self.leader == Some(port));
+        let led = self
+            .follow
+            .filter(|_| self.leader == Some(port) && !clock_ignored);
         for &b in data {
             // The monitor's line, if this byte ends a message; where it
             // went is said below, once the message is routed.
@@ -624,7 +658,9 @@ impl MusicIn {
                     s.last_tick = t;
                     if !s.clock_running {
                         s.clock_running = true;
-                        let follows = if self.leader == Some(port) {
+                        let follows = if clock_ignored {
+                            "ignored: this port's setting"
+                        } else if self.leader == Some(port) {
                             "MPFree follows it"
                         } else {
                             "not followed: the tempo isn't from this port"
@@ -674,6 +710,7 @@ impl MusicIn {
             }
             let mut seen = None;
             let mut got = false;
+            let mut ignored = false;
             let mut learned = None;
             // Where a channel message went, for the monitor.
             let mut to = if learn_only {
@@ -685,6 +722,12 @@ impl MusicIn {
                 (&mut self.learn, &mut self.learning, &mut self.learn_sets);
             self.router.feed(port, b, 0, |e| match e {
                 In::Seen { msg, .. } => seen = Some(msg),
+                // The port's "Ignore coming in": listed, nothing else.
+                In::Ignored { .. } => {
+                    got = true;
+                    ignored = true;
+                    to = To::PortIgnores;
+                }
                 other => {
                     got = true;
                     // What Learn takes doesn't play.
@@ -722,6 +765,13 @@ impl MusicIn {
                         Some(m) => To::Took(m.target),
                         None => to,
                     },
+                    Some(
+                        What::Arriving(Steady::Clock)
+                        | What::Start
+                        | What::Continue
+                        | What::Stop
+                        | What::SongPosition(_),
+                    ) if clock_ignored => To::PortIgnores,
                     Some(What::Arriving(Steady::Clock)) => follows(led.is_some()),
                     Some(What::Start | What::Continue | What::Stop) => {
                         follows(led.is_some_and(|f| f.start_stop))
@@ -752,9 +802,14 @@ impl MusicIn {
                 self.seen[p].messages += 1;
                 let (bytes, n) = msg.encode();
                 log(format!(
-                    "+{t:.3} s {label}: {} = {}",
+                    "+{t:.3} s {label}: {} = {}{}",
                     hex(&bytes[..n]),
-                    describe(&msg)
+                    describe(&msg),
+                    if ignored {
+                        " (ignored: this port's setting)"
+                    } else {
+                        ""
+                    }
                 ));
             }
         }
@@ -921,6 +976,67 @@ pub fn describe(msg: &Msg) -> String {
         Msg::ChanPressure { ch, value } => format!("channel pressure · ch {} · {value}", ch + 1),
         Msg::PitchBend { ch, value } => format!("pitch bend · ch {} · {value:+}", ch + 1),
     }
+}
+
+/// One port of a USB MIDI device, as the scanner names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsbPort {
+    /// The name a project uses for it: the device's own name when it has
+    /// one port, else each port's own name ("MIO4 MIDI 2").
+    pub name: String,
+    /// The input substream to read, if it has an input.
+    pub input: Option<u32>,
+    pub has_out: bool,
+    /// What the port's page says about it ("USB · port 2 of 4 on MIO4").
+    pub about: String,
+}
+
+/// The ports of one USB MIDI card named `card` (its description's name):
+/// one for each input substream, named by `subnames` (ALSA's names for
+/// them, in order), paired with the output of the same number, then one
+/// for each output past the inputs (`outputs` in all). A device with one
+/// port keeps the device's name, as before devices with several ports
+/// were read; one with several gets each port's own name, or "card N"
+/// when ALSA gives none or gives one twice.
+pub fn usb_ports(card: &str, subnames: &[String], outputs: usize) -> Vec<UsbPort> {
+    let n = subnames.len().max(outputs);
+    let mut out: Vec<UsbPort> = Vec::with_capacity(n);
+    for k in 0..n {
+        let name = if n == 1 {
+            card.to_string()
+        } else {
+            let own = subnames.get(k).map(|s| s.trim()).unwrap_or("");
+            if own.is_empty() || out.iter().any(|p| p.name == own) || own == card {
+                format!("{card} {}", k + 1)
+            } else {
+                own.to_string()
+            }
+        };
+        let about = if n == 1 {
+            "USB".to_string()
+        } else {
+            format!("USB · port {} of {n} on {card}", k + 1)
+        };
+        out.push(UsbPort {
+            name,
+            input: (k < subnames.len()).then_some(k as u32),
+            has_out: k < outputs,
+            about,
+        });
+    }
+    out
+}
+
+/// How many outputs a card's first MIDI device has, from its
+/// `/proc/asound/cardN/midi0` (one "Output N" block for each). Read only:
+/// nothing is opened.
+pub fn proc_midi_outputs(text: &str) -> usize {
+    text.lines()
+        .filter(|l| {
+            l.strip_prefix("Output ")
+                .is_some_and(|n| n.trim().parse::<u32>().is_ok())
+        })
+        .count()
 }
 
 /// USB-MIDI cards to listen to: every card in `/proc/asound/cards` (as
@@ -1201,6 +1317,54 @@ mod tests {
         );
     }
 
+    /// A device with one port keeps its name; one with several gets each
+    /// port's own, paired with its output; outputs past the inputs are
+    /// ports too.
+    #[test]
+    fn each_port_of_a_usb_device_is_a_port_of_its_own() {
+        let one = usb_ports("Keystep 37", &["Keystep 37 MIDI 1".to_string()], 1);
+        assert_eq!(
+            one,
+            vec![UsbPort {
+                name: "Keystep 37".into(),
+                input: Some(0),
+                has_out: true,
+                about: "USB".into()
+            }]
+        );
+        let subs: Vec<String> = ["MIO4 MIDI 1", "MIO4 MIDI 2", "", "MIO4 MIDI 2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let four = usb_ports("MIO4", &subs, 5);
+        let names: Vec<&str> = four.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["MIO4 MIDI 1", "MIO4 MIDI 2", "MIO4 3", "MIO4 4", "MIO4 5"]
+        );
+        assert_eq!(four[1].input, Some(1));
+        assert!(four.iter().all(|p| p.has_out));
+        assert_eq!(four[4].input, None);
+        assert_eq!(four[2].about, "USB · port 3 of 5 on MIO4");
+        // An output-only cable.
+        let out = usb_ports("UM-ONE", &[], 1);
+        assert_eq!(out[0].name, "UM-ONE");
+        assert_eq!(out[0].input, None);
+        assert!(out[0].has_out);
+        assert!(usb_ports("Nothing", &[], 0).is_empty());
+    }
+
+    #[test]
+    fn outputs_are_counted_from_proc() {
+        let text = "Arturia KeyStep 37\n\nOutput 0\n  Tx bytes     : 0\nOutput 1\n  Tx bytes     : 0\nInput 0\n  Rx bytes     : 12\n  Buffer size  : 4096\n";
+        assert_eq!(proc_midi_outputs(text), 2);
+        assert_eq!(
+            proc_midi_outputs("MPK mini\n\nInput 0\n  Rx bytes : 3\n"),
+            0
+        );
+        assert_eq!(proc_midi_outputs(""), 0);
+    }
+
     #[test]
     fn usb_cards_skip_the_mpc_and_need_a_midi_device() {
         let cards = vec![
@@ -1310,6 +1474,63 @@ mod tests {
             .find(|(_, l)| matches!(l.what, What::Channel { .. }))
             .unwrap();
         assert_eq!(key.1.to, To::LearnOnly);
+    }
+
+    /// A port set to ignore clock, program and aftertouch (its page): the
+    /// monitor still lists each, marked as the port's setting, but the
+    /// track, Learn and the clock follower get none of it; the port's notes
+    /// still play.
+    #[test]
+    fn a_port_that_ignores_clock_and_programs_follows_none() {
+        use mpfree_midi::setup::IgnoreSet;
+        let mut m = MusicIn::new();
+        let s = following_din();
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.set_port(mpfree_midi::setup::DIN_NAME, |p| {
+                p.ignore = IgnoreSet::NONE
+                    .with(Ignored::Clock, true)
+                    .with(Ignored::Program, true)
+                    .with(Ignored::Aftertouch, true)
+            });
+            v.gen += 1;
+        }
+        m.sync(&s, 0.0);
+        let (keys, lines) = run(
+            &mut m,
+            DIN,
+            &[0xF8, 0xFA, 0xC0, 5, 0x90, 60, 100, 0xA0, 60, 30, 0xD0, 40],
+        );
+        // The note plays; the key's pressure doesn't reach it.
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        assert!(matches!(keys[0], Key::Down { note: 60, .. }), "{keys:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.ends_with("(ignored: this port's setting)")),
+            "{lines:?}"
+        );
+        // The tempo still comes from the port, but its clock and Start
+        // never reach the follower.
+        assert_eq!(leader_bytes(&mut m).1, Vec::<u8>::new());
+        m.sync(&s, 0.5);
+        let v = s.lock().unwrap();
+        let mut went: Vec<To> = v.monitor.newest().map(|(_, l)| l.to).collect();
+        went.reverse();
+        assert_eq!(
+            went,
+            [
+                To::PortIgnores,
+                To::PortIgnores,
+                To::PortIgnores,
+                To::Track {
+                    track: 0,
+                    pad: None
+                },
+                To::PortIgnores,
+                To::PortIgnores,
+            ]
+        );
     }
 
     /// The Monitor's "Send note-offs to MIDI out": taken once, and the

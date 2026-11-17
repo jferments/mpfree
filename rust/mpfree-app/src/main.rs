@@ -208,12 +208,6 @@ struct Options {
     /// Where the sound runs for this run (`play` and `app`; cores.rs);
     /// else Prefs' saved "Sound cores".
     sound_cores: Option<cores::SoundCores>,
-    /// Open the 5-pin MIDI Out jack, so tracks set to play on it do
-    /// (`app` only; midi_out.rs). Off until a device round has checked it.
-    midi_out: bool,
-    /// Drive the CV/gate jacks (CV 1 to 4) from the project's CV outputs
-    /// (`app` only; cv_out.rs). Off until a device round has checked it.
-    cv_out: bool,
     /// Draw the screen on the GPU, in this program of its own
     /// (`mpfree-gpu-screen`; `play` and `app`; drawing.rs). Off until a
     /// device round has checked it; any failure draws in software again.
@@ -270,8 +264,6 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         patterns: None,
         data: None,
         sound_cores: None,
-        midi_out: false,
-        cv_out: false,
         gpu_screen: None,
         power_request: None,
     };
@@ -315,8 +307,6 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--kits" => o.kits = PathBuf::from(value()?),
             "--keep-screen" => o.keep_screen = true,
             "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
-            "--midi-out" => o.midi_out = true,
-            "--cv-out" => o.cv_out = true,
             "--data" => o.data = Some(PathBuf::from(value()?)),
             "--gpu-screen" => o.gpu_screen = Some(PathBuf::from(value()?)),
             "--power-request" => o.power_request = Some(PathBuf::from(value()?)),
@@ -361,12 +351,6 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.patterns.is_some() && o.command != "app" {
         return Err("--patterns goes with app".to_string());
-    }
-    if o.midi_out && o.command != "app" {
-        return Err("--midi-out goes with app".to_string());
-    }
-    if o.cv_out && o.command != "app" {
-        return Err("--cv-out goes with app".to_string());
     }
     if o.power_request.is_some() && o.command != "app" {
         return Err("--power-request goes with app".to_string());
@@ -1298,6 +1282,70 @@ fn open_output(card: u32, sub: u32, word: &str, out: &mut Out) -> Result<File, S
     Ok(file)
 }
 
+/// Opens MIDI out and CV out (`on`), or closes them without waiting: Prefs'
+/// "Send MIDI and CV out". Each says in the log what it did; a port that
+/// won't open is said once and left closed until the switch goes off and
+/// on again. Switched on again within a moment, each takes back the
+/// writer it was letting go, rather than opening its port a second time.
+/// Opening runs on the sound loop, once per switch: a period may run late
+/// then, which the log's underrun count would show.
+fn apply_sends(
+    on: bool,
+    midi_out: &mut midi_out::MidiOut,
+    cv_out: &mut cv_out::CvOut,
+    private: Option<&File>,
+    started: Instant,
+    out: &mut Out,
+) {
+    if !on {
+        if midi_out.is_open() || cv_out.is_open() {
+            midi_out.switch_off();
+            cv_out.switch_off();
+            out.midi(
+                "MIDI and CV out off (Prefs): notes on ended, clock stopped, CV 1 to 4 at 0 V; \
+                 tracks play inside MPFree",
+            );
+        }
+        return;
+    }
+    if midi_out.reopen() {
+        out.midi("MIDI Out on again (Prefs): the port was still open");
+    } else if !midi_out.is_open() {
+        match midi_card().and_then(|card| open_output(card, MUSIC_CABLE, "MIDI Port", out)) {
+            Ok(port) => match midi_out.open(port, started) {
+                Ok(()) => out.midi(&format!(
+                    "MIDI Out open (Prefs): tracks set to play on MIDI play there, {:.1} ms \
+                     after their frame is made (the sound's lead), less the jacks' gear delay",
+                    MIDI_OUT_LEAD.as_secs_f64() * 1000.0
+                )),
+                Err(e) => out.midi(&format!("MIDI Out not started: {e}")),
+            },
+            Err(e) => out.midi(&format!(
+                "MIDI Out not opened: {e}; tracks set to play on MIDI play on the pads \
+                 (turn Send MIDI and CV out off and on to try again)"
+            )),
+        }
+    }
+    if cv_out.reopen() {
+        out.midi("CV out on again (Prefs): CV 1 to 4 follow the project's CV outputs");
+    } else if !cv_out.is_open() {
+        match private.map(File::try_clone) {
+            Some(Ok(port)) => match cv_out.open(port, started) {
+                Ok(()) => out.midi(&format!(
+                    "CV out open (Prefs): CV 1 to {} follow the project's CV outputs, {:.1} ms \
+                     after their frame is made; CV {} to 8 wait for a check",
+                    cv_out::CHECKED_OUTS,
+                    MIDI_OUT_LEAD.as_secs_f64() * 1000.0,
+                    cv_out::CHECKED_OUTS + 1,
+                )),
+                Err(e) => out.midi(&format!("CV out not started: {e}")),
+            },
+            Some(Err(e)) => out.midi(&format!("CV out not opened: {e}")),
+            None => out.midi("CV out not opened: the Private port is not open"),
+        }
+    }
+}
+
 /// Write one whole message to a non-blocking MIDI output, waiting up to half a
 /// second for room in the kernel's buffer. Not for the audio loop, which
 /// queues its messages ([`Ports::queue`]).
@@ -1622,29 +1670,43 @@ impl Ports {
 
 // ---------------------------------------------------------------- USB keyboards
 
-/// A USB-MIDI device the scanner thread opened for reading.
+/// A USB-MIDI device's port the scanner thread found, its input opened
+/// for reading if it has one.
 struct UsbFound {
     card: u32,
-    name: String,
-    file: File,
+    port: midi_in::UsbPort,
+    file: Option<File>,
 }
 
-/// One open USB keyboard in the audio loop.
+/// What the scanner thread tells the audio loop.
+enum Scan {
+    Found(UsbFound),
+    /// A card went from `/proc/asound/cards`: its ports go, the ones
+    /// without an input too.
+    Gone(u32),
+    /// A line for the MIDI log.
+    Said(String),
+}
+
+/// One port of a USB device in the audio loop: read when it has an input.
 struct UsbIn {
     card: u32,
     port: mpfree_midi::port::PortId,
-    file: File,
+    file: Option<File>,
 }
 
-/// USB-MIDI keyboards on the USB-A socket, read only. A thread looks at
-/// `/proc/asound/cards` every two seconds and opens each new MIDI card's
-/// first input (never an output); the audio loop reads them without
-/// blocking, as it reads the controller. A read error (the keyboard was
-/// unplugged) closes it and lets go of its keys. A card that can't be
-/// opened is logged once and tried again only after it goes away and comes
-/// back.
+/// USB-MIDI devices on the USB-A socket, read only. A thread looks at
+/// `/proc/asound/cards` every two seconds and, for each new MIDI card,
+/// opens every input of its first MIDI device (never an output) and counts
+/// its outputs from `/proc/asound/cardN/midi0`; each input is a port of
+/// its own, and so is each output past the inputs (`midi_in::usb_ports`).
+/// The audio loop reads them without blocking, as it reads the controller.
+/// A read error (the device was unplugged) or the card leaving the list
+/// closes its ports and lets go of their keys. A card that can't be
+/// opened is logged once and tried again only after it goes away and
+/// comes back.
 struct UsbKeys {
-    found: Receiver<Result<UsbFound, String>>,
+    found: Receiver<Scan>,
     open: Vec<UsbIn>,
     /// Tells the scanner thread to end (when the session ends).
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1658,11 +1720,55 @@ impl Drop for UsbKeys {
 
 const USB_SCAN: Duration = Duration::from_secs(2);
 
+/// Opens every input of `card`'s first MIDI device, read only: the files
+/// and ALSA's name for each, in order. Stops at the first that won't open
+/// (said in `said`).
+fn usb_inputs(card: u32, name: &str, said: &mut Vec<String>) -> Vec<(File, String)> {
+    let mut got = Vec::new();
+    let mut count = 1;
+    let mut k = 0;
+    while k < count {
+        match alsa::open_rawmidi(card, k, alsa::Direction::Input) {
+            Ok((file, info))
+                if info.stream == alsa::RAWMIDI_STREAM_INPUT && info.subdevice == k =>
+            {
+                if k == 0 {
+                    count = info.subdevices.clamp(1, MAX_USB_SUBS);
+                }
+                got.push((file, info.subname));
+            }
+            Ok(_) => {
+                if k > 0 {
+                    said.push(format!(
+                        "USB MIDI {name} (card {card}): input {} is not what ALSA said; the rest not used",
+                        k + 1
+                    ));
+                }
+                break;
+            }
+            Err(e) => {
+                if k > 0 || e.kind() != ErrorKind::NotFound {
+                    said.push(format!(
+                        "USB MIDI {name} (card {card}): could not open input {}: {e}",
+                        k + 1
+                    ));
+                }
+                break;
+            }
+        }
+        k += 1;
+    }
+    got
+}
+
+/// The most inputs read from one USB device.
+const MAX_USB_SUBS: u32 = 8;
+
 impl UsbKeys {
     /// Start the scanner. `skip` holds the MPC's own cards (the
     /// controller and the sound card).
     fn start(skip: Vec<u32>) -> UsbKeys {
-        let (tx, rx) = sync_channel(8);
+        let (tx, rx) = sync_channel(32);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = stop.clone();
         thread::Builder::new()
@@ -1676,27 +1782,48 @@ impl UsbKeys {
                     let now = midi_in::usb_midi_cards(&cards(), &skip, |n| {
                         Path::new(&format!("/dev/snd/midiC{n}D0")).exists()
                     });
+                    for card in &seen {
+                        if !now.iter().any(|(c, _)| c == card)
+                            && tx.send(Scan::Gone(*card)).is_err()
+                        {
+                            return;
+                        }
+                    }
                     for (card, name) in &now {
                         if seen.contains(card) {
                             continue;
                         }
-                        let found = match alsa::open_rawmidi(*card, 0, alsa::Direction::Input) {
-                            Ok((file, info)) if info.stream == alsa::RAWMIDI_STREAM_INPUT => {
-                                Ok(UsbFound {
-                                    card: *card,
-                                    name: name.clone(),
-                                    file,
-                                })
+                        let mut said = Vec::new();
+                        let inputs = usb_inputs(*card, name, &mut said);
+                        let outputs = midi_in::proc_midi_outputs(
+                            &fs::read_to_string(format!("/proc/asound/card{card}/midi0"))
+                                .unwrap_or_default(),
+                        );
+                        let subnames: Vec<String> = inputs.iter().map(|i| i.1.clone()).collect();
+                        let ports = midi_in::usb_ports(name, &subnames, outputs);
+                        if ports.is_empty() {
+                            said.push(format!(
+                                "USB MIDI {name} (card {card}): no input or output found; not used"
+                            ));
+                        }
+                        let mut files: Vec<Option<File>> =
+                            inputs.into_iter().map(|i| Some(i.0)).collect();
+                        let mut msgs: Vec<Scan> = said.into_iter().map(Scan::Said).collect();
+                        for port in ports {
+                            let file = port
+                                .input
+                                .and_then(|k| files.get_mut(k as usize))
+                                .and_then(Option::take);
+                            msgs.push(Scan::Found(UsbFound {
+                                card: *card,
+                                port,
+                                file,
+                            }));
+                        }
+                        for m in msgs {
+                            if tx.send(m).is_err() {
+                                return;
                             }
-                            Ok(_) => Err(format!(
-                                "USB MIDI {name} (card {card}): its first port is not an input; not used"
-                            )),
-                            Err(e) => Err(format!(
-                                "USB MIDI {name} (card {card}): could not open its input: {e}"
-                            )),
-                        };
-                        if tx.send(found).is_err() {
-                            return;
                         }
                     }
                     seen = now.into_iter().map(|(c, _)| c).collect();
@@ -1711,7 +1838,27 @@ impl UsbKeys {
         }
     }
 
-    /// Take newly opened keyboards and read every open one. Never blocks.
+    /// Closes the port at `k` in `open`: its keys let go, the monitor
+    /// told.
+    fn close(
+        &mut self,
+        k: usize,
+        music: &mut midi_in::MusicIn,
+        t: f64,
+        keys: &mut Vec<midi_in::Key>,
+    ) {
+        let u = self.open.swap_remove(k);
+        let ended = music.unplugged(u.port, keys);
+        music.feed.event(
+            t,
+            Event::Unplugged {
+                port: u.port,
+                ended,
+            },
+        );
+    }
+
+    /// Take newly found ports and read every open one. Never blocks.
     fn poll(
         &mut self,
         music: &mut midi_in::MusicIn,
@@ -1720,14 +1867,19 @@ impl UsbKeys {
         keys: &mut Vec<midi_in::Key>,
         out: &mut Out,
     ) {
-        while let Ok(found) = self.found.try_recv() {
-            match found {
-                Ok(f) => match music.plugged(&f.name) {
+        while let Ok(scan) = self.found.try_recv() {
+            match scan {
+                Scan::Found(f) => match music.plug(&f.port) {
                     Some(port) => {
                         music.feed.event(t, Event::Plugged(port));
+                        let what = match (f.file.is_some(), f.port.has_out) {
+                            (true, true) => "listening, read only; its output is not used yet",
+                            (true, false) => "listening, read only",
+                            (false, _) => "an output only, not used yet",
+                        };
                         out.midi(&format!(
-                            "+{t:.3} s {}: plugged in (USB, card {}); listening, read only",
-                            f.name, f.card
+                            "+{t:.3} s {}: plugged in ({}, card {}); {what}",
+                            f.port.name, f.port.about, f.card
                         ));
                         self.open.push(UsbIn {
                             card: f.card,
@@ -1737,15 +1889,33 @@ impl UsbKeys {
                     }
                     None => out.midi(&format!(
                         "+{t:.3} s {}: plugged in, but every MIDI port number is taken; not used",
-                        f.name
+                        f.port.name
                     )),
                 },
-                Err(e) => out.midi(&format!("+{t:.3} s {e}")),
+                Scan::Gone(card) => {
+                    let mut k = 0;
+                    while k < self.open.len() {
+                        if self.open[k].card == card {
+                            out.midi(&format!(
+                                "+{t:.3} s {}: gone (card {card} left the list); its keys let go",
+                                music.label(self.open[k].port)
+                            ));
+                            self.close(k, music, t, keys);
+                        } else {
+                            k += 1;
+                        }
+                    }
+                }
+                Scan::Said(line) => out.midi(&format!("+{t:.3} s {line}")),
             }
         }
         let mut k = 0;
         while k < self.open.len() {
-            let gone = match self.open[k].file.read(buf) {
+            let Some(file) = self.open[k].file.as_mut() else {
+                k += 1;
+                continue;
+            };
+            let gone = match file.read(buf) {
                 Ok(0) => false,
                 Ok(n) => {
                     let port = self.open[k].port;
@@ -1766,15 +1936,7 @@ impl UsbKeys {
                 }
             };
             if gone {
-                let u = self.open.swap_remove(k);
-                let ended = music.unplugged(u.port, keys);
-                music.feed.event(
-                    t,
-                    Event::Unplugged {
-                        port: u.port,
-                        ended,
-                    },
-                );
+                self.close(k, music, t, keys);
             } else {
                 k += 1;
             }
@@ -4196,49 +4358,18 @@ fn player_session(
         };
     out.show(gui::ToUi::IoModel(io_model.clone()));
     // MIDI Out (midi_out.rs): tracks whose "Plays on" is the 5-pin jacks play
-    // there. State-changing on the MPC (note bytes on cable 2, never SysEx),
-    // so it opens only with --midi-out until a device round has checked it.
+    // there. CV out (cv_out.rs): CV 1 to 4 follow the project's CV outputs.
+    // State-changing on the MPC (note and clock bytes on cable 2, control
+    // changes on cable 1, never SysEx), so both open only while Prefs >
+    // "Send MIDI and CV out" is on (`apply_sends`, in the loop), and close
+    // when it goes off.
     let mut midi_out = midi_out::MidiOut::new(RATE, MIDI_OUT_LEAD);
     // Export (export.rs): a pass the screen sends plays the song into its
     // files; its MIDI file hears the notes as MIDI Out would send them.
     let mut export = export::Host::new();
-    if o.midi_out {
-        match midi_card().and_then(|card| open_output(card, MUSIC_CABLE, "MIDI Port", out)) {
-            Ok(port) => match midi_out.open(port, started) {
-                Ok(()) => out.midi(&format!(
-                    "MIDI Out open: tracks set to play on MIDI play there, {:.1} ms after \
-                     their frame is made (the sound's lead)",
-                    MIDI_OUT_LEAD.as_secs_f64() * 1000.0
-                )),
-                Err(e) => out.midi(&format!("MIDI Out not started: {e}")),
-            },
-            Err(e) => out.midi(&format!(
-                "MIDI Out not opened: {e}; tracks set to play on MIDI play on the pads"
-            )),
-        }
-    }
-    // CV out (cv_out.rs): CV 1 to 4 follow the project's CV outputs.
-    // State-changing on the MPC (control changes on cable 1, never SysEx),
-    // so it opens only with --cv-out until a device round with a meter has
-    // checked it. Its writer has a copy of the Private port, and the
-    // button lights go through it while it is open.
     let mut cv_out = cv_out::CvOut::new(RATE, MIDI_OUT_LEAD);
-    if o.cv_out {
-        match ports.private.as_ref().map(File::try_clone) {
-            Some(Ok(port)) => match cv_out.open(port, started) {
-                Ok(()) => out.midi(&format!(
-                    "CV out open: CV 1 to {} follow the project's CV outputs, {:.1} ms after \
-                     their frame is made; CV {} to 8 wait for a check",
-                    cv_out::CHECKED_OUTS,
-                    MIDI_OUT_LEAD.as_secs_f64() * 1000.0,
-                    cv_out::CHECKED_OUTS + 1,
-                )),
-                Err(e) => out.midi(&format!("CV out not started: {e}")),
-            },
-            Some(Err(e)) => out.midi(&format!("CV out not opened: {e}")),
-            None => out.midi("CV out not opened: the Private port is not open"),
-        }
-    }
+    // Prefs' "Send MIDI and CV out" as last applied (None: not yet).
+    let mut sends: Option<bool> = None;
     let mut usb = UsbKeys::start(
         [Some(audio), midi_card().ok()]
             .into_iter()
@@ -4867,6 +4998,19 @@ fn player_session(
         // developer tools are on.
         music.set_armed(app.track() as u8, synth_on && app.arp_plays_notes());
         music.feed.debug = app.settings.debug_mode;
+        // Prefs' "Send MIDI and CV out" turned on or off (and its kept
+        // value at the first period).
+        if sends != Some(app.settings.sends_midi) {
+            sends = Some(app.settings.sends_midi);
+            apply_sends(
+                app.settings.sends_midi,
+                &mut midi_out,
+                &mut cv_out,
+                ports.private.as_ref(),
+                started,
+                out,
+            );
+        }
         ports.tap_on = app.settings.debug_mode;
         let mut got = ports.poll(out, &mut buf)?;
         let mt = ports.t();
@@ -7532,13 +7676,10 @@ mod tests {
             "the store saves patterns now"
         );
         assert!(parse_args(&args("play --seconds 5 --patterns /tmp/p.txt")).is_err());
-        // MIDI Out opens only when asked, and only for the app.
-        assert!(!parse_args(&args("app")).unwrap().midi_out);
-        assert!(parse_args(&args("app --midi-out")).unwrap().midi_out);
-        assert!(parse_args(&args("play --seconds 5 --midi-out")).is_err());
-        assert!(!parse_args(&args("app")).unwrap().cv_out);
-        assert!(parse_args(&args("app --cv-out")).unwrap().cv_out);
-        assert!(parse_args(&args("pads --cv-out")).is_err());
+        // MIDI and CV out are Prefs' "Send MIDI and CV out" now, not
+        // flags (Jay, 16 Nov).
+        assert!(parse_args(&args("app --midi-out")).is_err());
+        assert!(parse_args(&args("app --cv-out")).is_err());
         // The GPU draws the screen only when asked, for the pad player.
         assert_eq!(parse_args(&args("app")).unwrap().gpu_screen, None);
         let o = parse_args(&args("app --gpu-screen /run/mpfree-app/mpfree-gpu-screen")).unwrap();
