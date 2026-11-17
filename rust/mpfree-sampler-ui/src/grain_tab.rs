@@ -161,6 +161,7 @@ pub enum Row {
     Scan,
     Spray,
     PitchSpray,
+    Timing,
     Window,
     Reverse,
     Spread,
@@ -174,11 +175,12 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 14] = [
+    pub const ALL: [Row; 15] = [
         Row::Mode,
         Row::Scan,
         Row::Spray,
         Row::PitchSpray,
+        Row::Timing,
         Row::Window,
         Row::Reverse,
         Row::Spread,
@@ -197,6 +199,7 @@ impl Row {
             Row::Scan => "Scan speed",
             Row::Spray => "Spray",
             Row::PitchSpray => "Pitch spray",
+            Row::Timing => "Timing",
             Row::Window => "Window",
             Row::Reverse => "Reverse chance",
             Row::Spread => "Stereo spread",
@@ -694,6 +697,7 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
             let i = WINDOWS.iter().position(|w| *w == g.window).unwrap_or(0);
             g.window = WINDOWS[shift(i, delta, WINDOWS.len())];
         }
+        Row::Timing => g.timing = round_to(g.timing + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Reverse => g.reverse = round_to(g.reverse + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Spread => g.spread = round_to(g.spread + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::Quantise => {
@@ -903,6 +907,16 @@ pub fn size_at(y: f32) -> f32 {
 
 // ---------------------------------------------------------------- text
 
+/// How random the gaps between grains are: Regular, a share random, or
+/// Random.
+fn timing_text(t: f32) -> String {
+    match percent(t) {
+        0 => "Regular".into(),
+        100 => "Random".into(),
+        p => format!("{p} % random"),
+    }
+}
+
 /// A row's value as the list shows it.
 pub fn value_text(r: &Region, row: Row) -> String {
     let g = &r.grain;
@@ -911,6 +925,7 @@ pub fn value_text(r: &Region, row: Row) -> String {
         Row::Scan => scan_text(g.scan),
         Row::Spray => format!("{} %", percent(g.spray)),
         Row::PitchSpray => format!("±{:.1} st", g.pitch_spray),
+        Row::Timing => timing_text(g.timing),
         Row::Window => window_label(g.window),
         Row::Reverse => format!("{} %", percent(g.reverse)),
         Row::Spread => format!("{} %", percent(g.spread)),

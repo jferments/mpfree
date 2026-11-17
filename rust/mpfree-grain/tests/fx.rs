@@ -241,9 +241,12 @@ fn grains_share_the_budget_and_hand_it_back() {
     let mut a = GrainFx::new(RATE, 1.0, 7).unwrap();
     let mut b = GrainFx::new(RATE, 1.0, 8).unwrap();
     for fx in [&mut a, &mut b] {
+        // Regular timing, so a freed slot is taken at once and the budget
+        // is full at the end.
         fx.set_params(Params {
             size_ms: 200.0,
             density: 200.0,
+            timing: 0.0,
             ..cloud()
         });
         fx.set_mix(1.0);

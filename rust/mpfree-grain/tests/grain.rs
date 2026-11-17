@@ -244,6 +244,7 @@ fn free_running_density_makes_the_right_number_of_grains() {
         v.set_params(Params {
             size_ms: 5.0,
             density,
+            timing: 0.0,
             ..Params::default()
         });
         v.start();
@@ -255,6 +256,97 @@ fn free_running_density_makes_the_right_number_of_grains() {
             v.stats().spawned
         );
     }
+}
+
+/// Frames between the starts of the grains a voice with `p` makes over
+/// `frames` (1 ms grains on a steady level, so each grain is a burst), and
+/// how many grains it made.
+fn gaps(p: Params, frames: usize) -> (Vec<usize>, u64) {
+    let data = vec![0.5; 48_000];
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let mut v = GrainVoice::new(RATE, 9);
+    v.set_params(Params { size_ms: 1.0, ..p });
+    v.start();
+    let (l, _) = run(&mut v, &src, &mut Budget::new(256), 0, frames, 128);
+    let g = bursts(&l).windows(2).map(|w| w[1] - w[0]).collect();
+    (g, v.stats().spawned)
+}
+
+#[test]
+fn regular_timing_spaces_grains_evenly() {
+    // 100 a second at 48 kHz: every 480 frames.
+    let (g, _) = gaps(
+        Params {
+            density: 100.0,
+            timing: 0.0,
+            ..Params::default()
+        },
+        48_000,
+    );
+    assert!(g.len() >= 98);
+    assert!(g.iter().all(|&x| x.abs_diff(480) <= 1), "{g:?}");
+}
+
+#[test]
+fn random_timing_varies_the_gaps_and_keeps_the_density() {
+    // Up to 0.8, so even the shortest gap (96 frames) leaves each 48-frame
+    // grain its own burst.
+    for timing in [0.3f32, 0.8] {
+        let (g, made) = gaps(
+            Params {
+                density: 100.0,
+                timing,
+                ..Params::default()
+            },
+            10 * 48_000,
+        );
+        // Each gap is anywhere from 1 - timing to 1 + timing periods.
+        let (lo, hi) = (480.0 * (1.0 - timing) - 2.0, 480.0 * (1.0 + timing) + 2.0);
+        assert!(
+            g.iter().all(|&x| (x as f32) >= lo && (x as f32) <= hi),
+            "timing {timing}: {:?}",
+            g.iter()
+                .filter(|&&x| (x as f32) < lo || (x as f32) > hi)
+                .collect::<Vec<_>>()
+        );
+        // Spread over the whole range, not bunched at one gap.
+        let low = g
+            .iter()
+            .filter(|&&x| (x as f32) < 480.0 * (1.0 - timing / 2.0))
+            .count();
+        let high = g
+            .iter()
+            .filter(|&&x| (x as f32) > 480.0 * (1.0 + timing / 2.0))
+            .count();
+        assert!(
+            low > g.len() / 6 && high > g.len() / 6,
+            "timing {timing}: {low} low, {high} high of {}",
+            g.len()
+        );
+        // The same density on average: 1000 grains in 10 s, within 2 %.
+        // (A grain made in the last frame hasn't sounded yet.)
+        assert!(made - (g.len() as u64 + 1) <= 1);
+        assert!(made.abs_diff(1000) <= 20, "timing {timing}: {made} grains");
+    }
+}
+
+#[test]
+fn synced_grains_ignore_random_timing() {
+    let sync = TempoSync {
+        frames_per_beat: 24_000.0,
+        grains_per_beat: Some(16.0),
+        size_beats: None,
+    };
+    let (g, _) = gaps(
+        Params {
+            sync: Some(sync),
+            timing: 1.0,
+            ..Params::default()
+        },
+        30_000,
+    );
+    assert!(g.len() >= 18);
+    assert!(g.iter().all(|&x| x == 1500), "{g:?}");
 }
 
 #[test]
@@ -478,6 +570,7 @@ fn the_ui_can_see_the_cloud() {
         position: 0.6,
         size_ms: 100.0,
         density: 50.0,
+        timing: 0.0,
         ..Params::default()
     });
     v.start();

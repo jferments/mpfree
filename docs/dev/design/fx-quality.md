@@ -629,7 +629,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md); decision 11.1): the Limi
 
 ## The grain engine
 
-`mpfree_fxlab::grain` measures `mpfree-grain`'s `GrainVoice` on its own (no amp envelope, filter or effects after it), at 44.1 kHz in 128-frame blocks with fixed seeds, on pink noise and a pad (an A minor chord of detuned band-limited saws, both -20 dBFS RMS), a 1 kHz sine and a steady level (DC, whose output is the sum of the grains' windows). Grains read from 30 % into the source, with the voice's defaults (80 ms, 20 a second, Hann, no spray, no scan) unless a row says otherwise. `tests/grain.rs` holds every number to `rust/mpfree-fxlab/quality/grain.tsv` as the sampler's ratchet does, and prints the report; it takes under two seconds, so it runs with the workspace's tests. Record a change with `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test grain`. The targets are the granular engine plan's (sampler roadmap R7, mpfree-claude `sampler/granular/plan.md`).
+`mpfree_fxlab::grain` measures `mpfree-grain`'s `GrainVoice` on its own (no amp envelope, filter or effects after it), at 44.1 kHz in 128-frame blocks with fixed seeds, on pink noise and a pad (an A minor chord of detuned band-limited saws, both -20 dBFS RMS), a 1 kHz sine and a steady level (DC, whose output is the sum of the grains' windows). Grains read from 30 % into the source, with the voice's defaults (80 ms, 25 a second, Hann, timing 30 % random, no spray, no scan; before step A3, 20 a second and regular) unless a row says otherwise. `tests/grain.rs` holds every number to `rust/mpfree-fxlab/quality/grain.tsv` as the sampler's ratchet does, and prints the report; it takes under two seconds, so it runs with the workspace's tests. Record a change with `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test grain`. The targets are the granular engine plan's (sampler roadmap R7, mpfree-claude `sampler/granular/plan.md`).
 
 | Id | Row | Target | How it is measured |
 |---|---|---|---|
@@ -637,7 +637,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md); decision 11.1): the Limi
 | G1 | `level[..., defaults]/offset_lu` | within 1 LU | The defaults against the source |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2. The exponential window is percussive on purpose: shown, not kept |
-| G3 | `smooth[defaults, 1 kHz]/sideband_db` | -40 dB | The first grain-rate sideband (1 kHz ± 20 Hz, ±3 Hz) of a held sine against the tone |
+| G3 | `smooth[defaults, 1 kHz]/sideband_db` | -40 dB | The first grain-rate sideband (1 kHz ± the density, ±3 Hz) of a held sine against the tone, from a 65536-point transform (0.7 Hz bins). Until step A3 it used 8192 points, whose window's main lobe (±21.5 Hz) let the tone itself into the band: the -16.4 and -20.9 dB there were mostly the tone. `flutter_db`, the held sine's 10 ms level against its mean, is shown, not kept |
 | G4 | `frozen[...]/swing_db` | 3 dB (pad), 6 dB (sine) | A frozen cloud (no scan, no spray) at every density from 15 to 60 a second: how far its RMS swings |
 | G5 | `pitch[...]/spur_db`, `heard_db` | -60 dB | A sine pitched by a sprayed cloud (200 ms, 20 a second): the power within 60 Hz of the loudest bin from 20 Hz to 20 kHz at least 200 Hz from the wanted tone (and never within 140 Hz of it), against the tone through the same cloud at pitch; `heard_db` where the wanted tone is above 20 kHz and must fold away. Where the spur is is shown, not kept |
 | G6 | `cap[2 s grains, ...]/level_change_lu` | within 1 LU | A sprayed cloud of 2 s grains at 50 and 80 a second (100 and 160 wanted, 64 a voice) against 400 ms grains at the same density. The share of grains skipped is shown |
@@ -668,6 +668,18 @@ The voice no longer scales each grain by 1/√overlap. Every grain sounds at ful
 - **Unchanged or nearly:** G4 swings 8.1 dB on the pad and 27.6 dB on the sine (from 10.3 and 32: the comb is A3's); G5 within 0.5 dB, but for three octaves up at -101 dB (from -95); G7 the same.
 - **Heard:** a blind, loudness-matched A/B of five cases (a frozen pad at the defaults, a stretch with a Tukey window, drums with Density rising from 20 to 400 a second, long-grain piano presses and the Grains FX on drums).
 - **Cost:** the level costs four running sums a grain frame, and the coherence measure one more sum a grain frame in one 64-frame part of every four. The instruction gate's granular cases rose (blessed): the 4 granular pads alone +12.0 %, Grains FX (dense) +9.0 %, 20 pads + master grains +4.6 %, 20 pads +2.5 %, the song +3.8 % (about 2 % of it this change). The MPC's figure comes with step A6.
+
+### Step A3: timing (2026-11-17)
+
+Grains no longer arrive in lockstep: each gap between free-running grains is anywhere from `1 - timing` to `1 + timing` density periods (uniform; the average density is unchanged), drawn from a random sequence of its own so the other settings' draws don't move and timing 0 plays exactly as before. The default is 30 % random (decision D3) and the default density is 25 a second, so the default 80 ms grains overlap twice. Synced density stays on the beat grid. The Grain page and the Grains node have a Timing control.
+
+Why a bounded spread rather than a Poisson process: with exponential gaps at 30 %, overlap 2 leaves real holes (the window sum is under the level's floor 3.7 % of the time and the DC level modulates at -12 dB), and the A2 level law can't fill a hole. Uniform gaps up to 1.3 periods keep the window sum over 0.54 at overlap 2, so the level stays flat, and they take the first grain-rate line about as far down (the gaps' characteristic function at the grain rate is 0.50 against 0.47). A position jitter for frozen clouds, which the plan suggested, turned out not to be needed: timing alone takes the comb away.
+
+- **G4 met:** a frozen cloud swings 2.8 dB on the pad and 2.7 dB on the sine as density moves from 15 to 60 (from 8.1 and 27.6): its level no longer rises and falls with the density.
+- **G3 ripple and modulation still met** at the defaults and for every window (0.01 dB, -76 to -77 dB).
+- **G3 sideband, measured properly (see the table):** -19.3 dB at the defaults. A frozen sine is where random timing costs most: grains of one spot at random times add with random phases, so it flutters (-13.8 dB) where regular grains at a density that divides its frequency (20 or 25 a second against 1 kHz) held it still (about -70 dB); at any other density regular grains comb it (G4). Set Timing to Regular for that stillness; step R7b's Tone mode is the planned way to keep a frozen tone still at any density.
+- **G1, G2, G6 still met** (the spread of levels 0.83 LU on pink and 1.6 LU on the pad); G7 and G8 unchanged; G5 within about 1 dB but for two octaves and three octaves up, where the spurs move with the grains' times (-68 and -85 dB, still met). G5 is step A4's.
+- **Cost:** one random draw a grain.
 
 ## Round 5: movement, pitch and voice
 
