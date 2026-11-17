@@ -4,6 +4,8 @@
 # After an intended change, bless with CI's pinned toolchain:
 #   cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-bench
 #   python3 tools/ci/instr_gate.py --bless
+319648	Amp (Crunch)
+341579	Amp (Lead, Gain 10)
 265396	Analog Init, 8 voices
 202601	Analog Poly Brass, 8 voices
 320632	Analog Warm Pad, 8 voices

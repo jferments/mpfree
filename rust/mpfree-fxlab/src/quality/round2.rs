@@ -1,6 +1,6 @@
 //! The second round's classes of the quality report: drive (Drive and
-//! Character), crush, compressor, filters (the Multi and DJ filters) and
-//! lo-fi. The plan's target ids are G, B, K, F and L; the targets and why
+//! Character), crush, compressor, filters (the Multi and DJ filters),
+//! lo-fi and the amp. The plan's target ids are G, B, K, F, L and A; the targets and why
 //! each was chosen are in `docs/dev/design/fx-quality.md`. The rows, the
 //! report and the ratchet are the first round's (`super`); the measures
 //! only these classes need live here.
@@ -12,7 +12,7 @@ use super::{floor, lu_change, make, pink_stim, subjects, worst_zipper, Better, R
 use crate::dut::{Change, Dut, NodeDut};
 use crate::fft::power_spectrum;
 use crate::harmonics::{self, N};
-use crate::signals::{coherent, db_to_amp, level_steps, peak_of, pink, rms_of, sine};
+use crate::signals::{coherent, db_to_amp, level_steps, peak_of, pink, rms_of, sine, white};
 use crate::wav::Stereo;
 use crate::{dynamics, flutter, mixlaw, response, zipper};
 
@@ -1808,12 +1808,396 @@ pub(super) fn lofi(r: &mut Report) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Amp (plan-2 section 12).
+
+const AMP: &str = "mpfree.fx.amp";
+
+static AMP_CLEAN: [(u16, f32); 1] = [(ids::amp::MODEL, 0.0)];
+static AMP_CRUNCH: [(u16, f32); 1] = [(ids::amp::MODEL, 1.0)];
+static AMP_LEAD: [(u16, f32); 1] = [(ids::amp::MODEL, 2.0)];
+static AMP_BASS: [(u16, f32); 1] = [(ids::amp::MODEL, 3.0)];
+
+/// A power chord as a metal rhythm part plays it (E2, B2 and E3), two
+/// seconds.
+fn power_chord(rate: u32) -> Stereo {
+    let n = 2 * rate as usize;
+    let mut x = vec![0.0; n];
+    for (hz, a) in [(82.41, 0.25), (123.47, 0.2), (164.81, 0.15)] {
+        for (v, s) in x.iter_mut().zip(sine(hz, a, n, rate)) {
+            *v += s;
+        }
+    }
+    Stereo::mono(x, rate)
+}
+
+/// What share of `d`'s output on `x` lies from 20 to 70 Hz, against all of
+/// it from 20 Hz up, dB: the low "mud" a chord's intermodulation makes (E2
+/// and B2 make 41 Hz).
+fn sub70_db(d: &mut dyn Dut, x: &Stereo) -> f64 {
+    let rate = x.rate;
+    let lat = d.latency();
+    let y = d.render(x, lat).left;
+    let from = rate as usize / 2 + lat;
+    let n = 65_536.min(y.len() - from);
+    // Windowed, so the chord's own lines don't leak down into the band.
+    let w = blackman_harris(n);
+    let seg: Vec<f64> = y[from..from + n]
+        .iter()
+        .zip(&w)
+        .map(|(v, w)| v * w)
+        .collect();
+    let p = power_spectrum(&seg);
+    let df = rate as f64 / n as f64;
+    let bin = |hz: f64| (hz / df) as usize;
+    let low: f64 = p[bin(20.0)..bin(70.0)].iter().sum();
+    let all: f64 = p[bin(20.0)..].iter().sum();
+    db_pow(low / all)
+}
+
+/// The Gate setting the gate rows use: a -45 dBFS threshold.
+const AMP_GATE: f64 = 8.0;
+
+/// A note (220 Hz at -12 dBFS, half a second), then a rest of hiss
+/// (white noise at -60 dBFS RMS, a second and a half), through `d`: the
+/// output's level over the last half second, dBFS RMS.
+fn gate_hiss_db(d: &mut dyn Dut) -> f64 {
+    let rate = d.rate();
+    let note = rate as usize / 2;
+    let n = 2 * rate as usize;
+    let mut x = sine(220.0, db_to_amp(-12.0), note, rate);
+    x.extend(white(n - note, db_to_amp(-60.0) * 3f64.sqrt(), 11));
+    let y = d.render(&Stereo::mono(x, rate), 0).left;
+    floor(db_amp(rms_of(&y[n - rate as usize / 2..n])))
+}
+
+/// Envelopes of `y` in 1 ms windows (RMS).
+fn envelope_1ms(y: &[f64], rate: u32) -> Vec<f64> {
+    let w = (rate as usize / 1000).max(1);
+    y.chunks(w).map(rms_of).collect()
+}
+
+/// A 220 Hz note at -24 dBFS starting after half a second of silence,
+/// through `gated` and through `open` (the same amp, its gate off): the
+/// milliseconds from the note's start until the gated output is within
+/// 1 dB of the other. Run at Gain 0, where the amp is nearly straight, so
+/// a half-open gate can't hide in the clipping.
+fn gate_open_ms(gated: &mut dyn Dut, open: &mut dyn Dut) -> f64 {
+    let rate = gated.rate();
+    let at = rate as usize / 2;
+    let mut x = vec![0.0; at];
+    x.extend(sine(220.0, db_to_amp(-24.0), rate as usize / 2, rate));
+    let x = Stereo::mono(x, rate);
+    let a = envelope_1ms(&gated.render(&x, 0).left, rate);
+    let b = envelope_1ms(&open.render(&x, 0).left, rate);
+    let start = at / (rate as usize / 1000).max(1);
+    let near = 10f64.powf(-1.0 / 20.0);
+    (start..a.len())
+        .find(|&i| b[i] > 0.0 && a[i] >= near * b[i])
+        .map_or(500.0, |i| (i - start + 1) as f64)
+}
+
+/// A 220 Hz note from -12 dBFS decaying 40 dB a second for two seconds,
+/// through `gated` and `open` (as above): how many times the gate shuts,
+/// counted as the gated output falling under half the other's in a 1 ms
+/// window after being over 0.9 of it. One is a clean close; more is
+/// chatter. At Gain 0 the amp is nearly straight, so the ratio is the
+/// gate's own gain.
+fn gate_closes(gated: &mut dyn Dut, open: &mut dyn Dut) -> f64 {
+    let rate = gated.rate();
+    let n = 2 * rate as usize;
+    let x: Vec<f64> = sine(220.0, db_to_amp(-12.0), n, rate)
+        .iter()
+        .enumerate()
+        .map(|(i, v)| v * db_to_amp(-40.0 * i as f64 / rate as f64))
+        .collect();
+    let x = Stereo::mono(x, rate);
+    let a = envelope_1ms(&gated.render(&x, 0).left, rate);
+    let b = envelope_1ms(&open.render(&x, 0).left, rate);
+    // Counted with hysteresis: a close is the ratio falling under a half
+    // after being over 0.9.
+    let mut shut = 0;
+    let mut was_open = false;
+    for (a, b) in a.iter().zip(&b) {
+        let r = if *b > 0.0 { a / b } else { 0.0 };
+        if r > 0.9 {
+            was_open = true;
+        } else if r < 0.5 && was_open {
+            shut += 1;
+            was_open = false;
+        }
+    }
+    shut as f64
+}
+
+pub(super) fn amp(r: &mut Report) {
+    use ids::amp as a;
+    let rate = r.rate;
+    let (_, presets) = engine_subjects(AMP, "amp", "amp");
+    let p18 = pink_at(rate, -18.0, 4.0);
+    let chord = power_chord(rate);
+    let models: [(&str, &'static [(u16, f32)]); 4] = [
+        ("clean", &AMP_CLEAN),
+        ("crunch", &AMP_CRUNCH),
+        ("lead", &AMP_LEAD),
+        ("bass", &AMP_BASS),
+    ];
+    for (model, fixed) in models {
+        let s = Subject {
+            name: format!("amp/{model}"),
+            id: AMP,
+            fixed,
+            preset: None,
+        };
+        let name = s.name.as_str();
+
+        // A1: aliasing at the top of Gain (the target) and at its
+        // default (kept by the ratchet).
+        for gain in [5.0, 10.0] {
+            let mut d = make_with(&s, rate, &[(a::GAIN, gain)]);
+            for (hz, level, tag, target) in [
+                (1000.0, -6.0, "1k_m6dbfs", -60.0),
+                (2000.0, -6.0, "2k_m6dbfs", -60.0),
+                (5000.0, -12.0, "5k_m12dbfs", -50.0),
+            ] {
+                r.put(
+                    "A1",
+                    name,
+                    format!("alias_{tag}_gain{gain}"),
+                    Some(alias(&mut d, hz, level).0),
+                    Better::Lower,
+                    (gain == 10.0).then_some(target),
+                    1.0,
+                );
+            }
+        }
+
+        // A2: playing softer cleans up. A lead amp is meant to stay
+        // saturated, so its number is shown, not judged.
+        let mut d = make_with(&s, rate, &[(a::GAIN, 5.0)]);
+        let loud = harmonics::measure(&mut d, 1000.0, -6.0).thd_db;
+        let soft = harmonics::measure(&mut d, 1000.0, -30.0).thd_db;
+        let (better, target) = if model == "lead" {
+            (Better::Info, None)
+        } else {
+            (Better::Higher, Some(10.0))
+        };
+        r.put(
+            "A2",
+            name,
+            "cleanup_db_gain5",
+            Some(loud - soft),
+            better,
+            target,
+            1.0,
+        );
+
+        // A3: level across Gain, on pink at -18 dBFS.
+        for gain in [0.0, 2.5, 5.0, 7.5, 10.0] {
+            let mut d = make_with(&s, rate, &[(a::GAIN, gain)]);
+            let (better, target) = if gain >= 2.5 {
+                (Better::Near(0.0), Some(2.0))
+            } else {
+                (Better::Info, None)
+            };
+            r.put(
+                "A3",
+                name,
+                format!("lu_pink18_gain{gain}"),
+                Some(lu(&mut d, &p18)),
+                better,
+                target,
+                0.3,
+            );
+        }
+
+        // A5: a power chord's low mud at Gain 10 with the cab off. Today's
+        // sound keeps it; the target applies to the Tight boost once
+        // there is one.
+        let mut d = make_with(&s, rate, &[(a::GAIN, 10.0), (a::CAB, 0.0)]);
+        r.put(
+            "A5",
+            name,
+            "power_chord_sub70_db_gain10_nocab",
+            Some(sub70_db(&mut d, &chord)),
+            Better::Info,
+            None,
+            0.0,
+        );
+        // With the Tight boost in front: the target on the lead model,
+        // the others kept.
+        let mut d = make_with(&s, rate, &[(a::GAIN, 10.0), (a::CAB, 0.0), (a::BOOST, 1.0)]);
+        r.put(
+            "A5",
+            name,
+            "power_chord_sub70_db_gain10_nocab_tight",
+            Some(sub70_db(&mut d, &chord)),
+            Better::Lower,
+            (model == "lead").then_some(-25.0),
+            0.5,
+        );
+
+        // A6: a tone-stack knob thrown from 0 to 10 under a 220 Hz sine.
+        for (knob, id) in [("bass", a::BASS), ("mid", a::MID), ("treble", a::TREBLE)] {
+            let mut d = make_with(&s, rate, &[(id, 0.0)]);
+            r.put(
+                "A6",
+                name,
+                format!("{knob}_jump_db"),
+                Some(switch_click(&mut d, id, 10.0, 220.0)),
+                Better::Lower,
+                Some(3.0),
+                0.5,
+            );
+        }
+
+        // A7: Gain swept over its whole range in 50 ms (fxlab's zipper).
+        let mut d = make(&s, rate);
+        let gain = d
+            .params()
+            .iter()
+            .find(|p| p.id == a::GAIN)
+            .cloned()
+            .expect("the amp has Gain");
+        r.put(
+            "A7",
+            name,
+            "gain_zipper_db",
+            Some(zipper::sweep_param(&mut d, &gain, 50.0).step_db.max(0.0)),
+            Better::Lower,
+            Some(3.0),
+            0.5,
+        );
+
+        // A8: a Model change (to Lead, or from Lead to Crunch) and the
+        // cab taken out, under a 220 Hz sine.
+        let to = if model == "lead" { 1.0 } else { 2.0 };
+        let mut d = make(&s, rate);
+        r.put(
+            "A8",
+            name,
+            "model_change_db",
+            Some(switch_click(&mut d, a::MODEL, to, 220.0)),
+            Better::Lower,
+            Some(3.0),
+            0.5,
+        );
+        let mut d = make(&s, rate);
+        r.put(
+            "A8",
+            name,
+            "cab_change_db",
+            Some(switch_click(&mut d, a::CAB, 0.0, 220.0)),
+            Better::Lower,
+            Some(3.0),
+            0.5,
+        );
+        let mut d = make(&s, rate);
+        r.put(
+            "A8",
+            name,
+            "boost_change_db",
+            Some(switch_click(&mut d, a::BOOST, 1.0, 220.0)),
+            Better::Lower,
+            Some(3.0),
+            0.5,
+        );
+
+        // Silence in, silence out.
+        let mut d = make_with(&s, rate, &[(a::GAIN, 10.0)]);
+        let silence = Stereo::mono(vec![0.0; rate as usize], rate);
+        r.put(
+            "A9",
+            name,
+            "silence_out_dbfs_gain10",
+            Some(floor(db_amp(peak_of(&d.render(&silence, 0).left)))),
+            Better::Lower,
+            Some(-120.0),
+            1.0,
+        );
+
+        // The gate (its rows on the lead model, where hiss matters most;
+        // it is the same gate on every model): hiss at Gain 10, its
+        // timing at Gain 0.
+        if model == "lead" {
+            let mut gated = make_with(&s, rate, &[(a::GAIN, 10.0), (a::GATE, AMP_GATE)]);
+            r.put(
+                "A9",
+                name,
+                "gate_hiss_out_dbfs_gain10",
+                Some(gate_hiss_db(&mut gated)),
+                Better::Lower,
+                Some(-90.0),
+                1.0,
+            );
+            let mut gated = make_with(&s, rate, &[(a::GAIN, 0.0), (a::GATE, AMP_GATE)]);
+            let mut open = make_with(&s, rate, &[(a::GAIN, 0.0)]);
+            r.put(
+                "A9",
+                name,
+                "gate_open_ms",
+                Some(gate_open_ms(&mut gated, &mut open)),
+                Better::Lower,
+                Some(2.0),
+                0.0,
+            );
+            r.put(
+                "A9",
+                name,
+                "gate_closes_on_decay",
+                Some(gate_closes(&mut gated, &mut open)),
+                Better::Lower,
+                Some(1.0),
+                0.0,
+            );
+        }
+    }
+
+    // A4: the presets as loud as the dry; their aliasing kept.
+    for s in &presets {
+        let name = s.name.as_str();
+        let mut d = make(s, rate);
+        r.put(
+            "A4",
+            name,
+            "lu_pink18",
+            Some(lu(&mut d, &p18)),
+            Better::Near(0.0),
+            Some(1.0),
+            0.3,
+        );
+        r.put(
+            "A1",
+            name,
+            "alias_5k_m12dbfs",
+            Some(alias(&mut d, 5000.0, -12.0).0),
+            Better::Lower,
+            None,
+            1.0,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dut::Wire;
 
     const RATE: u32 = 44_100;
+
+    #[test]
+    fn a_clipped_power_chord_has_mud_and_a_clean_one_none() {
+        use crate::dut::Shaper;
+        let chord = power_chord(RATE);
+        let mut w = Wire { rate: RATE };
+        assert!(sub70_db(&mut w, &chord) < -60.0);
+        // Hard clipping makes the chord's 41 Hz difference tone.
+        let mut clip = Shaper {
+            rate: RATE,
+            curve: |x: f64| (4.0 * x).clamp(-0.5, 0.5),
+        };
+        assert!(sub70_db(&mut clip, &chord) > -30.0);
+    }
 
     #[test]
     fn the_lock_in_reads_a_sines_amplitude() {
