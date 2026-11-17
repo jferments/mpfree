@@ -731,30 +731,30 @@ reverb/plate[Snare plate]/wet_lu	0.4413
 reverb/plate[Snare plate]/zipper_worst_db	7.9974
 reverb/plate[Vocal plate]/wet_lu	0.7059
 reverb/plate[Vocal plate]/zipper_worst_db	6.4058
-reverb/room/decay_error_pct@0.3s	-15.9918
-reverb/room/decay_error_pct@0.8s	-1.6366
-reverb/room/decay_error_pct@2s	-1.5234
-reverb/room/decay_error_pct@5s	-0.7146
-reverb/room/diffuse_ms	314.3084
-reverb/room/early_side_db	0.8702
-reverb/room/edt_t30_log2	-1.3131
-reverb/room/iacc_tail	0.0922
+reverb/room/decay_error_pct@0.3s	-3.7629
+reverb/room/decay_error_pct@0.8s	-1.1066
+reverb/room/decay_error_pct@2s	0.5575
+reverb/room/decay_error_pct@5s	-0.919
+reverb/room/diffuse_ms	17.9819
+reverb/room/early_side_db	4.3035
+reverb/room/edt_t30_log2	-0.1393
+reverb/room/iacc_tail	0.0763
 reverb/room/mix_bump_lu	0
-reverb/room/mix_dip_lu	-0.8565
-reverb/room/mono_sum_lu	-1.917
-reverb/room/predelay_error_frames	1
-reverb/room/tail_excess_over_ideal_db	4.9319
-reverb/room/wet_lu	-0.8565
-reverb/room/wobble_cents	0.1659
-reverb/room/zipper_worst_db	5.2865
-reverb/room[Big studio]/wet_lu	-0.2726
-reverb/room[Big studio]/zipper_worst_db	2.6024
-reverb/room[Drum room]/wet_lu	-0.7284
-reverb/room[Drum room]/zipper_worst_db	4.8843
-reverb/room[Gated snare]/wet_lu	0.5815
-reverb/room[Gated snare]/zipper_worst_db	5.5339
-reverb/room[Small booth]/wet_lu	0.9188
-reverb/room[Small booth]/zipper_worst_db	6.8253
+reverb/room/mix_dip_lu	-0.1901
+reverb/room/mono_sum_lu	-2.3094
+reverb/room/predelay_error_frames	0
+reverb/room/tail_excess_over_ideal_db	1.2563
+reverb/room/wet_lu	-0.1901
+reverb/room/wobble_cents	1.8668
+reverb/room/zipper_worst_db	1.8384
+reverb/room[Big studio]/wet_lu	0.2397
+reverb/room[Big studio]/zipper_worst_db	1.0178
+reverb/room[Drum room]/wet_lu	-0.0012
+reverb/room[Drum room]/zipper_worst_db	0.5907
+reverb/room[Gated snare]/wet_lu	0.9139
+reverb/room[Gated snare]/zipper_worst_db	0.0676
+reverb/room[Small booth]/wet_lu	0.1709
+reverb/room[Small booth]/zipper_worst_db	2.4147
 reverb/spring/decay_error_pct@1s	4.025
 reverb/spring/decay_error_pct@2.5s	-4.4519
 reverb/spring/decay_error_pct@6s	-14.5295

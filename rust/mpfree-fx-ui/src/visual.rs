@@ -22,8 +22,8 @@ use mpfree_fx::ids::{
     pitch_correct as tune, plate, room, spring, tape, transient, tuner,
 };
 use mpfree_fx::{
-    interval_semis, nearest_note, Cloud, Crush, Ducker, Svf, SvfMode, TransientShaper,
-    DUCKER_RATE_BEATS, VOCAL_KEYS,
+    interval_semis, nearest_note, room_early_taps, room_loss, room_size, Cloud, Crush, Ducker, Svf,
+    SvfMode, TransientShaper, DUCKER_RATE_BEATS, VOCAL_KEYS,
 };
 use mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_synth_ui::format::value_text;
@@ -1687,20 +1687,15 @@ fn plate_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
     );
 }
 
-/// How much sooner a room's highs die than its lows over `secs`, in dB
-/// at `w`: the one-pole loss filter Jot's design puts in each line, with
-/// a gain of 1 at DC and, at Nyquist, the highs' extra loss over that
-/// time (Decay the lows' time to -60 dB, Damping how much sooner the
-/// highs get there).
-fn room_hf_db(decay_ms: f32, damping: f32, secs: f32, w: f32) -> f32 {
-    let rt = decay_ms * 0.001;
-    let rt_hi = (rt * (1.0 - 0.9 * damping / 100.0)).max(0.02);
-    let g = 10f32.powf(-3.0 * secs / rt);
-    let g_hi = 10f32.powf(-3.0 * secs / rt_hi);
-    let ratio = (g_hi / g).clamp(0.0, 1.0);
-    let a = (1.0 - ratio) / (1.0 + ratio);
-    let den = 1.0 + a * a - 2.0 * a * w.cos();
-    10.0 * ((1.0 - a) * (1.0 - a) / den.max(1e-12)).max(1e-24).log10()
+/// How much sooner a room's highs die than its mids over `secs`, in dB
+/// at `w`: the loss filter the Room puts in each line ([`room_loss`]),
+/// against its gain at the mid frequency Decay is set at.
+fn room_hf_db(decay_ms: f32, damping: f32, secs: f32, rate: u32, w: f32) -> f32 {
+    // The one-pole's gain is `c0` over this; `c0` cancels against the mid.
+    let (_, c1) = room_loss(secs, decay_ms * 0.001, damping / 100.0, rate);
+    let den_db = |w: f32| 10.0 * (1.0 + c1 * c1 - 2.0 * c1 * w.cos()).max(1e-12).log10();
+    let mid = std::f32::consts::TAU * 707.0 / rate as f32;
+    den_db(mid) - den_db(w)
 }
 
 /// The room: its decay (the pre-delay, the early reflections growing
@@ -1714,18 +1709,15 @@ fn room_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
     let span = pre + gate.map_or(decay, |g| g.min(decay)) * 1.15;
     let x = |ms: f32| (ms / span).clamp(0.0, 1.0);
     let mut traces = vec![tail(pre, decay, gate, span, t.accent)];
-    // The early reflections: eight taps from about 4 to 37 ms at full
-    // size, a quarter of that at the smallest and half as much again at
-    // the largest, each quieter than the one before.
-    let size = 0.25 + 1.25 * v(room::SIZE) / 100.0;
+    // The early reflections: the left source's pattern, spreading out
+    // with Size.
     let early = v(room::EARLY) / 100.0;
-    for k in 0..8 {
-        let at = x(pre + size * (4.3 + 4.6 * k as f32));
-        let h = 0.9 * early * (0.84 - 0.08 * k as f32);
+    for (ms, g) in room_early_taps(room_size(v(room::SIZE))) {
+        let h = 0.9 * early * g;
         if h > 0.01 {
             traces.push(Trace {
                 width: 3.0,
-                ..line(vec![(at, 0.0), (at, h)], t.good)
+                ..line(vec![(x(pre + ms), 0.0), (x(pre + ms), h)], t.good)
             });
         }
     }
@@ -1757,7 +1749,7 @@ fn room_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
         30.0,
     );
     let damp = freq_curve(
-        |hz| room_hf_db(decay, v(room::DAMPING), 0.1, w(hz)),
+        |hz| room_hf_db(decay, v(room::DAMPING), 0.1, rate, w(hz)),
         -30.0,
         30.0,
     );
