@@ -25,7 +25,9 @@ use std::time::{Duration, Instant};
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
-use mpfree_play::{ClipDrop, Cue, Includes, Launch, PlayView, SongChange, Started, Takes};
+use mpfree_play::{
+    ClipDrop, Cue, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started, Takes,
+};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
@@ -34,8 +36,8 @@ use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow,
-    TimeAction, TimeState, TransportInfo,
+    bars_label, card_rows, clips_after, grid_name, AudioAction, EditInfo, MorphInfo, MuteWait,
+    RegionId, TakeRow, TimeAction, TimeState, TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State};
@@ -50,6 +52,43 @@ const CARD_JOIN: u64 = 0xC1_0000;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
+
+/// The tracks' mutes and solos as they will be once a mute queue lands,
+/// read without changing the project.
+struct Landed<'a> {
+    project: &'a Project,
+    q: &'a MuteWait,
+    soloing: bool,
+}
+
+fn queue_landed<'a>(project: &'a Project, q: &'a MuteWait) -> Landed<'a> {
+    let mut l = Landed {
+        project,
+        q,
+        soloing: false,
+    };
+    l.soloing = (0..project.tracks.len()).any(|t| l.flags(t).1);
+    l
+}
+
+impl Landed<'_> {
+    /// Track `t`'s mute and solo then.
+    fn flags(&self, t: usize) -> (bool, bool) {
+        match self.q.want.iter().find(|w| w.0 == t) {
+            Some(&(_, m, s)) => (m, s),
+            None => self
+                .project
+                .tracks
+                .get(t)
+                .map_or((false, false), |tr| (tr.mute, tr.solo)),
+        }
+    }
+
+    fn silent(&self, t: usize) -> bool {
+        let (m, s) = self.flags(t);
+        m || (self.soloing && !s)
+    }
+}
 
 /// The most changes a step edit sends to be made in place; a bigger one
 /// (a whole page erased or copied) compiles.
@@ -94,6 +133,30 @@ impl Costs {
             ms(self.slowest_step_compiled)
         )
     }
+}
+
+/// When a change waiting for `line` lands, for the log: "on the next
+/// bar", "on the next 2-bar line", "on the next 1/4".
+fn line_words(line: LaunchGrid) -> String {
+    match line {
+        LaunchGrid::Now => "at once".to_string(),
+        LaunchGrid::Bars(1) => "on the next bar".to_string(),
+        LaunchGrid::Bars(n) => format!("on the next {n}-bar line"),
+        LaunchGrid::Ticks(t) => format!("on the next {}", grid_name(t)),
+    }
+}
+
+/// What TRACK MUTE's pad for a track shows ([`TimeControl::mute_light`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MuteLight {
+    /// Muted, or silent while other tracks are soloed.
+    pub silent: bool,
+    /// Soloed.
+    pub solo: bool,
+    /// A change waits in the mute queue.
+    pub waiting: bool,
+    /// A clip of it is launched.
+    pub launched: bool,
 }
 
 pub struct TimeControl {
@@ -162,6 +225,12 @@ pub struct TimeControl {
     spans_lost: u64,
     /// The current period's started cues.
     started: Vec<Started>,
+    /// Mute and solo changes waiting for their line (sequencer S4's mute
+    /// queue), and the queue's number: the player lands their cues.
+    mute_queue: Option<(u32, MuteWait)>,
+    mute_ids: u32,
+    /// The current period's landed mute cues.
+    landed: Vec<MuteLanded>,
     /// The bar line a cue started on in the last poll, on each loop's
     /// Loop track: its loop goes on or off there ([`TimeControl::loop_plan`]).
     loop_at: [Option<Tick>; LOOPS],
@@ -252,6 +321,9 @@ impl TimeControl {
             fresh: true,
             spans_lost: 0,
             started: Vec::with_capacity(STARTED_ROOM),
+            mute_queue: None,
+            mute_ids: 0,
+            landed: Vec::with_capacity(MAX_TRACKS),
             loop_at: [None; LOOPS],
             loops_seen: [LoopNow::default(); LOOPS],
             loops_gone: [None; LOOPS],
@@ -342,6 +414,7 @@ impl TimeControl {
                 ToControl::Played(offset, event) => self.capture.input(offset, event),
                 ToControl::Moved(offset, input) => self.move_log.input(offset, input),
                 ToControl::Started(st) => self.started.push(st),
+                ToControl::MuteLanded(l) => self.landed.push(l),
                 ToControl::Touch(points, n) => {
                     self.touch.extend_from_slice(&points[..usize::from(n)]);
                 }
@@ -427,13 +500,42 @@ impl TimeControl {
             compile = true;
         }
         self.started.clear();
+        // The mute queue landed on its line, all of it on one tick: the
+        // project takes its changes, Rec song the silences, and a Loop
+        // track's loops go on or off there.
+        for i in 0..self.landed.len() {
+            let l = self.landed[i];
+            self.song_rec.mute(l.track, l.silent, l.at);
+            let held = loops::on_track(&self.project, l.track);
+            for (n, at) in self.loop_at.iter_mut().enumerate() {
+                if held & (1 << n) != 0 {
+                    *at = Some(l.at);
+                }
+            }
+            if self.mute_queue.as_ref().is_some_and(|(id, _)| *id == l.id) {
+                let line = self.landed_line(l.at);
+                self.land_queue_now();
+                self.note_later(line);
+                compile = true;
+            }
+        }
+        self.landed.clear();
+        // STOP lands whatever waits.
+        if self.mute_queue.is_some() && !self.info.state.rolling() {
+            let line = self.landed_line(self.info.position);
+            self.land_queue_now();
+            self.note_later(format!("{line} (STOP)"));
+            compile = true;
+        }
         // Song mode: the Loop tracks' blocks turn their loops on and off
         // on their own ticks, on the tracks with no clip launched.
         self.song_loops = [false; LOOPS];
         if self.song {
-            let (launches, tracks) = (&self.launches, &self.project.tracks);
+            let (launches, project) = (&self.launches, &self.project);
             let free = |t: usize| {
-                !launches.iter().any(|l| l.track == t) && tracks.get(t).is_some_and(|tr| !tr.mute)
+                !launches.iter().any(|l| l.track == t)
+                    && t < project.tracks.len()
+                    && !project.silent(t)
             };
             let spans = self.block.spans().iter().map(|s| s.ticks());
             let plan = loops::song_plan(&self.project, spans, free);
@@ -630,8 +732,35 @@ impl TimeControl {
         v.set_armed(self.armed);
         v.set_song(&self.project, self.song)
             .map_err(|e| format!("song: {e:?}"))?;
-        // A scene's mutes switch with its cues.
+        // A scene's mutes switch with its cues; while a track is soloed,
+        // one it unmutes stays silent unless it is soloed too.
         self.perform.dress(&mut v);
+        let project = &self.project;
+        if project.tracks.iter().any(|t| t.solo) {
+            for (t, tr) in project.tracks.iter().enumerate() {
+                if let Some(m) = self.perform.cue_mute(t) {
+                    v.set_cue_mute(t, Some(m || !tr.solo));
+                }
+            }
+        }
+        // The mute queue: every track it changes, and every track a solo
+        // in it silences or lets be heard, lands on the queue's line.
+        if let Some((id, q)) = &self.mute_queue {
+            let after = queue_landed(project, q);
+            for t in 0..project.tracks.len() {
+                let silent = after.silent(t);
+                if silent != project.silent(t) || q.want.iter().any(|w| w.0 == t) {
+                    v.set_mute_cue(
+                        t,
+                        MuteCue {
+                            silent,
+                            line: q.line,
+                            id: *id,
+                        },
+                    );
+                }
+            }
+        }
         v.set_includes(self.includes);
         v.make_room(RECORD_ROOM, RECORD_ROOM);
         Ok(v)
@@ -2454,30 +2583,179 @@ impl TimeControl {
         true
     }
 
-    /// TRACK MUTE's keys (control map decision 5): mute track `t` now, or
-    /// let it play again. Its clip keeps its place, so it comes back in
-    /// time; a scene's mutes set it again when the scene starts.
-    pub fn toggle_mute(&mut self, t: usize) -> Result<String, String> {
-        let Some(track) = self.project.tracks.get_mut(t) else {
-            return Err(format!("no track {}", t + 1));
+    /// TRACK MUTE's pad (sequencer S4): track `t`'s mute flips, or with
+    /// `solo` its solo. With `wait`, while the transport rolls and Launch
+    /// isn't at once, the change joins the mute queue and lands with the
+    /// rest on the queue's line (a tap on a track waiting takes its change
+    /// back). Otherwise it acts at once, with whatever that track had
+    /// waiting.
+    pub fn mute_or_solo(&mut self, t: usize, wait: bool, solo: bool) -> Result<String, String> {
+        let tr = self
+            .project
+            .tracks
+            .get(t)
+            .ok_or_else(|| format!("no track {}", t + 1))?;
+        let name = tr.name.clone();
+        let now = (tr.mute, tr.solo);
+        let queued = self
+            .mute_queue
+            .as_ref()
+            .and_then(|(_, q)| q.want.iter().find(|w| w.0 == t))
+            .map(|w| (w.1, w.2));
+        let (mut m, mut s) = queued.unwrap_or(now);
+        if solo {
+            s = !s;
+        } else {
+            m = !m;
+        }
+        let what = match (solo, m, s) {
+            (true, _, true) => "solo",
+            (true, _, false) => "solo off",
+            (false, true, _) => "muted",
+            (false, false, _) => "plays",
         };
-        track.mute = !track.mute;
+        let line = self
+            .mute_queue
+            .as_ref()
+            .map_or(self.project.launch, |(_, q)| q.line);
+        let before = self.mute_queue.clone();
+        if let Some((_, q)) = &mut self.mute_queue {
+            q.want.retain(|w| w.0 != t);
+        }
+        if wait && self.info.state.rolling() && line != LaunchGrid::Now {
+            if (m, s) != now {
+                let ids = &mut self.mute_ids;
+                let (_, q) = self.mute_queue.get_or_insert_with(|| {
+                    *ids += 1;
+                    (*ids, MuteWait { line, want: vec![] })
+                });
+                q.want.push((t, m, s));
+            }
+            if self
+                .mute_queue
+                .as_ref()
+                .is_some_and(|(_, q)| q.want.is_empty())
+            {
+                self.mute_queue = None;
+            }
+            if let Err(e) = self.compile() {
+                self.mute_queue = before;
+                return Err(e);
+            }
+            return Ok(if (m, s) == now {
+                format!("track mute: {name}: its change taken back")
+            } else {
+                format!("track mute: {name} {what} {}", line_words(line))
+            });
+        }
+        if self
+            .mute_queue
+            .as_ref()
+            .is_some_and(|(_, q)| q.want.is_empty())
+        {
+            self.mute_queue = None;
+        }
+        // At once.
+        let was: Vec<bool> = (0..self.project.tracks.len())
+            .map(|i| self.project.silent(i))
+            .collect();
+        let tr = &mut self.project.tracks[t];
+        (tr.mute, tr.solo) = (m, s);
         if let Err(e) = self.compile() {
-            self.project.tracks[t].mute ^= true;
+            let tr = &mut self.project.tracks[t];
+            (tr.mute, tr.solo) = now;
+            self.mute_queue = before;
             return Err(e);
         }
-        let track = &self.project.tracks[t];
-        Ok(format!(
-            "track mute: {} {}",
-            track.name,
-            if track.mute { "muted" } else { "plays" }
-        ))
+        self.song_silences(&was, self.info.position);
+        Ok(format!("track mute: {name} {what}"))
+    }
+
+    /// Rec song keeps the tracks whose silence changed from `was` at song
+    /// tick `at` (a muted stretch is left out of the song).
+    fn song_silences(&mut self, was: &[bool], at: Tick) {
+        for (t, &w) in was.iter().enumerate() {
+            let now = self.project.silent(t);
+            if now != w {
+                self.song_rec.mute(t, now, at);
+            }
+        }
+    }
+
+    /// The mute queue landing at song tick `at`, for the log: "track mute:
+    /// at 5.1, Track 2 muted, Track 3 solo".
+    fn landed_line(&self, at: Tick) -> String {
+        let Some((_, q)) = &self.mute_queue else {
+            return String::new();
+        };
+        let p = self.info.meter.position(at);
+        let mut line = format!("track mute: at {}.{}", p.bar, p.beat);
+        for &(t, m, s) in &q.want {
+            let Some(tr) = self.project.tracks.get(t) else {
+                continue;
+            };
+            let what = if s != tr.solo {
+                if s {
+                    "solo"
+                } else {
+                    "solo off"
+                }
+            } else if m {
+                "muted"
+            } else {
+                "plays"
+            };
+            line.push_str(&format!(", {} {what}", tr.name));
+        }
+        line
+    }
+
+    /// A line for the log once this period's bookkeeping is done
+    /// ([`TimeControl::take_later_note`]), after any already waiting.
+    fn note_later(&mut self, line: String) {
+        self.later_note = Some(match self.later_note.take() {
+            Some(n) => format!("{n}; {line}"),
+            None => line,
+        });
+    }
+
+    /// Land the mute queue at once, as STOP does with whatever waits.
+    fn land_queue_now(&mut self) -> bool {
+        let Some((_, q)) = self.mute_queue.take() else {
+            return false;
+        };
+        for (t, m, s) in q.want {
+            if let Some(tr) = self.project.tracks.get_mut(t) {
+                (tr.mute, tr.solo) = (m, s);
+            }
+        }
+        true
+    }
+
+    /// The mute queue waiting, for the screens.
+    pub fn mute_wait(&self) -> Option<&MuteWait> {
+        self.mute_queue.as_ref().map(|(_, q)| q)
     }
 
     /// Whether track `t` is muted (None: no such track), for TRACK MUTE's
     /// pad lights.
     pub fn muted(&self, t: usize) -> Option<bool> {
         self.project.tracks.get(t).map(|tr| tr.mute)
+    }
+
+    /// What TRACK MUTE's pad for track `t` shows (None: no such track).
+    pub fn mute_light(&self, t: usize) -> Option<MuteLight> {
+        let tr = self.project.tracks.get(t)?;
+        let waiting = self
+            .mute_queue
+            .as_ref()
+            .is_some_and(|(_, q)| q.want.iter().any(|w| w.0 == t));
+        Some(MuteLight {
+            silent: self.project.silent(t),
+            solo: tr.solo,
+            waiting,
+            launched: self.launched(t),
+        })
     }
 
     /// Which loops the Loop tracks have on (loop-tracks.md): a loop plays
@@ -2639,6 +2917,7 @@ impl TimeControl {
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
         st.cues = self.cues.clone();
+        st.mute_wait = self.mute_wait().cloned();
         st.cue_lines = self
             .cues
             .iter()

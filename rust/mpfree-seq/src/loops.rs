@@ -90,7 +90,10 @@ pub fn playing(p: &Project, launched: impl Iterator<Item = (usize, usize)>) -> [
     }
     let mut on = !placed;
     for (t, s) in launched {
-        let Some(track) = p.tracks.get(t).filter(|t| t.is_loops() && !t.mute) else {
+        if p.silent(t) {
+            continue;
+        }
+        let Some(track) = p.tracks.get(t).filter(|t| t.is_loops()) else {
             continue;
         };
         if let Some(n) = track
