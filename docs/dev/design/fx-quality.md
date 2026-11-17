@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-17 1c113480
+checked: 2026-11-18 1a0b4bde
 -->
 # FX quality: targets, the report and the ratchet
 
@@ -911,3 +911,11 @@ What changed (design: [fx-movement.md](fx-movement.md), [fx.md](fx.md)): the rot
 - **Met now:** the horn ramps up in 1.14 s and the drum in 4.66 s (W10; 0.82 and 3.28), and they take 1.42 and 1.25 times as long to slow down (1.05 and 1.04); within 0.3 LU of the dry on pink and hits at Slow and Fast, and every preset within 0.2 (W11; -3.2, and Gritty organ +0.2); the 6 kHz swing 5.3 dB more than the 1.5 kHz one (W12; 1.7 dB less); Drive folds back at -96.3 dB (Drive 50) and -55.6 dB (100) (W13; -30.8 and -13.3); the rotors turn opposite ways (W14; the same way). The horn's Doppler is ±37.6 cents (±36.8).
 - **Blessed worse, inside the targets:** the speeds read through the level swing, which the beam reshapes: Slow 0.796 and 0.668 Hz (W9; 0.797 and 0.669), Fast 6.699 Hz (6.700), the rotors themselves unchanged; the drum's Doppler ±8.3 cents (±8.1). The clicks of Speed, Balance, Width and Mix at -91.1, -93.0, -91.2 and -104.3 dB (W10; -99.3, -98.1, -100.9 and -105.1), all far under -60: a louder cabinet with more movement in it.
 - **Cost** (the instruction gate): 115.7k to 108.2k (-6.5 %). Each rotor's angle at each microphone comes from the rotor's and the spread's sines by the angle sums, six sines a frame instead of eight, more than paying for the beam's two one-poles and the drive's delay.
+
+### PR 3: the auto wah
+
+What changed (design: [fx-movement.md](fx-movement.md), [fx.md](fx.md)): the auto wah (plan-5 section 7). The band's gain is 1.95·√Q, since a band-pass passes about 1/Q of a broad sound's power, so the effect keeps its level as Resonance sharpens the peak and the defaults go in at the dry's level; the filter still retunes every 16 frames, but its coefficients and the gains they scale glide in a straight line between retunes; Resonance, Low and High glide over 20 ms; a Filter change crossfades the shapes (each shape's share through two 2.5 ms one-poles, so a change mid-way carries on from where it is); a Source change glides the sweep from where it was over 30 ms. Saved auto wahs keep their controls; in the Wah and Band-pass shapes they are about 5 LU louder, at the dry's level. After it: movement 158 of 171 met (148 after PR 2); every auto wah row met.
+
+- **Met now:** the defaults within 0.2 LU of the dry on pink, the presets within 1.4 (W16; -5.7, and -7.0 to -4.4 in four presets); Band-pass within 0.7 LU of its level at Resonance 60 from 0 to 100 (W17; +3.6 at 0); the peak within 1.2 % of where it is set (W15; 3.0 % at Resonance 0); the Filter switch at -87.2 dB, Resonance -97.1, Source -89.0, and every other control -85 dB or under (W18; -8.4, -42.3 and -54.1).
+- **Blessed worse, inside the targets:** the Wah shape at Resonance 0 and 30 is 1.1 and 0.5 LU under its level at 60 (W17; +0.5 and +0.1), since its leak doesn't grow with the band. Rate and Sync, which the default Envelope source doesn't use, read -89.0 dB (W18; -101.2), Release -86.6 (-86.8) and Mix -105.3 (-105.8): what they measure is the steady sound's own content above 6 kHz under the 997 Hz tone, which follows the band's gain (half the gain reads -97.2).
+- **Cost** (the instruction gate): 25.5k after PR W to 26.0k (+2.1 %; 28.5k before round 5): the ramps of the coefficients and gains, five adds a frame. The shares' crossfade runs only while a Filter change does.

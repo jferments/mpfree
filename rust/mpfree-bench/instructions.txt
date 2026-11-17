@@ -15,7 +15,7 @@
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
-25491	Auto wah
+26033	Auto wah
 21329	Auto-pan
 339781	Chain: drive, filter, delay, comp
 104245	Character (Console)

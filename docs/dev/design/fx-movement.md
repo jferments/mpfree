@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-fx/src/motion.rs rust/mpfree-fx/src/shift.rs
-checked: 2026-11-18 b4fe3b81
+covers: rust/mpfree-fx/src/motion.rs rust/mpfree-fx/src/shift.rs rust/mpfree-fx/src/wah.rs
+checked: 2026-11-18 1a0b4bde
 -->
 # Movement: tremolo, auto-pan, rotary, ring mod, frequency shifter and auto wah
 
-**Status:** built (F2 and the MPC coverage round); FX quality round 5 is under way. Its research, targets and measuring are done (101 of 171 movement targets met before any fix, at 44.1 kHz). PR W (17 Nov) rebuilds the LFO they share and crossfades the tremolo's Mode: 136 of 171 met, every LFO, tremolo and auto-pan row among them. PR 2 (17 Nov) rebuilds the rotary's motion, beam, level and drive: 148 of 171, every rotary row among them. The auto wah, and the ring mod with the frequency shifter come next, a PR each. Below, "before PR W" and "before PR 2" describe what was there before.
+**Status:** built (F2 and the MPC coverage round); FX quality round 5 is under way. Its research, targets and measuring are done (101 of 171 movement targets met before any fix, at 44.1 kHz). PR W (17 Nov) rebuilds the LFO they share and crossfades the tremolo's Mode: 136 of 171 met, every LFO, tremolo and auto-pan row among them. PR 2 (17 Nov) rebuilds the rotary's motion, beam, level and drive: 148 of 171, every rotary row among them. PR 3 (17 Nov) sets the auto wah's level by its Q and glides every change: 158 of 171, every auto wah row among them. The ring mod with the frequency shifter comes next. Below, "before PR W", "before PR 2" and "before PR 3" describe what was there before.
 
 This page is the design of MPFree's movement effects as one effect type: what they are for, the ideas underneath them, the research behind ours, which algorithms each uses and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter-by-parameter summary lives in [fx.md](fx.md); the measured targets and their history in [fx-quality.md](fx-quality.md#round-5-movement-pitch-and-voice). The research notes, plan and baseline probe are in jferments/mpfree-claude `fx/quality/` (research-movement.md, plan-5.md, baseline-r5-2026-11-17.md, tools/r5_baseline.rs).
 
@@ -104,7 +104,14 @@ Single-sideband shifting by 0.01 Hz to 5 kHz: Olli Niemitalo's eighth-order pair
 
 ### Auto wah
 
-One Simper state-variable filter swept evenly in pitch between Low and High (100 Hz to 6 kHz) by the sound's level (a follower with Sensitivity, Attack and Release), by the LFO (its sine, read when the filter retunes), or by hand (Source Pedal: Center is the pedal). A negative Depth sweeps down. Shapes: Wah (the band-pass with the low end leaking through at about -9 dB, as a pedal's does), Band-pass (level-normalised), Low-pass and High-pass. It retunes every 16 frames from a smoothed position. Measured: the peak within 0.6 % at Resonance 60 and 100, 3 % at 0; 5.7 LU quieter at the defaults; Band-pass 3.6 LU louder at Resonance 0 than at 60; Filter clicks at -8.4 dB and a fast Resonance move at -42.3. PR 3's (plan-5 section 7).
+One Simper state-variable filter swept evenly in pitch between Low and High (100 Hz to 6 kHz) by the sound's level (a follower with Sensitivity, Attack and Release), by the LFO (its sine, read when the filter retunes), or by hand (Source Pedal: Center is the pedal). A negative Depth sweeps down. Shapes: Wah (the band-pass with the low end leaking through at about -9 dB, as a pedal's does), Band-pass, Low-pass and High-pass.
+
+- **Level:** a band-pass passes about 1/Q of a broad sound's power, so the band's gain is 1.95·√Q (`BAND_GAIN`): a sharper peak keeps the effect's level, and the defaults go in at the dry's level on pink noise. The peak itself is that much up: +12.6 dB at the default Resonance, +16.6 dB at 100, so a tone sitting on it comes out louder, as through a pedal.
+- **Retuning:** every 16 frames from a smoothed position, and the coefficients (and the gains they scale) glide in a straight line from one retune to the next, so a fast sweep doesn't buzz at the retune rate. Resonance, Low and High glide over 20 ms, a retune at a time.
+- **Filter:** a change crossfades the shapes: each shape's share glides toward 1 or 0 through two one-poles of 2.5 ms, so they add up to 1, start and stop gently, and a change mid-way carries on from where it is.
+- **Source:** a change glides the sweep from where the old Source had it to where the new one has it, a raised cosine over 30 ms.
+
+Measured before PR 3 (round 5's baseline): the peak within 0.6 % at Resonance 60 and 100, 3.0 % at 0; 5.7 LU quieter at the defaults and 7.0 to 4.4 LU quieter in four presets; Band-pass 3.6 LU louder at Resonance 0 than at 60; Filter clicked at -8.4 dB, a fast Resonance move at -42.3 and a Source change at -54.1. After it every auto wah target is met: the peak within 1.2 %; the defaults within 0.2 LU of the dry and every preset within 1.4; Band-pass within 0.7 LU of its level at 60 from Resonance 0 to 100; every control -85 dB or under, the Filter switch -87.2.
 
 ## 5. Controls
 
@@ -117,7 +124,7 @@ One Simper state-variable filter swept evenly in pitch between Low and High (100
 | Frequency shifter | Shift, Mode (Up, Down, Up and down, Stereo), Feedback, Mix |
 | Auto wah | Source (Envelope, LFO, Pedal), Center, Depth, Sensitivity, Attack, Release, Rate, Sync, Low, High, Resonance, Filter, Mix |
 
-PR W and PR 2 change no control and no id, so saved projects open as they were; they sound as described above (a saved rotary now goes in at the dry's level, its drum turns the other way, its horn beams and its ramp takes the Ramp's time).
+PR W, PR 2 and PR 3 change no control and no id, so saved projects open as they were; they sound as described above (a saved rotary now goes in at the dry's level, its drum turns the other way, its horn beams and its ramp takes the Ramp's time; a saved auto wah in the Wah or Band-pass shape goes in at the dry's level, about 5 LU louder than it was).
 
 ## 6. Defaults and presets
 
@@ -148,13 +155,13 @@ The instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz, at the defaul
 | Tremolo | 16.7k | 11.3k |
 | Auto-pan | 22.0k | 21.3k |
 | Ring mod | 24.6k | 20.3k |
-| Auto wah | 28.5k | 25.5k |
+| Auto wah | 28.5k | 26.0k |
 | Frequency shifter | 55.3k | 55.3k |
 | Rotary | 115.7k | 108.2k |
 
 PR W's LFO does more and costs less: its glide and wrap are out of line, the Sine is tested first, the tremolo works out one value a frame in its usual case, and the auto wah and talk box read the LFO only when they retune. The first version, with the glide in line and the shape matched for every value, cost the tremolo 45 % more.
 
-PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame off, more than the beam's two one-poles and the drive's delay cost.
+PR 3's auto wah costs 2.1 % more than after PR W (the ramps of the coefficients and gains, five adds a frame), 8.8 % less than before round 5. PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame off, more than the beam's two one-poles and the drive's delay cost.
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -167,7 +174,10 @@ PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame of
 - **Rotors that turn together, a horn with no beam** (the rotary before PR 2): a flatter swirl. The drum turns the other way, and the horn's highs are low-passed while it faces away.
 - **A ramp read one rotation at a time** (plan-5's 4.5 s for the drum was 3.28 s at every moment): the ramp is set from the speed at every moment, and slowing down is slower than speeding up.
 - **Saturation at the base rate** (the rotary's Drive before PR 2): fold-back at -13 dB. It runs 2x oversampled with ADAA, and the plain path waits as long, so switching never shifts the sound.
-- **The ring mod's aliasing, the shifter's image, the wah's level:** measured, and the subjects of the next PRs (plan-5 sections 7 and 8).
+- **A band-pass normalised for its peak** (the auto wah before PR 3): a broad sound loses about 1/Q of its power, 5.7 LU at the defaults. The band's gain follows √Q.
+- **Coefficients that step at each retune** (the auto wah before PR 3): a buzz at the retune rate on a fast sweep (-42 dB on Resonance). They glide between retunes.
+- **A shape switched in one frame, or a crossfade that restarts** (the Filter switch: -8.4 dB before PR 3, -33 with a crossfade that restarted on each change): shares that glide through two one-poles carry on from where they are.
+- **The ring mod's aliasing, the shifter's image:** measured, and the subject of the next PR (plan-5 section 8).
 
 ## 10. History and next
 
@@ -175,7 +185,8 @@ PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame of
 - FX quality round 5 (17 Nov): research, baseline and plan (mpfree-claude #211, plan-5.md); the measuring PR (#510): 101 of 171 movement targets met.
 - PR W (17 Nov): the shared LFO rebuilt and the tremolo's Mode crossfaded: 136 of 171.
 - PR 2 (17 Nov): the rotary's ramp, coast, opposite rotation, treble beam, level and oversampled drive: 148 of 171.
-- Next: PR 3 the auto wah (level, retuning, the Filter switch), PR 4 the ring mod and frequency shifter (the square's aliasing, the waves' level, a better 90° network, the Mode switch).
+- PR 3 (17 Nov): the auto wah's level by Q, gliding coefficients, Resonance, Low and High, and glided Filter and Source changes: 158 of 171.
+- Next: PR 4 the ring mod and frequency shifter (the square's aliasing, the waves' level, a better 90° network, the Mode switch).
 
 ## 11. Sources
 
