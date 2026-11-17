@@ -123,6 +123,28 @@ fn grains_never_allocate() {
                     } else {
                         SprayShape::Even
                     },
+                    lfo: GrainLfo {
+                        shape: [LfoShape::Sine, LfoShape::Hold, LfoShape::Drift][k % 3],
+                        rate_hz: 0.5 + (k % 4) as f32 * 10.0,
+                        beats: k.is_multiple_of(5).then_some(0.25),
+                        target: [
+                            MotionTarget::Position,
+                            MotionTarget::Size,
+                            MotionTarget::Density,
+                            MotionTarget::Pitch,
+                            MotionTarget::Spray,
+                            MotionTarget::Off,
+                        ][k % 6],
+                        depth: 1.0 - (k % 3) as f32,
+                    },
+                    env: GrainEnv {
+                        attack_ms: (k % 3) as f32 * 20.0,
+                        decay_ms: 50.0,
+                        sustain: 0.5,
+                        target: [MotionTarget::Size, MotionTarget::Density, MotionTarget::Off]
+                            [k % 3],
+                        depth: 0.8,
+                    },
                 });
                 if k % 4 == 3 {
                     v.stop()

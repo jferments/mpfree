@@ -63,13 +63,24 @@
 //!   flam, over 4 ms a millisecond at a time); the medians over the hits.
 //!   Shown: the stretch's loudness against the drums' (louder sped up,
 //!   with more whole hits a second) and the same without hits.
+//! - **G13, movement keeps the level (step B3):** a sprayed cloud (80 ms
+//!   grains, 80 a second, spray 0.3) on pink and the pad, with its LFO
+//!   (a sine, 0.5 Hz) on position (full depth), size, density and pitch
+//!   (half depth: 2.8 times, 4 times, 6 semitones either way) and spray
+//!   (from 0.5, full depth), or its envelope on size (half a second up,
+//!   a second down to half): the loudness against the same cloud
+//!   unmoved, and how much further its level swings (over 400 ms, every
+//!   100 ms, as a momentary meter moves).
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
 //! device round). Design: `docs/dev/design/fx-quality.md` ("The grain
 //! engine"); plan: mpfree-claude `sampler/granular/plan.md`.
 
-use mpfree_grain::{Budget, GrainVoice, Params, SprayShape, Stats, Window};
+use mpfree_grain::{
+    Budget, GrainEnv, GrainLfo, GrainVoice, LfoShape, MotionTarget, Params, SprayShape, Stats,
+    Window,
+};
 use mpfree_sampler::bandlimit::Octaves;
 use mpfree_sampler::grain_clip::GrainClip;
 
@@ -105,6 +116,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     variation(&mut rows, &lab);
     tone(&mut rows, &lab);
     hits(&mut rows, &lab);
+    movement(&mut rows, &lab);
     rows
 }
 
@@ -216,7 +228,19 @@ fn pad_sound(n: usize, rate: u32) -> Vec<f32> {
 /// pitched more than two semitones up read band-limited, from the
 /// sound's octave copies past an octave (made here only for those).
 fn render(src: &[f32], rate: u32, p: Params, secs: f64, seed: u64) -> (Stereo, Stats) {
-    let up = p.pitch.max(0.0) + p.pitch_spray.max(0.0) > 2.0;
+    // As high as the movement takes the pitch, too.
+    let moved = |t: MotionTarget, depth: f32| {
+        if t == MotionTarget::Pitch {
+            12.0 * depth.abs()
+        } else {
+            0.0
+        }
+    };
+    let up = p.pitch.max(0.0)
+        + p.pitch_spray.max(0.0)
+        + moved(p.lfo.target, p.lfo.depth)
+        + moved(p.env.target, p.env.depth)
+        > 2.0;
     let octaves = up.then(|| Octaves::make(src, 1));
     let clip = GrainClip::new(src, 1, rate)
         .expect("a lab clip")
@@ -1041,6 +1065,117 @@ fn hits(rows: &mut Vec<Row>, lab: &Lab) {
                 Better::Info,
                 None,
                 0.2,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G13: movement keeps the level (step B3).
+
+/// How far the level swings (dB): over 400 ms, every 100 ms, as a
+/// momentary loudness meter moves.
+fn swing(s: &Stereo) -> f64 {
+    let hop = (s.rate / 10) as usize;
+    let levels: Vec<f64> = (0..s.left.len().saturating_sub(4 * hop))
+        .step_by(hop)
+        .map(|i| db(rms(&s.left[i..i + 4 * hop])))
+        .collect();
+    let lo = levels.iter().cloned().fold(f64::MAX, f64::min);
+    let hi = levels.iter().cloned().fold(f64::MIN, f64::max);
+    hi - lo
+}
+
+fn movement(rows: &mut Vec<Row>, lab: &Lab) {
+    let p = Params {
+        density: 80.0,
+        spray: 0.3,
+        ..base()
+    };
+    let lfo = |target, depth| GrainLfo {
+        shape: LfoShape::Sine,
+        rate_hz: 0.5,
+        beats: None,
+        target,
+        depth,
+    };
+    let cases = [
+        (
+            "lfo position",
+            Params {
+                lfo: lfo(MotionTarget::Position, 1.0),
+                ..p
+            },
+        ),
+        (
+            "lfo size",
+            Params {
+                lfo: lfo(MotionTarget::Size, 0.5),
+                ..p
+            },
+        ),
+        (
+            "lfo density",
+            Params {
+                lfo: lfo(MotionTarget::Density, 0.5),
+                ..p
+            },
+        ),
+        (
+            "lfo pitch",
+            Params {
+                lfo: lfo(MotionTarget::Pitch, 0.5),
+                ..p
+            },
+        ),
+        (
+            "lfo spray",
+            Params {
+                spray: 0.5,
+                lfo: lfo(MotionTarget::Spray, 1.0),
+                ..p
+            },
+        ),
+        (
+            "env size",
+            Params {
+                env: GrainEnv {
+                    attack_ms: 500.0,
+                    decay_ms: 1000.0,
+                    sustain: 0.5,
+                    target: MotionTarget::Size,
+                    depth: 0.5,
+                },
+                ..p
+            },
+        ),
+    ];
+    for (name, src) in [("pink", &lab.pink), ("pad", &lab.pad)] {
+        // Two of the LFO's cycles, after the cloud fills in.
+        let (still, _) = steady(src, lab.rate, p, 4.0, 13);
+        let (level, spread) = (lufs(&still), swing(&still));
+        for (what, q) in cases {
+            let (s, _) = steady(src, lab.rate, q, 4.0, 13);
+            put(
+                rows,
+                "G13",
+                format!("move[{name}, {what}]"),
+                "level_change_lu",
+                lufs(&s) - level,
+                Better::Near(0.0),
+                Some(1.0),
+                0.1,
+            );
+            put(
+                rows,
+                "G13",
+                format!("move[{name}, {what}]"),
+                "extra_swing_db",
+                swing(&s) - spread,
+                Better::Lower,
+                Some(3.0),
+                // A random cloud's level wanders a few tenths either way.
+                0.5,
             );
         }
     }
