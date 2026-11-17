@@ -253,12 +253,12 @@ fn segments(line: Rect, n: usize) -> Vec<Rect> {
         .collect()
 }
 
-/// "MIDI in", "Keystep 37", "Any port".
-fn port_name(l: &Saved) -> String {
+/// "MIDI in", "Keystep 37" (or the name given to it), "Any port".
+fn port_name(m: &IoModel, l: &Saved) -> String {
     match l.port.as_deref() {
         None => "Any port".to_string(),
         Some(DIN_NAME) => "MIDI in".to_string(),
-        Some(p) => p.to_string(),
+        Some(p) => m.setup.shown(p).to_string(),
     }
 }
 
@@ -901,7 +901,7 @@ impl IoSection for Learn {
             // Control: the device, then what on it.
             let (x, w) = cols[0];
             let c = Rect::new(x + 10, rr.y, w - 14, rr.h);
-            let port = port_name(s);
+            let port = port_name(&m, s);
             let pw = (port.chars().count() as i32 * 9 + 10).min(c.w / 2);
             cx.text(
                 FontId::Sans,
@@ -1038,7 +1038,7 @@ impl IoSection for Learn {
                     k,
                     format!(
                         "{} {}: {}",
-                        port_name(s),
+                        port_name(&m, s),
                         control_name(s),
                         name_of(&m, k, s)
                     ),
