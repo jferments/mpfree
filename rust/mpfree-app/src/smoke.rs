@@ -278,7 +278,7 @@ pub fn short(a: &FromUi) -> String {
 
 /// Every sample screen, swept. `sample_screens` builds every screen in one
 /// frame, which outgrows a debug build's 2 MiB test thread, so this runs on
-/// a thread with the main thread's 8 MiB (as `every_sample_screen_draws`).
+/// a thread with [`gui::SCREENS_STACK`] (as `every_sample_screen_draws`).
 /// A screen a press cannot be brought back from is taken fresh from a spare
 /// set of screens (built when there is none left for it).
 ///
@@ -340,10 +340,11 @@ fn keep_nearest(spares: &mut Vec<Vec<Option<Player>>>, cap: usize) {
     spares.retain(|set| set.iter().any(Option::is_some));
 }
 
-/// Run `f` on a thread with the main thread's stack.
+/// Run `f` on a thread with the sample screens' stack
+/// ([`gui::SCREENS_STACK`]).
 pub fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     std::thread::Builder::new()
-        .stack_size(8 << 20)
+        .stack_size(gui::SCREENS_STACK)
         .spawn(f)
         .expect("a thread for the smoke test")
         .join()
