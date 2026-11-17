@@ -273,7 +273,12 @@ impl ChainHost {
     /// The Notes stage on `st` for a note track (`src`): its rows, the one
     /// whose page shows (its settings as the Q-Links' parameters), the
     /// picker. Plays on is the screen's to fill (it holds the MIDI set-up).
-    pub fn dress_notes(&mut self, st: &mut ChainState, src: Option<NotesSource>) {
+    pub fn dress_notes(
+        &mut self,
+        st: &mut ChainState,
+        src: Option<NotesSource>,
+        engine: &mpfree_mod::ModEngine,
+    ) {
         let (Some(src), Some(t)) = (src, self.track()) else {
             self.notes_row = None;
             self.notes_picking = false;
@@ -296,6 +301,30 @@ impl ChainHost {
         }
         if let Some((_, id, fx)) = ns.page_fx().filter(|_| !ns.picking) {
             (st.params, st.main_four) = mpfree_chain_ui::notes::param_views(ns.track, id, &fx);
+            // What the mod engine does to them: a macro, a ring for the
+            // matrix rows, a lock; and the setting touched last, with its
+            // rows, for the Modulate row.
+            for p in st.params.iter_mut().chain(st.main_four.iter_mut()) {
+                p.macro_ = engine.macro_of(p.addr);
+                p.mod_range = engine.mod_range(p.addr);
+                p.locked = engine.is_locked(p.addr);
+            }
+            if let Some(f) = self
+                .focus
+                .filter(|f| st.params.iter().any(|p| p.addr == *f))
+            {
+                st.focus = Some(f);
+                st.rows = engine
+                    .rows()
+                    .enumerate()
+                    .filter(|(_, r)| r.target == f)
+                    .map(|(i, r)| mpfree_chain_ui::state::RowView {
+                        index: i,
+                        source: mpfree_chain_ui::state::source_name(r.source),
+                        depth: r.depth,
+                    })
+                    .collect();
+            }
         }
         st.notes = Some(ns);
     }
@@ -746,7 +775,7 @@ fn mapping(h: &MixHost, target: ParamAddr) -> MacroMap {
         .value(target)
         .zip(e.info(target))
         .map(|(v, i)| i.to_unit(v))
-        .or_else(|| crate::modmix::describe(&h.mixer, target).map(|(i, v)| i.to_unit(v)))
+        .or_else(|| h.modu.param(&h.mixer, target).map(|(i, v)| i.to_unit(v)))
         .unwrap_or(0.0);
     MacroMap {
         target,
@@ -789,6 +818,7 @@ pub fn label(h: &MixHost, addr: ParamAddr) -> String {
                 format!("{effect} {} ({})", p.to_lowercase(), mixing::name(sid))
             }
         }
+        Owner::NoteFx(..) => h.modu.note_label(addr).unwrap_or_else(|| addr.to_string()),
         _ => addr.to_string(),
     }
 }
@@ -915,7 +945,7 @@ impl Panels {
         self.chain.as_mut().map(|h| {
             let mut st = h.state(mix);
             let src = h.track().and_then(notes);
-            h.dress_notes(&mut st, src);
+            h.dress_notes(&mut st, src, mix.modu.engine());
             st
         })
     }
@@ -1128,8 +1158,9 @@ impl Panels {
             return Vec::new();
         };
         self.sent_at = None;
-        // A MIDI effect's setting on the Q-Links is the Notes stage's (no
-        // modulation, learn or automation on them yet).
+        // A MIDI effect's setting turned is the Notes stage's (the project
+        // keeps it); touching it, its macro, Learn and its rows are the
+        // mod engine's, as for a sound's.
         let note = match *a {
             ChainAction::Notes(na) => Some(na),
             ChainAction::Set { addr, value } => match addr.owner {
@@ -1140,15 +1171,10 @@ impl Panels {
                 }),
                 _ => None,
             },
-            ChainAction::Focus(addr) | ChainAction::Release(addr)
-                if matches!(addr.owner, Owner::NoteFx(..)) =>
-            {
-                return Vec::new();
-            }
             _ => None,
         };
         if let Some(na) = note {
-            return notes_action(app, h, time, &na, recording);
+            return notes_action(app, h, mix, time, &na, recording);
         }
         match h.action(mix, a, recording) {
             ChainOut::Shown => Vec::new(),
@@ -1255,7 +1281,7 @@ impl Panels {
             if let Some(h) = self.chain.as_mut() {
                 let mut st = h.state(mix);
                 let src = h.track().and_then(notes);
-                h.dress_notes(&mut st, src);
+                h.dress_notes(&mut st, src, mix.modu.engine());
                 let fx = h.fx_state(mix, &st, bpm);
                 show(ToUi::Chain(Box::new(st)));
                 show(ToUi::ChainFx(fx.map(Box::new)));
@@ -1272,6 +1298,7 @@ impl Panels {
 fn notes_action(
     app: &mut App,
     h: &mut ChainHost,
+    mix: &mut MixHost,
     time: &mut TimeHost,
     a: &NoteAction,
     recording: bool,
@@ -1279,13 +1306,15 @@ fn notes_action(
     let Some(t) = h.track() else {
         return Vec::new();
     };
-    let Some(mut fx) = time.project().tracks.get(t).map(|tr| tr.note_fx) else {
+    let Some(was) = time.project().tracks.get(t).map(|tr| tr.note_fx) else {
         return Vec::new();
     };
+    let mut fx = was;
     match h.note_action(a, &mut fx) {
         NoteOut::Shown => Vec::new(),
         NoteOut::Changed => {
             if time.set_note_fx(t, fx) {
+                note_fx_to_engine(mix, t, &was, &fx, a);
                 Vec::new()
             } else {
                 vec![Effect::Tell(
@@ -1311,6 +1340,28 @@ fn notes_action(
             fx
         }
         NoteOut::Refused(why) => vec![Effect::Tell(format!("notes: {why}"))],
+    }
+}
+
+/// A track's MIDI effects changed from `was` to `now` on the screen: the
+/// mod engine forgets an effect that left the track (its macros, rows and
+/// locks go with it), and a setting it holds takes the new value as its
+/// own (a macro or an LFO then moves it from there).
+fn note_fx_to_engine(mix: &mut MixHost, t: usize, was: &TrackFx, now: &TrackFx, a: &NoteAction) {
+    let Ok(track) = u8::try_from(t) else {
+        return;
+    };
+    for p in 0..mpfree_notefx::MAX_FX {
+        let id = was.ids[p];
+        if was.slots[p].is_some() && now.place_of(id).is_none() {
+            mix.modu.forget(Owner::NoteFx(track, id));
+        }
+    }
+    if let NoteAction::Set { id, k, .. } = *a {
+        if let (Some(v), Ok(param)) = (now.value(id, k), u16::try_from(k)) {
+            mix.modu
+                .set(ParamAddr::new(Owner::NoteFx(track, id), param), v as f32);
+        }
     }
 }
 
@@ -1676,7 +1727,8 @@ mod tests {
             &mut quiet,
         );
         assert_eq!(shape(&time), to);
-        // The same Q-Link isn't a sound's: no knob focus, no release.
+        // Letting go of it hands it back to the engine, as a sound's knob:
+        // nothing for the app to do.
         assert!(p
             .chain(
                 &mut app,
@@ -1739,6 +1791,119 @@ mod tests {
         assert_eq!(app.view(), View::Arp);
         // No such track: no Notes stage.
         assert!(NotesSource::of(&app, &time, 99).is_none());
+    }
+
+    /// A MIDI effect's setting touched on its page takes a macro and an
+    /// LFO row as a sound's knob does: the engine holds it (named for the
+    /// macro cards), the page shows its macro and its row, a macro turn
+    /// moves it in the sound loop, and the effect taken out takes all of
+    /// that with it.
+    #[test]
+    fn a_midi_effect_setting_takes_a_macro_and_an_lfo_and_leaves_with_its_effect() {
+        use crate::mixing::SYNTH;
+        let mut r = Rig::new();
+        let mut app = App::new(RATE, false);
+        let mut time = TimeHost::new(RATE, 120.0).unwrap();
+        app.start();
+        let mut p = Panels::new();
+        p.open_insert(&mut app, &r.h, StripId::Track(SYNTH), None);
+        let act = |p: &mut Panels, app: &mut App, time: &mut TimeHost, r: &mut Rig, a| {
+            p.chain(app, &mut r.h, time, &a, false, &mut |_| {})
+        };
+        let chance = Fx::all().iter().position(|f| f.name() == "Chance").unwrap();
+        act(
+            &mut p,
+            &mut app,
+            &mut time,
+            &mut r,
+            ChainAction::Notes(NoteAction::Picker(true)),
+        );
+        let fx = act(
+            &mut p,
+            &mut app,
+            &mut time,
+            &mut r,
+            ChainAction::Notes(NoteAction::Add(chance)),
+        );
+        assert!(fx.is_empty(), "{fx:?}");
+        let id = time.project().tracks[SYNTH].note_fx.ids[0];
+        // The engine knows the tracks' MIDI effects as the sound loop has them.
+        let table: [TrackFx; mpfree_seq::MAX_TRACKS] = std::array::from_fn(|t| {
+            time.project()
+                .tracks
+                .get(t)
+                .map_or_else(TrackFx::default, |tr| tr.note_fx)
+        });
+        r.h.modu.set_note_fx(&table);
+        let addr = mpfree_chain_ui::notes::addr(SYNTH as u8, id, 0);
+        // Touched, then on macro 2: from where it is to the far end.
+        for a in [
+            ChainAction::Focus(addr),
+            ChainAction::Macro {
+                target: addr,
+                macro_: Some(1),
+            },
+        ] {
+            let fx = act(&mut p, &mut app, &mut time, &mut r, a);
+            assert!(fx.is_empty(), "{fx:?}");
+        }
+        assert_eq!(r.h.modu.engine().macro_of(addr), Some(1));
+        let mut m = MacrosHost::new(0);
+        let ms = m.state(&r.h);
+        let t = &ms.macros[1].targets[0];
+        assert_eq!(t.label, "Chance (Track 2)");
+        let (from, to) = (t.from, t.to);
+        assert!((from - 0.75).abs() < 1e-3 && to == 0.0, "{from} {to}");
+        // An LFO row on it: the page shows the macro, the ring and the row.
+        act(
+            &mut p,
+            &mut app,
+            &mut time,
+            &mut r,
+            ChainAction::AddRow {
+                target: addr,
+                source: Source::Lfo(0),
+            },
+        );
+        let st = shown(&mut p, &app, &time, &r);
+        let pv = st.params.iter().find(|p| p.addr == addr).unwrap();
+        assert_eq!(pv.macro_, Some(1));
+        assert!(pv.mod_range.is_some());
+        assert_eq!(st.focus, Some(addr));
+        assert_eq!(st.rows.len(), 1);
+        assert_eq!(st.rows[0].depth, ROW_DEPTH);
+        // The row out, the macro all the way: the sound loop gets 0 %.
+        act(
+            &mut p,
+            &mut app,
+            &mut time,
+            &mut r,
+            ChainAction::RemoveRow(0),
+        );
+        r.h.modu.take_note_values().for_each(drop);
+        m.action(&mut r.h, &MacroAction::Macro { m: 1, value: 1.0 }, false);
+        r.run(20);
+        let got: Vec<_> = r.h.modu.take_note_values().collect();
+        assert!(
+            got.last()
+                .is_some_and(|&(a, v)| a == addr && v.abs() < 1e-3),
+            "{got:?}"
+        );
+        // Taken out: its macro target and its page go, nothing is left.
+        let fx = act(
+            &mut p,
+            &mut app,
+            &mut time,
+            &mut r,
+            ChainAction::Notes(NoteAction::Remove(0)),
+        );
+        assert!(fx.is_empty(), "{fx:?}");
+        assert!(!r.h.modu.engine().is_target(addr));
+        assert!(m.state(&r.h).macros[1].targets.is_empty());
+        let st = shown(&mut p, &app, &time, &r);
+        assert!(st.rows.is_empty());
+        assert_eq!(st.notes.unwrap().selected, None);
+        assert_eq!(r.h.modu.unrouted(), 0);
     }
 
     /// Plays on opens the mixer's I/O view (the screen opens its MIDI

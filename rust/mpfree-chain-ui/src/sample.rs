@@ -1281,14 +1281,18 @@ mod tests {
         tap(&mut ui, echo.x + 5, echo.y + 5);
         tap(&mut ui, nl.plays.x + 5, nl.plays.y + 5);
         let acts = crate::take_chain_actions(&mut ui);
+        // Each setting touched becomes the one the Modulate row works on.
+        let at = |k| crate::notes::addr(2, 2, k);
         assert_eq!(
             acts,
             [
+                ChainAction::Focus(at(1)),
                 ChainAction::Notes(N::Set {
                     id: 2,
                     k: 1,
                     value: 1
                 }),
+                ChainAction::Focus(at(5)),
                 ChainAction::Notes(N::Set {
                     id: 2,
                     k: 5,
@@ -1298,6 +1302,57 @@ mod tests {
                 ChainAction::Notes(N::Picker(true)),
                 ChainAction::Notes(N::Add(5)),
                 ChainAction::Notes(N::PlaysOn),
+            ]
+        );
+    }
+
+    /// A MIDI effect's setting touched takes the usual Modulate row: a
+    /// macro, Learn and + LFO work on it (a choice takes macros, not rows).
+    #[test]
+    fn a_touched_midi_effect_setting_takes_a_macro_learn_and_an_lfo() {
+        use crate::notes::NoteAction as N;
+        use mpfree_mod::Source;
+        let mut song = Song::new();
+        let mut ui = notes_screen(&mut song, Some(1));
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        let pl = l.notes_page.clone().unwrap();
+        let at = |k| crate::notes::addr(2, 2, k);
+        // Strum's value (a number), then macro 2, Learn and + LFO.
+        let strum = pl.cards[1].rows.iter().find(|w| w.k == 5).unwrap();
+        tap(&mut ui, strum.value.x + 4, strum.value.y + 4);
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let (mx, my) = centre(l.macros[1]);
+        tap(&mut ui, mx, my);
+        let (lx, ly) = centre(l.learn);
+        tap(&mut ui, lx, ly);
+        let (fx, fy) = centre(l.add_lfo);
+        tap(&mut ui, fx, fy);
+        // The new row opened the rows over the page: a tap elsewhere shuts
+        // them. Then Voicing (a choice): a macro only, no row.
+        let (spread, _) = pl.cards[0].rows[0].seg[1];
+        tap(&mut ui, spread.x + 5, spread.y + 5);
+        tap(&mut ui, spread.x + 5, spread.y + 5);
+        tap(&mut ui, fx, fy);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [
+                ChainAction::Focus(at(5)),
+                ChainAction::Macro {
+                    target: at(5),
+                    macro_: Some(1)
+                },
+                ChainAction::Learn(at(5)),
+                ChainAction::AddRow {
+                    target: at(5),
+                    source: Source::Lfo(0)
+                },
+                ChainAction::Focus(at(1)),
+                ChainAction::Notes(N::Set {
+                    id: 2,
+                    k: 1,
+                    value: 1
+                }),
             ]
         );
     }
