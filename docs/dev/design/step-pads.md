@@ -5,7 +5,7 @@ checked: 2026-11-17 5be7b53
 
 # STEP SEQ: the pads as steps
 
-**Status:** S1 of the sequencer roadmap: the pads as steps (first part), then holding a step, ties and COPY (second part), 2026-11-16; locks (third part), 2026-11-17. Decided by the owner on 16 Nov 2026 (sequencer decision 2, card "Pads become steps, as designed", 20:00Z). The design notes, with mockup I (`step-pads.png`) and the Beats mockup, are in the private notes repository (`sequencer/rethink/README.md`, "STEP SEQ: the pads as steps"). The buttons and the screen are in the [layout spec](layout-spec.md) (sections 2, 4 and 6). Tested on the host; not yet run on the MPC (device checks `step-pads`, `step-hold` and `step-locks`).
+**Status:** S1 of the sequencer roadmap: the pads as steps (first part), then holding a step, ties and COPY (second part), 2026-11-16; locks (third part), 2026-11-17; step edits in place (fourth part), 2026-11-17. Decided by the owner on 16 Nov 2026 (sequencer decision 2, card "Pads become steps, as designed", 20:00Z). The design notes, with mockup I (`step-pads.png`) and the Beats mockup, are in the private notes repository (`sequencer/rethink/README.md`, "STEP SEQ: the pads as steps"). The buttons and the screen are in the [layout spec](layout-spec.md) (sections 2, 4 and 6). Tested on the host; not yet run on the MPC (device checks `step-pads`, `step-hold`, `step-locks` and `step-speed`).
 
 This builds on the [step sequencer](steps.md): steps are a view of a clip's notes, and each edit is one take.
 
@@ -65,6 +65,10 @@ A lock is a value a step's sound plays with in place of its own. Clips kept them
 - **The Synth tab.** With steps held on a track that plays the synth the tab shows (its own instrument, or the synth on the pads), a knob turned there goes out as a `StepAction::Lock` on the steps held instead of a change to the sound (`as_held_lock` in `gui.rs`, on every action the screen sends). While they are held the tab shows the first step's locks, and once they are let go its own values again (`held_synth_values`).
 - **SHIFT + an empty step** holds it with no note (`Press::shift`). **ERASE pressed while steps are held** sends `ClearLocks` for them (`erase_held_steps` in `main.rs`, before the app's own ERASE, and `StepKeys::erase_locks`).
 
+## Speed: edits in place
+
+Every press edits a clip that plays, so a tap or a turn must not cost the audio thread a compile of the whole view (a turn sends many detents). Since the fourth part, a tap, a change on a held step and a lock go into the playing view in place: the control half sends the notes and locks added and erased, and the audio half makes them where a compile would, without allocating ([time threads](time-threads.md#step-edits-in-place)). A new pattern, a length change, a big erase or copy, song mode and anything while recording still compile. The status line says what step edits and compiles cost, and the `step-speed` device check measures it on the MPC (Gate 0 of the roadmap).
+
 ## The lights
 
 | Step | Colour |
@@ -82,5 +86,4 @@ The colours go out on the pad colour message Akai's app uses (`akai::pad_colour`
 ## Coming next in S1
 
 - Locks from the mixer's and the effects' knobs turned on their own pages with a step held (the mod engine already plays them).
-- Step edits made in place on the control half, with a device measurement of the worst period (Gate 0; [time threads](time-threads.md)).
 - Full step cells and the held step's inspector on Beats; synth tracks on the step pads (the pen: a note or chord).
