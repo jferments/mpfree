@@ -87,6 +87,139 @@ impl RecChip {
     }
 }
 
+/// An Arm pill at the left of a panel's heading (the loop strip, the
+/// pattern; mockups F and G): grey "Arm" on what REC doesn't record, red
+/// on what it does. A tap gives `Select(0)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmPill {
+    /// Not armed: a tap arms it.
+    Arm,
+    /// Armed: REC records it. The panel has a red edge.
+    Armed,
+    /// Ready: PLAY starts its take. The panel has a dashed red outline.
+    Ready,
+    /// Recording. The panel has a solid red outline.
+    Rec,
+}
+
+impl ArmPill {
+    pub fn label(self) -> &'static str {
+        match self {
+            ArmPill::Arm => "Arm",
+            ArmPill::Armed => "Armed",
+            ArmPill::Ready => "Ready",
+            ArmPill::Rec => "Rec",
+        }
+    }
+
+    /// The pill of what REC records, as its chip stands.
+    pub fn of(state: RecState) -> ArmPill {
+        match state {
+            RecState::Armed => ArmPill::Armed,
+            RecState::Ready => ArmPill::Ready,
+            RecState::Recording => ArmPill::Rec,
+        }
+    }
+}
+
+/// The Arm pill's width, and the room the heading's title moves right by.
+pub const ARM_PILL_W: i32 = 92;
+const ARM_PILL_H: i32 = 28;
+
+/// Where the Arm pill sits in a card `r`.
+pub fn arm_pill_rect(r: Rect) -> Rect {
+    let (h, _) = card_head(r);
+    Rect::new(
+        h.x - 2,
+        h.y + h.h / 2 - ARM_PILL_H / 2,
+        ARM_PILL_W,
+        ARM_PILL_H,
+    )
+}
+
+/// The Arm pill's tap area: the pill and the heading band round it.
+pub fn arm_pill_hit(r: Rect) -> Rect {
+    let p = arm_pill_rect(r);
+    Rect::new(p.x - 6, r.y, p.w + 12, p.bottom() + 6 - r.y)
+}
+
+/// Paint card `r`'s Arm pill and its edge or outline (over the card
+/// already painted).
+pub fn paint_arm(cx: &mut PaintCx, r: Rect, pill: ArmPill) {
+    let t = cx.theme.clone();
+    paint_pill(cx, arm_pill_rect(r), pill);
+    // The panel: a red edge while armed, a dashed outline while ready, a
+    // solid one while recording.
+    match pill {
+        ArmPill::Arm => {}
+        ArmPill::Armed => {
+            cx.canvas
+                .fill_round_rect(Rect::new(r.x, r.y + 12, 3, r.h - 24), 1, t.bad)
+        }
+        ArmPill::Ready => dashed_outline(cx, r, t.bad),
+        ArmPill::Rec => cx.canvas.stroke_round_rect(r, t.radius, 2, t.bad),
+    }
+}
+
+/// A dashed outline just inside `r`, 2 px wide.
+pub fn dashed_outline(cx: &mut PaintCx, r: Rect, c: Color) {
+    let o = r.inset(1);
+    let (x0, y0, x1, y1) = (
+        o.x as f32,
+        o.y as f32,
+        o.right() as f32 - 1.0,
+        o.bottom() as f32 - 1.0,
+    );
+    let mut sh = mpfree_ui::Shape::new(r);
+    sh.dashed(
+        &[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)],
+        2.0,
+        8.0,
+    );
+    cx.canvas.blend_shape(&sh, c);
+}
+
+/// The Arm pill itself in `p`.
+pub fn paint_pill(cx: &mut PaintCx, p: Rect, pill: ArmPill) {
+    let t = cx.theme.clone();
+    let rad = p.h / 2;
+    let (fill, line, dot_c, ink) = match pill {
+        ArmPill::Arm => (t.surface, Some((1, t.outline)), None, t.text_dim),
+        ArmPill::Armed => (
+            t.bad.mix(t.surface, 0.8),
+            Some((2, t.bad)),
+            Some(t.bad),
+            t.text,
+        ),
+        ArmPill::Ready => (
+            t.bad.mix(t.surface, 0.85),
+            Some((2, t.bad)),
+            Some(t.bad),
+            t.bad,
+        ),
+        ArmPill::Rec => (t.bad, None, Some(t.bg), t.bg),
+    };
+    cx.canvas.fill_round_rect(p, rad, fill);
+    if let Some((w, c)) = line {
+        cx.canvas.stroke_round_rect(p, rad, w, c);
+    }
+    let (dx, dy) = (p.x + 16, p.y + p.h / 2);
+    match dot_c {
+        Some(c) => dot(cx, dx, dy, 5, c),
+        None => cx
+            .canvas
+            .stroke_round_rect(Rect::new(dx - 5, dy - 5, 10, 10), 5, 2, t.text_dim),
+    }
+    cx.text(
+        FontId::Bold,
+        13.0,
+        Rect::new(p.x + 28, p.y, p.w - 32, p.h),
+        Align::Left,
+        ink,
+        pill.label(),
+    );
+}
+
 /// The chip's height on the Play transport card.
 const REC_CHIP_H: i32 = 52;
 /// A 16th's dot on the transport card, and the room between the dots and
@@ -94,7 +227,7 @@ const REC_CHIP_H: i32 = 52;
 const DOT_CELL: i32 = 8;
 const DOTS_GAP: i32 = 16;
 
-fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
+pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
     let t = cx.theme.clone();
     let (fill, head_ink, ink) = match c.state {
         RecState::Armed => (t.raised, t.text_dim, t.text),
@@ -782,6 +915,8 @@ pub struct StepGrid {
     /// STEP SEQ: the step pads held, (pad, step on the page), outlined as
     /// the step picked is.
     pub held: Vec<(usize, usize)>,
+    /// The Arm pill at the left of the heading: the notes as a REC target.
+    pub arm: Option<ArmPill>,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
 
@@ -806,6 +941,7 @@ struct StepLook {
     page: (usize, usize, usize),
     on_pads: Option<usize>,
     held: Vec<(usize, usize)>,
+    arm: Option<ArmPill>,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
@@ -949,6 +1085,7 @@ impl StepGrid {
             page: (self.page, self.pages, self.length),
             on_pads: self.on_pads,
             held: self.held.clone(),
+            arm: self.arm,
         }
     }
 
@@ -1183,7 +1320,26 @@ impl Widget for StepGrid {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        card(cx, r, &self.title, "");
+        match self.arm {
+            // The Arm pill takes the heading's left, the title after it.
+            Some(pill) => {
+                card(cx, r, "", "");
+                let (h, _) = card_head(r);
+                let x = h.x + ARM_PILL_W + 10;
+                cx.text(
+                    FontId::Bold,
+                    draw::HEAD_PX,
+                    Rect::new(x, h.y, Head::of(r).title.right() - x, h.h),
+                    Align::Left,
+                    t.text_dim,
+                    &self.title.to_uppercase(),
+                );
+                paint_arm(cx, r, pill);
+            }
+            None => {
+                card(cx, r, &self.title, "");
+            }
+        }
         self.paint_head(cx, r);
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
@@ -1268,6 +1424,9 @@ impl Widget for StepGrid {
         ] {
             out.push(Target::tap("head", k, label, rect).disabled_if(!can));
         }
+        if let Some(pill) = self.arm {
+            out.push(Target::tap("arm", 0, pill.label(), arm_pill_hit(r)));
+        }
         for (k, lane) in self.shown(g.rows).iter().enumerate() {
             // The lane's whole name is its mute button (bigger mutes).
             out.push(Target::tap(
@@ -1294,6 +1453,9 @@ impl Widget for StepGrid {
         }
         if let Some(i) = Head::of(r).at(x, y) {
             return Some(EventKind::Tab(i));
+        }
+        if self.arm.is_some() && arm_pill_hit(r).contains(x, y) {
+            return Some(EventKind::Select(0));
         }
         let g = self.geom(r);
         let lanes = self.shown(g.rows);

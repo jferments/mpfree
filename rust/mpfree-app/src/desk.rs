@@ -224,10 +224,31 @@ impl Desk<'_> {
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a));
                 // Picking a track arms its notes, as Bitwig's auto-arm.
                 if picked {
-                    fx.extend(arm(app, time, looper, out, crate::rec_arm::Target::Notes));
+                    fx.extend(arm(
+                        app,
+                        time,
+                        looper,
+                        out,
+                        crate::rec_arm::Target::Notes,
+                        crate::rec_arm::Mover::Track,
+                    ));
                 }
             }
-            gui::FromUi::Arm(t) => fx.extend(arm(app, time, looper, out, t)),
+            gui::FromUi::Arm(t) => {
+                fx.extend(arm(app, time, looper, out, t, crate::rec_arm::Mover::Page))
+            }
+            gui::FromUi::ArmTap(t) => {
+                fx.extend(arm(app, time, looper, out, t, crate::rec_arm::Mover::Tap))
+            }
+            gui::FromUi::RecPin(on) => {
+                app.rec.pinned = on;
+                out.note(if on {
+                    "rec: the arm pinned: only a tap on Arm moves it"
+                } else {
+                    "rec: the arm unpinned"
+                });
+                out.show(gui::ToUi::Rec(app.rec));
+            }
             gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
             gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
             gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
@@ -240,7 +261,14 @@ impl Desk<'_> {
                     && app.rec.target != crate::rec_arm::Target::Loop
                 {
                     app.rec.ready = None;
-                    fx.extend(arm(app, time, looper, out, crate::rec_arm::Target::Loop));
+                    fx.extend(arm(
+                        app,
+                        time,
+                        looper,
+                        out,
+                        crate::rec_arm::Target::Loop,
+                        crate::rec_arm::Mover::Tap,
+                    ));
                 }
                 fx.extend(app.looper_tap(k));
             }
@@ -359,7 +387,18 @@ impl Desk<'_> {
                 out.note(&s);
                 out.show(gui::ToUi::Tell(s));
             }
-            app::Effect::Undo { redo } => out.show(gui::ToUi::Undo(redo)),
+            // UNDO while a take records throws it away (sequencer
+            // decision 1); otherwise it is the page's.
+            app::Effect::Undo { redo } => {
+                let now = rec_now(time, looper);
+                match app.rec.throw(&now).filter(|_| !redo) {
+                    Some(done) => {
+                        later.extend(rec_effects(done));
+                        out.show(gui::ToUi::Rec(app.rec));
+                    }
+                    None => out.show(gui::ToUi::Undo(redo)),
+                }
+            }
             app::Effect::UndoButton(down) => out.show(gui::ToUi::UndoButton(down)),
             app::Effect::Rec(p) => {
                 let now = rec_now(time, looper);
@@ -462,10 +501,11 @@ fn arm(
     looper: &looping::LoopHost,
     out: &mut Out,
     t: crate::rec_arm::Target,
+    by: crate::rec_arm::Mover,
 ) -> Vec<app::Effect> {
     let now = rec_now(time, looper);
     let was = app.rec;
-    let done = app.rec.move_to(t, &now);
+    let done = app.rec.move_to(t, by, &now);
     if app.rec != was {
         out.note(&format!("rec: {} armed", app.rec.target.name()));
     }
@@ -481,6 +521,7 @@ fn rec_effects(done: Vec<crate::rec_arm::Do>) -> Vec<app::Effect> {
             Do::Transport(c) => app::Effect::Time(mpfree_time_ui::TimeAction::Transport(c)),
             Do::Looper(c) => app::Effect::Looper(looping::LoopAction::Command(c)),
             Do::StopWaiting => app::Effect::Looper(looping::LoopAction::StopWaiting),
+            Do::ThrowTake => app::Effect::Time(mpfree_time_ui::TimeAction::ThrowTake),
             Do::Tell(s) => app::Effect::Tell(s),
             Do::Note(s) => app::Effect::Note(s),
         })

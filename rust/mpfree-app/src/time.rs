@@ -695,8 +695,8 @@ impl TimeHost {
 
     /// What live to song put into the song when the transport stopped
     /// (or why it could not), once, for the log.
-    pub fn take_song_note(&mut self) -> Option<String> {
-        self.control.take_song_note()
+    pub fn take_later_note(&mut self) -> Option<String> {
+        self.control.take_later_note()
     }
 
     /// The morph bar on the mixer's mod engine (`modu`): the rows, the
@@ -2672,7 +2672,7 @@ mod tests {
         run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
         h.command(Command::Stop);
         run(&mut h, &mut pads, 3 * BAR, &[]);
-        let note = h.take_song_note().unwrap();
+        let note = h.take_later_note().unwrap();
         assert_eq!(
             note,
             "rec song: 4 placements and 0 morph points into the song"
@@ -2741,7 +2741,7 @@ mod tests {
         run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
         h.command(Command::Stop);
         run(&mut h, &mut pads, 2 * BAR, &[]);
-        let note = h.take_song_note().unwrap();
+        let note = h.take_later_note().unwrap();
         assert!(note.starts_with("rec song: 1 placements and "), "{note}");
         let song = &h.control.project.arrangement;
         let rows: Vec<(usize, usize)> = song.morphs.iter().map(|m| (m.a, m.b)).collect();

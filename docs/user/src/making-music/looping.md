@@ -29,7 +29,7 @@ The looper holds five minutes of stereo sound across all its loops and layers (t
 
 ## The buttons
 
-These are on the Play page's Loop view. The MPC's own **REC** and **OVERDUB** do the same on the loop picked while the loop is armed: the Loop view and the Looper tab arm it, and the REC chip on the transport bar says "→ Loop 1" (see [What REC records](../getting-started/first-beat.md#what-rec-records)). **UNDO** (and **SHIFT + UNDO** for Redo) works on the loop on the Looper tab and the Loop view, and on the All view when the loop is what you changed last. To record a pattern from the pads with REC, open the Beats view (it arms the notes) or pick a track on the Arrange tab:
+These are on the Play page's Loop view. The MPC's own **REC** and **OVERDUB** do the same on the loop picked while the loop is armed: the Loop view and the Looper tab arm it, and the REC chip on the transport bar says "→ Loop 1" (see [What REC records](../getting-started/first-beat.md#what-rec-records)). On the home view, the **Arm** pill at the left of the loop strip arms the loop too: red when REC records it, grey when it doesn't. **UNDO** while the first pass or an overdub records throws that take away and the loop plays on. **UNDO** (and **SHIFT + UNDO** for Redo) works on the loop on the Looper tab and the Loop view, and on the All view when the loop is what you changed last. To record a pattern from the pads with REC, open the Beats view (it arms the notes) or pick a track on the Arrange tab:
 
 | Button | Empty loop | Recording the first pass | Playing |
 |---|---|---|---|

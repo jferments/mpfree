@@ -14,14 +14,19 @@
 //!   playing) and OVERDUB overdubs it. The looper's armed loop is its
 //!   ready.
 //!
-//! What moves the arm ([`RecArm::move_to`]): opening Play's Beats view arms
-//! the notes, Play's Loop view and the Looper tab arm the loop, and picking
-//! a track arms its notes. Nothing moves it while a take records. When the
-//! arm moves while ready, the ready goes with it.
+//! What moves the arm ([`RecArm::move_to`]): a tap on an Arm pill or a row
+//! of the target list, opening Play's Beats view (the notes) or Play's
+//! Loop view or the Looper tab (the loop), and picking a track (its
+//! notes). Nothing moves it while a take records (a tap says "Finish the
+//! take first"). Pinned, only a tap moves it. When the arm moves while
+//! ready, the ready goes with it.
+//!
+//! UNDO while a take records throws the take so far away
+//! ([`RecArm::throw`]): recording stops and the music plays on.
 //!
 //! The arm isn't saved and isn't an undo step; a new or opened project
-//! starts with the notes armed. SHIFT + REC is still Capture, whatever is
-//! armed.
+//! starts with the notes armed, unpinned. SHIFT + REC is still Capture,
+//! whatever is armed.
 
 use mpfree_looper::Command as LoopCommand;
 use mpfree_transport::{Command, State};
@@ -87,11 +92,26 @@ impl Now {
     }
 }
 
+/// What moves the arm, for [`RecArm::move_to`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mover {
+    /// A page with one target opened (Beats, the Loop view, the Looper tab).
+    Page,
+    /// A track picked: its notes.
+    Track,
+    /// A tap on an Arm pill, a row of the target list, or the loop's own
+    /// Record or Overdub: moves it even when pinned.
+    Tap,
+}
+
 /// What a press does, for the desk to carry out in order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Do {
     Transport(Command),
     Looper(LoopCommand),
+    /// Punch out and throw away the notes' take so far
+    /// (`TimeAction::ThrowTake`).
+    ThrowTake,
     /// Let go of a loop that waits for PLAY ([`crate::looping::LoopAction::StopWaiting`]).
     StopWaiting,
     /// Said on the hint line and in the log.
@@ -107,6 +127,8 @@ pub struct RecArm {
     /// The notes wait for PLAY to record (only with [`Target::Notes`]; a
     /// loop's ready is the looper's own armed loop).
     pub ready: Option<Take>,
+    /// Only a tap moves the arm (the target list's Pin the arm).
+    pub pinned: bool,
 }
 
 /// The transport's mode set for `take`, if it isn't already.
@@ -170,12 +192,25 @@ impl RecArm {
         }
     }
 
-    /// Arm `target` (a page opened, a track picked). Refused, saying
-    /// nothing, while a take records. A ready goes with the arm: the notes'
-    /// to the loop as Record (or Overdub), an armed loop's to the notes.
-    pub fn move_to(&mut self, target: Target, now: &Now) -> Vec<Do> {
-        if target == self.target || now.taking() {
+    /// Arm `target`, as `by` moves it. Refused while a take records (a tap
+    /// says why, a page or a pick says nothing) and, pinned, unless by a
+    /// tap. A ready goes with the arm: the notes' to the loop as Record (or
+    /// Overdub), an armed loop's to the notes.
+    pub fn move_to(&mut self, target: Target, by: Mover, now: &Now) -> Vec<Do> {
+        if target == self.target || (self.pinned && by != Mover::Tap) {
             return Vec::new();
+        }
+        if now.taking() {
+            return match by {
+                Mover::Tap => vec![Do::Tell(format!(
+                    "Finish the take first: REC records {} until it stops",
+                    match self.target {
+                        Target::Notes => now.notes.as_str(),
+                        Target::Loop => "the loop",
+                    }
+                ))],
+                _ => Vec::new(),
+            };
         }
         self.target = target;
         match target {
@@ -190,6 +225,28 @@ impl RecArm {
             }
             Target::Notes => Vec::new(),
         }
+    }
+
+    /// UNDO while a take records: the take so far is thrown away and the
+    /// music plays on (the notes punch out; a loop's first pass or overdub
+    /// is undone). None when nothing records: UNDO is the page's.
+    pub fn throw(&mut self, now: &Now) -> Option<Vec<Do>> {
+        let notes = matches!(now.state, State::Recording | State::CountIn);
+        if !notes && !now.loop_taking {
+            return None;
+        }
+        self.ready = None;
+        let mut out = Vec::new();
+        if notes {
+            out.push(Do::ThrowTake);
+        }
+        if now.loop_taking {
+            out.push(Do::Looper(LoopCommand::Undo));
+        }
+        out.push(Do::Tell(
+            "UNDO: the take is thrown away; the music plays on".to_string(),
+        ));
+        Some(out)
     }
 
     /// The lights: the notes ready to replace (REC blinks) or to add
@@ -299,7 +356,7 @@ mod tests {
     fn the_loop_records_as_the_looper_does() {
         let mut a = RecArm {
             target: Target::Loop,
-            ready: None,
+            ..RecArm::default()
         };
         for s in [State::Stopped, State::Playing, State::Recording] {
             assert_eq!(
@@ -321,14 +378,14 @@ mod tests {
         a.press(Press::Rec, &stopped);
         // To the loop: the loop is armed in its place.
         assert_eq!(
-            a.move_to(Target::Loop, &stopped),
+            a.move_to(Target::Loop, Mover::Page, &stopped),
             [Do::Looper(LoopCommand::Record)]
         );
         assert_eq!(
             a,
             RecArm {
                 target: Target::Loop,
-                ready: None
+                ..RecArm::default()
             }
         );
         // Back to the notes with the loop armed: it lets go, the notes are ready.
@@ -336,7 +393,10 @@ mod tests {
             loop_armed: true,
             ..stopped.clone()
         };
-        assert_eq!(a.move_to(Target::Notes, &armed), [Do::StopWaiting]);
+        assert_eq!(
+            a.move_to(Target::Notes, Mover::Page, &armed),
+            [Do::StopWaiting]
+        );
         assert_eq!(a.ready, Some(Take::Replace));
         // Nothing moves it while a take records, notes or loop.
         for busy in [
@@ -348,11 +408,56 @@ mod tests {
             },
         ] {
             let mut b = RecArm::default();
-            assert!(b.move_to(Target::Loop, &busy).is_empty());
+            assert!(b.move_to(Target::Loop, Mover::Page, &busy).is_empty());
             assert_eq!(b.target, Target::Notes);
         }
         // The same target again does nothing.
         let mut c = RecArm::default();
-        assert!(c.move_to(Target::Notes, &stopped).is_empty());
+        assert!(c.move_to(Target::Notes, Mover::Page, &stopped).is_empty());
+    }
+
+    #[test]
+    fn pinned_only_a_tap_moves_the_arm_and_a_tap_while_recording_says_why() {
+        let stopped = now(State::Stopped);
+        let mut a = RecArm {
+            pinned: true,
+            ..RecArm::default()
+        };
+        for by in [Mover::Page, Mover::Track] {
+            assert!(a.move_to(Target::Loop, by, &stopped).is_empty());
+            assert_eq!(a.target, Target::Notes, "{by:?} doesn't move a pinned arm");
+        }
+        assert!(a.move_to(Target::Loop, Mover::Tap, &stopped).is_empty());
+        assert_eq!(a.target, Target::Loop, "a tap does");
+        // While a take records a tap is refused, and says why.
+        let mut b = RecArm::default();
+        let said = b.move_to(Target::Loop, Mover::Tap, &now(State::Recording));
+        assert!(
+            matches!(&said[..], [Do::Tell(l)] if l.starts_with("Finish the take first")),
+            "{said:?}"
+        );
+        assert_eq!(b.target, Target::Notes);
+    }
+
+    #[test]
+    fn undo_while_a_take_records_throws_it_away() {
+        let mut a = RecArm::default();
+        assert_eq!(a.throw(&now(State::Stopped)), None, "UNDO is the page's");
+        assert_eq!(a.throw(&now(State::Playing)), None);
+        let said = a.throw(&now(State::Recording)).unwrap();
+        assert_eq!(said[0], Do::ThrowTake);
+        assert!(matches!(&said[1], Do::Tell(l) if l.contains("thrown away")));
+        let looping = Now {
+            loop_taking: true,
+            ..now(State::Playing)
+        };
+        assert_eq!(a.throw(&looping).unwrap()[0], Do::Looper(LoopCommand::Undo));
+        // Both record: both go.
+        let both = Now {
+            loop_taking: true,
+            ..now(State::Recording)
+        };
+        let said = a.throw(&both).unwrap();
+        assert_eq!(&said[..2], [Do::ThrowTake, Do::Looper(LoopCommand::Undo)]);
     }
 }

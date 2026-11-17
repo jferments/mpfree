@@ -73,6 +73,8 @@ pub struct LoopStrip {
     pub layers: usize,
     /// The buttons' labels and whether each is lit (the Loop view).
     pub buttons: Vec<(String, bool)>,
+    /// The Arm pill at the left of the heading: the loop as a REC target.
+    pub arm: Option<crate::play_widgets::ArmPill>,
     /// The playhead's x and everything else as last drawn, so a playhead
     /// move redraws only the columns it passed.
     drawn: RefCell<Option<(Rect, StripLook, i32)>>,
@@ -94,6 +96,7 @@ struct StripLook {
     layers: usize,
     buttons: Vec<(String, bool)>,
     wave: Option<u64>,
+    arm: Option<crate::play_widgets::ArmPill>,
 }
 
 /// The strip's widget name.
@@ -168,6 +171,7 @@ impl Default for LoopStrip {
                 .iter()
                 .map(|b| (b.to_string(), false))
                 .collect(),
+            arm: None,
             drawn: RefCell::new(None),
             speakers: RefCell::new(Vec::new()),
         }
@@ -213,6 +217,7 @@ impl LoopStrip {
             layers: self.layers,
             buttons: self.buttons.clone(),
             wave: self.wave.as_ref().map(|w| Arc::as_ptr(w) as usize as u64),
+            arm: self.arm,
         }
     }
 
@@ -238,7 +243,27 @@ impl Widget for LoopStrip {
         } else {
             &self.right
         };
-        draw::card(cx, r, "Looper", right);
+        // The Arm pill takes the heading's left, the title after it.
+        let title_x = match self.arm {
+            Some(_) => {
+                draw::card(cx, r, "", right);
+                let (h, _) = draw::card_head(r);
+                let x = h.x + crate::play_widgets::ARM_PILL_W + 10;
+                cx.text(
+                    FontId::Bold,
+                    draw::HEAD_PX,
+                    Rect::new(x, h.y, 80, h.h),
+                    Align::Left,
+                    t.text_dim,
+                    "LOOPER",
+                );
+                x
+            }
+            None => {
+                draw::card(cx, r, "Looper", right);
+                draw::card_head(r).0.x
+            }
+        };
         cx.canvas
             .fill_round_rect(panel, 10, t.bg.mix(t.surface, 0.4));
         let w = LoopStrip::wave_area(r);
@@ -296,7 +321,7 @@ impl Widget for LoopStrip {
             cx.measure(FontId::Sans, draw::HEAD_PX, right) + 20
         };
         let end = head.right() - right_w;
-        let mut lx = head.x + cx.measure(FontId::Bold, draw::HEAD_PX, "LOOPER") + 24;
+        let mut lx = title_x + cx.measure(FontId::Bold, draw::HEAD_PX, "LOOPER") + 24;
         let cy = head.y + head.h / 2;
         let mut speakers = Vec::new();
         for li in 0..self.layers {
@@ -348,6 +373,9 @@ impl Widget for LoopStrip {
             lx = sx + 12 + 18;
         }
         *self.speakers.borrow_mut() = speakers;
+        if let Some(pill) = self.arm {
+            crate::play_widgets::paint_arm(cx, r, pill);
+        }
         if let Some(row) = btns {
             for (i, (br, (label, on))) in
                 self.button_rects(row).iter().zip(&self.buttons).enumerate()
@@ -418,6 +446,14 @@ impl Widget for LoopStrip {
                 Target::tap("layer-mute", k, format!("{name} speaker"), *h)
             })
             .collect();
+        if let Some(pill) = self.arm {
+            out.push(Target::tap(
+                "arm",
+                0,
+                pill.label(),
+                crate::play_widgets::arm_pill_hit(r),
+            ));
+        }
         if let Some(row) = LoopStrip::parts(r).1 {
             for (i, b) in self.button_rects(row).into_iter().enumerate() {
                 let label = self.buttons.get(i).map_or(String::new(), |b| b.0.clone());
@@ -433,6 +469,9 @@ impl Widget for LoopStrip {
         }
         if let Some(k) = self.speakers.borrow().iter().position(|h| h.contains(x, y)) {
             return Some(EventKind::Toggle(k));
+        }
+        if self.arm.is_some() && crate::play_widgets::arm_pill_hit(r).contains(x, y) {
+            return Some(EventKind::Select(0));
         }
         let row = LoopStrip::parts(r).1?;
         self.button_rects(row)
@@ -1677,7 +1716,7 @@ fn live_place(v: &LooperView, wave: Option<&Arc<LoopWave>>) -> Option<(f32, usiz
     Some((at, bars))
 }
 
-fn bars_of(ticks: i64, beats_per_bar: u32) -> usize {
+pub(crate) fn bars_of(ticks: i64, beats_per_bar: u32) -> usize {
     if ticks <= 0 {
         return 0;
     }
