@@ -1,13 +1,18 @@
-//! The MIDI, Sync, CV and Monitor sections of the mixer's I/O view.
+//! The MIDI, Routing, Sync, CV and Monitor sections of the mixer's I/O view.
 //!
 //! The owner's calls (2026-11-12): a project's routing lives in an I/O view
 //! inside the mixer, opened by the I/O icon beside the mixer icon. The
 //! mixer (`mpfree-mixer-ui`) owns the view and its Audio section; this crate
-//! gives it four more through [`mpfree_mixer_ui::IoSection`]:
+//! gives it five more through [`mpfree_mixer_ui::IoSection`]:
 //!
 //! - **MIDI**: each port's input (Plays tracks, Learn only, Both) and thru,
 //!   and each track's one output setting, "Plays on", the port and the
 //!   channel together, with its program.
+//! - **Routing** (board 5, without blocks yet): a grid of where things go.
+//!   Its rows are the inputs, the pads and the tracks; its columns are the
+//!   armed track, tracks by channel, Learn, each MIDI out port and CV. A
+//!   square under Tracks by channel sends a port's channel to one track,
+//!   whichever track is armed.
 //! - **Sync**: where the tempo comes from, what following does, the clock
 //!   arriving now, and each port's clock out (Off, While playing, Always).
 //! - **CV**: the eight CV/gate outputs: each one's job, track and main
@@ -50,6 +55,7 @@ mod midi;
 mod monitor;
 mod now;
 mod port_page;
+mod routing;
 mod sync;
 
 pub mod sample;
@@ -270,15 +276,17 @@ pub type Shared = Arc<Mutex<IoModel>>;
 /// The sections' titles in the I/O view's list, to find one by name
 /// (`mpfree_mixer_ui::io_select` takes its place in the list).
 pub const MIDI: &str = "MIDI";
+pub const ROUTING: &str = "Routing";
 pub const SYNC: &str = "Sync";
 pub const CV: &str = "CV";
 pub const MONITOR: &str = "Monitor";
 
-/// The four sections, in the order the I/O view lists them, all on one
+/// The five sections, in the order the I/O view lists them, all on one
 /// model. Hand each to `mpfree_mixer_ui::add_io_section`.
 pub fn sections(model: &Shared) -> Vec<Box<dyn mpfree_mixer_ui::IoSection>> {
     vec![
         Box::new(form::FormSection::new(midi::Midi, model.clone())),
+        Box::new(routing::Routing::new(model.clone())),
         Box::new(form::FormSection::new(sync::Sync, model.clone())),
         Box::new(form::FormSection::new(cv::Cv, model.clone())),
         Box::new(monitor::MonitorSection::new(model.clone())),

@@ -2006,6 +2006,8 @@ impl Player {
         if !mpfree_mixer_ui::io_select(&mut self.ui, i + 1) {
             return false;
         }
+        // The section's own hint, not the one before it.
+        self.refresh_hint();
         self.outbox.push(FromUi::OpenIo);
         true
     }
@@ -9090,12 +9092,14 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
     titles
 }
 
-/// The stack for a thread that calls [`sample_screens`]. Every screen's
+/// The stack for a thread that builds the sample screens
+/// ([`sample_screens`]): the tests' (`smoke::on_big_stack` and below), and
+/// `--preview` and `--display-lists` ([`on_screens_stack`]). Every screen's
 /// `Player` sits in its one frame, which in a debug build is about 7 MiB
-/// (7,376,832 bytes on 17 Nov 2026): more than a test thread's 2 MiB, and
-/// the main thread's 8 MiB left the control sweep about 14 KB, so one more
-/// screen ran it out of stack ("thread '<unknown>' has overflowed its
-/// stack"). Twice that leaves room for the screens to come.
+/// (7,376,832 bytes on 17 Nov 2026): the main thread's 8 MiB left the sweep
+/// about 14 KB, so one more screen ran it out of stack ("thread '<unknown>'
+/// has overflowed its stack"). Twice that leaves room for the screens to
+/// come.
 pub const SCREENS_STACK: usize = 16 << 20;
 
 /// Run `f` on a thread with [`SCREENS_STACK`], for the commands that draw
@@ -9109,6 +9113,29 @@ pub fn on_screens_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
             .join()
             .unwrap_or_else(|e| std::panic::resume_unwind(e))
     })
+}
+
+/// A sample screen of the mixer's I/O view on the section titled
+/// `section`, with `model` (its own function, so `sample_screens`' frame
+/// doesn't grow with each screen).
+#[inline(never)]
+fn io_section_screen(
+    fonts: Fonts,
+    io_state: &mpfree_mixer_ui::MixState,
+    model: mpfree_midi_ui::IoModel,
+    section: &str,
+) -> Player {
+    let mut p = sample_player(fonts);
+    p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+        model,
+    ))));
+    p.apply(ToUi::Show(View::Mixer));
+    p.apply(ToUi::Mixer(Box::new(io_state.clone())));
+    p.open_io_section(section);
+    let _ = p.take_actions();
+    // Drawn whole again, as a screen first shown is.
+    p.ui.invalidate();
+    p
 }
 
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
@@ -9227,7 +9254,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mpfree_midi_ui::sample::rig(),
     ))));
     port.apply(ToUi::Show(View::Mixer));
-    port.apply(ToUi::Mixer(Box::new(io_state)));
+    port.apply(ToUi::Mixer(Box::new(io_state.clone())));
     port.open_io_section(mpfree_midi_ui::MIDI);
     let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
     port.ui.paint(&mut c);
@@ -9244,6 +9271,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Drawn whole again, as a screen first shown is.
     port.ui.invalidate();
     out.push(("mixer-io-port", port));
+    // The I/O view's Routing section (board 5 of the MIDI mockups, without
+    // blocks): the drum machine on the 5-pin jacks' channel 10 plays Drums
+    // whichever track is armed.
+    let mut rig = mpfree_midi_ui::sample::rig();
+    rig.setup.routes.push(mpfree_midi::setup::TrackRoute {
+        port: mpfree_midi::setup::DIN_NAME.to_string(),
+        channel: Some(9),
+        track: 0,
+    });
+    out.push((
+        "mixer-io-routing",
+        io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::ROUTING),
+    ));
     // The FX chain editor in the mixer's place (a strip's insert row): the
     // drum bus, Drive selected, Tone touched; and the macros panel over the
     // page (a long press on a macro card), layout spec 4b.
@@ -12412,9 +12452,9 @@ mod tests {
         assert_eq!(p.touch(2, Touch::Down, cr.x + 5, cr.y + 5), None);
         assert_eq!(p.take_actions(), [FromUi::OpenIo]);
         assert!(!p.open_io_section("Sync"), "no Sync section yet");
-        // The model arrives (once, at start): MIDI, Sync, CV and Monitor
-        // join the list after Audio, and the chip's tap opens Sync. A
-        // second model adds nothing.
+        // The model arrives (once, at start): MIDI, Routing, Sync, CV and
+        // Monitor join the list after Audio, and the chip's tap opens Sync.
+        // A second model adds nothing.
         let model = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::sample::rig()));
         p.apply(ToUi::IoModel(model.clone()));
         p.apply(ToUi::IoModel(model));
@@ -12422,6 +12462,7 @@ mod tests {
             p.io_sections,
             [
                 mpfree_midi_ui::MIDI,
+                mpfree_midi_ui::ROUTING,
                 mpfree_midi_ui::SYNC,
                 mpfree_midi_ui::CV,
                 mpfree_midi_ui::MONITOR
@@ -12430,7 +12471,11 @@ mod tests {
         assert!(p.open_io_section("Sync"));
         let v =
             p.ui.get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER);
-        assert_eq!(v.map(|v| v.io_section()), Some(2), "Audio, MIDI, Sync");
+        assert_eq!(
+            v.map(|v| v.io_section()),
+            Some(3),
+            "Audio, MIDI, Routing, Sync"
+        );
         let fx = app.open_io();
         assert_eq!(
             fx.first(),
@@ -18175,6 +18220,14 @@ mod tests {
                     let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
                     let d = p.ui.paint(&mut c);
                     assert_eq!(d.len(), 1, "{name}: a first paint covers the screen");
+                    if name == "mixer-io-routing" {
+                        assert!(
+                            p.ui.targets()
+                                .iter()
+                                .any(|t| t.target.id == "routing-square"),
+                            "{name}: the Routing section shows"
+                        );
+                    }
                     if name == "mixer-io-port" {
                         // The tap on Open › found its row: the page shows.
                         assert!(

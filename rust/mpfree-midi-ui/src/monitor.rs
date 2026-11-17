@@ -485,6 +485,7 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
             pad: Some(p),
         } => (format!("{}, pad {}", track(t), p + 1), Went::Took),
         To::NoPad { track: t } => (format!("nothing: no pad on {}", track(t)), Went::Nothing),
+        To::Routed { track: t } => (format!("{}, by its route", track(t)), Went::Took),
         To::Learned(a) => (format!("Learn: {}", param(a)), Went::Learn),
         To::Took(a) => (format!("Learn took it: {}", param(a)), Went::Learn),
         To::LearnOnly => ("not played: Learn only".to_string(), Went::Nothing),
@@ -1996,6 +1997,11 @@ mod tests {
             format!("Learn took it: {other}")
         );
         assert_eq!(went_to(&m, To::Unsaid).0, "");
+        // A route in the Routing section played a track, armed or not.
+        assert_eq!(
+            went_to(&m, To::Routed { track: 1 }),
+            ("Bass, by its route".to_string(), Went::Took)
+        );
         // Drawn at the I/O view's width and the Dev page's.
         let s = MonitorSection::new(Arc::new(Mutex::new(m)));
         let _ = paint(&s);
