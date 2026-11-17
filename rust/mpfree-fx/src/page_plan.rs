@@ -1159,11 +1159,18 @@ pub static PLANS: &[Plan] = &[
         pages: &[page(
             "row(lfo:520, col(phaser:340, output))",
             &[
+                // Stereo sits under the sweep it moves (the Sweep card
+                // draws the right side's offset).
                 Section {
                     hero: &["Rate", "Depth"],
-                    rows: &["Sync"],
+                    rows: &["Sync", "Stereo"],
                     drawings: &["Sweep"],
-                    ..s("lfo", "Movement", Motion, &["Rate", "Depth", "Sync"])
+                    ..s(
+                        "lfo",
+                        "Movement",
+                        Motion,
+                        &["Rate", "Depth", "Sync", "Stereo"],
+                    )
                 },
                 Section {
                     rows: &["Stages"],
