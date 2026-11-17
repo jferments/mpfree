@@ -14,7 +14,7 @@ An effect is good when it meets its measured targets, wins or ties in blind, lev
 
 ## The report
 
-`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi` or `amp`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq`, `eq[preset]` and `eq[HQ 2x]` (its Quality at HQ 2x); an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All nine classes take about 38 s in a release build (the round-2 classes 15 s, most of it the Drive's 4x quality).
+`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi`, `amp` or `modulation`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq`, `eq[preset]` and `eq[HQ 2x]` (its Quality at HQ 2x); an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All nine classes take about 38 s in a release build (the round-2 classes 15 s, most of it the Drive's 4x quality).
 
 New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known answers:
 
@@ -364,6 +364,40 @@ What changed (design: [fx-compressor.md](fx-compressor.md); decision 10.3): the 
 - **Reported:** FET's colour at 10 dB of reduction, -42.4 dB THD at 50 Hz, -43.0 at 100 Hz and -43.2 at 1 kHz: the grit it is for. An 8 kHz tone through FET at 0 dBFS: its third harmonic (24 kHz) folds to 20.1 kHz at -42.4 dB. Overshoot on a -40 to 0 dBFS step, 11.4 dB at 1 ms and 13.2 at 10 ms: no look-ahead (the Limiter has it). The defaults without makeup play pink 6.5 LU under the dry (was 3.0): they now reach the reduction drawn.
 - **Blessed worse, and why:** the 1 ms attack reads 1.08 (was 1): the old measure read whole milliseconds, and main's engine reads 1.58 by the fixed one. RMS curve error 0.026 dB (was 0.019), inside 0.25: the hold keeps the top of the RMS level's small ripple on a 1 kHz sine, where the old detector averaged it (the likely cause, not isolated). The zipper on Drum punch, 0.49 dB (was 0.12), Vocal level, 0.64 (0.20), and Sidechain pump, 0.639 (0.635), inside 3 dB: the presets now reach their full reduction and two carry their styles' slow stage, so a sweep moves a larger gain.
 - **Cost** (the instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz): Compressor 21.0k to 27.7k instructions (1.32 times). The cases that carry it rose too: the drive, filter, delay and compressor chain 2.1 %, the mixer with a song's inserts (seven compressors) 3.8 to 5.7 %, the frozen-tracks mixer 2.1 % and the song 5.0 %.
+
+## Round 3: chorus, flanger and phaser
+
+Measuring built 2026-11-17 with the chorus's PR (M1), class `modulation`, target ids M; research and plan in jferments/mpfree-claude `fx/quality/` (research-modulation.md, plan-3.md); the design is [fx-modulation.md](fx-modulation.md). Subjects are `modulation/chorus`, `modulation/flanger` and `modulation/phaser` at their defaults and each preset (`modulation/chorus[Lush ensemble]`), at 44.1 kHz.
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| M1 | `insert_lu_pink`, `insert_lu_hits` | Loudness change on insert within ±1 LU, every effect and preset | "Goes in quieter" sounds weak |
+| M2 | `feedback_lu_m95` to `feedback_lu_p95` | At the default Mix, within ±3 LU of Feedback 0 from -95 to +95 % (flanger, phaser) | More feedback sharpens the resonance, not the level |
+| M3 | `wet_corr_300hz_<n>v` | Wet left/right correlation above 300 Hz on a mono source at full Width ≤ 0.3, every voice count | A Width that does nothing at some counts is a bug |
+| M4 | `mono_fold_lu` | Folding to mono loses ≤ 1.5 LU beyond the stereo change | A wide effect must not vanish in mono |
+| M5 | `bend_cents_*` | A 1 kHz tone's peak bend through the chorus ≤ ±100 cents anywhere on the knobs (the flanger's reported) | Past a semitone a chorus is seasick |
+| M6 | `bend_ratio_delay5_to_40` | The bend at one Rate and Depth changes ≤ 10 % from Delay 5 to 40 ms | Delay moves where the copy sits, not how much it wobbles |
+| M7 | `half_frame_db_to_16k`, `half_frame_notch_db_12k_16k` | Held, the chorus's wet at half a frame within 0.5 dB of a whole frame to 16 kHz; the flanger's high notches ≤ -30 dB | The highs mustn't flutter as a sweep crosses fractions |
+| M8 | `read_sidebands_db_12k` | A 12 kHz tone through the default chorus (one voice, wet): energy beyond ±5 % of it ≤ -70 dB | Interpolation sidebands are a grainy shimmer |
+| M9 | `drawn_err_db_*` | The flanger's and phaser's held response within 0.5 dB of the drawn one (outside notches deeper than -20 dB) | The page's graph is how they are set |
+| M10 | `longest_delay_ms` | The flanger's swept delay ≤ 20 ms | Past that it is a doubler |
+| M11 | `sync_error_cycles_after_wrap` | A synced LFO within 1 % of a cycle of the song a bar after a 3.5-bar loop wraps | A bar-synced sweep stays on the bar |
+| M12 | `rest_dbfs_*` | 20 s of noise at ±95 % Feedback with extreme settings: finite, and under -60 dBFS after the reported tail | No runaway, no stuck tail |
+| M13 | `click_db_over_6k` | Each control swept end to end in 50 ms under a 997 Hz tone: the loudest millisecond above 6 kHz ≤ -60 dB against the tone (the Delay's row reported) | A bend or a resonance passing the tone is not a click; energy two octaves up is |
+| M14 | the instruction gate | Rises stated in the PR | The MPC's budget |
+
+### Baseline (2026-11-17, before any fix)
+
+61 of 113 modulation targets met. The chorus is 3.0 to 3.7 LU quieter on insert (a linear 50 % blend of a copy that, above the bass, is a different moment of the music); with three voices its sides correlate 0.67 above 300 Hz and with four 1.00 (the right side's voices a quarter cycle on land on the left's); its sweep is a share of the Delay, so the bend is 7.9 times more at 40 ms than at 5 and reaches ±866 cents at Rate 10, Depth 100, Delay 40 (the read runs backwards); its cubic read is 4.6 dB apart between half and whole frames to 16 kHz, and a 12 kHz tone grows sidebands at -49.8 dB. A synced LFO is half a cycle off after a 3.5-bar loop wraps. The flanger is 0.3 to 2.9 LU quieter, 6.0 to 6.5 LU louder at ±95 % Feedback, its high notches only 21 dB deep at half a frame, its drawn comb up to 46 dB wrong at half a frame and -90 % Feedback, and its sweep reaches 40 ms; "Jet sweep" loses 1.75 LU in mono and clicks at -54 dB. The phaser is 0.9 to 1.9 LU quieter and 5.7 to 7.4 LU louder at ±95 %; its notches are exactly where drawn. Feedback is stable everywhere.
+
+### PR M1: the chorus
+
+What changed (design: [fx-modulation.md](fx-modulation.md), [fx.md](fx.md)): the chorus reads through an 8-tap windowed sinc, Depth is a sweep in milliseconds under a semitone ceiling, the right side's voices sit between the left's at every count, it has the Mix curve (Equal by default), and a synced LFO follows the song on all three effects. After it: 82 of 113 met (61 before); every chorus row met.
+
+- **Met now, the chorus at its defaults and every preset:** on insert -0.66 to +0.06 LU (M1; -3.0 to -3.7); correlation -0.08 to 0.03 above 300 Hz at every voice count (M3; 0.67 and 1.00 at three and four); bend at most ±96 cents anywhere (M5; ±866) and the same at every Delay, ratio 1.00 (M6; 7.9); half and whole frames within 0.16 dB to 16 kHz (M7; 4.6) and sidebands at -87.3 dB (M8; -49.8); a synced LFO back on the bar after the wrap, 0.000 of a cycle (M11; 0.5), on the flanger and phaser too.
+- **Blessed worse, inside the targets:** the mono fold of "Lush ensemble" and "Bar swirl" is -0.99 and -1.01 LU (M4; 0.00 and -0.33): they are wide now, and a wide chorus loses a little in mono. The click measure of the presets reads -66.4 to -87.2 dB (M13; -82.3 to -95.7 before; Lush ensemble, the deepest sweep, the highest), still 6.4 dB or more inside the target.
+- **Not in this PR:** the flanger (M2, M7, M9, M10 and its level) and the phaser (M2 and its level), PRs M2 and M3.
+- **Cost** (the instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz): Chorus (2 voices) 95.0k to 103.8k (+9.2 %), Chorus (4 voices) 154.9k to 173.9k (+12.3 %): eight taps a read where the cubic took four. Gathering the taps with a wrap mask each cost 53 to 61 % more; writing each sample twice so a read's taps sit side by side, summing in four lanes and skipping the glides that have settled brought it here. The flanger and phaser are unchanged.
 
 ## The sampler
 

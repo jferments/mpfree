@@ -711,41 +711,41 @@ lofi/lofi[Old radio]/zipper_db	0
 lofi/lofi[Worn tape]/lu_pink18	-1.2007
 lofi/lofi[Worn tape]/mean_pitch_error_pct	0.0029
 lofi/lofi[Worn tape]/zipper_db	0
-modulation/chorus/bend_cents_depth100_r10_d2	109.5938
-modulation/chorus/bend_cents_depth100_r10_d40	865.419
-modulation/chorus/bend_cents_depth100_r1_d40	235.6695
-modulation/chorus/bend_ratio_delay5_to_40	7.88
-modulation/chorus/click_db_over_6k	-84.568
-modulation/chorus/half_frame_db_to_16k	4.5799
-modulation/chorus/insert_lu_hits	-3.5328
-modulation/chorus/insert_lu_pink	-3.5951
-modulation/chorus/mono_fold_lu	-1.006
-modulation/chorus/read_sidebands_db_12k	-49.7688
-modulation/chorus/sync_error_cycles_after_wrap	0.5
-modulation/chorus/wet_corr_300hz_1v	0.0051
-modulation/chorus/wet_corr_300hz_2v	0.0167
-modulation/chorus/wet_corr_300hz_3v	0.6726
-modulation/chorus/wet_corr_300hz_4v	1
-modulation/chorus[Bar swirl]/click_db_over_6k	-90.7281
-modulation/chorus[Bar swirl]/insert_lu_hits	-3.5849
-modulation/chorus[Bar swirl]/insert_lu_pink	-3.6032
-modulation/chorus[Bar swirl]/mono_fold_lu	-0.3283
-modulation/chorus[Dimension]/click_db_over_6k	-95.715
-modulation/chorus[Dimension]/insert_lu_hits	-3.5388
-modulation/chorus[Dimension]/insert_lu_pink	-3.5375
-modulation/chorus[Dimension]/mono_fold_lu	-0.8535
-modulation/chorus[Fast wobble]/click_db_over_6k	-91.5689
-modulation/chorus[Fast wobble]/insert_lu_hits	-3.4892
-modulation/chorus[Fast wobble]/insert_lu_pink	-3.5283
+modulation/chorus/bend_cents_depth100_r10_d2	95.7365
+modulation/chorus/bend_cents_depth100_r10_d40	95.6743
+modulation/chorus/bend_cents_depth100_r1_d40	57.4683
+modulation/chorus/bend_ratio_delay5_to_40	1.0012
+modulation/chorus/click_db_over_6k	-84.5306
+modulation/chorus/half_frame_db_to_16k	0.1609
+modulation/chorus/insert_lu_hits	-0.4566
+modulation/chorus/insert_lu_pink	-0.5431
+modulation/chorus/mono_fold_lu	-0.982
+modulation/chorus/read_sidebands_db_12k	-87.3233
+modulation/chorus/sync_error_cycles_after_wrap	0
+modulation/chorus/wet_corr_300hz_1v	0.0176
+modulation/chorus/wet_corr_300hz_2v	0.0335
+modulation/chorus/wet_corr_300hz_3v	-0.0681
+modulation/chorus/wet_corr_300hz_4v	-0.0781
+modulation/chorus[Bar swirl]/click_db_over_6k	-85.9378
+modulation/chorus[Bar swirl]/insert_lu_hits	-0.4489
+modulation/chorus[Bar swirl]/insert_lu_pink	-0.556
+modulation/chorus[Bar swirl]/mono_fold_lu	-1.0111
+modulation/chorus[Dimension]/click_db_over_6k	-85.8173
+modulation/chorus[Dimension]/insert_lu_hits	-0.4965
+modulation/chorus[Dimension]/insert_lu_pink	-0.4978
+modulation/chorus[Dimension]/mono_fold_lu	-0.8617
+modulation/chorus[Fast wobble]/click_db_over_6k	-87.1575
+modulation/chorus[Fast wobble]/insert_lu_hits	-0.4484
+modulation/chorus[Fast wobble]/insert_lu_pink	-0.4815
 modulation/chorus[Fast wobble]/mono_fold_lu	0
-modulation/chorus[Lush ensemble]/click_db_over_6k	-82.338
-modulation/chorus[Lush ensemble]/insert_lu_hits	-3.6566
-modulation/chorus[Lush ensemble]/insert_lu_pink	-3.6633
-modulation/chorus[Lush ensemble]/mono_fold_lu	0
-modulation/chorus[Subtle widen]/click_db_over_6k	-94.2532
-modulation/chorus[Subtle widen]/insert_lu_hits	-2.985
-modulation/chorus[Subtle widen]/insert_lu_pink	-3.2902
-modulation/chorus[Subtle widen]/mono_fold_lu	-0.8402
+modulation/chorus[Lush ensemble]/click_db_over_6k	-66.4196
+modulation/chorus[Lush ensemble]/insert_lu_hits	-0.6611
+modulation/chorus[Lush ensemble]/insert_lu_pink	-0.6276
+modulation/chorus[Lush ensemble]/mono_fold_lu	-0.9926
+modulation/chorus[Subtle widen]/click_db_over_6k	-84.3067
+modulation/chorus[Subtle widen]/insert_lu_hits	0.0599
+modulation/chorus[Subtle widen]/insert_lu_pink	-0.2473
+modulation/chorus[Subtle widen]/mono_fold_lu	-0.8499
 modulation/flanger/click_db_over_6k	-77.9885
 modulation/flanger/drawn_err_db_half_fbm90	46.3333
 modulation/flanger/drawn_err_db_half_fbp0	8.9369

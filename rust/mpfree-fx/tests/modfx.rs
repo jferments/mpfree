@@ -303,3 +303,135 @@ fn the_tail_estimate_covers_the_ring_out() {
         );
     }
 }
+
+/// The correlation of two signals.
+fn corr(a: &[f32], b: &[f32]) -> f32 {
+    let dot = a.iter().zip(b).map(|(p, q)| f64::from(p * q)).sum::<f64>();
+    (dot / (f64::from(rms(a)) * f64::from(rms(b)) * a.len() as f64)) as f32
+}
+
+#[test]
+fn the_chorus_is_wide_at_every_voice_count() {
+    // White noise, mostly highs, on both sides: at full Width the two
+    // sides' copies must differ at every count. With the right side a
+    // quarter cycle on, three voices nearly matched and four exactly.
+    use ids::chorus::{MIX, TONE, VOICES};
+    let x = noise(96_000, 11);
+    for voices in 1..=4 {
+        let mut c = set_up(
+            Box::new(Chorus::new()),
+            &[(VOICES, voices as f32), (TONE, 20_000.0), (MIX, 100.0)],
+        );
+        let (mut l, mut r) = (x.clone(), x.clone());
+        run(c.as_mut(), &mut l, &mut r, &[]);
+        let k = corr(&l[48_000..], &r[48_000..]);
+        assert!(k.abs() < 0.3, "{voices} voices: correlation {k}");
+    }
+}
+
+#[test]
+fn chorus_depth_is_milliseconds_and_the_bend_stays_inside_a_semitone() {
+    use ids::chorus::{DELAY, DEPTH, SYNC};
+    // The sweep either side of the Delay, and the steepest the delay
+    // changes (seconds a second), from the drawing's own function.
+    let measure = |values: &[(u16, f32)]| {
+        let mut c = Chorus::new();
+        c.prepare(RATE, MAX_BLOCK);
+        for &(id, v) in values {
+            c.set_param(id, v);
+        }
+        c.reset();
+        let (base, hz) = (c.param(DELAY), c.param(ids::chorus::RATE));
+        let n = 4096;
+        let d: Vec<f32> = (0..=n)
+            .map(|i| c.delay_ms(0, i as f32 / n as f32).unwrap())
+            .collect();
+        let swing = d.iter().fold(0.0f32, |m, v| m.max((v - base).abs()));
+        let slope =
+            d.windows(2).fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs())) * n as f32 * hz / 1000.0;
+        (swing, slope)
+    };
+    // Depth is a sweep in ms whatever the Delay (5 ms at 100 %).
+    for delay in [5.0f32, 12.0, 40.0] {
+        let (swing, _) = measure(&[(DEPTH, 40.0), (DELAY, delay), (ids::chorus::RATE, 0.6)]);
+        assert!((swing - 2.0).abs() < 0.01, "Delay {delay}: {swing} ms");
+    }
+    let (swing, _) = measure(&[(DEPTH, 100.0), (DELAY, 12.0), (ids::chorus::RATE, 0.6)]);
+    assert!((swing - 5.0).abs() < 0.01, "{swing}");
+    // Never past 90 % of the Delay.
+    let (swing, _) = measure(&[(DEPTH, 100.0), (DELAY, 3.0), (ids::chorus::RATE, 0.6)]);
+    assert!((swing - 2.7).abs() < 0.01, "{swing}");
+    // However fast and deep, the pitch moves less than a semitone: the
+    // delay never changes faster than 1 - 2^(-1/12) seconds a second.
+    let semitone = 1.0 - 2f32.powf(-1.0 / 12.0);
+    for rate in [0.05f32, 0.6, 3.0, 10.0] {
+        for delay in [2.0f32, 12.0, 40.0] {
+            let (_, slope) = measure(&[(DEPTH, 100.0), (DELAY, delay), (ids::chorus::RATE, rate)]);
+            assert!(slope < semitone, "Rate {rate}, Delay {delay}: {slope}");
+        }
+    }
+    // Synced to a sixteenth at 120 BPM (8 cycles a second) too.
+    let mut c = Chorus::new();
+    c.prepare(RATE, MAX_BLOCK);
+    c.set_param(SYNC, 1.0);
+    c.set_param(DEPTH, 100.0);
+    c.set_param(DELAY, 40.0);
+    c.reset();
+    let swing = (0..256)
+        .map(|i| c.delay_ms(0, i as f32 / 256.0).unwrap() - 40.0)
+        .fold(0.0f32, |m, v| m.max(v.abs()));
+    let slope = 2.0 * PI * 8.0 * swing / 1000.0;
+    assert!(slope < semitone * 1.001, "synced: {slope}");
+}
+
+#[test]
+fn a_synced_chorus_is_back_on_the_bar_after_a_loop_wraps() {
+    // A chorus synced to the bar plays 3.5 bars at 120 BPM, then the loop
+    // wraps to the start, half a cycle off. Within half a second (a deep
+    // sweep catches up no faster than its pitch ceiling allows) it must
+    // sound like a chorus that started at the loop's start with the same
+    // input.
+    use ids::chorus::{DEPTH, MIX, SYNC, TONE};
+    let values = [
+        (SYNC, 5.0f32),
+        (DEPTH, 100.0),
+        (TONE, 20_000.0),
+        (MIX, 100.0),
+    ];
+    let bar = 2 * RATE as usize;
+    let wrap = bar * 7 / 2;
+    let x = noise(wrap + RATE as usize, 21);
+    let play = |n: &mut dyn Node, l: &mut [f32], r: &mut [f32], from: usize, song0: usize| {
+        let mut at = from;
+        for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+            // The song position: frames since `song0`, wrapping at the loop.
+            let song = (at - song0) % wrap;
+            let ctx = Ctx {
+                bpm: 120.0,
+                beats: song as f64 / (RATE as f64 / 2.0),
+                playing: true,
+                ..Ctx::new(RATE, at as u64)
+            };
+            n.process(&ctx, &[], a, b);
+            at += a.len();
+        }
+    };
+    let mut looped = set_up(Box::new(Chorus::new()), &values);
+    let (mut l, mut r) = (x.clone(), x.clone());
+    play(looped.as_mut(), &mut l, &mut r, 0, 0);
+    let mut fresh = set_up(Box::new(Chorus::new()), &values);
+    let (mut fl, mut fr) = (x[wrap..].to_vec(), x[wrap..].to_vec());
+    play(fresh.as_mut(), &mut fl, &mut fr, wrap, wrap);
+    let after = RATE as usize / 2;
+    let a = &l[wrap + after..];
+    let b = &fl[after..];
+    let worst = a
+        .iter()
+        .zip(b)
+        .fold(0.0f32, |m, (p, q)| m.max((p - q).abs()));
+    assert!(
+        worst < 1e-3 * rms(b) * 4.0,
+        "{worst} apart against {} RMS",
+        rms(b)
+    );
+}
