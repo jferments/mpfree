@@ -6929,6 +6929,10 @@ fn player_session(
                 out.note(&format!("time: {line}"));
             }
         }
+        // A loop's copy onto another Loop track ended.
+        if let Some(end) = looper.copy_ended() {
+            fx.extend(desk::copy_ended(&mut time, end));
+        }
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
         }

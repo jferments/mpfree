@@ -164,6 +164,20 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(got["its row 2 cell armed"])
         self.assertFalse(got["the loop landed in it"])
 
+    def test_loop_copy_needs_the_copy_all_in_and_its_launch(self):
+        w = checks.Window(lines("clips: Loop 1 copies into Loop 3 on Loops B / 3: launch it to hear it",
+                                "looper: loop 3 is a copy of loop 1, 2 layers",
+                                "looper: loop 3 on from bar 9"))
+        self.assertTrue(all(ok for ok, _ in self.judge("loop-copy", w)))
+        # A copy into another row of its own track, a copy that stopped, a launch at once: not this.
+        w = checks.Window(lines("clips: a copy of Loop 1 in Loops A / 3 (UNDO takes it back)",
+                                "Loop 3 has 1 of Loop 1's 2 layers: the copy stopped",
+                                "looper: loop 3 on"))
+        got = dict((what, ok) for ok, what in self.judge("loop-copy", w))
+        self.assertFalse(got["the cell took a copy"])
+        self.assertFalse(got["the copy's layers all went in"])
+        self.assertFalse(got["the copy came in on a bar line"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]

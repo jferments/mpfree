@@ -225,6 +225,20 @@ impl Desk<'_> {
                     fx.extend(arm_loop_cell(app, time, tracks, looper, mix, out, cell));
                     return None;
                 }
+                // SHIFT + a loop's cell dropped on another Loop track: a
+                // new loop, a copy of its audio (loop-tracks.md part 6).
+                if let mpfree_time_ui::TimeAction::DropClip {
+                    from,
+                    to,
+                    copy: true,
+                } = a
+                {
+                    let loops = |t: usize| time.project().tracks.get(t).is_some_and(|t| t.is_loops());
+                    if from.0 != to.0 && loops(from.0) && loops(to.0) {
+                        fx.extend(copy_loop_cell(time, looper, out, from, to));
+                        return None;
+                    }
+                }
                 let picked = matches!(a, mpfree_time_ui::TimeAction::Arm(Some(_)));
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a));
                 // Picking a track arms its notes, as Bitwig's auto-arm.
@@ -590,6 +604,80 @@ fn arm_loop_cell(
         )));
     }
     fx
+}
+
+/// SHIFT + a loop's cell dropped on an empty cell of another Loop track
+/// (loop-tracks.md part 6): the cell there takes an empty loop, and the
+/// looper copies the loop's layers into it, silent until the cell is
+/// launched. Says why not: no loop free, the memory, the loop busy.
+fn copy_loop_cell(
+    time: &mut time::TimeHost,
+    looper: &mut looping::LoopHost,
+    out: &mut Out,
+    from: (usize, usize),
+    to: (usize, usize),
+) -> Vec<app::Effect> {
+    use mpfree_time_ui::TimeAction::{LoopCopy, LoopCopyOff};
+    let tell = |s: String| vec![app::Effect::Tell(s)];
+    let Some(n) = time
+        .project()
+        .clip(from.0, from.1)
+        .and_then(|c| c.looped)
+        .map(usize::from)
+    else {
+        return tell("clips: nothing to copy there".to_string());
+    };
+    let m = match looper.free_loop() {
+        Ok(m) => m,
+        Err(why) => return tell(why),
+    };
+    // The cell first: the time engine checks both cells.
+    let said = match time.act(LoopCopy {
+        from,
+        to,
+        into: m as u8,
+    }) {
+        Ok(line) => line,
+        Err(why) => return tell(why),
+    };
+    match looper.copy_loop(n, m) {
+        Ok(line) => out.note(&line),
+        Err(why) => {
+            let _ = time.act(LoopCopyOff(m as u8));
+            return tell(why);
+        }
+    }
+    tell(said)
+}
+
+/// A loop's copy onto another Loop track ended
+/// ([`looping::LoopHost::copy_ended`]): all in, or stopped with some of
+/// its layers, or with none, so its cell goes.
+pub fn copy_ended(time: &mut time::TimeHost, e: looping::CopyEnd) -> Vec<app::Effect> {
+    let (from, to) = (e.from + 1, e.to + 1);
+    if e.layers == 0 {
+        let mut fx = Vec::new();
+        if let Ok(line) = time.act(mpfree_time_ui::TimeAction::LoopCopyOff(e.to as u8)) {
+            if !line.is_empty() {
+                fx.push(app::Effect::Note(format!("time: {line}")));
+            }
+        }
+        fx.push(app::Effect::Tell(format!(
+            "Loop {from} didn't copy into Loop {to}: the loops were busy, so try again"
+        )));
+        return fx;
+    }
+    let s = if e.of == 1 { "" } else { "s" };
+    if e.layers < e.of {
+        return vec![app::Effect::Tell(format!(
+            "Loop {to} has {} of Loop {from}'s {} layers: the copy stopped",
+            e.layers, e.of
+        ))];
+    }
+    vec![app::Effect::Note(format!(
+        "looper: loop {to} is a copy of loop {from}, {} layer{s}",
+        e.of
+    ))]
 }
 
 /// What the arm does, as the app's effects (in order).

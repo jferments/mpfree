@@ -2695,4 +2695,121 @@ mod tests {
             s.button("STOP");
         });
     }
+
+    /// Loop tracks part 6 (loop-tracks.md): SHIFT + a loop's cell dropped
+    /// on another Loop track makes a new loop there, a copy of its layers,
+    /// silent until launched, then playing with it; a copy into another
+    /// row of its own Loop track is the same loop, so a scene change
+    /// between the two rows keeps it playing without a launch.
+    #[test]
+    fn a_loop_copied_onto_another_loop_track_is_a_new_loop_with_its_layers() {
+        use crate::gui::FromUi;
+        use mpfree_looper::Phase;
+        use mpfree_time_ui::TimeAction;
+        fn until(s: &mut Session, what: &str, done: &dyn Fn(&Session) -> bool) {
+            let end = s.t() + 8.0;
+            while !done(s) && s.t() < end {
+                s.run_periods(4);
+            }
+            assert!(
+                done(s),
+                "never {what}: {:?}",
+                &s.lines[s.lines.len().saturating_sub(12)..]
+            );
+        }
+        fn phase(n: usize, p: Phase) -> impl Fn(&Session) -> bool {
+            move |s: &Session| s.looper.loop_status(n).map(|l| l.phase) == Some(p)
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            // Loop 1: a first pass and an overdub, on Loops A row 1.
+            s.press("play-transport", "view", "Loop").settle();
+            s.button("REC").button("PLAY");
+            until(&mut s, "recording", &phase(0, Phase::Recording));
+            s.pad(0, 120, 0.3);
+            s.run_for(1.7);
+            s.button("REC");
+            until(&mut s, "playing", &phase(0, Phase::Playing));
+            s.button("OVERDUB");
+            until(&mut s, "overdubbing", &phase(0, Phase::Overdubbing));
+            s.pad(1, 110, 0.3);
+            s.run_for(2.1);
+            s.button("OVERDUB");
+            until(&mut s, "two layers", &|s: &Session| {
+                s.looper
+                    .loop_status(0)
+                    .is_some_and(|l| l.phase == Phase::Playing && l.layers == 2)
+            });
+            assert_eq!(s.time.project().clip(8, 0).and_then(|c| c.looped), Some(0));
+
+            // Loops B, and SHIFT + Loops A's cell dropped on its row 2.
+            s.route(FromUi::Time(TimeAction::AddLoopTrack));
+            s.run_periods(2);
+            assert!(s.time.project().tracks[9].is_loops());
+            let from = s.lines.len();
+            s.route(FromUi::Time(TimeAction::DropClip {
+                from: (8, 0),
+                to: (9, 1),
+                copy: true,
+            }));
+            s.run_periods(2).settle();
+            assert!(
+                s.hint()
+                    .starts_with("Loop 1 copies into Loop 2 on Loops B / 2: launch it to hear it"),
+                "{}",
+                s.hint()
+            );
+            assert_eq!(s.time.project().clip(9, 1).and_then(|c| c.looped), Some(1));
+            s.run_periods(11).settle();
+            let c = mpfree_time_ui::view::cell_of(&s.screen.time, 9, 1);
+            assert_eq!((c.name.as_str(), c.foot.as_str()), ("Loop 2", "copying in"));
+            until(&mut s, "copied", &|s: &Session| {
+                s.lines[from..]
+                    .iter()
+                    .any(|l| l == "looper: loop 2 is a copy of loop 1, 2 layers")
+            });
+            let (a, b) = (
+                s.looper.loop_status(0).unwrap(),
+                s.looper.loop_status(1).unwrap(),
+            );
+            assert_eq!((b.layers, b.ticks, b.frames), (2, a.ticks, a.frames));
+            assert!(!b.on, "silent until launched");
+            s.run_periods(12).settle();
+            let c = mpfree_time_ui::view::cell_of(&s.screen.time, 9, 1);
+            assert_eq!(c.foot, "", "copied");
+            // Launched, it plays with loop 1, on the bar line.
+            s.route(FromUi::Time(TimeAction::Launch { track: 9, slot: 1 }));
+            until(&mut s, "on", &|s: &Session| {
+                s.looper.loop_status(1).is_some_and(|l| l.on)
+            });
+            assert!(s.looper.loop_status(0).unwrap().on);
+
+            // The same loop in row 3 of Loops A: row 3's scene keeps it
+            // playing (no launch), and Loops B, empty there, stops.
+            s.route(FromUi::Time(TimeAction::DropClip {
+                from: (8, 0),
+                to: (8, 2),
+                copy: true,
+            }));
+            s.run_periods(2);
+            assert_eq!(s.time.project().clip(8, 2).and_then(|c| c.looped), Some(0));
+            let from = s.lines.len();
+            s.route(FromUi::Time(TimeAction::LaunchScene(2)));
+            until(&mut s, "loop 2 off", &|s: &Session| {
+                s.looper.loop_status(1).is_some_and(|l| !l.on)
+            });
+            s.run_for(0.5);
+            assert!(s.looper.loop_status(0).unwrap().on);
+            assert!(
+                s.lines[from..]
+                    .iter()
+                    .all(|l| !l.starts_with("looper: loop 1 ")),
+                "loop 1 went on playing: {:?}",
+                &s.lines[from..]
+            );
+            assert_eq!(s.time.project().check(), Ok(()));
+            s.button("STOP");
+        });
+    }
 }
