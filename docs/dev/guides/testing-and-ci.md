@@ -37,9 +37,10 @@ filters, so the check always reports.
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 | `soak` | The `mpfree-bench` song for 2^21 periods (about 101 minutes of sound), failing on any allocation in any block (see [profiling](../design/profiling.md#the-soak-the-soak-ci-job)); only by hand, with **Run workflow**'s Soak box ticked | ~15 min |
 
-The coverage table appears in the run's summary page, and the lcov file is
-kept as an artifact for 7 days. If the account's artifact storage is full,
-the upload fails without failing the run.
+The coverage table appears in the run's summary page. The lcov file and the
+JSON summary are kept on the CI VM, in `/srv/mpfree-store/coverage` (the newest
+30 runs; see [Artifacts](#artifacts)). If the store can't take them, the run
+still passes.
 
 ### Where it runs
 
@@ -72,12 +73,64 @@ for a runner is waiting, not failed. GitHub's list of runs can show a run as
 queued while its jobs are already running: to see what the runners are doing,
 look at the jobs of each run, not the run's status.
 
-If the account's artifact storage is full, the coverage job's lcov upload
-fails without failing the run (the table is in the run summary anyway).
+### Artifacts
+
+MPFree's workflows upload nothing to GitHub's artifact storage. That storage
+is one allowance for the whole GitHub account (500 MB on Free, 1 GB on Pro,
+shared with GitHub Packages and every private repository), billed by the hour
+over the month, and when the month's share is used every upload on the account
+fails ("Artifact storage quota has been hit", MPFree's runs since 2026-11-11).
+Deleting artifacts doesn't give back what the month has used. Project After
+and PlantGen avoid it the same way: their builds stay on the CI VM.
+
+What a run makes is kept **on the CI VM instead**, in `/srv/mpfree-store`, a
+folder the four mpfree-ci runners share. jferments/ci-infrastructure's
+`mpfree_runner.py install` makes it (owned by the runner account, readable by
+the VM's other accounts), and its `docs/mpfree-runner.md` ("The store") has
+the `scp` line to copy files out. A job keeps files with
+[`tools/ci/store.py`](../../../tools/ci/store.py):
+
+~~~sh
+python3 tools/ci/store.py keep KIND PATH...
+~~~
+
+| Folder | What | Kept |
+|---|---|---|
+| `kernel/runs/<run>.<attempt>/` | `kernel.yml`: `zImage`, the modules, the config, `System.map`, `build-info.txt`, `SHA256SUMS`, from every run (pull requests too) | 14 days, the newest 30 runs |
+| `coverage/runs/<run>.<attempt>/` | `mpc-inventory.yml`'s coverage job: `lcov.info` and `coverage.json` | 14 days, the newest 30 runs |
+| `creator/runs/<run>.<attempt>/` | `release-creator.yml`: the programs for the MPC and the free kits' credits, then the finished `release/` (the creators and `SHA256SUMS`) | 14 days, the newest 10 runs |
+
+Each run's folder has a `run.json` (the run's link, ref, commit, and each
+file's sha256 and size), and `<KIND>/main`, `<KIND>/pr-<number>` and so on
+point at the newest run for that ref; the newest run on `main` is always
+kept. The script refuses to replace a file a run already kept, and keeps
+nothing when the VM's disk would be left with less than 10 GiB free (After's
+and PlantGen's builds share it). A keep step is `continue-on-error`: when
+the store can't take the files, the run still passes, with a warning, and
+its summary still has the hashes.
+
+GitHub's own machines (the USB creator's Linux, Windows and macOS builds)
+can't reach the store, so the release workflow hands files over through its
+draft release ([`tools/ci/release_assets.js`](../../../tools/ci/release_assets.js),
+below). A new workflow keeps its files with `store.py`, never with
+`actions/upload-artifact` or `actions/cache`.
+
+The tests: `python3 tools/ci/test_store.py`, and
+`node --test tools/ci/test_release_assets.js` (against a fake GitHub), both in
+the `syntax` job.
 
 ### The USB creator's release workflow
 
-[`.github/workflows/release-creator.yml`](../../../.github/workflows/release-creator.yml) is not CI: it runs only by hand (**Run workflow**) or on a `creator-vX.Y.Z` tag, and makes a draft release of the USB creator for Linux, Windows and macOS ([Releases](../design/usb-creator.md#releases)). MPFree's programs for the MPC, its free drum kits (`mpfree-free-kits`, which fetches the samples `rust/mpfree-factory/free-kits.txt` pins from GitHub and keeps them in the runner's `~/.cache/mpfree-free-kits`) and the draft itself use the self-hosted runners; the creator is built on GitHub's own Ubuntu 22.04, Windows and macOS runners, which count against the account's Actions minutes (about 180 counted minutes a release). Each build runs the creator's tests on its own system and lists that machine's USB disks, the only place the Windows and macOS disk code runs before a real stick.
+[`.github/workflows/release-creator.yml`](../../../.github/workflows/release-creator.yml) is not CI: it runs only by hand (**Run workflow**) or on a `creator-vX.Y.Z` tag, and makes a draft release of the USB creator for Linux, Windows and macOS ([Releases](../design/usb-creator.md#releases)). MPFree's programs for the MPC, its free drum kits (`mpfree-free-kits`, which fetches the samples `rust/mpfree-factory/free-kits.txt` pins from GitHub and keeps them in the runner's tool cache, `_work/_tool/mpfree-free-kits`) and the draft itself use the self-hosted runners; the creator is built on GitHub's own Ubuntu 22.04, Windows and macOS runners, which count against the account's Actions minutes (about 180 counted minutes a release). Each build runs the creator's tests on its own system and lists that machine's USB disks, the only place the Windows and macOS disk code runs before a real stick.
+
+### MPFree's kernel build
+
+[`.github/workflows/kernel.yml`](../../../.github/workflows/kernel.yml) builds MPFree's own kernel for the MPC One ([own-kernel step 2](../hardware/own-kernel.md)) with [`tools/kernel/build.sh`](../../../tools/kernel/build.sh). It is not a required check: it runs on a pull request or a push to `main` that changes `tools/kernel/` or the workflow, or by hand. It runs the build script's own tests, prints what the runner has (system, CPUs, memory, disk, container engines, host tools, which hosts it reaches), then builds Linux 6.18 with the PREEMPT_RT patch.
+
+- **The compiler** is kernel.org's crosstool gcc 14 for 32-bit ARM (gcc and binutils, the toolchain kernel developers use, made to run on any x86-64 Linux), never the machine's own, so the kernel comes out the same wherever it is built.
+- **Where it runs:** in the pinned container ([`tools/kernel/Dockerfile`](../../../tools/kernel/Dockerfile): Debian pinned by digest, packages from one day's snapshot.debian.org) where Docker or Podman works; otherwise on the machine itself, as its user, never as root. The mpfree-ci runners have neither engine (first run, 2026-11-17), so they build on the runner. A host tool the runner lacks (flex, bison, m4, patch, bc, depmod, the OpenSSL headers) is fetched with `apt-get download`, which checks it against the runner's own signed package lists, and unpacked into the run's folder; nothing is installed. These tools only build the kernel's own helper programs, not the kernel.
+- **Checks:** the kernel, the RT patch and the compiler are taken by the sha256 pinned in [`versions.env`](../../../tools/kernel/versions.env). With nothing pinned, the newest 6.18 RT patch and its kernel and the newest gcc 14 crosstool are taken after kernel.org's PGP signatures check out (the kernel's must be Greg Kroah-Hartman's or Linus Torvalds's key, the compiler's Arnd Bergmann's, who builds the crosstool compilers), and `build-info.txt` lists the lines to pin. [`check-config.py`](../../../tools/kernel/check-config.py) stops the build if any setting in [`mpfree.config`](../../../tools/kernel/mpfree.config) did not take, or the eMMC and SD drivers ended up built in.
+- **Result:** the run's summary shows `build-info.txt` (what was built, from what, how it was checked) and `SHA256SUMS`. Every run keeps `zImage`, the modules, the config, `System.map`, `build-info.txt` and `SHA256SUMS` on the CI VM, in `/srv/mpfree-store/kernel` (see [Artifacts](#artifacts)); nothing goes to GitHub's artifact storage. When the store can't take them the step only warns ("Kernel not kept"), because the kernel itself built. Downloads live in the runner's tool cache (`_work/_tool/mpfree-kernel`; the runners' home folder is read-only to jobs); each run builds in its own folder there, removed when the run ends, so two builds at once don't meet.
 
 ## Running it locally
 

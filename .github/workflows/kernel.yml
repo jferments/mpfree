@@ -1,0 +1,64 @@
+name: MPFree kernel build
+
+# Own-kernel step 2 (docs/dev/hardware/own-kernel.md): Linux 6.18 long-term with the
+# PREEMPT_RT patch for the MPC One, built by tools/kernel/build.sh on the self-hosted runners
+# with kernel.org's crosstool compiler, pinned (the runners have no container engine, so it
+# builds on the runner itself, as the runner's user). Not a required check; it runs only when
+# the kernel's files change, or by hand. The result is kept as the run's artifact (zImage, modules, config,
+# SHA256SUMS) for the stick builder; nothing here reaches an MPC.
+
+on:
+  pull_request:
+    paths:
+      - 'tools/kernel/**'
+      - '.github/workflows/kernel.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/kernel/**'
+      - '.github/workflows/kernel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One build per branch at a time; a newer push waits rather than cancelling a build.
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Kernel for the MPC One (6.18 with PREEMPT_RT)
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests for the build script
+        run: |
+          python3 tools/kernel/tests/test_check_config.py
+          python3 tools/kernel/tests/test_build_sources.py
+          python3 tools/ci/test_store.py
+      # The runners' home is read-only to jobs; the tool cache keeps the downloads between runs.
+      - name: What this runner has
+        run: MPFREE_KERNEL_CACHE="${RUNNER_TOOL_CACHE:?}/mpfree-kernel" bash tools/kernel/build.sh --probe
+      - name: Build
+        run: MPFREE_KERNEL_CACHE="${RUNNER_TOOL_CACHE:?}/mpfree-kernel" bash tools/kernel/build.sh "$RUNNER_TEMP/mpfree-kernel"
+      - name: What was built
+        run: |
+          { echo '### MPFree kernel'; echo '```'; cat "$RUNNER_TEMP/mpfree-kernel/build-info.txt"
+            echo; cat "$RUNNER_TEMP/mpfree-kernel/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # Nothing goes to GitHub's artifact storage (one allowance for the whole account, billed by
+      # the hour, and full since 2026-11-11). The kernel is kept on the CI VM, in the folder the
+      # mpfree runners share (tools/ci/store.py: /srv/mpfree-store/kernel, for 14 days, the newest
+      # on main always). The kernel built either way and its hashes are in the summary above, so
+      # a store that can't take it warns instead of failing the build.
+      - name: Keep the kernel on the CI VM
+        id: keep
+        continue-on-error: true
+        run: python3 tools/ci/store.py keep kernel "$RUNNER_TEMP"/mpfree-kernel/*
+      - name: Say if the kernel was not kept
+        if: steps.keep.outcome == 'failure'
+        run: |
+          echo "::warning title=Kernel not kept::The kernel built, but the CI VM's store could not keep it (see 'Keep the kernel on the CI VM'). Its hashes are in the run summary."
+          echo '**Not kept** (see the "Keep the kernel on the CI VM" step).' >> "$GITHUB_STEP_SUMMARY"
