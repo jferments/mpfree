@@ -1187,12 +1187,18 @@ pub struct OptionRow {
 /// gives `Tab(k)` at once. The last tab takes the room the others leave,
 /// its name cut with "…" if it is longer; the title and `right` are not
 /// shown.
+///
+/// With `buttons`, a row of buttons sits under the rows, side by side
+/// (the clip card's Save state and Reload, sequencer S4): a tap on button
+/// `i` gives `Toggle(i)` at once, unless it is drawn off.
 pub struct OptionList {
     pub title: String,
     pub right: String,
     pub tabs: Vec<String>,
     pub tab: usize,
     pub rows: Vec<OptionRow>,
+    /// The buttons under the rows; none to begin with.
+    pub buttons: Vec<OptionButton>,
     /// What the list says with no rows ("nothing here" to begin with).
     pub empty: String,
     pub selected: usize,
@@ -1217,7 +1223,31 @@ struct OptionGrab {
     dragging: bool,
 }
 
+/// A button under an [`OptionList`]'s rows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OptionButton {
+    pub label: String,
+    /// Drawn faint, and a tap does nothing, while off.
+    pub enabled: bool,
+    /// Outlined amber: what it asked for waits (a reload waiting for its
+    /// line); a tap takes it back.
+    pub waiting: bool,
+}
+
+impl OptionButton {
+    pub fn new(label: &str, enabled: bool) -> OptionButton {
+        OptionButton {
+            label: label.to_string(),
+            enabled,
+            waiting: false,
+        }
+    }
+}
+
 const OPTION_H: i32 = 58;
+/// An [`OptionList`]'s buttons: their height, and the gap over them.
+const OPTION_BUTTON_H: i32 = 44;
+const OPTION_BUTTON_GAP: i32 = 8;
 const VALUE_W: i32 = 300;
 const ARROW_W: i32 = 64;
 /// Rows narrower than this draw narrow (see [`OptionList`]): below it the
@@ -1240,6 +1270,7 @@ impl OptionList {
             tabs: Vec::new(),
             tab: 0,
             rows: Vec::new(),
+            buttons: Vec::new(),
             empty: "nothing here".to_string(),
             selected: 0,
             editing: false,
@@ -1249,13 +1280,37 @@ impl OptionList {
         }
     }
 
-    fn body(r: Rect) -> Rect {
+    /// Under the title line, to the panel's padding at the foot.
+    fn inside(r: Rect) -> Rect {
         // Matches PaintCx::titled_panel with the default theme's padding.
         r.inset(14).take_top(34).1
     }
 
-    fn visible(r: Rect) -> usize {
-        (OptionList::body(r).h / OPTION_H).max(0) as usize
+    /// Where the rows are: inside, over the buttons if there are any.
+    fn body(&self, r: Rect) -> Rect {
+        let inside = OptionList::inside(r);
+        if self.buttons.is_empty() {
+            inside
+        } else {
+            inside.take_bottom(OPTION_BUTTON_H + OPTION_BUTTON_GAP).1
+        }
+    }
+
+    fn visible(&self, r: Rect) -> usize {
+        (self.body(r).h / OPTION_H).max(0) as usize
+    }
+
+    /// Button `i`'s rectangle, if there is one: the buttons share the foot
+    /// of the panel, side by side.
+    pub fn button_rect(&self, r: Rect, i: usize) -> Option<Rect> {
+        let n = self.buttons.len() as i32;
+        if i >= self.buttons.len() {
+            return None;
+        }
+        let foot = OptionList::inside(r).take_bottom(OPTION_BUTTON_H).0;
+        let w = (foot.w - (n - 1) * OPTION_BUTTON_GAP) / n;
+        let x = foot.x + i as i32 * (w + OPTION_BUTTON_GAP);
+        Some(Rect::new(x, foot.y, w, foot.h))
     }
 
     /// The first row in view. When the selection has changed since the view
@@ -1295,8 +1350,8 @@ impl OptionList {
     /// The scroll bar's track and thumb, when the list is longer than its
     /// panel.
     pub fn scroll_bar(&self, r: Rect) -> Option<(Rect, Rect)> {
-        let body = OptionList::body(r);
-        let visible = OptionList::visible(r);
+        let body = self.body(r);
+        let visible = self.visible(r);
         if visible == 0 || self.rows.len() <= visible {
             return None;
         }
@@ -1309,8 +1364,8 @@ impl OptionList {
 
     /// Row `k`'s rectangle (if it is in view) and its value box.
     pub fn row_rects(&self, r: Rect, k: usize) -> Option<(Rect, Rect)> {
-        let body = OptionList::body(r);
-        let visible = OptionList::visible(r);
+        let body = self.body(r);
+        let visible = self.visible(r);
         let first = self.first(visible);
         if k < first || k >= first + visible || k >= self.rows.len() {
             return None;
@@ -1343,7 +1398,7 @@ impl OptionList {
         } else {
             OPTION_TAB_W - 6
         };
-        Some(Rect::new(x, r.y, w.max(0), OptionList::body(r).y - r.y))
+        Some(Rect::new(x, r.y, w.max(0), OptionList::inside(r).y - r.y))
     }
 
     /// The row draws narrow (see [`OptionList`]).
@@ -1455,8 +1510,32 @@ impl Widget for OptionList {
             cx.canvas.fill_round_rect(track, 2, t.outline);
             cx.canvas.fill_round_rect(thumb, 2, t.text_dim);
         }
+        for (i, b) in self.buttons.iter().enumerate() {
+            let Some(br) = self.button_rect(r, i) else {
+                continue;
+            };
+            cx.canvas
+                .fill_round_rect(br, 10, if b.enabled { t.raised } else { t.surface });
+            if b.waiting {
+                cx.canvas.stroke_round_rect(br, 10, 2, t.warn);
+            }
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                br,
+                Align::Center,
+                if b.waiting {
+                    t.warn
+                } else if b.enabled {
+                    t.text
+                } else {
+                    t.text_faint
+                },
+                &b.label,
+            );
+        }
         if self.rows.is_empty() {
-            let body = OptionList::body(r);
+            let body = self.body(r);
             cx.text(
                 FontId::Sans,
                 t.size_body,
@@ -1489,6 +1568,11 @@ impl Widget for OptionList {
             out.push(Target::tap("row-less", k, format!("{name} ‹"), less));
             out.push(Target::tap("row-more", k, format!("{name} ›"), more));
         }
+        for (i, b) in self.buttons.iter().enumerate() {
+            if let Some(br) = self.button_rect(r, i) {
+                out.push(Target::tap("button", i, b.label.clone(), br).disabled_if(!b.enabled));
+            }
+        }
         out
     }
 
@@ -1520,7 +1604,7 @@ impl Widget for OptionList {
         match phase {
             Touch::Down => {}
             Touch::Move => {
-                let visible = OptionList::visible(r);
+                let visible = self.visible(r);
                 let g = self.grab.as_mut().filter(|g| g.finger == finger)?;
                 if !g.dragging && (y - g.y).abs() < OPTION_DRAG_PX {
                     return None;
@@ -1552,6 +1636,11 @@ impl Widget for OptionList {
             // Another tab: the app shows its list (the lit one does nothing).
             return (k != self.tab).then_some(EventKind::Tab(k));
         }
+        if let Some(i) = (0..self.buttons.len())
+            .find(|&i| self.button_rect(r, i).is_some_and(|b| b.contains(x, y)))
+        {
+            return self.buttons[i].enabled.then_some(EventKind::Toggle(i));
+        }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
                 .is_some_and(|(row, _)| row.contains(x, y))
@@ -1570,7 +1659,7 @@ impl Widget for OptionList {
         } else {
             // A row's name: picked when the finger lifts, unless it drags
             // the list.
-            let top = self.first(OptionList::visible(r));
+            let top = self.first(self.visible(r));
             self.grab = Some(OptionGrab {
                 finger,
                 y,
@@ -1874,6 +1963,52 @@ mod tests {
         o.tabs.clear();
         assert_eq!(o.touch(1, Touch::Down, b.x + 4, b.y + 20, r), None);
         assert!(!o.targets(r).iter().any(|t| t.id == "tab"));
+    }
+
+    /// Buttons under the rows: side by side at the foot, the rows over
+    /// them; a tap gives `Toggle(i)`, nothing while one is off.
+    #[test]
+    fn option_buttons_sit_under_the_rows_and_tap() {
+        let mut o = OptionList::new("Clip");
+        o.rows = (0..6)
+            .map(|i| OptionRow {
+                name: format!("Row {i}"),
+                value: "1".into(),
+            })
+            .collect();
+        let r = Rect::new(0, 0, 250, 14 * 2 + 34 + OPTION_H * 4);
+        assert_eq!(o.visible(r), 4);
+        assert!(o.button_rect(r, 0).is_none());
+        o.buttons = vec![
+            OptionButton::new("Save state", true),
+            OptionButton::new("Reload", false),
+        ];
+        assert_eq!(o.visible(r), 3, "the buttons take a row's room");
+        let (a, b) = (o.button_rect(r, 0).unwrap(), o.button_rect(r, 1).unwrap());
+        assert!(o.button_rect(r, 2).is_none());
+        assert_eq!(a.bottom(), r.bottom() - 14);
+        assert!(
+            a.right() < b.x && b.right() == r.right() - 14,
+            "{a:?} {b:?}"
+        );
+        let (last, _) = o.row_rects(r, 2).unwrap();
+        assert!(last.bottom() <= a.y, "{last:?} {a:?}");
+        assert_eq!(
+            o.touch(1, Touch::Down, a.x + 4, a.y + 4, r),
+            Some(EventKind::Toggle(0))
+        );
+        assert_eq!(o.touch(1, Touch::Down, b.x + 4, b.y + 4, r), None, "off");
+        let t = o.targets(r);
+        let buttons: Vec<_> = t.iter().filter(|t| t.id == "button").collect();
+        assert_eq!(buttons.len(), 2);
+        assert!(buttons[0].enabled && !buttons[1].enabled);
+        // Painted, waiting outlined.
+        o.buttons[1].waiting = true;
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 260, r.h);
+        ui.add("o", o);
+        ui.add_page("p", "o").unwrap();
+        let mut c = SoftCanvas::new(260, r.h);
+        assert!(!ui.paint(&mut c).is_empty());
     }
 
     #[test]

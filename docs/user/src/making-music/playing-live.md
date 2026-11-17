@@ -91,11 +91,16 @@ What Perform changes today:
 - **The Clips grid shows 5 big rows**, and a clip waiting to start counts down: an amber bar along its foot fills as its line comes near.
 - **NEXT** on the transport bar says what comes next and how soon, while the music plays: a scene you launched ("NEXT Drop in 2 beats"), the clips waiting ("Drop bass in 1 bar", "Bass stops in 3 beats"), the next scene a follow action plays ("Verse in 3 bars", or "Drop or stay" when it is down to chance), or in song mode the next section ("Chorus in 4 bars"). When mutes are waiting too, WAITING comes first.
 
-{{shot: clips-perform | In Perform: five big rows, the chords waiting for bar 6 with their countdown bar, the glitch stopping there, and NEXT on the transport bar.}}
+{{shot: clips-perform | In Perform: five big rows, the chords waiting for bar 6 with their countdown bar, the glitch stopping there, NEXT on the transport bar, and Back to song on the grid's title line.}}
 
 Clips and scenes start on the line the Record panel's **Launch** sets, in Make and Perform alike (see [Recording a clip](clips.md#recording-a-clip)), and the transport bar shows it.
 
-Coming next: the song list, a scene editor, Back to song, reloading a clip and live transpose.
+Two more things help on a stage, in Make and Perform alike:
+
+- **Back to song.** With **Song on**, a clip you launch takes its track over from the song. While any clip plays over the song, **Back to song** shows on the grid's title line: tap it and every clip stops on the next Launch line, and the song plays every track from there, on the beat (see [The song](arranging.md#the-song)).
+- **Reload a clip.** Before you take a pattern apart live, tap **Save state** on the Clip tab (see [Clip settings](clips.md#clip-settings)). Add steps, change its speed, erase half of it; then tap **Reload clip** on the morph bar, and the pattern comes back as you saved it on the next Launch line, so it lands on the beat. In Perform, NEXT says when ("Verse B reloads in 2 beats"). Tap Reload clip again before then to take it back, and **UNDO** puts the wrecked version back if you liked it after all.
+
+Coming next: the song list, a scene editor and live transpose.
 
 ## The Q-Links on the Play page
 

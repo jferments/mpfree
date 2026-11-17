@@ -519,6 +519,10 @@ pub struct ClipGrid {
     pub song_rec: bool,
     /// The project has room for another track: "+ Track" is lit.
     pub can_add: bool,
+    /// Clips launched over the song (song mode on): "Back to song" shows
+    /// on the title line, left of the pager or "+ Track" (sequencer S4,
+    /// mockup C), and gives `Toggle(slots + `[`BACK_TO_SONG`]`)`.
+    pub back_to_song: bool,
     /// Perform's big rows (sequencer decision 5, mockup C): five rows of
     /// [`ROW_MIN_H`] with rings and countdowns. Off (Make), the rows are
     /// compact, [`ROW_MIN_H_MAKE`], eight in view with names and lengths.
@@ -577,6 +581,7 @@ struct Drawn {
     song_rec: bool,
     can_add: bool,
     big: bool,
+    back_to_song: bool,
     /// Where a dragged clip or row was drawn.
     dragged: Option<(Held, (i32, i32))>,
 }
@@ -592,6 +597,11 @@ pub const PAGE_ON: usize = 6;
 /// clip or row held at the top or bottom edge scrolls the rows one.
 pub const ROWS_BACK: usize = 7;
 pub const ROWS_ON: usize = 8;
+/// `Toggle(slots + BACK_TO_SONG)`: "Back to song", every track back to the
+/// arrangement on the launch line.
+pub const BACK_TO_SONG: usize = 9;
+/// "Back to song"'s width.
+const BACK_W: i32 = 124;
 /// Pixels a finger travels along the track names to page.
 const SWIPE_PX: i32 = 48;
 /// "+ Track"'s width, the pager's arrows' and its label's.
@@ -666,6 +676,7 @@ impl ClipGrid {
             song_rec: false,
             can_add: false,
             big: false,
+            back_to_song: false,
             drawn: RefCell::new(None),
             press: None,
             grip: None,
@@ -900,6 +911,16 @@ impl ClipGrid {
         Some((back, on))
     }
 
+    /// Where "Back to song" is, while it shows: left of the pager, or of
+    /// "+ Track".
+    pub fn back_rect(&self, r: Rect) -> Option<Rect> {
+        if !self.back_to_song {
+            return None;
+        }
+        let right = self.pager_rects(r).map_or(self.add_rect(r), |(b, _)| b);
+        Some(Rect::new(right.x - 8 - BACK_W, right.y, BACK_W, right.h))
+    }
+
     /// Where the Stop all button is: over the scene buttons.
     pub fn stop_all_rect(&self, r: Rect) -> Rect {
         let g = self.geo(r);
@@ -1001,6 +1022,7 @@ impl Widget for ClipGrid {
             || d.song_rec != self.song_rec
             || d.can_add != self.can_add
             || d.big != self.big
+            || d.back_to_song != self.back_to_song
             || d.dragged.is_some()
             || self.dragged_now().is_some()
         {
@@ -1038,16 +1060,38 @@ impl Widget for ClipGrid {
             song_rec: self.song_rec,
             can_add: self.can_add,
             big: self.big,
+            back_to_song: self.back_to_song,
             dragged: self.dragged_now(),
         });
-        cx.titled_panel(r, &self.title, "");
+        // The title, shortened to what comes before " · " where "Back to
+        // song" leaves it no room.
+        let head = r.inset(14).take_top(26).0;
+        let back = self.back_rect(r);
+        let mut title = self.title.as_str();
+        if let Some(b) = back {
+            let wide = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
+            if head.x + wide + 12 > b.x {
+                title = title.split(" · ").next().unwrap_or(title);
+            }
+        }
+        cx.titled_panel(r, title, "");
         // The legend (or the pager), "+ Track", Edit, Rec song and the
         // Song button (the Song view of the page).
         let song = self.song_rect(r);
         let rec = self.rec_rect(r);
         let edit = self.edit_rect(r);
         let add = self.add_rect(r);
-        let head = r.inset(14).take_top(26).0;
+        if let Some(b) = back {
+            cx.canvas.fill_round_rect(b, 10, t.raised.mix(t.good, 0.35));
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                b,
+                Align::Center,
+                t.text,
+                "Back to song",
+            );
+        }
         if let Some((back, on)) = self.pager_rects(r) {
             // The pager: the tracks shown, with a step either way, dim at
             // either end.
@@ -1074,8 +1118,9 @@ impl Widget for ClipGrid {
         } else {
             // The legend's parts that fit between the title and the
             // buttons, dropping the first ones when it is too wide.
-            let title_w = cx.measure(FontId::Bold, t.size_small, &self.title.to_uppercase());
-            let room = add.x - 12 - (head.x + title_w + 16);
+            let title_w = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
+            let end = back.map_or(add.x, |b| b.x);
+            let room = end - 12 - (head.x + title_w + 16);
             let mut legend = self.legend.as_str();
             while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
                 legend = legend.split_once(" · ").map_or("", |(_, rest)| rest);
@@ -1083,7 +1128,7 @@ impl Widget for ClipGrid {
             cx.text(
                 FontId::Sans,
                 t.size_small,
-                Rect::new(head.x, head.y, add.x - head.x - 12, head.h),
+                Rect::new(head.x, head.y, end - head.x - 12, head.h),
                 Align::Right,
                 t.text_dim,
                 legend,
@@ -1259,6 +1304,9 @@ impl Widget for ClipGrid {
             Target::tap("edit", 0, "Edit", self.edit_rect(r)),
             Target::tap("add-track", 0, "+ Track", self.add_rect(r)).disabled_if(!self.can_add),
         ];
+        if let Some(b) = self.back_rect(r) {
+            out.push(Target::tap("back-to-song", 0, "Back to song", b));
+        }
         if let Some((back, on)) = self.pager_rects(r) {
             let last = self.first_track + GRID_COLS >= self.tracks.len();
             out.push(
@@ -1387,6 +1435,9 @@ impl Widget for ClipGrid {
         if self.edit_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 3));
         }
+        if self.back_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Toggle(self.slots + BACK_TO_SONG));
+        }
         if self.add_rect(r).contains(x, y) {
             return self
                 .can_add
@@ -1459,7 +1510,8 @@ impl Widget for ClipGrid {
 /// The scene morph under the grid: the rows on A and B (a tap on a chip's
 /// left half steps it down, on its right half up: `Step { index: 0 or 1,
 /// delta }`), the crossfader between them (`Value`, while the finger is
-/// down), and Snap back, Keep and Save (`Tab(0)`, `Tab(1)`, `Tab(2)`).
+/// down), Snap back, Keep and Save (`Tab(0)`, `Tab(1)`, `Tab(2)`), and
+/// Reload clip (`Tab(3)`, sequencer S4, mockup C).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MorphBar {
     /// The rows on A and B, shown 1-based.
@@ -1471,10 +1523,20 @@ pub struct MorphBar {
     pub on: bool,
     /// Parameters the morph moves, for the label.
     pub params: usize,
+    /// The focused clip has a saved state: Reload clip is lit.
+    pub reload: bool,
+    /// Its reload waits for the launch line: Reload clip is outlined
+    /// amber.
+    pub reload_waiting: bool,
 }
 
 const CHIP_W: i32 = 96;
-const MORPH_BUTTONS: [(&str, i32); 3] = [("Snap back", 104), ("Keep", 72), ("Save", 84)];
+const MORPH_BUTTONS: [(&str, i32); 4] = [
+    ("Snap back", 96),
+    ("Keep", 64),
+    ("Save", 76),
+    ("Reload clip", 104),
+];
 
 impl Default for MorphBar {
     fn default() -> MorphBar {
@@ -1484,6 +1546,8 @@ impl Default for MorphBar {
             pos: 0.0,
             on: false,
             params: 0,
+            reload: false,
+            reload_waiting: false,
         }
     }
 }
@@ -1493,14 +1557,14 @@ impl MorphBar {
         MorphBar::default()
     }
 
-    /// The A chip, the crossfader, the B chip and the three buttons.
-    pub fn parts(r: Rect) -> (Rect, Rect, Rect, [Rect; 3]) {
+    /// The A chip, the crossfader, the B chip and the four buttons.
+    pub fn parts(r: Rect) -> (Rect, Rect, Rect, [Rect; 4]) {
         let inner = r.inset_xy(14, 8);
         let gap = 8;
         let buttons_w: i32 = MORPH_BUTTONS.iter().map(|b| b.1 + gap).sum();
         let (buttons, rest) = inner.take_right(buttons_w);
         let mut x = buttons.x + gap;
-        let mut bs = [Rect::new(0, 0, 0, 0); 3];
+        let mut bs = [Rect::new(0, 0, 0, 0); 4];
         for (i, (_, w)) in MORPH_BUTTONS.iter().enumerate() {
             bs[i] = Rect::new(x, inner.y, *w, inner.h);
             x += w + gap;
@@ -1569,22 +1633,30 @@ impl Widget for MorphBar {
             &label,
         );
         for (i, br) in buttons.iter().enumerate() {
-            let live = self.on || i == 2;
+            let live = match i {
+                2 => true,
+                3 => self.reload,
+                _ => self.on,
+            };
+            let waiting = i == 3 && self.reload_waiting;
             cx.canvas
                 .fill_round_rect(*br, 10, if live { t.raised } else { t.surface });
+            if waiting {
+                cx.canvas.stroke_round_rect(*br, 10, 2, t.warn);
+            }
             let word = if i == 2 {
                 format!("Save {}", if self.pos < 0.5 { "A" } else { "B" })
             } else {
                 MORPH_BUTTONS[i].0.to_string()
             };
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                *br,
-                Align::Center,
-                if live { t.text } else { t.text_faint },
-                &word,
-            );
+            let ink = if waiting {
+                t.warn
+            } else if live {
+                t.text
+            } else {
+                t.text_faint
+            };
+            cx.text(FontId::Bold, t.size_small, *br, Align::Center, ink, &word);
         }
     }
 
@@ -1609,10 +1681,11 @@ impl Widget for MorphBar {
         }
         out.push(Target::drag("crossfader", 0, "crossfader", fader).towards(fader.w / 3, 0));
         for (i, br) in buttons.iter().enumerate() {
-            // Snap back and Keep are faint until the crossfader morphs.
+            // Snap back and Keep are faint until the crossfader morphs,
+            // Reload clip without a saved state.
             out.push(
-                Target::tap("button", i, ["Snap back", "Keep", "Save"][i], *br)
-                    .disabled_if(i < 2 && !self.on),
+                Target::tap("button", i, MORPH_BUTTONS[i].0, *br)
+                    .disabled_if((i < 2 && !self.on) || (i == 3 && !self.reload)),
             );
         }
         out
@@ -2382,6 +2455,28 @@ mod tests {
         assert_eq!(g.touch(1, Touch::Up, h.x + 2, h.y + 4, r), None);
         // Eight tracks: no pager.
         assert!(grid(8).pager_rects(r).is_none());
+    }
+
+    /// "Back to song" shows while clips play over the song, left of the
+    /// pager or "+ Track", and the title gives way to it.
+    #[test]
+    fn back_to_song_shows_left_of_the_pager_and_taps() {
+        let r = Rect::new(12, 128, 814, 610);
+        for tracks in [8, 24] {
+            let mut g = grid(tracks);
+            assert_eq!(g.back_rect(r), None);
+            assert!(g.targets(r).iter().all(|t| t.id != "back-to-song"));
+            g.back_to_song = true;
+            let b = g.back_rect(r).unwrap();
+            let right = g.pager_rects(r).map_or(g.add_rect(r), |(back, _)| back);
+            assert!(b.right() < right.x, "{b:?} {right:?}");
+            assert!(b.x > r.x + 100, "clear of the title's start: {b:?}");
+            assert!(g.targets(r).iter().any(|t| t.id == "back-to-song"));
+            assert_eq!(
+                g.touch(1, Touch::Down, b.x + 3, b.y + 3, r),
+                Some(EventKind::Toggle(16 + BACK_TO_SONG))
+            );
+        }
     }
 
     #[test]

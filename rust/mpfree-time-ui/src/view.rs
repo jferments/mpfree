@@ -38,7 +38,8 @@ use crate::song::{
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
-    TakeList, TransportBar, ADD_TRACK, GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
+    TakeList, TransportBar, ADD_TRACK, BACK_TO_SONG, GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK,
+    ROWS_ON, ROW_DROP,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
@@ -52,7 +53,7 @@ use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
 use mpfree_ui::qlink::QLinkColumn;
-use mpfree_ui::widgets::{Chip, OptionList, OptionRow};
+use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
 
 /// Widget names the page adds. The app's own are `header` and `hint`.
@@ -363,6 +364,8 @@ pub struct TakeRow {
     pub settings: bool,
     /// COPY + an empty slot pasted a clip there.
     pub pasted: bool,
+    /// Reload clip put a clip's saved state back (sequencer S4).
+    pub reloaded: bool,
 }
 
 impl TakeRow {
@@ -400,11 +403,12 @@ impl TakeRow {
             song: t.song.as_ref().map(|e| e.change),
             settings: t.settings.is_some(),
             pasted: t.pasted,
+            reloaded: t.reloaded,
         }
     }
 
     /// What it is: "take", "capture", "edit", "delete", "paste",
-    /// "settings", for a drop "move",
+    /// "settings", "reload", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
     /// "length", "delete", "unique" or "scenes".
     pub fn word(&self) -> &'static str {
@@ -425,7 +429,9 @@ impl TakeRow {
                 ClipDrop::Copied(..) | ClipDrop::RowCopied { .. } => "copy",
             };
         }
-        if self.deleted {
+        if self.reloaded {
+            "reload"
+        } else if self.deleted {
             "delete"
         } else if self.pasted {
             "paste"
@@ -507,6 +513,12 @@ pub struct TimeState {
     /// Mute and solo changes waiting for their line (the mute queue). The
     /// app sets it.
     pub mute_wait: Option<MuteWait>,
+    /// The clips with a saved state (Save state on the clip card, S4), as
+    /// (track, slot): Reload clip brings it back.
+    pub saved: Vec<(usize, usize)>,
+    /// Reloads waiting for their launch line, as (track, slot, the line's
+    /// song tick).
+    pub reloads: Vec<(usize, usize, Tick)>,
     /// The scene playing's follow action, for Perform's NEXT (S4). The
     /// app sets it.
     pub follow_next: Option<FollowNext>,
@@ -677,6 +689,8 @@ impl TimeState {
             launch: project.launch,
             cue_lines: Vec::new(),
             mute_wait: None,
+            saved: Vec::new(),
+            reloads: Vec::new(),
             placements: project
                 .arrangement
                 .placements
@@ -859,6 +873,23 @@ pub enum TimeAction {
     LaunchScene(usize),
     /// Stop every track on the next bar line.
     StopAll,
+    /// Every track back to the arrangement on the launch line: song mode
+    /// on, and every clip launched over the song stopped there (sequencer
+    /// S4, "Back to song", Ableton's Back to Arrangement).
+    BackToSong,
+    /// Keep the clip as it is now (sequencer S4, Elektron's temp save):
+    /// Reload clip brings this state back.
+    SaveState {
+        track: usize,
+        slot: usize,
+    },
+    /// Put the clip's saved state back, on its launch line while it plays
+    /// (at once otherwise), as an edit UNDO takes back. Asked again while
+    /// it waits, the reload is taken back.
+    Reload {
+        track: usize,
+        slot: usize,
+    },
     /// Put these rows on the morph's A and B (loaded again if it is on).
     MorphRows {
         a: usize,
@@ -1194,6 +1225,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         } else {
             st.morph.b
         })),
+        (MORPH, EventKind::Tab(3)) => st
+            .focus()
+            .filter(|f| st.saved.contains(f))
+            .map(|(track, slot)| TimeAction::Reload { track, slot }),
         (CLIPS, EventKind::Toggle(row)) => Some(match *row {
             r if r < SLOTS => TimeAction::LaunchScene(r),
             SLOTS => TimeAction::StopAll,
@@ -1201,6 +1236,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             r if r == SLOTS + 2 => TimeAction::RecSong(!st.song_rec),
             r if r == SLOTS + 3 => TimeAction::Edit(EditAction::Open),
             r if r == SLOTS + ADD_TRACK => TimeAction::AddTrack,
+            r if r == SLOTS + BACK_TO_SONG => TimeAction::BackToSong,
             // The pager and the drag's edges are the page's own:
             // TimePage::page_tracks.
             _ => return None,
@@ -1458,6 +1494,17 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }
         }
         (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).ok(),
+        (CLIP_CARD, EventKind::Toggle(b)) => {
+            let (track, slot) = st.focus()?;
+            match b {
+                0 => Some(TimeAction::SaveState { track, slot }),
+                1 => st
+                    .saved
+                    .contains(&(track, slot))
+                    .then_some(TimeAction::Reload { track, slot }),
+                _ => None,
+            }
+        }
         // Each only while it has something to do (it is faint otherwise).
         (TAKES, EventKind::Tab(0)) => (!st.done.is_empty()).then_some(TimeAction::Undo),
         (TAKES, EventKind::Tab(1)) => (!st.undone.is_empty()).then_some(TimeAction::Redo),
@@ -1481,6 +1528,12 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         (MORPH, EventKind::Tab(0 | 1)) if !st.morph.on => {
             Some("Move the crossfader first: Snap back and Keep work on a morph".to_string())
         }
+        (MORPH, EventKind::Tab(3)) | (CLIP_CARD, EventKind::Toggle(1)) => Some(match st.focus() {
+            None => "Arm a track with a clip: Reload clip reloads its clip".to_string(),
+            Some(_) => {
+                "Save state on the Clip card first: Reload clip brings that state back".to_string()
+            }
+        }),
         (TAKES, EventKind::Tab(0)) => Some("Nothing to undo yet".to_string()),
         (TAKES, EventKind::Tab(1)) => Some("Nothing to redo: Undo something first".to_string()),
         (TAKES, EventKind::Tab(2)) => {
@@ -1583,6 +1636,20 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
         Some(c) => card_rows(c.length, c.settings),
         None => Vec::new(),
     }
+}
+
+/// The clip card's buttons, under its rows (S4): Save state, and Reload
+/// while the focused clip has a saved state, outlined while its reload
+/// waits. None without a clip; Save state is off on a loop's cell (its
+/// layers have the looper's undo).
+pub fn card_buttons(st: &TimeState) -> Vec<OptionButton> {
+    let Some((track, slot)) = st.focus() else {
+        return Vec::new();
+    };
+    let looped = st.clip(track, slot).is_some_and(|c| c.looped.is_some());
+    let mut reload = OptionButton::new("Reload", st.saved.contains(&(track, slot)));
+    reload.waiting = st.reload_waiting((track, slot));
+    vec![OptionButton::new("Save state", !looped), reload]
 }
 
 /// The card's rows for a clip `length` ticks long (its own ticks) with
@@ -2064,6 +2131,9 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         Some(ClipDrop::RowCopied { to, .. }) => return format!("to row {}", to + 1),
         None => {}
     }
+    if row.reloaded {
+        return "saved state".into();
+    }
     if row.deleted {
         return "clip".into();
     }
@@ -2317,6 +2387,17 @@ pub struct FollowNext {
 }
 
 impl TimeState {
+    /// The reload of clip `at` (track, slot) waits for its line.
+    pub fn reload_waiting(&self, at: (usize, usize)) -> bool {
+        self.reloads.iter().any(|r| (r.0, r.1) == at)
+    }
+
+    /// Clips play over the song: song mode is on and a clip is launched,
+    /// or waits to be (the grid's "Back to song", S4).
+    pub fn over_song(&self) -> bool {
+        self.song_on && (!self.launches.is_empty() || self.cues.iter().any(|c| c.slot.is_some()))
+    }
+
     /// A queued cell's foot: where it starts ("from 7.1"); in Perform also
     /// its countdown, filling over the `span` ticks before the line (its
     /// launch grid's).
@@ -2364,6 +2445,16 @@ impl TimeState {
                 n => format!("{} +{}", names[0], n - 1),
             };
             Some((shown, at))
+        } else if let Some(&(track, slot, at)) = self
+            .reloads
+            .iter()
+            .filter(|r| r.2 > t.position)
+            .min_by_key(|r| r.2)
+        {
+            let name = self
+                .clip(track, slot)
+                .map_or_else(|| self.track_name(track), |c| c.name.clone());
+            Some((format!("{name} reloads"), at))
         } else if let Some(f) = self.follow_next.filter(|f| f.at > t.position) {
             self.follow_words(f).map(|w| (w, f.at))
         } else if self.song_on {
@@ -2917,6 +3008,7 @@ impl TimePage {
                 && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
                 && g.song_rec == st.song_rec
                 && g.can_add == can_add
+                && g.back_to_song == st.over_song()
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -2929,6 +3021,7 @@ impl TimePage {
                 g.scene_cued = st.scene_cued;
                 g.song_rec = st.song_rec;
                 g.can_add = can_add;
+                g.back_to_song = st.over_song();
             }
         }
         // The grid, the song or the note editor, as the app has it.
@@ -2959,12 +3052,15 @@ impl TimePage {
             }
         }
         let m = st.morph;
+        let focus = st.focus();
         let bar = MorphBar {
             a: m.a,
             b: m.b,
             pos: m.pos,
             on: m.on,
             params: m.params,
+            reload: focus.is_some_and(|f| st.saved.contains(&f)),
+            reload_waiting: focus.is_some_and(|f| st.reload_waiting(f)),
         };
         if ui.get::<MorphBar>(MORPH).is_some_and(|b| *b != bar) {
             if let Some(b) = ui.get_mut::<MorphBar>(MORPH) {
@@ -3000,9 +3096,10 @@ impl TimePage {
             }
         }
         let rows = clip_rows(st);
+        let buttons = card_buttons(st);
         if ui
             .get::<OptionList>(CLIP_CARD)
-            .is_some_and(|l| l.rows != rows || l.tabs != tabs)
+            .is_some_and(|l| l.rows != rows || l.tabs != tabs || l.buttons != buttons)
         {
             if let Some(l) = ui.get_mut::<OptionList>(CLIP_CARD) {
                 // Another clip: its card starts at the top.
@@ -3011,6 +3108,7 @@ impl TimePage {
                 }
                 l.rows = rows;
                 l.tabs = tabs;
+                l.buttons = buttons;
             }
         }
         let (items, current) = take_items(st);
@@ -3516,6 +3614,10 @@ mod tests {
             Some(TimeAction::AddTrack)
         );
         assert!(song_lanes(&st, 0).can_add_track);
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS + BACK_TO_SONG)), &st),
+            Some(TimeAction::BackToSong)
+        );
     }
 
     #[test]
@@ -4107,6 +4209,7 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
         };
         let mut st = st;
         st.done = vec![take];
@@ -4588,6 +4691,67 @@ mod tests {
         assert_eq!(page.wheel_list(&ui), RECORD);
     }
 
+    /// Save state and Reload on the clip card, Reload clip on the morph
+    /// bar (S4): lit once the focused clip has a saved state, outlined
+    /// while it waits, and NEXT names it in Perform.
+    #[test]
+    fn save_state_and_reload_show_on_the_card_and_the_morph_bar() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Arrange"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        let (track, slot) = st.focus().unwrap();
+        let focus = (track, slot);
+        page.update(&mut ui, &st);
+        let card = ui.get::<OptionList>(CLIP_CARD).unwrap();
+        assert_eq!(
+            card.buttons,
+            [
+                OptionButton::new("Save state", true),
+                OptionButton::new("Reload", false)
+            ]
+        );
+        let morph = ui.get::<MorphBar>(MORPH).unwrap();
+        assert!(!morph.reload && !morph.reload_waiting);
+        let save = ev(CLIP_CARD, EventKind::Toggle(0));
+        let card_reload = ev(CLIP_CARD, EventKind::Toggle(1));
+        let morph_reload = ev(MORPH, EventKind::Tab(3));
+        assert_eq!(
+            action(&save, &st),
+            Some(TimeAction::SaveState { track, slot })
+        );
+        assert_eq!(action(&card_reload, &st), None);
+        assert_eq!(action(&morph_reload, &st), None);
+        assert!(why_not(&morph_reload, &st)
+            .unwrap()
+            .starts_with("Save state on the Clip card first"));
+        // Saved: both reloads are lit.
+        st.saved = vec![focus];
+        page.update(&mut ui, &st);
+        assert!(ui.get::<OptionList>(CLIP_CARD).unwrap().buttons[1].enabled);
+        assert!(ui.get::<MorphBar>(MORPH).unwrap().reload);
+        let reload = Some(TimeAction::Reload { track, slot });
+        assert_eq!(action(&card_reload, &st), reload);
+        assert_eq!(action(&morph_reload, &st), reload);
+        // Waiting for bar 3: outlined, and NEXT says so in Perform.
+        st.reloads = vec![(track, slot, 2 * BAR)];
+        st.transport.state = State::Playing;
+        st.transport.position = 2 * BAR - 480;
+        st.cues.clear();
+        st.scene_cued = None;
+        page.update(&mut ui, &st);
+        assert!(ui.get::<OptionList>(CLIP_CARD).unwrap().buttons[1].waiting);
+        assert!(ui.get::<MorphBar>(MORPH).unwrap().reload_waiting);
+        assert_eq!(st.next_reading(), None, "Make");
+        st.perform = true;
+        assert_eq!(st.next_reading().as_deref(), Some("A reloads in 1 beat"));
+        // No clip in focus: no buttons.
+        st.armed = Some(9);
+        assert!(card_buttons(&st).is_empty());
+    }
+
     fn project() -> Project {
         let mut p = Project::new();
         for (i, name) in ["Drums", "Bass", "Stab"].iter().enumerate() {
@@ -5011,6 +5175,7 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -5045,6 +5210,7 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -5069,6 +5235,7 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");

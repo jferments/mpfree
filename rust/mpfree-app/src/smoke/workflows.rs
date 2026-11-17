@@ -3016,6 +3016,67 @@ mod tests {
         });
     }
 
+    /// Save state and Reload clip (sequencer S4): the clip card keeps the
+    /// pattern, two more steps change it, and Reload clip on the morph
+    /// bar brings it back on the next bar line; UNDO takes the reload
+    /// back.
+    #[test]
+    fn reload_clip_brings_a_saved_pattern_back_on_the_bar() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.press("header", "tab", "Arrange").settle();
+            let tab = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == "record" && o.target.id == "tab" && o.target.index == 1)
+                .expect("the Record panel's Clip tab")
+                .target;
+            s.press_target(&tab);
+            s.settle();
+            assert!(
+                s.control("morph", "button", "Reload clip")
+                    .is_some_and(|c| !c.target.enabled),
+                "nothing saved yet"
+            );
+            s.press("clip-card", "button", "Save state").settle();
+            let (t, slot) = s.time.state().focus().unwrap();
+            let notes = |s: &Session| s.time.project().clip(t, slot).unwrap().notes.len();
+            let saved = notes(&s);
+            assert_eq!(saved, 4);
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l.contains("save state: ") && l.contains(" kept")));
+            // Two more steps.
+            s.press("header", "tab", "Play").settle();
+            s.press("steps", "step", "Kick step 3");
+            s.press("steps", "step", "Kick step 7");
+            assert_eq!(notes(&s), 6);
+            s.press("header", "tab", "Arrange").settle();
+            s.button("PLAY").run_for(0.3);
+            let n = s.lines.len();
+            s.press("morph", "button", "Reload clip").settle();
+            assert_eq!(s.time.state().reloads.len(), 1, "it waits for the bar");
+            assert_eq!(notes(&s), 6);
+            s.run_for(2.0);
+            assert_eq!(notes(&s), saved, "back on the line");
+            let lines = s.lines[n..].to_vec();
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("reload: ") && l.contains(" back as saved on bar 2")),
+                "{lines:#?}"
+            );
+            s.button("UNDO").settle();
+            assert_eq!(notes(&s), 6, "UNDO takes the reload back");
+            s.button("STOP");
+        });
+    }
+
     /// Rec song with REC (sequencer S4): in Perform the take REC records
     /// brings Rec song with it, and the REC chip says "+ Rec song"; what
     /// the grid played goes into the song when the take ends. The target

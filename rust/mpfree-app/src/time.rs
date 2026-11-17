@@ -3654,6 +3654,148 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// "Back to song" (sequencer S4): every clip launched over the song
+    /// stops on the launch line and the song plays its tracks from there;
+    /// stopped, it is at once; with song mode off it turns it on.
+    #[test]
+    fn back_to_song_stops_the_clips_on_the_line_and_the_song_plays_on() {
+        use mpfree_seq::arrange::Placement;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        h.control.project.tracks[0].slots[0] = Some(one_bar(4));
+        h.control.project.tracks[0].slots[1] = Some(one_bar(9));
+        h.control
+            .project
+            .arrangement
+            .placements
+            .push(Placement::linked(0, 0, 0, 8 * 3840));
+        h.act(TimeAction::SongMode(true)).unwrap();
+        assert!(!h.state().over_song(), "the song alone");
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        assert!(h.state().over_song(), "a clip over the song");
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let live = pads.hits.last().unwrap().1;
+        assert_eq!(pads.hits.len(), 1);
+        let said = h.act(TimeAction::BackToSong).unwrap();
+        assert_eq!(
+            said,
+            "back to song: every track plays the song from the next launch line"
+        );
+        let st = h.state();
+        assert!(st.song_on);
+        assert!(st.over_song(), "the clip plays to the line");
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        assert_eq!(pads.hits.len(), 2, "{:?}", pads.hits);
+        let (at, song, _) = pads.hits[1];
+        assert!(at.abs_diff(BAR) <= 128, "on the line: {at}");
+        assert_ne!(song, live, "the song's clip, not the one launched");
+        assert!(!h.state().over_song(), "nothing launched now");
+        // Stopped, with song mode off: at once, and song mode is on.
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        h.act(TimeAction::SongMode(false)).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        assert_eq!(h.act(TimeAction::BackToSong).unwrap(), "back to song");
+        let st = h.state();
+        assert!(st.song_on && st.launches.is_empty() && st.cues.is_empty());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Save state and Reload clip (sequencer S4): the saved state comes
+    /// back on the launch line while the clip plays, at once while the
+    /// transport is stopped; UNDO takes a reload back; asked again while
+    /// it waits, it is taken back; a deleted clip forgets its state.
+    #[test]
+    fn reload_clip_lands_on_the_launch_line_and_undo_takes_it_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        h.control.project.tracks[0].slots[0] = Some(one_bar(4));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let reload = TimeAction::Reload { track: 0, slot: 0 };
+        let pitch = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().notes[0].note;
+        assert!(h
+            .act(reload)
+            .unwrap_err()
+            .contains("no saved state: Save state on the Clip card first"));
+        assert_eq!(
+            h.act(TimeAction::SaveState { track: 0, slot: 0 }).unwrap(),
+            "save state: beat kept (Reload clip brings it back)"
+        );
+        assert_eq!(h.state().saved, [(0, 0)]);
+        assert_eq!(h.act(reload).unwrap(), "reload: beat is as saved already");
+        // Mangled: another note.
+        let mangle = |h: &mut TimeHost| {
+            h.control.project.tracks[0].slots[0] = Some(one_bar(9));
+            h.control.compile().unwrap();
+        };
+        mangle(&mut h);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(pads.hits.len(), 1);
+        let mangled = pads.hits[0].1;
+        assert_eq!(
+            h.act(reload).unwrap(),
+            "reload: beat reloads at bar 2 (Reload clip again: taken back)"
+        );
+        let st = h.state();
+        assert_eq!(st.reloads, [(0, 0, 3840)]);
+        assert_eq!(pitch(&h), 9, "not yet");
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        assert_eq!(pads.hits.len(), 2, "{:?}", pads.hits);
+        let (at, pad, _) = pads.hits[1];
+        assert!(at.abs_diff(BAR) <= 128, "on the line: {at}");
+        assert_ne!(pad, mangled, "the saved note");
+        assert_eq!(
+            h.take_later_note().unwrap(),
+            "reload: beat back as saved on bar 2"
+        );
+        let st = h.state();
+        assert!(st.reloads.is_empty());
+        assert_eq!(pitch(&h), 4);
+        assert_eq!(st.done.last().unwrap().short(), "reload 1");
+        // UNDO: mangled again; stopped, a reload is at once.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(pitch(&h), 9);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        assert_eq!(
+            h.act(reload).unwrap(),
+            "reload: beat is back as saved (UNDO takes it back)"
+        );
+        assert_eq!(pitch(&h), 4);
+        // Taken back while it waits.
+        mangle(&mut h);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, 2 * BAR + BAR / 2, &[]);
+        assert!(h.act(reload).unwrap().contains("reloads at"));
+        assert_eq!(h.act(reload).unwrap(), "reload: beat's reload taken back");
+        assert!(h.state().reloads.is_empty());
+        // STOP lands what waits.
+        h.act(reload).unwrap();
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        assert_eq!(
+            h.take_later_note().unwrap(),
+            "reload: beat back as saved (STOP)"
+        );
+        assert_eq!(pitch(&h), 4);
+        // A deleted clip forgets its saved state.
+        h.act(TimeAction::DeleteClip { track: 0, slot: 0 }).unwrap();
+        assert!(h.state().saved.is_empty());
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// Perform's Rec song with REC (sequencer S4): a take turns Rec song
     /// on for its length and what it played goes into the song when it
     /// ends; "+ Rec song" taken off skips one take; Rec song off during

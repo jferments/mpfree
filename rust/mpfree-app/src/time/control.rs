@@ -250,6 +250,14 @@ pub struct TimeControl {
     mute_ids: u32,
     /// The current period's landed mute cues.
     landed: Vec<MuteLanded>,
+    /// Clips' saved states (Save state, sequencer S4), as (track, slot,
+    /// the clip as it was): Reload clip puts one back. Kept while the
+    /// project is open, not saved with it.
+    saved: Vec<(usize, usize, Clip)>,
+    /// Reloads waiting for their launch line.
+    reloads: Vec<ReloadWait>,
+    /// The audio's sample rate, for a period's length in ticks.
+    rate: u32,
     /// The bar line a cue started on in the last poll, on each loop's
     /// Loop track: its loop goes on or off there ([`TimeControl::loop_plan`]).
     loop_at: [Option<Tick>; LOOPS],
@@ -294,6 +302,18 @@ pub struct TimeControl {
     unsent: Option<Box<PlayView>>,
     /// The tracks' settings the audio half has.
     tracks_sent: Tracks,
+}
+
+/// A reload waiting for its launch line (sequencer S4's Reload clip).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ReloadWait {
+    track: usize,
+    slot: usize,
+    /// The line's song tick.
+    line: Tick,
+    /// Where the transport was when it was asked: a jump back (a loop,
+    /// a locate) lands it at once.
+    asked: Tick,
 }
 
 impl TimeControl {
@@ -345,6 +365,9 @@ impl TimeControl {
             mute_queue: None,
             mute_ids: 0,
             landed: Vec::with_capacity(MAX_TRACKS),
+            saved: Vec::new(),
+            reloads: Vec::new(),
+            rate,
             loop_at: [None; LOOPS],
             loops_seen: [LoopNow::default(); LOOPS],
             loops_gone: [None; LOOPS],
@@ -547,6 +570,11 @@ impl TimeControl {
             self.land_queue_now();
             self.note_later(format!("{line} (STOP)"));
             compile = true;
+        }
+        // Reloads land just before their line: the next period, which
+        // holds the line, plays the saved state from its start.
+        if !self.reloads.is_empty() {
+            compile |= self.reloads_due(end.frames);
         }
         // Song mode: the Loop tracks' blocks turn their loops on and off
         // on their own ticks, on the tracks with no clip launched.
@@ -908,6 +936,15 @@ impl TimeControl {
     /// clips, and the views compile. If they don't, the drop is taken
     /// back (and can't be redone) and the error says why.
     fn drop_went_in(&mut self, drop: ClipDrop) -> Result<(), String> {
+        // A clip moved or copied keeps no saved state, nor what it lands
+        // on; rows moved forget them all.
+        match drop {
+            ClipDrop::Moved(a, b) | ClipDrop::Swapped(a, b) | ClipDrop::Copied(a, b) => {
+                self.forget_saved(Some(a));
+                self.forget_saved(Some(b));
+            }
+            ClipDrop::RowMoved { .. } | ClipDrop::RowCopied { .. } => self.forget_saved(None),
+        }
         let before = (self.launches.clone(), self.cues.clone());
         self.follow_launches(drop, false);
         if let Err(e) = self.compile() {
@@ -1633,7 +1670,7 @@ impl TimeControl {
                     None => "armed: none".into(),
                 })
             }
-            TimeAction::LaunchScene(_) | TimeAction::StopAll => {
+            TimeAction::LaunchScene(_) | TimeAction::StopAll | TimeAction::BackToSong => {
                 let when = if info.state.rolling() {
                     When::Cued
                 } else {
@@ -1649,6 +1686,7 @@ impl TimeControl {
                         .map(|t| t.mute)
                         .collect::<Vec<_>>(),
                 );
+                let song_was = self.song;
                 let (launches, cues) = (&mut self.launches, &mut self.cues);
                 let line = match a {
                     TimeAction::LaunchScene(row) => {
@@ -1660,12 +1698,25 @@ impl TimeControl {
                         }
                         format!("scene {}", row + 1)
                     }
+                    TimeAction::BackToSong => {
+                        // Every clip stops on the line, and the song plays
+                        // the tracks from there.
+                        self.perform.stop_all(when, launches, cues);
+                        self.song = true;
+                        match when {
+                            When::Cued => "back to song: every track plays the song from the \
+                                           next launch line"
+                                .to_string(),
+                            When::Now(_) => "back to song".to_string(),
+                        }
+                    }
                     _ => {
                         self.perform.stop_all(when, launches, cues);
                         "stop all".to_string()
                     }
                 };
                 if let Err(e) = self.compile() {
+                    self.song = song_was;
                     (self.launches, self.cues, self.perform) = (before.0, before.1, before.2);
                     for (t, m) in self.project.tracks.iter_mut().zip(before.3) {
                         t.mute = m;
@@ -1734,6 +1785,8 @@ impl TimeControl {
                     track + 1
                 ))
             }
+            TimeAction::SaveState { track, slot } => self.save_state(track, slot),
+            TimeAction::Reload { track, slot } => self.reload(track, slot),
             TimeAction::DeleteClip { track, slot } => {
                 // A clip the song plays stays: its song blocks would go
                 // silent, and the song's edits have no undo yet.
@@ -1751,6 +1804,7 @@ impl TimeControl {
                 self.takes
                     .remove_clip(&mut self.project, track, slot)
                     .map_err(|_| format!("slot {} of track {} is empty", slot + 1, track + 1))?;
+                self.forget_saved(Some((track, slot)));
                 // Its launch and cues go with it (compile drops them).
                 self.compile()?;
                 Ok(format!(
@@ -2792,6 +2846,177 @@ impl TimeControl {
 
     /// The mute queue landing at song tick `at`, for the log: "track mute:
     /// at 5.1, Track 2 muted, Track 3 solo".
+    /// Save state (sequencer S4, Elektron's temp save): keep clip `slot`
+    /// of `track` as it is now, for Reload clip, in place of any state
+    /// kept before. A loop's cell keeps none: its layers have the
+    /// looper's undo.
+    fn save_state(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let c = self.project.clip(track, slot).ok_or_else(|| {
+            format!(
+                "save state: slot {} of track {} is empty",
+                slot + 1,
+                track + 1
+            )
+        })?;
+        if c.looped.is_some() {
+            return Err(
+                "save state: a loop's cell keeps no state; the looper's UNDO takes layers back"
+                    .to_string(),
+            );
+        }
+        let c = c.clone();
+        let name = c.name.clone();
+        self.saved.retain(|s| (s.0, s.1) != (track, slot));
+        self.saved.push((track, slot, c));
+        self.changed = true;
+        Ok(format!(
+            "save state: {name} kept (Reload clip brings it back)"
+        ))
+    }
+
+    /// Reload clip (sequencer S4): clip `slot` of `track` goes back to its
+    /// saved state, as an edit UNDO takes back. While the clip plays and
+    /// the transport rolls it waits for the clip's launch line (the
+    /// project's unless it has its own), so the saved state starts on the
+    /// beat; asked again while it waits, the reload is taken back.
+    fn reload(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let c = self
+            .project
+            .clip(track, slot)
+            .ok_or_else(|| format!("reload: slot {} of track {} is empty", slot + 1, track + 1))?;
+        let name = c.name.clone();
+        if let Some(i) = self
+            .reloads
+            .iter()
+            .position(|r| (r.track, r.slot) == (track, slot))
+        {
+            self.reloads.remove(i);
+            self.changed = true;
+            return Ok(format!("reload: {name}'s reload taken back"));
+        }
+        let saved = self
+            .saved
+            .iter()
+            .find(|s| (s.0, s.1) == (track, slot))
+            .map(|s| &s.2)
+            .ok_or_else(|| {
+                format!("reload: {name} has no saved state: Save state on the Clip card first")
+            })?;
+        if c == saved {
+            return Ok(format!("reload: {name} is as saved already"));
+        }
+        if matches!(self.info.state, State::Recording | State::CountIn) {
+            return Err("reload: not while recording (UNDO takes a take back)".to_string());
+        }
+        let grid = c.launch.unwrap_or(self.project.launch);
+        let plays = self
+            .launches
+            .iter()
+            .any(|l| (l.track, l.slot) == (track, slot))
+            || self
+                .cues
+                .iter()
+                .any(|q| q.track == track && q.slot == Some(slot));
+        let pos = self.info.position;
+        if plays && self.info.state.rolling() && grid != LaunchGrid::Now {
+            let line = grid.next(pos, self.info.meter.bar_ticks());
+            // A line within the next period is as good as now.
+            if line > pos + self.period_ticks(self.block.frames) {
+                self.reloads.push(ReloadWait {
+                    track,
+                    slot,
+                    line,
+                    asked: pos,
+                });
+                self.changed = true;
+                return Ok(format!(
+                    "reload: {name} reloads at {} (Reload clip again: taken back)",
+                    bar_beat(line, self.info.meter)
+                ));
+            }
+        }
+        self.reload_now(track, slot)?;
+        if let Err(e) = self.compile() {
+            self.takes.undo(&mut self.project);
+            self.takes.forget_undone();
+            return Err(e);
+        }
+        Ok(format!(
+            "reload: {name} is back as saved (UNDO takes it back)"
+        ))
+    }
+
+    /// Put clip `slot` of `track`'s saved state in its place, as an edit;
+    /// the caller compiles. Its name.
+    fn reload_now(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let saved = self
+            .saved
+            .iter()
+            .find(|s| (s.0, s.1) == (track, slot))
+            .map(|s| s.2.clone())
+            .ok_or("reload: no saved state")?;
+        let name = saved.name.clone();
+        self.takes
+            .reload_clip(&mut self.project, track, slot, saved)
+            .map_err(|e| format!("reload: {name}: {e:?}"))?;
+        Ok(name)
+    }
+
+    /// The reloads due: each whose line falls in the next period (of
+    /// `frames`, as long as the last), or all of them when the transport
+    /// stops or jumps back. A reload due while recording is dropped. True
+    /// if one went in (the view is to be compiled).
+    fn reloads_due(&mut self, frames: u32) -> bool {
+        let pos = self.info.position;
+        let ahead = self.period_ticks(frames);
+        let stopped = !self.info.state.rolling();
+        let recording = matches!(self.info.state, State::Recording | State::CountIn);
+        let meter = self.info.meter;
+        let mut went = false;
+        let mut i = 0;
+        while i < self.reloads.len() {
+            let w = self.reloads[i];
+            if !(stopped || w.line <= pos + ahead || pos < w.asked) {
+                i += 1;
+                continue;
+            }
+            self.reloads.remove(i);
+            self.changed = true;
+            let at = if stopped {
+                "(STOP)".to_string()
+            } else {
+                format!("on {}", bar_beat(w.line, meter))
+            };
+            if recording {
+                self.note_later(format!("reload: none {at}: recording started"));
+                continue;
+            }
+            match self.reload_now(w.track, w.slot) {
+                Ok(name) => {
+                    self.note_later(format!("reload: {name} back as saved {at}"));
+                    went = true;
+                }
+                Err(e) => self.note_later(e),
+            }
+        }
+        went
+    }
+
+    /// Song ticks in a period of `frames` frames at the tempo now, rounded
+    /// up.
+    fn period_ticks(&self, frames: u32) -> Tick {
+        mpfree_transport::time::ticks_in(f64::from(frames), self.info.bpm, self.rate).ceil() as Tick
+    }
+
+    /// Forget the saved state of the clip `at` (track, slot), and its
+    /// reload, or of every clip with None.
+    fn forget_saved(&mut self, at: Option<(usize, usize)>) {
+        let keep = |t: usize, s: usize| at.is_some_and(|a| a != (t, s));
+        self.saved.retain(|x| keep(x.0, x.1));
+        self.reloads.retain(|r| keep(r.track, r.slot));
+        self.changed = true;
+    }
+
     fn landed_line(&self, at: Tick) -> String {
         let Some((_, q)) = &self.mute_queue else {
             return String::new();
@@ -3026,6 +3251,12 @@ impl TimeControl {
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
         st.cues = self.cues.clone();
         st.mute_wait = self.mute_wait().cloned();
+        st.saved = self.saved.iter().map(|s| (s.0, s.1)).collect();
+        st.reloads = self
+            .reloads
+            .iter()
+            .map(|r| (r.track, r.slot, r.line))
+            .collect();
         st.cue_lines = self
             .cues
             .iter()

@@ -218,6 +218,10 @@ pub struct Take {
     /// COPY + an empty slot put a copy there ([`Takes::paste_clip`]): the
     /// clip is in `made`.
     pub pasted: bool,
+    /// Reload clip put a saved state in place of the clip
+    /// ([`Takes::reload_clip`]): the clip it replaced is in `removed`, the
+    /// saved state in `made`.
+    pub reloaded: bool,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -527,6 +531,37 @@ impl Takes {
             edited: true,
             pasted: true,
             made: vec![(track, slot, clip)],
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
+    /// Reload clip (sequencer S4, Elektron's temp save and reload): put
+    /// `saved`, a state of clip `slot` of `track` kept earlier, in place of
+    /// the clip there now, as an edit of its own. Undo puts back the clip
+    /// as it was before the reload, redo the saved state again. The edit's
+    /// number. `BadSlot` if the slot is empty; the saved clip's own
+    /// refusals as they are. Nothing changes on an error.
+    pub fn reload_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        saved: Clip,
+    ) -> Result<u32, ModelError> {
+        saved.check()?;
+        let s = slot_mut(project, track, slot)
+            .filter(|s| s.is_some())
+            .ok_or(ModelError::BadSlot)?;
+        let now = s.replace(saved.clone()).expect("checked");
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            reloaded: true,
+            removed: vec![(track, slot, now)],
+            made: vec![(track, slot, saved)],
             ..Take::default()
         });
         Ok(number)
@@ -1224,6 +1259,32 @@ mod tests {
         assert_eq!(t.redo(&mut p), Some(1));
         assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
         assert_eq!(t.paste_clip(&mut p, 0, 99, copy), Err(ModelError::BadSlot));
+    }
+
+    /// Reload clip: the saved state goes in as an edit of its own; undo
+    /// puts back the clip as it was, redo the saved state; an empty slot
+    /// refuses it.
+    #[test]
+    fn a_reload_puts_the_saved_state_back_and_undo_takes_it_away() {
+        let mut p = project();
+        let mut t = Takes::default();
+        let saved = p.tracks[0].slots[0].clone().unwrap();
+        let mut mangled = saved.clone();
+        mangled.notes.clear();
+        p.tracks[0].slots[0] = Some(mangled.clone());
+        assert_eq!(
+            t.reload_clip(&mut p, 0, 5, saved.clone()),
+            Err(ModelError::BadSlot)
+        );
+        assert!(p.tracks[0].slots[5].is_none());
+        assert_eq!(t.reload_clip(&mut p, 0, 0, saved.clone()), Ok(1));
+        assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&saved));
+        let take = &t.done()[0];
+        assert!(take.reloaded && take.edited && !take.pasted);
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&mangled));
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&saved));
     }
 
     #[test]

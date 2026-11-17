@@ -28,6 +28,8 @@ The morph bar under the grid glides the sound from one scene to another, like a 
    - **Keep** leaves everything where the morph put it.
 4. **Save A** or **Save B** stores the sound you have now in the row the crossfader is nearer.
 
+**Reload clip**, at the right of the morph bar, brings the armed track's clip back to the state you saved with **Save state** (see [Save state and Reload](clips.md#save-state-and-reload)).
+
 A knob you turn while morphing changes the scene the crossfader is nearer, and that change stays in the row.
 
 ## The song
@@ -37,7 +39,7 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song �
 {{shot: arrange-song | The Song view: five rows made into a song, a drum block selected, and Rec song on.}}
 
 - **Scenes → song** adds every row that has clips to the end of the song, one after another, with each scene's name above the bars where it starts.
-- **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song.
+- **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song. While clips play over the song, **Back to song** shows on the grid's title line: it stops them all on the next Launch line, and every track plays the song from there.
 - **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips.
 - Hold **SHIFT** and turn the wheel to scroll through the bars. Tap a block to select it. It is picked when you lift your finger, because you can also drag it.
 - Under each track's name is what it plays: **Kit**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).

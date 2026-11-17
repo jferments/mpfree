@@ -10859,6 +10859,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         song: None,
         settings: false,
         pasted: false,
+        reloaded: false,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -11137,13 +11138,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Err(e) => eprintln!("clips-solo sample: {e}"),
     }
     // Perform's grid (sequencer S4, mockup C): five big rows, the chords
-    // queued for the next bar with a countdown ring, the glitch ending
-    // there, and NEXT on the transport bar.
+    // queued for the next bar with a countdown, the glitch ending there,
+    // NEXT on the transport bar, and the clips played over the song, so
+    // "Back to song" shows.
     match mpfree_time_ui::sample::playing() {
         Ok(s) => {
             let mut p = quiet_player(fonts());
             let mut st = s.state();
             st.perform = true;
+            st.song_on = true;
+            st.saved = st.focus().into_iter().collect();
             st.scenes = ["Intro", "Verse", "Break", "Drop"]
                 .iter()
                 .map(|n| n.to_string())
@@ -13698,6 +13702,7 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -14039,6 +14044,7 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
+            reloaded: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
