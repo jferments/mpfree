@@ -1,8 +1,17 @@
 # Importing MPC projects
 
-**Status:** feasibility done; Stage 0 tools built, waiting on the owner's own projects, which are on an SD card or USB drive rather than the Internal drive (2026-11-15). Stage 1 started: keygroup programs to MPFree kits (`rust/mpfree-mpc-import`, 2026-11-14); its field readings checked against a real factory keygroup program's report on 2026-11-15, not yet played side by side with the MPC. Full assessment: [Importing MPC projects: feasibility](https://claude.ai/artifact/1CzE52mppbCaNWMYsVLVm8). Plan for projects, expansions, factory content and Akai's instruments: [MPC projects and Akai content in MPFree](https://claude.ai/artifact/6fd7m8ewvGfJDx9ts9G8DT) (2026-11-15).
+**Status:** scope narrowed on 2026-11-17 by the owner: **sounds and patterns only.** MPFree will not open MPC projects as projects. Musicians bring their kits and programs, their patterns as MIDI files exported from the MPC, and audio stems or bounces. Stage 1 for keygroup programs is built (`rust/mpfree-mpc-import`, 2026-11-14); its field readings were checked against a real factory keygroup program's report on 2026-11-15, not yet played side by side with the MPC. Current plan: [Loading MPC projects into MPFree](https://claude.ai/artifact/EAnubyX8htJKtgHUVJHpvc) (2026-11-17). The earlier assessment and plan docs were on a previous account and no longer open.
 
-MPFree will open a project saved by Akai's MPC software (OS 3.x, and later 2.x) and turn it into an MPFree project. The importer only ever reads MPC files and writes a new MPFree project; it never writes to the MPC.
+## Scope (decided 2026-11-17)
+
+A whole MPC project can't come across faithfully: Akai's plugin instruments live in Akai's code, effect settings are an undecoded blob, the sound engines differ, and the format is undocumented and changes between firmware versions. So the importer covers what converts reliably and leaves the rest to Akai's own exports:
+
+- **Kept:** keygroup programs (built), drum programs (next, on the owner's go), expansion and factory programs read from a card, and standalone `.xpm` files. Patterns come in as MIDI files saved with the MPC's *Track as MIDI* or *All Tracks* export, through MPFree's MIDI file import (planned: MIDI powerhouse phase 2, PR 6). Everything else comes in as audio: *Drum Pads as Stems*, *Audio Mixdown* with separate tracks, or bounced tracks.
+- **Instruments:** bounce Akai plugin tracks to audio on the MPC, or autosample them into a keygroup.
+- **Dropped:** reading `.xpj` sequences, the mixer, songs and Arrange, effect settings and automation (stages 2 to 4 below), and OS 2.x projects.
+- **To write:** a user manual page, "Moving your beats from the MPC", with drum program import.
+
+The importer only ever reads MPC files and writes a new MPFree project; it never writes to the MPC. The sections below keep the format notes and the earlier staged plan for reference.
 
 ## What the files are
 
@@ -17,7 +26,7 @@ Community reverse-engineering, not Akai documentation; confirmed for OS 3.7 file
 
 High: samples, tempo and meter, notes. Medium-high: drum programs, mixer levels and routing. Medium: keygroups, probability, per-note tuning. Low: automation, audio tracks, songs and Arrange, effect settings, plugin synths, Q-Links. Details per area are in the assessment.
 
-## Stages
+## Stages (earlier plan; stages 2 to 4 dropped 2026-11-17)
 
 0. **Corpus and inspector:** the owner's own projects, saved on OS 3.6 and on 3.10.1 (the owner's MPC runs 3.10.1 since 2026-11-15), read by an inspector that dumps their structure and flags fields that differ from the public 3.7 notes.
 1. **Kits:** samples, drum and keygroup programs, and standalone `.xpm` files.
