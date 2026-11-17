@@ -987,19 +987,23 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.amp",
         qlinks: &["Gain", "Bass", "Mid", "Treble"],
         pages: &[page(
-            "row(col(amp:260, stack):520, output)",
+            "row(col(amp:320, stack):520, col(gate, output))",
             &[
                 Section {
                     hero: &["Gain"],
-                    rows: &["Model"],
-                    ..s("amp", "Amp", Tone, &["Model", "Gain"])
+                    rows: &["Model", "Boost"],
+                    ..s("amp", "Amp", Tone, &["Model", "Boost", "Gain", "Sag"])
                 },
                 s(
                     "stack",
                     "Tone stack",
                     Tone,
-                    &["Bass", "Mid", "Treble", "Presence"],
+                    &["Bass", "Mid", "Treble", "Presence", "Depth"],
                 ),
+                Section {
+                    note: Some("0 is off"),
+                    ..s("gate", "Gate", Shape, &["Gate", "Release"])
+                },
                 Section {
                     rows: &["Cab"],
                     labels: &[("Cab", "Cabinet")],
