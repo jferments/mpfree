@@ -225,6 +225,14 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **The Looper:** a layer dragged onto another loop moves there (with SHIFT a copy); onto + New loop it becomes a loop of its own; onto To a pad or To a clip just that layer goes. A loop of another length refuses it and says why. Built, with these details for Jay to confirm: To a pad and To a clip are left out for now, since the loop's own bounce to a pad or a clip isn't in the app yet (their rows are faint); the loops that can take the layer are lit and empty loops are not, as drawn, but + New loop takes it into the first empty one; the loop that took the layer is picked afterwards, so the editor shows where it went; a move from a loop's only layer leaves it there, so it acts as a copy (the looper keeps a loop's last layer); a busy or recording loop, or a full one, says why as a loop of another length does; the layer fades in, in time with the song, as soon as it is copied (a 64th of the loop's length later: about 60 ms for 2 bars at 120 BPM), and UNDO in either loop takes a move back in both; the hint line adds "drag a layer to a loop (SHIFT: copy)", and its first item is cut to "Tap: pick" so STOP's still fits.
 - **Left out:** moving tracks (every per-track table would shift) and reordering layers within a loop.
 
+## 4i. The Sample tab's frame
+
+The sampler review's decision 5 (Jay, 16 Nov: the Sample tab in the shared frame, https://claude.ai/artifact/Jx5jTNTJxN6iQCv8jmjdaj): its Q-Links are where they are on every other page.
+- **The frame:** on every sub-page (Wave, Warp, Chop, Play, Grain, Rec, Auto-sample) the pad bar and the Send to pad and Chop to pads buttons (330 px) across the top, as before; under them the page, with the shared Q-Link column (168 px) at the right, as the FX sub-tab's chain editor has it; the hint line under them. The strip of Q-Link cards along the bottom is gone, and the page gets its room.
+- **The cards** are drawn as the column's: Q1 to Q4 in the knob's colour with the sub-page's name (on Play, the section's), the job, and the ring with the value in it (its unit or offset under). A tap gives the wheel to the card where the page has a wheel focus; a drag up or down a card turns its knob, as on Play; a faint card says why on the hint line.
+- **The wheel's card** (the zoom on Wave, Warp and Chop; the row picked on Grain, Rec and Auto-sample) is 56 px, under the page's list. Play has none (its list shows the row picked) and puts the scene fader there instead, beside the section chips' page. On Rec and Auto-sample the Q-Links turn nothing yet, so their cards are blank.
+- **Play in sections:** six chips over the page (Layers, Amp, Filter, Pitch, Mod, Pad), each with a line of what it holds; a section has at most eight rows, so the list never scrolls, and Q-Links 1 to 4 turn the open section's four rows.
+
 ## 5. Prefs (SHIFT + MENU)
 
 - **Main rows, in order:**

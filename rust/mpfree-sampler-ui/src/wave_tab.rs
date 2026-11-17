@@ -54,9 +54,9 @@ pub const WHEEL: &str = "smp-wheel";
 /// The tab's page: the app's header, the pad bar, the overview, the
 /// waveform beside the Region list, the Q-Link cards and the wheel card,
 /// and the app's hint line.
-pub const LAYOUT: &str =
-    "col(header:60, row(smp-bar:*, smp-send:330):60, smp-overview:56, row(smp-wave:*, smp-region:360):*, \
-                          row(smp-q1, smp-q2, smp-q3, smp-q4, smp-wheel:210):88, hint:26)";
+pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
+                          row(col(smp-overview:56, row(smp-wave:*, col(smp-region:*, smp-wheel:56):360):*):*, \
+                          col(smp-q1, smp-q2, smp-q3, smp-q4):168):*, hint:26)";
 
 /// The pad editor's tabs: the editors for the pad picked. The kit's pads
 /// (to pick one and set it up) are the app's own Pads tab since 12 Nov
@@ -561,7 +561,8 @@ impl WaveTab {
         for (k, m) in Mark::ALL.iter().enumerate() {
             ui.add(
                 QLINKS[k],
-                KnobCard::new(&format!("Q-Link {} · {}", k + 1, m.label()), colors[k]),
+                KnobCard::new(&format!("Q-Link {} · {}", k + 1, m.label()), colors[k])
+                    .on(k, "Wave"),
             );
         }
         ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
