@@ -1569,6 +1569,69 @@ mod tests {
         assert!(h.control.project.clip(0, 1).is_some());
     }
 
+    /// The clip settings card (sequencer S3): a row turned is one take
+    /// however far it turns, the clip plays the new settings, UNDO puts
+    /// them back; Length is Beats' length, for the focused clip only.
+    #[test]
+    fn the_clip_card_sets_a_clip_and_undo_takes_it_back() {
+        use mpfree_seq::{ClipSettings, Speed};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.control.project.tracks[0].slots[0] = Some(Clip::new("beat", 3840));
+        h.control.project.tracks[0].slots[1] = Some(Clip::new("fill", 960));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let st = h.state();
+        assert_eq!(st.focus(), Some((0, 0)));
+        let was = st.clip(0, 0).unwrap().settings;
+        let speed = |num, den| TimeAction::ClipSettings {
+            track: 0,
+            slot: 0,
+            row: 1,
+            settings: ClipSettings {
+                speed: Speed::new(num, den).unwrap(),
+                ..was
+            },
+        };
+        let compiles = h.control.costs.compiles;
+        let said = h.act(speed(1, 2)).unwrap();
+        assert!(said.contains("beat · Speed ×1/2"), "{said}");
+        assert_eq!(h.control.costs.compiles, compiles + 1, "it plays at once");
+        h.act(speed(1, 4)).unwrap();
+        let st = h.state();
+        assert_eq!(st.done.len(), 1, "the row turned twice: one take");
+        assert_eq!(st.done[0].short(), "settings 1");
+        assert_eq!(st.clip(0, 0).unwrap().speed, Speed::new(1, 4).unwrap());
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().clip(0, 0).unwrap().settings, was);
+        // Length: Beats' length, the focused clip's.
+        let said = h
+            .act(TimeAction::ClipLength {
+                track: 0,
+                slot: 0,
+                steps: 12,
+            })
+            .unwrap();
+        assert!(said.contains("12 steps"), "{said}");
+        assert_eq!(h.control.project.clip(0, 0).unwrap().length, 12 * 240);
+        assert!(h
+            .act(TimeAction::ClipLength {
+                track: 0,
+                slot: 1,
+                steps: 4,
+            })
+            .unwrap_err()
+            .contains("focused clip changed"));
+        // An empty slot says so.
+        assert!(h
+            .act(TimeAction::ClipSettings {
+                track: 0,
+                slot: 5,
+                row: 1,
+                settings: was,
+            })
+            .unwrap_err()
+            .contains("empty"));
+    }
+
     /// Jay, 14 Nov: drag and drop on the Clips grid. A playing clip
     /// dropped elsewhere keeps playing where it lands; onto another clip
     /// the two change places; a row moves; UNDO takes each back, the

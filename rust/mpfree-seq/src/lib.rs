@@ -447,6 +447,18 @@ pub struct Clip {
     pub looped: Option<u8>,
 }
 
+/// A clip's settings that are not its notes: how fast it plays, its own
+/// swing and quantise, and what its track does after it (the clip
+/// settings card, sequencer S3). Read with [`Clip::settings`], changed as
+/// one with [`Clip::set_settings`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipSettings {
+    pub speed: Speed,
+    pub swing: Option<Swing>,
+    pub quantise: Option<Quantise>,
+    pub follow: Option<Follow>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelError {
     ClipLength,
@@ -489,6 +501,43 @@ pub enum ModelError {
 }
 
 impl Clip {
+    /// Its speed, swing, quantise and follow action.
+    pub fn settings(&self) -> ClipSettings {
+        ClipSettings {
+            speed: self.speed,
+            swing: self.swing,
+            quantise: self.quantise,
+            follow: self.follow,
+        }
+    }
+
+    /// Change its speed, swing, quantise and follow action, all or none:
+    /// `BadSpeed`, `BadSwing`, `BadQuantise` or the follow action's own
+    /// refusal leaves the clip as it was.
+    pub fn set_settings(&mut self, s: ClipSettings) -> Result<(), ModelError> {
+        if Speed::new(s.speed.num, s.speed.den).is_none() {
+            return Err(ModelError::BadSpeed);
+        }
+        if s.swing
+            .is_some_and(|w| Swing::new(w.grid, w.amount).is_none())
+        {
+            return Err(ModelError::BadSwing);
+        }
+        if s.quantise
+            .is_some_and(|q| Quantise::new(q.grid, q.strength).is_none())
+        {
+            return Err(ModelError::BadQuantise);
+        }
+        if let Some(f) = &s.follow {
+            f.check()?;
+        }
+        self.speed = s.speed;
+        self.swing = s.swing;
+        self.quantise = s.quantise;
+        self.follow = s.follow;
+        Ok(())
+    }
+
     /// An empty clip of `length` ticks at normal speed.
     pub fn new(name: &str, length: Tick) -> Clip {
         Clip {

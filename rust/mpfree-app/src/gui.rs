@@ -5427,7 +5427,11 @@ impl Player {
             if let Some(p) = self.synth.as_mut() {
                 p.set_editing(&mut self.ui, on);
             }
-            for list in [time_view::RECORD, time_view::EDIT_OPTIONS] {
+            for list in [
+                time_view::RECORD,
+                time_view::CLIP_CARD,
+                time_view::EDIT_OPTIONS,
+            ] {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
                     l.editing = on;
                 }
@@ -8015,9 +8019,11 @@ impl Player {
                 }
             }
             (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::RECORD | time_view::CLIP_CARD, EventKind::Tab(_))
                 if self.time_page.page_tracks(&ev, &self.time) =>
             {
-                // The grid's pager: the page's own, nothing for the app.
+                // The grid's pager and the Record panel's tabs: the page's
+                // own, nothing for the app.
                 self.time_page.update(&mut self.ui, &self.time);
                 None
             }
@@ -8025,6 +8031,7 @@ impl Player {
                 time_view::TRANSPORT
                 | time_view::CLIPS
                 | time_view::RECORD
+                | time_view::CLIP_CARD
                 | time_view::TAKES
                 | time_view::MORPH
                 | time_view::SONG
@@ -10393,6 +10400,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         new_track: None,
         dropped: None,
         song: None,
+        settings: false,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -10614,6 +10622,30 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-instruments", p));
         }
         Err(e) => eprintln!("clips sample: {e}"),
+    }
+    // The Record panel's Clip tab (sequencer S3): the focused clip's
+    // settings, half speed with its own swing, quantised to 1/16 at 60 %,
+    // and Next after 4 bars.
+    match sample_clips(fonts()) {
+        Ok(mut p) => {
+            let mut st = p.time.clone();
+            st.armed = Some(0);
+            if let Some(c) = st
+                .focus()
+                .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+            {
+                c.settings.speed = mpfree_seq::Speed::new(1, 2).unwrap_or_default();
+                c.settings.swing = mpfree_transport::time::Swing::new(240, 56);
+                c.settings.quantise = mpfree_seq::Quantise::new(240, 60);
+                c.settings.follow =
+                    Some(mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next));
+            }
+            p.time_page.clip_card = true;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-card", p));
+        }
+        Err(e) => eprintln!("clips-card sample: {e}"),
     }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
@@ -11814,6 +11846,51 @@ mod tests {
             "Clips · slots 2–6 of 16"
         );
         assert!(p.take_actions().is_empty());
+        // The Record panel's Clip tab: the clip settings card for the
+        // focused clip, which the wheel then steps (its Length first).
+        let record = p.ui.rect_of(time_view::RECORD).unwrap();
+        let clip_tab =
+            p.ui.get::<OptionList>(time_view::RECORD)
+                .unwrap()
+                .tab_rect(record, 1)
+                .unwrap();
+        assert_eq!(tap(&mut p, (clip_tab.x + 10, clip_tab.y + 20)), None);
+        assert_eq!(
+            p.ui.layout_of(time_view::CLIPS_PAGE),
+            Some(time_view::CLIPS_CARD_LAYOUT)
+        );
+        // Bass, armed, has no clip yet: the card is empty.
+        assert_eq!(p.time.focus(), None);
+        assert!(p
+            .ui
+            .get::<OptionList>(time_view::CLIP_CARD)
+            .unwrap()
+            .rows
+            .is_empty());
+        p.time.armed = Some(0);
+        p.time_page.update(&mut p.ui, &p.time);
+        let (track, slot) = p.time.focus().unwrap();
+        p.apply(ToUi::ClipsWheel {
+            delta: 1,
+            scroll: false,
+        });
+        let got = p.take_actions();
+        assert!(
+            matches!(got[..], [FromUi::Time(TimeAction::ClipLength { track: t, slot: s, .. })] if (t, s) == (track, slot)),
+            "{got:?}"
+        );
+        // And back to the record settings.
+        let card = p.ui.rect_of(time_view::CLIP_CARD).unwrap();
+        let record_tab =
+            p.ui.get::<OptionList>(time_view::CLIP_CARD)
+                .unwrap()
+                .tab_rect(card, 0)
+                .unwrap();
+        assert_eq!(tap(&mut p, (record_tab.x + 10, record_tab.y + 20)), None);
+        assert_eq!(
+            p.ui.layout_of(time_view::CLIPS_PAGE),
+            Some(time_view::CLIPS_LAYOUT)
+        );
         // The morph bar under the grid: Save stores the A row (the
         // crossfader is at A).
         let morph = p.ui.rect_of(time_view::MORPH).unwrap();
@@ -12849,6 +12926,7 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -13188,6 +13266,7 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
