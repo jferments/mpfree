@@ -1,5 +1,8 @@
 //! MIDI from outside the MPC: the 5-pin MIDI In jack and USB-MIDI keyboards
-//! on the USB-A socket. Read only: nothing here ever sends a byte.
+//! on the USB-A socket. Read only: nothing here ever sends a byte. What thru
+//! passes on (the Routing section's squares from a port to an output) is
+//! handed to the app ([`MusicIn::take_thru`]), whose `midi_out` sends it,
+//! only while Prefs' "Send MIDI and CV out" is on.
 //!
 //! - **MIDI In** is the controller's cable 2 ("MIDI Port"), seen in the
 //!   owner's read-only captures of 2026-11-12
@@ -55,7 +58,7 @@
 use std::sync::TryLockError;
 use std::time::Duration;
 
-use mpfree_midi::input::{ChanFilter, In, InputRouter, PortFilter, Route};
+use mpfree_midi::input::{ChanFilter, In, InputRouter, PortFilter, Route, Thru};
 use mpfree_midi::learn::{Input, LearnMap, Mode, Saved, Source, Write};
 use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
 use mpfree_midi::msg::Msg;
@@ -183,6 +186,20 @@ const LEADER_BYTES: usize = 64;
 /// Routed keys kept for the app between its takes; a period's keys past
 /// this still go in (the Vec grows), so none is lost.
 const ROUTED_KEYS: usize = 256;
+
+/// Messages thru passes on, kept for the app between its takes; a period's
+/// past this are dropped and counted, so the sound loop never grows the
+/// list (a port's MIDI out takes 256 a period at most).
+const THRU_MSGS: usize = 256;
+
+/// A message thru passes on: as it came in on `from`, for the output
+/// port `to`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Passed {
+    pub from: PortId,
+    pub to: PortId,
+    pub msg: Msg,
+}
 
 /// What a learned control last set a parameter to (0 to 1), and when.
 #[derive(Clone, Copy, Debug)]
@@ -313,6 +330,11 @@ pub struct MusicIn {
     /// Keys a route sends to its track, whichever track is armed, until
     /// the app takes them ([`MusicIn::take_routed`]).
     routed: Vec<(u8, Key)>,
+    /// What thru passes on, until the app takes it
+    /// ([`MusicIn::take_thru`]), and how many were dropped for want of
+    /// room.
+    thru: Vec<Passed>,
+    thru_dropped: u64,
 }
 
 impl Default for MusicIn {
@@ -362,6 +384,8 @@ impl MusicIn {
             note_offs: false,
             about: vec![String::new(); MAX_PORTS],
             routed: Vec::with_capacity(ROUTED_KEYS),
+            thru: Vec::with_capacity(THRU_MSGS),
+            thru_dropped: 0,
         }
     }
 
@@ -376,6 +400,12 @@ impl MusicIn {
     /// track is armed), each with its track, from 0.
     pub fn take_routed(&mut self) -> std::vec::Drain<'_, (u8, Key)> {
         self.routed.drain(..)
+    }
+
+    /// What thru passed on since the app last took it, in the order it
+    /// came, for MIDI out.
+    pub fn take_thru(&mut self) -> std::vec::Drain<'_, Passed> {
+        self.thru.drain(..)
     }
 
     /// Once a period, before the bytes: the track keys play (from 0), and
@@ -653,6 +683,23 @@ impl MusicIn {
                 0,
                 |e| routed_key(e, routed),
             );
+            // Thru, on this run's port numbers: one whose input or output
+            // isn't plugged in yet waits for it.
+            let (thru, dropped) = (&mut self.thru, &mut self.thru_dropped);
+            self.router.set_thru(
+                m.setup.thru.iter().filter_map(|r| {
+                    let all = ports.all();
+                    let from = all.iter().find(|p| p.name == r.from && p.has_in)?.id;
+                    let to = all.iter().find(|p| p.name == r.to && p.has_out)?.id;
+                    Some(Thru {
+                        port: PortFilter::One(from),
+                        channel: r.channel.map_or(ChanFilter::Omni, ChanFilter::One),
+                        to,
+                    })
+                }),
+                0,
+                |e| passed(e, thru, dropped),
+            );
             // The song's learned controls, then the rig's it doesn't
             // override.
             self.build_learn(&m.setup.in_use());
@@ -785,9 +832,11 @@ impl MusicIn {
         let held = keys.len();
         let routed = &mut self.routed;
         let routed_held = routed.len();
+        let (thru, dropped) = (&mut self.thru, &mut self.thru_dropped);
         self.router.port_gone(port, 0, |e| {
             key_of(e, keys);
             routed_key(e, routed);
+            passed(e, thru, dropped);
         });
         let routed_ended = self.routed[routed_held..]
             .iter()
@@ -925,6 +974,10 @@ impl MusicIn {
                 &mut self.learn_sets,
                 &mut self.routed,
             );
+            let (thru, dropped) = (&mut self.thru, &mut self.thru_dropped);
+            // The message Learn took: it reaches nothing else, however
+            // many routes and thru name its channel.
+            let mut took: Option<Msg> = None;
             self.router.feed(port, b, 0, |e| match e {
                 In::Seen { msg, .. } => seen = Some(msg),
                 // The port's "Ignore coming in": listed, nothing else.
@@ -935,9 +988,15 @@ impl MusicIn {
                 }
                 other => {
                     got = true;
-                    // What Learn takes doesn't play.
-                    if let In::Track { msg, .. } | In::Routed { msg, .. } = &other {
+                    // What Learn takes doesn't play, or go thru.
+                    if let In::Track { msg, .. } | In::Routed { msg, .. } | In::Thru { msg, .. } =
+                        &other
+                    {
+                        if took == Some(*msg) {
+                            return;
+                        }
                         if learns && learn.takes(port, msg) {
+                            took = Some(*msg);
                             if let Some(target) = learn.target_of(port, msg) {
                                 to = To::Learned(target);
                             }
@@ -951,6 +1010,13 @@ impl MusicIn {
                             });
                             return;
                         }
+                    }
+                    // Thru sends it on as it came, whatever the port's
+                    // input (MIDI out sends it if it is on).
+                    if let In::Thru { to: out, .. } = other {
+                        to = To::Thru { to: out };
+                        passed(other, thru, dropped);
+                        return;
                     }
                     // A route plays its track, whatever the port's input.
                     // Its other messages (a knob, a bend) nothing takes yet.
@@ -1092,6 +1158,12 @@ impl MusicIn {
                 mpfree_midi::setup::MAX_LEARNED
             ));
         }
+        if self.thru_dropped > 0 {
+            lines.push(format!(
+                "Thru: {} messages dropped (more than {THRU_MSGS} in a period)",
+                self.thru_dropped
+            ));
+        }
         let st = self.router.stats;
         if st.unrouted + st.bad_port > 0 {
             lines.push(format!(
@@ -1168,6 +1240,19 @@ fn key_of(e: In, keys: &mut Vec<Key>) {
     };
     if let Some(k) = key(msg) {
         keys.push(k);
+    }
+}
+
+/// What thru passes on, kept for the app; past [`THRU_MSGS`] dropped and
+/// counted.
+fn passed(e: In, thru: &mut Vec<Passed>, dropped: &mut u64) {
+    let In::Thru { from, to, msg, .. } = e else {
+        return;
+    };
+    if thru.len() < THRU_MSGS {
+        thru.push(Passed { from, to, msg });
+    } else {
+        *dropped += 1;
     }
 }
 
@@ -1372,6 +1457,102 @@ mod tests {
         assert_eq!(keys, vec![Key::Up { note: 60 }]);
         // Still logged.
         assert_eq!(lines.len(), 3);
+    }
+
+    /// Thru sends a keyboard's channel 10 to the 5-pin jacks as it came,
+    /// and the rest of its keys play the armed track; a control Learn has
+    /// on that channel moves its value instead of going thru, and taking
+    /// the thru away while a key is down ends that note at the jacks.
+    #[test]
+    fn thru_sends_a_channel_on_as_it_came_and_learn_keeps_what_it_learned() {
+        use mpfree_midi::setup::{ThruRoute, DIN_NAME};
+        let mut m = MusicIn::new();
+        let io = model();
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.thru = vec![ThruRoute {
+                from: "Keystep 37".to_string(),
+                channel: Some(9),
+                to: DIN_NAME.to_string(),
+            }];
+            let cutoff =
+                Saved::parse("port Keystep 37 | ch 10 | cc 74 | t1.fx1.0 | 0 1 | absolute | jump")
+                    .expect("a learned control");
+            assert!(v.setup.learned(cutoff));
+            v.gen += 1;
+        }
+        let keystep = m.plugged("Keystep 37").unwrap();
+        m.sync(&io, 0.5);
+        let (keys, _) = run(
+            &mut m,
+            keystep,
+            &[0x99, 36, 100, 0xB9, 74, 64, 0xB9, 1, 10, 0x90, 60, 100],
+        );
+        assert_eq!(
+            keys,
+            vec![Key::Down {
+                note: 60,
+                velocity: 100
+            }]
+        );
+        let passed = |m: &mut MusicIn| -> Vec<(PortId, PortId, Msg)> {
+            m.take_thru().map(|p| (p.from, p.to, p.msg)).collect()
+        };
+        assert_eq!(
+            passed(&mut m),
+            vec![
+                (
+                    keystep,
+                    DIN,
+                    Msg::NoteOn {
+                        ch: 9,
+                        note: 36,
+                        vel: 100
+                    }
+                ),
+                (
+                    keystep,
+                    DIN,
+                    Msg::Cc {
+                        ch: 9,
+                        cc: 1,
+                        value: 10
+                    }
+                ),
+            ]
+        );
+        assert!(m
+            .learning()
+            .any(|l| matches!(l, Learning::Set(w) if w.target.to_string() == "t1.fx1.0")));
+        m.sync(&io, 0.75);
+        {
+            let v = io.lock().unwrap();
+            let went: Vec<To> = v.monitor.newest().map(|(_, l)| l.to).collect();
+            assert!(went.contains(&To::Thru { to: DIN }), "{went:?}");
+        }
+        // The thru taken away with 36 still down: its note-off goes to
+        // the jacks now, and the key's own note-off later goes nowhere.
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.thru.clear();
+            v.gen += 1;
+        }
+        m.sync(&io, 1.0);
+        assert_eq!(
+            passed(&mut m),
+            vec![(
+                keystep,
+                DIN,
+                Msg::NoteOff {
+                    ch: 9,
+                    note: 36,
+                    vel: 64
+                }
+            )]
+        );
+        let (keys, _) = run(&mut m, keystep, &[0x89, 36, 0]);
+        assert!(keys.is_empty());
+        assert!(passed(&mut m).is_empty());
     }
 
     #[test]

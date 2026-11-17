@@ -4,11 +4,12 @@
 //! apart from system-wide ones):
 //!
 //! - **The rig** (`MidiSetup::rig`): each port's input (Plays tracks, Learn
-//!   only, Both) and thru. They describe the gear on the desk, so they are
-//!   kept here for every project, in the store as `files/midi/rig.txt`.
-//! - **The project** (`MidiSetup::project`): each track's "Plays on", Tempo
-//!   from and following, each port's clock out, the CV jobs and learned
-//!   controls. They are the project's `midi` part (`mpfree_midi_ui::MidiPart`),
+//!   only, Both), what it ignores and its gear's delay, and the controls
+//!   learned for every project. They describe the gear on the desk, so they
+//!   are kept here for every project, in the store as `files/midi/rig.txt`.
+//! - **The project** (`MidiSetup::project`): each track's "Plays on", the
+//!   routes and thru, Tempo from and following, each port's clock out, the
+//!   CV jobs and learned controls. They are the project's `midi` part (`mpfree_midi_ui::MidiPart`),
 //!   saved and opened with the project (gui.rs), not here.
 //!
 //! [`restore`] reads the rig once at start, before the sound loop syncs the
@@ -150,7 +151,7 @@ mod tests {
         let model = crate::midi_in::io_model();
         let mut saver = Saver::new(&model);
         changed(&model, |m| {
-            m.setup.set_port(DIN_NAME, |p| p.thru = !p.thru);
+            m.setup.set_port(DIN_NAME, |p| p.delay_tenths += 5);
         });
         {
             let _held = model.lock().unwrap();
