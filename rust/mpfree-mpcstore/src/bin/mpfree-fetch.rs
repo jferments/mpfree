@@ -5,6 +5,9 @@
 //! `cargo zigbuild --target armv7-unknown-linux-gnueabihf.2.34`, never with
 //! `+crt-static`. It goes beside the pad player (`/etc/mpfree-test/` on the
 //! stick). Only `https://` on the catalog's hosts, as the pad player.
+//! `mpfree-fetch --tls` downloads nothing: it starts libcurl and says what
+//! its OpenSSL said (`fetch::tls_through_helper`), for the Plugins place's
+//! first line.
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

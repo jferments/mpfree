@@ -114,6 +114,10 @@ pub struct Listing {
     pub zips: Vec<ZipFile>,
     /// libcurl is there: downloads can work (with a network).
     pub can_download: bool,
+    /// What libcurl's TLS library said as it started (`fetch::tls`), for the
+    /// log: "OpenSSL 3.0.13 ready", or why it can't make the random numbers
+    /// TLS needs.
+    pub tls: Option<String>,
     /// No data folder: nowhere to install.
     pub no_folder: bool,
     /// The favourites as kept.
@@ -468,6 +472,7 @@ impl State {
             return Listing {
                 catalog: self.catalog.clone(),
                 can_download: fetch::available(),
+                tls: fetch::tls(),
                 no_folder: true,
                 ..Listing::default()
             };
@@ -569,6 +574,7 @@ impl State {
             installed,
             zips,
             can_download: fetch::available(),
+            tls: fetch::tls(),
             no_folder: false,
             favourites,
         }

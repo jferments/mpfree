@@ -2377,4 +2377,37 @@ mod tests {
         assert_eq!(sets(&stop), [(LISTEN, 0.0)]);
         assert!(page.stop_listening().is_empty());
     }
+
+    /// Solo band (Listen until 16 Nov) says what it does on the hint line
+    /// while it is on, and the EQ page's own hint comes back when it stops.
+    #[test]
+    fn the_hint_line_says_what_solo_band_does_while_it_is_on() {
+        use mpfree_fx::ids::eq::LISTEN;
+        let mut song = Song::new();
+        let st = song.chain_state(DRUMS, 3, 0, None);
+        assert!(st.eq);
+        let param = st
+            .params
+            .iter()
+            .find(|p| p.addr.param == LISTEN)
+            .expect("Solo band");
+        assert_eq!(param.info.name, "Solo band");
+        let mut ui = screen(
+            Fonts::embedded(),
+            &mut song,
+            Place::Mixer,
+            Some(st.clone()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(crate::chain_hint(&ui), crate::EQ_HINT);
+        let mut solo = st.clone();
+        for p in solo.params.iter_mut().filter(|p| p.addr.param == LISTEN) {
+            p.value = 2.0;
+        }
+        crate::update_chain(&mut ui, solo);
+        assert_eq!(crate::chain_hint(&ui), crate::EQ_SOLO_HINT);
+        crate::update_chain(&mut ui, st);
+        assert_eq!(crate::chain_hint(&ui), crate::EQ_HINT);
+    }
 }
