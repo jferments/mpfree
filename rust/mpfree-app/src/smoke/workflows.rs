@@ -1376,7 +1376,10 @@ mod tests {
             // into on an empty track yet; see the app thread).
             s.press("steps", "step", "Snare step 1");
             let (snare, kick) = (lane(&s, "Snare").0, lane(&s, "Kick").0);
+            // REC readies the notes; PLAY starts the take.
             s.button("REC");
+            assert_eq!(s.time.info().state, mpfree_transport::State::Stopped);
+            s.button("PLAY");
             assert_eq!(s.time.info().state, mpfree_transport::State::Recording);
             s.run_for(0.55);
             s.pad(kick, 100, 0.05);
@@ -1522,7 +1525,8 @@ mod tests {
 
     /// REC, PLAY and OVERDUB on the MPC as it starts from a fresh stick
     /// (no saved map, Map controls never run): the buttons are the real
-    /// ones (73, 82, 80), they record and overdub the loop on Play, and
+    /// ones (73, 82, 80), they record and overdub the loop armed by Play's
+    /// Loop view, and
     /// their lights reach the controller: REC and PLAY blink while REC
     /// waits for PLAY, PLAY stays lit while playing, REC blinks while the
     /// first pass records, OVERDUB blinks while it overdubs, and STOP puts
@@ -1539,7 +1543,9 @@ mod tests {
             assert_eq!(s.button_note("OVERDUB"), button::OVERDUB);
             assert_eq!(s.button_note("PLAY"), button::PLAY);
             assert_eq!(s.view(), View::Play);
-            // REC on Play's All view arms the loop; REC and PLAY blink.
+            // The Loop view arms the loop; REC arms it to record, and REC
+            // and PLAY blink.
+            s.press("play-transport", "view", "Loop").settle();
             s.button("REC");
             s.run_for(0.1);
             assert_eq!(s.looper.phase(), Phase::Armed, "REC armed the loop");
@@ -1615,7 +1621,9 @@ mod tests {
         use mpfree_looper::Phase;
         on_big_stack(|| {
             let mut s = Session::new();
-            // Armed on Play, then STOP: disarmed, the lights dark.
+            // Armed on Play's Loop view, then STOP: disarmed, the lights
+            // dark.
+            s.press("play-transport", "view", "Loop").settle();
             s.button("REC").run_for(0.1);
             assert_eq!(s.looper.phase(), Phase::Armed);
             s.button("STOP").run_for(0.3);
@@ -1902,6 +1910,424 @@ mod tests {
                     "the {chip} chip went"
                 );
             }
+        });
+    }
+
+    /// REC records what is armed (sequencer decision 1): on the home view
+    /// the notes are armed, REC makes them ready and PLAY records them; a
+    /// take that records keeps the arm where it is; the Loop view arms the
+    /// loop, and the ready goes with the arm when it moves.
+    #[test]
+    fn rec_records_what_is_armed_and_play_starts_a_ready_take() {
+        use crate::play_widgets::{PlayTransport, RecChip, RecState};
+        use crate::rec_arm::{RecArm, Take, Target};
+        use mpfree_looper::Phase;
+        use mpfree_transport::State;
+        fn chip(s: &Session) -> RecChip {
+            s.screen
+                .ui
+                .get::<PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.clone())
+                .expect("the REC chip")
+        }
+        fn notes(s: &Session) -> usize {
+            s.time.project().tracks[0]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.len())
+                .sum()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            assert_eq!(s.view(), View::Play);
+            // The home view: the notes are armed.
+            assert_eq!(s.app.rec.target, Target::Notes);
+            assert_eq!(chip(&s).state, RecState::Armed);
+            // REC, stopped: ready, and nothing starts.
+            s.button("REC").settle();
+            assert_eq!(chip(&s).state, RecState::Ready);
+            assert!(s.hint().starts_with("PLAY: record"), "{}", s.hint());
+            assert_eq!(s.time.info().state, State::Stopped);
+            // STOP lets go.
+            s.button("STOP").settle();
+            assert_eq!(chip(&s).state, RecState::Armed);
+            assert_eq!(s.app.rec.ready, None);
+            // REC, then PLAY: the take records (after the count-in, if
+            // any).
+            s.button("REC").button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            s.settle();
+            assert_eq!(chip(&s).state, RecState::Recording);
+            // The Loop view opened while it records doesn't take the arm.
+            s.press("play-transport", "view", "Loop").settle();
+            assert_eq!(s.app.rec.target, Target::Notes);
+            s.pad(0, 100, 0.05);
+            s.run_for(0.2);
+            s.button("STOP").settle();
+            assert!(notes(&s) > 0, "the pad went into the clip");
+            assert_eq!(s.looper.phase(), Phase::Empty, "the loop recorded nothing");
+            // Opened again with nothing recording, the Loop view arms the
+            // loop, and REC arms it.
+            s.press("play-transport", "view", "Beats").settle();
+            s.press("play-transport", "view", "Loop").settle();
+            assert_eq!(s.app.rec.target, Target::Loop);
+            assert_eq!(chip(&s).what, "Loop 1");
+            s.button("REC").settle();
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            // (The loop's view reaches the screen every 11 periods.)
+            s.run_periods(12).settle();
+            assert_eq!(chip(&s).state, RecState::Ready);
+            // Beats takes the arm back with its ready: the loop lets go and
+            // the notes wait for PLAY.
+            s.press("play-transport", "view", "Beats").settle();
+            s.run_periods(12).settle();
+            assert_eq!(
+                s.app.rec,
+                RecArm {
+                    target: Target::Notes,
+                    ready: Some(Take::Replace),
+                    ..RecArm::default()
+                }
+            );
+            assert_eq!(s.looper.phase(), Phase::Empty);
+            assert_eq!(chip(&s).state, RecState::Ready);
+        });
+    }
+
+    /// The loop strip on the home view says what REC does: with the notes
+    /// armed, that REC records them and the Loop view arms the loop; with
+    /// the loop armed, that REC records the pads into it. Once a notes take
+    /// is done, the strip's own Record arms the loop for REC.
+    #[test]
+    fn the_loop_strip_says_what_rec_records_and_its_record_arms_the_loop() {
+        use crate::looper_page::{LoopStrip, LOOP_STRIP};
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        use mpfree_transport::State;
+        fn note(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<LoopStrip>(LOOP_STRIP)
+                .unwrap()
+                .note
+                .clone()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let notes =
+                "Empty: REC records the notes now. Open the Loop view to record a loop here";
+            assert_eq!(note(&s), notes);
+            s.press("play-transport", "view", "Loop").settle();
+            assert_eq!(note(&s), "Empty: REC records the pads and the synth");
+            s.press("play-transport", "view", "Beats").settle();
+            s.press("play-transport", "view", "All").settle();
+            assert_eq!(note(&s), notes);
+            // A notes take keeps the arm when the Loop view opens.
+            s.button("REC").button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            s.press("play-transport", "view", "Loop").settle();
+            assert_eq!(s.app.rec.target, Target::Notes);
+            assert_eq!(note(&s), notes);
+            s.button("STOP").settle();
+            // Then the strip's Record arms the loop, for REC too.
+            s.press("play-loop", "button", "Record").settle();
+            assert_eq!(s.app.rec.target, Target::Loop);
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert!(s.app.rec.ready.is_none());
+        });
+    }
+
+    /// UNDO while the notes record throws the take so far away: recording
+    /// stops, the music plays on, the clip is as it was, and REDO doesn't
+    /// bring it back.
+    #[test]
+    fn undo_while_recording_throws_the_take_away_and_the_music_plays_on() {
+        use mpfree_transport::State;
+        fn notes(s: &Session) -> usize {
+            s.time.project().tracks[0]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.len())
+                .sum()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.button("REC").button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            s.pad(0, 100, 0.05);
+            s.run_for(0.3);
+            assert!(notes(&s) > 0, "the hit went in as it recorded");
+            s.button("UNDO");
+            s.run_for(0.3);
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            assert_eq!(notes(&s), 0, "the take is gone");
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.starts_with("time: undo: take ") && l.ends_with(" thrown away")),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!(
+                s.hint(),
+                "UNDO: the take is thrown away; the music plays on"
+            );
+            s.button_with("SHIFT", "UNDO").run_for(0.2);
+            assert_eq!(notes(&s), 0, "REDO doesn't bring it back");
+            // Not recording, UNDO is the page's again.
+            s.button("STOP").run_for(0.2);
+            assert_eq!(s.app.rec.ready, None);
+        });
+    }
+
+    /// The Arm pills and the REC chip's target list (mockups F to H): a
+    /// pill tapped arms what it heads, red on what REC records; the chip
+    /// opens the list, whose rows arm, whose Pin keeps pages from moving
+    /// the arm, and whose Rec song is the grid's; REC ready on a page
+    /// without a transport bar shows in the header.
+    #[test]
+    fn arm_pills_and_the_target_list_move_the_arm_and_pin_it() {
+        use crate::looper_page::{LoopStrip, LOOP_STRIP};
+        use crate::play_widgets::{ArmPill, StepGrid};
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        fn pills(s: &Session) -> (Option<ArmPill>, Option<ArmPill>) {
+            (
+                s.screen
+                    .ui
+                    .get::<StepGrid>(crate::play_page::STEPS)
+                    .unwrap()
+                    .arm,
+                s.screen.ui.get::<LoopStrip>(LOOP_STRIP).unwrap().arm,
+            )
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            assert_eq!(pills(&s), (Some(ArmPill::Armed), Some(ArmPill::Arm)));
+            // The armed pill says what REC records.
+            s.press("steps", "arm", "Armed").settle();
+            assert!(s.hint().starts_with("REC records Track 1"), "{}", s.hint());
+            // The strip's Arm arms the loop; REC then readies it.
+            s.press("play-loop", "arm", "Arm").settle();
+            assert_eq!(s.app.rec.target, Target::Loop);
+            assert_eq!(pills(&s), (Some(ArmPill::Arm), Some(ArmPill::Armed)));
+            s.button("REC");
+            s.run_periods(12).settle();
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert_eq!(pills(&s).1, Some(ArmPill::Ready));
+            // The pattern's Arm takes the arm back, the ready with it.
+            s.press("steps", "arm", "Arm").settle();
+            s.run_periods(12).settle();
+            assert_eq!(s.app.rec.target, Target::Notes);
+            assert_eq!(pills(&s), (Some(ArmPill::Ready), Some(ArmPill::Arm)));
+            // REC ready shows in the header on a page without the bar.
+            s.press("header", "tab", "Mix").settle();
+            assert!(
+                s.controls().iter().any(|c| c.widget == "header"
+                    && c.target.id == "chip"
+                    && c.target.label.starts_with("READY")),
+                "the header's REC chip"
+            );
+            s.press("header", "tab", "Play").settle();
+            s.button("STOP").settle();
+            // The chip opens the list.
+            let chip = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&chip);
+            s.settle();
+            assert_eq!(s.screen.ui.page(), crate::rec_list::REC_PAGE);
+            // Pin: Beats and the Loop view leave the arm where it is.
+            s.press("rec-list", "switch", "Pin the arm").settle();
+            assert!(s.app.rec.pinned);
+            s.press("rec-list", "row", "Looper · Loop 1").settle();
+            assert_eq!(s.app.rec.target, Target::Loop, "a row arms, pinned or not");
+            s.press("rec-list", "close", "Close").settle();
+            assert_ne!(s.screen.ui.page(), crate::rec_list::REC_PAGE);
+            s.press("play-transport", "view", "Beats").settle();
+            assert_eq!(s.app.rec.target, Target::Loop, "pinned: Beats leaves it");
+            // Rec song is the grid's.
+            let chip = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&chip);
+            s.settle();
+            assert_eq!(s.screen.ui.page(), crate::rec_list::REC_PAGE);
+            s.press("rec-list", "switch", "Rec song").settle();
+            assert!(s.time.state().song_rec, "Rec song on");
+            s.press("rec-list", "switch", "Pin the arm").settle();
+            assert!(!s.app.rec.pinned);
+            // A view picked closes it.
+            s.press("play-transport", "view", "All").settle();
+            assert_eq!(s.screen.ui.page(), "Play");
+        });
+    }
+
+    /// SHIFT + Arm: REC records the pads into a clip and a loop in one
+    /// pass. The chip names both; REC readies the notes and arms the loop,
+    /// PLAY starts both after the count-in, REC closes both, and a plain
+    /// tap on one pill keeps only that one.
+    #[test]
+    fn shift_arm_records_the_notes_and_a_loop_in_one_pass() {
+        use crate::looper_page::{LoopStrip, LOOP_STRIP};
+        use crate::play_widgets::{ArmPill, PlayTransport, RecState, StepGrid};
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        use mpfree_transport::State;
+        fn pills(s: &Session) -> (Option<ArmPill>, Option<ArmPill>) {
+            (
+                s.screen
+                    .ui
+                    .get::<StepGrid>(crate::play_page::STEPS)
+                    .unwrap()
+                    .arm,
+                s.screen.ui.get::<LoopStrip>(LOOP_STRIP).unwrap().arm,
+            )
+        }
+        fn chip(s: &Session) -> crate::play_widgets::RecChip {
+            s.screen
+                .ui
+                .get::<PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.clone())
+                .expect("the REC chip")
+        }
+        fn notes(s: &Session) -> usize {
+            s.time.project().tracks[0]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.len())
+                .sum()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            // SHIFT + the strip's Arm: both are armed.
+            s.button_edge("SHIFT", true);
+            s.press("play-loop", "arm", "Arm").settle();
+            s.button_edge("SHIFT", false);
+            assert!(s.app.rec.both, "{:?}", s.app.rec);
+            assert_eq!(pills(&s), (Some(ArmPill::Armed), Some(ArmPill::Armed)));
+            assert!(chip(&s).what.ends_with(" + Loop 1"), "{:?}", chip(&s));
+            // Beats finds the notes armed already: both stay.
+            s.press("play-transport", "view", "Beats").settle();
+            s.press("play-transport", "view", "All").settle();
+            assert!(s.app.rec.both);
+            // A bar's count-in: the loop waits for it too.
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::SetCountIn(1)),
+            ));
+            s.run_periods(2);
+            // REC: the notes ready, the loop armed to wait for PLAY.
+            s.button("REC");
+            s.run_periods(12).settle();
+            assert!(s.app.rec.ready.is_some());
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert_eq!(chip(&s).state, RecState::Ready);
+            assert_eq!(pills(&s), (Some(ArmPill::Ready), Some(ArmPill::Ready)));
+            // PLAY: both record once the count-in is over.
+            s.button("PLAY");
+            let end = s.t() + 6.0;
+            let mut counted = false;
+            while (s.time.info().state != State::Recording || s.looper.phase() != Phase::Recording)
+                && s.t() < end
+            {
+                s.run_periods(1);
+                if s.time.info().state == State::CountIn {
+                    counted = true;
+                    assert_ne!(
+                        s.looper.phase(),
+                        Phase::Recording,
+                        "the loop doesn't record the count-in"
+                    );
+                }
+            }
+            assert!(counted, "a bar's count-in");
+            assert_eq!(s.time.info().state, State::Recording);
+            assert_eq!(s.looper.phase(), Phase::Recording, "the loop's first pass");
+            assert_eq!(chip(&s).state, RecState::Recording);
+            s.pad(0, 100, 0.05);
+            s.run_for(1.0);
+            // A tap while both record says to finish first.
+            s.press("steps", "arm", "Rec").settle();
+            assert!(s.app.rec.both);
+            assert!(
+                s.hint().starts_with("Finish the take first"),
+                "{}",
+                s.hint()
+            );
+            // REC: the notes punch out, the loop's pass closes on the bar.
+            s.button("REC");
+            let end = s.t() + 6.0;
+            while s.looper.phase() != Phase::Playing && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            assert_eq!(s.looper.phase(), Phase::Playing, "the loop plays");
+            assert!(notes(&s) > 0, "the pad went into the clip");
+            s.button("STOP").settle();
+            // A plain tap on the pattern's pill keeps only the notes.
+            s.press("steps", "arm", "Armed").settle();
+            assert!(!s.app.rec.both);
+            assert_eq!(s.app.rec.target, Target::Notes);
+            assert_eq!(pills(&s), (Some(ArmPill::Armed), Some(ArmPill::Arm)));
+        });
+    }
+
+    /// Arrange's bar: its Rec is REC, so it readies the notes and its Play
+    /// starts the take (its Stop lets go); its chip says what REC records,
+    /// and names the loop once the Looper tab has armed it.
+    #[test]
+    fn arranges_bar_rec_and_play_record_what_is_armed() {
+        use crate::rec_arm::{Take, Target};
+        use mpfree_looper::Phase;
+        use mpfree_transport::State;
+        fn chip(s: &mut Session) -> String {
+            s.control("transport", "chip", "")
+                .expect("the REC chip on Arrange's bar")
+                .target
+                .label
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Arrange").settle();
+            assert!(chip(&mut s).starts_with("REC → "), "{}", chip(&mut s));
+            // Rec readies the notes; nothing starts.
+            s.press("transport", "rec", "Rec").settle();
+            assert_eq!(s.app.rec.ready, Some(Take::Replace));
+            assert_eq!(s.time.info().state, State::Stopped);
+            assert!(chip(&mut s).starts_with("READY"), "{}", chip(&mut s));
+            // Stop lets go.
+            s.press("transport", "stop", "Stop").settle();
+            assert_eq!(s.app.rec.ready, None);
+            assert_eq!(s.time.info().state, State::Stopped);
+            // Rec, then Play: the take records.
+            s.press("transport", "rec", "Rec").settle();
+            s.press("transport", "play", "Play");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            assert_eq!(s.app.rec.ready, None);
+            s.press("transport", "stop", "Stop").settle();
+            assert_eq!(s.time.info().state, State::Stopped);
+            // The Looper tab arms the loop: Arrange's chip names it, and
+            // Rec arms the loop to record.
+            s.press("header", "tab", "Looper").settle();
+            s.press("header", "tab", "Arrange").settle();
+            assert_eq!(s.app.rec.target, Target::Loop);
+            assert_eq!(chip(&mut s), "REC → Loop 1");
+            s.press("transport", "rec", "Rec").settle();
+            assert_eq!(s.looper.phase(), Phase::Armed);
         });
     }
 }

@@ -28,7 +28,7 @@ A round's runbook has a table of its checks: the check, why it's in this round, 
 
 | Check | Kind | What only the MPC shows | The log must show |
 |---|---|---|---|
-| `transport` | hands | REC, OVERDUB, UNDO and PLAY on a fresh start (#387); their lights | buttons 73, 82, 80, 67 and 81, and the looper's Record, overdub on and off, and Undo |
+| `transport` | hands | REC, OVERDUB, UNDO and PLAY on a fresh start (#387), on the loop the Loop view arms; their lights | buttons 73, 82, 80, 67 and 81, and the looper's Record, overdub on and off, and Undo |
 | `basics` | hands | Pads, PAD BANK, FULL LEVEL, the wheel, the Q-Links (also on the Mix tab and the chain editor) and touch, on a new system or boot route | soft and hard hits, a bank change, Full Level on and off, wheel steps, Q-Link messages, touch interrupts rising |
 | `load` | hands | Supersaw and the Grains kit with 8 pads: the worst case for the cores | no underrun between the status lines around it; then the cores, clock and threads |
 | `track-mute` | hands | The pad colours as track mutes, and PAD BANK past 16 tracks (#332) | tracks muted and playing, another bank of 16 |
@@ -38,6 +38,7 @@ A round's runbook has a table of its checks: the check, why it's in this round, 
 | `step-synth` | hands | STEP SEQ on the synth (sequencer S1): a chord picked with STEP SEQ held goes on four steps, heard as a chord once while stopped and four times a bar playing; a lit step comes off whole | the pads as the line's steps, a step taking the chord (pads 1 and 5), a lit step erased whole |
 | `step-notes` | hands | A synth step's Note knob (sequencer S1): Q-Link 1 on a held line step moves its note up the pads, heard on the next pass | the pads as the line's steps, a Note detent's line |
 | `step-keys` | hands | A keyboard's keys on a held synth step (sequencer S1; only with a keyboard on MIDI IN or the USB socket): a chord played goes on the step, the other steps keep theirs | a line of keys entered on step 1 |
+| `rec-arm` | hands | REC records what is armed (sequencer S2): the REC chip naming the track's clip, READY and solid red as it records; REC then PLAY records the pads, heard back; UNDO while recording throws the take away and the music plays on; the Loop view arms the loop | the notes ready, the take started, UNDO of the take, a take thrown away, the loop armed and REC on it |
 | `step-speed` | hands | Step edits in place (sequencer S1, Gate 0): taps and a lock turn on the pattern playing, heard on the next pass with no click; what they and a compile cost the MPC | taps and a lock turn in the log; the status line's step edits in place, each within a tenth of a period; no slow period from the pads or the screen; no underrun |
 | `wheel` | hands | The outline and the push on the real wheel (#339), and moving a Song block by wheel (#355) | wheel steps, a block moved |
 | `touch` | hands | Touch lab, Calibrate touch, two fingers, and a real drag past the 12 px lift | the Touch lab's start and end, Calibrate's result, a clip moved and a copy dropped |
