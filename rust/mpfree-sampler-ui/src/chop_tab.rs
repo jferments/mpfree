@@ -84,7 +84,7 @@ pub const WHEEL: &str = "smp-chop-wheel";
 pub const LAYOUT: &str = "col(header:60, row(smp-chop-bar:*, smp-send:330):60, \
                           row(col(smp-chop-overview:56, row(smp-chop-wave:*, \
                           col(smp-chop-list:*, smp-chop-buttons:64, smp-chop-wheel:56):360):*):*, \
-                          col(smp-chop-q1, smp-chop-q2, smp-chop-q3, smp-chop-q4):168):*, hint:26)";
+                          col(smp-chop-q1, smp-chop-q2, smp-chop-q3, smp-chop-q4):128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 2;

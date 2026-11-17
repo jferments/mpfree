@@ -1,5 +1,5 @@
 //! The effects' page plans (`mpfree_fx::page_plan`) against the screen:
-//! every page's layout parses, places each section once in the 844 by 540
+//! every page's layout parses, places each section once in the 884 by 540
 //! pixels the page has, and gives each section room for its controls; and
 //! every drawing a plan places is one the effect draws (or one the new
 //! pages add), with none of today's left out.
@@ -18,7 +18,7 @@ use mpfree_ui::{Rect, Theme};
 const PAGE: Rect = Rect {
     x: 0,
     y: 0,
-    w: 844,
+    w: 884,
     h: 540,
 };
 const GAP: i32 = 12;

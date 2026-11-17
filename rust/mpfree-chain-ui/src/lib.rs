@@ -72,9 +72,9 @@ pub const MACROS_PAGE: &str = "macros";
 /// The pages: the app's top bar, the panel beside the app's Q-Link column
 /// (the Play page's width), the hint line. In the Sample tab the chain
 /// editor goes under the pad bar instead, in the sampler's page.
-pub const QLINKS_W: i32 = 168;
-pub const CHAIN_LAYOUT: &str = "col(header:60, row(chain:*, qlinks:168):*, hint:26)";
-pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hint:26)";
+pub const QLINKS_W: i32 = mpfree_ui::qlink::COLUMN_WIDTH;
+pub const CHAIN_LAYOUT: &str = "col(header:60, row(chain:*, qlinks:128):*, hint:26)";
+pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:128):*, hint:26)";
 /// The chain editor's page key for `Bindings::set_page`: a Q-Link learned
 /// here stays on the chain editor.
 pub const QLINK_PAGE: &str = "chain";
