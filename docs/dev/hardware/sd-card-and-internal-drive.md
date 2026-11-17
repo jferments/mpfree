@@ -1,6 +1,6 @@
 # The SD card and the MPC's internal drive in MPFree (plan)
 
-**As of 2026-11-17** · **Status:** plan, nothing built. · **Asked for by** the owner, 2026-11-17 00:10Z: "eventually I would like for MPFree to be able to utilize the SD card to store samples, etc. and I would like to be able to have read-only access to the eMMC as needed. So these should be something that our kernel has the capability to turn on/off. We need to come up with a plan to safely partition / use the SD card and share it with Akai factory OS."
+**As of 2026-11-17** · **Status:** plan, nothing built. The owner chose how the card is shared on 2026-11-17: **a folder on the card as it is** (layout A). · **Asked for by** the owner, 2026-11-17 00:10Z: "eventually I would like for MPFree to be able to utilize the SD card to store samples, etc. and I would like to be able to have read-only access to the eMMC as needed. So these should be something that our kernel has the capability to turn on/off. We need to come up with a plan to safely partition / use the SD card and share it with Akai factory OS."
 
 ## Goal
 
@@ -24,7 +24,7 @@ What we know about Akai's side, from earlier rounds:
 
 ## How the SD card is shared with Akai's system
 
-This is the owner's choice (asked on 2026-11-17). Three ways:
+**The owner chose A on 2026-11-17 (00:24Z).** The three ways that were offered:
 
 | | **A. A folder on the card as it is** (recommended) | B. A partition of MPFree's own | C. A second card just for MPFree |
 | --- | --- | --- | --- |
@@ -35,7 +35,7 @@ This is the owner's choice (asked on 2026-11-17). Three ways:
 | A power cut while saving | FAT and exFAT keep no journal, so a cut can damage the filesystem, the same risk Akai's own saves carry. MPFree lowers it: whole files written then renamed, synced, the card checked before writing | ext4's journal protects it | ext4's journal protects it |
 | Getting there | Nothing to do | Repartitioning a card that has data on it means copying everything off and back (there is no safe exFAT shrink); never done without a typed confirmation | Formatting a card; never done without a typed confirmation |
 
-A keeps one card that works everywhere, with nothing to repartition, and is the recommendation. B or C can be added later for musicians who want a journal.
+A keeps one card that works everywhere, with nothing to repartition. B or C can be added later for musicians who want a journal.
 
 ## How MPFree switches them on and off
 
