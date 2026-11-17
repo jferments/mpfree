@@ -137,6 +137,9 @@ impl Form for Sync {
                 (_, _) if !built.clock_out => {
                     row.note("sends nothing: MIDI out is off", Tone::Warn)
                 }
+                (Some(l), _) if !l.sending => {
+                    row.note("sends nothing: its output didn't open", Tone::Warn)
+                }
                 (_, ClockOut::WhilePlaying) => {
                     row.note("clock, start and stop while playing", Tone::Normal)
                 }
@@ -224,6 +227,7 @@ mod tests {
             about: "USB".into(),
             has_in: true,
             has_out: false,
+            sending: false,
             last_in: None,
         });
         Arc::new(Mutex::new(IoModel {
@@ -325,6 +329,16 @@ mod tests {
             ClockOut::WhilePlaying
         );
         assert_eq!(row(&s, "clock:MIDI").note, "sends nothing: MIDI out is off");
+        s.lock().unwrap().live.built.clock_out = true;
+        assert_eq!(
+            row(&s, "clock:MIDI").note,
+            "sends nothing: its output didn't open"
+        );
+        s.lock().unwrap().live.ports[0].sending = true;
+        assert_eq!(
+            row(&s, "clock:MIDI").note,
+            "clock, start and stop while playing"
+        );
         Sync.step(&mut s.lock().unwrap(), "clock:MIDI", 0, 1);
         Sync.step(&mut s.lock().unwrap(), "clock:MIDI", 0, 1);
         assert!(s.lock().unwrap().setup.ports.is_empty());
