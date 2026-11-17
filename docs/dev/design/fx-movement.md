@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-fx/src/motion.rs rust/mpfree-fx/src/shift.rs
-checked: 2026-11-17 8ac941f3
+checked: 2026-11-18 b4fe3b81
 -->
 # Movement: tremolo, auto-pan, rotary, ring mod, frequency shifter and auto wah
 
-**Status:** built (F2 and the MPC coverage round); FX quality round 5 is under way. Its research, targets and measuring are done (101 of 171 movement targets met before any fix, at 44.1 kHz). PR W (17 Nov) rebuilds the LFO they share and crossfades the tremolo's Mode: 136 of 171 met, every LFO, tremolo and auto-pan row among them. The rotary, the auto wah, and the ring mod with the frequency shifter come next, a PR each. Below, "before PR W" describes what was there before.
+**Status:** built (F2 and the MPC coverage round); FX quality round 5 is under way. Its research, targets and measuring are done (101 of 171 movement targets met before any fix, at 44.1 kHz). PR W (17 Nov) rebuilds the LFO they share and crossfades the tremolo's Mode: 136 of 171 met, every LFO, tremolo and auto-pan row among them. PR 2 (17 Nov) rebuilds the rotary's motion, beam, level and drive: 148 of 171, every rotary row among them. The auto wah, and the ring mod with the frequency shifter come next, a PR each. Below, "before PR W" and "before PR 2" describe what was there before.
 
 This page is the design of MPFree's movement effects as one effect type: what they are for, the ideas underneath them, the research behind ours, which algorithms each uses and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter-by-parameter summary lives in [fx.md](fx.md); the measured targets and their history in [fx-quality.md](fx-quality.md#round-5-movement-pitch-and-voice). The research notes, plan and baseline probe are in jferments/mpfree-claude `fx/quality/` (research-movement.md, plan-5.md, baseline-r5-2026-11-17.md, tools/r5_baseline.rs).
 
@@ -83,7 +83,16 @@ The constant-power law above, at `Centre + Depth × m`, clamped to the extremes;
 
 ### Rotary
 
-After J. O. Smith's rotating horn and the daisy-leslie project: a Linkwitz-Riley crossover at 800 Hz, then the horn and the drum each a Doppler delay (cubic reads) whose length follows the rotor's angle, and a level following the rotor past two microphones. Speed moves between Stop, Slow (horn 0.8 Hz, drum 0.67) and Fast (6.7 and 5.7 Hz); each rotor follows with its own inertia (Ramp, 200 ms to 8 s; the light horn first). Balance sets horn against drum, Width the microphones' spread, and Drive a little saturation before it. Measured (round 5's baseline): the speeds within 0.1 % and the Doppler ±36.8 and ±8.1 cents; the horn reaches Fast in 0.82 s and the drum in 3.28 s; it goes in 3.2 LU quieter; the horn has no beam (its 6 kHz swing is 1.7 dB less than its 1.5 kHz one) and both rotors turn the same way; Drive folds back at -30.8 dB (Drive 50) and -13.3 dB (100). These are PR 2's to fix (plan-5 section 6).
+After J. O. Smith's rotating horn and the daisy-leslie project: a Linkwitz-Riley crossover at 800 Hz, then the horn and the drum each a Doppler delay (cubic reads) whose length follows the rotor's angle, and a level following the rotor past two microphones. Speed moves between Stop, Slow (horn 0.8 Hz, drum 0.67) and Fast (6.7 and 5.7 Hz). Balance sets horn against drum, Width the microphones' spread.
+
+- **The ramp:** each rotor follows the speed through a one-pole. Ramp (200 ms to 8 s) is the time the drum takes from Slow to within 10 % of Fast: 2.18 time constants, the gap from 5.03 Hz down to 0.57 (`RAMP_TAUS`). The light horn takes about a quarter of it (1.1 s at the default 4.5 s). Both coast down a quarter more slowly than the motor speeds them up (`COAST`), as Smith, Serafin, Abel and Berners describe.
+- **Opposite rotation:** the drum turns the other way from the horn, as a Leslie's do, so the microphone that hears the horn first hears the drum last.
+- **The treble beam:** a horn's beam narrows with frequency. Facing away from a microphone, the horn is heard through a one-pole low-pass at 2 kHz (`BEAM_HZ`, one a microphone), crossfaded to the whole horn as it turns to face it, so the highs swirl more than the mids.
+- **Level:** the horn and the drum are 1.07 and 1.28 times up at the microphones, so the cabinet goes in at the dry's level, swings and all.
+- **Drive:** as round 2's: soft saturation averaged by first-order ADAA, 2x oversampled through Drive's Eco half-bands, its level held by the curve's ceiling (`undrive`), so noise at -18 dBFS stays within 0.3 dB from Drive 0 to 100. It runs only while Drive is up and fades in and out; the plain path is held the same 4 frames late, so turning Drive on or off never moves the sound in time.
+- **Angles:** each rotor's angle at each microphone comes from the rotor's and the spread's sines by the angle sums, six sines a frame instead of eight, which pays for the beam with room to spare.
+
+Measured before PR 2 (round 5's baseline): the speeds within 0.1 % and the Doppler ±36.8 and ±8.1 cents; the horn reached Fast in 0.82 s and the drum in 3.28 s, and both slowed down at the same pace; it went in 3.2 LU quieter; the horn had no beam (its 6 kHz swing 1.7 dB less than its 1.5 kHz one) and both rotors turned the same way; Drive folded back at -30.8 dB (Drive 50) and -13.3 dB (100). After it every rotary target is met: the horn reaches Fast in 1.14 s and the drum in 4.66 s, and they take 1.42 and 1.25 times as long to slow down; the Doppler ±37.6 and ±8.3 cents; within 0.3 LU of the dry on pink and hits, and every preset within 0.2; a 5.3 dB beam; opposite rotation; Drive's fold-back at -96.3 dB (Drive 50) and -55.6 dB (100).
 
 ### Ring mod
 
@@ -108,7 +117,7 @@ One Simper state-variable filter swept evenly in pitch between Low and High (100
 | Frequency shifter | Shift, Mode (Up, Down, Up and down, Stereo), Feedback, Mix |
 | Auto wah | Source (Envelope, LFO, Pedal), Center, Depth, Sensitivity, Attack, Release, Rate, Sync, Low, High, Resonance, Filter, Mix |
 
-PR W changes no control and no id, so saved projects open as they were; they sound as described above.
+PR W and PR 2 change no control and no id, so saved projects open as they were; they sound as described above (a saved rotary now goes in at the dry's level, its drum turns the other way, its horn beams and its ramp takes the Ramp's time).
 
 ## 6. Defaults and presets
 
@@ -134,16 +143,18 @@ fxlab's `movement` class (`quality/round5.rs`, ids W and Z) measures them, and t
 
 The instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz, at the defaults:
 
-| Case | Before PR W | Now |
+| Case | Before round 5's fixes | Now |
 |---|---|---|
 | Tremolo | 16.7k | 11.3k |
 | Auto-pan | 22.0k | 21.3k |
 | Ring mod | 24.6k | 20.3k |
 | Auto wah | 28.5k | 25.5k |
 | Frequency shifter | 55.3k | 55.3k |
-| Rotary | 115.7k | 115.7k |
+| Rotary | 115.7k | 108.2k |
 
 PR W's LFO does more and costs less: its glide and wrap are out of line, the Sine is tested first, the tremolo works out one value a frame in its usual case, and the auto wah and talk box read the LFO only when they retune. The first version, with the glide in line and the shape matched for every value, cost the tremolo 45 % more.
+
+PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame off, more than the beam's two one-poles and the drive's delay cost.
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -153,14 +164,18 @@ PR W's LFO does more and costs less: its glide and wrap are out of line, the Sin
 - **An offset that wraps on its own** (Random with Width): the right side jumped where its phase wrapped. Random's values are worked out a cycle ahead.
 - **Sync only at the transport's start**: off the bar after a loop wraps. The phase follows the song all the time, and the jump glides.
 - **A mode or shape switched in one frame**: a click. Both glide over 20 ms.
-- **The rotary's realism, the ring mod's aliasing, the shifter's image, the wah's level:** measured, and the subjects of the next PRs (plan-5 sections 6 to 8).
+- **Rotors that turn together, a horn with no beam** (the rotary before PR 2): a flatter swirl. The drum turns the other way, and the horn's highs are low-passed while it faces away.
+- **A ramp read one rotation at a time** (plan-5's 4.5 s for the drum was 3.28 s at every moment): the ramp is set from the speed at every moment, and slowing down is slower than speeding up.
+- **Saturation at the base rate** (the rotary's Drive before PR 2): fold-back at -13 dB. It runs 2x oversampled with ADAA, and the plain path waits as long, so switching never shifts the sound.
+- **The ring mod's aliasing, the shifter's image, the wah's level:** measured, and the subjects of the next PRs (plan-5 sections 7 and 8).
 
 ## 10. History and next
 
 - F2 and the MPC coverage round: the tremolo, auto-pan, ring mod and rotary (`motion.rs`), the frequency shifter (`shift.rs`), the auto wah (`wah.rs`).
 - FX quality round 5 (17 Nov): research, baseline and plan (mpfree-claude #211, plan-5.md); the measuring PR (#510): 101 of 171 movement targets met.
 - PR W (17 Nov): the shared LFO rebuilt and the tremolo's Mode crossfaded: 136 of 171.
-- Next: PR 2 the rotary (the drum's ramp, the horn's beam, opposite rotation, level, the drive's aliasing), PR 3 the auto wah (level, retuning, the Filter switch), PR 4 the ring mod and frequency shifter (the square's aliasing, the waves' level, a better 90° network, the Mode switch).
+- PR 2 (17 Nov): the rotary's ramp, coast, opposite rotation, treble beam, level and oversampled drive: 148 of 171.
+- Next: PR 3 the auto wah (level, retuning, the Filter switch), PR 4 the ring mod and frequency shifter (the square's aliasing, the waves' level, a better 90° network, the Mode switch).
 
 ## 11. Sources
 
