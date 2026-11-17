@@ -2762,6 +2762,95 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// Loop tracks part 6: the same loop in two rows of its Loop track
+    /// plays on through a scene change between them; a loop's cell copied
+    /// onto another Loop track takes an empty loop for the copy there, off
+    /// until launched, and its cell goes if the copy stops with nothing
+    /// in.
+    #[test]
+    fn the_same_loop_in_two_rows_plays_on_and_a_copy_takes_a_new_loop() {
+        use mpfree_seq::loops::LoopNow;
+        use mpfree_seq::LOOPS;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut a = Track::new_loops("Loops A", 8);
+        a.slots[0] = Some(Clip::new_loop(0, 3840));
+        a.slots[1] = Some(Clip::new_loop(0, 3840));
+        h.control.project.tracks.push(a);
+        h.control
+            .project
+            .tracks
+            .push(Track::new_loops("Loops B", 9));
+        let pass = LoopNow {
+            pass: true,
+            ticks: 3840,
+            origin: 0,
+        };
+        let mut now = [LoopNow::default(); LOOPS];
+        now[0] = pass;
+        assert!(h.loops_are(&now).is_empty(), "in its cells already");
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.command(Command::Play);
+        let to = pads.frame + BAR;
+        run(&mut h, &mut pads, to, &[]);
+        assert!(h.loop_plan().on[0]);
+        // Row 2's scene: loop 1 is in it too, so it never goes off.
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        while pads.frame < 3 * BAR {
+            let to = pads.frame + u64::from(PERIOD);
+            run(&mut h, &mut pads, to, &[]);
+            assert!(h.loop_plan().on[0], "off at {}", pads.frame);
+        }
+        let slot = h
+            .state()
+            .launches
+            .iter()
+            .find(|l| l.track == 8)
+            .map(|l| l.slot);
+        assert_eq!(slot, Some(1), "row 2's cell plays it");
+
+        // A copy onto Loops B row 3: Loop 4 there, off until launched.
+        let copy = |into| TimeAction::LoopCopy {
+            from: (8, 0),
+            to: (9, 2),
+            into,
+        };
+        assert!(h.act(copy(0)).is_err(), "loop 1 is in cells");
+        let bad = |from, to| TimeAction::LoopCopy { from, to, into: 3 };
+        assert!(h.act(bad((9, 0), (9, 2))).is_err(), "an empty cell");
+        assert!(h.act(bad((8, 0), (8, 2))).is_err(), "its own Loop track");
+        assert!(h.act(bad((8, 0), (0, 5))).is_err(), "a note track");
+        let said = h.act(copy(3)).unwrap();
+        assert!(
+            said.starts_with("clips: Loop 1 copies into Loop 4 on Loops B / 3"),
+            "{said}"
+        );
+        let cell = h.control.project.clip(9, 2).unwrap();
+        assert_eq!(
+            (cell.looped, cell.length, cell.name.as_str()),
+            (Some(3), 3840, "Loop 4")
+        );
+        assert!(!h.loop_plan().on[3], "off until launched");
+        assert!(h.act(copy(4)).unwrap_err().contains("has a loop"));
+        // Nothing went in: its cell goes.
+        let off = h.act(TimeAction::LoopCopyOff(3)).unwrap();
+        assert_eq!(off, "clips: Loop 4's copy stopped: its cell is empty");
+        assert!(h.control.project.clip(9, 2).is_none());
+        // Again, and its first layer goes in: the cell stays, as it is.
+        h.act(copy(3)).unwrap();
+        now[3] = pass;
+        assert!(h.loops_are(&now).is_empty(), "no landing: it has its cell");
+        assert_eq!(h.act(TimeAction::LoopCopyOff(3)).unwrap(), "");
+        assert_eq!(h.control.project.clip(9, 2).and_then(|c| c.looped), Some(3));
+        assert!(!h.loop_plan().on[3]);
+        h.act(TimeAction::Launch { track: 9, slot: 2 }).unwrap();
+        let to = pads.frame + BAR;
+        run(&mut h, &mut pads, to, &[]);
+        assert!(h.loop_plan().on[3] && h.loop_plan().on[0], "both play");
+        assert_eq!(h.control.project.check(), Ok(()));
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// SHIFT + "+ Track" adds an empty Loop track (UNDO takes it away), its
     /// sound line steps its input, and a tap on an empty cell of it arms
     /// that cell: the next loop recorded lands there, playing, and the

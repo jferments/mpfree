@@ -957,6 +957,9 @@ pub struct LooperView {
     pub history: History,
     /// Each loop's small wave, for its cells on the Clips grid.
     pub cell_waves: [CellWave; MAX_LOOPS],
+    /// The loop a whole loop copies into ([`LoopHost::copy_loop`]), until
+    /// every layer is in.
+    pub copy_into: Option<usize>,
 }
 
 impl Default for LooperView {
@@ -979,6 +982,7 @@ impl Default for LooperView {
             rate: 44_100,
             history: l.history(),
             cell_waves: [[0; CELL_WAVE]; MAX_LOOPS],
+            copy_into: None,
         }
     }
 }
@@ -1043,6 +1047,37 @@ pub struct LoopHost {
     /// Undo (below 0) or Redo (above 0) presses the undo history asked for
     /// that the command queue had no room for yet ([`LoopHost::steps`]).
     steps_left: i32,
+    /// A whole loop copying into an empty one ([`LoopHost::copy_loop`]),
+    /// and how the last one ended, until [`LoopHost::copy_ended`] takes it.
+    copy: Option<LoopCopy>,
+    copy_end: Option<CopyEnd>,
+}
+
+/// A whole loop copying into an empty one, a layer at a time
+/// ([`LoopHost::copy_loop`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LoopCopy {
+    from: usize,
+    to: usize,
+    /// The source's layers by id, in play order, and how many.
+    ids: [u8; MAX_LAYERS],
+    layers: usize,
+    /// Layers asked for so far.
+    asked: usize,
+    /// Periods since the last layer was asked for with nothing to show
+    /// for it (refused, or not started yet), and tries in all.
+    waited: u32,
+    tries: u32,
+}
+
+/// How a whole loop's copy ended ([`LoopHost::copy_ended`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CopyEnd {
+    pub from: usize,
+    pub to: usize,
+    /// Layers that went in, of how many.
+    pub layers: usize,
+    pub of: usize,
 }
 
 /// A save under way ([`LoopHost::save`]).
@@ -1347,6 +1382,8 @@ impl LoopHost {
             settle: 0,
             steps_left: 0,
             picked: 0,
+            copy: None,
+            copy_end: None,
         }
     }
 
@@ -2221,6 +2258,7 @@ impl LoopHost {
             self.printer.tend(&mut self.looper, span.bpm);
         }
         self.tend_save();
+        self.tend_copy();
         note
     }
 
@@ -2292,10 +2330,12 @@ impl LoopHost {
     /// why there is none, as REC says it. Less than a second of memory
     /// left is full: a first pass with no memory for it is thrown away.
     pub fn free_loop(&self) -> Result<usize, String> {
+        let copy = self.copy.map(|c| c.to);
         let empty = |n: usize| {
-            self.looper
-                .loop_status(n)
-                .is_some_and(|s| s.phase == Phase::Empty)
+            copy != Some(n)
+                && self.looper.loop_status(n).is_some_and(|s| {
+                    s.phase == Phase::Empty && s.copying.is_none() && s.loading.is_none()
+                })
         };
         let n = if empty(self.picked) {
             self.picked
@@ -2312,6 +2352,152 @@ impl LoopHost {
             );
         }
         Ok(n)
+    }
+
+    /// Copy loop `from` into `to`, an empty loop: every layer, with its
+    /// mix, and the loop's level (loop-tracks.md part 6, a loop cell
+    /// copied onto another Loop track). The copy is launched off, so it
+    /// stays silent until its cell is launched. The layers copy in one at
+    /// a time in the background while the loops play on
+    /// ([`Looper::copy_layer`], each a step the looper's UNDO takes
+    /// back); [`LoopHost::copy_ended`] says when it is all in or stopped.
+    /// Refused, saying why, while another copy runs, when `from` isn't
+    /// just playing, `to` isn't empty or the memory can't hold the
+    /// layers.
+    pub fn copy_loop(&mut self, from: usize, to: usize) -> Result<String, String> {
+        if let Some(c) = self.copy {
+            return Err(format!(
+                "Loop {} is still copying into Loop {}: wait for it to finish",
+                c.from + 1,
+                c.to + 1
+            ));
+        }
+        let (Some(a), Some(b)) = (self.looper.loop_status(from), self.looper.loop_status(to))
+        else {
+            return Err("No such loop".to_string());
+        };
+        let still = a.merging.is_none()
+            && a.fitting.is_none()
+            && a.loading.is_none()
+            && a.copying.is_none();
+        if from == to || a.phase != Phase::Playing || a.layers == 0 || !still {
+            return Err(format!(
+                "Loop {} can't be copied while it records or changes: try again when it just plays",
+                from + 1
+            ));
+        }
+        if b.phase != Phase::Empty || b.loading.is_some() || b.copying.is_some() {
+            return Err(format!("Loop {} isn't empty", to + 1));
+        }
+        let m = self.looper.memory();
+        let need = a.layers * a.frames + self.rate as usize;
+        if m.capacity.saturating_sub(m.used) < need {
+            return Err(format!(
+                "The loops' memory can't hold a copy of Loop {} ({} layer{}): clear a loop on the Looper tab first",
+                from + 1,
+                a.layers,
+                if a.layers == 1 { "" } else { "s" }
+            ));
+        }
+        let mut ids = [0u8; MAX_LAYERS];
+        let mut layers = 0;
+        for (k, id) in ids.iter_mut().enumerate().take(a.layers) {
+            if let Some(l) = self.looper.loop_layer_info(from, k) {
+                *id = l.id;
+                layers = k + 1;
+            }
+        }
+        if layers == 0 || self.looper.room() < 4 {
+            return Err(format!("Loop {} can't be copied now: try again", from + 1));
+        }
+        // Off until its cell is launched, at the source's level.
+        self.looper.launch(to, false, None);
+        self.looper.select_loop(to);
+        self.looper.command(Command::SetLevel(a.level));
+        self.looper.select_loop(self.picked);
+        self.copy = Some(LoopCopy {
+            from,
+            to,
+            ids,
+            layers,
+            asked: 0,
+            waited: 0,
+            tries: 0,
+        });
+        self.copy_end = None;
+        Ok(format!(
+            "looper: loop {} copies into loop {}, {} layer{}",
+            from + 1,
+            to + 1,
+            layers,
+            if layers == 1 { "" } else { "s" }
+        ))
+    }
+
+    /// The end of the last whole loop's copy, once: all its layers in, or
+    /// as many as went in before it stopped (none: the copy's loop is
+    /// empty, so its cells should go).
+    pub fn copy_ended(&mut self) -> Option<CopyEnd> {
+        self.copy_end.take()
+    }
+
+    /// One period of a whole loop's copy: once the last layer asked for
+    /// is in, the next is asked for. A layer that doesn't start (the
+    /// loops were busy or fading) is asked for again, for up to two
+    /// seconds; the copy stops then, or when its loop is cleared or
+    /// undone, or its source no longer plays. Allocates nothing.
+    fn tend_copy(&mut self) {
+        let Some(mut c) = self.copy else {
+            return;
+        };
+        let (Some(a), Some(b)) = (
+            self.looper.loop_status(c.from),
+            self.looper.loop_status(c.to),
+        ) else {
+            self.copy = None;
+            return;
+        };
+        let have = if b.phase == Phase::Empty { 0 } else { b.layers };
+        let ended = CopyEnd {
+            from: c.from,
+            to: c.to,
+            layers: have,
+            of: c.layers,
+        };
+        if b.copying.is_some() {
+            c.waited = 0;
+            self.copy = Some(c);
+            return;
+        }
+        // All in; or cleared or undone under it: it stops with what it has.
+        if have == c.layers || have + 1 < c.asked {
+            self.copy = None;
+            self.copy_end = Some(ended);
+            return;
+        }
+        if c.asked > have {
+            // Asked, but not started: it starts with the next period, or
+            // it was refused.
+            c.waited += 1;
+            if c.waited <= 2 {
+                self.copy = Some(c);
+                return;
+            }
+            c.asked = have;
+            c.tries += 1;
+        }
+        let limit = 2 * self.rate / PERIOD as u32;
+        let gone = a.phase != Phase::Playing || (b.phase != Phase::Empty && b.ticks != a.ticks);
+        if gone || c.tries > limit {
+            self.copy = None;
+            self.copy_end = Some(ended);
+            return;
+        }
+        if self.looper.room() > 0 && self.looper.copy_layer(c.from, c.ids[have], c.to, true) {
+            c.asked = have + 1;
+            c.waited = 0;
+        }
+        self.copy = Some(c);
     }
 
     /// What the picked loop is doing (armed, recording, overdubbing...).
@@ -2391,6 +2577,7 @@ impl LoopHost {
             rate: self.rate,
             history: self.looper.history(),
             cell_waves: self.cells.done,
+            copy_into: self.copy.map(|c| c.to),
         }
     }
 
@@ -2725,6 +2912,115 @@ mod tests {
             h.free_loop().unwrap_err(),
             "The loops' memory is full: clear a loop on the Looper tab to record another",
             "{m:?}"
+        );
+    }
+
+    /// A loop cell copied onto another Loop track (loop-tracks.md part 6):
+    /// every layer of the loop copies into an empty one, a layer at a
+    /// time, with the loop's level, off until launched; the copy's loop
+    /// isn't free meanwhile, and a busy or full looper says why.
+    #[test]
+    fn a_whole_loop_copies_into_an_empty_one_a_layer_at_a_time() {
+        let mut h = LoopHost::new(44_100, 20);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, until: &dyn Fn(&LoopHost) -> bool| {
+            for _ in 0..4000 {
+                if until(h) {
+                    return;
+                }
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.1; PERIOD], [0.1; PERIOD]);
+                h.take_pads(&l, &r);
+                h.period(&b, &mut l, &mut r);
+            }
+            panic!("never: {:?}", h.looper.loop_status(3));
+        };
+        let st = |h: &LoopHost, n: usize| h.looper.loop_status(n).unwrap();
+        // Loop 1: a first pass and an overdub, at half level.
+        h.command(Command::Record);
+        run(&mut h, &|h| st(h, 0).phase == Phase::Playing);
+        h.command(Command::Overdub);
+        run(&mut h, &|h| st(h, 0).phase == Phase::Overdubbing);
+        run(&mut h, &|h| st(h, 0).position > 0.9);
+        h.command(Command::Overdub);
+        run(&mut h, &|h| {
+            st(h, 0).phase == Phase::Playing && st(h, 0).layers == 2
+        });
+        h.command(Command::SetLevel(0.5));
+        run(&mut h, &|h| st(h, 0).level == 0.5);
+
+        // Refused: an empty source.
+        assert!(h.copy_loop(5, 3).unwrap_err().contains("can't be copied"));
+
+        assert_eq!(
+            h.copy_loop(0, 3),
+            Ok("looper: loop 1 copies into loop 4, 2 layers".to_string())
+        );
+        assert_eq!(
+            h.copy_loop(0, 5).unwrap_err(),
+            "Loop 1 is still copying into Loop 4: wait for it to finish"
+        );
+        assert_eq!(h.view(120.0).copy_into, Some(3));
+        h.select(3);
+        assert_eq!(h.free_loop(), Ok(1), "not the copy's loop, though picked");
+        h.select(0);
+        run(&mut h, &|h| h.copy_end.is_some());
+        assert_eq!(
+            h.copy_ended(),
+            Some(CopyEnd {
+                from: 0,
+                to: 3,
+                layers: 2,
+                of: 2
+            })
+        );
+        assert_eq!(h.copy_ended(), None, "once");
+        let (a, c) = (st(&h, 0), st(&h, 3));
+        assert_eq!(
+            (c.phase, c.layers, c.ticks, c.frames),
+            (Phase::Playing, 2, a.ticks, a.frames)
+        );
+        assert_eq!(
+            (c.on, c.level),
+            (false, 0.5),
+            "silent until its cell is launched"
+        );
+        assert_eq!(h.view(120.0).copy_into, None);
+        assert_eq!(h.copy_loop(0, 3).unwrap_err(), "Loop 4 isn't empty");
+        for k in 0..2 {
+            let (x, y) = (
+                h.looper.loop_layer_info(0, k).unwrap(),
+                h.looper.loop_layer_info(3, k).unwrap(),
+            );
+            assert_eq!((x.level, x.pan, x.muted), (y.level, y.pan, y.muted));
+        }
+
+        // The memory can't hold another copy and a second's room.
+        let mut h = LoopHost::new(44_100, 3);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        t.command(0, T::Play);
+        h.command(Command::Record);
+        for _ in 0..4000 {
+            if st(&h, 0).phase == Phase::Playing {
+                break;
+            }
+            assert!(t.process(PERIOD as u32, &mut b));
+            let (mut l, mut r) = ([0.1; PERIOD], [0.1; PERIOD]);
+            h.take_pads(&l, &r);
+            h.period(&b, &mut l, &mut r);
+        }
+        assert!(
+            h.copy_loop(0, 1)
+                .unwrap_err()
+                .starts_with("The loops' memory can't hold a copy of Loop 1 (1 layer)"),
+            "{:?}",
+            h.looper.memory()
         );
     }
 

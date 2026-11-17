@@ -147,7 +147,10 @@ Every loop you record also shows on the **Arrange** tab's Clips grid, on a **Loo
 - **A loop that isn't playing keeps its place** in the song: launch it again and it comes back in step.
 - **Clear** a loop, or undo its first pass, and its cell empties (Redo of the first pass puts it back). **½ length**, **× 2** and **Trim** change the cell's length with the loop's.
 - **A Loop track past the first 8 tracks** is on the grid's next page: tap **›** over the grid, or **Show in Clips** on the Looper tab (see below).
-- **The pads never play a Loop track.** Picking one keeps the pads on the track they were on; a tap on an empty Loop cell records a loop there instead (below). Drag a loop's cell to another row or another Loop track, or SHIFT-drop a copy into another row of its own Loop track (both rows play the same loop). Loops stay on Loop tracks, and clips on the other tracks.
+- **The pads never play a Loop track.** Picking one keeps the pads on the track they were on; a tap on an empty Loop cell records a loop there instead (below). Drag a loop's cell to another row or another Loop track. Loops stay on Loop tracks, and clips on the other tracks.
+- **Copy a loop's cell** by holding **SHIFT** as you lift it:
+  - **Into another row of its own Loop track**, both rows play the same loop. A scene change from one of those rows to the other keeps the loop playing without a break.
+  - **Onto an empty cell of another Loop track**, it becomes a new loop with a copy of every layer and its mix. The cell says **copying in** for a moment, then shows the wave. The copy stays quiet until you tap its cell, so you can change it on the Looper tab while the first one plays. It takes one of the eight loops and room in the loop memory, and says so when there isn't any. **UNDO** on the Looper tab, with the copy picked, takes its layers back; once they are all gone, its cell empties.
 
 A project saved before Loop tracks opens with each of its loops on a Loop track of its own, in row 1, all playing as they did. A project saved with Loop tracks opens with nothing launched, as its clips do: tap a loop's cell, or its scene, to play it.
 

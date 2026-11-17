@@ -218,6 +218,9 @@ pub struct ClipInfo {
 pub struct LoopFacts {
     /// It records a layer now.
     pub overdubbing: bool,
+    /// Another loop's layers copy into it (a loop cell copied onto
+    /// another Loop track, loop-tracks.md part 6).
+    pub copying: bool,
     /// Its small wave for the cells ([`crate::widgets::GridCell::wave`]).
     pub wave: [u8; crate::widgets::CELL_WAVE],
 }
@@ -683,6 +686,18 @@ pub enum TimeAction {
     /// A Loop track's input to the next one (Pads, Line in, Resample):
     /// what a loop recorded into its cells records.
     LoopInput(usize),
+    /// A loop cell copied onto an empty cell of another Loop track
+    /// (loop-tracks.md part 6): the cell there takes loop `into`, an empty
+    /// loop the looper copies the audio into. Not a take: the looper's
+    /// UNDO takes the copy back, and its cell goes with it. The app sends
+    /// it for SHIFT + a drop onto another Loop track.
+    LoopCopy {
+        from: (usize, usize),
+        to: (usize, usize),
+        into: u8,
+    },
+    /// Loop `n`'s copy stopped before any of it went in: its cells empty.
+    LoopCopyOff(u8),
     /// Chip `i` on the bar was tapped.
     Chip(usize),
     /// Keep what was just played (CAPTURE): into the armed track's playing
@@ -1561,6 +1576,9 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         progress: 0.0,
         wave: facts.map(|f| f.wave),
     };
+    if facts.is_some_and(|f| f.copying) {
+        cell.foot = "copying in".to_string();
+    }
     let cue = st.cue(track);
     if cue.is_some_and(|c| c.slot == Some(slot)) {
         cell.state = CellState::Queued;
@@ -2358,6 +2376,10 @@ mod tests {
             (CellState::Stopped, "2 bars", "")
         );
         assert_eq!(stopped.wave, Some([0; crate::widgets::CELL_WAVE]));
+        // A copy's layers copying in (part 6): its foot says so.
+        st.loops.loops[0].copying = true;
+        assert_eq!(cell_of(&st, 3, 0).foot, "copying in");
+        st.loops.loops[0].copying = false;
         let playing = cell_of(&st, 4, 1);
         assert_eq!(playing.state, CellState::Playing);
         assert_eq!(playing.wave, Some([200; crate::widgets::CELL_WAVE]));

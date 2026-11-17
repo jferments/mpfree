@@ -1575,6 +1575,58 @@ impl TimeControl {
                     s + 1
                 ))
             }
+            TimeAction::LoopCopy { from, to, into } => {
+                let n = usize::from(into);
+                let name = |p: &Project, (t, s): (usize, usize)| {
+                    let track = p.tracks.get(t).map_or("", |t| t.name.as_str());
+                    format!("{track} / {}", s + 1)
+                };
+                let clip = self
+                    .project
+                    .clip(from.0, from.1)
+                    .filter(|c| c.looped.is_some())
+                    .ok_or_else(|| format!("clips: {} holds no loop", name(&self.project, from)))?;
+                let (len, was) = (clip.length, clip.name.clone());
+                let there = self
+                    .project
+                    .tracks
+                    .get(to.0)
+                    .filter(|tr| tr.is_loops() && to.0 != from.0)
+                    .and_then(|tr| tr.slots.get(to.1))
+                    .ok_or("clips: a loop's copy onto another Loop track goes in a cell of it")?;
+                if there.is_some() {
+                    return Err(format!(
+                        "clips: {} has a loop; a copy goes in an empty cell",
+                        name(&self.project, to)
+                    ));
+                }
+                if n >= LOOPS || loops::in_cell(&self.project, into) || self.loops_seen[n].pass {
+                    return Err(format!("clips: loop {} isn't free for a copy", n + 1));
+                }
+                self.project.tracks[to.0].slots[to.1] = Some(Clip::new_loop(into, len));
+                self.compile()?;
+                Ok(format!(
+                    "clips: {was} copies into Loop {} on {}: launch it to hear it (the looper's UNDO takes it back)",
+                    n + 1,
+                    name(&self.project, to)
+                ))
+            }
+            TimeAction::LoopCopyOff(into) => {
+                // Only while nothing of the copy went in: a loop with a
+                // pass keeps its cells (its clear empties them).
+                let n = usize::from(into);
+                if n < LOOPS
+                    && !self.loops_seen[n].pass
+                    && loops::remove(&mut self.project, into) > 0
+                {
+                    self.compile()?;
+                    return Ok(format!(
+                        "clips: Loop {}'s copy stopped: its cell is empty",
+                        n + 1
+                    ));
+                }
+                Ok(String::new())
+            }
             TimeAction::LoopInput(t) => {
                 let tr = self
                     .project

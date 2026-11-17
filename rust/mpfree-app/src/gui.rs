@@ -595,8 +595,15 @@ fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
 fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo {
     use mpfree_looper::Phase;
     let mut info = mpfree_time_ui::view::LoopsInfo::default();
-    for ((f, s), w) in info.loops.iter_mut().zip(&v.loops).zip(&v.cell_waves) {
+    for (n, ((f, s), w)) in info
+        .loops
+        .iter_mut()
+        .zip(&v.loops)
+        .zip(&v.cell_waves)
+        .enumerate()
+    {
         f.overdubbing = s.phase == Phase::Overdubbing;
+        f.copying = v.copy_into == Some(n) || s.copying.is_some();
         f.wave = *w;
     }
     info.in_use = v.loops.iter().filter(|s| s.phase != Phase::Empty).count();
