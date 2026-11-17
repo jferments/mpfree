@@ -93,7 +93,7 @@ pub const CLIPS_CARD_LAYOUT: &str =
 pub const SONG_CARD_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(clip-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 pub const CLIPS_HINT: &str =
-    "Tap a clip: it plays from the next bar, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
+    "Tap a clip: it plays from the next Launch line, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
 /// The hint line under the Clips grid with the Record panel's Clip tab.
 pub const CLIPS_CARD_HINT: &str =
     "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   SHIFT + ‹ ›: Length and Speed halve or double   ·   COPY + a clip, then an empty slot: a copy";
@@ -457,7 +457,8 @@ pub struct TimeState {
     /// The looper's loops, for the Loop tracks' cells. The app sets them.
     pub loops: LoopsInfo,
     pub launches: Vec<Launch>,
-    /// Launches and stops waiting for the next bar line. The app sets them.
+    /// Launches and stops waiting for their launch line (the next bar line
+    /// by default). The app sets them.
     pub cues: Vec<Cue>,
     pub armed: Option<usize>,
     /// The clip COPY + a clip copied last, by its name, for COPY + an
@@ -2681,7 +2682,7 @@ impl TimePage {
                 (self.first_row + rows).min(SLOTS)
             )
         };
-        let legend = "ring: one pass   ·   amber: next bar   ·   red: recording".to_string();
+        let legend = "ring: one pass   ·   amber: waiting   ·   red: recording".to_string();
         let can_add = st.tracks.len() < MAX_TRACKS;
         let same_grid = ui.get::<ClipGrid>(CLIPS).is_some_and(|g| {
             g.tracks == tracks
