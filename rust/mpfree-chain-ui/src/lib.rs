@@ -146,6 +146,24 @@ pub fn chain_hold(ui: &mut Ui) -> bool {
         .is_some_and(|v| v.hold_tick())
 }
 
+/// The parameter the control `t` on `widget` sets, for SHIFT + a touch's
+/// MIDI Learn: a knob, fader, slider or drawbar on the chain editor (its
+/// effect's parameter, unless it only shows a reading), or a macro's knob
+/// on the macros panel; else None.
+pub fn param_of(ui: &Ui, widget: &str, t: &mpfree_ui::Target) -> Option<mpfree_param::ParamAddr> {
+    match (widget, t.id) {
+        (CHAIN, "knob" | "fader" | "slider" | "drawbar") => {
+            let v = ui.get::<ChainView>(CHAIN)?;
+            let p = v.state().params.get(t.index)?;
+            (!p.info.readonly).then_some(p.addr)
+        }
+        (MACROS_W, "knob") => u8::try_from(t.index)
+            .ok()
+            .map(mpfree_param::ParamAddr::macro_value),
+        _ => None,
+    }
+}
+
 /// The effect picker is open.
 pub fn chain_picking(ui: &Ui) -> bool {
     ui.get::<ChainView>(CHAIN)

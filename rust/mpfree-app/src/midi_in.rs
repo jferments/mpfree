@@ -218,6 +218,18 @@ struct Seen {
     messages: u64,
 }
 
+/// Who armed MIDI Learn ([`MusicIn::arm_from`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmedBy {
+    /// The chain editor's Learn: it ends when the editor closes.
+    Chain,
+    /// The I/O view's Learn again: until a control takes it or Cancel.
+    Io,
+    /// SHIFT + a touch on a value: until a control takes it, the same
+    /// value again, or the Learn section's Cancel.
+    Touch,
+}
+
 pub struct MusicIn {
     router: InputRouter,
     ports: Ports,
@@ -248,8 +260,8 @@ pub struct MusicIn {
     /// over). Learn armed from the I/O view stays armed until a control
     /// takes it or Cancel; the chain editor's ends when the editor does.
     relearn: Option<(Kept, Saved)>,
-    /// Learn was armed from the I/O view (Learn again).
-    armed_by_io: bool,
+    /// Who armed Learn, which says how long it waits.
+    armed_by: ArmedBy,
     /// Switches of mode whose learned controls follow their parameters,
     /// not yet in the project (the screen held it).
     moved: Vec<crate::fxmodes::Landed>,
@@ -320,7 +332,7 @@ impl MusicIn {
             learning: Vec::new(),
             unsaved: Vec::new(),
             relearn: None,
-            armed_by_io: false,
+            armed_by: ArmedBy::Chain,
             moved: Vec::new(),
             unkept: 0,
             // The song's and the rig's.
@@ -416,23 +428,35 @@ impl MusicIn {
     }
 
     /// MIDI Learn: the next press or move on a port that learns takes
-    /// `target`.
+    /// `target`, for the chain editor's Learn (it ends with the editor).
     pub fn arm(&mut self, target: ParamAddr) {
+        self.arm_from(target, ArmedBy::Chain);
+    }
+
+    /// MIDI Learn armed by `by`: the next press or move on a port that
+    /// learns takes `target`.
+    pub fn arm_from(&mut self, target: ParamAddr, by: ArmedBy) {
         self.learn.arm(target);
-        self.armed_by_io = false;
+        self.armed_by = by;
         self.relearn = None;
     }
 
     pub fn disarm(&mut self) {
         self.learn.disarm();
-        self.armed_by_io = false;
+        self.armed_by = ArmedBy::Chain;
         self.relearn = None;
     }
 
-    /// Learn was armed from the I/O view (its Learn again), not the chain
-    /// editor: it stays armed until a control takes it or Cancel.
-    pub fn armed_by_io(&self) -> bool {
-        self.armed_by_io && self.learn.armed().is_some()
+    /// Who armed the Learn waiting now; None when none is.
+    pub fn armed_by(&self) -> Option<ArmedBy> {
+        self.learn.armed().map(|_| self.armed_by)
+    }
+
+    /// Learn waits until a control takes it or it is cancelled: armed from
+    /// the I/O view (Learn again) or by SHIFT + a touch, not the chain
+    /// editor.
+    pub fn waits(&self) -> bool {
+        self.armed_by().is_some_and(|b| b != ArmedBy::Chain)
     }
 
     pub fn armed(&self) -> Option<ParamAddr> {
@@ -559,7 +583,7 @@ impl MusicIn {
                     self.unkept += 1;
                 }
             }
-            self.armed_by_io = false;
+            self.armed_by = ArmedBy::Chain;
             m.gen += 1;
         }
         // The Learn section's Learn again and Cancel.
@@ -567,7 +591,7 @@ impl MusicIn {
             if let Some((kept, l)) = m.setup.learned_at(k) {
                 self.learn.arm(l.target);
                 self.relearn = Some((kept, l.clone()));
-                self.armed_by_io = true;
+                self.armed_by = ArmedBy::Io;
             }
         }
         if std::mem::take(&mut m.asks.cancel_learn) {
@@ -1928,7 +1952,7 @@ mod tests {
         s.lock().unwrap().asks.learn_again = Some(0);
         m.sync(&s, 0.1);
         assert_eq!(m.armed(), Some(cutoff()));
-        assert!(m.armed_by_io());
+        assert!(m.waits());
         s.lock().unwrap().asks.cancel_learn = true;
         m.sync(&s, 0.2);
         assert_eq!(m.armed(), None);
@@ -1951,7 +1975,7 @@ mod tests {
             assert_eq!(new.source, mpfree_midi::learn::Source::Cc(21));
             assert_eq!((new.lo, new.hi, new.takeover), (0.2, 0.8, Takeover::Pickup));
         }
-        assert!(!m.armed_by_io());
+        assert!(!m.waits());
         // The song's own mapping for CC 21 wins over the rig's.
         let mut song = s.lock().unwrap().setup.rig_learn[0].clone();
         song.target = "t2.inst.3".parse().unwrap();
@@ -1964,6 +1988,39 @@ mod tests {
             matches!(set[..], [Learning::Set(w)] if w.target.to_string() == "t2.inst.3"),
             "{set:?}"
         );
+    }
+
+    /// SHIFT + a touch arms Learn until a control takes it: a synth's
+    /// knob, learned into the song, then moved by the control.
+    #[test]
+    fn a_touch_arms_learn_until_a_control_takes_it() {
+        let mut m = MusicIn::new();
+        let usb = m.plugged("Keystep 37").unwrap();
+        let s = model();
+        m.sync(&s, 0.0);
+        let knob: ParamAddr = "t2.inst.3".parse().unwrap();
+        m.arm_from(knob, ArmedBy::Touch);
+        assert_eq!(m.armed_by(), Some(ArmedBy::Touch));
+        assert!(m.waits(), "it waits, with no chain editor open");
+        run(&mut m, usb, &[0xB0, 71, 30]);
+        assert!(matches!(
+            m.learning().collect::<Vec<_>>()[..],
+            [Learning::Took { target, .. }] if target == knob
+        ));
+        m.sync(&s, 0.1);
+        assert_eq!(m.armed_by(), None);
+        assert!(!m.waits());
+        assert_eq!(s.lock().unwrap().setup.learn.len(), 1);
+        assert_eq!(s.lock().unwrap().setup.learn[0].target, knob);
+        run(&mut m, usb, &[0xB0, 71, 127]);
+        assert!(matches!(
+            m.learning().collect::<Vec<_>>()[..],
+            [Learning::Set(w)] if w.target == knob && w.value == 1.0
+        ));
+        // The chain editor's Learn doesn't wait.
+        m.arm(cutoff());
+        assert_eq!(m.armed_by(), Some(ArmedBy::Chain));
+        assert!(!m.waits());
     }
 
     /// A switch of mode moves a control learned on the insert to the new
