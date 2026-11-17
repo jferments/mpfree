@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-16 873e19d
 -->
 
 # Recording loops
@@ -14,7 +14,7 @@ You perform a loop on the Play page (the looper strip in the All view, or the bi
 
 The looper is part of the song, not a separate machine running beside it:
 
-- **It starts and ends on bar lines.** Press Record and the loop waits for the next bar line; it stops after the number of bars you set. So the loop is always a whole number of bars, and always in time with your patterns.
+- **It starts and ends on bar lines.** Press Record and the loop waits for the next bar line, then records until you press Record again, when it ends on the next bar line. Press **STOP** instead and it stops at once and keeps what you played: the loop runs on to the next bar line, silent after the stop (if you press STOP just after a bar line, within a sixteenth note, it ends on that bar line instead). With a set length (**First pass**, below) it ends by itself after that many bars. So the loop is always a whole number of bars, and always in time with your patterns.
 - **It follows the song's position.** Stop and start the transport and the loop picks up exactly where the song is. It is silent while the transport is stopped, and its playhead stops too, at the place the song will start from again (press STOP twice and it goes back to the start of the loop, with the song).
 - **The tempo is the song's tempo.** Change the tempo and a playing loop follows it and keeps its pitch. MPFree re-makes the loop at the new tempo in the background, which takes a fraction of a second; until it is ready, the loop plays faster or slower, like tape. Overdub over a loop at its new tempo and MPFree first fits the loop to that tempo, so the new layer lines up. The fit is its own step: UNDO takes back the overdub, then the fit.
 - **There are no clicks.** The end of the loop is blended into its start, and every start, stop, punch in and out, mute and undo is faded in a few milliseconds.
@@ -33,14 +33,14 @@ These are on the Play page's Loop view. The MPC's own **REC**, **OVERDUB** and *
 
 | Button | Empty loop | Recording the first pass | Playing |
 |---|---|---|---|
-| **Record** | Waits for the next bar line, then records. Press again before it starts to cancel. | With a free length: ends the loop on the next bar line. | Starts an overdub. |
+| **Record** | Waits for the next bar line (or, stopped, for PLAY), then records. Press again before it starts to cancel. | Ends the loop on the next bar line. | Starts an overdub. |
 | **Overdub** | Nothing. | Goes straight on into an overdub when the first pass ends. | Starts an overdub; press again to stop adding. |
 | **Undo** | Nothing. | Throws the recording away. | Removes the newest layer (or the overdub in progress). |
 | **Redo** | Nothing. | Nothing. | Brings back the last layer undone. |
 | **Clear** | | | Deletes the whole loop, so you can start again. |
 | **Mute** | | | Silences the loop without losing it. Press again to hear it. |
 
-Stopping the transport while you overdub ends the overdub. With the transport stopped, Record or Overdub on a loop that has something in it waits for **PLAY**, with OVERDUB and PLAY blinking; **STOP** then lets go of it (and of a loop armed with Record), so nothing is left blinking.
+**STOP** while the first pass records stops it at once and keeps what you played, up to the next bar line, so a loop is never lost. Stopping the transport while you overdub ends the overdub. With the transport stopped, Record or Overdub on a loop that has something in it waits for **PLAY**, with OVERDUB and PLAY blinking; **STOP** then lets go of it (and of a loop armed with Record), so nothing is left blinking.
 
 ## The Looper tab
 
@@ -102,12 +102,14 @@ The panel at the bottom left holds how the looper records. The Play page's loope
 
 | Setting | What it does |
 |---|---|
-| **Record from** | **Pads and synth**: MPFree's own sound, before the metronome and the loops themselves. **Line input**: the INPUTS on the back of the MPC. |
-| **First pass** | 1, 2, 4 or 8 bars, or **free**: from the next bar line until the bar line after you press Record again. |
+| **Record from** | **Pads and synth**: MPFree's own sound as you hear it, with the effects on its tracks and the echoes and reverbs of the sends. It leaves out the loops, the audio tracks, the line input and the metronome, and the master's own effects and Level, which the loop plays through anyway. **Line input**: the INPUTS on the back of the MPC. |
+| **First pass** | **free** (the default): from the next bar line until you press Record again (it ends on the next bar line) or STOP (it stops at once). Or 1, 2, 4 or 8 bars. |
 | **Line input** | Opens the line input. It is off every time MPFree starts. |
 | **Input peak** | How loud the input has been. |
 | **Monitor** | Hear the line input through the outputs, about 9 ms late. Leave it off if you already hear your instrument another way, such as through a mixer. |
 | **Latency** | How late your playing reaches the looper (see below). |
+
+Two things to know about recording the pads with their effects. The loop's own echo is recorded too if you turn up the **Looper**'s Delay send on the Play page, since that echo is part of the mix. And if you send the Loop or Audio track (or the line input) to a submix in the mixer, the looper can't leave it out of the mix, so it records the pads and the synth without their effects until that track goes back to the master.
 
 **After recording** sets what the loop does when its first pass ends: **play**, or go straight into **overdub**. **Start** (next bar line) shows how the looper works today and can't be changed yet. **At another tempo** still reads "like tape" in this build, but loops keep their pitch, as described above.
 

@@ -457,9 +457,10 @@ pub struct ChopTab {
     /// keygroups of a note each, the pads then playing those notes; or the
     /// pads and a phrase of them in time.
     put: Put,
-    /// The source and region the cuts were made for: another pad, or a
-    /// moved Start or End, chops again.
-    made_for: Option<(SourceId, u64, u64)>,
+    /// The source and region the cuts were made for, and whether the
+    /// source's hits and tempo were worked out then: another pad, a moved
+    /// Start or End, or the analysis coming in chops again.
+    made_for: Option<(SourceId, u64, u64, bool)>,
     shown: Option<SourceId>,
     wave_w: i32,
 }
@@ -672,13 +673,19 @@ impl ChopTab {
         }
     }
 
-    /// Shows `st`, chopping again if it is another pad or region.
+    /// Shows `st`, chopping again if it is another pad or region, or once
+    /// the sound's hits and tempo are worked out.
     pub fn update(&mut self, ui: &mut Ui, st: &ChopState) {
-        let key = (st.source.id, st.region.start, st.region.end);
+        let key = (
+            st.source.id,
+            st.region.start,
+            st.region.end,
+            st.source.ready,
+        );
         if self.made_for != Some(key) {
             let same_source = self.made_for.is_some_and(|k| k.0 == key.0);
             self.made_for = Some(key);
-            if self.method == Method::Beat && st.frames_per_beat().is_none() {
+            if self.method == Method::Beat && st.frames_per_beat().is_none() && st.source.ready {
                 self.method = Method::Transient;
             }
             if self.live.take().is_some() {

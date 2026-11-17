@@ -17,17 +17,21 @@
 //! download to [`HELPER`], a small program linked dynamically against the
 //! MPC's glibc (built with `cargo zigbuild` for glibc 2.34) and installed
 //! beside it, which runs this same code ([`fetch_here`]) and reports on its
-//! standard output ([`helper_main`]).
+//! standard output ([`helper_main`]). The check of libcurl's OpenSSL
+//! ([`tls`]) runs in the helper too: it starts with libcurl in every
+//! download, and `mpfree-fetch --tls` reports it for the Plugins place's
+//! first line ([`tls_through_helper`]).
 //!
 //! Only `https://` addresses on the catalog's own hosts are fetched, and
 //! redirects may only go to HTTPS.
 
-use std::ffi::{c_char, c_int, c_long, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 /// The download helper's file name, beside the program that uses it
 /// (`/etc/mpfree-test/mpfree-fetch` on the stick).
@@ -89,6 +93,8 @@ struct Curl {
     perform: unsafe extern "C" fn(*mut c_void) -> c_int,
     cleanup: unsafe extern "C" fn(*mut c_void),
     strerror: unsafe extern "C" fn(c_int) -> *const c_char,
+    /// What [`check_tls`] said once libcurl had started.
+    tls: String,
 }
 
 fn curl() -> Result<&'static Curl, String> {
@@ -130,6 +136,7 @@ fn curl() -> Result<&'static Curl, String> {
             strerror: std::mem::transmute::<P, unsafe extern "C" fn(c_int) -> *const c_char>(sym(
                 c"curl_easy_strerror",
             )?),
+            tls: check_tls(),
         })
     })
     .as_ref()
@@ -160,6 +167,187 @@ pub fn means() -> &'static str {
 fn helper() -> Option<PathBuf> {
     let p = std::env::current_exe().ok()?.with_file_name(HELPER);
     p.is_file().then_some(p)
+}
+
+/// What libcurl's TLS library said as it started, for the log: for example
+/// "OpenSSL 3.0.13 ready". None without libcurl. A static program never
+/// opens libcurl, so it asks the helper beside it, once
+/// ([`tls_through_helper`]); None without the helper.
+pub fn tls() -> Option<String> {
+    if STATIC {
+        static ASKED: OnceLock<Option<String>> = OnceLock::new();
+        return ASKED
+            .get_or_init(|| helper().map(|h| tls_through_helper(&h, TLS_WAIT)))
+            .clone();
+    }
+    curl().ok().map(|c| c.tls.clone())
+}
+
+/// How long the helper may take to start libcurl and say what its OpenSSL
+/// said.
+pub const TLS_WAIT: Duration = Duration::from_secs(10);
+
+/// Asks the helper at `helper` what its libcurl's OpenSSL said as it
+/// started (`mpfree-fetch --tls`, which downloads nothing): its account, as
+/// [`tls`] gives it in a dynamic program, or "TLS not checked: " and why
+/// (the helper's own reason, it gave no answer within `wait`, or it
+/// stopped). A helper still running after `wait` is stopped.
+pub fn tls_through_helper(helper: &Path, wait: Duration) -> String {
+    let mut child = match Command::new(helper)
+        .arg("--tls")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("TLS not checked: {}: {e}", helper.display()),
+    };
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Ok(s),
+            Ok(None) if start.elapsed() < wait => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return format!(
+                    "TLS not checked: {HELPER} gave no answer in {} s",
+                    wait.as_secs_f32()
+                );
+            }
+            Err(e) => break Err(e),
+        }
+    };
+    // One short line: it fits the pipe, so the helper never waited on it.
+    let mut text = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+    }
+    for line in text.lines() {
+        if let Some(account) = line.strip_prefix("tls ") {
+            return account.to_string();
+        }
+        if let Some(why) = line.strip_prefix("failed ") {
+            return format!("TLS not checked: {why}");
+        }
+    }
+    match status {
+        Ok(s) => format!("TLS not checked: {HELPER} stopped ({s})"),
+        Err(e) => format!("TLS not checked: {HELPER}: {e}"),
+    }
+}
+
+// OpenSSL's numbers (openssl/crypto.h).
+const OPENSSL_VERSION: c_int = 0;
+const OPENSSL_INFO_CONFIG_DIR: c_int = 1001;
+const OPENSSL_INFO_SEED_SOURCE: c_int = 1007;
+
+/// Checks that libcurl's OpenSSL can make random numbers, which TLS needs
+/// before it sends anything; without them libcurl says only "Insufficient
+/// randomness". The usual cause is a system `openssl.cnf` that turns on a
+/// provider (the legacy one, say) but not the default one, which then never
+/// loads: OpenSSL then has no random number generator at all. This loads the
+/// default provider then, as OpenSSL does itself when a config turns on
+/// none. For any other cause it says what OpenSSL said, where it seeds from
+/// and whether the kernel gives this process random bytes. Only reads.
+fn check_tls() -> String {
+    unsafe {
+        // libcurl has opened it already: RTLD_NOLOAD finds that copy and
+        // never opens another.
+        let h = libc::dlopen(
+            c"libcrypto.so.3".as_ptr(),
+            libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_NOLOAD,
+        );
+        if h.is_null() {
+            return "TLS not through OpenSSL 3".into();
+        }
+        let sym = |n: &CStr| {
+            let p = libc::dlsym(h, n.as_ptr());
+            (!p.is_null()).then_some(p)
+        };
+        type P = *mut c_void;
+        let (
+            Some(version),
+            Some(info),
+            Some(status),
+            Some(get_error),
+            Some(error_string),
+            Some(load),
+        ) = (
+            sym(c"OpenSSL_version"),
+            sym(c"OPENSSL_info"),
+            sym(c"RAND_status"),
+            sym(c"ERR_get_error"),
+            sym(c"ERR_error_string_n"),
+            sym(c"OSSL_PROVIDER_load"),
+        )
+        else {
+            return "OpenSSL 3 without the functions MPFree checks it with".into();
+        };
+        let version =
+            std::mem::transmute::<P, unsafe extern "C" fn(c_int) -> *const c_char>(version);
+        let info = std::mem::transmute::<P, unsafe extern "C" fn(c_int) -> *const c_char>(info);
+        let status = std::mem::transmute::<P, unsafe extern "C" fn() -> c_int>(status);
+        let get_error = std::mem::transmute::<P, unsafe extern "C" fn() -> c_ulong>(get_error);
+        let error_string = std::mem::transmute::<
+            P,
+            unsafe extern "C" fn(c_ulong, *mut c_char, usize),
+        >(error_string);
+        let load = std::mem::transmute::<P, unsafe extern "C" fn(P, *const c_char) -> P>(load);
+        let text = |p: *const c_char| {
+            if p.is_null() {
+                "?".to_string()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
+        };
+        // OpenSSL's errors on this thread, oldest first, at most 4.
+        let errors = || {
+            let mut said = Vec::new();
+            loop {
+                let e = get_error();
+                if e == 0 {
+                    break;
+                }
+                if said.len() < 4 {
+                    let mut b = [0 as c_char; 256];
+                    error_string(e, b.as_mut_ptr(), b.len());
+                    said.push(text(b.as_ptr()));
+                }
+            }
+            if said.is_empty() {
+                "no error said".to_string()
+            } else {
+                said.join("; ")
+            }
+        };
+        let name = text(version(OPENSSL_VERSION));
+        let name = name.split(' ').take(2).collect::<Vec<_>>().join(" ");
+        errors();
+        if status() == 1 {
+            return format!("{name} ready");
+        }
+        let first = errors();
+        if !load(std::ptr::null_mut(), c"default".as_ptr()).is_null() && status() == 1 {
+            return format!(
+                "{name} ready (its random numbers didn't start: {first}; MPFree loaded its default provider)"
+            );
+        }
+        let then = errors();
+        let mut b = [0u8; 16];
+        let kernel =
+            match libc::getrandom(b.as_mut_ptr() as *mut c_void, b.len(), libc::GRND_NONBLOCK) {
+                16 => "works".to_string(),
+                n => format!("gave {n} ({})", std::io::Error::last_os_error()),
+            };
+        format!(
+            "{name} not ready: its random numbers can't start ({first}; with its default provider: {then}); \
+             it seeds from {}, its config is in {}, the kernel's getrandom {kernel}",
+            text(info(OPENSSL_INFO_SEED_SOURCE)),
+            text(info(OPENSSL_INFO_CONFIG_DIR)),
+        )
+    }
 }
 
 struct Sink<'a> {
@@ -237,6 +425,11 @@ pub fn fetch_here(
 /// (the program that started it went), it stops the download.
 pub fn helper_main(args: &[String]) -> i32 {
     let mut stdout = std::io::stdout();
+    if let [flag] = args {
+        if flag == "--tls" {
+            return helper_tls(&mut stdout);
+        }
+    }
     let (url, out, max) = match args {
         [url, out, max] => match max.parse::<u64>() {
             Ok(max) => (url, Path::new(out), max),
@@ -246,7 +439,10 @@ pub fn helper_main(args: &[String]) -> i32 {
             }
         },
         _ => {
-            let _ = writeln!(stdout, "failed usage: {HELPER} URL OUT MAX");
+            let _ = writeln!(
+                stdout,
+                "failed usage: {HELPER} URL OUT MAX, or {HELPER} --tls"
+            );
             return 2;
         }
     };
@@ -270,6 +466,28 @@ pub fn helper_main(args: &[String]) -> i32 {
     match r {
         Ok(n) => {
             let _ = writeln!(stdout, "done {n}");
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(stdout, "failed {}", e.replace('\n', " "));
+            1
+        }
+    }
+}
+
+/// `mpfree-fetch --tls`: starts libcurl and prints `tls ` and what its
+/// OpenSSL said ([`tls`]), or `failed ` and why libcurl didn't start.
+fn helper_tls(stdout: &mut std::io::Stdout) -> i32 {
+    if STATIC {
+        let _ = writeln!(
+            stdout,
+            "failed this {HELPER} is linked statically, so it can't open libcurl (build it as the docs say)"
+        );
+        return 1;
+    }
+    match curl() {
+        Ok(c) => {
+            let _ = writeln!(stdout, "tls {}", c.tls.replace('\n', " "));
             0
         }
         Err(e) => {
@@ -404,7 +622,13 @@ fn fetch_any(
         let general = unsafe { CStr::from_ptr((c.strerror)(code)) }
             .to_string_lossy()
             .into_owned();
-        Err(if detail.is_empty() { general } else { detail })
+        let why = if detail.is_empty() { general } else { detail };
+        // libcurl's whole account of OpenSSL failing to make random numbers.
+        Err(if why.contains("randomness") {
+            format!("{why} ({})", check_tls())
+        } else {
+            why
+        })
     };
     if result.is_err() {
         let _ = std::fs::remove_file(out);
@@ -431,6 +655,20 @@ mod tests {
         assert!(!out.exists());
     }
 
+    #[test]
+    fn the_tls_library_is_checked_as_libcurl_starts() {
+        let Some(tls) = tls() else {
+            eprintln!("no libcurl on this machine: not exercised");
+            return;
+        };
+        // A workstation's OpenSSL makes random numbers at once.
+        assert!(
+            tls == "TLS not through OpenSSL 3"
+                || (tls.starts_with("OpenSSL 3") && tls.ends_with(" ready")),
+            "{tls}"
+        );
+    }
+
     /// One HTTP answer on a local port, for the libcurl path (plain HTTP:
     /// the TLS is libcurl's own).
     fn serve(body: Vec<u8>, status: &'static str) -> String {
@@ -451,13 +689,27 @@ mod tests {
         format!("http://{addr}/x.zip")
     }
 
-    /// A stand-in for the helper: a shell script that says `lines` and
-    /// writes `body` to its OUT argument.
+    /// A stand-in for the helper: a shell script that runs `script`, under a
+    /// name of its own.
+    ///
+    /// A child `sh` writes it, so this process never has it open for writing.
+    /// The tests run on parallel threads, and a process another test starts
+    /// holds a copy of every open file until its own exec: running a script
+    /// this process had just written could fail with "Text file busy".
     fn fake_helper(dir: &Path, script: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let p = dir.join("fake-fetch");
-        std::fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static MADE: AtomicUsize = AtomicUsize::new(0);
+        let n = MADE.fetch_add(1, Ordering::Relaxed);
+        let p = dir.join(format!("fake-fetch-{n}"));
+        let wrote = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf '#!/bin/sh\\n%s\\n' \"$1\" > \"$2\" && chmod 755 \"$2\"")
+            .arg("sh")
+            .arg(script)
+            .arg(&p)
+            .status()
+            .unwrap();
+        assert!(wrote.success(), "{}: {wrote}", p.display());
         p
     }
 
@@ -505,6 +757,46 @@ mod tests {
         assert!(!out.exists());
         let e = through_helper(&dir.join("none"), url, &out, 4096, &mut |_, _| true).unwrap_err();
         assert!(e.contains("none"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_static_build_asks_the_helper_what_its_openssl_said() {
+        let dir = std::env::temp_dir().join(format!("mpfree-fetch-tls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wait = Duration::from_secs(5);
+        // Its account, asked with --tls.
+        let h = fake_helper(
+            &dir,
+            "[ \"$1\" = --tls ] || exit 9\necho tls OpenSSL 3.5.4 ready",
+        );
+        assert_eq!(tls_through_helper(&h, wait), "OpenSSL 3.5.4 ready");
+        // Its reason when libcurl didn't start.
+        let h = fake_helper(&dir, "echo failed libcurl.so.4 not found; exit 1");
+        assert_eq!(
+            tls_through_helper(&h, wait),
+            "TLS not checked: libcurl.so.4 not found"
+        );
+        // A helper that dies, or says nothing.
+        let h = fake_helper(&dir, "kill -SEGV $$");
+        let said = tls_through_helper(&h, wait);
+        assert!(
+            said.starts_with("TLS not checked: mpfree-fetch stopped ("),
+            "{said}"
+        );
+        // One that takes too long is stopped.
+        let h = fake_helper(&dir, "sleep 5; echo tls late");
+        let start = Instant::now();
+        assert_eq!(
+            tls_through_helper(&h, Duration::from_millis(200)),
+            "TLS not checked: mpfree-fetch gave no answer in 0.2 s"
+        );
+        assert!(start.elapsed() < Duration::from_secs(3));
+        let said = tls_through_helper(&dir.join("none"), wait);
+        assert!(
+            said.starts_with("TLS not checked: ") && said.contains("none"),
+            "{said}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

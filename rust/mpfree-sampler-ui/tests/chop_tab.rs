@@ -437,6 +437,7 @@ fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
         root: None,
         root_note: None,
         onsets: v.onsets.clone(),
+        ready: true,
     };
     s.state.source = Arc::new(plain);
     let st = s.state.clone();
@@ -722,4 +723,20 @@ fn live_chop_ends_with_its_sound_or_another_method() {
     assert!(!s.tab.live());
     assert_eq!(s.tab.method(), Method::Transient);
     assert_eq!(buttons(&s).0[0], "Split");
+}
+
+#[test]
+fn a_sound_still_being_analysed_chops_by_its_hits_once_they_are_found() {
+    let mut s = chop();
+    let full = s.state.source.clone();
+    let source = s.project.source(full.id).unwrap().clone();
+    // Its hits not found yet: no cuts, and Transient stays the method.
+    let mut st = s.state.clone();
+    st.source = Arc::new(SourceView::quick(&source));
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!((s.tab.slices(), s.tab.method()), (1, Method::Transient));
+    // They come in: the tab chops again at them.
+    st.source = full;
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(s.tab.slices(), 15);
 }
