@@ -896,13 +896,13 @@ fn a_keygroup_shows_the_kits_keyboard_to_drag_its_zone_pick_a_pad_and_play_notes
     let mut s = tone();
     assert!(!s.tab.keys_shown());
     assert_eq!(s.tab.hint(), play_tab::HINT);
-    // Keys on: the keyboard spans the top of the tab.
+    // Keys on: the keyboard spans the top of the tab, left of the list.
     step_apply(&mut s, Row::Keys, 1);
     s.tab.lift();
     assert!(s.tab.keys_shown());
     assert_eq!(s.tab.hint(), play_tab::KEYS_HINT);
     let (_, r) = keyboard(&s);
-    assert!(r.w > 800 && r.h >= 190, "{r:?}");
+    assert!(r.w > 700 && r.h >= 190, "{r:?}");
     // Narrow it to C2–G4 with the rows, and add a second keygroup on the
     // next pad, C5 to the top.
     step_apply(&mut s, Row::LowKey, 36);
