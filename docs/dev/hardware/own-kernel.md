@@ -23,7 +23,7 @@ Most of the MPC One runs on drivers that are in mainline Linux. The parts that n
 | Pads, buttons, lights, controller MIDI | Internal USB (DWC2 at `ff540000`), USB MIDI | Mainline |
 | Ethernet (RTL8211E PHY) | `stmmac` / `rk_gmac` | Mainline; already works on the stick's device tree (step 7) |
 | USB stick | DWC2 and EHCI, `usb-storage` | Mainline |
-| eMMC and SD card | `dw_mmc` | **Left out on purpose** (see Safety) |
+| eMMC and SD card | `dw_mmc` | Mainline, **built as modules that nothing loads at start**; MPFree switches the SD card, or the eMMC read-only, on when asked ([plan](sd-card-and-internal-drive.md)) |
 | Real-time | Linux 6.18.44 with the PREEMPT_RT patch set (`6.18.44-az01-2026-08-10-rt6`) | 6.18 needs the same patch set; mainline Linux supports PREEMPT_RT on 32-bit ARM from 7.1 ([Phoronix](https://phoronix.com/news/linux-7.1-arm-rt)) |
 
 Other facts that shape the plan:
@@ -37,9 +37,9 @@ Other facts that shape the plan:
 
 ## Safety
 
-Our kernel runs from RAM only and never touches the MPC's own storage. Pulling the stick and switching off always brings back MPC OS as it was.
+Our kernel runs from RAM only and never writes the MPC's own storage. Pulling the stick and switching off always brings back MPC OS as it was.
 
-- **No eMMC or SD driver at all.** The stick's device tree already disables the eMMC and SD controllers. Our kernel goes further: it is built without the MMC drivers (`CONFIG_MMC` off), so even a wrong device tree cannot make the internal storage appear.
+- **The eMMC and SD card stay off unless MPFree asks.** The stick's device tree disables both controllers today. Our kernel has the MMC drivers (corrected by the owner on 2026-11-17: MPFree is to use the SD card and read the eMMC when asked), but as modules that nothing loads at start, with both controllers held so loading the driver binds neither. Our kernel also makes every eMMC disk read-only when it is created. How they are switched on and off: [the SD card and the internal drive](sd-card-and-internal-drive.md). Until that plan's step 4, our kernel's sticks keep both controllers out of the device tree, as today.
 - **RAM only.** The kernel file sits on the stick and the chain loads it into memory. The [recovery strategy](../research/recovery-and-os-strategy.md) treats a kernel in RAM as research that leaves the eMMC untouched. Nothing here is persistent, so the Tier 3 gate (for persistent changes) does not apply.
 - **One try per failed power-on.** The guard (#381) marks the try before the jump. If our kernel panics or hangs before it has run 30 s, the next power-on skips the chain once and MPFree starts on Akai's kernel instead.
 - **The soft-reboot stays.** The default route, and the fallback if Akai changes something, is not touched by this plan.
@@ -56,7 +56,7 @@ Each step is its own small PR with owner blocks, verified before the owner gets 
    - Together they answer the open question in [boot routes](boot-routes.md#what-the-next-runs-answer): whether `CONFIG_MODULE_SIG_FORCE` is set.
    - Result: this page gets the full parts list and the config we start from.
 2. **First own kernel, no sound yet.**
-   - Linux 6.18.y with the matching PREEMPT_RT patch, Akai's config as the starting point, minus the MMC drivers and Akai's own drivers.
+   - Linux 6.18.y with the matching PREEMPT_RT patch, Akai's config as the starting point, minus Akai's own drivers, with the MMC drivers as modules (not loaded; the device tree still disables both controllers in this step), and `vfat` and `exfat`.
    - Built by CI on the mpfree-ci runners, in a pinned container, by a script in the repository that checks the source hashes (kernel.org's signed tarball and the RT patch). The owner fetches the result and checks its hash before the stick builder takes it.
    - The stick builder gets an opt-in option for our kernel and its modules (modules on the stick's root).
    - Passes when it boots on two power-ons with Ethernet and SSH, LoadPin enforcing, no `mmcblk`, the `--app-user` privileges and unchanged boot hashes. The screen works if the panel is mainline. No sound is expected, and the pad player says so.
