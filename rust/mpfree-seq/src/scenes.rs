@@ -44,6 +44,8 @@ pub const MAX_SCENE_VALUES: usize = 1024;
 pub const MAX_LIST_STEPS: usize = 128;
 /// The most times a step plays its scene.
 pub const MAX_TIMES: u16 = 99;
+/// The most characters a scene's name has (the scene editor's Rename).
+pub const MAX_SCENE_NAME: usize = 24;
 
 /// One step of the song list: scene `row` played `times` times, one
 /// after another (a pass is the scene's length, `arrange::scene_length`).
@@ -87,6 +89,34 @@ impl SongList {
         } else {
             None
         }
+    }
+}
+
+/// A scene's name, mutes and follow action: what the scene editor (the
+/// Record panel's Scene tab, sequencer S4) sets, apart from its morph
+/// values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SceneSettings {
+    pub name: String,
+    pub mutes: Option<u128>,
+    pub follow: Option<Follow>,
+}
+
+impl SceneSettings {
+    pub fn check(&self) -> Result<(), ModelError> {
+        if let Some(f) = &self.follow {
+            f.check()?;
+        }
+        if self
+            .mutes
+            .and_then(|m| m.checked_shr(MAX_TRACKS as u32))
+            .is_some_and(|rest| rest != 0)
+            || self.name.chars().count() > MAX_SCENE_NAME
+            || self.name.chars().any(char::is_control)
+        {
+            return Err(ModelError::BadScene);
+        }
+        Ok(())
     }
 }
 
@@ -162,6 +192,27 @@ impl Scene {
             name: name.to_string(),
             ..Scene::default()
         }
+    }
+
+    /// What the scene editor sets (sequencer S4): its name, mutes and
+    /// follow action.
+    pub fn settings(&self) -> SceneSettings {
+        SceneSettings {
+            name: self.name.clone(),
+            mutes: self.mutes,
+            follow: self.follow,
+        }
+    }
+
+    /// Give it `s`, its values (the morph's) as they are. `BadScene`, and
+    /// nothing changed, for a follow out of range, mutes past the last
+    /// track, or a name too long or with a line break.
+    pub fn set_settings(&mut self, s: &SceneSettings) -> Result<(), ModelError> {
+        s.check()?;
+        self.name.clone_from(&s.name);
+        self.mutes = s.mutes;
+        self.follow = s.follow;
+        Ok(())
     }
 
     /// Whether track `t` is muted while this scene plays, or `None` when
@@ -271,6 +322,40 @@ mod tests {
         }
         assert_eq!(follow_target(Other, 0, &[true], 5), Some(0), "nothing else");
         assert_eq!(follow_target(Next, 0, &[false, false], 0), None);
+    }
+
+    /// The scene editor's settings: set together, the morph values left
+    /// alone; a bad one changes nothing.
+    #[test]
+    fn scene_settings_set_name_mutes_and_follow() {
+        let a = ParamAddr::new(Owner::Inst(0), 1);
+        let mut s = Scene::named("Verse");
+        s.set_value(a, 0.5).unwrap();
+        let want = SceneSettings {
+            name: "Drop".into(),
+            mutes: Some(0b10),
+            follow: Some(Follow::after(8, FollowAction::Next)),
+        };
+        s.set_settings(&want).unwrap();
+        assert_eq!(s.settings(), want);
+        assert_eq!(s.value(a), Some(0.5), "the morph's value stays");
+        for bad in [
+            SceneSettings {
+                name: "x".repeat(MAX_SCENE_NAME + 1),
+                ..want.clone()
+            },
+            SceneSettings {
+                name: "a\nb".into(),
+                ..want.clone()
+            },
+            SceneSettings {
+                follow: Some(Follow::after(0, FollowAction::Next)),
+                ..want.clone()
+            },
+        ] {
+            assert!(s.set_settings(&bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(s.settings(), want);
     }
 
     #[test]

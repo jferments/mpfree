@@ -3707,6 +3707,93 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// The scene editor (sequencer S4, part 7): a scene's settings are
+    /// takes, a row turned again joining its take; the editor follows a
+    /// scene launched; the scene's follow action plays.
+    #[test]
+    fn the_scene_editor_sets_a_scene_and_undo_takes_it_back() {
+        use mpfree_seq::{Follow, FollowAction, SceneSettings};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |name: &str, note: u8| {
+            let mut c = Clip::new(name, 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        let t = &mut h.control.project.tracks[0];
+        t.slots[0] = Some(one_bar("intro", 4));
+        t.slots[1] = Some(one_bar("verse", 9));
+        // Nothing playing: the editor shows scene 1, a plain row.
+        let st = h.state();
+        assert_eq!((st.scene_focus, &st.scene), (0, &SceneSettings::default()));
+        let follow = |chance| SceneSettings {
+            follow: Some(Follow {
+                chance,
+                ..Follow::after(1, FollowAction::Next)
+            }),
+            ..SceneSettings::default()
+        };
+        let set = |h: &mut TimeHost, card_row, settings| {
+            h.act(TimeAction::SceneSettings {
+                row: 0,
+                card_row,
+                settings,
+            })
+        };
+        assert_eq!(
+            set(&mut h, 1, follow(100)).unwrap(),
+            "scene 1 · Follow Next (UNDO takes it back)"
+        );
+        let takes = h.state().done.len();
+        set(&mut h, 3, follow(90)).unwrap();
+        set(&mut h, 3, follow(80)).unwrap();
+        assert_eq!(
+            h.state().done.len(),
+            takes + 1,
+            "Chance turned twice: one take"
+        );
+        assert_eq!(
+            h.state().done.last().unwrap().short(),
+            format!("scene {}", takes + 1)
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().scene, follow(100), "UNDO takes Chance back");
+        // A name.
+        let named = SceneSettings {
+            name: "Intro".into(),
+            ..follow(100)
+        };
+        assert_eq!(
+            set(&mut h, mpfree_time_ui::view::SCENE_NAME, named).unwrap(),
+            "scene 1 · named Intro (UNDO takes it back)"
+        );
+        assert_eq!(h.state().scenes[0], "Intro");
+        assert!(set(
+            &mut h,
+            mpfree_time_ui::view::SCENE_NAME,
+            SceneSettings {
+                name: "x".repeat(mpfree_seq::MAX_SCENE_NAME + 1),
+                ..follow(100)
+            }
+        )
+        .is_err());
+        // The editor's ‹ ›, then a scene launched: the editor follows it.
+        h.act(TimeAction::SceneFocus(1)).unwrap();
+        let st = h.state();
+        assert_eq!((st.scene_focus, &st.scene), (1, &SceneSettings::default()));
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        assert_eq!(h.state().scene_focus, 0);
+        // Scene 1 plays a bar, then follows on to scene 2.
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        assert_eq!(h.state().scene_playing, Some(1));
+        let played: Vec<(u64, usize)> = pads.hits.iter().map(|h| (h.0, h.1)).collect();
+        assert_eq!(played.len(), 2, "{played:?}");
+        assert!(played[1].0.abs_diff(BAR) <= 128, "{played:?}");
+        assert_ne!(played[0].1, played[1].1, "scene 2's clip");
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// The song list (sequencer S4): steps added after the pick play
     /// their rows their times, in order, the next one landing on the bar
     /// its step ends; after the last everything stops. Edits are takes
@@ -3814,10 +3901,10 @@ mod tests {
         };
         h.control.project.tracks[0].slots[0] = Some(one_bar(4));
         h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
-        let reload = TimeAction::Reload { track: 0, slot: 0 };
+        let reload = || TimeAction::Reload { track: 0, slot: 0 };
         let pitch = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().notes[0].note;
         assert!(h
-            .act(reload)
+            .act(reload())
             .unwrap_err()
             .contains("no saved state: Save state on the Clip card first"));
         assert_eq!(
@@ -3825,7 +3912,7 @@ mod tests {
             "save state: beat kept (Reload clip brings it back)"
         );
         assert_eq!(h.state().saved, [(0, 0)]);
-        assert_eq!(h.act(reload).unwrap(), "reload: beat is as saved already");
+        assert_eq!(h.act(reload()).unwrap(), "reload: beat is as saved already");
         // Mangled: another note.
         let mangle = |h: &mut TimeHost| {
             h.control.project.tracks[0].slots[0] = Some(one_bar(9));
@@ -3837,7 +3924,7 @@ mod tests {
         assert_eq!(pads.hits.len(), 1);
         let mangled = pads.hits[0].1;
         assert_eq!(
-            h.act(reload).unwrap(),
+            h.act(reload()).unwrap(),
             "reload: beat reloads at bar 2 (Reload clip again: taken back)"
         );
         let st = h.state();
@@ -3862,7 +3949,7 @@ mod tests {
         h.command(Command::Stop);
         run(&mut h, &mut pads, 2 * BAR, &[]);
         assert_eq!(
-            h.act(reload).unwrap(),
+            h.act(reload()).unwrap(),
             "reload: beat is back as saved (UNDO takes it back)"
         );
         assert_eq!(pitch(&h), 4);
@@ -3870,11 +3957,11 @@ mod tests {
         mangle(&mut h);
         h.command(Command::Play);
         run(&mut h, &mut pads, 2 * BAR + BAR / 2, &[]);
-        assert!(h.act(reload).unwrap().contains("reloads at"));
-        assert_eq!(h.act(reload).unwrap(), "reload: beat's reload taken back");
+        assert!(h.act(reload()).unwrap().contains("reloads at"));
+        assert_eq!(h.act(reload()).unwrap(), "reload: beat's reload taken back");
         assert!(h.state().reloads.is_empty());
         // STOP lands what waits.
-        h.act(reload).unwrap();
+        h.act(reload()).unwrap();
         h.command(Command::Stop);
         run(&mut h, &mut pads, 3 * BAR, &[]);
         assert_eq!(

@@ -15,7 +15,26 @@ A row of the clip grid is a scene. Tap a row's number on the left and every clip
 {{shot: clips | The Arrange tab's clip grid, with the morph bar under it.}}
 
 - The square button above the row numbers stops every track on the next bar line.
-- A scene can also switch which tracks are muted on its bar line, and move on by itself after some bars (to the next row, back to the first, or to a random one). Setting these up on screen is coming. For now a row plays until you launch another. **Song → scenes** (below) sets rows up to play one after another.
+- A scene can also switch which tracks are muted on its bar line, have a name, and move on by itself after some bars (to the next row, back to the first, or to a random one). Set these up on the Record panel's **Scene** tab (below). **Song → scenes** (below) also sets rows up to play one after another, and the [song list](#the-song-list) plays them in any order.
+
+### Setting up a scene
+
+Tap **Scene**, the third tab on the Record panel's title line, to the right of the grid. It shows the scene playing, or scene 1 when nothing plays. Launching a scene or picking a step of the song list brings that scene.
+
+{{shot: clips-scene | The Record panel's Scene tab: scene 2, named Drop, moves on to the next scene after 4 bars four times in five, and mutes Track 2 when it starts.}}
+
+Turn the wheel to pick a row, and press **–** or **+** to change it:
+
+- **Scene**: which scene you are setting up. Its name shows after its number.
+- **Follow**: what plays after this scene has played its bars: off (it plays until you launch another), the next scene, the previous one, the first or the last, any scene, any other scene, this one again, or Stop. Turning it on sets **After** to the scene's longest clip.
+- **After**: how many bars the scene plays before Follow happens.
+- **Chance**: how often Follow happens, in steps of 10 %.
+- **Or**: what happens the rest of the time, when Chance is under 100 %. **Stay** plays the scene again for the same bars and then tries again.
+- **Mutes**: "as they are" leaves the mutes alone when the scene starts. **+** gives the scene the mutes you have now.
+
+**Mutes now**, under the rows, also gives the scene the mutes you have now: mute the tracks you want silent in this part, then tap it. When the scene starts, those tracks mute and the others play. **Rename** opens the keyboard: type the scene's name and tap **Enter**. The name shows on the song list, and becomes the section's name when the scene goes into the song.
+
+Every change plays at once, and **UNDO** takes it back. Turning one row many times is one undo. While a scene plays, new mutes wait until it starts again.
 
 ## The scene morph
 

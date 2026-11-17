@@ -8,7 +8,7 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
 
 - **Scene `k` is row `k`** of every track's slots, so there are 16 (`SCENES = SLOTS`). `Project::scenes` holds what a row has besides its clips. A row the project keeps nothing for is a plain scene: launching it still plays its clips. `Project::scene_mut(row)` makes the plain rows up to it when a row gets a name, mutes or a follow.
 - **`Scene { name, mutes, follow, values }`**.
-  - `mutes: Option<u16>`: bit `t` mutes track `t` while the scene plays. `None` leaves the mutes as they are.
+  - `mutes: Option<u128>`: bit `t` mutes track `t` while the scene plays. `None` leaves the mutes as they are.
   - `follow: Option<Follow>`: what happens after it has played some bars.
   - `values`: parameter values stored with the scene, for the scene morph (T10, below).
 - **`Clip::follow`**: a clip can have a follow action of its own.
@@ -43,6 +43,7 @@ The host calls `due` after every period while the transport rolls, with the next
 - **The row numbers are scene buttons.** Each one shows a play mark over its number, beside its row. Tapping it sends `TimeAction::LaunchScene(row)`. The playing scene's button is lit green, and a scene waiting for its bar line has an amber ring.
 - **The square in the corner** over the scene buttons is Stop all (`TimeAction::StopAll`).
 - The column is 48 pixels wide, up from the 26 the row numbers took, so the buttons are big enough to hit.
+- **The scene editor** (S4's seventh part, [make-perform.md](make-perform.md#the-scene-editor-as-built-the-seventh-part)): the Record panel's Scene tab sets a scene's name, follow action and mutes (`SceneSettings`, one take a row through `Takes::set_scene`).
 
 ## In the pad player (`TimeHost`)
 
@@ -118,8 +119,7 @@ The project keeps the rows' values (`Project::scenes`), so a saved morph comes b
 
 ## Not yet
 
-- Scene names and follow settings have no editor yet. They are set in the model only.
-- A launch quantise setting (1 beat to 8 bars, or none) is still to come. Scenes and follows use the bar.
+- A scene's colour has no editor yet (a row takes its clips' colours).
 - Clip follow actions count song bars. A clip at another speed still counts the song's bars, as Ableton does.
 - In a song loop shorter than a follow's time, the follow never comes due.
 - Scenes into a song and back are built: see [arrange.md](arrange.md).
