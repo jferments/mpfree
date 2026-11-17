@@ -18,6 +18,7 @@ use mpfree_looper::{
     After, Command, Edit, History, LayerCommand, LayerInfo, Phase, Status, Step, MAX_LAYERS,
     MAX_LOOPS, MAX_SEAM,
 };
+use mpfree_time_ui::view::LoopPlace;
 use mpfree_ui::draw;
 use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
@@ -538,11 +539,14 @@ pub fn setting_command(i: usize, s: &Status) -> Option<Command> {
 /// Use the loop's rows: title and what it does.
 const USE_ROWS: [(&str, &str); 4] = [
     ("To a pad", "a sample on the Sample tab"),
-    ("To a clip", "audio on the Arrange page"),
+    ("Show in Clips", "its cell on the Arrange page"),
     ("Save loop", "on the stick, with its layers"),
     ("Resample", "the loops as heard, into a new loop"),
 ];
 
+/// Use the loop's Show in Clips row: the Arrange page's Clips grid with
+/// the loop's cell in view.
+pub const USE_SHOW: usize = 1;
 /// Use the loop's Resample row.
 pub const USE_RESAMPLE: usize = 3;
 
@@ -682,8 +686,11 @@ pub fn why_no_tool(i: usize, s: &Status) -> &'static str {
 /// Why Use the loop's row `i` can't be used now, for the screen to say in
 /// place when its faint row is tapped.
 pub fn why_no_use(i: usize, v: &LooperView) -> &'static str {
+    if i == USE_SHOW {
+        return "This loop is in no cell yet: once it has a first pass it shows on a Loop track";
+    }
     if i != USE_RESAMPLE {
-        return "Not built yet: Resample works now (the bounce to a pad, a clip or a file comes next)";
+        return "Not built yet: Resample and Show in Clips work now (the bounce to a pad or a file comes next)";
     }
     if !v.loops.iter().any(|l| l.phase == Phase::Empty) {
         return "Every loop is in use: clear one to resample into it";
@@ -760,6 +767,8 @@ pub struct LooperPage {
     /// REC records the loop ([`crate::rec_arm`]): the strip's empty text
     /// says what REC does.
     rec_loop: bool,
+    /// Each loop's place on the Clips grid (Loop tracks), for its name.
+    places: [Option<LoopPlace>; MAX_LOOPS],
 }
 
 impl LooperPage {
@@ -783,6 +792,7 @@ impl LooperPage {
             turned: None,
             history_open: false,
             rec_loop: false,
+            places: Default::default(),
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
@@ -790,6 +800,30 @@ impl LooperPage {
 
     /// Whether REC records the loop (it is armed) or the notes: the
     /// strip's empty text follows.
+    /// Each loop's place on the Clips grid, from the time engine's state;
+    /// true when one changed (the page is then refreshed).
+    pub fn set_places(&mut self, places: [Option<LoopPlace>; MAX_LOOPS]) -> bool {
+        if self.places == places {
+            return false;
+        }
+        self.places = places;
+        true
+    }
+
+    /// Loop `n` as the screens name it: by its place on the Clips grid,
+    /// "Loops B · Loop 2 · Verse", or "Loop 2" while it is in no cell.
+    pub fn loop_name(&self, n: usize) -> String {
+        match self.places.get(n).and_then(Option::as_ref) {
+            Some(p) => p.full(n),
+            None => format!("Loop {}", n + 1),
+        }
+    }
+
+    /// Where loop `n` sits on the Clips grid, if it is in a cell.
+    pub fn place(&self, n: usize) -> Option<&LoopPlace> {
+        self.places.get(n).and_then(Option::as_ref)
+    }
+
     pub fn set_rec_loop(&mut self, ui: &mut Ui, on: bool) {
         if self.rec_loop != on {
             self.rec_loop = on;
@@ -1004,7 +1038,7 @@ impl LooperPage {
     pub fn history_rows(&self) -> (String, HistoryList) {
         let v = &self.view;
         (
-            format!("Loop {}", v.selected + 1),
+            self.loop_name(v.selected),
             history_list(&v.history, &self.layers, v.rate),
         )
     }
@@ -1210,7 +1244,11 @@ impl LooperPage {
         let s = &v.status;
         let n = v.selected;
         let empty = s.phase == Phase::Empty;
-        let title = format!("Loop {} · Editor", n + 1);
+        // On a Loop track, the loop's place ("Loops B · Loop 2 · Verse").
+        let title = match self.place(n) {
+            Some(p) => p.full(n),
+            None => format!("Loop {} · Editor", n + 1),
+        };
         let right = if empty {
             "empty".to_string()
         } else {
@@ -1377,9 +1415,19 @@ impl LooperPage {
         let rows: Vec<LoopRow> = (0..shown)
             .map(|i| {
                 let l = &v.loops[i];
+                // On a Loop track, its track and length ("Loops A · 4
+                // bars"): the editor has its layers.
+                let detail = match (self.place(i), l.phase) {
+                    (Some(p), Phase::Playing | Phase::Overdubbing) => {
+                        let bars = bars_of(l.ticks, v.beats_per_bar);
+                        let s = if bars == 1 { "" } else { "s" };
+                        format!("{} · {bars} bar{s}", p.track_name)
+                    }
+                    _ => loop_detail(l, v.beats_per_bar),
+                };
                 LoopRow {
                     name: format!("Loop {}", i + 1),
-                    detail: loop_detail(l, v.beats_per_bar),
+                    detail,
                     state: state_of(l).map(|(a, b)| (a.to_string(), b)),
                     colour: LOOP_COLOURS[i % LOOP_COLOURS.len()],
                     speaker: (l.phase != Phase::Empty).then_some(l.muted),
@@ -1449,10 +1497,15 @@ impl LooperPage {
             && v.loops
                 .iter()
                 .any(|l| l.phase == Phase::Playing && !l.muted);
+        // Show in Clips, while the loop is in a cell.
+        let shown = self.place(v.selected).is_some();
         let use_rows: Vec<(String, String, bool)> = USE_ROWS
             .iter()
             .enumerate()
-            .map(|(i, (a, b))| (a.to_string(), b.to_string(), i == USE_RESAMPLE && resample))
+            .map(|(i, (a, b))| {
+                let on = (i == USE_RESAMPLE && resample) || (i == USE_SHOW && shown);
+                (a.to_string(), b.to_string(), on)
+            })
             .collect();
         if let Some(w) = ui.get_mut::<UseLoop>(USE) {
             if w.rows != use_rows {
@@ -1499,6 +1552,15 @@ impl LooperPage {
                 Some((len, layers)) => format!("{len} · input: {input} · {layers}"),
                 None => format!("input: {input} · {right}"),
             }
+        };
+        // On a Loop track, the loop's place first: "Loops B · Loop 2 ·
+        // Verse · 4 bars · 3 layers".
+        let (right, right_wide) = match self.place(v.selected) {
+            Some(p) if !empty => {
+                let at = p.full(v.selected);
+                (format!("{at} · {right}"), format!("{at} · {right_wide}"))
+            }
+            _ => (right, right_wide),
         };
         let names: Vec<String> = (0..s.layers).map(|k| self.layer_name(k)).collect();
         let info = |k: usize| v.layers.get(k).copied().flatten();

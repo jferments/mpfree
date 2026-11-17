@@ -139,11 +139,11 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 ## Arrange page
 
-- **`clips/slot`**: a clip slot. Tap a clip: it plays from the next bar, or stops (on the lift); + on an empty slot records into it (on the touch). A clip dragged more than 12 px drops on the slot under the lift (`EventKind::Drop`, `TimeAction::DropClip`): it moves, swaps with a clip there, or with SHIFT is copied. On a Loop track a cell launches its loop, + says to record the loop on Play's Loop view or the Looper tab, and a drop keeps loops on Loop tracks ([Loop tracks](../design/loop-tracks.md)). *Test:* `the_clips_page_shows_the_engine_and_turns_taps_into_actions`, `clips_and_rows_drag_and_drop_and_a_still_finger_taps`.
+- **`clips/slot`**: a clip slot. Tap a clip: it plays from the next bar, or stops (on the lift); + on an empty slot records into it (on the touch). A clip dragged more than 12 px drops on the slot under the lift (`EventKind::Drop`, `TimeAction::DropClip`): it moves, swaps with a clip there, or with SHIFT is copied. On a Loop track a cell launches its loop, a tap on an empty one arms it for the next loop recorded (again: lets go; `TimeAction::LoopCell`), and a drop keeps loops on Loop tracks; with SHIFT, a loop's cell dropped on another Loop track becomes a new loop, a copy of its layers (`TimeAction::LoopCopy`, through the desk) ([Loop tracks](../design/loop-tracks.md)). *Test:* `the_clips_page_shows_the_engine_and_turns_taps_into_actions`, `clips_and_rows_drag_and_drop_and_a_still_finger_taps`, `an_empty_loop_cell_arms_and_says_what_rec_does`, `a_loop_records_into_the_cell_tapped_on_the_grid`, `a_loop_copied_onto_another_loop_track_is_a_new_loop_with_its_layers`.
 - **`clips/scene`**: a row's number: plays the whole row (a scene), on the lift. Dragged, it moves the row to the gap under the lift (`TimeAction::DropRow`), or with SHIFT copies it. *Test:* `the_clips_page_shows_the_engine_and_turns_taps_into_actions`, `clips_and_rows_drag_and_drop_and_a_still_finger_taps`.
-- **`clips/track`**: a track's name: arms it for recording.
+- **`clips/track`**: a track's name: arms it for recording. The line under it opens the track's instrument on the Synth tab; on a Loop track it steps what the track's new loops record, Pads, Line in, Resample (`TimeAction::LoopInput`).
 - **`clips/stop-all`**, **`clips/edit`**, **`clips/song`**, **`clips/rec-song`**: Stop all clips; Edit (the note editor on the picked clip); Song (the Song view); Rec song (record what the grid plays into the song).
-- **`clips/add-track`**: + Track: adds a track after the last one, named "Track 9" and so on and armed; UNDO takes it away. Faint at 128 tracks.
+- **`clips/add-track`**: + Track: adds a track after the last one, named "Track 9" and so on and armed; UNDO takes it away. With SHIFT held, an empty Loop track ("Loops A" and on; `TimeAction::AddLoopTrack`), the pads staying on their track. Faint at 128 tracks. *Test:* `a_loop_records_into_the_cell_tapped_on_the_grid`.
 - **`clips/pager`**: ‹ and ›, shown once there are more than 8 tracks: the 8 tracks before or after (a swipe along the names does the same). Faint at either end.
 - **`transport/rec`**, **`transport/mode`**, **`transport/play`**, **`transport/stop`**, **`transport/undo`**: the Arrange page's transport: Rec, the record mode (replace or overdub), Play, Stop, Undo of the last take. Rec is REC: it records what is armed, and with the notes ready Play starts the take and Stop lets go ([REC records what is armed](../design/rec-arm.md)). *Test:* `arranges_bar_rec_and_play_record_what_is_armed`.
 - **`transport/chip`**: the REC chip at the bar's right end ("REC → Drums · Clip 1", "REC → Loop 1"): what REC records. A tap says so, and what arms another target. *Test:* `arranges_bar_rec_and_play_record_what_is_armed`.
@@ -184,7 +184,7 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 - **`leditor/history-step`**: a step of the loop's history: tap to go back (or forward) to it.
 - **`lqlinks/knob-card`**: the looper's Q-Link cards (Level, Pan, Fade old, Seam fade).
 - **`lrecording/setting-less`**, **`lrecording/setting-more`**: the recording settings (Record from, First pass, After recording, Line input).
-- **`luse/use`**: To a pad, To a clip, Save loop, Resample: what to do with the loop.
+- **`luse/use`**: To a pad, Show in Clips, Save loop, Resample: what to do with the loop. Show in Clips (lit while the loop is in a cell on a Loop track) opens the Arrange tab with the loop's cell in view.
 
 ## The mixer, its I/O view and the effects
 

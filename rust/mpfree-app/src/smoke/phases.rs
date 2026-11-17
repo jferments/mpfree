@@ -1451,6 +1451,73 @@ mod device_log {
         });
     }
 
+    /// `loop-cell`'s lines: SHIFT + "+ Track" adds a Loop track, a tap on
+    /// its row 2 cell arms it, and REC, PLAY and REC record a loop there.
+    #[test]
+    fn loop_cell_writes_its_lines() {
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("header", "tab", "Arrange").settle();
+            let n = s.lines.len();
+            s.button_edge("SHIFT", true);
+            s.press("clips", "add-track", "+ Track").settle();
+            s.button_edge("SHIFT", false);
+            wrote(&s, n, "time: Loops A added, a Loop track", "");
+            s.press("clips", "pager", "Tracks after").settle();
+            s.press("clips", "slot", "Loops A slot 2").settle();
+            wrote(&s, n, "time: loop cell: Loops A row 2 armed", "");
+            s.button("REC").button("PLAY");
+            s.run_for(0.5);
+            s.pad(0, 100, 0.05);
+            s.run_for(2.0);
+            s.button("REC");
+            s.run_for(2.5);
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            wrote(&s, n, "time: Loop 1 on Loops A, row 2, playing", "");
+            s.button("STOP");
+        });
+    }
+
+    /// `loop-copy`'s lines: SHIFT + Loops A's cell dropped on Loops B's
+    /// row 3 copies the loop there, its layers all go in, and its cell's
+    /// launch brings the copy in on a bar line.
+    #[test]
+    fn loop_copy_writes_its_lines() {
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("play-transport", "view", "Loop").settle();
+            s.button("REC").button("PLAY");
+            s.run_for(0.5);
+            s.pad(0, 100, 0.05);
+            s.run_for(2.0);
+            s.button("REC");
+            s.run_for(2.5);
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            s.press("header", "tab", "Arrange").settle();
+            s.button_edge("SHIFT", true);
+            s.press("clips", "add-track", "+ Track").settle();
+            s.button_edge("SHIFT", false);
+            let n = s.lines.len();
+            s.route(FromUi::Time(TimeAction::DropClip {
+                from: (8, 0),
+                to: (9, 2),
+                copy: true,
+            }));
+            s.run_for(1.0);
+            wrote(&s, n, "clips: Loop 1 copies into Loop 2 on Loops B / 3", "");
+            wrote(&s, n, "looper: loop 2 is a copy of loop 1, 1 layer", "");
+            s.press("clips", "pager", "Tracks after").settle();
+            s.press("clips", "slot", "Loops B slot 3");
+            s.run_for(2.5);
+            wrote(&s, n, "looper: loop 2 on from bar ", "");
+            s.button("STOP");
+        });
+    }
+
     #[test]
     fn rec_arm_writes_its_lines() {
         use mpfree_looper::Phase;
