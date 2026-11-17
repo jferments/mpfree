@@ -152,7 +152,7 @@ fn console_big(x: f64) -> f64 {
 
 /// The antiderivative of [`soft`], zero at 0: `soft` is
 /// `x / 9 + (8 / 3) x / (x^2 + 3)` up to ±3 and ±1 beyond.
-fn soft_big(x: f64) -> f64 {
+pub(crate) fn soft_big(x: f64) -> f64 {
     let a = x.abs().min(3.0);
     let inside = a * a / 18.0 + 4.0 / 3.0 * crate::adaa::ln(1.0 + a * a / 3.0);
     inside + (x.abs() - 3.0).max(0.0)

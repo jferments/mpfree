@@ -45,13 +45,16 @@ pub const BAR: &str = "smp-auto-bar";
 pub const VIEW: &str = "smp-auto-view";
 pub const LIST: &str = "smp-auto-list";
 pub const BUTTONS: &str = "smp-auto-buttons";
+/// The Q-Link column, as on every page: the Q-Links turn nothing here,
+/// so its four cards are free.
+pub const QLINKS: &str = "smp-auto-qlinks";
 pub const WHEEL: &str = "smp-auto-wheel";
 
 /// The page: the keyboard beside the list, the buttons under them, as the
 /// Rec tab's.
 pub const LAYOUT: &str = "col(header:60, row(smp-auto-bar:*, smp-send:330):60, \
-                          row(smp-auto-view:*, smp-auto-list:340):*, \
-                          row(smp-auto-buttons:*, smp-auto-wheel:340):88, hint:26)";
+                          row(col(row(smp-auto-view:*, smp-auto-list:340):*, \
+                          row(smp-auto-buttons:*, smp-auto-wheel:340):88):*, smp-auto-qlinks:168):*, hint:26)";
 
 /// The hint line the app shows under the page.
 pub const HINT: &str =
@@ -468,6 +471,7 @@ impl AutoTab {
         buttons.primary = Some(0);
         ui.add(BUTTONS, buttons);
         ui.add(WHEEL, InfoCard::new("The row picked"));
+        ui.add(QLINKS, mpfree_ui::qlink::QLinkColumn::new());
         ui.add_page(name, LAYOUT)?;
         let mut tab = AutoTab {
             name: name.to_string(),

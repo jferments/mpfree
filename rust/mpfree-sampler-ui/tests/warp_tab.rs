@@ -111,8 +111,10 @@ fn dragging_a_handle_moves_its_pin_along_the_grid() {
     let x = v.x_of(before[3].beat, wave);
     let px_per_16th = v.x_of(0.25, wave) - v.x_of(0.0, wave);
     assert!(s.ui.touch(1, Touch::Down, x, ruler.y + 10).is_none());
-    let ev =
-        s.ui.touch(1, Touch::Move, x + px_per_16th / 3, ruler.y + 10);
+    // A third of a sixteenth, and past the 8 px a tap may wander.
+    let nudge = (px_per_16th / 3).max(9);
+    assert!(nudge < px_per_16th / 2, "{px_per_16th}");
+    let ev = s.ui.touch(1, Touch::Move, x + nudge, ruler.y + 10);
     let Some(ev) = ev else { panic!("no drag") };
     let EventKind::Marker { index, frame } = ev.kind else {
         panic!("{ev:?}");
@@ -275,7 +277,12 @@ fn the_wheel_zooms_round_the_pin_and_q_link_4_scrolls() {
     let (first, span) = v.shown();
     assert!(span < 3.0 && first < beat && beat < first + span);
     let card = s.ui.get::<KnobCard>(warp_tab::QLINKS[3]).unwrap();
-    assert!(card.enabled && card.value.starts_with("from "));
+    assert!(
+        card.enabled && card.sub == "from",
+        "{} {}",
+        card.value,
+        card.sub
+    );
     s.tab.qlink(&mut s.ui, &st, 3, 4, false);
     let (first2, _) = s.ui.get::<WarpView>(VIEW).unwrap().shown();
     assert!((first2 - (first + span / 4.0)).abs() < 1e-9);
