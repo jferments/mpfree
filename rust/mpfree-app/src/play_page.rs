@@ -32,7 +32,7 @@ use crate::mixing::{self, PlayFx, PlayLevels, ThrowFx};
 use crate::play_widgets::{
     Lane, Marks, StepGrid, Throw, Throws, TimedHit, TransportLook, XyPad, YourTiming,
 };
-use crate::time::{HitInfo, StepAction, StepsData, STEP_TICKS};
+use crate::time::{HitInfo, StepAction, StepsData, LINE, STEP_TICKS};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_arp_ui::view as arp_view;
 use mpfree_fx::ids::mixer as mixer_ids;
@@ -1149,6 +1149,10 @@ impl PlayPage {
     }
 
     fn pad_name(&self, pad: usize) -> String {
+        if pad == usize::from(LINE) {
+            // The synth's steps on the pads: the whole line.
+            return "Line".to_string();
+        }
         self.pads
             .get(pad)
             .and_then(|p| p.label.clone())
@@ -1632,8 +1636,17 @@ impl PlayPage {
                 Lane {
                     pad: p,
                     name: self.pad_name(p),
-                    color: self.pads[p].color().unwrap_or(draw::FX),
-                    muted: self.levels.pad_mutes & (1 << p) != 0,
+                    // The line (the synth's steps) takes its pen's colour.
+                    color: self
+                        .pads
+                        .get(p)
+                        .or_else(|| {
+                            let pen = self.on_pads.filter(|_| p == usize::from(LINE))?.pen;
+                            self.pads.get(usize::from(*pen.pads().first()?))
+                        })
+                        .and_then(PadInfo::color)
+                        .unwrap_or(draw::FX),
+                    muted: p < 16 && self.levels.pad_mutes & (1 << p) != 0,
                     steps: (from..from + PAGE)
                         .map(|i| row.get(i).copied().flatten().map_or(0, |s| s.velocity))
                         .collect(),
@@ -1786,6 +1799,9 @@ impl PlayPage {
     /// clears it; elsewhere a tap turns it on or off.
     pub fn tap_step(&mut self, pad: usize, col: usize) -> Option<StepAction> {
         let i = self.page * PAGE + col;
+        if pad == usize::from(LINE) {
+            return self.tap_line(i);
+        }
         // The inspector's Copy: a step on the lane takes the copy; any
         // other tap lets it go.
         if let Some((from_pad, from)) = self.copy_from.take() {
@@ -1820,6 +1836,47 @@ impl PlayPage {
             step: i,
             velocity: TAP_VELOCITY,
         })
+    }
+
+    /// A tap on step `i` of the line's lane (STEP SEQ on the synth): on
+    /// an empty step the pen goes on; on a lit one, in Beats, the first
+    /// tap picks it and a second takes it off, as on a sound's lane.
+    fn tap_line(&mut self, i: usize) -> Option<StepAction> {
+        let line = usize::from(LINE);
+        if let Some((from_pad, from)) = self.copy_from.take() {
+            return (from_pad == line && from != i).then_some(StepAction::CopySteps {
+                pad: LINE,
+                from,
+                to: i,
+                count: 1,
+            });
+        }
+        let on = self
+            .steps
+            .clip
+            .as_ref()
+            .and_then(|c| c.row(LINE).get(i).copied().flatten())
+            .is_some();
+        if on {
+            if self.view == PlayView::Beats && self.selected != Some((line, i)) {
+                self.selected = Some((line, i));
+                if self.held.is_none() {
+                    self.bank = HeldBank::Step;
+                }
+                return None;
+            }
+            if self.selected == Some((line, i)) {
+                self.selected = None;
+            }
+            return Some(StepAction::ClearSteps {
+                pad: LINE,
+                from: i,
+                to: i + 1,
+            });
+        }
+        let pen = self.on_pads.filter(|s| s.line())?.pen;
+        let (keys, n) = pen.keys(TAP_VELOCITY);
+        (n > 0).then_some(StepAction::Enter { step: i, keys, n })
     }
 
     /// The throws' panel: the list, lit while held.

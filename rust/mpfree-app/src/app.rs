@@ -1458,6 +1458,38 @@ impl App {
         self.rolling = rolling;
     }
 
+    /// Whether the transport rolls, as the audio loop last told it.
+    pub fn rolling(&self) -> bool {
+        self.rolling
+    }
+
+    /// The tempo, in BPM.
+    pub fn bpm(&self) -> f64 {
+        self.settings.bpm
+    }
+
+    /// A learned control pressing (`down`) or letting go of one of the
+    /// MPC's buttons (MIDI Learn's remote control, `remote.rs`; `id` from
+    /// `mpfree_param::transport`): as the button itself, on the page
+    /// showing. Not while Map controls listens, which would take it for
+    /// the MPC's own button.
+    pub fn remote_press(&mut self, id: u16, down: bool, t: f64) -> Vec<Effect> {
+        use mpfree_play::mpfree_param::transport as tr;
+        let note = match id {
+            tr::PLAY => Some(button::PLAY),
+            tr::STOP => Some(button::STOP),
+            tr::PLAY_START => self.map.play_start,
+            tr::REC => self.map.rec,
+            tr::OVERDUB => self.map.overdub,
+            tr::TAP_TEMPO => self.map.tap_tempo,
+            _ => None,
+        };
+        match note {
+            Some(n) if self.view != View::Map => self.button(n, down, t),
+            _ => Vec::new(),
+        }
+    }
+
     /// The project's tracks, for TRACK MUTE's hint line (the audio loop
     /// tells it each period).
     pub fn set_track_count(&mut self, n: usize) {
@@ -1673,6 +1705,7 @@ impl App {
     }
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
+        self.step_pad_let_go(slot);
         if !self.free_time_recording() {
             self.release_pad(slot);
         }
@@ -6472,6 +6505,55 @@ mod tests {
         );
     }
 
+    /// MIDI Learn's remote control presses the MPC's buttons as they are,
+    /// on the page showing; never while Map controls listens, which would
+    /// take a press for the MPC's own button.
+    #[test]
+    fn a_learned_control_presses_the_mpcs_transport_buttons() {
+        use mpfree_play::mpfree_param::transport as tr;
+        let mut app = ready();
+        let cmd = |fx: Vec<Effect>| {
+            fx.into_iter().find_map(|e| match e {
+                Effect::Time(TimeAction::Transport(c)) => Some(c),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            cmd(app.remote_press(tr::PLAY, true, 1.0)),
+            Some(Command::Play)
+        );
+        app.remote_press(tr::PLAY, false, 1.1);
+        app.set_rolling(true);
+        assert!(app.rolling());
+        assert_eq!(
+            cmd(app.remote_press(tr::STOP, true, 2.0)),
+            Some(Command::Stop)
+        );
+        app.remote_press(tr::STOP, false, 2.1);
+        app.set_rolling(false);
+        assert_eq!(
+            cmd(app.remote_press(tr::PLAY_START, true, 3.0)),
+            Some(Command::PlayStart)
+        );
+        app.remote_press(tr::PLAY_START, false, 3.1);
+        // REC on the Play page, as the MPC's own REC there.
+        assert_eq!(
+            app.remote_press(tr::REC, true, 4.0),
+            vec![Effect::PlayRec { overdub: false }]
+        );
+        app.remote_press(tr::REC, false, 4.1);
+        for k in 0..4 {
+            let t = 10.0 + k as f64 * 0.5;
+            app.remote_press(tr::TAP_TEMPO, true, t);
+            app.remote_press(tr::TAP_TEMPO, false, t + 0.1);
+        }
+        assert_eq!(app.bpm(), 120.0);
+        // The tempo is no button.
+        assert!(app.remote_press(tr::TEMPO, true, 20.0).is_empty());
+        app.view = View::Map;
+        assert!(app.remote_press(tr::PLAY, true, 30.0).is_empty());
+    }
+
     /// Live test 3: taps on Play's tempo tap the tempo, and say so.
     #[test]
     fn taps_on_plays_tempo_set_it() {
@@ -7029,6 +7111,70 @@ mod tests {
             .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));
     }
 
+    /// STEP SEQ on the synth (the sequencer design's "Synth tracks"): the
+    /// pads are the whole line's steps, and the pen starts as the pad
+    /// played last. Held, the pads play the synth: pads held together are
+    /// the new pen (a chord), a pad played once all are up starts a new
+    /// one; its notes name it.
+    #[test]
+    fn step_seq_on_the_synth_takes_the_line_and_the_pen_from_the_pads_held() {
+        use crate::time::LINE;
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        const STEP_SEQ: u8 = button::STEP_SEQ;
+        let mut app = ready();
+        app.set_pad_layout(Some(layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        })));
+        app.pad_down(2, 100);
+        app.pad_up(2);
+        let fx = click(&mut app, STEP_SEQ);
+        let s = app.step_pads().expect("the pads are steps");
+        assert_eq!((s.sound, s.pen.pads()), (LINE, &[2][..]));
+        assert!(s.line());
+        let name = app.pen_name(&s.pen);
+        assert!(
+            fx.iter().any(
+                |e| matches!(e, Effect::Note(n) if n.contains("line's steps") && n.contains(&name))
+            ),
+            "{fx:?}"
+        );
+        // Held: pads 1 and 5 together are the pen; then 8 alone replaces it.
+        let t = 0.0;
+        app.button(STEP_SEQ, true, t);
+        assert!(!app.pads_are_steps(), "held, the pads play the synth");
+        assert!(app.step_pads().is_some_and(|p| p.picking && p.line()));
+        app.pad_down(0, 100);
+        app.pad_down(4, 100);
+        app.pad_down(4, 100);
+        assert_eq!(app.step_pads().unwrap().pen.pads(), [0, 4]);
+        app.pad_up(0);
+        app.pad_up(4);
+        app.pad_down(7, 100);
+        app.pad_up(7);
+        app.button(STEP_SEQ, false, t);
+        let s = app.step_pads().expect("still steps");
+        assert!(app.pads_are_steps());
+        assert_eq!(s.pen.pads(), [7]);
+        // A chord, named by its notes, lowest first.
+        app.button(STEP_SEQ, true, t);
+        for p in [4, 0, 7] {
+            app.pad_down(p, 100);
+        }
+        for p in [4, 0, 7] {
+            app.pad_up(p);
+        }
+        app.button(STEP_SEQ, false, t);
+        let s = app.step_pads().unwrap();
+        assert_eq!(s.pen.pads(), [4, 0, 7]);
+        let name = app.pen_name(&s.pen);
+        assert_eq!(name.split(' ').count(), 3, "{name}");
+        // A kit on the pads again: a sound's steps, the pen kept.
+        app.set_pad_layout(None);
+        assert_ne!(app.step_pads().unwrap().sound, LINE);
+        assert_eq!(app.step_pads().unwrap().pen.pads(), [4, 0, 7]);
+    }
+
     /// STEP SEQ (sequencer decision 2, Jay 16 Nov): the pads are the
     /// steps of the pad played last, over any page; PAD BANK picks pages
     /// (a second press or SHIFT: 5 to 8); SHIFT + STEP SEQ is Follow;
@@ -7058,6 +7204,7 @@ mod tests {
             app.status_now().steps,
             Some(StepPads {
                 sound: 4,
+                pen: step_pads::Pen::of(4),
                 page: 0,
                 follow: false,
                 picking: false,

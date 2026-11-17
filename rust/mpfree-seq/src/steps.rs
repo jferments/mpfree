@@ -284,7 +284,11 @@ pub fn lock_key_steps(sound: Option<u8>, steps: u128, addr: RelAddr) -> u64 {
 }
 
 /// No sound has this number: it names every sound of a step in a key.
-const ALL: u8 = 255;
+const ALL: u8 = LINE;
+
+/// The whole line: every sound of a step at once, as one row (a melodic
+/// track's notes and chords on the step pads). No note has this number.
+pub const LINE: u8 = 255;
 
 /// The most steps a Euclidean pattern spans: four pages.
 pub const MAX_EUCLID_STEPS: u8 = 64;
@@ -426,8 +430,19 @@ impl Grid {
     /// Every step of sound `pitch` in `clip`, all pages: None where a step
     /// is empty.
     pub fn row(self, clip: &Clip, pitch: u8) -> Vec<Option<Step>> {
+        self.row_of(clip, |n| n.note == pitch)
+    }
+
+    /// Every step of the whole line, all pages: each step's notes of every
+    /// sound as one, the first of them (as [`Grid::row`] picks it) with
+    /// how many there are. None where a step is empty.
+    pub fn line(self, clip: &Clip) -> Vec<Option<Step>> {
+        self.row_of(clip, |_| true)
+    }
+
+    fn row_of(self, clip: &Clip, keep: impl Fn(&Note) -> bool) -> Vec<Option<Step>> {
         let mut row: Vec<Option<Step>> = vec![None; self.steps(clip.length)];
-        for n in clip.notes.iter().filter(|n| n.note == pitch) {
+        for n in clip.notes.iter().filter(|n| keep(n)) {
             let (i, nudge) = self.place(clip.length, n.tick);
             let Some(slot) = row.get_mut(i) else { continue };
             let step = Step {
@@ -529,6 +544,80 @@ impl Grid {
                 .collect(),
             ..Edit::default()
         }
+    }
+
+    /// Clear steps `from` up to (not including) `to` of the whole line:
+    /// every note on them and every lock, the rows' and the whole step's.
+    /// Steps past the clip's end are left out.
+    pub fn clear_line(self, clip: &Clip, from: usize, to: usize) -> Edit {
+        let to = to.min(self.steps(clip.length));
+        let within = |tick: Tick| (from..to).contains(&self.place(clip.length, tick).0);
+        Edit {
+            erase: clip
+                .notes
+                .iter()
+                .filter(|n| within(n.tick))
+                .copied()
+                .collect(),
+            erase_locks: clip
+                .locks
+                .iter()
+                .filter(|l| within(l.tick))
+                .copied()
+                .collect(),
+            ..Edit::default()
+        }
+    }
+
+    /// Copy `count` steps of the whole line from step `from` over the
+    /// steps from `to`, as [`Grid::copy_steps`] does for one sound: every
+    /// note and lock on each target step goes, and the source step's come
+    /// in, each keeping its nudge as far as the target step allows.
+    pub fn copy_line(self, clip: &Clip, from: usize, to: usize, count: usize) -> Edit {
+        let n = self.steps(clip.length);
+        let mut edit = Edit::default();
+        if from == to {
+            return edit;
+        }
+        for k in 0..count {
+            let (src, dst) = (from + k, to + k);
+            if src >= n || dst >= n {
+                break;
+            }
+            let (lo, hi) = self.nudges(clip.length, dst);
+            let at = |tick: Tick| {
+                let nudge = self.place(clip.length, tick).1;
+                self.tick(clip.length, dst, nudge.clamp(lo, hi))
+            };
+            edit.erase.extend(self.chord(clip, dst));
+            edit.erase_locks.extend(self.step_locks(clip, dst));
+            edit.add
+                .extend(self.chord(clip, src).into_iter().map(|n| Note {
+                    tick: at(n.tick),
+                    ..n
+                }));
+            edit.add_locks
+                .extend(self.step_locks(clip, src).into_iter().map(|l| Lock {
+                    tick: at(l.tick),
+                    ..l
+                }));
+        }
+        edit
+    }
+
+    /// Change each of steps `steps` of the whole line, every sound in it,
+    /// as [`Grid::change_all`] does for one step: several held step pads
+    /// of a melodic track turned at once, as one edit.
+    pub fn change_line(self, clip: &Clip, steps: &[usize], change: Change) -> Edit {
+        let mut edit = Edit::default();
+        let mut done: Vec<usize> = Vec::new();
+        for &i in steps {
+            if !done.contains(&i) {
+                done.push(i);
+                edit.join(self.change_all(clip, i, change));
+            }
+        }
+        edit
     }
 
     /// Copy `count` steps of sound `pitch` from step `from` over the steps
@@ -895,6 +984,18 @@ impl Grid {
             .filter(|l| self.place(clip.length, l.tick).0 == i)
             .copied()
             .collect()
+    }
+
+    /// How many locks each step of the whole line holds, all pages: every
+    /// row's and the whole step's.
+    pub fn lock_line(self, clip: &Clip) -> Vec<usize> {
+        let mut row = vec![0; self.steps(clip.length)];
+        for l in &clip.locks {
+            if let Some(n) = row.get_mut(self.place(clip.length, l.tick).0) {
+                *n += 1;
+            }
+        }
+        row
     }
 
     /// How many locks each step of row `sound` shows, all pages: the row's
@@ -1926,6 +2027,49 @@ mod tests {
         c.apply(&g.enter(&c, 1, &[])).unwrap();
         assert!(c.notes.is_empty());
         assert!(g.enter(&c, 16, &[(60, 100)]).is_empty());
+    }
+
+    /// The whole line (a melodic track's step pads): a chord shows as one
+    /// step with its notes counted; it is cleared, copied and changed
+    /// whole, its locks (the rows' and the whole step's) along.
+    #[test]
+    fn the_whole_line_is_one_row_cleared_copied_and_changed_whole() {
+        use mpfree_param::OnTrack;
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(240, 60), (250, 63), (250, 67), (960, 62)]);
+        let cutoff = RelAddr::new(OnTrack::Inst, 3);
+        c.apply(&g.lock(&c, None, 1, cutoff, 0.5)).unwrap();
+        c.apply(&g.lock(&c, Some(63), 1, cutoff, 0.2)).unwrap();
+        let line = g.line(&c);
+        assert_eq!(line.len(), 16);
+        let first = line[1].expect("step 2 holds the chord");
+        assert_eq!((first.notes, first.nudge, first.velocity), (3, 0, 100));
+        assert_eq!(line[4].map(|s| s.notes), Some(1));
+        assert!(line[0].is_none() && line[2].is_none());
+        assert_eq!(g.lock_line(&c)[1], 2, "the step's lock and the row's");
+
+        // Copy step 2 over step 5: the chord and both locks, the old note out.
+        let e = g.copy_line(&c, 1, 4, 1);
+        assert_eq!(e.erase, vec![Note::new(960, 60, 62, 100)]);
+        assert_eq!((e.add.len(), e.add_locks.len()), (3, 2));
+        c.apply(&e).unwrap();
+        let chord: Vec<(Tick, u8)> = g.chord(&c, 4).iter().map(|n| (n.tick, n.note)).collect();
+        assert_eq!(chord, [(960, 60), (970, 63), (970, 67)], "nudges kept");
+        assert_eq!(g.lock_line(&c)[4], 2);
+        assert!(g.copy_line(&c, 1, 1, 1).is_empty());
+
+        // Two steps held, one velocity for every note in them.
+        c.apply(&g.change_line(&c, &[1, 4, 1], Change::Velocity(50)))
+            .unwrap();
+        assert!(c.notes.iter().all(|n| n.velocity == 50));
+
+        // Cleared: every note and lock on the steps, nothing else.
+        let e = g.clear_line(&c, 4, 5);
+        assert_eq!((e.erase.len(), e.erase_locks.len()), (3, 2));
+        c.apply(&e).unwrap();
+        assert!(g.line(&c)[4].is_none());
+        assert_eq!(g.line(&c)[1].map(|s| s.notes), Some(3));
+        assert!(g.clear_line(&c, 16, 20).is_empty(), "past the end");
     }
 
     #[test]

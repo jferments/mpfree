@@ -5,7 +5,7 @@ checked: 2026-11-17 dc4da93
 
 # STEP SEQ: the pads as steps
 
-**Status:** S1 of the sequencer roadmap: the pads as steps (first part), then holding a step, ties and COPY (second part), 2026-11-16; locks (third part), 2026-11-17; step edits in place (fourth part), 2026-11-17; full step cells and the step inspector on Beats (fifth part), 2026-11-17. Decided by the owner on 16 Nov 2026 (sequencer decision 2, card "Pads become steps, as designed", 20:00Z). The design notes, with mockup I (`step-pads.png`) and the Beats mockup, are in the private notes repository (`sequencer/rethink/README.md`, "STEP SEQ: the pads as steps"). The buttons and the screen are in the [layout spec](layout-spec.md) (sections 2, 4 and 6). Tested on the host; not yet run on the MPC (device checks `step-pads`, `step-hold`, `step-locks` and `step-speed`).
+**Status:** S1 of the sequencer roadmap: the pads as steps (first part), then holding a step, ties and COPY (second part), 2026-11-16; locks (third part), 2026-11-17; step edits in place (fourth part), 2026-11-17; full step cells and the step inspector on Beats (fifth part), 2026-11-17; the synth's steps, the line and its pen (sixth part), 2026-11-17. Decided by the owner on 16 Nov 2026 (sequencer decision 2, card "Pads become steps, as designed", 20:00Z). The design notes, with mockup I (`step-pads.png`) and the Beats mockup, are in the private notes repository (`sequencer/rethink/README.md`, "STEP SEQ: the pads as steps"). The buttons and the screen are in the [layout spec](layout-spec.md) (sections 2, 4 and 6). Tested on the host; not yet run on the MPC (device checks `step-pads`, `step-hold`, `step-locks`, `step-synth` and `step-speed`).
 
 This builds on the [step sequencer](steps.md): steps are a view of a clip's notes, and each edit is one take.
 
@@ -65,6 +65,15 @@ A lock is a value a step's sound plays with in place of its own. Clips kept them
 - **The Synth tab.** With steps held on a track that plays the synth the tab shows (its own instrument, or the synth on the pads), a knob turned there goes out as a `StepAction::Lock` on the steps held instead of a change to the sound (`as_held_lock` in `gui.rs`, on every action the screen sends). While they are held the tab shows the first step's locks, and once they are let go its own values again (`held_synth_values`).
 - **SHIFT + an empty step** holds it with no note (`Press::shift`). **ERASE pressed while steps are held** sends `ClearLocks` for them (`erase_held_steps` in `main.rs`, before the app's own ERASE, and `StepKeys::erase_locks`).
 
+## On the synth: the line and the pen
+
+On a melodic track the design makes the pads the steps of the whole line, chords included, as one lane does on the KeyStep Pro, and a new step plays the **pen**: the note or chord picked last. Here a melodic track is the synth on the pads (`App::set_pad_layout` has its layout). Its clips keep pad numbers, as every track on the pads does, and the synth plays each through its pad layout, so a pad of the Chords layout is a whole chord and the pen holds pads, not notes.
+
+- **The line** (`time::LINE`, `mpfree_seq::steps::LINE`, a row number no note has): `StepPads::sound` is it while the synth has the pads (`StepPads::line`). `StepClip` carries the line as a row of its own (`Grid::line`, each step's notes as one `Step` with their count) with its lock counts (`Grid::lock_line`), and a whole step's locks (a lock with no sound) show in `lock_values` on the line's row. Every step action takes `LINE` as its pad: `Change` is `Grid::change_all`, `ChangeSteps` `change_line`, `Lock` and `ClearLocks` the whole step's (no sound), `ClearSteps` `clear_line` and `CopySteps` `copy_line`, so ties, ERASE, COPY, the Q-Links and locks work as on a sound's steps, on every note of a step at once.
+- **The pen** (`step_pads::Pen`, up to `MAX_PEN`, 8 pads): STEP SEQ held, the pads play the synth as usual and `App::step_pad_played` writes the pen: a pad played with none of the others down starts a new pen, and pads held with it join it (a chord); `App::pad_up` lets them go (`step_pad_let_go`). With no pen yet, it is the pad played last. `App::pen_name` names its notes ("C3 Eb3 G3") for the lines; the chip shows the synth's name, then its pads' names joined with + ("Pads: steps · Poly · C3 + G3").
+- **A press** (`StepKeys::press`): an empty step sends `StepAction::Enter { step, keys, n }`, the pen's pads at the press's velocity (`Grid::enter`: in place of what the step held, a step long; with no clip, one is made and launched as `Tap` does), and while stopped every pad of the pen sounds once (`Pressed::sound`, a list, as `Released::silence`). A lit step pressed alone comes off whole on its release (`ClearSteps` of the line). With no pen, a press says to hold STEP SEQ and play a pad.
+- **The screen.** Beats' lane on the pads is the line, named "Line" in its pen's colour; a tap on its empty step puts the pen there (`PlayPage::tap_line`), and on a lit one picks it, then takes it off. The hint line says how to pick the pen while STEP SEQ is held.
+
 ## The step inspector and the cells
 
 The Beats mockup (A) shows a step whole, on its cell and under the pattern. Each lane carries the marks of its page (`play_widgets::Marks`, made by `play_page::marks` from the clip's row and `StepClip::locks`): condition, chance, ratchet, the nudge's side, a tie into the next step, the empty steps a note lasts over, and the lock count. `paint_cell` draws them, and the grid's paint cache (`StepLook`) compares the lanes with their marks, so a mark that changes is drawn again.
@@ -98,4 +107,4 @@ The colours go out on the pad colour message Akai's app uses (`akai::pad_colour`
 ## Coming next in S1
 
 - Locks from the mixer's and the effects' knobs turned on their own pages with a step held (the mod engine already plays them).
-- Synth tracks on the step pads (the pen: a note or chord).
+- On the synth: the Step bank's Note (the step's notes moved along the pad layout, nudge moving to Trig), a held step taking the notes played on a MIDI keyboard (`Grid::enter`), and Beats' scale rows (the design's mockup B). Tracks with their own instrument on the step pads.

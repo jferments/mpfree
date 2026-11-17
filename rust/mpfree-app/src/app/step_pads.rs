@@ -20,14 +20,20 @@
 //!   copy (`step_keys.rs`); a PAD BANK picks a page and the next one takes
 //!   a copy of it, the sound's steps and their locks.
 //!
-//! The app keeps the mode, the sound, the page and Follow. The audio loop
+//! **On the synth** (the pads play it: a melodic track), the pads are the
+//! steps of the whole line, chords included ([`LINE`]), and a new step
+//! plays the **pen**: the pad or pads picked last. Hold STEP SEQ and the
+//! pads are the synth's keys: tap a note, or hold a chord, then let go.
+//! STEP SEQ goes on with the pad played last as the pen.
+//!
+//! The app keeps the mode, the sound, the pen, the page and Follow. The audio loop
 //! turns the pads' presses into step edits and lights them
 //! (`step_keys.rs`), and the screen shows the "Pads: steps" chip and the
 //! lane on the pads from [`super::Status::steps`].
 
 use super::{bank_target, App, Effect, MuteKeys, View, LIGHT_OFF, LIGHT_ON};
 use crate::play_page::PlayView;
-use crate::time::StepAction;
+use crate::time::{StepAction, LINE, MAX_PEN};
 
 /// Pages the pads reach: 8 of 16 steps, the 128 steps a pattern can have.
 pub const PAGES: usize = 8;
@@ -39,8 +45,11 @@ pub const PAGE: usize = 16;
 /// audio loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StepPads {
-    /// The sound (a pad of the kit, 0 to 15) whose steps the pads are.
+    /// The sound (a pad of the kit, 0 to 15) whose steps the pads are, or
+    /// on the synth [`LINE`], the whole line.
     pub sound: u8,
+    /// On the synth: the pads a new step plays (a note, or a chord).
+    pub pen: Pen,
     /// The page of 16 steps on the pads (0: steps 1 to 16).
     pub page: usize,
     /// Follow: the page turns with the playhead.
@@ -61,6 +70,53 @@ impl StepPads {
     pub fn first(&self) -> usize {
         self.page * PAGE
     }
+
+    /// The pads are the steps of the whole line (the synth plays them).
+    pub fn line(&self) -> bool {
+        self.sound == LINE
+    }
+}
+
+/// STEP SEQ's pen on the synth: the pads (synth pads, 0 to 15, each a
+/// note or a chord) a new step plays, in the order they were played.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pen {
+    pads: [u8; MAX_PEN],
+    n: u8,
+}
+
+impl Pen {
+    /// A pen of one pad.
+    pub fn of(pad: u8) -> Pen {
+        let mut p = Pen::default();
+        p.add(pad);
+        p
+    }
+
+    pub fn pads(&self) -> &[u8] {
+        &self.pads[..usize::from(self.n)]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// `pad` joins the pen (a chord), if it isn't in it and there is room.
+    pub fn add(&mut self, pad: u8) {
+        if !self.pads().contains(&pad) && usize::from(self.n) < MAX_PEN {
+            self.pads[usize::from(self.n)] = pad;
+            self.n += 1;
+        }
+    }
+
+    /// The pen as a step action's keys, each at `velocity`.
+    pub fn keys(&self, velocity: u8) -> ([(u8, u8); MAX_PEN], u8) {
+        let mut keys = [(0, 0); MAX_PEN];
+        for (k, &p) in self.pads().iter().enumerate() {
+            keys[k] = (p, velocity);
+        }
+        (keys, self.n)
+    }
 }
 
 /// STEP SEQ's state in the app.
@@ -80,6 +136,10 @@ pub(super) struct StepSeq {
     copy_held: bool,
     /// COPY + PAD BANK: the page picked to copy.
     copy_page: Option<usize>,
+    /// On the synth: the pen, and the pads held while STEP SEQ is (a pad
+    /// played with none of them held starts a new pen).
+    pen: Pen,
+    pen_down: u16,
 }
 
 impl App {
@@ -89,11 +149,19 @@ impl App {
         let s = &self.step_seq;
         (s.on || s.held).then_some(StepPads {
             // Held with a pad tapped, or on: the sound; held to turn it
-            // on: the pad played last, until one is tapped.
-            sound: if s.on || s.picked {
+            // on: the pad played last, until one is tapped. On the synth,
+            // the whole line.
+            sound: if self.pad_layout.is_some() {
+                LINE
+            } else if s.on || s.picked {
                 s.sound
             } else {
                 s.last_pad
+            },
+            pen: if s.pen.is_empty() {
+                Pen::of(s.last_pad)
+            } else {
+                s.pen
             },
             page: s.page,
             follow: s.follow,
@@ -134,7 +202,8 @@ impl App {
     }
 
     /// A pad played (on the controller or the screen): the next sound for
-    /// STEP SEQ, and while STEP SEQ is held, the sound picked.
+    /// STEP SEQ, and while STEP SEQ is held, the sound picked; on the
+    /// synth, the pen (pads held together are a chord).
     pub(super) fn step_pad_played(&mut self, slot: usize) {
         let Ok(pad) = u8::try_from(slot) else { return };
         if pad >= 16 {
@@ -144,7 +213,50 @@ impl App {
         if self.step_seq.held {
             self.step_seq.picked = true;
             self.step_seq.sound = pad;
+            if self.pad_layout.is_some() {
+                let s = &mut self.step_seq;
+                if s.pen_down == 0 {
+                    s.pen = Pen::default();
+                }
+                s.pen.add(pad);
+                s.pen_down |= 1 << pad;
+            }
         }
+    }
+
+    /// A pad let go: while STEP SEQ is held, the next pad played starts a
+    /// new pen once none is down.
+    pub(super) fn step_pad_let_go(&mut self, slot: usize) {
+        if slot < 16 {
+            self.step_seq.pen_down &= !(1u16 << slot);
+        }
+    }
+
+    /// The pen's notes by name, for the lines and the chip: "C3", or a
+    /// chord's "C3 Eb3 G3".
+    pub fn pen_name(&self, pen: &Pen) -> String {
+        let Some(layout) = &self.pad_layout else {
+            return String::new();
+        };
+        let mut notes: Vec<u8> = pen
+            .pads()
+            .iter()
+            .filter_map(|&p| layout.get(usize::from(p)))
+            .flat_map(|n| n.notes().iter().copied())
+            .collect();
+        notes.sort_unstable();
+        notes.dedup();
+        let names: Vec<String> = notes.iter().map(|&n| crate::synth::note_name(n)).collect();
+        match names.len() {
+            0 => "no note".to_string(),
+            1..=4 => names.join(" "),
+            k => format!("{} +{}", names[..3].join(" "), k - 3),
+        }
+    }
+
+    /// The row the pads' steps are: the sound, or on the synth the line.
+    fn step_row(&self) -> u8 {
+        self.step_pads().map_or(self.step_seq.sound, |p| p.sound)
     }
 
     /// STEP SEQ pressed: SHIFT + STEP SEQ is Follow; alone it waits for
@@ -168,6 +280,7 @@ impl App {
         }
         self.step_seq.held = true;
         self.step_seq.picked = false;
+        self.step_seq.pen_down = 0;
         vec![
             self.status(),
             // While held, PAD BANK shows the kit's bank again.
@@ -214,11 +327,19 @@ impl App {
             fx.push(Effect::Light(n, LIGHT_ON));
         }
         fx.push(self.status());
-        fx.push(Effect::Note(format!(
-            "STEP SEQ: the pads are pad {}'s steps, page {}",
-            self.step_seq.sound + 1,
-            self.step_seq.page + 1
-        )));
+        let line = match self.step_pads() {
+            Some(p) if p.line() => format!(
+                "STEP SEQ: the pads are the line's steps, page {}; new steps play {} (hold STEP SEQ and play the pads to change it)",
+                self.step_seq.page + 1,
+                self.pen_name(&p.pen)
+            ),
+            _ => format!(
+                "STEP SEQ: the pads are pad {}'s steps, page {}",
+                self.step_seq.sound + 1,
+                self.step_seq.page + 1
+            ),
+        };
+        fx.push(Effect::Note(line));
         fx.push(Effect::BankLights);
         if open {
             fx.extend(self.go(View::Play));
@@ -249,13 +370,14 @@ impl App {
     /// the sound's steps on that page are cleared instead.
     pub(super) fn step_page_button(&mut self, button: u8, shift: bool) -> Vec<Effect> {
         let s = self.step_seq;
+        let row = self.step_row();
         // ERASE or COPY + PAD BANK: the page that button lights now
         // (SHIFT: the other four).
         let group = (s.page / 4 * 4 + if shift { 4 } else { 0 }) % PAGES;
         let lit = group + (button as usize & 3);
         if self.erase_held {
             return vec![Effect::Steps(StepAction::ClearSteps {
-                pad: s.sound,
+                pad: row,
                 from: lit * PAGE,
                 to: (lit + 1) * PAGE,
             })];
@@ -263,7 +385,7 @@ impl App {
         if s.copy_held {
             return match s.copy_page {
                 Some(from) if from != lit => vec![Effect::Steps(StepAction::CopySteps {
-                    pad: s.sound,
+                    pad: row,
                     from: from * PAGE,
                     to: lit * PAGE,
                     count: PAGE,
