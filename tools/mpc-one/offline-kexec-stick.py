@@ -134,6 +134,21 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     kernel; if the mark is still there at the next power-on, MPFree starts
     on the first kernel instead of trying again (no restart loop).
     Without --chain none of this is made
+  - only with --own-kernel DIR (with --chain; opt-in, own-kernel step 2):
+    the chain's second kernel is MPFree's own instead of a copy of Akai's.
+    DIR is a kernel folder as CI keeps it (tools/kernel/build.sh's output, in
+    /srv/mpfree-store/kernel/ on the CI VM): zImage, modules-<release>.tar.xz,
+    config, System.map, build-info.txt and SHA256SUMS, checked against its
+    SHA256SUMS. /boot/mpfree-kexec/zImage is then that zImage (a file, not
+    the link to Akai's), its modules go to /usr/lib/modules/<release>/ on the
+    stick's root (LoadPin pins it), /boot/mpfree-kexec/build-info.txt says
+    which kernel it is, and /etc/modprobe.d/mpfree-own-kernel.conf keeps udev
+    from loading the eMMC and SD card modules (our kernel has them as modules;
+    Akai's has them built in, so the file changes nothing there). The root
+    filesystem grows by what the modules need. The kernel must be one of
+    ours: release <x.y.z>[-rtN]-mpfree, pinned, its config checked
+    (CONFIG-OK), LoadPin enforcing, no kexec, the eMMC and SD card drivers
+    not built in. Without --own-kernel none of this is made
   - only with --dev-tools DIR (with --app; opt-in): developer tools for
     Akai's own system, beside the drum kits on partition 3 under /mpfree-dev:
     DIR's plain files and folders (plain names, single spaces allowed, no
@@ -204,6 +219,8 @@ Optional inputs:
                       line
   --chain             with --kexec-file --loadpin-off: restart once more into
                       the stick's own kernel and device tree (see above)
+  --own-kernel DIR    with --chain: that kernel is MPFree's own, from a kernel
+                      folder CI built (see above)
   --preload-module M  a kernel module the stick's system needs that Akai's
                       boot may not have loaded by 6 s (repeatable). After a
                       soft-reboot LoadPin refuses every module load, so the
@@ -219,6 +236,7 @@ import glob
 import hashlib
 import importlib.util
 import json
+import lzma
 import os
 import re
 import shutil
@@ -226,6 +244,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import uuid
@@ -343,6 +362,41 @@ CHAIN_FILES = ("/etc/mpfree-test/chain.sh", "/etc/systemd/system/mpfree-test-cha
 CHAIN_WANTS = "/etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service"
 CHAIN_DONE_WANTS = "/etc/systemd/system/multi-user.target.wants/mpfree-test-chain-done.service"
 CHAIN_MARK = "chain-pending"   # on the stick's log partition, from the jump until the second kernel has run 30 s
+# --own-kernel DIR (with --chain): MPFree's own kernel as the chain's second kernel (own-kernel.md, step 2).
+OWN_RELEASE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(-rt[0-9]+)?-mpfree$")
+OWN_PART = re.compile(r"^[A-Za-z0-9._+-]+$")   # each name in the modules tarball
+OWN_ZIMAGE_MAGIC = struct.pack("<I", 0x016F2818)   # at offset 0x24 of every 32-bit ARM zImage
+OWN_ZIMAGE_MAX = 32 << 20
+OWN_MODULES_MAX = 256 << 20   # unpacked
+OWN_FILES_MAX = 8192
+OWN_MODULES_DIR = "/usr/lib/modules"
+OWN_BUILD_INFO = KEXEC_DIR + "/build-info.txt"
+OWN_MODPROBE = "/etc/modprobe.d/mpfree-own-kernel.conf"
+# Our kernel builds the eMMC and SD card drivers as modules that nothing loads at start
+# (sd-card-and-internal-drive.md). Their devices are disabled in kexec.dtb, but the two power-sequence
+# nodes are not, and udev would load their modules (and the MMC core) by alias. "blacklist" stops only
+# loading by alias: MPFree can still load them by name when it switches the SD card on.
+OWN_MODPROBE_TEXT = """# MPFree (offline-kexec-stick.py --own-kernel): udev must not load the eMMC and SD card modules
+# of MPFree's own kernel at start. MPFree loads them by name when it switches the SD card on.
+# Akai's kernel has these built in, so this file changes nothing there.
+blacklist pwrseq_emmc
+blacklist pwrseq_simple
+blacklist dw_mmc_rockchip
+blacklist dw_mmc_pltfm
+blacklist dw_mmc
+blacklist mmc_block
+"""
+# (symbol, allowed values; None = unset): what the builder checks in the kernel's own config.
+OWN_CONFIG_RULES = (
+    ("CONFIG_SECURITY_LOADPIN_ENFORCE", {"y"}, "LoadPin must be enforcing, so the kernel loads modules only from the stick's root"),
+    ("CONFIG_KEXEC", {None}, "kexec must be off: the chain ends at this kernel"),
+    ("CONFIG_KEXEC_FILE", {None}, "kexec must be off: the chain ends at this kernel"),
+    ("CONFIG_MMC", {"m", None}, "the eMMC and SD card drivers must not be built in"),
+    ("CONFIG_MMC_DW", {"m", None}, "the eMMC and SD card drivers must not be built in"),
+    ("CONFIG_MODULE_SIG_FORCE", {None}, "modules must not be required to be signed"),
+    ("CONFIG_ARCH_ROCKCHIP", {"y"}, "it must be built for the MPC One's Rockchip RK3288"),
+    ("CONFIG_LOCALVERSION", {'"-mpfree"'}, "it must be MPFree's build"),
+)
 CHAIN_UP_SECONDS = 30
 KEXEC_PROGRAM = "/usr/sbin/kexec"
 SHUTDOWN_PROGRAM = "/usr/lib/systemd/systemd-shutdown"
@@ -1554,6 +1608,197 @@ def fetch_input(args):
     return path, dynamic_arm_program(path)
 
 
+def own_kernel_input(args):
+    """--own-kernel DIR: MPFree's own kernel, from a folder tools/kernel/build.sh made, checked. Returns None
+    without the option, else a dict: path, release, zimage (bytes), build_info (text), dirs (folders under
+    OWN_MODULES_DIR, parents first), files ([(path under OWN_MODULES_DIR, bytes)]), modules (the .ko count)."""
+    if not args.own_kernel:
+        return None
+    if not args.chain:
+        raise Stop("--own-kernel goes with --chain: our kernel is the chain's second kernel")
+    top = os.path.realpath(args.own_kernel)
+    if not os.path.isdir(top):
+        raise Stop(f"--own-kernel: {top} is not a folder (a kernel folder from the CI VM's store)")
+
+    def read(name, limit):
+        path = os.path.join(top, name)
+        if not os.path.isfile(path) or os.path.islink(path):
+            raise Stop(f"--own-kernel: {top} has no file {name}")
+        with open(path, "rb") as fh:
+            data = fh.read(limit + 1)
+        if len(data) > limit:
+            raise Stop(f"--own-kernel: {name} is larger than {limit >> 20} MiB")
+        return data
+
+    info = read("build-info.txt", 1 << 16).decode("utf-8", "replace")
+    release = next((line[len("release: "):].strip() for line in info.splitlines() if line.startswith("release: ")), "")
+    if not OWN_RELEASE.match(release):
+        raise Stop(f"--own-kernel: build-info.txt names release {release!r}, not one of MPFree's "
+                   "(<x.y.z>[-rtN]-mpfree)")
+    if "pinned: yes" not in info.splitlines():
+        raise Stop("--own-kernel: build-info.txt does not say \"pinned: yes\"; take a kernel built from the "
+                   "sources pinned in tools/kernel/versions.env")
+    if "check-config: CONFIG-OK" not in info:
+        raise Stop("--own-kernel: build-info.txt does not say its config was checked (check-config: CONFIG-OK)")
+    tar_name = f"modules-{release}.tar.xz"
+    names = ("zImage", tar_name, "config", "System.map", "build-info.txt")
+    sums = {}
+    for line in read("SHA256SUMS", 1 << 16).decode("utf-8", "replace").splitlines():
+        m = re.match(r"^([0-9a-f]{64})  (\S+)$", line)
+        if not m or m.group(2) in sums:
+            raise Stop(f"--own-kernel: SHA256SUMS has a line this tool does not take: {line!r}")
+        sums[m.group(2)] = m.group(1)
+    if sorted(sums) != sorted(names):
+        raise Stop(f"--own-kernel: SHA256SUMS lists {', '.join(sorted(sums))}, not {', '.join(sorted(names))}")
+    for name in names:
+        if sha256(os.path.join(top, name)) != sums[name]:
+            raise Stop(f"--own-kernel: {name} does not match its SHA256SUMS")
+
+    have = {}
+    for line in read("config", 1 << 20).decode("utf-8", "replace").splitlines():
+        m = re.match(r"^(CONFIG_[A-Za-z0-9_]+)=(.*)$", line.strip())
+        if m:
+            have[m.group(1)] = m.group(2)
+        m = re.match(r"^# (CONFIG_[A-Za-z0-9_]+) is not set$", line.strip())
+        if m:
+            have[m.group(1)] = None
+    if not have:
+        raise Stop("--own-kernel: config has no CONFIG_ lines")
+    for sym, allowed, why in OWN_CONFIG_RULES:
+        if have.get(sym) not in allowed:
+            got = "unset" if have.get(sym) is None else f"{sym}={have[sym]}"
+            raise Stop(f"--own-kernel: {why} (its config has {got})")
+
+    zimage = read("zImage", OWN_ZIMAGE_MAX)
+    if len(zimage) < (1 << 20) or zimage[0x24:0x28] != OWN_ZIMAGE_MAGIC:
+        raise Stop("--own-kernel: zImage is not a 32-bit ARM kernel (no zImage magic at 0x24)")
+
+    prefix = f"lib/modules/{release}"
+    dirs, files, total = [], [], 0
+    try:
+        with tarfile.open(os.path.join(top, tar_name), "r:xz") as tar:
+            for member in tar:
+                name = member.name
+                if name != prefix and not name.startswith(prefix + "/"):
+                    raise Stop(f"--own-kernel: {tar_name} has {name!r}, outside {prefix}/")
+                rel = name[len("lib/modules/"):]
+                if not all(OWN_PART.match(part) and part not in (".", "..") for part in rel.split("/")):
+                    raise Stop(f"--own-kernel: {tar_name} has a name this tool does not take: {name!r}")
+                if member.isdir():
+                    dirs.append(rel)
+                elif member.isreg():
+                    total += member.size
+                    if total > OWN_MODULES_MAX or len(files) >= OWN_FILES_MAX:
+                        raise Stop(f"--own-kernel: {tar_name} holds more than {OWN_MODULES_MAX >> 20} MiB or "
+                                   f"{OWN_FILES_MAX} files")
+                    files.append((rel, tar.extractfile(member).read()))
+                else:
+                    raise Stop(f"--own-kernel: {tar_name} has {name!r}, which is not a plain file or folder")
+    except (tarfile.TarError, lzma.LZMAError, EOFError) as err:
+        raise Stop(f"--own-kernel: {tar_name} could not be read ({err})")
+    if release not in dirs:
+        raise Stop(f"--own-kernel: {tar_name} has no folder {prefix}")
+    paths = {rel for rel, _ in files}
+    for need in ("modules.dep", "modules.order", "modules.builtin"):
+        if f"{release}/{need}" not in paths:
+            raise Stop(f"--own-kernel: {tar_name} has no {prefix}/{need}")
+    folders = set(dirs)
+    for rel in [*dirs, *paths]:
+        parent = rel.rsplit("/", 1)[0]
+        if rel != release and parent not in folders:
+            raise Stop(f"--own-kernel: {tar_name} has {rel!r} but not its folder")
+    modules = sum(1 for rel in paths if rel.endswith(".ko"))
+    said = next((line.split(":", 1)[1].strip() for line in info.splitlines() if line.startswith("modules: ")), None)
+    if modules == 0 or said != str(modules):
+        raise Stop(f"--own-kernel: {tar_name} holds {modules} modules, build-info.txt says {said}")
+    return {"path": top, "release": release, "zimage": zimage, "build_info": info,
+            "dirs": sorted(folders, key=lambda d: (d.count("/"), d)), "files": sorted(files), "modules": modules}
+
+
+def own_kernel_bytes(own):
+    """What our kernel takes on the root filesystem, in whole 4 KiB blocks, with its folders."""
+    block = 4096
+    sizes = [len(own["zimage"]), len(own["build_info"]), len(OWN_MODPROBE_TEXT)] + [len(d) for _, d in own["files"]]
+    return sum(-(-n // block) * block for n in sizes) + block * len(own["dirs"])
+
+
+def grow_for_own_kernel(img, own):
+    """Make room on the copy for our kernel and its modules: grow the file and its filesystem (resize2fs),
+    in whole MiB, by what they need plus 32 MiB, and more (128 MiB at a time, at most 4 times) while inodes
+    are short. The copy must be clean (e2fsck) first. Returns the bytes added."""
+    mib = 1 << 20
+    need_bytes = own_kernel_bytes(own) + 32 * mib
+    need_inodes = 64 + len(own["files"]) + len(own["dirs"])
+    free_bytes, free_inodes = img.free()
+    if free_bytes >= need_bytes and free_inodes >= need_inodes:
+        return 0
+    if not shutil.which("resize2fs"):
+        raise Stop("missing 'resize2fs' (e2fsprogs): --own-kernel grows the root filesystem for the modules")
+    check = run(["e2fsck", "-fn", img.path])
+    if check.returncode != 0:
+        raise Stop("e2fsck found problems in the copy before it grew:\n" + check.stdout)
+    # resize2fs wants a check newer than the last mount; -p marks the clean filesystem checked.
+    mark = run(["e2fsck", "-fp", img.path])
+    if mark.returncode != 0:
+        raise Stop("e2fsck -fp changed or refused the copy before it grew:\n" + mark.stdout)
+    added = 0
+    step = -(-max(need_bytes - free_bytes, 0) // mib) * mib or 128 * mib
+    for _ in range(5):
+        with open(img.path, "r+b") as fh:
+            fh.truncate(os.path.getsize(img.path) + step)
+        added += step
+        res = run(["resize2fs", img.path])
+        if res.returncode != 0:
+            raise Stop("resize2fs could not grow the copy:\n" + res.stdout)
+        free_bytes, free_inodes = img.free()
+        if free_bytes >= need_bytes and free_inodes >= need_inodes:
+            return added
+        step = 128 * mib
+    raise Stop(f"the copy grew by {added >> 20} MiB and still has too little room for our kernel's modules "
+               f"({free_bytes} bytes, {free_inodes} inodes free)")
+
+
+def check_own_modules(img, scratch, own_dir, own, written):
+    """Read our kernel's modules back: every folder and file there with root's ownership, 0755 and 0644, the
+    right size and the same bytes, and nothing else."""
+    want = {f"{OWN_MODULES_DIR}/{rel}": ("040755", None) for rel in own["dirs"]}
+    want.update({path: ("100644", len(data)) for path, data in written})
+    seen = {}
+    for rel in own["dirs"]:
+        folder = f"{OWN_MODULES_DIR}/{rel}"
+        for line in img.cmd(f"ls -p {quote(folder)}").splitlines():
+            parts = line.split("/")
+            if len(parts) < 8 or parts[5] in (".", ".."):
+                continue
+            seen[f"{folder}/{parts[5]}"] = (parts[2], parts[3], parts[4], parts[6])
+    top = img.cmd(f"stat {quote(own_dir)}")
+    if not re.search(r"Type: directory\s+Mode:\s+0755", top) or not re.search(r"User:\s+0\s+Group:\s+0", top):
+        raise Stop(f"{own_dir} did not read back as a folder of root's, 0755")
+    seen[own_dir] = ("040755", "0", "0", "")
+    if sorted(seen) != sorted(want):
+        extra = sorted(set(seen) - set(want))[:3]
+        missing = sorted(set(want) - set(seen))[:3]
+        raise Stop(f"our kernel's modules did not read back as written (extra {extra}, missing {missing})")
+    for path, (mode, size) in want.items():
+        got_mode, uid, gid, got_size = seen[path]
+        if got_mode != mode or (uid, gid) != ("0", "0") or (size is not None and got_size != str(size)):
+            raise Stop(f"{path} did not read back as written")
+    dest = os.path.join(scratch, "own-check")
+    os.mkdir(dest)
+    run(["debugfs", "-R", f"rdump {quote(own_dir)} {quote(dest)}", img.path])
+    base = os.path.join(dest, own["release"])
+    for path, data in written:
+        local = os.path.join(base, path[len(own_dir) + 1:])
+        try:
+            with open(local, "rb") as fh:
+                same = fh.read() == data
+        except OSError:
+            same = False
+        if not same:
+            raise Stop(f"{path} did not read back as written")
+    shutil.rmtree(dest)
+
+
 def newest(pattern):
     found = sorted(glob.glob(pattern))
     return found[-1] if found else None
@@ -1773,7 +2018,7 @@ def chain_kexec_check(img, scratch):
 
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
                  app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None,
-                 app_user=False, chain=False, fetch=None):
+                 app_user=False, chain=False, fetch=None, own_kernel=None):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
@@ -1790,13 +2035,19 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     With `chain` (only with `kexec_files` and a kexec-file command line in `softreboot`), mpfree-test-chain.service
     is installed, listed in SOFTREBOOT_DIR's SHA256SUMS with KEXEC_DIR's files, and Akai's KEXEC_PROGRAM is
     left in place (not stubbed). Without it, nothing here differs from a build before --chain.
-    With `fetch` (only with `app`), FETCH_PROGRAM is the Plugins place's download helper."""
+    With `fetch` (only with `app`), FETCH_PROGRAM is the Plugins place's download helper.
+    With `own_kernel` (only with `chain`; own_kernel_input's dict), KEXEC_DIR/zImage is MPFree's own kernel (a
+    file, not the link to the image's), its modules go under OWN_MODULES_DIR, OWN_BUILD_INFO says which kernel
+    it is and OWN_MODPROBE keeps udev from loading the eMMC and SD card modules. Without it, nothing here
+    differs from a build before --own-kernel."""
     if app_user and app is None:
         raise Stop("--app-user needs --app: it changes who the pad player runs as")
     if fetch is not None and app is None:
         raise Stop("--fetch needs --app: it is the pad player's download helper")
     if chain and not (kexec_files and softreboot and softreboot[2]):
         raise Stop("--chain needs the kexec-file route and the stick's own kernel and device tree")
+    if own_kernel and not chain:
+        raise Stop("--own-kernel goes with --chain: our kernel is the chain's second kernel")
     if akai_app:
         if app is not None or splash[0] is not None or kits_uuid is None or data_uuid is None:
             raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
@@ -1817,10 +2068,15 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     user_edits = app_user_edits(img, scratch) if app_user else {}
     if chain:
         chain_kexec_check(img, scratch)
+    own_dir = f"{OWN_MODULES_DIR}/{own_kernel['release']}" if own_kernel else None
+    if own_kernel and img.kind(OWN_MODULES_DIR) != "directory":
+        raise Stop(f"the image has no folder {OWN_MODULES_DIR} for our kernel's modules")
     splash_program, font_name, font = splash
-    extra = len(splash_program or b"") + len(font or b"") + len(app or b"") + len(fetch or b"")
+    extra = len(splash_program or b"") + len(font or b"") + len(app or b"") + len(fetch or b"") + \
+        (own_kernel_bytes(own_kernel) if own_kernel else 0)
     free_bytes, free_inodes = img.free()
-    if free_bytes < len(screen_log) + extra + (4 << 20) or free_inodes < 64:
+    if free_bytes < len(screen_log) + extra + (4 << 20) or \
+            free_inodes < 64 + (len(own_kernel["files"]) + len(own_kernel["dirs"]) if own_kernel else 0):
         raise Stop(f"the image has too little room for the changes ({free_bytes} bytes, {free_inodes} inodes free)")
     new_paths = (["/etc/systemd/system/" + u for u in mask_units] +
                  ["/etc/systemd/system/data.mount", "/etc/systemd/system/mpfree-test-sshd.service",
@@ -1842,7 +2098,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                    "/etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service"] if softreboot else []) +
                  (["/etc/systemd/system/mpfree-test-storage.service"] if app_user else []) +
                  ([*POWER_FILES[1:], POWER_WANTS] if app is not None else []) +
-                 ([*CHAIN_FILES, CHAIN_WANTS, CHAIN_DONE_WANTS] if chain else []))
+                 ([*CHAIN_FILES, CHAIN_WANTS, CHAIN_DONE_WANTS] if chain else []) +
+                 ([own_dir, OWN_BUILD_INFO, OWN_MODPROBE] if own_kernel else []))
     for path in new_paths:
         if img.kind(path) is not None:
             raise Stop(f"{path} already exists in the image; refusing to guess what it is")
@@ -1906,7 +2163,11 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     add("/etc/systemd/system/mpfree-test-ethernet.service", ETHERNET_UNIT, 0o644)
     if kexec_files:
         release, kexec_dtb, cmdline = kexec_files
-        kernel = img.read("/boot/zImage-" + release, scratch)
+        kernel = own_kernel["zimage"] if own_kernel else img.read("/boot/zImage-" + release, scratch)
+        if own_kernel:
+            add(KEXEC_DIR + "/zImage", kernel, 0o644)
+            add(OWN_BUILD_INFO, own_kernel["build_info"], 0o644)
+            add(OWN_MODPROBE, OWN_MODPROBE_TEXT, 0o644)
         sums = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n"
                        for name, data in (("zImage", kernel), ("kexec.dtb", kexec_dtb), ("cmdline.txt", cmdline)))
         add(KEXEC_DIR + "/kexec.dtb", kexec_dtb, 0o644)
@@ -1986,7 +2247,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     if splash_program:
         links["/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service"] = \
             "/etc/systemd/system/mpfree-test-splash.service"
-    if kexec_files:
+    if kexec_files and not own_kernel:
         links[KEXEC_DIR + "/zImage"] = "../zImage-" + kexec_files[0]
 
     if softreboot:
@@ -1997,12 +2258,26 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
 
     commands = (["mkdir /etc/mpfree-test"] + ([f"mkdir {KEXEC_DIR}"] if kexec_files else []) +
                 ([f"mkdir {SOFTREBOOT_DIR}"] if softreboot else []))
-    for folder in MADE_IF_MISSING:
+    for folder in MADE_IF_MISSING + ((parent_of(OWN_MODPROBE),) if own_kernel else ()):
         kind = img.kind(folder)
         if kind is None:
             commands.append(f"mkdir {folder}")
         elif kind != "directory":
             raise Stop(f"{folder} is a {kind}, not a folder")
+    own_files = []   # (image path, bytes): our kernel's modules, written below and checked apart from `files`
+    if own_kernel:
+        for rel in own_kernel["dirs"]:
+            path = f"{OWN_MODULES_DIR}/{rel}"
+            commands += [f"mkdir {quote(path)}", f"sif {quote(path)} mode 040755",
+                         f"sif {quote(path)} uid 0", f"sif {quote(path)} gid 0"]
+        for n, (rel, data) in enumerate(own_kernel["files"]):
+            path = f"{OWN_MODULES_DIR}/{rel}"
+            local = os.path.join(scratch, f"module{n}")
+            with open(local, "wb") as fh:
+                fh.write(data)
+            own_files.append((path, data))
+            commands += [f"write {quote(local)} {quote(path)}", f"sif {quote(path)} mode 0100644",
+                         f"sif {quote(path)} uid 0", f"sif {quote(path)} gid 0"]
     for n, (path, (data, mode)) in enumerate(sorted(files.items())):
         local = os.path.join(scratch, f"file{n}")
         with open(local, "wb") as fh:
@@ -2035,6 +2310,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     for path, target in links.items():
         if img.kind(path) != "symlink" or img.link(path) != target:
             raise Stop(f"{path} is not a link to {target}")
+    if own_kernel:
+        check_own_modules(img, scratch, own_dir, own_kernel, own_files)
     fsck = run(["e2fsck", "-fn", img.path])
     if fsck.returncode != 0:
         raise Stop("e2fsck found problems in the changed copy:\n" + fsck.stdout)
@@ -2135,6 +2412,9 @@ def main(argv):
                     help=f"with --kexec-file --loadpin-off: on that kernel, the stick's system restarts once more "
                          f"into the stick's own kernel and device tree ({KEXEC_DIR}): Ethernet's PHY ID, and the "
                          "eMMC and SD controllers disabled in the tree")
+    ap.add_argument("--own-kernel", metavar="DIR",
+                    help="with --chain: that kernel is MPFree's own, from a kernel folder CI built (zImage, "
+                         "modules-<release>.tar.xz, config, System.map, build-info.txt, SHA256SUMS); see above")
     args = ap.parse_args(argv)
     if args.loadpin_off and not args.kexec_file:
         raise Stop("--loadpin-off goes with --kexec-file (it changes only that route's command line)")
@@ -2166,6 +2446,7 @@ def main(argv):
     app_path, app, kits_path, kits = app_inputs(args, work)
     fetch_path, fetch = fetch_input(args)
     dev = dev_tools_input(args)
+    own = own_kernel_input(args)
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     os.makedirs(work, exist_ok=True)
@@ -2177,7 +2458,7 @@ def main(argv):
         OUT.say("MPFree kexec test-boot builder (workstation only, no MPC contact, no device writes)")
         OUT.say(f"output folder: {outdir}")
         need = 2 * os.path.getsize(image) + 3 * len(kits or b"") + 3 * sum(len(d) for _, d in (dev or ([], []))[1]) \
-            + (256 << 20)
+            + (256 << 20) + (3 * own_kernel_bytes(own) if own else 0)
         parts34 = app is not None or args.akai_app
         if shutil.disk_usage(outdir).free < need:
             raise Stop(f"not enough free space in {work}: {need >> 20} MiB needed")
@@ -2189,6 +2470,7 @@ def main(argv):
         if sha256(copy) != source_sha:
             raise Stop("the copy of the rootfs does not match the source")
         img = Image(copy)
+        grown = grow_for_own_kernel(img, own) if own else 0
         kernels = [n for n in img.names("/boot") if n.startswith("zImage-")]
         if len(kernels) != 1 or not SAFE.match(kernels[0]):
             raise Stop(f"expected one /boot/zImage-<release> in the image, found {len(kernels)}")
@@ -2296,9 +2578,10 @@ def main(argv):
                     "or a full restart. Holding the button is still the hard power-off")
         else:
             OUT.say("pad player: none (no --app); the log display starts at power-on")
-        OUT.say(f"for MPFree's boot hook: {KEXEC_DIR} on partition 1, with a link to the kernel, kexec.dtb, "
-                "cmdline.txt and their SHA256SUMS (the same files as in the build folder); with the hook installed "
-                "on the MPC, power-on with this stick in jumps to it")
+        OUT.say(f"for MPFree's boot hook: {KEXEC_DIR} on partition 1, with "
+                + ("MPFree's own kernel (--own-kernel, below)" if own else "a link to the kernel")
+                + ", kexec.dtb, cmdline.txt and their SHA256SUMS (the same files as in the build folder); with the "
+                "hook installed on the MPC, power-on with this stick in jumps to it")
         OUT.say(f"for MPFree's soft-reboot hook: {SOFTREBOOT_DIR} on partition 1 (protocol {SOFTREBOOT_PROTOCOL}, "
                 f"kernel release {release}) and mpfree-test-internal-off.service, which switches the MPC's eMMC and "
                 "SD card off first thing at boot, before udev and every mount; it fails safe by powering off")
@@ -2326,13 +2609,25 @@ def main(argv):
                 if splash[0]:
                     OUT.say("  --chain: the startup screen waits for the chain, so it plays once: on the stick's "
                             "kernel, or on the first kernel only when the chain does not restart")
+                if own:
+                    OUT.say(f"  --own-kernel: the chain's second kernel is MPFree's own, {own['release']}, from "
+                            f"{own['path']}: {KEXEC_DIR}/zImage ({len(own['zimage'])} bytes, sha256 "
+                            f"{hashlib.sha256(own['zimage']).hexdigest()}), not Akai's")
+                    OUT.say(f"  --own-kernel: {own['modules']} modules in {OWN_MODULES_DIR}/{own['release']} "
+                            f"({len(own['files'])} files, {sum(len(d) for _, d in own['files'])} bytes), on the "
+                            f"stick's root, which LoadPin pins; {OWN_MODPROBE} keeps udev from loading the eMMC "
+                            f"and SD card modules; {OWN_BUILD_INFO} is the kernel's build-info.txt"
+                            + (f"; the root filesystem grew by {grown >> 20} MiB for them" if grown else ""))
+                    for line in own["build_info"].splitlines():
+                        if line.split(":", 1)[0] in ("linux", "rt", "compiler", "config", "source commit"):
+                            OUT.say(f"  --own-kernel: {line}")
         else:
             OUT.say("  route: soft-reboot only (no --kexec-file)")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
                                                                   screen_log, rotation, splash, app, kits_uuid,
                                                                   data_uuid, args.akai_app, kexec_files,
                                                                   (release, args.preload_module, kexec_file_cmdline),
-                                                                  args.app_user, args.chain, fetch)
+                                                                  args.app_user, args.chain, fetch, own)
         if fetch:
             OUT.say(f"download helper: {fetch_path} ({len(fetch)} bytes, sha256 {hashlib.sha256(fetch).hexdigest()}, "
                     f"dynamic ARM EABI5 hard-float), at {FETCH_PROGRAM}: the Plugins place downloads through it")
