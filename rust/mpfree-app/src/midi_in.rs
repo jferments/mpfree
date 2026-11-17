@@ -55,7 +55,7 @@
 use std::sync::TryLockError;
 use std::time::Duration;
 
-use mpfree_midi::input::{In, InputRouter, PortFilter};
+use mpfree_midi::input::{ChanFilter, In, InputRouter, PortFilter, Route};
 use mpfree_midi::learn::{Input, LearnMap, Saved, Write};
 use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
 use mpfree_midi::msg::Msg;
@@ -89,6 +89,61 @@ pub enum Key {
     },
 }
 
+/// The tracks a route may name (`mpfree_midi::setup::ROUTE_TRACKS`).
+const ROUTE_TRACKS: usize = mpfree_midi::setup::ROUTE_TRACKS;
+
+/// Where each routed key went down: played on its own track at once, or
+/// with the armed track's keys (its track was armed then). Its note-off and
+/// pressure follow it there, even if the armed track changed while it was
+/// held, so no note hangs.
+pub struct RoutedHeld {
+    /// Per track, a bit per note played on it at once.
+    direct: Box<[u128]>,
+}
+
+impl Default for RoutedHeld {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RoutedHeld {
+    pub fn new() -> RoutedHeld {
+        RoutedHeld {
+            direct: vec![0; ROUTE_TRACKS].into_boxed_slice(),
+        }
+    }
+
+    /// Whether `key`, routed to `track`, plays on that track at once
+    /// (true) or goes with the armed track's keys (false); `armed`: the
+    /// track is the armed one now.
+    pub fn direct(&mut self, track: u8, key: Key, armed: bool) -> bool {
+        let Some(held) = self.direct.get_mut(usize::from(track)) else {
+            return false;
+        };
+        let bit = |note: u8| 1u128 << (note & 0x7F);
+        match key {
+            Key::Down { note, .. } if armed => {
+                *held &= !bit(note);
+                false
+            }
+            Key::Down { note, .. } => {
+                *held |= bit(note);
+                true
+            }
+            // A key that went down with the armed keys ends there; one
+            // whose track was armed and isn't now was let go when the
+            // armed track changed, so its note-off is harmless here.
+            Key::Up { note } => {
+                let was = *held & bit(note) != 0;
+                *held &= !bit(note);
+                was || !armed
+            }
+            Key::Pressure { note, .. } => *held & bit(note) != 0 || !armed,
+        }
+    }
+}
+
 /// What MIDI Learn did, for the app.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Learning {
@@ -111,6 +166,10 @@ const LEARN_QUIET_S: f64 = 0.25;
 /// The followed port's clock bytes kept for the time engine in one
 /// period: at 300 BPM a pulse comes every 8 ms, so a few at most.
 const LEADER_BYTES: usize = 64;
+
+/// Routed keys kept for the app between its takes; a period's keys past
+/// this still go in (the Vec grows), so none is lost.
+const ROUTED_KEYS: usize = 256;
 
 /// What a learned control last set a parameter to (0 to 1), and when.
 #[derive(Clone, Copy, Debug)]
@@ -219,6 +278,9 @@ pub struct MusicIn {
     /// Per port: what its page says about it ("USB · port 2 of 4 on
     /// MIO4"), set when it is plugged in.
     about: Vec<String>,
+    /// Keys a route sends to its track, whichever track is armed, until
+    /// the app takes them ([`MusicIn::take_routed`]).
+    routed: Vec<(u8, Key)>,
 }
 
 impl Default for MusicIn {
@@ -264,6 +326,7 @@ impl MusicIn {
             armed: (0, true),
             note_offs: false,
             about: vec![String::new(); MAX_PORTS],
+            routed: Vec::with_capacity(ROUTED_KEYS),
         }
     }
 
@@ -271,6 +334,13 @@ impl MusicIn {
     /// end, since the last call (at most once a sync).
     pub fn take_note_offs(&mut self) -> bool {
         std::mem::take(&mut self.note_offs)
+    }
+
+    /// The keys routes sent to their tracks since the last take (the I/O
+    /// view's Routing: a port and channel that play one track, whichever
+    /// track is armed), each with its track, from 0.
+    pub fn take_routed(&mut self) -> std::vec::Drain<'_, (u8, Key)> {
+        self.routed.drain(..)
     }
 
     /// Once a period, before the bytes: the track keys play (from 0), and
@@ -468,6 +538,23 @@ impl MusicIn {
                 }
                 self.router.set_ignore(p.id, set.ignore);
             }
+            // Routes to tracks, on this run's port numbers: a route whose
+            // port hasn't been plugged in yet waits for it (plugging a
+            // port in applies the setup again).
+            let ports = &self.ports;
+            let routed = &mut self.routed;
+            self.router.set_routes(
+                m.setup.routes.iter().filter_map(|r| {
+                    let id = ports.all().iter().find(|p| p.name == r.port)?.id;
+                    Some(Route {
+                        port: PortFilter::One(id),
+                        channel: r.channel.map_or(ChanFilter::Omni, ChanFilter::One),
+                        track: r.track,
+                    })
+                }),
+                0,
+                |e| routed_key(e, routed),
+            );
             let learned = std::mem::take(&mut m.setup.learn);
             self.build_learn(&learned);
             m.setup.learn = learned;
@@ -598,11 +685,21 @@ impl MusicIn {
     /// many were.
     pub fn unplugged(&mut self, port: PortId, keys: &mut Vec<Key>) -> u16 {
         let held = keys.len();
-        self.router.port_gone(port, 0, |e| key_of(e, keys));
+        let routed = &mut self.routed;
+        let routed_held = routed.len();
+        self.router.port_gone(port, 0, |e| {
+            key_of(e, keys);
+            routed_key(e, routed);
+        });
+        let routed_ended = self.routed[routed_held..]
+            .iter()
+            .filter(|(_, k)| matches!(k, Key::Up { .. }))
+            .count();
         let ended = keys[held..]
             .iter()
             .filter(|k| matches!(k, Key::Up { .. }))
-            .count();
+            .count()
+            + routed_ended;
         self.ports.unplugged(port);
         self.ports_changed = true;
         if let Some(c) = self.clock.get_mut(usize::from(port.0)) {
@@ -724,8 +821,12 @@ impl MusicIn {
             } else {
                 To::Nothing
             };
-            let (learn, learning, sets) =
-                (&mut self.learn, &mut self.learning, &mut self.learn_sets);
+            let (learn, learning, sets, routed) = (
+                &mut self.learn,
+                &mut self.learning,
+                &mut self.learn_sets,
+                &mut self.routed,
+            );
             self.router.feed(port, b, 0, |e| match e {
                 In::Seen { msg, .. } => seen = Some(msg),
                 // The port's "Ignore coming in": listed, nothing else.
@@ -737,7 +838,7 @@ impl MusicIn {
                 other => {
                     got = true;
                     // What Learn takes doesn't play.
-                    if let In::Track { msg, .. } = &other {
+                    if let In::Track { msg, .. } | In::Routed { msg, .. } = &other {
                         if learns && learn.takes(port, msg) {
                             if let Some(target) = learn.target_of(port, msg) {
                                 to = To::Learned(target);
@@ -752,6 +853,14 @@ impl MusicIn {
                             });
                             return;
                         }
+                    }
+                    // A route plays its track, whatever the port's input.
+                    if let In::Routed { track, .. } = other {
+                        if key_note(&other).is_some() {
+                            to = To::Track { track, pad: None };
+                        }
+                        routed_key(other, routed);
+                        return;
                     }
                     // "Learn only" plays nothing, but a note-off still
                     // ends a note this port started before.
@@ -946,15 +1055,31 @@ fn key_of(e: In, keys: &mut Vec<Key>) {
     let In::Track { msg, .. } = e else {
         return;
     };
-    match msg {
-        Msg::NoteOn { note, vel, .. } => keys.push(Key::Down {
+    if let Some(k) = key(msg) {
+        keys.push(k);
+    }
+}
+
+/// A route's notes as keys, with the track they play.
+fn routed_key(e: In, routed: &mut Vec<(u8, Key)>) {
+    let In::Routed { track, msg, .. } = e else {
+        return;
+    };
+    if let Some(k) = key(msg) {
+        routed.push((track, k));
+    }
+}
+
+fn key(msg: Msg) -> Option<Key> {
+    Some(match msg {
+        Msg::NoteOn { note, vel, .. } => Key::Down {
             note,
             velocity: vel,
-        }),
-        Msg::NoteOff { note, .. } => keys.push(Key::Up { note }),
-        Msg::PolyPressure { note, value, .. } => keys.push(Key::Pressure { note, value }),
-        _ => {}
-    }
+        },
+        Msg::NoteOff { note, .. } => Key::Up { note },
+        Msg::PolyPressure { note, value, .. } => Key::Pressure { note, value },
+        _ => return None,
+    })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1136,6 +1261,110 @@ mod tests {
         assert_eq!(keys, vec![Key::Up { note: 60 }]);
         // Still logged.
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn a_route_plays_its_track_whatever_the_ports_input_and_the_rest_play_the_armed_one() {
+        use mpfree_midi::setup::{TrackRoute, DIN_NAME};
+        let mut m = MusicIn::new();
+        let io = model();
+        {
+            let mut v = io.lock().unwrap();
+            // Channel 10 of the 5-pin jack plays track 41; a route from a
+            // keyboard that isn't plugged in yet waits for it.
+            v.setup.routes = vec![
+                TrackRoute {
+                    port: DIN_NAME.to_string(),
+                    channel: Some(9),
+                    track: 40,
+                },
+                TrackRoute {
+                    port: "Keystep 37".to_string(),
+                    channel: None,
+                    track: 2,
+                },
+            ];
+            v.setup
+                .set_port(DIN_NAME, |p| p.input = PortInput::LearnOnly);
+            v.gen += 1;
+        }
+        m.sync(&io, 0.5);
+        // A Learn only port plays nothing on the armed track, but its
+        // route still plays track 41.
+        let (keys, _) = run(&mut m, DIN, &[0x99, 36, 100, 0x90, 60, 100]);
+        assert!(keys.is_empty(), "{keys:?}");
+        let routed: Vec<_> = m.take_routed().collect();
+        assert_eq!(
+            routed,
+            vec![(
+                40,
+                Key::Down {
+                    note: 36,
+                    velocity: 100
+                }
+            )]
+        );
+        // The keyboard's route applies once it is plugged in; its keys
+        // go to track 3, none to the armed track.
+        let keystep = m.plugged("Keystep 37").unwrap();
+        m.sync(&io, 1.0);
+        let (keys, _) = run(&mut m, keystep, &[0x93, 64, 90]);
+        assert!(keys.is_empty());
+        assert_eq!(
+            m.take_routed().collect::<Vec<_>>(),
+            vec![(
+                2,
+                Key::Down {
+                    note: 64,
+                    velocity: 90
+                }
+            )]
+        );
+        // Unplugged while held: the key is let go on its track.
+        let mut keys = Vec::new();
+        assert_eq!(m.unplugged(keystep, &mut keys), 1);
+        assert_eq!(
+            m.take_routed().collect::<Vec<_>>(),
+            vec![(2, Key::Up { note: 64 })]
+        );
+        // A route taken away lets its held keys go on the track they
+        // played (36 is still held from above).
+        run(&mut m, DIN, &[0x99, 38, 100]);
+        m.take_routed().for_each(drop);
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes.clear();
+            v.gen += 1;
+        }
+        m.sync(&io, 2.0);
+        assert_eq!(
+            m.take_routed().collect::<Vec<_>>(),
+            vec![(40, Key::Up { note: 36 }), (40, Key::Up { note: 38 })]
+        );
+    }
+
+    #[test]
+    fn a_routed_keys_note_off_follows_its_note_on_when_the_armed_track_changes() {
+        let mut h = RoutedHeld::new();
+        let down = Key::Down {
+            note: 60,
+            velocity: 100,
+        };
+        let up = Key::Up { note: 60 };
+        // Down while its track isn't armed: played at once; the track is
+        // armed before the key comes up: it still ends where it began.
+        assert!(h.direct(5, down, false));
+        assert!(h.direct(5, Key::Pressure { note: 60, value: 9 }, true));
+        assert!(h.direct(5, up, true));
+        // Down while armed: with the armed keys, and so its note-off.
+        assert!(!h.direct(5, down, true));
+        assert!(!h.direct(5, up, true));
+        // Armed at the key's down, not at its up: the armed keys let it
+        // go when the armed track changed, so a note-off here is harmless.
+        assert!(!h.direct(5, down, true));
+        assert!(h.direct(5, up, false));
+        // A track past the most a route names goes with the armed keys.
+        assert!(!h.direct(200, down, false));
     }
 
     #[test]

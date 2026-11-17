@@ -4,7 +4,9 @@
 use std::cell::RefCell;
 
 use mpfree_midi::cv::{Calibration, CvAssign, CvChange, CvEngine, Priority, Scale};
-use mpfree_midi::input::{ChanFilter, In, InputMode, InputRouter, Listen, PortFilter};
+use mpfree_midi::input::{
+    ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route, MAX_ROUTES,
+};
 use mpfree_midi::learn::{Encoding, Input, LearnMap, Mode, Saved, Source, Takeover};
 use mpfree_midi::output::{OutQueue, OutRoute, OutputRouter};
 use mpfree_midi::{Msg, PortId, DIN, MAX_PORTS};
@@ -1104,4 +1106,112 @@ fn cv_clock_reset_run_and_triggers() {
     assert_eq!(at(2), vec![(0, 5.0), (48, 0.0)]);
     assert_eq!(at(3), vec![(3, 10.0), (243 - 128, 0.0)]);
     assert_eq!(cv.volts()[4], -2.5);
+}
+
+fn routed(evs: &[In]) -> Vec<(u8, Msg)> {
+    evs.iter()
+        .filter_map(|e| match *e {
+            In::Routed { track, msg, .. } => Some((track, msg)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn route(port: PortId, ch: Option<u8>, track: u8) -> Route {
+    Route {
+        port: PortFilter::One(port),
+        channel: ch.map_or(ChanFilter::Omni, ChanFilter::One),
+        track,
+    }
+}
+
+#[test]
+fn a_route_plays_its_track_and_the_selected_track_gets_the_rest() {
+    let mut r = InputRouter::new();
+    r.set_selected(Some(0));
+    // Channel 10 of the keyboard plays track 40 (past the router's own
+    // 16), whichever track is selected.
+    assert_eq!(r.set_routes([route(KEYS, Some(9), 40)], 0, |_| {}), 0);
+    let ev = feed(&mut r, KEYS, &[0x99, 36, 100, 0x90, 60, 90]);
+    let drum = Msg::NoteOn {
+        ch: 9,
+        note: 36,
+        vel: 100,
+    };
+    let key = Msg::NoteOn {
+        ch: 0,
+        note: 60,
+        vel: 90,
+    };
+    // Never both: the routed note doesn't play the selected track too.
+    assert_eq!(routed(&ev), vec![(40, drum)]);
+    assert_eq!(to_tracks(&ev), vec![(0, key)]);
+    // The note-off ends it on its route; a CC on channel 10 goes there
+    // only, and the same channel on another port isn't routed.
+    let ev = feed(&mut r, KEYS, &[0x89, 36, 0, 0xB9, 1, 64]);
+    assert_eq!(
+        routed(&ev),
+        vec![
+            (
+                40,
+                Msg::NoteOff {
+                    ch: 9,
+                    note: 36,
+                    vel: 0
+                }
+            ),
+            (
+                40,
+                Msg::Cc {
+                    ch: 9,
+                    cc: 1,
+                    value: 64
+                }
+            )
+        ]
+    );
+    assert!(to_tracks(&ev).is_empty());
+    let ev = feed(&mut r, DIN, &[0x99, 36, 100]);
+    assert!(routed(&ev).is_empty());
+    assert_eq!(to_tracks(&ev), vec![(0, drum)]);
+}
+
+#[test]
+fn a_route_changed_while_a_key_is_held_ends_the_note_where_it_began() {
+    let mut r = InputRouter::new();
+    r.set_routes([route(KEYS, None, 5)], 0, |_| {});
+    let ev = feed(&mut r, KEYS, &[0x91, 64, 100]);
+    assert_eq!(routed(&ev).len(), 1);
+    // The route moves to track 6 while the key is down: track 5 gets its
+    // note-off now, and the key's own note-off later plays nothing.
+    let mut offs = Vec::new();
+    r.set_routes([route(KEYS, None, 6)], 7, |e| offs.push(e));
+    assert_eq!(
+        routed(&offs),
+        vec![(
+            5,
+            Msg::NoteOff {
+                ch: 1,
+                note: 64,
+                vel: 64
+            }
+        )]
+    );
+    let ev = feed(&mut r, KEYS, &[0x81, 64, 0]);
+    assert!(routed(&ev).is_empty());
+    assert_eq!(r.held(), 0);
+    // A route that stays the same keeps its keys.
+    feed(&mut r, KEYS, &[0x91, 65, 100]);
+    let mut none = Vec::new();
+    r.set_routes([route(KEYS, None, 6)], 8, |e| none.push(e));
+    assert!(none.is_empty());
+    assert_eq!(r.held(), 1);
+}
+
+#[test]
+fn routes_past_the_most_kept_are_counted() {
+    let mut r = InputRouter::new();
+    let many = (0..40u8).map(|t| route(KEYS, Some(t % 16), t));
+    assert_eq!(r.set_routes(many, 0, |_| {}), 40 - MAX_ROUTES);
+    assert_eq!(r.routes().count(), MAX_ROUTES);
 }

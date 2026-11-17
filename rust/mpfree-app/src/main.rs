@@ -3095,6 +3095,76 @@ struct SeqPads<'a> {
     only: Option<mpfree_export::Only>,
 }
 
+/// A key a route sends to a track that isn't armed (the I/O view's
+/// Routing): played at once where the track's clips play, on MIDI out, its
+/// own instrument, or the pads (a kit's pad by the MPC's pad notes, or the
+/// synth by note), and on CV out if it follows the track. It goes through
+/// no arp, and nothing records it: REC records the armed track.
+fn play_routed(
+    track: u8,
+    key: midi_in::Key,
+    midi: &mut midi_out::MidiOut,
+    cv: &mut cv_out::CvOut,
+    own: &mut instruments::Instruments,
+    synth: Option<&mut synth::Synth>,
+    player: &mut sampler::Player,
+) {
+    use mpfree_play::Event;
+    let event = match key {
+        midi_in::Key::Down { note, velocity } => Event::NoteOn {
+            note,
+            velocity: velocity.max(1),
+        },
+        midi_in::Key::Up { note } => Event::NoteOff { note },
+        midi_in::Key::Pressure { note, value } => Event::Pressure { note, value },
+    };
+    let o = mpfree_play::Out {
+        offset: 0,
+        frame: 0,
+        track: u16::from(track),
+        dest: Default::default(),
+        event,
+    };
+    cv.send(&o, midi_out::NoteIs::Note);
+    if midi.send(&o, midi_out::NoteIs::Note) {
+        return;
+    }
+    let t = usize::from(track);
+    if own.holds(t) {
+        match event {
+            Event::NoteOn { note, velocity } => {
+                own.note_on(t, note, velocity, 0);
+            }
+            Event::NoteOff { note } => {
+                own.note_off(t, note, 0);
+            }
+            _ => {}
+        }
+        return;
+    }
+    match (synth, event) {
+        (Some(s), Event::NoteOn { note, velocity }) => s.note_on_note(note, velocity, 0),
+        (Some(s), Event::NoteOff { note }) => s.note_off_note(note, 0),
+        (Some(s), Event::Pressure { note, value }) => s.pressure_note(note, value),
+        (None, Event::NoteOn { note, velocity }) => {
+            if let Some(pad) = mpc_one::pad_index(note) {
+                player.hit_at(usize::from(pad), velocity, 0);
+            }
+        }
+        (None, Event::NoteOff { note }) => {
+            if let Some(pad) = mpc_one::pad_index(note) {
+                player.release_at(usize::from(pad), 0);
+            }
+        }
+        (None, Event::Pressure { note, value }) => {
+            if let Some(pad) = mpc_one::pad_index(note) {
+                player.pressure_at(usize::from(pad), value, 0);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// What plays outside the MPC, for the Export panel's Fast or Listen
 /// (export.rs), gathered when Export is pressed.
 fn export_rig(
@@ -4471,6 +4541,9 @@ fn player_session(
             .collect(),
     );
     let mut keys: Vec<midi_in::Key> = Vec::with_capacity(64);
+    // Keys a route sends to a track that isn't armed, played at once.
+    let mut routed_keys: Vec<(u8, midi_in::Key)> = Vec::with_capacity(64);
+    let mut routed_held = midi_in::RoutedHeld::new();
     let mut key_misses = 0u64;
     // Messages each port's MIDI out writer dropped with its queue full, as
     // the monitor was last told.
@@ -5196,6 +5269,17 @@ fn player_session(
                 m.live.learn_names = names;
             }
         }
+        // Keys a route sends to a track (the I/O view's Routing): the
+        // armed track's join the keys below; another track's play it at
+        // once, after them.
+        let armed = app.track();
+        for (track, k) in music.take_routed() {
+            if routed_held.direct(track, k, usize::from(track) == armed) {
+                routed_keys.push((track, k));
+            } else {
+                keys.push(k);
+            }
+        }
         // Keys play the armed track: by note while the pads play notes (a
         // synth pad layout), else as the pad the MPC gives that note.
         let key_notes = synth_on && app.arp_plays_notes();
@@ -5245,6 +5329,17 @@ fn player_session(
                 }
                 None => {}
             }
+        }
+        for (track, k) in routed_keys.drain(..) {
+            play_routed(
+                track,
+                k,
+                &mut midi_out,
+                &mut cv_out,
+                &mut mix.instruments,
+                synth_on.then_some(&mut synth),
+                &mut player,
+            );
         }
         for m in got {
             let (t_item, event) = (Instant::now(), m.event);
