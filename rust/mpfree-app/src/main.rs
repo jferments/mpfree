@@ -6177,6 +6177,19 @@ fn player_session(
                 None => {}
             }
         }
+        // MIDI Follow: the controller's knobs turn the Q-Links, as the
+        // MPC's own Q-Links turned by as much.
+        for (knob, d) in music.take_knob_turns() {
+            got.push(Incoming {
+                port: MUSIC_CABLE as usize,
+                bytes: Vec::new(),
+                event: Some(ControlEvent::QLinkTurn {
+                    knob,
+                    delta: d.clamp(-127, 127) as i8,
+                }),
+                music: true,
+            });
+        }
         // What thru passes on (the I/O view's Routing): out of its output
         // now, if MIDI out is on.
         for p in music.take_thru() {

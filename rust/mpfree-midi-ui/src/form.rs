@@ -1026,6 +1026,11 @@ pub(crate) mod testing {
     pub const AREA: Rect = Rect::new(194, 136, 732, 614);
 
     pub fn paint(s: &dyn IoSection) -> SoftCanvas {
+        paint_in(s, AREA)
+    }
+
+    /// As [`paint`], in `area`.
+    pub fn paint_in(s: &dyn IoSection, area: Rect) -> SoftCanvas {
         let mut c = SoftCanvas::new(1280, 800);
         let theme = Theme::dark();
         let mut fonts = Fonts::embedded();
@@ -1034,7 +1039,7 @@ pub(crate) mod testing {
             theme: &theme,
             fonts: &mut fonts,
         };
-        s.paint(&mut cx, AREA);
+        s.paint(&mut cx, area);
         c
     }
 

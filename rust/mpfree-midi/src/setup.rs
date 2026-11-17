@@ -521,6 +521,42 @@ pub fn thru_allowed(from: &str, to: &str) -> bool {
     from != to || from == DIN_NAME
 }
 
+/// The most knobs MIDI Follow turns: the MPC's four Q-Links.
+pub const FOLLOW_KNOBS: usize = 4;
+
+/// MIDI Follow (board 8 of the MIDI mockups): one controller's knobs turn
+/// what the MPC's Q-Links turn on the screen showing, as a Q-Link turned
+/// by as much as the knob moved. Its keys play the armed track as any
+/// port's do, and a control learned with MIDI Learn wins over it. The
+/// rig's: the controller is on the desk, whatever the song.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FollowSetup {
+    pub on: bool,
+    /// The controller's port, by its own name; empty: none picked yet.
+    pub port: String,
+    /// The CCs its knobs send, in Q-Link order (at most
+    /// [`FOLLOW_KNOBS`]); empty: its profile's `knobs`.
+    pub knobs: Vec<u8>,
+}
+
+impl FollowSetup {
+    /// The CCs that turn the Q-Links: its own, else `profile`'s (the
+    /// controller port's profile), at most [`FOLLOW_KNOBS`].
+    pub fn knobs_of(&self, profile: Option<&crate::profile::Profile>) -> Vec<u8> {
+        let k = if self.knobs.is_empty() {
+            profile.map_or(&[][..], |p| p.knobs.as_slice())
+        } else {
+            &self.knobs
+        };
+        k.iter().take(FOLLOW_KNOBS).copied().collect()
+    }
+
+    /// Whether `port` (its own name) is the controller it follows now.
+    pub fn follows(&self, port: &str) -> bool {
+        self.on && !self.port.is_empty() && self.port == port
+    }
+}
+
 /// A project's MIDI, sync and CV settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MidiSetup {
@@ -549,6 +585,8 @@ pub struct MidiSetup {
     /// input is): a controller's transport keys or a tempo fader. The
     /// song's own mapping for the same control wins ([`MidiSetup::in_use`]).
     pub rig_learn: Vec<Saved>,
+    /// MIDI Follow: the rig's.
+    pub follow: FollowSetup,
 }
 
 impl Default for MidiSetup {
@@ -564,6 +602,7 @@ impl Default for MidiSetup {
             cv: [CvAssign::Off; CV_OUTS],
             learn: Vec::new(),
             rig_learn: Vec::new(),
+            follow: FollowSetup::default(),
         }
     }
 }
@@ -774,6 +813,7 @@ impl MidiSetup {
     pub fn project(&self) -> MidiSetup {
         let mut m = self.clone();
         m.rig_learn.clear();
+        m.follow = FollowSetup::default();
         for name in self
             .ports
             .iter()
@@ -799,6 +839,7 @@ impl MidiSetup {
     pub fn rig(&self) -> MidiSetup {
         let mut m = MidiSetup {
             rig_learn: self.rig_learn.clone(),
+            follow: self.follow.clone(),
             ..MidiSetup::default()
         };
         for p in &self.ports {
@@ -826,6 +867,7 @@ impl MidiSetup {
     /// kept.
     pub fn set_rig(&mut self, rig: &MidiSetup) {
         self.rig_learn = rig.rig_learn.clone();
+        self.follow = rig.follow.clone();
         let names: Vec<String> = self
             .ports
             .iter()
@@ -926,6 +968,17 @@ impl MidiSetup {
         for l in &self.rig_learn {
             line(&mut s, "learn-rig", &l.text());
         }
+        let f = &self.follow;
+        if f.on {
+            line(&mut s, "midi-follow", "on");
+        }
+        if !f.port.is_empty() {
+            line(&mut s, "midi-follow.port", &f.port);
+        }
+        if !f.knobs.is_empty() {
+            let k: Vec<String> = f.knobs.iter().map(u8::to_string).collect();
+            line(&mut s, "midi-follow.knobs", &k.join(" "));
+        }
         s
     }
 
@@ -999,6 +1052,9 @@ impl MidiSetup {
             }
             ["follow", "start-stop"] => self.follow_start_stop = parse_on(v)?,
             ["follow", "position"] => self.follow_position = parse_on(v)?,
+            ["midi-follow"] => self.follow.on = parse_on(v)?,
+            ["midi-follow", "port"] => self.follow.port = v.to_string(),
+            ["midi-follow", "knobs"] => self.follow.knobs = parse_knobs(v)?,
             ["port", i, rest @ ..] => {
                 let i = index(i, MAX_PORT_LINES)?;
                 let p = match ports.iter().position(|p| p.0 == i) {
@@ -1099,6 +1155,23 @@ fn on_off(b: bool) -> &'static str {
 }
 
 /// "6.5" (ms) as tenths of a ms, 0 to [`MAX_DELAY_TENTHS`].
+/// Up to [`FOLLOW_KNOBS`] CC numbers apart by spaces ("74 71 76 77"),
+/// none twice.
+pub fn parse_knobs(v: &str) -> Result<Vec<u8>, String> {
+    let mut k = Vec::new();
+    for w in v.split_whitespace() {
+        let cc = number(w, 0, 119)? as u8;
+        if k.contains(&cc) {
+            return Err(format!("CC {cc} twice"));
+        }
+        if k.len() == FOLLOW_KNOBS {
+            return Err(format!("more than {FOLLOW_KNOBS} knobs"));
+        }
+        k.push(cc);
+    }
+    Ok(k)
+}
+
 fn parse_shown(v: &str) -> Result<String, String> {
     if v.chars().count() > MAX_SHOWN {
         return Err(format!("longer than {MAX_SHOWN} characters"));
@@ -1870,6 +1943,46 @@ mod tests {
         assert_eq!(ClockOut::default().label(), "Off");
         let names: Vec<_> = PortInput::ALL.iter().map(|p| p.label()).collect();
         assert_eq!(names, ["Plays tracks", "Learn only", "Both"]);
+    }
+
+    /// MIDI Follow is the rig's: its controller, its knobs, on or off.
+    #[test]
+    fn midi_follow_is_the_rigs() {
+        let m = MidiSetup {
+            follow: FollowSetup {
+                on: true,
+                port: "Keystep 37".into(),
+                knobs: vec![74, 71, 76, 77],
+            },
+            ..MidiSetup::default()
+        };
+        let rig = m.rig_text();
+        assert!(
+            rig.ends_with(
+                "midi-follow = on\nmidi-follow.port = Keystep 37\nmidi-follow.knobs = 74 71 76 77\n"
+            ),
+            "{rig}"
+        );
+        assert!(!m.project_text().contains("midi-follow"));
+        let (back, warn) = MidiSetup::parse(&rig);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.follow, m.follow);
+        assert!(back.follow.follows("Keystep 37") && !back.follow.follows("Juno"));
+        let mut other = MidiSetup::default();
+        other.set_rig(&back);
+        assert_eq!(other.follow, m.follow);
+        // Its own knobs, else its profile's; four at most.
+        let (p, _) = crate::profile::Profile::parse("name = KS\nknobs = 1 2 3 4 5\n").unwrap();
+        assert_eq!(m.follow.knobs_of(Some(&p)), [74, 71, 76, 77]);
+        let bare = FollowSetup::default();
+        assert_eq!(bare.knobs_of(Some(&p)), [1, 2, 3, 4]);
+        assert!(bare.knobs_of(None).is_empty());
+        assert!(!bare.follows(""));
+        // Knobs: CCs 0 to 119, none twice, four at most.
+        assert_eq!(parse_knobs(" 1  2 "), Ok(vec![1, 2]));
+        assert!(parse_knobs("1 1").is_err());
+        assert!(parse_knobs("120").is_err());
+        assert!(parse_knobs("1 2 3 4 5").is_err());
     }
 
     /// A port's profile is the rig's: saved with it (Auto, the default,

@@ -16,13 +16,16 @@
 //! cc.71 = Resonance
 //! nrpn.0.23 = Osc 1 shape
 //! program.1 = Init
+//! knobs = 74 71 76 77
 //! ```
 //!
 //! `match` (any number of them) is a USB name the profile is for: a port
 //! whose profile is Auto ([`crate::setup::ProfilePick`]) takes the first
 //! profile that matches the name the port calls itself. `nrpn.MSB.LSB`
 //! names a parameter by its two numbers (CC 99 and CC 98); programs count
-//! from 1, as everywhere on screen. A line that can't be read is skipped
+//! from 1, as everywhere on screen. `knobs` is a controller's knobs' CCs
+//! in order, which MIDI Follow turns the Q-Links with
+//! ([`crate::setup::FollowSetup`]). A line that can't be read is skipped
 //! with a warning; a file without a name isn't a profile.
 //!
 //! [`Profiles`] holds the built-in profiles ([`Profiles::builtin`]: General
@@ -48,6 +51,9 @@ pub const MAX_CONTROL_NAME: usize = 32;
 /// The most `match` lines a profile keeps.
 pub const MAX_MATCHES: usize = 8;
 
+/// The most knobs a profile lists.
+pub const MAX_KNOBS: usize = 16;
+
 /// The largest profile file read, in bytes.
 pub const MAX_FILE_BYTES: usize = 64 * 1024;
 
@@ -63,6 +69,8 @@ pub struct Profile {
     nrpn: Vec<(u16, String)>,
     /// Program names by number (0 is the screen's 1), in number order.
     programs: Vec<(u8, String)>,
+    /// A controller's knobs' CCs, in order (MIDI Follow's).
+    pub knobs: Vec<u8>,
 }
 
 impl Profile {
@@ -131,6 +139,10 @@ impl Profile {
         for (p, n) in &self.programs {
             let _ = writeln!(s, "program.{} = {n}", u16::from(*p) + 1);
         }
+        if !self.knobs.is_empty() {
+            let k: Vec<String> = self.knobs.iter().map(u8::to_string).collect();
+            let _ = writeln!(s, "knobs = {}", k.join(" "));
+        }
         s
     }
 
@@ -198,6 +210,20 @@ impl Profile {
             ["program", n] => {
                 let p = number(n, 1, 128)?;
                 self.set_program((p - 1) as u8, control_name(v)?);
+            }
+            ["knobs"] => {
+                let mut k = Vec::new();
+                for w in v.split_whitespace() {
+                    let cc = number(w, 0, 119)? as u8;
+                    if k.contains(&cc) {
+                        return Err(format!("CC {cc} twice"));
+                    }
+                    if k.len() == MAX_KNOBS {
+                        return Err(format!("more than {MAX_KNOBS} knobs"));
+                    }
+                    k.push(cc);
+                }
+                self.knobs = k;
             }
             _ => return Err("unknown key".into()),
         }
@@ -560,7 +586,8 @@ mod tests {
         nrpn.1.23 = Osc 1 shape\n\
         program.1 = Init\n\
         program.0 = Nowhere\n\
-        colour = red\n";
+        colour = red\n\
+        knobs = 74 71\n";
 
     #[test]
     fn a_profile_names_its_controls_and_programs_and_skips_what_it_cant_read() {
@@ -572,6 +599,7 @@ mod tests {
         assert_eq!(p.nrpn_name(23, 1), None);
         assert_eq!(p.program_name(0), Some("Init"));
         assert_eq!(p.counts(), (2, 1, 1));
+        assert_eq!(p.knobs, [74, 71]);
         assert_eq!(warn.len(), 3, "{warn:?}");
         assert!(warn[0].starts_with("line 8: cc.200"), "{warn:?}");
         assert!(warn[2].contains("unknown key"), "{warn:?}");

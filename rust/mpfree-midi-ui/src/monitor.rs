@@ -476,6 +476,7 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::Thru { .. } => ("thru: not sent, MIDI out is off".to_string(), Went::Nothing),
         To::Learned(a) => (format!("Learn: {}", param(a)), Went::Learn),
         To::Took(a) => (format!("Learn took it: {}", param(a)), Went::Learn),
+        To::QLink(k) => (format!("MIDI Follow: Q-Link {}", k + 1), Went::Learn),
         To::LearnOnly => ("not played: Learn only".to_string(), Went::Nothing),
         To::Follows => ("clock: the tempo follows it".to_string(), Went::Clock),
         To::NotFollowed => ("not followed".to_string(), Went::Nothing),
