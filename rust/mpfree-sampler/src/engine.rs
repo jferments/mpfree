@@ -55,6 +55,14 @@
 //! ([`Engine::split`]) they reach both halves of the voices.
 //! [`Engine::stop_all`] is the hard stop: every voice and grain idle at
 //! once and the events waiting dropped.
+//!
+//! **Edits.** [`Engine::edit_view`] swaps in an edit of the kit playing
+//! now, and the voices playing hear it: a voice whose layer still plays
+//! the same sound takes its new loop points at once (jumping into a loop
+//! moved behind it, the step faded out over [`JUMP_FRAMES`]), its tune at
+//! once, its grain settings, and glides to its new level, pan, cutoff and
+//! resonance as it does for live settings. [`Engine::set_view`] is for
+//! another kit: its voices finish as they began.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -82,6 +90,9 @@ use crate::warp::{CopyMap, Warps};
 pub const KILL_FRAMES: u16 = 64;
 /// Fade length of the previous sound when its voice is stolen for a new hit.
 pub const STEAL_FRAMES: u16 = 32;
+/// How long the step is smoothed over when an edit moves a loop behind a
+/// playing voice and it jumps into the loop ([`Engine::edit_view`]).
+pub const JUMP_FRAMES: u16 = 64;
 /// Events that can wait for the next render.
 pub const MAX_EVENTS: usize = 256;
 /// What a hit on a pad plays.
@@ -941,6 +952,18 @@ struct Voice {
     bl_step: i64,
     bl_octave: u32,
     bl_reach: Reach,
+    /// What it follows of an edit ([`Engine::edit_view`]): the hit's own
+    /// gain (velocity, 16 Levels) under the layer's, whether its filter's
+    /// cutoff is the pad's (not one 16 Levels set), and the layer's step
+    /// and grain settings it plays from now.
+    hit_gain: f32,
+    own_cut: bool,
+    layer_step: i64,
+    layer_grain: GrainParams,
+    /// A jump into a moved loop: what the read was minus what it is now,
+    /// fading out over [`JUMP_FRAMES`] frames so the sound doesn't step.
+    jump: [f32; 2],
+    jump_left: u16,
 }
 
 impl Voice {
@@ -1395,6 +1418,9 @@ pub struct Engine {
     /// Split: [`Engine::stop_all`] came while the lane's share was away;
     /// it stops when it comes back.
     stop_lane: bool,
+    /// Split: an edit ([`Engine::edit_view`]) came while the lane's share
+    /// was away; its voices follow the view when it comes back.
+    edit_lane: bool,
     /// Voices this old or newer (by `clock`) were started by the hit being
     /// played, so its links don't choke each other.
     spare_from: u64,
@@ -1450,6 +1476,7 @@ impl Engine {
             },
             live_k: 1.0 - (-(FILTER_STEP as f32) / (LIVE_SMOOTH_S * rate as f32)).exp(),
             stop_lane: false,
+            edit_lane: false,
             spare_from: u64::MAX,
             chop_pad: None,
             marks: [0; MAX_MARKS],
@@ -1565,14 +1592,50 @@ impl Engine {
 
     /// Swaps in a new view at once and hands back the old one, so the caller
     /// frees it off the audio thread. Playing voices keep their own handle to
-    /// their audio and finish normally. The master effect takes the new
-    /// view's settings (a new mix glides there over 10 ms). The pads' live
-    /// settings ([`Event::PadLive`]) go back to the pads' own; the
-    /// program's offsets stay.
+    /// their audio and finish as they started: this is for another kit,
+    /// whose pads are other pads ([`Engine::edit_view`] is for an edit).
+    /// The master effect takes the new view's settings (a new mix glides
+    /// there over 10 ms). The pads' live settings ([`Event::PadLive`]) go
+    /// back to the pads' own; the program's offsets stay.
     pub fn set_view(&mut self, view: EngineView) -> EngineView {
         self.live.pads = Live::OWN;
+        self.edit_lane = false;
         let old = std::mem::replace(&mut self.view, view);
         self.apply_master();
+        old
+    }
+
+    /// Swaps in an edit of the view playing now (the same kit, edited) as
+    /// [`Engine::set_view`] does, and the voices playing hear it: each
+    /// voice whose layer still plays the same sound (the same pad and
+    /// layer, the same audio) picks up the layer's loop points at once,
+    /// and its level, pan, cutoff, resonance and tune as a live setting
+    /// does (gliding, so nothing clicks; a new tune at once, as a knob
+    /// would). A loop moved behind the voice takes it into the loop, the
+    /// step smoothed over [`JUMP_FRAMES`]; a loop taken away lets the
+    /// voice play on to its end; a granular voice takes the new grain
+    /// settings. What it started with stays: its start and end, fades,
+    /// play mode, direction, envelope, filter type and the sound itself
+    /// (an edit that changes those, or puts another sound on the pad, is
+    /// heard from the next hit). Never allocates.
+    pub fn edit_view(&mut self, view: EngineView) -> EngineView {
+        // The pads whose voices follow a live value, which goes now.
+        let live_pads: [bool; PADS] = std::array::from_fn(|p| {
+            PadField::ALL
+                .iter()
+                .any(|&f| f.follows() && !self.live.pads[p][f as usize].is_nan())
+        });
+        let old = self.set_view(view);
+        let Engine {
+            pool, view, live, ..
+        } = self;
+        for (v, g) in pool.iter_mut() {
+            let p = usize::from(v.pad);
+            if v.active && p < PADS {
+                follow_edit(v, g, view, &live.row(p), &live.program, live_pads[p]);
+            }
+        }
+        self.edit_lane = self.pool.split && self.pool.b.is_none();
         old
     }
     pub fn view_revision(&self) -> u64 {
@@ -2555,6 +2618,12 @@ impl Engine {
             bl_step: 0,
             bl_octave: 0,
             bl_reach: Reach::default(),
+            hit_gain: level,
+            own_cut: vary.cutoff_hz.is_none(),
+            layer_step: l.step,
+            layer_grain: l.grain,
+            jump: [0.0; 2],
+            jump_left: 0,
         };
         if self.tape != 1.0 {
             // A hit on a stopped (or slowing) tape plays at its speed.
@@ -2687,6 +2756,17 @@ impl Engine {
         if std::mem::take(&mut self.stop_lane) {
             if let Some(b) = self.pool.b.as_deref_mut() {
                 silence(b);
+            }
+        }
+        if std::mem::take(&mut self.edit_lane) {
+            if let Some(b) = self.pool.b.as_deref_mut() {
+                for (v, g) in b.voices.iter_mut().zip(b.grains.iter_mut()) {
+                    let p = usize::from(v.pad);
+                    if v.active && p < PADS {
+                        let row = self.live.row(p);
+                        follow_edit(v, g, &self.view, &row, &self.live.program, true);
+                    }
+                }
             }
         }
         let tempo = self.tempo;
@@ -2999,6 +3079,185 @@ fn retarget(v: &mut Voice, live: &[f32; PadField::COUNT], program: &[f32; Progra
     f.moving = true;
 }
 
+/// Playing voice `v` (with its grain voice `g`) follows an edit of its pad
+/// in `view` ([`Engine::edit_view`]), if its layer there still plays its
+/// sound: the loop points at once, a new tune at once, a granular voice's
+/// grain settings, and the level, pan, cutoff and resonance gliding there
+/// from where they are, under `live` (its pad's live row) and `program`.
+/// `was_live`: it followed a live value that the new view cleared, so it
+/// glides back to its own even if the edit didn't change it.
+fn follow_edit(
+    v: &mut Voice,
+    g: &mut GrainVoice,
+    view: &EngineView,
+    live: &[f32; PadField::COUNT],
+    program: &[f32; ProgramField::COUNT],
+    was_live: bool,
+) {
+    if !v.active || v.kill_left > 0 || v.audition {
+        return;
+    }
+    let Some(vp) = view.pads.get(usize::from(v.pad)).and_then(Option::as_ref) else {
+        return;
+    };
+    let Some(l) = vp.layers.get(usize::from(v.layer)) else {
+        return;
+    };
+    let same_sound = v.stereo == l.stereo
+        && v.src_rate == l.src_rate
+        && v.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &l.data));
+    if !same_sound {
+        return;
+    }
+    let f = v.follow;
+    let mut moved = was_live;
+
+    // Level and pan: the layer's gain and pan under the hit's own.
+    let unit_gain = l.unit_gain * v.hit_gain;
+    if unit_gain != v.unit_gain
+        || l.pan != v.layer_pan
+        || vp.level_db != f.own_db
+        || vp.pan != f.own_pan
+    {
+        (v.unit_gain, v.layer_pan) = (unit_gain, l.pan);
+        (v.follow.own_db, v.follow.own_pan) = (vp.level_db, vp.pan);
+        moved = true;
+    }
+
+    // The filter's cutoff and resonance, where the filter is still the
+    // same kind (and its cutoff the pad's, not 16 Levels'). A low-pass
+    // turned on comes in from open; one turned off opens.
+    let pf = vp.filter;
+    let (fc, res) = match v.filter {
+        _ if !v.own_cut => (f.own_fc, f.own_res),
+        Some(cur) if cur.kind == pf.kind && cur.poles == pf.poles => (pf.cutoff_hz, pf.resonance),
+        Some(cur) if cur.kind == FilterKind::LowPass && pf.kind == FilterKind::Off => {
+            (OPEN_FILTER.cutoff_hz, 0.0)
+        }
+        None if pf.kind == FilterKind::LowPass => {
+            v.filter = Some(Filter {
+                cutoff_hz: OPEN_FILTER.cutoff_hz,
+                resonance: 0.0,
+                ..pf
+            });
+            v.fenv = Some(Envelope::idle());
+            v.svf = [Svf::default(); 2];
+            v.filter_key = None;
+            (pf.cutoff_hz, pf.resonance)
+        }
+        _ => (f.own_fc, f.own_res),
+    };
+    if fc != f.own_fc || res != f.own_res {
+        (v.follow.own_fc, v.follow.own_res) = (fc, res);
+        moved = true;
+    }
+
+    // Tune: the layer's speed against the one it played at. A warped
+    // layer's speed is the tempo's; a granular voice's pitch is its grains'.
+    if !v.granular && v.warp_bpm == 0.0 && l.warp_bpm == 0.0 && l.step != v.layer_step {
+        let ratio = l.step as f64 / v.layer_step.max(1) as f64;
+        v.plain_step = ((v.plain_step as f64 * ratio).round() as i64).max(1);
+        v.base_step = v.plain_step;
+        v.layer_step = l.step;
+        retime(v);
+    }
+
+    // A granular voice: the layer's grain settings, with what its hit
+    // added (a keygroup's semitones, 16 Levels' position) kept.
+    if v.granular && l.mode == PlayMode::Granular && l.grain != v.layer_grain {
+        let mut p = l.grain;
+        p.pitch += v.grain_base.pitch - v.layer_grain.pitch;
+        if v.grain_base.position != v.layer_grain.position {
+            p.position = v.grain_base.position;
+        }
+        v.grain_base = p;
+        v.layer_grain = l.grain;
+        g.set_params(tuned_grain(
+            pressed_grain(p, v.route, v.press),
+            v.follow.cents,
+        ));
+        v.grain_cents = v.follow.cents;
+    }
+
+    if v.mode == Some(l.mode) && !v.granular && !v.reverse && !l.reverse {
+        follow_loop(v, l);
+    }
+    if moved {
+        retarget(v, live, program);
+    }
+}
+
+/// A voice of a looping mode follows its layer's loop ([`follow_edit`]):
+/// the new points, kept inside the region it plays; if it is now past
+/// the loop, it jumps in, the step smoothed ([`JUMP_FRAMES`]). A loop
+/// taken away lets it play on to its end; one added while it is held
+/// starts looping.
+fn follow_loop(v: &mut Voice, l: &ViewLayer) {
+    if !matches!(
+        v.mode,
+        Some(PlayMode::Loop | PlayMode::Toggle | PlayMode::Gate)
+    ) {
+        return;
+    }
+    let Some(lp) = l.sustain_loop.as_ref() else {
+        if v.looping {
+            v.looping = false;
+            v.backwards = false;
+        }
+        return;
+    };
+    let (start, end) = (lp.start.max(v.start), lp.end.min(v.end));
+    if end - start < 2 {
+        return;
+    }
+    let looping = v.looping || v.held;
+    let unchanged = (v.loop_start, v.loop_end, v.ping_pong) == (start, end, lp.ping_pong);
+    v.loop_start = start;
+    v.loop_end = end;
+    v.ping_pong = lp.ping_pong;
+    // Its blend reads before the loop's start, never before the region's.
+    v.crossfade = lp
+        .crossfade
+        .min((end - start) / 2)
+        .min(start - v.start)
+        .max(0);
+    if !looping || (unchanged && v.looping) {
+        return;
+    }
+    v.looping = true;
+    let i = v.pos >> 32;
+    let fraction = v.pos & (ONE - 1);
+    let (pos, backwards) = if v.ping_pong {
+        if !v.backwards && i >= end {
+            (((end - 1) << 32) | fraction, true)
+        } else if v.backwards && i < start {
+            ((start << 32) | fraction, false)
+        } else {
+            return;
+        }
+    } else if i >= end {
+        let into = (v.pos - (start << 32)) % ((end - start) << 32);
+        ((start << 32) + into, false)
+    } else {
+        return;
+    };
+    // The read on each side of the jump, so the step fades out instead
+    // of clicking (with what is left of an earlier jump's).
+    if let Some(data) = v.data.as_deref() {
+        let (al, ar) = v.read2(data, v.pos);
+        let (bl, br) = v.read2(data, pos);
+        let left = f32::from(v.jump_left) / f32::from(JUMP_FRAMES);
+        v.jump = [v.jump[0] * left + al - bl, v.jump[1] * left + ar - br];
+        v.jump_left = JUMP_FRAMES;
+        if !v.follow.moving {
+            v.follow.count = 0;
+        }
+        v.follow.moving = true;
+    }
+    v.pos = pos;
+    v.backwards = backwards;
+}
+
 /// One frame of following the live settings: the gain's step, and every
 /// [`FILTER_STEP`] frames the next steps ([`live_step`]). Only the loops of
 /// a voice that is following call it ([`render_voice`]).
@@ -3065,7 +3324,7 @@ fn live_step(v: &mut Voice) {
         }
         retime(v);
     }
-    v.follow.moving = moving;
+    v.follow.moving = moving || v.jump_left > 0;
 }
 
 /// Every voice of `pool` idle at once, its grains handed back.
@@ -3464,6 +3723,14 @@ fn render_voice_as<const FOLLOW: bool, const BL: bool>(
             let (bl, br) = read(v, back);
             l = l * out + bl * inn;
             r = r * out + br * inn;
+        }
+        // An edit's jump into a moved loop: the step fading out. A voice
+        // follows while one is under way ([`live_step`]).
+        if FOLLOW && v.jump_left > 0 {
+            let t = f32::from(v.jump_left) / f32::from(JUMP_FRAMES);
+            l += v.jump[0] * t;
+            r += v.jump[1] * t;
+            v.jump_left -= 1;
         }
 
         let mut g = 1.0f32;

@@ -678,6 +678,66 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
     );
 }
 
+/// A key a route sends to a track that isn't armed (the I/O view's
+/// Routing) plays that track at once, where its clips play: out of MIDI
+/// out on its channel, on its own instrument, or the kit's pad for the
+/// MPC's pad note. None of it allocates.
+#[test]
+fn routed_keys_play_their_track_where_its_clips_play() {
+    use crate::midi_in::Key;
+    use mpfree_midi::setup::{TrackOut, DIN_NAME};
+    let mut rig = Rig::new(false);
+    let sink = MidiSink::default();
+    rig.midi
+        .open(sink.clone(), std::time::Instant::now())
+        .unwrap();
+    rig.io.lock().unwrap().setup.tracks[3] = Some(TrackOut::new(DIN_NAME, 1));
+    rig.io.lock().unwrap().gen += 1;
+    rig.midi.sync(&rig.io, false);
+    let job = crate::instrument_job(&rig.synth, 2, "mpfree.poly", None);
+    assert!(rig.mix.build_instrument(job));
+    assert!(matches!(
+        rig.mix.poll_instruments(),
+        Some(mixing::Landed::Playing { track: 2, .. })
+    ));
+    let (before, notes_before) = (rig.player.hits(), rig.mix.instruments.stats(2).notes);
+    let down = |note| Key::Down {
+        note,
+        velocity: 100,
+    };
+    let up = |note| Key::Up { note };
+    let keys = [
+        (3, down(60)),
+        (3, up(60)),
+        (2, down(64)),
+        (2, up(64)),
+        (5, down(PAD_NOTES[0])),
+        (5, up(PAD_NOTES[0])),
+    ];
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for (track, key) in keys {
+            crate::play_routed(
+                track,
+                key,
+                &mut rig.midi,
+                &mut rig.cv,
+                &mut rig.mix.instruments,
+                None,
+                &mut rig.player,
+            );
+        }
+        rig.midi
+            .period_end(PERIOD as u32, std::time::Instant::now());
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    // The sounds play in the next period.
+    rig.period(0);
+    assert_eq!(rig.player.hits(), before + 1, "only track 6 played the kit");
+    assert_eq!(rig.mix.instruments.stats(2).notes, notes_before + 1);
+    assert!(rig.midi.close());
+    assert_eq!(*sink.0.lock().unwrap(), [0x91, 60, 100, 0x81, 60, 64]);
+}
+
 /// The pads played live (through track 1's arp) on track 1 with its own
 /// instrument: they play it, not the kit, record as their pad, and
 /// another track's clip still plays the kit.

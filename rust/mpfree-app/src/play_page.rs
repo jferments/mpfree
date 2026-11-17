@@ -30,7 +30,7 @@
 
 use crate::mixing::{self, PlayFx, PlayLevels, ThrowFx};
 use crate::play_widgets::{
-    Lane, StepGrid, Throw, Throws, TimedHit, TransportLook, XyPad, YourTiming,
+    Lane, Marks, StepGrid, Throw, Throws, TimedHit, TransportLook, XyPad, YourTiming,
 };
 use crate::time::{HitInfo, StepAction, StepsData, STEP_TICKS};
 use mpfree_arp::scale::pads::PadLayout;
@@ -60,6 +60,9 @@ pub const STEPS: &str = "steps";
 pub const THROWS: &str = "throws";
 pub const XY: &str = "xy";
 pub const TIMING: &str = "play-timing";
+/// The step inspector under the pattern on Beats, in the throws' place
+/// while a step is held or picked (sequencer mockup A).
+pub const INSPECTOR: &str = "step-inspector";
 /// The pads heading on the Synth tab, over its presets: always the synth.
 pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
 
@@ -67,6 +70,10 @@ pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
 pub const VIEWS: [&str; 3] = ["All", "Beats", "Loop"];
 /// Beats with the Your timing strip (Play's options, Timing strip On).
 pub const BEATS_TIMING_PAGE: &str = "Play · Beats · timing";
+/// Beats with a step held or picked: the step inspector in the throws'
+/// place, without and with the timing strip.
+pub const BEATS_STEP_PAGE: &str = "Play · Beats · step";
+pub const BEATS_TIMING_STEP_PAGE: &str = "Play · Beats · timing · step";
 /// The Your timing strip's height in Beats.
 pub const TIMING_STRIP_H: i32 = 72;
 /// The transport card's height.
@@ -106,12 +113,15 @@ impl PlayView {
     }
 
     /// The page showing for this view: Beats has a second page with the
-    /// Your timing strip, for when `timing` (Play's options) is on.
-    pub fn page_for(self, timing: bool) -> &'static str {
-        if self == PlayView::Beats && timing {
-            BEATS_TIMING_PAGE
-        } else {
-            self.page()
+    /// Your timing strip, for when `timing` (Play's options) is on, and
+    /// with `step` (a step held or picked) a page with the step inspector
+    /// in the throws' place, so nothing else moves.
+    pub fn page_with(self, timing: bool, step: bool) -> &'static str {
+        match (self, timing, step) {
+            (PlayView::Beats, true, true) => BEATS_TIMING_STEP_PAGE,
+            (PlayView::Beats, false, true) => BEATS_STEP_PAGE,
+            (PlayView::Beats, true, false) => BEATS_TIMING_PAGE,
+            _ => self.page(),
         }
     }
 
@@ -144,9 +154,17 @@ impl PlayView {
         self.layout_for(false)
     }
 
-    /// The layout of [`PlayView::page_for`]`(timing)`.
+    /// The layout of [`PlayView::page_with`]`(timing, false)`.
     pub fn layout_for(self, timing: bool) -> String {
         frame(&self.body(false, timing))
+    }
+
+    /// Beats' layout with the step inspector in the throws' place (the
+    /// same height), with or without the timing strip.
+    pub fn step_layout(timing: bool) -> String {
+        PlayView::Beats
+            .layout_for(timing)
+            .replace(&format!("{THROWS}:196"), &format!("{INSPECTOR}:196"))
     }
 
     /// The view while NOTE REPEAT is held or pads are latched.
@@ -427,9 +445,9 @@ pub struct SoundKnob {
     pub own: f32,
 }
 
-/// The lock colour on a Sound card whose step has a lock (the step pads'
-/// purple).
-const LOCKED: Color = Color::rgb(0xA0_40_FF);
+/// The lock colour on a Sound card whose step has a lock, and a lock's
+/// dot on a step's cell (the step pads' purple).
+pub const LOCKED: Color = Color::rgb(0xA0_40_FF);
 
 impl SoundKind {
     /// The value as the card writes it, where its ring is, and whether it
@@ -642,6 +660,58 @@ pub struct PlayPage {
     /// filter and level, or an instrument's first Q-Link set), as the
     /// screen fills it in while steps are held.
     pub sound_bank: [Option<SoundKnob>; 4],
+    /// The inspector's Copy: the step (pad, step in the clip) whose copy
+    /// the next step tapped on its lane takes.
+    pub copy_from: Option<(usize, usize)>,
+}
+
+/// What the step inspector shows (Beats, a step held or picked; the
+/// sequencer design's mockup A).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Inspect {
+    /// "Step 7 · Kick · held".
+    pub title: String,
+    /// The bank the Q-Links show, and whether Sound can be picked (only
+    /// while steps are held: a turn there locks them).
+    pub bank: HeldBank,
+    pub sound: bool,
+    /// The step's settings, (name, value), in [`INSPECT_CHIPS`]' order;
+    /// none for steps held with no note.
+    pub chips: Vec<(String, String)>,
+    /// Which chips the bank's Q-Links turn.
+    pub turned: [bool; 6],
+    /// The step's locks: (parameter, name, value).
+    pub locks: Vec<(RelAddr, String, String)>,
+    /// One step: Copy and Clear can be used.
+    pub one: bool,
+    /// Copy waits for the step that takes the copy.
+    pub copying: bool,
+}
+
+/// The inspector's chips, in order.
+pub const INSPECT_CHIPS: [Knob; 6] = [
+    Knob::Velocity,
+    Knob::Length,
+    Knob::Nudge,
+    Knob::Chance,
+    Knob::Cond,
+    Knob::Ratchet,
+];
+
+/// A tap on the step inspector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InspectTap {
+    /// One of Q-LINK's banks.
+    Bank(HeldBank),
+    /// The × on lock `k` of the list: it comes off.
+    Unlock(usize),
+    /// Copy: the next step tapped on the lane takes a copy.
+    Copy,
+    /// Clear: the step comes out, locks too.
+    Clear,
+    /// × on a step picked: picked off, the step kept (the throws come
+    /// back).
+    Close,
 }
 
 impl Default for PlayPage {
@@ -672,8 +742,50 @@ impl Default for PlayPage {
             held: None,
             bank: HeldBank::Step,
             sound_bank: Default::default(),
+            copy_from: None,
         }
     }
+}
+
+/// The marks of the page of `row` from step `from` (its locks counted in
+/// `locks`): each step's condition, chance, ratchet, nudge and locks, a
+/// note that lasts into the next step (a tie), and the empty steps a note
+/// lasts over.
+fn marks(row: &[Option<Step>], locks: &[usize], from: usize) -> Vec<Marks> {
+    let size = STEP_TICKS;
+    // Where the last note so far ends, from the row's start.
+    let mut reach: Tick = 0;
+    let mut held = vec![false; row.len()];
+    for (i, s) in row.iter().enumerate() {
+        let line = i as Tick * size;
+        if s.is_none() && line < reach {
+            held[i] = true;
+        }
+        if let Some(s) = s {
+            reach = reach.max(line + s.nudge + s.len);
+        }
+    }
+    (from..from + PAGE)
+        .map(|i| {
+            let n = locks.get(i).copied().unwrap_or(0).min(255) as u8;
+            match row.get(i).copied().flatten() {
+                Some(s) => Marks {
+                    locks: n,
+                    cond: s.cond,
+                    chance: s.chance,
+                    ratchet: s.ratchet,
+                    nudge: s.nudge.signum() as i8,
+                    tie: s.nudge + s.len > size,
+                    held_over: false,
+                },
+                None => Marks {
+                    locks: n,
+                    held_over: held.get(i).copied().unwrap_or(false),
+                    ..Marks::default()
+                },
+            }
+        })
+        .collect()
 }
 
 fn pct(v: f32) -> String {
@@ -780,9 +892,11 @@ impl PlayPage {
             };
         }
         match self.view {
-            PlayView::Beats if self.selected_step().is_some() => {
-                [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance]
-            }
+            PlayView::Beats if self.selected_step().is_some() => match self.bank {
+                // The inspector's Trig bank, or Q-LINK on a picked step.
+                HeldBank::Trig => [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Empty],
+                _ => [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance],
+            },
             PlayView::All | PlayView::Beats => {
                 [Knob::Swing, Knob::Tune, Knob::DrumsFilter, Knob::DrumsSend]
             }
@@ -865,6 +979,165 @@ impl PlayPage {
         } else {
             format!("Steps {}", list.join(", "))
         })
+    }
+
+    /// Whether the step inspector shows: Beats, with steps held or a
+    /// step picked.
+    pub fn inspecting(&self) -> bool {
+        self.view == PlayView::Beats && (self.held.is_some() || self.selected_step().is_some())
+    }
+
+    /// The step the inspector shows: the step held first, or the step
+    /// picked (pad, step in the clip), and whether it is held.
+    fn inspected(&self) -> Option<(usize, usize, bool)> {
+        if self.view != PlayView::Beats {
+            return None;
+        }
+        if let Some((sound, steps)) = &self.held {
+            return Some((usize::from(*sound), *steps.first()?, true));
+        }
+        self.selected_step().map(|(pad, i, _)| (pad, i, false))
+    }
+
+    /// What the step inspector shows, if it shows.
+    pub fn inspect(&self) -> Option<Inspect> {
+        let (pad, i, held) = self.inspected()?;
+        let name = self.pad_name(pad);
+        let title = match (held, self.held_name()) {
+            (true, Some(steps)) => format!("{steps} · {name} · held"),
+            _ => format!("Step {} · {name}", i + 1),
+        };
+        let has_note = self.target_step().is_some();
+        let chips = if has_note {
+            INSPECT_CHIPS
+                .iter()
+                .map(|&k| {
+                    let c = self.card(k, None);
+                    (c.name, c.value)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let bank = if held { self.held_bank() } else { self.bank };
+        let turned = match bank {
+            HeldBank::Step => [true, true, true, true, false, false],
+            HeldBank::Trig => [false, false, true, false, true, true],
+            HeldBank::Sound => [false; 6],
+        };
+        let locks = self
+            .steps
+            .clip
+            .as_ref()
+            .map(|c| {
+                c.lock_values
+                    .iter()
+                    .filter(|l| (usize::from(l.0), l.1) == (pad, i))
+                    .map(|&(_, _, addr, v)| {
+                        let (n, text) = self.lock_text(addr, v);
+                        (addr, n, text)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let one = self.held.as_ref().is_none_or(|(_, steps)| steps.len() == 1);
+        Some(Inspect {
+            title,
+            bank,
+            sound: held,
+            chips,
+            turned,
+            locks,
+            one: one && has_note,
+            copying: self.copy_from == Some((pad, i)),
+        })
+    }
+
+    /// A lock's parameter and value as the inspector names them: a kit
+    /// pad's by its field, an instrument's by the Sound bank's name when
+    /// it is there.
+    fn lock_text(&self, addr: RelAddr, v: f32) -> (String, String) {
+        use mpfree_play::mpfree_param::OnTrack;
+        use mpfree_sampler::engine::PadField;
+        if let Some(sk) = self.sound_bank.iter().flatten().find(|k| k.addr == addr) {
+            return (sk.name.clone(), sk.kind.read(v).0);
+        }
+        let named = |n: &str, kind: SoundKind| (n.to_string(), kind.read(v).0);
+        match addr.on {
+            OnTrack::Pad(_) => match addr.param {
+                p if p == PadField::Tune as u16 => named("Tune", SoundKind::Tune),
+                p if p == PadField::Decay as u16 => named("Decay", SoundKind::Decay),
+                p if p == PadField::Cutoff as u16 => named("Filter", SoundKind::Cutoff),
+                p if p == PadField::Level as u16 => named("Level", SoundKind::Level),
+                p if p == PadField::Pan as u16 => ("Pan".to_string(), format!("{v:+.2}")),
+                p if p == PadField::Resonance as u16 => {
+                    ("Resonance".to_string(), format!("{:.0} %", v * 100.0))
+                }
+                p if p == PadField::Attack as u16 => ("Attack".to_string(), format!("{v:.0} ms")),
+                p if p == PadField::Release as u16 => ("Release".to_string(), format!("{v:.0} ms")),
+                p => (format!("Pad setting {p}"), format!("{v:.2}")),
+            },
+            OnTrack::Inst => (format!("Synth {}", addr.param), format!("{v:.2}")),
+            _ => (format!("{addr}"), format!("{v:.2}")),
+        }
+    }
+
+    /// A tap on the step inspector: a bank picked (Q-LINK's), a lock
+    /// taken off the steps (every step held), Copy (the next step tapped
+    /// on the lane takes a copy) or Clear. The step action, if any.
+    pub fn inspector_tap(&mut self, tap: InspectTap) -> Option<StepAction> {
+        let (pad, i, held) = self.inspected()?;
+        let steps = if held {
+            self.all_held_bits()
+        } else {
+            1u128.checked_shl(i as u32)?
+        };
+        match tap {
+            InspectTap::Bank(HeldBank::Sound) if !held => None,
+            InspectTap::Bank(b) => {
+                self.bank = b;
+                None
+            }
+            InspectTap::Unlock(k) => {
+                let (addr, _, _) = self.inspect()?.locks.get(k).cloned()?;
+                let a = StepAction::Lock {
+                    pad: pad as u8,
+                    steps,
+                    addr,
+                    value: None,
+                };
+                if let Some(c) = self.steps.clip.as_mut() {
+                    c.lock_values.retain(|l| {
+                        !(usize::from(l.0) == pad
+                            && steps & (1u128 << l.1.min(127)) != 0
+                            && l.2 == addr)
+                    });
+                }
+                Some(a)
+            }
+            InspectTap::Copy if self.inspect()?.one => {
+                self.copy_from = Some((pad, i));
+                None
+            }
+            InspectTap::Clear if self.inspect()?.one => {
+                self.copy_from = None;
+                if !held {
+                    self.selected = None;
+                }
+                Some(StepAction::ClearSteps {
+                    pad: pad as u8,
+                    from: i,
+                    to: i + 1,
+                })
+            }
+            InspectTap::Close if !held => {
+                self.selected = None;
+                self.copy_from = None;
+                self.bank = HeldBank::Step;
+                None
+            }
+            InspectTap::Copy | InspectTap::Clear | InspectTap::Close => None,
+        }
     }
 
     /// The step picked, if it still holds notes.
@@ -1355,6 +1628,7 @@ impl PlayPage {
             .into_iter()
             .map(|p| {
                 let row = clip.map_or(&[][..], |c| c.row(p as u8));
+                let locks = clip.map_or(&[][..], |c| c.locks(p as u8));
                 Lane {
                     pad: p,
                     name: self.pad_name(p),
@@ -1363,6 +1637,7 @@ impl PlayPage {
                     steps: (from..from + PAGE)
                         .map(|i| row.get(i).copied().flatten().map_or(0, |s| s.velocity))
                         .collect(),
+                    marks: marks(row, locks, from),
                 }
             })
             .collect()
@@ -1511,6 +1786,19 @@ impl PlayPage {
     /// clears it; elsewhere a tap turns it on or off.
     pub fn tap_step(&mut self, pad: usize, col: usize) -> Option<StepAction> {
         let i = self.page * PAGE + col;
+        // The inspector's Copy: a step on the lane takes the copy; any
+        // other tap lets it go.
+        if let Some((from_pad, from)) = self.copy_from.take() {
+            if from_pad == pad && from != i {
+                return Some(StepAction::CopySteps {
+                    pad: pad as u8,
+                    from,
+                    to: i,
+                    count: 1,
+                });
+            }
+            return None;
+        }
         let on = self
             .steps
             .clip
@@ -1519,6 +1807,9 @@ impl PlayPage {
             .is_some();
         if self.view == PlayView::Beats && on && self.selected != Some((pad, i)) {
             self.selected = Some((pad, i));
+            if self.held.is_none() {
+                self.bank = HeldBank::Step;
+            }
             return None;
         }
         if self.selected == Some((pad, i)) {
@@ -1832,8 +2123,8 @@ mod tests {
         );
         assert_eq!(rect(&timed, THROWS), rect(&beats, THROWS));
         const { assert!(TIMING_STRIP_H < crate::play_widgets::YourTiming::FULL_H) };
-        assert_eq!(PlayView::Beats.page_for(true), BEATS_TIMING_PAGE);
-        assert_eq!(PlayView::Loop.page_for(true), PlayView::Loop.page());
+        assert_eq!(PlayView::Beats.page_with(true, false), BEATS_TIMING_PAGE);
+        assert_eq!(PlayView::Loop.page_with(true, true), PlayView::Loop.page());
         // No view has a pads panel.
         for v in PlayView::ALL {
             for spec in [v.layout(), v.quick_layout()] {

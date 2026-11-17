@@ -30,6 +30,11 @@ the first waits for you to press Enter:
      its own main thread to core 3 and its lane workers to core 2, and prints
      "not pinned (reason)" and runs unpinned if a pin is refused; writes
      nothing). Their output, and the JSON, go into this report.
+  6. Only with --before COMMIT=PATH (once for each): builds of earlier
+     commits, made the default build's way, so a change's cost on the MPC
+     can be read against the commit before it. Each is checked in step 1 and
+     copied in step 3 like the two, and runs `--calibrate` and
+     `--json <commit>.json` only (about 2 to 5 minutes each).
 
 The benchmark only computes. It opens no device and writes only its JSON
 file (the --afford and --lanes runs write nothing), into /run/mpfree-bench
@@ -76,6 +81,10 @@ RUNS = (
     ("--afford", 600),
     ("--lanes --lane-cores 3,2", 1200),
 )
+# An earlier commit's build (--before): it names its files on the MPC, so its label is only a short commit
+# hash. It runs the reference kernels and every engine; --afford and --lanes are the two builds' own.
+BEFORE_LABEL = re.compile(r"^[0-9a-f]{7,12}$")
+BEFORE_RUNS = RUNS[:2]
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
     "port": int(os.environ.get("MPC_TEST_PORT", "2222")),  # the test build's own SSH, not Akai's
@@ -89,7 +98,7 @@ PREPARE = r"""R=''
 umask 077
 d="$R/run/mpfree-bench"
 [ -d "$d" ] || mkdir "$d" || exit 1
-rm -f "$d/default" "$d/default.part" "$d/a17" "$d/a17.part" "$d/default.json" "$d/a17.json"
+rm -f "$d/default" "$d/default.part" "$d/a17" "$d/a17.part" "$d/default.json" "$d/a17.json"@@BEFORE@@
 """
 RECEIVE = r"""R=''; umask 077; cat > "$R/run/mpfree-bench/@@BUILD@@.part" && chmod 700 "$R/run/mpfree-bench/@@BUILD@@.part" && mv "$R/run/mpfree-bench/@@BUILD@@.part" "$R/run/mpfree-bench/@@BUILD@@" """
 HASH = r"""R=''
@@ -121,6 +130,19 @@ def check_program(out, name, path):
     return path, digest
 
 
+def befores(values):
+    """[(label, path)] from the --before values, each COMMIT=PATH with a short commit hash for the label."""
+    out = []
+    for value in values:
+        label, eq, path = value.partition("=")
+        if not eq or not BEFORE_LABEL.match(label) or not path:
+            raise Stop(f"--before {value}: give COMMIT=PATH, COMMIT a short commit hash (7 to 12 of 0-9a-f)")
+        if label in (n for n, _ in out):
+            raise Stop(f"--before {label} is given twice")
+        out.append((label, path))
+    return out
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--ip", default=DEFAULT_SSH["ip"])
@@ -130,8 +152,11 @@ def main(argv):
     p.add_argument("--work", default=os.environ.get("MPFREE_WORK_DIR", os.path.expanduser("~/mpfree-work")))
     p.add_argument("--default-program", default=BUILDS[0][1])
     p.add_argument("--a17-program", default=BUILDS[1][1])
+    p.add_argument("--before", action="append", default=[], metavar="COMMIT=PATH",
+                   help="also run an earlier commit's build (--calibrate and --json only); repeatable")
     p.add_argument("--report")
     args = p.parse_args(argv)
+    earlier = befores(args.before)
     if os.environ.get("MPFREE_ACCEPT_BENCH") != "YES":
         raise Stop("opt-in required (copies the benchmark into the test build's RAM and runs it): "
                    "MPFREE_ACCEPT_BENCH=YES python3 tools/mpc-one/host_bench_mpc.py")
@@ -139,11 +164,12 @@ def main(argv):
         raise Stop("run this from a terminal: each step waits for you to press Enter")
     out = kexec.Out(args.report)
     out.say("MPFree benchmark on the test build (changes RAM on the MPC only)")
-    total = 3 + len(BUILDS)
+    total = 3 + len(BUILDS) + (1 if earlier else 0)
 
     out.say(f"\n[1/{total}] Workstation checks (read-only)")
     programs = [(name, *check_program(out, name, path))
                 for name, path in (("default", args.default_program), ("a17", args.a17_program))]
+    before = [(label, *check_program(out, f"{label} (earlier)", path)) for label, path in earlier]
     folder = kexec.newest_build(os.path.realpath(args.work))
     out.say(f"  test build: {folder}")
     with open(os.path.join(folder, "report.txt")) as fh:
@@ -164,13 +190,16 @@ def main(argv):
     signal.signal(signal.SIGINT, signal.default_int_handler)
     stopped = []
     try:
-        out.say(f"\n[3/{total}] Copy both builds into the test build's RAM ({REMOTE_DIR})")
-        if app.ready(out, "Copies two programs of about 1.3 MB each.") != "go":
+        out.say(f"\n[3/{total}] Copy " + ("both builds" if not before else f"both builds and {len(before)} earlier")
+                + f" into the test build's RAM ({REMOTE_DIR})")
+        count = ("two" if not before else str(len(programs) + len(before)))
+        if app.ready(out, f"Copies {count} programs of about 1.3 MB each.") != "go":
             raise Stop("stopped by you")
-        rc, text = mpc.run(PREPARE, test=True)
+        old = "".join(f' "$d/{label}" "$d/{label}.part" "$d/{label}.json"' for label, _, _ in before)
+        rc, text = mpc.run(kexec.fill(PREPARE, BEFORE=old), test=True)
         if rc != 0:
             raise Stop(f"could not make {REMOTE_DIR} ({text.strip()})")
-        for name, path, digest in programs:
+        for name, path, digest in programs + before:
             rc, text = mpc.run(None, test=True, stdin_path=path, command=kexec.fill(RECEIVE, BUILD=name))
             if rc != 0:
                 raise Stop(f"copying {name} failed ({text.strip()})")
@@ -202,11 +231,20 @@ def main(argv):
                                      timeout, out)
                 if rc != 0:
                     raise Stop(f"{name} {run_args.split()[0]} ended with exit code {rc}")
-            rc, text = mpc.run(kexec.fill(JSON, BUILD=name), test=True)
-            out.say(f"  ----- {name}.json -----")
-            for line in text.splitlines():
-                out.say(f"  {line}")
-            out.say(f"  ----- end of {name}.json -----")
+            show_json(mpc, out, name)
+        if before:
+            out.say(f"\n[{total}/{total}] The earlier builds, " + ", ".join(n for n, _, _ in before)
+                    + ": the reference kernels and every engine (only computes)")
+            answer = app.ready(out, f"Takes about 5 minutes for each of the {len(before)}.")
+            if answer == "quit":
+                raise Stop("stopped by you")
+            for name, _, _ in (before if answer == "go" else []):
+                for run_args, timeout in BEFORE_RUNS:
+                    rc, _ = app.stream(mpc, kexec.fill(RUN, BUILD=name, ARGS=kexec.fill(run_args, BUILD=name)),
+                                       timeout, out)
+                    if rc != 0:
+                        raise Stop(f"{name} {run_args.split()[0]} ended with exit code {rc}")
+                show_json(mpc, out, name)
         result = 0
     except (Stop, KeyboardInterrupt) as err:
         out.say(f"\nSTOP: {str(err) or 'interrupted (Ctrl-C)'}")
@@ -218,6 +256,15 @@ def main(argv):
     out.say("NEXT: carry on with the round, or switch the MPC off with its power switch, take out the stick,")
     out.say("wait 10 s, switch it on, and run the boot-map block to confirm nothing on the eMMC changed.")
     return result
+
+
+def show_json(mpc, out, name):
+    """A build's JSON report, from the MPC's RAM into this report."""
+    rc, text = mpc.run(kexec.fill(JSON, BUILD=name), test=True)
+    out.say(f"  ----- {name}.json -----")
+    for line in text.splitlines():
+        out.say(f"  {line}")
+    out.say(f"  ----- end of {name}.json -----")
 
 
 if __name__ == "__main__":

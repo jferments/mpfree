@@ -36,8 +36,12 @@ use crate::looping::{LoopWave, LooperView};
 use crate::mixing::{PlayFx, PlayLevels};
 use crate::pace::{Pace, TOUCH_POLL};
 use crate::perf::ProcView;
-use crate::play_page::{self, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn};
-use crate::play_widgets::{self, MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
+use crate::play_page::{
+    self, HeldBank, InspectTap, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn,
+};
+use crate::play_widgets::{
+    self, MiniPads, PlayTransport, StepGrid, StepInspector, Throws, XyPad, YourTiming,
+};
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::skin_page;
@@ -1353,6 +1357,7 @@ impl Player {
         ui.add(play_page::THROWS, Throws::default());
         ui.add(play_page::XY, XyPad::default());
         ui.add(play_page::TIMING, YourTiming::default());
+        ui.add(play_page::INSPECTOR, StepInspector::default());
         ui.add(play_page::SYNTH_PADS_HEAD, PadsBar::default());
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
@@ -1381,6 +1386,13 @@ impl Player {
             &PlayView::Beats.layout_for(true),
         )
         .expect("beats with timing layout");
+        for (page, timing) in [
+            (play_page::BEATS_STEP_PAGE, false),
+            (play_page::BEATS_TIMING_STEP_PAGE, true),
+        ] {
+            ui.add_page(page, &PlayView::step_layout(timing))
+                .expect("beats with the step inspector");
+        }
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
@@ -1994,6 +2006,8 @@ impl Player {
         if !mpfree_mixer_ui::io_select(&mut self.ui, i + 1) {
             return false;
         }
+        // The section's own hint, not the one before it.
+        self.refresh_hint();
         self.outbox.push(FromUi::OpenIo);
         true
     }
@@ -2254,6 +2268,20 @@ impl Player {
             // and Sound banks.
             self.play.bank = self.play.bank.next();
             println!("q-link bank: {}", self.play.held_bank().name());
+            self.refresh_play();
+            self.refresh_qlinks();
+            self.refresh_hint();
+            return;
+        }
+        if play && self.play.inspecting() {
+            // A step picked on Beats: Step and Trig (locks need the
+            // step's pad held).
+            self.play.bank = match self.play.bank {
+                HeldBank::Step => HeldBank::Trig,
+                _ => HeldBank::Step,
+            };
+            println!("q-link bank: {}", self.play.bank.name());
+            self.refresh_play();
             self.refresh_qlinks();
             self.refresh_hint();
             return;
@@ -2378,6 +2406,27 @@ impl Player {
                         (xy.x, xy.y) = (x, y);
                     }
                 }
+            }
+        }
+        // The step inspector: filled while a step is held or picked on
+        // Beats, and its page swapped in for the throws' (or back).
+        let inspect = self.play.inspect().unwrap_or_default();
+        if self
+            .ui
+            .get::<StepInspector>(play_page::INSPECTOR)
+            .is_some_and(|w| w.inspect != inspect)
+        {
+            if let Some(w) = self.ui.get_mut::<StepInspector>(play_page::INSPECTOR) {
+                w.inspect = inspect;
+            }
+        }
+        if self.ready && self.view == View::Play && !self.band_showing() && !self.levels.open {
+            let want = self
+                .play
+                .view
+                .page_with(self.settings.timing_strip, self.play.inspecting());
+            if self.ui.page() != want && self.ui.page().starts_with("Play") {
+                self.show_view(View::Play);
             }
         }
         if self.timing_shown() {
@@ -6381,7 +6430,7 @@ impl Player {
             View::Play => self
                 .play
                 .view
-                .page_for(self.settings.timing_strip)
+                .page_with(self.settings.timing_strip, self.play.inspecting())
                 .to_string(),
             View::Arrange => CLIPS_PAGE.to_string(),
             View::Synth => self.synth_page(),
@@ -6934,6 +6983,42 @@ impl Player {
                 self.play.levels.pad_mutes ^= 1 << pad;
                 self.refresh_play();
                 Some(FromUi::PlayFx(PlayFx::PadMute { pad, mute }))
+            }
+            (play_page::INSPECTOR, EventKind::Tab(k)) if k < 3 => {
+                let bank = [HeldBank::Step, HeldBank::Trig, HeldBank::Sound][k];
+                self.play.inspector_tap(InspectTap::Bank(bank));
+                println!(
+                    "q-link bank: {}",
+                    self.play.inspect().map_or(bank, |i| i.bank).name()
+                );
+                self.refresh_play();
+                self.refresh_qlinks();
+                self.refresh_hint();
+                None
+            }
+            (play_page::INSPECTOR, EventKind::Tab(k)) => {
+                let tap = match k {
+                    play_widgets::INSPECT_COPY => InspectTap::Copy,
+                    play_widgets::INSPECT_CLOSE => InspectTap::Close,
+                    _ => InspectTap::Clear,
+                };
+                let a = self.play.inspector_tap(tap);
+                if let Some((_, i)) = self.play.copy_from.filter(|_| tap == InspectTap::Copy) {
+                    self.tell(&format!(
+                        "Copy: tap the step on this lane that takes step {}'s copy",
+                        i + 1
+                    ));
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                self.refresh_hint();
+                a.map(FromUi::Steps)
+            }
+            (play_page::INSPECTOR, EventKind::Toggle(k)) => {
+                let a = self.play.inspector_tap(InspectTap::Unlock(k));
+                self.refresh_play();
+                self.refresh_qlinks();
+                a.map(FromUi::Steps)
             }
             (play_page::THROWS, EventKind::Pad { index, down }) => {
                 let fx = self.play.throw(index, down);
@@ -8130,6 +8215,34 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
             change,
         });
     }
+    // Mockup A's marks on the cells: conditions, a chance, ratchets, a
+    // note held over the next step, and locks (one with no note).
+    use mpfree_seq::steps::Change;
+    use mpfree_seq::Cond;
+    for (pad, step, change) in [
+        (0, 8, Change::Cond(Cond::Every { a: 1, b: 2 })),
+        (0, 10, Change::Chance(50)),
+        (2, 15, Change::Ratchet(3)),
+        (4, 12, Change::Cond(Cond::Pre)),
+        (5, 7, Change::Length(STEP_TICKS * 2)),
+        (7, 12, Change::Cond(Cond::Fill)),
+        (10, 2, Change::Ratchet(2)),
+        (12, 8, Change::Cond(Cond::First)),
+        (13, 10, Change::Chance(70)),
+    ] {
+        let _ = h.step_action(StepAction::Change { pad, step, change });
+    }
+    let tune = |pad| {
+        mpfree_play::mpfree_param::RelAddr::new(mpfree_play::mpfree_param::OnTrack::Pad(pad), 2)
+    };
+    for (pad, steps) in [(0u8, (1u128 << 6) | (1 << 9)), (2, 1 << 12), (10, 1 << 5)] {
+        let _ = h.step_action(StepAction::Lock {
+            pad,
+            steps,
+            addr: tune(pad),
+            value: Some(300.0),
+        });
+    }
     h.command(mpfree_transport::Command::SetSwing(
         mpfree_transport::time::Swing {
             grid: 240,
@@ -8979,6 +9092,52 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
     titles
 }
 
+/// The stack for a thread that builds the sample screens
+/// ([`sample_screens`]): the tests' (`smoke::on_big_stack` and below), and
+/// `--preview` and `--display-lists` ([`on_screens_stack`]). Every screen's
+/// `Player` sits in its one frame, which in a debug build is about 7 MiB
+/// (7,376,832 bytes on 17 Nov 2026): the main thread's 8 MiB left the sweep
+/// about 14 KB, so one more screen ran it out of stack ("thread '<unknown>'
+/// has overflowed its stack"). Twice that leaves room for the screens to
+/// come.
+pub const SCREENS_STACK: usize = 16 << 20;
+
+/// Run `f` on a thread with [`SCREENS_STACK`], for the commands that draw
+/// every sample screen (`--preview`, `--display-lists`). It may borrow.
+pub fn on_screens_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(SCREENS_STACK)
+            .spawn_scoped(s, f)
+            .expect("a thread for the sample screens")
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e))
+    })
+}
+
+/// A sample screen of the mixer's I/O view on the section titled
+/// `section`, with `model` (its own function, so `sample_screens`' frame
+/// doesn't grow with each screen).
+#[inline(never)]
+fn io_section_screen(
+    fonts: Fonts,
+    io_state: &mpfree_mixer_ui::MixState,
+    model: mpfree_midi_ui::IoModel,
+    section: &str,
+) -> Player {
+    let mut p = sample_player(fonts);
+    p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+        model,
+    ))));
+    p.apply(ToUi::Show(View::Mixer));
+    p.apply(ToUi::Mixer(Box::new(io_state.clone())));
+    p.open_io_section(section);
+    let _ = p.take_actions();
+    // Drawn whole again, as a screen first shown is.
+    p.ui.invalidate();
+    p
+}
+
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -9095,7 +9254,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mpfree_midi_ui::sample::rig(),
     ))));
     port.apply(ToUi::Show(View::Mixer));
-    port.apply(ToUi::Mixer(Box::new(io_state)));
+    port.apply(ToUi::Mixer(Box::new(io_state.clone())));
     port.open_io_section(mpfree_midi_ui::MIDI);
     let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
     port.ui.paint(&mut c);
@@ -9112,6 +9271,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Drawn whole again, as a screen first shown is.
     port.ui.invalidate();
     out.push(("mixer-io-port", port));
+    // The I/O view's Routing section (board 5 of the MIDI mockups, without
+    // blocks): the drum machine on the 5-pin jacks' channel 10 plays Drums
+    // whichever track is armed.
+    let mut rig = mpfree_midi_ui::sample::rig();
+    rig.setup.routes.push(mpfree_midi::setup::TrackRoute {
+        port: mpfree_midi::setup::DIN_NAME.to_string(),
+        channel: Some(9),
+        track: 0,
+    });
+    out.push((
+        "mixer-io-routing",
+        io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::ROUTING),
+    ));
     // The FX chain editor in the mixer's place (a strip's insert row): the
     // drum bus, Drive selected, Tone touched; and the macros panel over the
     // page (a long press on a macro card), layout spec 4b.
@@ -11104,6 +11276,9 @@ mod tests {
             (q.title.clone(), q.cards.clone())
         };
         let held = |p: &Player| p.ui.get::<StepGrid>(play_page::STEPS).unwrap().held.clone();
+        // No step picked on the screen (Q-LINK would step its banks).
+        p.play.selected = None;
+        p.refresh_play();
         // A macro bank first: a held step takes the Q-Links over it.
         p.apply(ToUi::QLinkBank);
         assert_eq!(column(&p).0, "Q-Links · Macros 1-4");
@@ -12106,7 +12281,9 @@ mod tests {
     #[test]
     fn the_beats_view_shows_your_timing() {
         let p = sample_play(Fonts::embedded(), PlayView::Beats);
-        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
+        // Step 7 of the kick is picked, as in the sequencer's mockup A:
+        // the step inspector has the throws' place.
+        assert_eq!(p.page(), play_page::BEATS_TIMING_STEP_PAGE);
         let t = p.ui.get::<YourTiming>(play_page::TIMING).unwrap();
         assert_eq!(
             t.lanes.iter().map(|l| l.1.as_str()).collect::<Vec<_>>(),
@@ -12275,9 +12452,9 @@ mod tests {
         assert_eq!(p.touch(2, Touch::Down, cr.x + 5, cr.y + 5), None);
         assert_eq!(p.take_actions(), [FromUi::OpenIo]);
         assert!(!p.open_io_section("Sync"), "no Sync section yet");
-        // The model arrives (once, at start): MIDI, Sync, CV and Monitor
-        // join the list after Audio, and the chip's tap opens Sync. A
-        // second model adds nothing.
+        // The model arrives (once, at start): MIDI, Routing, Sync, CV and
+        // Monitor join the list after Audio, and the chip's tap opens Sync.
+        // A second model adds nothing.
         let model = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::sample::rig()));
         p.apply(ToUi::IoModel(model.clone()));
         p.apply(ToUi::IoModel(model));
@@ -12285,6 +12462,7 @@ mod tests {
             p.io_sections,
             [
                 mpfree_midi_ui::MIDI,
+                mpfree_midi_ui::ROUTING,
                 mpfree_midi_ui::SYNC,
                 mpfree_midi_ui::CV,
                 mpfree_midi_ui::MONITOR
@@ -12293,7 +12471,11 @@ mod tests {
         assert!(p.open_io_section("Sync"));
         let v =
             p.ui.get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER);
-        assert_eq!(v.map(|v| v.io_section()), Some(2), "Audio, MIDI, Sync");
+        assert_eq!(
+            v.map(|v| v.io_section()),
+            Some(3),
+            "Audio, MIDI, Routing, Sync"
+        );
         let fx = app.open_io();
         assert_eq!(
             fx.first(),
@@ -18030,14 +18212,22 @@ mod tests {
     fn every_sample_screen_draws() {
         // sample_screens builds every screen's Player in one frame, which in
         // a debug build outgrows the 2 MiB test thread, so draw them on a
-        // thread with smoke::SCREENS_STACK.
+        // thread with SCREENS_STACK.
         std::thread::Builder::new()
-            .stack_size(crate::smoke::SCREENS_STACK)
+            .stack_size(SCREENS_STACK)
             .spawn(|| {
                 for (name, mut p) in sample_screens(Fonts::embedded) {
                     let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
                     let d = p.ui.paint(&mut c);
                     assert_eq!(d.len(), 1, "{name}: a first paint covers the screen");
+                    if name == "mixer-io-routing" {
+                        assert!(
+                            p.ui.targets()
+                                .iter()
+                                .any(|t| t.target.id == "routing-square"),
+                            "{name}: the Routing section shows"
+                        );
+                    }
                     if name == "mixer-io-port" {
                         // The tap on Open › found its row: the page shows.
                         assert!(
@@ -18060,7 +18250,7 @@ mod tests {
     #[test]
     fn every_sample_screen_plays_back_the_same_from_its_display_list() {
         std::thread::Builder::new()
-            .stack_size(crate::smoke::SCREENS_STACK)
+            .stack_size(SCREENS_STACK)
             .spawn(|| {
                 let direct = sample_screens(Fonts::embedded);
                 let recorded = sample_screens(Fonts::embedded);
@@ -18283,7 +18473,7 @@ mod tests {
         // The sample screens outgrow the 2 MiB test thread in a debug build
         // (as above).
         std::thread::Builder::new()
-            .stack_size(crate::smoke::SCREENS_STACK)
+            .stack_size(SCREENS_STACK)
             .spawn(idle_pages_stay_still)
             .unwrap()
             .join()

@@ -16,8 +16,9 @@
 //! - The kits' projects go to the screen thread for the Sample tab
 //!   ([`Player::take_projects`]). An edit there builds the kit's view again
 //!   on the screen thread and sends it here in a [`ViewSwap`];
-//!   [`Player::swap_view`] puts it in place and hands the old view back in
-//!   the same box, so the screen thread frees it.
+//!   [`Player::swap_view`] puts it in place (sounds already playing hear
+//!   the edit) and hands the old view back in the same box, so the screen
+//!   thread frees it.
 //! - While the Grain tab shows, a [`Cloud`] goes back and forth the same
 //!   way: the screen thread names the pad, the audio thread copies that
 //!   pad's grains into it ([`Player::fill_cloud`]) about 25 times a second
@@ -385,9 +386,11 @@ impl Player {
 
     /// Puts `swap`'s view in place for kit `swap.kit` (in the engine, if
     /// that kit is playing) and leaves the view it replaces in `swap`, to
-    /// be freed off the audio thread. Sounds already playing finish as they
-    /// started; the next hit plays the new view, and the pads with a sound
-    /// are the view's (a chop adds some). Never allocates or frees.
+    /// be freed off the audio thread. It is an edit of that kit, so sounds
+    /// already playing hear it ([`Engine::edit_view`]: loop points, level,
+    /// pan, filter and tune), and the next hit plays the new view; the pads
+    /// with a sound are the view's (a chop adds some). Never allocates or
+    /// frees.
     /// Returns false, leaving `swap` as it was, if there is no such kit.
     pub fn swap_view(&mut self, swap: &mut ViewSwap) -> bool {
         let Some(view) = swap.view.take() else {
@@ -400,7 +403,7 @@ impl Player {
             }
         }
         if swap.kit == self.kit {
-            swap.view = Some(self.engine.set_view(view));
+            swap.view = Some(self.engine.edit_view(view));
         } else if let Some(slot) = self.views.get_mut(swap.kit) {
             swap.view = slot.replace(view);
         } else {
@@ -1196,6 +1199,37 @@ mod tests {
         );
         p.select(1);
         assert!(p.hit_at(0, 127, 0));
+    }
+
+    #[test]
+    fn an_edit_reaches_the_sound_still_playing_and_another_kit_does_not() {
+        let play = |edit: bool, kit: usize| {
+            let mut ks = kits();
+            let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+            let mut projects = p.take_projects();
+            p.hit_at(0, 127, 0);
+            run(&mut p, 4);
+            if edit {
+                projects[kit]
+                    .edit_pad(0, None, |pad| pad.level_db -= 20.0)
+                    .unwrap();
+                let mut swap = ViewSwap {
+                    kit,
+                    view: Some(EngineView::build(&projects[kit], 44_100)),
+                };
+                assert!(p.swap_view(&mut swap));
+            }
+            run(&mut p, 18).0
+        };
+        let peak = |x: &[f32]| x.iter().fold(0f32, |m, s| m.max(s.abs()));
+        let (as_it_was, edited) = (play(false, 0), play(true, 0));
+        // 20 dB down once it has glided there (a 10 ms glide: frames 1500
+        // to 2300 of the rest; the sound ends at 2488).
+        let window = 2 * 1500..2 * 2300;
+        let ratio = peak(&edited[window.clone()]) / peak(&as_it_was[window]);
+        assert!((0.07..0.13).contains(&ratio), "{ratio}");
+        // An edit of the kit not playing doesn't reach what plays.
+        assert_eq!(play(true, 1), as_it_was);
     }
 
     #[test]

@@ -46,7 +46,10 @@
 572112	Drums Boom Kit, a hit every block
 417001	Drums Init Kit, a hit every 4 blocks
 108120	EQ (4 bands and both cuts)
+256118	EQ (4 bands and both cuts), Freq gliding
+188280	EQ (4 bands and both cuts), HQ 2x
 55126	Flanger
+386476	Fuzz
 434564	Grains FX (dense)
 188538	Keys Dusty Keys, 16 voices
 169967	Keys Init, 16 voices

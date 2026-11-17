@@ -61,6 +61,7 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
             ];
             cuts.extend((0..eq::BANDS).map(eq::band_use));
             cuts.push(eq::LISTEN);
+            cuts.push(eq::QUALITY);
             Some(vec![
                 pg("Bands", &one, &one_q),
                 pg("Bands 5-8", &two, &two_q),

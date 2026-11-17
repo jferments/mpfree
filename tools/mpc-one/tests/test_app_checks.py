@@ -163,6 +163,33 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(test(checks.Window([], session, 100.0, 120.0))[0], "none in place")
         self.assertIsNone(test(checks.Window([], session[:1], 100.0, 120.0))[0], "no status after it yet")
 
+    def test_the_mix_checks_see_a_refused_effect_and_the_latch(self):
+        """The effect checks (return-wet, the Mix curve and Room checks, the Tape delay's three, Crush's,
+        Drive's and the Amp's, the busy project): any refusal from the mixer or the chain editor fails them, a
+        late mode switch among them, and the latched ones start and end on Latch."""
+        latched = lines("Latch on", "Latch off")
+        for name in ("return-wet", "mix-curve", "mix-curve-click", "room-level",
+                     "tape-first-echo", "dub-echo-dies", "runaway-howls", "crush-rate", "crush-filters",
+                     "drive-modes", "amp-turns", "amp-switches", "amp-gate", "fx-busy"):
+            got = dict((what, ok) for ok, what in self.judge(name, checks.Window(latched)))
+            self.assertTrue(got["no refusal"], name)
+            self.assertTrue(got["the app kept running"], name)
+            for refusal in ("mixer: The chain is full", "chain: The mixer is busy",
+                            "mixer: an effect was switched after it was taken out"):
+                got = dict((what, ok) for ok, what in self.judge(name, checks.Window(lines(refusal))))
+                self.assertFalse(got["no refusal"], f"{name}: {refusal}")
+        got = dict((what, ok) for ok, what in self.judge("mix-curve", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the snare repeating"])
+        got = dict((what, ok) for ok, what in self.judge("room-level", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("crush-rate", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the pad repeating"])
+        got = dict((what, ok) for ok, what in self.judge("crush-filters", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("fx-busy", checks.Window(lines("Latch on"))))
+        self.assertTrue(got["Latch kept the chord repeating"])
+        self.assertFalse(got["Latch went off"])
+
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
                  (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),

@@ -20,6 +20,8 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
 - **Filter:** darken or thin out the sound. Drag the dot.
 
+A cutoff or resonance change reaches a sound that is still playing, gliding there; a new envelope or filter type plays from the next hit.
+
 ### Pads that stop, play or hold others
 
 {{shot: sample-play-links | The Play page's Pad list with Also plays picked: hits on A1 and A3 put them on it, so a hit on A5 plays all three, and A5 latches.}}
