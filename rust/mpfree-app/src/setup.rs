@@ -42,6 +42,19 @@
 //! (`write --new-backup`): it leaves a token in [`NEW_BACKUP`], which the
 //! setup honours once, keeping the backups the stick already has.
 //!
+//! **Left out** (Jay, 17 Nov: "if they don't want to use Akai's kits, they
+//! can skip the backup/extraction step"): the musician can leave the backup,
+//! Akai's kits and samples, or both out of the first start, in the creator
+//! (`--no-backup`, `--no-akai-kits`: [`LEAVE_OUT`] on the stick, read once,
+//! when the store has no record yet) and later in Prefs. The store's
+//! `leave-out` then says what is left out. Without a backup, Akai's kits
+//! and samples are read straight from the MPC: the root service opens the
+//! same read-only window and lets the pad player read only the content
+//! partition's device ([`CONTENT_DEVICE`]), until the pad player says it is
+//! done ([`ContentWindow`]). A backup already on the stick is used instead
+//! when there is one. The creator can ask for Akai's kits again on an update
+//! (`--akai-kits`, [`AKAI_KITS`]), as for a new backup.
+//!
 //! It runs only where the stick has the backup service (the creator's
 //! sticks), only with `--data`, and never in `play`.
 
@@ -55,6 +68,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -87,6 +102,38 @@ pub const SERIAL: &str = "/sys/firmware/devicetree/base/serial-number";
 /// --new-backup`), on the stick's read-only root: a token in hex, honoured
 /// once (the store keeps it as `new-backup`).
 pub const NEW_BACKUP: &str = "/etc/mpfree-test/new-backup";
+/// What the creator left out of the first start (`mpfree-stick write
+/// --no-backup --no-akai-kits`): words from [`LEAVE_OUT_WORDS`], on the
+/// stick's read-only root. Read only while the store has no `leave-out`
+/// record, so the musician's later choice in Prefs, and an update that
+/// keeps partition 4, keep what the store says.
+pub const LEAVE_OUT: &str = "/etc/mpfree-test/leave-out";
+/// What can be left out: the eMMC backup, and Akai's kits and samples
+/// (the steps in [`AKAI_STEPS`]).
+pub const LEAVE_OUT_WORDS: &[&str] = &["backup", "akai-kits"];
+/// The steps that bring in Akai's kits and samples.
+pub const AKAI_STEPS: &[&str] = &["kits", "kit folders", "kit files"];
+/// The store's `leave-out` when nothing is left out.
+const NOTHING: &str = "none";
+/// The creator's request for Akai's kits and samples on an update that keeps
+/// partition 4 (`mpfree-stick write --akai-kits`), a token honoured once
+/// like [`NEW_BACKUP`]: it takes "akai-kits" out of the store's `leave-out`.
+pub const AKAI_KITS: &str = "/etc/mpfree-test/akai-kits";
+/// The request to read Akai's content straight from the MPC, in the
+/// program's own folder in /run (the same root service as the backup).
+pub const CONTENT_REQUEST: &str = "setup-content.request";
+/// While it reads: a counter, written every [`BEAT`]. The service closes the
+/// window when it stops moving (setup-backup.sh's QUIET).
+pub const CONTENT_ALIVE: &str = "setup-content.alive";
+/// Made when the pad player has read what it needs: the service closes the
+/// window.
+pub const CONTENT_DONE: &str = "setup-content.done";
+/// The content partition (Akai's kits and samples) while the window is
+/// open: readable by the pad player's group, on a disk the kernel holds
+/// read-only. The only eMMC device the pad player ever opens, read-only.
+pub const CONTENT_DEVICE: &str = "/dev/mmcblk0p7";
+/// How often the counter moves.
+const BEAT: Duration = Duration::from_secs(2);
 /// What a backup's MANIFEST.txt calls the MPC it was made on
 /// (setup-backup.sh writes it).
 const MPC_LINE: &str = "MPC: ";
@@ -110,6 +157,12 @@ pub struct Paths {
     pub request: PathBuf,
     pub serial: PathBuf,
     pub new_backup: PathBuf,
+    pub leave_out: PathBuf,
+    pub akai_kits: PathBuf,
+    pub content_request: PathBuf,
+    pub content_alive: PathBuf,
+    pub content_done: PathBuf,
+    pub content_device: PathBuf,
 }
 
 impl Paths {
@@ -121,6 +174,12 @@ impl Paths {
             request: report_dir.join(REQUEST),
             serial: PathBuf::from(SERIAL),
             new_backup: PathBuf::from(NEW_BACKUP),
+            leave_out: PathBuf::from(LEAVE_OUT),
+            akai_kits: PathBuf::from(AKAI_KITS),
+            content_request: report_dir.join(CONTENT_REQUEST),
+            content_alive: report_dir.join(CONTENT_ALIVE),
+            content_done: report_dir.join(CONTENT_DONE),
+            content_device: PathBuf::from(CONTENT_DEVICE),
         }
     }
 }
@@ -158,23 +217,184 @@ pub fn done_steps(saved: &Settings) -> Vec<String> {
 }
 
 /// Whether the setup still has to run: the stick has the service, and a
-/// step is not done and the setup has not given up, or the creator asked
+/// step the musician wants is not done and the setup has not given up
+/// (unless the creator asked for Akai's kits again), or the creator asked
 /// for a new backup that this partition 4 has not made yet.
 pub fn needed(paths: &Paths, saved: &Settings) -> bool {
     let done = done_steps(saved);
+    let left = left_out(paths, saved);
     paths.service.is_file()
         && (new_backup_asked(paths, saved).is_some()
-            || (STEPS.iter().any(|s| !done.iter().any(|d| d == s))
-                && saved.get_i64("tries").unwrap_or(0) < MAX_TRIES))
+            || (steps_wanted(&left)
+                .iter()
+                .any(|s| !done.iter().any(|d| d == s))
+                && (akai_kits_asked(paths, saved).is_some()
+                    || saved.get_i64("tries").unwrap_or(0) < MAX_TRIES)))
+}
+
+/// A token file the creator wrote, in hex.
+fn token_in(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let token = text.trim();
+    let hex = (8..=64).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_hexdigit());
+    hex.then(|| token.to_string())
 }
 
 /// The creator's request for a new backup ([`NEW_BACKUP`]), when the store
 /// has not honoured it yet: its token.
 fn new_backup_asked(paths: &Paths, saved: &Settings) -> Option<String> {
-    let text = std::fs::read_to_string(&paths.new_backup).ok()?;
-    let token = text.trim();
-    let hex = (8..=64).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_hexdigit());
-    (hex && saved.get_str("new-backup") != Some(token)).then(|| token.to_string())
+    token_in(&paths.new_backup).filter(|t| saved.get_str("new-backup") != Some(t.as_str()))
+}
+
+/// The creator's request for Akai's kits and samples ([`AKAI_KITS`]), when
+/// the store has not honoured it yet: its token.
+fn akai_kits_asked(paths: &Paths, saved: &Settings) -> Option<String> {
+    token_in(&paths.akai_kits).filter(|t| saved.get_str("akai-kits-asked") != Some(t.as_str()))
+}
+
+/// The words of [`LEAVE_OUT_WORDS`] in a text, once each, in that order.
+fn leave_out_words(text: &str) -> Vec<String> {
+    let found: Vec<&str> = text
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .collect();
+    LEAVE_OUT_WORDS
+        .iter()
+        .filter(|w| found.contains(w))
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// What the first start leaves out: what the store records (the musician's
+/// choice, from the creator at the first start or from Prefs since), or,
+/// before it records anything, the creator's [`LEAVE_OUT`] file; less what
+/// the creator has just asked for again (a new backup, Akai's kits).
+pub fn left_out(paths: &Paths, saved: &Settings) -> Vec<String> {
+    let mut left = match saved.get_str("leave-out") {
+        Some(s) => leave_out_words(s),
+        None => leave_out_words(&std::fs::read_to_string(&paths.leave_out).unwrap_or_default()),
+    };
+    if new_backup_asked(paths, saved).is_some() {
+        left.retain(|w| w != "backup");
+    }
+    if akai_kits_asked(paths, saved).is_some() {
+        left.retain(|w| w != "akai-kits");
+    }
+    left
+}
+
+/// The store's text for `left`.
+fn leave_out_text(left: &[String]) -> String {
+    if left.is_empty() {
+        NOTHING.to_string()
+    } else {
+        left.join(",")
+    }
+}
+
+/// The steps wanted when `left` is left out.
+pub fn steps_wanted(left: &[String]) -> Vec<&'static str> {
+    let out = |w: &str| left.iter().any(|l| l == w);
+    STEPS
+        .iter()
+        .copied()
+        .filter(|s| !(out("backup") && *s == "backup"))
+        .filter(|s| !(out("akai-kits") && AKAI_STEPS.contains(s)))
+        .collect()
+}
+
+/// The settings to save before anything else when the store has no record
+/// of what is left out yet: the creator's choice, from [`LEAVE_OUT`], so an
+/// update of the stick later (which has no such file) keeps it. None when
+/// the store has a record, or the stick has no setup.
+pub fn remember_left_out(paths: &Paths, saved: &Settings) -> Option<Settings> {
+    if saved.get_str("leave-out").is_some() || !paths.service.is_file() {
+        return None;
+    }
+    let mut out = saved.clone();
+    let left = leave_out_words(&std::fs::read_to_string(&paths.leave_out).unwrap_or_default());
+    out.set_str("leave-out", &leave_out_text(&left));
+    Some(out)
+}
+
+/// What Prefs offers for the backup and Akai's kits, from the store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Choice {
+    /// Left out (and not asked for since).
+    pub left_out: bool,
+    /// Done at an earlier start.
+    pub done: bool,
+    /// Asked for in Prefs: runs at the next start.
+    pub next_start: bool,
+}
+
+/// The backup's and Akai's kits' state, for Prefs: (backup, akai-kits).
+pub fn choices(paths: &Paths, saved: &Settings) -> (Choice, Choice) {
+    let done = done_steps(saved);
+    let left = left_out(paths, saved);
+    let is_done = |steps: &[&str]| steps.iter().all(|s| done.iter().any(|d| d == s));
+    let backup = Choice {
+        left_out: left.iter().any(|l| l == "backup"),
+        done: is_done(&["backup"]) && saved.get_str("fresh-backup").is_none(),
+        next_start: saved.get_str("fresh-backup") == Some("prefs"),
+    };
+    let akai = Choice {
+        left_out: left.iter().any(|l| l == "akai-kits"),
+        done: is_done(AKAI_STEPS),
+        next_start: false,
+    };
+    let akai = Choice {
+        next_start: !akai.left_out && !akai.done && saved.get_str("akai-kits-next").is_some(),
+        ..akai
+    };
+    (backup, akai)
+}
+
+/// Prefs' "at the next start" for the backup: a new one, kept beside any
+/// backup the stick has (as the creator's `--new-backup`), or none. `want`
+/// false takes the ask back, and leaves the backup out if there is none.
+pub fn ask_backup(paths: &Paths, saved: &Settings, want: bool) -> Settings {
+    let mut out = saved.clone();
+    let mut left = left_out(paths, saved);
+    let mut done = done_steps(saved);
+    if want {
+        left.retain(|w| w != "backup");
+        done.retain(|d| d != "backup");
+        out.set_str("fresh-backup", "prefs");
+        out.set_i64("tries", 0);
+    } else {
+        if out.get_str("fresh-backup") == Some("prefs") {
+            out.remove("fresh-backup");
+        }
+        let has = out.get_str("backup").is_some() || !finished_backups(paths).is_empty();
+        if has {
+            if !done.iter().any(|d| d == "backup") {
+                done.insert(0, "backup".into());
+            }
+        } else if !left.iter().any(|w| w == "backup") {
+            left.insert(0, "backup".into());
+        }
+    }
+    out.set_str("leave-out", &leave_out_text(&left));
+    out.set_str("done", &done.join(","));
+    out
+}
+
+/// Prefs' "at the next start" for Akai's kits and samples, or (`want`
+/// false) leaving them out again, when they are not in yet.
+pub fn ask_akai_kits(paths: &Paths, saved: &Settings, want: bool) -> Settings {
+    let mut out = saved.clone();
+    let mut left = left_out(paths, saved);
+    left.retain(|w| w != "akai-kits");
+    if want {
+        out.set_str("akai-kits-next", "prefs");
+        out.set_i64("tries", 0);
+    } else {
+        out.remove("akai-kits-next");
+        left.push("akai-kits".into());
+        left = leave_out_words(&left.join(","));
+    }
+    out.set_str("leave-out", &leave_out_text(&left));
+    out
 }
 
 /// Which MPC this is, as a backup's MANIFEST.txt records it: the first 16
@@ -690,13 +910,28 @@ pub fn run(
 ) -> Outcome {
     let mut out = saved.clone();
     let asked = new_backup_asked(paths, saved);
-    // A new backup the creator asked for starts the tries afresh.
-    let tries = match asked {
-        Some(_) => 1,
-        None => saved.get_i64("tries").unwrap_or(0) + 1,
+    let akai_asked = akai_kits_asked(paths, saved);
+    let left = left_out(paths, saved);
+    // A new backup or Akai's kits the creator asked for start the tries afresh.
+    let tries = match (&asked, &akai_asked) {
+        (None, None) => saved.get_i64("tries").unwrap_or(0) + 1,
+        _ => 1,
     };
     out.set_i64("tries", tries);
     say(format!("first start: setup, try {tries} of {MAX_TRIES}"));
+    out.set_str("leave-out", &leave_out_text(&left));
+    if let Some(token) = &akai_asked {
+        say("first start: the stick was made asking for Akai's kits and samples".into());
+        out.set_str("akai-kits-asked", token);
+    }
+    let left_backup = left.iter().any(|w| w == "backup");
+    let left_akai = left.iter().any(|w| w == "akai-kits");
+    if !left.is_empty() {
+        say(format!(
+            "first start: left out, as the musician chose: {}",
+            left.join(", ")
+        ));
+    }
     // A step this version no longer has ("samples") is forgotten.
     let mut done = done_steps(saved);
     done.retain(|d| STEPS.contains(&d.as_str()));
@@ -732,13 +967,17 @@ pub fn run(
         est: Estimate::new(EMMC_BYTES),
         clock: Instant::now(),
     };
+    if left_akai {
+        bar.finish(Stage::Kits);
+        bar.finish(Stage::Samples);
+    }
     let here = this_mpc(paths);
     let mut others = Vec::new();
     let earlier = match out.get_str("fresh-backup") {
         Some(_) => None,
         None => earlier_backup(paths, &out, here.as_deref(), &mut others),
     };
-    if earlier.is_none() {
+    if earlier.is_none() && !left_backup {
         for f in &others {
             say(format!(
                 "first start: {} is a backup of another MPC; this one is backed up too",
@@ -747,6 +986,23 @@ pub fn run(
         }
     }
     let folder = match earlier {
+        // Left out, with a backup already on the stick (an earlier start's):
+        // Akai's kits come from it, with no new look at the MPC's storage.
+        Some(f) if left_backup => {
+            bar.finish(Stage::Copy);
+            bar.finish(Stage::Verify);
+            say(format!(
+                "first start: no new backup (left out); the one on the stick is used: {}",
+                f.display()
+            ));
+            Some(f)
+        }
+        None if left_backup => {
+            bar.finish(Stage::Copy);
+            bar.finish(Stage::Verify);
+            say("first start: no backup (left out)".into());
+            None
+        }
         Some(f) => {
             let line = about_text(&about(&f), here.as_deref(), now_secs());
             say(format!(
@@ -757,32 +1013,50 @@ pub fn run(
             bar.finish(Stage::Verify);
             show(show_f, REUSING, line, bar.value());
             thread::sleep(timing.notice);
-            f
+            Some(f)
         }
         None => match backup(paths, timing, &mut bar, show_f, say) {
-            Ok(f) => f,
+            Ok(f) => Some(f),
             Err(why) => return fail(out, why, say),
         },
     };
-    out.set_str("backup", &folder.display().to_string());
-    out.remove("fresh-backup");
-    mark(&mut out, &mut done, "backup");
+    if let Some(f) = &folder {
+        out.set_str("backup", &f.display().to_string());
+        if !left_backup {
+            out.remove("fresh-backup");
+            mark(&mut out, &mut done, "backup");
+        }
+    }
     save(&out);
-    let v = bar.value();
-    show(show_f, EXTRACTING, "Reading the backup".into(), v);
-    // The backup's copy of the eMMC's user area: a file on partition 4, read only.
-    let image = image_in(&folder);
-    let content = match File::open(&image)
-        .map_err(|e| format!("{}: {e}", image.display()))
-        .and_then(|f| {
-            Content::from_disk(f).map_err(|e| format!("the backup's content partition: {e}"))
-        }) {
-        Ok(c) => c,
-        Err(why) => return fail(out, why, say),
-    };
+    if left_akai {
+        return finished(out, None, folder.as_deref(), show_f, say);
+    }
     let lib = match Library::at(&paths.data) {
         Ok(l) => l,
         Err(e) => return fail(out, format!("the library: {e}"), say),
+    };
+    let v = bar.value();
+    // The backup's copy of the eMMC's user area (a file on partition 4), or
+    // the content partition straight from the MPC through the read-only
+    // window: read only, either way.
+    let (content, window) = match &folder {
+        Some(f) => {
+            show(show_f, EXTRACTING, "Reading the backup".into(), v);
+            let image = image_in(f);
+            match File::open(&image)
+                .map_err(|e| format!("{}: {e}", image.display()))
+                .and_then(|f| {
+                    Content::from_disk(f)
+                        .map_err(|e| format!("the backup's content partition: {e}"))
+                }) {
+                Ok(c) => (c, None),
+                Err(why) => return fail(out, why, say),
+            }
+        }
+        None => match ContentWindow::open(paths, timing, show_f, say) {
+            Ok((c, w)) => (c, Some(w)),
+            Err(why) => return fail(out, why, say),
+        },
     };
     let mut failed = Vec::new();
     // Each step is tried even when one before it failed; a later start
@@ -821,26 +1095,216 @@ pub fn run(
         }
         Err(why) => failed.push(why),
     }
+    // Nothing more is read from the MPC: the window closes, and the service
+    // says whether its counters stayed still.
+    if let Some(w) = window {
+        if let Err(why) = w.close(content, paths, timing, say) {
+            failed.push(why);
+        }
+    }
+    if AKAI_STEPS.iter().all(|s| done.iter().any(|d| d == s)) {
+        out.remove("akai-kits-next");
+    }
     if !failed.is_empty() {
         let mut o = fail(out, failed.join("; "), say);
         o.kits = kits;
         return o;
     }
+    finished(out, kits, folder.as_deref(), show_f, say)
+}
+
+/// The setup's end, every step it wanted done.
+fn finished(
+    mut out: Settings,
+    kits: Option<PathBuf>,
+    folder: Option<&Path>,
+    show_f: &mut dyn FnMut(Show),
+    say: &mut dyn FnMut(String),
+) -> Outcome {
     out.set_str("state", "done");
     out.remove("why");
     // A step added later gets its own tries.
     out.set_i64("tries", 0);
     show(show_f, "Setup done", "Starting the pad player".into(), 1.0);
-    say(format!(
-        "first start: done: {} Akai kits, {} samples; the backup is in {}",
-        out.get_i64("akai-kits").unwrap_or(0),
-        out.get_i64("akai-samples").unwrap_or(0),
-        folder.display()
-    ));
+    let akai = match out.get_i64("akai-kits") {
+        Some(k) => format!(
+            "{k} Akai kits, {} samples",
+            out.get_i64("akai-samples").unwrap_or(0)
+        ),
+        None => "no Akai kits".to_string(),
+    };
+    let backup = match folder {
+        Some(f) => format!("the backup is in {}", f.display()),
+        None => "no backup".to_string(),
+    };
+    say(format!("first start: done: {akai}; {backup}"));
     Outcome {
         saved: out,
         kits,
         failed: None,
+    }
+}
+
+/// The read-only window on the MPC's storage while the pad player reads
+/// Akai's content partition itself (a first start with the backup left
+/// out). The root service opens it on [`CONTENT_REQUEST`] and closes it on
+/// [`CONTENT_DONE`], or when the counter in [`CONTENT_ALIVE`] stops; this
+/// side writes the counter from a thread of its own while it reads, and
+/// says it is done when it is dropped, at the latest.
+pub struct ContentWindow {
+    stop: Arc<AtomicBool>,
+    beat: Option<thread::JoinHandle<()>>,
+    done: PathBuf,
+    said: bool,
+}
+
+impl ContentWindow {
+    /// Asks for the window, waits for it to open, and opens the content
+    /// partition, read only.
+    fn open(
+        paths: &Paths,
+        timing: &Timing,
+        show_f: &mut dyn FnMut(Show),
+        say: &mut dyn FnMut(String),
+    ) -> Result<(Content<Offset<File>>, ContentWindow), String> {
+        show(
+            show_f,
+            EXTRACTING,
+            "Switching on the MPC's internal storage, read-only".into(),
+            0.0,
+        );
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&paths.content_request)
+        {
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+            Err(e) => {
+                return Err(format!(
+                    "could not ask to read Akai's kits and samples ({}: {e})",
+                    paths.content_request.display()
+                ))
+            }
+        }
+        say(format!(
+            "first start: asked to read Akai's kits and samples from the MPC ({})",
+            paths.content_request.display()
+        ));
+        let start = Instant::now();
+        loop {
+            let text = std::fs::read_to_string(&paths.status).unwrap_or_default();
+            match parse_status(&text) {
+                Some(s) if s.state == "open" && s.step == "reading" => break,
+                Some(s) if s.state == "failed" => {
+                    return Err(format!(
+                        "the MPC's storage could not be read: {}",
+                        s.message
+                    ))
+                }
+                _ if start.elapsed() >= timing.answer => {
+                    return Err("the MPC's storage was not opened for reading in time".to_string())
+                }
+                _ => {}
+            }
+            thread::sleep(timing.poll);
+        }
+        // From here the window is open: dropping this says the reading is over.
+        let stop = Arc::new(AtomicBool::new(false));
+        let beat = {
+            let stop = Arc::clone(&stop);
+            let alive = paths.content_alive.clone();
+            let every = timing.poll.min(BEAT);
+            thread::spawn(move || {
+                let mut n: u64 = 0;
+                let mut last = Instant::now() - BEAT;
+                while !stop.load(Ordering::Relaxed) {
+                    if last.elapsed() >= BEAT {
+                        n += 1;
+                        let _ = std::fs::write(&alive, format!("{n}\n"));
+                        last = Instant::now();
+                    }
+                    thread::sleep(every);
+                }
+            })
+        };
+        let window = ContentWindow {
+            stop,
+            beat: Some(beat),
+            done: paths.content_done.clone(),
+            said: false,
+        };
+        say(format!(
+            "first start: reading Akai's kits and samples from {}, read-only",
+            paths.content_device.display()
+        ));
+        // A block device's size is where a seek to its end lands.
+        let content = File::open(&paths.content_device)
+            .and_then(|mut f| {
+                use std::io::{Seek, SeekFrom};
+                let len = f.seek(SeekFrom::End(0))?;
+                Content::from_partition(f, len)
+            })
+            .map_err(|e| format!("the MPC's content partition: {e}"))?;
+        Ok((content, window))
+    }
+
+    /// Stops the counter and says the reading is over, once.
+    fn say_done(&mut self) {
+        if self.said {
+            return;
+        }
+        self.said = true;
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(b) = self.beat.take() {
+            let _ = b.join();
+        }
+        let _ = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&self.done);
+    }
+
+    /// Closes the content partition, says the reading is over and waits for
+    /// the service to close the window and check its counters.
+    fn close<F: ReadAt>(
+        mut self,
+        content: Content<F>,
+        paths: &Paths,
+        timing: &Timing,
+        say: &mut dyn FnMut(String),
+    ) -> Result<(), String> {
+        drop(content);
+        self.say_done();
+        let start = Instant::now();
+        loop {
+            let text = std::fs::read_to_string(&paths.status).unwrap_or_default();
+            match parse_status(&text) {
+                Some(s) if s.state == "done" => {
+                    say(
+                        "first start: the MPC's storage is off again; nothing was written to it"
+                            .into(),
+                    );
+                    return Ok(());
+                }
+                Some(s) if s.state == "failed" => {
+                    return Err(format!("closing the MPC's storage: {}", s.message))
+                }
+                _ if start.elapsed() >= timing.answer => {
+                    return Err("the service did not say the MPC's storage is off again".to_string())
+                }
+                _ => {}
+            }
+            thread::sleep(timing.poll);
+        }
+    }
+}
+
+impl Drop for ContentWindow {
+    fn drop(&mut self) {
+        self.say_done();
     }
 }
 
@@ -973,8 +1437,8 @@ fn kit_count(bytes: &[u8]) -> usize {
 }
 
 /// The Akai kits from the backup: (the kits file, its kits).
-fn extract_kits(
-    content: &Content<Offset<File>>,
+fn extract_kits<F: ReadAt>(
+    content: &Content<F>,
     lib: &Library,
     bar: &mut Bar,
     show_f: &mut dyn FnMut(Show),
@@ -1593,6 +2057,12 @@ mod tests {
             request: t.0.join("run/setup-backup.request"),
             serial: t.0.join("serial-number"),
             new_backup: t.0.join("new-backup"),
+            leave_out: t.0.join("leave-out"),
+            akai_kits: t.0.join("akai-kits"),
+            content_request: t.0.join("run/setup-content.request"),
+            content_alive: t.0.join("run/setup-content.alive"),
+            content_done: t.0.join("run/setup-content.done"),
+            content_device: t.0.join("mmcblk0p7"),
         }
     }
 
@@ -1625,9 +2095,9 @@ mod tests {
         // The try's number is kept before anything runs (the first, for a
         // new backup the creator asked for), and every save after it keeps
         // what the one before it had.
-        let first = match new_backup_asked(p, saved) {
-            Some(_) => 1,
-            None => saved.get_i64("tries").unwrap_or(0) + 1,
+        let first = match (new_backup_asked(p, saved), akai_kits_asked(p, saved)) {
+            (None, None) => saved.get_i64("tries").unwrap_or(0) + 1,
+            _ => 1,
         };
         assert_eq!(saves.first().and_then(|s| s.get_i64("tries")), Some(first));
         for w in saves.windows(2) {
@@ -2384,6 +2854,319 @@ mod tests {
         );
         assert!(old.join("mmcblk0.img").is_file(), "the old backup is kept");
         assert!(!needed(&p, &o.saved), "once only");
+    }
+
+    /// The test disk's content partition on its own, as the MPC's
+    /// `/dev/mmcblk0p7` reads through the window.
+    fn content_partition() -> Vec<u8> {
+        let disk = mpfree_factory::import::testdisk::disk();
+        let table = mpfree_diskimage::gpt::read(&disk).unwrap();
+        let (_, part) = table.by_name("content").unwrap();
+        let (start, len) = (part.start_bytes() as usize, part.len_bytes() as usize);
+        disk[start..start + len].to_vec()
+    }
+
+    /// The stick's root service for a content request, as setup-backup.sh
+    /// answers it: the window opens, stays open while the counter moves, and
+    /// closes on the pad player's word. Returns what it saw: whether the
+    /// counter moved.
+    fn content_service(p: &Paths) -> thread::JoinHandle<bool> {
+        let (request, status, alive, done) = (
+            p.content_request.clone(),
+            p.status.clone(),
+            p.content_alive.clone(),
+            p.content_done.clone(),
+        );
+        thread::spawn(move || {
+            let end = Instant::now() + Duration::from_secs(10);
+            while !request.exists() {
+                assert!(Instant::now() < end, "no request");
+                thread::sleep(Duration::from_millis(2));
+            }
+            std::fs::write(&status, "state=open\nstep=reading\nmode=content\n").unwrap();
+            while !done.exists() {
+                assert!(
+                    Instant::now() < end,
+                    "the pad player never said it was done"
+                );
+                thread::sleep(Duration::from_millis(2));
+            }
+            let beat = std::fs::read_to_string(&alive).unwrap_or_default();
+            std::fs::write(&status, "state=done\nstep=done\nmode=content\n").unwrap();
+            !beat.trim().is_empty()
+        })
+    }
+
+    #[test]
+    fn what_is_left_out_comes_from_the_creator_once_then_the_store() {
+        let t = tmp("leave");
+        let p = paths(&t);
+        // Nothing left out: the store records "none", and the setup runs.
+        let s = remember_left_out(&p, &Settings::default()).unwrap();
+        assert_eq!(s.get_str("leave-out"), Some("none"));
+        assert!(remember_left_out(&p, &s).is_none(), "once");
+        assert!(needed(&p, &s));
+        // Both left out by the creator: nothing runs.
+        std::fs::write(&p.leave_out, "akai-kits\nbackup\nsomething else\n").unwrap();
+        let s = remember_left_out(&p, &Settings::default()).unwrap();
+        assert_eq!(s.get_str("leave-out"), Some("backup,akai-kits"));
+        assert!(!needed(&p, &s));
+        assert!(
+            !needed(&p, &Settings::default()),
+            "the file counts before it is saved"
+        );
+        assert!(steps_wanted(&left_out(&p, &s)).is_empty());
+        // Once the store has a record, the file no longer counts: an update
+        // of the stick, or Prefs, keeps what the store says.
+        let mut kept = Settings::default();
+        kept.set_str("leave-out", "none");
+        assert_eq!(left_out(&p, &kept), Vec::<String>::new());
+        assert!(needed(&p, &kept));
+        // The backup alone left out: Akai's kits are still wanted.
+        std::fs::write(&p.leave_out, "backup\n").unwrap();
+        let s = remember_left_out(&p, &Settings::default()).unwrap();
+        assert_eq!(
+            steps_wanted(&left_out(&p, &s)),
+            ["kits", "kit folders", "kit files"]
+        );
+        // Only on the creator's sticks.
+        take_away(&p.service);
+        assert!(remember_left_out(&p, &Settings::default()).is_none());
+    }
+
+    #[test]
+    fn kits_without_a_backup_come_straight_from_the_mpc() {
+        let t = tmp("direct");
+        let p = paths(&t);
+        std::fs::write(&p.content_device, content_partition()).unwrap();
+        std::fs::write(&p.leave_out, "backup\n").unwrap();
+        let saved = remember_left_out(&p, &Settings::default()).unwrap();
+        assert!(needed(&p, &saved));
+        let service = content_service(&p);
+        let (o, shown, said) = run_it(&p, &saved);
+        assert_eq!(o.failed, None, "{said:#?}");
+        assert!(service.join().unwrap(), "the counter moved while it read");
+        assert!(!p.request.exists(), "no backup asked for");
+        assert!(p.content_request.exists());
+        assert!(p.content_done.exists(), "it said it was done");
+        assert_eq!(o.saved.get_str("done"), Some("kits,kit folders,kit files"));
+        assert_eq!(o.saved.get_str("leave-out"), Some("backup"));
+        assert_eq!(o.saved.get_str("backup"), None);
+        assert_eq!(
+            o.saved.get_i64("akai-samples"),
+            Some(52),
+            "the same as from a backup"
+        );
+        assert!(o.kits.is_some());
+        assert!(!needed(&p, &o.saved));
+        assert!(said
+            .iter()
+            .any(|l| l == "first start: no backup (left out)"));
+        assert!(said
+            .iter()
+            .any(|l| l.contains("the MPC's storage is off again; nothing was written to it")));
+        assert!(said.last().unwrap().ends_with("; no backup"), "{said:#?}");
+        assert!(!shown.iter().any(|s| s.message == BACKING_UP));
+        assert_eq!(shown.last().unwrap().message, "Setup done");
+    }
+
+    #[test]
+    fn a_window_that_does_not_open_is_tried_again_later() {
+        let t = tmp("noopen");
+        let p = paths(&t);
+        std::fs::write(&p.leave_out, "backup\n").unwrap();
+        std::fs::write(
+            &p.status,
+            "state=failed\nstep=checking\nmessage=no eMMC controller at ff0f0000\n",
+        )
+        .unwrap();
+        let saved = remember_left_out(&p, &Settings::default()).unwrap();
+        let (o, _, _) = run_it(&p, &saved);
+        assert_eq!(
+            o.failed.as_deref(),
+            Some("the MPC's storage could not be read: no eMMC controller at ff0f0000")
+        );
+        assert!(!p.content_done.exists(), "the window never opened");
+        assert!(needed(&p, &o.saved), "tried again at the next start");
+        // No answer at all.
+        take_away(&p.status);
+        take_away(&p.content_request);
+        let (o, _, _) = run_it(&p, &o.saved);
+        assert_eq!(
+            o.failed.as_deref(),
+            Some("the MPC's storage was not opened for reading in time")
+        );
+    }
+
+    #[test]
+    fn a_window_that_reports_writes_fails_the_setup() {
+        let t = tmp("moved");
+        let p = paths(&t);
+        std::fs::write(&p.content_device, content_partition()).unwrap();
+        std::fs::write(&p.leave_out, "backup\n").unwrap();
+        let saved = remember_left_out(&p, &Settings::default()).unwrap();
+        let (request, status, done) = (
+            p.content_request.clone(),
+            p.status.clone(),
+            p.content_done.clone(),
+        );
+        let service = thread::spawn(move || {
+            while !request.exists() {
+                thread::sleep(Duration::from_millis(2));
+            }
+            std::fs::write(&status, "state=open\nstep=reading\n").unwrap();
+            while !done.exists() {
+                thread::sleep(Duration::from_millis(2));
+            }
+            std::fs::write(&status, "state=failed\nstep=reading\nmessage=the eMMC's write or discard counters moved while MPFree read it\n").unwrap();
+        });
+        let (o, _, _) = run_it(&p, &saved);
+        service.join().unwrap();
+        assert_eq!(
+            o.failed.as_deref(),
+            Some("closing the MPC's storage: the eMMC's write or discard counters moved while MPFree read it")
+        );
+        assert_eq!(o.saved.get_str("state"), Some("failed"));
+    }
+
+    #[test]
+    fn the_backup_alone_when_akais_kits_are_left_out() {
+        let t = tmp("backuponly");
+        let p = paths(&t);
+        std::fs::write(&p.leave_out, "akai-kits\n").unwrap();
+        let folder = finished(&p, "20261117T180000Z", None);
+        std::fs::write(
+            &p.status,
+            format!("state=done\nstep=done\nfolder={}\n", folder.display()),
+        )
+        .unwrap();
+        let saved = remember_left_out(&p, &Settings::default()).unwrap();
+        // The backup made before (on this partition 4) counts: no new one.
+        let (o, _, said) = run_it(&p, &saved);
+        assert_eq!(o.failed, None, "{said:#?}");
+        assert_eq!(o.saved.get_str("done"), Some("backup"));
+        assert_eq!(o.kits, None);
+        assert!(!p.data.join("library/Kits").join(KITS_FILE).exists());
+        assert!(!needed(&p, &o.saved));
+        assert!(
+            said.last()
+                .unwrap()
+                .contains("no Akai kits; the backup is in"),
+            "{said:#?}"
+        );
+    }
+
+    #[test]
+    fn a_backup_on_the_stick_serves_for_the_kits_when_the_backup_is_left_out() {
+        let t = tmp("serves");
+        let p = paths(&t);
+        finished(&p, "20261114T090000Z", None);
+        std::fs::write(&p.leave_out, "backup\n").unwrap();
+        let saved = remember_left_out(&p, &Settings::default()).unwrap();
+        let (o, _, said) = run_it(&p, &saved);
+        assert_eq!(o.failed, None, "{said:#?}");
+        assert!(
+            !p.request.exists() && !p.content_request.exists(),
+            "nothing asked of the MPC"
+        );
+        assert_eq!(o.saved.get_str("done"), Some("kits,kit folders,kit files"));
+        assert_eq!(o.saved.get_i64("akai-samples"), Some(52));
+        assert!(said
+            .iter()
+            .any(|l| l.contains("no new backup (left out); the one on the stick is used")));
+    }
+
+    #[test]
+    fn the_creator_can_ask_for_akais_kits_again() {
+        let t = tmp("akaiagain");
+        let p = paths(&t);
+        let folder = finished(&p, "20261114T090000Z", None);
+        let mut saved = Settings::default();
+        saved.set_str("leave-out", "akai-kits");
+        saved.set_str("done", "backup");
+        saved.set_str("backup", folder.to_str().unwrap());
+        saved.set_i64("tries", MAX_TRIES);
+        assert!(!needed(&p, &saved));
+        std::fs::write(&p.akai_kits, "00112233445566778899aabbccddeeff\n").unwrap();
+        assert!(needed(&p, &saved), "asked, even after the setup gave up");
+        let (o, _, said, saves) = run_saving(&p, &saved);
+        assert_eq!(o.failed, None, "{said:#?}");
+        assert_eq!(
+            saves[0].get_str("akai-kits-asked"),
+            Some("00112233445566778899aabbccddeeff")
+        );
+        assert_eq!(o.saved.get_str("leave-out"), Some("none"));
+        assert_eq!(
+            o.saved.get_str("done"),
+            Some("backup,kits,kit folders,kit files")
+        );
+        assert!(!needed(&p, &o.saved), "once only");
+        assert_eq!(left_out(&p, &o.saved), Vec::<String>::new());
+    }
+
+    #[test]
+    fn prefs_asks_for_the_backup_and_akais_kits_at_the_next_start() {
+        let t = tmp("prefs");
+        let p = paths(&t);
+        let mut s = Settings::default();
+        s.set_str("leave-out", "backup,akai-kits");
+        s.set_str("state", "done");
+        let (b, a) = choices(&p, &s);
+        assert!(b.left_out && !b.done && !b.next_start);
+        assert!(a.left_out && !a.done && !a.next_start);
+        assert!(!needed(&p, &s));
+        // Akai's kits at the next start: straight from the MPC, with no backup.
+        let s = ask_akai_kits(&p, &s, true);
+        assert_eq!(s.get_str("leave-out"), Some("backup"));
+        let (_, a) = choices(&p, &s);
+        assert!(!a.left_out && a.next_start);
+        assert!(needed(&p, &s));
+        // Taken back.
+        let back = ask_akai_kits(&p, &s, false);
+        assert_eq!(back.get_str("leave-out"), Some("backup,akai-kits"));
+        assert!(!needed(&p, &back));
+        // The backup at the next start, too.
+        let s = ask_backup(&p, &s, true);
+        assert_eq!(s.get_str("leave-out"), Some("none"));
+        assert_eq!(s.get_str("fresh-backup"), Some("prefs"));
+        let (b, _) = choices(&p, &s);
+        assert!(!b.left_out && b.next_start && !b.done);
+        assert_eq!(steps_wanted(&left_out(&p, &s)), STEPS);
+        // Taken back with no backup on the stick: left out again.
+        let back = ask_backup(&p, &s, false);
+        assert_eq!(back.get_str("leave-out"), Some("backup"));
+        assert_eq!(back.get_str("fresh-backup"), None);
+        // A new backup beside one there already: the old one is kept, and
+        // taking the ask back puts things as they were.
+        let folder = finished(&p, "20261114T090000Z", None);
+        let mut had = Settings::default();
+        had.set_str("leave-out", "none");
+        had.set_str("done", "backup,kits,kit folders,kit files");
+        had.set_str("backup", folder.to_str().unwrap());
+        let (b, a) = choices(&p, &had);
+        assert!(b.done && !b.left_out && a.done);
+        let asked = ask_backup(&p, &had, true);
+        assert!(needed(&p, &asked));
+        assert_eq!(asked.get_str("done"), Some("kits,kit folders,kit files"));
+        let back = ask_backup(&p, &asked, false);
+        assert_eq!(
+            back.get_str("done"),
+            Some("backup,kits,kit folders,kit files")
+        );
+        assert!(!needed(&p, &back));
+        // The asked-for start makes a new backup rather than use the old one.
+        let new = finished(&p, "20261117T190000Z", None);
+        std::fs::write(
+            &p.status,
+            format!("state=done\nstep=done\nfolder={}\n", new.display()),
+        )
+        .unwrap();
+        let (o, _, said) = run_it(&p, &asked);
+        assert_eq!(o.failed, None, "{said:#?}");
+        assert!(p.request.exists(), "a new backup asked for");
+        assert_eq!(o.saved.get_str("backup"), Some(new.to_str().unwrap()));
+        assert_eq!(o.saved.get_str("fresh-backup"), None);
+        assert!(!needed(&p, &o.saved));
     }
 
     #[test]
