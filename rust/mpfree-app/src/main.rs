@@ -7431,11 +7431,13 @@ fn main() {
     );
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(|o| {
+        // Both draw every sample screen, whose one frame needs more stack
+        // than the main thread has in a debug build (gui::SCREENS_STACK).
         if o.preview.is_some() {
-            return preview(&o);
+            return gui::on_screens_stack(|| preview(&o));
         }
         if o.display_lists.is_some() {
-            return display_lists(&o);
+            return gui::on_screens_stack(|| display_lists(&o));
         }
         match o.command.as_str() {
             "inventory" => inventory(&o),
