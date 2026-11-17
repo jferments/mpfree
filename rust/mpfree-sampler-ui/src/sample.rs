@@ -740,12 +740,12 @@ pub fn play_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PlaySample>, String
     let mut s = play_on(fonts(), p, view)?;
     (s.name, s.about) = (
         "play-plain",
-        "One layer, the open envelope and no filter; Release picked and turned up by the wheel",
+        "One layer, the open envelope and no filter; the Amp section, Release picked and turned up by the wheel",
     );
-    let index = play_tab::Row::ALL
-        .iter()
-        .position(|r| *r == play_tab::Row::Release)
-        .unwrap_or(0);
+    let st = s.state.clone();
+    s.tab
+        .open_section(&mut s.ui, &st, play_tab::Row::Release.section());
+    let index = play_tab::Row::Release.place();
     let ev = mpfree_ui::UiEvent {
         widget: play_tab::LIST.into(),
         kind: mpfree_ui::EventKind::Select(index),
@@ -807,6 +807,30 @@ pub fn play_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PlaySample>, String
         "Three velocity layers overlapping by 12, crossfaded over the overlaps; the last hit at 64",
     );
     s.tab.set_velocity(&mut s.ui, Some(64));
+    out.push(s);
+
+    // The layered pad on its Filter section: the filter envelope over the
+    // sound, its times in the list.
+    let (mut p, view) = layered_project();
+    p.edit_pad(PAD, None, |pd| {
+        pd.filter.env_octaves = 2.0;
+        pd.filter_env = Ahdsr {
+            attack_ms: 5.0,
+            hold_ms: 20.0,
+            decay_ms: 420.0,
+            sustain: 0.25,
+            release_ms: 600.0,
+        };
+    })
+    .map_err(|e| format!("{e:?}"))?;
+    let mut s = play_on(fonts(), p, view)?;
+    (s.name, s.about) = (
+        "play-filter",
+        "The Filter section: the filter's type, cutoff and resonance, and its envelope's depth and times, the envelope drawn over the sound",
+    );
+    let st = s.state.clone();
+    s.tab
+        .open_section(&mut s.ui, &st, play_tab::Section::Filter);
     out.push(s);
     Ok(out)
 }

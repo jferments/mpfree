@@ -2,8 +2,10 @@
 //! do, and what Chop to pads does to a real project.
 
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{ChopMode, Keys, PadsPlay, PlayMode, SLICE_KEYS_FROM};
-use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, Method, Row};
+use mpfree_sampler::model::{
+    ChopMode, ChopSet, Keys, PadsPlay, PlayMode, KEPT_CHOP, SLICE_KEYS_FROM,
+};
+use mpfree_sampler_ui::chop_tab::{self, Button, ChopAction, ChopState, ChopTab, Method, Row};
 use mpfree_sampler_ui::sample::{self, chop_sample, ChopSample, BPM, PAD, RATE};
 use mpfree_sampler_ui::wave_tab;
 use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, SettingList};
@@ -739,4 +741,56 @@ fn a_sound_still_being_analysed_chops_by_its_hits_once_they_are_found() {
     st.source = full;
     s.tab.update(&mut s.ui, &st);
     assert_eq!(s.tab.slices(), 15);
+}
+
+#[test]
+fn a_changed_chop_is_kept_for_its_sound_and_comes_back() {
+    let mut s = chop();
+    let st = s.state.clone();
+    assert!(st.kept.is_none());
+    assert_eq!(
+        s.tab.take_kept(&st),
+        None,
+        "the tab's own first chop is nothing to keep"
+    );
+    // Grid, then a slice split by hand: Manual.
+    method(&mut s, Method::Grid);
+    assert_eq!(press(&mut s, Button::Split), None);
+    assert_eq!(s.tab.method(), Method::Manual);
+    let bounds = s.tab.bounds(&st);
+    let (mode, cuts) = s.tab.take_kept(&st).expect("a changed chop");
+    assert_eq!(mode, ChopMode::Manual);
+    assert_eq!(cuts, bounds[1..bounds.len() - 1]);
+    assert_eq!(s.tab.take_kept(&st), None, "told once");
+    // The app keeps it for the sound.
+    let src = s.project.source(st.source.id).unwrap().clone();
+    let kept = ChopSet::from_markers(KEPT_CHOP, &src, mode, cuts.clone()).unwrap();
+    s.project.keep_chop(kept).unwrap();
+    let st = ChopState::from_project(&s.project, PAD, 0, st.source.clone()).unwrap();
+    assert_eq!(st.kept.as_ref().map(|k| k.markers()), Some(&cuts[..]));
+    // A tab made afresh (the app opened again) shows the kept slices, not a
+    // fresh Transient chop, and has nothing new to keep.
+    let mut ui = sample::app_ui_with(Fonts::embedded(), &s.project, chop_tab::HINT);
+    let mut again = ChopTab::add(&mut ui, sample::CHOP_PAGE, &st).unwrap();
+    assert_eq!(again.method(), Method::Manual);
+    assert_eq!(again.bounds(&st), bounds);
+    assert_eq!(again.take_kept(&st), None);
+    // Start moved later on the Wave tab, and back: the kept slices inside
+    // the region show each time, none lost.
+    let mut moved = st.clone();
+    // Three quarters of a beat later: clear of every cut by far more than
+    // the shortest slice.
+    moved.region.start += (beat() * 0.75) as u64;
+    again.update(&mut ui, &moved);
+    assert_eq!(again.method(), Method::Manual);
+    let inside: Vec<u64> = cuts
+        .iter()
+        .copied()
+        .filter(|&c| c > moved.region.start)
+        .collect();
+    assert!(inside.len() < cuts.len());
+    let b = again.bounds(&moved);
+    assert_eq!(&b[1..b.len() - 1], &inside[..]);
+    again.update(&mut ui, &st);
+    assert_eq!(again.bounds(&st), bounds);
 }

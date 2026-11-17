@@ -1488,6 +1488,24 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
             .map(|&n| (n, held_pads(rate, n, true)))
             .collect(),
     });
+    // A pair for the denormals check (#463): the same filtered pads, once
+    // playing and once ringing out on silence. Before the sampler flushed
+    // its own denormals, the second cost about 40 times the first.
+    for ringing in [false, true] {
+        v.push(Scaling {
+            name: if ringing {
+                "Sampler, filtered pads ringing on silence"
+            } else {
+                "Sampler, filtered pads playing"
+            }
+            .to_string(),
+            module: "sampler",
+            points: [1usize, 4, 8, 16, 32]
+                .iter()
+                .map(|&n| (n, filtered_pads(rate, n, ringing)))
+                .collect(),
+        });
+    }
     v.push(Scaling {
         name: "Sampler grains (per grain)".to_string(),
         module: "sampler",
@@ -1617,6 +1635,74 @@ fn held_pads(rate: u32, n: usize, up: bool) -> Case {
             "looping pads held down, pitched up"
         } else {
             "looping pads held down"
+        },
+        block: Box::new(move |b, l, r| {
+            if b == 0 {
+                for pad in 0..n {
+                    e.apply(Event::NoteOn {
+                        pad: pad as u8,
+                        velocity: 100,
+                    });
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The sampler with `n` pads held down through a resonant 4-pole low-pass
+/// at 1 kHz, each looping noise; `ringing` loops them over silence
+/// instead, after the last 50 ms of the noise, so every filter rings out
+/// on zeros: what costs most where a filter's state decays into denormals.
+/// The pair is measured on one build, so it needs no other to compare with.
+fn filtered_pads(rate: u32, n: usize, ringing: bool) -> Case {
+    let len = rate as usize;
+    let mut data = vec![0.0f32; len * 2 * 8];
+    for (i, x) in data[..len * 2].iter_mut().enumerate() {
+        *x = ((i * 7919) % 2000) as f32 / 1000.0 - 1.0;
+    }
+    let s = Source::new("noise then silence", rate, 2, data).expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let at = if ringing { len as u64 } else { 0 };
+    for i in 0..n {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Loop;
+        if ringing {
+            r.start = at - 2205;
+        }
+        r.sustain_loop = Some(Loop {
+            start: at + 5000,
+            end: at + 30000,
+            crossfade: 0,
+            mode: LoopMode::Forward,
+        });
+        let mut pad = Pad::new("f", Layer::new(r));
+        pad.polyphony = 1;
+        pad.filter = Filter {
+            kind: FilterKind::LowPass,
+            poles: 4,
+            cutoff_hz: 1000.0,
+            resonance: 0.5,
+            env_octaves: 0.0,
+        };
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, n.max(1));
+    e.set_view(EngineView::build(&p, rate));
+    Case {
+        name: format!(
+            "Sampler x{n} {}",
+            if ringing { "ringing" } else { "filtered" }
+        ),
+        module: "sampler",
+        what: if ringing {
+            "filtered pads held, ringing out on silence"
+        } else {
+            "filtered pads held, playing"
         },
         block: Box::new(move |b, l, r| {
             if b == 0 {
@@ -3090,6 +3176,20 @@ mod tests {
             let (l, _) = run(&mut c, 100);
             assert!(l.iter().any(|v| v.abs() > 1e-4));
         }
+        // The filtered pair: one plays on, the other rings out on silence
+        // to exact zero (no denormals left behind).
+        let mut c = filtered_pads(44_100, 4, false);
+        let (l, _) = run(&mut c, 400);
+        assert!(l.iter().any(|v| v.abs() > 1e-4));
+        let mut c = filtered_pads(44_100, 4, true);
+        let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        (c.block)(0, &mut l, &mut r);
+        assert!(l.iter().any(|v| v.abs() > 1e-4), "the noise first");
+        for b in 1..400 {
+            (c.block)(b, &mut l, &mut r);
+        }
+        let most = l.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(l.iter().all(|v| *v == 0.0), "then exact silence: {most:e}");
         assert!(scaling(44_100)
             .iter()
             .all(|s| s.points.len() == 5 || (s.points.len() == 1 && s.name.ends_with("(mono)"))));

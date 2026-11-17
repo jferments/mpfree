@@ -675,6 +675,103 @@ impl Widget for ButtonRow {
     }
 }
 
+// ---------------------------------------------------------------- sections
+
+/// One chip of a [`SectionChips`]: the section's name and a short line of
+/// what is in it now ("A 2 ms · D 310 ms · S 60 %").
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionChip {
+    pub name: String,
+    pub sub: String,
+}
+
+/// A page's sections as a row of chips, the one open lit with a bar under
+/// it. A tap on chip `i` gives [`EventKind::Tab`]`(i)`.
+pub struct SectionChips {
+    pub chips: Vec<SectionChip>,
+    pub selected: usize,
+}
+
+impl SectionChips {
+    pub fn new(names: &[&str]) -> SectionChips {
+        SectionChips {
+            chips: names
+                .iter()
+                .map(|n| SectionChip {
+                    name: n.to_string(),
+                    sub: String::new(),
+                })
+                .collect(),
+            selected: 0,
+        }
+    }
+
+    /// Chip `i`'s rectangle: the chips share the width.
+    pub fn chip_rect(&self, r: Rect, i: usize) -> Rect {
+        let n = self.chips.len().max(1) as i32;
+        let unit = (r.w - BUTTON_GAP * (n - 1)).max(0) / n;
+        let x = r.x + i as i32 * (unit + BUTTON_GAP);
+        let w = if i + 1 == self.chips.len() {
+            r.right() - x
+        } else {
+            unit
+        };
+        Rect::new(x, r.y, w.max(0), r.h)
+    }
+}
+
+impl Widget for SectionChips {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        for (i, chip) in self.chips.iter().enumerate() {
+            let b = self.chip_rect(r, i);
+            let open = i == self.selected;
+            cx.canvas
+                .fill_round_rect(b, 10, if open { t.raised } else { t.surface });
+            if open {
+                let bar = Rect::new(b.x + 10, b.bottom() - 4, (b.w - 20).max(0), 3);
+                cx.canvas.fill_rect(bar, t.accent);
+            }
+            let inner = b.inset_xy(14, 6);
+            let (top, bottom) = inner.take_top(inner.h / 2 + 2);
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                top,
+                Align::Left,
+                if open { t.text } else { t.text_dim },
+                &chip.name,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                bottom,
+                Align::Left,
+                t.text_faint,
+                &chip.sub,
+            );
+        }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        // The section already open changes nothing, as the pad bar's tab.
+        (0..self.chips.len())
+            .map(|i| {
+                Target::tap("chip", i, self.chips[i].name.clone(), self.chip_rect(r, i))
+                    .disabled_if(i == self.selected)
+            })
+            .collect()
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        let i = (0..self.chips.len()).find(|&i| self.chip_rect(r, i).contains(x, y))?;
+        Some(EventKind::Tab(i))
+    }
+}
+
 // ---------------------------------------------------------------- pad map
 
 /// One pad on the [`PadMap`].

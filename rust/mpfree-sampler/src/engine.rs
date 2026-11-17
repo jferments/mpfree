@@ -1535,12 +1535,21 @@ impl Engine {
             return;
         }
         self.tempo = bpm;
-        for (v, _) in self.pool.iter_mut() {
+        let beat = self.frames_per_beat();
+        for (v, g) in self.pool.iter_mut() {
             if v.active && v.warp_bpm > 0.0 {
                 v.base_step = warped_step(v.plain_step, bpm, v.warp_bpm);
                 retime(v);
             }
+            // A cloud synced to the tempo follows it at once.
+            g.set_tempo(beat);
         }
+    }
+
+    /// Output frames per beat at the project tempo: what a granular pad's
+    /// tempo sync follows, whatever its saved `frames_per_beat` says.
+    pub fn frames_per_beat(&self) -> f64 {
+        60.0 * f64::from(self.rate) / self.tempo
     }
 
     pub fn tempo(&self) -> f64 {
@@ -2636,7 +2645,9 @@ impl Engine {
         } else if cents != 0.0 {
             retime(v);
         }
+        let beat = self.frames_per_beat();
         if let Some(g) = self.pool.grain_mut(slot).filter(|_| granular) {
+            g.set_tempo(beat);
             g.set_params(tuned_grain(grain, cents));
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
