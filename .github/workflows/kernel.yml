@@ -43,10 +43,24 @@ jobs:
         run: MPFREE_KERNEL_CACHE="${RUNNER_TOOL_CACHE:?}/mpfree-kernel" bash tools/kernel/build.sh --probe
       - name: Build
         run: MPFREE_KERNEL_CACHE="${RUNNER_TOOL_CACHE:?}/mpfree-kernel" bash tools/kernel/build.sh "$RUNNER_TEMP/mpfree-kernel"
+      - name: What was built
+        run: |
+          { echo '### MPFree kernel'; echo '```'; cat "$RUNNER_TEMP/mpfree-kernel/build-info.txt"
+            echo; cat "$RUNNER_TEMP/mpfree-kernel/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # The account's artifact storage is shared by every workflow and can be full; the kernel
+      # built either way, and its hashes are in the summary above, so a full store warns instead
+      # of failing the build.
       - name: Keep the kernel
+        id: keep
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: mpfree-kernel-${{ github.sha }}
           path: ${{ runner.temp }}/mpfree-kernel/
           retention-days: 30
           if-no-files-found: error
+      - name: Say if the kernel was not kept
+        if: steps.keep.outcome == 'failure'
+        run: |
+          echo "::warning title=Kernel not kept::The kernel built, but it could not be kept as this run's artifact (see 'Keep the kernel'; the account's artifact storage may be full). Its hashes are in the run summary."
+          echo '**Not kept as an artifact** (see the "Keep the kernel" step).' >> "$GITHUB_STEP_SUMMARY"
