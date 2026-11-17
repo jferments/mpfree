@@ -2404,7 +2404,7 @@ fn sound_step(
     if !p.log.is_empty() {
         out.note(&p.log);
     }
-    if let Some((sound, v)) = p.sound {
+    for (sound, v) in p.sound {
         if synth_on {
             synth.note_on(usize::from(sound), v, 0);
         } else {
@@ -2425,7 +2425,7 @@ fn let_go_of_step(
     if !r.log.is_empty() {
         out.note(&r.log);
     }
-    if let Some(sound) = r.silence {
+    for sound in r.silence {
         if synth_on {
             synth.note_off(usize::from(sound), 0);
         } else {

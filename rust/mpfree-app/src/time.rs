@@ -95,6 +95,12 @@ const MAX_OUT: usize = 512;
 pub const RECORD_ROOM: usize = 1024;
 /// The Play page's steps: sixteenths.
 pub const STEP_TICKS: Tick = 240;
+/// The most pads a pen (STEP SEQ's note or chord on a melodic track)
+/// holds.
+pub const MAX_PEN: usize = 8;
+/// The row of the whole line: every sound of a step as one (a melodic
+/// track's notes and chords). `pad` in a [`StepAction`] may be it.
+pub use mpfree_seq::steps::LINE;
 /// Pad hits kept for the screen between two periods (more are dropped).
 const MAX_HITS: usize = 16;
 
@@ -119,7 +125,8 @@ pub struct StepClip {
     /// Where it was launched, while it plays (for the playhead).
     pub origin: Option<Tick>,
     /// Every pad (0 to 15), and any other note the clip holds, with its
-    /// steps (None: empty).
+    /// steps (None: empty); and [`LINE`], the whole line, each step's
+    /// notes as one.
     pub rows: Vec<(u8, Vec<Option<Step>>)>,
     /// The same rows' locks: how many each step holds (its row's own and
     /// the whole step's), for the step pads' lock colour.
@@ -212,6 +219,15 @@ pub enum StepAction {
         from: usize,
         to: usize,
         count: usize,
+    },
+    /// STEP SEQ on a melodic track (the synth on the pads): the pen, the
+    /// first `n` of `keys` (pad, velocity), goes on step `step` of the
+    /// whole line in place of what it held (`Grid::enter`); `n` 0 clears
+    /// the step. With no clip, one is made and launched, as `Tap` does.
+    Enter {
+        step: usize,
+        keys: [(u8, u8); MAX_PEN],
+        n: u8,
     },
     /// The pattern's - / + on Play (Jay after live test 3: 32, 64 and 128
     /// steps): make the clip `steps` steps long. With `copy`, new steps
