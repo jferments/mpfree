@@ -144,16 +144,157 @@ fn the_flanger_feedback_is_a_comb() {
         l[0] = 1.0;
         let mut r = l.clone();
         run(f.as_mut(), &mut l, &mut r, &[]);
-        // Echoes every 2 ms (96 frames), each the last times the feedback.
+        // Echoes every 2 ms (96 frames), each the last times the feedback,
+        // all trimmed by sqrt(1 - g²) (the level trim at Mix 100 %). The
+        // flat read spreads each echo over a few frames, summing to it.
+        let g = fb / 100.0;
+        let trim = (1.0 - g * g).sqrt();
         for k in 1..5 {
-            let want = (fb / 100.0).powi(k as i32 - 1);
+            let want = trim * g.powi(k as i32 - 1);
+            let echo: f32 = l[96 * k - 30..96 * k + 30].iter().sum();
             assert!(
-                (l[96 * k] - want).abs() < 1e-3,
-                "feedback {fb}: echo {k} is {}, want {want}",
-                l[96 * k]
+                (echo - want).abs() < 1e-3,
+                "feedback {fb}: echo {k} is {echo}, want {want}"
+            );
+            let peak = (96 * k - 30..96 * k + 30)
+                .max_by(|&a, &b| l[a].abs().total_cmp(&l[b].abs()))
+                .unwrap();
+            assert_eq!(peak, 96 * k, "feedback {fb}: echo {k}");
+        }
+    }
+}
+
+/// The response in dB at `hz` of an impulse response.
+fn response_db(h: &[f32], hz: f64) -> f64 {
+    let w = 2.0 * std::f64::consts::PI * hz / f64::from(RATE);
+    let (mut re, mut im) = (0.0f64, 0.0f64);
+    for (n, &v) in h.iter().enumerate() {
+        re += f64::from(v) * (w * n as f64).cos();
+        im -= f64::from(v) * (w * n as f64).sin();
+    }
+    10.0 * (re * re + im * im).max(1e-30).log10()
+}
+
+#[test]
+fn the_flanger_draws_what_it_plays() {
+    // Held (Depth 0), the comb heard is the comb drawn, through the read
+    // it is made with: at whole and half frames, near the write (where
+    // the read fades to a cubic), at either Feedback and at two Mixes.
+    use ids::flanger::{DELAY, DEPTH, FEEDBACK, MIX, WIDTH};
+    let frame = 1000.0 / RATE as f32;
+    let delays = [
+        0.1,
+        3.5 * frame,
+        2.5 * frame,
+        1.5,
+        1.5 + 0.5 * frame,
+        7.0 + 0.25 * frame,
+    ];
+    for delay in delays {
+        for fb in [-90.0f32, 0.0, 90.0] {
+            for mix in [50.0f32, 100.0] {
+                let values = [
+                    (DEPTH, 0.0),
+                    (DELAY, delay),
+                    (FEEDBACK, fb),
+                    (MIX, mix),
+                    (WIDTH, 0.0),
+                ];
+                let mut f = set_up(Box::new(Flanger::new()), &values);
+                let mut l = vec![0.0f32; 1 << 15];
+                l[0] = 1.0;
+                let mut r = l.clone();
+                run(f.as_mut(), &mut l, &mut r, &[]);
+                let mut drawn = Flanger::new();
+                drawn.prepare(RATE, MAX_BLOCK);
+                for (id, v) in values {
+                    drawn.set_param(id, v);
+                }
+                for k in 1..=90 {
+                    let hz = 200.0 * k as f64;
+                    let want = f64::from(drawn.response_db(hz as f32, 0.0));
+                    if want < -20.0 {
+                        continue;
+                    }
+                    let got = response_db(&l, hz);
+                    assert!(
+                        (got - want).abs() < 0.05,
+                        "Delay {delay} ms, Feedback {fb}, Mix {mix}: {hz} Hz heard {got:.2} dB, drawn {want:.2}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_flanger_goes_in_at_the_dry_level_at_any_feedback() {
+    // The trim holds a noise's level within 1 dB at any Feedback and Mix,
+    // sweeping as it does by default. The noise is dulled a little, as
+    // music is (6 dB down at 12 kHz, nothing at 24): the read rolls off
+    // the last few kHz, so round a loop at 95 % white noise's top octave
+    // loses more.
+    use ids::flanger::{FEEDBACK, MIX};
+    let white = noise(3 * RATE as usize + 2, 17);
+    let x: Vec<f32> = white
+        .windows(3)
+        .map(|w| 0.25 * (w[0] + 2.0 * w[1] + w[2]))
+        .collect();
+    let start = RATE as usize / 2;
+    let dry = rms(&x[start..]);
+    for fb in [-95.0f32, -70.0, -30.0, 0.0, 30.0, 70.0, 95.0] {
+        for mix in [25.0f32, 50.0, 100.0] {
+            let mut f = set_up(Box::new(Flanger::new()), &[(FEEDBACK, fb), (MIX, mix)]);
+            let (mut l, mut r) = (x.clone(), x.clone());
+            run(f.as_mut(), &mut l, &mut r, &[]);
+            for (side, y) in [("left", &l), ("right", &r)] {
+                let db = 20.0 * (rms(&y[start..]) / dry).log10();
+                assert!(
+                    db.abs() < 1.0,
+                    "Feedback {fb}, Mix {mix}, {side}: {db:.2} dB against the dry"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_flanger_never_sweeps_past_20_ms() {
+    use ids::flanger::{DELAY, DEPTH};
+    let longest = |delay: f32, depth: f32| {
+        let mut f = Flanger::new();
+        f.prepare(RATE, MAX_BLOCK);
+        f.set_param(DELAY, delay);
+        f.set_param(DEPTH, depth);
+        let ms: Vec<f32> = (0..=400).map(|k| f.delay_ms(k as f32 / 400.0)).collect();
+        (
+            ms.iter().copied().fold(f32::MAX, f32::min),
+            ms.iter().copied().fold(0.0f32, f32::max),
+        )
+    };
+    for delay in [0.1f32, 1.0, 2.5, 5.0, 7.5, 10.0] {
+        for depth in [0.0f32, 50.0, 100.0] {
+            let (lo, hi) = longest(delay, depth);
+            assert!(hi <= 20.0 + 1e-3, "Delay {delay}, Depth {depth}: {hi} ms");
+            // The sweep stays centred on the Delay, in octaves.
+            assert!(
+                ((lo * hi).sqrt() - delay).abs() < 1e-3 * delay,
+                "Delay {delay}, Depth {depth}: {lo} to {hi} ms"
             );
         }
     }
+    // Below 20 ms, Depth keeps its meaning: two octaves each way at 100 %.
+    let (lo, hi) = longest(2.5, 100.0);
+    assert!(
+        (lo - 0.625).abs() < 1e-3 && (hi - 10.0).abs() < 1e-2,
+        "{lo} to {hi}"
+    );
+    // At Delay 10 ms the sweep narrows to an octave each way.
+    let (lo, hi) = longest(10.0, 100.0);
+    assert!(
+        (lo - 5.0).abs() < 1e-2 && (hi - 20.0).abs() < 1e-2,
+        "{lo} to {hi}"
+    );
 }
 
 #[test]

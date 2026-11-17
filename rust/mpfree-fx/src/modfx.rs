@@ -11,10 +11,10 @@
 //!
 //! The LFO is a polynomial sine and the read tables are built at compile
 //! time, so a render is the same on every machine (the phaser's tangent
-//! aside). The chorus reads its delay through an 8-tap windowed sinc that
-//! sounds the same at any fraction of a frame, so a sweep never flutters
-//! the highs; the flanger's read is still cubic (FX quality round 3, M2,
-//! moves it to the sinc).
+//! aside). The chorus and the flanger read their delays through an 8-tap
+//! windowed sinc that sounds the same at any fraction of a frame, so a
+//! sweep never flutters the highs and the flanger's high notches stay
+//! deep round its feedback loop.
 
 use std::f32::consts::PI;
 
@@ -46,13 +46,18 @@ fn wrap(p: f32) -> f32 {
     p - (p as u32) as f32
 }
 
-/// Cubic Hermite (Catmull-Rom) interpolation between `x1` (t = 0) and `x2`.
+/// Cubic Hermite (Catmull-Rom) weights at `t` (0 to 1) of the way from
+/// `x1` to `x2`, for `x3`, `x2`, `x1` and `x0` in that order (oldest
+/// first, as the flat read's taps are).
 #[inline]
-fn hermite(x0: f32, x1: f32, x2: f32, x3: f32, t: f32) -> f32 {
-    let c1 = 0.5 * (x2 - x0);
-    let c2 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
-    let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
-    ((c3 * t + c2) * t + c1) * t + x1
+fn hermite_weights(t: f32) -> [f32; 4] {
+    let (t2, t3) = (t * t, t * t * t);
+    [
+        0.5 * (t3 - t2),
+        0.5 * t + 2.0 * t2 - 1.5 * t3,
+        1.0 - 2.5 * t2 + 1.5 * t3,
+        -0.5 * t + t2 - 0.5 * t3,
+    ]
 }
 
 /// How long a synced LFO takes at least to catch up with the song after a
@@ -287,44 +292,45 @@ const fn read_table() -> ReadTable {
 /// Built at compile time, so it is the same on every machine.
 static READ_TABLE: ReadTable = read_table();
 
-/// A delay line read at a fractional, moving point.
-#[derive(Clone, Debug, Default)]
-struct ModLine {
-    buf: Vec<f32>,
-    mask: usize,
-    w: usize,
-}
-
-impl ModLine {
-    /// Room for `frames` of delay (control thread).
-    fn new(frames: usize) -> ModLine {
-        let n = (frames + 4).next_power_of_two();
-        ModLine {
-            buf: vec![0.0; n],
-            mask: n - 1,
-            w: 0,
+/// The flat read's eight weights for a point `d` frames before the last
+/// write, and its whole part `i`: weight `k` is for the sample `i + 4 - k`
+/// frames back (oldest first), as [`FlatLine::read_with`] takes them.
+///
+/// From 4 frames back it is the windowed sinc of [`FlatLine::read`]. In a
+/// feedback loop the sinc's newest taps would be samples not yet written
+/// nearer the write than that, so from 4 frames down to 3 the read fades
+/// to a cubic (Catmull-Rom), which holds from there down to 1 frame. Only
+/// a flanger's shortest sweeps (under about 0.1 ms) get there, where its
+/// comb's first notch is above 5 kHz. `longest` is the line's room.
+#[inline]
+fn flat_weights(d: f32, longest: f32) -> (usize, [f32; TAPS]) {
+    let d = d.clamp(1.0, longest);
+    let i = d as usize;
+    let t = d - i as f32;
+    let mut w = [0.0f32; TAPS];
+    if i >= 3 {
+        let p = t * PHASES as f32;
+        let r = (p as usize).min(PHASES - 1);
+        let a = p - r as f32;
+        let (taps, step) = (&READ_TABLE.taps[r], &READ_TABLE.step[r]);
+        for k in 0..TAPS {
+            w[k] = taps[k] + a * step[k];
+        }
+        if i >= 4 {
+            return (i, w);
+        }
+        // 3 to 4 frames back: from the cubic (at 3) to the sinc (at 4).
+        for v in &mut w {
+            *v *= t;
         }
     }
-    #[inline]
-    fn push(&mut self, x: f32) {
-        self.buf[self.w] = x;
-        self.w = (self.w + 1) & self.mask;
+    let c = hermite_weights(t);
+    let share = if i >= 3 { 1.0 - t } else { 1.0 };
+    for k in 0..4 {
+        // The cubic's samples are i + 2 down to i - 1 frames back.
+        w[k + 2] += share * c[k];
     }
-    /// The signal `d` frames before the last write (0 is the last write),
-    /// `d` at least 1, interpolated.
-    #[inline]
-    fn read(&self, d: f32) -> f32 {
-        let d = d.clamp(1.0, (self.buf.len() - 4) as f32);
-        let i = d as usize;
-        let t = d - i as f32;
-        let last = self.w.wrapping_sub(1);
-        let at = |k: usize| self.buf[last.wrapping_sub(k) & self.mask];
-        hermite(at(i - 1), at(i), at(i + 1), at(i + 2), t)
-    }
-    fn clear(&mut self) {
-        self.buf.fill(0.0);
-        self.w = 0;
-    }
+    (i, w)
 }
 
 /// A delay line read through the windowed sinc: as bright at any fraction
@@ -378,10 +384,40 @@ impl FlatLine {
         }
         (lane[0] + lane[2]) + (lane[1] + lane[3])
     }
+    /// The read with the weights [`flat_weights`] gives, for a point `i`
+    /// whole frames (and a fraction) before the last write. Weights for
+    /// samples not yet written are zero.
+    #[inline]
+    fn read_with(&self, i: usize, w: &[f32; TAPS]) -> f32 {
+        let from = (self.w + self.n - 1 - i - TAPS / 2) & (self.n - 1);
+        let x = &self.buf[from..from + TAPS];
+        let mut lane = [0.0f32; 4];
+        for k in 0..4 {
+            lane[k] = w[k] * x[k] + w[k + 4] * x[k + 4];
+        }
+        (lane[0] + lane[2]) + (lane[1] + lane[3])
+    }
+    /// The furthest back a read can reach, in frames.
+    fn longest(&self) -> f32 {
+        (self.n - TAPS) as f32
+    }
     fn clear(&mut self) {
         self.buf.fill(0.0);
         self.w = 0;
     }
+}
+
+/// The response of a read with `w` (from [`flat_weights`], whole part `i`)
+/// that comes one frame after the last write, at `rad` radians a frame:
+/// tap `k` is `i + 5 - k` frames before the frame read.
+fn flat_response(i: usize, w: &[f32; TAPS], rad: f64) -> (f64, f64) {
+    let (mut re, mut im) = (0.0f64, 0.0f64);
+    for (k, &v) in w.iter().enumerate() {
+        let a = rad * (i + 5 - k) as f64;
+        re += f64::from(v) * a.cos();
+        im -= f64::from(v) * a.sin();
+    }
+    (re, im)
 }
 
 fn smooth_all(list: &mut [&mut Smooth], rate: u32, ms: f32) {
@@ -900,14 +936,39 @@ static FLANGER_PARAMS: [ParamInfo; 7] = [
 
 /// The sweep at full depth: two octaves of delay each way.
 const FLANGE_OCTAVES: f32 = 2.0;
+/// The longest the sweep reaches: past 20 ms a flanger is a doubler. At a
+/// Delay over 5 ms the sweep is narrowed to fit, the same both ways.
+const FLANGE_MAX_MS: f32 = 20.0;
+/// `log2(FLANGE_MAX_MS)`.
+const LOG2_FLANGE_MAX_MS: f32 = 4.321_928;
+
+/// The sweep in octaves each way for a Depth of `depth` (0 to 1) at a
+/// Delay of `log_delay` (log2 of its ms).
+#[inline]
+fn flange_octaves(depth: f32, log_delay: f32) -> f32 {
+    (FLANGE_OCTAVES * depth).min(LOG2_FLANGE_MAX_MS - log_delay)
+}
+
+/// The flanger's level trim at Feedback `g` and Mix `m` (0 to 1): the
+/// dry and the comb summed carry `(1 - m)² + m² / (1 - g²)` of a noise's
+/// power (the loop's own gain is `1 / (1 - g²)`, and the comb's echoes
+/// don't line up with the dry), so this holds the level at any Feedback
+/// and Mix, and the notches keep their depth. 1 at Mix 0.
+#[inline]
+fn flange_trim(g: f32, m: f32) -> f32 {
+    let dry = 1.0 - m;
+    1.0 / (dry * dry + m * m / (1.0 - g * g)).sqrt()
+}
 
 /// A stereo flanger: a short delay swept in octaves (so the comb moves
-/// evenly), with positive (metallic) or negative (hollow) feedback.
+/// evenly), with positive (metallic) or negative (hollow) feedback, read
+/// through the flat read so the high notches stay deep round the loop,
+/// and trimmed so it goes in at the dry's level at any Feedback.
 pub struct Flanger {
     v: [f32; 7],
     rate: u32,
     lfo: Lfo,
-    lines: [ModLine; 2],
+    lines: [FlatLine; 2],
     depth: Smooth,
     log_delay: Smooth,
     feedback: Smooth,
@@ -915,6 +976,11 @@ pub struct Flanger {
     mix: Smooth,
     /// The base delay in frames, cached while it holds still.
     base: f32,
+    /// [`flange_octaves`]'s ceiling at the base delay, cached with it.
+    max_oct: f32,
+    /// [`flange_trim`] for the Feedback and Mix it was worked out at.
+    trim: f32,
+    trim_at: (f32, f32),
 }
 
 impl Default for Flanger {
@@ -924,27 +990,42 @@ impl Default for Flanger {
 }
 
 impl Flanger {
+    /// The delay in frames at LFO phase `phase` (0 to 1 a cycle) for the
+    /// settings set, worked out as the sound is.
+    fn delay_frames(&self, phase: f32) -> f32 {
+        let log_delay = self.v[flanger::DELAY as usize].log2();
+        let base = log_delay.exp2() * 0.001 * self.rate as f32;
+        let oct = flange_octaves(self.v[flanger::DEPTH as usize] / 100.0, log_delay);
+        base * (oct * sine(wrap(phase))).exp2()
+    }
+
     /// The delay in ms at LFO phase `phase` (0 to 1 a cycle), for the
     /// settings set. For drawing.
     pub fn delay_ms(&self, phase: f32) -> f32 {
-        let depth = FLANGE_OCTAVES * self.v[flanger::DEPTH as usize] / 100.0;
-        self.v[flanger::DELAY as usize] * (depth * sine(wrap(phase))).exp2()
+        let oct = flange_octaves(
+            self.v[flanger::DEPTH as usize] / 100.0,
+            self.v[flanger::DELAY as usize].log2(),
+        );
+        self.v[flanger::DELAY as usize] * (oct * sine(wrap(phase))).exp2()
     }
 
     /// The response in dB at `hz` with the sweep held at `phase`, for the
-    /// settings set: the comb the flanger makes there. For drawing.
+    /// settings set: the comb the flanger makes there, through the read
+    /// it makes it with. For drawing.
     pub fn response_db(&self, hz: f32, phase: f32) -> f32 {
         let fs = self.rate as f64;
-        let d = f64::from(self.delay_ms(phase)) * 0.001 * fs;
-        let fb = f64::from(self.v[flanger::FEEDBACK as usize]) / 100.0;
-        let mix = f64::from(self.v[flanger::MIX as usize]) / 100.0;
-        let w = 2.0 * std::f64::consts::PI * f64::from(hz) / fs;
-        // wet = z^-d / (1 - fb z^-d); out = (1 - mix) + mix wet.
-        let (zr, zi) = ((w * d).cos(), -(w * d).sin());
+        let (i, w) = flat_weights(self.delay_frames(phase) - 1.0, self.lines[0].longest());
+        let g = self.v[flanger::FEEDBACK as usize] / 100.0;
+        let m = self.v[flanger::MIX as usize] / 100.0;
+        let (fb, mix) = (f64::from(g), f64::from(m));
+        let (zr, zi) = flat_response(i, &w, 2.0 * std::f64::consts::PI * f64::from(hz) / fs);
+        // wet = H / (1 - fb H), H the read round the loop;
+        // out = trim ((1 - mix) + mix wet).
         let (dr, di) = (1.0 - fb * zr, -fb * zi);
         let den = dr * dr + di * di;
         let (wr, wi) = ((zr * dr + zi * di) / den, (zi * dr - zr * di) / den);
-        crate::svf::power_db((1.0 - mix + mix * wr, mix * wi))
+        let trim = f64::from(flange_trim(g, m));
+        crate::svf::power_db((trim * (1.0 - mix + mix * wr), trim * mix * wi))
     }
 
     pub fn new() -> Flanger {
@@ -953,13 +1034,16 @@ impl Flanger {
             v,
             rate: 0,
             lfo: Lfo::default(),
-            lines: [ModLine::default(), ModLine::default()],
+            lines: [FlatLine::default(), FlatLine::default()],
             depth: Smooth::new(v[2] / 100.0),
             log_delay: Smooth::new(v[3].log2()),
             feedback: Smooth::new(v[4] / 100.0),
             width: Smooth::new(v[5] / 100.0),
             mix: Smooth::new(v[6] / 100.0),
             base: 0.0,
+            max_oct: 0.0,
+            trim: 1.0,
+            trim_at: (f32::NAN, f32::NAN),
         };
         f.prepare(48_000, mpfree_node::MAX_BLOCK);
         f.reset();
@@ -983,15 +1067,27 @@ impl Flanger {
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
     }
 
+    /// The base delay and its sweep's ceiling from the glided Delay.
+    fn set_base(&mut self, log_delay: f32) {
+        self.base = log_delay.exp2() * 0.001 * self.rate as f32;
+        self.max_oct = LOG2_FLANGE_MAX_MS - log_delay;
+    }
+
     fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let longest = self.lines[0].longest();
         for i in 0..l.len() {
             if !self.log_delay.settled() {
-                self.base = self.log_delay.next().exp2() * 0.001 * self.rate as f32;
+                let ld = self.log_delay.next();
+                self.set_base(ld);
             }
-            let depth = FLANGE_OCTAVES * self.depth.next();
+            let depth = (FLANGE_OCTAVES * self.depth.next()).min(self.max_oct);
             let fb = self.feedback.next();
             let off_r = 0.25 * self.width.next();
             let mix = self.mix.next();
+            if (fb, mix) != self.trim_at {
+                self.trim = flange_trim(fb, mix);
+                self.trim_at = (fb, mix);
+            }
             let ph = self.lfo.next();
             let x = [l[i], r[i]];
             let mut y = [0.0f32; 2];
@@ -999,9 +1095,10 @@ impl Flanger {
                 let off = if ch == 0 { 0.0 } else { off_r };
                 let d = self.base * (depth * sine(wrap(ph + off))).exp2();
                 // Read before the write: the last write is one frame back.
-                let wet = self.lines[ch].read(d - 1.0);
+                let (k, w) = flat_weights(d - 1.0, longest);
+                let wet = self.lines[ch].read_with(k, &w);
                 self.lines[ch].push(flush(x[ch] + fb * wet));
-                y[ch] = lerp(x[ch], wet, mix);
+                y[ch] = self.trim * lerp(x[ch], wet, mix);
             }
             l[i] = y[0];
             r[i] = y[1];
@@ -1025,9 +1122,9 @@ impl Node for Flanger {
     fn prepare(&mut self, rate: u32, _max_block: usize) {
         let rate = rate.max(1);
         if rate != self.rate {
-            // The longest delay times the widest sweep.
-            let frames = (10.0 * FLANGE_OCTAVES.exp2() * 0.001 * rate as f32) as usize + 8;
-            self.lines = [ModLine::new(frames), ModLine::new(frames)];
+            // The longest the sweep reaches.
+            let frames = (FLANGE_MAX_MS * 0.001 * rate as f32) as usize + 8;
+            self.lines = [FlatLine::new(frames), FlatLine::new(frames)];
         }
         self.rate = rate;
         smooth_all(
@@ -1042,7 +1139,7 @@ impl Node for Flanger {
             30.0,
         );
         self.lfo.set(self.v[0], self.v[1] as usize, rate);
-        self.base = self.log_delay.value.exp2() * 0.001 * rate as f32;
+        self.set_base(self.log_delay.value);
     }
     fn reset(&mut self) {
         for s in [
@@ -1058,7 +1155,7 @@ impl Node for Flanger {
             line.clear();
         }
         self.lfo.reset();
-        self.base = self.log_delay.value.exp2() * 0.001 * self.rate as f32;
+        self.set_base(self.log_delay.value);
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         self.lfo.begin(ctx, self.v[1] as usize, f64::INFINITY);
@@ -1075,8 +1172,7 @@ impl Node for Flanger {
     }
     fn tail_frames(&self) -> u32 {
         // The longest loop, rung down 80 dB by the feedback.
-        let longest =
-            self.v[3] * 0.001 * (FLANGE_OCTAVES * self.v[2] / 100.0).exp2() * self.rate as f32;
+        let longest = self.delay_ms(0.25) * 0.001 * self.rate as f32;
         let fb = (self.v[4] / 100.0).abs();
         let rings = if fb > 0.0 {
             (1e-4f32).ln() / fb.ln()
@@ -1491,15 +1587,37 @@ mod tests {
     }
 
     #[test]
-    fn a_mod_line_reads_whole_and_fractional_delays() {
-        let mut m = ModLine::new(16);
-        for k in 0..40 {
+    fn the_flat_read_near_the_write_is_whole_and_smooth() {
+        // A ramp, near the write where the read fades to a cubic: whole
+        // frames read exactly, fractions follow the ramp, and the cubic
+        // and the sinc meet without a step.
+        let mut m = FlatLine::new(64);
+        for k in 0..100 {
             m.push(k as f32);
         }
-        assert_eq!(m.read(1.0), 38.0);
-        assert_eq!(m.read(5.0), 34.0);
-        // A ramp interpolates exactly.
-        assert!((m.read(2.25) - 36.75).abs() < 1e-5);
+        let read = |d: f32| {
+            let (i, w) = flat_weights(d, m.longest());
+            m.read_with(i, &w)
+        };
+        for d in [1.0f32, 2.0, 3.0, 4.0, 5.0, 9.0] {
+            assert!((read(d) - (99.0 - d)).abs() < 1e-4, "{d}: {}", read(d));
+        }
+        for d in [1.25f32, 2.5, 3.25, 3.5, 3.75, 4.5] {
+            assert!((read(d) - (99.0 - d)).abs() < 2e-2, "{d}: {}", read(d));
+        }
+        for d in [3.0f32, 4.0] {
+            let (lo, hi) = (read(d - 1e-3), read(d + 1e-3));
+            assert!((lo - hi).abs() < 1e-2, "{d}: {lo} against {hi}");
+        }
+        // Past 4 frames it is the sinc of FlatLine::read.
+        for d in [4.0f32, 6.3, 17.5] {
+            assert_eq!(read(d), m.read(d), "{d}");
+        }
+        // The weights always sum to 1.
+        for k in 0..=80 {
+            let (_, w) = flat_weights(1.0 + k as f32 * 0.05, 60.0);
+            assert!((w.iter().sum::<f32>() - 1.0).abs() < 1e-5, "{k}");
+        }
     }
 
     #[test]
