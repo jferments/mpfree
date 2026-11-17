@@ -36,6 +36,8 @@ pub struct Inner {
     /// False when the worker couldn't start: views are then worked out
     /// in [`Views::get`], as before.
     worker: bool,
+    /// A view came from a cache file since the last [`Views::take_done`].
+    fresh: bool,
 }
 
 impl Views {
@@ -57,6 +59,7 @@ impl Views {
             queue,
             rx,
             worker,
+            fresh: false,
         }))
     }
 }
@@ -109,10 +112,32 @@ impl Inner {
         }
     }
 
+    /// A view read from its sound's cache file (`SourceView::from_cache`),
+    /// ready: kept for its sound in place of one still being worked out
+    /// (never of a ready one), and the sound no longer waits for the
+    /// worker. The next [`Views::take_done`] says a view changed.
+    pub fn known(&mut self, v: Arc<SourceView>) {
+        if !v.ready || self.made.get(&v.id).is_some_and(|old| old.ready) {
+            return;
+        }
+        let (lock, _) = &*self.queue;
+        if let Ok(mut q) = lock.lock() {
+            q.jobs.retain(|s| s.id() != v.id);
+        }
+        self.made.insert(v.id, v);
+        self.fresh = true;
+    }
+
+    /// The view of the sound `id`, if it is worked out: for the save, which
+    /// keeps it beside the sound.
+    pub fn ready(&self, id: SourceId) -> Option<Arc<SourceView>> {
+        self.made.get(&id).filter(|v| v.ready).cloned()
+    }
+
     /// Takes in what the worker finished since the last call. True when a
     /// view changed, for the page to show it.
     pub fn take_done(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = std::mem::take(&mut self.fresh);
         while let Ok(v) = self.rx.try_recv() {
             // A view forgotten since (its sound gone) stays forgotten, and
             // a step never replaces a later one.
@@ -298,6 +323,36 @@ mod tests {
             "a sound still here keeps its view"
         );
         assert!(!v.get(&b).ready, "a forgotten one is worked out again");
+        settle(&mut v);
+    }
+
+    #[test]
+    fn a_view_from_a_cache_file_is_ready_at_once_and_never_worked_out_again() {
+        let s = clicks("Loop", 4, 0.8);
+        let bytes = SourceView::analyse(&s).to_cache().unwrap();
+        let mut v = Views::new();
+        // Shown first (the worker is asked), then its cache comes in.
+        assert!(!v.get(&s).ready);
+        let cached = Arc::new(SourceView::from_cache(&s, &bytes).unwrap());
+        v.known(cached.clone());
+        assert!(v.take_done(), "the page is told");
+        assert!(Arc::ptr_eq(&cached, &v.get(&s)));
+        assert!(Arc::ptr_eq(&cached, &v.ready(s.id()).unwrap()));
+        // What the worker sends for it later doesn't replace it.
+        std::thread::sleep(Duration::from_millis(100));
+        v.take_done();
+        assert!(Arc::ptr_eq(&cached, &v.get(&s)));
+        assert!(!v.busy());
+        // A cache never replaces a view already worked out.
+        let other = clicks("Other", 1, 0.5);
+        let made = v.full(&other);
+        let again = SourceView::from_cache(&other, &made.to_cache().unwrap()).unwrap();
+        v.known(Arc::new(again));
+        assert!(Arc::ptr_eq(&made, &v.get(&other)));
+        // A sound not worked out yet has no view for the save.
+        let new = clicks("New", 1, 0.4);
+        v.get(&new);
+        assert!(v.ready(new.id()).is_none());
         settle(&mut v);
     }
 
