@@ -466,7 +466,13 @@ pub struct GridTrack {
     pub color: Color,
     /// Recording goes into this track.
     pub armed: bool,
+    /// Silent: muted, or not soloed while another track is.
     pub mute: bool,
+    /// Soloed (sequencer S4): outlined in the accent colour.
+    pub solo: bool,
+    /// A mute or solo change waiting for its line: the header is hatched
+    /// and this says what and when ("mutes in 2 beats") under the name.
+    pub waiting: Option<String>,
     /// A Loop track: a wave mark before what it records, under its name.
     pub loops: bool,
     pub cells: Vec<GridCell>,
@@ -979,6 +985,9 @@ impl Widget for ClipGrid {
                 || old.color != new.color
                 || old.armed != new.armed
                 || old.mute != new.mute
+                || old.solo != new.solo
+                || old.waiting != new.waiting
+                || old.sound != new.sound
                 || old.loops != new.loops
                 || old.cells.len() != new.cells.len()
             {
@@ -1153,7 +1162,23 @@ impl Widget for ClipGrid {
                 );
                 name = name.take_left(14).1;
             }
-            if two {
+            if track.solo && !track.armed {
+                cx.canvas.stroke_round_rect(head, 8, 2, t.accent);
+            }
+            if let Some(w) = &track.waiting {
+                // Hatched while a change waits for its line, with what and
+                // when under the name (the second line, or the only one).
+                hatch(cx, head, t.warn.mix(t.surface, 0.55));
+                cx.canvas.stroke_round_rect(head, 8, 1, t.warn);
+                let line = if two {
+                    Rect::new(head.x + 10, head.y + 22, head.w - 14, 18)
+                } else {
+                    Rect::new(head.x + 10, head.y + head.h - 16, head.w - 14, 14)
+                };
+                let px = t.size_small - 3.0;
+                let w = waiting_fit(w, |s| cx.measure(FontId::Bold, px, s) <= line.w);
+                cx.text(FontId::Bold, px, line, Align::Left, t.warn, &w);
+            } else if two {
                 let mut sound = Rect::new(head.x + 10, head.y + 22, head.w - 16, 18);
                 let dim = if track.mute { t.text_faint } else { t.text_dim };
                 if track.loops {
@@ -1984,10 +2009,51 @@ impl Widget for TakeList {
     }
 }
 
+/// A grid header's waiting line made to fit (`fits`): "mutes in 2
+/// beats", else "mutes 2 beats", else "mutes" (the transport bar's
+/// WAITING reading still says where it lands).
+fn waiting_fit(full: &str, mut fits: impl FnMut(&str) -> bool) -> String {
+    if fits(full) {
+        return full.to_string();
+    }
+    let short = full.replacen(" in ", " ", 1);
+    if fits(&short) {
+        return short;
+    }
+    full.split(" in ").next().unwrap_or(full).to_string()
+}
+
+/// Diagonal stripes over `r` in `c`, 3 px wide every 9 px, inside the
+/// canvas's clip (a mute or solo change waiting, the grid's header).
+fn hatch(cx: &mut PaintCx, r: Rect, c: Color) {
+    let was = cx.canvas.clip();
+    cx.canvas.set_clip(was.intersect(r));
+    for y in r.y..r.y + r.h {
+        let shift = (y - r.y) % 9;
+        let mut x = r.x - 9 + shift;
+        while x < r.x + r.w {
+            cx.canvas.fill_rect(Rect::new(x, y, 3, 1), c);
+            x += 9;
+        }
+    }
+    cx.canvas.set_clip(was);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use mpfree_ui::{Fonts, SoftCanvas, Theme, Ui};
+
+    #[test]
+    fn a_waiting_line_drops_words_until_it_fits() {
+        let fits = |n: usize| move |s: &str| s.len() <= n;
+        assert_eq!(
+            waiting_fit("mutes in 2 beats", fits(20)),
+            "mutes in 2 beats"
+        );
+        assert_eq!(waiting_fit("mutes in 2 beats", fits(13)), "mutes 2 beats");
+        assert_eq!(waiting_fit("solo off in 2 beats", fits(13)), "solo off");
+    }
 
     fn bar_ui(bar: TransportBar) -> Ui {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 68);
@@ -2061,6 +2127,8 @@ mod tests {
                 color: Color::rgb(0x3DDC97),
                 armed: i == 1,
                 mute: false,
+                solo: false,
+                waiting: None,
                 loops: false,
                 cells,
             });

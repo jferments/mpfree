@@ -239,6 +239,12 @@ pub struct Asks {
     /// and STOP, the tempo and the rest: `mpfree_param::transport`); it
     /// waits until a control takes it or Cancel.
     pub learn_target: Option<mpfree_param::ParamAddr>,
+    /// A port page's Name: open the text keyboard to name this port (by
+    /// its own name, [`PortLive::name`]). The app sets
+    /// [`MidiSetup::set_shown`] on Enter, or says why not on the keyboard.
+    ///
+    /// [`MidiSetup::set_shown`]: mpfree_midi::setup::MidiSetup::set_shown
+    pub name_port: Option<String>,
 }
 
 /// What a port's page asks MIDI out to send to it.

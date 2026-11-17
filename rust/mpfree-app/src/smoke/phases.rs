@@ -1644,6 +1644,19 @@ mod device_log {
             s.pad_edge(2, 0, false);
             s.button("STOP");
             assert_eq!(pads_in(&s), [2], "pad 3's notes stay");
+            // The check ends with UNDO twice on Play's All view: both
+            // takes go, so the checks after it find Track 1 as it was.
+            s.press("play-transport", "view", "All");
+            s.run_for(0.2);
+            let n = s.lines.len();
+            s.button("UNDO").run_for(0.2);
+            s.button("UNDO").run_for(0.2);
+            let undid = since(&s, n)
+                .iter()
+                .filter(|l| l.starts_with("Undid take "))
+                .count();
+            assert_eq!(undid, 2, "{:#?}", since(&s, n));
+            assert!(pads_in(&s).is_empty(), "Track 1 has no notes left");
         });
     }
 
@@ -1731,6 +1744,39 @@ mod device_log {
             s.button("PAD BANK B/F");
             let l = wrote(&s, n, "TRACK MUTE · bank B: ", "");
             assert_eq!(l, "TRACK MUTE · bank B: pads 1-8 mute tracks 17-24");
+        });
+    }
+
+    /// The mute queue (`^track mute: .* muted on the next `, `^time:
+    /// track mute: at \d+\.1, .* muted`, `^track mute: .* solo on the
+    /// next `, `^time: track mute: at \d+\.1, .* solo`): in Perform a
+    /// pad waits for the bar line and lands on it; TRACK MUTE held solos.
+    #[test]
+    fn mute_queue_writes_its_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.2);
+            s.button_with("SHIFT", "MAIN").run_for(0.2);
+            s.button("TRACK MUTE");
+            let n = s.lines.len();
+            s.pad(0, 100, 0.05);
+            wrote(&s, n, "track mute: ", " muted on the next ");
+            s.run_for(2.2);
+            let l = wrote(&s, n, "time: track mute: at ", " muted");
+            assert!(l.starts_with("time: track mute: at 2.1, "), "{l}");
+            let n = s.lines.len();
+            s.button_edge("TRACK MUTE", true);
+            s.pad(1, 100, 0.05);
+            s.button_edge("TRACK MUTE", false);
+            wrote(&s, n, "track mute: ", " solo on the next ");
+            s.run_for(2.2);
+            wrote(&s, n, "time: track mute: at ", " solo");
+            s.button("TRACK MUTE");
+            s.button("STOP");
         });
     }
 
