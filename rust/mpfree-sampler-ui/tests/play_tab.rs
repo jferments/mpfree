@@ -213,6 +213,9 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Tune, 7, "+7 st"),
         (Row::Wow, 3, "30 %"),
         (Row::Wow, -5, "Off"),
+        (Row::Vintage, 1, "On"),
+        (Row::Vintage, -1, "Off"),
+        (Row::Vintage, 1, "On"),
         (Row::VelFade, 1, "2"),
         (Row::VelFade, 4, "12"),
         (Row::VelFade, 20, "64"),
@@ -225,6 +228,7 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
     }
     assert_eq!(s.state.settings.select, LayerSelect::Random);
+    assert!(s.state.settings.vintage, "Vintage reaches the pad");
     // Grain targets show only for a granular pad.
     let targets: Vec<String> = (0..4)
         .map(|_| {

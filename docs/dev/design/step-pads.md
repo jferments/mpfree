@@ -1,11 +1,11 @@
 <!--
-covers: rust/mpfree-app/src/app/step_pads.rs rust/mpfree-app/src/step_keys.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-seq/src/steps.rs
-checked: 2026-11-16 0fc15c6
+covers: rust/mpfree-app/src/app/step_pads.rs rust/mpfree-app/src/step_keys.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/locks.rs rust/mpfree-seq/src/steps.rs
+checked: 2026-11-17 5be7b53
 -->
 
 # STEP SEQ: the pads as steps
 
-**Status:** S1 of the sequencer roadmap: the pads as steps (first part), then holding a step, ties and COPY (second part), 2026-11-16. Decided by the owner on 16 Nov 2026 (sequencer decision 2, card "Pads become steps, as designed", 20:00Z). The design notes, with mockup I (`step-pads.png`) and the Beats mockup, are in the private notes repository (`sequencer/rethink/README.md`, "STEP SEQ: the pads as steps"). The buttons and the screen are in the [layout spec](layout-spec.md) (sections 2, 4 and 6). Tested on the host; not yet run on the MPC (device checks `step-pads` and `step-hold`).
+**Status:** S1 of the sequencer roadmap: the pads as steps (first part), then holding a step, ties and COPY (second part), 2026-11-16; locks (third part), 2026-11-17. Decided by the owner on 16 Nov 2026 (sequencer decision 2, card "Pads become steps, as designed", 20:00Z). The design notes, with mockup I (`step-pads.png`) and the Beats mockup, are in the private notes repository (`sequencer/rethink/README.md`, "STEP SEQ: the pads as steps"). The buttons and the screen are in the [layout spec](layout-spec.md) (sections 2, 4 and 6). Tested on the host; not yet run on the MPC (device checks `step-pads`, `step-hold` and `step-locks`).
 
 This builds on the [step sequencer](steps.md): steps are a view of a clip's notes, and each edit is one take.
 
@@ -20,7 +20,11 @@ This builds on the [step sequencer](steps.md): steps are a view of a clip's note
 | SHIFT + STEP SEQ | Follow: the page turns with the playhead |
 | Tap an empty step | A note at the pad's velocity (127 with FULL LEVEL), heard once while the transport is stopped |
 | Tap a lit step | It comes off, with its locks, when the pad is let go, if it was the only step held and nothing was done while it was |
-| Hold a step | The Q-Links on Play set it: its Step bank (velocity, length, nudge, chance); Q-LINK steps to its Trig bank (condition, ratchet, nudge in ticks) and back. A finger on a Q-Link shows the step's value on its card |
+| Hold a step | The Q-Links on Play set it: its Step bank (velocity, length, nudge, chance); Q-LINK steps to its Trig bank (condition, ratchet, nudge in ticks), then its Sound bank, and back. A finger on a Q-Link shows the step's value on its card |
+| Hold a step, turn a Q-Link on the Sound bank | A lock on the steps held: a kit pad's Tune, Decay, Filter and Level, or the synth's first Q-Link set. The card shows the lock in purple |
+| SHIFT + an empty step | It is held with no note, and the Q-Links show the Sound bank: a turn is a lock with no note |
+| Hold a step, turn a knob on the Synth tab | When the step's track plays the synth the tab shows: a lock on the steps held, not a change to the sound. The tab shows the step's locks while it is held |
+| Hold a step, press ERASE | The steps held lose their locks; their notes stay |
 | Hold several steps and turn | They all take the first one's new value, as one undo |
 | Hold a step, tap a later one | Before any turn: the note lasts to the end of that step, or ends there if the tap is inside it. A lit step, an earlier one, or any step after a turn joins the steps held |
 | COPY held + a step, then others | The first step is picked; each step tapped after takes a copy, locks included |
@@ -44,10 +48,22 @@ Pad 1, bottom left, is the page's first step. With no clip, the first tap on pag
 
 - **The step keys** (`StepKeys` in `step_keys.rs`) keep what each held pad is for: a step to set, or a press that was ERASE, COPY, a tie's end or past the clip's end. `held_steps` is the sound and the steps to set, the first held first; the audio loop sends it to the screen when it changes (`ToUi::StepsHeld`). A screen action that changes a step (`StepAction::Change` or `ChangeSteps`, from a Q-Link) calls `StepKeys::turned`, so the steps held stay on their release and a later tap joins them rather than tying. COPY held (`App::copy_held`) makes a press pick the step to copy, then copy it; COPY let go forgets it.
 - **The tie** is `Change::Length` on the step held first: from its note to the end of the step tapped (its nudge taken off), so the lights' "held over" glow shows it at once.
-- **The Q-Links** (`play_page.rs`): with steps held, `PlayPage::knobs` is the Step bank, or after Q-LINK the Trig bank, on every Play view and on Arrange, over a macro bank. A turn changes the step held first that has a note; with several held it sends `ChangeSteps` with all of them, at that step's new value. The cards' scope and the column's title name the steps ("Q-Links · Steps 5, 13 · Trig"). Letting go brings the page's own knobs back, and the next hold starts on the Step bank.
+- **The Q-Links** (`play_page.rs`): with steps held, `PlayPage::knobs` is the Step bank, or after Q-LINK the Trig bank, then the Sound bank (`PlayPage::bank`, a `HeldBank`), on every Play view and on Arrange, over a macro bank; steps held with no note show the Sound bank only (`held_bank`). A turn changes the step held first that has a note; with several held it sends `ChangeSteps` with all of them, at that step's new value. The cards' scope and the column's title name the steps ("Q-Links · Steps 5, 13 · Trig"). Letting go brings the page's own knobs back, and the next hold starts on the Step bank.
 - **COPY + PAD BANK** is the app's (`App::step_page_button`): the page that button lights (SHIFT: the other four), as ERASE + PAD BANK, picks the page, and each PAD BANK after takes a copy, until COPY is let go.
 
-Holding a step on another page and turning a knob there does what the knob does on that page; it becomes a lock with the next part.
+Holding a step on another page and turning a knob there does what the knob does on that page, except on the Synth tab (below); the mixer's and the effects' knobs become locks in a later part.
+
+## Locks
+
+A lock is a value a step's sound plays with in place of its own. Clips kept them and the player played them already (`Event::Lock` and `Event::Unlock`, [playback.md](playback.md#parameter-locks)), but only the mixer's strips and inserts took one (`modmix.rs`). The third part gives a pad's sound and the synth their locks, and the ways to set them.
+
+- **Where a lock goes.** The audio loop gives each `Lock` and `Unlock` to the pads first (`time::Pads::lock_at`; `SeqPads` in `main.rs`, `Hits` in the smoke session). `Owner::Pad` on a kit's track goes to the sampler engine (`sampler::Player::pad_lock`, `Event::PadLock`); the lock's parameter is the `PadField` number, its value in the field's unit: Level 0 (dB), Pan 1 (−1 to 1), Tune 2 (cents), Cutoff 3 (Hz), Resonance 4 (0 to 1), Attack 5, Decay 6 and Release 7 (ms). `Owner::Inst` goes to the track's own instrument (`Instruments::lock`), or, on a track that plays the kit while the synth has the pads, to the synth (`Synth::lock`). One none of them takes (a MIDI-out track's, the mixer's) goes on to the mod engine as before.
+- **What its end comes back to.** The synth and the instruments keep the value under each lock (`locks::Under`, 64 parameters each): a run of locked steps comes back to the sound's own value, not an earlier step's; a knob turned while a lock holds is what its end comes back to; and an end and a new lock on the same frame (a clip switch) still find the sound's own. The sampler keeps locks in a table of their own under the pad's live values, so it needs none.
+- **When it ends.** The player's rule: a pad's lock holds from its step's frame until that pad's next note without it; a lock with no note holds the same way; a stop, a locate or a loop jump ends them all.
+- **How it sounds.** A kit pad's Level, Pan, Filter and Resonance move the sound still ringing; Tune, Attack, Decay and Release reach the next note. A locked Decay decays to silence, as the Play page's Decay knob does. The scene crossfader goes over a lock.
+- **Setting one** (`play_page.rs`, `gui.rs`). `StepAction::Lock { pad, steps, addr, value }` puts a lock on every step held, with a note or not (`Grid::lock_steps`); a turn of one knob over the same steps is one undo (`lock_key_steps`). `StepAction::ClearLocks` takes the held steps' locks off and leaves their notes (`Grid::clear_step_locks`). `StepClip::lock_values` gives the screen each row's locks, so a Sound bank card shows the held step's lock, in purple, or the sound's own value. The Sound bank (`PlayPage::sound_bank`, filled by `held_sound_bank` in `gui.rs`) is a kit pad's Tune, Decay, Filter and Level, read from the Sample tab's pad (`SamplePage::pad_sound`), or the synth's first Q-Link set (`qsets::factory`, `qsets::on_pad` for Drums); a pad with neither shows empty cards.
+- **The Synth tab.** With steps held on a track that plays the synth the tab shows (its own instrument, or the synth on the pads), a knob turned there goes out as a `StepAction::Lock` on the steps held instead of a change to the sound (`as_held_lock` in `gui.rs`, on every action the screen sends). While they are held the tab shows the first step's locks, and once they are let go its own values again (`held_synth_values`).
+- **SHIFT + an empty step** holds it with no note (`Press::shift`). **ERASE pressed while steps are held** sends `ClearLocks` for them (`erase_held_steps` in `main.rs`, before the app's own ERASE, and `StepKeys::erase_locks`).
 
 ## The lights
 
@@ -65,6 +81,6 @@ The colours go out on the pad colour message Akai's app uses (`akai::pad_colour`
 
 ## Coming next in S1
 
-- Locks: the lock targets that let a pad's sound and the synth play a lock (today only the mixer's strips and inserts take one, `modmix.rs`), then the Q-Links' Sound bank with a step held (the sound's tune, decay, filter and level), any knob turned on another page with a step held, and SHIFT + an empty step for a lock with no note.
+- Locks from the mixer's and the effects' knobs turned on their own pages with a step held (the mod engine already plays them).
 - Step edits made in place on the control half, with a device measurement of the worst period (Gate 0; [time threads](time-threads.md)).
 - Full step cells and the held step's inspector on Beats; synth tracks on the step pads (the pen: a note or chord).

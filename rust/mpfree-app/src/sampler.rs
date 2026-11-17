@@ -52,6 +52,15 @@ use crate::looping::PERIOD;
 /// much, so a kit plays at the level the round 3 mixer played it.
 pub const CENTRE_DB: f32 = 3.010_3;
 
+/// The sampler setting a clip's lock on a kit pad's sound names
+/// (`Owner::Pad`): its parameter is the [`PadField`]'s number (Level 0,
+/// Pan 1, Tune 2, Cutoff 3, Resonance 4, Attack 5, Decay 6, Release 7), and
+/// its value is in the field's own unit (dB, -1 to 1, cents, Hz, 0 to 1,
+/// ms).
+pub fn pad_field(param: u16) -> Option<PadField> {
+    PadField::ALL.get(usize::from(param)).copied()
+}
+
 /// What each row of the Grains kit's pads changes with pressure: target,
 /// depth.
 const GRAIN_ROWS: [(PressureTarget, f32); 4] = [
@@ -561,6 +570,27 @@ impl Player {
         for &(pad, field, value) in values {
             self.engine.apply(Event::PadLive { pad, field, value });
         }
+    }
+
+    /// A step's parameter lock on pad `pad`'s `field` (`Some`), or its end
+    /// (`None`), `offset` frames into the next render: the clips' locks on
+    /// a kit pad's sound (`Owner::Pad`). False for no such pad.
+    pub fn pad_lock(
+        &mut self,
+        pad: usize,
+        field: PadField,
+        value: Option<f32>,
+        offset: u32,
+    ) -> bool {
+        pad < 16
+            && self.engine.schedule(
+                offset,
+                Event::PadLock {
+                    pad: pad as u8,
+                    field,
+                    value: value.unwrap_or(f32::NAN),
+                },
+            )
     }
 
     /// Plays source frames `start..end` of pad `pad`'s layer `layer` once,

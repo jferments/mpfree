@@ -272,6 +272,17 @@ pub fn lock_key(sound: Option<u8>, i: usize, addr: RelAddr) -> u64 {
     (5 << 56) | (u64::from(sound.unwrap_or(ALL)) << 48) | (a << 24) | (i as u64 & 0xFF_FFFF)
 }
 
+/// [`lock_key`] for a lock turned on several held steps at once (bits of
+/// `steps`, step 0 the lowest): one step's key when only one is set, else a
+/// key no one-step lock has, so a whole turn joins one undo.
+pub fn lock_key_steps(sound: Option<u8>, steps: u128, addr: RelAddr) -> u64 {
+    if steps.count_ones() == 1 {
+        return lock_key(sound, steps.trailing_zeros() as usize, addr);
+    }
+    let folded = (steps as u64) ^ ((steps >> 64) as u64).rotate_left(23);
+    lock_key(sound, (0x80_0000 | (folded & 0x7F_FFFF)) as usize, addr)
+}
+
 /// No sound has this number: it names every sound of a step in a key.
 const ALL: u8 = 255;
 
@@ -958,6 +969,46 @@ impl Grid {
         }
     }
 
+    /// Lock `addr` to `value` on each of steps `steps` of row `sound`, as
+    /// [`Grid::lock`] does (a held step with no note gets a lock with no
+    /// note), or with `None` take that lock off them ([`Grid::unlock`]):
+    /// several step pads held while a knob turns, as one edit.
+    pub fn lock_steps(
+        self,
+        clip: &Clip,
+        sound: Option<u8>,
+        steps: &[usize],
+        addr: RelAddr,
+        value: Option<f32>,
+    ) -> Edit {
+        let mut edit = Edit::default();
+        let mut done: Vec<usize> = Vec::new();
+        for &i in steps {
+            if !done.contains(&i) {
+                done.push(i);
+                edit.join(match value {
+                    Some(v) => self.lock(clip, sound, i, addr, v),
+                    None => self.unlock(clip, sound, i, addr),
+                });
+            }
+        }
+        edit
+    }
+
+    /// Take every lock off each of steps `steps` of row `sound` (their
+    /// notes stay).
+    pub fn clear_step_locks(self, clip: &Clip, sound: Option<u8>, steps: &[usize]) -> Edit {
+        let mut edit = Edit::default();
+        let mut done: Vec<usize> = Vec::new();
+        for &i in steps {
+            if !done.contains(&i) {
+                done.push(i);
+                edit.join(self.clear_locks(clip, sound, i));
+            }
+        }
+        edit
+    }
+
     /// Write the Euclidean pattern `e` into the row of sound `pitch`,
     /// repeated from the clip's first step to its last: a step with a hit
     /// keeps its notes, or with none gets a note on its line, a step long,
@@ -1575,6 +1626,44 @@ mod tests {
         let mut v: Vec<_> = c.locks.iter().map(|l| (l.tick, l.sound, l.value)).collect();
         v.sort_by_key(|a| (a.0, a.1));
         v
+    }
+
+    #[test]
+    fn locks_on_several_held_steps_are_one_edit_with_their_own_key() {
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(0, 36), (960, 36)]);
+        // Steps 0 and 4 have notes, step 6 none: a lock with no note there.
+        let e = g.lock_steps(&c, Some(36), &[0, 4, 6, 4], CUT, Some(500.0));
+        assert_eq!(e.add_locks.len(), 3);
+        c.apply(&e).unwrap();
+        assert_eq!(
+            lock_ticks(&c),
+            vec![
+                (0, Some(36), 500.0),
+                (960, Some(36), 500.0),
+                (1440, Some(36), 500.0)
+            ]
+        );
+        assert!(g
+            .lock_steps(&c, Some(36), &[0, 4], CUT, Some(500.0))
+            .is_empty());
+        c.apply(&g.lock_steps(&c, Some(36), &[0], CUT, Some(700.0)))
+            .unwrap();
+        let off = g.lock_steps(&c, Some(36), &[0, 6], CUT, None);
+        assert_eq!(off.erase_locks.len(), 2);
+        c.apply(&off).unwrap();
+        assert_eq!(lock_ticks(&c), vec![(960, Some(36), 500.0)]);
+        // ERASE with steps held: their locks go, their notes stay.
+        c.apply(&g.lock(&c, Some(36), 4, TUNE, 200.0)).unwrap();
+        c.apply(&g.clear_step_locks(&c, Some(36), &[4, 4])).unwrap();
+        assert!(c.locks.is_empty());
+        assert_eq!(c.notes.len(), 2);
+        // One step's key is the one-step key; several have their own.
+        let one = lock_key_steps(Some(36), 1 << 4, CUT);
+        assert_eq!(one, lock_key(Some(36), 4, CUT));
+        let two = lock_key_steps(Some(36), 1 << 4 | 1, CUT);
+        assert!((0..128).all(|i| two != lock_key(Some(36), i, CUT)));
+        assert_ne!(two, lock_key_steps(Some(36), 1 << 4 | 1, TUNE));
     }
 
     #[test]

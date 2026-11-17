@@ -26,6 +26,7 @@
 
 pub mod aiff;
 pub mod autosample;
+pub mod bandlimit;
 pub mod chop;
 pub mod dsp;
 pub mod engine;

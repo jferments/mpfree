@@ -57,6 +57,8 @@ The chip at the top of the screen says what the pads are ("Pads: steps · Kick")
 
 **Changing a step.** Hold a step pad and turn the Q-Links: the cards say "Step 5" and turn its velocity, length, nudge (how early or late it plays) and chance. Press **Q-LINK** while you still hold it for its condition (play only on some passes, or only with FILL), its ratchet (repeats within the step) and a finer nudge. Hold several step pads to change them all at once. A step you turned stays when you let go of it. Touch a Q-Link without turning it to read the step's value.
 
+**Locks.** A step can play its sound differently: tuned up, shorter, darker or quieter. Hold a step pad and press **Q-LINK** until the cards say "Sound": they show the sound's tune, decay, filter and level (on the synth, its first four knobs). Turn one and the step plays with that value while the rest play the sound as it is; the card and the step pad turn purple. Hold several steps to lock them all at once. To lock a step without playing a note there (to change a sound that is still ringing), hold **SHIFT** and hit an empty step: it holds with no note, and the cards show "Sound" straight away. With a synth, you can also hold a step and turn the knobs on the Synth tab. Hold a step and press **ERASE** to take its locks off and keep its note.
+
 **Longer notes.** Hold a step and hit a later one: the note lasts to the end of that step, and the steps in between glow dim. Hit a step inside a long note to shorten it to there.
 
 **Copying.** Hold **COPY**, hit a step, then hit each step it should go to. To copy a whole page, hold **COPY**, press its **PAD BANK** button, then the **PAD BANK** button of the page it should go to.
@@ -66,7 +68,7 @@ The chip at the top of the screen says what the pads are ("Pads: steps · Kick")
 **TRACK MUTE** and **16 LEVEL** take the pads over too: only one of the three has them at a time, and the lit button tells you which.
 
 > [!MPC]
-> As on the MPC, **STEP SEQ** turns the pads into step buttons lit by velocity, and the Beats view shows the whole pattern on the screen. The differences: the pads stay steps on every page until you press **STEP SEQ** again, you pick the sound by holding **STEP SEQ** and hitting its pad, and **PAD BANK** turns the pages. Velocity, length, nudge and chance live on the Q-Links for the step you hold (or pick on the screen), rather than in an event list, and holding a step then hitting a later one sets the note's length, as on the MPC Live III and XL's step buttons.
+> As on the MPC, **STEP SEQ** turns the pads into step buttons lit by velocity, and the Beats view shows the whole pattern on the screen. The differences: the pads stay steps on every page until you press **STEP SEQ** again, you pick the sound by holding **STEP SEQ** and hitting its pad, and **PAD BANK** turns the pages. Velocity, length, nudge and chance live on the Q-Links for the step you hold (or pick on the screen), rather than in an event list, and holding a step then hitting a later one sets the note's length, as on the MPC Live III and XL's step buttons. Locks work as on an Elektron box: a held step's knob turn sets that one step's sound, rather than recording automation.
 
 ## Record a pattern live
 

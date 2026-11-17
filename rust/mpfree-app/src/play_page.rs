@@ -37,6 +37,8 @@ use mpfree_arp::scale::pads::PadLayout;
 use mpfree_arp_ui::view as arp_view;
 use mpfree_fx::ids::mixer as mixer_ids;
 use mpfree_fx::StripId;
+use mpfree_node::{Curve, ParamInfo};
+use mpfree_play::mpfree_param::RelAddr;
 use mpfree_seq::steps::{Change, Step, PAGE};
 use mpfree_seq::Cond;
 use mpfree_time_ui::view::TransportInfo;
@@ -363,7 +365,148 @@ pub enum Knob {
     /// No knob: an empty card (the Trig bank's fourth, for the ratchet's
     /// ramp to come).
     Empty,
+    /// The step pads held, Q-LINK twice (their Sound bank): knob `k` of
+    /// [`PlayPage::sound_bank`], a lock on the held steps.
+    Sound(u8),
 }
+
+/// Which bank the Q-Links show while step pads are held: Q-LINK steps
+/// Step, Trig, Sound and round. Held steps with no note have only Sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HeldBank {
+    #[default]
+    Step,
+    Trig,
+    Sound,
+}
+
+impl HeldBank {
+    pub fn name(self) -> &'static str {
+        match self {
+            HeldBank::Step => "Step",
+            HeldBank::Trig => "Trig",
+            HeldBank::Sound => "Sound",
+        }
+    }
+
+    /// The bank Q-LINK steps to.
+    pub fn next(self) -> HeldBank {
+        match self {
+            HeldBank::Step => HeldBank::Trig,
+            HeldBank::Trig => HeldBank::Sound,
+            HeldBank::Sound => HeldBank::Step,
+        }
+    }
+}
+
+/// How a Sound bank knob reads and turns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SoundKind {
+    /// A kit pad's tune, in cents.
+    Tune,
+    /// A kit pad's decay, in ms: the sound decays to silence.
+    Decay,
+    /// A kit pad's filter cutoff, in Hz (a pad without a filter gets a
+    /// low-pass).
+    Cutoff,
+    /// A kit pad's level, in dB.
+    Level,
+    /// An instrument's parameter, as its node describes it.
+    Param(ParamInfo),
+}
+
+/// One of the Sound bank's knobs: a setting of the held steps' sound, a
+/// lock on them when turned.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundKnob {
+    pub name: String,
+    /// What it locks, on the clip's track.
+    pub addr: RelAddr,
+    pub kind: SoundKind,
+    /// The sound's own value: what a step without a lock plays.
+    pub own: f32,
+}
+
+/// The lock colour on a Sound card whose step has a lock (the step pads'
+/// purple).
+const LOCKED: Color = Color::rgb(0xA0_40_FF);
+
+impl SoundKind {
+    /// The value as the card writes it, where its ring is, and whether it
+    /// is lit both ways.
+    fn read(self, v: f32) -> (String, f32, bool) {
+        match self {
+            SoundKind::Tune => {
+                let st = v / 100.0;
+                let text = if (st - st.round()).abs() < 0.05 {
+                    format!("{:+.0} st", st.round())
+                } else {
+                    format!("{st:+.1} st")
+                };
+                (
+                    text.replace("+0 st", "0 st"),
+                    ((st + 24.0) / 48.0).clamp(0.0, 1.0),
+                    true,
+                )
+            }
+            SoundKind::Decay if v >= DECAY_MAX_MS => ("open".to_string(), 1.0, false),
+            SoundKind::Decay => (
+                if v >= 1000.0 {
+                    format!("{:.2} s", v / 1000.0)
+                } else {
+                    format!("{v:.0} ms")
+                },
+                ((v / 10.0).max(1.0).log2() / (DECAY_MAX_MS / 10.0).log2()).clamp(0.0, 1.0),
+                false,
+            ),
+            SoundKind::Cutoff if v >= CUTOFF_OPEN_HZ => ("open".to_string(), 1.0, false),
+            SoundKind::Cutoff => (
+                if v >= 1000.0 {
+                    format!("{:.1} kHz", v / 1000.0)
+                } else {
+                    format!("{v:.0} Hz")
+                },
+                ((v / 20.0).max(1.0).log2() / (CUTOFF_OPEN_HZ / 20.0).log2()).clamp(0.0, 1.0),
+                false,
+            ),
+            SoundKind::Level => (db_text(v), ((v + 60.0) / 72.0).clamp(0.0, 1.0), false),
+            SoundKind::Param(p) => (
+                mpfree_synth_ui::format::value_line(&p, v),
+                p.to_unit(v),
+                p.min < 0.0 && p.max > 0.0,
+            ),
+        }
+    }
+
+    /// `v` turned by `ticks` detents (`fine`: SHIFT held).
+    fn turn(self, v: f32, ticks: i32, fine: bool) -> f32 {
+        let d = ticks as f32;
+        match self {
+            SoundKind::Tune => (v + d * if fine { 10.0 } else { 100.0 }).clamp(-2400.0, 2400.0),
+            SoundKind::Decay => {
+                let from = v.clamp(10.0, DECAY_MAX_MS);
+                (from * (d / if fine { 32.0 } else { 8.0 }).exp2())
+                    .round()
+                    .clamp(10.0, DECAY_MAX_MS)
+            }
+            SoundKind::Cutoff => {
+                let from = v.clamp(20.0, CUTOFF_OPEN_HZ);
+                (from * (d / if fine { 48.0 } else { 12.0 }).exp2()).clamp(20.0, CUTOFF_OPEN_HZ)
+            }
+            SoundKind::Level => (v + d * if fine { 0.1 } else { 0.5 }).clamp(-60.0, 12.0),
+            SoundKind::Param(p) => match p.curve {
+                Curve::Stepped | Curve::Choice(_) | Curve::Toggle => p.clamp(v + d),
+                _ => {
+                    let per = mpfree_synth_ui::view::DETENTS * if fine { 10.0 } else { 1.0 };
+                    p.from_unit(p.to_unit(v) + d / per)
+                }
+            },
+        }
+    }
+}
+
+/// A kit pad's cutoff that reads as an open filter.
+pub const CUTOFF_OPEN_HZ: f32 = 20_000.0;
 
 /// A Q-Link turn, for the engines.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -493,8 +636,12 @@ pub struct PlayPage {
     /// STEP SEQ: the step pads held (their sound, and the steps, the first
     /// held first). The Q-Links set them.
     pub held: Option<(u8, Vec<usize>)>,
-    /// Q-LINK while steps are held: the Trig bank, not the Step bank.
-    pub trig_bank: bool,
+    /// Q-LINK while steps are held: the bank shown.
+    pub bank: HeldBank,
+    /// The held steps' sound's Sound bank (a kit pad's tune, decay,
+    /// filter and level, or an instrument's first Q-Link set), as the
+    /// screen fills it in while steps are held.
+    pub sound_bank: [Option<SoundKnob>; 4],
 }
 
 impl Default for PlayPage {
@@ -523,7 +670,8 @@ impl Default for PlayPage {
             xy: mpfree_fx::XyPad::perform(),
             on_pads: None,
             held: None,
-            trig_bank: false,
+            bank: HeldBank::Step,
+            sound_bank: Default::default(),
         }
     }
 }
@@ -620,10 +768,15 @@ impl PlayPage {
     /// view.
     pub fn knobs(&self) -> [Knob; 4] {
         if self.held.is_some() {
-            return if self.trig_bank {
-                [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Empty]
-            } else {
-                [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance]
+            return match self.held_bank() {
+                HeldBank::Trig => [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Empty],
+                HeldBank::Sound => [
+                    Knob::Sound(0),
+                    Knob::Sound(1),
+                    Knob::Sound(2),
+                    Knob::Sound(3),
+                ],
+                HeldBank::Step => [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance],
             };
         }
         match self.view {
@@ -653,6 +806,40 @@ impl PlayPage {
                 .find_map(|&i| Some((usize::from(*sound), i, (*row.get(i)?)?)));
         }
         self.selected_step()
+    }
+
+    /// The bank the Q-Links show while steps are held: the one Q-LINK
+    /// picked, or Sound when no held step has a note (SHIFT + an empty
+    /// step: a lock with no note).
+    pub fn held_bank(&self) -> HeldBank {
+        if self.held.is_some() && self.held_bits().1 == 0 {
+            HeldBank::Sound
+        } else {
+            self.bank
+        }
+    }
+
+    /// Every step held, with a note or not, as a step action's bits.
+    fn all_held_bits(&self) -> u128 {
+        self.held.as_ref().map_or(0, |(_, steps)| {
+            steps
+                .iter()
+                .filter(|&&i| i < 128)
+                .fold(0u128, |b, &i| b | (1u128 << i))
+        })
+    }
+
+    /// Sound knob `k` and its value on the step held first: its lock
+    /// there, else the sound's own (and whether it is a lock).
+    fn sound_value(&self, k: usize) -> Option<(&SoundKnob, f32, bool)> {
+        let sk = self.sound_bank.get(k)?.as_ref()?;
+        let (sound, steps) = self.held.as_ref()?;
+        let lock = self
+            .steps
+            .clip
+            .as_ref()
+            .and_then(|c| c.lock_value(*sound, *steps.first()?, sk.addr));
+        Some((sk, lock.unwrap_or(sk.own), lock.is_some()))
     }
 
     /// The steps held with a note, as a step action's bits (step 0 the
@@ -775,6 +962,28 @@ impl PlayPage {
                 ((l.line_db + 60.0) / 66.0).clamp(0.0, 1.0),
             ),
             Knob::Empty => return QLinkCard::default(),
+            Knob::Sound(k) => {
+                let Some((sk, v, locked)) = self.sound_value(usize::from(k)) else {
+                    return QLinkCard::default();
+                };
+                let (text, pos, bipolar) = sk.kind.read(v);
+                let sound = self.held.as_ref().map_or(0, |h| usize::from(h.0));
+                let scope = format!(
+                    "{} · {}",
+                    self.held_name().unwrap_or_default(),
+                    if locked {
+                        "lock".to_string()
+                    } else {
+                        self.pad_name(sound)
+                    }
+                );
+                let mut c = QLinkCard::new(&sk.name, &scope, &text, pos);
+                c.bipolar = bipolar;
+                if locked {
+                    c.color = Some(LOCKED);
+                }
+                c
+            }
             Knob::Velocity
             | Knob::Length
             | Knob::Nudge
@@ -931,6 +1140,20 @@ impl PlayPage {
                 })
             }
             Knob::Empty => return None,
+            Knob::Sound(k) => {
+                // Every step held takes the lock, with a note or not.
+                let (sk, v, _) = self.sound_value(usize::from(k))?;
+                let (addr, value) = (sk.addr, sk.kind.turn(v, ticks, fine));
+                let pad = self.held.as_ref()?.0;
+                let a = StepAction::Lock {
+                    pad,
+                    steps: self.all_held_bits(),
+                    addr,
+                    value: Some(value),
+                };
+                self.apply_locally(a);
+                Turn::Step(a)
+            }
             Knob::Velocity
             | Knob::Length
             | Knob::Nudge
@@ -994,6 +1217,27 @@ impl PlayPage {
 
     /// A step change shows at once; the engine's steps follow.
     fn apply_locally(&mut self, a: StepAction) {
+        if let StepAction::Lock {
+            pad,
+            steps,
+            addr,
+            value: Some(v),
+        } = a
+        {
+            if let Some(clip) = self.steps.clip.as_mut() {
+                for step in (0..128).filter(|i| steps & (1u128 << i) != 0) {
+                    match clip
+                        .lock_values
+                        .iter_mut()
+                        .find(|l| (l.0, l.1, l.2) == (pad, step, addr))
+                    {
+                        Some(l) => l.3 = v,
+                        None => clip.lock_values.push((pad, step, addr, v)),
+                    }
+                }
+            }
+            return;
+        }
         let (pad, steps, change) = match a {
             StepAction::Change { pad, step, change } if step < 128 => (pad, 1u128 << step, change),
             StepAction::ChangeSteps { pad, steps, change } => (pad, steps, change),
