@@ -448,7 +448,7 @@ mod tests {
             })
             .sum();
         assert_eq!(t.len(), all - members + FAMILIES.len());
-        assert_eq!(t.len(), 36);
+        assert_eq!(t.len(), 37);
         for f in FAMILIES {
             assert_eq!(t.iter().filter(|x| x.name == f.name).count(), 1);
             for m in f.modes {

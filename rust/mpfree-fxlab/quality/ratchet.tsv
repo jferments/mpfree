@@ -569,6 +569,66 @@ filter/multi/swept_pink_peak_res100_12db	2.7714
 filter/multi/swept_pink_peak_res100_24db	1.0304
 filter/multi/swept_pink_peak_res75_12db	-0.8332
 filter/multi/swept_pink_peak_res75_24db	-2.525
+fuzz/face/alias_1k_m6dbfs_fuzz100	-73.0099
+fuzz/face/alias_1k_m6dbfs_fuzz60	-85.0631
+fuzz/face/alias_5k_m12dbfs_fuzz100	-65.8952
+fuzz/face/alias_5k_m12dbfs_fuzz60	-82.9871
+fuzz/face/breakup_dbfs_fuzz100_gate70	-31.2
+fuzz/face/low_keep_50hz_gain_db	-0.0299
+fuzz/face/low_keep_change_db	1.593
+fuzz/face/lu_pink18_fuzz0	0.0009
+fuzz/face/lu_pink18_fuzz100	-0.0047
+fuzz/face/lu_pink18_fuzz25	0.0757
+fuzz/face/lu_pink18_fuzz50	-0.004
+fuzz/face/lu_pink18_fuzz75	0.0159
+fuzz/face/model_change_db	0.3108
+fuzz/face/silence_out_dbfs_fuzz100_gate0	-140
+fuzz/face/silence_out_dbfs_fuzz100_gate100	-140
+fuzz/face/sustain_drop_db_fuzz100	1.031
+fuzz/fuzz[808 fuzz]/alias_5k_m12dbfs	-89.636
+fuzz/fuzz[808 fuzz]/lu_pink18	0.0305
+fuzz/fuzz[Octave lead]/alias_5k_m12dbfs	-73.3771
+fuzz/fuzz[Octave lead]/lu_pink18	-0.0153
+fuzz/fuzz[Sputter]/alias_5k_m12dbfs	-67.2901
+fuzz/fuzz[Sputter]/lu_pink18	-0.0224
+fuzz/fuzz[Synth grit]/alias_5k_m12dbfs	-103.8964
+fuzz/fuzz[Synth grit]/lu_pink18	0.0073
+fuzz/fuzz[Thick muff]/alias_5k_m12dbfs	-79.1954
+fuzz/fuzz[Thick muff]/lu_pink18	-0.0239
+fuzz/fuzz[Vintage face]/alias_5k_m12dbfs	-79.9263
+fuzz/fuzz[Vintage face]/lu_pink18	-0.0091
+fuzz/muff/alias_1k_m6dbfs_fuzz100	-77.8499
+fuzz/muff/alias_1k_m6dbfs_fuzz60	-90.2814
+fuzz/muff/alias_5k_m12dbfs_fuzz100	-72.489
+fuzz/muff/alias_5k_m12dbfs_fuzz60	-89.1817
+fuzz/muff/breakup_dbfs_fuzz100_gate70	-31.2
+fuzz/muff/low_keep_50hz_gain_db	-0.1221
+fuzz/muff/low_keep_change_db	1.1432
+fuzz/muff/lu_pink18_fuzz0	-0.003
+fuzz/muff/lu_pink18_fuzz100	-0.0012
+fuzz/muff/lu_pink18_fuzz25	0.0909
+fuzz/muff/lu_pink18_fuzz50	0.0047
+fuzz/muff/lu_pink18_fuzz75	0.0127
+fuzz/muff/model_change_db	0.4548
+fuzz/muff/silence_out_dbfs_fuzz100_gate0	-140
+fuzz/muff/silence_out_dbfs_fuzz100_gate100	-140
+fuzz/muff/sustain_drop_db_fuzz100	0.0722
+fuzz/octave/alias_1k_m6dbfs_fuzz100	-62.8607
+fuzz/octave/alias_1k_m6dbfs_fuzz60	-71.6135
+fuzz/octave/alias_5k_m12dbfs_fuzz100	-53.955
+fuzz/octave/alias_5k_m12dbfs_fuzz60	-77.9413
+fuzz/octave/breakup_dbfs_fuzz100_gate70	-27.2
+fuzz/octave/low_keep_50hz_gain_db	-0.0853
+fuzz/octave/low_keep_change_db	0.6552
+fuzz/octave/lu_pink18_fuzz0	0.0024
+fuzz/octave/lu_pink18_fuzz100	-0.001
+fuzz/octave/lu_pink18_fuzz25	0.0657
+fuzz/octave/lu_pink18_fuzz50	0.0001
+fuzz/octave/lu_pink18_fuzz75	0.0235
+fuzz/octave/model_change_db	0
+fuzz/octave/silence_out_dbfs_fuzz100_gate0	-140
+fuzz/octave/silence_out_dbfs_fuzz100_gate100	-140
+fuzz/octave/sustain_drop_db_fuzz100	2.494
 lofi/lofi/cuts_heard_vs_drawn_420_3200	0
 lofi/lofi/cuts_heard_vs_drawn_80_8000	0
 lofi/lofi/flutter_peak_pct_top	0.1339

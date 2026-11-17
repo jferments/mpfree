@@ -244,7 +244,19 @@ The Amp at each model (`amp/clean`, `amp/crunch`, `amp/lead`, `amp/bass`) and it
 | A8 | `model_change_db`, `cab_change_db`, `boost_change_db` | ≤ 3 dB (switch click) | No clicks |
 | A9 | `silence_out_dbfs_gain10`; on Lead with Gate 8 (-45 dBFS): `gate_hiss_out_dbfs_gain10`, `gate_open_ms`, `gate_closes_on_decay` | Silence ≤ -120 dBFS. A note then hiss at -60 dBFS RMS: the last half second of the rest ≤ -90 dBFS at Gain 10. A note after silence is within 1 dB of the ungated amp's in ≤ 2 ms, and a note decaying 40 dB a second shuts the gate once (gated over ungated, 1 ms windows, under a half after over 0.9); both at Gain 0, where the amp is nearly straight, so a half-open gate can't hide in the clipping | Clean rests, notes not chopped |
 
-The fuzz's rows (A10, A11) come with the fuzz (decision 10.6), and A12 is the instruction gate's two Amp cases.
+The Fuzz (decision 10.6) is measured in the same class, at each model (`fuzz/face`, `fuzz/muff`, `fuzz/octave`) and its presets (`fuzz/fuzz[Sputter]`):
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| A3 | `lu_pink18_fuzz*` | Pink at -18 dBFS within ±2 LU of the dry at Fuzz 0, 25, 50, 75 and 100 | Fuzz changes grit, not loudness |
+| A4 | `lu_pink18` (presets) | Within ±1 LU | Fair A/B |
+| A8 | `model_change_db`, `low_keep_change_db` | ≤ 3 dB (switch click) | No clicks |
+| A9 | `silence_out_dbfs_fuzz100_gate0`, `..._gate100` | ≤ -120 dBFS | Silence stays silent, starved or not |
+| A10 | `sustain_drop_db_fuzz100`; `breakup_dbfs_fuzz100_gate70` (`breakup_dbfs_fuzz100` reported) | At full fuzz a 220 Hz sine 20 dB quieter (-12 to -32 dBFS) comes out ≤ 6 dB quieter (RMS, as the octave's is an octave up). With Gate 70, a note decaying 40 dB a second from -12 dBFS breaks up (its output, in 10 ms windows, 20 dB under its level 100 ms in) while the note is still above -40 dBFS | The two fuzz signatures: sustain, and the starved sputter |
+| A11 | `alias_5k_m12dbfs_fuzz100` (the 1 kHz row, Fuzz 60 and the presets kept by the ratchet) | ≤ -50 dB, every model | As G1 |
+| A13 | `low_keep_50hz_gain_db` | A 50 Hz sine at -12 dBFS with Low keep at 150 Hz and full fuzz comes out within ±1 dB of how it went in | The sub stays the sub |
+
+A12 is the instruction gate's Amp cases and its Fuzz case.
 
 ### Baseline (2026-11-17, before any fix)
 
@@ -294,3 +306,11 @@ What changed (design: [fx.md](fx.md), the Amp entry): the first clipping stage's
 - **Reported:** on the other models the Tight boost adds mud instead (Clean -25.6 to -17.7 dB, Crunch -22.2 to -18.7, Bass -23.4 to -18.6): its own clipping makes the chord's difference tones, which only Lead's 300 Hz tightening high-pass takes out, as a real overdrive into a clean amp does. Cutting the boost's lows harder (two poles at 150 Hz) made Lead worse (-15.4 dB) and its switch click.
 - **Blessed worse, and why:** a Model change reads 0.16 to 0.45 dB (was 0; target 3): the old model and the new now play together for 10 ms instead of the sound jumping, and the jump read 0 because the level after it was higher. Bass's clean-up, 16.45 dB (was 16.48), inside its tolerance.
 - **Cost** (the instruction gate's cases, rustc 1.97.0, a 128-frame block at 44.1 kHz): Amp (Crunch) 206.6k to 319.6k instructions (1.55 times), Amp (Lead, Gain 10) 232.8k to 341.6k (1.47 times). ADAA on every stage and the power stage cost 424k and 506k and changed the worst alias by under 0.5 dB: the first stage takes the most gain and squares the wave off, while the later ones clip what its Miller pole has already smoothed, and the power stage clips gently at 4x. The gate, the boost and Depth cost nothing while off; Sag's follower runs once a frame.
+
+### Fuzz PR
+
+What changed (design: [fx.md](fx.md), the Fuzz entry): a new effect, **Fuzz** (`mpfree.fx.fuzz`, decision 10.6), with Face, Muff and Octave models and Fuzz, Tone, Gate, Low keep and Level, built on the Drive PR's ADAA inside the Amp's 4x half-bands, and its rows in the amp class (60 new ratchet rows; the other rows are main's). All 45 of its targets are met.
+
+- **Met:** at full fuzz a 5 kHz sine at -12 dBFS aliases at -65.9 dB (Face), -72.5 (Muff) and -54.0 (Octave) (A11). A 20 dB drop in at full fuzz drops the output 1.0, 0.1 and 2.5 dB (A10); with Gate 70 a decaying note breaks up at -31.2, -31.2 and -27.2 dBFS (without it at -57.6, -70 and -55.2). Pink at -18 dBFS within 0.1 LU of the dry at every Fuzz (A3) and every preset within 0.05 LU (A4). A Model change reads at most 0.5 dB and Low keep turned on at most 1.6 (A8). With Low keep at 150 Hz a 50 Hz sine comes out within 0.13 dB (A13).
+- **Chosen while building:** the Octave's top gain is 44 dB, not the 36 first drafted: at 36 its output fell 9 dB for a 20 dB drop in (the rectified octave is about 7.5 dB under the note), and at 48 its 5 kHz alias was -50.5 dB, at the target's edge. Low keep lets the fuzz hear everything and high-passes what it makes at the crossover, rather than fuzzing only what is above it: a bare 808 has almost nothing above 150 Hz, and fuzzing only that left it clean.
+- **Cost** (the instruction gate's `Fuzz` case, the default Face at Fuzz 60, rustc 1.97.0, a 128-frame block at 44.1 kHz): 386.5k instructions. It runs in stereo (the Amp is mono), each side at 4x with ADAA on its first curve; Drive HQ is 350k. The device round decides whether it needs a cheaper Eco path (2x, as Drive's Eco).

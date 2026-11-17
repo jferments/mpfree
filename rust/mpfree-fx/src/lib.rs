@@ -84,6 +84,7 @@ mod dynamics;
 mod echoes;
 mod eq;
 pub mod families;
+mod fuzz;
 mod grains;
 mod kit;
 mod lofi;
@@ -130,6 +131,7 @@ pub use ducker::{
 pub use dynamics::{DeEsser, Gate, Limiter, MultibandCompressor};
 pub use echoes::{MultiTap, TapeDelay};
 pub use eq::Eq;
+pub use fuzz::Fuzz;
 pub use grains::Granulator;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
@@ -188,6 +190,7 @@ pub mod ids {
     pub use crate::echoes::multitap;
     pub use crate::echoes::tape;
     pub use crate::eq::ids as eq;
+    pub use crate::fuzz::fuzz_ids as fuzz;
     pub use crate::grains::ids as granulator;
     pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;
