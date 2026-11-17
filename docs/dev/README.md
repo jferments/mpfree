@@ -46,6 +46,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [MIDI I/O, sync, MIDI Learn and CV/gate](design/midi-io.md): the DIN jacks, USB keyboards, MIDI tracks out with DIN pacing, MIDI Learn onto any parameter and the eight CV/gate outputs: hardware facts, the read-only capture that settles the DIN cable and the CV path, the steps that touch the MPC, what musicians ask for and where Akai's MPC falls short, a project's MIDI settings and the I/O view's MIDI, Sync and CV sections, and the proposed screens (`rust/mpfree-midi`, `rust/mpfree-midi-ui`, 2026-11-12).
 - [Arpeggiator, Latch and latch patterns](design/arpeggiator.md): research, design and plan for Note Repeat, Latch, the arpeggiator and custom patterns (engine in `rust/mpfree-arp`).
 - [Scales](design/scales.md): one scale model for every part that plays in key: the arp and the synth pads (`rust/mpfree-scale`).
+- [MIDI effects per track](design/note-fx.md): a track's Notes stage before its sound: Transpose, Scale, Chord, Velocity, Note length, Echo, Humanize and Chance on sample-timed notes, a key's notes ending where they went, with no allocation in the sound loop (`rust/mpfree-notefx`, the engine, 2026-11-17).
 
 ### Sound: instruments, effects, mixing, modulation
 
