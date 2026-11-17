@@ -1,5 +1,7 @@
 //! The FX quality report: every measured target of one class of effect
-//! (delay, EQ, reverb), for each mode of its family at its defaults and,
+//! (delay, EQ, reverb; and in the second round drive, crush, compressor,
+//! filter and lo-fi, in `quality/round2.rs`), for each mode of its family
+//! at its defaults and,
 //! for the cheaper measures, at each factory preset. Each row is a number
 //! with the plan's target id, which way is better, the target where the
 //! plan sets one, and how much it may move before it counts as worse.
@@ -23,22 +25,43 @@ use crate::{
     zipper,
 };
 
+mod round2;
+
 /// A class of effect the plan covers so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     Delay,
     Eq,
     Reverb,
+    Drive,
+    Crush,
+    Compressor,
+    Filter,
+    Lofi,
 }
 
 impl Class {
-    pub const ALL: [Class; 3] = [Class::Delay, Class::Eq, Class::Reverb];
+    pub const ALL: [Class; 8] = [
+        Class::Delay,
+        Class::Eq,
+        Class::Reverb,
+        Class::Drive,
+        Class::Crush,
+        Class::Compressor,
+        Class::Filter,
+        Class::Lofi,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Class::Delay => "delay",
             Class::Eq => "eq",
             Class::Reverb => "reverb",
+            Class::Drive => "drive",
+            Class::Crush => "crush",
+            Class::Compressor => "compressor",
+            Class::Filter => "filter",
+            Class::Lofi => "lofi",
         }
     }
 
@@ -156,6 +179,11 @@ pub fn report(class: Class, rate: u32) -> Report {
         Class::Delay => delay(&mut r),
         Class::Eq => eq(&mut r),
         Class::Reverb => reverb(&mut r),
+        Class::Drive => round2::drive(&mut r),
+        Class::Crush => round2::crush(&mut r),
+        Class::Compressor => round2::compressor(&mut r),
+        Class::Filter => round2::filter(&mut r),
+        Class::Lofi => round2::lofi(&mut r),
     }
     r
 }
