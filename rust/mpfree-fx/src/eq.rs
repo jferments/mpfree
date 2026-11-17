@@ -65,9 +65,10 @@ pub mod ids {
         37 + b as u16
     }
     pub const OUTPUT: u16 = 20;
-    /// Listen: Off, or band `n` (1 to 8) heard alone through a band-pass
-    /// at its frequency and Q, to find what it touches. Not saved with a
-    /// sound: pages turn it off when they close.
+    /// Solo band (named Listen until 16 Nov): Off, or band `n` (1 to 8)
+    /// heard alone through a band-pass at its frequency and Q, to find
+    /// what it touches. Not saved with a sound: pages turn it off when
+    /// they close.
     pub const LISTEN: u16 = 45;
     /// The band an id belongs to and which of its params it is: 0 type,
     /// 1 freq, 2 gain, 3 Q, 4 Use.
@@ -592,7 +593,7 @@ static PARAMS: [ParamInfo; N] = [
     },
     ParamInfo {
         id: ids::LISTEN,
-        name: "Listen",
+        name: "Solo band",
         group: "Output",
         min: 0.0,
         max: 8.0,

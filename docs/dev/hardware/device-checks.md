@@ -42,7 +42,7 @@ A round's runbook has a table of its checks: the check, why it's in this round, 
 | `looper` | hands | The wave drawing as you play, and STOP stopping the loop at once | the loop armed, STOP |
 | `console` | hands | The console chord, TAP TEMPO and STOP on the real panel | a tapped tempo, STOP's silence |
 | `fx-add` | hands | Adding an effect on the Mix tab and hearing it, which live test 3 couldn't (#275, #287, #353) | the touchscreen used, no refusal line, the app kept running |
-| `eq` | hands | The parametric EQ on the real panel (#388): a dot following a finger, UNDO, and Listen on the MPC's outputs | UNDO, its `Undid … EQ Band N` line, no underrun while it played |
+| `eq` | hands | The parametric EQ on the real panel (#388): a dot following a finger, UNDO, and Solo band (Listen until 16 Nov) on the MPC's outputs | UNDO, its `Undid … EQ Band N` line, no underrun while it played |
 | `midi-in` | hands | A keyboard on the MPC's MIDI IN, and its port in the I/O view | `MIDI in:` lines |
 | `midi-monitor` | hands | The I/O view's Monitor fed from the real MIDI IN, each line saying where its message went, and the Dev tab's MIDI page listing the MPC's own pads, buttons and Q-Links (read-only: nothing is sent to MIDI OUT) | `MIDI in:` lines |
 | `midi-now` | hands | The Monitor's Now view showing a keyboard's held keys, mod wheel and bend as they are played, and Save log keeping the list on the stick in `files/midi-logs/` (read-only on MIDI OUT; the one write is the log file on the data partition) | `midi log: Saved ... lines to files/midi-logs/` |
