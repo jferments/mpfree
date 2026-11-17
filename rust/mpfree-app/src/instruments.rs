@@ -179,6 +179,14 @@ pub struct Instruments {
     /// Ring-outs cut short to lend their slot (more than [`SLOTS`] at once),
     /// or by a new instrument while an older one still rang out there.
     cut: u64,
+    /// The values under the clips' locks on the instruments' parameters
+    /// ([`Instruments::lock`]), keyed by track and parameter.
+    locks: crate::locks::Under,
+}
+
+/// The key of track `track`'s parameter `id` in the lock table.
+fn lock_key(track: usize, id: u16) -> u32 {
+    (track as u32) << 16 | u32::from(id)
 }
 
 impl Instruments {
@@ -195,6 +203,7 @@ impl Instruments {
             slot_of: [NO_SLOT; TRACKS],
             refused: 0,
             cut: 0,
+            locks: crate::locks::Under::new(),
         }
     }
 
@@ -312,6 +321,10 @@ impl Instruments {
         slot.held = Some(held);
         slot.pads = pads;
         slot.started = [Started::default(); PADS];
+        // The new instrument starts from its own sound: the old one's
+        // locks are forgotten.
+        let t = track as u32;
+        self.locks.forget(|k| k >> 16 == t, |_, _| {});
         Ok(())
     }
 
@@ -334,6 +347,8 @@ impl Instruments {
         slot.held = None;
         slot.started = [Started::default(); PADS];
         self.slot_of[track] = NO_SLOT;
+        let t = track as u32;
+        self.locks.forget(|k| k >> 16 == t, |_, _| {});
         true
     }
 
@@ -412,8 +427,40 @@ impl Instruments {
     /// A parameter of track `track`'s instrument (the Synth tab's knobs),
     /// from the next block's first frame.
     pub fn param(&mut self, track: usize, id: u16, value: f32) -> bool {
+        // Under a clip's lock, the turn is what its end comes back to.
+        self.locks.set(lock_key(track, id), value);
         self.slot(track)
             .is_some_and(|s| self.host.param(s, 0, id, value))
+    }
+
+    /// A clip's lock on parameter `id` of track `track`'s instrument
+    /// (`Owner::Inst`): `Some` sets it on its frame, `offset` frames into
+    /// the next block, `None` puts back the value under it (the sound's
+    /// own, or the last turn on the Synth tab). False when the track has
+    /// no instrument, the instrument has no such parameter (or it is a
+    /// meter), or the table is full.
+    pub fn lock(&mut self, track: usize, id: u16, value: Option<f32>, offset: u32) -> bool {
+        let Some(s) = self.slot(track) else {
+            return false;
+        };
+        let key = lock_key(track, id);
+        let Some(value) = value else {
+            if let Some(under) = self.locks.unlock(key) {
+                self.host.param(s, offset, id, under);
+            }
+            return true;
+        };
+        let now = self
+            .host
+            .params(s)
+            .iter()
+            .any(|p| p.id == id && !p.readonly)
+            .then(|| self.host.param_value(s, id))
+            .flatten();
+        let Some(now) = now else {
+            return false;
+        };
+        self.locks.lock(key, now) && self.host.param(s, offset, id, value)
     }
 
     /// Track `track`'s instrument's node, while it holds one.
@@ -457,6 +504,8 @@ impl Instruments {
 
     /// Every slot's next `frames` frames into its track's mixer channel.
     pub fn render(&mut self, ctx: &Ctx, frames: usize, out: &mut dyn Outputs) {
+        // The locks that ended play now: forget them.
+        self.locks.settle();
         self.host.render(ctx, frames, out);
     }
 
@@ -671,6 +720,57 @@ mod tests {
             0.5,
             "the held pad still sounds"
         );
+    }
+
+    #[test]
+    fn a_clips_lock_on_a_tracks_instrument_plays_and_its_end_puts_the_sound_back() {
+        let synth = crate::synth::Synth::new(RATE);
+        let (id, values) = synth.sound_of(crate::synth::Engine::Poly);
+        let plugins = crate::plugins::Plugins::none();
+        let inst = make(&plugins, id, &values, RATE, BLOCK).expect("made");
+        let mut i = Instruments::new(RATE, BLOCK);
+        assert!(!i.lock(1, 0, Some(0.5), 0), "no instrument on the track");
+        i.put(
+            1,
+            inst,
+            synth.pads_for(crate::synth::Engine::Poly),
+            &Tuning::standard(),
+        )
+        .unwrap();
+        let node = i.node(1).unwrap();
+        let p = *node
+            .params()
+            .iter()
+            .find(|p| !p.readonly && p.max > p.min && p.curve == mpfree_node::Curve::Linear)
+            .unwrap();
+        let own = node.param(p.id);
+        let locked = if own < (p.min + p.max) / 2.0 {
+            p.max
+        } else {
+            p.min
+        };
+        let render = |i: &mut Instruments| {
+            let mut t = tracks();
+            i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
+        };
+        assert!(i.lock(1, p.id, Some(locked), 5));
+        render(&mut i);
+        assert_eq!(i.node(1).unwrap().param(p.id), locked);
+        assert!(i.lock(1, p.id, None, 0));
+        render(&mut i);
+        assert_eq!(i.node(1).unwrap().param(p.id), own);
+        // A turn under the lock is what its end comes back to.
+        let mid = (p.min + p.max) / 2.0;
+        assert!(i.lock(1, p.id, Some(locked), 0));
+        render(&mut i);
+        i.param(1, p.id, mid);
+        assert!(i.lock(1, p.id, None, 0));
+        render(&mut i);
+        assert_eq!(i.node(1).unwrap().param(p.id), mid);
+        if let Some(m) = i.node(1).unwrap().params().iter().find(|p| p.readonly) {
+            let m = m.id;
+            assert!(!i.lock(1, m, Some(1.0), 0), "a meter");
+        }
     }
 
     #[test]

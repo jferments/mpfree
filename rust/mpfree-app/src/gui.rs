@@ -128,6 +128,10 @@ pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (P
                               UNDO brings it back";
 const SHIFT_HINT: &str =
     "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held with the pads as steps.
+const SHIFT_STEPS_HINT: &str =
+    "SHIFT +   an empty step pad: hold it with no note, for a lock alone   ·   STEP SEQ: Follow   ·   \
+     FULL LEVEL: Half Level   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// TRACK MUTE's keys, over whatever page shows (control map decision 5).
 /// The hint while the 16 Levels panel shows on Play.
 const LEVELS_HINT: &str = "16 LEVEL or Off: back to the kit   ·   Wheel or tap: what the levels change   ·   \
@@ -185,15 +189,31 @@ fn step_copy_hint(s: crate::app::StepPads) -> String {
     }
 }
 
-/// While step pads are held: what the Q-Links (`qlinks`: they are the
-/// step's on this page) and another tap do.
-fn step_held_hint(name: &str, trig: bool, qlinks: bool) -> String {
-    let bank = if !qlinks {
-        "MAIN: Play, where the Q-Links set it"
-    } else if trig {
-        "Q-Links: condition, ratchet, nudge   ·   Q-LINK: velocity, length, nudge, chance"
-    } else {
-        "Q-Links: velocity, length, nudge, chance   ·   Q-LINK: condition, ratchet"
+/// Where the steps are held from, for their hint: Play or Arrange (the
+/// Q-Links set them), the Synth tab (a knob is a lock), or elsewhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeldPlace {
+    QLinks,
+    Synth,
+    Elsewhere,
+}
+
+/// While step pads are held: what the Q-Links of bank `bank` (or the
+/// Synth tab's knobs) and another tap do.
+fn step_held_hint(name: &str, bank: play_page::HeldBank, place: HeldPlace) -> String {
+    use play_page::HeldBank;
+    let bank = match (place, bank) {
+        (HeldPlace::Synth, _) => "a knob here: a lock   ·   ERASE: the locks off",
+        (HeldPlace::Elsewhere, _) => "MAIN: Play, where the Q-Links set it",
+        (HeldPlace::QLinks, HeldBank::Step) => {
+            "Q-Links: velocity, length, nudge, chance   ·   Q-LINK: condition, ratchet"
+        }
+        (HeldPlace::QLinks, HeldBank::Trig) => {
+            "Q-Links: condition, ratchet, nudge   ·   Q-LINK: the sound's locks"
+        }
+        (HeldPlace::QLinks, HeldBank::Sound) => {
+            "Q-Links: lock the sound   ·   ERASE: the locks off   ·   Q-LINK: velocity, length"
+        }
     };
     format!(
         "{name} held   ·   {bank}   ·   tap a later step: the note lasts to it   ·   \
@@ -1135,6 +1155,10 @@ pub struct Player {
     /// What each track plays ([`ToUi::TrackSounds`]), written under its
     /// name on Arrange.
     track_sounds: TrackSounds,
+    /// STEP SEQ: the Synth tab's values from before steps were held, put
+    /// back on it when they are let go (a knob turned there while they
+    /// are held is a lock on them, not a change to the sound).
+    held_synth: Option<Vec<f32>>,
     /// Prefs > At start was looked at (once, when the sound is going).
     start_checked: bool,
     /// The last run crashed: Prefs > At start opens nothing this time
@@ -1502,6 +1526,7 @@ impl Player {
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: false,
             track_sounds: [None; crate::instruments::TRACKS],
+            held_synth: None,
             start_checked: false,
             crashed: false,
             autosave_in: AUTOSAVE_S,
@@ -1828,6 +1853,9 @@ impl Player {
     }
 
     fn refresh_qlinks(&mut self) {
+        if self.play.held.is_some() {
+            self.play.sound_bank = self.held_sound_bank();
+        }
         let play_like = matches!(self.view, View::Play | View::Arrange);
         let arp = self.view == View::Arp || (play_like && self.band_showing());
         // The chain editor, the macros panel, and Play on a macro bank.
@@ -1886,7 +1914,7 @@ impl Player {
             let knobs = self.play.knobs();
             let cards: [QLinkCard; 4] = std::array::from_fn(|i| self.play.card(knobs[i], None));
             let name = self.play.held_name().unwrap_or_default();
-            let bank = if self.play.trig_bank { "Trig" } else { "Step" };
+            let bank = self.play.held_bank().name();
             held_title = format!("Q-Links · {name} · {bank}");
             (held_title.as_str(), cards)
         } else if arp {
@@ -2058,6 +2086,162 @@ impl Player {
         self.refresh_qlinks();
     }
 
+    /// The held steps' track plays a synth (its own instrument, or the
+    /// synth while it has the pads) and the Synth tab shows it.
+    fn held_plays_synth(&self) -> bool {
+        let Some(p) = self.synth.as_ref() else {
+            return false;
+        };
+        match self
+            .track_sounds
+            .get(self.play.steps.track)
+            .copied()
+            .flatten()
+        {
+            Some(h) => h.id == p.state.info.id,
+            None => self.kits.get(self.kit).is_some_and(|k| k.synth.is_some()),
+        }
+    }
+
+    /// The Sound bank of the held steps' sound: a kit pad's tune, decay,
+    /// filter and level, or a synth's first Q-Link set (Drums': the held
+    /// pad's), each locked on the held steps when turned.
+    fn held_sound_bank(&self) -> [Option<play_page::SoundKnob>; 4] {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        use play_page::{SoundKind, SoundKnob};
+        let Some(sound) = self.play.held.as_ref().map(|h| h.0) else {
+            return Default::default();
+        };
+        let pad = usize::from(sound);
+        if self.held_plays_synth() {
+            let Some(st) = self.synth.as_ref().map(|p| &p.state) else {
+                return Default::default();
+            };
+            let sets = mpfree_synth_ui::qsets::factory(st.info, st.params);
+            let sets = mpfree_synth_ui::qsets::on_pad(st.info, &sets, pad);
+            let Some(set) = sets.first() else {
+                return Default::default();
+            };
+            return set.params.map(|id| {
+                let i = st
+                    .params
+                    .iter()
+                    .position(|q| Some(q.id) == id && !q.readonly)?;
+                let info = st.params[i];
+                Some(SoundKnob {
+                    name: info.name.to_string(),
+                    addr: RelAddr::new(OnTrack::Inst, info.id),
+                    kind: SoundKind::Param(info),
+                    own: *st.values.get(i)?,
+                })
+            });
+        }
+        if self.kits.get(self.kit).is_some_and(|k| k.synth.is_some()) {
+            return Default::default();
+        }
+        let Some(own) = self.sample.pad_sound(pad) else {
+            return Default::default();
+        };
+        let knob = |name: &str, field: PadField, kind: SoundKind, own: f32| {
+            Some(SoundKnob {
+                name: name.to_string(),
+                addr: RelAddr::new(OnTrack::Pad(sound), field as u16),
+                kind,
+                own,
+            })
+        };
+        [
+            knob("Tune", PadField::Tune, SoundKind::Tune, own[0]),
+            knob("Decay", PadField::Decay, SoundKind::Decay, own[1]),
+            knob("Filter", PadField::Cutoff, SoundKind::Cutoff, own[2]),
+            knob("Level", PadField::Level, SoundKind::Level, own[3]),
+        ]
+    }
+
+    /// Steps held on the step pads (`first`: they just were) or let go:
+    /// the Synth tab shows the step held first's locks while they are
+    /// held, and its own values again once they are let go.
+    fn held_synth_values(&mut self, first: bool) {
+        use mpfree_play::mpfree_param::OnTrack;
+        if self.play.held.is_none() {
+            if let (Some(values), Some(p)) = (self.held_synth.take(), self.synth.as_mut()) {
+                if p.state.values.len() == values.len() {
+                    p.state.values = values;
+                    p.refresh(&mut self.ui);
+                }
+                if self.skin_showing() {
+                    self.outbox.push(FromUi::SkinValues);
+                }
+            }
+            return;
+        }
+        if !first || !self.held_plays_synth() {
+            return;
+        }
+        let Some((sound, step)) = self
+            .play
+            .held
+            .as_ref()
+            .and_then(|(s, steps)| Some((*s, *steps.first()?)))
+        else {
+            return;
+        };
+        let locks: Vec<(u16, f32)> = self
+            .play
+            .steps
+            .clip
+            .as_ref()
+            .map(|c| {
+                c.lock_values
+                    .iter()
+                    .filter(|l| (l.0, l.1) == (sound, step) && l.2.on == OnTrack::Inst)
+                    .map(|l| (l.2.param, l.3))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(p) = self.synth.as_mut() {
+            self.held_synth = Some(p.state.values.clone());
+            let mut shown = false;
+            for (id, v) in locks {
+                if let Some(i) = p.state.params.iter().position(|q| q.id == id) {
+                    p.state.values[i] = v;
+                    shown = true;
+                }
+            }
+            if shown {
+                p.refresh(&mut self.ui);
+            }
+        }
+    }
+
+    /// With step pads held, a knob turned on the Synth tab for the sound
+    /// they play is a lock on them: the sound stays as it is, and the tab
+    /// shows its own values again when they are let go. Any other action
+    /// goes out as it is.
+    fn as_held_lock(&self, a: FromUi) -> FromUi {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let FromUi::Synth(SynthAction::Set { id, value }) = a else {
+            return a;
+        };
+        let Some((pad, steps)) = self.play.held.as_ref() else {
+            return a;
+        };
+        if !self.held_plays_synth() {
+            return a;
+        }
+        let bits = steps
+            .iter()
+            .filter(|&&i| i < 128)
+            .fold(0u128, |b, &i| b | (1u128 << i));
+        FromUi::Steps(StepAction::Lock {
+            pad: *pad,
+            steps: bits,
+            addr: RelAddr::new(OnTrack::Inst, id),
+            value: Some(value),
+        })
+    }
+
     /// Q-LINK: the column's next bank where it has macro banks (Play, the
     /// chain editor, the macros panel).
     fn next_qlink_bank(&mut self) {
@@ -2066,13 +2250,10 @@ impl Player {
             return;
         }
         if play && self.play.held.is_some() {
-            // The step pads held: Q-LINK steps between their Step and Trig
-            // banks.
-            self.play.trig_bank = !self.play.trig_bank;
-            println!(
-                "q-link bank: {}",
-                if self.play.trig_bank { "Trig" } else { "Step" }
-            );
+            // The step pads held: Q-LINK steps through their Step, Trig
+            // and Sound banks.
+            self.play.bank = self.play.bank.next();
+            println!("q-link bank: {}", self.play.held_bank().name());
             self.refresh_qlinks();
             self.refresh_hint();
             return;
@@ -2635,6 +2816,8 @@ impl Player {
             SHIFT_SYNTH_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
+        } else if self.status.shift && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
+            SHIFT_STEPS_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
         } else if self.status.erase && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
@@ -2644,8 +2827,14 @@ impl Player {
         } else if let Some(s) = self.status.steps.filter(|s| s.copying && !s.picking) {
             step_copy_hint(s)
         } else if let (Some(name), Some(_)) = (self.play.held_name(), self.status.steps) {
-            let qlinks = matches!(self.view, View::Play | View::Arrange);
-            step_held_hint(&name, self.play.trig_bank, qlinks)
+            let place = if matches!(self.view, View::Play | View::Arrange) {
+                HeldPlace::QLinks
+            } else if self.view == View::Synth && self.held_plays_synth() {
+                HeldPlace::Synth
+            } else {
+                HeldPlace::Elsewhere
+            };
+            step_held_hint(&name, self.play.held_bank(), place)
         } else if let Some(s) = self.status.steps {
             step_seq_hint(s)
         } else if self.status.mute_keys == MuteKeys::Tracks {
@@ -3905,9 +4094,11 @@ impl Player {
             ToUi::StepsHeld(held) => {
                 if held.is_none() {
                     // Let go: the next hold starts on the Step bank.
-                    self.play.trig_bank = false;
+                    self.play.bank = play_page::HeldBank::Step;
                 }
+                let first = self.play.held.is_none() && held.is_some();
                 self.play.held = held;
+                self.held_synth_values(first);
                 if let Some(name) = self.play.held_name() {
                     println!("steps held: {name}");
                 }
@@ -6111,7 +6302,10 @@ impl Player {
         }
         // A stretched copy coming in says so.
         self.print_sample_lines();
-        let out = std::mem::take(&mut self.outbox);
+        let out: Vec<FromUi> = std::mem::take(&mut self.outbox)
+            .into_iter()
+            .map(|a| self.as_held_lock(a))
+            .collect();
         let own = std::mem::take(&mut self.open_actions).min(out.len());
         for a in &out[own..] {
             self.saw_action(a);
@@ -6397,7 +6591,9 @@ impl Player {
     /// while actions wait, this touch's first waits behind them too.
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
         let waiting = self.outbox.len();
-        let action = self.touch_unordered(finger, phase, x, y);
+        let action = self
+            .touch_unordered(finger, phase, x, y)
+            .map(|a| self.as_held_lock(a));
         match action {
             Some(a) if waiting > 0 => {
                 self.outbox.insert(waiting.min(self.outbox.len()), a);
@@ -10873,13 +11069,15 @@ mod tests {
     /// lane on the pads outlined and its page shown; ‹ › turn the pads'
     /// page too, and a tap on the chip gives the pads back.
     /// STEP SEQ's step pads held (sequencer S1): the Q-Links set them, on
-    /// their Step bank and, after Q-LINK, their Trig bank, over a macro
-    /// bank; two held turn as one action; they are outlined on Beats; the
-    /// hint says what a hold and COPY do.
+    /// their Step bank and, after Q-LINK, their Trig and Sound banks (a
+    /// turn on the Sound bank is a lock), over a macro bank; two held turn
+    /// as one action; they are outlined on Beats; the hint says what a
+    /// hold and COPY do.
     #[test]
     fn held_step_pads_take_the_q_links_and_q_link_steps_to_trig() {
         use crate::time::StepAction;
         use mpfree_controller::mpc_one::button;
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
         use mpfree_seq::steps::Change;
         use mpfree_seq::Cond;
         let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
@@ -10957,10 +11155,52 @@ mod tests {
             })]
         );
         assert_eq!(column(&p).1[0].value, "1:2", "shown at once");
+        // Q-LINK again: the Sound bank, the kit pad's own tune, decay,
+        // filter and level; a turn is a lock on both steps, shown at once
+        // in the lock colour.
+        p.apply(ToUi::QLinkBank);
+        let (title, cards) = column(&p);
+        assert_eq!(title, "Q-Links · Steps 5, 13 · Sound");
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Tune", "Decay", "Filter", "Level"]);
+        assert!(cards[0].color.is_none(), "no lock yet");
+        assert!(hint(&p).contains("Q-Links: lock the sound"), "{}", hint(&p));
+        let tune = RelAddr::new(OnTrack::Pad(2), 2);
+        let own = p.play.sound_bank[0].as_ref().expect("tune").own;
+        p.apply(ToUi::PlayQLink(0, 2));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Steps(StepAction::Lock {
+                pad: 2,
+                steps: (1 << 4) | (1 << 12),
+                addr: tune,
+                value: Some(own + 200.0)
+            })]
+        );
+        let card = &column(&p).1[0];
+        assert!(card.color.is_some(), "the lock colour");
+        assert_eq!(card.scope, "STEPS 5, 13 · LOCK");
+        // Q-LINK: back to the Step bank.
+        p.apply(ToUi::QLinkBank);
+        assert_eq!(column(&p).0, "Q-Links · Steps 5, 13 · Step");
+        // Empty steps held (SHIFT + a step): the Sound bank, whatever the
+        // bank was.
+        let row = p.play.steps.clip.as_ref().unwrap().row(2).to_vec();
+        let empty: Vec<usize> = (0..16).filter(|&i| row[i].is_none()).take(2).collect();
+        p.apply(ToUi::StepsHeld(Some((2, empty.clone()))));
+        assert!(column(&p).0.ends_with(" · Sound"), "{}", column(&p).0);
+        assert!(hint(&p).contains("Q-Links: lock the sound"), "{}", hint(&p));
+        p.apply(ToUi::PlayQLink(3, -2));
+        assert!(matches!(
+            p.take_actions().as_slice(),
+            [FromUi::Steps(StepAction::Lock { pad: 2, steps, value: Some(_), .. })]
+                if *steps == (1u128 << empty[0]) | (1u128 << empty[1])
+        ));
+        p.apply(ToUi::StepsHeld(Some((2, vec![4, 12]))));
         // Let go: the page's own knobs (the macro bank), the Step bank
         // next time, no outline.
         p.apply(ToUi::StepsHeld(None));
-        assert!(!p.play.trig_bank);
+        assert_eq!(p.play.bank, play_page::HeldBank::Step);
         assert_eq!(column(&p).0, "Q-Links · Macros 1-4");
         assert!(held(&p).is_empty());
         assert!(hint(&p).starts_with("STEP SEQ · page 1"), "{}", hint(&p));
@@ -10969,6 +11209,86 @@ mod tests {
         assert!(hint(&p).starts_with("COPY +"), "{}", hint(&p));
         apply_effects(&mut p, app.button(button::COPY, false, 0.0));
         assert!(hint(&p).starts_with("STEP SEQ · page 1"), "{}", hint(&p));
+    }
+
+    /// Steps held on the pads while the synth plays them (sequencer S1
+    /// locks): the Sound bank is the synth's first Q-Link set, and a knob
+    /// turned on the Synth tab is a lock on the steps held, not a change
+    /// to the sound; the tab shows its own values again once they are let
+    /// go.
+    #[test]
+    fn held_steps_lock_the_synth_from_its_tab_and_the_sound_bank() {
+        use crate::time::StepAction;
+        use mpfree_controller::mpc_one::button;
+        use mpfree_play::mpfree_param::OnTrack;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.apply(ToUi::Kit(sample_kits().len()));
+        p.take_actions();
+        let mut app = crate::app::App::new(44_100, false);
+        app.pad_down(0, 100);
+        app.pad_up(0);
+        apply_effects(&mut p, app.button(button::STEP_SEQ, true, 0.0));
+        apply_effects(&mut p, app.button(button::STEP_SEQ, false, 0.0));
+        p.take_actions();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let column = |p: &Player| {
+            let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+            (q.title.clone(), q.cards.clone())
+        };
+        let values = |p: &Player| p.synth.as_ref().unwrap().state.values.clone();
+        let own = values(&p);
+        // Step 1 held; Q-LINK twice: the Sound bank, the synth's knobs.
+        p.apply(ToUi::StepsHeld(Some((0, vec![0]))));
+        p.apply(ToUi::QLinkBank);
+        p.apply(ToUi::QLinkBank);
+        let (title, cards) = column(&p);
+        assert_eq!(title, "Q-Links · Step 1 · Sound");
+        let first = p.play.sound_bank[0].clone().expect("the first Q-Link set");
+        assert_eq!(first.addr.on, OnTrack::Inst);
+        assert_eq!(cards[0].name, first.name);
+        p.apply(ToUi::PlayQLink(0, 1));
+        let acts = p.take_actions();
+        assert!(
+            matches!(acts.as_slice(), [FromUi::Steps(StepAction::Lock {
+                pad: 0,
+                steps: 1,
+                addr,
+                value: Some(_)
+            })] if *addr == first.addr),
+            "{acts:?}"
+        );
+        // On the Synth tab, a knob turned is a lock too: no Set goes out,
+        // and the tab shows the lock while the step is held.
+        p.apply(ToUi::Show(View::Synth));
+        p.take_actions();
+        assert!(hint(&p).contains("a knob here: a lock"), "{}", hint(&p));
+        p.apply(ToUi::SynthQLink(0, 3));
+        let acts = p.take_actions();
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, FromUi::Steps(StepAction::Lock {
+                pad: 0,
+                steps: 1,
+                addr,
+                value: Some(_)
+            }) if addr.on == OnTrack::Inst)),
+            "{acts:?}"
+        );
+        assert!(
+            !acts
+                .iter()
+                .any(|a| matches!(a, FromUi::Synth(SynthAction::Set { .. }))),
+            "the sound is not changed: {acts:?}"
+        );
+        assert_ne!(values(&p), own, "the lock shows while held");
+        // Let go: the tab's own values, and a turn changes the sound again.
+        p.apply(ToUi::StepsHeld(None));
+        assert_eq!(values(&p), own);
+        p.apply(ToUi::SynthQLink(0, 3));
+        assert!(p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::Synth(SynthAction::Set { .. }))));
     }
 
     #[test]
@@ -11029,6 +11349,14 @@ mod tests {
         apply_effects(&mut p, app.button(button::ERASE, true, 0.0));
         assert!(hint(&p).contains("a step pad: clear it"), "{}", hint(&p));
         apply_effects(&mut p, app.button(button::ERASE, false, 0.0));
+        // SHIFT held: an empty step held with it is for a lock alone.
+        apply_effects(&mut p, app.button(button::SHIFT, true, 0.0));
+        assert!(
+            hint(&p).contains("an empty step pad: hold it with no note"),
+            "{}",
+            hint(&p)
+        );
+        apply_effects(&mut p, app.button(button::SHIFT, false, 0.0));
         // A clip of two pages: PAD BANK B shows page 2 on Beats, and ‹
         // back on the screen turns the pads' page.
         let mut st = p.play.steps.clone();

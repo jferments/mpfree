@@ -506,22 +506,32 @@ impl TimeAudio {
                 Event::Pressure { note, value } => {
                     pads.pressure_at(usize::from(note), value, o.offset)
                 }
-                // Parameter locks go to the mod engine in the mixer
-                // (`MixHost::lock`), which the audio loop hands them to.
-                Event::Lock { addr, value } => Self::lock_out(
-                    &mut self.locks,
-                    &mut self.locks_dropped,
-                    o.offset,
-                    addr,
-                    Some(value),
-                ),
-                Event::Unlock { addr } => Self::lock_out(
-                    &mut self.locks,
-                    &mut self.locks_dropped,
-                    o.offset,
-                    addr,
-                    None,
-                ),
+                // Parameter locks: a kit pad's sound and an instrument
+                // take theirs on the frame (`Pads::lock_at`); the rest go
+                // to the mod engine in the mixer (`MixHost::lock`), which
+                // the audio loop hands them to.
+                Event::Lock { addr, value } => {
+                    if !pads.lock_at(addr, Some(value), o.offset) {
+                        Self::lock_out(
+                            &mut self.locks,
+                            &mut self.locks_dropped,
+                            o.offset,
+                            addr,
+                            Some(value),
+                        );
+                    }
+                }
+                Event::Unlock { addr } => {
+                    if !pads.lock_at(addr, None, o.offset) {
+                        Self::lock_out(
+                            &mut self.locks,
+                            &mut self.locks_dropped,
+                            o.offset,
+                            addr,
+                            None,
+                        );
+                    }
+                }
                 // A move lane's value goes to the mod engine too, where any
                 // hand on the control beats it.
                 Event::Lane { addr, value } => {

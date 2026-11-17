@@ -12,10 +12,12 @@
 //!   mixer panel, the Play page) go through the engine as `Set`s
 //!   ([`ModMix::set`]), so what comes back after a lock is the last turn.
 //! - Strips and inserts are routed. A lock on a pad's sound or an
-//!   instrument (`Owner::Pad`, `Owner::Inst`) is counted
-//!   ([`ModMix::unrouted`]) and dropped until those engines take parameter
-//!   events. An insert is found by its slot id, so a lock follows the effect
-//!   when it moves.
+//!   instrument (`Owner::Pad`, `Owner::Inst`) goes to the pads first
+//!   (`time::Pads::lock_at`: the sampler engine, the synth on the pads, a
+//!   track's own instrument; see `locks.rs`); one none of them takes
+//!   reaches here and is counted ([`ModMix::unrouted`]) and dropped. An
+//!   insert is found by its slot id, so a lock follows the effect when it
+//!   moves.
 //!
 //! - The chain editor's and the macros panel's set-up changes (a macro's
 //!   targets, matrix rows, scenes) come in as [`Change`]s
