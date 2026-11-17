@@ -325,7 +325,7 @@ A plugin's settings are saved with your project. If you open the project on a st
 
 ## Coming next
 
-- **Automation**: knob moves recorded into clips.
+- **Automation lanes**: knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)).
 - **Perform FX from the pads**: effects played by hitting pads.
 
 > [!MPC]

@@ -2444,6 +2444,57 @@ fn live_erase_let_go(app: &app::App, time: &mut time::TimeHost) {
     }
 }
 
+/// Knob recording (sequencer roadmap S1, the Elektron way): the parameter
+/// a screen action turns and its new value, as the recorder takes a knob
+/// move: a knob of the selected track's instrument (the Synth tab, its
+/// Q-Links), a strip control or an insert's knob on the mixer, or an
+/// effect's knob in the chain editor. Only parameters on a track; the
+/// recorder keeps the armed track's while the transport records, as a
+/// lock on the step it belongs to.
+fn knob_turn(
+    a: &gui::FromUi,
+    app: &app::App,
+    mix: &mixing::MixHost,
+) -> Option<(mpfree_play::mpfree_param::ParamAddr, f32)> {
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    let (addr, value) = match a {
+        gui::FromUi::Synth(SynthAction::Set { id, value }) => (
+            ParamAddr::new(Owner::Inst(u8::try_from(app.track()).ok()?), *id),
+            *value,
+        ),
+        gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Set { strip, id, value }) => (
+            ParamAddr::new(Owner::Strip(modmix::strip_of(*strip)?), *id),
+            *value,
+        ),
+        gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::SetInsert {
+            strip,
+            slot,
+            id,
+            value,
+        }) => {
+            let uid = mix.mixer.chain(*strip)?.uid(*slot)?;
+            (
+                ParamAddr::new(Owner::Insert(modmix::strip_of(*strip)?, uid), *id),
+                *value,
+            )
+        }
+        gui::FromUi::Chain(mpfree_chain_ui::ChainAction::Set { addr, value }) => (*addr, *value),
+        _ => return None,
+    };
+    (addr.owner.track().is_some() && value.is_finite()).then_some((addr, value))
+}
+
+/// Knob recording: a screen action's knob turn goes to the recorder while
+/// the transport records (see [`knob_turn`]).
+fn record_knob(a: &gui::FromUi, app: &app::App, mix: &mixing::MixHost, time: &mut time::TimeHost) {
+    if time.info().state != mpfree_transport::State::Recording {
+        return;
+    }
+    if let Some((addr, value)) = knob_turn(a, app, mix) {
+        time.knob(0, addr, value);
+    }
+}
+
 /// A Q-Link turn of the steps held on the step pads (or of the step
 /// picked on Beats): the steps held stay on their release.
 fn step_turn(a: &gui::FromUi) -> bool {
@@ -4793,6 +4844,7 @@ fn player_session(
             if step_turn(&a) {
                 step_keys.turned();
             }
+            record_knob(&a, desk.app, desk.mix, desk.time);
             let a = desk.screen(a, t, out, &mut fx);
             save_shelf(&mut mix, &store, out);
             // UNDO on the mixer: a strip control's turn, from its value

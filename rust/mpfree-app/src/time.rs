@@ -818,10 +818,8 @@ impl TimeHost {
     /// A knob moved in the coming period, at `offset`: parameter `addr` is
     /// now `value`. While the transport records and `addr` is on the armed
     /// track, it becomes a parameter lock on the step it belongs to (see
-    /// `mpfree_play::Recorder`).
-    // No knob is mapped to a parameter in the pad player yet (that needs
-    // the mod resolver); the Q-Links call this once one is.
-    #[allow(dead_code)]
+    /// `mpfree_play::Recorder`). The main loop calls it for the screen's
+    /// knob turns while recording (`record_knob` in main.rs).
     pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {
         self.audio.knob(offset, addr, value);
     }

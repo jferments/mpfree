@@ -72,6 +72,10 @@ Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into
 
 Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its hits come out of the clip as the playhead passes them, on every pass, and the pad makes no sound while you hold it. The other pads play on. Let go of the pad, or of **ERASE**, and it stops. It erases on the armed track only, and the hits it took out are part of the take, so **UNDO** brings them back with it. With **STEP SEQ** on, **ERASE** and a pad clears that step instead.
 
+### Knob moves while you record
+
+Turn a knob while you record and the move goes into the clip as a **lock** on the step you're playing: a knob of the armed track's synth on the Synth tab (or a Q-Link turning it), its mixer strip's fader, pan or sends, or an effect's knob on its strip. Hold a pad and turn, and the lock goes on that pad's note; turn just after a hit and it goes on that hit; otherwise it lands on the nearest step with no note of its own. A turn is one lock, however far you turn it, and it plays back on every pass (see [Locks](../getting-started/first-beat.md#program-a-pattern-on-the-pads) for what a lock does). The take's **UNDO** takes the locks back with its notes. Only the armed track's knobs record. Coming: the Play page's Q-Links and a kit pad's sound knobs.
+
 ### Pad pressure
 
 The pads feel how hard you keep pressing after you hit them. While you record, that pressure goes into the clip with each note, and the clip plays it back the way you played it: a synth swells, opens up or wobbles just as it did live. It works on drum pads too, where a sound's pressure settings use it.
