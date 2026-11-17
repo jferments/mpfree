@@ -1063,6 +1063,222 @@ impl Widget for SectionChips {
     }
 }
 
+// ---------------------------------------------------------- kit tracks
+
+/// A track on the Pads tab's "Kit of" row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KitTrack {
+    /// The track's place (from 0).
+    pub track: usize,
+    /// Its name, such as "Track 3" or "Drums".
+    pub name: String,
+    /// What it plays: the kit's name, or why it has none ("synth, no
+    /// kit").
+    pub kit: String,
+    pub color: Color,
+    /// The armed track: the pads play its kit.
+    pub armed: bool,
+    /// It plays a kit, so a tap arms it; a track without one is faint.
+    pub enabled: bool,
+}
+
+/// The Pads tab's "Kit of" row (the sampler review's mockup 5): the tracks
+/// that play kits, each with its kit, the armed one outlined, and **+ Kit
+/// track** on the right. A tap on an enabled track gives
+/// [`EventKind::Select`] with its place in the project; a tap on + Kit
+/// track gives [`EventKind::Tab`]`(0)`. Tracks that don't fit are left
+/// out, but the armed one always shows (in the last place).
+pub struct KitTracks {
+    pub tracks: Vec<KitTrack>,
+    /// + Kit track can add a track (faint when not).
+    pub can_add: bool,
+}
+
+const KT_CAPTION_W: i32 = 64;
+const KT_ADD_W: i32 = 124;
+const KT_GAP: i32 = 8;
+const KT_CHIP_MIN: i32 = 150;
+const KT_CHIP_MAX: i32 = 220;
+
+impl KitTracks {
+    pub fn new() -> KitTracks {
+        KitTracks {
+            tracks: Vec::new(),
+            can_add: true,
+        }
+    }
+
+    fn inner(r: Rect) -> Rect {
+        r.inset_xy(12, 6)
+    }
+
+    /// + Kit track's button.
+    pub fn add_rect(&self, r: Rect) -> Rect {
+        let b = Self::inner(r);
+        Rect::new(b.right() - KT_ADD_W, b.y, KT_ADD_W, b.h)
+    }
+
+    /// The tracks shown, in order, by their place in [`KitTracks::tracks`],
+    /// and each chip's width.
+    pub fn shown(&self, r: Rect) -> (Vec<usize>, i32) {
+        let b = Self::inner(r);
+        let room = (b.w - KT_CAPTION_W - KT_ADD_W - KT_GAP).max(0);
+        let fit = ((room + KT_GAP) / (KT_CHIP_MIN + KT_GAP)).max(1) as usize;
+        let mut shown: Vec<usize> = (0..self.tracks.len().min(fit)).collect();
+        if let Some(armed) = self.tracks.iter().position(|t| t.armed) {
+            if armed >= fit {
+                shown.pop();
+                shown.push(armed);
+            }
+        }
+        let n = shown.len().max(1) as i32;
+        let w = ((room + KT_GAP) / n - KT_GAP).clamp(0, KT_CHIP_MAX);
+        (shown, w)
+    }
+
+    /// The chip of [`KitTracks::tracks`]`[i]`, if it is shown.
+    pub fn chip_rect(&self, r: Rect, i: usize) -> Option<Rect> {
+        let b = Self::inner(r);
+        let (shown, w) = self.shown(r);
+        let k = shown.iter().position(|&s| s == i)? as i32;
+        Some(Rect::new(
+            b.x + KT_CAPTION_W + k * (w + KT_GAP),
+            b.y,
+            w,
+            b.h,
+        ))
+    }
+}
+
+impl Default for KitTracks {
+    fn default() -> KitTracks {
+        KitTracks::new()
+    }
+}
+
+impl Widget for KitTracks {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        let b = Self::inner(r);
+        let caption = Rect::new(b.x, b.y, KT_CAPTION_W, b.h);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 1.0,
+            caption,
+            Align::Left,
+            t.text_dim,
+            "KIT OF",
+        );
+        for (i, k) in self.tracks.iter().enumerate() {
+            let Some(c) = self.chip_rect(r, i) else {
+                continue;
+            };
+            cx.canvas
+                .fill_round_rect(c, 10, if k.armed { t.surface } else { t.raised });
+            if k.armed {
+                cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
+            }
+            let inner = c.inset_xy(12, 0);
+            let dot = Rect::new(inner.x, c.y + c.h / 2 - 4, 8, 8);
+            cx.canvas
+                .fill_round_rect(dot, 4, if k.enabled { k.color } else { t.text_faint });
+            let text = Rect::new(
+                dot.right() + 8,
+                c.y,
+                (inner.right() - dot.right() - 8).max(0),
+                c.h,
+            );
+            let name_w = cx
+                .measure(FontId::Bold, t.size_small, &k.name)
+                .min(text.w * 3 / 5);
+            let (name, rest) = (
+                Rect::new(text.x, text.y, name_w, text.h),
+                Rect::new(
+                    text.x + name_w + 8,
+                    text.y,
+                    (text.w - name_w - 8).max(0),
+                    text.h,
+                ),
+            );
+            let (ink, dim) = if k.enabled {
+                (t.text, t.text_dim)
+            } else {
+                (t.text_faint, t.text_faint)
+            };
+            cx.text(FontId::Bold, t.size_small, name, Align::Left, ink, &k.name);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                rest,
+                Align::Left,
+                dim,
+                &k.kit,
+            );
+        }
+        let add = self.add_rect(r);
+        // A dashed outline: it makes something new.
+        let c = if self.can_add {
+            t.text_dim
+        } else {
+            t.text_faint
+        };
+        let (dash, gap) = (8, 6);
+        let mut x = add.x + 10;
+        while x + dash <= add.right() - 10 {
+            cx.canvas.fill_rect(Rect::new(x, add.y, dash, 2), c);
+            cx.canvas
+                .fill_rect(Rect::new(x, add.bottom() - 2, dash, 2), c);
+            x += dash + gap;
+        }
+        let mut y = add.y + 8;
+        while y + dash <= add.bottom() - 8 {
+            cx.canvas.fill_rect(Rect::new(add.x, y, 2, dash), c);
+            cx.canvas
+                .fill_rect(Rect::new(add.right() - 2, y, 2, dash), c);
+            y += dash + gap;
+        }
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            add,
+            Align::Center,
+            c,
+            "+ Kit track",
+        );
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out: Vec<Target> = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, k)| {
+                let c = self.chip_rect(r, i)?;
+                Some(
+                    Target::tap("track", k.track, k.name.clone(), c)
+                        .disabled_if(!k.enabled || k.armed),
+                )
+            })
+            .collect();
+        out.push(Target::tap("add", 0, "+ Kit track", self.add_rect(r)).disabled_if(!self.can_add));
+        out
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        if self.add_rect(r).contains(x, y) {
+            return self.can_add.then_some(EventKind::Tab(0));
+        }
+        let i = (0..self.tracks.len())
+            .find(|&i| self.chip_rect(r, i).is_some_and(|c| c.contains(x, y)))?;
+        let k = &self.tracks[i];
+        (k.enabled && !k.armed).then_some(EventKind::Select(k.track))
+    }
+}
+
 // ---------------------------------------------------------------- pad map
 
 /// One pad on the [`PadMap`].
