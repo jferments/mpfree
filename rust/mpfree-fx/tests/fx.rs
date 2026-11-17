@@ -432,14 +432,50 @@ fn drive_latency_is_whole_and_the_same_in_both_qualities() {
         rms(&diff) / rms(&outs[0][4800..])
     );
     // The dry side of the mix is delayed to match: in HQ, Mix 0 is the
-    // input, late. In Eco the dry side also takes the IIR half-bands' phase
-    // (an all-pass), so Mix 0 is the input at the same level, on time at
-    // low frequencies (`drive_eco_blends_with_the_dry_side_at_any_mix`).
+    // input, late, through the low-end filter on the output (fourth-order
+    // Butterworth at 17 Hz, dry and wet together so they add in phase). In
+    // Eco the dry side also takes the IIR half-bands' phase (an all-pass),
+    // so Mix 0 is the input at the same level, on time at low frequencies
+    // (`drive_eco_blends_with_the_dry_side_at_any_mix`).
     let mut d = set_up(Box::new(Drive::new()), &[(MIX, 0.0), (QUALITY, 1.0)]);
     let x = program(4800);
     let (mut l, mut r) = x.clone();
     run_once(d.as_mut(), &mut l, &mut r);
-    assert!((55..4800).all(|i| l[i] == x.0[i - 55] && r[i] == x.1[i - 55]));
+    let want = |x: &[f32]| {
+        let mut y: Vec<f64> = (0..x.len())
+            .map(|i| if i < 55 { 0.0 } else { f64::from(x[i - 55]) })
+            .collect();
+        for q in [0.541_196_1, 1.306_563] {
+            y = high_pass(&y, 17.0, q);
+        }
+        y
+    };
+    for (got, x) in [(&l, &x.0), (&r, &x.1)] {
+        let want = want(x);
+        let worst = (0..4800).fold(0.0f64, |m, i| m.max((f64::from(got[i]) - want[i]).abs()));
+        assert!(
+            worst < 1e-5,
+            "Mix 0 is the input through the low-end filter: {worst}"
+        );
+    }
+}
+
+/// A second-order high-pass (bilinear, prewarped at `hz`, as the SVF is),
+/// in 64 bits, for checking the effects' filters against.
+fn high_pass(x: &[f64], hz: f64, q: f64) -> Vec<f64> {
+    let w = std::f64::consts::TAU * hz / f64::from(RATE);
+    let (c, a) = (w.cos(), w.sin() / (2.0 * q));
+    let a0 = 1.0 + a;
+    let (b0, b1, b2) = ((1.0 + c) / 2.0 / a0, -(1.0 + c) / a0, (1.0 + c) / 2.0 / a0);
+    let (a1, a2) = (-2.0 * c / a0, (1.0 - a) / a0);
+    let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+    x.iter()
+        .map(|&v| {
+            let y = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            (x2, x1, y2, y1) = (x1, v, y1, y);
+            y
+        })
+        .collect()
 }
 
 /// The largest alias of a sine in the audible band, in dB against the
@@ -837,7 +873,7 @@ fn bypass_is_click_free_and_latency_never_moves() {
         &mut c,
         &input,
         &mut || 128,
-        &[(12_000, d, false), (30_000, d, true)],
+        &[(12_000, d, false), (40_000, d, true)],
         &[],
     );
     assert_eq!(c.latency(), 55, "the same when bypassed");
@@ -846,14 +882,15 @@ fn bypass_is_click_free_and_latency_never_moves() {
             .map(|i| (out.0[i] - out.0[i - 1]).abs())
             .fold(0.0f32, f32::max)
     };
-    let steady = steps(6_000, 11_000).max(steps(20_000, 29_000));
-    let around = steps(11_900, 14_000).max(steps(29_900, 32_000));
+    let steady = steps(6_000, 11_000).max(steps(30_000, 39_000));
+    let around = steps(11_900, 14_000).max(steps(39_900, 42_000));
     assert!(
         around <= steady * 1.05,
         "largest step at a switch {around} vs steady {steady}"
     );
-    // Fully bypassed, the output is the input, exactly, one latency late.
-    assert!((16_000..29_000).all(|i| out.0[i] == x[i - 55]));
+    // Fully bypassed, once its tail (the low-end filter's, 0.3 s) has rung
+    // out, the output is the input, exactly, one latency late.
+    assert!((28_000..39_000).all(|i| out.0[i] == x[i - 55]));
 }
 
 #[test]
