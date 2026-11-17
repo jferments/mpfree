@@ -47,6 +47,7 @@
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod loops;
 pub mod notes;
 pub mod save;
 pub mod scenes;
@@ -77,6 +78,9 @@ pub const MAX_NOTES: usize = 8192;
 pub const MAX_LOCKS: usize = 8192;
 /// Pressure values in one clip, every note's together ([`Clip::touch`]).
 pub const MAX_TOUCH_POINTS: usize = 65536;
+/// The looper's loops, which a Loop track's cells name ([`Clip::looped`]):
+/// `mpfree_looper::MAX_LOOPS`.
+pub const LOOPS: usize = 8;
 
 /// One note in a clip, in the clip's own ticks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -437,6 +441,10 @@ pub struct Clip {
     /// After some bars, its track plays another clip or stops
     /// ([`scenes`]).
     pub follow: Option<Follow>,
+    /// A Loop track's cell: the looper's loop it launches (0 to
+    /// [`LOOPS`] - 1). Such a clip has no notes, locks, pressure or moves,
+    /// and is as long as its loop ([`loops`]).
+    pub looped: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -474,6 +482,10 @@ pub enum ModelError {
     BadPlacement,
     /// No room for it (song to scenes: no run of empty rows long enough).
     NoRoom,
+    /// A loop cell names no loop or holds notes, or a clip is on a track
+    /// of the other kind (a loop cell on a note track, a note clip on a
+    /// Loop track).
+    BadLoop,
 }
 
 impl Clip {
@@ -490,6 +502,16 @@ impl Clip {
             moves: Moves::new(),
             follow: None,
             touch: Vec::new(),
+            looped: None,
+        }
+    }
+
+    /// A Loop track's cell for loop `n` (0 based), `ticks` long: named
+    /// after its loop ("Loop 2"), with no notes.
+    pub fn new_loop(n: u8, ticks: Tick) -> Clip {
+        Clip {
+            looped: Some(n),
+            ..Clip::new(&format!("Loop {}", u32::from(n) + 1), loops::length(ticks))
         }
     }
 
@@ -619,6 +641,15 @@ impl Clip {
         if let Some(f) = &self.follow {
             f.check()?;
         }
+        if self.looped.is_some_and(|n| {
+            usize::from(n) >= LOOPS
+                || !self.notes.is_empty()
+                || !self.locks.is_empty()
+                || !self.touch.is_empty()
+                || !self.moves.is_empty()
+        }) {
+            return Err(ModelError::BadLoop);
+        }
         let len = u32::try_from(self.length).map_err(|_| ModelError::ClipLength)?;
         self.moves.check(len).map_err(|_| ModelError::BadMoves)
     }
@@ -665,7 +696,56 @@ pub struct Track {
     /// "Record pad pressure": while the track records, the pads' pressure
     /// goes into its notes ([`Note::touch`]). On by default.
     pub record_touch: bool,
+    /// A note track (the pads play it and its clips hold notes), or a Loop
+    /// track, whose cells launch the looper's loops ([`loops`]).
+    pub kind: TrackKind,
     pub slots: [Option<Clip>; SLOTS],
+}
+
+/// What a track is: see [`Track::kind`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrackKind {
+    #[default]
+    Notes,
+    /// A Loop track and what its new loops record.
+    Loops(LoopInput),
+}
+
+/// What a Loop track's new loops record (recording from the grid, Loop
+/// tracks part 4): the pads and the synth as heard (the looper's source
+/// today), the line input, or the other loops as heard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoopInput {
+    #[default]
+    Pads,
+    Line,
+    Resample,
+}
+
+impl LoopInput {
+    pub const ALL: [LoopInput; 3] = [LoopInput::Pads, LoopInput::Line, LoopInput::Resample];
+
+    /// As the screens say it, under the track's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            LoopInput::Pads => "Pads + synth",
+            LoopInput::Line => "Line in",
+            LoopInput::Resample => "Resample",
+        }
+    }
+
+    /// As a saved project writes it.
+    pub fn word(self) -> &'static str {
+        match self {
+            LoopInput::Pads => "pads",
+            LoopInput::Line => "line",
+            LoopInput::Resample => "resample",
+        }
+    }
+
+    pub fn from_word(w: &str) -> Option<LoopInput> {
+        LoopInput::ALL.into_iter().find(|i| i.word() == w)
+    }
 }
 
 impl Track {
@@ -677,8 +757,30 @@ impl Track {
             mute: false,
             through_arp: false,
             record_touch: true,
+            kind: TrackKind::Notes,
             slots: Default::default(),
         }
+    }
+
+    /// An empty Loop track recording the pads and the synth. Its `dest`
+    /// is unused: nothing plays notes into it.
+    pub fn new_loops(name: &str, dest: DestId) -> Track {
+        Track {
+            kind: TrackKind::Loops(LoopInput::Pads),
+            ..Track::new(name, dest)
+        }
+    }
+
+    /// A Loop track's input; None for a note track.
+    pub fn loops(&self) -> Option<LoopInput> {
+        match self.kind {
+            TrackKind::Notes => None,
+            TrackKind::Loops(i) => Some(i),
+        }
+    }
+
+    pub fn is_loops(&self) -> bool {
+        self.loops().is_some()
     }
 }
 
@@ -703,6 +805,9 @@ impl Project {
         for t in &self.tracks {
             for c in t.slots.iter().flatten() {
                 c.check()?;
+                if c.looped.is_some() != t.is_loops() {
+                    return Err(ModelError::BadLoop);
+                }
             }
         }
         if self.scenes.len() > SCENES {
