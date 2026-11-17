@@ -150,6 +150,20 @@ The **Plate** reverb is the studio plate: a big sheet of steel that rings with t
 > [!NOTE]
 > The Plate was rebuilt, so projects saved before it sound different on a Plate: dense from the first moment instead of grainy, smoother in the tail, and a sound keeps its side. Every setting and preset still loads and does what it did.
 
+### The Spring
+
+The **Spring** reverb is the tank in a guitar amp or an old organ: the sound sent down a coiled spring and back, again and again. Each time round it chirps (the "boing", the lows arriving after the highs), which is what makes it lovely on guitars, organs and dub, and twangy on drums.
+
+- **Length** is how long the spring is: an echo comes back every Length.
+- **Decay** is how long the tail takes to fall away (60 dB, to near silence) in the mids; the lows ring on a little longer, as a real spring's do.
+- **Tension** sets how much each echo chirps.
+- **Drip** sends some of each chirp round the spring again at once, for the splash a tap on the tank gives (dub's favourite). It doesn't change how long the tail rings.
+- **Tone** darkens what you hear; **Low cut** keeps the bass out of the tank.
+- A sound on the left plays more on the left spring, so it keeps its place.
+
+> [!NOTE]
+> The Spring was rebuilt, so projects saved before it sound a little different on a Spring: Decay is what it says, an echo comes back every Length, and a sound keeps its side. Every setting and preset still loads and does what it did.
+
 ### The EQ's page
 
 {{shot: chain-mixer-drums-eq | The EQ on the drum bus: its curve with a dot for each band and the cuts, band 2 picked in the panel underneath.}}
