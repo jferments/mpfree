@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-16 ececc7e
+checked: 2026-11-17 5c0286b9
 -->
 # FX quality: targets, the report and the ratchet
 
@@ -10,11 +10,13 @@ An effect is good when it meets its measured targets, wins or ties in blind, lev
 
 **Second round** (measuring built 2026-11-17): drive (Drive and Character), crush, compressor, filters (Multi and DJ) and lo-fi, by the same method, in [Round 2](#round-2-drive-crush-compressor-filters-and-lo-fi) below; the amp joined it on 17 Nov (class `amp`, ids A; plan-2 section 12, research-amp.md). Research and plan: jferments/mpfree-claude `fx/quality/` (plan-2.md, research-drive.md, research-crush.md, research-compressor.md, research-filter.md, research-lofi.md, baseline-2026-11-17.md).
 
+**Fourth round** (measuring built 2026-11-17): the rest of the dynamics (Limiter and Master safety, Gate, De-esser, Multiband compressor, Ducker, Transient shaper, Channel strip), in [Round 4](#round-4-the-rest-of-the-dynamics) below; the fixes come one class at a time. Research and plan: jferments/mpfree-claude `fx/quality/` (research-dynamics.md, plan-4.md, baseline-dynamics-2026-11-17.md).
+
 **The sampler** (measuring built 2026-11-17; the sampler review's engine item 7): a pad of `mpfree-sampler` measured by the same kind of numbers, with its own ratchet: [The sampler](#the-sampler) below.
 
 ## The report
 
-`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi`, `amp` or `modulation`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq`, `eq[preset]` and `eq[HQ 2x]` (its Quality at HQ 2x); an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All ten classes take about 65 s in a release build (the round-2 classes 39 s: Lo-fi about 24 s of it, for its minute-long pitch reads, and most of the rest the Drive's 4x quality; the modulation class about 3 s).
+`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi`, `amp`, `modulation`, `limiter`, `gate`, `deesser`, `multiband`, `ducker`, `transient` or `strip`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq`, `eq[preset]` and `eq[HQ 2x]` (its Quality at HQ 2x); an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All seventeen classes take about 65 s in a release build (the round-2 classes 39 s: Lo-fi about 24 s of it, for its minute-long pitch reads, and most of the rest the Drive's 4x quality; the modulation class about 3 s; the seven dynamics classes of round 4 about 2.5 s together).
 
 New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known answers:
 
@@ -502,3 +504,106 @@ A mutation check: with Vintage on, S2 reads -3.0 and -4.1 dB and the ratchet fai
 - **Not yet, the Hermite read with high content:** a 9 kHz tone a semitone up has a spur at 6.4 kHz, 31 dB down, and a 13.5 kHz tone a fifth down has one at 5.8 kHz, 44 dB down and plays 1.1 dB quiet. These are the Hermite kernel's images folding back, not content above Nyquist, so `CLEAN_ABOVE`'s argument (nothing folds below 19.35 kHz up to two semitones) doesn't cover them. Closing them takes the band-limited read, or a longer interpolator, for every pitched voice, which is a cost the bench would count.
 - **Not yet, the band-pass:** 1.02 dB from its prototype at 8 kHz. This is the state-variable filter's bilinear mapping, which puts 8 kHz where the prototype has 8.98 kHz, and the band-pass's 6 dB an octave turns that into 1 dB.
 - **No target yet, the steps:** a forward loop with no crossfade steps 42 dB over the sine, and ping-pong 30 dB, as any reversal of a sine mid-wave does. A steal or a choke (the 32-frame linear fade, `STEAL_FRAMES`) steps 13 dB. A Gate pad let go steps 33 dB with the Play tab's shortest release (1 ms) and 47 dB with none: the release is exponential, so its first frames fall fastest (a 1 ms release loses about a fifth of the level in its first frame), and at 0 ms it is one frame, not the 64-frame fade of a hard stop (`KILL_FRAMES`).
+
+## Round 4: the rest of the dynamics
+
+Measuring built 2026-11-17, by `quality/round4.rs`: the Limiter and Master safety (class `limiter`, ids P), the Gate (`gate`, N), the De-esser (`deesser`, S), the Multiband compressor (`multiband`, X), the Ducker (`ducker`, U), the Transient shaper (`transient`, T) and the Channel strip (`strip`, C). Research and plan: jferments/mpfree-claude `fx/quality/` (research-dynamics.md, plan-4.md, baseline-dynamics-2026-11-17.md). The seven classes take about 2.5 s together. Subjects are `class/engine` at its defaults and presets, and named settings: `limiter/limiter-true-peak`, `limiter/limiter-auto-off`, `limiter/master-safety` (Safe limiter), `limiter/master-soft-clip`, `deesser/split`, `deesser/wide`, `deesser/relative`, `deesser/absolute`, `ducker/tempo`.
+
+The measures it adds, beside the earlier rounds':
+
+| Measure | What it reads |
+|---|---|
+| Peaks over the ceiling | Pink at -14 dBFS RMS and a loud programme (that pink, drum hits peaking about +2.5 dBFS and a 55 Hz bass at -12 dBFS), 5 s each, pushed 0, 6 and 12 dB: the worst sample peak and 4x true peak against the ceiling, the first second left out |
+| A tone falling through a gate | A sine falling evenly from 20 dB over the threshold to 20 dB under in 3 s: the gain's spread inside each half cycle while the input is 2 dB or more over (chatter), and the input level where the gain has fallen under -6 dB (where it shut) |
+| The gate's fade | A 1 kHz tone dropping from 20 dB over the threshold to 20 dB under, Hold 0: the time from -0.5 dB to 1 dB short of Range, against that share of Release (the fade is even in dB) |
+| Response at full reduction | Pink through the de-esser with Absolute detection at its lowest threshold, a Welch transfer function (4096-point Hann) smoothed to third octaves |
+| A vocal-like line | A 150 Hz buzz for 400 ms, then an s (white noise high-passed twice at 4 kHz) over the buzz 12 dB down, repeated; the de-esser's meter read each block during the s and between them (the 100 ms after each s left out) |
+| Gain against a reference | The multiband's mid band soloed, its output against the same band at ratio 1, so neither the crossovers' phase nor a level step's spread into the other bands counts |
+| Against the drawing | The ducker in tempo mode on a 200 Hz tone in cosine phase (the beats land on its peaks): the gain at each frame where the tone is over half its peak against the page's curve at that song position, a quarter of a millisecond either way allowed |
+| Song position | Nodes run with the transport playing at 120 BPM, a song position given per block, and a side-chain when one is fed; a jump moves the position at a block's start |
+| Fronts | Drum hits from silence: the energy of each hit's first millisecond out against in (gate), or the peak of its first 5 ms (transient shaper) |
+
+### Limiter and Master safety (P)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| P1 | `sample_peak_over_ceiling_db` | ≤ 0.01 dB, every subject | The promise |
+| P2 | `true_peak_over_ceiling_db` | ≤ 0.1 dB with True peak on and in Master safety's Safe limiter; off reported | The converter rebuilds the wave between the samples |
+| P3 | `thd_<hz>hz_<over>db_over` | 6 dB of limiting at the defaults: 50 Hz ≤ -40 dB, 100 Hz ≤ -50 dB (Limiter and Master safety); 12 dB, the other settings and the presets reported | Gain riding inside bass cycles |
+| P4 | `release_slowdown` | With Auto release, the release (63 %) after 3 s of 6 dB limiting at least twice that after 0.1 s; the times reported | Fast after a short peak, slow under a push |
+| P5 | `release_ratio_<ms>` | Auto off, and Master safety: 63 % within ±15 % of Release, 20 to 300 ms | The compressor's convention |
+| P6 | the soft clip's `alias_5khz_6db_over`, `true_peak_over_ceiling_db` | ≤ -60 dB; ≤ 0.1 dB (12 dB and the limiters' reported) | Colour without fold-back, and never over |
+| P7 | `latency_spread_frames` | 0 across every mode and setting | Exports and the mixer's compensation |
+| P8 | `zipper_<control>` | ≤ 3 dB (round 2's slope zipper) | Smooth automation |
+
+### Gate (N)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| N1 | `onset_1ms_db_attack<ms>` | The first millisecond of a hit from silence within 0.5 dB at Attack up to the look-ahead (5 ms and the presets reported) | The front is the drum |
+| N2 | `ripple_db_<hz>hz_hold<ms>` | ≤ 0.5 dB, 40 Hz to 1 kHz, Hold 0 and the default | Gates mustn't trigger on bass cycles |
+| N3 | `shut_error_db_<hz>hz_hold<ms>` | Shuts within 1 dB of the threshold less its 4 dB of hysteresis | The stated hysteresis at every pitch |
+| N4 | `release_ratio_<ms>` | Within ±10 %, 50 to 500 ms | The label |
+| N5 | `zipper_<control>`, `range_change_while_shut_error_db` | ≤ 3 dB; Range moved from -80 to -40 dB while shut lands within 1 dB of -40 | Smooth automation, and a control that works while it is shut |
+
+### De-esser (S)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| S1 | `lift_db_range<db>_<hz>hz` | Split at full reduction: no third octave under 0.8 times Freq rises more than 0.2 dB (Wide reported) | Turning the s down mustn't boost the voice under it |
+| S2 | `range_error_db_range<db>_<hz>hz` | Split: within 1.5 dB of Range from 1.5 times Freq to 16 kHz | The knob means what it says |
+| S3 | `s_reduction_spread_db` | Relative: the reduction during the s within 1 dB at -6, -18 and -30 dBFS (Absolute and the levels reported) | A threshold that works at any level |
+| S4 | `voice_reduction_db_<level>dbfs` | ≤ 0.5 dB between the s | The voice left alone |
+| S5 | `one_side_error_db` | An s on one side gets within 1 dB of the reduction it gets in the centre, both detections | Doubled and panned vocals |
+| S6 | `zipper_<control>` | ≤ 3 dB (Freq and Range at full reduction) | Smooth automation |
+
+### Multiband compressor (X)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| X1 | `idle_error_db` | Ratio 1, Mix 100: flat within ±0.1 dB, 20 Hz to 20 kHz | Inserting it costs nothing |
+| X2 | `ratio1_error_db_mix<n>` | Ratio 1 at Mix 25, 50 and 75: flat within ±0.5 dB | A Mix that notches the crossovers is broken |
+| X3 | `curve_error_mid_1khz` | The mid band's gain within 0.25 dB of its curve, -40 to 0 dBFS (the whole output's reported) | As K1 |
+| X4 | `attack_ratio_<ms>` | Within ±15 %, 1 to 30 ms | As K2 |
+| X5 | `release_ratio_<ms>` | Within ±10 %, 60 to 500 ms (90 % reported) | As K3 |
+| X6 | `thd_<hz>hz_12db_over` | 50 Hz 12 dB over the low band's threshold ≤ -50 dB; 100 Hz and the presets reported | As K4 |
+| X7 | `lu_pink` | Reported (once Auto makeup is built: within ±1.5 LU) | As K7 |
+| X8 | `zipper_<control>` | ≤ 3 dB, every control | Smooth automation |
+
+### Ducker (U)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| U1 | `beat_error_db` | Tempo mode: within 1 dB of full depth from each beat until the hold ends, the defaults and every tempo preset | The kick lands where the bass is already down |
+| U2 | `drawing_error_db` | Within 1 dB of the drawing over the whole step | The page is how it's set |
+| U3 | `response_ms_attack<ms>` | Side-chain: the duck reaches -1 dB within 1 ms of the key crossing the threshold | |
+| U4 | `click_db_attack<ms>` | Reported: a 60 Hz tone ducked by the beat (the shortest attacks click by choice) | |
+| U5 | `drawing_error_db_after_jump`, `_after_wrap` | Within 1 dB of the drawing from 50 ms after the song position jumps into a step or a loop wraps to the start | As M11 |
+| U6 | `zipper_<control>` | ≤ 3 dB, while a long duck holds and releases | Smooth automation |
+
+### Transient shaper (T) and Channel strip (C)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| T1 | `front_spread_db_attack<n>` | Attack 50 and 100: the fronts' gain within 1 dB across hits at 0, -12, -24 and -36 dB (Attack -100 and the gains reported) | A shaper with no threshold works at any level |
+| T2 | `ripple_db_<setting>` | ≤ 0.5 dB on steady tones, 30 Hz to 1 kHz | Steady tones untouched |
+| T3 | `hits_peak_change_db`, `hits_lu` | Reported, defaults and presets (decision 11.4) | An insert shouldn't jump unexpectedly |
+| T4 | `zipper_<control>` | ≤ 3 dB | Smooth automation |
+| C1 | `gate_*`, `comp_*` | The strip's gate alone as N1 to N3 (40 Hz and 1 kHz), its compressor alone as K1 to K4 against the compressor engine set as the strip sets it | Each stage as good as on its own |
+| C2 | `lu_pink` | Reported (once Auto makeup is on its page: within ±1.5 LU) | Fair A/B |
+| C3 | `switch_click_db_<stage>` | ≤ 3 dB: the gate switched on, the compressor off, a 6 dB EQ off and the order changed, under a 220 Hz tone | Switching a stage mid-note |
+| C4 | `latency_spread_frames` | 0 whatever is on | The mixer's compensation |
+
+The cost of each is in the instruction gate: new cases Limiter (12 dB of push) 39.5k instructions a block, with True peak 72.6k, Gate (threshold over the program's tone, so it opens on each burst) 17.4k, De-esser 42.4k, Multiband compressor 141.5k, Ducker (tempo) 14.8k and Transient shaper 26.0k; Master safety's was there (29.0k).
+
+### Baseline (2026-11-17, before any fix)
+
+87 of 152 dynamics targets met: limiter 17 of 33, gate 20 of 30, de-esser 11 of 20, multiband 15 of 27, ducker 6 of 18, transient 8 of 10, strip 10 of 14.
+
+- **Limiter and Master safety:** sample peaks exact; true peaks over by up to 0.48 dB with True peak on (0.61 for Loud master), 1.38 off, and 1.11 in Master safety; 50 Hz under 6 dB of limiting -29.8 dB THD (Master safety -38.7); Auto release comes back in 21.8 ms after 0.1 s and after 3 s alike; with it off 63 % comes at 0.80 of Release; the Soft clip aliases at -27.6 dB with true peaks 4.4 dB over.
+- **Gate:** fronts kept exactly; with Hold 0 it rides 40 and 60 Hz (3.7 and 2.3 dB); under 1 kHz it shuts 0.2 to 1.1 dB under the threshold rather than 4; the fade means its label (within 0.3 %); Range moved while it is shut does nothing until it opens again.
+- **De-esser:** Relative detection reads the s the same at every level and leaves the voice alone; Split lifts the band under Freq by 1.3 to 1.8 dB and falls 6.9 to 22.1 dB short of Range above it; an s on one side gets 4.4 dB less with Absolute detection.
+- **Multiband:** flat at Mix 100, but Mix 50 notches 19.7 dB at a crossover (25 and 75: 5.9); the mid band 0.57 dB off its curve; attacks 1.7 to 2.1 times their labels, releases 0.81 to 0.85; the mid band's Threshold and Ratio zipper (10.6 and 6.8 dB).
+- **Ducker:** the tempo duck starts at the beat, so each beat is up to its full depth away from the drawing's (17.8 dB at the defaults); within 1.1 dB of the drawing at the defaults, 8.2 and 8.5 dB for Sixteenth gate and Slow swell; after the song position jumps into a step it stays 17.7 dB off its drawing (a wrap to the start is followed); the side-chain duck starts 0.43 ms after the key.
+- **Transient shaper:** steady tones untouched; the fronts' gain depends on level (8.7 dB spread at Attack 50, 3.1 at 100); the defaults add 12.8 dB to hits' peaks and 13.6 LU.
+- **Channel strip:** its compressor meets K1 to K4; its gate shuts 2.75 dB short at 40 Hz; switching the gate on clicks 12.9 dB (it restarts with an empty look-ahead), a 6 dB EQ off 9.3 dB (the crossfade starts at full speed) and the order 54.4 dB (no crossfade); 5.8 LU quieter on insert.
