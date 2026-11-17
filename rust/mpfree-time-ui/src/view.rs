@@ -152,7 +152,9 @@ pub fn edit_hint(lens: Lens) -> &'static str {
     }
 }
 /// The record settings, top to bottom (short, to fit the 250 px panel).
-pub const RECORD_ROWS: [&str; 6] = ["Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure"];
+pub const RECORD_ROWS: [&str; 7] = [
+    "Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure", "Quantise",
+];
 /// The clip settings card's rows, top to bottom.
 pub const CLIP_ROWS: [&str; 7] = [
     "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After",
@@ -323,6 +325,8 @@ pub struct TrackInfo {
     pub mute: bool,
     /// It records pad pressure (`Track::record_touch`).
     pub pressure: bool,
+    /// Its record quantise grid (`Track::record_quantise`), or none.
+    pub record_quantise: Option<u32>,
     /// A Loop track, and what its new loops record (`Track::kind`).
     pub loops: Option<mpfree_seq::LoopInput>,
     pub slots: Vec<Option<ClipInfo>>,
@@ -606,6 +610,7 @@ impl TimeState {
                 sound: String::new(),
                 mute: t.mute,
                 pressure: t.record_touch,
+                record_quantise: t.record_quantise,
                 loops: t.loops(),
                 slots: t
                     .slots
@@ -735,6 +740,12 @@ pub enum TimeAction {
     RecordPressure {
         track: usize,
         on: bool,
+    },
+    /// "Quantise" on the record settings (sequencer S3): the grid the
+    /// track's recorded notes go in on (`Track::record_quantise`), or none.
+    RecordQuantise {
+        track: usize,
+        grid: Option<u32>,
     },
     /// Play this clip from the next bar line (see [`clips_after`]).
     Launch {
@@ -1362,6 +1373,16 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     let on = st.tracks.get(a)?.pressure;
                     Some(TimeAction::RecordPressure { track: a, on: !on })
                 }),
+                // Off, then the grids from the coarsest.
+                6 => st.armed.and_then(|a| {
+                    let now = st.tracks.get(a)?.record_quantise;
+                    let k = now.map_or(0, |g| {
+                        QUANTISE_GRIDS.iter().position(|&q| q == g).map_or(0, |i| i + 1)
+                    });
+                    let next = (k as i32 + d).clamp(0, QUANTISE_GRIDS.len() as i32) as usize;
+                    let grid = (next > 0).then(|| QUANTISE_GRIDS[next - 1]);
+                    (grid != now).then_some(TimeAction::RecordQuantise { track: a, grid })
+                }),
                 _ => None,
             }
         }
@@ -1418,6 +1439,17 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         (RECORD, EventKind::Step { index: 5, .. }) if st.armed.is_none() => {
             Some("Arm a track first: pressure records on the armed track".to_string())
         }
+        (RECORD, EventKind::Step { index: 6, .. }) if st.armed.is_none() => {
+            Some("Arm a track first: quantise is the armed track's".to_string())
+        }
+        (RECORD, EventKind::Step { index: 6, delta }) => Some(end(
+            *delta,
+            "Quantise is off already: the notes go in as played",
+            &format!(
+                "Quantise is at its finest, {}",
+                grid_name(QUANTISE_GRIDS[QUANTISE_GRIDS.len() - 1])
+            ),
+        )),
         (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).err(),
         _ => None,
     }
@@ -2175,6 +2207,13 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
                 None => "–".to_string(),
                 Some(tr) if tr.pressure => "Recorded".to_string(),
                 Some(_) => "Off".to_string(),
+            },
+        ),
+        row(
+            RECORD_ROWS[6],
+            match st.armed.and_then(|a| st.tracks.get(a)) {
+                None => "–".to_string(),
+                Some(tr) => tr.record_quantise.map_or_else(|| "Off".to_string(), grid_name),
             },
         ),
     ]
@@ -3810,6 +3849,45 @@ mod tests {
         st.armed = None;
         assert_eq!(record_rows(&st)[5].value, "–");
         assert_eq!(step(&st, 5, 1), None);
+        // Record quantise steps off, 1/4 ... 1/32 for the armed track, and
+        // says why at its ends or with none armed.
+        let why = |st: &TimeState, delta| {
+            why_not(&ev(RECORD, EventKind::Step { index: 6, delta }), st).unwrap_or_default()
+        };
+        assert_eq!(record_rows(&st)[6].value, "–");
+        assert_eq!(step(&st, 6, 1), None);
+        assert!(why(&st, 1).starts_with("Arm a track first"));
+        st.armed = Some(1);
+        assert_eq!(record_rows(&st)[6].value, "Off");
+        assert_eq!(step(&st, 6, -1), None);
+        assert!(why(&st, -1).contains("off already"));
+        assert_eq!(
+            step(&st, 6, 1),
+            Some(TimeAction::RecordQuantise {
+                track: 1,
+                grid: Some(PPQ)
+            })
+        );
+        st.tracks[1].record_quantise = Some(PPQ / 4);
+        assert_eq!(record_rows(&st)[6].value, "1/16");
+        assert_eq!(
+            step(&st, 6, 1),
+            Some(TimeAction::RecordQuantise {
+                track: 1,
+                grid: Some(PPQ / 6)
+            })
+        );
+        st.tracks[1].record_quantise = Some(PPQ);
+        assert_eq!(
+            step(&st, 6, -1),
+            Some(TimeAction::RecordQuantise {
+                track: 1,
+                grid: None
+            })
+        );
+        st.tracks[1].record_quantise = Some(PPQ / 8);
+        assert_eq!(step(&st, 6, 1), None);
+        assert!(why(&st, 1).contains("finest, 1/32"));
     }
 
     /// The clip settings card: the focused clip's settings, each row

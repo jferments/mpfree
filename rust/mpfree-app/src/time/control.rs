@@ -1409,6 +1409,30 @@ impl TimeControl {
                     format!("pad pressure: {name} leaves it out")
                 })
             }
+            TimeAction::RecordQuantise { track, grid } => {
+                if grid.is_some_and(|g| mpfree_seq::Quantise::new(g, 100).is_none()) {
+                    return Err("record quantise: not a grid".into());
+                }
+                let t = self
+                    .project
+                    .tracks
+                    .get_mut(track)
+                    .ok_or_else(|| format!("record quantise: no track {}", track + 1))?;
+                if t.record_quantise != grid {
+                    t.record_quantise = grid;
+                    self.changed = true;
+                    // The recorder reads the grid from the view.
+                    self.compile()?;
+                }
+                let name = &self.project.tracks[track].name;
+                Ok(match grid {
+                    Some(g) => format!(
+                        "record quantise: {name} records each note on the nearest {}",
+                        mpfree_time_ui::view::grid_name(g)
+                    ),
+                    None => format!("record quantise: {name} records the notes as played"),
+                })
+            }
             TimeAction::Arm(Some(t))
                 if self.project.tracks.get(t).is_some_and(|t| t.is_loops()) =>
             {

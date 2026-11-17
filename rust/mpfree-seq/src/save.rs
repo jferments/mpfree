@@ -72,6 +72,9 @@ pub fn to_text(p: &Project) -> String {
         let _ = writeln!(s, "mute {}", u8::from(t.mute));
         let _ = writeln!(s, "arp {}", u8::from(t.through_arp));
         let _ = writeln!(s, "rectouch {}", u8::from(t.record_touch));
+        if let Some(grid) = t.record_quantise {
+            let _ = writeln!(s, "recquant {grid}");
+        }
         if let Some(input) = t.loops() {
             let _ = writeln!(s, "loops {}", input.word());
         }
@@ -355,6 +358,13 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             }
             ("rectouch", At::Track) => {
                 last(&mut p).record_touch = flag(w.next()).ok_or_else(|| bad("rectouch"))?
+            }
+            ("recquant", At::Track) => {
+                let grid: u32 = num(w.next()).ok_or_else(|| bad("recquant"))?;
+                if Quantise::new(grid, 100).is_none() {
+                    return Err(bad("recquant"));
+                }
+                last(&mut p).record_quantise = Some(grid)
             }
             ("loops", At::Track) => {
                 let input = w.next().and_then(LoopInput::from_word);
@@ -659,6 +669,7 @@ mod tests {
         p.tracks[1].mute = true;
         p.tracks[2].through_arp = true;
         p.tracks[2].record_touch = false;
+        p.tracks[2].record_quantise = Some(160);
         let mut c = Clip::new("Beat with  spaces", 7680);
         c.speed = Speed::new(2, 1).unwrap();
         c.swing = Swing::new(480, 66);
@@ -812,6 +823,8 @@ mod tests {
         // Numbers that don't fit.
         let big = text.replace("rectouch 0", "rectouch 2");
         assert!(from_text(&big).is_err());
+        let coarse = text.replace("recquant 160", "recquant 99999");
+        assert!(from_text(&coarse).is_err());
         let nan = text.replace("lock 480 36 pad36.4 0.1", "lock 480 36 pad36.4 NaN");
         assert!(from_text(&nan).is_err());
     }
