@@ -637,6 +637,15 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#multiband-comp)): the Mult
 - **Blessed worse, and why:** the zipper rows' floor rose from 0.018 to 0.023 dB and the crossovers' from 0.48 and 0.55 to 0.54 and 0.58, Release's from 0.02 to 0.07: the detector in dB follows the test tone a hair more closely; all far under 3 dB. Drum crush's 50 Hz THD 12 dB over went from -35.9 to -34.5 dB (reported only): at 1 ms and 8:1 the new detector rides closer to its curve inside the bass's cycles.
 - **Cost:** Multiband compressor 141.5k to 149.9k instructions a block (1.06): the detector in dB and the new glides. Taking the dry from the bands' sum made the Mix fix free (a second pair of all-passes on the dry cost 1.22).
 
+### De-esser PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#de-esser); decision 11.2): Split is an eighth-order Linkwitz-Riley split a sixth of an octave under Freq, its low band plus its high band at the gain, which never lifts; detection takes the louder side; the sound is held back 2 ms so the gain is down when each s arrives (the latency, fixed, is 88 frames at 44.1 kHz); Wide passes the split's all-pass too, so switching modes at rest doesn't click. After it: all 20 de-esser targets met (11 before); the other classes are unchanged.
+
+- **Met now:** Split's lift under 0.8 times Freq at full reduction is 0.002 dB (1.3 to 1.8) (S1), and from 1.5 times Freq to 16 kHz it is within 0.10 dB of Range 10 and 0.67 of Range 24 (7.7 and 22.1 short) (S2). An s on one side gets the reduction it gets in the centre within 0.0003 dB in Relative (0.70) and exactly in Absolute (4.40) (S5).
+- **Reported:** Wide's rows are as before within 0.003 dB.
+- **Blessed worse, and why:** Freq's zipper rose from 0.09 to 0.25 dB (the eighth-order split is re-tuned every 16 frames as Freq glides; far under 3 dB). Wide's lift and range rows moved by 0.002 to 0.003 dB and Absolute's voice reduction at -6 dBFS by 0.0001 dB: the all-pass in the path.
+- **Cost:** De-esser 42.4k to 59.0k instructions a block (1.39): the split's five stages a side (one before) and the look-ahead's delay; run a side at a time it was 87.7k.
+
 ## The grain engine
 
 `mpfree_fxlab::grain` measures `mpfree-grain`'s `GrainVoice` on its own (no amp envelope, filter or effects after it), at 44.1 kHz in 128-frame blocks with fixed seeds, on pink noise and a pad (an A minor chord of detuned band-limited saws, both -20 dBFS RMS), a 1 kHz sine and a steady level (DC, whose output is the sum of the grains' windows). Grains read from 30 % into the source, with the voice's defaults (80 ms, 25 a second, Hann, timing 30 % random, no spray, no scan; before step A3, 20 a second and regular) unless a row says otherwise. `tests/grain.rs` holds every number to `rust/mpfree-fxlab/quality/grain.tsv` as the sampler's ratchet does, and prints the report; it takes under two seconds, so it runs with the workspace's tests. Record a change with `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test grain`. The targets are the granular engine plan's (sampler roadmap R7, mpfree-claude `sampler/granular/plan.md`).

@@ -13,7 +13,9 @@ use crate::kit::{
 };
 use crate::limit::PeakLimit;
 use crate::svf::{Svf, SvfMode};
-use crate::{db_to_gain, defaults, fast_db_to_gain, fast_level_db, flush, gain_to_db, Preset};
+use crate::{
+    db_to_gain, defaults, fast_db_to_gain, fast_level_db, flush, gain_to_db, FixedDelay, Preset,
+};
 
 /// The soft-knee gain reduction in dB for `over` dB above the threshold at
 /// `ratio`, with a knee `knee` dB wide.
@@ -557,17 +559,33 @@ pub static DEESSER_PRESETS: &[Preset] = &[
     },
 ];
 
+/// The de-esser's look-ahead (decision 11.2 of FX quality round 4): the
+/// sound is held back this long, so the gain is already down when an s
+/// arrives.
+const DEESS_AHEAD_MS: f32 = 2.0;
+
+/// The split sits this far under Freq (a sixth of an octave), so at full
+/// reduction the cut is within a dB of Range from 1.5 times Freq up.
+const DEESS_SPLIT: f32 = 0.9;
+
 /// A de-esser: turns the "s" and "t" sounds down when they jump out. It
-/// listens to the band above Freq; in Relative detection it compares that
-/// band with the whole signal, so the threshold works at any input level.
-/// Split mode turns down only the band (the rest passes bit for bit
-/// untouched in level), Wide the whole signal. Listen plays the band alone,
-/// to find the frequency.
+/// listens to the band above Freq on the louder side, so an s panned to
+/// one side is caught as in the centre; in Relative detection it compares
+/// that band with the whole signal, so the threshold works at any input
+/// level. The sound is held back 2 ms, so the gain is down by the time
+/// each s arrives. Split mode turns down the band above an eighth-order
+/// Linkwitz-Riley split just under Freq, whose bands are in phase, so
+/// nothing under it is ever lifted; Wide turns the whole signal down.
+/// Both pass the split's all-pass (flat, the phase turned around the
+/// split), so switching modes at rest doesn't click. Listen plays the
+/// band alone, to find the frequency.
 pub struct DeEsser {
     v: [f32; 7],
     rate: u32,
-    detect: Svf,
-    split: Svf,
+    /// The detector's high-pass at Freq, per side.
+    detect: kit::HighPass2,
+    split: kit::Split8,
+    ahead: [FixedDelay; 2],
     band_env: kit::Follower,
     full_env: kit::Follower,
     freq: Smooth,
@@ -587,8 +605,9 @@ impl DeEsser {
         let mut d = DeEsser {
             v,
             rate: 48_000,
-            detect: Svf::default(),
-            split: Svf::default(),
+            detect: kit::HighPass2::default(),
+            split: kit::Split8::default(),
+            ahead: [FixedDelay::default(), FixedDelay::default()],
             band_env: kit::Follower::default(),
             full_env: kit::Follower::default(),
             freq: Smooth::new(v[0].log2()),
@@ -604,9 +623,8 @@ impl DeEsser {
         }
     }
     fn set_filters(&mut self, hz: f32) {
-        self.detect
-            .set(SvfMode::HighPass, hz, 0.707, 0.0, self.rate);
-        self.split.set(SvfMode::HighPass, hz, 0.707, 0.0, self.rate);
+        self.detect.set(hz, self.rate);
+        self.split.set(hz * DEESS_SPLIT, self.rate);
     }
     fn begin(&mut self, _ctx: &Ctx) {}
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
@@ -628,36 +646,46 @@ impl DeEsser {
             if gliding && self.freq.value == self.freq.target {
                 self.set_filters(self.v[deesser::FREQ as usize]);
             }
-            let key = 0.5 * (l[i] + r[i]);
-            let band = self.detect.run(0, key);
+            // Detection on the sound as it comes in, 2 ms ahead of what
+            // is heard, from the louder side.
+            let x = [l[i], r[i]];
+            let band = self.detect.run(x);
+            let band = band[0].abs().max(band[1].abs());
             let b = fast_level_db(self.band_env.run(band));
             let over = if absolute {
                 b - thr
             } else {
                 // How far the band stands above the whole signal, against
                 // the threshold taken as a level relative to it.
-                let f = fast_level_db(self.full_env.run(key));
+                let f = fast_level_db(self.full_env.run(x[0].abs().max(x[1].abs())));
                 (b - f) - (thr * 0.5)
             };
             let red = knee_reduction(over, DEESS_RATIO, 4.0).min(range);
             self.most = self.most.max(red);
             let g = fast_db_to_gain(-red);
-            for (ch, x) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
-                let hi = self.split.run(ch, *x);
-                *x = if listen {
-                    hi
+            let d = [self.ahead[0].run(x[0]), self.ahead[1].run(x[1])];
+            let (ap, lo) = self.split.split(d);
+            for (ch, y) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
+                *y = if listen {
+                    ap[ch] - lo[ch]
                 } else if wide {
-                    *x * g
+                    ap[ch] * g
                 } else {
-                    (*x - hi) + hi * g
+                    // The low band plus the high band at the gain.
+                    g * ap[ch] + (1.0 - g) * lo[ch]
                 };
             }
         }
         self.v[deesser::REDUCTION as usize] = self.most;
         self.most = 0.0;
     }
+    fn frames_ahead(&self) -> usize {
+        ((DEESS_AHEAD_MS * 0.001 * self.rate as f32).round() as usize).max(1)
+    }
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
+        let n = self.frames_ahead();
+        self.ahead = [FixedDelay::new(n), FixedDelay::new(n)];
         self.band_env.set(0.5, 60.0, rate);
         self.full_env.set(0.5, 60.0, rate);
         self.freq.set_time(rate, 30.0);
@@ -668,6 +696,9 @@ impl DeEsser {
         self.set_filters(self.v[deesser::FREQ as usize]);
         self.detect.reset();
         self.split.reset();
+        for d in &mut self.ahead {
+            d.reset();
+        }
         self.band_env.reset();
         self.full_env.reset();
         self.tick = 0;
@@ -678,11 +709,12 @@ impl DeEsser {
         0
     }
     fn rest(&self) -> u32 {
-        // Ten of the followers' 60 ms release, and the filters settling.
-        (0.65 * self.rate as f32) as u32
+        // Ten of the followers' 60 ms release, the filters settling and
+        // the look-ahead.
+        (0.65 * self.rate as f32) as u32 + self.frames_ahead() as u32
     }
     fn lat(&self) -> u32 {
-        0
+        self.frames_ahead() as u32
     }
 }
 

@@ -69,7 +69,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
-| **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
+| **De-esser** | Turns down harsh "s" and "t" sounds ([more](#the-de-esser)). **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs ([more](#the-multiband-comp)). |
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Main**, shows the three as sections, each with its switch, then the **Signal path** (**Order**: the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
 | **EQ** | Shapes the tone with up to eight bands (each a bell, a shelf or a notch) and low and high cuts: cut mud, add air, take out a ring, thin out a sound. Its page is a graph with a dot for each band (see [The EQ's page](#the-eqs-page)); each band can be on (**ON**), switched off with its settings kept (**OFF**), or removed. Bands 1 to 4 start on and bands 5 to 8 start removed. |
@@ -261,6 +261,15 @@ It holds the sound back about 1.8 ms to see the peaks coming, and the mixer hold
 
 > [!NOTE]
 > Projects saved before this change sound a little different through the Limiter: pushed hard, it is cleaner on bass and a little quieter (about 0.6 dB on a mix pushed 6 dB), and Auto release now acts.
+
+### The De-esser
+
+**Freq** is where the "s" sounds start; the De-esser listens above it, on whichever side is louder, so a doubled vocal panned to one side is caught as well as one in the centre. **Threshold** is how far that band has to stand out: with **Detect** on **Relative** (the default) it is measured against the whole sound, so it works the same on a quiet take and a loud one; **Absolute** uses the band's own level. **Range** is the most it turns down. **Split** turns down only what is above Freq and never touches the voice under it; **Wide** turns the whole sound down, which some voices like better. **Listen** plays only the band it hears, to find the right Freq.
+
+It holds the sound back 2 ms so it is already turning down when each "s" arrives; the mixer holds everything else back to match.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the De-esser: in Split it no longer lifts the voice under Freq, it turns the "s" down as far as Range says (it used to fall well short), it catches each "s" from its start, and an "s" on one side is turned down as much as one in the centre.
 
 ### The Multiband comp
 

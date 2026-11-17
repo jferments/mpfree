@@ -4,7 +4,7 @@ checked: 2026-11-17 1c113480
 -->
 # Dynamics: design
 
-**Status:** 2026-11-17, FX quality round 4's Multiband PR (after the Limiter and Master safety PR). This page covers the dynamics effects other than the Compressor ([fx-compressor.md](fx-compressor.md)): the **Limiter**, **Master safety**, the **Gate**, the **De-esser**, the **Multiband comp**, the **Ducker**, the **Transient shaper** and the **Channel strip**. Round 4 improves them one pull request at a time, in the order of the plan (jferments/mpfree-claude `fx/quality/plan-4.md`, with research-dynamics.md and baseline-dynamics-2026-11-17.md): the Limiter and Master safety first, then the Multiband (this one), the De-esser, the Gate with the Channel strip, the Ducker and the Transient shaper. The sections on the effects not yet reworked say what they are today and what their pull request is planned to change. Their short entries are in [fx.md](fx.md); their measured targets are in [fx-quality.md](fx-quality.md) (ids P, N, S, X, U, T and C).
+**Status:** 2026-11-17, FX quality round 4's De-esser PR (after the Limiter and Master safety PR and the Multiband PR). This page covers the dynamics effects other than the Compressor ([fx-compressor.md](fx-compressor.md)): the **Limiter**, **Master safety**, the **Gate**, the **De-esser**, the **Multiband comp**, the **Ducker**, the **Transient shaper** and the **Channel strip**. Round 4 improves them one pull request at a time, in the order of the plan (jferments/mpfree-claude `fx/quality/plan-4.md`, with research-dynamics.md and baseline-dynamics-2026-11-17.md): the Limiter and Master safety first, then the Multiband, the De-esser (this one), the Gate with the Channel strip, the Ducker and the Transient shaper. The sections on the effects not yet reworked say what they are today and what their pull request is planned to change. Their short entries are in [fx.md](fx.md); their measured targets are in [fx-quality.md](fx-quality.md) (ids P, N, S, X, U, T and C).
 
 ## 1. What they are for
 
@@ -88,13 +88,17 @@ Every stage takes the gain at most down to what is needed, never up past it, so 
 
 The soft clip's delay (the half-bands' 2.02 frames at low frequencies and ADAA's 2) is matched in the other modes by a 4-frame pad, so the latency is the core's plus 4 in every mode: 85 frames at 44.1 kHz, 91 at 48 kHz. A mode change glides over 10 ms: the soft clip's share of what the core hears and the core's share of the output each move in a straight line, both paths running meanwhile, and the soft clip starts from a clean state when it fades in from nothing. The meters count overs (frames that came in above the ceiling), frames that leave above 0 dBFS (only Raw can make them) and the limiting.
 
-### Gate (round 4's fourth PR)
+### Gate (round 4's next PR)
 
 Today: open and close thresholds apart (hysteresis), Range, Attack, Hold, Release, a 1 ms look-ahead, key filters and the strip's side-chain as the key. Its fronts are kept exactly and the fade means its label, but with Hold 0 it rides 40 and 60 Hz, it shuts only 0.2 to 1.1 dB under the threshold under 1 kHz, and a Range move while it is shut waits until it opens. Planned (plan-4 section 5): a detector that holds each peak for at least 20 ms, Range that follows while shut, an expander mode and Key listen.
 
-### De-esser (round 4's third PR)
+### De-esser
 
-Today: listens above Freq; Relative detection compares that band with the whole sound, so its threshold works at any level; Split turns down only the band (a complementary split), Wide the whole sound; Listen plays the band. Split lifts the band under Freq by up to 1.8 dB and falls short of Range above it. Planned (plan-4 section 6): a split that never lifts (a Linkwitz-Riley split or a matched shelf, whichever measures better), linked detection, and look-ahead (decision 11.2).
+- **Detection** listens above Freq (a 12 dB an octave Butterworth high-pass) on each side, and takes the louder, so an s panned to one side is caught as in the centre (it used to listen to the mid, where a one-sided s is 6 dB down: 4.4 dB less reduction in Absolute). **Relative** compares that band with the whole signal's louder side, so the threshold works at any level; **Absolute** is the band's own level. A 4:1 soft knee (4 dB) under Range; followers of 0.5 ms attack and 60 ms release.
+- **Look-ahead** (decision 11.2): the sound is held back 2 ms (88 frames at 44.1 kHz, fixed, so the mixer compensates and the latency never moves) while the detector hears it as it comes in, so the gain is down when each s arrives. Before, the first half millisecond of each s passed.
+- **Split**: an eighth-order Linkwitz-Riley split (a fourth-order Butterworth, squared; `kit::Split8`) a sixth of an octave under Freq (0.9 times). Its bands are in phase, so the low band plus the high band at the gain, `g × all-pass + (1 - g) × low`, is |low| + g |high| in level: never over 1, so nothing under the split is lifted, and it falls 48 dB an octave, so the cut is within a dB of Range from 1.5 times Freq up. The old split took a 12 dB an octave high-pass from the input (`x - high + g × high`), whose two halves weren't in phase: it lifted under Freq by up to 1.8 dB and fell 7 to 22 dB short of Range. Two Linkwitz-Riley orders were measured on paper first: a fourth-order split at Freq reaches Range only about two octaves up (8.7 dB short at Range 24), and an eighth-order one at Freq 2.1 dB short; the eighth-order at 0.9 times meets both targets with 1 dB to spare. At full reduction it takes about 2 dB off at 0.8 times Freq and nothing measurable at 0.6.
+- **Wide** turns the whole signal down. It passes the split's all-pass too, as Split does at rest, so switching modes at rest doesn't click. **Listen** plays the high band (`all-pass - low`).
+- Five state-variable stages a side make the split (one stage on the input gives the first low-pass and the all-pass's first half together), run on both sides at once (`Stage::run2`), which the compiler pairs up: 87.7k instructions a block run a side at a time, 59.0k together.
 
 ### Multiband comp
 
@@ -132,6 +136,8 @@ Today: MPFree's Gate, Compressor (Clean) and EQ in one insert, with Order and Ou
 | True peak | Off, On (Off) | The points between samples as a 4x meter reads them |
 | Reduction | 0 to 30 dB, read only | The meter |
 
+**De-esser** (ids unchanged): Freq (2 to 12 kHz, 6k; log, 30 ms glide, the filters re-tuned every 16 frames), Threshold (-60 to 0 dB, -30), Range (0 to 24 dB, 10), Mode (Split, Wide), Detect (Relative, Absolute), Listen, and the Reduction meter. Latency 2 ms.
+
 **Multiband comp** (ids unchanged, Auto makeup new): Low | mid (40 Hz to 1 kHz, 200; log, 30 ms glide), Mid | high (1 to 12 kHz, 2.5k; as Low | mid), per band Threshold (-60 to 0 dB, -18; 20 ms glide), Ratio (1 to 20, 2; log, its slope glides 20 ms) and Gain (-24 to +24 dB, 0; 20 ms glide), Attack (0.1 to 100 ms, 10; log), Release (10 ms to 1 s, 150; log), Solo (Off, Low, Mid, High), Mix (0 to 100 %, 100; 20 ms glide), Output (-24 to +24 dB, 0; 20 ms glide), Auto makeup (Off, On; Off), and the three bands' reduction meters.
 
 **Master safety** (ids unchanged): Mode (Safe limiter, Soft clip, Raw; Safe limiter; a 10 ms glide between modes), Trim (-24 to +12 dB, 0; 20 ms glide), Ceiling (-6 to 0 dB, -0.3; 20 ms glide, new), Release (10 ms to 1 s, 80; log, as the Limiter's), and the meters Limiting, Overs and Clipped.
@@ -139,6 +145,8 @@ Today: MPFree's Gate, Compressor (Clean) and EQ in one insert, with Order and Ou
 ## 6. Defaults and presets
 
 The Limiter's defaults (Gain 0, Ceiling -0.3, Release 80, Auto release on, True peak off) catch stray peaks without touching anything under the ceiling. Its presets: **Safe peaks** (Ceiling -1), **Loud master** (Gain 6, Ceiling -1, True peak on) and **Drum smash** (Gain 12, Release 25, Auto release off). Master safety's defaults (Safe limiter at -0.3 dB) are what every output ends in; it has no presets.
+
+The De-esser's defaults (6 kHz, -30 dB Relative, Range 10, Split) and presets (Male vocal at 5 kHz, Female vocal at 7.5 kHz, both -26 dB; Harsh hats at 9 kHz, -20 dB, Range 6) are unchanged.
 
 The Multiband's defaults (200 Hz and 2.5 kHz, every band at -18 dB and 2:1, Attack 10 ms, Release 150 ms) are gentle glue. Its presets now all turn Auto makeup on: **Master glue**, **Tight low end** (keeps its +2 dB on the low band, a tilt), **Vocal smooth** and **Drum crush**, which drops the +6 dB it gave each band for Auto makeup (it was 5.6 LU quieter than the dry on pink, now 0.8 louder).
 
@@ -175,6 +183,19 @@ The quick gates (`mpfree-fxlab/tests/gates.rs`) assert P1 and P2 on pink pushed 
 
 The quick gates assert X2 at Mix 25, 50 and 75, and X7 at the defaults and at Drum crush's settings.
 
+### De-esser
+
+`fxlab quality --class deesser` measures the S targets ([fx-quality.md](fx-quality.md#de-esser-s)). After the De-esser PR all 20 are met (11 before):
+
+| | Before | After |
+|---|---|---|
+| Split at full reduction: lift under 0.8 times Freq (Range 10, 24) | +1.3, +1.8 dB | +0.002 dB |
+| Split at full reduction: worst distance from Range, 1.5 times Freq to 16 kHz (Range 10, 24) | 7.7, 22.1 dB | 0.10, 0.67 dB |
+| An s on one side against the centre: Relative, Absolute | 0.70, 4.40 dB | 0.0003, 0 dB |
+| Zipper: Freq, Range, Threshold | 0.09, 0.33, 0.61 dB | 0.25, 0.02, 0.02 dB |
+
+S3 and S4 are as before (Relative takes the same 9.95 dB off the s at -6, -18 and -30 dBFS, and 0.04 dB off the voice between). `tests/coverage.rs` checks that the first millisecond of a burst out of silence already comes out turned down (the look-ahead), and `kit`'s unit tests that the split's all-pass is flat, that turning its high band down never lifts anything, and that an octave over the split it is within a dB of the gain.
+
 ## 8. Cost
 
 The instruction gate (rustc 1.97.0, a 128-frame block at 44.1 kHz), before and after:
@@ -189,8 +210,9 @@ The instruction gate (rustc 1.97.0, a 128-frame block at 44.1 kHz), before and a
 | Mixer, 16 tracks and 32 pads, routing only | 370.8k | 461.7k (+24.5 %) |
 | Mixer cases with a song's inserts | 1.02M to 1.54M | +5 to +7 % |
 | Multiband compressor (defaults) | 141.5k | 149.9k (+6.0 %) |
+| De-esser (defaults) | 42.4k | 59.0k (+39.0 %) |
 
-The rises are the true peaks: Master safety now always catches them (decision 11.1). In the routing-only mixer cases a dozen loud tracks keep the master limiting nearly all the time, so the detector works out every point between samples for both channels on almost every frame. A mix that isn't pushing the master costs less than before (quiet blocks), and one near the ceiling pays for the near taps on most frames. The x86 host vectorises these sums poorly, so the numbers are a rough guide; on the MPC's ARM, which does floats one at a time, the folding and the near taps cut the detector's multiplies to 18 or 48 a channel from 96. Soft clip costs more than Safe limiter (the half-bands and four ADAA steps a frame); it isn't in the gate. The Multiband's rise is the detector in decibels and the six new glides; taking the dry from the bands kept the Mix fix free (a second pair of all-passes cost 22 %).
+The rises are the true peaks: Master safety now always catches them (decision 11.1). In the routing-only mixer cases a dozen loud tracks keep the master limiting nearly all the time, so the detector works out every point between samples for both channels on almost every frame. A mix that isn't pushing the master costs less than before (quiet blocks), and one near the ceiling pays for the near taps on most frames. The x86 host vectorises these sums poorly, so the numbers are a rough guide; on the MPC's ARM, which does floats one at a time, the folding and the near taps cut the detector's multiplies to 18 or 48 a channel from 96. Soft clip costs more than Safe limiter (the half-bands and four ADAA steps a frame); it isn't in the gate. The Multiband's rise is the detector in decibels and the six new glides; taking the dry from the bands kept the Mix fix free (a second pair of all-passes cost 22 %). The De-esser's rise is its split, five stages a side for one, and the look-ahead's delay.
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -208,11 +230,15 @@ The rises are the true peaks: Master safety now always catches them (decision 11
 | A parallel Mix that notches a multiband's crossovers | The dry is the bands' own sum, in phase with them |
 | Zipper from a band's threshold or ratio | Both glide; the curve takes the slope, so the ratio glides evenly |
 | Auto makeup stacked on a preset's own makeup | The presets that turn it on drop their makeup gains |
+| A split de-esser that boosts the voice under the s | A Linkwitz-Riley split, whose bands are in phase |
+| A de-esser that misses the start of each s | 2 ms of look-ahead |
+| An s panned to one side caught less | Detection from the louder side |
 
 ## 10. History and next
 
 - Before round 4: the Limiter's true-peak detector was a 12-tap Hann sinc at three phases (+0.48 dB over a 4x meter), its Auto release never acted, its release was a linear one-pole (63 % in dB at 0.8 of its label); Master safety had no true-peak detection (+0.81 dBTP out on pink pushed 12 dB) and a base-rate soft clip.
 - This PR: the shared core, true peaks always caught in Master safety, the hold, release in dB, an Auto release that acts, the soft clip at 2x with ADAA, the mode glide, the Ceiling glide in Master safety.
+- The De-esser PR: the eighth-order Linkwitz-Riley split under Freq, detection from the louder side, 2 ms of look-ahead (decision 11.2).
 - The Multiband PR: Mix in phase, the Compressor's detector in each band, gliding thresholds and ratios, Auto makeup (on in every preset).
 - Next, from plan-4 section 4.2: styles in the spirit of Pro-L 2's (Transparent, Punchy with a shorter hold, Safe with a longer one) and a channel link amount, if the device round shows the cost allows. Then the rest of round 4 as section 4 says.
 
