@@ -565,10 +565,13 @@ pub struct Timing {
 pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
 
 /// Writes what each track plays under its name: its own instrument's
-/// name, or "Kit".
+/// name, or "Kit"; a Loop track's input ("Pads + synth").
 fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
     for (i, t) in st.tracks.iter_mut().enumerate() {
-        let name = sounds.get(i).copied().flatten().map_or("Kit", |h| h.name);
+        let name = match t.loops {
+            Some(input) => input.name(),
+            None => sounds.get(i).copied().flatten().map_or("Kit", |h| h.name),
+        };
         if t.sound != name {
             t.sound = name.to_string();
         }

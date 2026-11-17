@@ -910,6 +910,9 @@ impl Session {
             self.out.note(&line);
         }
         let (mut ll, mut lr) = ([0f32; PERIOD], [0f32; PERIOD]);
+        for line in self.looper.follow_plan(&self.time.loop_plan()) {
+            self.out.note(&line);
+        }
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -925,6 +928,11 @@ impl Session {
         }
         for line in self.looper.changes(|| self.time.position_text()) {
             self.out.note(&line);
+        }
+        if let Some(now) = self.looper.grid_now() {
+            for line in self.time.loops_are(&now) {
+                self.out.note(&format!("time: {line}"));
+            }
         }
         if self.periods.is_multiple_of(11) {
             let view = self.looper.view(self.app.settings.bpm);

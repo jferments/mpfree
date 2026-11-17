@@ -140,6 +140,17 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
         self.assertTrue(got["REC then went to the loop"])
 
+    def test_loop_tracks_need_the_landing_and_both_launches(self):
+        w = checks.Window(lines("time: Loop 1 on Loops A, row 1, playing", "looper: loop 1 off from bar 4",
+                                "looper: loop 1 on from bar 6"))
+        self.assertTrue(all(ok for ok, _ in self.judge("loop-tracks", w)))
+        # Another loop's line, or one on a later Loop track, is not this one.
+        w = checks.Window(lines("time: Loop 2 on Loops B, row 1, playing", "looper: loop 1 off"))
+        got = dict((what, ok) for ok, what in self.judge("loop-tracks", w))
+        self.assertFalse(got["the loop landed on Loops A"])
+        self.assertFalse(got["row 2 stopped it on its bar line"], "off at once is not on the bar line")
+        self.assertFalse(got["its cell brought it back on a bar line"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]
