@@ -359,6 +359,68 @@ impl Quantise {
     }
 }
 
+/// When a launched clip starts, and a stop or a mute lands (launch
+/// quantise, sequencer S4): at once, on the next line of a note grid, or
+/// on the next line of a number of bars counted from the song's start.
+/// The project has one ([`Project::launch`], 1 bar for a new one), and a
+/// clip can have its own ([`Clip::launch`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LaunchGrid {
+    /// At once: the next tick the playhead plays.
+    Now,
+    /// The next line of a grid this many ticks apart (1/16 is 240).
+    Ticks(u32),
+    /// The next line of this many bars.
+    Bars(u8),
+}
+
+impl Default for LaunchGrid {
+    fn default() -> Self {
+        LaunchGrid::Bars(1)
+    }
+}
+
+/// The launch grids the screens step through, finest first: at once, 1/16
+/// to 1/2, then 1 to 8 bars.
+pub const LAUNCH_GRIDS: [LaunchGrid; 9] = [
+    LaunchGrid::Now,
+    LaunchGrid::Ticks(PPQ / 4),
+    LaunchGrid::Ticks(PPQ / 2),
+    LaunchGrid::Ticks(PPQ),
+    LaunchGrid::Ticks(PPQ * 2),
+    LaunchGrid::Bars(1),
+    LaunchGrid::Bars(2),
+    LaunchGrid::Bars(4),
+    LaunchGrid::Bars(8),
+];
+
+impl LaunchGrid {
+    /// In range: a note grid of a tick to a whole note, or 1 to 16 bars.
+    pub fn ok(self) -> bool {
+        match self {
+            LaunchGrid::Now => true,
+            LaunchGrid::Ticks(t) => (1..=PPQ * 4).contains(&t),
+            LaunchGrid::Bars(n) => (1..=16).contains(&n),
+        }
+    }
+
+    /// The distance between its lines, in song ticks, with bars of `bar`
+    /// ticks: 1 for at once, so the next line is the next tick.
+    pub fn line(self, bar: Tick) -> Tick {
+        match self {
+            LaunchGrid::Now => 1,
+            LaunchGrid::Ticks(t) => Tick::from(t.max(1)),
+            LaunchGrid::Bars(n) => bar.max(1) * Tick::from(n.max(1)),
+        }
+    }
+
+    /// Its first line at or after song tick `t`, with bars of `bar` ticks.
+    pub fn next(self, t: Tick, bar: Tick) -> Tick {
+        let line = self.line(bar);
+        t.div_euclid(line) * line + if t.rem_euclid(line) == 0 { 0 } else { line }
+    }
+}
+
 /// A parameter lock: `addr` set to `value` on a step, from `tick` until
 /// the track's next note without a lock on it (see the crate docs).
 ///
@@ -445,6 +507,12 @@ pub struct Clip {
     /// [`LOOPS`] - 1). Such a clip has no notes, locks, pressure or moves,
     /// and is as long as its loop ([`loops`]).
     pub looped: Option<u8>,
+    /// Its own launch quantise; None: the project's ([`Project::launch`]).
+    pub launch: Option<LaunchGrid>,
+    /// Legato: launched while another clip plays on its track, it takes
+    /// over that clip's place in its pass instead of starting from its
+    /// top (sequencer S4).
+    pub legato: bool,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -457,6 +525,9 @@ pub struct ClipSettings {
     pub swing: Option<Swing>,
     pub quantise: Option<Quantise>,
     pub follow: Option<Follow>,
+    /// Its launch quantise (None: the project's) and legato (S4).
+    pub launch: Option<LaunchGrid>,
+    pub legato: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -494,6 +565,8 @@ pub enum ModelError {
     BadPlacement,
     /// No room for it (song to scenes: no run of empty rows long enough).
     NoRoom,
+    /// A launch quantise out of range ([`LaunchGrid::ok`]).
+    BadLaunch,
     /// A loop cell names no loop or holds notes, or a clip is on a track
     /// of the other kind (a loop cell on a note track, a note clip on a
     /// Loop track).
@@ -501,19 +574,23 @@ pub enum ModelError {
 }
 
 impl Clip {
-    /// Its speed, swing, quantise and follow action.
+    /// Its speed, swing, quantise, follow action, launch quantise and
+    /// legato.
     pub fn settings(&self) -> ClipSettings {
         ClipSettings {
             speed: self.speed,
             swing: self.swing,
             quantise: self.quantise,
             follow: self.follow,
+            launch: self.launch,
+            legato: self.legato,
         }
     }
 
-    /// Change its speed, swing, quantise and follow action, all or none:
-    /// `BadSpeed`, `BadSwing`, `BadQuantise` or the follow action's own
-    /// refusal leaves the clip as it was.
+    /// Change its speed, swing, quantise, follow action, launch quantise
+    /// and legato, all or none: `BadSpeed`, `BadSwing`, `BadQuantise`,
+    /// `BadLaunch` or the follow action's own refusal leaves the clip as it
+    /// was.
     pub fn set_settings(&mut self, s: ClipSettings) -> Result<(), ModelError> {
         if Speed::new(s.speed.num, s.speed.den).is_none() {
             return Err(ModelError::BadSpeed);
@@ -531,10 +608,15 @@ impl Clip {
         if let Some(f) = &s.follow {
             f.check()?;
         }
+        if s.launch.is_some_and(|g| !g.ok()) {
+            return Err(ModelError::BadLaunch);
+        }
         self.speed = s.speed;
         self.swing = s.swing;
         self.quantise = s.quantise;
         self.follow = s.follow;
+        self.launch = s.launch;
+        self.legato = s.legato;
         Ok(())
     }
 
@@ -552,6 +634,8 @@ impl Clip {
             follow: None,
             touch: Vec::new(),
             looped: None,
+            launch: None,
+            legato: false,
         }
     }
 
@@ -673,6 +757,9 @@ impl Clip {
             .is_some_and(|q| Quantise::new(q.grid, q.strength).is_none())
         {
             return Err(ModelError::BadQuantise);
+        }
+        if self.launch.is_some_and(|g| !g.ok()) {
+            return Err(ModelError::BadLaunch);
         }
         for (i, n) in self.notes.iter().enumerate() {
             if !self.note_ok(n) {
@@ -861,6 +948,9 @@ pub struct Project {
     /// Jay's decisions 4 and 5): how the app answers the hands, never
     /// what plays. Saved, so a set opens as it was left.
     pub perform: bool,
+    /// When a launch, a stop or a scene lands (launch quantise, S4): the
+    /// transport bar's "Launch 1 bar". A clip can have its own.
+    pub launch: LaunchGrid,
 }
 
 impl Project {
@@ -884,6 +974,9 @@ impl Project {
         }
         for s in &self.scenes {
             s.check()?;
+        }
+        if !self.launch.ok() {
+            return Err(ModelError::BadLaunch);
         }
         self.arrangement.check(&self.tracks)
     }
@@ -1192,6 +1285,44 @@ mod tests {
         assert_eq!(q.apply(110.0), 55.0);
         assert_eq!(Quantise::new(240, 100).unwrap().apply(130.0), 240.0);
         assert!(Quantise::new(0, 50).is_none() && Quantise::new(240, 101).is_none());
+    }
+
+    /// Launch quantise (S4): the next line of the grid, at once for Now,
+    /// and only grids in range pass.
+    #[test]
+    fn launch_grids_find_their_next_line() {
+        let bar = 3840;
+        assert_eq!(LaunchGrid::default(), LaunchGrid::Bars(1));
+        assert_eq!(LaunchGrid::Now.next(1234, bar), 1234);
+        assert_eq!(LaunchGrid::Ticks(240).next(1234, bar), 1440);
+        assert_eq!(LaunchGrid::Ticks(240).next(1440, bar), 1440);
+        assert_eq!(LaunchGrid::Bars(1).next(1, bar), 3840);
+        assert_eq!(LaunchGrid::Bars(2).next(3841, bar), 7680);
+        assert_eq!(LaunchGrid::Bars(4).next(0, bar), 0);
+        // Before the song's start (a count-in), lines count back from 0.
+        assert_eq!(LaunchGrid::Bars(1).next(-100, bar), 0);
+        assert_eq!(LaunchGrid::Bars(1).next(-3940, bar), -3840);
+        assert!(LAUNCH_GRIDS.iter().all(|g| g.ok()));
+        for bad in [
+            LaunchGrid::Ticks(0),
+            LaunchGrid::Ticks(PPQ * 4 + 1),
+            LaunchGrid::Bars(0),
+            LaunchGrid::Bars(17),
+        ] {
+            assert!(!bad.ok(), "{bad:?}");
+        }
+        let mut c = Clip::new("c", 960);
+        let mut s = c.settings();
+        s.launch = Some(LaunchGrid::Bars(0));
+        assert_eq!(c.set_settings(s), Err(ModelError::BadLaunch));
+        assert_eq!(c.launch, None);
+        s.launch = Some(LaunchGrid::Now);
+        s.legato = true;
+        assert_eq!(c.set_settings(s), Ok(()));
+        assert_eq!((c.launch, c.legato), (Some(LaunchGrid::Now), true));
+        let mut p = Project::new();
+        p.launch = LaunchGrid::Bars(99);
+        assert_eq!(p.check(), Err(ModelError::BadLaunch));
     }
 
     #[test]

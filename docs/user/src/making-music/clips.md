@@ -14,7 +14,7 @@ A **clip** is a piece of music you recorded or programmed: a drum pattern, a bas
 
 The grid has a column per **track** and a row per **slot**. Each track plays one clip at a time, so a column might hold four different drum patterns, and you pick which one plays.
 
-- **Tap a clip** to launch it. It starts on the next bar line, so it always lands in time. Tap a playing clip to stop it at the next bar. A clip launches when you lift your finger, because you can also drag it.
+- **Tap a clip** to launch it. It starts on the next bar line (or the line **Launch** sets, below), so it always lands in time. Tap a playing clip to stop it at the next bar. A clip launches when you lift your finger, because you can also drag it.
 - **Tap +** in an empty slot to record a new clip there.
 - **Drag a clip** to move it: once your finger moves, it lifts and follows you, and the slot it will land in is outlined. Lift your finger to drop it. In an empty slot it moves there; onto another clip, the two change places, so nothing is lost. In another track's column it plays that track's sound. A clip that is playing keeps playing where it lands, and the song's blocks that use it go with it. Hold **SHIFT** as you lift to drop a copy instead (into an empty slot). Lift it where it started to leave it be.
 - **Drag a row's number** to move the whole row, every track's clip in it: a line shows where it will go, and the rows in between move up or down one, so nothing is written over. With **SHIFT** held as you lift, a copy of the row goes in at the line and the rows under it move down one (the last row has to be empty). A tap on the number still plays the row.
@@ -41,7 +41,7 @@ Tracks past 16 play the kit for now. They have no MIDI out of their own and can'
 
 The loops you record on the Play page or the Looper tab show on **Loop tracks**, columns named **Loops A**, **Loops B** and on, added at the end of the grid as they are needed, with a little wave and **Pads** under the name (they record the pads and the synth). Each cell names its loop ("Loop 1"), shows its wave and length, and launches like a clip: one loop plays per Loop track, and loops on different Loop tracks play together. The pads don't play a Loop track. **SHIFT + + Track** adds an empty one, and a tap on an empty Loop cell arms it, so REC records a loop there. See [Loops in the Clips grid](looping.md#loops-in-the-clips-grid).
 
-A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits for the next bar, red while recording. A loop's cell has no ring: its wave lights up to where the loop is.
+A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits to start, red while recording. A loop's cell has no ring: its wave lights up to where the loop is.
 
 ## The Q-Links on Arrange
 
@@ -62,7 +62,9 @@ Set up the recording in the Record panel, beside the grid:
 - **Loop:** plays the same bars round and round while you record, so you can keep trying a part. It counts in bars from bar 1.
 - **Tempo:** the song's tempo, in BPM.
 - **Pressure:** whether the armed track records how hard you press the pads while they're held (**Recorded**, the setting for a new track, or **Off**).
-- **Quantise:** puts each note you record on the nearest line of a grid, from **1/4** to **1/32** with triplets, as the MPC's Timing Correct does while recording. **Off** (the setting for a new track) keeps the notes exactly as you played them. It belongs to the armed track, so drums can go in on 1/16 while the bass keeps its feel. The clip's own **Quantise** (see [Clip settings](#clip-settings)) still moves the notes as they play, and you can change that later; this one moves them for good, so they sit on the steps in Beats and the note editor. **Pressure** and **Quantise** are the last rows: pick Loop or Tempo and the list moves up to show them.
+- **Quantise:** puts each note you record on the nearest line of a grid, from **1/4** to **1/32** with triplets, as the MPC's Timing Correct does while recording. **Off** (the setting for a new track) keeps the notes exactly as you played them. It belongs to the armed track, so drums can go in on 1/16 while the bass keeps its feel. The clip's own **Quantise** (see [Clip settings](#clip-settings)) still moves the notes as they play, and you can change that later; this one moves them for good, so they sit on the steps in Beats and the note editor. - **Launch:** when a clip you tap, a stop or a scene starts while the music plays: on the next bar line (**1 bar**, the setting for a new project), the next **2**, **4** or **8** bars for a big change, the next **1/2** to **1/16** note for a quick one, or **at once**. The transport bar shows it as **Launch 1 bar**. A clip with a Launch of its own on the Clip tab (below) keeps it; a scene's clips all start together on this one. Change it while something waits and that still starts where it was going to.
+
+**Pressure**, **Quantise** and **Launch** are the last rows: pick Loop or Tempo and the list moves up to show them.
 
 Tap a row's arrows, or the left or right of its value, to change it. Or turn the data wheel to pick a row and press **–** or **+**. Push the wheel and turning it changes the row picked; push again to go back to picking rows.
 
@@ -102,12 +104,14 @@ The Record panel has two tabs at its top: **Record**, the record settings, and *
 - **Strength:** how far quantise pulls them, 10 to 100 %.
 - **Follow:** what the track plays after this clip. **Next**, **Previous**, **First** and **Last** pick from the track's clips; **Any** picks one at random, this one included, and **Other** any but this one; **Again** plays it from its start; **Stop** stops the track.
 - **After:** after how many bars, counted from where the clip started. Turning **Follow** on starts it at one pass of the clip.
+- **Launch:** **project** starts this clip on the Record tab's **Launch** line. Or give it its own, from **at once** to **8 bars**: a fill on **1/4** comes in on the next beat while the rest of the set changes on the bar.
+- **Mode:** **Restart** starts the clip from its top. **Legato** takes over from the clip the track is playing at the same place in its pass, so a variation slides in mid-phrase: with **Verse A** two bars long, a legato **Verse B** that starts on the bar line halfway through it plays on from its own second bar. With nothing playing, it starts from its top.
 
 Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **+**, as on the Record tab. Hold **SHIFT** as you tap **Length**'s arrows to **double** the clip (its notes play again in the new half) or **halve** it, and **Speed**'s to play it twice as fast or half as fast. Each change plays at once. A row you change is one take ("Settings 4 · Bass / 2"), however far you turn it, so **UNDO** puts it back in one go.
 
-A Loop track's cell plays its loop as you recorded it, so only **Follow** and **After** apply to it.
+A Loop track's cell plays its loop as you recorded it, so only **Follow**, **After** and **Launch** apply to it.
 
-Coming: the clip's name and colour, its step size, how it launches (on the bar, or legato), and playing it backwards.
+Coming: the clip's name and colour, its step size, a one-shot mode, and playing it backwards.
 
 ## Takes
 

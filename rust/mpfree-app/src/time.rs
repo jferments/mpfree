@@ -2754,6 +2754,79 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// Launch on the Record tab (S4): a tapped clip waits for the next
+    /// line of the project's launch quantise, a legato clip plays on from
+    /// the place in the bar the one it replaces had reached, and a cue
+    /// waiting when Launch changes keeps the line it had.
+    #[test]
+    fn a_launch_lands_on_the_launch_quantise_and_waiting_cues_keep_their_line() {
+        use mpfree_seq::LaunchGrid;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |name: &str, notes: &[(i64, u8)]| {
+            let mut c = Clip::new(name, 3840);
+            c.notes = notes
+                .iter()
+                .map(|&(tick, note)| mpfree_seq::Note::new(tick, 100, note, 100))
+                .collect();
+            c
+        };
+        h.control.project.tracks[0].slots[0] = Some(one_bar("A", &[(0, 4), (1920, 4)]));
+        let mut b = one_bar("B", &[(0, 9), (1920, 10)]);
+        b.legato = true;
+        h.control.project.tracks[0].slots[1] = Some(b);
+        assert!(h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(0))).is_err());
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+        // A quarter note: B lands on bar 2's second beat, a quarter into
+        // its pass as A was, so its first note is its half-bar one.
+        assert_eq!(
+            h.act(TimeAction::LaunchGrid(LaunchGrid::Ticks(960)))
+                .unwrap(),
+            "launch: a tapped clip, a stop or a scene starts on the next 1/4"
+        );
+        assert_eq!(h.state().launch, LaunchGrid::Ticks(960));
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        assert_eq!(h.state().cue_line(0), LaunchGrid::Ticks(960));
+        run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+        assert_eq!(h.state().launch(0).map(|l| l.slot), Some(1));
+        // Back to a bar: A waits for bar 4. Launch goes to 4 bars while it
+        // waits, and A keeps its bar line.
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(1))).unwrap();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(4))).unwrap();
+        let st = h.state();
+        assert_eq!(st.cue_lines, vec![(0, LaunchGrid::Bars(1))]);
+        assert_eq!(st.cue_line(0), LaunchGrid::Bars(1));
+        run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
+        let st = h.state();
+        assert_eq!((st.launch(0).map(|l| l.slot), st.cues.len()), (Some(0), 0));
+        assert!(st.cue_lines.is_empty());
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        let want = [
+            (0, 4),
+            (BAR / 2, 4),
+            (BAR, 4),
+            (BAR + BAR / 2, 10),
+            (2 * BAR, 9),
+            (2 * BAR + BAR / 2, 10),
+            (3 * BAR, 4),
+            (3 * BAR + BAR / 2, 4),
+        ];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        // A new tap while one waits lands on the line Launch gives now.
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(1))).unwrap();
+        assert_eq!(h.state().cue_line(0), LaunchGrid::Bars(4));
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        assert_eq!(h.state().cue_line(0), LaunchGrid::Bars(1));
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// A row's scene button: stopped, the row plays at once; playing, it
     /// waits for the bar line, where track 2 goes quiet (the scene mutes
     /// it) and track 1 switches row. Row 2 follows on to row 1 after a bar.

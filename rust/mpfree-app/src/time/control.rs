@@ -31,7 +31,7 @@ use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::steps::{Edit, Grid};
-use mpfree_seq::{Clip, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
+use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow,
@@ -1433,6 +1433,37 @@ impl TimeControl {
                     None => format!("record quantise: {name} records the notes as played"),
                 })
             }
+            // The project's launch quantise (S4). What waits already keeps
+            // the line it had (the design's edge case).
+            TimeAction::LaunchGrid(g) => {
+                if !g.ok() {
+                    return Err("launch: not a launch quantise".into());
+                }
+                let was = self.project.launch;
+                if was != g {
+                    for c in &self.cues {
+                        let own = c
+                            .slot
+                            .and_then(|s| self.project.clip(c.track, s))
+                            .and_then(|m| m.launch);
+                        if own.is_none() {
+                            self.perform.hold_line(c.track, was);
+                        }
+                    }
+                    self.project.launch = g;
+                    self.changed = true;
+                    self.compile()?;
+                }
+                let name = mpfree_time_ui::view::launch_name(g);
+                Ok(match g {
+                    LaunchGrid::Now => {
+                        "launch: a tapped clip, a stop or a scene starts at once".into()
+                    }
+                    _ => format!(
+                        "launch: a tapped clip, a stop or a scene starts on the next {name}"
+                    ),
+                })
+            }
             TimeAction::Arm(Some(t))
                 if self.project.tracks.get(t).is_some_and(|t| t.is_loops()) =>
             {
@@ -1493,10 +1524,19 @@ impl TimeControl {
                 Ok(line)
             }
             TimeAction::Launch { .. } | TimeAction::StopClip(_) | TimeAction::Uncue(_) => {
-                if let TimeAction::Uncue(track) = a {
-                    self.perform.uncue(track);
-                }
-                // While the music plays, they wait for the next bar line.
+                // A new tap replaces the track's cue, which lands on the
+                // line Launch gives now, not one an earlier cue kept.
+                let kept = match a {
+                    TimeAction::Uncue(track) => {
+                        self.perform.uncue(track);
+                        None
+                    }
+                    TimeAction::Launch { track, .. } | TimeAction::StopClip(track) => {
+                        Some((track, self.perform.forget_line(track)))
+                    }
+                    _ => None,
+                };
+                // While the music plays, they wait for their launch line.
                 let after = clips_after(&self.project, &self.launches, &self.cues, &a, &info);
                 let before = (
                     std::mem::replace(&mut self.launches, after.0),
@@ -1504,6 +1544,9 @@ impl TimeControl {
                 );
                 if let Err(e) = self.compile() {
                     (self.launches, self.cues) = before;
+                    if let Some((track, line)) = kept {
+                        self.perform.restore_line(track, line);
+                    }
                     return Err(e);
                 }
                 Ok(format!("clips: {a:?}"))
@@ -2596,6 +2639,11 @@ impl TimeControl {
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
         st.cues = self.cues.clone();
+        st.cue_lines = self
+            .cues
+            .iter()
+            .filter_map(|c| Some((c.track, self.perform.cue_line(c.track)?)))
+            .collect();
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();
         st.loop_cell = self.loop_cell();

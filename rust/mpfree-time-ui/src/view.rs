@@ -45,8 +45,8 @@ use mpfree_audiotracks::{Input, Monitor};
 use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
-    Clip, ClipSettings, Follow, FollowAction, Project, Quantise, Source, Speed, MAX_CLIP_TICKS,
-    MAX_TRACKS, SLOTS,
+    Clip, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise, Source, Speed,
+    LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -152,12 +152,12 @@ pub fn edit_hint(lens: Lens) -> &'static str {
     }
 }
 /// The record settings, top to bottom (short, to fit the 250 px panel).
-pub const RECORD_ROWS: [&str; 7] = [
-    "Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure", "Quantise",
+pub const RECORD_ROWS: [&str; 8] = [
+    "Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure", "Quantise", "Launch",
 ];
 /// The clip settings card's rows, top to bottom.
-pub const CLIP_ROWS: [&str; 7] = [
-    "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After",
+pub const CLIP_ROWS: [&str; 9] = [
+    "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After", "Launch", "Mode",
 ];
 /// The speeds the card's Speed row steps through, slowest first, as
 /// (clip ticks, song ticks): x1/8 to x4.
@@ -493,6 +493,12 @@ pub struct TimeState {
     /// The project is in Perform, not Make (`Project::perform`, sequencer
     /// S4).
     pub perform: bool,
+    /// The project's launch quantise (`Project::launch`, S4).
+    pub launch: LaunchGrid,
+    /// The line each cue lands on, by track, where the time engine set
+    /// it apart from the clip's own and the project's (a scene's, a
+    /// follow's, one kept when Launch changed). The app sets it.
+    pub cue_lines: Vec<(usize, LaunchGrid)>,
     /// The arrangement's placements and markers.
     pub placements: Vec<PlacementInfo>,
     pub markers: Vec<(Tick, String)>,
@@ -651,6 +657,8 @@ impl TimeState {
             song_view: false,
             song_on: false,
             perform: project.perform,
+            launch: project.launch,
+            cue_lines: Vec::new(),
             placements: project
                 .arrangement
                 .placements
@@ -751,6 +759,9 @@ pub enum TimeAction {
         track: usize,
         grid: Option<u32>,
     },
+    /// "Launch" on the record settings (sequencer S4): the project's launch
+    /// quantise, when launches, stops and scenes land.
+    LaunchGrid(LaunchGrid),
     /// Play this clip from the next bar line (see [`clips_after`]).
     Launch {
         track: usize,
@@ -1074,13 +1085,31 @@ pub fn clips_after(
     (launches, cues)
 }
 
-/// Where the cues start: the next bar line the playhead plays. In a loop
-/// whose end comes first, that is the loop start's bar line.
-pub fn cue_tick(t: &TransportInfo) -> Tick {
-    let next = t.meter.next_bar(t.position);
+/// Where a cue landing on `line` starts: its next line the playhead
+/// plays. In a loop whose end comes first, that is the loop start's.
+pub fn cue_tick(t: &TransportInfo, line: LaunchGrid) -> Tick {
+    let bar = t.meter.bar_ticks();
+    let next = line.next(t.position, bar);
     match t.loop_range {
-        Some((a, b)) if t.state.rolling() && t.position < b && next >= b => t.meter.next_bar(a),
+        Some((a, b)) if t.state.rolling() && t.position < b && next >= b => line.next(a, bar),
         _ => next,
+    }
+}
+
+impl TimeState {
+    /// The line the cue on `track` lands on: as the time engine set it
+    /// ([`TimeState::cue_lines`]), else the cued clip's own launch
+    /// quantise, else the project's.
+    pub fn cue_line(&self, track: usize) -> LaunchGrid {
+        if let Some((_, g)) = self.cue_lines.iter().find(|(t, _)| *t == track) {
+            return *g;
+        }
+        let own = self
+            .cue(track)
+            .and_then(|c| c.slot)
+            .and_then(|s| self.clip(track, s))
+            .and_then(|c| c.settings.launch);
+        own.unwrap_or(self.launch)
     }
 }
 
@@ -1393,6 +1422,15 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     let grid = (next > 0).then(|| QUANTISE_GRIDS[next - 1]);
                     (grid != now).then_some(TimeAction::RecordQuantise { track: a, grid })
                 }),
+                // At once, the note grids, then the bars.
+                7 => {
+                    let now = LAUNCH_GRIDS
+                        .iter()
+                        .position(|&g| g == st.launch)
+                        .unwrap_or(5);
+                    let next = (now as i32 + d).clamp(0, LAUNCH_GRIDS.len() as i32 - 1) as usize;
+                    (next != now).then_some(TimeAction::LaunchGrid(LAUNCH_GRIDS[next]))
+                }
                 _ => None,
             }
         }
@@ -1459,6 +1497,11 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
                 "Quantise is at its finest, {}",
                 grid_name(QUANTISE_GRIDS[QUANTISE_GRIDS.len() - 1])
             ),
+        )),
+        (RECORD, EventKind::Step { index: 7, delta }) => Some(end(
+            *delta,
+            "Launch is at once already: a tapped clip starts on the next tick",
+            "Launch is at its longest, 8 bars",
         )),
         (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).err(),
         _ => None,
@@ -1571,6 +1614,12 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
                 .map_or_else(|| "off".to_string(), |f| follow_name(f.action).to_string()),
         ),
         row(6, s.follow.map_or(dash, |f| bars_label(i64::from(f.bars)))),
+        // The project's launch quantise unless it has its own.
+        row(
+            7,
+            s.launch.map_or_else(|| "project".to_string(), launch_name),
+        ),
+        row(8, if s.legato { "Legato" } else { "Restart" }.to_string()),
     ]
 }
 
@@ -1664,8 +1713,10 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
         .focus()
         .ok_or("No clip to set: arm a track with a clip, or make one")?;
     let c = st.clip(track, slot).ok_or("No clip to set")?;
-    if c.looped.is_some() && index < 5 {
-        return Err("A loop cell plays its loop as recorded: only Follow and After apply".into());
+    if c.looped.is_some() && (index < 5 || index == 8) {
+        return Err(
+            "A loop cell plays its loop as recorded: only Follow, After and Launch apply".into(),
+        );
     }
     let d = delta.signum();
     // Within 0..n from `now`, or None at the end it is pushed past.
@@ -1833,6 +1884,33 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
                     format!("Follow is at its latest, after {MAX_FOLLOW_BARS} bars"),
                 ),
             }
+        }
+        // The project's, then its own: at once, the note grids, the bars.
+        7 => {
+            let now = s.launch.map_or(0, |g| {
+                LAUNCH_GRIDS
+                    .iter()
+                    .position(|&x| x == g)
+                    .map_or(0, |k| k + 1)
+            });
+            match step(now, LAUNCH_GRIDS.len() + 1) {
+                Some(k) => {
+                    s.launch = k.checked_sub(1).map(|k| LAUNCH_GRIDS[k]);
+                    set(s)
+                }
+                None => end(
+                    format!(
+                        "Launch is the project's already ({})",
+                        launch_name(st.launch)
+                    ),
+                    "Launch is at its longest, 8 bars".into(),
+                ),
+            }
+        }
+        // Either way flips it.
+        8 => {
+            s.legato = !s.legato;
+            set(s)
         }
         _ => Err(String::new()),
     }
@@ -2005,6 +2083,9 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
             format!("{}/{}", t.meter.beats, t.meter.unit),
             Tone::Normal,
         ),
+        // When a tapped clip, a stop or a scene lands (S4; the Record
+        // tab's Launch row sets it).
+        BarItem::new("Launch", launch_name(st.launch), Tone::Normal),
         BarItem::new("Swing", swing, Tone::Normal),
         BarItem::new(
             "Loop",
@@ -2137,7 +2218,10 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     let cue = st.cue(track);
     if cue.is_some_and(|c| c.slot == Some(slot)) {
         cell.state = CellState::Queued;
-        cell.foot = format!("from {}", bar_beat(cue_tick(t), t.meter));
+        cell.foot = format!(
+            "from {}",
+            bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
+        );
         return cell;
     }
     let Some(l) = st.launch(track).filter(|l| l.slot == slot) else {
@@ -2165,7 +2249,10 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     if let Some(c) = cue {
         // It plays until the cue starts.
         let word = if c.slot.is_none() { "stops" } else { "until" };
-        cell.detail = format!("{word} {}", bar_beat(cue_tick(t), t.meter));
+        cell.detail = format!(
+            "{word} {}",
+            bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
+        );
     }
     cell
 }
@@ -2228,7 +2315,19 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
                     .map_or_else(|| "Off".to_string(), grid_name),
             },
         ),
+        row(RECORD_ROWS[7], launch_name(st.launch)),
     ]
+}
+
+/// A launch quantise as the screens say it: "at once", "1/16", "1 bar",
+/// "4 bars".
+pub fn launch_name(g: LaunchGrid) -> String {
+    match g {
+        LaunchGrid::Now => "at once".to_string(),
+        LaunchGrid::Ticks(t) => grid_name(t),
+        LaunchGrid::Bars(1) => "1 bar".to_string(),
+        LaunchGrid::Bars(n) => format!("{n} bars"),
+    }
 }
 
 /// The takes newest first: the undone ones (dimmed), then the ones Undo
@@ -2896,6 +2995,8 @@ mod tests {
                 other: FollowAction::Stop,
                 chance: 75,
             }),
+            launch: None,
+            legato: true,
         };
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
         values.extend(
@@ -2918,7 +3019,13 @@ mod tests {
         card.quantise = Quantise::new(PPQ / 3, 100);
         card.swing = None;
         card.follow = None;
+        card.legato = false;
         values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
+        // Every launch quantise, the project's and a clip's own.
+        for g in LAUNCH_GRIDS {
+            card.launch = Some(g);
+            values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
+        }
         for name in RECORD_ROWS
             .iter()
             .chain(crate::editor::EDIT_ROWS.iter())
@@ -3901,6 +4008,36 @@ mod tests {
         st.tracks[1].record_quantise = Some(PPQ / 8);
         assert_eq!(step(&st, 6, 1), None);
         assert!(why(&st, 1).contains("finest, 1/32"));
+        // Launch: the project's line for tapped clips, stops and scenes,
+        // from at once to 8 bars, whatever is armed.
+        let why = |st: &TimeState, delta| {
+            why_not(&ev(RECORD, EventKind::Step { index: 7, delta }), st).unwrap_or_default()
+        };
+        st.armed = None;
+        assert_eq!(record_rows(&st)[7].value, "1 bar");
+        assert_eq!(
+            step(&st, 7, 1),
+            Some(TimeAction::LaunchGrid(LaunchGrid::Bars(2)))
+        );
+        assert_eq!(
+            step(&st, 7, -1),
+            Some(TimeAction::LaunchGrid(LaunchGrid::Ticks(PPQ * 2)))
+        );
+        st.launch = LaunchGrid::Now;
+        assert_eq!(record_rows(&st)[7].value, "at once");
+        assert_eq!(step(&st, 7, -1), None);
+        assert!(why(&st, -1).contains("at once already"));
+        st.launch = LaunchGrid::Bars(8);
+        assert_eq!(record_rows(&st)[7].value, "8 bars");
+        assert_eq!(step(&st, 7, 1), None);
+        assert!(why(&st, 1).contains("longest, 8 bars"));
+        // One set in the file (3 bars) shows as it is and steps from 1 bar.
+        st.launch = LaunchGrid::Bars(3);
+        assert_eq!(record_rows(&st)[7].value, "3 bars");
+        assert_eq!(
+            step(&st, 7, 1),
+            Some(TimeAction::LaunchGrid(LaunchGrid::Bars(2)))
+        );
     }
 
     /// The clip settings card: the focused clip's settings, each row
@@ -3929,7 +4066,9 @@ mod tests {
                 "Quantise off",
                 "Strength —",
                 "Follow off",
-                "After —"
+                "After —",
+                "Launch project",
+                "Mode Restart"
             ]
         );
         let step = |st: &TimeState, index: usize, delta: i32| {
@@ -4057,10 +4196,39 @@ mod tests {
         cs(&mut st).follow = Some(Follow::after(1, FollowAction::Stop));
         ends(step(&st, 5, 1), "last action, Stop");
         ends(step(&st, 6, -1), "soonest");
-        // A loop cell: only Follow and After.
+        // Launch: the project's, then the clip's own, at once to 8 bars.
+        ends(step(&st, 7, -1), "the project's already (1 bar)");
+        assert_eq!(
+            step(&st, 7, 1),
+            set(&st, 7, |s| s.launch = Some(LaunchGrid::Now))
+        );
+        cs(&mut st).launch = Some(LaunchGrid::Ticks(PPQ));
+        assert_eq!(clip_rows(&st)[7].value, "1/4");
+        assert_eq!(
+            step(&st, 7, 1),
+            set(&st, 7, |s| s.launch = Some(LaunchGrid::Ticks(PPQ * 2)))
+        );
+        assert_eq!(
+            step(&st, 7, -1),
+            set(&st, 7, |s| s.launch = Some(LaunchGrid::Ticks(PPQ / 2)))
+        );
+        cs(&mut st).launch = Some(LaunchGrid::Now);
+        assert_eq!(clip_rows(&st)[7].value, "at once");
+        assert_eq!(step(&st, 7, -1), set(&st, 7, |s| s.launch = None));
+        cs(&mut st).launch = Some(LaunchGrid::Bars(8));
+        assert_eq!(clip_rows(&st)[7].value, "8 bars");
+        ends(step(&st, 7, 1), "longest, 8 bars");
+        // Mode: either arrow flips Restart and Legato.
+        assert_eq!(step(&st, 8, 1), set(&st, 8, |s| s.legato = true));
+        cs(&mut st).legato = true;
+        assert_eq!(clip_rows(&st)[8].value, "Legato");
+        assert_eq!(step(&st, 8, -1), set(&st, 8, |s| s.legato = false));
+        // A loop cell: only Follow, After and Launch.
         st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
         ends(step(&st, 1, 1), "loop cell");
+        ends(step(&st, 8, 1), "loop cell");
         assert!(step(&st, 6, 1).0.is_some());
+        assert!(step(&st, 7, -1).0.is_some());
         // A settings take in the Takes list.
         let row = TakeRow {
             number: 4,
@@ -4357,7 +4525,21 @@ mod tests {
         // In a loop of bars 4 and 5, the next bar line played is bar 4's.
         st.transport.loop_range = Some((3 * BAR, 5 * BAR));
         assert_eq!(cell_of(&st, 0, 1).foot, "from 4.1");
-        assert_eq!(cue_tick(&st.transport), 3 * BAR);
+        assert_eq!(cue_tick(&st.transport, LaunchGrid::Bars(1)), 3 * BAR);
+        st.transport.loop_range = None;
+        // The cued clip's own launch quantise moves its label; the time
+        // engine's line for a cue (one kept when Launch changed) wins.
+        st.tracks[0].slots[1].as_mut().unwrap().settings.launch = Some(LaunchGrid::Ticks(PPQ * 2));
+        assert_eq!(st.cue_line(0), LaunchGrid::Ticks(PPQ * 2));
+        assert_eq!(cell_of(&st, 0, 1).foot, "from 5.3");
+        st.cue_lines = vec![(0, LaunchGrid::Bars(2))];
+        assert_eq!(cell_of(&st, 0, 1).foot, "from 7.1");
+        assert_eq!(cell_of(&st, 0, 0).detail, "until 7.1");
+        st.launch = LaunchGrid::Bars(4);
+        assert_eq!(st.cue_line(2), LaunchGrid::Bars(4), "a stop: the project's");
+        assert_eq!(cell_of(&st, 2, 0).detail, "stops 9.1");
+        st.cue_lines.clear();
+        st.launch = LaunchGrid::Bars(1);
         let tap = |track: usize, slot: usize| {
             action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st)
         };

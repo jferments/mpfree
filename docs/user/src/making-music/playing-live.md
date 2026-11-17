@@ -78,6 +78,8 @@ What Perform changes today:
 - **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, and again the grid.
 - **The arm is pinned**: opening a page doesn't move what REC records; only a tap on an Arm pill does. The REC chip says PINNED. Back in Make, the arm follows the page again.
 
+Clips and scenes start on the line the Record panel's **Launch** sets, in Make and Perform alike (see [Recording a clip](clips.md#recording-a-clip)), and the transport bar shows it.
+
 Coming next: in Perform, mutes and solos land on the bar, buttons that delete need a half-second hold, Rec song goes on with REC, and the Clips grid shows bigger rows with what comes next.
 
 ## The Q-Links on the Play page
