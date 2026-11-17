@@ -90,7 +90,7 @@ use std::time::{Duration, Instant};
 
 pub const CONSOLE_LAYOUT: &str = "col(header:60, log:*, hint:26)";
 /// The mixer, and the Q-Link column beside it as on the Play page.
-pub const MIXER_LAYOUT: &str = "col(header:60, row(mixer:*, qlinks:168):*, hint:26)";
+pub const MIXER_LAYOUT: &str = "col(header:60, row(mixer:*, qlinks:128):*, hint:26)";
 pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 /// Prefs > System info: the software on the left, the hardware on the right.
 pub const SYSTEM_LAYOUT: &str = "col(header:60, row(syssw:*, syshw:*):*, hint:26)";
@@ -13032,7 +13032,7 @@ mod tests {
             tap(&mut p, seg(v.index()));
             let throws = p.ui.rect_of(play_page::THROWS).unwrap();
             assert!(
-                throws.y > 168 && throws.bottom() <= 750 && throws.right() <= 1010,
+                throws.y > 168 && throws.bottom() <= 750 && throws.right() <= 1050,
                 "{v:?}: {throws:?}"
             );
             assert!(p.ui.rect_of(play_page::PADS).is_none(), "{v:?}: no pads");
@@ -14345,7 +14345,7 @@ mod tests {
         let r =
             p.ui.rect_of(play_page::QLINKS)
                 .expect("the column is on Arrange");
-        assert_eq!((r.x, r.w), (1100, 168), "at the right edge, 168 px");
+        assert_eq!((r.x, r.w), (1140, 128), "at the right edge, 128 px");
         // Q-Link 1 is Play's first knob, and a turn of it does what it does on Play.
         p.apply(ToUi::PlayQLink(0, 6));
         assert!(
@@ -14543,7 +14543,7 @@ mod tests {
         // the Q-Link cards at the right edge, beside the knobs.
         assert!(p.ui.rect_of(play_page::PADS).is_none());
         let steps = p.ui.rect_of(play_page::STEPS).unwrap();
-        assert!(steps.w == 998 && steps.h > 250, "{steps:?}");
+        assert!(steps.w == 1038 && steps.h > 250, "{steps:?}");
         assert_eq!(
             p.ui.rect_of(play_page::TRANSPORT).map(|r| (r.y, r.h)),
             Some((84, 84))
@@ -16443,7 +16443,7 @@ mod tests {
             .map(|q| p.ui.rect_of(q).unwrap())
             .collect();
         for (k, r) in cards.iter().enumerate() {
-            assert_eq!((r.w, r.right()), (168, w - p.ui.theme.gap), "card {k}");
+            assert_eq!((r.w, r.right()), (128, w - p.ui.theme.gap), "card {k}");
             if k > 0 {
                 assert!(r.y > cards[k - 1].bottom());
             }
@@ -19416,7 +19416,7 @@ mod tests {
             let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
             (q.title.clone(), q.cards.clone())
         };
-        assert!(p.ui.rect_of(play_page::QLINKS).is_some_and(|r| r.w == 168));
+        assert!(p.ui.rect_of(play_page::QLINKS).is_some_and(|r| r.w == 128));
         assert_eq!(column(&p).0, "Q-Links · Synth");
         assert_eq!(column(&p).1, p.synth.as_ref().unwrap().qlink_cards());
         let before = column(&p).1[0].value.clone();

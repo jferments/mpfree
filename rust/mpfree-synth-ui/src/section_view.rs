@@ -1715,7 +1715,7 @@ mod tests {
     #[test]
     fn controls_stay_inside_their_sections_and_apart() {
         let v = view();
-        let r = Rect::new(0, 0, 844, 598);
+        let r = Rect::new(0, 0, 884, 598);
         for g in v.geometry(r) {
             for (k, c) in g.controls.iter().enumerate() {
                 assert!(c.cell.w > 0 && c.cell.h > 0);
@@ -1730,7 +1730,7 @@ mod tests {
     #[test]
     fn a_drag_turns_a_knob_and_a_lift_steps_a_choice() {
         let mut v = view();
-        let r = Rect::new(0, 0, 844, 598);
+        let r = Rect::new(0, 0, 884, 598);
         let geo = v.geometry(r);
         let hero = &geo[0].controls[1];
         let (x, y) = (hero.cell.x + hero.cell.w / 2, hero.cell.y + 10);
@@ -1837,7 +1837,7 @@ mod tests {
             ..knob_ctl(20, Tier::Std)
         });
         assert!(!v.sections[0].switched_off());
-        let r = Rect::new(0, 0, 844, 598);
+        let r = Rect::new(0, 0, 884, 598);
         let g = v.geometry(r);
         let sw = g[0].switch.unwrap();
         assert!(g[0].head.right() < sw.x, "the name and note stay clear");

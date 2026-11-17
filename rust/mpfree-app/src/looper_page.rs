@@ -29,7 +29,7 @@ pub const LOOPER_PAGE: &str = "Looper";
 /// Mockup J: the loops on the left, the editor over the recording set-up
 /// and Use the loop, the Q-Links on the right.
 pub const LOOPER_LAYOUT: &str = "col(header:60, row(lloops:220, col(leditor:*, \
-     row(lrecording:*, luse:330):206):*, lqlinks:168):*, hint:26)";
+     row(lrecording:*, luse:330):206):*, lqlinks:128):*, hint:26)";
 
 /// The looper's presses, as `App::looper_tap` takes them.
 pub const B_RECORD: usize = 0;
