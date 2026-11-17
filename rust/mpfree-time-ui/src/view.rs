@@ -507,6 +507,9 @@ pub struct TimeState {
     /// Mute and solo changes waiting for their line (the mute queue). The
     /// app sets it.
     pub mute_wait: Option<MuteWait>,
+    /// The scene playing's follow action, for Perform's NEXT (S4). The
+    /// app sets it.
+    pub follow_next: Option<FollowNext>,
     /// The arrangement's placements and markers.
     pub placements: Vec<PlacementInfo>,
     pub markers: Vec<(Tick, String)>,
@@ -518,6 +521,9 @@ pub struct TimeState {
     /// Live to song armed: what the grid plays goes into the song. The app
     /// sets it.
     pub song_rec: bool,
+    /// Perform (sequencer S4): the take recording, or the next one, turns
+    /// Rec song on for its length; the REC chip says "+ Rec song".
+    pub song_with_take: bool,
     /// The note editor, when it is open. The app sets it.
     pub edit: Option<Box<EditInfo>>,
     /// The audio tracks' lanes on the Song view (layout spec 4c), under
@@ -694,6 +700,8 @@ impl TimeState {
             selected: None,
             section: None,
             song_rec: false,
+            song_with_take: false,
+            follow_next: None,
             edit: None,
             audio: Vec::new(),
             waves: Vec::new(),
@@ -914,6 +922,9 @@ pub enum TimeAction {
     /// grid plays is recorded into the song
     /// (`mpfree_perform::SongRecorder`).
     RecSong(bool),
+    /// Perform's Rec song with REC (sequencer S4): a take turns Rec song
+    /// on for its length, or (false) not this take.
+    RecSongWithTake(bool),
     /// The clip settings card: clip `slot` of `track` given `settings`
     /// (its speed, swing, quantise and follow action), card row `row`
     /// turned. One take a row: turning the same row again joins it.
@@ -2093,6 +2104,10 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
     if let Some(w) = st.waiting_reading() {
         bar.items.push(BarItem::new("WAITING", w, Tone::Warn));
     }
+    // Perform's NEXT: what comes next, and when (S4).
+    if let Some(n) = st.next_reading() {
+        bar.items.push(BarItem::new("NEXT", n, Tone::Accent));
+    }
     bar.items.extend([
         BarItem::new("BPM", format!("{:.1}", t.bpm), Tone::Normal),
         BarItem::new(
@@ -2235,10 +2250,9 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     let cue = st.cue(track);
     if cue.is_some_and(|c| c.slot == Some(slot)) {
         cell.state = CellState::Queued;
-        cell.foot = format!(
-            "from {}",
-            bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
-        );
+        let line = st.cue_line(track);
+        let at = cue_tick(t, line);
+        st.queued_foot(&mut cell, at, line.line(t.meter.bar_ticks()));
         return cell;
     }
     let Some(l) = st.launch(track).filter(|l| l.slot == slot) else {
@@ -2246,7 +2260,7 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     };
     if l.origin > t.position {
         cell.state = CellState::Queued;
-        cell.foot = format!("from {}", bar_beat(l.origin, t.meter));
+        st.queued_foot(&mut cell, l.origin, t.meter.bar_ticks());
         return cell;
     }
     // In steps of 1/64 of a pass, so the ring is not redrawn every frame.
@@ -2272,6 +2286,137 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         );
     }
     cell
+}
+
+/// How long `left` ticks are, as Perform's countdowns say it: whole
+/// beats, rounded up, under a bar ("1 beat", "3 beats"), whole bars past
+/// one ("2 bars").
+pub fn countdown(left: Tick, meter: Meter) -> String {
+    let left = left.max(1);
+    let beat = meter.beat_ticks().max(1);
+    let bar = meter.bar_ticks().max(1);
+    let (n, one, many) = if left >= bar {
+        ((left + bar - 1) / bar, "bar", "bars")
+    } else {
+        ((left + beat - 1) / beat, "beat", "beats")
+    };
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// The scene playing's follow action, for Perform's NEXT (S4): on song
+/// tick `at` it plays `follow` from row `row`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FollowNext {
+    pub at: Tick,
+    pub row: usize,
+    pub follow: Follow,
+}
+
+impl TimeState {
+    /// A queued cell's foot: where it starts ("from 7.1"); in Perform also
+    /// its countdown, filling over the `span` ticks before the line (its
+    /// launch grid's).
+    fn queued_foot(&self, cell: &mut GridCell, at: Tick, span: Tick) {
+        let t = &self.transport;
+        cell.foot = format!("from {}", bar_beat(at, t.meter));
+        if self.perform && t.state.rolling() {
+            let left = (at - t.position).max(0);
+            let span = span.max(1);
+            let frac = 1.0 - (left.min(span) as f64 / span as f64);
+            // In steps of 1/64, as a playing clip's ring; never empty, so
+            // the countdown shows from the tap.
+            cell.progress = ((frac * 64.0).floor().max(1.0) / 64.0) as f32;
+        }
+    }
+
+    /// What Perform's NEXT says comes next, and when: a scene launched
+    /// ("Drop in 2 beats"), else the clips cued ("Drop bass in 1 bar",
+    /// "Bass stops in 3 beats", "Drop bass +2 in 1 bar"), else the
+    /// scene playing's follow action ("Verse in 3 bars"), else in song
+    /// mode the next marker ("Chorus in 4 bars"). None with nothing
+    /// coming, in Make, or stopped.
+    pub fn next_reading(&self) -> Option<String> {
+        let t = &self.transport;
+        if !self.perform || !t.state.rolling() {
+            return None;
+        }
+        let cue_at = |c: &Cue| cue_tick(t, self.cue_line(c.track));
+        let soonest = self.cues.iter().map(cue_at).min();
+        let what = if let Some(row) = self.scene_cued {
+            let at = soonest.unwrap_or_else(|| cue_tick(t, self.launch));
+            Some((row_name(self, row), at))
+        } else if let Some(at) = soonest {
+            let names: Vec<String> = self
+                .cues
+                .iter()
+                .filter(|c| cue_at(c) == at)
+                .map(|c| match c.slot.and_then(|s| self.clip(c.track, s)) {
+                    Some(clip) => clip.name.clone(),
+                    None => format!("{} stops", self.track_name(c.track)),
+                })
+                .collect();
+            let shown = match names.len() {
+                0 | 1 => names.join(""),
+                n => format!("{} +{}", names[0], n - 1),
+            };
+            Some((shown, at))
+        } else if let Some(f) = self.follow_next.filter(|f| f.at > t.position) {
+            self.follow_words(f).map(|w| (w, f.at))
+        } else if self.song_on {
+            self.markers
+                .iter()
+                .filter(|(at, _)| *at > t.position)
+                .min_by_key(|(at, _)| *at)
+                .map(|(at, name)| (name.clone(), *at))
+        } else {
+            None
+        };
+        let (name, at) = what?;
+        Some(format!("{name} in {}", countdown(at - t.position, t.meter)))
+    }
+
+    /// What a scene's follow action plays, as NEXT names it: the row
+    /// ("Drop"), "Verse again", "Stop all", "Any scene", "Another scene";
+    /// with a chance, both ("Drop or stay"). None when it stays.
+    fn follow_words(&self, f: FollowNext) -> Option<String> {
+        let filled: Vec<bool> = (0..SLOTS)
+            .map(|r| {
+                self.tracks
+                    .iter()
+                    .any(|tr| tr.slots.get(r).is_some_and(Option::is_some))
+            })
+            .collect();
+        let words = |a: FollowAction| -> Option<String> {
+            Some(match a {
+                FollowAction::Stay => return None,
+                FollowAction::Again => format!("{} again", row_name(self, f.row)),
+                FollowAction::Stop => "Stop all".to_string(),
+                FollowAction::Any => "Any scene".to_string(),
+                FollowAction::Other => "Another scene".to_string(),
+                _ => row_name(
+                    self,
+                    mpfree_seq::scenes::follow_target(a, f.row, &filled, 0)?,
+                ),
+            })
+        };
+        let fw = f.follow;
+        if fw.chance >= 100 || fw.action == fw.other {
+            words(fw.action)
+        } else if fw.chance == 0 {
+            words(fw.other)
+        } else {
+            let one = |a| words(a).unwrap_or_else(|| "stay".to_string());
+            Some(format!(
+                "{} or {}",
+                one(fw.action),
+                one(fw.other).to_lowercase()
+            ))
+        }
+    }
 }
 
 /// Mute and solo changes waiting for one launch line (sequencer S4's mute
@@ -2304,25 +2449,8 @@ impl TimeState {
             "plays"
         };
         let tp = &self.transport;
-        let left = (cue_tick(tp, q.line) - tp.position).max(1);
-        let beat = tp.meter.beat_ticks().max(1);
-        let bar = tp.meter.bar_ticks().max(1);
-        let when = if left >= bar {
-            let n = (left + bar - 1) / bar;
-            if n == 1 {
-                "1 bar".to_string()
-            } else {
-                format!("{n} bars")
-            }
-        } else {
-            let n = (left + beat - 1) / beat;
-            if n == 1 {
-                "1 beat".to_string()
-            } else {
-                format!("{n} beats")
-            }
-        };
-        Some(format!("{what} in {when}"))
+        let left = cue_tick(tp, q.line) - tp.position;
+        Some(format!("{what} in {}", countdown(left, tp.meter)))
     }
 
     /// The transport bar's WAITING reading: the tracks waiting and where
@@ -2745,7 +2873,19 @@ impl TimePage {
             }
         }
         let tracks = grid_tracks(st);
+        // Perform's big rows, Make's compact ones (S4): the rows in view
+        // follow, kept within the slots.
+        // (A look first: `get_mut` marks the grid for a paint.)
+        if ui
+            .get::<ClipGrid>(CLIPS)
+            .is_some_and(|g| g.big != st.perform)
+        {
+            if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
+                g.big = st.perform;
+            }
+        }
         let rows = self.visible_rows(ui).max(1);
+        self.first_row = self.first_row.min(SLOTS.saturating_sub(rows));
         self.rows_seen = rows;
         // With Loop tracks, the title is the loops' gauge: how many of the
         // looper's loops hold one, and the share of its memory in use (the
@@ -4679,6 +4819,122 @@ mod tests {
         st.tracks[0].silent = true;
         let g = grid_tracks(&st);
         assert!(g[2].solo && !g[2].mute && g[0].mute);
+    }
+
+    #[test]
+    fn perform_shows_big_rows_countdowns_and_what_comes_next() {
+        // Make: eight compact rows; Perform: five big ones.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        page.update(&mut ui, &st);
+        assert_eq!(page.visible_rows(&ui), 8);
+        st.perform = true;
+        page.update(&mut ui, &st);
+        assert_eq!(page.visible_rows(&ui), 5);
+        // A queued clip says where it starts; in Perform it counts down
+        // too: at 5.2, a quarter of the bar to 6.1 has gone.
+        st.perform = false;
+        let c = cell_of(&st, 1, 1);
+        assert_eq!(
+            (c.state, c.foot.as_str(), c.progress),
+            (CellState::Queued, "from 6.1", 0.0)
+        );
+        st.perform = true;
+        let c = cell_of(&st, 1, 1);
+        assert_eq!((c.foot.as_str(), c.progress), ("from 6.1", 0.25));
+        // NEXT: nothing coming.
+        assert_eq!(st.next_reading(), None);
+        // Clips cued: the first by name and how many more.
+        st.cues = vec![Cue {
+            track: 2,
+            slot: Some(1),
+        }];
+        assert_eq!(st.next_reading().as_deref(), Some("B in 3 beats"));
+        let c = cell_of(&st, 2, 1);
+        assert_eq!((c.foot.as_str(), c.progress), ("from 6.1", 0.25));
+        st.cues.push(Cue {
+            track: 0,
+            slot: None,
+        });
+        assert_eq!(st.next_reading().as_deref(), Some("B +1 in 3 beats"));
+        st.cues = vec![Cue {
+            track: 0,
+            slot: None,
+        }];
+        assert_eq!(st.next_reading().as_deref(), Some("Drums stops in 3 beats"));
+        // A scene launched names the scene.
+        st.scenes = vec![String::new(), "Drop".into()];
+        st.scene_cued = Some(1);
+        assert_eq!(st.next_reading().as_deref(), Some("Drop in 3 beats"));
+        let item = &bar_of(&st).items[0];
+        assert_eq!(
+            (item.label.as_str(), item.value.as_str(), item.tone),
+            ("NEXT", "Drop in 3 beats", Tone::Accent)
+        );
+        // The scene playing's follow action, bars rounded up.
+        st.cues.clear();
+        st.scene_cued = None;
+        let follow = |action, other, chance| FollowNext {
+            at: 8 * BAR,
+            row: 0,
+            follow: Follow {
+                bars: 4,
+                action,
+                other,
+                chance,
+            },
+        };
+        st.follow_next = Some(follow(FollowAction::Next, FollowAction::Stay, 100));
+        assert_eq!(st.next_reading().as_deref(), Some("Drop in 4 bars"));
+        st.follow_next = Some(follow(FollowAction::Next, FollowAction::Stay, 70));
+        assert_eq!(st.next_reading().as_deref(), Some("Drop or stay in 4 bars"));
+        st.follow_next = Some(follow(FollowAction::Again, FollowAction::Stay, 100));
+        assert_eq!(st.next_reading().as_deref(), Some("row 1 again in 4 bars"));
+        st.follow_next = Some(follow(FollowAction::Other, FollowAction::Stay, 100));
+        assert_eq!(
+            st.next_reading().as_deref(),
+            Some("Another scene in 4 bars")
+        );
+        st.follow_next = Some(follow(FollowAction::Stay, FollowAction::Next, 100));
+        assert_eq!(st.next_reading(), None);
+        // Song mode: the next marker.
+        st.follow_next = None;
+        st.song_on = true;
+        st.markers = vec![(2 * BAR, "Intro".into()), (6 * BAR, "Chorus".into())];
+        assert_eq!(st.next_reading().as_deref(), Some("Chorus in 2 bars"));
+        // WAITING goes before NEXT.
+        st.mute_wait = Some(MuteWait {
+            line: LaunchGrid::Bars(1),
+            want: vec![(1, true, false)],
+        });
+        let items = bar_of(&st).items;
+        assert_eq!(
+            (items[0].label.as_str(), items[1].label.as_str()),
+            ("WAITING", "NEXT")
+        );
+        // Nothing in Make, or stopped.
+        st.perform = false;
+        assert_eq!(st.next_reading(), None);
+        st.perform = true;
+        st.transport.state = State::Stopped;
+        assert_eq!(st.next_reading(), None);
+    }
+
+    #[test]
+    fn countdowns_round_up_to_beats_then_bars() {
+        let m = Meter::default();
+        let beat = m.beat_ticks();
+        let bar = m.bar_ticks();
+        assert_eq!(countdown(1, m), "1 beat");
+        assert_eq!(countdown(beat + 1, m), "2 beats");
+        assert_eq!(countdown(bar - 1, m), "4 beats");
+        assert_eq!(countdown(bar, m), "1 bar");
+        assert_eq!(countdown(bar + 1, m), "2 bars");
+        assert_eq!(countdown(0, m), "1 beat");
     }
 
     #[test]

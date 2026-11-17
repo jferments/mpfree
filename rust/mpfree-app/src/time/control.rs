@@ -36,8 +36,8 @@ use mpfree_seq::steps::{Edit, Grid};
 use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, card_rows, clips_after, grid_name, AudioAction, EditInfo, MorphInfo, MuteWait,
-    RegionId, TakeRow, TimeAction, TimeState, TransportInfo,
+    bars_label, card_rows, clips_after, grid_name, AudioAction, EditInfo, FollowNext, MorphInfo,
+    MuteWait, RegionId, TakeRow, TimeAction, TimeState, TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State};
@@ -135,6 +135,19 @@ impl Costs {
     }
 }
 
+/// Perform's Rec song with REC (sequencer S4), between takes and during
+/// one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SongTake {
+    /// Rec song is as set by hand; in Perform the next take turns it on.
+    #[default]
+    Idle,
+    /// The take recording turned it on: it goes off when the take ends.
+    Armed,
+    /// Taken off for this take (or the next): back to Idle when it ends.
+    Off,
+}
+
 /// When a change waiting for `line` lands, for the log: "on the next
 /// bar", "on the next 2-bar line", "on the next 1/4".
 fn line_words(line: LaunchGrid) -> String {
@@ -185,6 +198,12 @@ pub struct TimeControl {
     section: Option<usize>,
     /// Live to song: records what the grid plays into the song.
     song_rec: SongRecorder,
+    /// Perform's Rec song with REC: armed by the take, or taken off for
+    /// it ([`TimeControl::take_follows`]).
+    song_take: SongTake,
+    /// A take records (the notes, their count-in, or a loop), as the host
+    /// last said.
+    taking: bool,
     /// What happened to the last recording when the transport stopped,
     /// or to a take thrown away, for the log
     /// ([`TimeControl::take_later_note`]).
@@ -301,6 +320,8 @@ impl TimeControl {
             region: None,
             section: None,
             song_rec: SongRecorder::default(),
+            song_take: SongTake::Idle,
+            taking: false,
             later_note: None,
             throw: false,
             pass_take: None,
@@ -564,10 +585,11 @@ impl TimeControl {
         // The transport stopped: what live to song recorded goes into the
         // song (it compiles).
         if song_was && !self.song_rec.recording() && self.song_rec.waiting() {
-            self.later_note = Some(match self.keep_song() {
+            let line = match self.keep_song() {
                 Ok(line) => format!("rec song: {line}"),
                 Err(e) => e,
-            });
+            };
+            self.note_later(line);
         }
         if compile {
             // The clips only gained or lost notes and locks, and cues became
@@ -1947,15 +1969,17 @@ impl TimeControl {
                 ))
             }
             TimeAction::RecSong(on) => {
-                let rows = (self.morph.a, self.morph.b);
-                self.song_rec
-                    .arm(on, &self.project, &self.launches, self.morph.pos, rows);
-                self.changed = true;
+                // Off during a take that turned it on: off for that take.
+                if !on && self.song_take == SongTake::Armed {
+                    self.song_take = SongTake::Off;
+                }
+                self.arm_song(on);
                 if on {
                     return Ok("rec song: what the grid plays goes into the song".into());
                 }
                 self.keep_song().map(|line| format!("rec song off: {line}"))
             }
+            TimeAction::RecSongWithTake(on) => self.song_with_take_set(on),
             TimeAction::Morph(_)
             | TimeAction::SnapBack
             | TimeAction::KeepMorph
@@ -2088,6 +2112,90 @@ impl TimeControl {
         self.steps_changed = true;
         self.later_note = Some(format!("undo: take {n} thrown away"));
         true
+    }
+
+    /// Rec song armed or not, with what plays now.
+    fn arm_song(&mut self, on: bool) {
+        let rows = (self.morph.a, self.morph.b);
+        self.song_rec
+            .arm(on, &self.project, &self.launches, self.morph.pos, rows);
+        self.changed = true;
+    }
+
+    /// Perform, and the take recording or the next one brings Rec song
+    /// (the REC chip's "+ Rec song").
+    fn song_with_take(&self) -> bool {
+        self.project.perform
+            && match self.song_take {
+                SongTake::Idle => !self.song_rec.armed(),
+                SongTake::Armed => true,
+                SongTake::Off => false,
+            }
+    }
+
+    /// The REC chip's "+ Rec song" set (`on`) or taken off for the take
+    /// (sequencer S4, Perform). A line for the log.
+    fn song_with_take_set(&mut self, on: bool) -> Result<String, String> {
+        if !self.project.perform {
+            return Err("rec song with REC: only in Perform".into());
+        }
+        self.changed = true;
+        if on {
+            if self.song_take == SongTake::Off {
+                self.song_take = SongTake::Idle;
+            }
+            if self.taking && !self.song_rec.armed() {
+                self.arm_song(true);
+                self.song_take = SongTake::Armed;
+                return Ok("rec song: on with this take".into());
+            }
+            return Ok("rec song: on with REC".into());
+        }
+        let was = std::mem::replace(&mut self.song_take, SongTake::Off);
+        if was == SongTake::Armed && self.song_rec.armed() {
+            self.arm_song(false);
+            return self
+                .keep_song()
+                .map(|line| format!("rec song: off for this take ({line})"));
+        }
+        Ok(format!(
+            "rec song: off for {} take",
+            if self.taking { "this" } else { "the next" }
+        ))
+    }
+
+    /// The host says whether a take records (the notes, their count-in,
+    /// or a loop's pass), each period. In Perform a take turns Rec song on
+    /// for its length, unless it is on already or taken off for this take
+    /// (sequencer S4, "Rec song is on with REC"). A line for the log when
+    /// it goes on or off.
+    pub fn take_follows(&mut self, taking: bool) -> Option<String> {
+        let was = std::mem::replace(&mut self.taking, taking);
+        if was == taking {
+            return None;
+        }
+        if taking {
+            if self.project.perform && self.song_take == SongTake::Idle && !self.song_rec.armed() {
+                self.arm_song(true);
+                self.song_take = SongTake::Armed;
+                return Some("rec song: on with REC (Perform)".into());
+            }
+            return None;
+        }
+        // The take ended.
+        let ended = std::mem::replace(&mut self.song_take, SongTake::Idle);
+        self.changed = true;
+        if ended != SongTake::Armed || !self.song_rec.armed() {
+            return None;
+        }
+        self.arm_song(false);
+        if !self.song_rec.waiting() {
+            return Some("rec song: off with the take".into());
+        }
+        Some(match self.keep_song() {
+            Ok(line) => format!("rec song: off with the take, {line}"),
+            Err(e) => e,
+        })
     }
 
     /// Live to song: the passes recorded so far into the song, compiled
@@ -2933,6 +3041,11 @@ impl TimeControl {
         st.region = self.region;
         st.section = self.section;
         st.song_rec = self.song_rec.armed();
+        st.song_with_take = self.song_with_take();
+        st.follow_next = self
+            .perform
+            .scene_follow(&self.project, self.info.meter.bar_ticks())
+            .map(|(row, at, follow)| FollowNext { at, row, follow });
         st.edit = self.editor.as_ref().and_then(|ed| {
             let clip = self.project.clip(ed.track, ed.slot)?;
             let bar = clip.speed.to_clip(self.info.meter.bar_ticks() as f64);
@@ -2991,13 +3104,12 @@ impl TimeControl {
 /// "bar 9", or "bar 9 beat 3" off the bar line: song tick `t` as the Song
 /// view's drags and the wheel say where a block or section went.
 /// What Make or Perform switches, for the hint line (sequencer S4; the
-/// design's "Perform: mutes land on the bar, deletes need a hold" as its
-/// parts are built).
+/// design's "Perform: mutes land on the bar, deletes need a hold").
 pub fn perform_line(on: bool) -> &'static str {
     if on {
-        "Perform: MAIN goes to the Clips grid, and only a tap on Arm moves the arm"
+        "Perform: mutes land on the bar, deletes need a hold, MAIN goes to the Clips grid"
     } else {
-        "Make: MAIN goes to Play, and the arm follows the page"
+        "Make: mutes and deletes act at once, MAIN goes to Play"
     }
 }
 

@@ -513,7 +513,7 @@ impl Desk<'_> {
 
 /// What the arm finds ([`crate::rec_arm::Now`]): the transport, the loops
 /// and the armed track's name.
-fn rec_now(time: &time::TimeHost, looper: &looping::LoopHost) -> crate::rec_arm::Now {
+pub fn rec_now(time: &time::TimeHost, looper: &looping::LoopHost) -> crate::rec_arm::Now {
     let info = time.info();
     let (loop_taking, loop_armed) = looper.rec_now();
     let notes = time

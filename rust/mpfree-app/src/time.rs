@@ -884,6 +884,14 @@ impl TimeHost {
         self.control.perform()
     }
 
+    /// Whether a take records (the notes, their count-in, or a loop's
+    /// pass), each period: in Perform a take turns Rec song on for its
+    /// length ([`TimeControl::take_follows`]). A line for the log.
+    pub fn take_follows(&mut self, taking: bool) -> Option<String> {
+        let r = self.control.take_follows(taking);
+        self.sent(r)
+    }
+
     /// Which loops the Loop tracks have on, and the bar line each change
     /// lands on ([`TimeControl::loop_plan`]): for the looper, before its
     /// period, so a launch lands on its line's own frame.
@@ -3643,6 +3651,80 @@ mod tests {
                 "{again:?} {heard:?}"
             );
         }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Perform's Rec song with REC (sequencer S4): a take turns Rec song
+    /// on for its length and what it played goes into the song when it
+    /// ends; "+ Rec song" taken off skips one take; Rec song off during
+    /// a take that turned it on is off for that take; in Make a take
+    /// changes nothing.
+    #[test]
+    fn in_perform_a_take_brings_rec_song_for_its_length() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        // Make: a take is only a take.
+        assert_eq!(h.take_follows(true), None);
+        assert!(!h.state().song_rec && !h.state().song_with_take);
+        assert_eq!(h.take_follows(false), None);
+        h.act(TimeAction::Perform(true)).unwrap();
+        assert!(h.state().song_with_take, "the REC chip says + Rec song");
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        assert_eq!(
+            h.take_follows(true).as_deref(),
+            Some("rec song: on with REC (Perform)")
+        );
+        assert!(h.state().song_rec && h.state().song_with_take);
+        run(&mut h, &mut pads, 2 * BAR + BAR / 2, &[]);
+        let line = h.take_follows(false).unwrap();
+        assert!(
+            line.starts_with("rec song: off with the take, ") && line.contains("placement"),
+            "{line}"
+        );
+        let st = h.state();
+        assert!(!st.song_rec && st.song_with_take, "ready for the next take");
+        assert!(
+            !st.placements.is_empty(),
+            "the take's stretch is in the song"
+        );
+        // Taken off for the next take: it records no song.
+        assert_eq!(
+            h.act(TimeAction::RecSongWithTake(false)).unwrap(),
+            "rec song: off for the next take"
+        );
+        assert!(!h.state().song_with_take);
+        assert_eq!(h.take_follows(true), None);
+        assert!(!h.state().song_rec);
+        assert_eq!(h.take_follows(false), None);
+        assert!(h.state().song_with_take, "back with the take after it");
+        // Off by hand during a take that turned it on: off for that take.
+        h.take_follows(true).unwrap();
+        h.act(TimeAction::RecSong(false)).unwrap();
+        assert!(!h.state().song_rec && !h.state().song_with_take);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        assert_eq!(h.take_follows(false), None);
+        // "+ Rec song" put back during a take turns it on for the rest.
+        h.act(TimeAction::RecSongWithTake(false)).unwrap();
+        h.take_follows(true);
+        assert_eq!(
+            h.act(TimeAction::RecSongWithTake(true)).unwrap(),
+            "rec song: on with this take"
+        );
+        assert!(h.state().song_rec);
+        // Rec song on by hand stays on after a take.
+        h.take_follows(false).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        assert_eq!(h.take_follows(true), None);
+        assert_eq!(h.take_follows(false), None);
+        assert!(h.state().song_rec);
+        // In Make "+ Rec song" is refused.
+        h.act(TimeAction::Perform(false)).unwrap();
+        assert!(h.act(TimeAction::RecSongWithTake(true)).is_err());
         assert_eq!(h.dropped(), 0);
     }
 

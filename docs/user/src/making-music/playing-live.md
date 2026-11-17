@@ -86,10 +86,16 @@ What Perform changes today:
 - **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, and again the grid.
 - **The arm is pinned**: opening a page doesn't move what REC records; only a tap on an Arm pill does. The REC chip says PINNED. Back in Make, the arm follows the page again.
 - **TRACK MUTE's pads wait for the launch line** before a mute or solo lands, and SHIFT + a pad acts at once (see [Muting tracks and pads](#muting-tracks-and-pads)).
+- **REC brings Rec song with it**: each take also records what the grid plays into the song, for as long as it lasts, and the REC chip says "+ Rec song". Tap the chip and turn off **Rec song with REC** to leave one take out (see [Recording a performance into the song](arranging.md#recording-a-performance-into-the-song)).
+- **Buttons that delete need a hold**: the Song view's **Delete** and **Erase**, the note editor's **Delete**, the Looper's **Clear**, a layer's **×** and **½ length**, and the step's **Clear** take half a second in Perform. A red fill crosses the button while you hold it, and it acts once the fill is across; let go early, or slide off, and nothing happens, and the hint line says "Hold to delete". In Make one tap does it, and UNDO brings it back. **ERASE** + a tap works as before, since it already takes two hands.
+- **The Clips grid shows 5 big rows**, and a clip waiting to start counts down: an amber bar along its foot fills as its line comes near.
+- **NEXT** on the transport bar says what comes next and how soon, while the music plays: a scene you launched ("NEXT Drop in 2 beats"), the clips waiting ("Drop bass in 1 bar", "Bass stops in 3 beats"), the next scene a follow action plays ("Verse in 3 bars", or "Drop or stay" when it is down to chance), or in song mode the next section ("Chorus in 4 bars"). When mutes are waiting too, WAITING comes first.
+
+{{shot: clips-perform | In Perform: five big rows, the chords waiting for bar 6 with their countdown bar, the glitch stopping there, and NEXT on the transport bar.}}
 
 Clips and scenes start on the line the Record panel's **Launch** sets, in Make and Perform alike (see [Recording a clip](clips.md#recording-a-clip)), and the transport bar shows it.
 
-Coming next: in Perform, buttons that delete need a half-second hold, Rec song goes on with REC, and the Clips grid shows bigger rows with what comes next.
+Coming next: the song list, a scene editor, Back to song, reloading a clip and live transpose.
 
 ## The Q-Links on the Play page
 

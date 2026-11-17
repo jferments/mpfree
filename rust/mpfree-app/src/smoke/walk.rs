@@ -304,7 +304,9 @@ pub fn check(s: &mut Session) -> Vec<String> {
             .get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS),
     ) {
         for lane in g.lanes.iter().filter(|l| l.pad < 16) {
-            if lane.muted != (pad_mutes & (1 << lane.pad) != 0) {
+            // A synth track's rows are notes, not the kit's pads: the
+            // kit's mutes are not theirs.
+            if g.pitched.is_none() && lane.muted != (pad_mutes & (1 << lane.pad) != 0) {
                 bad.push(format!(
                     "the step grid shows {} {} but the mixer has it {}",
                     lane.name,

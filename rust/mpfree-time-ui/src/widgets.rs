@@ -150,7 +150,8 @@ impl BarItem {
 /// overdub, the song position, readings (tempo, meter, swing, loop ...),
 /// Undo, and status chips on the right (the arp's chip goes there). A tap on
 /// a button gives `Tab(BarButton index)`; a tap on chip `i` gives
-/// `Select(i)`. Readings that do not fit are left out from the right.
+/// `Select(i)`. Readings that do not fit are left out from the right; the first is cut
+/// to fit (WAITING or NEXT).
 pub struct TransportBar {
     pub run: Run,
     /// Bar.beat.tick.
@@ -353,10 +354,18 @@ impl Widget for TransportBar {
             } else {
                 cx.measure(FontId::Sans, t.size_small, &item.label) + 6
             };
-            let vw = cx.measure(FontId::Bold, t.size_body, &item.value);
-            let w = 32 + lw + vw;
+            let mut vw = cx.measure(FontId::Bold, t.size_body, &item.value);
+            let mut w = 32 + lw + vw;
             if x + w > limit {
-                break;
+                // The first reading (WAITING or NEXT, when there is one)
+                // is cut to fit rather than left out.
+                let room = limit - x - 32 - lw;
+                if room >= 80 && std::ptr::eq(item, &self.items[0]) {
+                    vw = room;
+                    w = limit - x;
+                } else {
+                    break;
+                }
             }
             cx.canvas
                 .fill_rect(Rect::new(x + 16, inner.y + 9, 1, inner.h - 18), t.outline);
@@ -445,7 +454,9 @@ pub struct GridCell {
     pub detail: String,
     /// At the bottom, such as "24 notes" or "from 7.1".
     pub foot: String,
-    /// How far through its pass the clip is, 0.0 to 1.0 (the ring).
+    /// How far through its pass the clip is, 0.0 to 1.0 (the ring); for
+    /// a queued clip in Perform, how near its line is (the countdown, an
+    /// amber bar along its foot; 0 draws none).
     pub progress: f32,
     /// A loop cell's small wave, drawn under its name in the detail's
     /// place (the detail goes to the foot when it is empty): each column's
@@ -508,6 +519,10 @@ pub struct ClipGrid {
     pub song_rec: bool,
     /// The project has room for another track: "+ Track" is lit.
     pub can_add: bool,
+    /// Perform's big rows (sequencer decision 5, mockup C): five rows of
+    /// [`ROW_MIN_H`] with rings and countdowns. Off (Make), the rows are
+    /// compact, [`ROW_MIN_H_MAKE`], eight in view with names and lengths.
+    pub big: bool,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
     /// A finger down on a track's name: where (x) and which track. Let go
@@ -561,6 +576,7 @@ struct Drawn {
     scenes: (Option<usize>, Option<usize>),
     song_rec: bool,
     can_add: bool,
+    big: bool,
     /// Where a dragged clip or row was drawn.
     dragged: Option<(Held, (i32, i32))>,
 }
@@ -616,8 +632,16 @@ const HEAD_SOUND_H: i32 = 44;
 /// `Tab(SOUND_TAP + t)`.
 pub const SOUND_TAP: usize = 1 << 16;
 const CELL_GAP: i32 = 6;
-const ROW_MIN_H: i32 = 76;
+/// Perform's big rows: five in view on the MPC's screen.
+pub const ROW_MIN_H: i32 = 76;
+/// Make's compact rows: eight in view, a name and a length each.
+pub const ROW_MIN_H_MAKE: i32 = 44;
 const RING: i32 = 26;
+/// A compact cell's ring.
+const SMALL_RING: i32 = 18;
+/// Under this height a cell is drawn compact: its name, and its length
+/// (or when it starts) under it.
+const COMPACT_H: i32 = 64;
 
 struct Geo {
     body: Rect,
@@ -641,6 +665,7 @@ impl ClipGrid {
             scene_cued: None,
             song_rec: false,
             can_add: false,
+            big: false,
             drawn: RefCell::new(None),
             press: None,
             grip: None,
@@ -898,8 +923,9 @@ impl ClipGrid {
         let col_w = ((body.right() - x0 - CELL_GAP * (cols - 1)) / cols).max(1);
         let cells_y = body.y + self.head_h() + CELL_GAP;
         let avail = body.bottom() - cells_y;
+        let min_h = if self.big { ROW_MIN_H } else { ROW_MIN_H_MAKE };
         let rows =
-            (((avail + CELL_GAP) / (ROW_MIN_H + CELL_GAP)).max(1) as usize).min(self.slots.max(1));
+            (((avail + CELL_GAP) / (min_h + CELL_GAP)).max(1) as usize).min(self.slots.max(1));
         let row_h = ((avail - CELL_GAP * (rows as i32 - 1)) / rows as i32).max(1);
         Geo {
             body,
@@ -974,6 +1000,7 @@ impl Widget for ClipGrid {
             || d.scenes != (self.scene_playing, self.scene_cued)
             || d.song_rec != self.song_rec
             || d.can_add != self.can_add
+            || d.big != self.big
             || d.dragged.is_some()
             || self.dragged_now().is_some()
         {
@@ -1010,6 +1037,7 @@ impl Widget for ClipGrid {
             scenes: (self.scene_playing, self.scene_cued),
             song_rec: self.song_rec,
             can_add: self.can_add,
+            big: self.big,
             dragged: self.dragged_now(),
         });
         cx.titled_panel(r, &self.title, "");
@@ -1637,6 +1665,10 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         _ => t.raised.mix(base, 0.16),
     };
     cx.canvas.fill_round_rect(cr, 10, fill);
+    if cr.h < COMPACT_H {
+        paint_compact(cx, cr, cell, base, fill);
+        return;
+    }
     if cell.state == CellState::Armed {
         // The armed Loop cell: a red edge and a red dot before "Armed".
         cx.canvas
@@ -1709,31 +1741,7 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         // A loop: its wave in the detail's place, and at the foot the
         // foot, or the detail when there is none ("2 bars", "overdub").
         // Playing, the wave is lit up to the playhead, as on Play's strip.
-        let band = detail.inset_xy(0, 2);
-        let lit = match cell.state {
-            CellState::Recording => fill.mix(t.bad.mix(t.text, 0.2), 0.85),
-            _ => fill.mix(base.mix(t.text, 0.45), 0.9),
-        };
-        let ink = fill.mix(base.mix(t.text, 0.3), 0.7);
-        let dim = fill.mix(base.mix(t.text, 0.3), 0.4);
-        let head = rolling.then(|| band.x + (band.w as f32 * cell.progress) as i32);
-        let cy = band.y + band.h / 2;
-        for (c, &p) in wave.iter().enumerate() {
-            let x0 = band.x + band.w * c as i32 / CELL_WAVE as i32;
-            let x1 = band.x + band.w * (c as i32 + 1) / CELL_WAVE as i32;
-            let h = (i32::from(p) * band.h / 255).max(1);
-            let ink = match head {
-                Some(hx) if x0 < hx => lit,
-                Some(_) => dim,
-                None => ink,
-            };
-            cx.canvas
-                .fill_rect(Rect::new(x0, cy - h / 2, (x1 - x0 - 1).max(1), h), ink);
-        }
-        if let Some(hx) = head {
-            cx.canvas
-                .fill_rect(Rect::new(hx, band.y - 1, 1, band.h + 2), t.text);
-        }
+        paint_wave(cx, detail.inset_xy(0, 2), wave, cell, base, fill);
         let (line, ink) = if cell.foot.is_empty() {
             (&cell.detail, detail_ink)
         } else {
@@ -1781,6 +1789,130 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
             cr.bottom() - RING - 7,
             RING,
             3.5,
+            cell.progress,
+            t.surface.mix(t.text_faint, 0.35),
+            color,
+        );
+    } else if cell.state == CellState::Queued && cell.progress > 0.0 {
+        // Perform's countdown: an amber bar along the foot that fills as
+        // the line nears.
+        let track = Rect::new(cr.x + 10, cr.bottom() - 7, cr.w - 20, 3);
+        cx.canvas
+            .fill_round_rect(track, 1, t.surface.mix(t.text_faint, 0.35));
+        let w = (track.w as f32 * cell.progress.min(1.0)) as i32;
+        cx.canvas
+            .fill_round_rect(Rect::new(track.x, track.y, w.max(2), 3), 1, t.warn);
+    }
+}
+
+/// A loop cell's small wave in `band`, lit up to the playhead while it
+/// plays, as on Play's strip.
+fn paint_wave(
+    cx: &mut PaintCx,
+    band: Rect,
+    wave: &[u8; CELL_WAVE],
+    cell: &GridCell,
+    base: Color,
+    fill: Color,
+) {
+    let t = cx.theme.clone();
+    let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
+    let lit = match cell.state {
+        CellState::Recording => fill.mix(t.bad.mix(t.text, 0.2), 0.85),
+        _ => fill.mix(base.mix(t.text, 0.45), 0.9),
+    };
+    let ink = fill.mix(base.mix(t.text, 0.3), 0.7);
+    let dim = fill.mix(base.mix(t.text, 0.3), 0.4);
+    let head = rolling.then(|| band.x + (band.w as f32 * cell.progress) as i32);
+    let cy = band.y + band.h / 2;
+    for (c, &p) in wave.iter().enumerate() {
+        let x0 = band.x + band.w * c as i32 / CELL_WAVE as i32;
+        let x1 = band.x + band.w * (c as i32 + 1) / CELL_WAVE as i32;
+        let h = (i32::from(p) * band.h / 255).max(1);
+        let ink = match head {
+            Some(hx) if x0 < hx => lit,
+            Some(_) => dim,
+            None => ink,
+        };
+        cx.canvas
+            .fill_rect(Rect::new(x0, cy - h / 2, (x1 - x0 - 1).max(1), h), ink);
+    }
+    if let Some(hx) = head {
+        cx.canvas
+            .fill_rect(Rect::new(hx, band.y - 1, 1, band.h + 2), t.text);
+    }
+}
+
+/// Make's compact cell (sequencer decision 5: eight rows with names and
+/// lengths): the name, and under it the length, or when a queued clip
+/// starts ("from 7.1"), or a loop's wave; a small ring while it plays.
+fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill: Color) {
+    let t = cx.theme.clone();
+    match cell.state {
+        CellState::Queued => cx.canvas.stroke_round_rect(cr, 10, 2, t.warn),
+        CellState::Recording => cx.canvas.stroke_round_rect(cr, 10, 2, t.bad),
+        CellState::Armed => {
+            cx.canvas
+                .fill_round_rect(Rect::new(cr.x, cr.y + 4, 4, cr.h - 8), 2, t.bad)
+        }
+        _ => {}
+    }
+    let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
+    let ringed = rolling && cell.wave.is_none();
+    let inner = cr.inset_xy(9, 4);
+    let inner = if ringed {
+        inner.take_right(SMALL_RING + 4).1
+    } else {
+        inner
+    };
+    let (mut name, line) = inner.take_top(inner.h / 2);
+    let mut name_ink = t.text;
+    if cell.state == CellState::Armed {
+        cx.canvas
+            .fill_round_rect(Rect::new(name.x, name.y + name.h / 2 - 4, 8, 8), 4, t.bad);
+        name = name.take_left(13).1;
+        name_ink = t.bad;
+    }
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        name,
+        Align::Left,
+        name_ink,
+        &cell.name,
+    );
+    let queued = cell.state == CellState::Queued;
+    match &cell.wave {
+        Some(wave) if !queued => paint_wave(cx, line.inset_xy(0, 3), wave, cell, base, fill),
+        _ => {
+            let (words, ink) = match cell.state {
+                CellState::Queued => (&cell.foot, t.warn),
+                CellState::Recording => (&cell.detail, t.bad.mix(t.text, 0.2)),
+                CellState::Armed => (&cell.detail, t.text),
+                _ => (&cell.detail, t.text_dim),
+            };
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                line,
+                Align::Left,
+                ink,
+                words,
+            );
+        }
+    }
+    if ringed {
+        let color = if cell.state == CellState::Recording {
+            t.bad
+        } else {
+            t.good
+        };
+        ring(
+            cx.canvas,
+            cr.right() - SMALL_RING - 6,
+            cr.y + (cr.h - SMALL_RING) / 2,
+            SMALL_RING,
+            3.0,
             cell.progress,
             t.surface.mix(t.text_faint, 0.35),
             color,
@@ -2140,6 +2272,12 @@ mod tests {
     fn grid_cells_and_names_report_where_they_are() {
         let mut g = grid(10);
         let r = Rect::new(12, 128, 814, 610);
+        // Make's compact rows; Perform's big ones (sequencer S4).
+        let rows = g.visible_rows(r);
+        assert!((9..=10).contains(&rows), "{rows}");
+        let c = g.cell_rect(r, 2, 3).unwrap();
+        assert!(c.h >= ROW_MIN_H_MAKE && c.h < COMPACT_H, "{c:?}");
+        g.big = true;
         let rows = g.visible_rows(r);
         assert!((6..=7).contains(&rows), "{rows}");
         // Eight tracks across; the ninth is off to the right.
