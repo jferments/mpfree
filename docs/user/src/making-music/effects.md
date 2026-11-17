@@ -137,6 +137,19 @@ The **Room** reverb is a room you put the sound in: its first reflections off th
 > [!NOTE]
 > The Room was rebuilt, so projects saved before it sound different on a Room: denser and smoother, with no slap at the start, and a source keeps its side. Every setting and preset still loads and does what it did; Diffusion starts at 70 %.
 
+### The Plate
+
+The **Plate** reverb is the studio plate: a big sheet of steel that rings with the sound. It has no walls, so no separate echoes: a hit turns into a dense, bright shimmer at once and dies away evenly.
+
+- **Decay** is how long the tail takes to fall away (60 dB, to near silence) in the mids; **Damping** makes the highs die sooner; **Tone** darkens what goes in.
+- **Size** makes the plate bigger: a deeper, smoother tail.
+- A sound on the left starts on the left before it spreads, so it keeps its place.
+- **Mod** keeps the tail from ringing on a note with a very slow drift, too small to hear as a wobble.
+- **Pre-delay** waits up to 250 ms before the plate answers, the classic vocal trick. Turning it never bends the pitch: the plate fades over to the new time.
+
+> [!NOTE]
+> The Plate was rebuilt, so projects saved before it sound different on a Plate: dense from the first moment instead of grainy, smoother in the tail, and a sound keeps its side. Every setting and preset still loads and does what it did.
+
 ### The EQ's page
 
 {{shot: chain-mixer-drums-eq | The EQ on the drum bus: its curve with a dot for each band and the cuts, band 2 picked in the panel underneath.}}
