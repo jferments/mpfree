@@ -1653,6 +1653,7 @@ impl Player {
             mute_bank: 0,
             steps: None,
             erase: false,
+            copy: false,
         };
         let mut p = Player {
             save_sent: None,
@@ -2942,6 +2943,29 @@ impl Player {
         }
     }
 
+    /// COPY held on the Clips grid (sequencer S3): a tap on a clip copies
+    /// it, and a tap on an empty slot pastes the copy there (a take UNDO
+    /// takes away). `Some` is the answer to the touch; `None` lets the tap
+    /// do what it always does.
+    fn copy_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
+        let (time_view::CLIPS, EventKind::Select(i)) = (ev.widget.as_str(), &ev.kind) else {
+            return None;
+        };
+        let slots = mpfree_seq::SLOTS;
+        let (track, slot) = (i / slots, i % slots);
+        if track >= self.time.tracks.len() {
+            return None;
+        }
+        if self.time.clip(track, slot).is_some() {
+            Some(Some(FromUi::Time(TimeAction::CopyClip { track, slot })))
+        } else if self.time.clipboard.is_some() {
+            Some(Some(FromUi::Time(TimeAction::PasteClip { track, slot })))
+        } else {
+            self.tell("COPY: tap a clip first to copy it, then an empty slot");
+            Some(None)
+        }
+    }
+
     /// What the Looper tab's panels asked for: the first as the answer to
     /// the touch, the rest after it. With ERASE held, a layer tapped is
     /// deleted (the looper's UNDO brings it back).
@@ -3393,6 +3417,14 @@ impl Player {
             REC_LIST_HINT.to_string()
         } else if self.ready && self.rec.ready.is_some() {
             rec_ready_hint(&self.rec_chip())
+        } else if self.status.copy
+            && self.ready
+            && self.status.steps.is_none()
+            && self.view == View::Arrange
+            && !self.time.song_view
+            && self.time.edit.is_none()
+        {
+            time_view::copy_hint(&self.time)
         } else if let Some(s) = self.status.steps.filter(|s| s.copying && !s.picking) {
             step_copy_hint(s)
         } else if let (Some(name), Some(_)) = (self.play.held_name(), self.status.steps) {
@@ -3430,6 +3462,7 @@ impl Player {
                         .to_string()
                 }
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
+                View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
@@ -7574,6 +7607,11 @@ impl Player {
                 return answer;
             }
         }
+        if self.status.copy {
+            if let Some(answer) = self.copy_tap(&ev) {
+                return answer;
+            }
+        }
         match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
                 // The header moved its own highlight; the page follows when the app says.
@@ -8016,6 +8054,19 @@ impl Player {
                     Some(FromUi::Time(TimeAction::LoopInput(t)))
                 } else {
                     Some(FromUi::TrackInstrument(t))
+                }
+            }
+            // SHIFT + the clip card's arrows: Length and Speed halve or
+            // double.
+            (time_view::CLIP_CARD, EventKind::Step { index, delta }) if self.status.shift => {
+                match time_view::card_action(&self.time, index, delta, true) {
+                    Ok(a) => Some(FromUi::Time(a)),
+                    Err(why) => {
+                        if !why.is_empty() {
+                            self.tell(&why);
+                        }
+                        None
+                    }
                 }
             }
             (time_view::CLIPS, EventKind::Toggle(_))
@@ -8818,6 +8869,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         mute_bank: 0,
         steps: None,
         erase: false,
+        copy: false,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -9252,6 +9304,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         mute_bank: 0,
         steps: None,
         erase: false,
+        copy: false,
     }));
     sample_loop(&mut p);
     if v == PlayView::Loop {
@@ -10843,6 +10896,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mute_bank: 0,
         steps: None,
         erase: false,
+        copy: false,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
     for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
@@ -10879,6 +10933,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mute_bank: 0,
         steps: None,
         erase: false,
+        copy: false,
     }));
     chords.apply(ToUi::KitChanged {
         kit: synth_kit,
@@ -13356,6 +13411,60 @@ mod tests {
         assert_eq!(
             p.told.as_ref().map(|t| t.0.as_str()),
             Some("Nothing to undo on this page")
+        );
+    }
+
+    /// COPY held on Arrange (sequencer S3): a clip tapped is copied, an
+    /// empty slot tapped gets the copy, and the hint line says which.
+    #[test]
+    fn copy_held_copies_a_clip_and_pastes_it_in_an_empty_slot() {
+        use mpfree_time_ui::widgets::ClipGrid;
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let copy = |p: &mut Player, on: bool| {
+            let mut s = p.status.clone();
+            s.copy = on;
+            p.apply(ToUi::Status(s));
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let cell = |p: &Player, track, slot| {
+            let r =
+                p.ui.get::<ClipGrid>(time_view::CLIPS)
+                    .unwrap()
+                    .cell_rect(grid, track, slot)
+                    .unwrap();
+            (r.x + r.w / 2, r.y + r.h / 2)
+        };
+        copy(&mut p, true);
+        assert!(hint(&p).starts_with("COPY held: tap a clip"), "{}", hint(&p));
+        // Nothing copied yet: an empty slot says so and records nothing.
+        let empty = cell(&p, 2, 1);
+        assert_eq!(tap(&mut p, empty), None);
+        assert!(hint(&p).contains("tap a clip first"), "{}", hint(&p));
+        let clip = cell(&p, 0, 0);
+        assert_eq!(
+            tap(&mut p, clip),
+            Some(FromUi::Time(TimeAction::CopyClip { track: 0, slot: 0 }))
+        );
+        // The engine says what it copied; an empty slot pastes it.
+        let mut st = p.time.clone();
+        st.clipboard = Some("Clip 1".into());
+        p.apply(ToUi::Time(Box::new(st)));
+        copy(&mut p, true);
+        assert!(hint(&p).contains("a copy of Clip 1"), "{}", hint(&p));
+        assert_eq!(
+            tap(&mut p, empty),
+            Some(FromUi::Time(TimeAction::PasteClip { track: 2, slot: 1 }))
+        );
+        // Let go of COPY: taps are as always.
+        copy(&mut p, false);
+        assert_eq!(
+            tap(&mut p, empty),
+            Some(FromUi::Time(TimeAction::NewClip { track: 2, slot: 1 }))
         );
     }
 
@@ -20036,6 +20145,7 @@ mod tests {
             mute_bank: 0,
             steps: None,
             erase: false,
+            copy: false,
         };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);

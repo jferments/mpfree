@@ -136,6 +136,8 @@ pub struct TimeControl {
     editor: Option<Editor>,
     pub(super) armed: Option<usize>,
     takes: Takes,
+    /// The clip COPY + a clip copied last, for COPY + an empty slot.
+    clipboard: Option<Clip>,
     /// The take a step lock's turn went into last: a turn that joins it
     /// writes no line, so a knob turned through many values is one line.
     lock_take: u32,
@@ -237,6 +239,7 @@ impl TimeControl {
             editor: None,
             armed: tracks.armed,
             takes: Takes::default(),
+            clipboard: None,
             lock_take: 0,
             costs: Costs::default(),
             capture: Box::new(Capture::new()),
@@ -1338,11 +1341,62 @@ impl TimeControl {
                     .map_or_else(String::new, |r| format!("{} {}", r.name, r.value));
                 Ok(format!("clip: {name} · {said} (UNDO takes it back)"))
             }
-            TimeAction::ClipLength { track, slot, steps } => {
+            TimeAction::ClipLength {
+                track,
+                slot,
+                steps,
+                copy,
+            } => {
                 if self.step_focus() != (track, Some(slot)) {
                     return Err("clip: the focused clip changed: try again".into());
                 }
-                self.step_action(StepAction::Length { steps, copy: false })
+                self.step_action(StepAction::Length { steps, copy })
+            }
+            TimeAction::CopyClip { track, slot } => {
+                let c = self.project.clip(track, slot).ok_or_else(|| {
+                    format!("copy: slot {} of track {} is empty", slot + 1, track + 1)
+                })?;
+                if c.looped.is_some() {
+                    return Err(
+                        "copy: a loop cell copies with SHIFT + a drag onto another Loop track"
+                            .into(),
+                    );
+                }
+                let said = format!(
+                    "copy: {} copied · COPY + an empty slot puts a copy there",
+                    c.name
+                );
+                self.clipboard = Some(c.clone());
+                self.changed = true;
+                Ok(said)
+            }
+            TimeAction::PasteClip { track, slot } => {
+                let c = self
+                    .clipboard
+                    .clone()
+                    .ok_or("paste: nothing copied yet: COPY + a clip copies it")?;
+                let t = self
+                    .project
+                    .tracks
+                    .get(track)
+                    .ok_or_else(|| format!("paste: no track {}", track + 1))?;
+                if t.is_loops() {
+                    return Err(format!("paste: {} plays loops, not clips", t.name));
+                }
+                let place = format!("{} / {}", t.name, slot + 1);
+                self.takes
+                    .paste_clip(&mut self.project, track, slot, c.clone())
+                    .map_err(|e| match e {
+                        ModelError::BadSlot => {
+                            format!("paste: {place} holds a clip: COPY + an empty slot pastes")
+                        }
+                        e => format!("paste: {e:?}"),
+                    })?;
+                self.compile()?;
+                Ok(format!(
+                    "paste: a copy of {} in {place} (UNDO takes it away)",
+                    c.name
+                ))
             }
             TimeAction::RecordPressure { track, on } => {
                 if !self.set_record_touch(track, on) {
@@ -2502,6 +2556,7 @@ impl TimeControl {
             &self.takes,
         );
         st.capture = self.pending.map(|p| bars_label(p.bars));
+        st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
         st.cues = self.cues.clone();
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();

@@ -879,6 +879,9 @@ pub struct Status {
     /// ERASE held: the next tap on the screen deletes what it lands on
     /// (Jay after live test 3).
     pub erase: bool,
+    /// COPY held: on Arrange, a tap on a clip copies it and a tap on an
+    /// empty slot pastes the copy (sequencer S3).
+    pub copy: bool,
 }
 
 /// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
@@ -1858,6 +1861,7 @@ impl App {
             mute_bank: self.mute_bank,
             steps: self.step_pads(),
             erase: self.erase_held,
+            copy: self.step_seq.copy_held,
         })
     }
 

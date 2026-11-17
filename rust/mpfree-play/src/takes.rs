@@ -215,6 +215,9 @@ pub struct Take {
     /// A clip's settings changed ([`Takes::set_clip`]), as (track, slot,
     /// before, after).
     pub settings: Option<(usize, usize, ClipSettings, ClipSettings)>,
+    /// COPY + an empty slot put a copy there ([`Takes::paste_clip`]): the
+    /// clip is in `made`.
+    pub pasted: bool,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -497,6 +500,36 @@ impl Takes {
         let take = self.next_capture();
         take.made.extend(clips);
         Ok(take.number)
+    }
+
+    /// COPY + an empty slot (sequencer S3): put `clip`, a copy of one
+    /// copied before, in clip `slot` of `track`, as an edit of its own that
+    /// undo takes away again. The edit's number. `BadSlot` if there is no
+    /// such slot or it holds a clip; the clip's own refusals as they are.
+    /// Nothing changes on an error.
+    pub fn paste_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        clip: Clip,
+    ) -> Result<u32, ModelError> {
+        clip.check()?;
+        let s = slot_mut(project, track, slot).ok_or(ModelError::BadSlot)?;
+        if s.is_some() {
+            return Err(ModelError::BadSlot);
+        }
+        *s = Some(clip.clone());
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            pasted: true,
+            made: vec![(track, slot, clip)],
+            ..Take::default()
+        });
+        Ok(number)
     }
 
     /// ERASE + a clip (Jay after live test 3): take clip `slot` of
@@ -1170,6 +1203,30 @@ mod tests {
         assert_eq!(t.redo(&mut p), Some(2));
         assert_eq!(c(&p).speed, Speed::NORMAL);
         assert_eq!(c(&p).quantise, None);
+    }
+
+    /// COPY + an empty slot: the copy goes in as an edit of its own, which
+    /// undo takes away and redo puts back; a slot with a clip refuses it.
+    #[test]
+    fn a_pasted_clip_is_an_edit_undo_takes_away() {
+        let mut p = project();
+        let mut t = Takes::default();
+        let copy = p.tracks[0].slots[0].clone().unwrap();
+        assert_eq!(
+            t.paste_clip(&mut p, 0, 0, copy.clone()),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(t.paste_clip(&mut p, 0, 5, copy.clone()), Ok(1));
+        assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
+        assert!(t.done()[0].pasted && t.done()[0].edited);
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert!(p.tracks[0].slots[5].is_none());
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.tracks[0].slots[5].as_ref(), Some(&copy));
+        assert_eq!(
+            t.paste_clip(&mut p, 0, 99, copy),
+            Err(ModelError::BadSlot)
+        );
     }
 
     #[test]

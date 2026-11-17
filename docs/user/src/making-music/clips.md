@@ -22,6 +22,7 @@ The grid has a column per **track** and a row per **slot**. Each track plays one
 - **UNDO** takes back any drop, and the Takes list names it ("Move 7 · Drums / 2, to Bass / 4").
 - **Tap a track's name** to **arm** it: the pads record into that track. The track arms when you lift your finger.
 - **Hold ERASE and tap a clip** to delete it. **UNDO** brings it back. A clip the song uses stays until you delete its blocks in the song.
+- **Hold COPY and tap a clip** to copy it. Then **hold COPY and tap an empty slot**, on any track and any page, and a copy goes there; tap more empty slots for more copies. **UNDO** takes a copy away. It's handy for a variation: copy the verse, then change the copy.
 - **Under each name** is what the track plays: **Kit**, or its own instrument (FM, Poly, a plugin synth). Tap that line to change it: the track is armed, and the Synth tab opens its MENU on the track's instrument row (see [A synth for each track](synths.md#a-synth-for-each-track)).
 
 {{shot: arrange-instruments | Each track's instrument under its name: Track 2 plays FM, Track 4 Poly and Track 6 a plugin synth, and the rest play the kit.}}
@@ -93,7 +94,7 @@ The Record panel has two tabs at its top: **Record**, the record settings, and *
 - **Follow:** what the track plays after this clip. **Next**, **Previous**, **First** and **Last** pick from the track's clips; **Any** picks one at random, this one included, and **Other** any but this one; **Again** plays it from its start; **Stop** stops the track.
 - **After:** after how many bars, counted from where the clip started. Turning **Follow** on starts it at one pass of the clip.
 
-Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **+**, as on the Record tab. Each change plays at once. A row you change is one take ("Settings 4 · Bass / 2"), however far you turn it, so **UNDO** puts it back in one go.
+Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **+**, as on the Record tab. Hold **SHIFT** as you tap **Length**'s arrows to **double** the clip (its notes play again in the new half) or **halve** it, and **Speed**'s to play it twice as fast or half as fast. Each change plays at once. A row you change is one take ("Settings 4 · Bass / 2"), however far you turn it, so **UNDO** puts it back in one go.
 
 A Loop track's cell plays its loop as you recorded it, so only **Follow** and **After** apply to it.
 
