@@ -209,6 +209,8 @@ pub enum To {
     PortPage,
     /// Out: thru passed it on from this input port.
     ThruFrom(PortId),
+    /// Out: the Sample tab's auto-sample played it on outside gear.
+    Sampler,
 }
 
 /// The monitor's filter groups, as bits of [`Filter::kinds`].

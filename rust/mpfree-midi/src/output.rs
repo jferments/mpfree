@@ -48,10 +48,13 @@ const NO_TRACK: u8 = 0xFF;
 /// [`Timed`]'s track when a port's page sent it (its test note or All
 /// notes off).
 const PAGE: u8 = 0xFE;
+/// [`Timed`]'s track when the Sample tab's auto-sample of outside gear
+/// sent it.
+const SAMPLER: u8 = 0xFD;
 /// [`Timed`]'s track when thru passed it on: this bit, with the input
 /// port's number below it (tracks are below [`MAX_TRACKS`]).
 const THRU: u8 = 0x80;
-const _: () = assert!(MAX_TRACKS <= THRU as usize && MAX_PORTS <= 0x7E);
+const _: () = assert!(MAX_TRACKS <= THRU as usize && MAX_PORTS <= 0x7D);
 
 impl Timed {
     pub fn msg(offset: u32, m: Msg) -> Timed {
@@ -77,6 +80,15 @@ impl Timed {
         }
     }
 
+    /// The same message, sent by the Sample tab's auto-sample of outside
+    /// gear (for the MIDI monitor).
+    pub fn from_sampler(self) -> Timed {
+        Timed {
+            track: SAMPLER,
+            ..self
+        }
+    }
+
     /// The same message, passed on by thru from the input `port` (for
     /// the MIDI monitor).
     pub fn thru(self, port: PortId) -> Timed {
@@ -93,13 +105,18 @@ impl Timed {
 
     /// The input port thru passed it on from, if it did.
     pub fn thru_from(&self) -> Option<PortId> {
-        (self.track >= THRU && self.track != NO_TRACK && self.track != PAGE)
+        (self.track >= THRU && ![NO_TRACK, PAGE, SAMPLER].contains(&self.track))
             .then_some(PortId(self.track & 0x7F))
     }
 
     /// A port's page sent it.
     pub fn is_from_page(&self) -> bool {
         self.track == PAGE
+    }
+
+    /// The Sample tab's auto-sample of outside gear sent it.
+    pub fn is_from_sampler(&self) -> bool {
+        self.track == SAMPLER
     }
 
     /// One real-time byte (F8 clock, FA start, FB continue, FC stop).

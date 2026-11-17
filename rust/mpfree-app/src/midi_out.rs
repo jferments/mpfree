@@ -54,8 +54,16 @@
 //!   every tempo change; Stop, Song Position and Continue on a locate or a
 //!   loop's jump; Stop when it stops. A count-in sends nothing until
 //!   playback starts. Always also sends pulses at the tempo while stopped.
+//! - **The Sample tab's auto-sample of outside gear** ([`MidiOut::gear_out`])
+//!   plays the gear's notes out of the jacks from the job's own thread:
+//!   only note on and off, through a bounded queue the sound loop drains
+//!   each period ([`GEAR_QUEUE`]), out at once with no song timing. Its
+//!   notes still on end at a panic, when sending is switched off, when the
+//!   jacks' writer stops and when the job ends.
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -70,12 +78,76 @@ use mpfree_play::{Event, Out};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
 use crate::port_writer::{Closing, Wire, Writer, STALL};
+use crate::sample_page::GearOut;
 
 /// Notes one pad can start (a synth pad's chord); more are not sent.
 const CHORD: usize = 8;
 const PADS: usize = 16;
 /// The most messages a period lists for the MIDI monitor, over every port.
 const SENT: usize = 1024;
+/// The most messages the Sample tab's auto-sample of outside gear can have
+/// waiting for the sound loop; more are dropped and counted. The job sends
+/// one note at a time, seconds apart.
+pub const GEAR_QUEUE: usize = 64;
+/// The jacks' name on the Sample tab's auto-sample.
+pub const GEAR_NAME: &str = "MIDI Out (5-pin)";
+
+/// What the auto-sample's job hands the sound loop.
+#[derive(Clone, Copy, Debug)]
+enum GearMsg {
+    /// A note on or off, as it goes out.
+    Note(Msg),
+    /// The job is over (or was cancelled): every note it left on ends.
+    End,
+}
+
+/// The Sample tab's auto-sample of outside gear: its notes from the job's
+/// thread to the jacks, through a bounded queue the sound loop drains.
+struct Gear {
+    tx: SyncSender<GearMsg>,
+    rx: Receiver<GearMsg>,
+    /// Its notes on, a bit for each note, by channel.
+    held: [u128; 16],
+    /// Counted on the job's thread: messages refused (not a note on or
+    /// off), and dropped because the queue was full.
+    refused: Arc<AtomicU64>,
+    full: Arc<AtomicU64>,
+    /// Notes sent, and not sent because sending was off or the jacks
+    /// closed.
+    sent: u64,
+    unsent: u64,
+    /// Whether [`MidiOut::gear_changed`] last said there is a MIDI out.
+    told: Option<bool>,
+}
+
+impl Gear {
+    fn new() -> Gear {
+        let (tx, rx) = sync_channel(GEAR_QUEUE);
+        Gear {
+            tx,
+            rx,
+            held: [0; 16],
+            refused: Arc::new(AtomicU64::new(0)),
+            full: Arc::new(AtomicU64::new(0)),
+            sent: 0,
+            unsent: 0,
+            told: None,
+        }
+    }
+}
+
+/// What the auto-sample's `send` hands on: a note on or off of exactly
+/// three bytes, or the end of the job (no bytes). None: refused.
+fn gear_msg(b: &[u8]) -> Option<GearMsg> {
+    match *b {
+        [] => Some(GearMsg::End),
+        [s, n, v] if n < 0x80 && v < 0x80 => match Msg::from_bytes(s, n, v)? {
+            m @ (Msg::NoteOn { .. } | Msg::NoteOff { .. }) => Some(GearMsg::Note(m)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 /// Opens a USB device's output, in its writer's thread: the app's way to
 /// that device's substream, checked before anything is written.
@@ -455,6 +527,8 @@ pub struct MidiOut {
     said: Vec<String>,
     /// Messages thru couldn't send (MIDI out off, or no output there).
     thru_unsent: u64,
+    /// The Sample tab's auto-sample of outside gear, out of the jacks.
+    gear: Gear,
 }
 
 /// The port page's test note: C4, held half a second.
@@ -499,6 +573,7 @@ impl MidiOut {
             sent_at: Instant::now(),
             said: Vec::new(),
             thru_unsent: 0,
+            gear: Gear::new(),
         }
     }
 
@@ -632,6 +707,9 @@ impl MidiOut {
     fn forget(&mut self, i: usize) {
         self.end_port(i, 0);
         self.queue[i].clear();
+        if i == usize::from(DIN.0) {
+            self.gear.held = [0; 16];
+        }
         let p = &mut self.ports[i];
         p.test_off = None;
         // Its setting stays; the clock starts afresh when it is sent to.
@@ -911,6 +989,107 @@ impl MidiOut {
     pub fn all_off(&mut self, offset: u32) {
         self.chords.clear();
         self.router.all_off(offset, &mut self.queue);
+        self.gear_off(offset);
+    }
+
+    /// The jacks as the Sample tab's MIDI out for auto-sampling outside
+    /// gear, while they are open and Prefs' Send MIDI and CV out is on;
+    /// None otherwise. Its `send`, from any thread, takes a note on or off
+    /// (three bytes), or no bytes when the job is over or cancelled, which
+    /// ends every note it left on. Anything else is refused. It never
+    /// waits: a message that finds [`GEAR_QUEUE`] full is dropped. Both
+    /// are counted for the log. Allocates (its name and `send`).
+    // The sampler thread wires it to `SamplePage::set_gear` with its
+    // auto-sample of outside gear.
+    #[allow(dead_code)]
+    pub fn gear_out(&self) -> Option<GearOut> {
+        if !self.gear_ready() {
+            return None;
+        }
+        let tx = self.gear.tx.clone();
+        let (refused, full) = (self.gear.refused.clone(), self.gear.full.clone());
+        let send = move |b: &[u8]| match gear_msg(b) {
+            Some(m) => {
+                if tx.try_send(m).is_err() {
+                    full.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            None => {
+                refused.fetch_add(1, Ordering::Relaxed);
+            }
+        };
+        Some(GearOut {
+            name: GEAR_NAME.to_string(),
+            send: Arc::new(send),
+        })
+    }
+
+    /// Whether the auto-sample's notes can go out: the jacks are open and
+    /// sending is on.
+    fn gear_ready(&self) -> bool {
+        self.sending && self.is_open()
+    }
+
+    /// Once a period: the Sample tab's MIDI out ([`MidiOut::gear_out`])
+    /// when it came or went since the last call (None inside: there is
+    /// none now), to hand to `SamplePage::set_gear`. Allocates only then.
+    // The sampler thread wires it to `SamplePage::set_gear` with its
+    // auto-sample of outside gear.
+    #[allow(dead_code)]
+    pub fn gear_changed(&mut self) -> Option<Option<GearOut>> {
+        let ready = self.gear_ready();
+        if self.gear.told == Some(ready) {
+            return None;
+        }
+        self.gear.told = Some(ready);
+        Some(self.gear_out())
+    }
+
+    /// The auto-sample's waiting notes, into the jacks' queue at the start
+    /// of this period (at most [`GEAR_QUEUE`]). Never waits.
+    fn gear_period(&mut self) {
+        let din = usize::from(DIN.0);
+        for _ in 0..GEAR_QUEUE {
+            let Ok(m) = self.gear.rx.try_recv() else {
+                break;
+            };
+            let msg = match m {
+                GearMsg::End => {
+                    self.gear_off(0);
+                    continue;
+                }
+                GearMsg::Note(msg) => msg,
+            };
+            if !self.gear_ready() {
+                self.gear.unsent += 1;
+                continue;
+            }
+            match msg {
+                Msg::NoteOn { ch, note, .. } => {
+                    self.gear.held[usize::from(ch & 0x0F)] |= 1u128 << note;
+                }
+                Msg::NoteOff { ch, note, .. } => {
+                    self.gear.held[usize::from(ch & 0x0F)] &= !(1u128 << note);
+                }
+                _ => {}
+            }
+            self.queue[din].push(Timed::msg(0, msg).from_sampler());
+            self.gear.sent += 1;
+        }
+    }
+
+    /// Ends the auto-sample's notes still on, at `offset`.
+    fn gear_off(&mut self, offset: u32) {
+        let din = usize::from(DIN.0);
+        for ch in 0..16u8 {
+            let mut held = std::mem::take(&mut self.gear.held[usize::from(ch)]);
+            while held != 0 {
+                let note = held.trailing_zeros() as u8;
+                held &= held - 1;
+                let off = Msg::NoteOff { ch, note, vel: 64 };
+                self.queue[din].push(Timed::msg(offset, off).from_sampler());
+            }
+        }
     }
 
     /// The transport's period as MIDI clock on each port, by its "Clock
@@ -936,6 +1115,7 @@ impl MidiOut {
     /// sound is heard `lead` later. A port with no writer drops what it
     /// was given.
     pub fn period_end(&mut self, frames: u32, t0: Instant) {
+        self.gear_period();
         let at = t0 + self.lead;
         let rate = f64::from(self.rate);
         self.sent.clear();
@@ -1156,6 +1336,18 @@ impl MidiOut {
             lines.push(format!(
                 "Thru: {} messages not sent (MIDI out off, or no output to send them to)",
                 self.thru_unsent
+            ));
+        }
+        let g = &self.gear;
+        let (refused, full) = (
+            g.refused.load(Ordering::Relaxed),
+            g.full.load(Ordering::Relaxed),
+        );
+        if g.sent + g.unsent + refused + full > 0 {
+            lines.push(format!(
+                "Auto-sample: its notes to the gear on MIDI Out: {} sent, {} not sent (MIDI out \
+                 off), {refused} refused (not a note on or off), {full} dropped (the queue was full)",
+                g.sent, g.unsent
             ));
         }
         if self.busy > 0 {
@@ -2143,6 +2335,121 @@ mod tests {
 
     /// Steady playing on MIDI Out allocates and frees nothing in the sound
     /// loop.
+    /// Waits up to 2 s for the port to have `n` bytes.
+    fn wait_for(sink: &Sink, n: usize) {
+        let give_up = Instant::now() + Duration::from_secs(2);
+        while sink.bytes().len() < n && Instant::now() < give_up {
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// The Sample tab's auto-sample of outside gear: its notes, sent from
+    /// the job's own thread, leave the jacks in the next period, marked as
+    /// its own for the monitor; anything but a note on or off is refused;
+    /// the end of the job ends every note it left on.
+    #[test]
+    fn the_auto_samples_notes_go_out_at_once_and_end_with_the_job() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let g = mo.gear_changed().expect("said once").expect("the jacks");
+        assert_eq!(g.name, GEAR_NAME);
+        assert!(mo.gear_changed().is_none(), "said only when it changes");
+        let send = g.send.clone();
+        thread::spawn(move || {
+            send(&[0x92, 60, 100]);
+            send(&[0xB2, 1, 64]); // a CC: refused
+            send(&[0xF0, 0x7E, 0xF7]); // SysEx: refused
+            send(&[0x92, 60]); // short: refused
+            send(&[0x92, 0x80, 100]); // a data byte with its top bit: refused
+        })
+        .join()
+        .unwrap();
+        mo.period_end(PERIOD, Instant::now());
+        let sent: Vec<(Vec<u8>, bool)> = mo
+            .sent()
+            .map(|(_, port, m)| {
+                assert_eq!(port, DIN);
+                (m.bytes().to_vec(), m.is_from_sampler())
+            })
+            .collect();
+        assert_eq!(sent, [(vec![0x92, 60, 100], true)]);
+        (g.send)(&[0x92, 64, 90]);
+        (g.send)(&[]);
+        mo.period_end(PERIOD, Instant::now());
+        wait_for(&sink, 12);
+        assert_eq!(
+            sink.bytes(),
+            [0x92, 60, 100, 0x92, 64, 90, 0x82, 60, 64, 0x82, 64, 64]
+        );
+        // Nothing left on: a second end sends nothing.
+        (g.send)(&[]);
+        mo.period_end(PERIOD, Instant::now());
+        assert_eq!(mo.sent().count(), 0);
+        let said = mo.summary().join("\n");
+        assert!(
+            said.contains(
+                "Auto-sample: its notes to the gear on MIDI Out: 2 sent, 0 not sent (MIDI out off), 4 refused"
+            ),
+            "{said}"
+        );
+        assert!(mo.close());
+    }
+
+    /// A panic ends the auto-sample's note; switched off, the Sample tab is
+    /// told it has no MIDI out and what was still sent isn't; a full queue
+    /// drops and counts, never waits.
+    #[test]
+    fn the_auto_sample_stops_with_a_panic_and_has_no_midi_out_while_sending_is_off() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let g = mo.gear_out().expect("the jacks, sending");
+        (g.send)(&[0x90, 48, 100]);
+        mo.period_end(PERIOD, Instant::now());
+        mo.all_off(0);
+        mo.period_end(PERIOD, Instant::now());
+        wait_for(&sink, 6);
+        assert_eq!(sink.bytes(), [0x90, 48, 100, 0x80, 48, 64]);
+        mo.gear_changed();
+        mo.switch_off();
+        assert!(matches!(mo.gear_changed(), Some(None)));
+        assert!(mo.gear_out().is_none());
+        (g.send)(&[0x90, 50, 100]);
+        mo.period_end(PERIOD, Instant::now());
+        for _ in 0..GEAR_QUEUE + 6 {
+            (g.send)(&[0x90, 52, 100]);
+        }
+        let said = mo.summary().join("\n");
+        assert!(said.contains("6 dropped (the queue was full)"), "{said}");
+        mo.period_end(PERIOD, Instant::now());
+        let said = mo.summary().join("\n");
+        assert!(
+            said.contains(&format!("MIDI Out: 1 sent, {} not sent", GEAR_QUEUE + 1)),
+            "{said}"
+        );
+        assert_eq!(sink.bytes().len(), 6, "nothing went out while off");
+    }
+
+    /// The auto-sample's notes cost the sound loop no allocation, and its
+    /// `send` none on the job's side.
+    #[test]
+    fn the_auto_samples_notes_never_allocate() {
+        let (mut mo, _sink) = open(Duration::ZERO);
+        let g = mo.gear_out().expect("the jacks, sending");
+        let run = |mo: &mut MidiOut, periods: u32| {
+            for i in 0..periods {
+                let note = (i % 100) as u8;
+                (g.send)(&[0x90, note, 100]);
+                mo.period_end(PERIOD, Instant::now());
+                (g.send)(&[0x80, note, 0]);
+                (g.send)(&[]);
+                mo.period_end(PERIOD, Instant::now());
+            }
+        };
+        run(&mut mo, 20);
+        thread::sleep(Duration::from_millis(50));
+        let ((), calls) = crate::sys::alloc_count::calls(|| run(&mut mo, 500));
+        assert_eq!(calls, 0, "allocations or frees");
+        assert!(mo.close());
+    }
+
     #[test]
     fn steady_play_never_allocates() {
         let (mut mo, sink) = open(Duration::ZERO);

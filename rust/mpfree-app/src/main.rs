@@ -6336,6 +6336,8 @@ fn player_session(
         for (due, port, m) in seq.midi.sent() {
             let to = if m.is_from_page() {
                 To::PortPage
+            } else if m.is_from_sampler() {
+                To::Sampler
             } else if let Some(from) = m.thru_from() {
                 To::ThruFrom(from)
             } else {
