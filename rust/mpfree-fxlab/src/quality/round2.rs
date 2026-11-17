@@ -1785,12 +1785,22 @@ pub(super) fn filter(r: &mut Report) {
 
 const LOFI: &str = "mpfree.fx.lofi";
 
+/// How long the wow and flutter rows listen: a minute, so the mean pitch
+/// of a wow that wanders without repeating averages out (over ten seconds
+/// it is off by the tape's net move across the window, up to 0.18 % at
+/// full wow, which is not a drift) and the peak is the wow's own.
+const LOFI_SECS: f64 = 60.0;
+
 /// The share of the strongest line (with its neighbours) in the spectrum
-/// of the pitch track of a 3.15 kHz tone through `d` over ten seconds: 1
-/// for a single sine of wow, small for irregular wow.
+/// of the pitch track of a 3.15 kHz tone through `d` over a minute: 1 for
+/// a single sine of wow, small for irregular wow. A minute, not ten
+/// seconds: a wow near 0.7 Hz makes only four cycles in the six seconds a
+/// ten-second track analyses, and any slow wobble, however irregular, then
+/// fills a few bins (the first version's two sines read 0.68 over a
+/// minute, a random path 0.1 to 0.25).
 fn wow_line_share(d: &mut NodeDut) -> Option<f64> {
     let rate = d.rate();
-    let n = 10 * rate as usize;
+    let n = 60 * rate as usize;
     let x = sine(3150.0, db_to_amp(-12.0), n, rate);
     let y = d.render(&Stereo::mono(x, rate), 0).left;
     let f = flutter::instantaneous_hz(&y[rate as usize / 2..], rate, 3150.0);
@@ -1814,7 +1824,17 @@ pub(super) fn lofi(r: &mut Report) {
     let (main, presets) = engine_subjects(LOFI, "lofi", "lofi");
     let name = main.name.clone();
     let name = name.as_str();
-    let quiet = [(l::CRACKLE, 0.0), (l::NOISE, 0.0), (l::SATURATION, 0.0)];
+    // What would disturb a pitch track: noise, saturation, dropouts, hum,
+    // and Stereo (the measure reads the mid, where two sides wowing apart
+    // beat; L14 reads them apart).
+    let quiet = [
+        (l::CRACKLE, 0.0),
+        (l::NOISE, 0.0),
+        (l::SATURATION, 0.0),
+        (l::DROPOUTS, 0.0),
+        (l::HUM, 0.0),
+        (l::STEREO, 0.0),
+    ];
     let with = |extra: &[(u16, f64)]| {
         let mut v = quiet.to_vec();
         v.extend_from_slice(extra);
@@ -1844,7 +1864,7 @@ pub(super) fn lofi(r: &mut Report) {
         ),
     ] {
         let mut d = make_with(&main, rate, &values);
-        let f = flutter::measure(&mut d, 10.0);
+        let f = flutter::measure(&mut d, LOFI_SECS);
         let id = if metric.contains("flutter") {
             "L2"
         } else {
@@ -1874,7 +1894,7 @@ pub(super) fn lofi(r: &mut Report) {
         let mut v: Vec<(u16, f64)> = Vec::new();
         v.extend_from_slice(&quiet);
         let mut d = make_with(s, rate, &v);
-        let f = flutter::measure(&mut d, 10.0);
+        let f = flutter::measure(&mut d, LOFI_SECS);
         r.put(
             "L1",
             &s.name,
@@ -2013,6 +2033,180 @@ pub(super) fn lofi(r: &mut Report) {
         );
     }
 
+    // L7: with Follow at 0, the noise runs on in silence as it played.
+    let s1 = rate as usize;
+    let bed = [
+        (l::WOW, 0.0),
+        (l::FLUTTER, 0.0),
+        (l::SATURATION, 0.0),
+        (l::CRACKLE, 0.0),
+        (l::NOISE, 100.0),
+        (l::FOLLOW, 0.0),
+    ];
+    let mut x = sine(1000.0, db_to_amp(-18.0), 2 * s1, rate);
+    x.resize(8 * s1, 0.0);
+    let mut d = make_with(&main, rate, &bed);
+    let y = d.render(&Stereo::mono(x, rate), 0).left;
+    let mut d = make_with(&main, rate, &bed);
+    let quiet = d.render(&Stereo::mono(vec![0.0; 8 * s1], rate), 0).left;
+    // The same noise either way (it doesn't hear the music): the silence
+    // after the tone against the same span of a run with no music at all.
+    let after = db_amp(rms_of(&y[4 * s1..8 * s1]));
+    let alone = db_amp(rms_of(&quiet[4 * s1..8 * s1]));
+    r.put(
+        "L7",
+        name,
+        "follow0_after_vs_alone_db",
+        Some((after - alone).abs()),
+        Better::Lower,
+        Some(1.0),
+        0.1,
+    );
+    r.put(
+        "L7",
+        name,
+        "follow0_noise_dbfs",
+        Some(floor(alone)),
+        Better::Info,
+        None,
+        0.0,
+    );
+
+    // L12: dropouts dip by their depth along ramps (Dropouts 100: 24 dB).
+    {
+        let s48 = rate as usize / 1000;
+        let mut d = make_with(
+            &main,
+            rate,
+            &[
+                (l::AMOUNT, 100.0),
+                (l::WOW, 0.0),
+                (l::FLUTTER, 0.0),
+                (l::SATURATION, 0.0),
+                (l::CRACKLE, 0.0),
+                (l::NOISE, 0.0),
+                (l::LOW_CUT, 20.0),
+                (l::HIGH_CUT, 20_000.0),
+                (l::DROPOUTS, 100.0),
+            ],
+        );
+        let n = 12 * s1;
+        let x = sine(1000.0, db_to_amp(-12.0), n, rate);
+        let lat = d.latency();
+        let y = d.render(&Stereo::mono(x, rate), lat).left;
+        // 1 ms windows, a whole cycle of the tone each.
+        let db: Vec<f64> = y[lat + s1..lat + n]
+            .chunks_exact(s48)
+            .map(|w| db_amp(rms_of(w)))
+            .collect();
+        let mut sorted = db.clone();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let steady = sorted[sorted.len() / 2];
+        let rel: Vec<f64> = db.iter().map(|v| v - steady).collect();
+        let deepest = rel.iter().fold(0.0f64, |m, &v| m.min(v));
+        r.put(
+            "L12",
+            name,
+            "dropout_depth_error_db",
+            Some((deepest + 24.0).abs()),
+            Better::Lower,
+            Some(1.0),
+            0.1,
+        );
+        // The quickest fall from -1 dB to within 1 dB of the depth.
+        let mut quickest: Option<f64> = None;
+        for i in 1..rel.len() {
+            if rel[i] <= -1.0 && rel[i - 1] > -1.0 {
+                if let Some(k) = (i..rel.len()).find(|&k| rel[k] <= -23.0) {
+                    let ms = (k - i + 1) as f64;
+                    quickest = Some(quickest.map_or(ms, |q: f64| q.min(ms)));
+                }
+            }
+        }
+        r.put(
+            "L12",
+            name,
+            "dropout_fall_ms",
+            quickest,
+            Better::Higher,
+            Some(5.0),
+            0.5,
+        );
+        let dips = rel
+            .windows(2)
+            .filter(|w| w[0] > -1.0 && w[1] <= -1.0)
+            .count();
+        r.put(
+            "L12",
+            name,
+            "dropouts_per_s",
+            Some(dips as f64 / 11.0),
+            Better::Info,
+            None,
+            0.0,
+        );
+    }
+
+    // Stereo wow: how far the sides' pitch drifts apart at Stereo 100.
+    {
+        let mut d = make_with(
+            &main,
+            rate,
+            &with(&[
+                (l::AMOUNT, 100.0),
+                (l::WOW, 100.0),
+                (l::FLUTTER, 0.0),
+                (l::WIDTH, 100.0),
+                (l::STEREO, 100.0),
+            ]),
+        );
+        let n = 10 * s1;
+        let x = sine(3150.0, db_to_amp(-12.0), n, rate);
+        let y = d.render(&Stereo::mono(x, rate), 0);
+        let fl = flutter::instantaneous_hz(&y.left[s1 / 2..], rate, 3150.0);
+        let fr = flutter::instantaneous_hz(&y.right[s1 / 2..], rate, 3150.0);
+        let k = fl.len().min(fr.len());
+        let apart = fl[..k]
+            .iter()
+            .zip(&fr[..k])
+            .map(|(a, b)| ((a - b) / 3150.0 * 100.0).abs())
+            .fold(0.0, f64::max);
+        r.put(
+            "L14",
+            name,
+            "stereo100_pitch_apart_pct",
+            Some(apart),
+            Better::Info,
+            None,
+            0.0,
+        );
+    }
+
+    // Hum: its level at full, against Mains.
+    {
+        let mut d = make_with(
+            &main,
+            rate,
+            &[
+                (l::AMOUNT, 100.0),
+                (l::CRACKLE, 0.0),
+                (l::NOISE, 0.0),
+                (l::HUM, 100.0),
+                (l::FOLLOW, 0.0),
+            ],
+        );
+        let y = d.render(&Stereo::mono(vec![0.0; 3 * s1], rate), 0).left;
+        r.put(
+            "L15",
+            name,
+            "hum100_dbfs",
+            Some(floor(db_amp(rms_of(&y[s1..])))),
+            Better::Info,
+            None,
+            0.0,
+        );
+    }
+
     // L10: Amount 0 is the input, late by the latency.
     let mut d = make_with(&main, rate, &[(l::AMOUNT, 0.0)]);
     let pink6 = pink_at(rate, -6.0, 2.0);
@@ -2035,8 +2229,10 @@ pub(super) fn lofi(r: &mut Report) {
         0.0,
     );
 
-    // L9, L11: level and zipper, defaults and presets.
-    let p18 = pink_stim(rate, 4.0);
+    // L9, L11: level and zipper, defaults and presets. Dropouts come at
+    // random, so the level is read over 9 s, not the usual 1 s: one dip
+    // more or less in a short window moves it by a dB.
+    let p18 = pink_stim(rate, 12.0);
     for s in std::iter::once(&main).chain(&presets) {
         let mut d = make(s, rate);
         let radio = s.name.contains("Old radio");

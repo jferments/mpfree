@@ -683,34 +683,46 @@ fuzz/octave/model_change_db	0
 fuzz/octave/silence_out_dbfs_fuzz100_gate0	-140
 fuzz/octave/silence_out_dbfs_fuzz100_gate100	-140
 fuzz/octave/sustain_drop_db_fuzz100	2.494
-lofi/lofi/cuts_heard_vs_drawn_420_3200	0
-lofi/lofi/cuts_heard_vs_drawn_80_8000	0
-lofi/lofi/flutter_peak_pct_top	0.1339
-lofi/lofi/lu_pink18	-1.3001
-lofi/lofi/mean_pitch_error_pct_flutter_peak_pct_top	0.0002
-lofi/lofi/mean_pitch_error_pct_wf_peak_pct	0.0019
+lofi/lofi/cuts_heard_vs_drawn_420_3200	0.0059
+lofi/lofi/cuts_heard_vs_drawn_80_8000	0.0059
+lofi/lofi/dropout_depth_error_db	0.005
+lofi/lofi/dropout_fall_ms	6
+lofi/lofi/flutter_peak_pct_top	0.501
+lofi/lofi/follow0_after_vs_alone_db	0
+lofi/lofi/lu_pink18	0.1749
+lofi/lofi/mean_pitch_error_pct_flutter_peak_pct_top	0.0001
+lofi/lofi/mean_pitch_error_pct_wf_peak_pct	0.0003
 lofi/lofi/mean_pitch_error_pct_wf_peak_pct_amount0	0
-lofi/lofi/mean_pitch_error_pct_wow_peak_pct_top	0.008
-lofi/lofi/null_amount0_dbfs	1.9336
-lofi/lofi/sat100_alias_5k_0dbfs	-16.291
-lofi/lofi/sat40_alias_5k_0dbfs	-27.5745
-lofi/lofi/wf_peak_pct	0.1161
-lofi/lofi/wf_peak_pct_amount0	0.0001
-lofi/lofi/wow_line_share	0.8087
-lofi/lofi/wow_peak_pct_top	0.3858
+lofi/lofi/mean_pitch_error_pct_wow_peak_pct_top	0.0074
+lofi/lofi/null_amount0_dbfs	-140
+lofi/lofi/sat100_alias_5k_0dbfs	-49.5547
+lofi/lofi/sat40_alias_5k_0dbfs	-89.1534
+lofi/lofi/wf_peak_pct	0.1262
+lofi/lofi/wf_peak_pct_amount0	0
+lofi/lofi/wow_line_share	0.1936
+lofi/lofi/wow_peak_pct_top	2.1543
 lofi/lofi/zipper_db	0
-lofi/lofi[Cassette]/lu_pink18	-1.5847
-lofi/lofi[Cassette]/mean_pitch_error_pct	0.0022
-lofi/lofi[Cassette]/zipper_db	0
-lofi/lofi[Dusty vinyl]/lu_pink18	-1.2159
-lofi/lofi[Dusty vinyl]/mean_pitch_error_pct	0.0007
+lofi/lofi[Broken machine]/lu_pink18	-0.5844
+lofi/lofi[Broken machine]/mean_pitch_error_pct	0.001
+lofi/lofi[Broken machine]/zipper_db	0.2368
+lofi/lofi[Cassette]/lu_pink18	-0.5003
+lofi/lofi[Cassette]/mean_pitch_error_pct	0.0004
+lofi/lofi[Cassette]/zipper_db	0.4129
+lofi/lofi[Dusty vinyl]/lu_pink18	0.2623
+lofi/lofi[Dusty vinyl]/mean_pitch_error_pct	0.0001
 lofi/lofi[Dusty vinyl]/zipper_db	0
-lofi/lofi[Old radio]/lu_pink18	-3.0107
+lofi/lofi[Old radio]/lu_pink18	-1.5519
 lofi/lofi[Old radio]/mean_pitch_error_pct	0
 lofi/lofi[Old radio]/zipper_db	0
-lofi/lofi[Worn tape]/lu_pink18	-1.2007
-lofi/lofi[Worn tape]/mean_pitch_error_pct	0.0029
-lofi/lofi[Worn tape]/zipper_db	0
+lofi/lofi[VHS]/lu_pink18	-0.4068
+lofi/lofi[VHS]/mean_pitch_error_pct	0.0005
+lofi/lofi[VHS]/zipper_db	0.3967
+lofi/lofi[Vinyl bed]/lu_pink18	0.6684
+lofi/lofi[Vinyl bed]/mean_pitch_error_pct	0.0001
+lofi/lofi[Vinyl bed]/zipper_db	0
+lofi/lofi[Worn tape]/lu_pink18	0.0677
+lofi/lofi[Worn tape]/mean_pitch_error_pct	0.0006
+lofi/lofi[Worn tape]/zipper_db	0.2229
 reverb/cloud/decay_error_pct@1s	19.4439
 reverb/cloud/decay_error_pct@2.5s	21.7053
 reverb/cloud/decay_error_pct@6s	8.2076
