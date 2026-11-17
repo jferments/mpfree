@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
+covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-notefx rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
 checked: 2026-11-16 ececc7e
 -->
 
@@ -57,6 +57,42 @@ Touch a control on the page and the **Modulate** row under the page names it. Th
 **Cancel** closes the list without adding anything.
 
 The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). The Sample tab's **FX** page opens the same chain editor on the pad you are editing, with a switch between the pad's own channel and the Drums track (see [Shaping how a pad plays](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
+
+## MIDI effects: a track's Notes
+
+A track that plays notes (not a Loop track) can change its notes before they reach its sound: make each note a chord, keep notes in a scale, move them, set how hard they play, make them all as long, echo them, loosen them up, or let some through only by chance. These are its **MIDI effects**, and with the track's arp they are its **Notes**. They work on the pads, a keyboard and the track's clips, and on what the track sends out of MIDI.
+
+{{shot: chain-notes | A track's chain: NOTES above SOUND, with Scale, Chord, the arp and Humanize (off) in order. Chord's page shows its shapes, what goes in and what comes out on a keyboard, and its settings; the Q-Links turn Chord, Voicing, Inversion and Velocity.}}
+
+Open a track's chain in the chain editor (its strip's **+ FX**, or an effect in its insert row). The left column then has two groups:
+
+- **NOTES**, the track's MIDI effects and its **Arp**, in the order the notes go through them, top to bottom. Each row has its name, a line on how it is set, and its **ON** switch. Four rows show at a time; **‹ ›** on the NOTES line scroll through more. The line says how many MIDI effects the track has out of 8.
+- **Plays on**, between the groups, says where the track's notes go: **Its own sound**, or a MIDI out port and channel. Tap it to change that in the mixer's I/O view, in the MIDI section's **Tracks out** (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)).
+- **SOUND**, the effects on the track's sound, as before.
+
+**+ MIDI effect** opens the eight MIDI effects as tiles, each with what it does. Tap one to add it, just above the arp, with its page open. **Cancel** closes the tiles.
+
+| MIDI effect | What it does |
+|---|---|
+| **Scale** | Keeps notes in a scale: a note outside it moves down, up or to the nearest note in it, or isn't played |
+| **Chord** | Adds notes to each one played: a shape (Octave, Fifth, Major, Minor, 7th, m7, maj7, sus2, sus4, add9, dim, aug, In key or your own), a voicing, an inversion, a highest note, the added notes' velocity and a strum |
+| **Transpose** | Moves every note, up to four octaves either way |
+| **Velocity** | Sets how hard each note plays: one velocity, or the one you played on a curve between a lowest and a highest |
+| **Note length** | Makes every note as long, in ms or a note value, however long you hold it |
+| **Echo** | Plays each note again after it, softer each time, up to 16 times, with a pitch step per repeat if you like |
+| **Humanize** | Plays each note a little late and a little louder or softer, never the same way twice |
+| **Chance** | Plays each note with a chance, from 0 to 100 % |
+
+Tap a MIDI effect's row for its page. Its choices are along the top as buttons (Chord's shapes, Scale's root), a keyboard shows what goes in and what comes out (for Chord, Scale and Transpose), and its settings sit in sections under it: tap a choice, or – and + to step a value, or rest a finger on a setting's row and turn the data wheel (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). The four with a **Q1** to **Q4** badge are on the Q-Links. The page's line under its name says where it is among the Notes ("after Scale, before Arp").
+
+- **Up** and **Down** move the row picked, the arp too. An effect above the arp changes the notes it gets; one below changes what it plays.
+- **Remove** takes a MIDI effect out. The arp stays: tap its row for what it plays now and **Open the arp ›**, which opens the arp panel on that track.
+- **ON** switches one off without losing how it is set.
+- A key held while you change an effect ends as it started, so nothing hangs.
+- The track's MIDI effects are saved with the project.
+- On a drum track, the pads go through them but the track's clips don't.
+
+Macros, Learn and LFOs on a MIDI effect's settings come later: for now the Modulate row says which settings the Q-Links turn. Returns, submixes, the master and Loop tracks have no Notes.
 
 ## The effects
 

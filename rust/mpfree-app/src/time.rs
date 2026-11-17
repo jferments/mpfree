@@ -583,6 +583,14 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// A track's MIDI effects, as the chain editor's Notes stage set them
+    /// (see `TimeControl::set_note_fx`). False if there is no such note
+    /// track.
+    pub fn set_note_fx(&mut self, track: usize, fx: mpfree_notefx::TrackFx) -> bool {
+        let r = self.control.set_note_fx(track, fx);
+        self.sent(r)
+    }
+
     /// What the Play page's pattern shows. Allocates: called on a change.
     pub fn steps(&self) -> StepsData {
         self.control.steps()
@@ -2609,12 +2617,23 @@ mod tests {
         };
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(6));
         assert!(arps.has_chain(1) && !arps.has_chain(0));
-        h.control.project.tracks[1].note_fx.slots[0] = Some(transpose(-3));
+        // As the chain editor's Notes stage sets them.
+        let mut fx = h.project().tracks[1].note_fx;
+        fx.slots[0] = Some(transpose(-3));
+        assert!(h.set_note_fx(1, fx));
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(1));
         h.control.project.tracks[1].note_fx.slots[0] = None;
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(4));
         assert!(arps.has_chain(1));
         assert_eq!((h.dropped(), arps.dropped()), (0, 0));
+        // A Loop track plays no notes, so it has no MIDI effects.
+        h.control
+            .project
+            .tracks
+            .push(Track::new_loops("Loops A", 8));
+        let loops = h.project().tracks.len() - 1;
+        assert!(!h.set_note_fx(loops, fx));
+        assert!(!h.set_note_fx(loops + 1, fx), "no such track");
     }
 
     /// STOP while stopped (the transport's panic) silences everything,

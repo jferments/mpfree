@@ -516,7 +516,29 @@ impl TimeControl {
             {
                 was.arp_at = now.arp_at;
             }
+            // The ids stay on this side (what names a setting).
+            was.ids = now.ids;
         }
+    }
+
+    /// A track's MIDI effects (its Notes stage, `Track::note_fx`), as the
+    /// chain editor set them: they reach the sound loop at once, changing
+    /// only the places that changed (`ToAudio::NoteFx`, `ToAudio::NoteArp`).
+    /// False if there is no such track, or it is a Loop track (it plays no
+    /// notes).
+    pub fn set_note_fx(&mut self, track: usize, fx: TrackFx) -> bool {
+        let Some(t) = self.project.tracks.get_mut(track) else {
+            return false;
+        };
+        if t.loops().is_some() {
+            return false;
+        }
+        if t.note_fx != fx {
+            t.note_fx = fx;
+            self.changed = true;
+            self.sync_note_fx();
+        }
+        true
     }
 
     /// Take everything the audio half sent, in order, and do each

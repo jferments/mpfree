@@ -2501,7 +2501,10 @@ fn knob_turn(
         gui::FromUi::Chain(mpfree_chain_ui::ChainAction::Set { addr, value }) => (*addr, *value),
         _ => return None,
     };
-    (addr.owner.track().is_some() && value.is_finite()).then_some((addr, value))
+    // A MIDI effect's setting isn't automated (yet): it is the Notes
+    // stage's, not a sound's.
+    let note_fx = matches!(addr.owner, Owner::NoteFx(..));
+    (addr.owner.track().is_some() && !note_fx && value.is_finite()).then_some((addr, value))
 }
 
 /// Knob recording: a screen action's knob turn goes to the recorder while
@@ -7240,6 +7243,7 @@ fn player_session(
         panels.poll(
             app.view(),
             &mix,
+            &|t| modpanels::NotesSource::of(&app, &time, t),
             time.info().bpm,
             Instant::now(),
             &mut |m| out.show(m),
