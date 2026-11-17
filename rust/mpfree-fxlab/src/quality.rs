@@ -947,14 +947,21 @@ fn reverb(r: &mut Report) {
         let mut d = wet();
         let frames = (d.node().tail_frames() as usize).clamp(rate as usize, 12 * rate as usize);
         let ir = room::impulse_response(&mut d, frames, 0.5);
-        let hall = matches!(name, "reverb/hall" | "reverb/cloud");
+        // Hall and Cloud may build slower (up to 1.6); Echoes is a pattern
+        // of echoes over 600 ms before its tail, so its early decay is
+        // slower by design and only reported, as its density and colour.
+        let one_slope = match name {
+            "reverb/hall" | "reverb/cloud" => Some(1.6f64.log2()),
+            "reverb/echoes" => None,
+            _ => Some(1.25f64.log2()),
+        };
         r.put(
             "R3",
             name,
             "edt_t30_log2",
             clarity::edt_over_t30(&ir).map(f64::log2),
             Better::Near(0.0),
-            Some(if hall { 1.6f64.log2() } else { 1.25f64.log2() }),
+            one_slope,
             0.02,
         );
         r.put(
