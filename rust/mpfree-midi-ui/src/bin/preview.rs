@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mpfree_midi::setup::{IgnoreSet, Ignored, DIN_NAME};
+use mpfree_midi::setup::{ClockOut, IgnoreSet, Ignored, TrackOut, DIN_NAME};
 use mpfree_midi_ui::{sample, sections, Built, IoModel};
 use mpfree_mixer_ui::sample::{name, play, screen, song_mixer};
 use mpfree_mixer_ui::{MixState, MixView};
@@ -52,6 +52,10 @@ fn shots() -> Vec<Shot> {
         cv_outs: 4,
         monitor: true,
     };
+    // MIDI out on: every port with an output plugged in takes what is sent.
+    for p in built.live.ports.iter_mut() {
+        p.sending = p.has_out;
+    }
     built.live.cv_volts = [2.0, 5.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0];
     // Four learned controls: a knob, an endless encoder, a key, and one on
     // the drum machine that isn't plugged in.
@@ -78,6 +82,15 @@ fn shots() -> Vec<Shot> {
         built.live.learn_names.push(name.into());
     }
     let rig_port = rig.clone();
+    // The keyboard with MIDI out on: the Pads track plays on it and it
+    // gets clock while playing, 3 ms early.
+    let mut usb_port = sample::monitored(built.clone());
+    usb_port.live.early_ms = 8.7;
+    usb_port.setup.tracks[2] = Some(TrackOut::new("Keystep 37", 0));
+    usb_port.setup.set_port("Keystep 37", |p| {
+        p.clock_out = ClockOut::WhilePlaying;
+        p.delay_tenths = 30;
+    });
     let mut din_port = sample::monitored(built.clone());
     din_port.live.early_ms = 8.7;
     din_port.setup.set_port(DIN_NAME, |p| {
@@ -192,9 +205,19 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-midi-port",
-            about: "A port's page (board 6), the USB keyboard: Learn only, nothing ignored, what it does today; Send to it greyed until MPFree sends to USB devices",
+            about: "A port's page (board 6), the USB keyboard: Learn only, nothing ignored, what it does today; Send to it greyed while MIDI out is off",
             section: 1,
             model: rig_port,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: Some("Keystep 37"),
+        },
+        Shot {
+            name: "io-midi-port-usb",
+            about: "The USB keyboard's page with MIDI out on: the Pads track plays on it, clock while playing, the gear 3 ms late so MIDI out sends that early, test note and All notes off",
+            section: 1,
+            model: usb_port,
             wheel: 0,
             taps: vec![],
             at: 1,

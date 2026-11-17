@@ -197,7 +197,7 @@ fn the_monitor_never_allocates_once_made() {
         feed.sent(DIN, t, &[0x91, 36, 100], To::SentBy(1));
         feed.debug = i % 2 == 0;
         feed.mpc(Dir::Out, t, Mpc::KeepAlive);
-        feed.event(t, Event::OutStopped);
+        feed.event(t, Event::OutStopped { port: DIN });
         if i % 8 == 0 {
             feed.drain_into(&mut m, t);
             m.set_epoch(t);

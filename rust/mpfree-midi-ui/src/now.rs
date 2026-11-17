@@ -11,10 +11,10 @@
 //!   one arriving), the spread of its pulse gaps, the worst gap of the last
 //!   minute, pulses lost or late, and a bar for each second's worst gap.
 //! - **Bend and pressure** on the channel.
-//! - **Notes still on** going out of MIDI Out, the longest held first: one
-//!   held 30 s or more is called stuck. "Send note-offs to MIDI out" ends
-//!   the notes MPFree itself left on (only those it sent, never a blind
-//!   All notes off); it is greyed while MIDI Out is off.
+//! - **Notes still on** going out of each port, the longest held first:
+//!   one held 30 s or more is called stuck. "Send note-offs to MIDI out"
+//!   ends the notes MPFree itself left on (only those it sent, never a
+//!   blind All notes off); it is greyed while MIDI out is off.
 //!
 //! Everything comes from [`mpfree_midi::monitor::Monitor`]: what is held
 //! from the lines it lists ([`Held`]), the clock from its feed
