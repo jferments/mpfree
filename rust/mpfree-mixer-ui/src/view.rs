@@ -2850,6 +2850,32 @@ impl MixerView {
 }
 
 impl MixerView {
+    /// The wheel on a strip's fader, pan or send by `delta` detents,
+    /// `fine` with SHIFT ([`Widget::step`], [`Widget::held_step`]).
+    fn turn(&mut self, t: &Target, delta: i32, fine: bool, r: Rect) -> Option<EventKind> {
+        let (strip, j) = self.strip_of(t, r)?;
+        let s = self.state.strip(strip)?;
+        let (id, from, to) = match t.id {
+            "fader" => (
+                mx::VOLUME,
+                s.volume_db,
+                crate::qlinks::level_turn(s.volume_db, delta, fine),
+            ),
+            "pan" => (mx::PAN, s.pan, crate::qlinks::pan_turn(s.pan, delta, fine)),
+            "send" => {
+                let db = s.sends?.get(j)?.db;
+                (mx::send(j), db, crate::qlinks::level_turn(db, delta, fine))
+            }
+            _ => return None,
+        };
+        if to == from {
+            return None;
+        }
+        self.set(strip, id, to);
+        self.mark(Dirty::All);
+        Some(EventKind::Select(self.actions.len()))
+    }
+
     // ------------------------------------------------------------ I/O view
 
     /// Adds a section to the I/O view's list, after Audio and the sections
@@ -3707,27 +3733,12 @@ impl Widget for MixerView {
     /// The data wheel on a strip's fader, pan or send: as Q-Links 1 to 4
     /// turn them ([`crate::qlinks::level_turn`], [`crate::qlinks::pan_turn`]).
     fn step(&mut self, t: &Target, delta: i32, r: Rect) -> Option<EventKind> {
-        let (strip, j) = self.strip_of(t, r)?;
-        let s = self.state.strip(strip)?;
-        let (id, from, to) = match t.id {
-            "fader" => (
-                mx::VOLUME,
-                s.volume_db,
-                crate::qlinks::level_turn(s.volume_db, delta, false),
-            ),
-            "pan" => (mx::PAN, s.pan, crate::qlinks::pan_turn(s.pan, delta, false)),
-            "send" => {
-                let db = s.sends?.get(j)?.db;
-                (mx::send(j), db, crate::qlinks::level_turn(db, delta, false))
-            }
-            _ => return None,
-        };
-        if to == from {
-            return None;
-        }
-        self.set(strip, id, to);
-        self.mark(Dirty::All);
-        Some(EventKind::Select(self.actions.len()))
+        self.turn(t, delta, false, r)
+    }
+
+    /// Held with SHIFT: the fine steps SHIFT gives the Q-Links.
+    fn held_step(&mut self, t: &Target, delta: i32, fine: bool, r: Rect) -> Option<EventKind> {
+        self.turn(t, delta, fine, r)
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
