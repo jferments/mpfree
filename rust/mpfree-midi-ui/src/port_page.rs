@@ -6,8 +6,11 @@
 //!   through [`Asks::name_port`]: "Juno" for a "USB MIDI Interface", shown
 //!   on every screen; the 5-pin jacks keep the panel's MIDI In and MIDI
 //!   Out), what it is (the 5-pin jacks, or a USB device and which of its
-//!   ports, and the name it calls itself) and its **Input** (Plays tracks,
-//!   Learn only, Both), the same setting as on its row.
+//!   ports, and the name it calls itself), its **Input** (Plays tracks,
+//!   Learn only, Both), the same setting as on its row, and its
+//!   **Profile** ([`mpfree_midi::profile`]): Auto (the first profile made
+//!   for the name it calls itself), None, or one by name, which names its
+//!   CCs and programs in the Monitor and Learn.
 //! - **Ignore coming in:** Clock, Program, Aftertouch and All notes off
 //!   ([`IgnoreSet`]). Ignored messages still show in the Monitor, marked
 //!   "ignored: this port's setting"; nothing else gets them.
@@ -26,7 +29,7 @@
 //!   ([`PortLive::sending`]: MIDI out on, the port plugged in and its
 //!   output open).
 //!
-//! The name, Input, Ignore coming in and the delay belong to the rig (kept
+//! The name, Input, Profile, Ignore coming in and the delay belong to the rig (kept
 //! for every project, `MidiSetup::rig`); Clock to this port belongs to the
 //! project.
 //! The wheel picks a control, - and + step it, and the Q-Links take Input,
@@ -40,7 +43,8 @@ use std::time::Duration;
 
 use mpfree_midi::monitor::{Dir, What};
 use mpfree_midi::setup::{
-    ClockOut, Ignored, PortInput, PortSetup, TempoSource, DELAY_STEP_TENTHS, MAX_DELAY_TENTHS,
+    ClockOut, Ignored, PortInput, PortSetup, ProfilePick, TempoSource, DELAY_STEP_TENTHS,
+    MAX_DELAY_TENTHS,
 };
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target, Touch};
@@ -67,6 +71,7 @@ pub(crate) const HINT: &str = "Tap a setting to change it (Name: type one)  ·  
 enum Sel {
     Name,
     Input,
+    Profile,
     Ignore(usize),
     Clock,
     Delay,
@@ -74,9 +79,10 @@ enum Sel {
     AllOff,
 }
 
-const SELS: [Sel; 10] = [
+const SELS: [Sel; 11] = [
     Sel::Name,
     Sel::Input,
+    Sel::Profile,
     Sel::Ignore(0),
     Sel::Ignore(1),
     Sel::Ignore(2),
@@ -93,6 +99,7 @@ enum Hit {
     Back,
     Name,
     Input,
+    Profile,
     Ignore(usize),
     Clock,
     Delay(i32),
@@ -107,6 +114,7 @@ struct Layout {
     this: Rect,
     name: Rect,
     input: Rect,
+    profile: Rect,
     ignore: Rect,
     chips: [Rect; 4],
     does: Rect,
@@ -131,7 +139,7 @@ fn layout(r: Rect) -> Layout {
     let rx = r.x + lw + GAP;
     let rw = r.w - lw - GAP;
     // Left: this port, ignore coming in, what it does.
-    let this = Rect::new(r.x, body_y, lw, 196);
+    let this = Rect::new(r.x, body_y, lw, 256);
     let ignore = Rect::new(r.x, this.bottom() + GAP, lw, 158);
     let does = Rect::new(
         r.x,
@@ -143,6 +151,13 @@ fn layout(r: Rect) -> Layout {
     let ti = inner(this);
     let name = Rect::new(ti.x + NAME_W, ti.y, ti.w - NAME_W, BOX_H);
     let input = Rect::new(ti.right() - VALUE_W, ti.y + BOX_H + 8, VALUE_W, BOX_H);
+    // Under Input's line: its profile, as wide as the name.
+    let profile = Rect::new(
+        ti.x + NAME_W,
+        input.bottom() + 6 + LINE_H + 8,
+        ti.w - NAME_W,
+        BOX_H,
+    );
     let ii = inner(ignore);
     let cw = (ii.w - 8) / 2;
     let chips = std::array::from_fn(|k| {
@@ -175,6 +190,7 @@ fn layout(r: Rect) -> Layout {
         this,
         name,
         input,
+        profile,
         ignore,
         chips,
         does,
@@ -197,6 +213,12 @@ struct View {
     /// Its name on screen ([`mpfree_midi::setup::MidiSetup::shown`]).
     shown: String,
     setup: PortSetup,
+    /// The profiles' names, in the order - and + step through them.
+    profiles: Vec<String>,
+    /// Profile's value: "Auto · Juno-X", "None", "General MIDI".
+    profile_label: String,
+    /// What the profile names, in words, under it.
+    profile_says: String,
     plugged: bool,
     usb: bool,
     about: String,
@@ -386,7 +408,7 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
                     .map_or(String::new(), |c| format!("ch {} ", c + 1));
                 last.push((
                     dir,
-                    format!("{ch}{}", crate::monitor_words(s)),
+                    format!("{ch}{}", crate::monitor_words_named(s, m.profile(name))),
                     (now - s.t).max(0.0),
                 ));
             }
@@ -415,8 +437,75 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
         test_channel: tracks.first().map_or(0, |t| t.1),
         does,
         last,
+        profiles: m.profiles.all().iter().map(|p| p.name.clone()).collect(),
+        profile_label: profile_label(m, name, &setup.profile),
+        profile_says: profile_says(m.profile(name), &setup.profile),
         setup,
     }
+}
+
+/// Profile's value on the page.
+fn profile_label(m: &IoModel, name: &str, pick: &ProfilePick) -> String {
+    match pick {
+        ProfilePick::Auto => match m.profiles.matching(name) {
+            Some(p) => format!("Auto · {}", p.name),
+            None => "Auto · none made for it".to_string(),
+        },
+        ProfilePick::Off => "None".to_string(),
+        ProfilePick::Named(n) => match m.profiles.get(n) {
+            Some(p) => p.name.clone(),
+            None => format!("{n} (not found)"),
+        },
+    }
+}
+
+/// The line under Profile: what the port's profile names.
+fn profile_says(p: Option<&mpfree_midi::profile::Profile>, pick: &ProfilePick) -> String {
+    let Some(p) = p else {
+        return match pick {
+            ProfilePick::Named(n) => {
+                format!("No profile is called {n} now: controls are named as most gear names them.")
+            }
+            _ => "Controls are named as most gear names them (CC 7 Volume).".to_string(),
+        };
+    };
+    let (cc, nrpn, programs) = p.counts();
+    let mut parts = Vec::new();
+    for (n, what) in [(cc, "control"), (nrpn, "NRPN"), (programs, "program")] {
+        match n {
+            0 => {}
+            1 => parts.push(format!("1 {what}")),
+            n => parts.push(format!("{n} {what}s")),
+        }
+    }
+    if parts.is_empty() {
+        return "It names nothing: controls are named as most gear names them.".to_string();
+    }
+    let last = parts.pop().unwrap_or_default();
+    let list = if parts.is_empty() {
+        last
+    } else {
+        format!("{} and {last}", parts.join(", "))
+    };
+    format!("Names {list} in the Monitor and Learn.")
+}
+
+/// The profile choice `d` steps to from `now`: Auto, None, then each
+/// profile by name. A tap goes round; - and + stop at either end. A
+/// profile no longer there steps from Auto.
+fn step_profile(names: &[String], now: &ProfilePick, d: i32, tap: bool) -> ProfilePick {
+    let all: Vec<ProfilePick> = [ProfilePick::Auto, ProfilePick::Off]
+        .into_iter()
+        .chain(names.iter().map(|n| ProfilePick::Named(n.clone())))
+        .collect();
+    let n = all.len() as i32;
+    let i = all.iter().position(|x| x == now).unwrap_or(0) as i32;
+    let to = if tap {
+        (i + d).rem_euclid(n)
+    } else {
+        (i + d).clamp(0, n - 1)
+    };
+    all[to as usize].clone()
 }
 
 /// "CC 74, CC 71 and 2 more".
@@ -474,6 +563,9 @@ impl PortPage {
         }
         if l.input.contains(x, y) {
             return Some(Hit::Input);
+        }
+        if l.profile.contains(x, y) {
+            return Some(Hit::Profile);
         }
         if let Some(k) = l.chips.iter().position(|c| c.contains(x, y)) {
             return Some(Hit::Ignore(k));
@@ -546,6 +638,14 @@ impl PortPage {
                 let c = self.set(|p| p.input = choose(&PortInput::ALL, p.input, d, tap));
                 if !c {
                     self.note = Some(at_end("Input", v.setup.input.label(), d));
+                }
+                c
+            }
+            Sel::Profile => {
+                let to = step_profile(&v.profiles, &v.setup.profile, d, tap);
+                let c = self.set(|p| p.profile = to);
+                if !c {
+                    self.note = Some(at_end("Profile", &v.profile_label, d));
                 }
                 c
             }
@@ -635,6 +735,7 @@ impl PortPage {
             }
             Hit::Name => Sel::Name,
             Hit::Input => Sel::Input,
+            Hit::Profile => Sel::Profile,
             Hit::Ignore(k) => Sel::Ignore(k),
             Hit::Clock => Sel::Clock,
             Hit::Delay(_) => Sel::Delay,
@@ -834,6 +935,28 @@ impl IoSection for PortPage {
             }],
             t.text_faint,
         );
+        let row = Rect::new(body.x, l.profile.y, NAME_W, BOX_H);
+        cx.text(
+            FontId::Sans,
+            t.size_body,
+            row,
+            Align::Left,
+            t.text,
+            "Profile",
+        );
+        value_box(
+            cx,
+            l.profile,
+            &v.profile_label,
+            picked == Sel::Profile,
+            true,
+        );
+        lines(
+            cx,
+            Rect::new(body.x, l.profile.bottom() + 6, body.w, LINE_H),
+            &[&v.profile_says],
+            t.text_faint,
+        );
         let calls = if v.shown != v.name {
             format!("{} · it calls itself {}", v.about, v.name)
         } else {
@@ -841,7 +964,7 @@ impl IoSection for PortPage {
         };
         lines(
             cx,
-            Rect::new(body.x, l.input.bottom() + 6 + LINE_H + 4, body.w, LINE_H),
+            Rect::new(body.x, l.profile.bottom() + 6 + LINE_H + 4, body.w, LINE_H),
             &[&calls],
             t.text_dim,
         );
@@ -1077,6 +1200,12 @@ impl IoSection for PortPage {
                 l.input,
             )
             .disabled_if(!v.has_in),
+            Target::tap(
+                "port-profile",
+                0,
+                format!("Profile: {}", v.profile_label),
+                l.profile,
+            ),
         ];
         for (k, kind) in Ignored::ALL.iter().enumerate() {
             out.push(
@@ -1271,7 +1400,7 @@ mod tests {
             let p = PortPage::new(m.clone(), name);
             let _ = paint(&p);
             let ts = p.targets(AREA);
-            assert_eq!(ts.len(), 12, "{name}");
+            assert_eq!(ts.len(), 13, "{name}");
             for t in ts {
                 let r = t.rect;
                 assert!(
@@ -1285,6 +1414,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Profile: Auto takes the profile made for the name the port calls
+    /// itself; a tap steps to None, then each profile by name, and round;
+    /// - stops at Auto. The rig keeps it, and a profile that has gone
+    /// says so.
+    #[test]
+    fn the_profile_names_the_ports_controls() {
+        use mpfree_midi::profile::Profile;
+        let m = model();
+        let text = "mpfree-profile 1\nname = KeyStep\nmatch = Keystep 37\ncc.74 = Knob 1\n";
+        let (keystep, _) = Profile::parse(text).unwrap();
+        m.lock().unwrap().profiles.add(keystep).unwrap();
+        let mut p = PortPage::new(m.clone(), "Keystep 37");
+        let v = p.view();
+        assert_eq!(v.profile_label, "Auto · KeyStep");
+        assert_eq!(v.profile_says, "Names 1 control in the Monitor and Learn.");
+        let used = |m: &Shared| {
+            m.lock()
+                .unwrap()
+                .profile("Keystep 37")
+                .map(|p| p.name.clone())
+        };
+        assert_eq!(used(&m).as_deref(), Some("KeyStep"));
+        let l = layout(AREA);
+        let (x, y) = centre(l.profile);
+        tap(&mut p, x, y);
+        assert_eq!(port(&m, "Keystep 37").profile, ProfilePick::Off);
+        assert_eq!(used(&m), None);
+        assert!(p.view().profile_says.contains("as most gear names them"));
+        tap(&mut p, x, y);
+        let gm = ProfilePick::Named("General MIDI".into());
+        assert_eq!(port(&m, "Keystep 37").profile, gm);
+        assert_eq!(
+            p.view().profile_says,
+            "Names 17 controls and 128 programs in the Monitor and Learn."
+        );
+        tap(&mut p, x, y);
+        tap(&mut p, x, y);
+        assert_eq!(port(&m, "Keystep 37").profile, ProfilePick::Auto, "round");
+        assert_eq!(SELS[p.sel], Sel::Profile);
+        assert_eq!(p.input(IoInput::Step(-1)), IoReply::Handled);
+        assert!(p.take_note().unwrap().contains("Profile is at its first"));
+        // Gone since it was picked; the rig keeps the pick.
+        let gone = ProfilePick::Named("Gone".into());
+        m.lock()
+            .unwrap()
+            .setup
+            .set_port("Keystep 37", |p| p.profile = gone.clone());
+        assert_eq!(p.view().profile_label, "Gone (not found)");
+        assert!(p
+            .view()
+            .profile_says
+            .starts_with("No profile is called Gone now"));
+        assert_eq!(
+            m.lock().unwrap().setup.rig().port("Keystep 37").profile,
+            gone
+        );
     }
 
     /// Taps and the wheel set the rig's settings for the port; a change
@@ -1316,7 +1503,7 @@ mod tests {
         assert_eq!(port(&m, "Keystep 37").delay_tenths, 2 * DELAY_STEP_TENTHS);
         // The wheel picks Clock, + steps it.
         p.sel = 0;
-        p.input(IoInput::Wheel(6));
+        p.input(IoInput::Wheel(7));
         assert_eq!(SELS[p.sel], Sel::Clock);
         let was = port(&m, "Keystep 37").clock_out;
         p.input(IoInput::Step(1));

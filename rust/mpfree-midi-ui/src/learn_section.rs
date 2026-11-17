@@ -262,10 +262,15 @@ fn port_name(m: &IoModel, l: &Saved) -> String {
     }
 }
 
-/// "CC 74", "note C1 ch 16", "pitch bend ch 2".
-fn control_name(l: &Saved) -> String {
+/// "CC 74", "CC 1 Mod wheel", "note C1 ch 16", "pitch bend ch 2": a CC
+/// named by its port's profile, else as most gear names it.
+fn control_name(m: &IoModel, l: &Saved) -> String {
+    let profile = l.port.as_deref().and_then(|p| m.profile(p));
     let what = match l.source {
-        Source::Cc(n) => format!("CC {n}"),
+        Source::Cc(n) => match mpfree_midi::profile::cc_name(profile, n) {
+            Some(name) => format!("CC {n} {name}"),
+            None => format!("CC {n}"),
+        },
         Source::Note(n) => format!("note {}", note_name(n)),
         Source::PitchBend => "pitch bend".to_string(),
         Source::ChanPressure => "pressure".to_string(),
@@ -643,7 +648,7 @@ impl Learn {
         let name = name_of(m, k, s);
         let (main, _) = split_name(&name);
         let ci = l.card.inset(14);
-        let title = format!("{} → {}", control_name(s), main).to_uppercase();
+        let title = format!("{} → {}", control_name(m, s), main).to_uppercase();
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -917,7 +922,7 @@ impl IoSection for Learn {
                 Rect::new(c.x + pw, c.y, c.w - pw, c.h),
                 Align::Left,
                 dim,
-                &control_name(s),
+                &control_name(&m, s),
             );
             // Moves: the parameter, then where it is (or why it waits).
             let (x, w) = cols[1];
@@ -1039,7 +1044,7 @@ impl IoSection for Learn {
                     format!(
                         "{} {}: {}",
                         port_name(&m, s),
-                        control_name(s),
+                        control_name(&m, s),
                         name_of(&m, k, s)
                     ),
                     rr,
@@ -1405,8 +1410,8 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "Keystep 37 CC 74: Cutoff (Filter, Bass)",
-                "Digitakt CC 1: Send A (Lead)",
+                "Keystep 37 CC 74 Cutoff: Cutoff (Filter, Bass)",
+                "Digitakt CC 1 Mod wheel: Send A (Lead)",
                 "MIDI in CC 20: Volume (Drums)",
             ]
         );

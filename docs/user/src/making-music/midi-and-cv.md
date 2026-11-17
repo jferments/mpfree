@@ -62,8 +62,9 @@ If a track would send nothing, it says why under the track's name: no port is pi
 
 Each port's row in the MIDI section has **Open ›** at its right; it, or a tap on the port's name, opens the port's page. **‹ MIDI** or **BACK** closes it.
 
-- **This port** says what it is (the MPC's 5-pin jacks, or a USB device), its **Name** and its **Input**: **Both**, **Plays tracks** or **Learn only**, the same setting as on its row.
+- **This port** says what it is (the MPC's 5-pin jacks, or a USB device), its **Name**, its **Input** (**Both**, **Plays tracks** or **Learn only**, the same setting as on its row) and its **Profile**.
 - **Name** gives a USB device a name of your own, such as *Juno* for a box that calls itself *USB MIDI Interface*. A tap (or +) opens the on-screen keyboard; type the name and tap **Enter**. From then on MPFree uses it everywhere it names the port: its row, Routing, a track's **Plays on**, Sync, Learn, the Monitor and the tempo chip. The page still says the name the device calls itself. A name has at most 24 characters, and two ports can't share one (whatever the capitals). Type the device's own name to go back to it. The name belongs to your setup, not the song, so every project uses it. The 5-pin jacks keep the names on the MPC's panel, **MIDI In** and **MIDI Out**.
+- **Profile** picks the [device profile](#device-profiles) that names this port's controls and programs: the Monitor then shows *CC 74 Filter cutoff* where it would show *CC 74*, and the Learn section *CC 1 Mod wheel*. A tap steps through **Auto**, **None** and each profile by name (– and + step too). **Auto** takes a profile made for the name the device calls itself, if there is one, and the box says which (*Auto · Juno-X*). **None** names only the controls most gear agrees on, such as *CC 7 Volume* and *CC 64 Sustain*. The line under it says how many controls and programs the profile names. Like the name, the profile belongs to your setup, so every project uses it.
 - **Ignore coming in** has four switches: **Clock**, **Program**, **Aftertouch** and **All notes off**. A lit one is ignored: those messages from this port play nothing, teach nothing and move no tempo. The Monitor still lists them, marked *ignored: this port's setting*, so you can see they arrive. **Clock** also covers the Start, Stop and Song Position that come with it. Ignore **Clock** on a drum machine that sends clock you don't want; ignore **Program** on a keyboard that sends one when you change its sound.
 - **What it does** lists, in words, what this port's messages do today and what plays on it: its routes to tracks (*Ch 10 → Drums*) and its thru (*Ch 3 → MIDI out, thru*), where the rest of its notes go, the tracks that play out of it with their channels, thru from other ports, the controls learned from it, and whether the tempo follows it. Change its routes in the Routing section.
 - **Now** shows the newest message in and out and how long ago.
@@ -72,6 +73,29 @@ Each port's row in the MIDI section has **Open ›** at its right; it, or a tap 
 - **Send to it** (marked **SENDS MIDI**): **Test note** plays C4 for half a second on the first channel a track plays this port on (else channel 1), to check the cable and the synth's channel. **All notes off** ends MPFree's own notes on this port (other ports' notes go on), then sends All notes off (CC 123) on all 16 channels, for a synth that hangs. Both are greyed while **Send MIDI and CV out** is off, and on a port that isn't plugged in, has no output or whose output didn't open; the greyed line says which.
 
 The wheel picks a setting on the page, – and + change it, and Q-Links 1 to 3 turn **Input**, **Clock** and the delay.
+
+### Device profiles
+
+A device profile is a list of what one synth or controller calls its controls (CCs), its NRPN parameters and its programs. MPFree has **General MIDI** built in: the 128 General MIDI sounds by number (*Program 34 Electric Bass (finger)*) and the controllers General MIDI gear answers to, such as *CC 91 Reverb* and *CC 93 Chorus*. Pick it on the page of a port with a General MIDI sound module.
+
+You can write your own for any gear, as a text file, and put it on the MPC's data partition in `files/midi-profiles/`, with a name ending `.txt`. MPFree reads that folder when it starts; it only reads the files, never changes them. A profile looks like this:
+
+```text
+mpfree-profile 1
+name = Juno-X
+match = Juno-X
+cc.74 = Filter cutoff
+cc.71 = Filter resonance
+nrpn.1.23 = Osc 1 shape
+program.1 = Init
+```
+
+- **name** is what the port's page shows: at most 32 characters, and not *Auto* or *None*. Two profiles can't share a name, so one with the name of the built-in General MIDI is left out.
+- **match** is a name a USB device calls itself (the page says it: *it calls itself …*). A port set to **Auto** takes the first profile with its name. Put up to 8 **match** lines in one profile, or none.
+- **cc.N** names CC N (0 to 127); **nrpn.MSB.LSB** names the NRPN parameter sent as CC 99 = MSB and CC 98 = LSB; **program.N** names program N, counted from 1 as everywhere on screen. Each name has at most 32 characters.
+- A line starting with `#` is a note to yourself. A line MPFree can't read is skipped, and the rest of the profile still works; a file with no **name** isn't a profile. MPFree's log says what it skipped and which profiles it found.
+
+A port's profile names what comes in from it and what goes out to it. Profiles change no MIDI: they only name it.
 
 ## Staying in time with other gear
 

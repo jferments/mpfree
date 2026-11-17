@@ -65,6 +65,7 @@ pub fn rig() -> IoModel {
         gen: 0,
         monitor: Default::default(),
         asks: Default::default(),
+        profiles: Default::default(),
     }
 }
 
