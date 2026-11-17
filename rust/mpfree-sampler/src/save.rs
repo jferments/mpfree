@@ -720,6 +720,8 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         reverse,
         spread,
         gain,
+        // A Stretch region's comes from its warp tempo as it plays.
+        scan_tempo: _,
         sync,
         timing,
         size_spray,

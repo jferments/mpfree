@@ -841,6 +841,38 @@ fn scan_moves_the_playhead_at_the_source_speed() {
 }
 
 #[test]
+fn a_stretch_with_its_sources_tempo_keeps_time_with_the_transport() {
+    let data = vec![0.0; 48_000];
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let p = Params {
+        position: 0.1,
+        scan: 1.0,
+        scan_tempo: Some(100.0),
+        ..Params::default()
+    };
+    // No tempo set: the scan as it is.
+    let mut v = GrainVoice::new(RATE, 1);
+    v.set_params(p);
+    v.start();
+    run(&mut v, &src, &mut Budget::new(256), 0, 12_000, 128);
+    assert!((v.playhead() - 0.35).abs() < 1e-4, "{}", v.playhead());
+    // At 120 BPM a sound played at 100 moves 1.2 times as fast, and at 50
+    // half as fast.
+    for (bpm, moved) in [(120.0, 0.3), (50.0, 0.125)] {
+        let mut v = GrainVoice::new(RATE, 1);
+        v.set_params(p);
+        v.set_tempo(60.0 * f64::from(RATE) / bpm);
+        v.start();
+        run(&mut v, &src, &mut Budget::new(256), 0, 12_000, 128);
+        assert!(
+            (v.playhead() - (0.1 + moved)).abs() < 1e-4,
+            "{bpm}: {}",
+            v.playhead()
+        );
+    }
+}
+
+#[test]
 fn stop_lets_grains_finish_then_goes_quiet() {
     let data = vec![0.5; 48_000];
     let src = Clip::new(&data, 1, RATE).unwrap();

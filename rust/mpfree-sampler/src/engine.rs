@@ -431,6 +431,10 @@ impl EngineView {
                         let ratio = f64::from(s.rate()) / f64::from(rate) * (cents / 1200.0).exp2();
                         let tone = r.grain_mode == GrainMode::Tone;
                         let mut grain = pitched_grain(r.grain, (cents / 100.0) as f32, tone);
+                        // A stretch of a sound with a tempo keeps time.
+                        if r.grain_mode == GrainMode::Stretch {
+                            grain.scan_tempo = r.warp.as_ref().map(|w| w.bpm);
+                        }
                         if r.reverse {
                             grain.reverse = 1.0;
                         }
