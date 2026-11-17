@@ -5,7 +5,9 @@
 
 use mpfree_scale::{Scale, SCALES};
 
-use crate::fx::{Chord, Echo, Fx, Shape, Time, Velocity, Voicing, NOTE_VALUES};
+use crate::fx::{
+    Chord, Echo, Fx, LatchMode, Randomize, Shape, StrumOrder, Time, Velocity, Voicing, NOTE_VALUES,
+};
 
 /// How a setting is shown and changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +136,19 @@ const HUMANIZE: [Setting; 2] = [
     number("Velocity", "Humanize", 0, 64),
 ];
 const CHANCE: [Setting; 1] = [number("Chance", "Chance", 0, 100)];
+const ORDERS: [&str; 3] = ["Up", "Down", "As played"];
+const STRUM: [Setting; 2] = [
+    number("Time", "Strum", 1, 200),
+    choice("Order", "Strum", &ORDERS),
+];
+const LATCH_MODES: [&str; 2] = ["Next chord", "Toggle"];
+const LATCH: [Setting; 1] = [choice("Latch", "Latch", &LATCH_MODES)];
+const RANDOMIZE: [Setting; 4] = [
+    number("Pitch", "Pitch", 0, 24),
+    number("How often", "Pitch", 0, 100),
+    number("Velocity", "Velocity and length", 0, 64),
+    number("Longer by", "Velocity and length", 0, 1000),
+];
 
 fn note_value_index(t: u32) -> i32 {
     NOTE_VALUES.iter().position(|(v, _)| *v == t).unwrap_or(7) as i32
@@ -194,6 +209,9 @@ impl Fx {
             Fx::Echo(_) => &ECHO,
             Fx::Humanize { .. } => &HUMANIZE,
             Fx::Chance { .. } => &CHANCE,
+            Fx::Strum(_) => &STRUM,
+            Fx::Latch { .. } => &LATCH,
+            Fx::Randomize(_) => &RANDOMIZE,
         }
     }
 
@@ -245,6 +263,9 @@ impl Fx {
             Fx::Echo(_) => &[2, 3, 4, 5],
             Fx::Humanize { .. } => &[0, 1],
             Fx::Chance { .. } => &[0],
+            Fx::Strum(_) => &[0, 1],
+            Fx::Latch { .. } => &[0],
+            Fx::Randomize(_) => &[0, 1, 2, 3],
         }
     }
 
@@ -295,6 +316,27 @@ impl Fx {
                 i32::from(if k == 0 { time_ms } else { velocity })
             }
             Fx::Chance { percent } => i32::from(percent),
+            Fx::Strum(st) => match k {
+                0 => i32::from(st.time_ms),
+                _ => StrumOrder::ALL
+                    .iter()
+                    .position(|o| *o == st.order)
+                    .unwrap_or(0) as i32,
+            },
+            Fx::Latch { mode } => {
+                LatchMode::ALL.iter().position(|m| *m == mode).unwrap_or(0) as i32
+            }
+            Fx::Randomize(Randomize {
+                pitch,
+                often,
+                velocity,
+                longer_ms,
+            }) => match k {
+                0 => i32::from(pitch),
+                1 => i32::from(often),
+                2 => i32::from(velocity),
+                _ => i32::from(longer_ms),
+            },
         }
     }
 
@@ -328,6 +370,17 @@ impl Fx {
                 }
             }
             Fx::Chance { percent } => *percent = v as u8,
+            Fx::Strum(st) => match k {
+                0 => st.time_ms = v as u16,
+                _ => st.order = StrumOrder::ALL[v as usize],
+            },
+            Fx::Latch { mode } => *mode = LatchMode::ALL[v as usize],
+            Fx::Randomize(r) => match k {
+                0 => r.pitch = v as u8,
+                1 => r.often = v as u8,
+                2 => r.velocity = v as u8,
+                _ => r.longer_ms = v as u16,
+            },
         }
     }
 
@@ -353,8 +406,12 @@ impl Fx {
             (Fx::Chord(_), 3) => mpfree_scale::note_name(v as i16),
             (Fx::Chord(_), 4) | (Fx::Echo(_), 4) | (Fx::Chance { .. }, _) => format!("{v} %"),
             (Fx::Chord(_), 5) | (Fx::Length { .. }, 2) | (Fx::Echo(_), 2) => format!("{v} ms"),
-            (Fx::Humanize { .. }, 0) => format!("{v} ms"),
-            (Fx::Humanize { .. }, _) => format!("±{v}"),
+            (Fx::Humanize { .. }, 0) | (Fx::Strum(_), 0) | (Fx::Randomize(_), 3) => {
+                format!("{v} ms")
+            }
+            (Fx::Humanize { .. }, _) | (Fx::Randomize(_), 2) => format!("±{v}"),
+            (Fx::Randomize(_), 0) => format!("±{v} st"),
+            (Fx::Randomize(_), 1) => format!("{v} %"),
             (Fx::Velocity(_), 2) | (Fx::Echo(_), 5) => {
                 if v == 0 {
                     "0".to_string()
@@ -406,6 +463,9 @@ impl Fx {
             Fx::Echo(_) => "plays each note again, softer",
             Fx::Humanize { .. } => "moves notes a little, never the same",
             Fx::Chance { .. } => "plays each note with a chance",
+            Fx::Strum(_) => "plays a chord's notes one after another",
+            Fx::Latch { .. } => "keeps notes on after the keys let go",
+            Fx::Randomize(_) => "moves notes at random, never the same",
         }
     }
 }

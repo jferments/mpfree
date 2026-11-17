@@ -7,7 +7,9 @@ use std::str::FromStr;
 use mpfree_scale::{Scale, Snap};
 
 use crate::chain::{Slot, MAX_FX};
-use crate::fx::{Chord, Echo, Fx, Shape, Time, Velocity, Voicing};
+use crate::fx::{
+    Chord, Echo, Fx, LatchMode, Randomize, Shape, Strum, StrumOrder, Time, Velocity, Voicing,
+};
 
 /// A track's Notes stage: up to [`MAX_FX`] effects in places, top to
 /// bottom, and where the track's arp sits among them: after the first
@@ -221,6 +223,17 @@ const VOICINGS: [(Voicing, &str); 3] = [
     (Voicing::Drop2, "drop2"),
 ];
 
+const ORDERS: [(StrumOrder, &str); 3] = [
+    (StrumOrder::Up, "up"),
+    (StrumOrder::Down, "down"),
+    (StrumOrder::Played, "played"),
+];
+
+const LATCHES: [(LatchMode, &str); 2] = [
+    (LatchMode::NextChord, "chord"),
+    (LatchMode::Toggle, "toggle"),
+];
+
 const SNAPS: [(Snap, &str); 4] = [
     (Snap::Down, "down"),
     (Snap::Up, "up"),
@@ -339,6 +352,18 @@ impl Slot {
                 write!(s, "humanize ms={time_ms} vel={velocity}")
             }
             Fx::Chance { percent } => write!(s, "chance pct={percent}"),
+            Fx::Strum(st) => write!(
+                s,
+                "strum ms={} order={}",
+                st.time_ms,
+                word_of(&ORDERS, st.order)
+            ),
+            Fx::Latch { mode } => write!(s, "latch mode={}", word_of(&LATCHES, mode)),
+            Fx::Randomize(r) => write!(
+                s,
+                "random pitch={} often={} vel={} longer={}",
+                r.pitch, r.often, r.velocity, r.longer_ms
+            ),
         };
         s
     }
@@ -363,6 +388,11 @@ impl Slot {
             "echo" => Fx::Echo(Echo::default()),
             "humanize" => Fx::all()[6],
             "chance" => Fx::all()[7],
+            "strum" => Fx::Strum(Strum::default()),
+            "latch" => Fx::Latch {
+                mode: LatchMode::NextChord,
+            },
+            "random" => Fx::Randomize(Randomize::default()),
             k => return Err(format!("no effect {k}")),
         };
         for pair in w {
@@ -419,6 +449,23 @@ impl Slot {
                         *percent = num(v, 0, 100, k)?;
                     }
                 }
+                Fx::Strum(st) => match k {
+                    "ms" => st.time_ms = num(v, 1, 200, k)?,
+                    "order" => st.order = from_word(&ORDERS, v, k)?,
+                    _ => {}
+                },
+                Fx::Latch { mode } => {
+                    if k == "mode" {
+                        *mode = from_word(&LATCHES, v, k)?;
+                    }
+                }
+                Fx::Randomize(r) => match k {
+                    "pitch" => r.pitch = num(v, 0, 24, k)?,
+                    "often" => r.often = num(v, 0, 100, k)?,
+                    "vel" => r.velocity = num(v, 0, 64, k)?,
+                    "longer" => r.longer_ms = num(v, 0, 1000, k)?,
+                    _ => {}
+                },
             }
         }
         Ok(Slot { fx, on })
@@ -461,6 +508,19 @@ mod tests {
             pitch: -12,
         }));
         list.push(Fx::Transpose { semitones: -48 });
+        list.push(Fx::Strum(Strum {
+            time_ms: 200,
+            order: StrumOrder::Played,
+        }));
+        list.push(Fx::Latch {
+            mode: LatchMode::Toggle,
+        });
+        list.push(Fx::Randomize(Randomize {
+            pitch: 24,
+            often: 100,
+            velocity: 64,
+            longer_ms: 1000,
+        }));
         for (i, fx) in list.into_iter().enumerate() {
             let slot = Slot { fx, on: i % 2 == 0 };
             let words = slot.to_words();

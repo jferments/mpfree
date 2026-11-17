@@ -153,10 +153,12 @@ pub const fn addr(track: u8, id: u16, k: usize) -> ParamAddr {
 /// The unit a setting reads in on a Q-Link card.
 fn unit_of(fx: &Fx, k: usize) -> Unit {
     match (fx, k) {
-        (Fx::Transpose { .. }, _) | (Fx::Echo(_), 5) => Unit::Semitones,
-        (Fx::Chord(_), 4) | (Fx::Echo(_), 4) | (Fx::Chance { .. }, _) => Unit::Percent,
+        (Fx::Transpose { .. }, _) | (Fx::Echo(_), 5) | (Fx::Randomize(_), 0) => Unit::Semitones,
+        (Fx::Chord(_), 4) | (Fx::Echo(_), 4) | (Fx::Chance { .. }, _) | (Fx::Randomize(_), 1) => {
+            Unit::Percent
+        }
         (Fx::Chord(_), 5) | (Fx::Length { .. }, 2) | (Fx::Echo(_), 2) => Unit::Ms,
-        (Fx::Humanize { .. }, 0) => Unit::Ms,
+        (Fx::Humanize { .. }, 0) | (Fx::Strum(_), 0) | (Fx::Randomize(_), 3) => Unit::Ms,
         _ => Unit::None,
     }
 }
@@ -1404,7 +1406,10 @@ mod tests {
         ns.picking = true;
         let page = Rect::new(240, 72, 900, 560);
         let l = page_layout(page, &ns);
-        assert_eq!(l.tiles.len(), 8);
+        assert_eq!(l.tiles.len(), Fx::all().len());
+        for t in &l.tiles {
+            assert!(t.bottom() <= page.bottom() && t.right() <= page.right());
+        }
         let r = l.tiles[3];
         assert_eq!(
             tap_page(&l, &ns, r.x + 1, r.y + 1),

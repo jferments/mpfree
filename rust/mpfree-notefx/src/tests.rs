@@ -638,8 +638,18 @@ fn every_note_that_starts_ends_whatever_is_played_and_changed() {
             velocity: 20,
         },
         Fx::Chance { percent: 50 },
+        strum(25, StrumOrder::Up),
+        strum(60, StrumOrder::Played),
+        latch(LatchMode::NextChord),
+        latch(LatchMode::Toggle),
+        Fx::Randomize(Randomize {
+            pitch: 7,
+            often: 60,
+            velocity: 20,
+            longer_ms: 300,
+        }),
     ];
-    for round in 0..20 {
+    for round in 0..40 {
         let mut c = Box::new(Chain::new());
         for i in 0..4 {
             let fx = choices[rnd(choices.len() as u32) as usize];
@@ -664,6 +674,14 @@ fn every_note_that_starts_ends_whatever_is_played_and_changed() {
             }
         }
         let got = run_with(&mut c, &input, 256, t + 400_000, |c, start| {
+            if start > t + 200_000 {
+                // Every key is up: taking the effects out ends what Latch
+                // holds, and what the rest started still ends.
+                for i in 0..4 {
+                    c.set(i, None);
+                }
+                return;
+            }
             if rnd(100) == 0 {
                 // A mute landing somewhere in the coming period.
                 c.cut(start + u64::from(rnd(256)));
@@ -724,6 +742,292 @@ fn every_effect_has_a_name_and_says_what_it_does() {
             "Echo: 1/8 · 3 repeats",
             "Humanize: up to 6 ms late · ±8 vel",
             "Chance: 75 %",
+            "Strum: 30 ms · up",
+            "Latch: next chord",
+            "Randomize: ±5 st on 30 % of notes",
         ]
     );
+}
+
+fn strum(time_ms: u16, order: StrumOrder) -> Fx {
+    Fx::Strum(Strum { time_ms, order })
+}
+
+#[test]
+fn strum_spreads_notes_that_start_together_in_its_order_and_keeps_lengths() {
+    // 30 ms is 1440 frames at 48 kHz. Played 64, 60, 67 on one frame.
+    let input = [
+        Ev::on(0, 64, 90),
+        Ev::on(0, 60, 100),
+        Ev::on(0, 67, 110),
+        Ev::off(10_000, 60),
+        Ev::off(10_000, 64),
+        Ev::off(10_000, 67),
+    ];
+    for (order, want) in [
+        (StrumOrder::Up, [(60, 100), (64, 90), (67, 110)]),
+        (StrumOrder::Down, [(67, 110), (64, 90), (60, 100)]),
+        (StrumOrder::Played, [(64, 90), (60, 100), (67, 110)]),
+    ] {
+        let mut c = chain_of(&[strum(30, order)]);
+        let got = run(&mut c, &input, 256, 20_000);
+        let at = [0, 1440, 2880];
+        let on: Vec<_> = (0..3).map(|i| (at[i], want[i].0, want[i].1)).collect();
+        assert_eq!(ons(&got), on, "{order:?}");
+        // Each note keeps the length it was played with.
+        let mut off: Vec<_> = (0..3).map(|i| (10_000 + at[i], want[i].0)).collect();
+        off.sort_unstable();
+        assert_eq!(offs(&got), off, "{order:?}");
+        balanced(&got);
+    }
+}
+
+#[test]
+fn a_strum_takes_keys_played_close_together_as_one_chord() {
+    // Keys 10 and 20 ms apart are one chord (within 40 ms of the first);
+    // one 50 ms after it is a new one, and so starts as played.
+    let mut c = chain_of(&[strum(30, StrumOrder::Up)]);
+    let input = [
+        Ev::on(0, 60, 100),
+        Ev::on(480, 64, 100),
+        Ev::on(960, 67, 100),
+        Ev::on(2400, 72, 100),
+        Ev::off(4000, 72),
+        Ev::off(20_000, 60),
+        Ev::off(20_000, 64),
+        Ev::off(20_000, 67),
+    ];
+    let got = run(&mut c, &input, 512, 30_000);
+    assert_eq!(
+        ons(&got),
+        [
+            (0, 60, 100),
+            (1440, 64, 100),
+            (2400, 72, 100),
+            (2880, 67, 100)
+        ]
+    );
+    assert_eq!(
+        offs(&got),
+        [(4000, 72), (20_000, 60), (20_960, 64), (21_920, 67)]
+    );
+    balanced(&got);
+}
+
+#[test]
+fn a_chord_effect_above_a_strum_strums_its_notes() {
+    let mut c = chain_of(&[Fx::Chord(Chord::default()), strum(10, StrumOrder::Down)]);
+    let got = run(&mut c, &[Ev::on(0, 48, 100), Ev::off(4000, 48)], 256, 8000);
+    let notes: Vec<u8> = ons(&got).iter().map(|o| o.1).collect();
+    let mut down = notes.clone();
+    down.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(notes, down, "highest first");
+    let at: Vec<u64> = ons(&got).iter().map(|o| o.0).collect();
+    let want: Vec<u64> = (0..at.len() as u64).map(|i| i * 480).collect();
+    assert_eq!(at, want);
+    balanced(&got);
+}
+
+fn latch(mode: LatchMode) -> Fx {
+    Fx::Latch { mode }
+}
+
+#[test]
+fn latch_holds_a_chord_until_the_next_one() {
+    let mut c = chain_of(&[latch(LatchMode::NextChord)]);
+    let input = [
+        // A chord, the second key a little after the first.
+        Ev::on(0, 60, 100),
+        Ev::on(100, 64, 100),
+        Ev::off(1000, 60),
+        Ev::off(1100, 64),
+        // The next chord, played after every key let go.
+        Ev::on(5000, 62, 90),
+        Ev::on(5000, 65, 90),
+        Ev::off(6000, 62),
+        Ev::off(6000, 65),
+        // The same note again, alone: it plays again.
+        Ev::on(8000, 62, 80),
+        Ev::off(8500, 62),
+    ];
+    let got = run_with(&mut c, &input, 512, 12_288, |c, start| {
+        if start == 10_240 {
+            c.set(0, None);
+        }
+    });
+    assert_eq!(
+        ons(&got),
+        [
+            (0, 60, 100),
+            (100, 64, 100),
+            (5000, 62, 90),
+            (5000, 65, 90),
+            (8000, 62, 80)
+        ]
+    );
+    // Taking Latch out ends what it held, where the period started.
+    assert_eq!(
+        offs(&got),
+        [(5000, 60), (5000, 64), (8000, 62), (8000, 65), (10_240, 62)]
+    );
+    balanced(&got);
+}
+
+#[test]
+fn latch_toggle_turns_a_note_on_with_one_press_and_off_with_the_next() {
+    let mut c = chain_of(&[latch(LatchMode::Toggle)]);
+    let input = [
+        Ev::on(0, 60, 100),
+        Ev::off(1000, 60),
+        Ev::on(2000, 64, 100),
+        Ev::off(2500, 64),
+        Ev::on(3000, 60, 100),
+        Ev::off(4000, 60),
+    ];
+    let got = run_with(&mut c, &input, 512, 8192, |c, start| {
+        if start == 6144 {
+            c.set(0, None);
+        }
+    });
+    assert_eq!(ons(&got), [(0, 60, 100), (2000, 64, 100)]);
+    assert_eq!(offs(&got), [(3000, 60), (6144, 64)]);
+    balanced(&got);
+}
+
+#[test]
+fn latch_taken_out_while_a_key_is_down_ends_its_note_once() {
+    let mut c = chain_of(&[latch(LatchMode::NextChord)]);
+    let input = [Ev::on(0, 60, 100), Ev::off(4000, 60)];
+    let got = run_with(&mut c, &input, 512, 6144, |c, start| {
+        if start == 2048 {
+            c.set(
+                0,
+                Some(Slot {
+                    fx: latch(LatchMode::NextChord),
+                    on: false,
+                }),
+            );
+        }
+    });
+    assert_eq!(ons(&got), [(0, 60, 100)]);
+    assert_eq!(offs(&got), [(2048, 60)], "the key's off ends nothing more");
+    balanced(&got);
+}
+
+#[test]
+fn a_key_down_before_latch_came_ends_as_it_would_have() {
+    let mut c = Box::new(Chain::new());
+    let input = [
+        Ev::on(0, 62, 100),
+        Ev::off(3000, 62),
+        Ev::on(4000, 64, 100),
+        Ev::off(5000, 64),
+    ];
+    let got = run_with(&mut c, &input, 512, 8192, |c, start| {
+        if start == 1024 {
+            c.set(
+                0,
+                Some(Slot {
+                    fx: latch(LatchMode::NextChord),
+                    on: true,
+                }),
+            );
+        }
+        if start == 7168 {
+            c.reset();
+        }
+    });
+    assert_eq!(ons(&got), [(0, 62, 100), (4000, 64, 100)]);
+    assert_eq!(offs(&got), [(3000, 62)], "64 is still held");
+}
+
+#[test]
+fn a_cut_ends_what_latch_holds_and_its_keys_end_nothing() {
+    let mut c = chain_of(&[latch(LatchMode::NextChord)]);
+    let input = [
+        Ev::on(0, 60, 100),
+        Ev::on(0, 67, 100),
+        Ev::off(1000, 60),
+        // 67 is still down at the cut and let go after it.
+        Ev::off(4000, 67),
+        Ev::on(5000, 62, 100),
+        Ev::off(5500, 62),
+    ];
+    let got = run_with(&mut c, &input, 512, 8192, |c, start| {
+        if start == 2048 {
+            c.cut(3000);
+        }
+        if start == 7168 {
+            c.set(0, None);
+        }
+    });
+    assert_eq!(ons(&got), [(0, 60, 100), (0, 67, 100), (5000, 62, 100)]);
+    assert_eq!(offs(&got), [(3000, 60), (3000, 67), (7168, 62)]);
+    balanced(&got);
+}
+
+#[test]
+fn randomize_moves_some_notes_within_its_range_and_never_the_same() {
+    let r = Randomize {
+        pitch: 3,
+        often: 50,
+        velocity: 10,
+        longer_ms: 20,
+    };
+    let mut c = chain_of(&[Fx::Randomize(r)]);
+    let mut input = Vec::new();
+    for k in 0..1000u64 {
+        input.push(Ev::on(k * 2000, 60, 100));
+        input.push(Ev::off(k * 2000 + 500, 60));
+    }
+    let got = run(&mut c, &input, 512, 1000 * 2000 + 2000);
+    balanced(&got);
+    let on = ons(&got);
+    let off = offs(&got);
+    assert_eq!(on.len(), 1000);
+    let mut moved = 0;
+    let mut vels = std::collections::BTreeSet::new();
+    let mut lengths = std::collections::BTreeSet::new();
+    for (k, (o, f)) in on.iter().zip(&off).enumerate() {
+        assert_eq!(o.0, k as u64 * 2000, "a note starts on time");
+        assert!((57..=63).contains(&o.1), "moved to {}", o.1);
+        assert_eq!(f.1, o.1, "its off is the note it became");
+        moved += usize::from(o.1 != 60);
+        assert!((90..=110).contains(&o.2), "velocity {}", o.2);
+        vels.insert(o.2);
+        let len = f.0 - o.0;
+        assert!((500..=500 + 960).contains(&len), "{len} frames long");
+        lengths.insert(len);
+    }
+    // Half the notes are picked to move, and a pick of 0 leaves one put.
+    assert!((330..=530).contains(&moved), "{moved} of 1000 moved");
+    assert!(vels.len() > 15, "velocities {vels:?}");
+    assert!(lengths.len() > 100, "lengths not the same each time");
+}
+
+#[test]
+fn randomize_with_nothing_to_move_plays_notes_as_they_were() {
+    for r in [
+        Randomize {
+            pitch: 0,
+            often: 100,
+            velocity: 0,
+            longer_ms: 0,
+        },
+        Randomize {
+            pitch: 12,
+            often: 0,
+            velocity: 0,
+            longer_ms: 0,
+        },
+    ] {
+        let mut c = chain_of(&[Fx::Randomize(r)]);
+        let mut input = Vec::new();
+        for k in 0..50u64 {
+            input.push(Ev::on(k * 1000, 36 + k as u8, 100));
+            input.push(Ev::off(k * 1000 + 300, 36 + k as u8));
+        }
+        let got = run(&mut c, &input, 256, 52_000);
+        assert_eq!(got, input, "{r:?}");
+    }
 }

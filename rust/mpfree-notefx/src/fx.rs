@@ -353,6 +353,102 @@ impl Default for Echo {
     }
 }
 
+/// Which note of a strummed chord goes first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StrumOrder {
+    /// Lowest first, as a guitar strummed down.
+    #[default]
+    Up,
+    /// Highest first.
+    Down,
+    /// In the order they were played.
+    Played,
+}
+
+impl StrumOrder {
+    pub const ALL: [StrumOrder; 3] = [StrumOrder::Up, StrumOrder::Down, StrumOrder::Played];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StrumOrder::Up => "Up",
+            StrumOrder::Down => "Down",
+            StrumOrder::Played => "As played",
+        }
+    }
+}
+
+/// Strum: notes that start together (within [`STRUM_TOGETHER_MS`] of the
+/// first) start one after another instead, `time_ms` apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Strum {
+    /// Between one note and the next (1 to 200 ms).
+    pub time_ms: u16,
+    pub order: StrumOrder,
+}
+
+impl Default for Strum {
+    fn default() -> Self {
+        Strum {
+            time_ms: 30,
+            order: StrumOrder::Up,
+        }
+    }
+}
+
+/// Notes that start within this long of the first of them are one chord,
+/// for [`Strum`].
+pub const STRUM_TOGETHER_MS: u64 = 40;
+
+/// The most notes one strum spreads; more start with the last.
+pub const STRUM_MOST: usize = 16;
+
+/// How Latch holds notes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LatchMode {
+    /// The notes stay after the keys let go, until a key goes down with
+    /// none held: then they end and the new ones play.
+    #[default]
+    NextChord,
+    /// Each press turns its note on, and the next press of it off.
+    Toggle,
+}
+
+impl LatchMode {
+    pub const ALL: [LatchMode; 2] = [LatchMode::NextChord, LatchMode::Toggle];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LatchMode::NextChord => "Next chord",
+            LatchMode::Toggle => "Toggle",
+        }
+    }
+}
+
+/// Randomize: some notes move in pitch, every note's velocity a little,
+/// and notes last a little longer, never the same twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Randomize {
+    /// The most a note moves, either way (0 to 24 semitones).
+    pub pitch: u8,
+    /// How often a note moves, in percent.
+    pub often: u8,
+    /// The most a velocity moves, either way (0 to 64).
+    pub velocity: u8,
+    /// The most a note's end comes later (0 to 1000 ms).
+    pub longer_ms: u16,
+}
+
+impl Default for Randomize {
+    fn default() -> Self {
+        Randomize {
+            pitch: 5,
+            often: 30,
+            velocity: 0,
+            longer_ms: 0,
+        }
+    }
+}
+
 /// One MIDI effect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fx {
@@ -383,11 +479,17 @@ pub enum Fx {
     Chance {
         percent: u8,
     },
+    Strum(Strum),
+    /// Notes stay on after their keys let go.
+    Latch {
+        mode: LatchMode,
+    },
+    Randomize(Randomize),
 }
 
 impl Fx {
     /// The effects a track can add, with their settings at first.
-    pub fn all() -> [Fx; 8] {
+    pub fn all() -> [Fx; 11] {
         [
             Fx::Scale {
                 scale: Scale::new(0, mpfree_scale::MAJOR),
@@ -405,6 +507,11 @@ impl Fx {
                 velocity: 8,
             },
             Fx::Chance { percent: 75 },
+            Fx::Strum(Strum::default()),
+            Fx::Latch {
+                mode: LatchMode::NextChord,
+            },
+            Fx::Randomize(Randomize::default()),
         ]
     }
 
@@ -418,6 +525,9 @@ impl Fx {
             Fx::Echo(_) => "Echo",
             Fx::Humanize { .. } => "Humanize",
             Fx::Chance { .. } => "Chance",
+            Fx::Strum(_) => "Strum",
+            Fx::Latch { .. } => "Latch",
+            Fx::Randomize(_) => "Randomize",
         }
     }
 
@@ -448,6 +558,25 @@ impl Fx {
                 format!("up to {time_ms} ms late · ±{velocity} vel")
             }
             Fx::Chance { percent } => format!("{percent} %"),
+            Fx::Strum(st) => format!("{} ms · {}", st.time_ms, st.order.label().to_lowercase()),
+            Fx::Latch { mode } => mode.label().to_lowercase(),
+            Fx::Randomize(r) => {
+                let mut parts = Vec::new();
+                if r.pitch > 0 && r.often > 0 {
+                    parts.push(format!("±{} st on {} % of notes", r.pitch, r.often));
+                }
+                if r.velocity > 0 {
+                    parts.push(format!("±{} vel", r.velocity));
+                }
+                if r.longer_ms > 0 {
+                    parts.push(format!("up to {} ms longer", r.longer_ms));
+                }
+                if parts.is_empty() {
+                    "nothing yet".to_string()
+                } else {
+                    parts.join(" · ")
+                }
+            }
         }
     }
 }
