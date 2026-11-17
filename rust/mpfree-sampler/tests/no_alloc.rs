@@ -4,8 +4,9 @@
 //! loops, layers, chokes, links, latched pads, stealing, filters,
 //! sample-accurate events,
 //! slice auditions,
-//! granular pads, pad pressure, and swapping prebuilt views (the pad player
-//! switches kits that way).
+//! granular pads, pad pressure, swapping prebuilt views (the pad player
+//! switches kits that way) and edits of the view that playing voices
+//! follow.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -239,6 +240,29 @@ fn render_and_events_never_allocate() {
     })
     .unwrap();
     let mut spare = Some(EngineView::build(&q, rate));
+    // An edit of the first kit, swapped in and out with `edit_view` while
+    // its voices play: loops moved behind them, level, pan, filter, tune
+    // and grains changed, so every voice follows something.
+    let mut edited = p.clone();
+    for i in 0..20usize {
+        edited
+            .edit_pad(i, None, |pad| {
+                pad.level_db -= 6.0;
+                pad.pan = 0.5;
+                pad.tune_cents += 30;
+                pad.filter.cutoff_hz *= 0.5;
+                pad.filter.resonance = 0.3;
+                for l in &mut pad.layers {
+                    if let Some(lp) = l.region.sustain_loop.as_mut() {
+                        (lp.start, lp.end) = (2000, 3000);
+                    }
+                    l.region.grain.density *= 0.5;
+                    l.region.grain.size_ms = 120.0;
+                }
+            })
+            .unwrap();
+    }
+    let mut edit = Some(EngineView::build_warped(&edited, rate, &mut warps));
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
     let mut ch = Channels(
@@ -437,6 +461,9 @@ fn render_and_events_never_allocate() {
         }
         if block % 50 == 25 {
             spare = Some(e.set_view(spare.take().unwrap()));
+        }
+        if block % 40 == 7 {
+            edit = Some(e.edit_view(edit.take().unwrap()));
         }
         if block % 4 == 1 {
             e.render_routed(128, &mut ch);
