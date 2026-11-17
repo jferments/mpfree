@@ -362,27 +362,39 @@ pub static PLANS: &[Plan] = &[
             &[
                 Section {
                     hero: &["Threshold", "Ratio"],
-                    trim: &["Attack", "Release", "Knee"],
+                    trim: &["Attack", "Release", "Knee", "Range"],
+                    rows: &["Style"],
                     drawings: &["Curve", "Timing"],
                     meters: &["Reduction"],
                     ..s(
                         "comp",
                         "Compressor",
                         Shape,
-                        &["Threshold", "Ratio", "Attack", "Release", "Knee"],
+                        &[
+                            "Threshold",
+                            "Ratio",
+                            "Attack",
+                            "Release",
+                            "Knee",
+                            "Range",
+                            "Style",
+                        ],
                     )
                 },
                 Section {
                     rows: &["Detect", "Sidechain"],
-                    trim: &["SC filter"],
+                    trim: &["SC filter", "Link"],
                     ..s(
                         "detector",
                         "Detector",
                         Shape,
-                        &["Detect", "Sidechain", "SC filter"],
+                        &["Detect", "Sidechain", "SC filter", "Link"],
                     )
                 },
-                s("output", "Output", Voice, &["Makeup", "Mix"]),
+                Section {
+                    rows: &["Auto makeup"],
+                    ..s("output", "Output", Voice, &["Makeup", "Auto makeup", "Mix"])
+                },
             ],
         )],
         dims: &[],

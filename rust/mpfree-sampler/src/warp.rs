@@ -491,6 +491,12 @@ impl Process {
 
     /// The job that makes the new audio. Run it on a worker.
     pub fn job(&self, project: &Project) -> Result<Job, StretchError> {
+        self.spec(project)?.start()
+    }
+
+    /// What the job needs, owned, for a worker to start it there (finding
+    /// the hits is part of the work).
+    pub fn spec(&self, project: &Project) -> Result<JobSpec, StretchError> {
         let r = self.region(project)?;
         let s = project.source(r.source).ok_or(StretchError::Empty)?;
         let ch = usize::from(s.channels());
@@ -511,7 +517,13 @@ impl Process {
             semitones: self.semitones,
             ..Settings::default()
         };
-        Job::new(data.into(), s.channels(), s.rate(), map, settings)
+        Ok(JobSpec {
+            data: data.into(),
+            channels: s.channels(),
+            rate: s.rate(),
+            map,
+            settings,
+        })
     }
 
     /// Puts the finished job's audio in the layer's place (one undo step)

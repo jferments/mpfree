@@ -85,13 +85,15 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 - **`smp-wave/marker`**: the Start, End and loop markers. Drag a marker by its tab. *Example:* drag Start past the silence at the front of a sample.
 - **`smp-overview/overview`**: the whole sound in a strip, with a box round what the waveform shows. Tap to move the box there; faint when the whole sound is in view.
 - **`smp-region/row`**, **`smp-region/row-less`**, **`smp-region/row-more`**: the region's settings (Mode, Loop, Crossfade, Gain, ...). Tap a row, then ‹ › or the wheel.
+- **`smp-region/row-button`**: Normalize's "To 0 dB": the gain that brings the region's loudest frame to 0 dBFS, one undo step (a silent region is left, and the line says so). *Example:* a quiet take: tap To 0 dB and it plays as loud as it can without clipping. *Test:* `normalize_sets_the_gain_from_the_peak_in_one_undo_step`.
 
 ### Warp
 
 - **`smp-warp-view/wave`**: the warped wave; tap a hit to pin it to the grid. *Test:* `the_warp_tab_pins_the_hits_and_the_copy_goes_through_them`.
 - **`smp-warp-view/pin`**: a pin: tap to pick it, drag its handle along the beats.
 - **`smp-warp-buttons/button`**: Pin hits (all of them), Remove pin, Clear pins. Faint ones say why.
-- **`smp-warp-list/row`**, **`smp-warp-list/row-less`**, **`smp-warp-list/row-more`**: Warp on or off, the warp tempo, the grid, the hits' sensitivity. *Test:* `a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready`.
+- **`smp-warp-list/row`**, **`smp-warp-list/row-less`**, **`smp-warp-list/row-more`**: Warp on or off, the warp tempo, the grid, the hits' sensitivity, and Process's Shift (semitones). *Test:* `a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready`.
+- **`smp-warp-list/row-button`**: Process's "New sound": a new sound of the region at the project's tempo (when warped) and Shift semitones higher or lower, made in the background and put in the region's place, one undo step; while it runs it reads "Stop · 40 %" and a tap stops it. With nothing to change it says so. *Example:* Warp on Stretch, Shift +3, tap New sound. *Test:* `process_makes_a_new_sound_on_a_worker_in_one_undo_step_and_can_be_stopped`.
 
 ### Chop
 
@@ -103,8 +105,10 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 ### Play
 
-- **`smp-play-list/row`**, **`smp-play-list/row-less`**, **`smp-play-list/row-more`**: how the pad plays: pressure, envelope, filter, keys, latch, also plays, 16 Levels. *Tests:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`, `hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row`, `sixteen_levels_make_every_pad_play_the_pad_and_hits_pick_it`.
-- **`smp-play-env/point`**: the envelope's points (Attack, Hold, Decay, Sustain, Release): drag one.
+- **`smp-play-sections/chip`**: the Play tab's sections (Layers, Amp, Filter, Pitch, Mod, Pad), each with a line of what it holds: tap one for its rows and its four Q-Links. *Test:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`.
+- **`smp-play-layer-edit/button`**: Add layer (a copy of the picked layer, sharing its velocities) and Remove layer (the picked one). Faint at 16 layers, or with one left. *Test:* `layers_are_added_and_removed_on_the_play_tab_one_undo_step_each`.
+- **`smp-play-list/row`**, **`smp-play-list/row-less`**, **`smp-play-list/row-more`**: the open section's rows: the picked layer's sound, velocities, level, pan and tune; the amp and filter envelopes; filter, keys, pressure, latch, also plays, 16 Levels. *Tests:* `the_play_tab_changes_how_the_pad_plays_and_undo_takes_it_back`, `hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row`, `sixteen_levels_make_every_pad_play_the_pad_and_hits_pick_it`.
+- **`smp-play-env/point`**: the envelope's points (Attack, Hold, Decay, Sustain, Release): drag one. The Filter section shows the filter envelope instead. *Test:* `the_filter_section_steps_and_drags_the_filter_envelope`.
 - **`smp-play-filter/cutoff`**: the filter's dot: drag for cutoff and resonance. Faint while the filter is off.
 - **`smp-play-layers/layer`**, **`smp-play-layers/layer-low`**, **`smp-play-layers/layer-high`**: the pad's velocity layers: tap one to pick it, drag its edges for the velocities it plays. *Test:* `key_fade_is_the_kits_and_vel_fade_the_pads_each_one_undo_step`.
 - **`smp-play-keys/keys`**: the keyboard: press keys to hear the kit's keygroups. *Test:* `map_to_keys_makes_the_bank_one_instrument_and_the_play_tab_plays_its_keys`.
@@ -115,8 +119,8 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 ### Grain
 
 - **`smp-grain-cloud/position`**: drag along the sound for where the grains play from. *Test:* `the_grain_tab_sets_the_grains_and_draws_the_cloud_the_audio_thread_fills`.
-- **`smp-grain-xy/xy`**: drag for position (across) and grain size (up).
-- **`smp-grain-list/row`**, **`smp-grain-list/row-less`**, **`smp-grain-list/row-more`**: Mode, Scan speed, Spray, Pitch spray and the other grain settings.
+- **`smp-grain-xy/xy`**: drag for position (across) and grain size (up); with the size synced, its length in beats.
+- **`smp-grain-list/row`**, **`smp-grain-list/row-less`**, **`smp-grain-list/row-more`**: Mode, Scan speed, Spray, Pitch spray and the other grain settings, Tempo sync (density, size or both on the beat) and the cloud's Level. *Test:* `tempo_sync_locks_density_and_size_to_beats_and_level_sets_the_cloud`.
 
 ### Rec and Auto
 

@@ -1,7 +1,9 @@
 //! The sampler's part of a saved project, as text: each kit's pads (their
 //! layers, regions, loops, fades, warps, grains, envelopes, filter,
-//! pressure and keys), its chop sets, its master effect and what its pads
-//! play, with each sound named by the file it is kept in.
+//! pressure and keys), its chop sets, the chops kept for its sounds (the
+//! Chop tab's slices as last left, `kept.0.source`, `.mode`, `.markers`),
+//! its master effect and what its pads play, with each sound named by the
+//! file it is kept in.
 //!
 //! ```text
 //! mpfree-sampler 1
@@ -82,6 +84,21 @@ pub fn to_text(
                 &format!("{at}source"),
                 w.ids.get(&c.source).copied().unwrap_or(usize::MAX),
             );
+            w.line(&format!("{at}mode"), word_of(c.mode, CHOP_MODES));
+            let marks: Vec<String> = c.markers().iter().map(u64::to_string).collect();
+            w.line(&format!("{at}markers"), marks.join(" "));
+        }
+        // Only the chops whose sound is saved: a sound the kit no longer
+        // has takes its chop with it.
+        let kept: Vec<(usize, &ChopSet)> = p
+            .kept_chops()
+            .iter()
+            .filter_map(|c| Some((*w.ids.get(&c.source)?, c)))
+            .collect();
+        w.line("kept", kept.len());
+        for (i, (source, c)) in kept.into_iter().enumerate() {
+            let at = format!("kept.{i}.");
+            w.line(&format!("{at}source"), source);
             w.line(&format!("{at}mode"), word_of(c.mode, CHOP_MODES));
             let marks: Vec<String> = c.markers().iter().map(u64::to_string).collect();
             w.line(&format!("{at}markers"), marks.join(" "));
@@ -222,6 +239,34 @@ fn read_kit(
         match ChopSet::from_markers(&name, &s, mode, marks).and_then(|c| p.add_chop_set(c)) {
             Ok(_) => {}
             Err(e) => r.notes.push(format!("{kit}: chop {name:?} left out ({e})")),
+        }
+    }
+    let kept: usize = r.get("kept").unwrap_or(0);
+    for i in 0..kept.min(r.map.len()) {
+        let at = format!("kept.{i}.");
+        // A kept chop whose sound is missing goes quietly: the sound's own
+        // note says it is missing.
+        let Some(s) = source(&p, r.get(&format!("{at}source"))) else {
+            continue;
+        };
+        let mode = r
+            .text(&format!("{at}mode"))
+            .and_then(|m| from_word(&m, CHOP_MODES))
+            .unwrap_or(ChopMode::Manual);
+        let marks: Vec<u64> = r
+            .text(&format!("{at}markers"))
+            .map(|m| {
+                m.split_whitespace()
+                    .filter_map(|x| x.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        match ChopSet::from_markers(KEPT_CHOP, &s, mode, marks).and_then(|c| p.keep_chop(c)) {
+            Ok(()) => {}
+            Err(e) => r.notes.push(format!(
+                "{kit}: the chop kept for {:?} left out ({e})",
+                s.name
+            )),
         }
     }
     let mut m = *p.master();
