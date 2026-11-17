@@ -64,7 +64,7 @@ use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
 use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
-use mpfree_midi::setup::{Ignored, Kept, PortInput, TempoSource};
+use mpfree_midi::setup::{Ignored, Kept, PortInput, TempoSource, FOLLOW_KNOBS};
 use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
 use mpfree_node::ParamInfo;
@@ -191,6 +191,71 @@ const ROUTED_KEYS: usize = 256;
 /// past this are dropped and counted, so the sound loop never grows the
 /// list (a port's MIDI out takes 256 a period at most).
 const THRU_MSGS: usize = 256;
+
+/// The most Q-Link turns MIDI Follow keeps for the app between two looks.
+const KNOB_TURNS: usize = 64;
+
+/// MIDI Follow on this run's port numbers (the rig's `MidiSetup::follow`):
+/// the controller's knobs turn the Q-Links, each by as much as it moved.
+#[derive(Debug)]
+struct Knobs {
+    /// The controller, while Follow is on and it is plugged in.
+    port: Option<PortId>,
+    /// Its knobs' CCs, in Q-Link order.
+    ccs: [Option<u8>; FOLLOW_KNOBS],
+    /// Each knob's last value: the next turns its Q-Link by the change.
+    at: [Option<u8>; FOLLOW_KNOBS],
+    /// Turns (Q-Link, detents) until the app takes them; fixed room.
+    turns: Vec<(u8, i32)>,
+    /// Learn knobs listens: the knobs found so far, in order.
+    learning: bool,
+    found: [Option<u8>; FOLLOW_KNOBS],
+    /// A knob was found since the setup last took them.
+    found_new: bool,
+}
+
+impl Knobs {
+    fn new() -> Knobs {
+        Knobs {
+            port: None,
+            ccs: [None; FOLLOW_KNOBS],
+            at: [None; FOLLOW_KNOBS],
+            turns: Vec::with_capacity(KNOB_TURNS),
+            learning: false,
+            found: [None; FOLLOW_KNOBS],
+            found_new: false,
+        }
+    }
+
+    /// A CC from `port`: the Q-Link it turns, or the knob Learn knobs
+    /// found it as; None when it isn't Follow's. A knob's first value
+    /// only says where it is.
+    fn cc(&mut self, port: PortId, cc: u8, value: u8) -> Option<u8> {
+        if self.port != Some(port) || cc >= 120 {
+            return None;
+        }
+        if self.learning {
+            if let Some(k) = self.found.iter().position(|f| *f == Some(cc)) {
+                return Some(k as u8);
+            }
+            let n = self.found.iter().flatten().count();
+            self.found[n] = Some(cc);
+            self.found_new = true;
+            if n + 1 == FOLLOW_KNOBS {
+                self.learning = false;
+            }
+            return Some(n as u8);
+        }
+        let k = self.ccs.iter().position(|c| *c == Some(cc))?;
+        if let Some(was) = self.at[k].replace(value) {
+            let d = i32::from(value) - i32::from(was);
+            if d != 0 && self.turns.len() < self.turns.capacity() {
+                self.turns.push((k as u8, d));
+            }
+        }
+        Some(k as u8)
+    }
+}
 
 /// A message thru passes on: as it came in on `from`, for the output
 /// port `to`.
@@ -339,6 +404,8 @@ pub struct MusicIn {
     /// room.
     thru: Vec<Passed>,
     thru_dropped: u64,
+    /// MIDI Follow: the controller's knobs on the Q-Links.
+    knobs: Knobs,
 }
 
 impl Default for MusicIn {
@@ -391,6 +458,7 @@ impl MusicIn {
             routed: Vec::with_capacity(ROUTED_KEYS),
             thru: Vec::with_capacity(THRU_MSGS),
             thru_dropped: 0,
+            knobs: Knobs::new(),
         }
     }
 
@@ -410,6 +478,13 @@ impl MusicIn {
             self.shown = shown.clone();
             m.monitor.set_shown(shown);
         }
+    }
+
+    /// MIDI Follow's Q-Link turns since the last call: each knob of the
+    /// controller that moved, as (Q-Link 0 to 3, detents). The app turns
+    /// the Q-Links by them, as the MPC's own.
+    pub fn take_knob_turns(&mut self) -> std::vec::Drain<'_, (u8, i32)> {
+        self.knobs.turns.drain(..)
     }
 
     /// Whether the Monitor asked for the notes MPFree left on MIDI Out to
@@ -676,6 +751,26 @@ impl MusicIn {
         if std::mem::take(&mut m.asks.cancel_learn) {
             self.disarm();
         }
+        // MIDI Follow's Learn knobs and Done.
+        match m.asks.follow_learn.take() {
+            Some(true) => {
+                self.knobs.learning = true;
+                self.knobs.found = [None; FOLLOW_KNOBS];
+            }
+            Some(false) => self.knobs.learning = false,
+            None => {}
+        }
+        if std::mem::take(&mut self.knobs.found_new) {
+            m.setup.follow.knobs = self.knobs.found.iter().flatten().copied().collect();
+            m.gen += 1;
+        }
+        let learning = self
+            .knobs
+            .learning
+            .then(|| self.knobs.found.iter().flatten().count());
+        if m.live.follow_learning != learning {
+            m.live.follow_learning = learning;
+        }
         if !self.moved.is_empty() {
             for landed in self.moved.drain(..) {
                 m.setup.learn.retain_mut(|s| follow(s, &landed));
@@ -746,6 +841,21 @@ impl MusicIn {
                 self.leader_len = 0;
                 self.leader_sp = 0;
             }
+            // MIDI Follow: its controller by name, its knobs (its own,
+            // else its profile's).
+            let f = &m.setup.follow;
+            self.knobs.port =
+                f.on.then(|| {
+                    self.ports
+                        .all()
+                        .iter()
+                        .find(|p| p.name == f.port && p.has_in)
+                        .map(|p| p.id)
+                })
+                .flatten();
+            let ccs = f.knobs_of(m.profile(&f.port));
+            self.knobs.ccs = std::array::from_fn(|i| ccs.get(i).copied());
+            self.knobs.at = [None; FOLLOW_KNOBS];
             // The app follows a clock now (M4).
             m.live.built.clock_in = true;
             self.applied = Some(m.gen);
@@ -1003,6 +1113,7 @@ impl MusicIn {
                 &mut self.routed,
             );
             let (thru, dropped) = (&mut self.thru, &mut self.thru_dropped);
+            let knobs = &mut self.knobs;
             // The message Learn took: it reaches nothing else, however
             // many routes and thru name its channel.
             let mut took: Option<Msg> = None;
@@ -1037,6 +1148,15 @@ impl MusicIn {
                                 }
                             });
                             return;
+                        }
+                        // MIDI Follow: the controller's knob turns a
+                        // Q-Link (a learned control above wins), and
+                        // plays nothing.
+                        if let Msg::Cc { cc, value, .. } = *msg {
+                            if let Some(k) = knobs.cc(port, cc, value) {
+                                to = To::QLink(k);
+                                return;
+                            }
                         }
                     }
                     // Thru sends it on as it came, whatever the port's
@@ -2172,6 +2292,95 @@ mod tests {
         let (keys, _) = run(&mut m, usb, &[0xB2, 75, 1, 0x92, 60, 90]);
         assert_eq!(keys.len(), 1);
         assert_eq!(m.learning().count(), 0);
+    }
+
+    /// MIDI Follow: the keyboard's knobs turn the Q-Links by as much as
+    /// they move and play nothing; its other CCs and keys, and another
+    /// port's, play as before; a learned control wins; Learn knobs takes
+    /// the next new CCs as its knobs; off, they are anyone's again.
+    #[test]
+    fn midi_follow_turns_the_q_links_and_learns_its_knobs() {
+        use mpfree_midi::setup::FollowSetup;
+        let mut m = MusicIn::new();
+        let usb = m.plugged("Keystep 37").unwrap();
+        let s = model();
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.follow = FollowSetup {
+                on: true,
+                port: "Keystep 37".into(),
+                knobs: vec![74, 71],
+            };
+            v.gen += 1;
+        }
+        m.sync(&s, 0.0);
+        let turns = |m: &mut MusicIn| m.take_knob_turns().collect::<Vec<_>>();
+        // A knob's first value only says where it is.
+        let (keys, _) = run(
+            &mut m,
+            usb,
+            &[
+                0xB0, 74, 64, 0xB0, 74, 70, 0xB0, 71, 0, 0xB0, 71, 127, 0xB0, 74, 60,
+            ],
+        );
+        assert!(keys.is_empty());
+        assert_eq!(turns(&mut m), [(0, 6), (1, 127), (0, -10)]);
+        assert!(turns(&mut m).is_empty());
+        let (keys, _) = run(&mut m, usb, &[0xB0, 1, 5, 0x90, 60, 90]);
+        assert_eq!(keys.len(), 1);
+        run(&mut m, DIN, &[0xB0, 74, 0, 0xB0, 74, 99]);
+        assert!(turns(&mut m).is_empty());
+        // A control learned on CC 71 moves its value, not Q-Link 2.
+        m.arm(cutoff());
+        run(&mut m, usb, &[0xB0, 71, 10]);
+        m.sync(&s, 0.1);
+        let _ = m.learning().count();
+        run(&mut m, usb, &[0xB0, 71, 20, 0xB0, 71, 30]);
+        assert!(turns(&mut m).is_empty());
+        assert_eq!(m.learning().count(), 2);
+        // Learn knobs: each new CC is the next knob, and plays nothing.
+        s.lock().unwrap().asks.follow_learn = Some(true);
+        m.sync(&s, 0.2);
+        assert_eq!(s.lock().unwrap().live.follow_learning, Some(0));
+        run(&mut m, usb, &[0xB0, 20, 1, 0xB0, 20, 3, 0xB0, 21, 1]);
+        assert!(turns(&mut m).is_empty());
+        m.sync(&s, 0.3);
+        {
+            let v = s.lock().unwrap();
+            assert_eq!(v.setup.follow.knobs, [20, 21]);
+            assert_eq!(v.live.follow_learning, Some(2));
+        }
+        // Done keeps them.
+        s.lock().unwrap().asks.follow_learn = Some(false);
+        m.sync(&s, 0.4);
+        assert_eq!(s.lock().unwrap().live.follow_learning, None);
+        run(&mut m, usb, &[0xB0, 21, 50, 0xB0, 21, 52]);
+        assert_eq!(turns(&mut m), [(1, 2)]);
+        // Four found stops it by itself.
+        s.lock().unwrap().asks.follow_learn = Some(true);
+        m.sync(&s, 0.5);
+        run(
+            &mut m,
+            usb,
+            &[
+                0xB0, 30, 1, 0xB0, 31, 1, 0xB0, 32, 1, 0xB0, 33, 1, 0xB0, 34, 1,
+            ],
+        );
+        m.sync(&s, 0.6);
+        {
+            let v = s.lock().unwrap();
+            assert_eq!(v.setup.follow.knobs, [30, 31, 32, 33]);
+            assert_eq!(v.live.follow_learning, None);
+        }
+        // Off: the knobs are anyone's again.
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.follow.on = false;
+            v.gen += 1;
+        }
+        m.sync(&s, 0.7);
+        run(&mut m, usb, &[0xB0, 30, 60, 0xB0, 30, 70]);
+        assert!(turns(&mut m).is_empty());
     }
 
     /// The I/O view's Learn again: the next control moved replaces the

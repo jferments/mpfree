@@ -93,6 +93,7 @@ program.1 = Init
 - **name** is what the port's page shows: at most 32 characters, and not *Auto* or *None*. Two profiles can't share a name, so one with the name of the built-in General MIDI is left out.
 - **match** is a name a USB device calls itself (the page says it: *it calls itself …*). A port set to **Auto** takes the first profile with its name. Put up to 8 **match** lines in one profile, or none.
 - **cc.N** names CC N (0 to 127); **nrpn.MSB.LSB** names the NRPN parameter sent as CC 99 = MSB and CC 98 = LSB; **program.N** names program N, counted from 1 as everywhere on screen. Each name has at most 32 characters.
+- **knobs** lists a controller's knobs by their CCs, in order, up to 16 (`knobs = 74 71 76 77`). [MIDI Follow](#midi-follow-your-controllers-knobs-on-the-q-links) turns Q-Links 1 to 4 with the first four, unless you taught it the controller's knobs yourself.
 - A line starting with `#` is a note to yourself. A line MPFree can't read is skipped, and the rest of the profile still works; a file with no **name** isn't a profile. MPFree's log says what it skipped and which profiles it found.
 
 A port's profile names what comes in from it and what goes out to it. Profiles change no MIDI: they only name it.
@@ -165,6 +166,23 @@ A button, pad, key or footswitch on your controller can press MPFree's transport
 For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it.
 
 Transport controls are kept in **Rig**, so they work in every project. Nothing here sends anything to your controller.
+
+### MIDI Follow: your controller's knobs on the Q-Links
+
+With MIDI Follow on, four knobs on one controller turn whatever the MPC's four Q-Links turn on the screen you're looking at: the synth's knobs on the Synth tab, an effect's knobs in the chain editor, the picked strip in the mixer, and so on. Go to another page and the same knobs turn that page's Q-Links, in every song, with nothing to learn.
+
+The **MIDI Follow** card is beside the picked control's card in the **Learn** section:
+
+- **Controller**: the device whose knobs follow (– and + step through the ports with an input).
+- **Follow**: **Off** or **On**. **On** picks the first device plugged in if none is picked.
+- **Knobs**: the CCs of the knobs that turn Q-Links 1 to 4. Tap **Learn knobs**, then turn the knobs you want, one at a time, in Q-Link order: after the fourth, or when you tap **Done**, it keeps them. **Clear** forgets them, and the controller's [device profile](#device-profiles) gives its knobs instead (its **knobs** line), if it has one.
+
+The line under them says what it does now, or why it waits (*Keystep 37 isn't plugged in: Follow waits for it.*).
+
+- A knob turns its Q-Link by as much as it moves, so a value never jumps when you start turning. The first move after you plug the controller in or turn Follow on only tells MPFree where the knob is.
+- The controller's keys still play the armed track, as any keyboard's do, and its other controls do what they did. A control you taught with MIDI Learn keeps its job: Learn wins over Follow.
+- MIDI Follow is kept with the rig, so it stays when you open another project.
+- Nothing is sent back to the controller yet, so its lights or motor faders don't follow the screen.
 
 ## MIDI files
 

@@ -116,6 +116,16 @@ fn shots() -> Vec<Shot> {
             hi_text: "On".into(),
         },
     ];
+    // MIDI Follow on the keyboard, with the four knobs it learned.
+    learn.setup.follow = mpfree_midi::setup::FollowSetup {
+        on: true,
+        port: "Keystep 37".into(),
+        knobs: vec![74, 71, 76, 77],
+    };
+    // Learn knobs listening, two found.
+    let mut knobs = learn.clone();
+    knobs.setup.follow.knobs = vec![74, 71];
+    knobs.live.follow_learning = Some(2);
     let mut learning = learn.clone();
     learning.live.learning = Some("Volume (Bass)".into());
     learning.asks.learn_again = Some(1);
@@ -243,7 +253,7 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-learn",
-            about: "Learn (board 8, without MIDI Follow): what the controllers move, where each stands and where it is kept; the drum machine's key kept for every project, one on a device that isn't plugged in; the keyboard's filter knob picked, with its range in hertz, Pick up and Project",
+            about: "Learn (board 8): what the controllers move, where each stands and where it is kept; the drum machine's key kept for every project, one on a device that isn't plugged in; the keyboard's filter knob picked, with its range in hertz, Pick up and Project; MIDI Follow on the keyboard with the four knobs it learned",
             section: 3,
             model: learn.clone(),
             wheel: 0,
@@ -251,6 +261,17 @@ fn shots() -> Vec<Shot> {
             at: 1,
             open: None,
             pick: None,
+        },
+        Shot {
+            name: "io-learn-transport",
+            about: "Learn with Transport and tempo tapped: the transport's eight beside MIDI Follow, whose Learn knobs has found two of the keyboard's knobs",
+            section: 3,
+            model: knobs,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Transport and tempo"),
         },
         Shot {
             name: "io-learn-learning",

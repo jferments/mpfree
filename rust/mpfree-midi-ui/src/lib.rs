@@ -128,6 +128,8 @@ pub struct Live {
     /// MIDI Learn is armed: what the next control moved will take, in
     /// words ("Drive (Filter, Bass)").
     pub learning: Option<String>,
+    /// MIDI Follow's Learn knobs listens: how many knobs it has found.
+    pub follow_learning: Option<usize>,
     pub built: Built,
     /// The developer tools are on (Prefs › Show developer tools): the app
     /// lists the MPC's own controller and its events, and writes the
@@ -166,6 +168,7 @@ impl Default for Live {
             learn_names: Vec::new(),
             learn_live: Vec::new(),
             learning: None,
+            follow_learning: None,
             built: Built::default(),
             debug: false,
             saves_logs: false,
@@ -268,6 +271,10 @@ pub struct Asks {
     ///
     /// [`MidiSetup::set_shown`]: mpfree_midi::setup::MidiSetup::set_shown
     pub name_port: Option<String>,
+    /// The Learn section's MIDI Follow card: Learn knobs (`true`: listen
+    /// for the controller's knobs, one at a time, from none) or Done
+    /// (`false`: stop listening, keeping those found).
+    pub follow_learn: Option<bool>,
 }
 
 /// What a port's page asks MIDI out to send to it.

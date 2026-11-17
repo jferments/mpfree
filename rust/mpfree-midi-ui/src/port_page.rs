@@ -1418,7 +1418,7 @@ mod tests {
 
     /// Profile: Auto takes the profile made for the name the port calls
     /// itself; a tap steps to None, then each profile by name, and round;
-    /// - stops at Auto. The rig keeps it, and a profile that has gone
+    /// minus stops at Auto. The rig keeps it, and a profile that has gone
     /// says so.
     #[test]
     fn the_profile_names_the_ports_controls() {

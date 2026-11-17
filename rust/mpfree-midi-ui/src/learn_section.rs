@@ -1,6 +1,5 @@
 //! The Learn section (board 8 of the MIDI mockups, approved by the owner
-//! on 16 Nov 2026; its MIDI Follow card comes later): what your
-//! controllers move, on one page.
+//! on 16 Nov 2026): what your controllers move, on one page.
 //!
 //! - **The list:** each learned control (its device, what on it, and the
 //!   channel when it isn't 1), what it moves, where that stands now, and
@@ -22,6 +21,14 @@
 //!   REC, OVERDUB, TAP TEMPO and Tempo. A tap arms Learn on one
 //!   ([`Asks::learn_target`]); the control that takes it works in every
 //!   project.
+//! - **MIDI Follow** (the card beside the picked row's, or in its place
+//!   from the heading's MIDI Follow when the section is narrower than the
+//!   two): the **Controller**, **Follow** Off or On, its **Knobs** (its
+//!   own, learned with **Learn knobs** one at a time, else its profile's,
+//!   with **Clear**) and what it does now or why it waits. The rig's
+//!   ([`MidiSetup::follow`]); Learn knobs asks the app
+//!   ([`Asks::follow_learn`]), which says how many it found
+//!   ([`Live::follow_learning`]).
 //!
 //! The wheel picks a row, - and + step Works as, and Q-Links 1 to 4 turn
 //! the range's two ends, Works as and Takeover.
@@ -31,15 +38,18 @@
 //! [`Asks::cancel_learn`]: crate::Asks::cancel_learn
 //! [`Asks::learn_target`]: crate::Asks::learn_target
 //! [`Live::learning`]: crate::Live::learning
+//! [`MidiSetup::follow`]: mpfree_midi::setup::MidiSetup::follow
+//! [`Asks::follow_learn`]: crate::Asks::follow_learn
+//! [`Live::follow_learning`]: crate::Live::follow_learning
 //! [`LearnLive`]: crate::LearnLive
 
 use std::cell::Cell;
 
 use mpfree_midi::learn::{Encoding, Mode, Saved, Source, Takeover};
-use mpfree_midi::setup::{Kept, PortInput, DIN_NAME};
+use mpfree_midi::setup::{Kept, PortInput, DIN_NAME, FOLLOW_KNOBS};
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
 use mpfree_param::{transport, Owner, ParamAddr};
-use mpfree_ui::{Align, FontId, PaintCx, Rect, Target, Touch};
+use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target, Touch};
 
 use crate::{note_name, IoModel, Shared};
 
@@ -61,6 +71,17 @@ const TRANSPORT_W: i32 = 190;
 const PICK_H: i32 = 44;
 /// A range end's step, a tap or a Q-Link detent (SHIFT: a tenth).
 const RANGE_STEP: f32 = 0.01;
+/// The MIDI Follow card's width beside the picked row's card.
+const FOLLOW_W: i32 = 340;
+/// The narrowest picked row's card: its Range line's two steppers.
+const ROW_CARD_W: i32 = 14 + LABEL_W + 190 + 36 + 190 + 14;
+/// The heading's MIDI Follow button, in a section too narrow for the
+/// two cards side by side.
+const FOLLOW_BUTTON_W: i32 = 130;
+/// The Follow card's labels.
+const FOLLOW_LABEL_W: i32 = 100;
+/// A line of the Follow card's words.
+const SAYS_LINE_H: i32 = 16;
 
 pub(crate) const HINT: &str = "Tap a row to edit it  ·  wheel: pick  ·  - and +: works as  ·  Q-Links: range, works as, takeover";
 
@@ -120,6 +141,17 @@ enum Hit {
     Back,
     /// One of the transport card's buttons ([`transport::ALL`]).
     Pick(usize),
+    /// The heading's MIDI Follow, in a narrow section: the card shows it,
+    /// or the picked row again.
+    Follow,
+    /// The Follow card's Controller, down or up.
+    FollowPort(i32),
+    /// Its Follow: Off (false) or On (true).
+    FollowOn(bool),
+    /// Its Learn knobs, or Done while it listens.
+    FollowLearn,
+    /// Its Clear: the controller's profile's knobs again.
+    FollowClear,
 }
 
 struct Layout {
@@ -128,6 +160,11 @@ struct Layout {
     head: Rect,
     /// The heading's Transport and tempo button.
     transport: Rect,
+    /// The heading's key (RIG and PROJECT), where there is room for it.
+    key: Option<Rect>,
+    /// The heading's MIDI Follow button, in a section too narrow for the
+    /// Follow card beside the picked row's.
+    follow_button: Option<Rect>,
     table: Rect,
     /// The rows' area, under the table's column heads.
     body: Rect,
@@ -136,6 +173,10 @@ struct Layout {
     remove: Rect,
     /// Each line of the card: Range, Works as, Takeover, Kept in.
     line: [Rect; 4],
+    /// The Follow card is beside the picked row's (board 8).
+    wide: bool,
+    /// The MIDI Follow card: beside the picked row's card, or in its place.
+    follow: Rect,
 }
 
 fn layout(r: Rect, learning: bool) -> Layout {
@@ -149,9 +190,29 @@ fn layout(r: Rect, learning: bool) -> Layout {
         Rect::new(b.right() - 10 - 100, b.y + 7, 100, b.h - 14)
     });
     let head = Rect::new(r.x + 4, y, r.w - 8, HEAD_H - 8);
-    let transport = Rect::new(head.right() - TRANSPORT_W, head.y, TRANSPORT_W, head.h);
+    let wide = r.w >= ROW_CARD_W + GAP + FOLLOW_W;
+    let follow_button = (!wide).then(|| {
+        Rect::new(
+            head.right() - FOLLOW_BUTTON_W,
+            head.y,
+            FOLLOW_BUTTON_W,
+            head.h,
+        )
+    });
+    let right = follow_button.map_or(head.right(), |b| b.x - 8);
+    let transport = Rect::new(right - TRANSPORT_W, head.y, TRANSPORT_W, head.h);
+    let key = wide.then(|| Rect::new(transport.x - 12 - 300, head.y, 300, head.h));
     y += HEAD_H;
-    let card = Rect::new(r.x, r.bottom() - CARD_H, r.w, CARD_H);
+    let bottom = Rect::new(r.x, r.bottom() - CARD_H, r.w, CARD_H);
+    let (card, follow) = if wide {
+        let w = r.w - GAP - FOLLOW_W;
+        (
+            Rect::new(r.x, bottom.y, w, CARD_H),
+            Rect::new(r.x + w + GAP, bottom.y, FOLLOW_W, CARD_H),
+        )
+    } else {
+        (bottom, bottom)
+    };
     let table = Rect::new(r.x, y, r.w, (card.y - GAP - y).max(0));
     let inner = table.inset(10);
     let body = Rect::new(
@@ -176,12 +237,215 @@ fn layout(r: Rect, learning: bool) -> Layout {
         cancel,
         head,
         transport,
+        key,
+        follow_button,
         table,
         body,
         card,
         again,
         remove,
         line,
+        wide,
+        follow,
+    }
+}
+
+/// The MIDI Follow card's parts.
+struct FollowRects {
+    title: Rect,
+    /// Learn knobs, or Done.
+    learn: Rect,
+    /// Each line's label: Controller, Follow, Knobs.
+    labels: [Rect; 3],
+    /// The Controller's − and +.
+    port: [Rect; 2],
+    /// Follow's Off and On.
+    on: [Rect; 2],
+    /// The knobs' CCs, then Clear.
+    knobs: Rect,
+    clear: Rect,
+    /// What Follow does now, or why it waits.
+    says: Rect,
+}
+
+fn follow_rects(card: Rect) -> FollowRects {
+    let ci = card.inset(14);
+    let learn = Rect::new(ci.right() - BUTTON_W, ci.y, BUTTON_W, BUTTON_H);
+    let title = Rect::new(ci.x, ci.y, learn.x - ci.x - 8, BUTTON_H);
+    let line = |i: i32| Rect::new(ci.x, ci.y + BUTTON_H + 10 + i * LINE_H, ci.w, LINE_H - 6);
+    let lines = [line(0), line(1), line(2)];
+    let x = ci.x + FOLLOW_LABEL_W;
+    let [l0, l1, l2] = lines;
+    let seg = 90;
+    let clear = Rect::new(ci.right() - 80, l2.y, 80, l2.h);
+    FollowRects {
+        title,
+        learn,
+        labels: lines.map(|l| Rect::new(l.x, l.y, FOLLOW_LABEL_W, l.h)),
+        port: [
+            Rect::new(x, l0.y, STEP_W, l0.h),
+            Rect::new(ci.right() - STEP_W, l0.y, STEP_W, l0.h),
+        ],
+        on: [
+            Rect::new(x, l1.y, seg, l1.h),
+            Rect::new(x + seg + 6, l1.y, seg, l1.h),
+        ],
+        knobs: Rect::new(x, l2.y, clear.x - 8 - x, l2.h),
+        clear,
+        says: Rect::new(ci.x, l2.bottom() + 8, ci.w, ci.bottom() - l2.bottom() - 8),
+    }
+}
+
+/// What a tap on the Follow card hit.
+fn follow_hit(m: &IoModel, card: Rect, x: i32, y: i32) -> Option<Hit> {
+    let r = follow_rects(card);
+    if r.learn.contains(x, y) {
+        return Some(Hit::FollowLearn);
+    }
+    if let Some(i) = r.port.iter().position(|p| p.contains(x, y)) {
+        return Some(Hit::FollowPort(if i == 0 { -1 } else { 1 }));
+    }
+    if let Some(i) = r.on.iter().position(|p| p.contains(x, y)) {
+        return Some(Hit::FollowOn(i == 1));
+    }
+    if follow_clearable(m) && r.clear.contains(x, y) {
+        return Some(Hit::FollowClear);
+    }
+    None
+}
+
+fn follow_targets(m: &IoModel, card: Rect, out: &mut Vec<Target>) {
+    let r = follow_rects(card);
+    let learn = if follow_listening(m) {
+        "Done"
+    } else {
+        "Learn knobs"
+    };
+    out.push(Target::tap("follow-learn", 0, learn, r.learn));
+    out.push(Target::tap("follow-port", 0, "Controller −", r.port[0]));
+    out.push(Target::tap("follow-port", 1, "Controller +", r.port[1]));
+    out.push(Target::tap("follow-on", 0, "Follow off", r.on[0]));
+    out.push(Target::tap("follow-on", 1, "Follow on", r.on[1]));
+    if follow_clearable(m) {
+        out.push(Target::tap("follow-clear", 0, "Clear the knobs", r.clear));
+    }
+}
+
+/// "MIDI in", or a USB device's name (the one given to it, if any).
+fn shown(m: &IoModel, name: &str) -> String {
+    if name == DIN_NAME {
+        "MIDI in".to_string()
+    } else {
+        m.setup.shown(name).to_string()
+    }
+}
+
+/// The controllers MIDI Follow can follow: each port plugged in with an
+/// input, then the one picked if it isn't plugged in now.
+fn follow_ports(m: &IoModel) -> Vec<String> {
+    let mut v: Vec<String> = m
+        .live
+        .ports
+        .iter()
+        .filter(|p| p.has_in)
+        .map(|p| p.name.clone())
+        .collect();
+    let f = &m.setup.follow;
+    if !f.port.is_empty() && !v.contains(&f.port) {
+        v.push(f.port.clone());
+    }
+    v
+}
+
+/// Learn knobs listens, or the app is asked to.
+fn follow_listening(m: &IoModel) -> bool {
+    m.live.follow_learning.is_some() || m.asks.follow_learn == Some(true)
+}
+
+/// The controller's own knobs can be cleared (its profile's take over).
+fn follow_clearable(m: &IoModel) -> bool {
+    !m.setup.follow.knobs.is_empty() && !follow_listening(m)
+}
+
+/// The knobs' line: "CC 74 71 76 77", "CC 74 71 (profile)", "none yet".
+fn knobs_text(m: &IoModel) -> String {
+    let f = &m.setup.follow;
+    if m.live.follow_learning == Some(0) {
+        return "listening…".to_string();
+    }
+    let list = |k: &[u8]| {
+        k.iter()
+            .take(FOLLOW_KNOBS)
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if !f.knobs.is_empty() {
+        return format!("CC {}", list(&f.knobs));
+    }
+    match m.profile(&f.port).filter(|p| !p.knobs.is_empty()) {
+        Some(p) => format!("CC {} (profile)", list(&p.knobs)),
+        None => "none yet".to_string(),
+    }
+}
+
+/// What MIDI Follow does now, or why it waits.
+fn follow_says(m: &IoModel) -> String {
+    let f = &m.setup.follow;
+    if let Some(n) = m.live.follow_learning {
+        return format!(
+            "Turn the knobs you want, one at a time, in Q-Link order: {n} of {FOLLOW_KNOBS} \
+             found. Done keeps them."
+        );
+    }
+    if f.port.is_empty() {
+        return "Pick the controller to follow, then turn Follow on. Kept for every project."
+            .to_string();
+    }
+    let name = shown(m, &f.port);
+    if m.live.port(&f.port).is_none() {
+        return format!("{name} isn't plugged in: Follow waits for it.");
+    }
+    if !f.on {
+        return format!(
+            "On, {name}'s knobs turn whatever the Q-Links turn on screen, in every project."
+        );
+    }
+    if f.knobs_of(m.profile(&f.port)).is_empty() {
+        return "No knobs yet: tap Learn knobs, then turn up to four of its knobs.".to_string();
+    }
+    "Its keys play the armed track and its knobs turn whatever the Q-Links turn on screen. \
+     A learned control wins."
+        .to_string()
+}
+
+/// `text` in `r`, a line of [`SAYS_LINE_H`] at a time, broken between
+/// words; what doesn't fit under `r` is left out.
+fn para(cx: &mut PaintCx, px: f32, r: Rect, ink: Color, text: &str) {
+    let mut y = r.y;
+    let mut line = String::new();
+    let put = |cx: &mut PaintCx, line: &str, y: &mut i32| {
+        if *y + SAYS_LINE_H <= r.bottom() {
+            let lr = Rect::new(r.x, *y, r.w, SAYS_LINE_H);
+            cx.text(FontId::Sans, px, lr, Align::Left, ink, line);
+        }
+        *y += SAYS_LINE_H;
+    };
+    for w in text.split(' ') {
+        let longer = if line.is_empty() {
+            w.to_string()
+        } else {
+            format!("{line} {w}")
+        };
+        if !line.is_empty() && cx.measure(FontId::Sans, px, &longer) > r.w {
+            put(cx, &line, &mut y);
+            line = w.to_string();
+        } else {
+            line = longer;
+        }
+    }
+    if !line.is_empty() {
+        put(cx, &line, &mut y);
     }
 }
 
@@ -266,8 +530,18 @@ fn port_name(m: &IoModel, l: &Saved) -> String {
 /// named by its port's profile, else as most gear names it.
 fn control_name(m: &IoModel, l: &Saved) -> String {
     let profile = l.port.as_deref().and_then(|p| m.profile(p));
+    control_words(l, true, profile)
+}
+
+/// "CC 74", "note C1 ch 16": the control, its CC named (by `profile`, else
+/// as most gear names it) when `named`.
+fn control_words(
+    l: &Saved,
+    named: bool,
+    profile: Option<&mpfree_midi::profile::Profile>,
+) -> String {
     let what = match l.source {
-        Source::Cc(n) => match mpfree_midi::profile::cc_name(profile, n) {
+        Source::Cc(n) => match mpfree_midi::profile::cc_name(profile, n).filter(|_| named) {
             Some(name) => format!("CC {n} {name}"),
             None => format!("CC {n}"),
         },
@@ -327,6 +601,9 @@ pub(crate) struct Learn {
     transport: bool,
     /// The transport button tapped, lit while Learn waits.
     armed: Option<usize>,
+    /// The card shows MIDI Follow, in a section too narrow for it beside
+    /// the picked row's.
+    follow: bool,
     /// What was drawn last: the model's generation, whether Learn waited
     /// and the values now (to draw again when they change).
     drawn: (u64, bool, u64),
@@ -343,6 +620,7 @@ impl Learn {
             again: None,
             transport: false,
             armed: None,
+            follow: false,
             drawn: (u64::MAX, false, 0),
         }
     }
@@ -385,11 +663,17 @@ impl Learn {
         if n > 0 && l.transport.contains(x, y) {
             return Some(Hit::Transport);
         }
+        if l.follow_button.is_some_and(|b| b.contains(x, y)) {
+            return Some(Hit::Follow);
+        }
         let top = self.top_for(n, Self::rows_shown(l.body));
         for k in 0..n {
             if Self::row_rect(&l, top, k).is_some_and(|rr| rr.contains(x, y)) {
                 return Some(Hit::Row(k));
             }
+        }
+        if self.follow_shown(&l) && l.follow.contains(x, y) {
+            return follow_hit(&m, l.follow, x, y);
         }
         if !l.card.contains(x, y) {
             return None;
@@ -433,6 +717,109 @@ impl Learn {
             }
         }
         None
+    }
+
+    /// The Follow card shows: beside the picked row's, or in its place.
+    fn follow_shown(&self, l: &Layout) -> bool {
+        l.wide || self.follow
+    }
+
+    /// The picked row's card (or the transport's) shows.
+    fn card_shown(&self, l: &Layout) -> bool {
+        l.wide || !self.follow
+    }
+
+    /// Follow's Controller, a step down or up the ports with an input.
+    /// Another controller's knobs aren't this one's: its own are cleared.
+    fn follow_port(&mut self, d: i32) -> IoReply {
+        let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        let ports = follow_ports(&m);
+        let to = match ports.iter().position(|p| *p == m.setup.follow.port) {
+            None if ports.is_empty() => {
+                self.note = Some("No controller is plugged in".to_string());
+                return IoReply::Handled;
+            }
+            None => 0,
+            Some(i) => {
+                let j = i as i32 + d;
+                if j < 0 || j >= ports.len() as i32 {
+                    self.note = Some(if d < 0 {
+                        "The first controller is picked".to_string()
+                    } else {
+                        "The last controller is picked".to_string()
+                    });
+                    return IoReply::Handled;
+                }
+                j as usize
+            }
+        };
+        if follow_listening(&m) {
+            m.asks.follow_learn = Some(false);
+        }
+        let f = &mut m.setup.follow;
+        f.port = ports[to].clone();
+        f.knobs.clear();
+        m.gen += 1;
+        IoReply::Redraw
+    }
+
+    /// Follow Off or On; On picks the first controller if none is.
+    fn follow_on(&mut self, on: bool) -> IoReply {
+        let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        if m.setup.follow.on == on {
+            return IoReply::Handled;
+        }
+        if on && m.setup.follow.port.is_empty() {
+            match follow_ports(&m).into_iter().next() {
+                Some(p) => m.setup.follow.port = p,
+                None => {
+                    self.note = Some("Plug in a controller first".to_string());
+                    return IoReply::Handled;
+                }
+            }
+        }
+        if !on && follow_listening(&m) {
+            m.asks.follow_learn = Some(false);
+        }
+        m.setup.follow.on = on;
+        m.gen += 1;
+        IoReply::Redraw
+    }
+
+    /// Learn knobs (turning Follow on), or Done while it listens.
+    fn follow_learn(&mut self) -> IoReply {
+        let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        if follow_listening(&m) {
+            m.asks.follow_learn = Some(false);
+            return IoReply::Redraw;
+        }
+        let port = m.setup.follow.port.clone();
+        if port.is_empty() {
+            self.note = Some("Pick the controller first".to_string());
+            return IoReply::Handled;
+        }
+        let name = shown(&m, &port);
+        if m.live.port(&port).is_none_or(|p| !p.has_in) {
+            self.note = Some(format!("{name} isn't plugged in"));
+            return IoReply::Handled;
+        }
+        if !m.setup.follow.on {
+            m.setup.follow.on = true;
+            m.gen += 1;
+        }
+        m.asks.follow_learn = Some(true);
+        self.note = Some(format!("Turn the knobs you want on {name}, one at a time"));
+        IoReply::Redraw
+    }
+
+    fn follow_clear(&mut self) -> IoReply {
+        let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        if !follow_clearable(&m) {
+            return IoReply::Handled;
+        }
+        m.setup.follow.knobs.clear();
+        m.gen += 1;
+        IoReply::Redraw
     }
 
     /// Changes the picked learned control; the app applies it at its next
@@ -520,6 +907,7 @@ impl Learn {
             Hit::Row(k) => {
                 self.pick = k;
                 self.transport = false;
+                self.follow = false;
                 IoReply::Redraw
             }
             Hit::Cancel => {
@@ -533,8 +921,17 @@ impl Learn {
             }
             Hit::Transport => {
                 self.transport = !self.transport;
+                self.follow = false;
                 IoReply::Redraw
             }
+            Hit::Follow => {
+                self.follow = !self.follow;
+                IoReply::Redraw
+            }
+            Hit::FollowPort(d) => self.follow_port(d),
+            Hit::FollowOn(on) => self.follow_on(on),
+            Hit::FollowLearn => self.follow_learn(),
+            Hit::FollowClear => self.follow_clear(),
             Hit::Back => {
                 self.transport = false;
                 IoReply::Redraw
@@ -592,10 +989,61 @@ impl Learn {
     /// The values the list shows, as a number, to draw again when one
     /// moves.
     fn now_hash(m: &IoModel) -> u64 {
-        m.live.learn_live.iter().fold(0u64, |h, v| {
+        let found = m.live.follow_learning.map_or(u64::MAX, |n| n as u64);
+        m.live.learn_live.iter().fold(found, |h, v| {
             let x = v.now.map_or(u64::MAX, |x| (x * 1000.0) as u64);
             h.wrapping_mul(31).wrapping_add(x)
         })
+    }
+
+    /// The MIDI Follow card (board 8's right card).
+    fn paint_follow(&self, cx: &mut PaintCx, m: &IoModel, card: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(card, 12, t.surface);
+        let r = follow_rects(card);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            r.title,
+            Align::Left,
+            t.text_dim,
+            "MIDI FOLLOW",
+        );
+        let listening = follow_listening(m);
+        button(
+            cx,
+            r.learn,
+            if listening { "Done" } else { "Learn knobs" },
+            listening,
+        );
+        for (lr, s) in r.labels.iter().zip(["Controller", "Follow", "Knobs"]) {
+            cx.text(FontId::Sans, t.size_body, *lr, Align::Left, t.text, s);
+        }
+        let f = &m.setup.follow;
+        let name = if f.port.is_empty() {
+            "none picked".to_string()
+        } else {
+            shown(m, &f.port)
+        };
+        stepper(cx, r.port[0], r.port[1], &name);
+        segment(cx, r.on[0], "Off", !f.on, true);
+        segment(cx, r.on[1], "On", f.on, true);
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            r.knobs,
+            Align::Left,
+            if f.knobs.is_empty() {
+                t.text_dim
+            } else {
+                t.text
+            },
+            &knobs_text(m),
+        );
+        if follow_clearable(m) {
+            button(cx, r.clear, "Clear", false);
+        }
+        para(cx, t.size_small * 0.9, r.says, t.text_dim, &follow_says(m));
     }
 
     /// The transport card: a button for each of the transport's controls,
@@ -615,11 +1063,10 @@ impl Learn {
         if back {
             button(cx, l.remove, "Back", false);
         }
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            Rect::new(ci.x, ci.y + BUTTON_H + 2, ci.w, 28),
-            Align::Left,
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(ci.x, ci.y + BUTTON_H, ci.w, 2 * SAYS_LINE_H),
             t.text_dim,
             "Tap one, then press a button or move a knob on your controller. It works in every project.",
         );
@@ -628,15 +1075,35 @@ impl Learn {
             button(cx, r, transport::ALL[i].1, waiting && self.armed == Some(i));
         }
         let last = pick_rects(l)[7];
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            Rect::new(ci.x, last.bottom() + 6, ci.w, 22),
-            Align::Left,
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(
+                ci.x,
+                last.bottom() + 6,
+                ci.w,
+                ci.bottom() - last.bottom() - 6,
+            ),
             t.text_faint,
             "A key on PLAY and STOP plays, then stops. Tempo wants a knob or a fader. \
              Mutes: hold SHIFT and touch a strip's M.",
         );
+    }
+
+    /// The cards under the list: the picked row's (or the transport's)
+    /// and MIDI Follow's, side by side or the one asked for.
+    fn paint_cards(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, n: usize) {
+        if self.follow_shown(l) {
+            self.paint_follow(cx, m, l.follow);
+        }
+        if !self.card_shown(l) {
+            return;
+        }
+        if self.transport || n == 0 {
+            self.paint_transport(cx, m, l, n > 0);
+        } else {
+            self.paint_card(cx, m, l, self.pick.min(n - 1));
+        }
     }
 
     fn paint_card(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, k: usize) {
@@ -648,7 +1115,8 @@ impl Learn {
         let name = name_of(m, k, s);
         let (main, _) = split_name(&name);
         let ci = l.card.inset(14);
-        let title = format!("{} → {}", control_name(m, s), main).to_uppercase();
+        // Its CC unnamed: the title says what it moves.
+        let title = format!("{} → {}", control_words(s, false, None), main).to_uppercase();
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -841,15 +1309,19 @@ impl IoSection for Learn {
         if !all.is_empty() {
             button(cx, l.transport, "Transport and tempo", self.transport);
         }
-        let key = Rect::new(l.transport.x - 12 - 300, l.head.y, 300, l.head.h);
-        cx.text(
-            FontId::Sans,
-            t.size_small * 0.85,
-            key,
-            Align::Right,
-            t.text_faint,
-            "RIG: every project  ·  PROJECT: this song",
-        );
+        if let Some(b) = l.follow_button {
+            button(cx, b, "MIDI Follow", self.follow);
+        }
+        if let Some(key) = l.key {
+            cx.text(
+                FontId::Sans,
+                t.size_small * 0.85,
+                key,
+                Align::Right,
+                t.text_faint,
+                "RIG: every project  ·  PROJECT: this song",
+            );
+        }
         cx.canvas.fill_round_rect(l.table, 12, t.surface);
         let cols = columns(l.body);
         let inner = l.table.inset(10);
@@ -882,7 +1354,7 @@ impl IoSection for Learn {
                 t.text_faint,
                 "Hold SHIFT and touch a value on any page, then move a knob on your controller.",
             );
-            self.paint_transport(cx, &m, &l, false);
+            self.paint_cards(cx, &m, &l, 0);
             return;
         }
         let shown = Self::rows_shown(l.body);
@@ -1011,12 +1483,7 @@ impl IoSection for Learn {
                 ),
             );
         }
-        if self.transport {
-            self.paint_transport(cx, &m, &l, true);
-            return;
-        }
-        let k = self.pick.min(all.len() - 1);
-        self.paint_card(cx, &m, &l, k);
+        self.paint_cards(cx, &m, &l, all.len());
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -1035,6 +1502,9 @@ impl IoSection for Learn {
                 l.transport,
             ));
         }
+        if let Some(b) = l.follow_button {
+            out.push(Target::tap("learn-follow", 0, "MIDI Follow", b));
+        }
         let top = self.top_for(all.len(), Self::rows_shown(l.body));
         for (k, (_, s)) in all.iter().enumerate() {
             if let Some(rr) = Self::row_rect(&l, top, k) {
@@ -1050,6 +1520,12 @@ impl IoSection for Learn {
                     rr,
                 ));
             }
+        }
+        if self.follow_shown(&l) {
+            follow_targets(&m, l.follow, &mut out);
+        }
+        if !self.card_shown(&l) {
+            return out;
         }
         if self.transport || all.is_empty() {
             if !all.is_empty() {
@@ -1134,7 +1610,7 @@ impl IoSection for Learn {
                 self.pick = to;
                 IoReply::Redraw
             }
-            IoInput::Step(_) if self.transport || n == 0 => IoReply::Handled,
+            IoInput::Step(_) if self.transport || self.follow || n == 0 => IoReply::Handled,
             IoInput::Step(d) if d != 0 => self.mode(d.signum()),
             IoInput::Step(_) => IoReply::Handled,
         }
@@ -1162,7 +1638,11 @@ impl IoSection for Learn {
             pos: 0.0,
             enabled: false,
         };
-        let Some((_, s)) = m.setup.learned_at(self.pick).filter(|_| !self.transport) else {
+        let Some((_, s)) = m
+            .setup
+            .learned_at(self.pick)
+            .filter(|_| !self.transport && !self.follow)
+        else {
             return Some([off(), off(), off(), off()]);
         };
         let live = m.live.learn_live.get(self.pick);
@@ -1204,7 +1684,7 @@ impl IoSection for Learn {
     }
 
     fn qlink_turn(&mut self, knob: usize, detents: i32, fine: bool) -> IoReply {
-        if detents == 0 || self.transport {
+        if detents == 0 || self.transport || self.follow {
             return IoReply::Ignored;
         }
         let step = if fine { RANGE_STEP / 10.0 } else { RANGE_STEP };
@@ -1230,7 +1710,7 @@ impl IoSection for Learn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::form::testing::{paint, AREA};
+    use crate::form::testing::{paint, paint_in, AREA};
     use crate::LearnLive;
     use std::sync::{Arc, Mutex};
 
@@ -1276,16 +1756,45 @@ mod tests {
         Arc::new(Mutex::new(m))
     }
 
+    /// The section as the mixer's I/O view gives it on the MPC's 1280 x
+    /// 800 screen: wide enough for the Follow card beside the picked
+    /// row's.
+    const WIDE: Rect = Rect::new(194, 136, 912, 614);
+
     fn tap(s: &mut Learn, id: &str, index: usize) -> IoReply {
+        tap_in(s, AREA, id, index)
+    }
+
+    fn tap_in(s: &mut Learn, area: Rect, id: &str, index: usize) -> IoReply {
         let r = s
-            .targets(AREA)
+            .targets(area)
             .into_iter()
             .find(|t| t.id == id && t.index == index)
             .unwrap_or_else(|| panic!("no {id} {index}"))
             .rect;
         let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
-        s.touch(1, Touch::Down, x, y, AREA);
-        s.touch(1, Touch::Up, x, y, AREA)
+        s.touch(1, Touch::Down, x, y, area);
+        s.touch(1, Touch::Up, x, y, area)
+    }
+
+    fn ids(s: &Learn, area: Rect) -> Vec<&'static str> {
+        s.targets(area).iter().map(|t| t.id).collect()
+    }
+
+    fn fits(s: &Learn, area: Rect) {
+        let _ = paint_in(s, area);
+        for t in s.targets(area) {
+            let r = t.rect;
+            assert!(
+                r.x >= area.x
+                    && r.y >= area.y
+                    && r.right() <= area.right()
+                    && r.bottom() <= area.bottom(),
+                "{} \"{}\" at {r:?} is outside {area:?}",
+                t.id,
+                t.label
+            );
+        }
     }
 
     #[test]
@@ -1314,23 +1823,137 @@ mod tests {
         // offers the transport.
         let s = Learn::new(Arc::new(Mutex::new(crate::sample::rig())));
         let _ = paint(&s);
-        let ids: Vec<&str> = s.targets(AREA).iter().map(|t| t.id).collect();
-        assert_eq!(ids, ["learn-pick"; 8]);
+        let empty = ids(&s, AREA);
+        assert_eq!(empty[0], "learn-follow");
+        assert_eq!(empty[1..], ["learn-pick"; 8]);
         // The transport card fits too.
         let mut s = Learn::new(model());
         assert_eq!(tap(&mut s, "learn-transport", 0), IoReply::Redraw);
-        let _ = paint(&s);
-        for t in s.targets(AREA) {
-            assert!(
-                AREA.contains(t.rect.x, t.rect.y)
-                    && t.rect.right() <= AREA.right()
-                    && t.rect.bottom() <= AREA.bottom(),
-                "{} \"{}\" at {:?} is outside {AREA:?}",
-                t.id,
-                t.label,
-                t.rect
-            );
+        fits(&s, AREA);
+        // On the MPC's screen the Follow card is beside the others.
+        for transport in [false, true] {
+            let m = model();
+            m.lock().unwrap().setup.follow.knobs = vec![74, 71];
+            let mut s = Learn::new(m);
+            if transport {
+                tap_in(&mut s, WIDE, "learn-transport", 0);
+            }
+            fits(&s, WIDE);
+            let ids = ids(&s, WIDE);
+            assert!(ids.contains(&"follow-clear"), "{ids:?}");
+            assert!(ids.contains(&"learn-pick") == transport, "{ids:?}");
+            assert!(!ids.contains(&"learn-follow"), "{ids:?}");
         }
+        // Narrower, the heading's MIDI Follow shows it in their place.
+        let mut s = Learn::new(model());
+        assert_eq!(tap(&mut s, "learn-follow", 0), IoReply::Redraw);
+        fits(&s, AREA);
+        let ids = ids(&s, AREA);
+        assert!(ids.contains(&"follow-on") && !ids.contains(&"learn-again"));
+    }
+
+    #[test]
+    fn midi_follow_picks_a_controller_learns_its_knobs_and_says_why_it_waits() {
+        let m = model();
+        let mut s = Learn::new(m.clone());
+        assert!(!ids(&s, AREA).contains(&"follow-on"));
+        assert_eq!(tap(&mut s, "learn-follow", 0), IoReply::Redraw);
+        let says = |m: &Shared| follow_says(&m.lock().unwrap());
+        let knobs = |m: &Shared| knobs_text(&m.lock().unwrap());
+        assert!(says(&m).starts_with("Pick the controller"), "{}", says(&m));
+        // Its Q-Links and - and + leave the picked row alone meanwhile.
+        assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
+        assert_eq!(s.qlink_turn(0, 1, false), IoReply::Ignored);
+        // On picks the first controller with an input: the 5-pin jacks.
+        assert_eq!(tap(&mut s, "follow-on", 1), IoReply::Redraw);
+        {
+            let g = m.lock().unwrap();
+            assert!(g.setup.follow.on);
+            assert_eq!(g.setup.follow.port, DIN_NAME);
+        }
+        // + steps to the keyboard, and the app is told.
+        let gen = m.lock().unwrap().gen;
+        assert_eq!(tap(&mut s, "follow-port", 1), IoReply::Redraw);
+        assert_eq!(m.lock().unwrap().setup.follow.port, "Keystep 37");
+        assert!(m.lock().unwrap().gen > gen);
+        assert_eq!(tap(&mut s, "follow-port", 1), IoReply::Handled);
+        assert_eq!(
+            s.take_note().as_deref(),
+            Some("The last controller is picked")
+        );
+        assert!(says(&m).starts_with("No knobs yet"), "{}", says(&m));
+        assert_eq!(knobs(&m), "none yet");
+        // Learn knobs asks the app, which says how many it has found.
+        assert_eq!(tap(&mut s, "follow-learn", 0), IoReply::Redraw);
+        assert_eq!(m.lock().unwrap().asks.follow_learn, Some(true));
+        let label = |s: &Learn| {
+            s.targets(AREA)
+                .into_iter()
+                .find(|t| t.id == "follow-learn")
+                .map(|t| t.label)
+        };
+        assert_eq!(label(&s).as_deref(), Some("Done"));
+        {
+            let mut g = m.lock().unwrap();
+            g.asks.follow_learn = None;
+            g.live.follow_learning = Some(0);
+        }
+        assert_eq!(knobs(&m), "listening…");
+        {
+            let mut g = m.lock().unwrap();
+            g.live.follow_learning = Some(2);
+            g.setup.follow.knobs = vec![74, 71];
+        }
+        assert!(says(&m).contains("2 of 4 found"), "{}", says(&m));
+        assert_eq!(knobs(&m), "CC 74 71");
+        assert!(!ids(&s, AREA).contains(&"follow-clear"));
+        let _ = paint(&s);
+        // Done stops it, keeping them.
+        assert_eq!(tap(&mut s, "follow-learn", 0), IoReply::Redraw);
+        assert_eq!(m.lock().unwrap().asks.follow_learn, Some(false));
+        m.lock().unwrap().live.follow_learning = None;
+        assert!(says(&m).starts_with("Its keys play"), "{}", says(&m));
+        assert_eq!(label(&s).as_deref(), Some("Learn knobs"));
+        // Clear: the keyboard's profile's knobs again (the Q-Links' four).
+        let (p, _) = mpfree_midi::profile::Profile::parse(
+            "mpfree-profile 1\nname = Keystep\nmatch = Keystep 37\nknobs = 74 71 76 77 93\n",
+        )
+        .unwrap();
+        m.lock().unwrap().profiles.add(p).unwrap();
+        assert_eq!(tap(&mut s, "follow-clear", 0), IoReply::Redraw);
+        assert!(m.lock().unwrap().setup.follow.knobs.is_empty());
+        assert_eq!(knobs(&m), "CC 74 71 76 77 (profile)");
+        // Unplugged, it waits, and can't learn.
+        m.lock()
+            .unwrap()
+            .live
+            .ports
+            .retain(|p| p.name != "Keystep 37");
+        assert_eq!(
+            says(&m),
+            "Keystep 37 isn't plugged in: Follow waits for it."
+        );
+        assert_eq!(tap(&mut s, "follow-learn", 0), IoReply::Handled);
+        assert_eq!(
+            s.take_note().as_deref(),
+            Some("Keystep 37 isn't plugged in")
+        );
+        // It stays picked; - steps back to the jacks, clearing the knobs
+        // a controller learned.
+        m.lock().unwrap().setup.follow.knobs = vec![1];
+        assert_eq!(tap(&mut s, "follow-port", 0), IoReply::Redraw);
+        {
+            let g = m.lock().unwrap();
+            assert_eq!(g.setup.follow.port, DIN_NAME);
+            assert!(g.setup.follow.knobs.is_empty());
+        }
+        // Off.
+        assert_eq!(tap(&mut s, "follow-on", 0), IoReply::Redraw);
+        assert!(!m.lock().unwrap().setup.follow.on);
+        assert!(says(&m).starts_with("On, MIDI in's knobs"), "{}", says(&m));
+        // A row goes back to its card.
+        assert_eq!(tap(&mut s, "learn-row", 1), IoReply::Redraw);
+        assert!(ids(&s, AREA).contains(&"learn-again"));
     }
 
     #[test]
