@@ -473,6 +473,11 @@ pub struct Status {
     pub latency: u32,
     pub level: f32,
     pub muted: bool,
+    /// Launched ([`Looper::launch`]): off, the loop is silent but keeps
+    /// its place.
+    pub on: bool,
+    /// A launch waiting for the bar line at this tick: on or off.
+    pub cue: Option<(bool, Tick)>,
     /// Frames of the crossfade at the cuts edits make.
     pub seam: usize,
     /// A merge rendering: how much is done, 0 to 1.
@@ -643,6 +648,12 @@ enum Queued {
     Loop(Command),
     Layer(u8, LayerCommand),
     Select(usize),
+    /// Loop `n` on or off, now or from a bar line ([`Looper::launch`]).
+    Launch {
+        n: usize,
+        on: bool,
+        at: Option<Tick>,
+    },
     /// A layer of loop `from` onto loop `to` ([`Looper::copy_layer`]).
     Copy {
         from: usize,
@@ -1057,6 +1068,12 @@ struct Loop {
     latency: u32,
     level: f32,
     muted: bool,
+    /// Launched: the loop plays (fading in and out as a mute does). Off,
+    /// it is silent but keeps its place in the song, so a launch brings it
+    /// back where it would have been ([`Looper::launch`]).
+    on: bool,
+    /// A launch waiting for a bar line: on or off from that tick.
+    cue: Option<(bool, Tick)>,
     origin: Tick,
     len_ticks: Tick,
     /// Frames; 0 until the first pass ends.
@@ -1231,6 +1248,8 @@ impl Loop {
         latency: 0,
         level: 1.0,
         muted: false,
+        on: true,
+        cue: None,
         origin: 0,
         len_ticks: 0,
         len: 0,
@@ -1410,6 +1429,18 @@ impl Looper {
         self.push(Queued::Copy { from, id, to, keep })
     }
 
+    /// Launch loop `n` (`on`) or stop it, as a clip launches: from the
+    /// bar line at song tick `at` (the frame it falls on), or with `None`
+    /// at once. Either way it fades in or out as a mute does, and an off
+    /// loop keeps its place in the song, so it comes back in step. A new
+    /// launch replaces one waiting; `on` with nothing waiting and the loop
+    /// already on changes nothing. Recording a first pass turns a loop on.
+    /// It doesn't wait for the selected loop's fades. False (and counted)
+    /// if the queue is full.
+    pub fn launch(&mut self, n: usize, on: bool, at: Option<Tick>) -> bool {
+        self.push(Queued::Launch { n, on, at })
+    }
+
     /// The loop the commands act on (as of the last period).
     pub fn selected(&self) -> usize {
         self.selected
@@ -1463,6 +1494,8 @@ impl Looper {
             latency: l.latency,
             level: l.level,
             muted: l.muted,
+            on: l.on,
+            cue: l.cue,
             seam: l.seam,
             merging: l.merging.then(|| l.mg_done as f32 / l.len.max(1) as f32),
             resampling: l.resample && (l.first_in_progress() || l.phase == Phase::Armed),
@@ -1904,7 +1937,7 @@ impl Looper {
             let bar = span.meter.bar_ticks();
             let watch_bars = loops
                 .iter()
-                .any(|l| matches!(l.phase, Phase::Armed | Phase::Recording));
+                .any(|l| matches!(l.phase, Phase::Armed | Phase::Recording) || l.cue.is_some());
             let mut lines = span.lines(bar);
             let mut next = if watch_bars { lines.next() } else { None };
             // Playing or recording: the loops sound. Counting in: the clock
@@ -2068,6 +2101,16 @@ impl Looper {
         match q {
             Queued::Select(n) if n < MAX_LOOPS => self.selected = n,
             Queued::Select(_) => self.stats.no_layer += 1,
+            Queued::Launch { n, on, at } => match self.loops.get_mut(n) {
+                Some(l) => match at {
+                    Some(t) => l.cue = Some((on, t)),
+                    None => {
+                        l.on = on;
+                        l.cue = None;
+                    }
+                },
+                None => self.stats.no_layer += 1,
+            },
             Queued::Loop(Command::SetLatency(l)) => {
                 for lp in &mut self.loops {
                     lp.latency = l;
@@ -2612,6 +2655,9 @@ impl Loop {
                 Phase::Empty => {
                     self.phase = Phase::Armed;
                     self.ring = [0.0; 2 * FADE];
+                    // A new loop plays once recorded.
+                    self.on = true;
+                    self.cue = None;
                 }
                 Phase::Armed => {
                     self.phase = Phase::Empty;
@@ -3514,6 +3560,14 @@ impl Loop {
         t: Tick,
         f: u64,
     ) {
+        // A launch waiting for this line (or one it passed: the song
+        // jumped over it).
+        if let Some((on, at)) = self.cue {
+            if t >= at && matches!(span.state, State::Playing | State::Recording) {
+                self.on = on;
+                self.cue = None;
+            }
+        }
         match self.phase {
             Phase::Recording if t > self.origin && (self.end_tick == Some(t) || self.ending) => {
                 self.finish_first(store, stats, me, t, f);
@@ -3993,6 +4047,7 @@ impl Loop {
             && !self.first_open
             && !self.mixing
             && self.gain == 1.0
+            && self.on
             && !self.muted
             && !self.clearing
             && self.jump == 0
@@ -4131,6 +4186,7 @@ impl Loop {
     ) -> [f32; 2] {
         let audible = matches!(self.phase, Phase::Playing | Phase::Overdubbing)
             && playing
+            && self.on
             && !self.muted
             && !self.clearing
             && !self.swapping;

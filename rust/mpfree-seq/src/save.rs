@@ -20,6 +20,12 @@
 //! lane t:mix.0 -60 6 0 n
 //! point 0 0.5 r
 //! end
+//! track Loops A
+//! dest 1
+//! loops pads
+//! clip 0 15360 Loop 1
+//! loop 0
+//! end
 //! scene 0 Verse
 //! mutes 5
 //! value t1.mix.0 -3
@@ -43,7 +49,8 @@ use mpfree_transport::time::{Swing, Tick};
 use crate::arrange::{Marker, MorphRows, Placement, Source};
 use crate::scenes::{Follow, FollowAction, Scene, SCENES};
 use crate::{
-    Clip, Cond, Lock, Note, Project, Quantise, Speed, Touch, TouchPoint, Track, MAX_TRACKS, SLOTS,
+    Clip, Cond, Lock, LoopInput, Note, Project, Quantise, Speed, Touch, TouchPoint, Track,
+    TrackKind, MAX_TRACKS, SLOTS,
 };
 
 /// The first line.
@@ -65,6 +72,9 @@ pub fn to_text(p: &Project) -> String {
         let _ = writeln!(s, "mute {}", u8::from(t.mute));
         let _ = writeln!(s, "arp {}", u8::from(t.through_arp));
         let _ = writeln!(s, "rectouch {}", u8::from(t.record_touch));
+        if let Some(input) = t.loops() {
+            let _ = writeln!(s, "loops {}", input.word());
+        }
         for (slot, c) in t.slots.iter().enumerate() {
             if let Some(c) = c {
                 let _ = writeln!(s, "clip {slot} {} {}", c.length, one_line(&c.name));
@@ -115,6 +125,9 @@ pub fn to_text(p: &Project) -> String {
 }
 
 fn clip_body(s: &mut String, c: &Clip) {
+    if let Some(n) = c.looped {
+        let _ = writeln!(s, "loop {n}");
+    }
     if c.speed != Speed::NORMAL {
         let _ = writeln!(s, "speed {} {}", c.speed.num, c.speed.den);
     }
@@ -343,6 +356,10 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("rectouch", At::Track) => {
                 last(&mut p).record_touch = flag(w.next()).ok_or_else(|| bad("rectouch"))?
             }
+            ("loops", At::Track) => {
+                let input = w.next().and_then(LoopInput::from_word);
+                last(&mut p).kind = TrackKind::Loops(input.ok_or_else(|| bad("loops"))?)
+            }
             ("clip", At::Track) => {
                 let slot: usize = num(w.next()).ok_or_else(|| bad("slot"))?;
                 let length: Tick = num(w.next()).ok_or_else(|| bad("length"))?;
@@ -360,6 +377,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                     .ok_or_else(|| bad("speed"))?;
             }
             ("swing", At::Clip(c, _)) => c.swing = Some(swing(&mut w).ok_or_else(|| bad("swing"))?),
+            ("loop", At::Clip(c, _)) => c.looped = Some(num(w.next()).ok_or_else(|| bad("loop"))?),
             ("quant", At::Clip(c, _)) => {
                 let (g, s) = (num(w.next()), num(w.next()));
                 c.quantise = Some(
@@ -796,6 +814,31 @@ mod tests {
         assert!(from_text(&big).is_err());
         let nan = text.replace("lock 480 36 pad36.4 0.1", "lock 480 36 pad36.4 NaN");
         assert!(from_text(&nan).is_err());
+    }
+
+    #[test]
+    fn loop_tracks_and_their_cells_read_back() {
+        let mut p = full();
+        let mut t = Track::new_loops("Loops A", 3);
+        t.kind = TrackKind::Loops(LoopInput::Line);
+        t.slots[0] = Some(Clip::new_loop(0, 7680));
+        t.slots[2] = Some(Clip::new_loop(3, 3840));
+        p.tracks.push(t);
+        p.tracks.push(Track::new_loops("Loops B", 4));
+        p.check().unwrap();
+        let text = to_text(&p);
+        assert!(text.contains("track Loops A\ndest 3\nmute 0\narp 0\nrectouch 1\nloops line\n"));
+        assert!(text.contains("clip 2 3840 Loop 4\nloop 3\nend\n"));
+        assert_eq!(from_text(&text).unwrap(), p);
+        // A build before Loop tracks skips the lines: note tracks with
+        // empty clips. One that names no input, or a loop past the
+        // looper's, is refused; so is a cell on a note track.
+        let bad = text.replace("loops line", "loops tape");
+        assert!(from_text(&bad).is_err());
+        let past = text.replace("loop 3\n", "loop 8\n");
+        assert!(from_text(&past).is_err());
+        let moved = text.replace("loops line\n", "");
+        assert!(from_text(&moved).is_err(), "a loop cell on a note track");
     }
 
     #[test]

@@ -226,6 +226,8 @@ pub struct TrackInfo {
     pub mute: bool,
     /// It records pad pressure (`Track::record_touch`).
     pub pressure: bool,
+    /// A Loop track, and what its new loops record (`Track::kind`).
+    pub loops: Option<mpfree_seq::LoopInput>,
     pub slots: Vec<Option<ClipInfo>>,
 }
 
@@ -482,6 +484,7 @@ impl TimeState {
                 sound: String::new(),
                 mute: t.mute,
                 pressure: t.record_touch,
+                loops: t.loops(),
                 slots: t
                     .slots
                     .iter()
