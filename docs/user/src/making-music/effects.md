@@ -133,6 +133,13 @@ The EQ's page in the chain editor is a graph of what the EQ does, from 20 Hz on 
 - **Tap the graph twice** where there is no dot to add a band there.
 - Under the graph, tap a band's chip to pick it, **+ Band** to add one, and a type to change it: **Low cut**, **Low shelf**, **Bell**, **Notch**, **High shelf** or **High cut**. **ON** switches the band off and on again (it keeps its settings), **Remove** takes it away, and **Solo band** lets you hear only the part of the sound that band shapes, to help you find a ring or a boom. Solo band follows the band you pick, and stops when you tap it again or leave the page.
 - The Q-Links turn the picked band's frequency, gain and Q, and the EQ's output.
+- **Quality**, at the end of the row of types, is for the whole EQ. **Normal** is right for almost everything. **HQ 2x** works the bands at twice the rate, so a broad bell or shelf up high follows the analog curve exactly, right up to 20 kHz (at Normal it can be up to about 1 dB off above 10 kHz). It takes about 1.7 times the EQ's share of the MPC's power, so keep it for the EQs where the top end matters, such as on the whole mix. A tap swaps the two without a click; the low and high cuts work the same either way.
+
+How the bands are measured, the same as on most EQs, so settings you know carry over:
+
+- A bell's **Q** is its width between the points where it has half its gain in dB: Q 1.41 is one octave wide, Q 0.71 about two, Q 4 about a third of an octave.
+- A shelf's frequency is where it is at half its gain: a +6 dB high shelf at 8 kHz is +3 dB at 8 kHz.
+- The bells and shelves keep their shape all the way up, like an analog EQ's: a broad bell at 12 kHz is as wide as one at 1 kHz, and still lifts the air above it, where many digital EQs squeeze it narrow near the top.
 
 The Mix tab's **EQ** look shows every strip's EQ at once (see [Mixing](mixing-and-effects.md#every-eq-at-once-eq)).
 

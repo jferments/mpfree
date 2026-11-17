@@ -737,7 +737,17 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         let _ = crate::take_chain_actions(&mut held);
     }
     let mut eq_ui = screen(fonts(), &mut song, Place::Mixer, Some(eq), None)?;
-    for ui in [&mut held, &mut eq_ui] {
+    // The same EQ at Quality HQ 2x (its chip lit), then back to Normal.
+    let quality = |song: &mut Song, v: f32| -> Result<(), String> {
+        let e = song.drums.node_mut(3).ok_or("the drum bus EQ")?;
+        e.set_param(mpfree_fx::ids::eq::QUALITY, v);
+        Ok(())
+    };
+    quality(&mut song, mpfree_fx::ids::eq::HQ)?;
+    let eq_hq = from_mixer(song.chain_state(DRUMS, 3, 0, Some(mud)));
+    let mut eq_hq_ui = screen(fonts(), &mut song, Place::Mixer, Some(eq_hq), None)?;
+    quality(&mut song, mpfree_fx::ids::eq::NORMAL)?;
+    for ui in [&mut held, &mut eq_ui, &mut eq_hq_ui] {
         let text = crate::chain_hint(ui).to_string();
         if let Some(h) = ui.get_mut::<Label>("hint") {
             h.text = text;
@@ -829,6 +839,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-keys-delay", about: "From the mixer: the keys chain's Delay, all its controls on one page; Mix touched: it is on Wash (macro 1) and ducked by follower 1 (a negative row), which the Modulate row's line says", ui: screen(fonts(), &mut song, Place::Mixer, Some(delay), None)? },
         Sample { name: "chain-mixer-keys-delay-rows", about: "The line under Mix tapped: its mod rows over the page (drag a bar for the depth, x takes a row off; + LFO and + Follower add one); the Modulate row still works under it", ui: rows },
         Sample { name: "chain-mixer-drums-eq", about: "The EQ's page: its whole curve over each band's own shape, a dot per band in use (LC and HC for the cuts), band 2 picked (ringed, its shape stronger). Under the graph: a chip per band and + Band, then band 2's type, Freq, Gain, Q, On and Remove. The Q-Links turn its Freq, Gain and Q, and the Output", ui: eq_ui },
+        Sample { name: "chain-mixer-drums-eq-hq", about: "The same EQ at Quality HQ 2x: the Quality chip at the end of the type row lit (a tap swaps Normal and HQ 2x); the bands run at twice the rate, so a bell keeps its analog shape to 20 kHz", ui: eq_hq_ui },
         Sample { name: "chain-mixer-drums-eq-held", about: "Band 2's dot held and dragged down and left: it follows the finger, frequency across and gain up, with a readout over it", ui: held },
         Sample { name: "chain-mixer-keys-strip", about: "An effect of several pages: a Channel strip (Vocal preset) on its first page, a tab per page beside its name. Its stages are sections with their switches (the gate off here, so its controls are dim) and Open › to each stage's page. The Q-Links are the strip's four on every page: Comp thresh, Makeup, Low cut, High gain", ui: screen(fonts(), &mut song, Place::Mixer, Some(strip_st), None)? },
         Sample { name: "chain-sample-fx-pad", about: "In the Sample tab's FX sub-tab, under the pad bar: pad 1's own chain, with a switch to the drum track's (to agree with the sampler thread)", ui: screen(fonts(), &mut song, Place::SampleFx, Some(kick), None)? },
@@ -907,7 +918,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 25);
+        assert_eq!(s.len(), 26);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -2376,6 +2387,43 @@ mod tests {
         let stop = page.stop_listening();
         assert_eq!(sets(&stop), [(LISTEN, 0.0)]);
         assert!(page.stop_listening().is_empty());
+    }
+
+    /// The Quality chip sits apart at the type row's end and swaps the
+    /// whole EQ between Normal and HQ 2x, whichever band is picked.
+    #[test]
+    fn the_quality_chip_swaps_normal_and_hq() {
+        use crate::eq_page::{layout, Band, Button};
+        use mpfree_fx::ids::eq::{HQ, NORMAL, QUALITY};
+        let (mut page, r) = eq_editor();
+        let l = layout(r, &page);
+        let (chip, _) = *l
+            .buttons
+            .iter()
+            .find(|(_, b)| *b == Button::Quality)
+            .expect("a Quality chip");
+        let types = l
+            .buttons
+            .iter()
+            .filter(|(_, b)| matches!(b, Button::Kind(_)));
+        assert!(types
+            .clone()
+            .all(|(t, _)| t.right() + 12 <= chip.x && t.y == chip.y));
+        assert!(chip.right() <= l.panel.right());
+        assert!(!page.hq());
+        let mut out = Vec::new();
+        page.press(Button::Chip(Band::Low), &mut out);
+        page.press(Button::Quality, &mut out);
+        assert!(page.hq());
+        page.press(Button::Quality, &mut out);
+        assert_eq!(
+            sets(&out)
+                .iter()
+                .filter(|s| s.0 == QUALITY)
+                .copied()
+                .collect::<Vec<_>>(),
+            [(QUALITY, HQ), (QUALITY, NORMAL)]
+        );
     }
 
     /// Solo band (Listen until 16 Nov) says what it does on the hint line
