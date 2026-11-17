@@ -224,6 +224,8 @@ pub enum Kind {
     /// An instrument preset (`.preset`).
     Preset,
     Pattern,
+    /// A Standard MIDI File (`.mid`, `.midi`, `.smf`): loads as clips.
+    Midi,
     Other,
 }
 
@@ -236,6 +238,7 @@ impl Kind {
         match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()) {
             Some(e) if e == "preset" => Kind::Preset,
             Some(e) if e == "pattern" || e == "arp" => Kind::Pattern,
+            Some(e) if e == "mid" || e == "midi" || e == "smf" => Kind::Midi,
             _ => Kind::Other,
         }
     }
@@ -1526,6 +1529,8 @@ pub(crate) mod tests {
         // A kit is a folder holding kit.txt (kit.rs), never a file.
         assert_eq!(Kind::of_file("Boom bap.KIT"), Kind::Other);
         assert_eq!(Kind::of_file("Up down.arp"), Kind::Pattern);
+        assert_eq!(Kind::of_file("Sequence01.MID"), Kind::Midi);
+        assert_eq!(Kind::of_file("song.midi"), Kind::Midi);
         assert_eq!(Kind::of_file("notes.txt"), Kind::Other);
         assert_eq!(Place::from_label("Instruments"), Some(Place::Instruments));
     }

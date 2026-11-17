@@ -1071,4 +1071,102 @@ mod tests {
             );
         });
     }
+
+    /// The MIDI file an export makes loads back (BROWSE > Recordings, its
+    /// folder, the file): in a new project its tracks land on the tracks
+    /// from the armed one, and the drums on the pads they played on, as the
+    /// MPC's own MIDI export comes in.
+    #[test]
+    fn an_exported_midi_file_loads_back_onto_the_pads_it_played() {
+        on_big_stack(|| {
+            let song = songs::tidal_suite();
+            let mut l = lab("midi-back");
+            let s = &mut l.s;
+            s.make_sounds();
+            open(s, song.name);
+            launch(s, song.scene("Ebb"));
+            s.run_for(0.5);
+            s.button("STOP").run_for(0.2);
+            let (_, dir) = export(s, &["Stems"], 120.0);
+            let folder = dir.file_name().unwrap().to_string_lossy().into_owned();
+            let mid = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .find(|n| n.ends_with(".mid"))
+                .expect("a MIDI file");
+            let in_file = midi(&dir.join(&mid));
+            let drum_ons = in_file
+                .iter()
+                .find(|(n, _)| n == "Drums")
+                .map(|(_, ons)| ons.len())
+                .expect("the drums in the file");
+            let t = song.track("Drums");
+            // The Ebb's drum clip: the one that played.
+            let played: BTreeSet<u8> = song.clips.tracks[t].slots[song.scene("Ebb")]
+                .iter()
+                .flat_map(|c| c.notes.iter().map(|n| n.note))
+                .collect();
+
+            // The Export panel, over: - closes it, back to the browser.
+            s.button("-");
+            if s.app.view() != crate::app::View::Browser {
+                s.button("BROWSE");
+            }
+            s.press("browser", "place", "Projects");
+            s.press("browser", "button", "New project");
+            // Over the launched scene, it asks first.
+            if s.control("browser", "confirm-yes", "").is_some() {
+                s.press("browser", "confirm-yes", "");
+            }
+            s.run_for(0.3);
+            assert!(
+                s.time
+                    .project()
+                    .tracks
+                    .iter()
+                    .all(|t| t.slots.iter().all(Option::is_none)),
+                "New project is empty"
+            );
+            if s.app.view() != crate::app::View::Browser {
+                s.button("BROWSE");
+            }
+            s.press("browser", "place", "Recordings");
+            s.press("browser", "row", &folder);
+            let said = |s: &Session| {
+                s.said()
+                    .into_iter()
+                    .filter(|l| l.starts_with(&format!("MIDI file {mid}")))
+                    .collect::<Vec<_>>()
+            };
+            let wait = |s: &mut Session, secs: u64| {
+                let wall = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+                while said(s).is_empty() && std::time::Instant::now() < wall {
+                    s.run_for(0.05);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            };
+            s.press("browser", "row", &mid);
+            wait(s, 1);
+            if said(s).is_empty() {
+                s.press("browser", "row", &mid);
+                wait(s, 5);
+            }
+            let lines = said(s);
+            assert_eq!(lines.len(), 1, "loaded once: {lines:?}");
+            assert!(lines[0].contains("from slot 1 of Track 1"), "{}", lines[0]);
+            let drums = s
+                .time
+                .project()
+                .tracks
+                .iter()
+                .flat_map(|t| t.slots.iter().flatten())
+                .find(|c| c.name == "Drums")
+                .cloned()
+                .expect("the drums came back as a clip");
+            assert_eq!(drums.notes.len(), drum_ons, "every drum note on a pad");
+            let pads: BTreeSet<u8> = drums.notes.iter().map(|n| n.note).collect();
+            assert_eq!(pads, played, "on the pads they played on");
+            assert_eq!(drums.length, 8 * songs::BAR, "the 8 bars exported");
+        });
+    }
 }

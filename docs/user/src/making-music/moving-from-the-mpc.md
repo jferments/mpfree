@@ -14,7 +14,7 @@ MPFree doesn't open MPC projects (`.xpj` files). What it brings across are your 
 |---|---|
 | Drum programs: samples, velocity layers, start and end, loops, level, pan, tuning, mute groups, mute targets, simultaneous play, mono and polyphony | A kit, read closely ([below](#bringing-a-kit-across)) |
 | Keygroup programs: samples, key ranges, root notes, velocity layers, tuning, levels | A kit whose pads play notes |
-| Notes, from **Export Track as MIDI** or **All Tracks** | Kept as MIDI files: MPFree can't load MIDI files yet (it's planned) |
+| Notes, from **Export Track as MIDI** or **All Tracks** | Clips, each note on the pad that plays it ([below](#bringing-your-patterns-across)) |
 | Anything else, from **Export Drum Pads as Stems** or **Audio Mixdown** with separate tracks | WAV files you load onto pads or audio tracks |
 | Envelopes and filters on pads | Not carried over: listed in the report |
 | Akai's effects (reverbs, delays, compressors...) | Not carried over: listed in the report |
@@ -46,6 +46,10 @@ Change `/path/to/MPFREE-DATA` to the folder where your computer shows that parti
 **Where a drum program's pads go.** By default each sound goes on the pad that answers the same note in MPFree, so the MIDI files you exported play the right sounds. MPFree's pads 1 to 16 answer the MPC One's own pad notes (pad 1 is note 37, pad 2 note 36, pad 3 note 42, and so on), so a kit that uses the MPC's usual notes keeps its bank A order, and a kit with its own notes is reordered to match. A sound whose note none of those 16 pads answers, or that shares its note with another pad, goes on a free pad from 17 up, and the report marks it with `*`: MIDI from the MPC won't play it there. Banks B to H don't answer MPC notes yet. To keep the MPC's pad order whatever the notes (A01 on pad 1), add `--place pads`.
 
 **The report** lists every pad: the MPC pad it came from, its note, its layers and its sound. It also says what was approximated or left out: a missing sample (the layer next to it takes over its velocities, so no hit falls silent), mute groups renumbered to fit MPFree's 16, envelopes, filters and the program's effects. A pad that plays while held on the MPC releases over 400 ms here (`--release-ms` changes it), because the times behind the MPC's envelope settings aren't known.
+
+## Bringing your patterns across
+
+Copy the MIDI files you exported to MPFree's stick (into **Patterns**, for example), bring the kit across first so its pads answer the MPC's notes, then arm the track the first part should go on and load the file from **BROWSE**. Each track of the file becomes a clip, on the armed track and the ones after it, and a drum track lands on the pads it was played on. **UNDO** takes the file away again. See [Bringing in a MIDI file](clips.md#bringing-in-a-midi-file) for what comes in and what is left out.
 
 ## Akai's instruments
 

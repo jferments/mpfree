@@ -6,7 +6,7 @@
 
 A whole MPC project can't come across faithfully: Akai's plugin instruments live in Akai's code, effect settings are an undecoded blob, the sound engines differ, and the format is undocumented and changes between firmware versions. So the importer covers what converts reliably and leaves the rest to Akai's own exports:
 
-- **Kept:** keygroup and drum programs (built), expansion and factory programs read from a card, and standalone `.xpm` files. Patterns come in as MIDI files saved with the MPC's *Track as MIDI* or *All Tracks* export, through MPFree's MIDI file import (planned: MIDI powerhouse phase 2, PR 6). Everything else comes in as audio: *Drum Pads as Stems*, *Audio Mixdown* with separate tracks, or bounced tracks.
+- **Kept:** keygroup and drum programs (built), expansion and factory programs read from a card, and standalone `.xpm` files. Patterns come in as MIDI files saved with the MPC's *Track as MIDI* or *All Tracks* export, through MPFree's MIDI file import (built 2026-11-17, MIDI powerhouse phase 2, PR 6: [MIDI file import](midi-io.md#midi-file-import)). Everything else comes in as audio: *Drum Pads as Stems*, *Audio Mixdown* with separate tracks, or bounced tracks.
 - **Instruments:** bounce Akai plugin tracks to audio on the MPC, or autosample them into a keygroup.
 - **Dropped:** reading `.xpj` sequences, the mixer, songs and Arrange, effect settings and automation (stages 2 to 4 below), and OS 2.x projects.
 - **The manual page:** [Moving your beats from the MPC](../../user/src/making-music/moving-from-the-mpc.md).

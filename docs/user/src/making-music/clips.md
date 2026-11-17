@@ -38,9 +38,9 @@ Tracks past 16 play the kit for now. They have no MIDI out of their own and can'
 
 ### Loop tracks
 
-The loops you record on the Play page or the Looper tab show on **Loop tracks**, columns named **Loops A**, **Loops B** and on, added at the end of the grid as they are needed, with **Pads + synth** under the name. Each cell names its loop ("Loop 1") and launches like a clip: one loop plays per Loop track, and loops on different Loop tracks play together. The pads don't play a Loop track. See [Loops in the Clips grid](looping.md#loops-in-the-clips-grid).
+The loops you record on the Play page or the Looper tab show on **Loop tracks**, columns named **Loops A**, **Loops B** and on, added at the end of the grid as they are needed, with a little wave and **Pads** under the name (they record the pads and the synth). Each cell names its loop ("Loop 1"), shows its wave and length, and launches like a clip: one loop plays per Loop track, and loops on different Loop tracks play together. The pads don't play a Loop track. **SHIFT + + Track** adds an empty one, and a tap on an empty Loop cell arms it, so REC records a loop there. See [Loops in the Clips grid](looping.md#loops-in-the-clips-grid).
 
-A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits for the next bar, red while recording.
+A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits for the next bar, red while recording. A loop's cell has no ring: its wave lights up to where the loop is.
 
 ## The Q-Links on Arrange
 
@@ -97,6 +97,28 @@ UNDO takes a capture back like any other take.
 
 > [!MPC]
 > Capture is like the MPC's Retro Rec, but it keeps whole bars, works whether the music was playing or stopped, and can add to the clip that's playing instead of always making a new one.
+
+## Bringing in a MIDI file
+
+A MIDI file (`.mid`) from another sequencer, a computer or your MPC loads as clips, so a beat you made somewhere else plays on your pads.
+
+1. Put the file on the stick, in **Patterns** or any folder of the browser (see [Getting files on and off the stick](saving.md#getting-files-on-and-off-the-stick)).
+2. Arm the track it should go on: tap its name on Arrange, or set the Record panel's **Armed** row.
+3. Press **BROWSE**, find the file, tap it to pick it and tap it again to load it (or push the data wheel).
+
+Each track of the file becomes a clip in the first empty slot of a track: the first on the armed track, the next on the track after it, and so on. A file with all its parts on one track, as many are, gets a clip for each channel. The clips are as long as the file, in whole bars, and wait in their slots for you to play them. The line under the screen says how many clips came in, where, and what was left out. **UNDO** takes the whole file away again.
+
+**Its notes go on the pads that play them.** A clip holds pads, as a recording does, so each note goes on the pad of its track that plays that note:
+
+- **On a kit**, by the MPC's pad notes: C#2 is pad 1, C2 pad 2 and so on, as the MPC sends and receives them. So a drum track exported from an MPC comes back on the same pads, and so does a drum part from a computer that uses those notes.
+- **On a synth** or a track's own instrument, by its pad layout: a note goes on the pad that plays that note. Set the layout to cover the notes first (a scale, the right octave), then load the file.
+
+A note no pad plays is left out, and counted. A melody that goes past what the 16 pads reach comes in as far as they reach.
+
+**Left out** for now: controllers, pitch bend, pressure and program changes (they come with lanes), and SysEx. The file's tempo is said but not set, so set the project's tempo to match if you want it. A file in clock time (made for video) is read at 120 BPM.
+
+> [!MPC]
+> To bring a sequence over from your MPC, export it there with *Track as MIDI* (one track) or *All Tracks* (every track in one file), copy the file to MPFree's stick, arm the track the first part should go on, and load the file. Drum tracks land on the pads they were played on. Load the kit too ([Sampling](sampling.md)), and the beat plays as it did.
 
 ## Steps
 

@@ -1131,6 +1131,30 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         effect(
+            "Multi filter (ladder)",
+            rate,
+            Box::new(MultiFilter::new()),
+            &[
+                (ids::filter::MODEL, 1.0),
+                (ids::filter::CUTOFF, 800.0),
+                (ids::filter::RESONANCE, 70.0),
+            ],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "Multi filter (LP 12, Hard)",
+            rate,
+            Box::new(MultiFilter::new()),
+            &[
+                (ids::filter::CUTOFF, 800.0),
+                (ids::filter::RESONANCE, 70.0),
+                (ids::filter::RES_MODE, 1.0),
+            ],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
             "DJ filter",
             rate,
             Box::new(DjFilter::new()),
@@ -1241,6 +1265,14 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         effect("Flanger", rate, Box::new(Flanger::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "Flanger, through zero",
+            rate,
+            Box::new(Flanger::new()),
+            &[(ids::flanger::THROUGH_ZERO, 1.0)],
+        )
     }));
     v.push(measured(|| {
         effect("Phaser (4 stages)", rate, Box::new(Phaser::new()), &[])

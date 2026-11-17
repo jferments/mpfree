@@ -372,6 +372,13 @@ pub enum BrowseAction {
     SaveKitRequested,
     /// Something for the log only (a slow listing, with how long it took).
     Note(String),
+    /// A MIDI file from the library or a stick: the app reads it in a
+    /// thread of its own and puts its tracks on the armed track and the
+    /// tracks after it as clips (`midi_file.rs`).
+    LoadMidi {
+        loc: Loc,
+        path: PathBuf,
+    },
     /// An instrument preset from the library, for the synth thread's
     /// `mpfree-instruments` to read. `engine` is the folder under
     /// Instruments it is in (`FM`, `Poly` ...), empty if none.
@@ -1828,6 +1835,19 @@ impl Browser {
                             self.close_pick(true);
                         }
                     }
+                    Kind::Midi => {
+                        let Ok(path) = self.library().file_path(&loc) else {
+                            self.status =
+                                Some((format!("{}: {} is not there", b.label(), r.name), true));
+                            return;
+                        };
+                        self.actions.push(BrowseAction::LoadMidi {
+                            loc: loc.clone(),
+                            path,
+                        });
+                        self.status = Some((format!("Loading {} as clips", r.name), false));
+                        self.remember(loc);
+                    }
                     _ => self.status = Some((format!("{} is not a sound", r.name), true)),
                 }
             }
@@ -2588,6 +2608,20 @@ impl Browser {
                     Button::Delete,
                 ];
             }
+            Kind::Midi => {
+                d.lines.push(("Size".into(), r.detail.clone()));
+                d.lines.push((
+                    "Load".into(),
+                    "As clips: from the armed track on, a track each".into(),
+                ));
+                d.buttons = vec![
+                    Button::Load,
+                    Button::Rename,
+                    Button::Copy,
+                    Button::Cut,
+                    Button::Delete,
+                ];
+            }
             Kind::Kit => {
                 d.lines
                     .push(("Load".into(), "In place of the kit the pads play".into()));
@@ -2687,6 +2721,7 @@ pub fn kind_label(k: Kind) -> String {
         Kind::Kit => "Kit".into(),
         Kind::Preset => "Preset".into(),
         Kind::Pattern => "Pattern".into(),
+        Kind::Midi => "MIDI file".into(),
         Kind::Other => "File".into(),
     }
 }

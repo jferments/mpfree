@@ -71,7 +71,7 @@ pub const WHEEL: &str = "smp-rec-wheel";
 /// them.
 pub const LAYOUT: &str = "col(header:60, row(smp-rec-bar:*, smp-send:330):60, \
                           row(col(row(smp-rec-view:*, smp-rec-list:340):*, \
-                          row(smp-rec-buttons:*, smp-rec-wheel:340):88):*, smp-rec-qlinks:168):*, hint:26)";
+                          row(smp-rec-buttons:*, smp-rec-wheel:340):88):*, smp-rec-qlinks:128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 6;

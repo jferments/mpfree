@@ -141,6 +141,10 @@ For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the
 
 Transport controls are kept in **Rig**, so they work in every project. Nothing here sends anything to your controller.
 
+## MIDI files
+
+A MIDI file from another sequencer, a computer or an MPC loads from BROWSE as clips, with each note on the pad that plays it: see [Bringing in a MIDI file](clips.md#bringing-in-a-midi-file). **Export** makes a MIDI file of your song for a computer: see [Exporting your music](exporting.md).
+
 ## CV and gate
 
 The **CV/Gate** jacks play modular synths. Each of the eight outputs has one job:
