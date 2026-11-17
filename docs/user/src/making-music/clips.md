@@ -111,6 +111,12 @@ Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **
 
 A Loop track's cell plays its loop as you recorded it, so only **Follow**, **After** and **Launch** apply to it.
 
+### Save state and Reload
+
+Under the rows, **Save state** keeps the clip as it is now: its notes, locks, knob moves, length and settings. Change the clip as much as you like, then tap **Reload** (or **Reload clip** on the morph bar under the grid) to bring the saved state back. While the clip plays, the reload waits for the clip's Launch line, so the saved pattern starts on the beat, and the button is outlined in amber until then; tap it again to take the reload back. With the music stopped it happens at once. A reload is a take ("Reload 3 · saved state"), so **UNDO** brings back what you had before it.
+
+A clip keeps one saved state, and a new Save state replaces it. Saved states last while the project is open; they are not saved with it. Deleting, moving or copying a clip, or moving a row, forgets the saved states of the slots it touches. A Loop track's cell has no Save state: the Looper's **UNDO** takes layers back.
+
 Coming: the clip's name and colour, its step size, a one-shot mode, and playing it backwards.
 
 ## Takes
