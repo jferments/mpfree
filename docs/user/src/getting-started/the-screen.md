@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-16 a994ab4
 -->
 
 # The screen
@@ -24,10 +24,11 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | **Sample** | Recording, chopping and shaping the sound on one pad. |
 | **Mix** | The mixer and every sound's effects (next build). See [Mixing and effects](../making-music/mixing-and-effects.md). |
 
-**The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). Two of them do something when tapped:
+**The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). Three of them do something when tapped:
 
 - **The kit chip** (such as **Classic House · Bank A**) opens a list of every kit over the page. Tap a kit to load it on the pads; the list closes and you are back where you were. The last row is the synth. **Back**, the kit chip again or any tab closes the list and keeps the kit that is playing.
 - **The Full level or Half level chip** turns that level off, as pressing **FULL LEVEL** again would: the pads play as hard as you hit them again.
+- **The Pads: steps chip** (such as **Pads: steps · Kick**) shows while **STEP SEQ** has made the pads the steps of a sound. Tap it to play the pads again, as pressing **STEP SEQ** again would. See [Program a pattern on the pads](first-beat.md#program-a-pattern-on-the-pads).
 
 Tap any other chip and the hint line says what it shows.
 
@@ -65,7 +66,7 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 {{shot: options | Play's options, opened with MENU. Turn the wheel or tap to pick a row; – and + change it.}}
 
-In a list of settings like this one, turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. Or push the data wheel: the row's value is outlined, the wheel now changes it, and a second push sets it so the wheel moves between rows again. The panel on the right explains the row you picked.
+In a list of settings like this one, turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. Or push the data wheel: the row's value is outlined, the wheel now changes it, and a second push sets it so the wheel moves between rows again. The panel on the right explains the row you picked. A list longer than its panel scrolls a row at a time as you pick, and a finger can drag it up or down; the thin bar at its right shows where you are.
 
 The settings beside the Sample tab's pages and the Pads tab's Pad view, the Synth tab's tiles and Arrange's Record settings work the same way: the wheel picks, **–** and **+** change, and the push lets the wheel change it. Holding **SHIFT** gives the wheel its other job on that page (the next pad, the next page, scrolling).
 

@@ -701,6 +701,141 @@ mod track_mute {
 }
 
 #[cfg(test)]
+mod step_seq {
+    //! STEP SEQ: the pads as steps (sequencer decision 2, Jay 16 Nov).
+
+    use super::super::{on_big_stack, Session};
+    use crate::app::{MuteKeys, View, LIGHT_OFF, LIGHT_ON};
+    use mpfree_controller::mpc_one::button;
+
+    /// The pad played last is the sound; STEP SEQ makes the pads its
+    /// steps on Beats and on any tab; a tap adds a note (making the clip),
+    /// a lit step comes off on the release, PAD BANK B is page 2, ERASE +
+    /// a step clears it, TRACK MUTE takes the pads and STEP SEQ gives
+    /// them back.
+    #[test]
+    fn step_seq_makes_the_pads_the_steps_of_the_sound_played_last() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.pad(2, 100, 0.05);
+            s.press("header", "tab", "Looper");
+            s.button("STEP SEQ");
+            assert!(s.app.pads_are_steps());
+            assert_eq!(s.view(), View::Play, "STEP SEQ shows Beats");
+            assert_eq!(s.sent_lights[button::STEP_SEQ as usize], LIGHT_ON);
+            assert!(s
+                .lines
+                .iter()
+                .any(|l| l == "STEP SEQ: the pads are pad 3's steps, page 1"));
+            let row = |s: &Session| -> Vec<bool> {
+                let d = s.time.steps();
+                d.clip
+                    .map_or(vec![], |c| c.row(2).iter().map(Option::is_some).collect())
+            };
+            // Pad 1 is step 1: a one-bar clip with pad 3's note there.
+            s.pad(0, 100, 0.05);
+            assert_eq!(row(&s).len(), 16);
+            assert!(row(&s)[0]);
+            // On another tab too; a lit step comes off on the release.
+            s.press("header", "tab", "Looper");
+            s.pad(4, 90, 0.05);
+            assert!(row(&s)[4]);
+            s.pad(4, 90, 0.05);
+            assert!(!row(&s)[4]);
+            assert_eq!(
+                s.time.steps().clip.unwrap().row(0).iter().flatten().count(),
+                0,
+                "pad 1's own row is untouched"
+            );
+            // PAD BANK B: page 2, past this clip's end; nothing changes.
+            s.button("PAD BANK B/F");
+            assert_eq!(s.app.step_pads().unwrap().page, 1);
+            s.pad(0, 100, 0.05);
+            assert_eq!(row(&s).len(), 16);
+            s.button("PAD BANK A/E");
+            // ERASE + a step: cleared.
+            s.button_edge("ERASE", true);
+            s.pad(0, 100, 0.05);
+            assert!(s.hint().contains("UNDO brings it back"), "{}", s.hint());
+            s.button_edge("ERASE", false);
+            assert!(!row(&s)[0]);
+            // TRACK MUTE takes the pads; STEP SEQ takes them back.
+            s.button("TRACK MUTE");
+            assert_eq!(s.app.mute_keys(), MuteKeys::Tracks);
+            assert!(!s.app.pads_are_steps());
+            s.button("STEP SEQ");
+            assert_eq!(s.app.mute_keys(), MuteKeys::Off);
+            assert!(s.app.pads_are_steps());
+            s.button("STEP SEQ");
+            assert!(s.app.step_pads().is_none(), "the pads play again");
+            assert_eq!(s.sent_lights[button::STEP_SEQ as usize], LIGHT_OFF);
+        });
+    }
+
+    /// Step pads held (sequencer S1): Q-Link 1 turned on the controller
+    /// sets the step held, which stays on its release; a later step tapped
+    /// while one is held is a tie; COPY + a step, then others, copies it,
+    /// and UNDO takes a copy back.
+    #[test]
+    fn held_step_pads_set_tie_and_copy_steps() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.pad(2, 100, 0.05);
+            s.button("STEP SEQ");
+            // Pad 3's steps: (step, velocity, length).
+            let row = |s: &Session| -> Vec<(usize, u8, i64)> {
+                let d = s.time.steps();
+                d.clip.map_or(vec![], |c| {
+                    c.row(2)
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, st)| st.map(|st| (i, st.velocity, st.len)))
+                        .collect()
+                })
+            };
+            s.pad(0, 100, 0.05);
+            s.pad(4, 100, 0.05);
+            let v = row(&s)[0].1;
+            // Hold step 1 and turn Q-Link 1: louder, and it stays.
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            assert!(s.hint().starts_with("Step 1 held"), "{}", s.hint());
+            s.qlink(0, 3);
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            assert_eq!(row(&s)[0], (0, v + 6, 240), "{:?}", row(&s));
+            // Hold step 1 and tap step 3: it lasts to the end of step 3.
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            s.pad(2, 100, 0.05);
+            assert!(
+                s.hint().contains("lasts to the end of step 3"),
+                "{}",
+                s.hint()
+            );
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            assert_eq!(row(&s)[0], (0, v + 6, 720));
+            assert_eq!(row(&s).len(), 2, "the tie's end stays empty");
+            // COPY + step 5, then steps 9 and 13.
+            s.button_edge("COPY", true);
+            assert!(s.app.step_pads().is_some_and(|p| p.copying));
+            for pad in [4, 8, 12] {
+                s.pad(pad, 100, 0.05);
+            }
+            s.button_edge("COPY", false);
+            let steps: Vec<usize> = row(&s).iter().map(|r| r.0).collect();
+            assert_eq!(steps, [0, 4, 8, 12]);
+            s.button("UNDO");
+            let steps: Vec<usize> = row(&s).iter().map(|r| r.0).collect();
+            assert_eq!(steps, [0, 4, 8], "UNDO: the last copy goes");
+        });
+    }
+}
+
+#[cfg(test)]
 mod device_log {
     //! The log lines the device checks are judged on
     //! (`tools/mpc-one/app_checks.py`): each step done here as on the MPC,

@@ -157,12 +157,15 @@ fn listing_line(l: &Listing) -> String {
         ),
         None => "no catalog kept yet".into(),
     };
+    // What downloads go through: the system's libcurl, or on the MPC (a
+    // static build) the helper beside the program (mpfree-mpcstore's fetch).
+    let means = mpfree_mpcstore::fetch::means();
     let downloads = if l.no_folder {
-        "downloads off (no data folder)"
+        "downloads off (no data folder)".to_string()
     } else if l.can_download {
-        "downloads possible (libcurl found)"
+        format!("downloads possible ({means} found)")
     } else {
-        "downloads off (no libcurl)"
+        format!("downloads off (no {means})")
     };
     format!(
         "plugins: {} installed, {} zip(s) on the stick, {catalog}, {downloads}",
@@ -1536,15 +1539,18 @@ mod tests {
     fn the_log_says_what_is_there_and_what_was_done() {
         let mut p = page_with(Vec::new(), Vec::new(), true);
         let lines = p.take_lines();
+        // A static build (the MPC's, or a host built with +crt-static)
+        // downloads through the helper, any other through libcurl.
         assert_eq!(
             lines,
-            vec!["plugins: 0 installed, 0 zip(s) on the stick, catalog of 2026-11-10 kept (3 plugins), downloads possible (libcurl found)"]
+            vec![format!(
+                "plugins: 0 installed, 0 zip(s) on the stick, catalog of 2026-11-10 kept (3 plugins), downloads possible ({} found)",
+                mpfree_mpcstore::fetch::means()
+            )]
         );
         p.take(News::Done {
             key: "maker.echo".into(),
-            said: Ok(
-                "Installed Echo 0.3.0: Echo ready on the Synth tab or in the chain editor".into(),
-            ),
+            said: Ok("Installed Echo 0.3.0: Echo ready in + Add effect, under Plugins".into()),
             changed: true,
         });
         p.take(News::Done {
@@ -1555,7 +1561,7 @@ mod tests {
         assert_eq!(
             p.take_lines(),
             vec![
-                "plugins: Installed Echo 0.3.0: Echo ready on the Synth tab or in the chain editor",
+                "plugins: Installed Echo 0.3.0: Echo ready in + Add effect, under Plugins",
                 "plugins: not done (catalog): The catalog didn't download: no network",
             ]
         );

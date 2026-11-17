@@ -6,9 +6,9 @@
 //! ("Private") as control-change pairs on channel 16, the way Akai's app
 //! sets the jacks (`mpfree_midi::cv_wire`, from the owner's read-only
 //! captures of 2026-11-12). Nothing is stored on the MPC. Only those
-//! control changes are sent, never SysEx. The app opens CV out only when
-//! started with `mpfree app --cv-out`, until a device round with a meter
-//! has checked it.
+//! control changes are sent, never SysEx. The app opens CV out only while
+//! Prefs' "Send MIDI and CV out" is on (off until the musician turns it
+//! on), and a device round with a meter is still to check it.
 //!
 //! - Only CV 1 to 4 ([`CHECKED_OUTS`]) are sent: Akai's app was seen
 //!   setting their pairs (CC 0 to 7). CV 5 to 8 follow the pattern (CC 8
@@ -45,7 +45,7 @@ use mpfree_play::{Event, Out};
 use mpfree_transport::{Block, Mark, State, Tick, PPQ};
 
 use crate::midi_out::{Chords, NoteIs};
-use crate::port_writer::{Wire, Writer, STALL};
+use crate::port_writer::{Closing, Wire, Writer, STALL};
 
 /// CV 1 to 4: the outputs whose control changes were seen.
 pub const CHECKED_OUTS: usize = 4;
@@ -105,6 +105,9 @@ pub struct CvOut {
     rate: u32,
     lead: Duration,
     writer: Option<Writer>,
+    /// The writer Prefs switched off, until its last values have left;
+    /// lights still go through it.
+    closing: Option<Closing>,
     changes: Changes,
     /// The clock outputs' pulses per quarter note, each once.
     clocks: [u16; CV_OUTS],
@@ -125,6 +128,12 @@ pub struct CvOut {
     lost: bool,
     /// The engine knows the song plays (run is up).
     playing: bool,
+    /// The last period's values the writer took, for the MIDI monitor in
+    /// debug mode ([`CvOut::sent`]): frame, output and 14-bit value; and
+    /// when frame 0 is heard.
+    sent: [(u32, u8, u16); CHANGES],
+    n_sent: usize,
+    sent_at: Instant,
 }
 
 impl CvOut {
@@ -137,6 +146,7 @@ impl CvOut {
             rate: rate.max(1),
             lead,
             writer: None,
+            closing: None,
             changes: Changes {
                 list: [CvChange {
                     offset: 0,
@@ -157,7 +167,22 @@ impl CvOut {
             overran: 0,
             lost: false,
             playing: false,
+            sent: [(0, 0, 0); CHANGES],
+            n_sent: 0,
+            sent_at: Instant::now(),
         }
+    }
+
+    /// The last period's values the writer took: when each is due to
+    /// leave, the output (0 to 3) and its 14-bit value.
+    pub fn sent(&self) -> impl Iterator<Item = (Instant, u8, u16)> + '_ {
+        let rate = f64::from(self.rate);
+        self.sent[..self.n_sent]
+            .iter()
+            .map(move |&(offset, out, value)| {
+                let due = self.sent_at + Duration::from_secs_f64(f64::from(offset) / rate);
+                (due, out, value)
+            })
     }
 
     /// Starts the writer thread on the Private port (`w`, a copy of the
@@ -165,16 +190,34 @@ impl CvOut {
     /// next [`CvOut::sync`] sets CV 1 to 4 to their jobs' voltages.
     pub fn open<W: Write + Send + 'static>(&mut self, w: W, started: Instant) -> io::Result<()> {
         self.writer = Some(Writer::start(w, "cv-out", "CV out", describe, started)?);
+        self.fresh();
+        Ok(())
+    }
+
+    /// Prefs switched sending on again before the last writer let go of
+    /// the port: it takes that writer back, as [`CvOut::open`] would start
+    /// one. False when there is none.
+    pub fn reopen(&mut self) -> bool {
+        match self.closing.take().and_then(Closing::take_back) {
+            Some(w) => {
+                self.writer = Some(w);
+                self.fresh();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// As at the start: the next [`CvOut::sync`] sets every output.
+    fn fresh(&mut self) {
         self.engine = CvEngine::new(self.rate);
         self.chords.clear();
         self.changes.clear();
         self.applied_gen = None;
         self.lost = false;
         self.playing = false;
-        Ok(())
     }
 
-    #[cfg(test)]
     pub fn is_open(&self) -> bool {
         self.writer.is_some()
     }
@@ -306,6 +349,7 @@ impl CvOut {
     /// the period was made (the loop's start); the sound is heard `lead`
     /// later.
     pub fn period_end(&mut self, frames: u32, t0: Instant) {
+        self.n_sent = 0;
         let Some(w) = &self.writer else {
             self.changes.clear();
             return;
@@ -327,6 +371,7 @@ impl CvOut {
         }
         changes.sort();
         let at = t0 + self.lead;
+        self.sent_at = at;
         let rate = f64::from(self.rate);
         for i in 0..changes.n {
             let c = changes.list[i];
@@ -341,6 +386,10 @@ impl CvOut {
             let due = at + Duration::from_secs_f64(f64::from(c.offset) / rate);
             if w.send(Wire::new(due, &pair)) {
                 self.queued += 1;
+                if self.n_sent < CHANGES {
+                    self.sent[self.n_sent] = (c.offset, c.out, counts);
+                    self.n_sent += 1;
+                }
             } else {
                 self.full += 1;
             }
@@ -352,7 +401,11 @@ impl CvOut {
     /// it (CV out is open), so the bytes go out between CV pairs; false
     /// leaves it to the caller.
     pub fn light(&mut self, msg: &[u8]) -> bool {
-        let Some(w) = &self.writer else {
+        let Some(w) = self
+            .writer
+            .as_ref()
+            .or(self.closing.as_ref().map(Closing::writer))
+        else {
             return false;
         };
         if !w.send(Wire::new(Instant::now(), msg)) {
@@ -364,6 +417,11 @@ impl CvOut {
     /// The writer's log lines, and whether the port stopped. A port that
     /// stopped is let go: the I/O view says CV out is off.
     pub fn tick(&mut self, log: &mut dyn FnMut(String)) {
+        if self.closing.as_ref().is_some_and(|c| c.tick(log)) {
+            if let Some(c) = self.closing.take() {
+                c.let_go();
+            }
+        }
         let Some(w) = &self.writer else { return };
         // `gone` first, then the lines: a port that fails between the two
         // still has its failure's line read before the writer goes.
@@ -382,18 +440,41 @@ impl CvOut {
     /// waiting at most a second. True when everything queued was written
     /// or there was nothing to close.
     pub fn close(&mut self) -> bool {
+        let closed = self.closing.take().is_none_or(Closing::finish);
         if self.writer.is_none() {
-            return true;
+            return closed;
         }
+        self.zero_outputs();
+        let done = self.writer.take().is_none_or(Writer::finish);
+        self.shown_outs = None;
+        done && closed
+    }
+
+    /// Prefs turned sending off: as [`CvOut::close`], but the sound loop
+    /// never waits: the writer is kept aside until the 0 V values have
+    /// left ([`Closing`]; [`CvOut::tick`] lets it go), and the lights go
+    /// through it until then.
+    pub fn switch_off(&mut self) {
+        if self.writer.is_none() {
+            return;
+        }
+        self.zero_outputs();
+        if let Some(w) = self.writer.take() {
+            if let Some(old) = self.closing.replace(Closing::new(w, self.lead)) {
+                old.let_go();
+            }
+        }
+        self.shown_outs = None;
+    }
+
+    /// CV 1 to 4 to 0 V, handed to the writer.
+    fn zero_outputs(&mut self) {
         let changes = &mut self.changes;
         for o in 0..CHECKED_OUTS {
             self.engine
                 .set_assign(o, CvAssign::Off, 0, &mut |c| changes.push(c));
         }
         self.period_end(0, Instant::now() - self.lead);
-        let done = self.writer.take().is_none_or(Writer::finish);
-        self.shown_outs = None;
-        done
     }
 
     /// The run's counts, for the log at exit.
@@ -580,6 +661,25 @@ mod tests {
         assert_eq!(w, want);
     }
 
+    /// The MIDI monitor (debug mode) gets each value the writer took, with
+    /// its output and when it is due; the next period starts empty.
+    #[test]
+    fn the_monitor_gets_each_value_sent() {
+        let (mut cv, _sink) = open();
+        let m = model(&[(0, PITCH), (1, GATE)]);
+        cv.sync(&m);
+        cv.period_end(PERIOD, Instant::now());
+        cv.send(&ev(0, 0, on(48)), NoteIs::Note);
+        let t0 = Instant::now();
+        cv.period_end(PERIOD, t0);
+        let sent: Vec<(u8, u16)> = cv.sent().map(|(_, out, v)| (out, v)).collect();
+        assert_eq!(sent, [(0, 3277), (1, cv_wire::FULL_SCALE)]);
+        assert!(cv.sent().all(|(due, ..)| due >= t0));
+        cv.period_end(PERIOD, Instant::now());
+        assert_eq!(cv.sent().count(), 0);
+        assert!(cv.close());
+    }
+
     /// CV 5 to 8 are never sent, though the engine follows them and the
     /// I/O view shows their volts.
     #[test]
@@ -720,6 +820,42 @@ mod tests {
         let w = sink.writes();
         assert_eq!(w[0], [0xB0, 3, 127]);
         assert_eq!(w[1..], [pair(0, 0), pair(1, 0), pair(2, 0), pair(3, 0)]);
+    }
+
+    /// Prefs switches CV out off: CV 1 to 4 go to 0 V without the loop
+    /// waiting, lights keep going through the same writer until its last
+    /// values have left, and switched on again at once it takes that
+    /// writer back; later, tick lets it go.
+    #[test]
+    fn switched_off_it_keeps_the_writer_until_the_zeros_leave() {
+        let (mut cv, sink) = open();
+        let m = model(&[]);
+        cv.sync(&m);
+        assert_eq!(m.lock().unwrap().live.built.cv_outs, CHECKED_OUTS as u8);
+        cv.switch_off();
+        assert!(!cv.is_open());
+        cv.sync(&m);
+        assert_eq!(m.lock().unwrap().live.built.cv_outs, 0);
+        assert!(cv.light(&[0xB0, 3, 127]), "the light waits its turn");
+        assert!(cv.reopen());
+        assert!(cv.is_open());
+        cv.switch_off();
+        thread::sleep(Duration::from_millis(300));
+        cv.tick(&mut |_| {});
+        assert!(
+            !cv.light(&[0xB0, 3, 0]),
+            "let go: the app writes lights again"
+        );
+        assert!(!cv.reopen());
+        let give_up = Instant::now() + Duration::from_secs(2);
+        while sink.writes().len() < 9 && Instant::now() < give_up {
+            thread::sleep(Duration::from_millis(2));
+        }
+        let zeros = [pair(0, 0), pair(1, 0), pair(2, 0), pair(3, 0)];
+        let w = sink.writes();
+        assert_eq!(w[..4], zeros);
+        assert_eq!(w[4], [0xB0, 3, 127]);
+        assert_eq!(w[5..], zeros);
     }
 
     /// A port that fails is let go and the I/O view is told.

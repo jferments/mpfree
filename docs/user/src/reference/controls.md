@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-16 a994ab4
 -->
 
 # Buttons and controls
@@ -34,7 +34,7 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 | **SHIFT + PLAY START** | Metronome on or off (it starts off; MPFree remembers your choice). The click plays while counting in and recording. Its level is in the Play page's options (**MENU**). | Works |
 | **TAP TEMPO** | Tap four times in time to set the tempo. Tapping the tempo on the Play page does the same. | Works |
 | **TRACK MIX** | Opens the mixer (the **Mix** tab) on the tracks; pressed again, back to the page you were on. **SHIFT + TRACK MIX** opens it on the pads. On the current test build it opens and closes the mixer over the page. | Works (the Mix tab: next build) |
-| **PAD BANK A–D** | Switches the pads to bank A, B, C or D. **SHIFT** + a bank button, or a second press, gives banks E–H. With a drum kit on the pads, this is how you change the kit (on the Play page **SHIFT** + the data wheel also steps through every kit; the kit chip lists them). With a synth on the pads, they pick its pad layout. | Works (the kit and the layout: next build) |
+| **PAD BANK A–D** | Switches the pads to bank A, B, C or D. **SHIFT** + a bank button, or a second press, gives banks E–H. With a drum kit on the pads, this is how you change the kit (on the Play page **SHIFT** + the data wheel also steps through every kit; the kit chip lists them). With a synth on the pads, they pick its pad layout. While **STEP SEQ** has the pads, they turn its pages of steps; while **TRACK MUTE** has them, they pick which 16 tracks. | Works (the kit and the layout: next build) |
 | **FULL LEVEL** | Every pad plays at full velocity, however hard you hit it. Press again to turn it off. **SHIFT + FULL LEVEL** is Half Level (every hit at half velocity). | Works |
 | **16 LEVEL** | 16 Levels: the pad you hit last plays on all 16 pads, each a step of velocity, tune, cutoff, decay or start, and the [16 Levels panel](../making-music/playing-live.md#16-levels) opens on Play. Press again to turn it off. **SHIFT + 16 LEVEL** switches the synth pads between Chromatic and In key (with no scale picked yet, In key picks C Major; the line at the bottom of the screen says which). | Works |
 | **Q-Link knobs 1–4** | Turn the four parameters shown in the Q-Link column at the right of the screen. What they control depends on the page. | Works |
@@ -42,7 +42,7 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 | **–** and **+** | Step the picked row's value down or up. With the outline on a value, step it; on anything else, move the outline. | Works (the outline: next build) |
 | **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. With the outline on a control, does what a tap does; on a value, lets the wheel turn it until you push again. | Works (the outline: next build) |
 
-**The transport lights** light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing. **UNDO** blinks while you record, and otherwise is bright when the page you are on has something to undo and dim when it has nothing. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own.
+**The transport lights** light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing; **STOP** lets go of a looper Record or Overdub still waiting for PLAY, and the lights go dark (see [Looping](../making-music/looping.md)). **UNDO** blinks while you record, and otherwise is bright when the page you are on has something to undo and dim when it has nothing. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own.
 
 ## Repeat and arpeggiator
 
@@ -110,21 +110,22 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | Button | Goes to | When |
 |---|---|---|
 | **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop). | Works |
-| **STEP SEQ** | The Play page's Beats view. | Works |
+| **STEP SEQ** | The pads become steps of one sound over any page, and the Play page shows Beats: hit an empty step to put a note there, a lit one to take it off. Press it again to play the pads. Hold **STEP SEQ** and hit a pad to pick the sound. **PAD BANK** turns the pages of steps; **SHIFT + STEP SEQ** turns on Follow. Hold a step pad and turn the Q-Links to change that step; hold it and hit a later one to make the note last to there. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads). | Works (new: needs a device check) |
 | **NEXT SEQ** | The Arrange tab. | Works |
 | **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. | Works |
 | **SAMPLE EDIT** | The Sample tab's Wave page. | Works |
 | **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab's Pad view. | Works |
 | **TRACK MUTE** | The pads become mute keys over any page: pads 1-16 mute and unmute tracks 1-16, and **PAD BANK** picks the next 16 (B: 17-32, up to H: 113-128). **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Works |
-| **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Effects](../making-music/effects.md#macros). | Works |
-| **ERASE** | Hold **ERASE** and tap something on the screen to delete it: a clip on the Arrange tab, a pattern row's name on the Play page (that sound's steps), or a layer on the Looper tab. **UNDO** brings it back. The hint line says what you can tap while you hold it. A clip used in the song, a whole loop, effects and macros can't be deleted this way yet. In the browser, **ERASE** moves the item picked to the Trash (asking first). Live erase while recording is planned. | Works |
+| **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Effects](../making-music/effects.md#macros). While you hold a step pad with **STEP SEQ** on, it switches the Q-Links between the step's velocity, length, nudge and chance and its condition, ratchet and fine nudge. | Works |
+| **ERASE** | Hold **ERASE** and tap something on the screen to delete it: a clip on the Arrange tab, a pattern row's name on the Play page (that sound's steps), or a layer on the Looper tab. With **STEP SEQ** on, **ERASE** + a step pad clears that step, and **ERASE** + a **PAD BANK** button clears that page of steps. **UNDO** brings it back. The hint line says what you can tap while you hold it. A clip used in the song, a whole loop, effects and macros can't be deleted this way yet. In the browser, **ERASE** moves the item picked to the Trash (asking first). Live erase while recording is planned. | Works |
 | **BROWSE** | Opens the browser over the page, and goes back to the page. **SHIFT + BROWSE** saves the project, on any page. See [Saving your work](../making-music/saving.md). | Works |
 | **The data wheel's push** | See [Everywhere](#everywhere). | Works |
-| **COPY**, **TC** | Not assigned yet. | Planned |
+| **COPY** | With **STEP SEQ** on: hold **COPY**, hit a step pad, then hit the steps it should go to. Or hold **COPY**, press a **PAD BANK** button, then the **PAD BANK** button it should go to, to copy a whole page of the sound's steps. **UNDO** takes a copy back. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads). | Works (new: needs a device check) |
+| **TC** | Not assigned yet. | Planned |
 
 ## For developers
 
 The Console, a text view of what MPFree is doing, opens with a chord nothing else uses: hold **SHIFT**, hold **ERASE**, then press **TAP TEMPO** (the same again closes it). The Dev tab appears when Prefs > Show developer tools is on.
 
 > [!MPC]
-> Most buttons do what their label says, as on the MPC. The differences: **MAIN** cycles the Play page's views, **STEP SEQ** opens the Beats view rather than a separate step editor, **SHIFT + REC** is Capture rather than Automation, and **SHIFT + MENU** opens MPFree's Prefs.
+> Most buttons do what their label says, as on the MPC. The differences: **MAIN** cycles the Play page's views, **STEP SEQ** keeps the pads as steps on every page until you press it again, **SHIFT + REC** is Capture rather than Automation, and **SHIFT + MENU** opens MPFree's Prefs.

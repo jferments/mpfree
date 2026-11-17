@@ -167,7 +167,7 @@ class JudgeTests(unittest.TestCase):
         window = lines(
             "plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found)",
             "plugins: not done (catalog): The catalog didn't download: no network",
-            "plugins: Installed Tidal Verb 1.6.0: Tidal Verb ready on the Synth tab or in the chain editor",
+            "plugins: Installed Tidal Verb 1.6.0: Tidal Verb ready in + Add effect, under Plugins",
             "plugins: 2 offered after an install",
             "track 7: plays [SYN] Mono Voice",
             "plugins: [SYN] Mono Voice started in its own process",
@@ -178,6 +178,11 @@ class JudgeTests(unittest.TestCase):
         refused = window + lines("plugins: [SYN] Modal Voice would not start: failed to map segment")
         got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(refused, refused))
         self.assertFalse(got[-1][0])
+        # The static pad player on the MPC downloads through mpfree-fetch, and says whether it has it.
+        for means in ("downloads possible (mpfree-fetch found)", "downloads off (no mpfree-fetch)"):
+            helper = lines(f"plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, {means}") + window[1:]
+            got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(helper, helper))
+            self.assertTrue(got[0][0], means)
 
     def test_kept_reads_the_running_value_too(self):
         session = lines("saved settings: pad curve Hard, sound cores two, loop memory 10 min, x",

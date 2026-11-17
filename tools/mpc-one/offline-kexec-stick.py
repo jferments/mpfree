@@ -3,6 +3,16 @@
 firmware version (such as 3.10.0) by kexec, with its root filesystem on a USB
 stick and the MPC's eMMC and SD card hidden from it.
 
+For development only. Sticks for the MPC are made with the USB creator
+(rust/mpfree-stick, rust/mpfree-creator): it makes the same changes, since
+its recipe is recorded from build_rootfs here (creator-recipe.py), and has
+the soft-reboot, --kexec-file, --loadpin-off and --chain routes (the last
+three as developer options). This tool stays for trying a change to the
+stick before the recipe is written again, and for what only it makes: the
+build folder's files for a kexec jump from 3.6.0, --akai-app, --preload-module,
+--splash-font, a stick without --app or --app-user, and a stick for an MPC
+running another release than the stick's.
+
 It never contacts the MPC and never writes a device. It reads Akai's files
 from ~/mpfree-work and writes one new private folder there:
 
@@ -29,7 +39,9 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     touch, XMOS and USB-SATA firmware updaters, the network update server,
     the USB script runner, the /data and content formatters, the firewall and
     the tool that zeroes ext4 reserved blocks (tune2fs), and for the generator
-    that mounts the eMMC content partition
+    that mounts the eMMC content partition; on a soft-reboot stick (no
+    --kexec-file) also Akai's LoadPin trust-points unit, which fails there on
+    every power-on
   - /data becomes a RAM disk, so the /etc and /var overlays live in RAM
   - Akai's update, flashing and U-Boot-environment programs and kexec are
     replaced by a stub that refuses and notes the call in the kernel log
@@ -77,7 +89,8 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     changes: the pad player runs as root, as before
   - a service that records the Ethernet details (read-only-ethernet.sh, the
     same script collect-over-ssh.sh --ethernet runs on 3.6) before the network
-    starts and after, and if eth0 failed to start, starts it again at 20, 45
+    starts and after, and if eth0 failed to start, starts it again: 2 s after
+    a "Failed to reset the dma" in the kernel log, else at 20, 45
     and 90 seconds; it changes only RAM (it mounts debugfs if systemd has not)
     and writes only /run/mpfree-test-eth, which the log service copies
   - root's password field, only if it marks the account locked ("!"), is set
@@ -173,6 +186,15 @@ Optional inputs:
                       folder. They are Akai's sounds: the stick stays private
   --app-user          with --app: run the pad player as the mpfree user, not
                       root (see above)
+  --fetch FILE        with --app: mpfree-fetch, the Plugins place's download
+                      helper, beside the pad player (/etc/mpfree-test/). The
+                      static pad player can't open libcurl itself, so this
+                      one is linked DYNAMICALLY against the MPC's glibc
+                      (2.39 or older), never with +crt-static:
+                      cargo zigbuild --manifest-path rust/Cargo.toml --release \
+                        --locked --target armv7-unknown-linux-gnueabihf.2.34 \
+                        -p mpfree-mpcstore --bin mpfree-fetch
+                      Without it the Plugins place installs from zips only
   --dev-tools DIR     with --app: developer tools for Akai's system, on
                       partition 3 under /mpfree-dev (see above)
   --akai-app          start Akai's app at power-on instead (see above); not
@@ -232,10 +254,16 @@ ETHERNET = "/ethernet@ff290000"
 # The PHY's ID as 3.6.0 reads it on the reference unit (/sys/bus/mdio_bus/devices/stmmac-0:01/phy_id
 # 0x001cc915, Realtek RTL8211E; docs/dev/hardware/ethernet-usb.md).
 PHY_ID_COMPATIBLE = "ethernet-phy-id001c.c915"
+# U-Boot's flag that tells Akai's units the content partition is on the eMMC; dropped from kexec.dtb.
+EMMC_CONTENT = "/chosen/inmusic,acvs-emmc-content"
 PANEL = "/mipi@ff960000/panel@0"
 SCREEN_LOG_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release",
                                 "mpfree-screen-log")
 SCREEN_LOG_MAX = 16 << 20
+# --fetch: the Plugins place's download helper, beside the pad player. Dynamic (the pad player is static and
+# can't open libcurl: mpfree-mpcstore's fetch.rs), so it must not ask for a newer glibc than the MPC's.
+FETCH_PROGRAM = "/etc/mpfree-test/mpfree-fetch"
+FETCH_MAX_GLIBC = (2, 39)
 SAFE = re.compile(r"^[A-Za-z0-9@._+/=-]+$")
 SAFE_UNIT = re.compile(r"^[A-Za-z0-9@._\\-]+$")
 
@@ -256,6 +284,12 @@ MASK_UNITS = (
     # off and read it. The mask covers every instance.
     "no-reserved-blocks@.service",
 )
+# Masked only on a soft-reboot stick (no --kexec-file): Akai's unit that hands LoadPin its trusted verity
+# digests. After a soft-reboot LoadPin's pinned root (Akai's verity root) is gone and it refuses every load, so
+# the unit fails on every power-on and does nothing (the final round, 16 Nov: the one failed unit), and "no
+# failed units" could not be a pass rule. On the kexec-file route and the chain it exits 0, and its read of
+# its policy file is what pins the stick's root for LoadPin (step 6, 3.78 s), so it stays there.
+SOFTREBOOT_MASK_UNITS = ("az0x-loadpin-trustpoints.service",)
 MASK_GENERATORS = ("acva-emmc-content-generator",)
 # With --akai-app these two stay as Akai ships them: the app's unit and its launcher, which runs
 # `dfu-util -l` (a stub that finds nothing) and then the app.
@@ -747,6 +781,9 @@ fi
 echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg
 exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}{power}
 """
+# SyslogIdentifier: the unit starts `/bin/sh start-app.sh`, which execs the app, and journald names a stream by
+# the process that opened it, so without it every line of the pad player's log was `sh[pid]:` (the final
+# round's creator stick, 16 Nov), and any tool that reads the journal by name had to know that.
 # A crash (a panic, a crash outside Rust, the out-of-memory killer) restarts the app after 2 s; it then
 # makes a safe start (the app's crash.rs): a new project even if Prefs > At start says Last project, and
 # the screen says why. A stop (systemctl stop) is not a failure, so the app stays stopped. A fourth
@@ -765,6 +802,7 @@ StartLimitBurst=4
 [Service]
 Type=simple
 ExecStart=/bin/sh /etc/mpfree-test/start-app.sh
+SyslogIdentifier=mpfree
 Restart=on-failure
 RestartSec=2
 
@@ -885,6 +923,7 @@ Type=simple
 User={user}
 Group={user}
 ExecStart=/bin/sh /etc/mpfree-test/start-app.sh
+SyslogIdentifier=mpfree
 Restart=on-failure
 RestartSec=2
 LimitRTPRIO=70
@@ -1003,32 +1042,53 @@ WantedBy=sysinit.target
 
 # Records the Ethernet details (tools/mpc-one/read-only-ethernet.sh, copied in as
 # ethernet-details.sh) early, before the network starts, and later; and if eth0 failed to
-# start, starts it again a few times. It changes only RAM: it mounts debugfs if systemd has
-# not, and runs `ip link set eth0 up`. It writes only to /run/mpfree-test-eth, which the log
-# service copies to the stick.
+# start, starts it again. It changes only RAM: it mounts debugfs if systemd has not, and runs
+# `ip link set eth0 up`. It writes only to /run/mpfree-test-eth, which the log service copies
+# to the stick. After a kexec the first start of eth0 can fail with "Failed to reset the dma"
+# (the PHY gives the controller no clock yet); the driver resets the PHY as it lets go of it,
+# and the next start works (the kexec test boots since 3.6.0, chain steps 7 and 7b). So the
+# script starts eth0 again 2 s after that failure, instead of waiting for its checks at 20, 45
+# and 90 s, which stay as the fallback. A failure logged before it started does not count.
 ETHERNET_SCRIPT = """#!/bin/sh
 # MPFree kexec test boot: record the Ethernet details; start eth0 again if it failed to start.
-out=/run/mpfree-test-eth
+R=''
+# (The R='' line is an empty root prefix; only tests change it.)
+out="$R/run/mpfree-test-eth"
 mkdir -p "$out"
 say() { echo "mpfree-test-ethernet: $*"; }
-grep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug
-uptime_s() { cut -d. -f1 /proc/uptime; }
+grep -q ' /sys/kernel/debug debugfs ' "$R/proc/mounts" || mount -t debugfs debugfs /sys/kernel/debug
+uptime_s() { cut -d. -f1 "$R/proc/uptime"; }
 wait_until() { while [ "$(uptime_s)" -lt "$1" ]; do sleep 1; done; }
 details() { sh /etc/mpfree-test/ethernet-details.sh > "$out/ethernet-$1.txt" 2>&1; say "recorded ethernet-$1.txt"; }
-eth0_up() { f=$(cat /sys/class/net/eth0/flags 2>/dev/null) || return 1; [ $((f & 1)) = 1 ]; }
+eth0_up() { f=$(cat "$R/sys/class/net/eth0/flags" 2>/dev/null) || return 1; [ $((f & 1)) = 1 ]; }
+start_eth0() { ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'; }
+dma_failures() { dmesg 2>/dev/null | grep -c 'Failed to reset the dma'; }
 details "1-early-$(uptime_s)s"
-wait_until 15
-details 2-at-15s
-n=3
+seen=$(dma_failures)
+n=2
+while [ "$(uptime_s)" -lt 15 ]; do
+  sleep 1
+  if [ "$seen" != done ] && ! eth0_up && [ "$(dma_failures)" -gt "$seen" ]; then
+    seen=done
+    sleep 2
+    say "eth0 failed to start (Failed to reset the dma); starting it again at $(uptime_s) s"
+    start_eth0
+    sleep 3
+    details "$n-at-$(uptime_s)s-after-early-retry"
+    n=$((n + 1))
+  fi
+done
+details "$n-at-15s"
+n=$((n + 1))
 for at in 20 45 90; do
   wait_until "$at"
   if eth0_up; then
-    say "eth0 is up at $at s (operstate $(cat /sys/class/net/eth0/operstate)); no retry needed"
+    say "eth0 is up at $at s (operstate $(cat "$R/sys/class/net/eth0/operstate")); no retry needed"
     details "$n-at-${at}s-eth0-up"
     exit 0
   fi
   say "eth0 is not up at $at s; starting it again"
-  ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'
+  start_eth0
   sleep 3
   details "$n-at-${at}s-after-retry"
   n=$((n + 1))
@@ -1171,6 +1231,43 @@ def phy_node(tree):
         raise Stop(f"the PHY node {path} is not at address 1 with compatible \"ethernet-phy-ieee802.3-c22\" "
                    "and a reset-gpios line; this tool does not know this layout")
     return path
+
+
+def build_kexec_dtb(target, reference, live_path, dtb_out):
+    """kexec.dtb (offline-dtb.py kexec-dtb): the board file `target` plus what U-Boot added at boot (`reference`
+    to the running tree), the eMMC and SD controllers disabled, /chosen's eMMC-content flag dropped and the
+    Ethernet PHY's ID first in its compatible list. Returns the PHY's path. The USB creator builds the same
+    tree (rust/mpfree-stick/src/dtb.rs), checked against this by creator-recipe.py's example."""
+    target_tree = dtb.load(target)
+    chosen = target_tree.find(parent_of(EMMC_CONTENT))
+    drops = []
+    if chosen is not None and chosen.prop(EMMC_CONTENT.rsplit("/", 1)[1]) is not None:
+        drops = ["--drop", EMMC_CONTENT]  # tells Akai's units the content is on eMMC
+    phy = phy_node(target_tree)
+    rc = dtb.kexec_dtb_main(["--target", target, "--reference", reference, "--live", live_path,
+                             "--out", dtb_out, *drops, "--add-compatible", f"{phy}={PHY_ID_COMPATIBLE}"], OUT)
+    if rc != 0:
+        raise Stop("offline-dtb.py kexec-dtb stopped; see above")
+    if dtb.strings_of(dtb.load(dtb_out).find(phy).prop("compatible"))[:1] != [PHY_ID_COMPATIBLE]:
+        raise Stop(f"{phy} in kexec.dtb does not start with {PHY_ID_COMPATIBLE}")
+    return phy
+
+
+def parent_of(path):
+    return path.rsplit("/", 1)[0] or "/"
+
+
+def command_lines(root_uuid, kexec_file=False, loadpin_off=False, chain=False):
+    """(cmdline.txt's command line, the kexec-file route's or None). cmdline.txt's is for the stick's own
+    kernel (the kexec jump, and the chain's second restart); the kexec-file route's starts Akai's kernel,
+    with LOADPIN_OFF if asked, and with --chain CHAIN_WORD in place of KEXEC_OFF_WORD."""
+    cmdline = f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 {KEXEC_OFF_WORD}"
+    if not kexec_file:
+        return cmdline, None
+    words = cmdline.split() + ([LOADPIN_OFF] if loadpin_off else [])
+    if chain:
+        words = [w for w in words if w != KEXEC_OFF_WORD] + [CHAIN_WORD]
+    return cmdline, " ".join(words)
 
 
 def panel_rotation(tree):
@@ -1412,6 +1509,51 @@ def static_arm_program(path):
     return data
 
 
+def dynamic_arm_program(path, max_glibc=FETCH_MAX_GLIBC):
+    """The file's bytes, checked to be a dynamically linked ARM EABI5 hard-float executable for the MPC's loader
+    that asks for no glibc newer than max_glibc."""
+    with open(path, "rb") as fh:
+        data = fh.read(SCREEN_LOG_MAX + 1)
+    problem = None
+    if len(data) > SCREEN_LOG_MAX or len(data) < 52 or data[:7] != b"\x7fELF\x01\x01\x01":
+        problem = "not a 32-bit little-endian ELF file of a plausible size"
+    else:
+        e_type, e_machine = struct.unpack_from("<HH", data, 16)
+        phoff, = struct.unpack_from("<I", data, 28)
+        flags, = struct.unpack_from("<I", data, 36)
+        phentsize, phnum = struct.unpack_from("<HH", data, 42)
+        heads = [struct.unpack_from("<IIIII", data, phoff + i * phentsize) for i in range(phnum)] \
+            if phentsize >= 32 and phoff + phnum * phentsize <= len(data) else None
+        interp = [data[h[1]:h[1] + h[4]].rstrip(b"\0") for h in heads or () if h[0] == 3]
+        needs = [tuple(map(int, m)) for m in re.findall(rb"GLIBC_(\d+)\.(\d+)", data)]
+        if e_type not in (2, 3) or e_machine != 40:
+            problem = "not an ARM executable"
+        elif flags & 0xFF000000 != 0x05000000 or not flags & 0x400:
+            problem = "not EABI5 hard-float"
+        elif heads is None:
+            problem = "its program headers run past the end"
+        elif interp != [b"/lib/ld-linux-armhf.so.3"]:
+            problem = "not linked dynamically for the MPC's loader (it must not be static: it opens libcurl)"
+        elif needs and max(needs) > max_glibc:
+            problem = (f"built against glibc {'.'.join(map(str, max(needs)))}, newer than the MPC's "
+                       f"{'.'.join(map(str, max_glibc))}")
+    if problem:
+        raise Stop(f"{path} is {problem}; build it with cargo zigbuild as --fetch's help says")
+    return data
+
+
+def fetch_input(args):
+    """--fetch: (path, bytes) of the download helper, or (None, None)."""
+    if not args.fetch:
+        return None, None
+    if not args.app:
+        raise Stop("--fetch needs --app: it is the pad player's download helper")
+    path = os.path.realpath(args.fetch)
+    if not os.path.isfile(path):
+        raise Stop(f"missing {path}: build mpfree-fetch first")
+    return path, dynamic_arm_program(path)
+
+
 def newest(pattern):
     found = sorted(glob.glob(pattern))
     return found[-1] if found else None
@@ -1631,7 +1773,7 @@ def chain_kexec_check(img, scratch):
 
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
                  app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None,
-                 app_user=False, chain=False):
+                 app_user=False, chain=False, fetch=None):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
@@ -1647,9 +1789,12 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     mounts its partitions as root first. Without it, nothing here differs from a build before --app-user.
     With `chain` (only with `kexec_files` and a kexec-file command line in `softreboot`), mpfree-test-chain.service
     is installed, listed in SOFTREBOOT_DIR's SHA256SUMS with KEXEC_DIR's files, and Akai's KEXEC_PROGRAM is
-    left in place (not stubbed). Without it, nothing here differs from a build before --chain."""
+    left in place (not stubbed). Without it, nothing here differs from a build before --chain.
+    With `fetch` (only with `app`), FETCH_PROGRAM is the Plugins place's download helper."""
     if app_user and app is None:
         raise Stop("--app-user needs --app: it changes who the pad player runs as")
+    if fetch is not None and app is None:
+        raise Stop("--fetch needs --app: it is the pad player's download helper")
     if chain and not (kexec_files and softreboot and softreboot[2]):
         raise Stop("--chain needs the kexec-file route and the stick's own kernel and device tree")
     if akai_app:
@@ -1657,7 +1802,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
             raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
     elif not ((app is None) == (kits_uuid is None) == (data_uuid is None)):
         raise Stop("the pad player needs its kits and data partitions, and the other way round")
-    mask_units = tuple(u for u in MASK_UNITS if not (akai_app and u == AKAI_APP_UNIT))
+    mask_units = tuple(u for u in MASK_UNITS if not (akai_app and u == AKAI_APP_UNIT)) + \
+        (SOFTREBOOT_MASK_UNITS if softreboot and not softreboot[2] else ())
     stub_programs = tuple(p for p in STUB_PROGRAMS if not (akai_app and p == AKAI_APP_LAUNCHER) and
                           not (chain and p == KEXEC_PROGRAM))
     for top in ("/bin", "/sbin", "/lib"):
@@ -1672,7 +1818,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     if chain:
         chain_kexec_check(img, scratch)
     splash_program, font_name, font = splash
-    extra = len(splash_program or b"") + len(font or b"") + len(app or b"")
+    extra = len(splash_program or b"") + len(font or b"") + len(app or b"") + len(fetch or b"")
     free_bytes, free_inodes = img.free()
     if free_bytes < len(screen_log) + extra + (4 << 20) or free_inodes < 64:
         raise Stop(f"the image has too little room for the changes ({free_bytes} bytes, {free_inodes} inodes free)")
@@ -1748,6 +1894,8 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
                               power=f" --power-request {POWER_REQUEST}"), 0o755)
         add("/etc/systemd/system/mpfree-test-app.service",
             APP_UNIT.format(after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
+    if fetch is not None:
+        add(FETCH_PROGRAM, fetch, 0o755)
     if app is not None:
         add(POWER_FILES[0], POWER_SCRIPT.format(request=POWER_REQUEST), 0o755)
         add(POWER_FILES[1], POWER_PATH_UNIT.format(request=POWER_REQUEST), 0o644)
@@ -1969,6 +2117,9 @@ def main(argv):
                     help="start Akai's app at power-on (for developer mode); every flasher stays a stub")
     ap.add_argument("--app-user", action="store_true",
                     help="with --app: run the pad player as the mpfree user, without root (opt-in)")
+    ap.add_argument("--fetch", metavar="FILE",
+                    help="with --app: mpfree-fetch, the Plugins place's download helper (dynamic ARM, glibc 2.39 "
+                         "or older; see above), beside the pad player")
     ap.add_argument("--dev-tools", metavar="DIR",
                     help="with --app: a folder of developer tools for Akai's system, copied to partition 3 under "
                          "/mpfree-dev (see above)")
@@ -2013,6 +2164,7 @@ def main(argv):
     screen_path, screen_log = screen_log_program()
     splash = splash_inputs(args)
     app_path, app, kits_path, kits = app_inputs(args, work)
+    fetch_path, fetch = fetch_input(args)
     dev = dev_tools_input(args)
 
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -2069,20 +2221,9 @@ def main(argv):
         OUT.say()
 
         OUT.say("=== Device tree for the kexec boot (names only, no values) ===")
-        drops = []
-        target_tree = dtb.load(target)
-        chosen = target_tree.find("/chosen")
-        if chosen is not None and chosen.prop("inmusic,acvs-emmc-content") is not None:
-            drops = ["--drop", "/chosen/inmusic,acvs-emmc-content"]  # tells Akai's units the content is on eMMC
-        phy = phy_node(target_tree)
-        rotation = panel_rotation(target_tree)
+        rotation = panel_rotation(dtb.load(target))
         dtb_out = os.path.join(outdir, "kexec.dtb")
-        rc = dtb.kexec_dtb_main(["--target", target, "--reference", reference, "--live", live_path,
-                                 "--out", dtb_out, *drops, "--add-compatible", f"{phy}={PHY_ID_COMPATIBLE}"], OUT)
-        if rc != 0:
-            raise Stop("offline-dtb.py kexec-dtb stopped; see above")
-        if dtb.strings_of(dtb.load(dtb_out).find(phy).prop("compatible"))[:1] != [PHY_ID_COMPATIBLE]:
-            raise Stop(f"{phy} in kexec.dtb does not start with {PHY_ID_COMPATIBLE}")
+        phy = build_kexec_dtb(target, reference, live_path, dtb_out)
         OUT.say(f"Ethernet PHY {phy}: the kernel takes its ID ({PHY_ID_COMPATIBLE}) from the tree, then resets it")
         OUT.say(f"panel rotation (from {PANEL}): {rotation} degrees; the screen log is drawn to match")
         OUT.say()
@@ -2109,13 +2250,9 @@ def main(argv):
             OUT.say("startup screen: none (no --splash)")
         kits_uuid = str(uuid.uuid4()) if parts34 else None
         data_uuid = str(uuid.uuid4()) if parts34 else None
-        cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
-                   "sysctl.kernel.kexec_load_disabled=1")
+        cmdline, kexec_file_cmdline = command_lines(root_uuid, args.kexec_file, args.loadpin_off, args.chain)
         with open(dtb_out, "rb") as fh:
             kexec_files = (release, fh.read(), (cmdline + "\n").encode())
-        kexec_file_cmdline = (cmdline + (" " + LOADPIN_OFF if args.loadpin_off else "")) if args.kexec_file else None
-        if args.chain:
-            kexec_file_cmdline = " ".join(w for w in kexec_file_cmdline.split() if w != KEXEC_OFF_WORD) + " " + CHAIN_WORD
         if args.akai_app:
             OUT.say(AKAI_APP_MARK)
             OUT.say(f"  {AKAI_APP_UNIT} and {AKAI_APP_LAUNCHER} are left as Akai ships them: Akai's app starts at "
@@ -2195,7 +2332,12 @@ def main(argv):
                                                                   screen_log, rotation, splash, app, kits_uuid,
                                                                   data_uuid, args.akai_app, kexec_files,
                                                                   (release, args.preload_module, kexec_file_cmdline),
-                                                                  args.app_user, args.chain)
+                                                                  args.app_user, args.chain, fetch)
+        if fetch:
+            OUT.say(f"download helper: {fetch_path} ({len(fetch)} bytes, sha256 {hashlib.sha256(fetch).hexdigest()}, "
+                    f"dynamic ARM EABI5 hard-float), at {FETCH_PROGRAM}: the Plugins place downloads through it")
+        elif app:
+            OUT.say("download helper: none (no --fetch): the Plugins place installs from zips on the stick only")
         if args.app_user:
             OUT.say(f"  {APP_USER} is in the groups: {' '.join(app_user_groups(img, scratch))}"
                     + ("" if "systemd-journal" in app_user_groups(img, scratch) else

@@ -1153,8 +1153,16 @@ pub struct OptionRow {
 }
 
 /// A titled list of settings, each with a value and arrows to step it. A tap
-/// on a row's name selects it (`Select`); a tap on an arrow steps its value
-/// (`Step`).
+/// on a row's name selects it (`Select`, when the finger lifts); a tap on an
+/// arrow steps its value (`Step`, at once).
+///
+/// A list longer than its panel scrolls (Jay's final round, 16 Nov: Prefs
+/// needed a scroll bar and continuous scrolling, not page jumps). The view
+/// moves only as far as it must to keep the picked row and one more in
+/// sight, so the wheel scrolls it a row at a time and a tap never jumps it;
+/// a finger dragged up or down the list scrolls it, row by row with the
+/// finger, and picks nothing. A thin bar at the right shows where the view
+/// is.
 ///
 /// A narrow list (rows under [`NARROW_ROW_W`] pixels, such as Arrange's
 /// Record panel beside the Q-Link column) keeps every row readable: the
@@ -1169,6 +1177,22 @@ pub struct OptionList {
     /// The selected row is open for the wheel: its value box is outlined
     /// and its arrows lit, until the wheel's push sets it.
     pub editing: bool,
+    /// The first row in view, and the selection it last followed (a drag
+    /// moves the view off the selection until the selection changes).
+    top: std::cell::Cell<usize>,
+    followed: std::cell::Cell<Option<(usize, usize)>>,
+    /// The finger on a row's name: where it went down, the view's first
+    /// row then, and whether it has moved far enough to be a drag.
+    grab: Option<OptionGrab>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OptionGrab {
+    finger: u64,
+    y: i32,
+    top: usize,
+    row: usize,
+    dragging: bool,
 }
 
 const OPTION_H: i32 = 58;
@@ -1180,6 +1204,9 @@ const ARROW_W: i32 = 64;
 pub const NARROW_ROW_W: i32 = 6 * ARROW_W;
 /// A narrow row's arrow, as drawn.
 const NARROW_ARROW_W: i32 = 22;
+/// How far a finger on a row moves before it scrolls the list instead of
+/// picking the row.
+const OPTION_DRAG_PX: i32 = 12;
 
 impl OptionList {
     pub fn new(title: &str) -> OptionList {
@@ -1189,6 +1216,9 @@ impl OptionList {
             rows: Vec::new(),
             selected: 0,
             editing: false,
+            top: std::cell::Cell::new(0),
+            followed: std::cell::Cell::new(None),
+            grab: None,
         }
     }
 
@@ -1197,19 +1227,63 @@ impl OptionList {
         r.inset(14).take_top(34).1
     }
 
+    fn visible(r: Rect) -> usize {
+        (OptionList::body(r).h / OPTION_H).max(0) as usize
+    }
+
+    /// The first row in view. When the selection has changed since the view
+    /// last followed it, the view moves just enough to show it with one row
+    /// either side (none past the ends); otherwise it stays where a drag
+    /// left it.
     fn first(&self, visible: usize) -> usize {
         if self.rows.len() <= visible || visible == 0 {
             return 0;
         }
-        self.selected
-            .saturating_sub(visible / 2)
-            .min(self.rows.len() - visible)
+        let last = self.rows.len() - visible;
+        let mut top = self.top.get().min(last);
+        let now = (self.selected, self.rows.len());
+        if self.followed.get() != Some(now) {
+            let sel = self.selected.min(self.rows.len() - 1);
+            let margin = usize::from(visible > 2);
+            if sel < top + margin {
+                top = sel.saturating_sub(margin);
+            } else if sel + margin >= top + visible {
+                top = (sel + margin + 1).saturating_sub(visible);
+            }
+            top = top.min(last);
+            self.followed.set(Some(now));
+        }
+        self.top.set(top);
+        top
+    }
+
+    /// Another list in the same widget (a new menu): its view starts at
+    /// the top and follows its selection.
+    pub fn reset_view(&mut self) {
+        self.top.set(0);
+        self.followed.set(None);
+        self.grab = None;
+    }
+
+    /// The scroll bar's track and thumb, when the list is longer than its
+    /// panel.
+    pub fn scroll_bar(&self, r: Rect) -> Option<(Rect, Rect)> {
+        let body = OptionList::body(r);
+        let visible = OptionList::visible(r);
+        if visible == 0 || self.rows.len() <= visible {
+            return None;
+        }
+        let track = Rect::new(r.right() - 9, body.y, 4, visible as i32 * OPTION_H - 6);
+        let h = (track.h * visible as i32 / self.rows.len() as i32).max(24);
+        let span = (self.rows.len() - visible) as i32;
+        let y = track.y + (track.h - h) * self.first(visible) as i32 / span;
+        Some((track, Rect::new(track.x, y, track.w, h)))
     }
 
     /// Row `k`'s rectangle (if it is in view) and its value box.
     pub fn row_rects(&self, r: Rect, k: usize) -> Option<(Rect, Rect)> {
         let body = OptionList::body(r);
-        let visible = (body.h / OPTION_H).max(0) as usize;
+        let visible = OptionList::visible(r);
         let first = self.first(visible);
         if k < first || k >= first + visible || k >= self.rows.len() {
             return None;
@@ -1308,6 +1382,10 @@ impl Widget for OptionList {
                 &self.rows[k].value,
             );
         }
+        if let Some((track, thumb)) = self.scroll_bar(r) {
+            cx.canvas.fill_round_rect(track, 2, t.outline);
+            cx.canvas.fill_round_rect(thumb, 2, t.text_dim);
+        }
         if self.rows.is_empty() {
             let body = OptionList::body(r);
             cx.text(
@@ -1340,9 +1418,35 @@ impl Widget for OptionList {
         out
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
-        if phase != Touch::Down {
-            return None;
+    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        match phase {
+            Touch::Down => {}
+            Touch::Move => {
+                let visible = OptionList::visible(r);
+                let g = self.grab.as_mut().filter(|g| g.finger == finger)?;
+                if !g.dragging && (y - g.y).abs() < OPTION_DRAG_PX {
+                    return None;
+                }
+                g.dragging = true;
+                if self.rows.len() > visible {
+                    // The rows follow the finger: up a row for each row's
+                    // height it moves up.
+                    let moved = (g.y - y) / OPTION_H;
+                    let last = (self.rows.len() - visible) as i32;
+                    let top = (g.top as i32 + moved).clamp(0, last) as usize;
+                    self.top.set(top);
+                    self.followed.set(Some((self.selected, self.rows.len())));
+                }
+                return None;
+            }
+            Touch::Up | Touch::Cancel => {
+                let g = self.grab.take().filter(|g| g.finger == finger)?;
+                if g.dragging || phase == Touch::Cancel {
+                    return None;
+                }
+                self.selected = g.row;
+                return Some(EventKind::Select(g.row));
+            }
         }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
@@ -1350,16 +1454,27 @@ impl Widget for OptionList {
         })?;
         let (row, value) = self.row_rects(r, k)?;
         let reach = OptionList::arrow_reach(row, value);
-        self.selected = k;
         if value.contains(x, y) && x < value.x + reach {
+            self.selected = k;
             Some(EventKind::Step {
                 index: k,
                 delta: -1,
             })
         } else if value.contains(x, y) && x >= value.right() - reach {
+            self.selected = k;
             Some(EventKind::Step { index: k, delta: 1 })
         } else {
-            Some(EventKind::Select(k))
+            // A row's name: picked when the finger lifts, unless it drags
+            // the list.
+            let top = self.first(OptionList::visible(r));
+            self.grab = Some(OptionGrab {
+                finger,
+                y,
+                top,
+                row: k,
+                dragging: false,
+            });
+            None
         }
     }
 }
@@ -1521,8 +1636,10 @@ mod tests {
             .collect();
         let r = Rect::new(0, 0, 800, 14 * 2 + 34 + OPTION_H * 6);
         let (row, value) = o.row_rects(r, 2).unwrap();
+        // A row's name picks it when the finger lifts.
+        assert_eq!(o.touch(1, Touch::Down, row.x + 20, row.y + 10, r), None);
         assert_eq!(
-            o.touch(1, Touch::Down, row.x + 20, row.y + 10, r),
+            o.touch(1, Touch::Up, row.x + 20, row.y + 10, r),
             Some(EventKind::Select(2))
         );
         assert_eq!(
@@ -1544,6 +1661,80 @@ mod tests {
         // Rows out of view cannot be hit; the selected row is kept in view.
         o.selected = 11;
         assert!(o.row_rects(r, 0).is_none() && o.row_rects(r, 11).is_some());
+    }
+
+    /// Prefs' long list (Jay's final round, 16 Nov): the view moves a row
+    /// at a time with the selection, a tap doesn't jump it, a finger drag
+    /// scrolls it and picks nothing, and a bar shows where it is.
+    #[test]
+    fn a_long_option_list_scrolls_a_row_at_a_time_and_with_a_finger() {
+        let mut o = OptionList::new("Prefs");
+        o.rows = (0..18)
+            .map(|i| OptionRow {
+                name: format!("option {i}"),
+                value: "a".into(),
+            })
+            .collect();
+        let r = Rect::new(0, 0, 800, 14 * 2 + 34 + OPTION_H * 6);
+        let first = |o: &OptionList| (0..18).find(|&k| o.row_rects(r, k).is_some()).unwrap();
+        assert_eq!(first(&o), 0);
+        // The wheel down the list: the view starts to move only when the
+        // selection nears the bottom, then a row at a time.
+        let mut tops = Vec::new();
+        for k in 0..18 {
+            o.selected = k;
+            tops.push(first(&o));
+        }
+        assert_eq!(
+            tops,
+            [0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12]
+        );
+        // Back up: it stays until the selection nears the top.
+        o.selected = 15;
+        assert_eq!(first(&o), 12);
+        o.selected = 13;
+        assert_eq!(first(&o), 12);
+        o.selected = 12;
+        assert_eq!(first(&o), 11);
+        // A tap on a row in view picks it without moving the view.
+        o.selected = 3;
+        let top = first(&o);
+        let (row, _) = o.row_rects(r, top + 3).unwrap();
+        o.touch(4, Touch::Down, row.x + 20, row.y + 10, r);
+        assert_eq!(
+            o.touch(4, Touch::Up, row.x + 20, row.y + 10, r),
+            Some(EventKind::Select(top + 3))
+        );
+        assert_eq!(first(&o), top, "no jump");
+        // A finger dragged up two rows scrolls two rows and picks nothing.
+        let sel = o.selected;
+        let (row, _) = o.row_rects(r, top + 4).unwrap();
+        let y = row.y + 10;
+        assert_eq!(o.touch(5, Touch::Down, row.x + 20, y, r), None);
+        assert_eq!(o.touch(5, Touch::Move, row.x + 20, y - OPTION_H, r), None);
+        assert_eq!(first(&o), top + 1);
+        assert_eq!(
+            o.touch(5, Touch::Move, row.x + 20, y - 2 * OPTION_H, r),
+            None
+        );
+        assert_eq!(first(&o), top + 2);
+        assert_eq!(o.touch(5, Touch::Up, row.x + 20, y - 2 * OPTION_H, r), None);
+        assert_eq!(o.selected, sel, "a drag picks nothing");
+        assert_eq!(
+            first(&o),
+            top + 2,
+            "the view stays where the finger left it"
+        );
+        // The bar: its thumb moves down as the view does.
+        let (track, thumb) = o.scroll_bar(r).expect("a bar on a long list");
+        assert!(thumb.y > track.y && thumb.bottom() <= track.bottom());
+        o.selected = 0;
+        assert_eq!(first(&o), 0, "a new selection brings the view back to it");
+        let (track, thumb) = o.scroll_bar(r).unwrap();
+        assert_eq!(thumb.y, track.y);
+        // A short list has no bar.
+        o.rows.truncate(4);
+        assert!(o.scroll_bar(r).is_none());
     }
 
     #[test]
@@ -1575,7 +1766,10 @@ mod tests {
             (value.right() - 2, step(1)),
             (row.x + 20, EventKind::Select(1)),
         ] {
-            assert_eq!(o.touch(1, Touch::Down, x, y, r), Some(want), "x {x}");
+            // A step is at once; a pick when the finger lifts.
+            let down = o.touch(1, Touch::Down, x, y, r);
+            let got = down.or_else(|| o.touch(1, Touch::Up, x, y, r));
+            assert_eq!(got, Some(want), "x {x}");
         }
         // A wide list is as before: the 64 px arrows, half the row.
         let wide = Rect::new(0, 0, 430, r.h);
@@ -1591,6 +1785,10 @@ mod tests {
         );
         assert_eq!(
             o.touch(1, Touch::Down, value.x + ARROW_W + 1, value.y + 10, wide),
+            None
+        );
+        assert_eq!(
+            o.touch(1, Touch::Up, value.x + ARROW_W + 1, value.y + 10, wide),
             Some(EventKind::Select(1))
         );
     }

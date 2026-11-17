@@ -1204,7 +1204,10 @@ pub static PLANS: &[Plan] = &[
                     )
                 },
                 s("repeats", "Repeats", Tone, &["Tone", "Saturation"]),
-                s("output", "Output", Voice, &["Mix"]),
+                Section {
+                    trim: &["Mix curve"],
+                    ..s("output", "Output", Voice, &["Mix", "Mix curve"])
+                },
             ],
         )],
         dims: &[sync_dim(&["Time"], "Sync")],
@@ -1213,7 +1216,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.tape_delay",
         qlinks: &["Time", "Feedback", "Tone", "Mix"],
         pages: &[page(
-            "row(echo:520, col(tape:290, row(wow, output)))",
+            "row(echo:520, col(tape:290, row(wow:130, output)))",
             &[
                 Section {
                     hero: &["Time", "Feedback"],
@@ -1232,7 +1235,10 @@ pub static PLANS: &[Plan] = &[
                     ..s("tape", "Tape", Tone, &["Saturation", "Tone", "Low cut"])
                 },
                 s("wow", "Wow and flutter", Motion, &["Wow", "Flutter"]),
-                s("output", "Output", Voice, &["Mix"]),
+                Section {
+                    trim: &["Mix curve"],
+                    ..s("output", "Output", Voice, &["Mix", "Mix curve"])
+                },
             ],
         )],
         dims: &[sync_dim(&["Time"], "Sync")],
@@ -1241,14 +1247,17 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.multitap",
         qlinks: &["Feedback", "Tone", "Low cut", "Mix"],
         pages: &[page(
-            "col(row(repeats, tone:240, output:140):230, row(t1, t2, t3, t4):*)",
+            "col(row(repeats, tone:240, output:170):230, row(t1, t2, t3, t4):*)",
             &[
                 Section {
                     drawings: &["Repeats"],
                     ..s("repeats", "Repeats", Source, &["Feedback"])
                 },
                 s("tone", "Tone", Tone, &["Tone", "Low cut"]),
-                s("output", "Output", Voice, &["Mix"]),
+                Section {
+                    trim: &["Mix curve"],
+                    ..s("output", "Output", Voice, &["Mix", "Mix curve"])
+                },
                 Section {
                     labels: &[
                         ("Tap 1 time", "Time"),
@@ -1328,6 +1337,7 @@ pub static PLANS: &[Plan] = &[
                             "Diffusion",
                             "Early",
                             "Freeze",
+                            "Quality",
                         ],
                     )
                 },
@@ -1340,9 +1350,8 @@ pub static PLANS: &[Plan] = &[
                     ..s("movement", "Movement", Motion, &["Modulation", "Mod rate"])
                 },
                 Section {
-                    trim: &["Width"],
-                    rows: &["Quality"],
-                    ..s("output", "Output", Voice, &["Mix", "Width", "Quality"])
+                    trim: &["Width", "Mix curve"],
+                    ..s("output", "Output", Voice, &["Mix", "Width", "Mix curve"])
                 },
             ],
         )],
@@ -1352,7 +1361,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.room",
         qlinks: &["Decay", "Size", "Pre-delay", "Mix"],
         pages: &[page(
-            "row(reverb:520, col(tone:252, row(movement, output)))",
+            "row(reverb:520, col(tone:252, row(movement:130, output)))",
             &[
                 Section {
                     hero: &["Decay", "Size"],
@@ -1371,8 +1380,8 @@ pub static PLANS: &[Plan] = &[
                 },
                 s("movement", "Movement", Motion, &["Mod"]),
                 Section {
-                    trim: &["Width"],
-                    ..s("output", "Output", Voice, &["Mix", "Width"])
+                    trim: &["Width", "Mix curve"],
+                    ..s("output", "Output", Voice, &["Mix", "Width", "Mix curve"])
                 },
             ],
         )],
@@ -1382,7 +1391,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.plate",
         qlinks: &["Decay", "Size", "Pre-delay", "Mix"],
         pages: &[page(
-            "row(reverb:520, col(tone:252, row(movement, output)))",
+            "row(reverb:520, col(tone:252, row(movement:130, output)))",
             &[
                 Section {
                     hero: &["Decay", "Size"],
@@ -1399,8 +1408,8 @@ pub static PLANS: &[Plan] = &[
                     ..s("movement", "Movement", Motion, &["Mod"])
                 },
                 Section {
-                    trim: &["Width"],
-                    ..s("output", "Output", Voice, &["Mix", "Width"])
+                    trim: &["Width", "Mix curve"],
+                    ..s("output", "Output", Voice, &["Mix", "Width", "Mix curve"])
                 },
             ],
         )],
@@ -1423,7 +1432,10 @@ pub static PLANS: &[Plan] = &[
                     )
                 },
                 s("tone", "Tone", Tone, &["Tone", "Low cut"]),
-                s("output", "Output", Voice, &["Mix"]),
+                Section {
+                    trim: &["Mix curve"],
+                    ..s("output", "Output", Voice, &["Mix", "Mix curve"])
+                },
             ],
         )],
         dims: &[],

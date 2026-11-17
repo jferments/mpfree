@@ -120,12 +120,23 @@ pub struct StepClip {
     /// Every pad (0 to 15), and any other note the clip holds, with its
     /// steps (None: empty).
     pub rows: Vec<(u8, Vec<Option<Step>>)>,
+    /// The same rows' locks: how many each step holds (its row's own and
+    /// the whole step's), for the step pads' lock colour.
+    pub locks: Vec<(u8, Vec<usize>)>,
 }
 
 impl StepClip {
     /// The steps of `pitch` (empty when the clip has no such row).
     pub fn row(&self, pitch: u8) -> &[Option<Step>] {
         self.rows
+            .iter()
+            .find(|(p, _)| *p == pitch)
+            .map_or(&[], |(_, r)| r.as_slice())
+    }
+
+    /// How many locks each step of `pitch` holds (empty with no such row).
+    pub fn locks(&self, pitch: u8) -> &[usize] {
+        self.locks
             .iter()
             .find(|(p, _)| *p == pitch)
             .map_or(&[], |(_, r)| r.as_slice())
@@ -155,8 +166,27 @@ pub enum StepAction {
         step: usize,
         change: Change,
     },
+    /// Q-Links turned while several step pads are held (STEP SEQ): the
+    /// steps of `pad` whose bits are set in `steps` (step 0 the lowest)
+    /// all take `change`, and a whole turn is one undo.
+    ChangeSteps {
+        pad: u8,
+        steps: u128,
+        change: Change,
+    },
     /// ERASE + a lane's name: every step of `pad` comes out of the clip.
     ClearPad { pad: u8 },
+    /// ERASE + a step pad (one step) or + a PAD BANK (a page), with STEP
+    /// SEQ on: steps `from` up to `to` of `pad` are cleared, locks too.
+    ClearSteps { pad: u8, from: usize, to: usize },
+    /// COPY with STEP SEQ on: `count` steps of `pad` from step `from` go
+    /// over the steps from `to`, locks too (a step, or a page of 16).
+    CopySteps {
+        pad: u8,
+        from: usize,
+        to: usize,
+        count: usize,
+    },
     /// The pattern's - / + on Play (Jay after live test 3: 32, 64 and 128
     /// steps): make the clip `steps` steps long. With `copy`, new steps
     /// repeat the ones before them; steps that go take their notes along.
@@ -1015,6 +1045,50 @@ mod tests {
             })
             .unwrap(),
             ""
+        );
+    }
+
+    /// Several step pads held and turned (STEP SEQ): every turn of them
+    /// is one undo; COPY of a step is one too.
+    #[test]
+    fn held_steps_turn_as_one_undo_and_copy_is_one_take() {
+        use mpfree_seq::Note;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("beat", 3840);
+        beat.notes = vec![Note::new(0, 100, 0, 100), Note::new(960, 100, 0, 90)];
+        h.control.project.tracks[0].slots[0] = Some(beat);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let velocities = |h: &TimeHost| -> Vec<(i64, u8)> {
+            let mut v: Vec<_> = h.control.project.clip(0, 0).unwrap().notes.clone();
+            v.sort_by_key(|n| n.tick);
+            v.iter().map(|n| (n.tick, n.velocity)).collect()
+        };
+        for v in [80, 60, 40] {
+            h.step_action(StepAction::ChangeSteps {
+                pad: 0,
+                steps: (1 << 0) | (1 << 4),
+                change: Change::Velocity(v),
+            })
+            .unwrap();
+        }
+        assert_eq!(velocities(&h), [(0, 40), (960, 40)]);
+        let line = h
+            .step_action(StepAction::CopySteps {
+                pad: 0,
+                from: 4,
+                to: 12,
+                count: 1,
+            })
+            .unwrap();
+        assert_eq!(line, "steps: step 5 of pad 1 to step 13 copied");
+        assert_eq!(velocities(&h), [(0, 40), (960, 40), (2880, 40)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(velocities(&h), [(0, 40), (960, 40)], "UNDO: the copy goes");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(
+            velocities(&h),
+            [(0, 100), (960, 90)],
+            "UNDO: the whole turn, both steps"
         );
     }
 

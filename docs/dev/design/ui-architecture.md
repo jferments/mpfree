@@ -1,6 +1,6 @@
 # UI architecture
 
-**Status:** 2026-11-14 (the wheel's outline; on 13 Nov, controls listed for the smoke tests, and saying why in place); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
+**Status:** 2026-11-16 (actions keep the order of the touches that made them, even several in one read); 2026-11-14 (the wheel's outline; on 13 Nov, controls listed for the smoke tests, and saying why in place); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
 
 ## What the owner asked for
 
@@ -66,7 +66,7 @@ Every widget lists the controls it draws: `Widget::targets(&self, r)` returns a 
 
 A `Target` has an `id` that names the kind of control within its widget ("tab", "row-less", "knob-card"; the controls catalogue is keyed by `widget/id`), an `index` when there are several, the `label` the screen shows on it, the `rect` where it answers a finger, the `gesture` a finger makes on it (`Tap`, `Drag` or `Hold`), `towards` for a drag (which way the finger moves), and `enabled`. `enabled` is false (`disabled_if`) when the control is drawn faint, or is the one already lit (the tab shown, the row picked), so a press has nothing to change. The [GUI smoke tests](../guides/testing-and-ci.md#gui-smoke-tests) press every target the way its gesture says and fail on one that does nothing.
 
-When a press can't do what it asks, the screen says so in place rather than doing nothing (Jay, 13 Nov 2026). A faint button or card still answers a tap, and the page puts why on the hint line (`Player::tell`): a faint looper tool, a blank Q-Link card, a faint take button or morph button on Arrange, a faint sampler button (`ButtonRow::why`) or Q-Link card (`KnobCard::why`), a sampler or Arrange setting already at its end (`time_view::why_not`, and `SamplePage` notices a step that changed nothing), an I/O setting that can't move (`IoSection::take_note`, read through the mixer's `take_io_note`). Controls that only show (status chips) say what they show.
+When a press can't do what it asks, the screen says so in place rather than doing nothing (Jay, 13 Nov 2026). A faint button or card still answers a tap, and the page puts why on the hint line (`Player::tell`): a faint looper tool, a blank Q-Link card, a faint take button or morph button on Arrange, a faint sampler button (`ButtonRow::why`) or Q-Link card (`KnobCard::why`), a sampler or Arrange setting already at its end (`time_view::why_not`, and `SamplePage` notices a step that changed nothing), an I/O setting that can't move (`IoSection::take_note`, read through the mixer's `take_io_note` after each touch and each tick of the section showing, so an answer that comes later, such as the Monitor's Save log, is said too). Controls that only show (status chips) say what they show.
 
 The routing from the screen's actions to the engines (`FromUi` to the app, the mixer, the time engine, the looper and the chain editor) lives in `desk.rs`, shared by `main.rs` and the test `Session`, so the smoke tests drive the code the MPC runs.
 
@@ -87,6 +87,8 @@ In the pad player, the screen has its own thread at normal priority; the audio t
 
 - audio to screen: what happened (a pad hit, a kit change, a MIDI message, timing). The audio thread uses `try_send`, so it never waits for the screen; a full queue drops the message and counts it.
 - screen to audio: actions from touches (play pad N, select kit K, set the level).
+
+Actions reach the audio thread in the order the touches made them. A touch hands back its first action at once and leaves the rest in the screen's outbox, which is sent after each read of the touchscreen; a read can hold several touches (a fast drag), so while actions wait in the outbox, a later touch's first action waits behind them (`Player::touch`). Without that, an EQ dot dragged fast could end on an older move's frequency (found by `a_drag_on_the_eq_look_is_what_you_hear`, 16 Nov).
 
 The screen thread redraws at most every 33 ms, and only what changed. It also prints every line to stdout, which reaches the workstation's terminal over SSH.
 

@@ -221,6 +221,7 @@ mod tests {
         live.ports.push(PortLive {
             name: "Keystep 37".into(),
             kind: "USB".into(),
+            about: "USB".into(),
             has_in: true,
             has_out: false,
             last_in: None,

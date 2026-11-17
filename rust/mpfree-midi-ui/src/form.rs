@@ -7,6 +7,10 @@
 //! - The data wheel moves between rows, the page arrows by a page, and
 //!   - and + step the selected field.
 //! - The Q-Links take the selected row's fields, left to right.
+//! - A row can open a page of its own over the section (a port's page): a
+//!   tap on its title, or its "Page" field tapped or stepped with +. The
+//!   page takes the screen, the wheel, - and + and the Q-Links until Back
+//!   or its own ‹ closes it.
 
 use std::cell::Cell;
 use std::time::Duration;
@@ -39,6 +43,8 @@ pub(crate) struct Field {
     pub tap_only: bool,
     /// The name its Q-Link card shows.
     pub knob: &'static str,
+    /// A tap or + opens the row's page ([`Form::page`]).
+    pub opens: bool,
 }
 
 impl Field {
@@ -51,6 +57,16 @@ impl Field {
             picker: false,
             tap_only: false,
             knob,
+            opens: false,
+        }
+    }
+
+    /// The field that opens its row's page ("Open ›").
+    pub fn page(text: impl Into<String>) -> Field {
+        Field {
+            opens: true,
+            tap_only: true,
+            ..Field::choice("Page", text, 0, 1)
         }
     }
 
@@ -180,6 +196,17 @@ pub(crate) trait Form: Send {
     fn live(&self, _m: &IoModel, _now: Duration) -> u64 {
         0
     }
+    /// The page the row `key` opens, if it has one.
+    fn page(&self, _model: &Shared, _key: &str) -> Option<Box<dyn Page>> {
+        None
+    }
+}
+
+/// A page a row opens over its section (a port's page). It draws in the
+/// section's area and takes its input; [`Page::done`] says when its own ‹
+/// asked to close, and Back closes it too.
+pub(crate) trait Page: IoSection {
+    fn done(&self) -> bool;
 }
 
 pub(crate) const BANNER_H: i32 = 40;
@@ -217,6 +244,8 @@ pub(crate) struct FormSection<F: Form> {
     /// What the last tap, key or knob couldn't do, and why (a value at its
     /// end, a field that can't change), for the app to say in place.
     note: Option<String>,
+    /// The page a row opened, showing over the rows.
+    page: Option<Box<dyn Page>>,
 }
 
 impl<F: Form> FormSection<F> {
@@ -232,7 +261,35 @@ impl<F: Form> FormSection<F> {
             down: None,
             fit: Cell::new(8),
             note: None,
+            page: None,
         }
+    }
+
+    /// Opens the page of the row `key`. True if it has one.
+    fn open_page(&mut self, key: &str) -> bool {
+        match self.form.page(&self.model, key) {
+            Some(mut p) => {
+                p.shown(true);
+                self.page = Some(p);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The page showing, unless its ‹ asked to close it (then it goes).
+    fn page_reply(&mut self, r: IoReply) -> IoReply {
+        if self.page.as_ref().is_some_and(|p| p.done()) {
+            self.page = None;
+            return IoReply::Redraw;
+        }
+        r
+    }
+
+    /// Whether the row's page is open now (for tests and the preview).
+    #[cfg(test)]
+    pub(crate) fn page_open(&self) -> bool {
+        self.page.is_some()
     }
 
     fn rows(&self) -> (Option<String>, Vec<Row>) {
@@ -313,6 +370,13 @@ impl<F: Form> FormSection<F> {
             return IoReply::Ignored;
         };
         match rows[i].fields.get(col) {
+            Some(f) if f.opens => {
+                if delta > 0 && self.open_page(&rows[i].key) {
+                    return IoReply::Redraw;
+                }
+                self.note = Some(format!("{}: + opens its page", rows[i].title));
+                IoReply::Handled
+            }
             Some(f) if f.enabled && !f.tap_only => {
                 let key = rows[i].key.clone();
                 self.step_or_say(&rows[i], &key, col, delta)
@@ -471,6 +535,11 @@ impl<F: Form> FormSection<F> {
                 let col = self.sel_index(&rows).map_or(0, |s| s.1);
                 if i < rows.len() {
                     self.select(&rows, i, col);
+                    // A row with a page opens it from its title.
+                    if rows[i].fields.iter().any(|f| f.opens) {
+                        let key = rows[i].key.clone();
+                        self.open_page(&key);
+                    }
                 }
                 IoReply::Redraw
             }
@@ -487,6 +556,11 @@ impl<F: Form> FormSection<F> {
                 }
                 if f.picker {
                     self.open = Some((row.key.clone(), c));
+                    return IoReply::Redraw;
+                }
+                if f.opens {
+                    let key = row.key.clone();
+                    self.open_page(&key);
                     return IoReply::Redraw;
                 }
                 let key = row.key.clone();
@@ -687,6 +761,9 @@ impl<F: Form> IoSection for FormSection<F> {
     }
 
     fn hint(&self) -> Option<&str> {
+        if let Some(p) = &self.page {
+            return p.hint();
+        }
         Some(if self.open.is_some() {
             HINT_PICKER
         } else {
@@ -695,6 +772,9 @@ impl<F: Form> IoSection for FormSection<F> {
     }
 
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        if let Some(p) = &self.page {
+            return p.paint(cx, r);
+        }
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
         let picker = self.open.as_ref().and_then(|(key, col)| {
@@ -708,6 +788,9 @@ impl<F: Form> IoSection for FormSection<F> {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some(p) = &self.page {
+            return p.targets(r);
+        }
         if let Some((key, col)) = &self.open {
             let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
             let Some(p) = self.form.picker(&m, key, *col) else {
@@ -737,7 +820,8 @@ impl<F: Form> IoSection for FormSection<F> {
             let title = &rows[i].title;
             let left = rects.first().map_or(rr.right(), |f| f.x);
             // The selected row is drawn lit: a tap on its title changes
-            // nothing.
+            // nothing, unless the row has a page to open.
+            let opens = rows[i].fields.iter().any(|f| f.opens);
             out.push(
                 Target::tap(
                     "row",
@@ -745,7 +829,7 @@ impl<F: Form> IoSection for FormSection<F> {
                     title.clone(),
                     Rect::new(rr.x, rr.y, left - rr.x, rr.h),
                 )
-                .disabled_if(sel == Some(i)),
+                .disabled_if(sel == Some(i) && !opens),
             );
             for (c, f) in rects.iter().enumerate() {
                 let field = &rows[i].fields[c];
@@ -757,6 +841,10 @@ impl<F: Form> IoSection for FormSection<F> {
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> IoReply {
+        if let Some(p) = self.page.as_mut() {
+            let reply = p.touch(finger, phase, x, y, r);
+            return self.page_reply(reply);
+        }
         match phase {
             Touch::Down => {
                 let h = self.hit(x, y, r);
@@ -781,6 +869,10 @@ impl<F: Form> IoSection for FormSection<F> {
     }
 
     fn input(&mut self, ev: IoInput) -> IoReply {
+        if let Some(p) = self.page.as_mut() {
+            let reply = p.input(ev);
+            return self.page_reply(reply);
+        }
         if self.open.is_some() {
             return IoReply::Handled;
         }
@@ -793,6 +885,10 @@ impl<F: Form> IoSection for FormSection<F> {
 
     fn tick(&mut self, now: Duration) -> IoReply {
         self.now = now;
+        if let Some(p) = self.page.as_mut() {
+            let reply = p.tick(now);
+            return self.page_reply(reply);
+        }
         let live = {
             let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
             self.form.live(&m, now)
@@ -809,18 +905,33 @@ impl<F: Form> IoSection for FormSection<F> {
         if !on {
             self.open = None;
             self.down = None;
+            self.page = None;
         }
     }
 
     fn back(&mut self) -> bool {
+        if let Some(p) = self.page.as_mut() {
+            if !p.back() {
+                self.page = None;
+            }
+            return true;
+        }
         self.open.take().is_some()
     }
 
     fn take_note(&mut self) -> Option<String> {
+        if let Some(p) = self.page.as_mut() {
+            if let Some(n) = p.take_note() {
+                return Some(n);
+            }
+        }
         self.note.take()
     }
 
     fn qlinks(&self) -> Option<[IoKnob; 4]> {
+        if let Some(p) = &self.page {
+            return p.qlinks();
+        }
         if self.open.is_some() {
             return None;
         }
@@ -841,7 +952,7 @@ impl<F: Form> IoSection for FormSection<F> {
                         0.0
                     }
                 }),
-                enabled: f.enabled && !f.tap_only,
+                enabled: f.enabled && !f.tap_only && !f.opens,
             },
             None => IoKnob {
                 label: String::new(),
@@ -853,6 +964,10 @@ impl<F: Form> IoSection for FormSection<F> {
     }
 
     fn qlink_turn(&mut self, knob: usize, detents: i32, fine: bool) -> IoReply {
+        if let Some(p) = self.page.as_mut() {
+            let reply = p.qlink_turn(knob, detents, fine);
+            return self.page_reply(reply);
+        }
         if self.open.is_some() || detents == 0 {
             return IoReply::Ignored;
         }

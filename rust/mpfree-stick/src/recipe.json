@@ -1,5 +1,5 @@
 {
- "about": "Written by tools/mpc-one/creator-recipe.py from offline-kexec-stick.py's build_rootfs (--app --app-user --splash, soft-reboot); do not edit by hand.",
+ "about": "Written by tools/mpc-one/creator-recipe.py from offline-kexec-stick.py's build_rootfs (--app --app-user --splash, soft-reboot; and each developer route); do not edit by hand.",
  "app_user": {
   "gecos": "MPFree pad player",
   "groups": [
@@ -46,7 +46,7 @@
   },
   "/etc/mpfree-test/ethernet-retry.sh": {
    "mode": 493,
-   "text": "#!/bin/sh\n# MPFree kexec test boot: record the Ethernet details; start eth0 again if it failed to start.\nout=/run/mpfree-test-eth\nmkdir -p \"$out\"\nsay() { echo \"mpfree-test-ethernet: $*\"; }\ngrep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug\nuptime_s() { cut -d. -f1 /proc/uptime; }\nwait_until() { while [ \"$(uptime_s)\" -lt \"$1\" ]; do sleep 1; done; }\ndetails() { sh /etc/mpfree-test/ethernet-details.sh > \"$out/ethernet-$1.txt\" 2>&1; say \"recorded ethernet-$1.txt\"; }\neth0_up() { f=$(cat /sys/class/net/eth0/flags 2>/dev/null) || return 1; [ $((f & 1)) = 1 ]; }\ndetails \"1-early-$(uptime_s)s\"\nwait_until 15\ndetails 2-at-15s\nn=3\nfor at in 20 45 90; do\n  wait_until \"$at\"\n  if eth0_up; then\n    say \"eth0 is up at $at s (operstate $(cat /sys/class/net/eth0/operstate)); no retry needed\"\n    details \"$n-at-${at}s-eth0-up\"\n    exit 0\n  fi\n  say \"eth0 is not up at $at s; starting it again\"\n  ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'\n  sleep 3\n  details \"$n-at-${at}s-after-retry\"\n  n=$((n + 1))\ndone\nsay \"eth0 retries done\"\n"
+   "text": "#!/bin/sh\n# MPFree kexec test boot: record the Ethernet details; start eth0 again if it failed to start.\nR=''\n# (The R='' line is an empty root prefix; only tests change it.)\nout=\"$R/run/mpfree-test-eth\"\nmkdir -p \"$out\"\nsay() { echo \"mpfree-test-ethernet: $*\"; }\ngrep -q ' /sys/kernel/debug debugfs ' \"$R/proc/mounts\" || mount -t debugfs debugfs /sys/kernel/debug\nuptime_s() { cut -d. -f1 \"$R/proc/uptime\"; }\nwait_until() { while [ \"$(uptime_s)\" -lt \"$1\" ]; do sleep 1; done; }\ndetails() { sh /etc/mpfree-test/ethernet-details.sh > \"$out/ethernet-$1.txt\" 2>&1; say \"recorded ethernet-$1.txt\"; }\neth0_up() { f=$(cat \"$R/sys/class/net/eth0/flags\" 2>/dev/null) || return 1; [ $((f & 1)) = 1 ]; }\nstart_eth0() { ip link set eth0 up 2>&1 | sed 's/^/mpfree-test-ethernet: ip: /'; }\ndma_failures() { dmesg 2>/dev/null | grep -c 'Failed to reset the dma'; }\ndetails \"1-early-$(uptime_s)s\"\nseen=$(dma_failures)\nn=2\nwhile [ \"$(uptime_s)\" -lt 15 ]; do\n  sleep 1\n  if [ \"$seen\" != done ] && ! eth0_up && [ \"$(dma_failures)\" -gt \"$seen\" ]; then\n    seen=done\n    sleep 2\n    say \"eth0 failed to start (Failed to reset the dma); starting it again at $(uptime_s) s\"\n    start_eth0\n    sleep 3\n    details \"$n-at-$(uptime_s)s-after-early-retry\"\n    n=$((n + 1))\n  fi\ndone\ndetails \"$n-at-15s\"\nn=$((n + 1))\nfor at in 20 45 90; do\n  wait_until \"$at\"\n  if eth0_up; then\n    say \"eth0 is up at $at s (operstate $(cat \"$R/sys/class/net/eth0/operstate\")); no retry needed\"\n    details \"$n-at-${at}s-eth0-up\"\n    exit 0\n  fi\n  say \"eth0 is not up at $at s; starting it again\"\n  start_eth0\n  sleep 3\n  details \"$n-at-${at}s-after-retry\"\n  n=$((n + 1))\ndone\nsay \"eth0 retries done\"\n"
   },
   "/etc/mpfree-test/host_ed25519": {
    "mode": 384,
@@ -59,6 +59,10 @@
   "/etc/mpfree-test/mpfree": {
    "mode": 493,
    "placeholder": "@PAD_PLAYER@"
+  },
+  "/etc/mpfree-test/mpfree-fetch": {
+   "mode": 493,
+   "placeholder": "@FETCH@"
   },
   "/etc/mpfree-test/mpfree-screen-log": {
    "mode": 493,
@@ -98,7 +102,7 @@
   },
   "/etc/systemd/system/mpfree-test-app.service": {
    "mode": 420,
-   "text": "[Unit]\nDescription=MPFree test boot: the pad player, from power-on, as the mpfree user\nDefaultDependencies=no\nWants=mpfree-test-storage.service\nAfter=systemd-journald.service systemd-udevd.service mpfree-test-storage.service mpfree-test-splash.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\nOnFailure=mpfree-test-screen.service\nStartLimitIntervalSec=60\nStartLimitBurst=4\n\n[Service]\nType=simple\nUser=mpfree\nGroup=mpfree\nExecStart=/bin/sh /etc/mpfree-test/start-app.sh\nRestart=on-failure\nRestartSec=2\nLimitRTPRIO=70\nLimitMEMLOCK=infinity\nNoNewPrivileges=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\nRuntimeDirectory=mpfree-app\nRuntimeDirectoryPreserve=yes\n\n[Install]\nWantedBy=sysinit.target\n"
+   "text": "[Unit]\nDescription=MPFree test boot: the pad player, from power-on, as the mpfree user\nDefaultDependencies=no\nWants=mpfree-test-storage.service\nAfter=systemd-journald.service systemd-udevd.service mpfree-test-storage.service mpfree-test-splash.service\nConflicts=shutdown.target\nBefore=shutdown.target\nIgnoreOnIsolate=yes\nOnFailure=mpfree-test-screen.service\nStartLimitIntervalSec=60\nStartLimitBurst=4\n\n[Service]\nType=simple\nUser=mpfree\nGroup=mpfree\nExecStart=/bin/sh /etc/mpfree-test/start-app.sh\nSyslogIdentifier=mpfree\nRestart=on-failure\nRestartSec=2\nLimitRTPRIO=70\nLimitMEMLOCK=infinity\nNoNewPrivileges=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\nRuntimeDirectory=mpfree-app\nRuntimeDirectoryPreserve=yes\n\n[Install]\nWantedBy=sysinit.target\n"
   },
   "/etc/systemd/system/mpfree-test-ethernet.service": {
    "mode": 420,
@@ -141,6 +145,28 @@
    "text": "# MPFree: the MPC's internal eMMC and SD card are not MPFree's. mpfree-test-internal-off.service removes\n# them before udev starts; should one appear anyway, systemd and udisks leave it alone.\nSUBSYSTEM==\"block\", KERNEL==\"mmcblk*\", ENV{SYSTEMD_READY}=\"0\", ENV{UDISKS_IGNORE}=\"1\", ENV{UDISKS_AUTO}=\"0\"\n"
   }
  },
+ "kexec_dtb": {
+  "chosen_not_copied": [
+   "bootargs",
+   "linux,initrd-start",
+   "linux,initrd-end",
+   "kaslr-seed",
+   "rng-seed"
+  ],
+  "emmc_content": "/chosen/inmusic,acvs-emmc-content",
+  "ethernet": "/ethernet@ff290000",
+  "hidden_controllers": [
+   [
+    "eMMC",
+    "ff0f0000"
+   ],
+   [
+    "SD card",
+    "ff0c0000"
+   ]
+  ],
+  "phy_compatible": "ethernet-phy-id001c.c915"
+ },
  "kits_max": 50331648,
  "links": {
   "/etc/systemd/system-generators/acva-emmc-content-generator": "/dev/null",
@@ -149,6 +175,7 @@
   "/etc/systemd/system/az01-script-runner.service": "/dev/null",
   "/etc/systemd/system/az01-usbsata-fixer.service": "/dev/null",
   "/etc/systemd/system/az0x-data-mkfs.service": "/dev/null",
+  "/etc/systemd/system/az0x-loadpin-trustpoints.service": "/dev/null",
   "/etc/systemd/system/az0x-webserver.service": "/dev/null",
   "/etc/systemd/system/ip6tables.service": "/dev/null",
   "/etc/systemd/system/iptables.service": "/dev/null",
@@ -189,11 +216,15 @@
  "placeholders": {
   "authorized_keys": "@AUTHORIZED_KEYS@",
   "data_uuid": "@DATA_UUID@",
+  "fetch": "@FETCH@",
   "host_key": "@HOST_KEY@",
+  "kernel_sha256": "@KERNEL_SHA256@",
+  "kexec_dtb": "@KEXEC_DTB@",
   "kits_uuid": "@KITS_UUID@",
   "log_uuid": "@LOG_UUID@",
   "pad_player": "@PAD_PLAYER@",
   "release": "@RELEASE@",
+  "root_uuid": "@ROOT_UUID@",
   "rotation": "@ROTATION@",
   "screen_log": "@SCREEN_LOG@",
   "startup": "@STARTUP@"
@@ -205,6 +236,164 @@
   "/etc/systemd/system/multi-user.target.wants": "directory",
   "/usr/lib/systemd/system/data.mount": "regular",
   "/usr/sbin/sshd": "regular"
+ },
+ "routes": {
+  "chain": {
+   "chain_check": {
+    "kexec_paths": [
+     "/usr/sbin/kexec",
+     "/sbin/kexec"
+    ],
+    "kexec_program": "/usr/sbin/kexec",
+    "shutdown_program": "/usr/lib/systemd/systemd-shutdown"
+   },
+   "files": {
+    "/boot/mpfree-kexec/cmdline.txt": {
+     "mode": 420,
+     "text": "root=PARTUUID=@ROOT_UUID@ rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1\n"
+    },
+    "/boot/mpfree-kexec/kexec.dtb": {
+     "mode": 420,
+     "placeholder": "@KEXEC_DTB@"
+    },
+    "/boot/mpfree-softreboot/cmdline": {
+     "mode": 420,
+     "text": "root=PARTUUID=@ROOT_UUID@ rootwait=60 ro panic=10 rfkill.default_state=0 loadpin.enforce=0 mpfree.chain=1\n"
+    },
+    "/boot/mpfree-softreboot/jump": {
+     "mode": 420,
+     "text": "kexec-file\n"
+    },
+    "/boot/mpfree-softreboot/kernel.sha256": {
+     "mode": 420,
+     "text": "@KERNEL_SHA256@  /boot/zImage-@RELEASE@\n"
+    },
+    "/etc/mpfree-test/chain-done.sh": {
+     "mode": 493,
+     "text": "R=''\n# MPFree: this kernel came up by the chain. After 30 s, take away chain.sh's mark, so the next\n# power-on restarts into this kernel again. It writes only that one file on the stick's log partition.\n[ -n \"$R\" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin\nwhile [ \"$(cut -d. -f1 \"$R/proc/uptime\")\" -lt 30 ]; do sleep 2; done\ni=0\nwhile ! grep -q ' /run/mpfree-log ' \"$R/proc/mounts\" && [ \"$i\" -lt 60 ]; do sleep 1; i=$((i + 1)); done\nif ! grep -q ' /run/mpfree-log ' \"$R/proc/mounts\"; then\n  echo \"mpfree-chain: the log partition is not mounted, so chain-pending stays: the next power-on starts without the chain\" > \"$R/dev/kmsg\"\n  exit 1\nfi\n[ -e \"$R/run/mpfree-log/chain-pending\" ] || exit 0\nrm -f \"$R/run/mpfree-log/chain-pending\" && sync &&\n  echo \"mpfree-chain: up for 30 s on the stick's kernel; chain-pending taken away, so the next power-on restarts into it again\" > \"$R/dev/kmsg\"\n"
+    },
+    "/etc/mpfree-test/chain.sh": {
+     "mode": 493,
+     "text": "R=''\n# MPFree: the chain's second restart (offline-kexec-stick.py --kexec-file --loadpin-off --chain).\n# (The R='' line is an empty root prefix; only tests change it.)\n# Started by mpfree-test-chain.service right after the eMMC and SD card are switched off, and only when the\n# kernel command line has mpfree.chain=1: on the kernel MPFree's boot hook started with the file-based kexec,\n# which runs on Akai's device tree with LoadPin not enforcing. It loads the stick's own kernel and device\n# tree from /boot/mpfree-kexec with the ordinary kexec, which LoadPin refuses only when enforcing, and has\n# systemd restart into them (kexec.target). That device tree gives the Ethernet PHY its ID and disables the\n# eMMC and SD controllers. Its command line (cmdline.txt) keeps kexec off and has no mpfree.chain=1, so this\n# runs once per power-on.\n# First it checks the three files against /boot/mpfree-kexec/SHA256SUMS, and that the command line starts\n# the same partition, turns kexec off and does not ask for the chain again. If a check, the load or the\n# restart fails, it says why and exits 0: MPFree then starts on this kernel, as on the kexec-file route.\n# One try per power-on that failed: just before the restart it leaves a mark (chain-pending) on the stick's\n# log partition, which chain-done.sh takes away once the stick's kernel has run 30 s. If that kernel dies\n# first (a panic restarts the MPC, and the hook starts this kernel again), the mark is still there: this\n# takes it away and lets MPFree start on this kernel instead of trying again, so there is no restart loop.\n# The next power-on tries the chain again.\n# It writes only the kernel log, /run (RAM), and its notes, the kernel log and the mark to the stick's own\n# log partition (partition 2, \"mpfree-test-log\", MPFree's; never anything of the MPC's). It loads a kernel\n# into RAM.\n[ -n \"$R\" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin\nD=\"$R/boot/mpfree-kexec\"\nK=\"$R/usr/sbin/kexec\"\nsay() { echo \"mpfree-chain: $*\" > \"$R/dev/kmsg\" 2>/dev/null; echo \"mpfree-chain: $*\" >> \"$R/run/mpfree-chain.txt\"; }\nm=\"$R/run/mpfree-chain-log\"\nlogon() {   # mount the stick's log partition (on USB, by its name) at $m, as internal-off.sh's stop does\n  log=''\n  for u in \"$R\"/sys/class/block/sd*/uevent; do\n    grep -qx 'PARTNAME=mpfree-test-log' \"$u\" 2>/dev/null || continue\n    p=${u%/uevent}\n    case \"$(readlink -f \"$p\")\" in */usb*) log=${p##*/} ;; esac\n  done\n  [ -n \"$log\" ] && [ -b \"$R/dev/$log\" ] && mkdir -p \"$m\" &&\n    mount -t ext4 -o rw,nosuid,nodev,noexec,sync \"$R/dev/$log\" \"$m\"\n}\nkeep() {   # the notes and the kernel log onto the log partition; the mark only with \"pending\"\n  logon || return 0\n  d=\"$m/boot-$(cat \"$R/proc/sys/kernel/random/boot_id\")\"\n  mkdir -p \"$d\" && { cat \"$R/run/mpfree-chain.txt\"; dmesg; } > \"$d/chain.txt\" 2>&1\n  if [ \"$1\" = pending ]; then cat \"$R/proc/sys/kernel/random/boot_id\" > \"$m/chain-pending\"; else rm -f \"$m/chain-pending\"; fi\n  umount \"$m\"\n}\npending() {   # is the mark there? (no log partition: no)\n  logon || return 1\n  r=1\n  [ -e \"$m/chain-pending\" ] && r=0\n  umount \"$m\"\n  return \"$r\"\n}\nskip() { say \"$1; MPFree starts on this kernel, with Akai's device tree\"; keep; exit 0; }\nunload() {\n  [ \"$(cat \"$R/sys/kernel/kexec_loaded\" 2>/dev/null)\" = 0 ] && return 0\n  \"$K\" --unload --kexec-syscall > /dev/null 2>&1 && [ \"$(cat \"$R/sys/kernel/kexec_loaded\" 2>/dev/null)\" = 0 ] &&\n    return 0\n  say \"could not unload the kernel loaded here (it stays in RAM until the MPC is switched off)\"\n}\nnow=\" $(cat \"$R/proc/cmdline\" 2>/dev/null) \"\ncase \"$now\" in *\" mpfree.chain=1 \"*) ;; *) exit 0 ;; esac\nsay \"started at $(cut -d' ' -f1 \"$R/proc/uptime\") s\"\npending && skip \"the last restart into the stick's kernel did not stay up for 30 s (chain-pending is still on the stick's log partition), so not again on this power-on\"\n[ -f \"$D/SHA256SUMS\" ] || skip \"the stick has no /boot/mpfree-kexec/SHA256SUMS\"\nfor f in zImage kexec.dtb cmdline.txt; do\n  want=$(sed -n \"s/^\\([0-9a-f]\\{64\\}\\)  $f\\$/\\1/p\" \"$D/SHA256SUMS\")\n  [ -f \"$D/$f\" ] && [ -n \"$want\" ] && [ \"$(sha256sum < \"$D/$f\" | cut -d' ' -f1)\" = \"$want\" ] ||\n    skip \"/boot/mpfree-kexec/$f does not match its SHA256SUMS\"\ndone\n[ \"$(wc -l < \"$D/cmdline.txt\" | tr -cd 0-9)\" = 1 ] || skip \"/boot/mpfree-kexec/cmdline.txt is not one line\"\ncmd=$(cat \"$D/cmdline.txt\")\nroot=''\nfor w in $now; do case \"$w\" in root=*) root=$w ;; esac; done\n[ -n \"$root\" ] || skip \"this kernel's command line has no root=\"\nfor w in $cmd; do\n  case \"$w\" in root=*) [ \"$w\" = \"$root\" ] || skip \"cmdline.txt does not start the system on this partition\" ;; esac\ndone\ncase \" $cmd \" in *\" $root \"*) ;; *) skip \"cmdline.txt does not start the system on this partition\" ;; esac\ncase \" $cmd \" in *\" sysctl.kernel.kexec_load_disabled=1 \"*) ;; *) skip \"cmdline.txt does not turn kexec off\" ;; esac\ncase \" $cmd \" in *\" mpfree.chain=1 \"*) skip \"cmdline.txt asks for the chain again\" ;; esac\n[ -x \"$K\" ] || skip \"this system has no /usr/sbin/kexec\"\n[ \"$(cat \"$R/proc/sys/kernel/kexec_load_disabled\" 2>/dev/null)\" = 0 ] || skip \"kexec is turned off on this kernel\"\n[ \"$(cat \"$R/sys/kernel/kexec_loaded\" 2>/dev/null)\" = 0 ] || skip \"a kexec kernel is loaded already\"\n# The ordinary kexec, with a device tree (the file-based one takes none on 32-bit ARM).\nif ! out=$(\"$K\" --load --kexec-syscall --dtb=\"$D/kexec.dtb\" --command-line=\"$cmd\" \"$D/zImage\" 2>&1); then\n  unload\n  skip \"the kernel refused the load ($(printf '%s' \"$out\" | tr -c 'A-Za-z0-9 ._:/()=-' ' ' | cut -c1-200))\"\nfi\n[ \"$(cat \"$R/sys/kernel/kexec_loaded\" 2>/dev/null)\" = 1 ] || skip \"kexec_loaded is not 1 after the load\"\nsay \"the stick's kernel and device tree are loaded at $(cut -d' ' -f1 \"$R/proc/uptime\") s; restart into them (kexec.target)\"\nkeep pending\nsystemctl --no-block --job-mode=replace-irreversibly start kexec.target && exit 0\nunload\nskip \"systemctl could not start kexec.target\"\n"
+    },
+    "/etc/systemd/system/mpfree-test-chain-done.service": {
+     "mode": 420,
+     "text": "[Unit]\nDescription=MPFree: after 30 s on the stick's own kernel, let the next power-on chain to it again\nConditionKernelCommandLine=!mpfree.chain=1\nAfter=mpfree-test-logs.service\n\n[Service]\nType=simple\nExecStart=/bin/sh /etc/mpfree-test/chain-done.sh\n\n[Install]\nWantedBy=multi-user.target\n"
+    },
+    "/etc/systemd/system/mpfree-test-chain.service": {
+     "mode": 420,
+     "text": "[Unit]\nDescription=MPFree: restart once more, into the stick's own kernel and device tree (mpfree.chain=1)\nDefaultDependencies=no\nConditionKernelCommandLine=mpfree.chain=1\nRequires=mpfree-test-internal-off.service\nAfter=mpfree-test-internal-off.service\nBefore=sysinit.target systemd-sysctl.service systemd-udevd.service systemd-udev-trigger.service local-fs.target\nBefore=data.mount mpfree-test-logs.service mpfree-test-storage.service mpfree-test-app.service\nBefore=mpfree-test-sshd.service mpfree-test-ethernet.service mpfree-test-splash.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/sh /etc/mpfree-test/chain.sh\nTimeoutStartSec=60\n\n[Install]\nWantedBy=sysinit.target\n"
+    }
+   },
+   "kexec_sums": {
+    "dir": "/boot/mpfree-kexec",
+    "names": [
+     "zImage",
+     "kexec.dtb",
+     "cmdline.txt"
+    ],
+    "path": "/boot/mpfree-kexec/SHA256SUMS"
+   },
+   "links": {
+    "/boot/mpfree-kexec/zImage": "../zImage-@RELEASE@",
+    "/etc/systemd/system/multi-user.target.wants/mpfree-test-chain-done.service": "/etc/systemd/system/mpfree-test-chain-done.service",
+    "/etc/systemd/system/sysinit.target.wants/mpfree-test-chain.service": "/etc/systemd/system/mpfree-test-chain.service"
+   },
+   "mkdirs": [
+    "/boot/mpfree-kexec"
+   ],
+   "softreboot_listed": [
+    "/etc/mpfree-test/internal-off.sh",
+    "/etc/systemd/system/mpfree-test-internal-off.service",
+    "/etc/udev/rules.d/00-mpfree-internal-off.rules",
+    "/boot/mpfree-softreboot/PROTOCOL",
+    "/boot/mpfree-softreboot/release",
+    "/boot/mpfree-softreboot/jump",
+    "/boot/mpfree-softreboot/cmdline",
+    "/boot/mpfree-softreboot/kernel.sha256",
+    "/etc/mpfree-test/chain.sh",
+    "/etc/systemd/system/mpfree-test-chain.service",
+    "/etc/mpfree-test/chain-done.sh",
+    "/etc/systemd/system/mpfree-test-chain-done.service",
+    "/boot/mpfree-kexec/kexec.dtb",
+    "/boot/mpfree-kexec/cmdline.txt",
+    "/boot/mpfree-kexec/SHA256SUMS"
+   ],
+   "unlinked": [
+    "/etc/systemd/system/az0x-loadpin-trustpoints.service"
+   ],
+   "unstubbed": [
+    "/usr/sbin/kexec"
+   ]
+  },
+  "kexec-file": {
+   "chain_check": null,
+   "files": {
+    "/boot/mpfree-softreboot/cmdline": {
+     "mode": 420,
+     "text": "root=PARTUUID=@ROOT_UUID@ rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1\n"
+    },
+    "/boot/mpfree-softreboot/jump": {
+     "mode": 420,
+     "text": "kexec-file\n"
+    },
+    "/boot/mpfree-softreboot/kernel.sha256": {
+     "mode": 420,
+     "text": "@KERNEL_SHA256@  /boot/zImage-@RELEASE@\n"
+    }
+   },
+   "kexec_sums": null,
+   "links": {},
+   "mkdirs": [],
+   "softreboot_listed": [
+    "/etc/mpfree-test/internal-off.sh",
+    "/etc/systemd/system/mpfree-test-internal-off.service",
+    "/etc/udev/rules.d/00-mpfree-internal-off.rules",
+    "/boot/mpfree-softreboot/PROTOCOL",
+    "/boot/mpfree-softreboot/release",
+    "/boot/mpfree-softreboot/jump",
+    "/boot/mpfree-softreboot/cmdline",
+    "/boot/mpfree-softreboot/kernel.sha256"
+   ],
+   "unlinked": [
+    "/etc/systemd/system/az0x-loadpin-trustpoints.service"
+   ],
+   "unstubbed": []
+  },
+  "kexec-file-loadpin-off": {
+   "chain_check": null,
+   "files": {
+    "/boot/mpfree-softreboot/cmdline": {
+     "mode": 420,
+     "text": "root=PARTUUID=@ROOT_UUID@ rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1 loadpin.enforce=0\n"
+    },
+    "/boot/mpfree-softreboot/jump": {
+     "mode": 420,
+     "text": "kexec-file\n"
+    },
+    "/boot/mpfree-softreboot/kernel.sha256": {
+     "mode": 420,
+     "text": "@KERNEL_SHA256@  /boot/zImage-@RELEASE@\n"
+    }
+   },
+   "kexec_sums": null,
+   "links": {},
+   "mkdirs": [],
+   "softreboot_listed": [
+    "/etc/mpfree-test/internal-off.sh",
+    "/etc/systemd/system/mpfree-test-internal-off.service",
+    "/etc/udev/rules.d/00-mpfree-internal-off.rules",
+    "/boot/mpfree-softreboot/PROTOCOL",
+    "/boot/mpfree-softreboot/release",
+    "/boot/mpfree-softreboot/jump",
+    "/boot/mpfree-softreboot/cmdline",
+    "/boot/mpfree-softreboot/kernel.sha256"
+   ],
+   "unlinked": [
+    "/etc/systemd/system/az0x-loadpin-trustpoints.service"
+   ],
+   "unstubbed": []
+  }
  },
  "softreboot_listed": [
   "/etc/mpfree-test/internal-off.sh",

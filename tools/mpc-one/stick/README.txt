@@ -4,8 +4,11 @@ MPFree setup drive
 This is the MPFREE partition of the stick the MPFree USB creator made. Akai's
 script runner offers to run autorun.sh when the stick is in and developer mode
 is on (MENU > Preferences > Enhancements: developer panel on; then hold SHIFT,
-press MENU, choose Developer); tap Yes once. It installs MPFree's startup hook and
-restarts the MPC, which then starts MPFree from this stick.
+press MENU, choose Developer); tap Yes once. It installs MPFree's startup hook,
+switches developer mode off again with Akai's own off script, and restarts the
+MPC, which then starts MPFree from this stick. To keep developer mode on, put an
+empty file named keep-developer-mode next to autorun.sh before you tap Yes (a
+stick with developer tools in mpfree-dev keeps it on by itself).
 
 mode.txt says what autorun.sh does: "install" (the default) or "remove" (takes
 the startup hook off the MPC again; set it with the creator, which also stops

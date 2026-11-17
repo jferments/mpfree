@@ -16,12 +16,42 @@
 //!   sits in the I/O view's model; [`Feed::drain_into`] moves the queue
 //!   over while the app holds that model's lock.
 //!
+//! Each line also says where its message went ([`To`]: the armed track,
+//! MIDI Learn and what it moved, the clock follower, nothing), set by the
+//! code that routed it ([`Feed::to`]), so nothing a port receives goes
+//! unexplained.
+//!
+//! **Debug mode** adds two sources that aren't ports: the MPC's own
+//! controller ([`MPC`]: its pads, buttons, Q-Links and wheel as the app
+//! read them, the lights, pad colours, keep-alive and CV values it wrote)
+//! and MPFree's own events ([`SYSTEM`]: a port plugged in or gone, MIDI
+//! out stopping, notes ended). A [`Feed`] lists them only while
+//! [`Feed::debug`] is on (Prefs › Show developer tools).
+//!
+//! **The Now view** ([`now`]): the monitor also keeps what each port's
+//! channels hold now (notes down, the last value of each controller, bend,
+//! pressure, program) from the lines it lists, and the feed measures how
+//! steady each clock's pulses come.
+//!
 //! Times are seconds on the app's clock, the one the I/O view's tick gets.
 
+use std::time::{Duration, Instant};
+
 use mpfree_controller::midi::{Message, Parser};
+use mpfree_controller::mpc_one::ControlEvent;
+use mpfree_param::ParamAddr;
 
 use crate::msg::{Channel, Msg};
 use crate::port::{PortId, PortInfo, PortKind, DIN, MAX_PORTS};
+
+pub mod now;
+
+use now::{Held, Pulses};
+
+/// The MPC's own controller, as a source in debug mode (not a port).
+pub const MPC: PortId = PortId(0xFE);
+/// MPFree's own events, as a source in debug mode (not a port).
+pub const SYSTEM: PortId = PortId(0xFF);
 
 /// How many messages the monitor keeps (the oldest go first).
 pub const KEEP: usize = 1000;
@@ -98,6 +128,76 @@ pub enum What {
     Stopped(Steady, u32),
     /// A status byte MIDI 1.0 leaves undefined (F4, F5, F9, FD).
     Undefined(u8),
+    /// Debug mode: the MPC's own controller (port [`MPC`]).
+    Mpc(Mpc),
+    /// Debug mode: something MPFree did (port [`SYSTEM`]).
+    Event(Event),
+}
+
+/// What the MPC's own controller carried (debug mode): in, a control as
+/// the app decoded it; out, what the app wrote to the panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mpc {
+    /// A pad, button, Q-Link or the wheel, with the bytes it came as (a
+    /// keep-alive reply's first three).
+    Control { ev: ControlEvent, bytes: [u8; 3] },
+    /// A button's light set to `value` (its CC on the Private cable).
+    Light { button: u8, value: u8 },
+    /// A pad's colour (a SysEx on the Public cable), 0 to 127 each.
+    PadColour { pad: u8, rgb: [u8; 3] },
+    /// The keep-alive ping the app sends about every 5 s.
+    KeepAlive,
+    /// A CV output (0 to 7) set to a 14-bit value (cable 1, channel 16).
+    Cv { out: u8, value: u16 },
+}
+
+/// Something MPFree did that a message alone doesn't say (debug mode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// A USB device was plugged in and is listened to.
+    Plugged(PortId),
+    /// A USB device went away; `ended` notes it held were let go.
+    Unplugged { port: PortId, ended: u16 },
+    /// The MIDI Out port failed; tracks set to it play on the pads again.
+    OutStopped,
+    /// Messages for a port dropped because its writer's queue was full.
+    Dropped { port: PortId, n: u32 },
+}
+
+/// Where a message went, said by the code that routed it (the list's
+/// "Went to"). [`To::Unsaid`] until it says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum To {
+    #[default]
+    Unsaid,
+    /// Played the armed track (its number from 0): as a note, or as the
+    /// kit pad (0 to 15) that note plays.
+    Track { track: u8, pad: Option<u8> },
+    /// The armed track plays a kit and no pad has this note.
+    NoPad { track: u8 },
+    /// A learned control: it moved this parameter.
+    Learned(ParamAddr),
+    /// MIDI Learn was armed: this control now moves this parameter.
+    Took(ParamAddr),
+    /// The port's input is "Learn only" and nothing learned this.
+    LearnOnly,
+    /// The tempo follows this port's clock (its Start, Stop and Song
+    /// Position too).
+    Follows,
+    /// Clock arriving on a port the tempo isn't from.
+    NotFollowed,
+    /// No track or control takes it: a control no one learned, a bend or
+    /// program change the tracks don't take from a keyboard yet.
+    Nothing,
+    /// MPFree never reads it (SysEx, tune request, undefined bytes).
+    Ignored,
+    /// The port is set to ignore this kind coming in (its page's "Ignore
+    /// coming in").
+    PortIgnores,
+    /// Out: this track (from 0) sent it.
+    SentBy(u8),
+    /// Out: MPFree's own clock.
+    Clock,
 }
 
 /// The monitor's filter groups, as bits of [`Filter::kinds`].
@@ -116,9 +216,20 @@ pub enum Kind {
     Clock,
     /// System exclusive, tune request and undefined bytes.
     System,
+    /// Debug mode: the MPC's pads, buttons, Q-Links and wheel.
+    MpcControls,
+    /// Debug mode: the button lights and pad colours MPFree writes.
+    Lights,
+    /// Debug mode: the keep-alive ping and its reply.
+    KeepAlive,
+    /// Debug mode: the CV outputs' values.
+    Cv,
+    /// Debug mode: MPFree's own events.
+    Events,
 }
 
 impl Kind {
+    /// The kinds a port carries.
     pub const ALL: [Kind; 6] = [
         Kind::Notes,
         Kind::Controls,
@@ -128,8 +239,17 @@ impl Kind {
         Kind::System,
     ];
 
-    pub fn bit(self) -> u8 {
-        1 << self as u8
+    /// The kinds only debug mode lists.
+    pub const DEBUG: [Kind; 5] = [
+        Kind::MpcControls,
+        Kind::Lights,
+        Kind::KeepAlive,
+        Kind::Cv,
+        Kind::Events,
+    ];
+
+    pub const fn bit(self) -> u16 {
+        1 << self as u16
     }
 }
 
@@ -153,6 +273,17 @@ impl What {
             | What::Arriving(_)
             | What::Stopped(..) => Kind::Clock,
             What::TuneRequest | What::SysEx { .. } | What::Undefined(_) => Kind::System,
+            What::Mpc(m) => match m {
+                Mpc::Control {
+                    ev: ControlEvent::KeepAliveReply { .. },
+                    ..
+                }
+                | Mpc::KeepAlive => Kind::KeepAlive,
+                Mpc::Control { .. } => Kind::MpcControls,
+                Mpc::Light { .. } | Mpc::PadColour { .. } => Kind::Lights,
+                Mpc::Cv { .. } => Kind::Cv,
+            },
+            What::Event(_) => Kind::Events,
         }
     }
 
@@ -185,17 +316,30 @@ impl What {
             }
             What::Arriving(s) | What::Stopped(s, _) => ([s.status(), 0, 0], 1),
             What::Undefined(b) => ([b, 0, 0], 1),
+            What::Mpc(m) => match m {
+                Mpc::Control { bytes, .. } => (bytes, 3),
+                Mpc::Light { button, value } => ([0xB0, button & 0x7F, value & 0x7F], 3),
+                // SysEx: Akai's id, then the device byte each was seen
+                // with (docs/dev/hardware/controller-protocol.md).
+                Mpc::PadColour { .. } => ([0xF0, 0x47, 0x7F], 3),
+                Mpc::KeepAlive => ([0xF0, 0x47, 0x00], 3),
+                // The first CC of the pair: the high seven bits.
+                Mpc::Cv { out, value } => ([0xBF, (out & 7) * 2, (value >> 7) as u8 & 0x7F], 3),
+            },
+            What::Event(_) => ([0; 3], 0),
         }
     }
 }
 
-/// A message the monitor saw: when, on which port, which way, and what.
+/// A message the monitor saw: when, on which port, which way, what, and
+/// where it went.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Seen {
     pub t: f64,
     pub port: PortId,
     pub dir: Dir,
     pub what: What,
+    pub to: To,
 }
 
 const EMPTY: Seen = Seen {
@@ -203,6 +347,7 @@ const EMPTY: Seen = Seen {
     port: DIN,
     dir: Dir::In,
     what: What::Start,
+    to: To::Unsaid,
 };
 
 /// Each port both ways: in first, then out.
@@ -265,6 +410,7 @@ struct Stream {
     sysex: u32,
     steady: [SteadyState; 3],
     tempo: Tempo,
+    pulses: Pulses,
 }
 
 impl Stream {
@@ -274,6 +420,7 @@ impl Stream {
             sysex: 0,
             steady: [SteadyState::default(); 3],
             tempo: Tempo::default(),
+            pulses: Pulses::new(),
         }
     }
 }
@@ -286,6 +433,10 @@ pub struct Feed {
     queue: Box<[Seen]>,
     queued: usize,
     lost: u64,
+    /// The first line the latest [`Feed::bytes`] listed ([`Feed::to`]).
+    from: usize,
+    /// List the debug sources ([`Feed::mpc`], [`Feed::event`]).
+    pub debug: bool,
 }
 
 impl Default for Feed {
@@ -301,6 +452,8 @@ impl Feed {
             queue: vec![EMPTY; QUEUE].into_boxed_slice(),
             queued: 0,
             lost: 0,
+            from: 0,
+            debug: false,
         }
     }
 
@@ -315,12 +468,65 @@ impl Feed {
 
     /// Bytes that came in on (`Dir::In`) or went out of (`Dir::Out`)
     /// `port` at `t` seconds. A port past [`MAX_PORTS`] is ignored.
-    pub fn bytes(&mut self, port: PortId, dir: Dir, t: f64, data: &[u8]) {
+    /// Returns whether they listed a line ([`Feed::to`] says where it
+    /// went).
+    pub fn bytes(&mut self, port: PortId, dir: Dir, t: f64, data: &[u8]) -> bool {
+        self.from = self.queued;
         let Some(s) = stream(port, dir) else {
-            return;
+            return false;
         };
         for &b in data {
             self.byte(s, port, dir, t, b);
+        }
+        self.queued > self.from
+    }
+
+    /// What the latest [`Feed::bytes`] listed last, if it listed anything.
+    pub fn listed(&self) -> Option<What> {
+        (self.queued > self.from).then(|| self.queue[self.queued - 1].what)
+    }
+
+    /// Where the lines the latest [`Feed::bytes`] listed went. Fed a byte
+    /// at a time, a caller says it for each message as it routes it.
+    pub fn to(&mut self, to: To) {
+        for s in &mut self.queue[self.from..self.queued] {
+            s.to = to;
+        }
+    }
+
+    /// The bytes of one message out of `port` at `t` (when it leaves),
+    /// and who sent it.
+    pub fn sent(&mut self, port: PortId, t: f64, data: &[u8], to: To) {
+        if self.bytes(port, Dir::Out, t, data) {
+            self.to(to);
+        }
+    }
+
+    /// Debug mode: the MPC's own controller (nothing while
+    /// [`Feed::debug`] is off).
+    pub fn mpc(&mut self, dir: Dir, t: f64, m: Mpc) {
+        if self.debug {
+            self.push(Seen {
+                t,
+                port: MPC,
+                dir,
+                what: What::Mpc(m),
+                to: To::Unsaid,
+            });
+        }
+    }
+
+    /// Debug mode: one of MPFree's own events (nothing while
+    /// [`Feed::debug`] is off).
+    pub fn event(&mut self, t: f64, e: Event) {
+        if self.debug {
+            self.push(Seen {
+                t,
+                port: SYSTEM,
+                dir: Dir::In,
+                what: What::Event(e),
+                to: To::Unsaid,
+            });
         }
     }
 
@@ -365,6 +571,7 @@ impl Feed {
             Some(Message::RealTime(r)) => match r {
                 0xF8 => {
                     st.tempo.tick(t);
+                    st.pulses.tick(t);
                     self.steady(s, t, Steady::Clock)
                 }
                 0xFE => self.steady(s, t, Steady::Sensing),
@@ -389,7 +596,13 @@ impl Feed {
             },
         };
         if let Some(what) = what {
-            self.push(Seen { t, port, dir, what });
+            self.push(Seen {
+                t,
+                port,
+                dir,
+                what,
+                to: To::Unsaid,
+            });
         }
     }
 
@@ -407,6 +620,7 @@ impl Feed {
         k.count = 1;
         if kind == Steady::Clock {
             st.tempo.start(t);
+            st.pulses.start(t);
         }
         Some(What::Arriving(kind))
     }
@@ -429,6 +643,7 @@ impl Feed {
                         port,
                         dir,
                         what: What::Stopped(kind, n),
+                        to: To::Unsaid,
                     });
                 }
             }
@@ -444,12 +659,14 @@ impl Feed {
             m.push(self.queue[i]);
         }
         self.queued = 0;
+        self.from = 0;
         m.lost += self.lost;
         self.lost = 0;
         for s in 0..STREAMS {
             let st = &self.streams[s];
             let running = st.steady[Steady::Clock as usize].running;
             m.bpm[s] = (running && st.tempo.bpm > 0.0).then_some(st.tempo.bpm);
+            m.pulses[s] = running.then_some(st.pulses);
         }
     }
 }
@@ -457,7 +674,7 @@ impl Feed {
 /// What to list: a bit per [`Kind`], which ways, and one port or channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Filter {
-    pub kinds: u8,
+    pub kinds: u16,
     /// Bit 0: in; bit 1: out.
     pub dirs: u8,
     pub port: Option<PortId>,
@@ -474,7 +691,7 @@ impl Default for Filter {
 impl Filter {
     /// Everything.
     pub const ALL: Filter = Filter {
-        kinds: 0b11_1111,
+        kinds: 0b111_1111_1111,
         dirs: 0b11,
         port: None,
         channel: None,
@@ -517,9 +734,17 @@ pub struct Monitor {
     /// When each port last had a message with no channel, each way.
     sys: [f64; STREAMS],
     bpm: [Option<f32>; STREAMS],
+    /// Each clock's pulses while it arrives (or leaves).
+    pulses: [Option<Pulses>; STREAMS],
+    /// What each port's channels hold now, each way: 16 a stream.
+    held: Box<[Held]>,
     ports: Vec<PortInfo>,
     /// Messages a [`Feed`] had no room for between two drains.
     pub lost: u64,
+    /// When the app's clock read 0, once the app has said
+    /// ([`Monitor::set_epoch`]): the screen reads the time from it, so the
+    /// lights go out on the same clock the lines were timed by.
+    epoch: Option<Instant>,
 }
 
 impl Default for Monitor {
@@ -539,9 +764,32 @@ impl Monitor {
             last: [[f64::NEG_INFINITY; 16]; STREAMS],
             sys: [f64::NEG_INFINITY; STREAMS],
             bpm: [None; STREAMS],
+            pulses: [None; STREAMS],
+            held: vec![Held::new(); STREAMS * 16].into_boxed_slice(),
             ports: crate::port::Ports::new().all().to_vec(),
             lost: 0,
+            epoch: None,
         }
+    }
+
+    /// The app's clock reads `t` seconds now: the screen's clock follows
+    /// it from here ([`Monitor::now`]). Set once; later calls change
+    /// nothing.
+    pub fn set_epoch(&mut self, t: f64) {
+        if self.epoch.is_none() {
+            let back = Duration::from_secs_f64(t.max(0.0));
+            self.epoch = Some(
+                Instant::now()
+                    .checked_sub(back)
+                    .unwrap_or_else(Instant::now),
+            );
+        }
+    }
+
+    /// The app's clock now, once the app has set it; else `fallback`
+    /// (the screen's own clock, as in tests).
+    pub fn now(&self, fallback: f64) -> f64 {
+        self.epoch.map_or(fallback, |e| e.elapsed().as_secs_f64())
     }
 
     /// The ports as the app's table has them (names, which are plugged in,
@@ -581,6 +829,10 @@ impl Monitor {
                 Some(c) => self.last[i][usize::from(c & 0x0F)] = s.t,
                 None => self.sys[i] = s.t,
             }
+            if let What::Channel { msg, .. } = &s.what {
+                let c = usize::from(msg.channel() & 0x0F);
+                self.held[i * 16 + c].take(msg, s.t, s.to);
+            }
         }
         if self.ring.len() < KEEP {
             self.ring.push(s);
@@ -591,7 +843,7 @@ impl Monitor {
         self.total += 1;
     }
 
-    /// Empties the list (the lights and tempos stay).
+    /// Empties the list (the lights, tempos and what is held stay).
     pub fn clear(&mut self) {
         self.ring.clear();
         self.head = 0;
@@ -646,6 +898,44 @@ impl Monitor {
     /// beat and half a second of it have come.
     pub fn bpm(&self, port: PortId, dir: Dir) -> Option<f32> {
         self.bpm[stream(port, dir)?]
+    }
+
+    /// How steady the clock arriving on (or leaving) `port` is, while it
+    /// comes.
+    pub fn pulses(&self, port: PortId, dir: Dir) -> Option<&Pulses> {
+        self.pulses[stream(port, dir)?].as_ref()
+    }
+
+    /// What `port`'s `channel` holds now, going `dir`.
+    pub fn held(&self, port: PortId, dir: Dir, channel: Channel) -> Option<&Held> {
+        let i = stream(port, dir)?;
+        Some(&self.held[i * 16 + usize::from(channel & 0x0F)])
+    }
+
+    /// The notes going out that are still on: each port, channel, note
+    /// and what holds it, the longest held first. Not for the audio loop:
+    /// it allocates.
+    pub fn still_on(&self) -> Vec<(PortId, Channel, u8, &Held)> {
+        let mut v = Vec::new();
+        for p in 0..MAX_PORTS {
+            let i = MAX_PORTS + p;
+            for c in 0..16 {
+                let h = &self.held[i * 16 + c];
+                for n in h.down() {
+                    v.push((PortId(p as u8), c as Channel, n, h));
+                }
+            }
+        }
+        v.sort_by(|a, b| a.3.down_at[usize::from(a.2)].total_cmp(&b.3.down_at[usize::from(b.2)]));
+        v
+    }
+
+    /// Forgets the notes going out (the app sent their note-offs, or
+    /// MIDI Out stopped).
+    pub fn out_notes_up(&mut self) {
+        for h in &mut self.held[MAX_PORTS * 16..] {
+            h.all_up();
+        }
     }
 }
 
@@ -820,6 +1110,7 @@ mod tests {
                 port: DIN,
                 dir: Dir::In,
                 what: What::SongSelect((i % 128) as u8),
+                to: To::Unsaid,
             });
         }
         assert_eq!(m.len(), KEEP);
@@ -861,6 +1152,7 @@ mod tests {
                 bytes: [0x99, 36, 90],
                 len: 3,
             },
+            to: To::Unsaid,
         };
         let start = Seen {
             what: What::Start,
@@ -899,5 +1191,169 @@ mod tests {
         assert!(!m.lit(PortId(200), Dir::In, 0, 0.0));
         assert_eq!(m.port_name(DIN), Some("MIDI"));
         assert_eq!(m.shown_ports().count(), 1, "the 5-pin jacks always");
+    }
+
+    #[test]
+    fn each_line_says_where_its_message_went() {
+        let keys = PortId(1);
+        let mut f = Feed::new();
+        let mut m = Monitor::new();
+        // A chord fed a byte at a time, as a router sees it: each message
+        // is tagged as it completes.
+        let to = |f: &mut Feed, b: u8, t: To| {
+            if f.bytes(keys, Dir::In, 1.0, &[b]) {
+                f.to(t);
+            }
+        };
+        let bass = To::Track {
+            track: 2,
+            pad: None,
+        };
+        for b in [0x90, 48, 100] {
+            to(&mut f, b, bass);
+        }
+        // Running status: the second note is its own message.
+        for b in [52, 90] {
+            to(&mut f, b, bass);
+        }
+        let cutoff = ParamAddr::new(mpfree_param::Owner::Macro(0), 0);
+        for b in [0xB0, 74, 64] {
+            to(&mut f, b, To::Learned(cutoff));
+        }
+        // Out: the bytes of one message and who sent it.
+        f.sent(DIN, 1.2, &[0x91, 36, 110], To::SentBy(2));
+        f.sent(DIN, 1.3, &[0xF8], To::Clock);
+        f.drain_into(&mut m, 1.4);
+        let tos: Vec<To> = m.newest().map(|(_, s)| s.to).collect();
+        assert_eq!(
+            tos,
+            [To::Clock, To::SentBy(2), To::Learned(cutoff), bass, bass]
+        );
+        // Lines no one tagged say nothing.
+        let mut f = Feed::new();
+        let mut m = Monitor::new();
+        f.bytes(keys, Dir::In, 2.0, &[0xFA]);
+        f.drain_into(&mut m, 2.0);
+        assert_eq!(m.newest().next().unwrap().1.to, To::Unsaid);
+    }
+
+    #[test]
+    fn debug_sources_are_listed_only_in_debug_mode() {
+        use mpfree_controller::mpc_one::ControlEvent;
+        let pad = Mpc::Control {
+            ev: ControlEvent::PadDown {
+                pad: 5,
+                velocity: 87,
+            },
+            bytes: [0x99, 0x2E, 87],
+        };
+        let mut f = Feed::new();
+        let mut m = Monitor::new();
+        f.mpc(Dir::In, 1.0, pad);
+        f.event(1.0, Event::Plugged(PortId(1)));
+        f.drain_into(&mut m, 1.0);
+        assert!(m.is_empty());
+        f.debug = true;
+        f.mpc(Dir::In, 1.1, pad);
+        f.mpc(
+            Dir::Out,
+            1.2,
+            Mpc::Light {
+                button: 73,
+                value: 127,
+            },
+        );
+        f.mpc(
+            Dir::Out,
+            1.3,
+            Mpc::Cv {
+                out: 0,
+                value: 3277,
+            },
+        );
+        f.mpc(Dir::Out, 1.4, Mpc::KeepAlive);
+        f.event(
+            1.5,
+            Event::Unplugged {
+                port: PortId(1),
+                ended: 2,
+            },
+        );
+        f.drain_into(&mut m, 1.5);
+        let lines: Vec<(PortId, Kind)> = m.newest().map(|(_, s)| (s.port, s.what.kind())).collect();
+        assert_eq!(
+            lines,
+            [
+                (SYSTEM, Kind::Events),
+                (MPC, Kind::KeepAlive),
+                (MPC, Kind::Cv),
+                (MPC, Kind::Lights),
+                (MPC, Kind::MpcControls),
+            ]
+        );
+        // Their bytes as the cable carried them; no lights or channels.
+        let (b, n) = What::Mpc(Mpc::Cv {
+            out: 0,
+            value: 3277,
+        })
+        .bytes();
+        assert_eq!(&b[..n], &[0xBF, 0, 25]);
+        assert_eq!(m.last(MPC, Dir::In, 9), None);
+        // The filter's debug kinds hide them like any other kind.
+        let ports_only = Filter {
+            kinds: Kind::ALL.iter().fold(0, |k, x| k | x.bit()),
+            ..Filter::ALL
+        };
+        assert_eq!(m.newest().filter(|(_, s)| ports_only.matches(s)).count(), 0);
+    }
+
+    /// The Now view: what each port's channels hold, each way, from the
+    /// lines listed; the notes still going out; a clock's pulses while it
+    /// comes.
+    #[test]
+    fn the_monitor_holds_each_channel_and_times_each_clock() {
+        let usb = PortId(1);
+        let mut f = Feed::new();
+        let mut m = Monitor::new();
+        let armed = To::Track {
+            track: 1,
+            pad: None,
+        };
+        for (t, b) in [(0.10, [0x90u8, 60, 96]), (0.11, [0x90, 64, 88])] {
+            assert!(f.bytes(usb, Dir::In, t, &b));
+            f.to(armed);
+        }
+        f.bytes(usb, Dir::In, 0.2, &[0xB0, 74, 88]);
+        f.sent(DIN, 0.3, &[0x91, 36, 110], To::SentBy(1));
+        f.sent(DIN, 0.4, &[0x91, 40, 100], To::SentBy(2));
+        f.sent(DIN, 0.5, &[0x81, 40, 0], To::SentBy(2));
+        // 120 BPM on the jacks for two seconds.
+        for k in 0..96 {
+            f.bytes(DIN, Dir::In, 0.5 + f64::from(k) / 48.0, &[0xF8]);
+        }
+        f.drain_into(&mut m, 2.5);
+        let keys = m.held(usb, Dir::In, 0).unwrap();
+        assert_eq!(keys.down().collect::<Vec<_>>(), [60, 64]);
+        assert_eq!((keys.vel[60], keys.note_to), (96, armed));
+        assert_eq!(keys.moved(), [(74, 88, 0.2)]);
+        // Out: one note still on, with the track that sent it.
+        let on = m.still_on();
+        assert_eq!(on.len(), 1);
+        let (port, ch, note, h) = on[0];
+        assert_eq!((port, ch, note, h.by[36]), (DIN, 1, 36, 1));
+        assert!(m.held(DIN, Dir::In, 1).unwrap().is_empty());
+        let p = m.pulses(DIN, Dir::In).unwrap();
+        assert!((p.gap_ms - 20.83).abs() < 0.1, "{}", p.gap_ms);
+        assert_eq!(p.late, 0);
+        assert!(m.pulses(usb, Dir::In).is_none());
+        // Clear empties the list, not what is held; the out notes go up
+        // when the app has sent their note-offs.
+        m.clear();
+        assert_eq!(m.held(usb, Dir::In, 0).unwrap().count(), 2);
+        m.out_notes_up();
+        assert!(m.still_on().is_empty());
+        // The clock stops: no pulses to show.
+        f.drain_into(&mut m, 5.0);
+        assert!(m.pulses(DIN, Dir::In).is_none());
     }
 }

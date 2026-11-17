@@ -434,15 +434,22 @@ impl State {
 
     /// Offers what was unpacked from now on (the rack lists each folder).
     fn added(&self, done: &[install::Installed], what: &str) -> Result<String, String> {
-        let mut names = Vec::new();
+        let (mut synths, mut effects) = (Vec::new(), Vec::new());
         let mut problems = Vec::new();
         for d in done {
             match self.rack.add(&d.folder) {
-                Ok((entries, _)) => names.extend(entries.iter().map(|e| e.name.to_string())),
+                Ok((entries, _)) => {
+                    for e in entries.iter() {
+                        match e.kind {
+                            mpfree_node::Kind::Instrument => synths.push(e.name.to_string()),
+                            _ => effects.push(e.name.to_string()),
+                        }
+                    }
+                }
                 Err(e) => problems.push(e),
             }
         }
-        if names.is_empty() {
+        if synths.is_empty() && effects.is_empty() {
             return Err(format!(
                 "{what} was unpacked but doesn't load: {}",
                 problems.join("; ")
@@ -450,9 +457,9 @@ impl State {
         }
         let replaced = done.iter().any(|d| d.replaced);
         Ok(format!(
-            "{} {what}: {} ready on the Synth tab or in the chain editor",
+            "{} {what}: {}",
             if replaced { "Updated" } else { "Installed" },
-            names.join(", ")
+            where_to_find(&synths, &effects)
         ))
     }
 
@@ -777,9 +784,48 @@ pub fn fit(w: i32, h: i32, px: &[u32]) -> Image {
     out
 }
 
+/// Where an installed plugin is, by its kind (Jay's round, 16 Nov: the
+/// Tidal Verb zip installed, but the line sent him to the Synth tab, and
+/// an effect is never there): an instrument is a track's instrument on
+/// the Synth tab's MENU, an effect is in the list + Add effect opens.
+fn where_to_find(synths: &[String], effects: &[String]) -> String {
+    let mut parts = Vec::new();
+    if !synths.is_empty() {
+        parts.push(format!(
+            "{} ready as a track's instrument (Synth tab, MENU, top row)",
+            synths.join(", ")
+        ));
+    }
+    if !effects.is_empty() {
+        parts.push(format!(
+            "{} ready in + Add effect, under Plugins",
+            effects.join(", ")
+        ));
+    }
+    parts.join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_install_line_says_where_each_kind_is() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            where_to_find(&[], &s(&["Tidal Verb"])),
+            "Tidal Verb ready in + Add effect, under Plugins"
+        );
+        assert_eq!(
+            where_to_find(&s(&["[SYN] Mono Voice"]), &[]),
+            "[SYN] Mono Voice ready as a track's instrument (Synth tab, MENU, top row)"
+        );
+        assert_eq!(
+            where_to_find(&s(&["Keys"]), &s(&["Echo", "Room"])),
+            "Keys ready as a track's instrument (Synth tab, MENU, top row); \
+             Echo, Room ready in + Add effect, under Plugins"
+        );
+    }
 
     #[test]
     fn a_picture_is_scaled_to_the_column_keeping_its_shape() {

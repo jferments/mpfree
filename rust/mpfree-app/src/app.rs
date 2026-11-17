@@ -32,11 +32,13 @@
 mod arp;
 pub mod mapper;
 pub mod saved;
+pub mod step_pads;
 mod synth_pads;
 
 pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
+pub use step_pads::StepPads;
 pub use synth_pads::SynthItem;
 
 use crate::cores::SoundCores;
@@ -626,6 +628,13 @@ pub struct Settings {
     /// The line input (the MPC's capture device) is open. Always off at
     /// start; nothing saves it.
     pub line_input: bool,
+    /// Prefs "Send MIDI and CV out": tracks set to a port play out of it,
+    /// clock goes out as each port says, and the CV jacks follow the
+    /// project. Off by default; kept between starts once on (Jay's pick on
+    /// the MIDI thread's card, 16 Nov 23:16Z). State-changing on the MPC:
+    /// bytes leave the MIDI Out jack and the CV jacks, in RAM only, never
+    /// SysEx.
+    pub sends_midi: bool,
     /// The line input is heard through the outputs.
     pub loop_monitor: bool,
     /// What the looper records: the pads (the default) or the line input.
@@ -704,6 +713,7 @@ impl Default for Settings {
             console_paused: false,
             debug_mode: false,
             line_input: false,
+            sends_midi: false,
             loop_monitor: false,
             loop_source: LoopSource::Pads,
             loop_bars: Some(2),
@@ -776,11 +786,12 @@ pub enum Item {
     PadLevel,
     Latch,
     ShowPressure,
-    MidiLog,
     ClearLogs,
     ConsoleFollow,
     ClearConsole,
     LineInput,
+    /// Prefs: MIDI and CV out on or off.
+    SendsMidi,
     LoopSource,
     LoopMonitor,
     LoopBars,
@@ -861,6 +872,8 @@ pub struct Status {
     pub mute_keys: MuteKeys,
     /// TRACK MUTE's bank (A = 0: tracks 1-16).
     pub mute_bank: usize,
+    /// STEP SEQ: the pads as steps, or STEP SEQ held to pick the sound.
+    pub steps: Option<StepPads>,
     /// ERASE held: the next tap on the screen deletes what it lands on
     /// (Jay after live test 3).
     pub erase: bool,
@@ -932,6 +945,9 @@ pub enum Effect {
     SixteenLevels,
     /// The wheel while the 16 Levels panel shows: the next or previous kind.
     LevelsWheel(i32),
+    /// A step edit from the buttons (ERASE + PAD BANK with STEP SEQ on),
+    /// for the time engine.
+    Steps(crate::time::StepAction),
     /// The Synth tab's options changed: the engine, the scale or the pad
     /// layouts, for the synth on the audio thread.
     SynthPads(crate::synth::PadSettings),
@@ -1149,6 +1165,10 @@ pub struct App {
     track_count: usize,
     /// The 16 Levels panel shows on Play: the wheel picks its kind.
     levels_open: bool,
+    /// 16 Levels are on (the screen says, with the panel).
+    levels_on: bool,
+    /// STEP SEQ: the pads as steps (`app/step_pads.rs`).
+    step_seq: step_pads::StepSeq,
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
@@ -1307,6 +1327,7 @@ const PREFS_ROWS: &[Item] = &[
     // Layout spec 4c: the line input's latency, shared by the looper and
     // the audio tracks.
     Item::LoopLatency,
+    Item::SendsMidi,
     Item::SystemInfo,
     Item::Appearance,
     Item::AtStart,
@@ -1351,6 +1372,8 @@ impl App {
             mute_bank: 0,
             track_count: 0,
             levels_open: false,
+            levels_on: false,
+            step_seq: step_pads::StepSeq::default(),
             view: View::Play,
             back: View::Play,
             chain_back: View::Mixer,
@@ -1614,6 +1637,7 @@ impl App {
 
     /// A pad pressed: it plays, and writes a step while recording a pattern.
     pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
+        self.step_pad_played(slot);
         if !self.free_time_recording() {
             // In Free time the pads only write steps; the pattern keeps
             // playing the latched notes.
@@ -1691,6 +1715,11 @@ impl App {
                     .any(|&n| self.arps.engine_at(self.track).active().contains(n))
             }),
         }
+    }
+
+    /// ERASE is held (a step pad pressed now is cleared).
+    pub fn erase_held(&self) -> bool {
+        self.erase_held
     }
 
     /// TRACK MUTE: whether a pad press plays, or mutes a track or a pad
@@ -1773,6 +1802,7 @@ impl App {
             bpm: self.settings.bpm,
             mute_keys: self.mute_keys,
             mute_bank: self.mute_bank,
+            steps: self.step_pads(),
             erase: self.erase_held,
         })
     }
@@ -1835,10 +1865,20 @@ impl App {
                 self.fill = Fill::Off;
                 fx.push(Effect::Fill(false));
             }
+            if Some(note) == self.map.step_seq {
+                fx.extend(self.step_seq_up());
+            }
+            if note == button::COPY && self.copy_held() {
+                fx.extend(self.copy_button(false));
+            }
             return fx;
         }
         if self.view == View::Guide {
             return self.guide_press(note);
+        }
+        if note == button::COPY {
+            // COPY: STEP SEQ's steps and pages (step_pads.rs).
+            return self.copy_button(true);
         }
         let shift = self.shift;
         if note == button::FULL_LEVEL {
@@ -1990,6 +2030,9 @@ impl App {
             fx.extend(self.toggle(View::Console));
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
+        } else if let Some(k) = self.map.bank_of(note).filter(|_| self.pads_are_steps()) {
+            // STEP SEQ: PAD BANK picks the page of steps on the pads.
+            fx.extend(self.step_page_button(k, shift));
         } else if let Some(k) = self
             .map
             .bank_of(note)
@@ -2066,7 +2109,6 @@ impl App {
     /// (Jay, 20:40Z): each goes to the page with the same job. None when
     /// `note` is not one of them.
     fn mode_button(&mut self, note: u8, shift: bool) -> Option<Vec<Effect>> {
-        use crate::play_page::PlayView;
         let m = self.map;
         let is = |b: Option<u8>| b == Some(note);
         let fx = if is(m.erase) {
@@ -2089,9 +2131,9 @@ impl App {
                 self.show(View::Play)
             }
         } else if is(m.step_seq) {
-            let mut fx = self.go(View::Play);
-            fx.push(Effect::PlayView(Some(PlayView::Beats)));
-            fx
+            // STEP SEQ: the pads as steps, on the release (held, a pad
+            // tapped picks the sound); SHIFT + STEP SEQ: Follow.
+            self.step_seq_down(shift)
         } else if is(m.next_seq) {
             self.go(View::Arrange)
         } else if is(m.sampler) {
@@ -2122,13 +2164,20 @@ impl App {
             } else {
                 MuteKeys::Tracks
             };
+            // One pad mode at a time: STEP SEQ gives the pads up.
+            let mut off = self.steps_off();
             self.mute_keys = if self.mute_keys == want {
                 MuteKeys::Off
             } else {
                 want
             };
             let on = self.mute_keys != MuteKeys::Off;
-            vec![
+            off.retain(|e| !matches!(e, Effect::Status(_) | Effect::Note(_)));
+            if on && self.levels_on {
+                // 16 Levels give the pads up too (the screen says back).
+                off.push(Effect::SixteenLevels);
+            }
+            off.extend([
                 Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF }),
                 self.status(),
                 Effect::Note(match self.mute_keys {
@@ -2140,7 +2189,8 @@ impl App {
                 }),
                 // The PAD BANK lights show the mute bank, or the kit's again.
                 Effect::BankLights,
-            ]
+            ]);
+            off
         } else if is(m.sixteen_level) {
             // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
             // 16 LEVEL: 16 Levels on (with its panel on Play) or off.
@@ -2169,10 +2219,25 @@ impl App {
     /// turns the panel's kind while it shows.
     pub fn levels_shown(&mut self, on: bool, open: bool) -> Vec<Effect> {
         self.levels_open = open;
-        match self.map.sixteen_level {
-            Some(note) => vec![Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF })],
-            None => Vec::new(),
+        let mut fx = Vec::new();
+        if on && !self.levels_on {
+            // One pad mode at a time: STEP SEQ and TRACK MUTE give the
+            // pads up to 16 Levels.
+            fx.extend(self.steps_off());
+            if self.mute_keys != MuteKeys::Off {
+                self.mute_keys = MuteKeys::Off;
+                if let Some(n) = self.map.track_mute {
+                    fx.push(Effect::Light(n, LIGHT_OFF));
+                }
+                fx.push(self.status());
+                fx.push(Effect::BankLights);
+            }
         }
+        self.levels_on = on;
+        if let Some(note) = self.map.sixteen_level {
+            fx.push(Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF }));
+        }
+        fx
     }
 
     /// A page from a mode button: shown, unless it shows already.
@@ -2189,6 +2254,15 @@ impl App {
     /// decision 5); STOP again, or STOP with nothing latched, lets go of
     /// the latched pads too. PLAY or a pad press plays the kept latch again.
     fn stop(&mut self) -> Vec<Effect> {
+        // A loop waiting for PLAY (an overdub, or an armed first pass)
+        // lets go too, so its lights stop blinking.
+        let waiting = Effect::Looper(LoopAction::StopWaiting);
+        let mut fx = self.stop_sounds();
+        fx.insert(0, waiting);
+        fx
+    }
+
+    fn stop_sounds(&mut self) -> Vec<Effect> {
         if self.latched
             && self.generating()
             && !self.arps.engine_at(self.track).hushed()
@@ -2881,7 +2955,8 @@ impl App {
                 Item::LoopMemory,
             ],
             (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
-                &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs]
+                // The MIDI page's monitor has its own Hold.
+                &[Item::ShowPressure, Item::ClearLogs]
             }
             // The full-screen touch checks, also in Prefs > Touch screen.
             (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
@@ -2988,10 +3063,6 @@ impl App {
                 "Pad pressure in the MIDI log",
                 if s.show_pressure { "Shown" } else { "Hidden" }.to_string(),
             ),
-            Item::MidiLog => (
-                "MIDI log",
-                if s.midi_paused { "Paused" } else { "Running" }.to_string(),
-            ),
             Item::ClearLogs => ("Clear the MIDI and event logs", "Clear".to_string()),
             Item::ConsoleFollow => (
                 "Console",
@@ -3006,6 +3077,15 @@ impl App {
             Item::LineInput => (
                 "Line input",
                 if s.line_input { "On" } else { "Off" }.to_string(),
+            ),
+            Item::SendsMidi => (
+                "Send MIDI and CV out",
+                if s.sends_midi {
+                    "On (sends MIDI)"
+                } else {
+                    "Off"
+                }
+                .to_string(),
             ),
             Item::LoopSource => ("Record from", s.loop_source.name().to_string()),
             Item::LoopMonitor => (
@@ -3194,7 +3274,6 @@ impl App {
                 "while a pad is held. Hidden, they are counted",
                 "but not listed.",
             ],
-            Item::MidiLog => vec!["Pause the MIDI log to read it."],
             Item::ClearLogs => vec!["Empty the MIDI and event logs."],
             Item::ConsoleFollow => vec![
                 "Pause the console to read it; it keeps",
@@ -3206,6 +3285,13 @@ impl App {
                 "Off at every start. Which jacks it reads is",
                 "not checked yet (line in L and R, most",
                 "likely). Turning it off closes the input.",
+            ],
+            Item::SendsMidi => vec![
+                "On: tracks set to play on MIDI play out of",
+                "the MIDI Out jack, clock goes out as each",
+                "port says, and the CV jacks follow the",
+                "project's CV outputs. Off: nothing is sent,",
+                "every track plays inside MPFree. Kept.",
             ],
             Item::LoopSource => vec![
                 "What the looper records: the pads and the",
@@ -3566,7 +3652,20 @@ impl App {
                 fx.extend(self.arp_changed());
             }
             Item::ShowPressure => s.show_pressure = d > 0,
-            Item::MidiLog => s.midi_paused = d > 0,
+            Item::SendsMidi => {
+                let on = d > 0;
+                if on != s.sends_midi {
+                    s.sends_midi = on;
+                    fx.push(Effect::Note(format!(
+                        "MIDI and CV out: {}",
+                        if on {
+                            "on (the MIDI Out jack and the CV jacks send)"
+                        } else {
+                            "off (nothing is sent)"
+                        }
+                    )));
+                }
+            }
             Item::ClearLogs => fx.push(Effect::ClearLogs),
             Item::ConsoleFollow => s.console_paused = d > 0,
             Item::ClearConsole => fx.push(Effect::ClearConsole),
@@ -3788,6 +3887,14 @@ mod tests {
     fn press(app: &mut App, note: u8) -> Vec<Effect> {
         let fx = app.button(note, true, 0.0);
         app.button(note, false, 0.0);
+        fx
+    }
+
+    /// A press and its release: what both did (STEP SEQ acts on the
+    /// release).
+    fn click(app: &mut App, note: u8) -> Vec<Effect> {
+        let mut fx = app.button(note, true, 0.0);
+        fx.extend(app.button(note, false, 0.0));
         fx
     }
 
@@ -4327,6 +4434,32 @@ mod tests {
         assert_eq!(l.items().last(), Some(&Item::LoopMemory));
     }
 
+    /// Prefs "Send MIDI and CV out" (layout spec 5, Jay's card of 16 Nov
+    /// 23:16Z): after Line input latency, off until turned on, and it says
+    /// what it does when it changes.
+    #[test]
+    fn prefs_send_midi_and_cv_out_is_off_until_turned_on() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::SendsMidi);
+        assert_eq!(at, row(&app, Item::LoopLatency) + 1);
+        assert_eq!(at + 1, row(&app, Item::SystemInfo));
+        assert!(!app.settings.sends_midi);
+        assert_eq!(app.item_text(Item::SendsMidi).0, "Send MIDI and CV out");
+        assert_eq!(app.item_text(Item::SendsMidi).1, "Off");
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.sends_midi);
+        assert_eq!(app.item_text(Item::SendsMidi).1, "On (sends MIDI)");
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.starts_with("MIDI and CV out: on"))));
+        app.step_item(at, -1);
+        assert!(!app.settings.sends_midi);
+    }
+
     /// Layout spec 4c: Prefs "Line input latency", after Line input and
     /// before System info, is the looper's "Latency to make up for": one
     /// setting, which the audio tracks follow too.
@@ -4339,7 +4472,7 @@ mod tests {
         app.button(button::SHIFT, false, 0.0);
         let at = row(&app, Item::LoopLatency);
         assert_eq!(at, row(&app, Item::LineInput) + 1);
-        assert_eq!(at + 1, row(&app, Item::SystemInfo));
+        assert!(at < row(&app, Item::SystemInfo));
         assert_eq!(app.item_text(Item::LoopLatency).0, "Line input latency");
         let before = app.settings.loop_latency;
         let fx = app.step_item(at, 1);
@@ -6838,15 +6971,19 @@ mod tests {
         // MAIN: Play, and on Play the next view.
         assert!(press(&mut app, 61).contains(&Effect::Show(View::Play)));
         assert_eq!(press(&mut app, 61), [Effect::PlayView(None)]);
-        // STEP SEQ: Play's Beats view; NEXT SEQ: Arrange.
-        assert_eq!(
-            press(&mut app, 64),
-            [Effect::PlayView(Some(PlayView::Beats))]
-        );
+        // STEP SEQ: the pads become steps and Play shows Beats (on the
+        // release); NEXT SEQ: Arrange.
+        let fx = click(&mut app, 64);
+        assert!(fx.contains(&Effect::PlayView(Some(PlayView::Beats))));
+        assert!(app.pads_are_steps());
         assert!(press(&mut app, 63).contains(&Effect::Show(View::Arrange)));
-        let fx = press(&mut app, 64);
+        let fx = click(&mut app, 64);
+        assert!(!app.pads_are_steps(), "STEP SEQ again gives the pads back");
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Show(_))), "{fx:?}");
+        let fx = click(&mut app, 64);
         assert!(fx.contains(&Effect::Show(View::Play)));
         assert!(fx.contains(&Effect::PlayView(Some(PlayView::Beats))));
+        click(&mut app, 64);
         // SAMPLE EDIT: the Wave editor; PROG EDIT: the audio loop decides.
         let fx = press(&mut app, 66);
         assert_eq!(fx[0], Effect::SampleEditor(Editor::Wave));
@@ -6876,6 +7013,163 @@ mod tests {
         assert!(shifted(&mut app, 62)
             .iter()
             .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));
+    }
+
+    /// STEP SEQ (sequencer decision 2, Jay 16 Nov): the pads are the
+    /// steps of the pad played last, over any page; PAD BANK picks pages
+    /// (a second press or SHIFT: 5 to 8); SHIFT + STEP SEQ is Follow;
+    /// held, a pad tapped picks the sound; ERASE + PAD BANK clears a
+    /// page; one pad mode at a time with TRACK MUTE and 16 LEVEL.
+    #[test]
+    fn step_seq_turns_the_pads_into_steps_until_pressed_again() {
+        use crate::play_page::PlayView;
+        use crate::time::StepAction;
+        const SHIFT: u8 = button::SHIFT;
+        const STEP_SEQ: u8 = button::STEP_SEQ;
+        const TRACK_MUTE: u8 = button::TRACK_MUTE;
+        let [bank_a, bank_b, bank_c, _] = button::PAD_BANK;
+        let mut app = ready();
+        let view = |app: &App| app.step_pads().expect("the pads are steps");
+        app.pad_down(4, 100);
+        app.pad_up(4);
+        app.open_tab(View::Looper);
+        // A quick press: the pad played last (pad 5), page 1, on Beats.
+        let fx = click(&mut app, STEP_SEQ);
+        assert!(fx.contains(&Effect::Light(STEP_SEQ, LIGHT_ON)), "{fx:?}");
+        assert!(fx.contains(&Effect::Show(View::Play)));
+        assert!(fx.contains(&Effect::PlayView(Some(PlayView::Beats))));
+        assert!(fx.contains(&Effect::BankLights));
+        assert!(app.pads_are_steps());
+        assert_eq!(
+            app.status_now().steps,
+            Some(StepPads {
+                sound: 4,
+                page: 0,
+                follow: false,
+                picking: false,
+                copying: false,
+                copy_page: None,
+            })
+        );
+        // On any page: the Looper tab keeps them.
+        app.open_tab(View::Looper);
+        assert!(app.pads_are_steps());
+        // PAD BANK: the page; again: page 6; SHIFT + C: page 7.
+        let fx = press(&mut app, bank_b);
+        assert_eq!(view(&app).page, 1);
+        assert!(fx.contains(&Effect::Note("STEP SEQ · page 2 (steps 17-32)".into())));
+        press(&mut app, bank_b);
+        assert_eq!(view(&app).page, 5);
+        held(&mut app, SHIFT, |a| press(a, bank_c));
+        assert_eq!(view(&app).page, 6);
+        // SHIFT + STEP SEQ: Follow; the playhead turns the page; a page
+        // picked by hand turns it off.
+        held(&mut app, SHIFT, |a| click(a, STEP_SEQ));
+        assert!(view(&app).follow);
+        assert!(app.pads_are_steps(), "SHIFT + STEP SEQ leaves the mode on");
+        assert!(!app.follow_page(2).is_empty());
+        assert_eq!(view(&app).page, 2);
+        assert!(app.follow_page(2).is_empty(), "no change, nothing sent");
+        let fx = press(&mut app, bank_a);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.ends_with("Follow off"))));
+        assert!(!view(&app).follow);
+        assert!(app.follow_page(3).is_empty(), "Follow is off");
+        // The screen's ‹ › turn the pads' page too.
+        app.set_step_page(1);
+        assert_eq!(view(&app).page, 1);
+        // Held: the pads play the kit, and the pad tapped is the sound.
+        app.button(STEP_SEQ, true, 0.0);
+        assert!(!app.pads_are_steps());
+        assert!(view(&app).picking);
+        assert_eq!(
+            press(&mut app, bank_b),
+            [Effect::Bank {
+                button: 1,
+                shift: false
+            }]
+        );
+        app.pad_down(9, 100);
+        app.pad_up(9);
+        let fx = app.button(STEP_SEQ, false, 0.0);
+        assert!(app.pads_are_steps(), "still on");
+        assert_eq!(view(&app).sound, 9);
+        assert_eq!(view(&app).page, 1, "the page stays");
+        assert!(!fx
+            .iter()
+            .any(|e| matches!(e, Effect::Show(_) | Effect::PlayView(_))));
+        // ERASE + PAD BANK: that page of pad 10's steps.
+        app.button(button::ERASE, true, 0.0);
+        assert_eq!(
+            press(&mut app, bank_c),
+            [Effect::Steps(StepAction::ClearSteps {
+                pad: 9,
+                from: 32,
+                to: 48
+            })]
+        );
+        app.button(button::ERASE, false, 0.0);
+        assert_eq!(view(&app).page, 1, "ERASE + PAD BANK turns no page");
+        // COPY + PAD BANK picks a page; another PAD BANK takes the copy
+        // (pad 10's steps), and each one after takes it too.
+        let fx = app.button(button::COPY, true, 0.0);
+        assert!(view(&app).copying);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Status(_))));
+        let fx = press(&mut app, bank_a);
+        assert!(fx.contains(&Effect::Tell(
+            "COPY: page 1 picked; press the PAD BANK it goes to".into()
+        )));
+        assert_eq!(view(&app).copy_page, Some(0));
+        assert_eq!(
+            press(&mut app, bank_c),
+            [Effect::Steps(StepAction::CopySteps {
+                pad: 9,
+                from: 0,
+                to: 32,
+                count: 16
+            })]
+        );
+        assert_eq!(view(&app).page, 1, "COPY + PAD BANK turns no page");
+        app.button(button::COPY, false, 0.0);
+        assert!(!app.copy_held());
+        assert_eq!(view(&app).copy_page, None, "let go: forgotten");
+        // TRACK MUTE takes the pads; STEP SEQ takes them back.
+        let fx = press(&mut app, TRACK_MUTE);
+        assert!(fx.contains(&Effect::Light(STEP_SEQ, LIGHT_OFF)));
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        assert!(!app.pads_are_steps());
+        let fx = click(&mut app, STEP_SEQ);
+        assert!(fx.contains(&Effect::Light(TRACK_MUTE, LIGHT_OFF)));
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        assert!(app.pads_are_steps());
+        // 16 Levels coming on takes them, from TRACK MUTE too; STEP SEQ
+        // and TRACK MUTE turn 16 Levels off.
+        press(&mut app, TRACK_MUTE);
+        press(&mut app, TRACK_MUTE);
+        click(&mut app, STEP_SEQ);
+        let fx = app.levels_shown(true, true);
+        assert!(fx.contains(&Effect::Light(STEP_SEQ, LIGHT_OFF)));
+        assert!(!app.pads_are_steps());
+        assert!(click(&mut app, STEP_SEQ).contains(&Effect::SixteenLevels));
+        app.levels_shown(false, false);
+        click(&mut app, STEP_SEQ);
+        app.levels_shown(true, true);
+        assert!(press(&mut app, TRACK_MUTE).contains(&Effect::SixteenLevels));
+        app.levels_shown(false, false);
+        press(&mut app, TRACK_MUTE);
+        click(&mut app, STEP_SEQ);
+        // The chip, or STEP SEQ again: the pads play.
+        assert!(!app.steps_off().is_empty());
+        assert_eq!(app.step_pads(), None);
+        assert!(app.steps_off().is_empty());
+        assert_eq!(
+            press(&mut app, bank_b),
+            [Effect::Bank {
+                button: 1,
+                shift: false
+            }]
+        );
     }
 
     #[test]
