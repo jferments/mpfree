@@ -375,6 +375,27 @@ impl TimeAudio {
         self.recorder.touch_dropped()
     }
 
+    /// Live erase: sound `note` erased on the armed track while the
+    /// transport records (`on`), or not any more.
+    pub fn erase_sound(&mut self, note: u8, on: bool) {
+        let Some(bit) = 1u128.checked_shl(u32::from(note)) else {
+            return;
+        };
+        let now = self.player.erasing();
+        self.player
+            .set_erasing(if on { now | bit } else { now & !bit });
+    }
+
+    /// Live erase off for every sound.
+    pub fn erase_none(&mut self) {
+        self.player.set_erasing(0);
+    }
+
+    /// The sounds live erase erases, a bit each.
+    pub fn erasing(&self) -> u128 {
+        self.player.erasing()
+    }
+
     pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {
         self.recorder.input(offset, Event::Lock { addr, value });
     }

@@ -67,6 +67,21 @@ The strip takes a little room from the pattern. To give the pattern more rows, p
 
 {{shot: play-beats | The Beats view: the pattern, your timing (7 ms early on average) and the throws.}}
 
+## Make and Perform
+
+MPFree has two ways of answering your hands, for the same project: **Make**, for building, where everything acts at once and **UNDO** is the safety net, and **Perform**, for a stage. The chip at the left of the top bar's chips says which one you're in: **MAKE**, or **PERFORM** in the second accent colour. Tap it, or press **SHIFT + MAIN**, to switch. The hint line says what changed.
+
+Switching never stops or changes anything playing. The project keeps it, so a set opens as you left it; a new project starts in Make.
+
+What Perform changes today:
+
+- **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, and again the grid.
+- **The arm is pinned**: opening a page doesn't move what REC records; only a tap on an Arm pill does. The REC chip says PINNED. Back in Make, the arm follows the page again.
+
+Clips and scenes start on the line the Record panel's **Launch** sets, in Make and Perform alike (see [Recording a clip](clips.md#recording-a-clip)), and the transport bar shows it.
+
+Coming next: in Perform, mutes and solos land on the bar, buttons that delete need a half-second hold, Rec song goes on with REC, and the Clips grid shows bigger rows with what comes next.
+
 ## The Q-Links on the Play page
 
 The four knobs change with the view:

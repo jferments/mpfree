@@ -441,7 +441,7 @@ Measuring built 2026-11-17 with the chorus's PR (M1), class `modulation`, target
 | M10 | `longest_delay_ms` | The flanger's swept delay ≤ 20 ms | Past that it is a doubler |
 | M11 | `sync_error_cycles_after_wrap` | A synced LFO within 1 % of a cycle of the song a bar after a 3.5-bar loop wraps | A bar-synced sweep stays on the bar |
 | M12 | `rest_dbfs_*` | 20 s of noise at ±95 % Feedback with extreme settings: finite, and under -60 dBFS after the reported tail | No runaway, no stuck tail |
-| M13 | `click_db_over_6k` | Each control swept end to end in 50 ms under a 997 Hz tone: the loudest millisecond above 6 kHz ≤ -60 dB against the tone (the Delay's row reported) | A bend or a resonance passing the tone is not a click; energy two octaves up is |
+| M13 | `click_db_over_6k`, `click_db_over_6k_shape` | Each control swept end to end in 50 ms under a 997 Hz tone: the loudest millisecond above 6 kHz ≤ -60 dB against the tone (the Delay's row reported; from M4, a change of Shape at the defaults too) | A bend or a resonance passing the tone is not a click; energy two octaves up is |
 | M14 | the instruction gate | Rises stated in the PR | The MPC's budget |
 
 ### Baseline (2026-11-17, before any fix)
@@ -479,6 +479,14 @@ What changed (design: [fx-modulation.md](fx-modulation.md), [fx.md](fx.md)): a l
 - **Blessed worse, inside the targets:** the click measure on four presets, -79.5 to -89.4 dB (M13, target -60: "Funk wobble" -90.9 to -79.5, "Deep phase" -81.0 to -80.0, "Quarter pulse" -84.8 to -83.4, "Liquid" -89.8 to -89.4; a Feedback sweep moves the trim with it); at the defaults and on "Slow swirl" it is 4.5 dB better. The mono fold, up to 0.01 LU more.
 - **Still unmet:** "Liquid" loses 1.68 LU in mono (M4, target 1.5): with twelve stages at 70 % Feedback the sides' resonances fall at different pitches, and fxlab hears 0.4 of its 10 s cycle (over a whole cycle the model gives 1.53). At 60 % Feedback it would about meet the target, but that changes the preset's character, so it stays.
 - **Cost** (the instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz): Phaser (4 stages) 61.6k to 66.0k (+7.1 %), (12 stages) 100.5k to 107.3k (+6.8 %): the high-pass, the trim's two gains with Mix folded in, and a check each frame whether Feedback or Mix moved. With the high-pass before the stages it was 15.7 to 17.6 %: the extra state there pushed the stage loop's values out of registers.
+
+### PR M4: the LFO's shape and syncs
+
+What changed (design: [fx-modulation.md](fx-modulation.md), [fx.md](fx.md)): a Shape for the shared LFO (Sine, or a Triangle with rounded corners), appended to all three, and the dotted and triplet syncs (1/8T, 1/8D, 1/4T, 1/4D) appended to the Sync list; plan-3 P2 items 8 and 9. Saved projects open on Sine and keep their sync. With Shape the flanger has nine controls, so it gets a Main page (Rate, Depth, Feedback, Mix, Sync, Delay, Width, Through zero). Four rows added, all met: 119 of 123 (115 of 119 with M3, and no earlier row moved).
+
+- **New rows:** M5 `bend_cents_depth100_r10_d40_triangle`, the chorus's Triangle at Rate 10 Hz, Depth 100 % and Delay 40 ms, 68.2 cents (the Sine's 95.7: a triangle's steepest slope is 4/0.9 a cycle against a sine's 2π, so the ceiling worked out for the sine holds); M13 `click_db_over_6k_shape` at each effect's defaults, Shape from Sine to Triangle and back under the 997 Hz tone: chorus -85.9 dB, flanger -89.6, phaser -102.1 (target -60).
+- **The corners:** a parabola a twentieth of a cycle either side of each, so the slope turns round over a tenth of a cycle instead of flipping; the peaks are scaled back to ±1, so a Triangle sweeps exactly as far as the Sine. A change of Shape crossfades the two over 50 ms.
+- **Cost** (the instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz): the shape is picked once a frame and the frame's sweeps worked out together (`Lfo::waves`), which lets the compiler do the sines side by side. Chorus (2 voices) 103.8k to 99.2k (-4.4 %), (4 voices) 173.9k to 147.1k (-15.5 %), where it works out all eight sweeps (four voices a side) at once; Flanger 64.3k to 64.9k (+1.0 %), with Through zero on 92.6k (+0.0 %); Phaser (4 stages) 66.0k to 66.5k (+0.7 %), (12 stages) 107.3k to 107.8k (+0.4 %), the shape's check each frame. Picking the shape for each read instead cost the flanger 8.5 % and the chorus 3.3 %.
 
 ## The sampler
 

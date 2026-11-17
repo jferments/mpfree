@@ -113,6 +113,15 @@ Changing the curve glides from one blend to the other, so it doesn't click. A pr
 > [!NOTE]
 > Projects saved before the Mix curve open at **Equal**, so a delay or reverb set between 0 and 100 % sounds a little louder and wetter than it did (at Mix 35 %, about 3 dB). Pick **Linear** for the blend it had before. The Room reverb is also about 4 dB louder than before, as loud as the other reverbs.
 
+### The chorus's, flanger's and phaser's sweep
+
+All three move with an LFO, set in their **Movement** section:
+
+- **Rate** sets how fast it sweeps, in Hz. With **Sync** on a note value it follows the tempo instead: 1/16 to 8 bars a cycle and, at the end of the list, the triplet and dotted eighths and quarters (**1/8T**, **1/8D**, **1/4T**, **1/4D**).
+- **Shape** is **Sine** (the default: the sweep slows and lingers at each end) or **Triangle** (it moves at an even speed and turns round quickly at each end). On the chorus a Triangle bends the pitch up and down by a steady amount, the classic synth-chorus sound; on the flanger and phaser the notches glide at an even pace. Its corners are rounded, so the turn is quick but never a jump, and a change of Shape glides from one to the other.
+
+Projects saved before Shape open on Sine, as they sounded.
+
 ### The Chorus
 
 - **Delay** sets where the copies sit, from 2 to 40 ms; **Depth** sets how far they swing either way, up to 5 ms at 100 %. The two are separate: a longer Delay doesn't make the chorus wobble more.
@@ -335,7 +344,7 @@ A plugin's settings are saved with your project. If you open the project on a st
 
 ## Coming next
 
-- **Automation**: knob moves recorded into clips.
+- **Automation lanes**: knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)).
 - **Perform FX from the pads**: effects played by hitting pads.
 
 > [!MPC]

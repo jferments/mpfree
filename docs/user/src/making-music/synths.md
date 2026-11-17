@@ -183,6 +183,20 @@ The **Chromatic / In key** switch in the pads heading on the Synth tab flips the
 > [!TIP]
 > Drums is a kit rather than a keyboard: pad 1 plays the first drum, pad 2 the second and so on, whatever the scale, layout or octave.
 
+## The synth's notes on Beats
+
+With the synth on the pads, the pattern on Play's **Beats** view (and the **All** view) shows the pads' notes as rows, the highest on top, like a piano roll turned to the scale: with a scale on, the rows are its notes, and the root's rows are shaded and marked **root**.
+
+{{shot: play-beats-synth | Beats on a synth track in C minor: the rows are the scale's notes from C3 to C4, the roots shaded. Step 1 holds a C minor triad, with an accent, a 50 % note and a 1:2 note later on.}}
+
+- **Tap a step in a row** to put that note there, and tap more rows on the same step for a chord. Tap a lit step to pick it for the Q-Links, and again to take it off.
+- **Hold a row's name** to hear its note.
+- **‹** and **›** beside **Oct** show the rows an octave lower or higher. The pattern starts from the root under the lowest note you've used.
+- **Fold** shows only the notes the pattern uses, so a bass line or a chord part fits on one screen. Tap it again for every note.
+- **ERASE** held + a row's name clears that note's steps; **UNDO** brings them back.
+
+Turning Play's **Timing strip** off in Play's options gives the pattern room for eight rows, a whole octave of a seven-note scale.
+
 ## Steps on the synth
 
 Press **STEP SEQ** with the synth on the pads and the 16 pads become the steps of the synth's whole line: each step can hold a note or a chord, and every note on it comes and goes together.
