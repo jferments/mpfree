@@ -99,7 +99,7 @@ pub const LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
                           col(smp-play-env:3*, smp-play-filter:2*):*):*, \
                           row(smp-play-layer-edit:260, smp-play-scenes:*):56):*, \
                           col(smp-play-list:*, smp-play-fader:56):340):*):*, \
-                          col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):168):*, hint:26)";
+                          col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):128):*, hint:26)";
 
 /// The page while the pad is a keygroup or the pads play notes: the
 /// keyboard over the layer map, the envelope and the filter side by side
@@ -109,7 +109,7 @@ pub const KEYS_LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):
                                row(smp-play-layers:*, smp-play-env:*, smp-play-filter:*):*, \
                                row(smp-play-layer-edit:260, smp-play-scenes:*):56):*, \
                                col(smp-play-list:*, smp-play-fader:56):340):*):*, \
-                               col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):168):*, hint:26)";
+                               col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):128):*, hint:26)";
 
 /// The velocity a key pressed on the keyboard plays at.
 pub const KEY_VELOCITY: u8 = 100;

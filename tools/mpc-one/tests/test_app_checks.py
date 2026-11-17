@@ -151,6 +151,33 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(got["row 2 stopped it on its bar line"], "off at once is not on the bar line")
         self.assertFalse(got["its cell brought it back on a bar line"])
 
+    def test_loop_cell_needs_the_track_the_arm_and_the_landing(self):
+        w = checks.Window(lines("time: Loops B added, a Loop track: tap a cell of it to record a loop there",
+                                "time: loop cell: Loops B row 2 armed, the next loop recorded lands there",
+                                "time: Loop 2 on Loops B, row 2, playing"))
+        self.assertTrue(all(ok for ok, _ in self.judge("loop-cell", w)))
+        # A loop landing in row 1 (no cell armed) is not this one.
+        w = checks.Window(lines("time: Track 9 added and armed (UNDO takes it away)",
+                                "time: Loop 1 on Loops A, row 1, playing"))
+        got = dict((what, ok) for ok, what in self.judge("loop-cell", w))
+        self.assertFalse(got["SHIFT + + Track made a Loop track"])
+        self.assertFalse(got["its row 2 cell armed"])
+        self.assertFalse(got["the loop landed in it"])
+
+    def test_loop_copy_needs_the_copy_all_in_and_its_launch(self):
+        w = checks.Window(lines("clips: Loop 1 copies into Loop 3 on Loops B / 3: launch it to hear it",
+                                "looper: loop 3 is a copy of loop 1, 2 layers",
+                                "looper: loop 3 on from bar 9"))
+        self.assertTrue(all(ok for ok, _ in self.judge("loop-copy", w)))
+        # A copy into another row of its own track, a copy that stopped, a launch at once: not this.
+        w = checks.Window(lines("clips: a copy of Loop 1 in Loops A / 3 (UNDO takes it back)",
+                                "Loop 3 has 1 of Loop 1's 2 layers: the copy stopped",
+                                "looper: loop 3 on"))
+        got = dict((what, ok) for ok, what in self.judge("loop-copy", w))
+        self.assertFalse(got["the cell took a copy"])
+        self.assertFalse(got["the copy's layers all went in"])
+        self.assertFalse(got["the copy came in on a bar line"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]
