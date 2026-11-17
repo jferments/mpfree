@@ -138,11 +138,24 @@ impl Widget for PadBar {
 
 /// A Q-Link's card: a knob showing where its marker sits in the sound, the
 /// Q-Link's job, and the marker's position in bars and beats (or seconds).
+/// In the page's Q-Link column (less than twice as wide as it is high) it is drawn as the
+/// shared column's cards are (`mpfree_ui::qlink`): the knob's number and
+/// the page, the job, then the ring with the value in it; in a strip, the
+/// ring beside the text.
+///
 /// A tap gives [`EventKind::Select`]`(0)`; the page makes it the wheel's
 /// focus. A tap on a faint card with a reason in `why` gives
-/// [`EventKind::Select`]`(1)`, for the page to say why.
+/// [`EventKind::Select`]`(1)`, for the page to say why. A finger dragged up
+/// or down the card turns its knob, as on the shared column: an
+/// [`EventKind::Step`] with the card's `knob` and the detents (up is
+/// positive), a detent per [`mpfree_ui::qlink::DRAG_DETENT`] pixels.
 pub struct KnobCard {
+    /// "Q-Link 1 · Start": the knob, then its job.
     pub label: String,
+    /// The page, in capitals over the job in the column ("WAVE").
+    pub scope: String,
+    /// Which Q-Link (0 to 3): the index a drag's steps carry.
+    pub knob: usize,
     pub value: String,
     /// Small text after the value (ticks, or frames).
     pub sub: String,
@@ -155,6 +168,9 @@ pub struct KnobCard {
     pub enabled: bool,
     /// Why the card is faint, for the hint line; empty for no reason.
     pub why: String,
+    /// A finger on the card: where it went down (or the last detent), and
+    /// whether it has turned the knob yet.
+    drag: Option<(i32, bool)>,
 }
 
 /// The knob's arc: from 135° (down-left) round 270° to 45° (down-right).
@@ -165,6 +181,8 @@ impl KnobCard {
     pub fn new(label: &str, color: Color) -> KnobCard {
         KnobCard {
             label: label.to_string(),
+            scope: String::new(),
+            knob: 0,
             value: String::new(),
             sub: String::new(),
             pos: 0.0,
@@ -172,6 +190,109 @@ impl KnobCard {
             focused: false,
             enabled: true,
             why: String::new(),
+            drag: None,
+        }
+    }
+
+    /// The card for Q-Link `knob` (0 to 3) on the page `scope`.
+    pub fn on(mut self, knob: usize, scope: &str) -> KnobCard {
+        self.knob = knob;
+        self.scope = scope.to_string();
+        self
+    }
+
+    /// The job, without the knob's name before it: "Start".
+    pub fn job(&self) -> &str {
+        self.label
+            .split_once(" · ")
+            .map_or(self.label.as_str(), |(_, j)| j)
+    }
+
+    /// As the shared column's card: a coloured edge; "Q1" and the page; the
+    /// job; the ring with the value in it, and the small text under it.
+    fn paint_tall(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let col = if self.enabled {
+            self.color
+        } else {
+            t.text_faint
+        };
+        cx.canvas.fill_round_rect(r, t.radius, t.surface);
+        if self.focused && self.enabled {
+            cx.canvas
+                .stroke_round_rect(r, t.radius, 2, t.outline.mix(self.color, 0.6));
+        }
+        if self.enabled {
+            cx.canvas
+                .fill_round_rect(Rect::new(r.x, r.y + 14, 4, (r.h - 28).max(0)), 2, col);
+        }
+        let inner = r.inset_xy(14, 10);
+        let (top, rest) = inner.take_top(18);
+        cx.text(
+            FontId::Bold,
+            13.0,
+            top,
+            Align::Left,
+            col,
+            &format!("Q{}", self.knob + 1),
+        );
+        cx.text(
+            FontId::Sans,
+            12.0,
+            top.take_left(28).1,
+            Align::Right,
+            t.text_faint,
+            &self.scope.to_uppercase(),
+        );
+        let (name, rest) = rest.take_top(24);
+        cx.text(
+            FontId::Bold,
+            16.0,
+            name,
+            Align::Left,
+            if self.enabled { t.text } else { t.text_faint },
+            self.job(),
+        );
+        let (ring, sub) = if self.sub.is_empty() {
+            (rest, None)
+        } else {
+            let (sub, ring) = rest.take_bottom(16);
+            (ring, Some(sub))
+        };
+        let d = ring.h.min(ring.w - 10).max(20);
+        let (ox, oy) = (ring.x + ring.w / 2, ring.y + ring.h / 2 + 2);
+        let rad = d as f32 / 2.0 - 5.0;
+        let lit = if self.enabled { self.pos } else { 0.0 };
+        mpfree_ui::draw::ring(cx, ox, oy, rad, lit, false, col);
+        let vr = Rect::new(ox - rad as i32, oy - 12, 2 * rad as i32, 24);
+        let value = if self.enabled {
+            self.value.as_str()
+        } else {
+            "—"
+        };
+        // A long value ("12 of 15") a size smaller, to stay inside the ring.
+        let px = if cx.measure(FontId::Bold, 16.0, value) > vr.w - 6 {
+            13.0
+        } else {
+            16.0
+        };
+        cx.text(
+            FontId::Bold,
+            px,
+            vr,
+            Align::Center,
+            if self.enabled { t.text } else { t.text_faint },
+            value,
+        );
+        if let (Some(sub), true) = (sub, self.enabled) {
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                sub,
+                Align::Center,
+                t.text_dim,
+                &self.sub,
+            );
         }
     }
 }
@@ -198,6 +319,11 @@ fn arc(cx: &mut PaintCx, (x, y): (f32, f32), rad: f32, from: f32, sweep: f32, do
 
 impl Widget for KnobCard {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        // In a column (168 px wide) rather than a strip (about three times
+        // as wide as high).
+        if r.w < 2 * r.h {
+            return self.paint_tall(cx, r);
+        }
         let t = cx.theme.clone();
         cx.panel(r);
         if self.focused && self.enabled {
@@ -273,13 +399,29 @@ impl Widget for KnobCard {
             .disabled_if(!self.enabled || self.focused)]
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
-        if phase != Touch::Down {
-            None
-        } else if self.enabled {
-            Some(EventKind::Select(0))
-        } else {
-            (!self.why.is_empty()).then_some(EventKind::Select(1))
+    fn touch(&mut self, _f: u64, phase: Touch, _x: i32, y: i32, _r: Rect) -> Option<EventKind> {
+        match phase {
+            Touch::Down if self.enabled => {
+                self.drag = Some((y, false));
+                Some(EventKind::Select(0))
+            }
+            Touch::Down => (!self.why.is_empty()).then_some(EventKind::Select(1)),
+            Touch::Move => {
+                let (from, _) = self.drag?;
+                let detents = (from - y) / mpfree_ui::qlink::DRAG_DETENT;
+                if detents == 0 {
+                    return None;
+                }
+                self.drag = Some((from - detents * mpfree_ui::qlink::DRAG_DETENT, true));
+                Some(EventKind::Step {
+                    index: self.knob,
+                    delta: detents,
+                })
+            }
+            _ => {
+                self.drag = None;
+                None
+            }
         }
     }
 }
@@ -538,8 +680,15 @@ impl Widget for InfoCard {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.panel(r);
-        let inner = Rect::new(r.x + t.pad, r.y + 12, (r.w - 2 * t.pad).max(0), r.h - 24);
-        let (head, body) = inner.take_top(22);
+        // Under a list (56 px) the two lines sit closer than in a strip.
+        let (pad_y, head_h) = if r.h < 70 { (7, 18) } else { (12, 22) };
+        let inner = Rect::new(
+            r.x + t.pad,
+            r.y + pad_y,
+            (r.w - 2 * t.pad).max(0),
+            r.h - 2 * pad_y,
+        );
+        let (head, body) = inner.take_top(head_h);
         cx.text(
             FontId::Bold,
             t.size_small - 1.0,

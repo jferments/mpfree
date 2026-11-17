@@ -62,13 +62,16 @@ pub const BAR: &str = "smp-rec-bar";
 pub const VIEW: &str = "smp-rec-view";
 pub const LIST: &str = "smp-rec-list";
 pub const BUTTONS: &str = "smp-rec-buttons";
+/// The Q-Link column, as on every page: the Q-Links turn nothing here,
+/// so its four cards are free.
+pub const QLINKS: &str = "smp-rec-qlinks";
 pub const WHEEL: &str = "smp-rec-wheel";
 
 /// The tab's page: the input beside the Record list, the buttons under
 /// them.
 pub const LAYOUT: &str = "col(header:60, row(smp-rec-bar:*, smp-send:330):60, \
-                          row(smp-rec-view:*, smp-rec-list:340):*, \
-                          row(smp-rec-buttons:*, smp-rec-wheel:340):88, hint:26)";
+                          row(col(row(smp-rec-view:*, smp-rec-list:340):*, \
+                          row(smp-rec-buttons:*, smp-rec-wheel:340):88):*, smp-rec-qlinks:168):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 6;
@@ -556,6 +559,7 @@ impl RecTab {
         buttons.primary = Some(0);
         ui.add(BUTTONS, buttons);
         ui.add(WHEEL, InfoCard::new("The row picked"));
+        ui.add(QLINKS, mpfree_ui::qlink::QLinkColumn::new());
         ui.add_page(name, LAYOUT)?;
         let mut tab = RecTab {
             name: name.to_string(),
