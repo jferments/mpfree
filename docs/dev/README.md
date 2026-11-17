@@ -68,6 +68,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [EQ](design/fx-eq.md): the design of the eight-band EQ: matched bells and shelves, the HQ 2x Quality, measuring, cost, defaults and presets (`rust/mpfree-fx`, 2026-11-17).
 - [Reverbs](design/fx-reverb.md): the design of the Room, Plate, Spring and the Cloud engine (Hall, Cloud, Echoes): research, feedback delay networks, decay and level, measuring, cost, defaults and presets (`rust/mpfree-fx`, 2026-11-17).
 - [Chorus, flanger and phaser](design/fx-modulation.md): the design of the modulation effects: research, the moving read and its pitch, width, sync, measuring, cost, defaults and presets (`rust/mpfree-fx`, 2026-11-17).
+- [Compressor](design/fx-compressor.md): the design of the compressor: the gain computer and the smooth decoupled peak detector, times as time constants, the four styles and their program-dependent release, FET colour from Chebyshev harmonics, auto makeup, Range and Link, the presets, the K targets and the cost (`rust/mpfree-fx`, 2026-11-17).
 - [Export](design/export.md): the mixdown, stems and MIDI file from one pass over the song, Fast (quiet, the default) or Listen (real time), when an export has to listen, and the app's part (`rust/mpfree-export`).
 - [Modulation](design/modulation.md): parameter addresses, macros, the mod matrix, morph and Q-Link bindings (`rust/mpfree-param`, `rust/mpfree-mod`).
 
