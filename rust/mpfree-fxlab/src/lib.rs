@@ -19,6 +19,9 @@
 //!   [`wobble`] (how much modulation smears a held note), and [`quality`]
 //!   (every target of a class as one report, and the ratchet that keeps
 //!   the numbers from getting worse).
+//! - [`sampler`]: the sampler's own quality numbers (pitching, loop seams,
+//!   voice stops, the filter against its analog prototype) with the same
+//!   ratchet, so the voice is held to the bar the effects are.
 //! - [`programme`]: every stimulus in one recording with a sync chirp and
 //!   a schedule, for capturing a reference device and cutting it back up.
 //! - [`card`]: report cards over the registry, written as JSON.
@@ -47,6 +50,7 @@ pub mod prototype;
 pub mod quality;
 pub mod response;
 pub mod room;
+pub mod sampler;
 pub mod signals;
 pub mod wav;
 pub mod wobble;

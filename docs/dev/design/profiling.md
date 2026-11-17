@@ -73,9 +73,11 @@ Left, in the review's order, none started:
 
 - **4. A read-only device run:** the Sound cores A/B boots (one core against
   two and three), the CPU's idle states and the interrupt threads'
-  priorities as they are, the cost of a decaying voice (the synths and the
-  sampler don't flush denormals, and the CPU's flush-to-zero bit is never
-  set), and whether the temperature and clock files exist on the MPC (if
+  priorities as they are, the cost of a decaying voice (the sampler
+  flushes its own since its R2 step, see
+  [sampler-architecture](sampler-architecture.md#real-time-guarantees-and-how-they-are-tested);
+  the synths haven't been checked, and the CPU's flush-to-zero bit is
+  never set), and whether the temperature and clock files exist on the MPC (if
   they do, °C and MHz go on the 30 s status line). It decides which of 5,
   7 and 8 pays most.
 - **5. Cheaper engines:** 16-bit sample storage (the MPC is 8 to 13 times

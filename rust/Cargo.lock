@@ -990,6 +990,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-fx",
  "mpfree-node",
+ "mpfree-sampler",
 ]
 
 [[package]]
