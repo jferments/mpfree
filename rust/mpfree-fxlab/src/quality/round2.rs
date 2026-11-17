@@ -2176,6 +2176,219 @@ pub(super) fn amp(r: &mut Report) {
             1.0,
         );
     }
+
+    fuzz(r);
+}
+
+// ---------------------------------------------------------------------------
+// Fuzz (plan-2 section 12, decision 10.6), in the amp class.
+
+const FUZZ: &str = "mpfree.fx.fuzz";
+
+static FUZZ_FACE: [(u16, f32); 1] = [(ids::fuzz::MODEL, 0.0)];
+static FUZZ_MUFF: [(u16, f32); 1] = [(ids::fuzz::MODEL, 1.0)];
+static FUZZ_OCTAVE: [(u16, f32); 1] = [(ids::fuzz::MODEL, 2.0)];
+
+/// The Gate the sputter rows use.
+const FUZZ_GATE: f64 = 70.0;
+
+/// How far the output falls (RMS, the last tenth of 0.4 s) when a 220 Hz
+/// sine falls from -12 to -32 dBFS, dB: a fuzz that sustains keeps it
+/// small. RMS, not the fundamental, as the octave's is an octave up.
+fn sustain_drop_db(d: &mut dyn Dut) -> f64 {
+    let rate = d.rate();
+    let n = (0.4 * rate as f64) as usize;
+    let w = rate as usize / 10;
+    let mut level = |db: f64| {
+        let x = Stereo::mono(sine(220.0, db_to_amp(db), n, rate), rate);
+        let y = d.render(&x, 0).left;
+        db_amp(rms_of(&y[n - w..n]))
+    };
+    level(-12.0) - level(-32.0)
+}
+
+/// A 220 Hz note from -12 dBFS decaying 40 dB a second for two seconds:
+/// the note's level (dBFS, peak) when the output, in 10 ms windows, first
+/// falls 20 dB under its level 100 ms in. A fuzz that sputters breaks up
+/// while the note is still loud; -92 if it never does.
+fn breakup_dbfs(d: &mut dyn Dut) -> f64 {
+    let rate = d.rate();
+    let n = 2 * rate as usize;
+    let x: Vec<f64> = sine(220.0, db_to_amp(-12.0), n, rate)
+        .iter()
+        .enumerate()
+        .map(|(i, v)| v * db_to_amp(-40.0 * i as f64 / rate as f64))
+        .collect();
+    let y = d.render(&Stereo::mono(x, rate), 0).left;
+    let w = rate as usize / 100;
+    let env: Vec<f64> = y.chunks(w).map(rms_of).collect();
+    let start = env[10];
+    env.iter()
+        .enumerate()
+        .skip(10)
+        .find(|(_, e)| **e < start * 0.1)
+        .map_or(-92.0, |(i, _)| -12.0 - 40.0 * (i * w) as f64 / rate as f64)
+}
+
+fn fuzz(r: &mut Report) {
+    use ids::fuzz as f;
+    let rate = r.rate;
+    let (_, presets) = engine_subjects(FUZZ, "fuzz", "fuzz");
+    let p18 = pink_at(rate, -18.0, 4.0);
+    let models: [(&str, &'static [(u16, f32)]); 3] = [
+        ("face", &FUZZ_FACE),
+        ("muff", &FUZZ_MUFF),
+        ("octave", &FUZZ_OCTAVE),
+    ];
+    for (model, fixed) in models {
+        let s = Subject {
+            name: format!("fuzz/{model}"),
+            id: FUZZ,
+            fixed,
+            preset: None,
+        };
+        let name = s.name.as_str();
+
+        // A11: aliasing at full fuzz (the target) and at the default.
+        for fz in [60.0, 100.0] {
+            let mut d = make_with(&s, rate, &[(f::FUZZ, fz)]);
+            for (hz, level, tag, target) in [
+                (1000.0, -6.0, "1k_m6dbfs", None),
+                (5000.0, -12.0, "5k_m12dbfs", Some(-50.0)),
+            ] {
+                r.put(
+                    "A11",
+                    name,
+                    format!("alias_{tag}_fuzz{fz}"),
+                    Some(alias(&mut d, hz, level).0),
+                    Better::Lower,
+                    if fz == 100.0 { target } else { None },
+                    1.0,
+                );
+            }
+        }
+
+        // A10: it sustains at full fuzz, and with the Gate up it breaks
+        // up while the note is still loud (without it, it holds on).
+        let mut d = make_with(&s, rate, &[(f::FUZZ, 100.0)]);
+        r.put(
+            "A10",
+            name,
+            "sustain_drop_db_fuzz100",
+            Some(sustain_drop_db(&mut d)),
+            Better::Lower,
+            Some(6.0),
+            0.5,
+        );
+        r.put(
+            "A10",
+            name,
+            "breakup_dbfs_fuzz100",
+            Some(breakup_dbfs(&mut d)),
+            Better::Info,
+            None,
+            0.0,
+        );
+        let mut d = make_with(&s, rate, &[(f::FUZZ, 100.0), (f::GATE, FUZZ_GATE)]);
+        r.put(
+            "A10",
+            name,
+            "breakup_dbfs_fuzz100_gate70",
+            Some(breakup_dbfs(&mut d)),
+            Better::Higher,
+            Some(-40.0),
+            1.0,
+        );
+
+        // A3: level across Fuzz, on pink at -18 dBFS.
+        for fz in [0.0, 25.0, 50.0, 75.0, 100.0] {
+            let mut d = make_with(&s, rate, &[(f::FUZZ, fz)]);
+            r.put(
+                "A3",
+                name,
+                format!("lu_pink18_fuzz{fz}"),
+                Some(lu(&mut d, &p18)),
+                Better::Near(0.0),
+                Some(2.0),
+                0.3,
+            );
+        }
+
+        // Low keep: a 50 Hz sine under a 150 Hz crossover comes out as it
+        // went in.
+        let mut d = make_with(&s, rate, &[(f::FUZZ, 100.0), (f::LOW_KEEP, 3.0)]);
+        r.put(
+            "A13",
+            name,
+            "low_keep_50hz_gain_db",
+            Some(gain_at(&mut d, 50.0, -12.0)),
+            Better::Near(0.0),
+            Some(1.0),
+            0.3,
+        );
+
+        // A8: a Model change and Low keep turned on, under a 220 Hz sine.
+        let to = if model == "face" { 1.0 } else { 0.0 };
+        let mut d = make(&s, rate);
+        r.put(
+            "A8",
+            name,
+            "model_change_db",
+            Some(switch_click(&mut d, f::MODEL, to, 220.0)),
+            Better::Lower,
+            Some(3.0),
+            0.5,
+        );
+        let mut d = make(&s, rate);
+        r.put(
+            "A8",
+            name,
+            "low_keep_change_db",
+            Some(switch_click(&mut d, f::LOW_KEEP, 3.0, 220.0)),
+            Better::Lower,
+            Some(3.0),
+            0.5,
+        );
+
+        // Silence in, silence out, with and without the Gate.
+        for gate in [0.0, 100.0] {
+            let mut d = make_with(&s, rate, &[(f::FUZZ, 100.0), (f::GATE, gate)]);
+            let silence = Stereo::mono(vec![0.0; rate as usize], rate);
+            r.put(
+                "A9",
+                name,
+                format!("silence_out_dbfs_fuzz100_gate{gate}"),
+                Some(floor(db_amp(peak_of(&d.render(&silence, 0).left)))),
+                Better::Lower,
+                Some(-120.0),
+                1.0,
+            );
+        }
+    }
+
+    // A4: the presets as loud as the dry; their aliasing kept.
+    for s in &presets {
+        let name = s.name.as_str();
+        let mut d = make(s, rate);
+        r.put(
+            "A4",
+            name,
+            "lu_pink18",
+            Some(lu(&mut d, &p18)),
+            Better::Near(0.0),
+            Some(1.0),
+            0.3,
+        );
+        r.put(
+            "A11",
+            name,
+            "alias_5k_m12dbfs",
+            Some(alias(&mut d, 5000.0, -12.0).0),
+            Better::Lower,
+            None,
+            1.0,
+        );
+    }
 }
 
 #[cfg(test)]

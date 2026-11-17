@@ -57,6 +57,7 @@ const IDS: &[&str] = &[
     "mpfree.fx.plate",
     "mpfree.fx.spring",
     "mpfree.fx.amp",
+    "mpfree.fx.fuzz",
     "mpfree.fx.exciter",
     "mpfree.fx.xy",
     "mpfree.fx.autowah",

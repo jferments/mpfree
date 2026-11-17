@@ -1,5 +1,5 @@
 //! The effects added for MPC coverage (movement, dynamics, rooms, echoes,
-//! amp and exciter), walked from the registry: each one is block-size
+//! amp, fuzz and exciter), walked from the registry: each one is block-size
 //! invariant under automation, stays finite and bounded at every extreme,
 //! resets to the same output as a fresh node, keeps its latency whatever
 //! its parameters, and its presets name its own parameters. Then each
@@ -26,6 +26,7 @@ const COVERED: &[&str] = &[
     "mpfree.fx.plate",
     "mpfree.fx.spring",
     "mpfree.fx.amp",
+    "mpfree.fx.fuzz",
     "mpfree.fx.exciter",
     "mpfree.fx.xy",
     "mpfree.fx.autowah",
