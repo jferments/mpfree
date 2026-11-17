@@ -958,6 +958,12 @@ impl PlayTab {
         self.layer
     }
 
+    /// The layer picked on the map while it showed pad `pad`; None if it
+    /// shows another pad, or none yet. The other tabs edit this layer.
+    pub fn layer_of(&self, pad: usize) -> Option<usize> {
+        (self.shown_pad == Some(pad)).then_some(self.layer)
+    }
+
     /// The row picked in the section's list.
     pub fn row(&self, ui: &Ui) -> Row {
         let rows = self.section.rows();

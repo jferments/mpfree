@@ -16637,6 +16637,86 @@ mod tests {
     }
 
     #[test]
+    fn the_wave_and_grain_tabs_edit_the_layer_picked_on_play() {
+        use mpfree_sampler::model::PlayMode;
+        use mpfree_sampler_ui::play_tab::{self, LAYERS, LAYER_EDIT};
+        use mpfree_sampler_ui::widgets::PadBar;
+        use mpfree_sampler_ui::{grain_tab, wave_tab};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let back = |p: &mut Player| {
+            let (sent, _) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+        };
+        ev(&mut p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
+        // Add layer picks the new layer 2.
+        ev(&mut p, LAYER_EDIT, EventKind::Tab(0));
+        back(&mut p);
+        ev(&mut p, play_tab::BAR, EventKind::Tab(grain_tab::TAB));
+        assert_eq!(
+            p.ui.get::<PadBar>(grain_tab::BAR).unwrap().title,
+            "Pad A5 · Break 92 · layer 2"
+        );
+        let row = |r: grain_tab::Row| grain_tab::Row::ALL.iter().position(|x| *x == r).unwrap();
+        for r in [grain_tab::Row::Mode, grain_tab::Row::Sync] {
+            ev(
+                &mut p,
+                grain_tab::LIST,
+                EventKind::Step {
+                    index: row(r),
+                    delta: 1,
+                },
+            );
+            p.apply(ToUi::SampleLift);
+        }
+        back(&mut p);
+        let regions = |p: &Player| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[..2]
+                .iter()
+                .map(|l| (l.region.mode, l.region.grain.sync.is_some()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            regions(&p),
+            vec![(PlayMode::Loop, false), (PlayMode::Granular, true)],
+            "layer 2 alone plays grains, synced to the tempo"
+        );
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l.contains("tempo sync Off -> Density")),
+            "{:?}",
+            events_log(&p)
+        );
+        // The Wave tab shows the same layer; back on Play, picking layer 1
+        // moves every tab to it.
+        ev(&mut p, grain_tab::BAR, EventKind::Tab(0));
+        assert!(p
+            .ui
+            .get::<PadBar>(wave_tab::BAR)
+            .unwrap()
+            .title
+            .ends_with("· layer 2 of 2"));
+        ev(&mut p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
+        ev(&mut p, LAYERS, EventKind::Select(0));
+        ev(&mut p, play_tab::BAR, EventKind::Tab(0));
+        assert!(p
+            .ui
+            .get::<PadBar>(wave_tab::BAR)
+            .unwrap()
+            .title
+            .ends_with("· layer 1 of 2"));
+    }
+
+    #[test]
     fn the_rec_tab_records_the_line_input_onto_a_pad_and_frees_the_buffer_when_it_goes_off() {
         use mpfree_sampler_ui::rec_tab;
         use mpfree_sampler_ui::rec_widgets::InputView;

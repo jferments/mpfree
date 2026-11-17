@@ -158,7 +158,11 @@ struct Gesture {
 }
 
 enum Before {
-    Region(Region),
+    /// A layer's region on the Wave, Warp or Chop tab.
+    Region {
+        layer: usize,
+        region: Box<Region>,
+    },
     /// A layer's region on the Grain tab.
     Grain {
         layer: usize,
@@ -1415,11 +1419,16 @@ impl SamplePage {
         if self.state.is_none() {
             return;
         }
+        let layer = self.layer();
+        let bpm = self.tempo();
         let Some(project) = self.projects.get(self.kit) else {
             return;
         };
         let sources = &mut self.sources;
-        self.grain_state = GrainState::from_project(project, self.pad, 0, |s| sources.get(s));
+        self.grain_state = GrainState::from_project(project, self.pad, layer, |s| sources.get(s));
+        if let Some(gs) = self.grain_state.as_mut() {
+            gs.bpm = bpm;
+        }
         let Some(gs) = self.grain_state.as_ref() else {
             return;
         };
@@ -1443,11 +1452,27 @@ impl SamplePage {
     }
 
     fn build_state(&mut self) -> Option<WaveState> {
+        let layer = self.layer();
         let p = self.projects.get(self.kit)?;
-        let region = &p.pad(self.pad)?.layers.first()?.region;
+        let region = &p.pad(self.pad)?.layers.get(layer)?.region;
         let source = p.source(region.source)?;
         let view = self.sources.get(source);
-        WaveState::from_project(p, self.pad, 0, view)
+        WaveState::from_project(p, self.pad, layer, view)
+    }
+
+    /// The layer the Wave, Warp, Chop and Grain tabs edit: the one picked
+    /// on the Play tab's layer map for the pad shown, else the first.
+    fn layer(&self) -> usize {
+        let n = self
+            .projects
+            .get(self.kit)
+            .and_then(|p| p.pad(self.pad))
+            .map_or(1, |p| p.layers.len().max(1));
+        self.play
+            .as_ref()
+            .and_then(|t| t.layer_of(self.pad))
+            .unwrap_or(0)
+            .min(n - 1)
     }
 
     /// Map to keys: `pads` of the kit become one keygroup instrument, each
@@ -2613,7 +2638,10 @@ impl SamplePage {
                             id: gesture,
                             kit,
                             pad,
-                            before: Before::Region(st.region.clone()),
+                            before: Before::Region {
+                                layer: st.layer,
+                                region: Box::new(st.region.clone()),
+                            },
                         });
                     }
                 }
@@ -2956,11 +2984,11 @@ impl SamplePage {
             return;
         };
         let what = match &g.before {
-            Before::Region(before) => {
-                let Some(l) = after.layers.first() else {
+            Before::Region { layer, region } => {
+                let Some(l) = after.layers.get(*layer) else {
                     return;
                 };
-                describe(before, &l.region, self.rate)
+                describe(region, &l.region, self.rate)
             }
             Before::Grain { layer, region } => {
                 let Some(l) = after.layers.get(*layer) else {

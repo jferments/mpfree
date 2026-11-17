@@ -44,7 +44,7 @@ A cutoff or resonance change reaches a sound that is still playing, gliding ther
 A pad can hold up to 16 sounds, its **layers**: soft and hard hits of a snare, a kick with a click on top, round robins that take turns.
 
 - **Add layer**, under the layer map, adds a copy of the picked layer just after it. The copy takes the upper half of its velocities, so a soft hit plays the first and a hard hit the new one. Change its sound on the **Sound** row: it steps through the kit's sounds, and the new sound plays from start to end, keeping the layer's play mode.
-- **Tap a layer** on the map to pick it. The Layers section's rows then set that layer alone: **Sound**, **Vel low** and **Vel high** (the velocities it plays; dragging its edges on the map does the same), and its own **Level**, **Pan** and **Tune**, on top of the pad's.
+- **Tap a layer** on the map to pick it. The Layers section's rows then set that layer alone: **Sound**, **Vel low** and **Vel high** (the velocities it plays; dragging its edges on the map does the same), and its own **Level**, **Pan** and **Tune**, on top of the pad's. The **Wave**, **Warp**, **Chop** and **Grain** pages then work on that layer too: its trim, loop, warp, slices and grains.
 - **Remove layer** takes the picked layer out. A pad keeps one layer at least.
 - The **Layers** row says how the layers that match a hit play: all together (**Stacked**), in turn (**Cycle**), or one at random (**Random**).
 
@@ -94,6 +94,10 @@ The scenes are saved with the kit.
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
 
 Grains play only when the pad's **Mode** is **Granular**. Until then a button over the picture says which mode the pad is in: tap it to play the pad as grains. The **Mode** row steps through every mode to **Granular** too (on the way, **Loop** gets a loop region of its own, as on the Wave page).
+
+**In time with the beat.** **Tempo sync** locks the grains to the project tempo: **Density** starts them on the beat grid (grains per beat, from one a bar to 32 a beat), **Size** makes each one a length in beats (1/64 of a beat to 4 beats), and **Both** does both. Change the tempo and a cloud that is playing follows at once. Turn it **Off** and the density and size come back as they were. **Level** sets how loud the cloud plays (−24 to +12 dB), for a dense cloud that gets too loud or a sparse one that is too quiet.
+
+**Every layer its own cloud.** The Grain page (and the Wave, Warp and Chop pages) work on the layer picked on the Play page's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.
 
 ## FX: effects on one pad, or on the whole kit
 

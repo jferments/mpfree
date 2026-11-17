@@ -277,6 +277,47 @@ fn the_playhead_shows_where_grains_read_and_view_swaps_keep_playing() {
     assert!(e.live_grains() > 0);
 }
 
+/// Where each burst of sound starts (silence before it).
+fn bursts(x: &[f32]) -> Vec<usize> {
+    (0..x.len())
+        .filter(|&i| x[i] != 0.0 && (i == 0 || x[i - 1] == 0.0))
+        .collect()
+}
+
+#[test]
+fn a_synced_cloud_follows_the_project_tempo_not_its_saved_one() {
+    let s = Source::new("dc", RATE, 1, vec![0.5; RATE as usize * 2]).unwrap();
+    // Saved at some other tempo: the engine's is the one that counts.
+    let g = GrainParams {
+        sync: Some(TempoSync {
+            frames_per_beat: 31_000.0,
+            grains_per_beat: Some(4.0),
+            size_beats: Some(1.0 / 16.0),
+        }),
+        ..GrainParams::default()
+    };
+    let mut e = engine_for(&[(0, granular_pad(&s, g))], &s, 8);
+    assert_eq!(e.frames_per_beat(), 22_050.0, "120 BPM at 44.1 kHz");
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
+    let gaps = |l: &[f32]| -> Vec<usize> { bursts(l).windows(2).map(|w| w[1] - w[0]).collect() };
+    let (l, _) = run(&mut e, 44_100, 128);
+    let at_120 = gaps(&l);
+    assert_eq!(at_120.len(), 7, "eight grains in a second: {at_120:?}");
+    assert!(
+        at_120.iter().all(|&d| d == 5512 || d == 5513),
+        "a sixteenth at 120 BPM: {at_120:?}"
+    );
+    // Halving the tempo spaces the grains of the voice playing twice as far.
+    e.set_tempo(60.0);
+    let (l, _) = run(&mut e, 66_150, 128);
+    let at_60 = gaps(&l);
+    assert!(at_60.len() >= 4, "{at_60:?}");
+    assert!(at_60.iter().all(|&d| d == 11_025), "{at_60:?}");
+}
+
 #[test]
 fn grain_settings_are_checked_and_kept_across_modes() {
     let s = ramp(1000);

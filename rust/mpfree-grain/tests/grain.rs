@@ -288,6 +288,37 @@ fn synced_grains_land_on_the_transport_grid() {
 }
 
 #[test]
+fn a_tempo_set_on_the_voice_moves_a_synced_cloud() {
+    let data = vec![0.5; 96_000];
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    // Saved at 120 BPM (24000 frames a beat at 48 kHz), played at 60.
+    let sync = TempoSync {
+        frames_per_beat: 24_000.0,
+        grains_per_beat: Some(4.0),
+        size_beats: Some(1.0 / 32.0),
+    };
+    let mut v = GrainVoice::new(RATE, 1);
+    v.set_params(Params {
+        sync: Some(sync),
+        ..Params::default()
+    });
+    v.set_tempo(48_000.0);
+    v.set_tempo(f64::NAN);
+    v.set_tempo(0.5);
+    v.start();
+    let (l, _) = run(&mut v, &src, &mut Budget::new(256), 0, 60_000, 128);
+    let starts = bursts(&l);
+    assert_eq!(starts.len(), 5, "{starts:?}");
+    for w in starts.windows(2) {
+        assert_eq!(w[1] - w[0], 12_000, "a grain each quarter of a 60 BPM beat");
+    }
+    // A 32nd of a 60 BPM beat: 1500 frames.
+    let first = starts[1];
+    assert!(l[first..first + 1498].iter().all(|&x| x > 0.0));
+    assert_eq!(l[first + 1499], 0.0);
+}
+
+#[test]
 fn the_budget_caps_grains_across_voices() {
     let data = vec![0.1; 48_000];
     let src = Clip::new(&data, 1, RATE).unwrap();
