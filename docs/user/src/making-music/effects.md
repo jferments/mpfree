@@ -82,7 +82,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Exciter** | Adds sparkle and air to the top end. |
 | **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
 | **Lo-fi** | Worn tape and dusty vinyl under one **Amount** knob, from a hint of age to a broken machine. **Wow** is slow pitch drift that wanders like a worn tape, not a steady wobble, at about **Rate**; **Stereo** lets the two sides drift apart; **Flutter** is a fast waver; **Saturation** is the tape's soft grit; **Dropouts** are short dips in level where the tape is worn. **Crackle**, **Noise** (hiss) and **Hum** (at your country's **Mains**, 50 or 60 Hz) follow the music while **Follow** is at 100 %: they come in with the sound and fade about a second after it stops, so a stopped track is silent. Turn Follow down for a bed of noise that keeps going. **Low cut**, **High cut** and **Width** set the tone. At Amount 0 it is exactly the sound going in (see [Lo-fi](#lo-fi)). |
-| **Chorus**, **Flanger**, **Phaser** | Movement and width. The Chorus is below. |
+| **Chorus**, **Flanger**, **Phaser** | Movement and width. The Chorus and the Flanger are below. |
 | **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. |
 | **Ring mod** | Bells, clangs and robot voices. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one. |
@@ -123,6 +123,16 @@ Changing the curve glides from one blend to the other, so it doesn't click. A pr
 
 > [!NOTE]
 > Choruses saved before this change sound a little different: at the same Mix they are about 3 dB louder (pick **Linear** for the old blend), with three or four voices they are wide, and Depth now means the same swing at every Delay, so a chorus with a long Delay wobbles less than it did and one with a short Delay a little more. The presets keep the swing they had.
+
+### The Flanger
+
+- **Delay** is the middle of the sweep (a pedal's Manual), from 0.1 to 10 ms, and **Depth** swings it up to two octaves either way, so the notches glide evenly up and down the sound. The sweep never goes past 20 ms, where a flanger turns into a doubler: from a Delay of 5 ms up, full Depth swings a little less, the same both ways.
+- **Feedback** sends the copy round again: up for a metallic ring, down (below 0) for a hollow one. The flanger stays as loud as the sound going in at any Feedback and Mix: more Feedback sharpens the notches and the peaks between them, it doesn't make the sound louder.
+- The notches stay deep all the way up, however the sweep moves, and the curve on its page is the one you hear.
+- **Mix** is a plain crossfade: 50 % is the deepest notch.
+
+> [!NOTE]
+> Flangers saved before this change sound a little different: they go in at the level of the sound going in, so at the defaults they are about 2 dB louder than before and with Feedback near either end up to about 4 dB quieter; their highs are brighter; and with a Delay over 5 ms and a deep Depth the sweep stops at 20 ms.
 
 ### A delay's repeats
 
