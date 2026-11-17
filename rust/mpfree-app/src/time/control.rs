@@ -163,6 +163,7 @@ fn line_words(line: LaunchGrid) -> String {
         LaunchGrid::Bars(1) => "on the next bar".to_string(),
         LaunchGrid::Bars(n) => format!("on the next {n}-bar line"),
         LaunchGrid::Ticks(t) => format!("on the next {}", grid_name(t)),
+        LaunchGrid::At(_) => "at the end of its pass".to_string(),
     }
 }
 

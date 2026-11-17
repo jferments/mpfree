@@ -105,7 +105,7 @@ The Record panel has three tabs at its top: **Record**, the record settings, **C
 - **Follow:** what the track plays after this clip. **Next**, **Previous**, **First** and **Last** pick from the track's clips; **Any** picks one at random, this one included, and **Other** any but this one; **Again** plays it from its start; **Stop** stops the track.
 - **After:** after how many bars, counted from where the clip started. Turning **Follow** on starts it at one pass of the clip.
 - **Launch:** **project** starts this clip on the Record tab's **Launch** line. Or give it its own, from **at once** to **8 bars**: a fill on **1/4** comes in on the next beat while the rest of the set changes on the bar.
-- **Mode:** **Restart** starts the clip from its top. **Legato** takes over from the clip the track is playing at the same place in its pass, so a variation slides in mid-phrase: with **Verse A** two bars long, a legato **Verse B** that starts on the bar line halfway through it plays on from its own second bar. With nothing playing, it starts from its top.
+- **Mode:** **Restart** starts the clip from its top. **Legato** takes over from the clip the track is playing at the same place in its pass, so a variation slides in mid-phrase: with **Verse A** two bars long, a legato **Verse B** that starts on the bar line halfway through it plays on from its own second bar. With nothing playing, it starts from its top. **Once** makes it a one-shot: it plays one pass and then its track stops, right where the pass ends, whatever the Launch line (in song mode the song carries on). A fill of three beats stops after three beats. From its last bar its cell says where it stops ("stops 3.4"). A **Follow** set on it waits.
 
 Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **+**, as on the Record tab. Hold **SHIFT** as you tap **Length**'s arrows to **double** the clip (its notes play again in the new half) or **halve** it, and **Speed**'s to play it twice as fast or half as fast. Each change plays at once. A row you change is one take ("Settings 4 · Bass / 2"), however far you turn it, so **UNDO** puts it back in one go.
 
@@ -117,7 +117,7 @@ Under the rows, **Save state** keeps the clip as it is now: its notes, locks, kn
 
 A clip keeps one saved state, and a new Save state replaces it. Saved states last while the project is open; they are not saved with it. Deleting, moving or copying a clip, or moving a row, forgets the saved states of the slots it touches. A Loop track's cell has no Save state: the Looper's **UNDO** takes layers back.
 
-Coming: the clip's name and colour, its step size, a one-shot mode, and playing it backwards.
+Coming: the clip's name and colour, its step size, and playing it backwards.
 
 ## Takes
 

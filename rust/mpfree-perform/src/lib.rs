@@ -23,6 +23,10 @@
 //!   (a locate past the point) starts it on the next bar line instead.
 //!   A scene's follow goes first and cues every track, so a clip follow on
 //!   a track that already has a cue waits: whatever is cued wins.
+//! - A one-shot clip ([`mpfree_seq::Clip::once`]) has its track's stop
+//!   cued the same way, in the bar before the end of the pass it started
+//!   in, on that tick exactly ([`once_end`], `LaunchGrid::At`); its own
+//!   follow waits.
 //! - Stay keeps playing and rolls again `bars` bars later, so a follow
 //!   with a chance between Next and Stay plays on for a random number of
 //!   passes. Again starts the same again (a new start to count from).
@@ -55,7 +59,7 @@ pub use song::{Recorded, SongRecorder};
 use mpfree_play::{anchored, Cue, Launch, PlayView, Started};
 use mpfree_seq::arrange::scene_length;
 use mpfree_seq::scenes::follow_target;
-use mpfree_seq::{Follow, FollowAction, LaunchGrid, Project, MAX_TRACKS, SCENES, SLOTS};
+use mpfree_seq::{Clip, Follow, FollowAction, LaunchGrid, Project, MAX_TRACKS, SCENES, SLOTS};
 use mpfree_transport::Tick;
 
 /// When a launch happens.
@@ -553,7 +557,27 @@ impl Perform {
             let Some(track) = project.tracks.get(l.track) else {
                 continue;
             };
-            let Some(f) = track.slots.get(l.slot).and_then(|c| c.as_ref()?.follow) else {
+            let Some(clip) = track.slots.get(l.slot).and_then(Option::as_ref) else {
+                self.clips[l.track] = None;
+                continue;
+            };
+            // A one-shot: its track stops where the pass it started in
+            // ends, cued in the bar before as a follow is; its follow
+            // waits.
+            if clip.once {
+                self.clips[l.track] = None;
+                let end = once_end(&l, clip);
+                if now > end - bar {
+                    cues.push(Cue {
+                        track: l.track,
+                        slot: None,
+                    });
+                    self.cue_lines[l.track] = Some(LaunchGrid::At(end));
+                    fired.clips |= 1u128 << l.track;
+                }
+                continue;
+            }
+            let Some(f) = clip.follow else {
                 self.clips[l.track] = None;
                 continue;
             };
@@ -685,6 +709,15 @@ impl Perform {
     }
 }
 
+/// Where a one-shot launch stops ([`mpfree_seq::Clip::once`]): the end of
+/// the pass of `clip` that its start is in, its passes counted from its
+/// origin (a legato launch's is earlier than its start).
+pub fn once_end(l: &Launch, clip: &Clip) -> Tick {
+    let pass = clip.speed.to_song(clip.length as f64).max(1.0);
+    let k = ((l.start - l.origin) as f64 / pass).floor().max(0.0);
+    l.origin + ((k + 1.0) * pass).round() as Tick
+}
+
 /// Where a follow from `start` comes due after `stays` Stays.
 fn point(start: Tick, f: Follow, stays: u32, bar: Tick) -> Tick {
     start + i64::from(f.bars) * bar * (i64::from(stays) + 1)
@@ -693,7 +726,7 @@ fn point(start: Tick, f: Follow, stays: u32, bar: Tick) -> Tick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_seq::{Clip, Track};
+    use mpfree_seq::Track;
 
     const BAR: Tick = 3840;
 
@@ -1022,6 +1055,53 @@ mod tests {
                 slot: Some(1)
             }]
         );
+    }
+
+    /// A one-shot clip (S4): its stop is cued in the bar before the end
+    /// of the pass it started in, on that tick; a legato launch's pass
+    /// counts from its origin; its follow waits; a cue waiting wins.
+    #[test]
+    fn a_one_shot_clip_cues_its_stop_at_the_end_of_its_pass() {
+        let mut p = project();
+        {
+            let c = p.tracks[1].slots[1].as_mut().unwrap();
+            c.once = true;
+            c.follow = Some(Follow::after(1, FollowAction::Next));
+        }
+        let mut perf = Perform::default();
+        let launch = |origin, start| Launch {
+            track: 1,
+            slot: 1,
+            origin,
+            start,
+        };
+        let mut launches = vec![launch(BAR, BAR)];
+        let mut cues = vec![];
+        // Two bars long from bar 2: nothing in its first bar.
+        let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR, BAR);
+        assert_eq!(f, Fired::default(), "its follow waits");
+        let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR + 1, BAR);
+        assert_eq!(f.clips, 0b10);
+        assert_eq!(
+            cues,
+            vec![Cue {
+                track: 1,
+                slot: None
+            }]
+        );
+        assert_eq!(perf.cue_line(1), Some(LaunchGrid::At(3 * BAR)));
+        assert_eq!(LaunchGrid::At(3 * BAR).next(2 * BAR + 1, BAR), 3 * BAR);
+        assert_eq!(LaunchGrid::At(3 * BAR).next(4 * BAR, BAR), 4 * BAR);
+        // The stop waiting wins: nothing more.
+        let f = perf.due(&mut p, &mut launches, &mut cues, 2 * BAR + 2, BAR);
+        assert!(!f.changed());
+        // Legato, taking over a pass at its second bar: it ends with that
+        // pass.
+        let l = launch(0, BAR);
+        assert_eq!(once_end(&l, p.clip(1, 1).unwrap()), 2 * BAR);
+        // At half speed a pass is twice as long.
+        p.tracks[1].slots[1].as_mut().unwrap().speed = mpfree_seq::Speed::new(1, 2).unwrap();
+        assert_eq!(once_end(&launch(0, 0), p.clip(1, 1).unwrap()), 4 * BAR);
     }
 
     #[test]

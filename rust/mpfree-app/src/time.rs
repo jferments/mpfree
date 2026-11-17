@@ -3794,6 +3794,45 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// A one-shot clip (sequencer S4, the clip card's Mode: Once): it plays
+    /// one pass, its track's stop waiting from its last bar, and stops on
+    /// the tick the pass ends, though that is no bar line.
+    #[test]
+    fn a_one_shot_clip_plays_one_pass_and_its_track_stops() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        // Three beats, a note on each.
+        let mut c = Clip::new("fill", 2880);
+        c.notes = [0, 960, 1920]
+            .iter()
+            .map(|&t| mpfree_seq::Note::new(t, 100, 7, 100))
+            .collect();
+        c.once = true;
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 8, &[]);
+        let st = h.state();
+        assert_eq!(
+            st.cues,
+            vec![mpfree_play::Cue {
+                track: 0,
+                slot: None
+            }],
+            "its stop waits"
+        );
+        assert_eq!(st.cue_lines, vec![(0, mpfree_seq::LaunchGrid::At(2880))]);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        let played: Vec<u64> = pads.hits.iter().map(|h| h.0).collect();
+        assert_eq!(played.len(), 3, "one pass: {played:?}");
+        for (k, at) in [0, BAR / 4, BAR / 2].iter().enumerate() {
+            assert!(played[k].abs_diff(*at) <= 128, "{k}: {played:?}");
+        }
+        let st = h.state();
+        assert!(st.launches.is_empty() && st.cues.is_empty());
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// The song list (sequencer S4): steps added after the pick play
     /// their rows their times, in order, the next one landing on the bar
     /// its step ends; after the last everything stops. Edits are takes
