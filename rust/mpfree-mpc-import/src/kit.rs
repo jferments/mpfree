@@ -226,7 +226,12 @@ pub fn keygroup_kit(
             layers.push(layer);
         }
         if left_out {
-            notes.extend(cover(kg.number, &mut layers, &labels, span));
+            notes.extend(cover(
+                &format!("keygroup {}", kg.number),
+                &mut layers,
+                &labels,
+                span,
+            ));
         }
         let longest = labels.iter().map(|l| l.1).fold(0.0, f64::max);
         for (label, secs) in &labels {
@@ -296,8 +301,14 @@ pub fn keygroup_kit(
 /// Gives the velocities of left-out layers to the ones kept: each kept
 /// layer reaches up to the next one, the softest down to the keygroup's
 /// softest and the loudest up to its loudest. `layers` are sorted by
-/// velocity; `labels` name them. One note for each layer that grew.
-fn cover(kg: u32, layers: &mut [Layer], labels: &[(String, f64)], span: (u8, u8)) -> Vec<String> {
+/// velocity; `labels` name them; `what` names the pad or keygroup. One
+/// note for each layer that grew.
+pub(crate) fn cover(
+    what: &str,
+    layers: &mut [Layer],
+    labels: &[(String, f64)],
+    span: (u8, u8),
+) -> Vec<String> {
     let mut notes = Vec::new();
     let n = layers.len();
     for i in 0..n {
@@ -313,7 +324,7 @@ fn cover(kg: u32, layers: &mut [Layer], labels: &[(String, f64)], span: (u8, u8)
         let now = (layers[i].vel_lo, layers[i].vel_hi);
         if now != was {
             notes.push(format!(
-                "keygroup {kg}: {} now plays velocities {}-{} (was {}-{}), in place of the layers left out",
+                "{what}: {} now plays velocities {}-{} (was {}-{}), in place of the layers left out",
                 labels[i].0, now.0, now.1, was.0, was.1
             ));
         }
