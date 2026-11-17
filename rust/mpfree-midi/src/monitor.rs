@@ -752,6 +752,9 @@ pub struct Monitor {
     /// What each port's channels hold now, each way: 16 a stream.
     held: Box<[Held]>,
     ports: Vec<PortInfo>,
+    /// The names the musician gave ports on their pages (the rig's
+    /// `PortSetup::shown`), by id: [`Monitor::port_name`] says them.
+    shown: Vec<(PortId, String)>,
     /// Messages a [`Feed`] had no room for between two drains.
     pub lost: u64,
     /// When the app's clock read 0, once the app has said
@@ -780,6 +783,7 @@ impl Monitor {
             pulses: [None; STREAMS],
             held: vec![Held::new(); STREAMS * 16].into_boxed_slice(),
             ports: crate::port::Ports::new().all().to_vec(),
+            shown: Vec::new(),
             lost: 0,
             epoch: None,
         }
@@ -826,12 +830,30 @@ impl Monitor {
             .filter(|p| p.kind == PortKind::Din || p.connected)
     }
 
-    /// A port's name, if the table has it.
-    pub fn port_name(&self, port: PortId) -> Option<&str> {
+    /// The names given to ports ([`crate::setup::MidiSetup::shown`]), each
+    /// with its port's id; the ports not listed show their own names.
+    pub fn set_shown(&mut self, shown: Vec<(PortId, String)>) {
+        if self.shown != shown {
+            self.shown = shown;
+        }
+    }
+
+    /// A port's own name (the project's settings name it by this), if the
+    /// table has it.
+    pub fn own_name(&self, port: PortId) -> Option<&str> {
         self.ports
             .iter()
             .find(|p| p.id == port)
             .map(|p| p.name.as_str())
+    }
+
+    /// A port's name as the screen says it: the one given to it, else its
+    /// own, if the table has it.
+    pub fn port_name(&self, port: PortId) -> Option<&str> {
+        if let Some((_, n)) = self.shown.iter().find(|(id, _)| *id == port) {
+            return Some(n.as_str());
+        }
+        self.own_name(port)
     }
 
     /// Adds one, dropping the oldest past [`KEEP`], and notes it for the
