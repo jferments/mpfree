@@ -68,6 +68,8 @@ The picked loop's waveform runs across the top, with its length, tempo and sourc
 - **a level** you can drag,
 - **×** to delete the layer. A deleted layer can be brought back with UNDO, like an overdub. On the loop's only layer (the first pass, once the others are gone), **×** clears the whole loop, like **Clear loop**.
 
+Three lanes show at a time. When a loop has more layers, the line under the lanes says so ("swipe for more · layers 1 to 3 of 6"): **swipe up or down on the lanes** to see the others. They move a lane at a time and stay where you leave them until you pick another layer.
+
 You can also hold **ERASE** and tap a layer's lane to delete it, with the same UNDO. ERASE leaves the loops in the list alone, since a cleared loop can't be brought back.
 
 Tap a lane to pick that layer for the Q-Links:
@@ -81,7 +83,7 @@ Tap a lane to pick that layer for the Q-Links:
 
 ### Moving a layer to another loop
 
-Drag a layer out of the editor to give it to another loop. Put your finger on the layer's lane and move it: a card with the layer's name follows your finger, the layer's own lane is outlined, and the loops in the list that can take it light up, with **+ New loop**. The line at the bottom says what will happen if you let go there.
+Drag a layer out of the editor to give it to another loop. **Press and hold** the layer's lane for a moment, until it gets a blue outline, then move your finger: a card with the layer's name follows it, the layer's own lane is outlined, and the loops in the list that can take it light up, with **+ New loop**. The line at the bottom says what will happen if you let go there.
 
 - **Onto a loop:** the layer moves there. It keeps its level, pan and mute, and it plays in time with that loop's bars.
 - **Hold SHIFT as you let go** to copy it instead: the layer stays in this loop too.
