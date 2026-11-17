@@ -17,6 +17,10 @@ pub struct PadBar {
     pub active: usize,
     /// Tabs that can be opened; the others are drawn faint and ignore taps.
     pub enabled: Vec<bool>,
+    /// The title is a name that can be typed: a dotted line under it, and
+    /// a tap on it (the swatch, title and subtitle) gives
+    /// [`EventKind::Type`] 0, for the text keyboard.
+    pub nameable: bool,
 }
 
 const SEG_H: i32 = 40;
@@ -32,7 +36,14 @@ impl PadBar {
             tabs: tabs.iter().map(|s| s.to_string()).collect(),
             active: 0,
             enabled: vec![true; tabs.len()],
+            nameable: false,
         }
+    }
+
+    /// The part a tap names the pad in: the swatch, title and subtitle.
+    pub fn name_rect(&self, r: Rect) -> Rect {
+        let tabs = self.tabs_rect(r);
+        Rect::new(r.x, r.y, (tabs.x - r.x - 10).max(0), r.h)
     }
 
     /// The box holding the tabs.
@@ -77,6 +88,18 @@ impl Widget for PadBar {
             t.text,
             &self.title,
         );
+        if self.nameable {
+            // A dotted line under the title: it can be typed.
+            let w = cx
+                .measure(FontId::Bold, t.size_title + 1.0, &self.title)
+                .min(top.w);
+            let y = top.bottom() - 3;
+            let mut x = top.x;
+            while x + 4 <= top.x + w {
+                cx.canvas.fill_rect(Rect::new(x, y, 4, 2), t.text_dim);
+                x += 8;
+            }
+        }
         cx.text(
             FontId::Sans,
             t.size_small,
@@ -112,18 +135,30 @@ impl Widget for PadBar {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        (0..self.tabs.len())
+        let mut out: Vec<Target> = (0..self.tabs.len())
             .map(|i| {
                 // Faint tabs, and the tab already open, change nothing.
                 let on = self.enabled.get(i).copied().unwrap_or(false) && i != self.active;
                 Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i)).disabled_if(!on)
             })
-            .collect()
+            .collect();
+        if self.nameable {
+            out.push(Target::tap(
+                "name",
+                0,
+                self.title.clone(),
+                self.name_rect(r),
+            ));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        if self.nameable && self.name_rect(r).contains(x, y) {
+            return Some(EventKind::Type(0));
         }
         let i = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y))?;
         self.enabled

@@ -138,6 +138,20 @@ pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
 /// The pad editor's widgets all start with this (the Chop tab's with
 /// `smp-chop-`, the Play tab's with `smp-play-`).
 pub const PREFIX: &str = "smp-";
+/// The editors whose pad bar's title names the pad and its sound.
+const NAMED_BARS: [&str; 5] = [
+    wave_tab::BAR,
+    warp_tab::BAR,
+    chop_tab::BAR,
+    play_tab::BAR,
+    grain_tab::BAR,
+];
+/// The text keyboard's keys for a pad's name and its sound's.
+pub const NAME_PAD: &str = "pad";
+pub const NAME_SOUND: &str = "sound";
+/// The most characters a name typed may have (one from a file may be
+/// longer, until shortened).
+pub const NAME_MAX: usize = 32;
 const CHOP_PREFIX: &str = "smp-chop-";
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
@@ -621,6 +635,10 @@ pub struct SamplePage {
     /// A number to be typed, asked for by a tab (the Warp tempo): the
     /// screen opens the number pad ([`SamplePage::take_number_ask`]).
     number_ask: Option<mpfree_ui::numpad::NumberAsk>,
+    /// Names to be typed (a tap on the pad bar's title: the pad's and its
+    /// sound's): the screen opens the text keyboard
+    /// ([`SamplePage::take_text_ask`]).
+    text_ask: Option<Vec<mpfree_ui::textpad::TextAsk>>,
     auto_job: Option<AutoJob>,
     /// The Warp tab's Process, while one runs.
     processing: Option<Processing>,
@@ -739,6 +757,7 @@ impl SamplePage {
             auto_synth: None,
             auto_request: None,
             number_ask: None,
+            text_ask: None,
             auto_job: None,
             processing: None,
             auto_last: String::new(),
@@ -1287,6 +1306,15 @@ impl SamplePage {
             .and_then(|p| p.pad(self.pad))
             .is_some_and(|pd| !pd.layers.is_empty());
         send::show(ui, has_sound, self.sending.is_some());
+        // The pad bar's title names the pad (and its sound) on the editors
+        // of a pad with a sound.
+        for bar in NAMED_BARS {
+            if let Some(b) = ui.get_mut::<mpfree_sampler_ui::widgets::PadBar>(bar) {
+                if b.nameable != has_sound {
+                    b.nameable = has_sound;
+                }
+            }
+        }
         self.shown_heads.clear();
         if let Some(tab) = self.tab.as_ref() {
             tab.set_playheads(ui, &[]);
@@ -1626,6 +1654,15 @@ impl SamplePage {
     /// A touch on one of the editor's widgets. Taps that play the pad go
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        // A tap on the pad bar's title: type the pad's name, or its sound's.
+        if ev.kind == EventKind::Type(0)
+            && ui
+                .get::<mpfree_sampler_ui::widgets::PadBar>(&ev.widget)
+                .is_some()
+        {
+            self.ask_names();
+            return;
+        }
         // A finger dragged on a Q-Link card turns that knob, as the knob
         // would (the drag is one undo step: the finger's lift ends it).
         if let EventKind::Step { index, delta } = ev.kind {
@@ -2957,6 +2994,110 @@ impl SamplePage {
     /// tempo), for the screen's number pad.
     pub fn take_number_ask(&mut self) -> Option<mpfree_ui::numpad::NumberAsk> {
         self.number_ask.take()
+    }
+
+    /// Names a tap on the pad bar asked to be typed, for the screen's text
+    /// keyboard.
+    pub fn take_text_ask(&mut self) -> Option<Vec<mpfree_ui::textpad::TextAsk>> {
+        self.text_ask.take()
+    }
+
+    /// The pad shown, and the sound of its layer the tabs edit, to be
+    /// named: the pad first, its sound on the keyboard's switch.
+    fn ask_names(&mut self) {
+        let kit = self.kit;
+        let at = self.pad_text(kit, self.pad);
+        let layer = self.layer();
+        let Some(project) = self.projects.get(kit) else {
+            return;
+        };
+        let Some(pad) = project.pad(self.pad).filter(|p| !p.layers.is_empty()) else {
+            return;
+        };
+        let mut asks = vec![mpfree_ui::textpad::TextAsk {
+            key: NAME_PAD.to_string(),
+            label: "Pad".to_string(),
+            title: format!("Name pad {at}"),
+            value: pad.name.clone(),
+            max_len: NAME_MAX,
+        }];
+        let sound = pad
+            .layers
+            .get(layer)
+            .and_then(|l| project.source(l.region.source));
+        if let Some(s) = sound {
+            let users = project.users_of(s.id()).len();
+            let on = if users > 1 {
+                format!(" (on {users} pads)")
+            } else {
+                String::new()
+            };
+            asks.push(mpfree_ui::textpad::TextAsk {
+                key: NAME_SOUND.to_string(),
+                label: "Sound".to_string(),
+                title: format!("Name pad {at}'s sound{on}"),
+                value: s.name.clone(),
+                max_len: NAME_MAX.max(s.name.chars().count()),
+            });
+        }
+        // A pad named from a long file name keeps it until shortened.
+        asks[0].max_len = NAME_MAX.max(pad.name.chars().count());
+        self.text_ask = Some(asks);
+    }
+
+    /// The names typed (by [`NAME_PAD`] and [`NAME_SOUND`]): the pad shown
+    /// and the sound of its layer take them, one undo step, with a line
+    /// in the log and on the hint line.
+    pub fn named(&mut self, ui: &mut Ui, names: &[(String, String)]) {
+        if names.is_empty() {
+            return;
+        }
+        self.lift();
+        let kit = self.kit;
+        let pad = self.pad;
+        let at = self.pad_text(kit, pad);
+        let layer = self.layer();
+        let Some(project) = self.projects.get_mut(kit) else {
+            return;
+        };
+        let Some(source) = project
+            .pad(pad)
+            .and_then(|p| p.layers.get(layer))
+            .map(|l| l.region.source)
+        else {
+            return;
+        };
+        let typed = |key: &str| {
+            names
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, n)| n.as_str())
+        };
+        let pad_name = typed(NAME_PAD);
+        let sound_name = typed(NAME_SOUND);
+        match project.rename(pad_name.map(|n| (pad, n)), sound_name.map(|n| (source, n))) {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(d) = self.dirty.get_mut(kit) {
+                    *d = true;
+                }
+                if pad_name.is_some() {
+                    self.mark_renamed(kit);
+                }
+                let line = match (pad_name, sound_name) {
+                    (Some(p), Some(s)) => format!("pad {at} named {p}, its sound {s}"),
+                    (Some(p), None) => format!("pad {at} named {p}"),
+                    (None, Some(s)) => format!("pad {at}'s sound named {s}"),
+                    (None, None) => return,
+                };
+                self.told.push(format!("P{}", &line[1..]));
+                self.lines.push(format!("sample: {line}"));
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: pad {at} not named ({e:?})")),
+        }
+        self.refresh(ui);
     }
 
     /// The number typed for `key`: the tab showing makes the change, an
