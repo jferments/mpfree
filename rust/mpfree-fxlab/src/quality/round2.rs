@@ -12,7 +12,7 @@ use super::{floor, lu_change, make, pink_stim, subjects, worst_zipper, Better, R
 use crate::dut::{Change, Dut, NodeDut};
 use crate::fft::power_spectrum;
 use crate::harmonics::{self, N};
-use crate::signals::{coherent, db_to_amp, level_steps, peak_of, pink, rms_of, sine};
+use crate::signals::{coherent, db_to_amp, level_steps, peak_of, pink, rms_of, sine, white};
 use crate::wav::Stereo;
 use crate::{dynamics, flutter, mixlaw, response, zipper};
 
@@ -1855,6 +1855,81 @@ fn sub70_db(d: &mut dyn Dut, x: &Stereo) -> f64 {
     db_pow(low / all)
 }
 
+/// The Gate setting the gate rows use: a -45 dBFS threshold.
+const AMP_GATE: f64 = 8.0;
+
+/// A note (220 Hz at -12 dBFS, half a second), then a rest of hiss
+/// (white noise at -60 dBFS RMS, a second and a half), through `d`: the
+/// output's level over the last half second, dBFS RMS.
+fn gate_hiss_db(d: &mut dyn Dut) -> f64 {
+    let rate = d.rate();
+    let note = rate as usize / 2;
+    let n = 2 * rate as usize;
+    let mut x = sine(220.0, db_to_amp(-12.0), note, rate);
+    x.extend(white(n - note, db_to_amp(-60.0) * 3f64.sqrt(), 11));
+    let y = d.render(&Stereo::mono(x, rate), 0).left;
+    floor(db_amp(rms_of(&y[n - rate as usize / 2..n])))
+}
+
+/// Envelopes of `y` in 1 ms windows (RMS).
+fn envelope_1ms(y: &[f64], rate: u32) -> Vec<f64> {
+    let w = (rate as usize / 1000).max(1);
+    y.chunks(w).map(rms_of).collect()
+}
+
+/// A 220 Hz note at -24 dBFS starting after half a second of silence,
+/// through `gated` and through `open` (the same amp, its gate off): the
+/// milliseconds from the note's start until the gated output is within
+/// 1 dB of the other. Run at Gain 0, where the amp is nearly straight, so
+/// a half-open gate can't hide in the clipping.
+fn gate_open_ms(gated: &mut dyn Dut, open: &mut dyn Dut) -> f64 {
+    let rate = gated.rate();
+    let at = rate as usize / 2;
+    let mut x = vec![0.0; at];
+    x.extend(sine(220.0, db_to_amp(-24.0), rate as usize / 2, rate));
+    let x = Stereo::mono(x, rate);
+    let a = envelope_1ms(&gated.render(&x, 0).left, rate);
+    let b = envelope_1ms(&open.render(&x, 0).left, rate);
+    let start = at / (rate as usize / 1000).max(1);
+    let near = 10f64.powf(-1.0 / 20.0);
+    (start..a.len())
+        .find(|&i| b[i] > 0.0 && a[i] >= near * b[i])
+        .map_or(500.0, |i| (i - start + 1) as f64)
+}
+
+/// A 220 Hz note from -12 dBFS decaying 40 dB a second for two seconds,
+/// through `gated` and `open` (as above): how many times the gate shuts,
+/// counted as the gated output falling under half the other's in a 1 ms
+/// window after being over 0.9 of it. One is a clean close; more is
+/// chatter. At Gain 0 the amp is nearly straight, so the ratio is the
+/// gate's own gain.
+fn gate_closes(gated: &mut dyn Dut, open: &mut dyn Dut) -> f64 {
+    let rate = gated.rate();
+    let n = 2 * rate as usize;
+    let x: Vec<f64> = sine(220.0, db_to_amp(-12.0), n, rate)
+        .iter()
+        .enumerate()
+        .map(|(i, v)| v * db_to_amp(-40.0 * i as f64 / rate as f64))
+        .collect();
+    let x = Stereo::mono(x, rate);
+    let a = envelope_1ms(&gated.render(&x, 0).left, rate);
+    let b = envelope_1ms(&open.render(&x, 0).left, rate);
+    // Counted with hysteresis: a close is the ratio falling under a half
+    // after being over 0.9.
+    let mut shut = 0;
+    let mut was_open = false;
+    for (a, b) in a.iter().zip(&b) {
+        let r = if *b > 0.0 { a / b } else { 0.0 };
+        if r > 0.9 {
+            was_open = true;
+        } else if r < 0.5 && was_open {
+            shut += 1;
+            was_open = false;
+        }
+    }
+    shut as f64
+}
+
 pub(super) fn amp(r: &mut Report) {
     use ids::amp as a;
     let rate = r.rate;
@@ -1949,6 +2024,18 @@ pub(super) fn amp(r: &mut Report) {
             None,
             0.0,
         );
+        // With the Tight boost in front: the target on the lead model,
+        // the others kept.
+        let mut d = make_with(&s, rate, &[(a::GAIN, 10.0), (a::CAB, 0.0), (a::BOOST, 1.0)]);
+        r.put(
+            "A5",
+            name,
+            "power_chord_sub70_db_gain10_nocab_tight",
+            Some(sub70_db(&mut d, &chord)),
+            Better::Lower,
+            (model == "lead").then_some(-25.0),
+            0.5,
+        );
 
         // A6: a tone-stack knob thrown from 0 to 10 under a 220 Hz sine.
         for (knob, id) in [("bass", a::BASS), ("mid", a::MID), ("treble", a::TREBLE)] {
@@ -2005,6 +2092,16 @@ pub(super) fn amp(r: &mut Report) {
             Some(3.0),
             0.5,
         );
+        let mut d = make(&s, rate);
+        r.put(
+            "A8",
+            name,
+            "boost_change_db",
+            Some(switch_click(&mut d, a::BOOST, 1.0, 220.0)),
+            Better::Lower,
+            Some(3.0),
+            0.5,
+        );
 
         // Silence in, silence out.
         let mut d = make_with(&s, rate, &[(a::GAIN, 10.0)]);
@@ -2018,6 +2115,42 @@ pub(super) fn amp(r: &mut Report) {
             Some(-120.0),
             1.0,
         );
+
+        // The gate (its rows on the lead model, where hiss matters most;
+        // it is the same gate on every model): hiss at Gain 10, its
+        // timing at Gain 0.
+        if model == "lead" {
+            let mut gated = make_with(&s, rate, &[(a::GAIN, 10.0), (a::GATE, AMP_GATE)]);
+            r.put(
+                "A9",
+                name,
+                "gate_hiss_out_dbfs_gain10",
+                Some(gate_hiss_db(&mut gated)),
+                Better::Lower,
+                Some(-90.0),
+                1.0,
+            );
+            let mut gated = make_with(&s, rate, &[(a::GAIN, 0.0), (a::GATE, AMP_GATE)]);
+            let mut open = make_with(&s, rate, &[(a::GAIN, 0.0)]);
+            r.put(
+                "A9",
+                name,
+                "gate_open_ms",
+                Some(gate_open_ms(&mut gated, &mut open)),
+                Better::Lower,
+                Some(2.0),
+                0.0,
+            );
+            r.put(
+                "A9",
+                name,
+                "gate_closes_on_decay",
+                Some(gate_closes(&mut gated, &mut open)),
+                Better::Lower,
+                Some(1.0),
+                0.0,
+            );
+        }
     }
 
     // A4: the presets as loud as the dry; their aliasing kept.
