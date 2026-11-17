@@ -316,9 +316,11 @@ const OPTIONS_HINT: &str =
 /// A menu row the wheel's push opened.
 /// The wheel on a page with rows (`app::RowKey`), for the hint lines.
 const ROWS_HINT: &str = "Wheel: pick a row   ·   - / +, or push the wheel and turn: change it";
-/// The finger the wheel's push taps and holds controls with ([`Nav`]): no
-/// real finger has this number.
-const WHEEL_FINGER: u64 = u64::MAX - 1;
+/// The end of the hint line while the wheel turns a held control.
+const HELD_TOLD: &str = " · the wheel turns it while you hold";
+// The finger the wheel's push taps and holds controls with ([`Nav`]): no
+// real finger has this number.
+use mpfree_ui::WHEEL_FINGER;
 /// What the wheel does on the pages with its outline ([`outlined`]).
 const WHEEL_HINT: &str = "Wheel: control to control   ·   push: press it";
 const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   MENU: close";
@@ -672,6 +674,12 @@ pub enum ToUi {
     Rec(crate::rec_arm::RecArm),
     /// The wheel, its push, - or + for the outline ([`Player::nav`]).
     Nav(Nav),
+    /// The wheel or - / + turned the control a finger rests on by `delta`
+    /// detents, `fine` with SHIFT ([`Player::held_turn`]).
+    Held {
+        delta: i32,
+        fine: bool,
+    },
     /// Whether the Synth tab's and the mixer's turns ([`crate::undo`])
     /// have something to undo, when that changes.
     TurnsReady {
@@ -1052,6 +1060,11 @@ pub enum FromUi {
     /// mixer's, the chain editor's and the macros panel's wheel then moves
     /// it: [`crate::app::App::set_outline`]).
     Outline(bool),
+    /// Whether a finger rests on a control with a value, when that changes
+    /// (Jay, 17 Nov: hold a control and turn the wheel): the app then sends
+    /// the wheel and - / + to it as [`ToUi::Held`]
+    /// ([`crate::app::App::set_held`]).
+    Held(bool),
     /// A kit's engine view, built again after an edit on the Sample page,
     /// for the audio thread to swap in (it sends the old one back).
     SampleView(Box<ViewSwap>),
@@ -1460,6 +1473,9 @@ pub struct Player {
     tells: u64,
     /// What the app was last told about the outline ([`FromUi::Outline`]).
     outline_told: bool,
+    /// What the app was last told of a finger resting on a control
+    /// ([`FromUi::Held`]).
+    held_told: bool,
 }
 
 impl Player {
@@ -1667,6 +1683,7 @@ impl Player {
             undo_ready: false,
             tells: 0,
             outline_told: false,
+            held_told: false,
             ui,
             kits: Vec::new(),
             kit: 0,
@@ -4506,6 +4523,7 @@ impl Player {
                 }
             }
             ToUi::Nav(n) => self.nav(n),
+            ToUi::Held { delta, fine } => self.held_turn(delta, fine),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
@@ -7396,6 +7414,7 @@ impl Player {
             .ui
             .touch(finger, phase, x, y)
             .and_then(|ev| self.on_event(ev));
+        self.watch_held(finger, phase);
         self.watch_tempo_press(finger, phase, x, y, &action);
         if matches!(phase, Touch::Up | Touch::Cancel) && self.view.sampler() {
             // A drag on the Sample page ends with its finger: one undo step.
@@ -7444,6 +7463,96 @@ impl Player {
             return self.synth.as_ref()?.param_of(t).map(LearnValue::Synth);
         }
         mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
+    }
+
+    /// A finger came down on, or lifted from, a control with a value: the
+    /// app hears of it at once, so the next turn of the wheel goes there,
+    /// and the hint line says what the wheel turns.
+    fn watch_held(&mut self, finger: u64, phase: Touch) {
+        if finger == WHEEL_FINGER {
+            return;
+        }
+        let was = self.held_told;
+        self.tell_held();
+        // Let go: the line the turns told goes, and the page's hint is back.
+        if matches!(phase, Touch::Up | Touch::Cancel) && was && !self.ui.holding() {
+            if self
+                .told
+                .as_ref()
+                .is_some_and(|(t, _)| t.ends_with(HELD_TOLD))
+            {
+                self.told = None;
+            }
+            self.refresh_hint();
+        }
+    }
+
+    /// Tell the app when a finger starts or stops resting on a control
+    /// with a value ([`FromUi::Held`]).
+    fn tell_held(&mut self) {
+        let held = self.ui.holding();
+        if held != self.held_told {
+            self.held_told = held;
+            self.outbox.push(FromUi::Held(held));
+        }
+    }
+
+    /// The wheel (or - / +) turned the control a finger rests on (Jay,
+    /// 17 Nov: hold a control and turn the wheel). The first turn ends any
+    /// long press under that finger (a macro card's macros panel), and
+    /// once turned the finger's lift is no tap. The Synth tab's tiles turn
+    /// as the wheel turns the selected tile, by the parameter's own step;
+    /// everything else says what it did as a touch would.
+    fn held_turn(&mut self, delta: i32, fine: bool) {
+        let Some(h) = self.ui.held() else {
+            return;
+        };
+        if let Some(f) = self.ui.held_finger() {
+            self.chain_page.lifted(f);
+            if self.tempo_press.is_some_and(|p| p.0 == f) {
+                self.tempo_press = None;
+            }
+        }
+        if h.widget == synth_view::TILES {
+            // The tile is the selected one since the finger came down.
+            self.ui.held_turned();
+            self.apply(ToUi::SynthWheel(delta));
+        } else if h.target.id == "marker"
+            && self.view.sampler()
+            && self
+                .sample
+                .held_marker(&mut self.ui, &h.widget, h.target.index, delta, fine)
+        {
+            // The Wave page's marker, as its Q-Link moves it.
+            self.ui.held_turned();
+            self.print_sample_lines();
+        } else if let Some(ev) = self.ui.held_step(delta, fine) {
+            if let Some(a) = self.on_event(ev) {
+                self.outbox.push(a);
+            }
+        }
+        if let Some(text) = self.held_value(&h) {
+            self.tell(&text);
+        }
+    }
+
+    /// What the held control reads now, for the hint line: its name and
+    /// value where the page says it ("Cutoff 1.2 kHz"), else its name.
+    fn held_value(&self, h: &mpfree_ui::PageTarget) -> Option<String> {
+        if h.widget == synth_view::TILES {
+            return self.synth.as_ref()?.wheel_text();
+        }
+        let now = self
+            .ui
+            .targets()
+            .into_iter()
+            .find(|t| {
+                t.widget == h.widget
+                    && t.target.id == h.target.id
+                    && t.target.index == h.target.index
+            })
+            .map_or_else(|| h.target.label.clone(), |t| t.target.label);
+        Some(format!("{now}{HELD_TOLD}"))
     }
 
     /// A finger on a Q-Link card, for the long press on a macro card that
@@ -8069,6 +8178,7 @@ impl Player {
             self.undo_ready = ready;
             self.outbox.push(FromUi::UndoReady(ready));
         }
+        self.tell_held();
         let outline = self.ui.has_focus();
         if outline != self.outline_told {
             self.outline_told = outline;
@@ -9367,6 +9477,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             // The desk carries it out (the transport and the looper).
             Effect::Rec(_) => {}
             Effect::Nav(n) => p.apply(ToUi::Nav(n)),
+            Effect::Held { delta, fine } => p.apply(ToUi::Held { delta, fine }),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
@@ -12104,7 +12215,7 @@ mod tests {
             p.tick(0.0);
             p.take_actions()
                 .into_iter()
-                .filter(|a| !matches!(a, FromUi::Outline(_)))
+                .filter(|a| !matches!(a, FromUi::Outline(_) | FromUi::Held(_)))
                 .collect::<Vec<_>>()
         };
         let finger = |p: &mut Player, phases: &[Touch], (x, y): (i32, i32)| {
@@ -12116,7 +12227,7 @@ mod tests {
             v.extend(
                 p.take_actions()
                     .into_iter()
-                    .filter(|a| !matches!(a, FromUi::Outline(_))),
+                    .filter(|a| !matches!(a, FromUi::Outline(_) | FromUi::Held(_))),
             );
             v
         };
@@ -12210,6 +12321,204 @@ mod tests {
         p.tick(0.0);
         assert!(p.take_actions().contains(&FromUi::Outline(false)));
         assert_eq!(on(&p), None);
+    }
+
+    /// Jay, 17 Nov: while a finger rests on a control with a value, the
+    /// wheel turns it, and when it lifts the wheel goes back to its job.
+    /// On Play's Q-Link card: the app hears of the hold at once, the wheel
+    /// turns the card as the push-and-turn did, the hint line says so, and
+    /// the lift taps nothing and gives the wheel back.
+    #[test]
+    fn a_finger_on_a_q_link_card_lets_the_wheel_turn_it() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.tick(0.0);
+        p.take_actions();
+        let q = QLinkColumn::card_rects(p.ui.rect_of(play_page::QLINKS).unwrap())[0];
+        let mid = (q.x + q.w / 2, q.y + q.h / 2);
+        let swing = |a: &[FromUi]| {
+            a.iter().find_map(|a| match a {
+                FromUi::Time(TimeAction::Transport(mpfree_transport::Command::SetSwing(s))) => {
+                    Some(s.amount)
+                }
+                _ => None,
+            })
+        };
+        // A drag of one detent gives the swing the card starts from.
+        let detent = mpfree_ui::qlink::DRAG_DETENT;
+        let mut v: Vec<FromUi> = p.touch(3, Touch::Down, mid.0, mid.1).into_iter().collect();
+        v.extend(p.touch(3, Touch::Move, mid.0, mid.1 - detent));
+        v.extend(p.touch(3, Touch::Up, mid.0, mid.1 - detent));
+        v.extend(p.take_actions());
+        let from = swing(&v).expect("the drag turned it");
+        // Now a finger at rest on it.
+        let mut v: Vec<FromUi> = p.touch(4, Touch::Down, mid.0, mid.1).into_iter().collect();
+        v.extend(p.take_actions());
+        assert!(
+            v.contains(&FromUi::Held(true)),
+            "the app hears of it: {v:?}"
+        );
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        p.apply(ToUi::Held {
+            delta: 2,
+            fine: false,
+        });
+        assert_eq!(
+            swing(&p.take_actions()),
+            Some(from + 2),
+            "the wheel turns it"
+        );
+        assert!(
+            hint(&p).contains("the wheel turns it while you hold"),
+            "{}",
+            hint(&p)
+        );
+        let mut v: Vec<FromUi> = p.touch(4, Touch::Up, mid.0, mid.1).into_iter().collect();
+        v.extend(p.take_actions());
+        assert!(v.contains(&FromUi::Held(false)), "{v:?}");
+        assert_eq!(swing(&v), None, "the lift changes nothing");
+        assert!(!hint(&p).contains("while you hold"), "{}", hint(&p));
+        // With no finger on it, a stray turn does nothing.
+        p.apply(ToUi::Held {
+            delta: 1,
+            fine: false,
+        });
+        assert!(swing(&p.take_actions()).is_none());
+    }
+
+    /// Hold and turn on a row of the Sample tab's settings: the typed Warp
+    /// tempo steps under the wheel, its number pad opens only for a tap
+    /// (on the lift), and the whole hold is one undo step.
+    #[test]
+    fn a_held_sample_row_turns_and_its_lift_opens_no_number_pad() {
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut p = sample_sampler(Fonts::embedded());
+        let row = |r: Row| Row::ALL.iter().position(|k| *k == r).unwrap();
+        p.on_event(UiEvent {
+            widget: REGION.into(),
+            kind: EventKind::Step {
+                index: row(Row::Warp),
+                delta: 1,
+            },
+        });
+        p.apply(ToUi::SampleLift);
+        let bpm = |p: &Player| p.sample.state().unwrap().region.warp.as_ref().unwrap().bpm;
+        let before = bpm(&p);
+        let mid = |p: &mut Player| {
+            p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+            let r = p.ui.rect_of(REGION).unwrap();
+            let (_, value) =
+                p.ui.get::<SettingList>(REGION)
+                    .unwrap()
+                    .row_rects(r, row(Row::WarpTempo))
+                    .unwrap();
+            (value.x + value.w / 2, value.y + value.h / 2)
+        };
+        let at = mid(&mut p);
+        p.touch(5, Touch::Down, at.0, at.1);
+        assert_eq!(
+            p.page(),
+            sample_page::PAGE,
+            "no pad while the finger is down"
+        );
+        for _ in 0..3 {
+            p.apply(ToUi::Held {
+                delta: 1,
+                fine: false,
+            });
+        }
+        let turned = bpm(&p);
+        assert!(turned > before, "{before} to {turned}");
+        p.touch(5, Touch::Up, at.0, at.1);
+        assert_eq!(p.page(), sample_page::PAGE, "a turned hold opens no pad");
+        assert_eq!(bpm(&p), turned);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(bpm(&p), before, "one undo step takes the whole hold back");
+        // A tap still opens the pad, on its lift.
+        let at = mid(&mut p);
+        p.touch(6, Touch::Down, at.0, at.1);
+        assert_eq!(p.page(), sample_page::PAGE, "not before the lift");
+        p.touch(6, Touch::Up, at.0, at.1);
+        assert_eq!(p.page(), NUMPAD_PAGE);
+    }
+
+    /// Hold a marker's tab and turn: it moves a screen pixel a detent at the
+    /// zoom showing, a frame with SHIFT, and the lift moves nothing more.
+    #[test]
+    fn a_held_marker_is_nudged_by_the_wheel() {
+        use mpfree_sampler_ui::wave_tab::WAVE;
+        use mpfree_ui::wave::Waveform;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let t =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == WAVE && t.target.id == "marker" && t.target.enabled)
+                .expect("a marker to hold")
+                .target;
+        let frame = |p: &Player| p.ui.get::<Waveform>(WAVE).unwrap().markers()[t.index].frame;
+        let fpp = p.ui.get::<Waveform>(WAVE).unwrap().view().frames_per_px;
+        let (x, y) = t.centre();
+        p.touch(8, Touch::Down, x, y);
+        p.tick(0.0);
+        assert!(p.take_actions().contains(&FromUi::Held(true)));
+        let at = frame(&p);
+        p.apply(ToUi::Held {
+            delta: 1,
+            fine: false,
+        });
+        let pixel = frame(&p) as f64 - at as f64;
+        assert!(
+            pixel > 0.0 && pixel <= fpp.round().max(1.0) * 2.0,
+            "a pixel's frames ({fpp:.1}): {pixel}"
+        );
+        let at = frame(&p);
+        p.apply(ToUi::Held {
+            delta: -1,
+            fine: true,
+        });
+        assert!(frame(&p) < at, "SHIFT nudges it back");
+        let at = frame(&p);
+        p.touch(8, Touch::Up, x, y);
+        assert_eq!(frame(&p), at);
+    }
+
+    /// The Synth tab: a finger on a knob tile lets the wheel turn that
+    /// parameter by its own step, as the wheel turns the selected tile.
+    #[test]
+    fn a_held_synth_tile_turns_with_the_wheel() {
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Synth));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let t =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == synth_view::TILES && t.target.id == "knob")
+                .expect("a knob tile")
+                .target;
+        let (x, y) = t.centre();
+        p.touch(9, Touch::Down, x, y);
+        p.tick(0.0);
+        assert!(p.take_actions().contains(&FromUi::Held(true)));
+        p.apply(ToUi::Held {
+            delta: 3,
+            fine: false,
+        });
+        let acts = p.take_actions();
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, FromUi::Synth(SynthAction::Set { .. }))),
+            "{acts:?}"
+        );
+        let mut v: Vec<FromUi> = p.touch(9, Touch::Up, x, y).into_iter().collect();
+        v.extend(p.take_actions());
+        assert!(
+            !v.iter()
+                .any(|a| matches!(a, FromUi::Synth(SynthAction::Set { .. }))),
+            "the lift sets nothing: {v:?}"
+        );
     }
 
     /// STEP SEQ on the screen (sequencer decision 2, Jay 16 Nov): the
@@ -13224,7 +13533,11 @@ mod tests {
             None
         );
         p.touch(3, Touch::Up, x, y);
-        let sent = p.take_actions();
+        let sent: Vec<FromUi> = p
+            .take_actions()
+            .into_iter()
+            .filter(|a| !matches!(a, FromUi::Held(_)))
+            .collect();
         assert!(
             matches!(
                 sent.as_slice(),
@@ -13699,16 +14012,44 @@ mod tests {
         p.tick(0.3);
         assert_eq!(
             p.take_actions(),
-            vec![FromUi::Outline(true)],
-            "the wheel's outline is on the card"
+            vec![FromUi::Held(true), FromUi::Outline(true)],
+            "the wheel's outline is on the card, and the wheel turns it"
         );
         p.tick(0.3);
         assert_eq!(p.take_actions(), vec![FromUi::OpenMacros(0)]);
         p.touch(5, Touch::Up, x, y);
+        // Jay, 17 Nov: the wheel turned before the half second ends the
+        // long press; the card turns and no panel opens.
+        p.touch(7, Touch::Down, x, y);
+        p.tick(0.2);
+        p.take_actions();
+        p.apply(ToUi::Held {
+            delta: 1,
+            fine: false,
+        });
+        p.tick(0.5);
+        let sent: Vec<FromUi> = p
+            .take_actions()
+            .into_iter()
+            .filter(|a| !matches!(a, FromUi::Held(_)))
+            .collect();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Macros(MacroAction::Macro { m: 2, .. })]
+            ),
+            "turned, and no macros panel: {sent:?}"
+        );
+        p.touch(7, Touch::Up, x, y);
+        p.take_actions();
         p.touch(6, Touch::Down, x, y);
         p.touch(6, Touch::Move, x, y - 3 * mpfree_ui::qlink::DRAG_DETENT);
         p.tick(1.0);
-        let sent = p.take_actions();
+        let sent: Vec<FromUi> = p
+            .take_actions()
+            .into_iter()
+            .filter(|a| !matches!(a, FromUi::Held(_)))
+            .collect();
         assert!(
             matches!(
                 sent.as_slice(),
