@@ -1214,6 +1214,7 @@ impl Session {
         if crate::step_turn(&a) {
             self.step_keys.turned();
         }
+        crate::record_knob(&a, &self.app, &self.mix, &mut self.time);
         let mut fx = std::mem::take(&mut self.fx);
         let rest = {
             let (mut d, out) = self.desk();
