@@ -68,6 +68,7 @@
 //! is cut into blocks. The tests in `tests/` check each of these.
 #![forbid(unsafe_code)]
 
+mod adaa;
 mod amp;
 pub mod bounce;
 mod chain;

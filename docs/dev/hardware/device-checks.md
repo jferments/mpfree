@@ -35,13 +35,14 @@ A round's runbook has a table of its checks: the check, why it's in this round, 
 | `step-pads` | hands | STEP SEQ's pads as steps (sequencer S1): the step colours, the white playhead walking across the pads and the PAD BANK page lights | the pads made steps, a step on and one off, page 2 |
 | `step-hold` | hands | A step pad held takes the Q-Links (sequencer S1): the held step's light as Q-Link 1 turns it, the tie's dim pads, and COPY's copies | a held step on the Q-Links, the Trig bank, a tie, a copy |
 | `step-locks` | hands | Locks on held steps (sequencer S1): the kick's tune and decay locked on one step each, heard on those steps only and with no click, and the purple lights of a lock and of a lock with no note | the Sound bank, a lock, a step held with SHIFT, a step's locks erased |
+| `step-speed` | hands | Step edits in place (sequencer S1, Gate 0): taps and a lock turn on the pattern playing, heard on the next pass with no click; what they and a compile cost the MPC | taps and a lock turn in the log; the status line's step edits in place, each within a tenth of a period; no slow period from the pads or the screen; no underrun |
 | `wheel` | hands | The outline and the push on the real wheel (#339), and moving a Song block by wheel (#355) | wheel steps, a block moved |
 | `touch` | hands | Touch lab, Calibrate touch, two fingers, and a real drag past the 12 px lift | the Touch lab's start and end, Calibrate's result, a clip moved and a copy dropped |
 | `note-repeat` | hands | NOTE REPEAT, Latch and the arp in real time | button 11, an arp mode, Latch on and off |
 | `looper` | hands | The wave drawing as you play, and STOP stopping the loop at once | the loop armed, STOP |
 | `console` | hands | The console chord, TAP TEMPO and STOP on the real panel | a tapped tempo, STOP's silence |
 | `fx-add` | hands | Adding an effect on the Mix tab and hearing it, which live test 3 couldn't (#275, #287, #353) | the touchscreen used, no refusal line, the app kept running |
-| `eq` | hands | The parametric EQ on the real panel (#388): a dot following a finger, UNDO, and Listen on the MPC's outputs | UNDO, its `Undid … EQ Band N` line, no underrun while it played |
+| `eq` | hands | The parametric EQ on the real panel (#388): a dot following a finger, UNDO, and Solo band (Listen until 16 Nov) on the MPC's outputs | UNDO, its `Undid … EQ Band N` line, no underrun while it played |
 | `midi-in` | hands | A keyboard on the MPC's MIDI IN, and its port in the I/O view | `MIDI in:` lines |
 | `midi-monitor` | hands | The I/O view's Monitor fed from the real MIDI IN, each line saying where its message went, and the Dev tab's MIDI page listing the MPC's own pads, buttons and Q-Links (read-only: nothing is sent to MIDI OUT) | `MIDI in:` lines |
 | `midi-now` | hands | The Monitor's Now view showing a keyboard's held keys, mod wheel and bend as they are played, and Save log keeping the list on the stick in `files/midi-logs/` (read-only on MIDI OUT; the one write is the log file on the data partition) | `midi log: Saved ... lines to files/midi-logs/` |

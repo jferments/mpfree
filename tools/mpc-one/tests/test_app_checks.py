@@ -145,6 +145,24 @@ class JudgeTests(unittest.TestCase):
         self.assertIn("2 underruns in 10,000 periods", detail)
         self.assertIsNone(test(checks.Window([], session[:1], 100.0, 120.0))[0], "no status after it yet")
 
+    def test_step_speed_reads_the_step_edits_between_status_lines(self):
+        def status(t, in_place, slowest, compiled):
+            return (t, "status: 1 hits (0 from the screen), 0 repeats, 0 underruns in 1000 periods, x, time: "
+                       f"Playing at 1.1.1, 120.0 BPM, 0 takes; compiles: 9 (slowest 0.80 ms, 120 notes and "
+                       f"locks); step edits: {in_place} in place (slowest {slowest} ms), {compiled} compiled "
+                       f"(slowest 0.90 ms)")
+        test = checks.step_edits_in_place()
+        session = [status(90.0, 2, "0.01", 1), status(130.0, 40, "0.05", 2)]
+        ok, detail = test(checks.Window([], session, 100.0, 120.0))
+        self.assertTrue(ok, detail)
+        self.assertEqual(detail, "38 step edits in place (slowest 0.05 ms), 1 compiled (slowest 0.90 ms); "
+                                 "the slowest compile 0.80 ms, with 120 notes and locks playing")
+        session[1] = status(130.0, 40, "0.40", 2)
+        self.assertFalse(test(checks.Window([], session, 100.0, 120.0))[0], "past a tenth of a period")
+        session[1] = status(130.0, 2, "0.01", 30)
+        self.assertFalse(test(checks.Window([], session, 100.0, 120.0))[0], "none in place")
+        self.assertIsNone(test(checks.Window([], session[:1], 100.0, 120.0))[0], "no status after it yet")
+
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
                  (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),
@@ -165,7 +183,8 @@ class JudgeTests(unittest.TestCase):
     def test_mpc_plugin_install_reads_the_plugins_place_and_the_skin(self):
         """Lines as the app writes them (plugin_page.rs, main.rs, gui.rs); a direct cable with no route out."""
         window = lines(
-            "plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found)",
+            "plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible (libcurl found), "
+            "OpenSSL 3.5.4 ready",
             "plugins: not done (catalog): The catalog didn't download: no network",
             "plugins: Installed Tidal Verb 1.6.0: Tidal Verb ready in + Add effect, under Plugins",
             "plugins: 2 offered after an install",
@@ -173,8 +192,13 @@ class JudgeTests(unittest.TestCase):
             "plugins: [SYN] Mono Voice started in its own process",
             "screen: mpc:timncox.monovoice: its own screen, 2 tab(s), on the Synth tab")
         got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(window, window))
-        self.assertEqual([ok for ok, _, _ in got], [True, True, True, True, False, True, True, True, True])
-        self.assertEqual(got[4][1], "Modal Voice installed from the catalog (needs a route out)")
+        self.assertEqual([ok for ok, _, _ in got], [True, True, True, True, True, False, True, True, True, True])
+        self.assertEqual(got[5][1], "Modal Voice installed from the catalog (needs a route out)")
+        # The final round's failure, as the app now says it: OpenSSL still can't make random numbers.
+        unseeded = lines("plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible "
+                         "(libcurl found), OpenSSL 3.5.4 not ready: its random numbers can't start (...)") + window[1:]
+        got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(unseeded, unseeded))
+        self.assertEqual([ok for ok, _, _ in got][:2], [True, False])
         refused = window + lines("plugins: [SYN] Modal Voice would not start: failed to map segment")
         got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(refused, refused))
         self.assertFalse(got[-1][0])
@@ -183,6 +207,16 @@ class JudgeTests(unittest.TestCase):
             helper = lines(f"plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, {means}") + window[1:]
             got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(helper, helper))
             self.assertTrue(got[0][0], means)
+            self.assertFalse(got[1][0], means)
+        # The helper reports its libcurl's OpenSSL (mpfree-fetch --tls), or why it couldn't.
+        for tls, ready in (("OpenSSL 3.5.4 ready", True),
+                           ("OpenSSL 3.5.4 ready (its random numbers didn't start: x; MPFree loaded its default "
+                            "provider)", True),
+                           ("TLS not checked: mpfree-fetch gave no answer in 10 s", False)):
+            helper = lines("plugins: 1 installed, 1 zip(s) on the stick, no catalog kept yet, downloads possible "
+                           f"(mpfree-fetch found), {tls}") + window[1:]
+            got = checks.judge(checks.BY_NAME["mpc-plugin-install"], checks.Window(helper, helper))
+            self.assertEqual([ok for ok, _, _ in got][:2], [True, ready], tls)
 
     def test_kept_reads_the_running_value_too(self):
         session = lines("saved settings: pad curve Hard, sound cores two, loop memory 10 min, x",

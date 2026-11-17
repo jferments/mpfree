@@ -170,6 +170,13 @@ pub static MAIN_PAGES: &[MainPage] = &[
         ["Amount", "Saturation", "High cut", "Mix"],
     ),
     main(
+        "mpfree.fx.amp",
+        &[
+            "Gain", "Bass", "Mid", "Treble", "Model", "Boost", "Cab", "Level",
+        ],
+        ["Gain", "Bass", "Mid", "Treble"],
+    ),
+    main(
         "mpfree.fx.delay",
         &[
             "Time",

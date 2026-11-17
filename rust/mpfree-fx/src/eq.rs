@@ -65,11 +65,12 @@ pub mod ids {
         37 + b as u16
     }
     pub const OUTPUT: u16 = 20;
-    /// Listen: Off, or band `n` (1 to 8) heard alone through a band-pass
-    /// at its frequency and Q, to find what it touches. Not saved with a
-    /// sound: pages turn it off when they close.
+    /// Solo band (named Listen until 16 Nov): Off, or band `n` (1 to 8)
+    /// heard alone through a band-pass at its frequency and Q, to find
+    /// what it touches. Not saved with a sound: pages turn it off when
+    /// they close.
     pub const LISTEN: u16 = 45;
-    /// Quality: Normal, or HQ 2x, where the bands, the cuts and Listen run
+    /// Quality: Normal, or HQ 2x, where the bands, the cuts and Solo band run
     /// at twice the rate between IIR half-bands, so a bell keeps its
     /// analog shape right up to 20 kHz.
     pub const QUALITY: u16 = 46;
@@ -599,7 +600,7 @@ static PARAMS: [ParamInfo; N] = [
     },
     ParamInfo {
         id: ids::LISTEN,
-        name: "Listen",
+        name: "Solo band",
         group: "Output",
         min: 0.0,
         max: 8.0,
@@ -891,7 +892,7 @@ impl Cut {
     }
 }
 
-/// The EQ at one rate: the cuts, the bands, Listen and the output gain.
+/// The EQ at one rate: the cuts, the bands, Solo band and the output gain.
 /// [`Eq`] runs one at the host's rate and, for Quality HQ 2x, one at twice
 /// it.
 struct Core {
@@ -906,7 +907,7 @@ struct Core {
     out: Smooth,
     /// The type-swap glide per frame (10 ms each way).
     step: f32,
-    /// Listen: the band heard (its index while Listen is on, kept while
+    /// Solo band: the band heard (its index while Solo band is on, kept while
     /// fading out), the band-pass, and its share of the output, 0 to 1.
     listen_band: usize,
     listen: Svf,
@@ -1004,7 +1005,7 @@ impl Core {
             && self.listen_mix.value == 0.0
     }
 
-    /// Points the Listen band-pass at its band's frequency and Q as they
+    /// Points Solo band's band-pass at its band's frequency and Q as they
     /// are this frame.
     fn aim_listen(&mut self) {
         let b = &self.bands[self.listen_band];
@@ -1320,7 +1321,7 @@ impl Halves {
 pub struct Eq {
     rate: u32,
     normal: Core,
-    /// The bands, Listen and the output gain at twice the rate; the cuts
+    /// The bands, Solo band and the output gain at twice the rate; the cuts
     /// stay at the base rate (`low`, `high`, ahead of the half-bands):
     /// they have no curve to keep near Nyquist, and it saves a third.
     hq: Core,

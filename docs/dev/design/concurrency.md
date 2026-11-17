@@ -23,7 +23,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-lights` | The controller's lights and the session ping, queued by the audio loop ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-report` | The report's lines (`/run/mpfree-app/report.txt`), queued by the audio loop |
 | `mpfree-build` | Builds the chain editor's effects, and drops the ones edits take out |
-| `midi-out`, `cv-out` | MIDI Out and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC. Started from the audio loop when Prefs' Send MIDI and CV out goes on; when it goes off, each is set aside (`Closing`) and let go once its last messages have left, never joined from the loop |
+| `midi-out`, `midi-out-usb`, `cv-out` | MIDI Out, MIDI out to each USB device and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC. Started from the audio loop when Prefs' Send MIDI and CV out goes on (and for a USB device plugged in while it is on); a `midi-out-usb` thread opens its device's output itself, so the loop never waits for it. When the switch goes off or a device is unplugged, each is set aside (`Closing`) and let go once its last messages have left, never joined from the loop |
 | `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load` | Helper threads: USB MIDI devices (every input of each, opened read only, handed to the audio loop), loading sounds |
 | `mpfree-print` | The looper's prints and buffers, at idle priority ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-screen` | Touch, the raster, the framebuffer. Ticks the pages every 33 ms and sleeps between ([profiling.md](profiling.md#the-screens-cost)) |
@@ -32,6 +32,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-midilog` | The MIDI monitor's Save log (handed to `mpfree-store`) and, while the developer tools are on, its lines in `/run/mpfree-app/midi.log` for the workstation console; four times a second, holding the I/O model's lock only to take an ask or word new lines (the audio loop only `try_lock`s it) |
 | `mpfree-journal` | The console's log |
 | `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs, at idle priority |
+| `mpfree-analyse` | The Sample tab's views of its sounds (`views.rs`): peaks and mono mix, then hits, tempo and root note, off the sound's cores at background priority; the sound shown last first |
 | `autosample` | An auto-sample: at idle priority for one of MPFree's instruments, at normal priority for external gear |
 
 ## The plan, in order
@@ -122,7 +123,7 @@ it could hold the core in the middle of a period. Two fixes:
   (`core3`, `two`, `three`), cores 0 and 1 only. The start lines say
   `sound cores: helper threads on cores 0 and 1, normal priority`, and the
   Dev tab's Sound cores page has a "Helper threads" row. In `shared` they
-  stay where the kernel puts them. MIDI Out's and CV out's writers
+  stay where the kernel puts them. MIDI out's and CV out's writers
   (`port_writer.rs`) then ask for SCHED_FIFO 60 on the MPC (below the lanes
   and the audio thread), so each message still leaves on its moment; if
   that is refused the log says so and they run at the normal priority.

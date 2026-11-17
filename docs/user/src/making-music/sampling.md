@@ -27,6 +27,8 @@ The switch at the top right shows **Browse** or **Pad** beside the pads.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
 - The **star** at the right end of each row adds it to Favourites; tap it again to take it out.
 
+**Sounds at other rates.** MPFree plays at 44.1 kHz. A sound recorded at another rate (48 kHz from a video or a phone, 96 kHz from a studio, 22 kHz from an old sampler) is converted to 44.1 kHz as it loads, and the Console says so ("converted from 48 kHz to 44.1 kHz"). Nothing you can hear changes: it plays at its own pitch, and as lightly as a sound recorded at 44.1 kHz. Whatever its settings file places on it (trim, loop, fades, warp and slices) moves with it to the same moments, and the file itself stays as it was. Kits and projects convert their sounds as they open, too. When memory is short, a sound stays at its own rate; it still plays at its pitch, and the Console lists it.
+
 **Whole kits.** A kit (green icon) loads all at once: pick it and tap it again, push the data wheel, or tap **Load**. It takes the place of the kit the pads play now, with every pad's sound and settings. To see the sounds inside a kit one by one, press **+**. **Save kit**, at the top of the **Kits** place, keeps the kit the pads play as a kit of its own, so you can load it in another project; save it before you load another kit over it if you want to keep your changes. MPFree puts its own drum kits in **Kits > MPFree** the first time it starts with your library.
 
 **MPFree's free kits.** Next to MPFree's own kits, made by its drum synth, are three kits of real recorded drums: **Big Rusty Drums** (a big acoustic kit) and **Swirly Drums** (a second acoustic kit, with cowbell, splash and china), both recorded by Karoryfer Samples, and **VCSL Percussion** (claves, cajon, tambourine, shaker, claps, bongos, congas, cowbell, agogo, triangle and more), from Versilian Studios' community sample library. Their makers gave the recordings to the public domain (CC0), so anything you make with them is yours, with no credit or fee owed. MPFree took one hit per pad from each library and brought every hit to about the same loudness, so set each pad's level to taste. Each hit's source is listed in the file `free-kits-credits.txt` that comes with the USB creator's download.
@@ -110,6 +112,8 @@ Both buttons are faint while the pad picked has no sound.
 {{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, and the region's settings on the right. Send to pad and Chop to pads are at the top right.}}
 
 The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too). Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** and **reverse**.
+
+MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap and Map to keys) while you work, never holding up the screen. A long sound shows as a flat line for a moment, then its wave, then its hits and tempo a little later: a minute-long sound takes a second or two on the MPC. The pages fill in as soon as each is found, and a sound already looked at is ready at once.
 
 **Warp** plays the sound in time with the project's tempo: **Stretch** keeps its pitch, **Repitch** speeds it up or slows it down like a record. **Warp tempo** is the tempo it was played at.
 

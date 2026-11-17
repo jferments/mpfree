@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looping.rs rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/play_page.rs
-checked: 2026-11-16 a994ab4
+checked: 2026-11-16 873e19d
 -->
 
 # Your first loop
@@ -21,10 +21,12 @@ On the **Play** page, tap **Loop** in the view switch. The loop takes the top of
 1. Set the tempo you want (see [Your first beat](first-beat.md#set-the-tempo)). The loop keeps it.
 2. Press **PLAY**. The transport bar counts bars and beats.
 3. Tap **Record**. The loop waits for the start of the next bar, then records. You'll see **RECORDING**, and the waveform of what you play grows across the loop as it records.
-4. Play the pads. A first loop is two bars long, so play a two-bar beat.
-5. After two bars the loop stops recording by itself and starts playing back what you played. You'll see **PLAYING**.
+4. Play the pads, a beat as long as you like. The loop keeps recording until you end it.
+5. Tap **Record** again just before the end of your beat. The loop closes at the end of that bar and starts playing back what you played. You'll see **PLAYING**.
 
-The loop records MPFree's own sound: the pads and the synth. Because it always starts and ends on a bar line, it stays in time with everything else.
+As on the MPC, you can also press **REC** with the transport stopped, then **PLAY**: the loop records from the first bar until you press **REC** again or **STOP**. **STOP** stops at once and keeps what you played; the loop runs on to the end of that bar, silent after the stop, and **PLAY** plays it.
+
+The loop records MPFree's own sound as you hear it: the pads and the synth with their effects, such as the Play page's delay. It leaves out the loops already playing and the metronome. Because it always starts and ends on a bar line, it stays in time with everything else.
 
 ## Add layers
 
