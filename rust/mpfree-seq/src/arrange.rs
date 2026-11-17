@@ -189,7 +189,13 @@ impl Arrangement {
             }
             match &p.source {
                 Source::Slot(s) if *s >= SLOTS => return Err(ModelError::BadPlacement),
-                Source::Own(c) => c.check()?,
+                Source::Own(c) => {
+                    c.check()?;
+                    // A loop's own copy only on a Loop track, a clip's off one.
+                    if c.looped.is_some() != tracks[p.track].is_loops() {
+                        return Err(ModelError::BadLoop);
+                    }
+                }
                 Source::Slot(_) => {}
             }
             if let Some(prev) = i.checked_sub(1).map(|j| &self.placements[j]) {
@@ -397,7 +403,10 @@ impl Arrangement {
     /// to a slot takes its own copy of the clip, as the slot would name
     /// that track's clip. Refused (`BadPlacement`), changing nothing, when
     /// it would overlap a placement there or start before 0, or goes to
-    /// another track linked to an empty slot. Its index now.
+    /// another track linked to an empty slot; and (`BadLoop`) when it goes
+    /// to another track and either is a Loop track: a loop's block stays on
+    /// its Loop track's lane, as its cell stays in its column
+    /// (loop-tracks.md). Its index now.
     pub fn move_placement(
         &mut self,
         tracks: &[Track],
@@ -409,6 +418,10 @@ impl Arrangement {
         let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
         if track >= tracks.len() || start < 0 {
             return Err(ModelError::BadPlacement);
+        }
+        let loops = |t: usize| tracks.get(t).is_some_and(Track::is_loops);
+        if track != p.track && (loops(track) || loops(p.track)) {
+            return Err(ModelError::BadLoop);
         }
         let mut moved = p.clone();
         if track != p.track && p.slot().is_some() {
@@ -931,6 +944,45 @@ mod tests {
             s.move_placement(&p.tracks, 0, 0, 2 * BAR + 100, true),
             Err(ModelError::BadPlacement)
         );
+    }
+
+    /// A loop's block stays on its Loop track's lane and a clip's block
+    /// off a Loop track's (loop-tracks.md part 5); a loop's own copy
+    /// anywhere else doesn't check.
+    #[test]
+    fn a_loops_block_stays_on_its_loop_tracks_lane() {
+        let mut p = project();
+        let mut a = Track::new_loops("Loops A", 2);
+        a.slots[0] = Some(Clip::new_loop(0, BAR));
+        p.tracks.push(a);
+        p.tracks.push(Track::new_loops("Loops B", 3));
+        let mut s = Arrangement::default();
+        s.place(Placement::linked(0, 0, 0, BAR)).unwrap();
+        s.place(Placement::linked(2, 0, 0, BAR)).unwrap();
+        let before = s.clone();
+        for (i, to) in [(1, 0), (1, 3), (0, 2)] {
+            for copy in [false, true] {
+                assert_eq!(
+                    s.move_placement(&p.tracks, i, to, 4 * BAR, copy),
+                    Err(ModelError::BadLoop)
+                );
+                assert_eq!(s, before);
+            }
+        }
+        // Along its own lane it moves as any block does.
+        assert_eq!(s.move_placement(&p.tracks, 1, 2, 2 * BAR, false), Ok(1));
+        assert_eq!(s.check(&p.tracks), Ok(()));
+        // Its own copy on a note track doesn't check, nor a clip's on a
+        // Loop track.
+        let mut bad = s.clone();
+        bad.placements[1].track = 0;
+        bad.placements[1].start = 4 * BAR;
+        bad.placements[1].source = Source::Own(Box::new(Clip::new_loop(0, BAR)));
+        bad.placements.sort_by_key(|p| (p.track, p.start));
+        assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
+        let mut bad = s.clone();
+        bad.placements[1].source = Source::Own(Box::new(Clip::new("a", BAR)));
+        assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
     }
 
     #[test]

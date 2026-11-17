@@ -2,6 +2,7 @@
 //! those, they only show what the page put in their fields and report
 //! touches.
 
+use mpfree_ui::qlink;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 // ---------------------------------------------------------------- pad bar
@@ -173,10 +174,10 @@ impl Widget for PadBar {
 
 /// A Q-Link's card: a knob showing where its marker sits in the sound, the
 /// Q-Link's job, and the marker's position in bars and beats (or seconds).
-/// In the page's Q-Link column (less than twice as wide as it is high) it is drawn as the
-/// shared column's cards are (`mpfree_ui::qlink`): the knob's number and
-/// the page, the job, then the ring with the value in it; in a strip, the
-/// ring beside the text.
+/// In the page's Q-Link column (less than twice as wide as it is high) it is
+/// drawn as the shared column's cards are (`mpfree_ui::qlink`): the knob's
+/// number and the job centred over the ring with the value in it; in a
+/// strip, the ring beside the text.
 ///
 /// A tap gives [`EventKind::Select`]`(0)`; the page makes it the wheel's
 /// focus. A tap on a faint card with a reason in `why` gives
@@ -187,7 +188,8 @@ impl Widget for PadBar {
 pub struct KnobCard {
     /// "Q-Link 1 · Start": the knob, then its job.
     pub label: String,
-    /// The page, in capitals over the job in the column ("WAVE").
+    /// The page ("Wave"): not drawn since the column narrowed (Jay, 17
+    /// Nov), kept for the page's tests.
     pub scope: String,
     /// Which Q-Link (0 to 3): the index a drag's steps carry.
     pub knob: usize,
@@ -243,8 +245,8 @@ impl KnobCard {
             .map_or(self.label.as_str(), |(_, j)| j)
     }
 
-    /// As the shared column's card: a coloured edge; "Q1" and the page; the
-    /// job; the ring with the value in it, and the small text under it.
+    /// As the shared column's card: a coloured edge; "Q1" and the job
+    /// centred; the ring with the value in it, and the small text under it.
     fn paint_tall(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         let col = if self.enabled {
@@ -261,33 +263,10 @@ impl KnobCard {
             cx.canvas
                 .fill_round_rect(Rect::new(r.x, r.y + 14, 4, (r.h - 28).max(0)), 2, col);
         }
-        let inner = r.inset_xy(14, 10);
-        let (top, rest) = inner.take_top(18);
-        cx.text(
-            FontId::Bold,
-            13.0,
-            top,
-            Align::Left,
-            col,
-            &format!("Q{}", self.knob + 1),
-        );
-        cx.text(
-            FontId::Sans,
-            12.0,
-            top.take_left(28).1,
-            Align::Right,
-            t.text_faint,
-            &self.scope.to_uppercase(),
-        );
-        let (name, rest) = rest.take_top(24);
-        cx.text(
-            FontId::Bold,
-            16.0,
-            name,
-            Align::Left,
-            if self.enabled { t.text } else { t.text_faint },
-            self.job(),
-        );
+        // As the shared column's cards: the number and the job centred
+        // over the knob, where the job lives not drawn.
+        let ink = if self.enabled { t.text } else { t.text_faint };
+        let rest = qlink::card_head(cx, qlink::card_inner(r), self.knob, self.job(), col, ink);
         let (ring, sub) = if self.sub.is_empty() {
             (rest, None)
         } else {
@@ -306,11 +285,7 @@ impl KnobCard {
             "—"
         };
         // A long value ("12 of 15") a size smaller, to stay inside the ring.
-        let px = if cx.measure(FontId::Bold, 16.0, value) > vr.w - 6 {
-            13.0
-        } else {
-            16.0
-        };
+        let px = qlink::fitting(cx, value, vr.w - 6);
         cx.text(
             FontId::Bold,
             px,
@@ -354,8 +329,8 @@ fn arc(cx: &mut PaintCx, (x, y): (f32, f32), rad: f32, from: f32, sweep: f32, do
 
 impl Widget for KnobCard {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
-        // In a column (168 px wide) rather than a strip (about three times
-        // as wide as high).
+        // In a column (`qlink::COLUMN_WIDTH` wide) rather than a strip
+        // (about three times as wide as high).
         if r.w < 2 * r.h {
             return self.paint_tall(cx, r);
         }

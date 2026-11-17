@@ -8,7 +8,7 @@
 //! - the frame, the same in every view: the transport card (84 px) with
 //!   the view switch at its right end, the view under it, and beside them,
 //!   from under the top bar to the hint line, the master meter (66 px) and
-//!   the four Q-Link cards (168 px) next to the MPC's Q-Link knobs;
+//!   the four Q-Link cards (128 px) next to the MPC's Q-Link knobs;
 //! - **All** (home, F): the looper strip, the pattern, and the throws
 //!   beside the XY pad;
 //! - **Beats** (G): the whole pattern, then (unless Play's options turn
@@ -2273,17 +2273,17 @@ mod tests {
             for spec in [v.layout(), v.quick_layout()].into_iter().chain(timing) {
                 assert_eq!(
                     rect(&spec, TRANSPORT),
-                    Rect::new(12, 84, 998, TRANSPORT_H),
+                    Rect::new(12, 84, 1038, TRANSPORT_H),
                     "{spec}"
                 );
                 assert_eq!(
                     rect(&spec, MASTER),
-                    Rect::new(1022, 84, MASTER_WIDTH, 666),
+                    Rect::new(1062, 84, MASTER_WIDTH, 666),
                     "{spec}"
                 );
                 assert_eq!(
                     rect(&spec, QLINKS),
-                    Rect::new(1100, 84, COLUMN_WIDTH, 666),
+                    Rect::new(1140, 84, COLUMN_WIDTH, 666),
                     "{spec}"
                 );
                 assert_eq!(rect(&spec, "hint").y, 762, "{spec}");
@@ -2296,25 +2296,25 @@ mod tests {
     fn the_views_are_laid_out_as_the_mockups() {
         let all = PlayView::All.layout();
         let strip = crate::looper_page::LOOP_STRIP;
-        assert_eq!(rect(&all, strip), Rect::new(12, 180, 998, 150));
+        assert_eq!(rect(&all, strip), Rect::new(12, 180, 1038, 150));
         // The pattern fills the room the mini pads had (Jay, 12 Nov 15:45Z).
-        assert_eq!(rect(&all, STEPS), Rect::new(12, 342, 998, 276));
-        assert_eq!(rect(&all, THROWS), Rect::new(12, 630, 706, 120));
-        assert_eq!(rect(&all, XY), Rect::new(730, 630, 280, 120));
+        assert_eq!(rect(&all, STEPS), Rect::new(12, 342, 1038, 276));
+        assert_eq!(rect(&all, THROWS), Rect::new(12, 630, 746, 120));
+        assert_eq!(rect(&all, XY), Rect::new(770, 630, 280, 120));
         let beats = PlayView::Beats.layout();
-        assert_eq!(rect(&beats, STEPS), Rect::new(12, 180, 998, 362));
-        assert_eq!(rect(&beats, THROWS), Rect::new(12, 554, 998, 196));
+        assert_eq!(rect(&beats, STEPS), Rect::new(12, 180, 1038, 362));
+        assert_eq!(rect(&beats, THROWS), Rect::new(12, 554, 1038, 196));
         let lp = PlayView::Loop.layout();
-        assert_eq!(rect(&lp, strip), Rect::new(12, 180, 998, 362));
-        assert_eq!(rect(&lp, THROWS), Rect::new(12, 554, 686, 196));
-        assert_eq!(rect(&lp, XY), Rect::new(710, 554, 300, 196));
+        assert_eq!(rect(&lp, strip), Rect::new(12, 180, 1038, 362));
+        assert_eq!(rect(&lp, THROWS), Rect::new(12, 554, 726, 196));
+        assert_eq!(rect(&lp, XY), Rect::new(750, 554, 300, 196));
         // Beats with the timing strip (Jay 13 Nov: the Drum view's
         // timing folded into Beats): the pattern keeps six lanes, as All's.
         let timed = PlayView::Beats.layout_for(true);
-        assert_eq!(rect(&timed, STEPS), Rect::new(12, 180, 998, 278));
+        assert_eq!(rect(&timed, STEPS), Rect::new(12, 180, 1038, 278));
         assert_eq!(
             rect(&timed, TIMING),
-            Rect::new(12, 470, 998, TIMING_STRIP_H)
+            Rect::new(12, 470, 1038, TIMING_STRIP_H)
         );
         assert_eq!(rect(&timed, THROWS), rect(&beats, THROWS));
         const { assert!(TIMING_STRIP_H < crate::play_widgets::YourTiming::FULL_H) };
@@ -2344,8 +2344,8 @@ mod tests {
         let spec = framed(arp_view::ARP_LAYOUT);
         assert!(!slots(&spec).iter().any(|(n, _)| n == PADS), "{spec}");
         let list = rect(&spec, arp_view::LIST);
-        assert_eq!((list.x, list.right()), (12, 1010), "{list:?}");
-        assert_eq!(rect(&spec, QLINKS), Rect::new(1100, 84, COLUMN_WIDTH, 666));
+        assert_eq!((list.x, list.right()), (12, 1050), "{list:?}");
+        assert_eq!(rect(&spec, QLINKS), Rect::new(1140, 84, COLUMN_WIDTH, 666));
         assert_eq!(framed(&spec), spec, "framing twice changes nothing");
         // Any other page body still gets the frame.
         let other = framed("col(header:60, log:*, hint:26)");
