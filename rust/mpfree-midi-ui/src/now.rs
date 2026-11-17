@@ -137,6 +137,8 @@ pub(crate) fn auto_channel(m: &Monitor, s: (PortId, Dir)) -> u8 {
 pub(crate) fn data(m: &IoModel, stream: (PortId, Dir), channel: u8, now: f64) -> NowData {
     let mon = &m.monitor;
     let name = mon.port_name(stream.0).unwrap_or("Port").to_string();
+    // The settings name a port by its own name, not one given to it.
+    let own = mon.own_name(stream.0).unwrap_or("Port").to_string();
     let held = mon
         .held(stream.0, stream.1, channel)
         .cloned()
@@ -147,7 +149,7 @@ pub(crate) fn data(m: &IoModel, stream: (PortId, Dir), channel: u8, now: f64) ->
         .learn
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.channel == channel && l.port.as_ref().is_none_or(|p| *p == name))
+        .filter(|(_, l)| l.channel == channel && l.port.as_ref().is_none_or(|p| *p == own))
         .filter_map(|(i, l)| match l.source {
             Source::Cc(cc) if stream.1 == Dir::In => Some((
                 cc,
@@ -163,8 +165,8 @@ pub(crate) fn data(m: &IoModel, stream: (PortId, Dir), channel: u8, now: f64) ->
     let clock_of = |s: (PortId, Dir)| {
         let p = mon.pulses(s.0, s.1)?;
         let name = mon.port_name(s.0).unwrap_or("Port").to_string();
-        let followed =
-            s.1 == Dir::In && matches!(&m.setup.tempo, TempoSource::Port(n) if *n == name);
+        let own = mon.own_name(s.0).unwrap_or("Port");
+        let followed = s.1 == Dir::In && matches!(&m.setup.tempo, TempoSource::Port(n) if n == own);
         Some(Clock {
             name,
             bpm: mon.bpm(s.0, s.1),
