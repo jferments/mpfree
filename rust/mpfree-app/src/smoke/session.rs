@@ -673,6 +673,32 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// A USB keyboard's key pressed (`velocity` Some) or let go, as
+    /// `player_session` hands it over while the synth has the pads: it
+    /// plays the synth by note, and with step pads of the line held it
+    /// goes on them.
+    pub fn key_edge(&mut self, note: u8, velocity: Option<u8>) -> &mut Session {
+        match velocity {
+            Some(v) => self.app.key_down(note, v),
+            None => self.app.key_up(note),
+        }
+        if let Some(p) = crate::step_key(
+            &self.app,
+            &mut self.step_keys,
+            &mut self.time,
+            note,
+            velocity,
+        ) {
+            if !p.log.is_empty() {
+                self.out.note(&p.log);
+            }
+            if let Some(t) = p.tell {
+                self.fx.push(Effect::Tell(t));
+            }
+        }
+        self.run_periods(2)
+    }
+
     /// Hit a pad on the controller (down, then up after `hold` seconds).
     pub fn pad(&mut self, pad: usize, velocity: u8, hold: f64) -> &mut Session {
         self.pad_edge(pad, velocity, true);
