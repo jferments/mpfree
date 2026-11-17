@@ -145,6 +145,24 @@ class JudgeTests(unittest.TestCase):
         self.assertIn("2 underruns in 10,000 periods", detail)
         self.assertIsNone(test(checks.Window([], session[:1], 100.0, 120.0))[0], "no status after it yet")
 
+    def test_step_speed_reads_the_step_edits_between_status_lines(self):
+        def status(t, in_place, slowest, compiled):
+            return (t, "status: 1 hits (0 from the screen), 0 repeats, 0 underruns in 1000 periods, x, time: "
+                       f"Playing at 1.1.1, 120.0 BPM, 0 takes; compiles: 9 (slowest 0.80 ms, 120 notes and "
+                       f"locks); step edits: {in_place} in place (slowest {slowest} ms), {compiled} compiled "
+                       f"(slowest 0.90 ms)")
+        test = checks.step_edits_in_place()
+        session = [status(90.0, 2, "0.01", 1), status(130.0, 40, "0.05", 2)]
+        ok, detail = test(checks.Window([], session, 100.0, 120.0))
+        self.assertTrue(ok, detail)
+        self.assertEqual(detail, "38 step edits in place (slowest 0.05 ms), 1 compiled (slowest 0.90 ms); "
+                                 "the slowest compile 0.80 ms, with 120 notes and locks playing")
+        session[1] = status(130.0, 40, "0.40", 2)
+        self.assertFalse(test(checks.Window([], session, 100.0, 120.0))[0], "past a tenth of a period")
+        session[1] = status(130.0, 2, "0.01", 30)
+        self.assertFalse(test(checks.Window([], session, 100.0, 120.0))[0], "none in place")
+        self.assertIsNone(test(checks.Window([], session[:1], 100.0, 120.0))[0], "no status after it yet")
+
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
                  (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),
