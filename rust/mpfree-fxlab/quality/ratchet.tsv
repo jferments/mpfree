@@ -836,57 +836,57 @@ modulation/phaser[Slow swirl]/click_db_over_6k	-76.0671
 modulation/phaser[Slow swirl]/insert_lu_hits	-1.6276
 modulation/phaser[Slow swirl]/insert_lu_pink	-1.5391
 modulation/phaser[Slow swirl]/mono_fold_lu	-0.6947
-reverb/cloud/decay_error_pct@1s	19.4439
-reverb/cloud/decay_error_pct@2.5s	21.7053
-reverb/cloud/decay_error_pct@6s	8.2076
+reverb/cloud/decay_error_pct@1s	-2.3747
+reverb/cloud/decay_error_pct@2.5s	-2.1424
+reverb/cloud/decay_error_pct@6s	-0.1823
 reverb/cloud/diffuse_ms	49.9093
-reverb/cloud/early_side_db	21.4479
-reverb/cloud/edt_t30_log2	0.1608
-reverb/cloud/iacc_tail	0.0313
-reverb/cloud/mix_bump_lu	0
-reverb/cloud/mix_dip_lu	-0.6512
-reverb/cloud/mono_sum_lu	-3.0168
+reverb/cloud/early_side_db	21.4552
+reverb/cloud/edt_t30_log2	0.473
+reverb/cloud/iacc_tail	0.028
+reverb/cloud/mix_bump_lu	0.6185
+reverb/cloud/mix_dip_lu	0
+reverb/cloud/mono_sum_lu	-3.0318
 reverb/cloud/predelay_error_frames	0
-reverb/cloud/tail_excess_over_ideal_db	0.7384
-reverb/cloud/wet_lu	-0.6512
-reverb/cloud/wobble_cents	3.5537
-reverb/cloud/zipper_worst_db	2.9922
-reverb/cloud[Endless cloud]/wet_lu	1.2125
-reverb/cloud[Endless cloud]/zipper_worst_db	2.8841
-reverb/echoes/decay_error_pct@1s	-1.4844
-reverb/echoes/decay_error_pct@2.5s	-14.2006
-reverb/echoes/decay_error_pct@6s	-26.816
-reverb/echoes/diffuse_ms	1204.2857
-reverb/echoes/early_side_db	17.4004
-reverb/echoes/edt_t30_log2	1.3072
-reverb/echoes/iacc_tail	0.0647
+reverb/cloud/tail_excess_over_ideal_db	0.2891
+reverb/cloud/wet_lu	0.6185
+reverb/cloud/wobble_cents	1.8595
+reverb/cloud/zipper_worst_db	2.2288
+reverb/cloud[Endless cloud]/wet_lu	-0.6184
+reverb/cloud[Endless cloud]/zipper_worst_db	2.8642
+reverb/echoes/decay_error_pct@1s	3.8958
+reverb/echoes/decay_error_pct@2.5s	1.026
+reverb/echoes/decay_error_pct@6s	1.1248
+reverb/echoes/diffuse_ms	1169.3651
+reverb/echoes/early_side_db	25.4374
+reverb/echoes/edt_t30_log2	1.0887
+reverb/echoes/iacc_tail	0.0171
 reverb/echoes/mix_bump_lu	0
-reverb/echoes/mix_dip_lu	-0.7304
-reverb/echoes/mono_sum_lu	-3.0378
+reverb/echoes/mix_dip_lu	-0.546
+reverb/echoes/mono_sum_lu	-3.0094
 reverb/echoes/predelay_error_frames	0
-reverb/echoes/tail_excess_over_ideal_db	0.6486
-reverb/echoes/wet_lu	-0.7304
-reverb/echoes/wobble_cents	3.0363
-reverb/echoes/zipper_worst_db	18.0639
-reverb/echoes[Echo chamber]/wet_lu	-0.8344
-reverb/echoes[Echo chamber]/zipper_worst_db	21.1586
-reverb/hall/decay_error_pct@1s	8.1698
-reverb/hall/decay_error_pct@2.5s	0.9218
-reverb/hall/decay_error_pct@6s	-1.6534
+reverb/echoes/tail_excess_over_ideal_db	0.2805
+reverb/echoes/wet_lu	-0.546
+reverb/echoes/wobble_cents	2.6315
+reverb/echoes/zipper_worst_db	0.4604
+reverb/echoes[Echo chamber]/wet_lu	0.5418
+reverb/echoes[Echo chamber]/zipper_worst_db	0.9549
+reverb/hall/decay_error_pct@1s	4.6664
+reverb/hall/decay_error_pct@2.5s	-0.0519
+reverb/hall/decay_error_pct@6s	0.3573
 reverb/hall/diffuse_ms	45.9184
-reverb/hall/early_side_db	9.2775
-reverb/hall/edt_t30_log2	0.2589
-reverb/hall/iacc_tail	0.0223
-reverb/hall/mix_bump_lu	0.7915
-reverb/hall/mix_dip_lu	0
-reverb/hall/mono_sum_lu	-3.0647
+reverb/hall/early_side_db	9.2997
+reverb/hall/edt_t30_log2	0.1416
+reverb/hall/iacc_tail	0.0455
+reverb/hall/mix_bump_lu	0
+reverb/hall/mix_dip_lu	-0.2051
+reverb/hall/mono_sum_lu	-3.0568
 reverb/hall/predelay_error_frames	0
-reverb/hall/tail_excess_over_ideal_db	2.2291
-reverb/hall/wet_lu	0.7915
-reverb/hall/wobble_cents	3.1489
-reverb/hall/zipper_worst_db	2.676
-reverb/hall[Big hall]/wet_lu	0.646
-reverb/hall[Big hall]/zipper_worst_db	1.9465
+reverb/hall/tail_excess_over_ideal_db	0.9947
+reverb/hall/wet_lu	-0.2051
+reverb/hall/wobble_cents	2.6911
+reverb/hall/zipper_worst_db	0.4686
+reverb/hall[Big hall]/wet_lu	0.2411
+reverb/hall[Big hall]/zipper_worst_db	1.5225
 reverb/plate/decay_error_pct@0.5s	0.1843
 reverb/plate/decay_error_pct@2s	-1.0946
 reverb/plate/decay_error_pct@6s	-0.0789
