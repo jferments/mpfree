@@ -72,14 +72,14 @@ pub const CLIPS_PAGE: &str = "Clips";
 /// The bar in a layout spec: 44 pixels under the header.
 pub const BAR_SPEC: &str = "transport:44";
 /// The Clips view: the bar over the grid and the scene morph, and beside
-/// them the record settings over the takes; Play's Q-Link column (168 px,
+/// them the record settings over the takes; Play's Q-Link column (128 px,
 /// `mpfree_ui::qlink::COLUMN_WIDTH`) down the right edge, from under the
 /// header to the hint line, as on Play.
 pub const CLIPS_LAYOUT: &str =
-    "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
+    "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 /// The same page in its Song view: the timeline in place of the grid.
 pub const SONG_LAYOUT: &str =
-    "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
+    "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 pub const CLIPS_HINT: &str =
     "Tap a clip: it plays from the next bar, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
 /// The hint line under the Song view.
@@ -105,7 +105,7 @@ pub fn song_hint(st: &TimeState) -> &'static str {
 /// The same page with the note editor (a piano roll or a list) in place
 /// of the grid, and the Edit options in place of the record settings.
 pub const EDIT_LAYOUT: &str =
-    "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
+    "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 /// The hint line under the note editor's piano roll.
 pub const EDIT_HINT: &str =
     "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: pick an option, - / +: change it";
@@ -2062,18 +2062,18 @@ mod tests {
             (EDIT_LAYOUT, NOTES, EDIT_OPTIONS),
         ] {
             ui.set_layout(CLIPS_PAGE, layout).unwrap();
-            // Where Play has it (play_page's frame test): x 1100, y 84.
+            // Where Play has it (play_page's frame test): x 1140, y 84.
             assert_eq!(
                 ui.rect_of(QLINKS),
-                Some(Rect::new(1100, 84, COLUMN_WIDTH, 666)),
+                Some(Rect::new(1140, 84, COLUMN_WIDTH, 666)),
                 "{layout}"
             );
-            assert_eq!(ui.rect_of(TRANSPORT), Some(Rect::new(12, 84, 1076, 44)));
+            assert_eq!(ui.rect_of(TRANSPORT), Some(Rect::new(12, 84, 1116, 44)));
             let s = ui.rect_of(side).unwrap();
-            assert_eq!((s.x, s.w), (838, SIDE_W), "{layout}");
-            assert_eq!(ui.rect_of(TAKES).map(|t| (t.x, t.w)), Some((838, SIDE_W)));
+            assert_eq!((s.x, s.w), (878, SIDE_W), "{layout}");
+            assert_eq!(ui.rect_of(TAKES).map(|t| (t.x, t.w)), Some((878, SIDE_W)));
             let b = ui.rect_of(body).unwrap();
-            assert_eq!((b.x, b.right()), (12, 826), "{layout}");
+            assert_eq!((b.x, b.right()), (12, 866), "{layout}");
         }
         // Without the app, the samples get an empty column.
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
