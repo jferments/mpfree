@@ -554,12 +554,12 @@ impl TimeAudio {
             }
             match o.event {
                 Event::NoteOn { note, velocity } => {
-                    pads.hit_at(usize::from(note), velocity, o.offset);
+                    pads.hit_at(o.track, usize::from(note), velocity, o.offset);
                 }
-                Event::NoteOff { note } => pads.release_at(usize::from(note), o.offset),
+                Event::NoteOff { note } => pads.release_at(o.track, usize::from(note), o.offset),
                 Event::AllOff => pads.stop_all(),
                 Event::Pressure { note, value } => {
-                    pads.pressure_at(usize::from(note), value, o.offset)
+                    pads.pressure_at(o.track, usize::from(note), value, o.offset)
                 }
                 // Parameter locks: a kit pad's sound and an instrument
                 // take theirs on the frame (`Pads::lock_at`); the rest go

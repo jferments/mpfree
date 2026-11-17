@@ -2320,11 +2320,14 @@ fn mute_colours(
 
 /// TRACK MUTE's key `pad` pressed: its track in bank `bank` (A = 0:
 /// tracks 1-16, B 17-32 ...), or the pad itself in the kit, muted or let
-/// play. The line for the log.
+/// play. `other_kit`: the armed track plays that kit (counted from 0) and
+/// not kit 1, whose pads alone have channels (and mutes) of their own, so
+/// a pad's key mutes nothing and says so. The line for the log.
 fn mute_key(
     keys: app::MuteKeys,
     bank: usize,
     pad: usize,
+    other_kit: Option<usize>,
     time: &mut time::TimeHost,
     mix: &mut mixing::MixHost,
 ) -> String {
@@ -2333,6 +2336,9 @@ fn mute_key(
         app::MuteKeys::Tracks => time
             .toggle_mute(bank * 16 + pad)
             .unwrap_or_else(|e| format!("track mute: {e}")),
+        app::MuteKeys::Pads if other_kit.is_some() => {
+            gui::other_kit_mutes("pad mute", other_kit.unwrap_or(0))
+        }
         app::MuteKeys::Pads => {
             let mute = mix.pad_mutes() & (1 << pad) == 0;
             mix.play(mixing::PlayFx::PadMute { pad, mute });
@@ -2343,6 +2349,12 @@ fn mute_key(
             )
         }
     }
+}
+
+/// The kit the armed track `track` plays when it isn't kit 1 (whose pads
+/// alone have the mixer's pad strips): see [`mute_key`].
+fn other_kit(kits: &sampler::TrackKits, track: usize) -> Option<usize> {
+    kits.kit_of(track).filter(|&k| k > 0)
 }
 
 /// STEP SEQ: pad `pad` pressed as a step, `velocity` loud as it plays
@@ -3203,11 +3215,18 @@ const SAMPLE_HEADS_EVERY: Duration = Duration::from_millis(40);
 /// While overdubbing, the loop's waveform is redrawn about once a second.
 const LOOP_WAVE_PERIODS: u64 = 344;
 
-/// The sequencer's notes on the pads: the sampler's kit, or the synth while the
-/// synth has the pads. Each hit is noted so the screen's pads can flash.
+/// The sequencer's notes on the pads: each track's own kit, or the synth
+/// for the tracks that play it (`kits`). Each hit is noted so the screen's
+/// pads can flash.
 struct SeqPads<'a> {
     player: &'a mut sampler::Player,
-    synth: Option<&'a mut synth::Synth>,
+    /// The synth, which the tracks that play it play (`kits`).
+    synth: &'a mut synth::Synth,
+    /// What each track plays: a kit or the synth.
+    kits: &'a sampler::TrackKits,
+    /// What the pads show: the armed track's entry. Only the hits of the
+    /// tracks that play it flash them.
+    shown: usize,
     flashes: [u8; 16],
     hits: u64,
     /// The live treatment's inputs (velocity curve, pad layout).
@@ -3235,9 +3254,12 @@ struct SeqPads<'a> {
 
 /// A key a route sends to a track that isn't armed (the I/O view's
 /// Routing): played at once where the track's clips play, on MIDI out, its
-/// own instrument, or the pads (a kit's pad by the MPC's pad notes, or the
-/// synth by note), and on CV out if it follows the track. It goes through
-/// no arp, and nothing records it: REC records the armed track.
+/// own instrument, or what it plays (its kit's pad by the MPC's pad notes,
+/// or the synth by note: `synth` if the track plays it, else `kit`), and
+/// on CV out if it follows the track. It goes through no arp, and nothing
+/// records it: REC records the armed track.
+// What a track plays comes in pieces the sound loop holds apart.
+#[allow(clippy::too_many_arguments)]
 fn play_routed(
     track: u8,
     key: midi_in::Key,
@@ -3246,6 +3268,7 @@ fn play_routed(
     own: &mut instruments::Instruments,
     synth: Option<&mut synth::Synth>,
     player: &mut sampler::Player,
+    kit: usize,
 ) {
     use mpfree_play::Event;
     let event = match key {
@@ -3286,17 +3309,17 @@ fn play_routed(
         (Some(s), Event::Pressure { note, value }) => s.pressure_note(note, value),
         (None, Event::NoteOn { note, velocity }) => {
             if let Some(pad) = mpc_one::pad_index(note) {
-                player.hit_at(usize::from(pad), velocity, 0);
+                player.hit_kit_at(kit, usize::from(pad), velocity, 0);
             }
         }
         (None, Event::NoteOff { note }) => {
             if let Some(pad) = mpc_one::pad_index(note) {
-                player.release_at(usize::from(pad), 0);
+                player.release_kit_at(kit, usize::from(pad), 0);
             }
         }
         (None, Event::Pressure { note, value }) => {
             if let Some(pad) = mpc_one::pad_index(note) {
-                player.pressure_at(usize::from(pad), value, 0);
+                player.pressure_kit_at(kit, usize::from(pad), value, 0);
             }
         }
         _ => {}
@@ -3573,40 +3596,44 @@ fn instrument_job(
 const MAX_LIVE_HITS: usize = 64;
 
 impl time::Pads for SeqPads<'_> {
-    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
-        let sounded = match self.synth.as_mut() {
+    fn hit_at(&mut self, track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
+        let kit = self.kit_of(track);
+        let sounded = match self.synth_of(track) {
             Some(s) if pad < 16 => {
                 s.note_on(pad, velocity, offset);
                 true
             }
             Some(_) => false,
-            None => self.player.hit_at(pad, velocity, offset),
+            None => self.player.hit_kit_at(kit, pad, velocity, offset),
         };
         if sounded {
             self.hits += 1;
-            if let Some(f) = self.flashes.get_mut(pad) {
-                *f = velocity.max(1);
+            if self.kits.entry(usize::from(track)) == self.shown {
+                if let Some(f) = self.flashes.get_mut(pad) {
+                    *f = velocity.max(1);
+                }
             }
         }
         sounded
     }
-    fn release_at(&mut self, pad: usize, offset: u32) {
-        match self.synth.as_mut() {
+    fn release_at(&mut self, track: u16, pad: usize, offset: u32) {
+        let kit = self.kit_of(track);
+        match self.synth_of(track) {
             Some(s) => s.note_off(pad, offset),
-            None => self.player.release_at(pad, offset),
+            None => self.player.release_kit_at(kit, pad, offset),
         }
     }
+    /// A panic: every kit, the synth and every track's own instrument.
     fn stop_all(&mut self) {
-        match self.synth.as_mut() {
-            Some(s) => s.all_off(),
-            None => self.player.stop_all(),
-        }
+        self.synth.all_off();
+        self.player.stop_all();
         self.own.all_off_every();
     }
-    fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
-        match self.synth.as_mut() {
+    fn pressure_at(&mut self, track: u16, pad: usize, value: u8, offset: u32) {
+        let kit = self.kit_of(track);
+        match self.synth_of(track) {
             Some(s) => s.pressure_at(pad, value, offset),
-            None => self.player.pressure_at(pad, value, offset),
+            None => self.player.pressure_kit_at(kit, pad, value, offset),
         }
     }
 
@@ -3620,7 +3647,7 @@ impl time::Pads for SeqPads<'_> {
         if self.quiet(o) {
             return None;
         }
-        let notes = self.synth.is_some() && self.live.plays_notes();
+        let notes = self.kits.plays_synth(usize::from(o.track)) && self.live.plays_notes();
         self.cv_live(o, notes);
         if self.midi.takes(o.track) {
             return self.live_out(o, notes);
@@ -3634,9 +3661,7 @@ impl time::Pads for SeqPads<'_> {
                 let pad = if notes {
                     // A note no pad has (an arp octave up, a scale run)
                     // still plays; only a pad's own note shows and records.
-                    if let Some(s) = self.synth.as_mut() {
-                        s.note_on_note(note, v, o.offset);
-                    }
+                    self.synth.note_on_note(note, v, o.offset);
                     self.hits += 1;
                     self.live.pad_of_note(note)?
                 } else {
@@ -3644,14 +3669,15 @@ impl time::Pads for SeqPads<'_> {
                     if pad >= 16 {
                         return None;
                     }
-                    match self.synth.as_mut() {
-                        Some(s) => {
-                            s.note_on(pad, v, o.offset);
-                            self.hits += 1;
-                        }
+                    let kit = self.kit_of(o.track);
+                    if let Some(s) = self.synth_of(o.track) {
+                        s.note_on(pad, v, o.offset);
+                        self.hits += 1;
+                    } else if self.player.live_hit_at(kit, pad, v, o.offset) {
                         // While live chop takes cuts, a hit marks one.
-                        None if self.player.live_hit_at(pad, v, o.offset) => self.hits += 1,
-                        None => self.silent += 1,
+                        self.hits += 1;
+                    } else {
+                        self.silent += 1;
                     }
                     pad
                 };
@@ -3665,18 +3691,19 @@ impl time::Pads for SeqPads<'_> {
                 })
             }
             Event::NoteOff { note } if notes => {
-                if let Some(s) = self.synth.as_mut() {
-                    s.note_off_note(note, o.offset);
-                }
+                self.synth.note_off_note(note, o.offset);
                 let pad = self.live.pad_of_note(note)?;
                 Some(Event::NoteOff { note: pad as u8 })
             }
             Event::NoteOff { note } => {
                 // The synth's note ends; a Grains pad stops when let go;
                 // one-shot sounds ignore it.
-                match self.synth.as_mut() {
+                let kit = self.kit_of(o.track);
+                match self.synth_of(o.track) {
                     Some(s) => s.note_off(usize::from(note), o.offset),
-                    None => self.player.live_release_at(usize::from(note), o.offset),
+                    None => self
+                        .player
+                        .live_release_at(kit, usize::from(note), o.offset),
                 }
                 Some(o.event)
             }
@@ -3686,7 +3713,7 @@ impl time::Pads for SeqPads<'_> {
                 None
             }
             Event::Pressure { note, value } => {
-                self.pressure_at(usize::from(note), value, o.offset);
+                self.pressure_at(o.track, usize::from(note), value, o.offset);
                 None
             }
             Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
@@ -3714,13 +3741,17 @@ impl time::Pads for SeqPads<'_> {
             Owner::Inst(t) if self.own.holds(usize::from(t)) => {
                 self.own.lock(usize::from(t), addr.param, value, offset)
             }
-            Owner::Inst(_) => self
-                .synth
-                .as_mut()
+            Owner::Inst(t) => self
+                .synth_of(u16::from(t))
                 .is_some_and(|s| s.lock(addr.param, value, offset)),
-            Owner::Pad(t, pad) if !self.own.holds(usize::from(t)) && self.synth.is_none() => {
-                sampler::pad_field(addr.param)
-                    .is_some_and(|f| self.player.pad_lock(usize::from(pad), f, value, offset))
+            Owner::Pad(t, pad)
+                if !self.own.holds(usize::from(t)) && !self.kits.plays_synth(usize::from(t)) =>
+            {
+                let kit = self.kit_of(u16::from(t));
+                sampler::pad_field(addr.param).is_some_and(|f| {
+                    self.player
+                        .pad_lock(kit, usize::from(pad), f, value, offset)
+                })
             }
             _ => false,
         }
@@ -3740,7 +3771,7 @@ impl time::Pads for SeqPads<'_> {
             }
             _ => 0,
         };
-        let is = midi_out::NoteIs::Pad(pad_notes(self.synth.as_deref(), pad));
+        let is = midi_out::NoteIs::Pad(pad_notes(synth_seen(self.kits, self.synth, o.track), pad));
         self.cv.send(o, is);
         self.tap.send(o, is);
         let taken = self.midi.send(o, is) || self.clip_own(o);
@@ -3753,7 +3784,30 @@ impl time::Pads for SeqPads<'_> {
     }
 }
 
+/// The synth, if track `track` plays it (`kits`): to read its pad notes.
+fn synth_seen<'s>(
+    kits: &sampler::TrackKits,
+    synth: &'s synth::Synth,
+    track: u16,
+) -> Option<&'s synth::Synth> {
+    kits.plays_synth(usize::from(track)).then_some(synth)
+}
+
 impl SeqPads<'_> {
+    /// The synth, if track `track` plays it rather than a kit.
+    fn synth_of(&mut self, track: u16) -> Option<&mut synth::Synth> {
+        if self.kits.plays_synth(usize::from(track)) {
+            Some(&mut *self.synth)
+        } else {
+            None
+        }
+    }
+
+    /// The kit track `track` plays (kit 1 if it plays the synth).
+    fn kit_of(&self, track: u16) -> usize {
+        self.kits.kit_of(usize::from(track)).unwrap_or(0)
+    }
+
     /// An export's replay plays one track alone: another track's note on
     /// the pads is kept quiet (taken, so nothing plays or records it).
     fn quiet(&self, o: &mpfree_play::Out) -> bool {
@@ -3872,7 +3926,7 @@ impl SeqPads<'_> {
         let is = match (notes, event) {
             (true, _) => NoteIs::Note,
             (false, Event::NoteOn { .. }) if pad < 16 => {
-                NoteIs::Pad(pad_notes(self.synth.as_deref(), pad))
+                NoteIs::Pad(pad_notes(synth_seen(self.kits, self.synth, o.track), pad))
             }
             // A pad's note-off and pressure go to what its note-on sent.
             (false, _) => NoteIs::Pad(&[]),
@@ -3904,7 +3958,8 @@ impl SeqPads<'_> {
                     if pad >= 16 {
                         return None;
                     }
-                    let is = NoteIs::Pad(pad_notes(self.synth.as_deref(), pad));
+                    let is =
+                        NoteIs::Pad(pad_notes(synth_seen(self.kits, self.synth, o.track), pad));
                     self.midi.send(&played, is);
                     pad
                 };
@@ -4171,6 +4226,15 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// The log line for the pads moving to the synth, by an octave or to
 /// another layout: "pads: Poly synth, C3 to D#4 (pad 1 = C3; …)", with the
 /// scale and layout when a scale is on.
+/// The hint the Synth tab shows while the armed track (`track`, from 0)
+/// plays a kit: opening the tab leaves what the track plays alone.
+fn synth_tab_hint(track: usize) -> String {
+    format!(
+        "Track {} plays a kit: pick Synth in the kit chip's list (or SHIFT + wheel) to play the synth on it",
+        track + 1
+    )
+}
+
 fn synth_pads_note(synth: &synth::Synth) -> String {
     if synth.engine() == synth::Engine::Drums {
         return format!(
@@ -4323,7 +4387,15 @@ fn player_session(
     let drum_kits = kits.len();
     let synth_kit = drum_kits;
     let n = drum_kits + 1;
+    // Whether the armed track plays the synth: the pads play it then.
     let mut synth_on = false;
+    // What each track plays: a kit, the Grains kit or the synth (kit 1 on
+    // every track until a pick). The pads play the armed track's; each
+    // track's clips play its own.
+    let mut track_kits = sampler::TrackKits::new(drum_kits);
+    // The armed track changed: next period the pads follow it to what it
+    // plays (as a pick would, but nothing changes what a track plays).
+    let mut kit_follow: Option<usize> = None;
     // Each track's own instrument's preset, as last picked (instruments.rs).
     let mut track_presets: [Option<usize>; instruments::TRACKS] = [None; instruments::TRACKS];
     // When the Synth tab looks again at a track whose plugin just loaded a
@@ -4343,6 +4415,7 @@ fn player_session(
     // What each track plays, as the screen last heard it (the line under
     // its name on Arrange).
     let mut sounds_shown: gui::TrackSounds = [None; instruments::TRACKS];
+    let mut kits_shown = sampler::TrackKits::default();
     // Each sounding voice's pressure, for the Synth tab's Pressure page.
     let mut synth_pressures = [0f32; 16];
     let mut shown_pressures = 0usize;
@@ -4820,7 +4893,7 @@ fn player_session(
         let period_span = Span::start();
         parts.begin();
         let t = started.elapsed().as_secs_f64();
-        let mut kit_to: Option<usize> = None;
+        let mut kit_to: Option<usize> = kit_follow.take();
         let mut audio_change: Option<u32> = None;
         let mut bank_lights = false;
         // Hits are timed only when they sound at once (not on the arp's grid).
@@ -4877,6 +4950,7 @@ fn player_session(
                         app.mute_keys(),
                         app.mute_bank(),
                         pad,
+                        other_kit(&track_kits, app.track()),
                         &mut time,
                         &mut mix,
                     ));
@@ -4987,8 +5061,8 @@ fn player_session(
                 // A MIDI file from BROWSE: its tracks as clips, each note on
                 // the pad that plays it (midi_file.rs).
                 gui::FromUi::MidiFile(m) => {
-                    let synth_has = synth_on.then_some(&*synth);
                     let r = midi_file::put(&mut time, &m, |t, n| {
+                        let synth_has = track_kits.plays_synth(t).then_some(&*synth);
                         midi_file::pad_on_track(&mix.instruments, synth_has, t, n)
                     });
                     let (Ok(line) | Err(line)) = r;
@@ -5046,19 +5120,20 @@ fn player_session(
                     let v = app.settings.screen_velocity;
                     player.live_chop(kit, pad, layer, start, end, on, v);
                 }
+                // Every kit is in the engine: the Sample tab plays any
+                // kit's pad, as that kit's clips would.
                 gui::FromUi::SampleHit {
                     kit,
                     pad,
                     velocity,
                     down,
-                } if kit == player.kit() => {
+                } => {
                     if down {
-                        player.hit_at(pad, velocity, 0);
+                        player.hit_kit_at(kit, pad, velocity, 0);
                     } else {
-                        player.release_at(pad, 0);
+                        player.release_kit_at(kit, pad, 0);
                     }
                 }
-                gui::FromUi::SampleHit { .. } => {}
                 gui::FromUi::SampleKey {
                     kit,
                     note,
@@ -5092,19 +5167,27 @@ fn player_session(
                 gui::FromUi::SaveProject => save_asked = true,
                 gui::FromUi::ExportAsk => {
                     let rig = export_rig(&time, &mix, &midi_out, &music, &cv_out, &app, &looper);
-                    // Stems by track: the pads play the synth or the drum
-                    // kit; the audio tracks that sound.
-                    let pads = mpfree_fx::StripId::Track(if synth_on {
-                        mixing::SYNTH
-                    } else {
-                        mixing::DRUMS
-                    });
+                    // Stems by track: each track on the pads plays the
+                    // synth, kit 1 (Drums) or another kit, in the channel
+                    // of the first track that plays it; the audio tracks
+                    // that sound.
+                    let homes = track_kits
+                        .homes(|t| !mix.instruments.holds(t) && !midi_out.takes(t as u16));
+                    let pads = |t: usize| {
+                        mpfree_fx::StripId::Track(match track_kits.kit_of(t) {
+                            None => mixing::SYNTH,
+                            Some(k) => match homes.get(k).copied().unwrap_or(0) {
+                                0 => mixing::DRUMS,
+                                h => instruments::first_track() + usize::from(h) - 1,
+                            },
+                        })
+                    };
                     let f = export::Facts::gather(
                         &time,
                         &mix,
                         rig,
                         &|t| midi_out.takes(t as u16),
-                        pads,
+                        &pads,
                         &export::audio_heard(&tracks.host.tracks),
                     );
                     out.show(gui::ToUi::ExportFacts(Box::new(f)));
@@ -5235,6 +5318,21 @@ fn player_session(
                             "project: {playing} tracks play their own instrument, the rest the kit"
                         ));
                     }
+                    // What each track plays: the project's picks, and kit 1
+                    // on every other track. The pads follow the armed
+                    // track's.
+                    track_kits = sampler::TrackKits::new(drum_kits);
+                    for &(track, kit) in &o.track_kits {
+                        let entry = kit.unwrap_or(track_kits.synth());
+                        if kit.is_some_and(|k| k >= drum_kits) || !track_kits.set(track, entry) {
+                            out.note(&format!(
+                                "project: track {} plays kit 1 (its kit {} isn't here: {drum_kits} kits)",
+                                track + 1,
+                                entry + 1
+                            ));
+                        }
+                    }
+                    kit_to = Some(track_kits.entry(app.track()));
                     if let Some((options, sounds)) = o.synth.take() {
                         for line in synth.set_sounds(&sounds) {
                             out.note(&line);
@@ -5748,8 +5846,11 @@ fn player_session(
                 &mut midi_out,
                 &mut cv_out,
                 &mut mix.instruments,
-                synth_on.then_some(&mut synth),
+                track_kits
+                    .plays_synth(usize::from(track))
+                    .then_some(&mut synth),
                 &mut player,
+                track_kits.kit_of(usize::from(track)).unwrap_or(0),
             );
         }
         for m in got {
@@ -5785,6 +5886,7 @@ fn player_session(
                         app.mute_keys(),
                         app.mute_bank(),
                         pad as usize,
+                        other_kit(&track_kits, app.track()),
                         &mut time,
                         &mut mix,
                     ));
@@ -6114,12 +6216,14 @@ fn player_session(
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Quit => stop = true,
                 app::Effect::Show(v) => {
-                    // Opening the Synth tab hands the pads to the synth, and
-                    // opening the Sample tab gives them back to the drum kit.
-                    if v == app::View::Synth && !synth_on {
-                        kit_to = Some(synth_kit);
-                    } else if v.sampler() && synth_on {
-                        kit_to = Some(player.kit());
+                    // Opening a page never changes what a track plays; only
+                    // a pick does. On the Synth tab, a track that plays a
+                    // kit is told how to play the synth instead.
+                    if v == app::View::Synth
+                        && !kit_to.map_or(synth_on, |k| k == synth_kit)
+                        && !mix.instruments.holds(app.track())
+                    {
+                        out.show(gui::ToUi::Tell(synth_tab_hint(app.track())));
                     }
                     out.show(gui::ToUi::Show(v));
                 }
@@ -6224,8 +6328,24 @@ fn player_session(
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         if let Some(k) = kit_to.filter(|&k| k != playing_kit) {
             used[k] = true;
+            // A pick: the armed track plays it from now on. (When the pads
+            // followed the armed track, it already does.)
+            track_kits.set(app.track(), k);
+            // The pads held now let go where they played; the other
+            // tracks' notes play on.
+            for pad in (0..16).filter(|&p| held[p]) {
+                if !synth_on {
+                    player.release_kit_at(playing_kit, pad, 0);
+                } else if app.arp_plays_notes() {
+                    for &note in app.pad_held_notes(pad) {
+                        synth.note_off_note(note, 0);
+                    }
+                } else {
+                    synth.note_off(pad, 0);
+                }
+            }
             if k == synth_kit {
-                // The sampler keeps its kit; its sounds finish.
+                // Every kit plays on; its sounds finish.
                 synth_on = true;
                 rest = synth.pad_colours();
                 out.note(&synth_pads_note(&synth));
@@ -6236,10 +6356,8 @@ fn player_session(
                     &as_slices(&pad_colours(&rest)),
                 )?;
             } else {
-                if synth_on {
-                    synth_on = false;
-                    synth.all_off();
-                }
+                // Other tracks may play the synth: it plays on.
+                synth_on = false;
                 player.select(k);
                 rest = sound_colours(player.sounds(k), k);
                 out.note(&format!(
@@ -6366,6 +6484,8 @@ fn player_session(
         if armed != app.track() {
             let before = app.track();
             fx.extend(app.set_track(armed));
+            // The pads play what the newly armed track plays.
+            kit_follow = Some(track_kits.entry(armed));
             // The Synth tab follows the selected track's own synth.
             if mix.instruments.holds(armed) || mix.instruments.holds(before) {
                 let preset = track_presets.get(armed).copied().flatten();
@@ -6503,7 +6623,9 @@ fn player_session(
         // the arps' notes as live playing (SeqPads::live).
         let mut seq = SeqPads {
             player: &mut player,
-            synth: synth_on.then_some(&mut synth),
+            synth: &mut synth,
+            kits: &track_kits,
+            shown: track_kits.entry(app.track()),
             flashes: [0; 16],
             hits: 0,
             live: app.live_map(),
@@ -6700,11 +6822,15 @@ fn player_session(
             let kit = player.kit();
             let first = app.mute_bank() * 16;
             let track = |t: usize| time.muted(first + t).map(|m| (m, time.launched(first + t)));
+            let pad_mutes = match other_kit(&track_kits, app.track()) {
+                Some(_) => 0,
+                None => mix.pad_mutes(),
+            };
             let want = mute_colours(
                 keys,
                 sound_colours(player.sounds(kit), kit),
                 track,
-                mix.pad_mutes(),
+                pad_mutes,
             );
             for pad in 0..16 {
                 if mute_shown.is_none_or(|s| s[pad] != want[pad]) {
@@ -6763,13 +6889,15 @@ fn player_session(
         let t_render = Instant::now();
         // Warped pads play at the transport's tempo.
         player.set_tempo(time.info().bpm);
-        // Each pad of the playing kit into its pad channel (Pad Mix); they
-        // all go to the Drums track.
+        // Each pad of kit 1 into its pad channel (Pad Mix), which all go
+        // to the Drums track; another kit into the channel of the first
+        // track that plays it.
         // With a synth lane (Cores 3, 2 and 1) the synth starts on its core
         // now and renders beside the drums; otherwise this only notes the
         // frame and tempo, and it renders below as before.
         synth.start(i * PERIOD as u64, app.settings.bpm);
-        let mut pads = mix.pads();
+        let homes = track_kits.homes(|t| !mix.instruments.holds(t) && !midi_out.takes(t as u16));
+        let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited
         // for until the period's deadline at most.
         player.render_routed_until(PERIOD, &mut pads, lane_until);
@@ -6945,6 +7073,7 @@ fn player_session(
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 arp: app.arp_part(),
                 instruments: project::instruments_text(&mix.instruments),
+                track_kits: track_kits.text(),
                 loops,
                 audio,
             })));
@@ -7344,6 +7473,10 @@ fn player_session(
             if sounds != sounds_shown {
                 sounds_shown = sounds;
                 out.show(gui::ToUi::TrackSounds(Box::new(sounds)));
+            }
+            if track_kits != kits_shown {
+                kits_shown = track_kits.clone();
+                out.show(gui::ToUi::TrackKits(Box::new(track_kits.clone())));
             }
             let meters = synth.meters();
             if meters != synth_meters {
@@ -8149,37 +8282,44 @@ mod tests {
         let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
         let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
         assert_eq!(
-            mute_key(MuteKeys::Tracks, 0, 2, &mut time, &mut mix),
+            mute_key(MuteKeys::Tracks, 0, 2, None, &mut time, &mut mix),
             "track mute: Track 3 muted"
         );
         assert_eq!(time.muted(2), Some(true));
         assert_eq!(
-            mute_key(MuteKeys::Tracks, 0, 9, &mut time, &mut mix),
+            mute_key(MuteKeys::Tracks, 0, 9, None, &mut time, &mut mix),
             "track mute: no track 10"
         );
         // Bank B: pad 3 is track 19, once there is one.
         assert_eq!(
-            mute_key(MuteKeys::Tracks, 1, 2, &mut time, &mut mix),
+            mute_key(MuteKeys::Tracks, 1, 2, None, &mut time, &mut mix),
             "track mute: no track 19"
         );
         while time.track_count() < 24 {
             time.act(TimeAction::AddTrack).unwrap();
         }
         assert_eq!(
-            mute_key(MuteKeys::Tracks, 1, 2, &mut time, &mut mix),
+            mute_key(MuteKeys::Tracks, 1, 2, None, &mut time, &mut mix),
             "track mute: Track 19 muted"
         );
         assert_eq!(time.muted(18), Some(true));
         assert_eq!(time.muted(2), Some(true), "bank A's track 3 is still muted");
         assert_eq!(
-            mute_key(MuteKeys::Pads, 0, 4, &mut time, &mut mix),
+            mute_key(MuteKeys::Pads, 0, 4, None, &mut time, &mut mix),
             "pad mute: pad 5 muted"
         );
         assert_eq!(mix.pad_mutes(), 1 << 4);
         assert_eq!(mix.play_levels().pad_mutes, 1 << 4, "the speakers show it");
         assert_eq!(
-            mute_key(MuteKeys::Pads, 0, 4, &mut time, &mut mix),
+            mute_key(MuteKeys::Pads, 0, 4, None, &mut time, &mut mix),
             "pad mute: pad 5 plays"
+        );
+        assert_eq!(mix.pad_mutes(), 0);
+        // A track on kit 2: its pads share the track's channel, so a pad's
+        // key mutes nothing of kit 1's.
+        assert_eq!(
+            mute_key(MuteKeys::Pads, 0, 4, Some(1), &mut time, &mut mix),
+            "pad mute: Kit 2's pads play through their track's channel: mute the track"
         );
         assert_eq!(mix.pad_mutes(), 0);
 

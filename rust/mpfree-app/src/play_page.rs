@@ -657,6 +657,11 @@ pub struct PlayPage {
     pub last_pad: usize,
     pub pads: Vec<PadInfo>,
     pub levels: PlayLevels,
+    /// The armed track plays kit 1, whose pads have channels of their own
+    /// (the mixer's pad strips): its lanes show and change their mutes.
+    /// Another kit plays through its track's channel, so its pads have no
+    /// mutes of their own, as a synth's haven't.
+    pub pad_strips: bool,
     turned_at: Option<Instant>,
     pub transport: TransportInfo,
     hits: VecDeque<HitInfo>,
@@ -753,6 +758,7 @@ impl Default for PlayPage {
                 fx_mix: 1.0,
                 pad_mutes: 0,
             },
+            pad_strips: true,
             turned_at: None,
             transport: TransportInfo::default(),
             hits: VecDeque::new(),
@@ -1859,8 +1865,12 @@ impl PlayPage {
                 .and_then(PadInfo::color)
                 .unwrap_or(draw::FX),
             // A synth's pads have no mutes of their own (the kit's are
-            // the drums').
-            muted: p < 16 && !self.pitched() && self.levels.pad_mutes & (1 << p) != 0,
+            // the drums'), nor have another kit's (they share their
+            // track's channel).
+            muted: p < 16
+                && !self.pitched()
+                && self.pad_strips
+                && self.levels.pad_mutes & (1 << p) != 0,
             steps: (from..from + PAGE)
                 .map(|i| row.get(i).copied().flatten().map_or(0, |s| s.velocity))
                 .collect(),

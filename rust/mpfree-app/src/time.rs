@@ -257,14 +257,16 @@ pub struct HitInfo {
     pub bar_ticks: Tick,
 }
 
-/// Where the sequencer's notes go: the sampler's pads.
+/// Where the sequencer's notes go: the sampler's pads. Each note names the
+/// track it came from (`Out::track`), so a host can play each track's own
+/// kit or instrument.
 pub trait Pads {
-    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool;
-    fn release_at(&mut self, pad: usize, offset: u32);
+    fn hit_at(&mut self, track: u16, pad: usize, velocity: u8, offset: u32) -> bool;
+    fn release_at(&mut self, track: u16, pad: usize, offset: u32);
     fn stop_all(&mut self);
     /// A clip's recorded pressure on `pad`'s sounding note, the raw value
     /// 0 to 127, `offset` frames into the period.
-    fn pressure_at(&mut self, pad: usize, value: u8, offset: u32);
+    fn pressure_at(&mut self, track: u16, pad: usize, value: u8, offset: u32);
     /// A track that plays somewhere other than the pads (one on MIDI
     /// OUT) is offered each event the clips play first: notes, a panic's
     /// `AllOff`, pressure, and the locks and lanes. True when it took the
@@ -301,11 +303,11 @@ pub trait Pads {
     fn live(&mut self, o: &Out) -> Option<Event> {
         match o.event {
             Event::NoteOn { note, velocity } => {
-                self.hit_at(usize::from(note), velocity, o.offset);
+                self.hit_at(o.track, usize::from(note), velocity, o.offset);
                 Some(o.event)
             }
             Event::NoteOff { note } => {
-                self.release_at(usize::from(note), o.offset);
+                self.release_at(o.track, usize::from(note), o.offset);
                 Some(o.event)
             }
             Event::AllOff => {
@@ -313,7 +315,7 @@ pub trait Pads {
                 None
             }
             Event::Pressure { note, value } => {
-                self.pressure_at(usize::from(note), value, o.offset);
+                self.pressure_at(o.track, usize::from(note), value, o.offset);
                 None
             }
             Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
@@ -322,16 +324,16 @@ pub trait Pads {
 }
 
 impl Pads for crate::sampler::Player {
-    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+    fn hit_at(&mut self, _track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
         crate::sampler::Player::hit_at(self, pad, velocity, offset)
     }
-    fn release_at(&mut self, pad: usize, offset: u32) {
+    fn release_at(&mut self, _track: u16, pad: usize, offset: u32) {
         crate::sampler::Player::release_at(self, pad, offset)
     }
     fn stop_all(&mut self) {
         crate::sampler::Player::stop_all(self)
     }
-    fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+    fn pressure_at(&mut self, _track: u16, pad: usize, value: u8, offset: u32) {
         crate::sampler::Player::pressure_at(self, pad, value, offset)
     }
     fn lock_at(
@@ -342,7 +344,7 @@ impl Pads for crate::sampler::Player {
     ) -> bool {
         match (addr.owner, crate::sampler::pad_field(addr.param)) {
             (mpfree_play::mpfree_param::Owner::Pad(_, pad), Some(field)) => {
-                self.pad_lock(usize::from(pad), field, value, offset)
+                self.pad_lock(self.kit(), usize::from(pad), field, value, offset)
             }
             _ => false,
         }
@@ -1898,16 +1900,16 @@ mod tests {
     }
 
     impl Pads for Fake {
-        fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+        fn hit_at(&mut self, _track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
             self.hits
                 .push((self.frame + u64::from(offset), pad, velocity));
             true
         }
-        fn release_at(&mut self, _pad: usize, _offset: u32) {}
+        fn release_at(&mut self, _track: u16, _pad: usize, _offset: u32) {}
         fn stop_all(&mut self) {
             self.stops += 1;
         }
-        fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+        fn pressure_at(&mut self, _track: u16, pad: usize, value: u8, offset: u32) {
             self.pressure
                 .push((self.frame + u64::from(offset), pad, value));
         }
@@ -4181,17 +4183,17 @@ mod tests {
     }
 
     impl Pads for Routed {
-        fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
-            self.pads.hit_at(pad, velocity, offset)
+        fn hit_at(&mut self, track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
+            self.pads.hit_at(track, pad, velocity, offset)
         }
-        fn release_at(&mut self, pad: usize, offset: u32) {
-            self.pads.release_at(pad, offset)
+        fn release_at(&mut self, track: u16, pad: usize, offset: u32) {
+            self.pads.release_at(track, pad, offset)
         }
         fn stop_all(&mut self) {
             self.pads.stop_all()
         }
-        fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
-            self.pads.pressure_at(pad, value, offset)
+        fn pressure_at(&mut self, track: u16, pad: usize, value: u8, offset: u32) {
+            self.pads.pressure_at(track, pad, value, offset)
         }
         fn out(&mut self, o: &Out) -> bool {
             if o.event == Event::AllOff {

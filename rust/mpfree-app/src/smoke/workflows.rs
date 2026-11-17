@@ -1477,18 +1477,71 @@ mod tests {
         });
     }
 
-    /// The Synth tab puts the synth on the pads, and it stays there after
-    /// leaving (the header says so) until a kit is picked from the chip's
-    /// list. The wheel alone moves the outline and keeps the synth.
+    /// A kit for each track (the sampler review's decision 1): a kit
+    /// picked in the chip's list is the armed track's, arming another
+    /// track moves the pads to what that one plays, and Arrange says what
+    /// each plays. Track 1 keeps kit 1 throughout.
     #[test]
-    fn the_synth_stays_on_the_pads_until_a_kit_is_picked() {
+    fn each_track_keeps_the_kit_picked_for_it() {
+        use crate::gui::FromUi;
+        use mpfree_time_ui::TimeAction;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            assert!(s.kits() >= 2, "{} kits", s.kits());
+            s.route(FromUi::Time(TimeAction::Arm(Some(1))));
+            // The arm reaches the app with the next periods.
+            s.run_for(0.05);
+            assert_eq!(s.app.track(), 1);
+            let chip = s.control("header", "chip", "").unwrap().target;
+            s.press_target(&chip);
+            let rows: Vec<_> = s
+                .controls()
+                .into_iter()
+                .filter(|c| c.widget == "kits" && c.target.id == "row")
+                .collect();
+            s.press_target(&rows[1].target).run_for(0.2);
+            assert_eq!(
+                (s.kit, s.track_kits.entry(1)),
+                (1, 1),
+                "track 2 plays kit 2"
+            );
+            assert_eq!(s.track_kits.entry(0), 0, "track 1 keeps kit 1");
+            s.route(FromUi::Time(TimeAction::Arm(Some(0))));
+            // The arm reaches the app with the next periods.
+            s.run_for(0.05);
+            assert_eq!(s.kit, 0, "the pads follow track 1 to kit 1");
+            s.route(FromUi::Time(TimeAction::Arm(Some(1))));
+            // The arm reaches the app with the next periods.
+            s.run_for(0.05);
+            assert_eq!(s.kit, 1, "and track 2 back to kit 2");
+            s.press("header", "tab", "Arrange").settle();
+            let sounds: Vec<&str> = s.screen.time.tracks[..2]
+                .iter()
+                .map(|t| t.sound.as_str())
+                .collect();
+            assert_eq!(sounds, ["Kit", "Kit 2"]);
+        });
+    }
+
+    /// Opening the Synth tab changes what no track plays (the sequencer
+    /// thread's point, 17 Nov 17:43Z): the armed track keeps its kit, and
+    /// the hint says how to play the synth on it. Picked from the kit
+    /// chip's list, the synth is the track's, and stays after leaving the
+    /// tab (the header says so) until a kit is picked there. The wheel
+    /// alone moves the outline and keeps the synth.
+    #[test]
+    fn the_synth_plays_on_a_track_once_picked_until_a_kit_is() {
         on_big_stack(|| {
             let mut s = Session::new();
             let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
             assert!(!s.synth_on);
             s.press("header", "tab", "Synth");
             assert_eq!(s.view(), View::Synth);
-            assert!(s.synth_on, "the pads play the synth on its tab");
+            assert!(!s.synth_on, "opening the tab leaves the track on its kit");
+            assert!(s.hint().contains("pick Synth"), "{}", s.hint());
+            s.pick_synth();
+            assert!(s.synth_on, "picked, the pads play the synth");
+            assert!(s.track_kits.plays_synth(s.app.track()), "the armed track's");
             s.press("header", "tab", "Play");
             assert!(s.synth_on, "and still on Play");
             assert!(chip(&mut s).starts_with("Poly"), "{}", chip(&mut s));

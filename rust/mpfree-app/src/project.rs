@@ -10,6 +10,7 @@
 //! | `clips` | the time engine | [`mpfree_seq::save`]: tracks, clips, scenes, the song | a new [`TimeHost`] built on the screen thread and swapped in |
 //! | `mixer` | the mixer | [`mixer_text`]: every strip's controls, each insert with its parameters (and a plugin's state) | [`mixer_load`] builds the effects on the screen thread (a plugin through the rack, in its own process); [`MixHost::open`] swaps them in over a few periods |
 //! | `instruments` | each track's own instrument (`instruments.rs`) | [`instruments_text`]: each track's instrument with its parameters (and a plugin's state) | [`instruments_load`] makes them on the screen thread; the audio loop puts them in |
+//! | `track-kits` | what each track plays (`sampler::TrackKits`) | `TrackKits::text`: the tracks that play another kit than kit 1, or the synth | [`track_kits_parse`]; the audio loop sets them |
 //! | `mod` | the mod engine | `ModMix::save` | `ModMix::load`, once the inserts are in |
 //! | `synth` | the synth | [`synth_text`]: the Synth tab's options and every engine's sound | the options go through the app (as at start), the sounds onto the engines |
 //! | `sampler` | the Sample tab | `SamplePage::save_part`, with its sounds in `samples/` | `SamplePage::open_part` |
@@ -58,6 +59,8 @@ pub const LOOPER: &str = "looper";
 pub const ARP: &str = "arp";
 /// Each track's own instrument ([`instruments_text`]).
 pub const INSTRUMENTS: &str = "instruments";
+/// What each track plays: a kit or the synth (`sampler::TrackKits::text`).
+pub const TRACK_KITS: &str = "track-kits";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
 
@@ -67,6 +70,8 @@ pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
 pub const SYNTH_FORMAT: &str = "mpfree-synth 1";
 /// The first line of the instruments part.
 pub const INSTRUMENTS_FORMAT: &str = "mpfree-instruments 1";
+/// The first line of the track kits part.
+pub const TRACK_KITS_FORMAT: &str = "mpfree-track-kits 1";
 
 // ------------------------------------------------------------ the loop's side
 
@@ -84,6 +89,8 @@ pub struct Collected {
     pub arp: String,
     /// Each track's own instrument ([`instruments_text`]).
     pub instruments: String,
+    /// What each track plays (`sampler::TrackKits::text`).
+    pub track_kits: String,
     /// The Looper's loops with their layers' audio (read as they play:
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
@@ -122,6 +129,11 @@ pub struct Opening {
     /// (all of them for New, or a project saved before the part) plays
     /// the kit.
     pub instruments: Vec<Option<Loaded>>,
+    /// What the tracks play other than kit 1 ([`track_kits_parse`]): a
+    /// track (from 0) and its kit (from 0), or None for the synth. Every
+    /// track not in it (all of them for New, or a project saved before
+    /// the part) plays kit 1.
+    pub track_kits: Vec<(usize, Option<usize>)>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
     /// What it is, for the log ("Night drive", "a new project").
@@ -192,6 +204,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if c.instruments.lines().count() > 1 {
         parts.push((INSTRUMENTS.to_string(), c.instruments.clone()));
     }
+    if c.track_kits.lines().count() > 1 {
+        parts.push((TRACK_KITS.to_string(), c.track_kits.clone()));
+    }
     parts.extend(extra);
     Snapshot {
         meta: mpfree_library::Meta {
@@ -260,6 +275,16 @@ pub fn opening(
             }
         },
     };
+    let track_kits = match snap.part(TRACK_KITS).map(track_kits_parse) {
+        None => Vec::new(),
+        Some(Ok(picks)) => picks,
+        Some(Err(e)) => {
+            notes.push(format!(
+                "project: what the tracks play wasn't opened ({e}); they play kit 1"
+            ));
+            Vec::new()
+        }
+    };
     Opening {
         tempo,
         swing,
@@ -268,11 +293,47 @@ pub fn opening(
         synth,
         arp: snap.part(ARP).map(str::to_string),
         instruments,
+        track_kits,
         notes,
         what: what.to_string(),
         clear_loops: snap.part(LOOPER).is_some(),
         clear_audio: snap.part(AUDIOTRACKS).is_some(),
     }
+}
+
+// ------------------------------------------------------------ what the tracks play
+
+/// Reads the track kits part (`sampler::TrackKits::text`):
+///
+/// ```text
+/// mpfree-track-kits 1
+/// track 2 kit 3
+/// track 4 synth
+/// ```
+///
+/// Tracks and kits are numbered from 1, as the screen shows them; gives
+/// them from 0, with None for the synth. A track or kit past what there
+/// is now is the audio loop's to refuse.
+pub fn track_kits_parse(text: &str) -> Result<Vec<(usize, Option<usize>)>, String> {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    if lines.next() != Some(TRACK_KITS_FORMAT) {
+        return Err(format!("not a {TRACK_KITS_FORMAT} part"));
+    }
+    let mut picks = Vec::new();
+    for line in lines {
+        let w: Vec<&str> = line.split_whitespace().collect();
+        let number = |s: &str| s.parse::<usize>().ok().filter(|&n| n >= 1).map(|n| n - 1);
+        let pick = match w.as_slice() {
+            ["track", t, "kit", k] => number(t).zip(number(k).map(Some)),
+            ["track", t, "synth"] => number(t).map(|t| (t, None)),
+            _ => None,
+        };
+        match pick {
+            Some(p) => picks.push(p),
+            None => return Err(format!("can't read \"{line}\"")),
+        }
+    }
+    Ok(picks)
 }
 
 // ------------------------------------------------------------ the looper
@@ -1446,6 +1507,57 @@ mod tests {
         .is_err());
     }
 
+    /// What each track plays goes in its own part, only once a track plays
+    /// something other than kit 1, and comes back on open; a part that
+    /// doesn't read is said, and every track plays kit 1.
+    #[test]
+    fn the_tracks_kits_are_kept_and_come_back() {
+        let c = |track_kits: String| Collected {
+            tempo: 120.0,
+            swing: mpfree_transport::time::Swing::new(240, 50).unwrap(),
+            clips: mpfree_seq::Project::default(),
+            mixer: String::new(),
+            modu: String::new(),
+            synth: String::new(),
+            arp: String::new(),
+            instruments: format!("{INSTRUMENTS_FORMAT}\n"),
+            track_kits,
+            loops: None,
+            audio: None,
+        };
+        // Nine kits, so the synth is entry 9.
+        let mut kits = crate::sampler::TrackKits::new(9);
+        let none = kits.text();
+        let snap = snapshot(&c(none), Vec::new());
+        assert!(
+            snap.part(TRACK_KITS).is_none(),
+            "not written while every track plays kit 1"
+        );
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+        assert!(o.track_kits.is_empty());
+        assert!(kits.set(1, 2) && kits.set(3, 9));
+        let picks = kits.text();
+        let snap = snapshot(&c(picks), Vec::new());
+        assert!(snap.part(TRACK_KITS).is_some());
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+        assert_eq!(o.track_kits, [(1, Some(2)), (3, None)]);
+        let mut snap = snap;
+        for (name, text) in &mut snap.parts {
+            if name == TRACK_KITS {
+                text.push_str("track two kit 1\n");
+            }
+        }
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+        assert!(o.track_kits.is_empty());
+        assert!(
+            o.notes.iter().any(|n| n.contains("they play kit 1")),
+            "{:?}",
+            o.notes
+        );
+        assert!(track_kits_parse("mpfree-track-kits 2\n").is_err());
+        assert!(track_kits_parse(&format!("{TRACK_KITS_FORMAT}\ntrack 0 kit 1\n")).is_err());
+    }
+
     /// A project saved before the instruments part, or with no track's
     /// own instrument, has none: every track plays the kit.
     #[test]
@@ -1459,6 +1571,7 @@ mod tests {
             synth: String::new(),
             arp: String::new(),
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
+            track_kits: String::new(),
             loops: None,
             audio: None,
         };

@@ -52,6 +52,16 @@ The data wheel, its push, **–** and **+** move through the browser too; see [B
 
 Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
 
+## A kit for each track
+
+Each track plays a kit of its own, as each track plays a program on the MPC, and every track's kit sounds at the same time: a drum kit on track 1, chopped vocals on track 2 and one-shot stabs on track 3 all play together in the song.
+
+- **The pads play the selected track's kit.** Select another track (on Arrange, or with the track chip) and the pads play its kit. A track's clips play its kit whichever track is selected.
+- **To change a track's kit,** select the track and pick the kit in the kit chip's list at the top right, or with **SHIFT** + the data wheel on the Play page, or with **PAD BANK**. Only these change what a track plays: opening a page never does. The list's last row is the synth (see [Put a synth on the pads](synths.md#put-a-synth-on-the-pads)).
+- **Every track starts on kit 1,** so a project saved before tracks had a kit each plays as it did.
+- **In the mixer,** kit 1 plays through the 16 pad channels and the **Drums** strip, as before. Another kit plays into the strip of the first track that plays it (**Track 2**, say), with its own fader, effects and sends; tracks that play the same kit share it. That kit's pads have no channels of their own yet, so put its effects on the track's strip, and mute the track rather than a pad: on its track the Play page's pad speakers and **TRACK MUTE**'s pad mutes say so and mute nothing.
+- **The project keeps** which kit each track plays.
+
 ## Recording a sample
 
 The **Rec** page records onto a pad: from the INPUTS on the back of the MPC, or from MPFree's own sound (resampling).
