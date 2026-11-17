@@ -23,7 +23,8 @@
 //!     short programme and measures it as a capture would be; writes
 //!     DIR/plan.tsv and DIR/sweep.json.
 //! fxlab quality [--class CLASS]... [--rate HZ] [--out DIR]
-//!     CLASS: delay, eq, reverb, drive, crush, compressor, filter, lofi or amp.
+//!     CLASS: delay, eq, reverb, drive, crush, compressor, filter, lofi, amp
+//!     or modulation.
 //!     The FX quality report: every target of each class (all of them when
 //!     none is named), met or not; writes DIR/quality.json
 //!     (docs/dev/design/fx-quality.md).
@@ -45,7 +46,7 @@ fn usage() -> ! {
     eprintln!("       fxlab plan (--effect ID | --controls LIST.tsv) [--points N] [--grid N] [--random N] [--seed N]");
     eprintln!("                  [--gains DB,DB...] [--programme FILE] [--out DIR]");
     eprintln!("       fxlab sweep --effect ID [plan options] [--out DIR]");
-    eprintln!("       fxlab quality [--class delay|eq|reverb|drive|crush|compressor|filter|lofi|amp]... [--rate HZ] [--out DIR]");
+    eprintln!("       fxlab quality [--class delay|eq|reverb|drive|crush|compressor|filter|lofi|amp|modulation]... [--rate HZ] [--out DIR]");
     std::process::exit(2);
 }
 
