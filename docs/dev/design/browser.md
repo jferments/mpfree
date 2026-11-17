@@ -85,6 +85,8 @@ A folder of thousands of sounds (Akai's factory content, 4,338 in one folder on 
 
 `Instruments/` holds one folder per engine, named as the engine shows it (Poly, FM, Wavetable, Pluck, Drums), with that engine's user presets as `<name>.preset` text files. The synth thread's `mpfree-instruments` turns a node into preset text and back and does no file work of its own: it saves with `Library::write_new` (whole or nothing) and lists through the worker, so the Trash and name checks stay here. Load on a preset sends `LoadPreset { loc, path, engine }`.
 
+A `.mid`, `.midi` or `.smf` file is `Kind::Midi` ("MIDI file"), wherever it is (Patterns, an export's folder in Recordings ...): Load sends `LoadMidi { loc, path }`, and the app reads it and puts its tracks on the armed track and the ones after it as clips ([MIDI file import](midi-io.md#midi-file-import)).
+
 ## Projects
 
 A project is one folder, complete in itself, readable on any computer.

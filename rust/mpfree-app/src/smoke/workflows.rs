@@ -2445,4 +2445,104 @@ mod tests {
             assert_eq!(s.time.project().check(), Ok(()));
         });
     }
+
+    /// A MIDI file in BROWSE's Patterns place (an MPC drum export, on its
+    /// pad notes): the row tapped twice loads it, and its track lands on the
+    /// armed track's first empty slot with each note on its pad; UNDO on the
+    /// Clips page takes it away.
+    #[test]
+    fn a_midi_file_from_browse_lands_on_its_pads_and_undo_takes_it() {
+        use mpfree_midi::msg::Msg;
+        use mpfree_midi::smf::{Smf, SmfTrack};
+        on_big_stack(|| {
+            let dir = std::env::temp_dir().join(format!("mpfree-midi-file-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            let on = |note: u8| Msg::NoteOn {
+                ch: 9,
+                note,
+                vel: 100,
+            };
+            let off = |note: u8| Msg::NoteOff {
+                ch: 9,
+                note,
+                vel: 64,
+            };
+            let file = Smf {
+                name: "Beat".into(),
+                tempos: vec![(0, 90.0)],
+                meters: vec![(0, 4, 4)],
+                tracks: vec![SmfTrack {
+                    name: "MPC drums".into(),
+                    // C#2 is pad 1, C2 pad 2, and E3 no pad.
+                    events: vec![
+                        (0, on(37)),
+                        (240, off(37)),
+                        (960, on(36)),
+                        (1200, off(36)),
+                        (1920, on(52)),
+                        (2000, off(52)),
+                    ],
+                }],
+                end: 3840,
+            };
+            let patterns = s
+                .library
+                .as_ref()
+                .expect("a library")
+                .root()
+                .join("Patterns");
+            std::fs::create_dir_all(&patterns).unwrap();
+            std::fs::write(patterns.join("Beat.mid"), file.bytes()).unwrap();
+            s.button("BROWSE");
+            s.press("browser", "place", "Patterns");
+            // It is read on its own thread, in real time.
+            let said = |s: &Session| {
+                s.said()
+                    .into_iter()
+                    .filter(|l| l.starts_with("MIDI file Beat.mid"))
+                    .collect::<Vec<_>>()
+            };
+            let wait = |s: &mut Session, secs: u64| {
+                let wall = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+                while said(s).is_empty() && std::time::Instant::now() < wall {
+                    s.run_for(0.05);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            };
+            // The first tap picks the row, or loads it when it is picked
+            // already (the only row is); then a second tap loads it.
+            s.press("browser", "row", "Beat.mid");
+            wait(&mut s, 1);
+            if said(&s).is_empty() {
+                s.press("browser", "row", "Beat.mid");
+                wait(&mut s, 5);
+            }
+            let lines = said(&s);
+            assert_eq!(lines.len(), 1, "loaded once: {lines:?}");
+            let line = lines[0].clone();
+            assert_eq!(
+                line,
+                "MIDI file Beat.mid: 1 clip with 2 notes, from slot 1 of Track 1 \
+                 (UNDO takes them away); its tempo 90 BPM; left out: 1 note no pad plays"
+            );
+            let clip = s.time.project().tracks[0].slots[0].clone().expect("a clip");
+            assert_eq!(clip.name, "MPC drums");
+            let pads: Vec<(i64, u8)> = clip.notes.iter().map(|n| (n.tick, n.note)).collect();
+            assert_eq!(pads, [(0, 0), (960, 1)]);
+            assert_eq!(clip.length, 3840);
+            s.button("BROWSE");
+            s.press("header", "tab", "Arrange");
+            s.button("UNDO");
+            s.run_for(0.1);
+            assert!(
+                s.time.project().tracks[0].slots[0].is_none(),
+                "UNDO took it away: {:?} / {:?}",
+                &s.lines[s.lines.len().saturating_sub(8)..],
+                s.said().iter().rev().take(6).collect::<Vec<_>>()
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
 }
