@@ -891,7 +891,10 @@ impl TimeControl {
                 let held = step_list(steps);
                 (
                     grid.lock_steps(clip, Some(pad), &held, addr, value),
-                    Some(mpfree_seq::steps::lock_key_steps(Some(pad), steps, addr)),
+                    // A turn's detents join one take; a lock taken off
+                    // (the step inspector's ×) is a take of its own, so
+                    // UNDO brings the lock back rather than the sound.
+                    value.map(|_| mpfree_seq::steps::lock_key_steps(Some(pad), steps, addr)),
                     format!(
                         "{} of pad {}: lock {addr} {}",
                         steps_text(&held),
