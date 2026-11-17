@@ -8,9 +8,9 @@ use mpfree_audiotracks::{
 };
 use mpfree_fx::ids;
 use mpfree_fx::{
-    CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive,
-    Eq, Flanger, Frozen, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap, Perform,
-    Phaser, Print, PrintJob, PrintState, StripId, Tail, TapeDelay,
+    Amp, CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter,
+    Drive, Eq, Flanger, Frozen, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap,
+    Perform, Phaser, Print, PrintJob, PrintState, StripId, Tail, TapeDelay,
 };
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
@@ -1165,6 +1165,18 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // The amp at its defaults (Crunch, Gain 5) and pushed (Lead, Gain 10).
+    v.push(measured(|| {
+        effect("Amp (Crunch)", rate, Box::new(Amp::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "Amp (Lead, Gain 10)",
+            rate,
+            Box::new(Amp::new()),
+            &[(ids::amp::MODEL, 2.0), (ids::amp::GAIN, 10.0)],
+        )
+    }));
     v.push(measured(|| {
         effect("Delay", rate, Box::new(Delay::new()), &[])
     }));

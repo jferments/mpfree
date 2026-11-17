@@ -9,9 +9,11 @@
 //!   buttons: a keyboard on channel 1 would otherwise press buttons, and one
 //!   on channel 10 would hit pads.
 //! - **USB keyboards** are ALSA cards of their own. [`usb_midi_cards`] finds
-//!   them in `/proc/asound/cards`, the app opens each one's first input for
-//!   reading, and [`MusicIn::plugged`] / [`MusicIn::unplugged`] keep the
-//!   port table (a keyboard plugged back in gets its old port number).
+//!   them in `/proc/asound/cards`, the app opens each MIDI port's input for
+//!   reading ([`usb_ports`]), and [`MusicIn::plugged`] /
+//!   [`MusicIn::unplugged`] keep the port table (a keyboard plugged back in
+//!   gets its old port number). A port's output is never opened here: the
+//!   app hands it to `midi_out`, which opens it only while sending is on.
 //!
 //! Every message goes through `mpfree_midi`'s `InputRouter` in its
 //! Selected mode: whatever plays on any port and channel plays the armed
@@ -510,6 +512,8 @@ impl MusicIn {
                     },
                     has_in: p.has_in,
                     has_out: p.has_out,
+                    // MIDI out says which it sends to (MidiOut::sync).
+                    sending: false,
                     last_in: None,
                 })
                 .collect();
@@ -570,7 +574,9 @@ impl MusicIn {
         self.ports_changed = true;
         // Its input setting is the rig's, by name.
         self.applied = None;
-        let id = self.ports.plugged(&p.name, p.input.is_some(), p.has_out)?;
+        let id = self
+            .ports
+            .plugged(&p.name, p.input.is_some(), p.output.is_some())?;
         if let Some(a) = self.about.get_mut(usize::from(id.0)) {
             a.clone_from(&p.about);
         }
@@ -583,7 +589,7 @@ impl MusicIn {
         self.plug(&UsbPort {
             name: name.to_string(),
             input: Some(0),
-            has_out: false,
+            output: None,
             about: "USB".to_string(),
         })
     }
@@ -986,7 +992,8 @@ pub struct UsbPort {
     pub name: String,
     /// The input substream to read, if it has an input.
     pub input: Option<u32>,
-    pub has_out: bool,
+    /// The output substream MIDI out sends to, if it has an output.
+    pub output: Option<u32>,
     /// What the port's page says about it ("USB · port 2 of 4 on MIO4").
     pub about: String,
 }
@@ -1020,7 +1027,7 @@ pub fn usb_ports(card: &str, subnames: &[String], outputs: usize) -> Vec<UsbPort
         out.push(UsbPort {
             name,
             input: (k < subnames.len()).then_some(k as u32),
-            has_out: k < outputs,
+            output: (k < outputs).then_some(k as u32),
             about,
         });
     }
@@ -1102,7 +1109,7 @@ mod tests {
         let v = io.lock().unwrap();
         assert_eq!(v.live.ports.len(), 2);
         assert_eq!(v.live.ports[1].kind, "USB");
-        assert!(!v.live.ports[1].has_out, "USB ports are only read for now");
+        assert!(!v.live.ports[1].has_out, "this keyboard has no output");
         assert_eq!(v.live.ports[0].last_in, Some(Duration::from_secs(1)));
         assert_eq!(v.live.ports[1].last_in, None, "clock lights nothing");
         let (port, bpm) = v.live.clock_in.clone().unwrap();
@@ -1328,7 +1335,7 @@ mod tests {
             vec![UsbPort {
                 name: "Keystep 37".into(),
                 input: Some(0),
-                has_out: true,
+                output: Some(0),
                 about: "USB".into()
             }]
         );
@@ -1343,14 +1350,17 @@ mod tests {
             ["MIO4 MIDI 1", "MIO4 MIDI 2", "MIO4 3", "MIO4 4", "MIO4 5"]
         );
         assert_eq!(four[1].input, Some(1));
-        assert!(four.iter().all(|p| p.has_out));
+        assert_eq!(
+            four.iter().map(|p| p.output).collect::<Vec<_>>(),
+            [Some(0), Some(1), Some(2), Some(3), Some(4)]
+        );
         assert_eq!(four[4].input, None);
         assert_eq!(four[2].about, "USB · port 3 of 5 on MIO4");
         // An output-only cable.
         let out = usb_ports("UM-ONE", &[], 1);
         assert_eq!(out[0].name, "UM-ONE");
         assert_eq!(out[0].input, None);
-        assert!(out[0].has_out);
+        assert_eq!(out[0].output, Some(0));
         assert!(usb_ports("Nothing", &[], 0).is_empty());
     }
 

@@ -10,15 +10,16 @@
 //!   "ignored: this port's setting"; nothing else gets them.
 //! - **What it does:** where its messages go today and what plays on it,
 //!   read only (the Routing section comes later).
-//! - **Now:** the newest message in on it (and out, for the 5-pin jacks),
-//!   and how long ago.
+//! - **Now:** the newest message in on it and out to it, and how long
+//!   ago.
 //! - **Clock to this port:** Off, While playing or Always: the project's,
 //!   the same setting as on the Sync section.
 //! - **This gear's delay:** how late the gear on the port sounds. MIDI out
 //!   sends that much early, up to the sound's lead ([`Live::early_ms`]).
 //! - **Send to it** (SENDS MIDI): a test note and All notes off
-//!   ([`ToPort`]), greyed while MIDI out is off and on USB ports until
-//!   MPFree sends to USB devices.
+//!   ([`ToPort`]), greyed unless MIDI out sends to the port now
+//!   ([`PortLive::sending`]: MIDI out on, the port plugged in and its
+//!   output open).
 //!
 //! Input, Ignore coming in and the delay belong to the rig (kept for every
 //! project, `MidiSetup::rig`); Clock to this port belongs to the project.
@@ -26,6 +27,7 @@
 //! Clock and the delay. ‹ MIDI or Back closes the page.
 //!
 //! [`Live::early_ms`]: crate::Live::early_ms
+//! [`PortLive::sending`]: crate::PortLive::sending
 
 use std::time::Duration;
 
@@ -185,6 +187,8 @@ struct View {
     has_out: bool,
     /// MIDI out is on (Prefs).
     out_on: bool,
+    /// MIDI out sends to it now.
+    sending: bool,
     early_ms: f32,
     /// The channel the test note goes on: the first track that plays on
     /// this port's, else 1.
@@ -199,7 +203,7 @@ struct View {
 impl View {
     /// A test note and All notes off can be sent to it now.
     fn can_send(&self) -> bool {
-        self.out_on && !self.usb && self.has_out
+        self.sending
     }
 }
 
@@ -293,9 +297,6 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
     let mut last: Vec<(Dir, String, f64)> = Vec::new();
     if let Some(id) = id {
         for dir in [Dir::In, Dir::Out] {
-            if dir == Dir::Out && !din {
-                continue;
-            }
             if let Some((_, s)) = mon
                 .newest()
                 .find(|(_, s)| s.port == id && s.dir == dir && !matches!(s.what, What::Event(_)))
@@ -329,6 +330,7 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
         has_in: live.is_none_or(|l| l.has_in),
         has_out,
         out_on: m.live.built.notes_out,
+        sending: live.is_some_and(|l| l.sending),
         early_ms: m.live.early_ms,
         test_channel: tracks.first().map_or(0, |t| t.1),
         does,
@@ -581,12 +583,14 @@ fn at_end(what: &str, value: &str, d: i32) -> String {
 
 /// Why a send is greyed, in words.
 fn why_not(v: &View) -> String {
-    if v.usb {
-        "Not sent: MPFree doesn't send to USB devices yet".to_string()
-    } else if !v.out_on {
+    if !v.out_on {
         "Not sent: MIDI out is off (Prefs > Send MIDI and CV out)".to_string()
-    } else {
+    } else if !v.plugged {
+        format!("Not sent: {} is not plugged in", v.name)
+    } else if !v.has_out {
         "Not sent: this port has no output".to_string()
+    } else {
+        "Not sent: its output didn't open (the log says why)".to_string()
     }
 }
 
@@ -636,12 +640,6 @@ fn test_text(v: &View) -> String {
 /// What the delay card says under its value.
 fn delay_words(v: &View) -> [String; 2] {
     let d = v.setup.delay_ms();
-    if v.usb {
-        return [
-            "Kept for when MPFree sends to".to_string(),
-            "USB devices.".to_string(),
-        ];
-    }
     if !v.out_on {
         return [
             "MIDI out is off (Prefs): kept for".to_string(),
@@ -865,10 +863,12 @@ impl IoSection for PortPage {
             picked == Sel::Clock,
             v.has_out,
         );
-        let clock_note = if v.usb {
-            "Kept: MPFree doesn't send to USB devices yet."
-        } else if !v.out_on {
+        let clock_note = if !v.out_on {
             "Kept: MIDI out is off (Prefs)."
+        } else if !v.has_out {
+            "Kept: this port has no output."
+        } else if !v.sending {
+            "Kept: its output didn't open."
         } else {
             "The same setting as on the Sync section."
         };
@@ -926,16 +926,20 @@ impl IoSection for PortPage {
         button(cx, l.all_off, "All notes off", picked == Sel::AllOff, can);
         let send_note: [&str; 2] = if can {
             [
-                "All notes off ends MPFree's notes, then",
-                "sends CC 123 on all 16 channels.",
+                "All notes off ends MPFree's notes on it,",
+                "then sends CC 123 on all 16 channels.",
             ]
-        } else if v.usb {
-            ["Greyed: MPFree doesn't send to USB", "devices yet."]
-        } else {
+        } else if !v.out_on {
             [
                 "Greyed while MIDI out is off (Prefs >",
                 "Send MIDI and CV out).",
             ]
+        } else if !v.plugged {
+            ["Greyed: not plugged in.", ""]
+        } else if !v.has_out {
+            ["Greyed: this port has no output.", ""]
+        } else {
+            ["Greyed: its output didn't open (the log", "says why)."]
         };
         lines(
             cx,
@@ -1222,8 +1226,17 @@ mod tests {
         assert!(p.done());
     }
 
-    /// The sends ask the app only while MIDI out is on and only for the
-    /// 5-pin jacks, and say the app's answer.
+    /// MIDI out on, sending to every port with an output.
+    fn sending(m: &Shared) {
+        let mut g = m.lock().unwrap();
+        g.live.built.notes_out = true;
+        for p in g.live.ports.iter_mut() {
+            p.sending = p.has_out;
+        }
+    }
+
+    /// The sends ask the app only while MIDI out sends to the port, and
+    /// say the app's answer; greyed, they say why.
     #[test]
     fn sends_ask_the_app_and_say_its_answer() {
         let m = model();
@@ -1234,7 +1247,12 @@ mod tests {
         tap(&mut p, x, y);
         assert_eq!(m.lock().unwrap().asks.port_send, None);
         assert!(p.take_note().unwrap().contains("MIDI out is off"));
+        // On, but the jacks' output didn't open.
         m.lock().unwrap().live.built.notes_out = true;
+        tap(&mut p, x, y);
+        assert_eq!(m.lock().unwrap().asks.port_send, None);
+        assert!(p.take_note().unwrap().contains("didn't open"));
+        sending(&m);
         tap(&mut p, x, y);
         let ask = m.lock().unwrap().asks.port_send.clone().unwrap();
         assert_eq!(ask.port, DIN_NAME);
@@ -1259,13 +1277,22 @@ mod tests {
             m.lock().unwrap().asks.port_send.as_ref().map(|a| a.what),
             Some(ToPort::AllNotesOff)
         );
-        // A USB port sends nothing yet.
+        // A USB device MIDI out sends to asks the same way.
         let mut usb = PortPage::new(m.clone(), "Keystep 37");
         m.lock().unwrap().asks.port_send = None;
         let (x, y) = centre(l.test);
         tap(&mut usb, x, y);
+        let ask = m.lock().unwrap().asks.port_send.clone().unwrap();
+        assert_eq!(ask.port, "Keystep 37");
+        // One that isn't plugged in says so.
+        let mut gone = PortPage::new(m.clone(), "Digitakt");
+        m.lock().unwrap().asks.port_send = None;
+        tap(&mut gone, x, y);
         assert_eq!(m.lock().unwrap().asks.port_send, None);
-        assert!(usb.take_note().unwrap().contains("USB"));
+        assert_eq!(
+            gone.take_note().as_deref(),
+            Some("Not sent: Digitakt is not plugged in")
+        );
     }
 
     #[test]

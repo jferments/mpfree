@@ -35,7 +35,7 @@ use mpfree_sampler::model::{
 };
 use mpfree_ui::layout;
 use mpfree_ui::numpad::NumberAsk;
-use mpfree_ui::wave::{Beats, Marker, MarkerKind, WaveOverview, WaveView, Waveform};
+use mpfree_ui::wave::{Beats, Marker, MarkerKind, Peaks, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
 use crate::source::SourceView;
@@ -503,8 +503,10 @@ pub struct WaveTab {
     focus: Mark,
     gesture: Option<(Key, u64)>,
     next_gesture: u64,
-    /// The source the waveform shows, so a new one starts zoomed out.
-    shown: Option<SourceId>,
+    /// The source the waveform shows and its peaks, so a new one starts
+    /// zoomed out, and peaks worked out since (the same sound, analysed
+    /// off the screen thread) come in where it is zoomed.
+    shown: Option<(SourceId, Arc<dyn Peaks>)>,
     /// The waveform's width in pixels (its views are measured in it).
     wave_w: i32,
 }
@@ -599,7 +601,8 @@ impl WaveTab {
         if st.region.sustain_loop.is_none() && self.focus.is_loop() {
             self.focus = Mark::Start;
         }
-        if self.snap == Snap::Sixteenths && src.tempo.is_none() {
+        // Sixteenths need a tempo; one still being worked out may come.
+        if self.snap == Snap::Sixteenths && src.tempo.is_none() && src.ready {
             self.snap = Snap::ZeroCrossing;
         }
         let pad_color = pad_color(st.pad);
@@ -647,10 +650,17 @@ impl WaveTab {
         }
         let width = self.wave_w;
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
-            if self.shown != Some(src.id) {
-                w.set_peaks(Some(src.peaks.clone()), width);
-                self.shown = Some(src.id);
+            match &self.shown {
+                Some((id, p)) if *id == src.id => {
+                    if !std::ptr::addr_eq(Arc::as_ptr(p), Arc::as_ptr(&src.peaks)) {
+                        let view = w.view();
+                        w.set_peaks(Some(src.peaks.clone()), width);
+                        w.set_view(view, width);
+                    }
+                }
+                _ => w.set_peaks(Some(src.peaks.clone()), width),
             }
+            self.shown = Some((src.id, src.peaks.clone()));
             w.set_markers(markers(r));
             w.set_region(Some((r.start, r.end)));
             w.set_loop(r.sustain_loop.map(|l| (l.start, l.end)));

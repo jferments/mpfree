@@ -173,21 +173,24 @@ impl Form for Midi {
                         .field(Field::choice("Program", "—", 0, 129).off(false));
                 }
                 Some(o) => {
-                    let plugged = m.live.port(&o.port).is_some();
-                    row = if !plugged {
-                        row.note(
+                    let live = m.live.port(&o.port);
+                    let plugged = live.is_some();
+                    row = match live {
+                        None => row.note(
                             format!("sends nothing: {} is not plugged in", o.port),
                             Tone::Warn,
-                        )
-                    } else if !built.notes_out {
-                        row.note("sends nothing: MIDI out is off", Tone::Warn)
-                    } else if !m.live.port(&o.port).is_some_and(|l| l.has_out) {
-                        row.note(
-                            format!("sends nothing: no output to {} yet", o.port),
+                        ),
+                        Some(_) if !built.notes_out => {
+                            row.note("sends nothing: MIDI out is off", Tone::Warn)
+                        }
+                        Some(l) if !l.has_out => row.note(
+                            format!("sends nothing: {} has no output", o.port),
                             Tone::Warn,
-                        )
-                    } else {
-                        row.note(format!("plays out of {}", o.port), Tone::Normal)
+                        ),
+                        Some(l) if !l.sending => {
+                            row.note("sends nothing: its output didn't open", Tone::Warn)
+                        }
+                        Some(_) => row.note(format!("plays out of {}", o.port), Tone::Normal),
                     };
                     let prog = o
                         .program
@@ -381,6 +384,7 @@ mod tests {
             about: "USB".into(),
             has_in: true,
             has_out: true,
+            sending: false,
             last_in: Some(Duration::from_millis(900)),
         });
         live.tracks = vec!["Drums".into(), "Bass".into(), "Keys".into()];
@@ -446,15 +450,23 @@ mod tests {
             notes_out: true,
             ..Built::default()
         };
+        // On, but the jacks' output didn't open.
+        let r = rows(&s);
+        assert_eq!(
+            row(&r, "track:2").note,
+            "sends nothing: its output didn't open"
+        );
+        s.lock().unwrap().live.ports[0].sending = true;
         let r = rows(&s);
         assert_eq!(row(&r, "track:2").note, "plays out of MIDI");
         assert!(Midi.banner(&s.lock().unwrap()).is_none());
     }
 
-    /// A port the app can't send to yet (a USB device, for now) says so on
-    /// the track that names it, and thru says when it does nothing.
+    /// A USB device plays its tracks once MIDI out sends to it; one with
+    /// no output says so on the track that names it, and thru says when it
+    /// does nothing.
     #[test]
-    fn a_port_with_no_output_yet_and_thru_say_so() {
+    fn a_usb_port_plays_or_says_it_has_no_output_and_thru_says_so() {
         let s = model();
         {
             let mut m = s.lock().unwrap();
@@ -462,14 +474,21 @@ mod tests {
                 notes_out: true,
                 ..Built::default()
             };
-            m.live.ports[1].has_out = false;
+            m.live.ports[1].sending = true;
             m.setup.tracks[0] = Some(TrackOut::new("Keystep 37", 0));
             m.setup.set_port(DIN_NAME, |p| p.thru = true);
         }
         let r = rows(&s);
+        assert_eq!(row(&r, "track:0").note, "plays out of Keystep 37");
+        {
+            let mut m = s.lock().unwrap();
+            m.live.ports[1].has_out = false;
+            m.live.ports[1].sending = false;
+        }
+        let r = rows(&s);
         assert_eq!(
             row(&r, "track:0").note,
-            "sends nothing: no output to Keystep 37 yet"
+            "sends nothing: Keystep 37 has no output"
         );
         assert_eq!(row(&r, "port:MIDI").note, "thru does nothing yet");
         s.lock().unwrap().live.built.thru = true;

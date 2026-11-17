@@ -73,8 +73,8 @@ use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    ChannelPick, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source,
-    SourceId, Warp, WARP_BPM,
+    self as model, ChannelPick, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project, Region,
+    Source, SourceId, Warp, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -96,7 +96,6 @@ use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
 };
 use mpfree_sampler_ui::widgets::SettingList;
-use mpfree_sampler_ui::SourceView;
 use mpfree_seq::{Clip, Note};
 use mpfree_transport::PPQ;
 use mpfree_ui::widgets::Card;
@@ -363,7 +362,11 @@ pub fn input_bytes(rate: u32) -> u64 {
 pub type KitFile = (String, String, Vec<(String, Source)>);
 
 /// A kit file being read: the answer, the kit it goes on, its name.
-type KitLoading = (Receiver<Result<Opened, String>>, usize, String);
+type KitLoading = (Receiver<Read>, usize, String);
+
+/// Kits read from a file, with what was converted to the output's rate
+/// on the way ([`opened_at_rate`]), one log line each.
+type Read = Result<(Opened, Vec<String>), String>;
 
 pub type ReadSample = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send>;
 
@@ -374,9 +377,10 @@ pub struct SamplePage {
     /// what New project goes back to ([`SamplePage::reset_kits`]).
     factory: Option<(Vec<Project>, Vec<String>)>,
     rate: u32,
-    /// Waveform peaks, tempo and root note, per source, made the first time
-    /// a pad using the source is shown.
-    sources: HashMap<SourceId, Arc<SourceView>>,
+    /// Waveform peaks, hits, tempo and root note, per source, worked out
+    /// off the screen thread the first time a pad using the source is
+    /// shown ([`crate::views`]).
+    sources: crate::views::Views,
     kit: usize,
     pad: usize,
     tab: Option<WaveTab>,
@@ -511,7 +515,7 @@ pub struct SamplePage {
     /// has one open.
     gear_out: Option<GearOut>,
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
-    opening: Option<Receiver<Result<Opened, String>>>,
+    opening: Option<Receiver<Read>>,
     /// A kit file being read and decoded ([`SamplePage::open_kit`]): it
     /// goes in place of this kit, under this name.
     kit_loading: Option<KitLoading>,
@@ -551,7 +555,7 @@ impl SamplePage {
             names: Vec::new(),
             factory: None,
             rate: 44_100,
-            sources: HashMap::new(),
+            sources: crate::views::Views::new(),
             kit: 0,
             pad: 0,
             tab: None,
@@ -650,7 +654,15 @@ impl SamplePage {
         }
         self.projects = projects;
         self.rate = rate;
-        self.sources.clear();
+        // Views of sounds still here are kept (a kit loaded again, or a
+        // sound in more than one kit); the rest are forgotten.
+        let here: HashSet<SourceId> = self
+            .projects
+            .iter()
+            .flat_map(|p| p.sources())
+            .map(|s| s.id())
+            .collect();
+        self.sources.keep_only(&here);
         self.warps.clear();
         self.cancel_stretching();
         if self.take.take().is_some() {
@@ -1249,12 +1261,7 @@ impl SamplePage {
             return;
         };
         let sources = &mut self.sources;
-        self.play_state = PlayState::from_project(project, self.pad, |s| {
-            sources
-                .entry(s.id())
-                .or_insert_with(|| Arc::new(SourceView::analyse(s)))
-                .clone()
-        });
+        self.play_state = PlayState::from_project(project, self.pad, |s| sources.get(s));
         let Some(ps) = self.play_state.as_ref() else {
             return;
         };
@@ -1287,12 +1294,7 @@ impl SamplePage {
             return;
         };
         let sources = &mut self.sources;
-        self.grain_state = GrainState::from_project(project, self.pad, 0, |s| {
-            sources
-                .entry(s.id())
-                .or_insert_with(|| Arc::new(SourceView::analyse(s)))
-                .clone()
-        });
+        self.grain_state = GrainState::from_project(project, self.pad, 0, |s| sources.get(s));
         let Some(gs) = self.grain_state.as_ref() else {
             return;
         };
@@ -1319,11 +1321,7 @@ impl SamplePage {
         let p = self.projects.get(self.kit)?;
         let region = &p.pad(self.pad)?.layers.first()?.region;
         let source = p.source(region.source)?;
-        let view = self
-            .sources
-            .entry(source.id())
-            .or_insert_with(|| Arc::new(SourceView::analyse(source)))
-            .clone();
+        let view = self.sources.get(source);
         WaveState::from_project(p, self.pad, 0, view)
     }
 
@@ -1346,10 +1344,9 @@ impl SamplePage {
             };
             let source = project.source(p.layers[0].region.source);
             let heard = source.and_then(|s| {
-                self.sources
-                    .entry(s.id())
-                    .or_insert_with(|| Arc::new(SourceView::analyse(s)))
-                    .root_note
+                // The note heard is needed now: worked out here if the
+                // worker hasn't yet.
+                self.sources.full(s).root_note
             });
             let name = match source {
                 Some(s) if keymap::note_in_name(&s.name).is_some() => s.name.as_str(),
@@ -3056,7 +3053,7 @@ impl SamplePage {
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn open_part(&mut self, text: String, read: ReadSample) {
         let (tx, rx) = mpsc::channel();
-        let free = self.mem_free;
+        let (free, rate) = (self.mem_free, self.rate);
         let spawned = std::thread::Builder::new()
             .name("sample-open".into())
             .spawn(move || {
@@ -3071,7 +3068,7 @@ impl SamplePage {
                     )?;
                     wav::read(f, &bytes)
                 });
-                let _ = tx.send(r);
+                let _ = tx.send(r.map(|o| opened_at_rate(o, rate, free)));
             });
         match spawned {
             Ok(_) => {
@@ -3145,7 +3142,7 @@ impl SamplePage {
             .unwrap_or("Kit")
             .to_string();
         let (tx, rx) = mpsc::channel();
-        let free = self.mem_free;
+        let (free, rate) = (self.mem_free, self.rate);
         let spawned = std::thread::Builder::new()
             .name("sample-kit".into())
             .spawn(move || {
@@ -3153,7 +3150,7 @@ impl SamplePage {
                 let r = read_kit_file(&dir, &mut |f, len| {
                     crate::memory::room_in(free(), crate::memory::decode_need(f, len))
                 });
-                let _ = tx.send(r);
+                let _ = tx.send(r.map(|o| opened_at_rate(o, rate, free)));
             });
         match spawned {
             Ok(_) => {
@@ -3178,7 +3175,7 @@ impl SamplePage {
         let Some((_, k, name)) = self.kit_loading.take() else {
             return;
         };
-        let mut o = match r {
+        let (mut o, converted) = match r {
             Ok(o) => o,
             Err(e) => {
                 self.lines
@@ -3187,7 +3184,7 @@ impl SamplePage {
                 return;
             }
         };
-        for n in &o.notes {
+        for n in o.notes.iter().chain(&converted) {
             self.lines.push(format!("sample: {n}"));
         }
         if o.kits.is_empty() || k >= self.projects.len() {
@@ -3237,11 +3234,12 @@ impl SamplePage {
     pub fn load_file(&mut self, path: PathBuf, to_pad: bool) {
         let (tx, rx) = mpsc::channel();
         let free = self.mem_free;
+        let rate = self.rate;
         let spawned = std::thread::Builder::new()
             .name("sample-load".into())
             .spawn(move || {
                 let _ = crate::cores::background(); // off the sound's cores and priority
-                let _ = tx.send(read_sound(&path, free));
+                let _ = tx.send(read_sound(&path, free, rate));
             });
         match spawned {
             Ok(_) => self.loading = Some((rx, to_pad)),
@@ -3264,7 +3262,12 @@ impl SamplePage {
         };
         self.opening = None;
         match r {
-            Ok(o) => self.apply_opened(ui, o),
+            Ok((o, converted)) => {
+                self.apply_opened(ui, o);
+                for n in converted {
+                    self.lines.push(format!("sample: {n}"));
+                }
+            }
             Err(e) => self
                 .lines
                 .push(format!("sample: the project's kits weren't opened ({e})")),
@@ -4075,6 +4078,22 @@ impl SamplePage {
         self.poll_open(ui);
         self.poll_kit(ui);
         self.poll_load(ui);
+        // A sound's view came in from the worker: the page shows it (now,
+        // or when it is next shown).
+        if self.sources.take_done() {
+            if showing && self.state.is_some() {
+                self.refresh(ui);
+            } else {
+                self.stale = true;
+            }
+        }
+    }
+
+    /// Whether a sound's view (its peaks, hits, tempo or note) is still
+    /// being worked out off the screen thread.
+    #[allow(dead_code)] // the tests wait on it
+    pub fn analysing(&self) -> bool {
+        self.sources.busy()
     }
 
     /// The line input turned on or off (its row on the Looper tab's MENU).
@@ -4727,9 +4746,10 @@ pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
 /// A sound file for the browser's Load: WAV, AIFF or FLAC, known by what
 /// it holds, no bigger than the sampler holds in memory; with its sidecar
 /// (`Break 92.mpfree` beside `Break 92.wav`) read too, and the other
-/// sounds it names beside it.
+/// sounds it names beside it. Every sound at another rate than `rate`
+/// (the output's) is converted to it ([`at_rate`]).
 #[allow(dead_code)] // reached through load_file
-fn read_sound(path: &Path, free: fn() -> Option<u64>) -> LoadedPad {
+fn read_sound(path: &Path, free: fn() -> Option<u64>, rate: u32) -> LoadedPad {
     let (src, note) = read_one(path, free)?;
     let side = path.with_extension(export::SIDECAR);
     let sidecar_name = side
@@ -4751,12 +4771,188 @@ fn read_sound(path: &Path, free: fn() -> Option<u64>) -> LoadedPad {
             read_one(&dir.join(name), free).map(|(s, _)| s)
         })
     });
-    Ok(LoadedSound {
-        src,
-        note,
-        sidecar,
-        sidecar_name,
-    })
+    Ok(at_rate(
+        LoadedSound {
+            src,
+            note,
+            sidecar,
+            sidecar_name,
+        },
+        rate,
+        free,
+    ))
+}
+
+/// Sounds put at the output's rate as they load or open
+/// (`Source::at_rate`): each sound once, so kits that share a sound share
+/// its converted copy too, and only while the copy leaves the memory
+/// MPFree keeps free; a sound without room stays at its own rate (it
+/// still plays at its pitch) and is listed.
+struct ToRate {
+    rate: u32,
+    free: fn() -> Option<u64>,
+    made: HashMap<SourceId, (Source, model::Rescale)>,
+    /// Sounds kept at their own rate for want of memory, and their names
+    /// and rates.
+    skipped: HashSet<SourceId>,
+    kept: Vec<(String, u32)>,
+}
+
+impl ToRate {
+    fn new(rate: u32, free: fn() -> Option<u64>) -> ToRate {
+        ToRate {
+            rate,
+            free,
+            made: HashMap::new(),
+            skipped: HashSet::new(),
+            kept: Vec::new(),
+        }
+    }
+
+    fn convert(&mut self, s: &Source) -> Option<(Source, model::Rescale)> {
+        if self.rate == 0 || s.rate() == self.rate || self.skipped.contains(&s.id()) {
+            return None;
+        }
+        if let Some(m) = self.made.get(&s.id()) {
+            return Some(m.clone());
+        }
+        // The new sound twice over: made, then moved into place.
+        let frames = s.frames() as f64 * f64::from(self.rate) / f64::from(s.rate());
+        let need = (frames.ceil() as u64) * u64::from(s.channels()) * 4 * 2;
+        if crate::memory::room_in((self.free)(), need).is_err() {
+            self.skipped.insert(s.id());
+            self.kept.push((s.name.clone(), s.rate()));
+            return None;
+        }
+        let m = s.at_rate(self.rate).ok()?;
+        self.made.insert(s.id(), m.clone());
+        Some(m)
+    }
+
+    /// The log's word on the sounds kept at their own rate, if any.
+    fn kept_note(&self) -> Option<String> {
+        (!self.kept.is_empty()).then(|| {
+            let each: Vec<String> = self
+                .kept
+                .iter()
+                .map(|(n, r)| format!("{n} at {}", khz(*r)))
+                .collect();
+            format!(
+                "kept at its own rate, {}: {}",
+                crate::memory::SHORT,
+                each.join(", ")
+            )
+        })
+    }
+}
+
+/// A loaded sound, and the sounds its sidecar brings, at `rate`: each one
+/// at another rate is converted ([`ToRate`]), and the sidecar's pad and
+/// slices move with it, so the sound plays at its own pitch through the
+/// sampler's plain path instead of being read faster or slower for ever.
+/// The note says what was converted. Done after the sidecar is read,
+/// since its frames are on the sounds as they were.
+fn at_rate(mut l: LoadedSound, rate: u32, free: fn() -> Option<u64>) -> LoadedSound {
+    let mut to = ToRate::new(rate, free);
+    let mut moved = Vec::new();
+    let mine = l.src.id();
+    if let Some(Ok(o)) = &mut l.sidecar {
+        let was: Vec<(SourceId, u32)> = o.sources.iter().map(|s| (s.id(), s.rate())).collect();
+        for r in model::convert_sounds(
+            &mut o.sources,
+            std::slice::from_mut(&mut o.pad),
+            &mut o.chops,
+            &mut |s| to.convert(s),
+        ) {
+            let old = was.iter().find(|(id, _)| *id == r.from).map(|w| w.1);
+            // The sound itself goes first and unnamed (the log line
+            // already names it); the others it brings by name.
+            let name = if r.from == mine {
+                None
+            } else {
+                o.sources
+                    .iter()
+                    .find(|s| s.id() == r.to)
+                    .map(|s| s.name.clone())
+            };
+            moved.push((name, old.unwrap_or(0)));
+        }
+    }
+    let old = l.src.rate();
+    if let Some((s, _)) = to.convert(&l.src) {
+        if !moved.iter().any(|(n, _)| n.is_none()) {
+            moved.push((None, old));
+        }
+        l.src = s;
+    }
+    let mut said: Vec<String> = Vec::new();
+    if !moved.is_empty() {
+        moved.sort_by_key(|(n, _)| n.is_some());
+        said.push(
+            moved
+                .iter()
+                .map(|(n, r)| {
+                    let what = format!("converted from {} to {}", khz(*r), khz(rate));
+                    match n {
+                        Some(n) => format!("{n} {what}"),
+                        None => what,
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    said.extend(to.kept_note());
+    if !said.is_empty() {
+        let said = said.join("; ");
+        l.note = Some(match l.note.take() {
+            Some(n) => format!("{n}; {said}"),
+            None => said,
+        });
+    }
+    l
+}
+
+/// Every kit of `o` at `rate` (`Project::convert_sounds` with a
+/// [`ToRate`]: its sounds at other rates converted, its pads, scenes and
+/// slices moved along), with a log line for each kit that had sounds
+/// converted and one for sounds kept at their rate.
+fn opened_at_rate(mut o: Opened, rate: u32, free: fn() -> Option<u64>) -> (Opened, Vec<String>) {
+    let mut to = ToRate::new(rate, free);
+    let mut said = Vec::new();
+    for (k, (name, p)) in o.kits.iter_mut().enumerate() {
+        let was: Vec<(SourceId, u32)> = p.sources().iter().map(|s| (s.id(), s.rate())).collect();
+        let moved = p.convert_sounds(&mut |s| to.convert(s));
+        if moved.is_empty() {
+            continue;
+        }
+        let mut from: Vec<u32> = moved
+            .iter()
+            .filter_map(|r| was.iter().find(|w| w.0 == r.from).map(|w| w.1))
+            .collect();
+        from.sort_unstable();
+        from.dedup();
+        let from: Vec<String> = from.iter().map(|&r| khz(r)).collect();
+        let kit = if name.is_empty() {
+            format!("kit {}", k + 1)
+        } else {
+            name.clone()
+        };
+        let n = moved.len();
+        said.push(format!(
+            "{kit}: {n} sound{} converted from {} to {}",
+            if n == 1 { "" } else { "s" },
+            from.join(" and "),
+            khz(rate)
+        ));
+    }
+    said.extend(to.kept_note());
+    (o, said)
+}
+
+/// A rate as said in the log: "48 kHz", "44.1 kHz".
+fn khz(rate: u32) -> String {
+    format!("{} kHz", f64::from(rate) / 1000.0)
 }
 
 /// One sound file, no bigger than the sampler holds in memory, and only

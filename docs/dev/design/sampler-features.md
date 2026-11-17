@@ -75,7 +75,7 @@ These apply to every feature in the tables below, so the tables don't repeat the
 | Pitch Shift, Time Stretch | Offline process | Non-destructive: a new source is rendered in the background with Signalsmith Stretch while the old one keeps playing; the result is swapped in when ready | Worker-thread render | S7 |
 | Bit Reduce *(memory)*, vintage modes | Lo-fi colour | A "Colour" tab: bit depth, sample rate, a choice of vintage filter and saturation, all real time and per pad | Voice DSP | S7 |
 | Stereo to Mono | Converts | A per-region channel choice (stereo, mono sum, L, R) that costs nothing | Voice read | S1 |
-| Sample rate conversion *(memory)* | Converts | Imports convert to 44.1 kHz on load with `rubato`; the original file is kept | Loader | S8 |
+| Sample rate conversion *(memory)* | Converts | Imports convert to 44.1 kHz as they load (the browser's Load, kits, projects), with `mpfree-stretch`'s windowed sinc; the original file is kept | Loader | S8 |
 | Save sample | From the pool or browser | From anywhere: the Sound page, the takes list, the browser; one press exports the focused region, slice set or pad as WAV | Writer thread | S5 |
 
 ### Chopping

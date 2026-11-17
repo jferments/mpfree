@@ -194,6 +194,32 @@ def no_underruns_while():
     return test
 
 
+# The time engine's costs on the status line, totals since the start: "compiles: N (slowest X ms, N notes and
+# locks); step edits: N in place (slowest X ms), M compiled (slowest Y ms)".
+TIME_COSTS = re.compile(r"compiles: (\d+) \(slowest ([\d.]+) ms, (\d+) notes and locks\); "
+                        r"step edits: (\d+) in place \(slowest ([\d.]+) ms\), (\d+) compiled \(slowest ([\d.]+) ms\)")
+# A step edit made in place may cost the audio thread a tenth of a 128-frame period (2.9 ms) at most.
+IN_PLACE_MS = 0.29
+
+
+def step_edits_in_place():
+    """Step edits went into the playing clip in place, each within IN_PLACE_MS, by the first status line after
+    the check against the last before it; says what they and a compile cost on the MPC (Gate 0's numbers)."""
+    def test(w):
+        costs = [(t, TIME_COSTS.search(m)) for t, m in w.session]
+        before = [c for t, c in costs if c and t <= w.start]
+        after = [c for t, c in costs if c and t >= w.end]
+        if not after:
+            return None, "no status line after the check yet (they come every 30 s)"
+        a, b = (before[-1] if before else None), after[0]
+        was = (lambda g: int(a.group(g)) if a else 0)
+        in_place, compiled = int(b.group(4)) - was(4), int(b.group(6)) - was(6)
+        text = (f"{in_place} step edits in place (slowest {b.group(5)} ms), {compiled} compiled (slowest "
+                f"{b.group(7)} ms); the slowest compile {b.group(2)} ms, with {b.group(3)} notes and locks playing")
+        return in_place > 0 and float(b.group(5)) <= IN_PLACE_MS, text
+    return test
+
+
 def hour_long():
     """The pad player has played for an hour with no underrun and no restart."""
     def test(w):
@@ -278,7 +304,7 @@ CHECKS = (
         ["Stay on the Play page, All view, where MPFree starts. Turn the volume down a little.",
          "1. Press REC once: REC and PLAY blink.",
          "2. Press PLAY: PLAY stays lit, REC keeps blinking while the first pass records. Play a few pads.",
-         "3. Wait about 4 seconds (two bars): REC goes dark and the loop plays back.",
+         "3. After about two bars, press REC: at the end of that bar REC goes dark and the loop plays back.",
          "4. Press OVERDUB: it blinks. Play a few more pads. 5. Press OVERDUB again: it goes dark.",
          "6. Press UNDO: the second layer goes. 7. Press STOP: PLAY goes dark.",
          "8. SHIFT + SAMPLER opens the Looper tab. Press REC: OVERDUB and PLAY blink (an overdub on",
@@ -427,6 +453,27 @@ CHECKS = (
          "held_step_locks_reach_the_pads_before_their_note_and_end_at_the_next"],
         needs=['STEP SEQ', 'ERASE', 'Q-LINK']),
     Check(
+        "step-speed", "STEP SEQ: taps and turns go into the playing clip, and what they cost the MPC",
+        "S1: step edits in place, no compile per tap or turn; Gate 0 for the time engine's own thread", "hands",
+        ["1. On Play, hit pad 1 (the kick) and press STEP SEQ. Hit pads 1, 5, 9 and 13 if they are dark,",
+         "   then press PLAY.",
+         "2. For about 20 s, hit step pads on and off all over, as fast as you like; leave a few lit.",
+         "3. Hold two lit pads, press Q-LINK twice (the cards say Sound) and turn Q-Link 1 back and forth",
+         "   for about 10 s. Let go.",
+         "4. Press STOP, then STEP SEQ."],
+        [("step pads tapped", seen_times(r"^steps: step \d+ of pad \d+ (on|off)$", 10)),
+         ("a turn locked held steps", seen(r"^steps: steps? .* of pad \d+: lock ")),
+         ("the edits went in place, each quick", step_edits_in_place()),
+         ("no slow period from the pads or the screen",
+          not_seen(r"^control: slow period .* most in (screen actions|MIDI in and buttons)")),
+         ("no underrun while it played", no_underruns_while())],
+        "Did each step you lit play on the next pass, and the turn follow the knob, with no click?",
+        ["step_edits_go_into_the_playing_view_in_place_as_a_compile_would",
+         "step_edits_that_need_more_than_the_playing_view_compile",
+         "a_step_edit_the_view_cannot_take_compiles_once_and_is_counted",
+         "steps_tapped_on_beats_play_in_time"],
+        needs=['STEP SEQ', 'Q-LINK'], wait_status=True),
+    Check(
         "wheel", "The data wheel and its push on the real wheel",
         "#339 and #355: the outline, the push, and the Song view's picked block", "hands",
         ["1. On Play's All view, tap a lane's name: it mutes, and the outline goes on it. Push the wheel: it",
@@ -483,19 +530,26 @@ CHECKS = (
          "stop_silences_a_latched_arp_and_keeps_the_latch_until_stop_again",
          "note_repeat_latch_stop_and_the_looper_write_their_lines"]),
     Check(
-        "looper", "The Looper tab records and STOP stops it at once",
-        "live test 3's loop that kept playing after STOP", "hands",
-        ["1. SHIFT + SAMPLER opens the Looper tab. Press PLAY, then REC: 2 bars from the next bar line.",
-         "   Play a beat on the pads: the wave draws as you play.",
-         "2. When it loops, press STOP: the loop and its playhead stop at once. PLAY starts it again. STOP."],
+        "looper", "REC + PLAY records until STOP, which keeps the take, with the pads' effects",
+        "Jay's final-round looper notes (16 Nov): STOP threw the take away, the echo wasn't recorded", "hands",
+        ["1. On the Play page's All view, turn Q-Link 4 (Delay send) up to about half. Play a pad: it echoes.",
+         "2. SHIFT + SAMPLER opens the Looper tab. If it shows Clear loop 1 (in red, under + New loop), tap it:",
+         "   an earlier check's loop goes. Press REC, then PLAY: the loop records from bar 1.",
+         "3. Play a few pads, with gaps between them, for about a bar and a half. The wave draws as you play.",
+         "4. Press STOP: everything stops at once.",
+         "5. SHIFT + STOP (back to bar 1), then PLAY: your pads play back with their echoes, then",
+         "   silence to the end of the bar, and round again. STOP."],
         [("the loop recorded", seen(r"^looper: Record: armed")),
-         ("STOP reached the app", pressed(STOP))],
-        "Did the wave draw as you played, and did STOP stop the loop at once?",
+         ("STOP kept the take", seen(r"^looper: loop of .* cut at STOP")),
+         ("the pads were recorded with their effects", not_seen(r"^looper: records the pads dry"))],
+        "Did the loop play back your pads with their echoes?",
         ["the_loop_strips_buttons_carry_their_symbols_and_play_and_stop_the_transport",
          "the_first_pass_shows_as_it_records",
          "presses_and_changes_log_and_the_wave_is_built",
          "the_looper_tab_picks_loops_and_works_layers",
-         "rec_records_two_bars_and_stop_stops_the_loop_at_once",
+         "rec_and_play_record_until_stop_which_keeps_the_take",
+         "the_loop_records_the_pads_with_their_effects",
+         "rec_closes_on_the_bar_line_and_stop_stops_the_loop_at_once",
          "note_repeat_latch_stop_and_the_looper_write_their_lines"],
         needs=['SAMPLER']),
     Check(
@@ -608,24 +662,25 @@ CHECKS = (
          "room_to_plate_keeps_the_shared_knobs_and_learned_q_links_follow"],
         needs=['TRACK MIX / PAD MIX', 'MAIN']),
     Check(
-        "eq", "The Mix tab's EQ: a dot follows a finger, UNDO and Listen",
+        "eq", "The Mix tab's EQ: a dot follows a finger, UNDO and Solo band",
         "#388: the parametric EQ (the EQ look on the Mix tab, the EQ page in the chain editor)", "hands",
         ["1. Press TRACK MIX, tap EQ at the top right of the Mix tab, and tap \"+ EQ\" on the Drums row.",
          "   Play pads, drag the second dot of the new curve up, down and sideways, and let go.",
          "2. Press UNDO: the curve goes back and the hint line says \"Undid Drums EQ Band 2\".",
-         "3. Tap the Drums curve twice to open the EQ page, tap Listen, and play pads (you hear only",
-         "   band 2's slice). Press MAIN to go back to Play."],
+         "3. Tap the Drums curve twice to open the EQ page, tap Solo band, and play pads (you hear only",
+         "   band 2's part of the sound). Press MAIN to go back to Play."],
         [("UNDO (67) reached the app", pressed(UNDO)),
          ("UNDO took back the EQ drag", seen(r"^Undid .+ EQ Band \d$")),
          ("no underrun while it played", no_underruns_while())],
-        "Did the sound follow the dot while you dragged it, and did Listen play only a thin slice of the sound?",
+        "Did the sound follow the dot while you dragged it, and did Solo band play only that band's part?",
         ["the_eq_look_adds_picks_and_shapes_an_eq", "a_drag_on_the_eq_look_is_what_you_hear",
          "a_drag_on_the_eq_page_is_what_you_hear"],
         needs=['TRACK MIX / PAD MIX', 'MAIN'], wait_status=True),
     Check(
         "mpc-plugin", "An Open MPC plugin instrument plays on the MPC",
         "#385: MPC-format plugins in the plugin sandbox; CI runs them as ARM only under qemu", "hands",
-        ["1. Open the Synth tab. On the Instrument row, step past the built-in engines to [SYN] Mono Voice.",
+        ["1. Open the Synth tab and press MENU. The top row is Track N instrument: press + until it reads",
+         "   [SYN] Mono Voice (after the built-in synths). MENU closes the options.",
          "2. Play pads 1 to 8 for about 10 s, soft and hard.",
          "3. Hold a pad for 30 s, so a status line counts the plugin."],
         [("the app found the plugin at its start",
@@ -650,11 +705,14 @@ CHECKS = (
          "2. Tap On the stick, pick Tidal-Verb-1.6.0-mpc-armv7.zip, then tap Install from zip.",
          "3. Tap Catalog, then Instruments. Pick Modal Voice and tap Install: the bar shows the download.",
          "   If the catalog says there is no network, go on: its line in the log says why.",
-         "4. Open the Synth tab. On the Instrument row, pick [SYN] Modal Voice, or [SYN] Mono Voice if step 3",
-         "   could not run. The plugin's own screen fills the page under the top bar. Play a few pads."],
+         "4. Open the Synth tab and press MENU. On the top row, Track N instrument, press + to [SYN] Modal Voice,",
+         "   or [SYN] Mono Voice if step 3 could not run. MENU closes the options: the plugin's own screen",
+         "   fills the page under the top bar. Play a few pads."],
         [("the Plugins place says what is there and whether downloads can work",
           seen(r"^plugins: \d+ installed, [1-9]\d* zip\(s\) on the stick, .*, "
                r"downloads (possible \((libcurl|mpfree-fetch) found\)|off \(no (libcurl|mpfree-fetch)\))")),
+         ("libcurl's OpenSSL can make the random numbers TLS needs (the final round's 'Insufficient randomness')",
+          seen(r"^plugins: .*downloads possible \((libcurl|mpfree-fetch) found\), OpenSSL \S+ ready")),
          ("the catalog came over the network, or the line says why not",
           seen(r"^plugins: (The catalog lists \d+ plugins; \d+ run on this MPC|not done \(catalog\): )")),
          ("the zip on the stick installed", seen(r"^plugins: (Installed|Updated) .*Tidal")),
@@ -670,7 +728,8 @@ CHECKS = (
          "an_mpc_plugins_skin_fills_the_synth_tab_and_mpfree_page_is_one_tap_away",
          "lists_a_zip_on_the_stick_and_refuses_one_that_is_not_a_plugin",
          "installed_and_older_says_update_and_remove_asks_twice",
-         "the_log_says_what_is_there_and_what_was_done"],
+         "the_log_says_what_is_there_and_what_was_done",
+         "the_log_says_what_libcurls_tls_said"],
         needs=['BROWSE']),
     Check(
         "power", "The power button opens the power card",

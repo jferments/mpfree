@@ -147,6 +147,7 @@ mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
 mod undo;
+mod views;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
@@ -1286,10 +1287,12 @@ fn open_output(card: u32, sub: u32, word: &str, out: &mut Out) -> Result<File, S
 /// Opens MIDI out and CV out (`on`), or closes them without waiting: Prefs'
 /// "Send MIDI and CV out". Each says in the log what it did; a port that
 /// won't open is said once and left closed until the switch goes off and
-/// on again. Switched on again within a moment, each takes back the
-/// writer it was letting go, rather than opening its port a second time.
-/// Opening runs on the sound loop, once per switch: a period may run late
-/// then, which the log's underrun count would show.
+/// on again (or, for a USB device, until it is plugged in again). Switched
+/// on again within a moment, each takes back the writer it was letting go,
+/// rather than opening its port a second time. Opening the jacks and CV
+/// runs on the sound loop, once per switch: a period may run late then,
+/// which the log's underrun count would show. Each USB device's output is
+/// opened by its own writer thread ([`usb_output`]).
 fn apply_sends(
     on: bool,
     midi_out: &mut midi_out::MidiOut,
@@ -1299,7 +1302,7 @@ fn apply_sends(
     out: &mut Out,
 ) {
     if !on {
-        if midi_out.is_open() || cv_out.is_open() {
+        if midi_out.sending() || cv_out.is_open() {
             midi_out.switch_off();
             cv_out.switch_off();
             out.midi(
@@ -1309,6 +1312,9 @@ fn apply_sends(
         }
         return;
     }
+    // USB devices plugged in: each writer takes back its open output or
+    // opens it, and says so in the log.
+    midi_out.switch_on(started);
     if midi_out.reopen() {
         out.midi("MIDI Out on again (Prefs): the port was still open");
     } else if !midi_out.is_open() {
@@ -1696,16 +1702,18 @@ struct UsbIn {
     file: Option<File>,
 }
 
-/// USB-MIDI devices on the USB-A socket, read only. A thread looks at
+/// USB-MIDI devices on the USB-A socket. A thread looks at
 /// `/proc/asound/cards` every two seconds and, for each new MIDI card,
-/// opens every input of its first MIDI device (never an output) and counts
-/// its outputs from `/proc/asound/cardN/midi0`; each input is a port of
-/// its own, and so is each output past the inputs (`midi_in::usb_ports`).
-/// The audio loop reads them without blocking, as it reads the controller.
-/// A read error (the device was unplugged) or the card leaving the list
-/// closes its ports and lets go of their keys. A card that can't be
-/// opened is logged once and tried again only after it goes away and
-/// comes back.
+/// opens every input of its first MIDI device, read only, and counts its
+/// outputs from `/proc/asound/cardN/midi0` (never opening one); each input
+/// is a port of its own, and so is each output past the inputs
+/// (`midi_in::usb_ports`). The audio loop reads them without blocking, as
+/// it reads the controller, and hands each port with an output to MIDI
+/// out (`MidiOut::plugged`), whose writer opens it only while Prefs' "Send
+/// MIDI and CV out" is on ([`usb_output`]). A read error (the device was
+/// unplugged) or the card leaving the list closes its ports, lets go of
+/// their keys and tells MIDI out. A card that can't be opened is logged
+/// once and tried again only after it goes away and comes back.
 struct UsbKeys {
     found: Receiver<Scan>,
     open: Vec<UsbIn>,
@@ -1764,6 +1772,27 @@ fn usb_inputs(card: u32, name: &str, said: &mut Vec<String>) -> Vec<(File, Strin
 
 /// The most inputs read from one USB device.
 const MAX_USB_SUBS: u32 = 8;
+
+/// How MIDI out opens output `sub` of USB card `card` (one the scanner
+/// found: never the MPC's own controller or sound card), in its writer's
+/// thread. **State-changing on the gear** (notes, clock, program changes:
+/// RAM only, never SysEx), so MIDI out calls it only while Prefs' "Send
+/// MIDI and CV out" is on. The substream ALSA opened is checked before
+/// anything is written; another one is closed unwritten.
+fn usb_output(card: u32, sub: u32) -> midi_out::Opener {
+    std::sync::Arc::new(move || {
+        let (file, info) = alsa::open_rawmidi(card, sub, alsa::Direction::Output)?;
+        if info.stream != alsa::RAWMIDI_STREAM_OUTPUT || info.subdevice != sub {
+            return Err(io::Error::other(format!(
+                "card {card}: ALSA opened output {} (\"{}\"), not output {}; nothing sent",
+                info.subdevice + 1,
+                info.subname,
+                sub + 1
+            )));
+        }
+        Ok(Box::new(file) as Box<dyn Write + Send>)
+    })
+}
 
 impl UsbKeys {
     /// Start the scanner. `skip` holds the MPC's own cards (the
@@ -1840,15 +1869,17 @@ impl UsbKeys {
     }
 
     /// Closes the port at `k` in `open`: its keys let go, the monitor
-    /// told.
+    /// told, MIDI out forgets it.
     fn close(
         &mut self,
         k: usize,
         music: &mut midi_in::MusicIn,
+        midi_out: &mut midi_out::MidiOut,
         t: f64,
         keys: &mut Vec<midi_in::Key>,
     ) {
         let u = self.open.swap_remove(k);
+        midi_out.unplugged(u.port);
         let ended = music.unplugged(u.port, keys);
         music.feed.event(
             t,
@@ -1863,6 +1894,7 @@ impl UsbKeys {
     fn poll(
         &mut self,
         music: &mut midi_in::MusicIn,
+        midi_out: &mut midi_out::MidiOut,
         buf: &mut [u8],
         t: f64,
         keys: &mut Vec<midi_in::Key>,
@@ -1873,10 +1905,19 @@ impl UsbKeys {
                 Scan::Found(f) => match music.plug(&f.port) {
                     Some(port) => {
                         music.feed.event(t, Event::Plugged(port));
-                        let what = match (f.file.is_some(), f.port.has_out) {
-                            (true, true) => "listening, read only; its output is not used yet",
+                        if let Some(sub) = f.port.output {
+                            midi_out.plugged(port, &f.port.name, usb_output(f.card, sub));
+                        }
+                        let what = match (f.file.is_some(), f.port.output.is_some()) {
+                            (true, true) => {
+                                "listening, read only; MIDI out sends to it while Send MIDI \
+                                 and CV out is on"
+                            }
                             (true, false) => "listening, read only",
-                            (false, _) => "an output only, not used yet",
+                            (false, _) => {
+                                "an output only: MIDI out sends to it while Send MIDI and CV \
+                                 out is on"
+                            }
                         };
                         out.midi(&format!(
                             "+{t:.3} s {}: plugged in ({}, card {}); {what}",
@@ -1901,7 +1942,7 @@ impl UsbKeys {
                                 "+{t:.3} s {}: gone (card {card} left the list); its keys let go",
                                 music.label(self.open[k].port)
                             ));
-                            self.close(k, music, t, keys);
+                            self.close(k, music, midi_out, t, keys);
                         } else {
                             k += 1;
                         }
@@ -1937,7 +1978,7 @@ impl UsbKeys {
                 }
             };
             if gone {
-                self.close(k, music, t, keys);
+                self.close(k, music, midi_out, t, keys);
             } else {
                 k += 1;
             }
@@ -4432,9 +4473,9 @@ fn player_session(
     );
     let mut keys: Vec<midi_in::Key> = Vec::with_capacity(64);
     let mut key_misses = 0u64;
-    // MIDI out's messages dropped with its writer's queue full, as the
-    // monitor was last told.
-    let mut out_full = 0u64;
+    // Messages each port's MIDI out writer dropped with its queue full, as
+    // the monitor was last told.
+    let mut out_full = [0u64; mpfree_midi::MAX_PORTS];
     // The lanes' deadline for this period (cores.rs): when the sound card's
     // queue would run dry, less a period. The buffer starts full.
     let mut lane_until = cores::lane_deadline(Instant::now(), None, periods);
@@ -5087,22 +5128,25 @@ fn player_session(
         for (t, m) in ports.tapped.drain(..) {
             music.feed.mpc(Dir::Out, t, m);
         }
-        usb.poll(&mut music, &mut buf, mt, &mut keys, out);
+        usb.poll(&mut music, &mut midi_out, &mut buf, mt, &mut keys, out);
         music.tick(mt, &mut |l| out.midi(&l));
-        if midi_out.tick(&mut |l| out.midi(&l)) {
-            music.feed.event(mt, Event::OutStopped);
-        }
-        let full = midi_out.dropped_full();
-        if full > out_full {
-            let n = u32::try_from(full - out_full).unwrap_or(u32::MAX);
-            music.feed.event(
-                mt,
-                Event::Dropped {
-                    port: midi_in::DIN,
-                    n,
-                },
-            );
-            out_full = full;
+        let mut stopped = [false; mpfree_midi::MAX_PORTS];
+        midi_out.tick(&mut |l| out.midi(&l), &mut |p| {
+            if let Some(s) = stopped.get_mut(usize::from(p.0)) {
+                *s = true;
+            }
+        });
+        for (i, was) in out_full.iter_mut().enumerate() {
+            let port = mpfree_midi::PortId(i as u8);
+            if stopped[i] {
+                music.feed.event(mt, Event::OutStopped { port });
+            }
+            let full = midi_out.dropped_full(port);
+            if full > *was {
+                let n = u32::try_from(full - *was).unwrap_or(u32::MAX);
+                music.feed.event(mt, Event::Dropped { port, n });
+                *was = full;
+            }
         }
         cv_out.tick(&mut |l| out.midi(&l));
         music.sync(&io_model, mt);
@@ -5958,9 +6002,13 @@ fn player_session(
         seq.midi.period_end(PERIOD as u32, t_read);
         seq.cv.period_end(PERIOD as u32, t_read);
         // The MIDI monitor: what went out, when it leaves.
-        for (due, m) in seq.midi.sent() {
-            let to = m.track().map_or(To::Clock, To::SentBy);
-            music.feed.sent(midi_in::DIN, ports.at(due), m.bytes(), to);
+        for (due, port, m) in seq.midi.sent() {
+            let to = if m.is_from_page() {
+                To::PortPage
+            } else {
+                m.track().map_or(To::Clock, To::SentBy)
+            };
+            music.feed.sent(port, ports.at(due), m.bytes(), to);
         }
         for (due, out, value) in seq.cv.sent() {
             music
@@ -6218,14 +6266,21 @@ fn player_session(
         let synth_took = t_synth.elapsed();
         synth_time.add(synth_took);
         engines.add(engines::SYNTH, synth_took);
-        // What the looper records from the pads: the drums and the synth as
-        // the engines make them, before the mixer (the loop plays back
-        // through the mixer, so the Level is applied once).
-        for f in 0..PERIOD {
-            pads_l[f] = drums_l[f] + synth_l[f];
-            pads_r[f] = drums_r[f] + synth_r[f];
+        // What the looper records from the pads: as they are heard, with
+        // their effects, from the mix of the last period (the master's
+        // input without the loops: mixing.rs); when that can't be had, the
+        // drums and the synth as the engines make them, dry. Either way
+        // before the master, so the Level is applied once.
+        let how = mix.pads_wet(&mut pads_l, &mut pads_r);
+        if how.is_err() {
+            for f in 0..PERIOD {
+                pads_l[f] = drums_l[f] + synth_l[f];
+                pads_r[f] = drums_r[f] + synth_r[f];
+            }
         }
-        looper.take_pads(&pads_l, &pads_r);
+        if let Some(line) = looper.take_pads_as(&pads_l, &pads_r, how) {
+            out.note(&line);
+        }
         // The loop, for its track; the line input comes with it.
         let t_loop = Instant::now();
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);

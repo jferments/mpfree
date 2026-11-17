@@ -1389,7 +1389,15 @@ mod tests {
                 rec.contains(&LIGHT_ON) && rec.contains(&LIGHT_DARK),
                 "REC blinks while recording: {rec:?}"
             );
-            // Two bars at 120 BPM: the loop then plays, REC goes dark.
+            // Free length: REC again closes it on the next bar line (two
+            // bars at 120 BPM), the loop then plays and REC goes dark.
+            s.run_for(2.0);
+            assert_eq!(
+                s.looper.phase(),
+                Phase::Recording,
+                "it records until REC or STOP"
+            );
+            s.button("REC");
             for _ in 0..100 {
                 if s.looper.phase() == Phase::Playing {
                     break;
@@ -1440,18 +1448,14 @@ mod tests {
             assert_eq!(lights_over(&mut s, button::REC, 0.7), vec![LIGHT_DARK]);
             assert_eq!(lights_over(&mut s, button::PLAY, 0.7), vec![LIGHT_DARK]);
 
-            // A loop recorded, then stopped (steps 1 to 7 of the check).
+            // A loop recorded, then stopped: REC + PLAY, and STOP keeps
+            // what was played.
             s.button("REC").run_for(0.1);
-            s.button("PLAY").run_for(0.3);
-            for _ in 0..100 {
-                if s.looper.phase() == Phase::Playing {
-                    break;
-                }
-                s.run_for(0.1);
-            }
-            assert_eq!(s.looper.phase(), Phase::Playing);
+            s.button("PLAY").run_for(3.0);
+            assert_eq!(s.looper.phase(), Phase::Recording);
             s.button("STOP").run_for(0.3);
             assert!(!s.time.info().state.rolling());
+            assert_eq!(s.looper.phase(), Phase::Playing, "STOP kept the take");
 
             // Step 8: the Looper tab, REC: an overdub waits for PLAY.
             s.button_with("SHIFT", "SAMPLER").run_for(0.2);

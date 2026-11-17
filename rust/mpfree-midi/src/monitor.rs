@@ -158,8 +158,9 @@ pub enum Event {
     Plugged(PortId),
     /// A USB device went away; `ended` notes it held were let go.
     Unplugged { port: PortId, ended: u16 },
-    /// The MIDI Out port failed; tracks set to it play on the pads again.
-    OutStopped,
+    /// MIDI out's output to a port failed (or didn't open); tracks set to
+    /// it play on the pads again.
+    OutStopped { port: PortId },
     /// Messages for a port dropped because its writer's queue was full.
     Dropped { port: PortId, n: u32 },
 }
@@ -198,6 +199,8 @@ pub enum To {
     SentBy(u8),
     /// Out: MPFree's own clock.
     Clock,
+    /// Out: the port's page sent it (its test note or All notes off).
+    PortPage,
 }
 
 /// The monitor's filter groups, as bits of [`Filter::kinds`].
@@ -937,6 +940,16 @@ impl Monitor {
             h.all_up();
         }
     }
+
+    /// Forgets the notes going out to `port` alone (its page's All notes
+    /// off, or its output stopped).
+    pub fn port_out_notes_up(&mut self, port: PortId) {
+        if let Some(i) = stream(port, Dir::Out) {
+            for h in &mut self.held[i * 16..(i + 1) * 16] {
+                h.all_up();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1350,6 +1363,13 @@ mod tests {
         // when the app has sent their note-offs.
         m.clear();
         assert_eq!(m.held(usb, Dir::In, 0).unwrap().count(), 2);
+        // Another port's All notes off leaves the jacks' note on.
+        m.port_out_notes_up(usb);
+        assert_eq!(m.still_on().len(), 1);
+        m.port_out_notes_up(DIN);
+        assert!(m.still_on().is_empty());
+        f.sent(DIN, 4.0, &[0x91, 36, 110], To::SentBy(1));
+        f.drain_into(&mut m, 4.1);
         m.out_notes_up();
         assert!(m.still_on().is_empty());
         // The clock stops: no pulses to show.

@@ -639,7 +639,8 @@ pub struct Settings {
     pub loop_monitor: bool,
     /// What the looper records: the pads (the default) or the line input.
     pub loop_source: LoopSource,
-    /// Bars in the looper's next first pass (None: until Record again).
+    /// Bars in the looper's next first pass (None, the default: free,
+    /// until STOP or Record again).
     pub loop_bars: Option<u32>,
     /// Input latency the looper makes up for, in frames; estimated from
     /// the audio buffer until set by hand.
@@ -716,7 +717,8 @@ impl Default for Settings {
             sends_midi: false,
             loop_monitor: false,
             loop_source: LoopSource::Pads,
-            loop_bars: Some(2),
+            // REC + PLAY records until STOP, as on the MPC (Jay, 16 Nov).
+            loop_bars: None,
             loop_latency: crate::looping::estimated_latency(3),
             loop_latency_set: false,
             loop_level_db: 0.0,
@@ -3316,9 +3318,10 @@ impl App {
                 "the instrument another way.",
             ],
             Item::LoopBars => vec![
-                "How long the looper's first pass is: 1, 2,",
-                "4 or 8 bars, or free: from the next bar line",
-                "until the bar line after Record again.",
+                "How long the looper's first pass is: free",
+                "(until STOP, or the bar line after Record",
+                "again) or 1, 2, 4 or 8 bars. STOP keeps what",
+                "you played, to the next bar line.",
             ],
             Item::LoopLatency => vec![
                 "How late your playing reaches the looper and",

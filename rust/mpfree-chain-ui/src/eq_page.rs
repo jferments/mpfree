@@ -185,7 +185,7 @@ pub enum Button {
     /// The second value: a cut's slope (a tap steps 12 / 24 dB).
     Slope,
     On,
-    /// Hear the picked band alone (the EQ's Listen); a tap again stops.
+    /// Solo band: hear the picked band alone; a tap again stops.
     Listen,
     Remove,
     /// The whole EQ's Quality: a tap swaps Normal and HQ 2x.
@@ -992,7 +992,7 @@ impl EqPage {
                 ),
                 Button::Listen => (
                     "eq-listen",
-                    "Listen".to_string(),
+                    "Solo band".to_string(),
                     !matches!(picked, Some(Band::Band(_))),
                 ),
                 Button::Remove => ("eq-remove", "Remove".to_string(), picked.is_none()),
@@ -1275,7 +1275,7 @@ impl EqPage {
                     rect,
                     Align::Center,
                     ink,
-                    "Listen",
+                    "Solo band",
                 );
             }
             Button::Quality => {

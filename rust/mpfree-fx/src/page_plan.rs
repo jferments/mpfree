@@ -727,8 +727,13 @@ pub static PLANS: &[Plan] = &[
                     band!(3),
                     band!(4),
                     Section {
-                        rows: &["Listen", "Quality"],
-                        ..s("output", "Output", Voice, &["Output", "Listen", "Quality"])
+                        rows: &["Solo band", "Quality"],
+                        ..s(
+                            "output",
+                            "Output",
+                            Voice,
+                            &["Output", "Solo band", "Quality"],
+                        )
                     },
                 ],
             ),
@@ -909,7 +914,14 @@ pub static PLANS: &[Plan] = &[
                 },
             ],
         )],
-        dims: &[],
+        // Soft with a bias would be Tube (FX quality plan 2, decision 10.1).
+        dims: &[Dim {
+            controls: &["Bias"],
+            by: "Mode",
+            when: When::Is(&[0.0]),
+            reason: "Soft doesn't use it",
+            swap: false,
+        }],
     },
     Plan {
         id: "mpfree.fx.character",
@@ -936,11 +948,16 @@ pub static PLANS: &[Plan] = &[
             &[
                 Section {
                     hero: &["Bits", "Rate"],
-                    rows: &["Dither"],
-                    drawings: &["A sine through it"],
-                    ..s("crush", "Crush", Tone, &["Bits", "Rate", "Dither"])
+                    rows: &["Dither", "Tails", "Filters"],
+                    drawings: &["A sine through it", "Filters"],
+                    ..s(
+                        "crush",
+                        "Crush",
+                        Tone,
+                        &["Bits", "Rate", "Jitter", "Dither", "Tails", "Filters"],
+                    )
                 },
-                s("output", "Output", Voice, &["Mix"]),
+                s("output", "Output", Voice, &["Output", "Mix"]),
             ],
         )],
         dims: &[],
@@ -975,19 +992,23 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.amp",
         qlinks: &["Gain", "Bass", "Mid", "Treble"],
         pages: &[page(
-            "row(col(amp:260, stack):520, output)",
+            "row(col(amp:320, stack):520, col(gate, output))",
             &[
                 Section {
                     hero: &["Gain"],
-                    rows: &["Model"],
-                    ..s("amp", "Amp", Tone, &["Model", "Gain"])
+                    rows: &["Model", "Boost"],
+                    ..s("amp", "Amp", Tone, &["Model", "Boost", "Gain", "Sag"])
                 },
                 s(
                     "stack",
                     "Tone stack",
                     Tone,
-                    &["Bass", "Mid", "Treble", "Presence"],
+                    &["Bass", "Mid", "Treble", "Presence", "Depth"],
                 ),
+                Section {
+                    note: Some("0 is off"),
+                    ..s("gate", "Gate", Shape, &["Gate", "Release"])
+                },
                 Section {
                     rows: &["Cab"],
                     labels: &[("Cab", "Cabinet")],
