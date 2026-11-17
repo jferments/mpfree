@@ -990,6 +990,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-fx",
  "mpfree-node",
+ "mpfree-sampler",
 ]
 
 [[package]]
@@ -1104,6 +1105,7 @@ dependencies = [
 name = "mpfree-mpc-import"
 version = "0.1.0"
 dependencies = [
+ "mpfree-controller",
  "mpfree-library",
  "mpfree-sampler",
 ]

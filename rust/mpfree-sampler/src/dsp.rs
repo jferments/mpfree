@@ -77,6 +77,11 @@ enum Stage {
 /// Envelope level below which a release counts as finished (about -80 dB).
 const FLOOR: f32 = 1.0e-4;
 
+/// A level far below hearing (-400 dB) but well above the denormals
+/// (under 1.2e-38): state that decays toward zero is set to zero once it
+/// gets here, as the effects do (`mpfree-fx`'s `flush`).
+pub const TINY: f32 = 1.0e-20;
+
 /// A running AHDSR. Attack is linear; decay and release are exponential
 /// (one multiply per sample), reaching about -80 dB of their distance in
 /// the given time.
@@ -246,6 +251,18 @@ impl Svf {
         self.a1 = 1.0 / (1.0 + g * (g + self.k));
         self.a2 = g * self.a1;
         self.a3 = g * self.a2;
+    }
+
+    /// Sets a state too small to hear (under [`TINY`]) to zero, so a
+    /// filter left ringing on silence decays to exact zeros instead of
+    /// running on denormals, which cost the CPU many times a normal
+    /// number's arithmetic (about 40 times on the workstation, for a
+    /// 4-pole low-pass ringing out). Callers run it every few frames.
+    #[inline]
+    pub fn flush(&mut self) {
+        let f = |x: f32| if x.abs() < TINY { 0.0 } else { x };
+        self.ic1 = self.ic1.map(f);
+        self.ic2 = self.ic2.map(f);
     }
 
     #[inline]

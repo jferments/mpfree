@@ -351,14 +351,6 @@ pub(crate) fn at_most(x: f32, hi: f32) -> f32 {
     }
 }
 
-/// A fixed read point on a [`Line`] with its cubic weights (and a gain)
-/// worked out, for taps that move only while a control glides.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Frac {
-    i: usize,
-    w: [f32; 4],
-}
-
 /// A mono delay line read at a fractional point (cubic interpolation).
 ///
 /// The buffer is a power of two long (at least 8) and every index is
@@ -426,34 +418,6 @@ impl Line {
         let c2 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
         let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
         ((c3 * t + c2) * t + c1) * t + x1
-    }
-    /// A read point `d` frames back (as in [`Line::read`]) scaled by
-    /// `gain`, worked out once for a point that holds still.
-    pub(crate) fn frac(&self, d: f32, gain: f32) -> Frac {
-        let d = at_most(at_least(d, 1.0), self.top);
-        let i = d as usize;
-        let t = d - i as f32;
-        let (t2, t3) = (t * t, t * t * t);
-        // Oldest first, as `four` returns them.
-        Frac {
-            i,
-            w: [
-                gain * (-0.5 * t2 + 0.5 * t3),
-                gain * (0.5 * t + 2.0 * t2 - 1.5 * t3),
-                gain * (1.0 - 2.5 * t2 + 1.5 * t3),
-                gain * (-0.5 * t + t2 - 0.5 * t3),
-            ],
-        }
-    }
-    /// The line at a point from [`Line::frac`]: the same cubic as
-    /// [`Line::read`] without working out the weights.
-    #[inline]
-    pub(crate) fn read_at(&self, f: &Frac) -> f32 {
-        if self.buf.len() < 8 {
-            return 0.0;
-        }
-        let s = self.four(f.i);
-        f.w[0] * s[0] + f.w[1] * s[1] + f.w[2] * s[2] + f.w[3] * s[3]
     }
     /// The frame `d - 1` frames before the newest (`tap(1)` is the newest).
     #[inline]
@@ -919,19 +883,6 @@ mod tests {
         assert_eq!(l.tap(3), 7.0);
         assert_eq!(l.read(3.0), 6.0);
         assert!((l.read(2.5) - 6.5).abs() < 1e-5);
-    }
-
-    #[test]
-    fn a_fixed_point_reads_as_read_does() {
-        let mut l = Line::new(64);
-        for i in 0..40 {
-            l.push(kit_noise(i));
-        }
-        for d in [1.0, 1.3, 2.5, 7.75, 20.01, 59.9, 500.0, -3.0] {
-            let want = l.read(d) * 0.7;
-            let got = l.read_at(&l.frac(d, 0.7));
-            assert!((want - got).abs() < 1e-5, "{d}: {want} {got}");
-        }
     }
 
     #[test]

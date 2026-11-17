@@ -1,5 +1,5 @@
-//! Three classic reverbs, lighter than the Cloud reverb: [`Room`] (early
-//! reflections into an eight-line feedback delay network), [`Plate`]
+//! Three classic reverbs, lighter than the Cloud reverb: [`Room`] (diffused
+//! early reflections and a sixteen-line feedback delay network), [`Plate`]
 //! (Dattorro's figure-eight tank) and [`Spring`] (chirping stretched
 //! all-pass chains in a feedback loop).
 //!
@@ -67,6 +67,930 @@ impl Damp {
 /// The one-pole coefficient for a corner at `hz`.
 fn pole(hz: f32, rate: u32) -> f32 {
     1.0 - (-std::f32::consts::TAU * hz / rate as f32).exp()
+}
+
+// ---------------------------------------------------------------- the network
+
+/// The lines of the late network.
+const LINES: usize = 16;
+/// The most first echoes a side.
+const TAPS: usize = 12;
+/// The diffusers' gain at Diffusion 100 %.
+const DIFF_MAX: f32 = 0.75;
+/// Decay is the time to fall 60 dB at this frequency, the middle of the
+/// 500 Hz and 1 kHz octaves room acoustics quote it at.
+const MID_HZ: f32 = 707.0;
+/// How long a Pre-delay change crossfades, ms.
+const PRE_FADE_MS: f32 = 20.0;
+/// How long the reads take to swap between moving and still, ms.
+const SETTLE_MS: f32 = 3.0;
+/// The loss filters' glide (time constant), ms.
+const LOSS_MS: f32 = 15.0;
+/// The lines that wobble, the eight longest: a slow wobble on a long line
+/// keeps the tail's resonances drifting apart instead of ringing, where
+/// on a short one it is heard as pitch (fewer leave the tail ringing:
+/// fxlab's R5).
+const MOD_FROM: usize = 8;
+/// The most frames the network works through a stage at a time.
+const CHUNK: usize = 64;
+
+/// What makes a reverb built on [`Net`] the one it is: its lengths, its
+/// first echoes and its wobble.
+trait Voice {
+    /// The lines' lengths in ms at size 1.
+    const LINES_MS: [f32; LINES];
+    /// Each side's input diffusers, ms (fixed, whatever the size).
+    const DIFF_MS: [[f32; 4]; 2];
+    /// A source's first echoes, for a source on the left and on the
+    /// right: (ms at size 1, gain on the source's own side, gain on the
+    /// other side).
+    const EARLY: [&'static [(f32, f32, f32)]; 2];
+    /// The smallest and largest size, as a share of the lengths above.
+    const SIZE_MIN: f32;
+    const SIZE_MAX: f32;
+    /// The longest Pre-delay, ms.
+    const PRE_MAX_MS: f32;
+    /// The wobble's depth at Mod 100 %, frames at 48 kHz.
+    const MOD_FRAMES: f32;
+    /// The first wobbling line's rate, Hz; each after it 5 % faster.
+    const MOD_HZ: f32;
+    /// The wet level, so the reverb plays as loud as the dry on pink
+    /// noise at its defaults and presets (FX quality, R6).
+    const TRIM: f32;
+}
+
+/// Each line's loss for a decay of `rt` seconds at [`MID_HZ`] and of `rt`
+/// times `1 - 0.9 damping` at the top of the band (Jot's absorption
+/// filter: a one-pole low-pass `c0 / (1 - c1 z^-1)` per line, set from
+/// its length so every line falls at the same rate). Returns `(c0, c1)`.
+pub fn room_loss(secs: f32, rt: f32, damping: f32, rate: u32) -> (f32, f32) {
+    let rt = rt.max(0.02);
+    let rt_hi = (rt * (1.0 - 0.9 * damping)).max(0.02);
+    let g_mid = 10f32.powf(-3.0 * secs / rt);
+    let g_top = 10f32.powf(-3.0 * secs / rt_hi);
+    let cw = (std::f32::consts::TAU * MID_HZ / rate as f32).cos();
+    // The one-pole's gain at DC is `g`, at Nyquist `g (1 - b) / (1 + b)`
+    // and at the mid frequency `g m(b)`, a little under `g`: find the `g`
+    // and `b` that put the mid and the top where they belong (two rounds
+    // settle it, `m` is within 1 % of 1).
+    let mut g = g_mid;
+    let mut b = 0.0f32;
+    for _ in 0..3 {
+        let ratio = (g_top / g).clamp(1e-6, 1.0);
+        b = (1.0 - ratio) / (1.0 + ratio);
+        let m = (1.0 - b) / (1.0 - 2.0 * b * cw + b * b).max(1e-12).sqrt();
+        g = (g_mid / m).min(0.9999);
+    }
+    (g * (1.0 - b), b)
+}
+
+/// A 16-point Hadamard transform in place (adds and subtracts only).
+#[inline(always)]
+fn hadamard16(x: &mut [f32; LINES]) {
+    let mut h = 1;
+    while h < LINES {
+        let mut i = 0;
+        while i < LINES {
+            for j in i..i + h {
+                let (a, b) = (x[j], x[j + h]);
+                x[j] = a + b;
+                x[j + h] = a - b;
+            }
+            i += 2 * h;
+        }
+        h *= 2;
+    }
+}
+
+/// The sign of row `r`, column `c` of the 16-point Hadamard matrix.
+const fn had(r: usize, c: usize) -> f32 {
+    if (r & c).count_ones().is_multiple_of(2) {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
+/// How each side's input goes into the lines and how the lines make each
+/// side's output: the left feeds the even lines and hears them at full
+/// strength (the odd at half), the right the other way round, with signs
+/// from two rows of the Hadamard matrix, so the two outputs are
+/// uncorrelated and a source's first echoes come back on its own side.
+const IN_SIGN: [f32; LINES] = {
+    let mut v = [0.0; LINES];
+    let mut k = 0;
+    while k < LINES {
+        v[k] = had(5, k);
+        k += 1;
+    }
+    v
+};
+#[cfg(test)]
+const OUT_VEC: [[f32; LINES]; 2] = {
+    let mut v = [[0.0; LINES]; 2];
+    let mut k = 0;
+    while k < LINES {
+        let near = if k % 2 == 0 { 1.0 } else { 0.5 };
+        let far = if k % 2 == 0 { 0.5 } else { 1.0 };
+        v[0][k] = had(5, k) * near;
+        v[1][k] = had(10, k) * far;
+        k += 1;
+    }
+    v
+};
+
+/// A ring of samples a power of two long: every ring is written once a
+/// frame at the same count `w`, so a read `d` frames back is one mask,
+/// with no clamps and no write pointer of its own.
+#[derive(Clone, Debug, Default)]
+struct Ring {
+    buf: Vec<f32>,
+    mask: usize,
+}
+
+impl Ring {
+    /// Room for `frames` of delay (control thread).
+    fn new(frames: usize) -> Ring {
+        let n = (frames + 4).next_power_of_two();
+        Ring {
+            buf: vec![0.0; n],
+            mask: n - 1,
+        }
+    }
+    /// What was written at count `w - d`.
+    #[inline(always)]
+    fn at(&self, w: usize, d: usize) -> f32 {
+        self.buf[w.wrapping_sub(d) & self.mask]
+    }
+    /// `d` frames back from count `w` (at least 1), cubic as
+    /// [`Line::read`].
+    #[inline(always)]
+    fn cubic(&self, w: usize, d: f32) -> f32 {
+        let i = d as i32 as usize;
+        let t = d - i as i32 as f32;
+        let (x0, x1, x2, x3) = (
+            self.at(w, i - 1),
+            self.at(w, i),
+            self.at(w, i + 1),
+            self.at(w, i + 2),
+        );
+        let c1 = 0.5 * (x2 - x0);
+        let c2 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
+        let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
+        ((c3 * t + c2) * t + c1) * t + x1
+    }
+    /// The two runs of the buffer holding counts `start` to
+    /// `start + n - 1`, in order.
+    #[inline]
+    fn runs(&self, start: usize, n: usize) -> (&[f32], &[f32]) {
+        let p = start & self.mask;
+        let a = n.min(self.buf.len() - p);
+        (&self.buf[p..p + a], &self.buf[..n - a])
+    }
+    /// Reads counts `start` onwards into `out`.
+    #[inline]
+    fn read(&self, start: usize, out: &mut [f32]) {
+        let (a, b) = self.runs(start, out.len());
+        out[..a.len()].copy_from_slice(a);
+        out[a.len()..].copy_from_slice(b);
+    }
+    /// Writes `xs` at counts `start` onwards.
+    #[inline]
+    fn write(&mut self, start: usize, xs: &[f32]) {
+        let p = start & self.mask;
+        let a = xs.len().min(self.buf.len() - p);
+        self.buf[p..p + a].copy_from_slice(&xs[..a]);
+        self.buf[..xs.len() - a].copy_from_slice(&xs[a..]);
+    }
+    fn clear(&mut self) {
+        self.buf.fill(0.0);
+    }
+}
+
+/// The cubic of [`Line::read`], `t` of a frame further back than count
+/// `p` in a ring's buffer (`m` its length less one).
+#[inline(always)]
+fn cubic_back(buf: &[f32], m: usize, p: usize, t: f32) -> f32 {
+    let x0 = buf[p.wrapping_add(1) & m];
+    let x1 = buf[p & m];
+    let x2 = buf[p.wrapping_sub(1) & m];
+    let x3 = buf[p.wrapping_sub(2) & m];
+    // The same cubic in fewer operations (de Soras's arrangement).
+    let c = 0.5 * (x2 - x0);
+    let v = x1 - x2;
+    let w = c + v;
+    let a = w + v + 0.5 * (x3 - x1);
+    ((a * t - (w + a)) * t + c) * t + x1
+}
+
+/// The reverb under [`Room`] and [`Plate`]: each side's input through a
+/// pre-delay and four all-passes, twelve first echoes a
+/// side from a stereo pattern scaled by the size (a source keeps its
+/// side), then a sixteen-line feedback delay network mixed by a Hadamard
+/// matrix, each line damped by a one-pole set from its length, the decay
+/// (the time to fall 60 dB in the mids) and the damping (how much sooner
+/// the top dies), so every line falls at the same rate. The eight longest
+/// lines wobble slowly to keep the tail from ringing. The gate cuts the
+/// tail that long after the sound stops. Pre-delay crossfades to a new
+/// time instead of sliding, so turning it never bends the pitch.
+struct Net<V: Voice> {
+    rate: u32,
+    /// Frames since reset: where every ring was last written.
+    w: usize,
+    /// Frames a stage at a time: [`CHUNK`], or fewer at a rate so low
+    /// that the shortest line is shorter.
+    chunk: usize,
+    /// Frames into the current chunk. Chunks fall on a fixed grid from
+    /// reset, whatever the host's blocks, and every choice a chunk makes
+    /// is made at its start, so the output is the same, bit for bit, at
+    /// any block size.
+    cell: usize,
+    /// This chunk's choices: whole-frame reads for the size, for the
+    /// wobbling lines, and whether they wobble.
+    cell_still: bool,
+    cell_wob_still: bool,
+    cell_wobbling: bool,
+    pre: [Ring; 2],
+    /// The pre-delay read (frames, as `tap`'s argument) and the one it is
+    /// fading to, how far (0 to 1) and by how much a frame.
+    pre_at: usize,
+    pre_to: usize,
+    pre_k: f32,
+    pre_step: f32,
+    /// The pre-delay wanted, frames.
+    pre_want: usize,
+    early: [Ring; 2],
+    /// The early taps for the size `placed`, whole frames (a moving
+    /// size reads fractions, worked out a frame at a time).
+    taps_i: [[usize; TAPS]; 2],
+    diff: [[Ring; 4]; 2],
+    diff_d: [[usize; 4]; 2],
+    diff_g: Smooth,
+    lines: [Ring; LINES],
+    /// Each line's length at the size `placed`, whole frames.
+    base_i: [usize; LINES],
+    /// Decay (seconds) and Damping (0 to 1).
+    rt: f32,
+    damping: f32,
+    /// Each line's loss filter, `s = c0 z + c1 s`, and its state; and
+    /// what the filters are gliding to after Decay, Damping or Size
+    /// moved (so they never zip).
+    c0: [f32; LINES],
+    c1: [f32; LINES],
+    c0_to: [f32; LINES],
+    c1_to: [f32; LINES],
+    loss_moving: bool,
+    /// Whether the loss filters move in this chunk, and by how much a
+    /// frame.
+    ramp: bool,
+    dc0: [f32; LINES],
+    dc1: [f32; LINES],
+    /// One over the glide's time constant, in frames.
+    loss_rate: f32,
+    state: [f32; LINES],
+    /// How far over to the still reads: 0 moving, 1 still.
+    still_k: f32,
+    /// The same for the early taps, which follow the size alone.
+    early_k: f32,
+    still_step: f32,
+    placed: f32,
+    /// The size the loss filters were worked out for.
+    lossed: f32,
+    phase: [f32; LINES - MOD_FROM],
+    lfo_step: [f32; LINES - MOD_FROM],
+    wob: [f32; LINES - MOD_FROM],
+    dwob: [f32; LINES - MOD_FROM],
+    /// The creeping read of each wobbling line while the size holds: how
+    /// far back (whole frames) and the fraction beyond.
+    creep_d: [usize; LINES - MOD_FROM],
+    creep_t: [f32; LINES - MOD_FROM],
+    mod_frames: f32,
+    /// The late network's input gain, so a longer Decay rings longer
+    /// rather than louder.
+    late: Smooth,
+    /// Frames since reset, for the 16-frame grid.
+    n: u32,
+    low_cut: Svf,
+    /// The size, a share of the lengths at size 1.
+    size: Smooth,
+    early_gain: Smooth,
+    modd: Smooth,
+    width: Smooth,
+    blend: Blend,
+    /// The gate's hold, ms (0: off), and its state.
+    gate_ms: f32,
+    env: f32,
+    env_fall: f32,
+    held: u32,
+    gate_g: f32,
+    gate_step: f32,
+    voice: std::marker::PhantomData<V>,
+}
+
+impl<V: Voice> Net<V> {
+    fn new() -> Net<V> {
+        Net {
+            rate: 48_000,
+            w: 0,
+            chunk: CHUNK,
+            cell: 0,
+            cell_still: false,
+            cell_wob_still: false,
+            cell_wobbling: false,
+            pre: Default::default(),
+            pre_at: 0,
+            pre_to: 0,
+            pre_k: 0.0,
+            pre_step: 1.0,
+            pre_want: 0,
+            early: Default::default(),
+            taps_i: [[2; TAPS]; 2],
+            diff: Default::default(),
+            diff_d: [[1; 4]; 2],
+            diff_g: Smooth::new(0.0),
+            lines: Default::default(),
+            base_i: [1; LINES],
+            rt: 1.0,
+            damping: 0.5,
+            c0: [0.0; LINES],
+            c1: [0.0; LINES],
+            c0_to: [0.0; LINES],
+            c1_to: [0.0; LINES],
+            loss_moving: false,
+            ramp: false,
+            dc0: [0.0; LINES],
+            dc1: [0.0; LINES],
+            loss_rate: 1.0,
+            state: [0.0; LINES],
+            still_k: 1.0,
+            early_k: 1.0,
+            still_step: 1.0,
+            placed: f32::NAN,
+            lossed: f32::NAN,
+            phase: [0.0; LINES - MOD_FROM],
+            lfo_step: [0.0; LINES - MOD_FROM],
+            wob: [0.0; LINES - MOD_FROM],
+            dwob: [0.0; LINES - MOD_FROM],
+            creep_d: [0; LINES - MOD_FROM],
+            creep_t: [0.0; LINES - MOD_FROM],
+            mod_frames: V::MOD_FRAMES,
+            late: Smooth::new(1.0),
+            n: 0,
+            low_cut: Svf::default(),
+            size: Smooth::new(1.0),
+            early_gain: Smooth::new(0.6),
+            modd: Smooth::new(0.0),
+            width: Smooth::new(1.0),
+            blend: Blend::new(0.25, 0),
+            gate_ms: 0.0,
+            env: 0.0,
+            env_fall: 0.0,
+            held: 0,
+            gate_g: 1.0,
+            gate_step: 0.0,
+            voice: std::marker::PhantomData,
+        }
+    }
+
+    /// Works out every line's loss filter for a size.
+    fn set_loss(&mut self, size: f32) {
+        let rt = self.rt;
+        for k in 0..LINES {
+            let secs = V::LINES_MS[k] * 0.001 * size;
+            // The Hadamard matrix's 1/4 goes in here.
+            let (c0, c1) = room_loss(secs, rt, self.damping, self.rate);
+            self.c0_to[k] = 0.25 * c0;
+            self.c1_to[k] = c1;
+        }
+        self.loss_moving = true;
+        // A network whose lines keep `g` a pass holds `1 / (1 - g^2)` of
+        // the power going in: feed it the inverse, at the mean line.
+        let mean = V::LINES_MS.iter().sum::<f32>() / LINES as f32 * 0.001 * size;
+        let g = 10f32.powf(-3.0 * mean / rt.max(0.02));
+        self.late.target = (1.0 - g * g).max(0.0).sqrt();
+        self.lossed = size;
+    }
+
+    /// Decay in seconds and Damping (0 to 1).
+    fn set_decay(&mut self, rt: f32, damping: f32) {
+        self.rt = rt;
+        self.damping = damping;
+        self.set_loss(self.size.value);
+    }
+
+    fn set_predelay_ms(&mut self, ms: f32) {
+        self.pre_want = (ms * 0.001 * self.rate as f32).round() as usize;
+    }
+
+    /// Places the early taps and the lines' lengths for a size (every
+    /// frame while the size glides, once when it settles).
+    fn place(&mut self, size: f32) {
+        let ms = self.rate as f32 * 0.001;
+        for side in 0..2 {
+            for (k, &(t, _, _)) in V::EARLY[side].iter().enumerate() {
+                self.taps_i[side][k] = (t * ms * size).round() as usize;
+            }
+        }
+        for k in 0..LINES {
+            self.base_i[k] = (V::LINES_MS[k] * ms * size).round() as usize;
+        }
+        self.placed = size;
+    }
+
+    fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let mut at = 0;
+        while at < l.len() {
+            if self.cell == 0 {
+                self.begin_chunk();
+            }
+            let n = (l.len() - at).min(self.chunk - self.cell);
+            self.run_chunk(&mut l[at..at + n], &mut r[at..at + n]);
+            at += n;
+            self.cell += n;
+            if self.cell >= self.chunk {
+                self.cell = 0;
+            }
+        }
+    }
+
+    /// A chunk's choices, at its first frame. The size moves every read;
+    /// once it holds still and the reads have settled, they take whole
+    /// frames.
+    fn begin_chunk(&mut self) {
+        self.cell_still = self.size.value == self.size.target
+            && self.placed == self.size.value
+            && self.early_k >= 1.0;
+        self.cell_wobbling = self.modd.value > 0.0
+            || self.modd.target > 0.0
+            || self.wob.iter().chain(&self.dwob).any(|&x| x != 0.0);
+        // The wobbling lines settle onto whole frames once Mod is off.
+        self.cell_wob_still = self.cell_still && !self.cell_wobbling && self.still_k >= 1.0;
+        if self.size.value != self.lossed {
+            self.set_loss(self.size.value);
+        }
+        // The loss filters glide, a straight line across the chunk.
+        self.ramp = self.loss_moving;
+        if self.ramp {
+            let n = self.chunk as f32;
+            let per = (1.0 - (-n * self.loss_rate).exp()) / n;
+            let mut most = 0.0f32;
+            for k in 0..LINES {
+                let (e0, e1) = (self.c0_to[k] - self.c0[k], self.c1_to[k] - self.c1[k]);
+                self.dc0[k] = e0 * per;
+                self.dc1[k] = e1 * per;
+                most = most.max(e0.abs()).max(e1.abs());
+            }
+            if most < 1e-6 {
+                (self.c0, self.c1) = (self.c0_to, self.c1_to);
+                self.ramp = false;
+                self.loss_moving = false;
+            }
+        }
+    }
+
+    /// Up to the rest of a chunk, a stage at a time: the pre-delay, the
+    /// diffusers, the early echoes, then the network, whose lines are
+    /// never shorter than a chunk, so every read in it was written before
+    /// it.
+    fn run_chunk(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let n = l.len().min(r.len()).min(CHUNK);
+        if n == 0 {
+            return;
+        }
+        let ms = self.rate as f32 * 0.001;
+        // Where this chunk's first frame is written.
+        let w1 = self.w.wrapping_add(1);
+        self.w = self.w.wrapping_add(n);
+        let n0 = self.n;
+        self.n = n0.wrapping_add(n as u32);
+
+        // Controls, a frame at a time.
+        let (still, wobbling) = (self.cell_still, self.cell_wobbling);
+        let wob_still = self.cell_wob_still;
+        let mut sz = [self.size.value; CHUNK];
+        let mut ek = [1.0f32; CHUNK];
+        if !still {
+            for i in 0..n {
+                let size = self.size.glide();
+                if size != self.size.target {
+                    self.early_k = 0.0;
+                } else if self.early_k < 1.0 {
+                    self.early_k = (self.early_k + self.still_step).min(1.0);
+                }
+                sz[i] = size;
+                ek[i] = self.early_k;
+            }
+        }
+        let mut sk = [1.0f32; CHUNK];
+        if !wob_still {
+            for i in 0..n {
+                if wobbling || sz[i] != self.size.target {
+                    self.still_k = 0.0;
+                } else if self.still_k < 1.0 {
+                    self.still_k = (self.still_k + self.still_step).min(1.0);
+                }
+                sk[i] = self.still_k;
+            }
+        }
+        let mut md = [0.0f32; CHUNK];
+        if wobbling {
+            for m in &mut md[..n] {
+                *m = self.modd.value;
+                self.modd.glide();
+            }
+        }
+
+        // Pre-delay, each side, crossfading to a new time.
+        self.pre[0].write(w1, &l[..n]);
+        self.pre[1].write(w1, &r[..n]);
+        let mut d = [[0.0f32; CHUNK]; 2];
+        if self.pre_k == 0.0 && self.pre_want == self.pre_at {
+            for (side, ds) in d.iter_mut().enumerate() {
+                self.pre[side].read(w1.wrapping_sub(self.pre_at), &mut ds[..n]);
+            }
+        } else {
+            for i in 0..n {
+                if self.pre_k == 0.0 && self.pre_want != self.pre_at {
+                    self.pre_to = self.pre_want;
+                    self.pre_k = self.pre_step;
+                } else if self.pre_k > 0.0 {
+                    self.pre_k += self.pre_step;
+                    if self.pre_k >= 1.0 {
+                        self.pre_at = self.pre_to;
+                        self.pre_k = 0.0;
+                    }
+                }
+                let w = w1.wrapping_add(i);
+                for (side, ds) in d.iter_mut().enumerate() {
+                    let a = self.pre[side].at(w, self.pre_at);
+                    ds[i] = if self.pre_k > 0.0 {
+                        a + self.pre_k * (self.pre[side].at(w, self.pre_to) - a)
+                    } else {
+                        a
+                    };
+                }
+            }
+        }
+        // Each side's input, diffused: the network's input, and what the
+        // early echoes repeat, so each is a cluster rather than a click
+        // (the echoes themselves stay out of the network: their comb
+        // would colour the whole tail).
+        let mut gd = [self.diff_g.value; CHUNK];
+        if self.diff_g.value != self.diff_g.target {
+            for g in &mut gd[..n] {
+                *g = self.diff_g.glide();
+            }
+        }
+        let mut lt = [self.late.value; CHUNK];
+        if self.late.value != self.late.target {
+            for g in &mut lt[..n] {
+                *g = self.late.glide();
+            }
+        }
+        let mut u = d;
+        for (side, us) in u.iter_mut().enumerate() {
+            // Schroeder all-passes, `v = x + g z`, `y = z - g v`.
+            for (ap, &dd) in self.diff[side].iter_mut().zip(&self.diff_d[side]) {
+                let buf = &mut ap.buf[..];
+                if buf.is_empty() {
+                    continue;
+                }
+                let m = buf.len() - 1;
+                for (i, (x, &g)) in us[..n].iter_mut().zip(&gd[..n]).enumerate() {
+                    let w = w1.wrapping_add(i);
+                    let z = buf[w.wrapping_sub(dd) & m];
+                    let v = flush(*x + g * z);
+                    buf[w & m] = v;
+                    *x = z - g * v;
+                }
+            }
+        }
+
+        // Early echoes: each side's source through its own pattern, onto
+        // both sides.
+        self.early[0].write(w1, &u[0][..n]);
+        self.early[1].write(w1, &u[1][..n]);
+        let mut er = [[0.0f32; CHUNK]; 2];
+        for src in 0..2 {
+            let line = &self.early[src];
+            let (a_side, b_side) = er.split_at_mut(1);
+            let (own, far) = if src == 0 {
+                (&mut a_side[0], &mut b_side[0])
+            } else {
+                (&mut b_side[0], &mut a_side[0])
+            };
+            if still {
+                for (&at, &(_, a, b)) in self.taps_i[src].iter().zip(V::EARLY[src]) {
+                    let (x0, x1) = line.runs(w1.wrapping_sub(at), n);
+                    let (o0, o1) = own[..n].split_at_mut(x0.len());
+                    let (f0, f1) = far[..n].split_at_mut(x0.len());
+                    for ((o, f), &x) in o0.iter_mut().zip(f0.iter_mut()).zip(x0) {
+                        *o += a * x;
+                        *f += b * x;
+                    }
+                    for ((o, f), &x) in o1.iter_mut().zip(f1.iter_mut()).zip(x1) {
+                        *o += a * x;
+                        *f += b * x;
+                    }
+                }
+            } else {
+                for i in 0..n {
+                    let w = w1.wrapping_add(i);
+                    let (mut o, mut f) = (0.0f32, 0.0f32);
+                    for &(t, a, b) in V::EARLY[src] {
+                        let dd = t * ms * sz[i];
+                        let c = line.cubic(w, dd);
+                        let x = c + ek[i] * (line.at(w, dd.round() as usize) - c);
+                        o += a * x;
+                        f += b * x;
+                    }
+                    own[i] += o;
+                    far[i] += f;
+                }
+            }
+        }
+
+        for us in &mut u {
+            for (x, &g) in us[..n].iter_mut().zip(&lt[..n]) {
+                *x *= g;
+            }
+        }
+
+        // The network. Read every line for the whole chunk (whole frames
+        // while the size holds still, the eight longest wobbling)...
+        let mut z = [[0.0f32; CHUNK]; LINES];
+        for (k, zk) in z.iter_mut().enumerate() {
+            let line = &self.lines[k];
+            let zk = &mut zk[..n];
+            if k >= MOD_FROM && wobbling {
+                let j = k - MOD_FROM;
+                let (mut wob, mut dwob, mut ph) = (self.wob[j], self.dwob[j], self.phase[j]);
+                let step = self.lfo_step[j];
+                let buf = &line.buf[..];
+                if buf.is_empty() {
+                    continue;
+                }
+                let m = buf.len() - 1;
+                let base = V::LINES_MS[k] * ms;
+                let lfo = |i: usize, ph: &mut f32, wob: f32, dwob: &mut f32| -> f32 {
+                    *ph = kit::wrap(*ph + step);
+                    let to = md[i] * self.mod_frames * kit::sine(*ph);
+                    if to == 0.0 && wob.abs() < 1e-3 {
+                        // Mod is off and the wobble has come home.
+                        *dwob = 0.0;
+                        0.0
+                    } else {
+                        *dwob = (to - wob) * (1.0 / 16.0);
+                        wob
+                    }
+                };
+                if still {
+                    // The size holds: the read creeps, a whole frame now
+                    // and then, with no conversions (from where it was,
+                    // inside a chunk).
+                    if self.cell == 0 {
+                        let d0 = base * sz[0] + wob;
+                        self.creep_t[j] = d0 - (d0 as i32) as f32;
+                        self.creep_d[j] = d0 as i32 as usize;
+                    }
+                    let mut t = self.creep_t[j];
+                    let mut p = w1.wrapping_sub(self.creep_d[j]);
+                    for (i, x) in zk.iter_mut().enumerate() {
+                        if n0.wrapping_add(i as u32) & 15 == 0 {
+                            let was = wob;
+                            wob = lfo(i, &mut ph, wob, &mut dwob);
+                            t += wob - was;
+                        }
+                        wob += dwob;
+                        t += dwob;
+                        if t >= 1.0 {
+                            t -= 1.0;
+                            p = p.wrapping_sub(1);
+                        } else if t < 0.0 {
+                            t += 1.0;
+                            p = p.wrapping_add(1);
+                        }
+                        *x = cubic_back(buf, m, p, t);
+                        p = p.wrapping_add(1);
+                    }
+                    self.creep_t[j] = t;
+                    self.creep_d[j] = w1.wrapping_add(n).wrapping_sub(p);
+                } else {
+                    for (i, x) in zk.iter_mut().enumerate() {
+                        if n0.wrapping_add(i as u32) & 15 == 0 {
+                            wob = lfo(i, &mut ph, wob, &mut dwob);
+                        }
+                        wob += dwob;
+                        let dd = base * sz[i] + wob;
+                        // Through i32: one instruction each way on ARMv7.
+                        let di = dd as i32;
+                        let p = w1.wrapping_add(i).wrapping_sub(di as usize);
+                        *x = cubic_back(buf, m, p, dd - di as f32);
+                    }
+                }
+                self.wob[j] = wob;
+                self.dwob[j] = dwob;
+                self.phase[j] = ph;
+            } else if (k < MOD_FROM && still) || wob_still {
+                line.read(w1.wrapping_sub(self.base_i[k]), zk);
+            } else {
+                let kk = if k >= MOD_FROM { &sk } else { &ek };
+                for (i, x) in zk.iter_mut().enumerate() {
+                    let w = w1.wrapping_add(i);
+                    let dd = V::LINES_MS[k] * ms * sz[i];
+                    let c = line.cubic(w, dd);
+                    *x = c + kk[i] * (line.at(w, dd.round() as usize) - c);
+                }
+            }
+        }
+        // ...then a frame at a time damp, mix and feed back...
+        let mut y = [[0.0f32; CHUNK]; 2];
+        let mut st = self.state;
+        let (mut c0, mut c1) = (self.c0, self.c1);
+        let (dc0, dc1, ramp) = (self.dc0, self.dc1, self.ramp);
+        for i in 0..n {
+            if ramp {
+                for k in 0..LINES {
+                    c0[k] += dc0[k];
+                    c1[k] += dc1[k];
+                }
+            }
+            for k in 0..LINES {
+                st[k] = flush(c0[k] * z[k][i] + c1[k] * st[k]);
+            }
+            let mut s = st;
+            hadamard16(&mut s);
+            for k in 0..LINES {
+                z[k][i] = s[k] + IN_SIGN[k] * u[k & 1][i];
+            }
+            // The outputs are [`OUT_VEC`] applied to the lines, read off
+            // the transform: `had(r, k) * had(1, k)` is `had(r ^ 1, k)`.
+            y[0][i] = 0.75 * s[5] + 0.25 * s[4];
+            y[1][i] = 0.75 * s[10] - 0.25 * s[11];
+        }
+        self.state = st;
+        (self.c0, self.c1) = (c0, c1);
+        // ...and write the chunk back.
+        for (line, zk) in self.lines.iter_mut().zip(&z) {
+            line.write(w1, &zk[..n]);
+        }
+        if !still {
+            self.place(self.size.value);
+        }
+
+        // Out: level, low cut, gate, width and the blend with the dry.
+        let gate_frames = (self.gate_ms * ms) as u32;
+        let gate_on = gate_frames > 0;
+        for i in 0..n {
+            let early_gain = self.early_gain.glide();
+            let mut v = [0.0f32; 2];
+            for side in 0..2 {
+                // The 4 undoes the 1/4 folded into the loss filters.
+                v[side] = self.low_cut.run(
+                    side,
+                    V::TRIM * (4.0 * y[side][i] + early_gain * er[side][i]),
+                );
+            }
+            // The gate, keyed by the dry input.
+            if gate_on {
+                let level = 0.5 * (l[i] + r[i]).abs();
+                self.env = if level > self.env {
+                    level
+                } else {
+                    self.env * self.env_fall
+                };
+                if self.env > 0.01 {
+                    self.held = gate_frames;
+                    self.gate_g = 1.0;
+                } else if self.held > 0 {
+                    self.held -= 1;
+                } else {
+                    self.gate_g = (self.gate_g - self.gate_step).max(0.0);
+                }
+                v[0] *= self.gate_g;
+                v[1] *= self.gate_g;
+            }
+            let w = self.width.glide();
+            let mid = 0.5 * (v[0] + v[1]);
+            let g = self.blend.next();
+            l[i] = kit::blend(l[i], lerp(mid, v[0], w), g);
+            r[i] = kit::blend(r[i], lerp(mid, v[1], w), g);
+        }
+    }
+
+    /// Everything that follows the rate (control thread); the owner then
+    /// applies its parameters and clears.
+    fn setup(&mut self, rate: u32) {
+        self.rate = rate;
+        let ms = rate as f32 * 0.001;
+        // A chunk is written into the pre-delay and the early taps before
+        // it is read: room for a chunk more.
+        let pre = ((V::PRE_MAX_MS + 1.0) * ms) as usize + 2 + CHUNK;
+        self.pre = [Ring::new(pre), Ring::new(pre)];
+        let last = |side: usize| V::EARLY[side].last().map_or(0.0, |e| e.0);
+        let longest = last(0).max(last(1));
+        let early = (longest * V::SIZE_MAX * ms) as usize + 8 + CHUNK;
+        self.early = [Ring::new(early), Ring::new(early)];
+        self.mod_frames = V::MOD_FRAMES * rate as f32 / 48_000.0;
+        // A chunk's reads from the network come from before it (with the
+        // cubic's frame either side).
+        let shortest = (0..LINES)
+            .map(|k| {
+                let wob = if k >= MOD_FROM { self.mod_frames } else { 0.0 };
+                (V::LINES_MS[k] * V::SIZE_MIN * ms - wob) as usize
+            })
+            .min()
+            .unwrap_or(0);
+        self.chunk = shortest.saturating_sub(3).clamp(1, CHUNK);
+        for k in 0..LINES {
+            let extra = if k >= MOD_FROM {
+                self.mod_frames as usize + 8
+            } else {
+                8
+            };
+            self.lines[k] = Ring::new((V::LINES_MS[k] * V::SIZE_MAX * ms) as usize + extra);
+        }
+        for side in 0..2 {
+            for (j, &t) in V::DIFF_MS[side].iter().enumerate() {
+                let d = ((t * ms).round() as usize).max(1);
+                self.diff[side][j] = Ring::new(d);
+                self.diff_d[side][j] = d;
+            }
+        }
+        for k in 0..LINES - MOD_FROM {
+            self.lfo_step[k] = 16.0 * V::MOD_HZ / rate as f32 * (1.0 + 0.05 * k as f32);
+        }
+        self.env_fall = crate::db_to_gain(-60.0 / (0.03 * rate as f32));
+        // The gate closes over 4 ms.
+        self.gate_step = 1.0 / (4.0 * ms);
+        self.pre_step = 1.0 / (PRE_FADE_MS * ms);
+        self.still_step = 1.0 / (SETTLE_MS * ms);
+        self.loss_rate = 1.0 / (LOSS_MS * ms);
+        for s in [
+            &mut self.size,
+            &mut self.early_gain,
+            &mut self.modd,
+            &mut self.width,
+            &mut self.diff_g,
+            &mut self.late,
+        ] {
+            s.set_time(rate, 50.0);
+        }
+        // The size moves the lines: slowly, so the tail never bends in
+        // pitch.
+        self.size.set_time(rate, 300.0);
+        self.blend.set_time(rate, 50.0);
+    }
+
+    fn clear(&mut self) {
+        for l in self.pre.iter_mut().chain(&mut self.early) {
+            l.clear();
+        }
+        for l in &mut self.lines {
+            l.clear();
+        }
+        for side in &mut self.diff {
+            for ap in side {
+                ap.clear();
+            }
+        }
+        self.w = 0;
+        self.cell = 0;
+        self.ramp = false;
+        self.state = [0.0; LINES];
+        for (k, p) in self.phase.iter_mut().enumerate() {
+            *p = (k as f32 * 0.618_034).fract();
+        }
+        self.wob = [0.0; LINES - MOD_FROM];
+        self.dwob = [0.0; LINES - MOD_FROM];
+        self.n = 0;
+        self.low_cut.reset();
+        self.env = 0.0;
+        self.held = 0;
+        self.gate_g = 1.0;
+        for s in [
+            &mut self.size,
+            &mut self.early_gain,
+            &mut self.modd,
+            &mut self.width,
+            &mut self.diff_g,
+        ] {
+            s.snap(s.target);
+        }
+        self.blend.snap();
+        self.pre_at = self.pre_want;
+        self.pre_to = self.pre_want;
+        self.pre_k = 0.0;
+        self.still_k = 1.0;
+        self.early_k = 1.0;
+        self.placed = f32::NAN;
+        let size = self.size.value;
+        self.place(size);
+        self.set_loss(size);
+        (self.c0, self.c1) = (self.c0_to, self.c1_to);
+        self.loss_moving = false;
+        self.late.snap(self.late.target);
+    }
 }
 
 // ---------------------------------------------------------------- plate
@@ -448,47 +1372,69 @@ pub mod room {
     pub const MIX: u16 = 9;
     /// How Mix blends ([`crate::kit::MIX_CURVES`]).
     pub const MIX_CURVE: u16 = 10;
+    /// How quickly the tail turns dense: the input diffusers' strength.
+    pub const DIFFUSION: u16 = 11;
 }
 
-const LINES: usize = 8;
-/// Line lengths in ms at Size 100 %, spread so no two share a factor.
-const ROOM_MS: [f32; LINES] = [23.3, 29.1, 34.7, 38.9, 43.1, 47.9, 53.3, 59.7];
-/// Early reflections: (ms at Size 100 %, gain, pan -1 left to 1 right).
-const EARLY: [(f32, f32, f32); 8] = [
-    (4.3, 0.84, -0.7),
-    (7.9, 0.72, 0.6),
-    (11.2, 0.66, -0.3),
-    (14.8, 0.55, 0.9),
-    (19.6, 0.47, -0.9),
-    (24.1, 0.40, 0.2),
-    (29.8, 0.33, 0.7),
-    (36.5, 0.27, -0.5),
-];
-/// Each early tap's left and right gains (constant power is not needed:
-/// the taps are summed, not panned one at a time).
-const EARLY_PAN: [[f32; 2]; 8] = {
-    let mut p = [[0.0; 2]; 8];
-    let mut k = 0;
-    while k < 8 {
-        p[k] = [0.5 - 0.5 * EARLY[k].2, 0.5 + 0.5 * EARLY[k].2];
-        k += 1;
-    }
-    p
-};
-/// The smallest Size, as a share of the lengths above.
-const ROOM_MIN: f32 = 0.25;
-const ROOM_MAX: f32 = 1.5;
-/// The wet level, +4 dB, so the Room plays as loud as the dry on pink
-/// noise like the other reverbs (it was 3 to 5 LU quieter at its defaults
-/// and every preset: fxlab quality, R6).
-const ROOM_TRIM: f32 = 1.584_893;
+/// The room's voice.
+struct RoomVoice;
+
+impl Voice for RoomVoice {
+    /// About geometric from 15 to 75 ms at Size 100 %, nudged off simple
+    /// ratios so no two lines' echoes keep landing together.
+    const LINES_MS: [f32; LINES] = [
+        15.3, 16.9, 18.7, 20.9, 23.1, 25.9, 28.4, 31.7, 35.3, 39.1, 43.9, 48.7, 54.1, 60.7, 67.1,
+        74.3,
+    ];
+    const DIFF_MS: [[f32; 4]; 2] = [[1.53, 2.47, 3.91, 5.87], [1.71, 2.69, 4.13, 6.07]];
+    /// The nearest walls answer first and mostly on the source's side, so
+    /// a sound keeps its place.
+    const EARLY: [&'static [(f32, f32, f32)]; 2] = [
+        &[
+            (2.9, 0.95, 0.30),
+            (5.1, 0.42, 0.66),
+            (7.6, 0.78, 0.26),
+            (10.3, 0.36, 0.52),
+            (13.1, 0.62, 0.24),
+            (16.4, 0.33, 0.42),
+            (19.9, 0.50, 0.22),
+            (23.6, 0.30, 0.34),
+            (27.8, 0.40, 0.20),
+            (32.3, 0.27, 0.28),
+            (37.1, 0.32, 0.18),
+            (42.6, 0.24, 0.22),
+        ],
+        &[
+            (3.4, 0.95, 0.30),
+            (5.8, 0.42, 0.66),
+            (8.3, 0.78, 0.26),
+            (11.1, 0.36, 0.52),
+            (14.2, 0.62, 0.24),
+            (17.5, 0.33, 0.42),
+            (21.2, 0.50, 0.22),
+            (25.3, 0.30, 0.34),
+            (29.6, 0.40, 0.20),
+            (34.4, 0.27, 0.28),
+            (39.4, 0.32, 0.18),
+            (45.1, 0.24, 0.22),
+        ],
+    ];
+    const SIZE_MIN: f32 = 0.25;
+    const SIZE_MAX: f32 = 1.5;
+    const PRE_MAX_MS: f32 = 100.0;
+    /// A held note in the tail smears by under 2 cents at the default Mod
+    /// (fxlab, R5 and R9).
+    const MOD_FRAMES: f32 = 96.0;
+    const MOD_HZ: f32 = 0.43;
+    const TRIM: f32 = 0.369;
+}
 
 static ROOM_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.room",
     name: "Room reverb",
     kind: Kind::Effect,
 };
-static ROOM_PARAMS: [ParamInfo; 11] = [
+static ROOM_PARAMS: [ParamInfo; 12] = [
     param(0, "Pre-delay", "Room", 0.0, 100.0, 5.0, Ms, Linear),
     param(1, "Size", "Room", 0.0, 100.0, 45.0, Percent, Linear),
     param(2, "Decay", "Room", 100.0, 5000.0, 800.0, Ms, Log),
@@ -509,6 +1455,7 @@ static ROOM_PARAMS: [ParamInfo; 11] = [
         NONE,
         Choice(kit::MIX_CURVES),
     ),
+    param(11, "Diffusion", "Room", 0.0, 100.0, 70.0, Percent, Linear),
 ];
 
 /// Room factory presets.
@@ -548,51 +1495,33 @@ pub static ROOM_PRESETS: &[Preset] = &[
     },
 ];
 
-/// A room: eight early reflections panned around the listener, then an
-/// eight-line feedback delay network mixed by a Householder matrix, with a
-/// damping filter in each line set from Decay (the time to fall 60 dB at
-/// low frequencies) and Damping (how much sooner the highs die). A slow
-/// modulation on the lines keeps small rooms from sounding metallic. Gate
-/// cuts the tail that many ms after the sound stops, the 1980s gated
-/// snare.
+/// The early reflections' times (ms) and their gain on the source's own
+/// side, for drawing: the left source's pattern at `size` (a share of
+/// the times at Size 100 %).
+pub fn room_early_taps(size: f32) -> impl Iterator<Item = (f32, f32)> {
+    RoomVoice::EARLY[0]
+        .iter()
+        .map(move |&(t, g, _)| (t * size, g))
+}
+
+/// The Room's Size, 0 to 100 %, as a share of its lengths at 100 %.
+pub fn room_size(v: f32) -> f32 {
+    RoomVoice::SIZE_MIN + (RoomVoice::SIZE_MAX - RoomVoice::SIZE_MIN) * v / 100.0
+}
+
+/// A room: twelve early reflections a side from a stereo pattern scaled
+/// by Size (a source keeps its side), each side's input through four
+/// short all-passes (Diffusion), then a sixteen-line feedback delay
+/// network mixed by a Hadamard matrix, each line damped by a one-pole set
+/// from its length, Decay (the time to fall 60 dB in the mids) and
+/// Damping (how much sooner the top dies), so every line falls at the
+/// same rate. The eight longest lines wobble slowly (Mod) to keep the tail
+/// from ringing. Gate cuts the tail that many ms after the sound stops,
+/// the 1980s gated snare. Pre-delay crossfades to a new time instead of
+/// sliding, so turning it never bends the pitch.
 pub struct Room {
-    v: [f32; 11],
-    rate: u32,
-    pre: Line,
-    early: Line,
-    lines: [Line; LINES],
-    /// Each line's loss filter: low-frequency gain and pole.
-    g: [f32; LINES],
-    a: [f32; LINES],
-    state: [f32; LINES],
-    phase: [f32; LINES],
-    /// Each line's LFO step over 16 frames.
-    lfo_step: [f32; LINES],
-    /// Each line's length at the current size, its wobble and the
-    /// wobble's step per frame (the LFO is worked out every 16 frames and
-    /// followed in straight lines between).
-    base: [f32; LINES],
-    wob: [f32; LINES],
-    dwob: [f32; LINES],
-    /// The early taps (gain folded in) and pans for the size `placed`.
-    taps: [kit::Frac; 8],
-    placed: f32,
-    pre_tap: kit::Frac,
-    pre_placed: f32,
-    /// Frames since reset, for the 16-frame LFO grid.
-    n: u32,
-    low_cut: Svf,
-    size: Smooth,
-    pre_frames: Smooth,
-    early_gain: Smooth,
-    modd: Smooth,
-    width: Smooth,
-    blend: Blend,
-    env: f32,
-    env_fall: f32,
-    held: u32,
-    gate_g: f32,
-    gate_step: f32,
+    v: [f32; 12],
+    net: Net<RoomVoice>,
 }
 
 impl Default for Room {
@@ -603,215 +1532,42 @@ impl Default for Room {
 
 impl Room {
     pub fn new() -> Room {
-        let v = defaults(&ROOM_PARAMS);
         let mut r = Room {
-            v,
-            rate: 48_000,
-            pre: Line::default(),
-            early: Line::default(),
-            lines: Default::default(),
-            g: [0.0; LINES],
-            a: [0.0; LINES],
-            state: [0.0; LINES],
-            phase: [0.0; LINES],
-            lfo_step: [0.0; LINES],
-            base: [0.0; LINES],
-            wob: [0.0; LINES],
-            dwob: [0.0; LINES],
-            taps: [kit::Frac::default(); 8],
-            placed: f32::NAN,
-            pre_tap: kit::Frac::default(),
-            pre_placed: f32::NAN,
-            n: 0,
-            low_cut: Svf::default(),
-            size: Smooth::new(1.0),
-            pre_frames: Smooth::new(0.0),
-            early_gain: Smooth::new(0.6),
-            modd: Smooth::new(0.0),
-            width: Smooth::new(1.0),
-            blend: Blend::new(0.25, 0),
-            env: 0.0,
-            env_fall: 0.0,
-            held: 0,
-            gate_g: 1.0,
-            gate_step: 0.0,
+            v: defaults(&ROOM_PARAMS),
+            net: Net::new(),
         };
         r.setup(48_000);
         r
     }
 
-    fn size_of(v: f32) -> f32 {
-        ROOM_MIN + (ROOM_MAX - ROOM_MIN) * v / 100.0
-    }
-
-    /// Each line's loss for Decay at low frequencies and a shorter decay
-    /// for the highs (Jot's absorption filters): a one-pole whose gain at
-    /// DC and at Nyquist give those two decay times for its length.
-    fn set_loss(&mut self) {
-        let rt = self.v[room::DECAY as usize] * 0.001;
-        let rt_hi = rt * (1.0 - 0.9 * self.v[room::DAMPING as usize] / 100.0);
-        let size = Self::size_of(self.v[room::SIZE as usize]);
-        for k in 0..LINES {
-            let secs = ROOM_MS[k] * 0.001 * size;
-            let g = 10f32.powf(-3.0 * secs / rt);
-            let g_hi = 10f32.powf(-3.0 * secs / rt_hi.max(0.02));
-            let ratio = (g_hi / g).clamp(0.0, 1.0);
-            self.g[k] = g;
-            self.a[k] = (1.0 - ratio) / (1.0 + ratio);
-        }
-    }
-
     fn apply(&mut self, id: u16, v: f32) {
+        let net = &mut self.net;
         match id {
-            room::PREDELAY => self.pre_frames.target = v * 0.001 * self.rate as f32,
-            room::SIZE => {
-                self.size.target = Self::size_of(v);
-                self.set_loss();
-            }
-            room::DECAY | room::DAMPING => self.set_loss(),
-            room::EARLY => self.early_gain.target = v / 100.0,
-            room::MOD => self.modd.target = v / 100.0,
-            room::LOW_CUT => self
-                .low_cut
-                .set(SvfMode::HighPass, v, 0.707, 0.0, self.rate),
-            room::WIDTH => self.width.target = v / 100.0,
-            room::MIX => self.blend.set_mix(v / 100.0),
-            room::MIX_CURVE => self.blend.set_curve(v),
+            room::PREDELAY => net.set_predelay_ms(v),
+            room::SIZE => net.size.target = room_size(v),
+            room::DECAY | room::DAMPING => net.set_decay(
+                self.v[room::DECAY as usize] * 0.001,
+                self.v[room::DAMPING as usize] / 100.0,
+            ),
+            room::EARLY => net.early_gain.target = v / 100.0,
+            room::MOD => net.modd.target = v / 100.0,
+            room::GATE => net.gate_ms = v,
+            room::LOW_CUT => net.low_cut.set(SvfMode::HighPass, v, 0.707, 0.0, net.rate),
+            room::WIDTH => net.width.target = v / 100.0,
+            room::MIX => net.blend.set_mix(v / 100.0),
+            room::MIX_CURVE => net.blend.set_curve(v),
+            room::DIFFUSION => net.diff_g.target = DIFF_MAX * v / 100.0,
             _ => {}
         }
     }
 
-    /// Places the early taps and the lines' lengths for a size (every
-    /// frame while Size glides, once when it settles).
-    fn place(&mut self, size: f32) {
-        let ms = self.rate as f32 * 0.001;
-        for (k, &(t, g, _)) in EARLY.iter().enumerate() {
-            self.taps[k] = self.early.frac(t * ms * size, g);
-        }
-        for k in 0..LINES {
-            self.base[k] = ROOM_MS[k] * ms * size;
-        }
-        self.placed = size;
-    }
-
     fn begin(&mut self, _ctx: &Ctx) {}
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
-        let ms = self.rate as f32 * 0.001;
-        let gate_frames = (self.v[room::GATE as usize] * ms) as u32;
-        let gate_on = gate_frames > 0;
-        for i in 0..l.len() {
-            let size = self.size.glide();
-            if size != self.placed {
-                self.place(size);
-            }
-            let pre = self.pre_frames.glide();
-            if pre != self.pre_placed {
-                self.pre_tap = self.pre.frac(pre - 1.0, 1.0);
-                self.pre_placed = pre;
-            }
-            let early_gain = self.early_gain.glide();
-            let modd = self.modd.glide();
-            if self.n & 15 == 0 {
-                for k in 0..LINES {
-                    self.phase[k] = kit::wrap(self.phase[k] + self.lfo_step[k]);
-                    let to = modd * 6.0 * kit::sine(self.phase[k]);
-                    self.dwob[k] = (to - self.wob[k]) * (1.0 / 16.0);
-                }
-            }
-            self.n = self.n.wrapping_add(1);
-            let x = 0.5 * (l[i] + r[i]);
-            self.pre.push(x);
-            let d = if pre >= 2.0 {
-                self.pre.read_at(&self.pre_tap)
-            } else {
-                x
-            };
-            // Early reflections, panned.
-            self.early.push(d);
-            let mut er = [0.0f32; 2];
-            for (tap, pan) in self.taps.iter().zip(EARLY_PAN) {
-                let v = self.early.read_at(tap);
-                er[0] += v * pan[0];
-                er[1] += v * pan[1];
-            }
-            // The network: read every line, mix, feed back.
-            let mut out = [0.0f32; LINES];
-            let mut sum = 0.0;
-            for k in 0..LINES {
-                self.wob[k] += self.dwob[k];
-                let z = self.lines[k].read(self.base[k] + self.wob[k] - 1.0);
-                // Loss: gain at DC g, less at the top.
-                self.state[k] =
-                    flush(self.g[k] * (1.0 - self.a[k]) * z + self.a[k] * self.state[k]);
-                out[k] = self.state[k];
-                sum += out[k];
-            }
-            let h = sum * (2.0 / LINES as f32);
-            let input = d + 0.3 * (er[0] + er[1]);
-            for k in 0..LINES {
-                let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
-                self.lines[k].push(out[k] - h + sign * 0.35 * input);
-            }
-            let mut y = [
-                out[0] - out[2] + out[4] - out[6] + 0.5 * (out[1] + out[5]),
-                out[1] - out[3] + out[5] - out[7] + 0.5 * (out[2] + out[6]),
-            ];
-            for (side, v) in y.iter_mut().enumerate() {
-                *v = self
-                    .low_cut
-                    .run(side, ROOM_TRIM * (0.35 * *v + early_gain * er[side]));
-            }
-            // The gate, keyed by the dry input.
-            if gate_on {
-                let level = x.abs();
-                self.env = if level > self.env {
-                    level
-                } else {
-                    self.env * self.env_fall
-                };
-                if self.env > 0.01 {
-                    self.held = gate_frames;
-                    self.gate_g = 1.0;
-                } else if self.held > 0 {
-                    self.held -= 1;
-                } else {
-                    self.gate_g = (self.gate_g - self.gate_step).max(0.0);
-                }
-                y[0] *= self.gate_g;
-                y[1] *= self.gate_g;
-            }
-            let w = self.width.glide();
-            let mid = 0.5 * (y[0] + y[1]);
-            let g = self.blend.next();
-            l[i] = kit::blend(l[i], lerp(mid, y[0], w), g);
-            r[i] = kit::blend(r[i], lerp(mid, y[1], w), g);
-        }
+        self.net.run(l, r);
     }
 
     fn setup(&mut self, rate: u32) {
-        self.rate = rate;
-        let ms = rate as f32 * 0.001;
-        self.pre = Line::new((101.0 * ms) as usize);
-        self.early = Line::new((EARLY[7].0 * ROOM_MAX * ms) as usize + 8);
-        for k in 0..LINES {
-            self.lines[k] = Line::new((ROOM_MS[k] * ROOM_MAX * ms) as usize + 16);
-        }
-        for k in 0..LINES {
-            self.lfo_step[k] = 16.0 * 0.37 / rate as f32 * (1.0 + 0.13 * k as f32);
-        }
-        self.env_fall = crate::db_to_gain(-60.0 / (0.03 * rate as f32));
-        // The gate closes over 4 ms.
-        self.gate_step = 1.0 / (4.0 * ms);
-        for s in [
-            &mut self.size,
-            &mut self.early_gain,
-            &mut self.modd,
-            &mut self.width,
-        ] {
-            s.set_time(rate, 50.0);
-        }
-        self.blend.set_time(rate, 50.0);
-        self.pre_frames.set_time(rate, 100.0);
+        self.net.setup(rate);
         for id in 0..ROOM_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
         }
@@ -819,46 +1575,18 @@ impl Room {
     }
 
     fn clear(&mut self) {
-        self.pre.clear();
-        self.early.clear();
-        for l in &mut self.lines {
-            l.clear();
-        }
-        self.state = [0.0; LINES];
-        self.phase = [0.0; LINES];
-        for (k, p) in self.phase.iter_mut().enumerate() {
-            *p = k as f32 / LINES as f32;
-        }
-        self.wob = [0.0; LINES];
-        self.dwob = [0.0; LINES];
-        self.n = 0;
-        self.placed = f32::NAN;
-        self.pre_placed = f32::NAN;
-        self.low_cut.reset();
-        self.env = 0.0;
-        self.held = 0;
-        self.gate_g = 1.0;
-        for s in [
-            &mut self.size,
-            &mut self.pre_frames,
-            &mut self.early_gain,
-            &mut self.modd,
-            &mut self.width,
-        ] {
-            s.snap(s.target);
-        }
-        self.blend.snap();
+        self.net.clear();
     }
 
     fn tail(&self) -> u32 {
-        ((self.v[room::DECAY as usize] * 0.0012 + 0.2) * self.rate as f32) as u32
+        ((self.v[room::DECAY as usize] * 0.0012 + 0.2) * self.net.rate as f32) as u32
     }
     fn rest(&self) -> u32 {
         // Its modulation keeps time across silence, and its gate shuts
         // where a reset would open it; without either, what it holds is
         // its tail, here to 100 dB down (Decay is the time to fall 60).
         if self.v[room::MOD as usize] > 0.0
-            || self.modd.value > 0.0
+            || self.net.modd.value > 0.0
             || self.v[room::GATE as usize] > 0.0
         {
             return u32::MAX;
@@ -866,7 +1594,7 @@ impl Room {
         let secs = self.v[room::DECAY as usize] * 0.001 * 100.0 / 60.0
             + self.v[room::PREDELAY as usize] * 0.001
             + 0.2;
-        (secs * self.rate as f32) as u32
+        (secs * self.net.rate as f32) as u32
     }
     fn lat(&self) -> u32 {
         0
@@ -1143,3 +1871,41 @@ impl Spring {
 }
 
 node_impl!(Spring, SPRING_INFO, SPRING_PARAMS, rest);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_outputs_read_off_the_transform_are_the_output_vectors() {
+        let mut seed = 7u32;
+        for _ in 0..20 {
+            let mut v = [0.0f32; LINES];
+            for x in &mut v {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *x = (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+            }
+            let want: Vec<f32> = (0..2)
+                .map(|o| (0..LINES).map(|k| OUT_VEC[o][k] * v[k]).sum())
+                .collect();
+            let mut s = v;
+            hadamard16(&mut s);
+            assert!((0.75 * s[5] + 0.25 * s[4] - want[0]).abs() < 1e-5);
+            assert!((0.75 * s[10] - 0.25 * s[11] - want[1]).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn every_line_is_longer_than_a_chunk_at_every_rate() {
+        for rate in [22_050, 44_100, 48_000, 96_000] {
+            let mut r = Room::new();
+            r.setup(rate);
+            let ms = rate as f32 * 0.001;
+            for k in 0..LINES {
+                let wob = if k >= MOD_FROM { r.net.mod_frames } else { 0.0 };
+                let shortest = RoomVoice::LINES_MS[k] * RoomVoice::SIZE_MIN * ms - wob;
+                assert!(shortest >= r.net.chunk as f32 + 2.0, "{rate} {k}");
+            }
+        }
+    }
+}
