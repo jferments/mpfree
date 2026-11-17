@@ -11,6 +11,8 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod embedded;
+
 use eframe::egui::{self, RichText};
 use mpfree_stick::disks::{self, DiskInfo};
 use mpfree_stick::update::{Supported, Update};
@@ -25,12 +27,12 @@ const MANUAL: &str =
 
 /// What to do on the MPC with a stick it has not started MPFree from yet.
 const NEW_STICK_STEPS: [&str; 6] = [
-    "Eject the stick from this computer and put it into the MPC's USB port.",
-    "Turn the MPC on. Akai's software starts as usual.",
+    "Eject the stick from this computer.",
+    "Turn the MPC on without the stick. Akai's software starts as usual.",
     "Switch on the developer panel (MENU > Preferences > Enhancements), then hold SHIFT, press MENU, choose Developer and switch developer mode on. This is needed once.",
-    "When the MPC asks whether to run the script on the stick (autorun.sh), tap Yes. It adds MPFree's start-up helper and restarts the MPC.",
-    "The MPC starts MPFree from the stick.",
-    "Afterwards, switch developer mode off again: stick out, in Akai's software, SHIFT + MENU > Developer.",
+    "Put the stick into the MPC's USB port. When the MPC asks whether to run the script on the stick (autorun.sh), tap Yes. If it hasn't asked after a minute, turn the MPC off and on again with the stick in: it asks once Akai's software is up.",
+    "A few seconds later the script adds MPFree's start-up helper, switches developer mode off again and restarts the MPC, which then starts MPFree from the stick.",
+    "The next time you use Akai's software (stick out), check that developer mode is off: SHIFT + MENU > Developer.",
 ];
 const MIN_STICK: u64 = mpfree_stick::stick::MIN_STICK;
 
@@ -39,6 +41,21 @@ fn main() -> eframe::Result {
     if args.first().map(String::as_str) == Some("--cli") {
         std::process::exit(mpfree_stick::cli::main(args[1..].to_vec()));
     }
+    // A release build carries MPFree's programs for the MPC inside itself
+    // (build.rs): they are put in a private temporary folder for as long as
+    // the window is open, and each step that makes a stick reads them there.
+    let unpacked = if std::env::var_os("MPFREE_STICK_PROGRAMS").is_none() {
+        embedded::unpack(embedded::EMBEDDED, &std::env::temp_dir()).unwrap_or_else(|e| {
+            eprintln!("MPFree's programs for the MPC could not be unpacked: {e}");
+            None
+        })
+    } else {
+        None
+    };
+    let programs = unpacked
+        .as_ref()
+        .map(|u| u.dir.clone())
+        .or_else(mpfree_stick::cli::default_programs);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MPFree USB creator")
@@ -51,9 +68,27 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             style(&cc.egui_ctx);
-            Ok(Box::new(Creator::new()))
+            Ok(Box::new(Creator::new(programs)))
         }),
     )
+    // `unpacked` is dropped here, removing the temporary folder.
+}
+
+/// How many finished eMMC backups (`mpc-one-emmc-<UTC>`, not a `.part`
+/// copy in progress) a folder on this computer holds.
+fn local_backups(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    name.starts_with("mpc-one-emmc-") && !name.ends_with(".part")
+                })
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn home() -> PathBuf {
@@ -289,6 +324,13 @@ fn run_privileged(args: &[String]) -> std::io::Result<Child> {
 
 #[cfg(target_os = "linux")]
 fn privileged(exe: &Path, args: &[String]) -> std::io::Result<Child> {
+    // An AppImage runs from a FUSE mount that only its user can read, root
+    // included; its runtime names the AppImage file itself in $APPIMAGE, and
+    // root runs that instead (it mounts its own copy).
+    let appimage = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_file());
+    let exe = appimage.as_deref().unwrap_or(exe);
     let root = std::fs::read_to_string("/proc/self/status")
         .map(|s| {
             s.lines()
@@ -330,7 +372,9 @@ fn privileged(exe: &Path, args: &[String]) -> std::io::Result<Child> {
         "do shell script \"{}\" with prompt \"The MPFree USB creator needs your password to use the USB stick.\" with administrator privileges",
         cmd.replace('\\', "\\\\").replace('"', "\\\"")
     );
-    Command::new("osascript").args(["-e", &script]).spawn()
+    Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .spawn()
 }
 
 #[cfg(windows)]
@@ -348,7 +392,10 @@ fn privileged(exe: &Path, args: &[String]) -> std::io::Result<Child> {
         ps(&exe.display().to_string()),
         list.join(",")
     );
-    Command::new("powershell")
+    // Windows PowerShell from the system folder: a program named powershell
+    // next to the creator (in Downloads, say) is never the one run.
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    Command::new(Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x0800_0000) // no console window
         .spawn()
@@ -452,7 +499,7 @@ struct Creator {
 }
 
 impl Creator {
-    fn new() -> Creator {
+    fn new(programs: Option<PathBuf>) -> Creator {
         let found = find_updates();
         let mut c = Creator {
             page: Page::Make,
@@ -474,7 +521,7 @@ impl Creator {
             prefs: Prefs::default(),
             key_note: None,
             backup_to: home().join("MPFree backups").display().to_string(),
-            programs: mpfree_stick::cli::default_programs(),
+            programs,
             jobs_started: 0,
         };
         if let Some((p, _)) = ssh::default_public_key(&home()) {
@@ -789,6 +836,7 @@ impl Creator {
             );
             ui.add_space(10.0);
         }
+        self.backup_reminder(ui);
         let mut update_ok = false;
         card(ui, |ui| {
             let found = self
@@ -1057,23 +1105,69 @@ impl Creator {
             let ready =
                 self.chosen.is_some() && self.job.is_none() && !self.backup_to.trim().is_empty();
             if primary(ui, ready, "Copy the backup").clicked() {
-                let to = self.backup_to.trim().to_string();
-                let _ = std::fs::create_dir_all(&to);
-                let id = self.chosen.clone().unwrap_or_default();
-                self.start(
-                    JobKind::Backup,
-                    vec![
-                        "copy-backup".into(),
-                        "--device".into(),
-                        id,
-                        "--to".into(),
-                        to,
-                    ],
-                );
+                self.copy_backup();
             }
             self.progress(ui);
             self.outcome_line(ui, JobKind::Backup);
         });
+    }
+
+    /// Copies the newest backup off the chosen stick into the backup folder.
+    fn copy_backup(&mut self) {
+        let to = self.backup_to.trim().to_string();
+        let _ = std::fs::create_dir_all(&to);
+        let id = self.chosen.clone().unwrap_or_default();
+        self.start(
+            JobKind::Backup,
+            vec![
+                "copy-backup".into(),
+                "--device".into(),
+                id,
+                "--to".into(),
+                to,
+            ],
+        );
+    }
+
+    /// When an MPFree stick is in and this computer has no copy of a backup
+    /// yet, a card on the first page offers to copy it, so the musician
+    /// doesn't have to remember the Copy the backup tab. Whether the stick
+    /// holds a backup can only be read with administrator rights, so the
+    /// card says "if"; the copy itself says when there is none yet.
+    fn backup_reminder(&mut self, ui: &mut egui::Ui) {
+        if self.job.is_some() || local_backups(Path::new(self.backup_to.trim())) > 0 {
+            return;
+        }
+        let Some(stick) = self
+            .chosen_disk()
+            .filter(|d| d.mpfree)
+            .or_else(|| self.disks.iter().find(|d| d.mpfree))
+            .map(|d| d.id.clone())
+        else {
+            return;
+        };
+        let mut copy = false;
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                sign(ui, Tone::Warn, 18.0);
+                ui.label(
+                    RichText::new("Keep a copy of your MPC's backup on this computer")
+                        .size(17.0)
+                        .strong(),
+                );
+            });
+            ui.add_space(4.0);
+            ui.label("If this stick has already started MPFree on your MPC, it holds a backup of your MPC, and this computer has no copy of it yet. It is the way back if anything ever goes wrong, so keep it in two places.");
+            ui.add_space(8.0);
+            copy = primary(ui, true, "Copy it now").clicked();
+        });
+        ui.add_space(12.0);
+        if copy {
+            self.chosen = Some(stick);
+            self.page = Page::Backup;
+            self.outcome = None;
+            self.copy_backup();
+        }
     }
 
     fn remove_page(&mut self, ui: &mut egui::Ui) {
@@ -1117,7 +1211,7 @@ impl Creator {
                 "Tap Yes when the MPC offers to run the stick's script",
                 false,
             );
-            ui.label("With developer mode on (SHIFT + MENU > Developer), the MPC asks to run autorun.sh. Tap Yes: it takes the helper off and restarts the MPC into Akai's software.");
+            ui.label("With developer mode on (SHIFT + MENU > Developer), the MPC asks to run autorun.sh. Tap Yes: it takes the helper off, switches developer mode off again and restarts the MPC into Akai's software.");
             ui.add_space(8.0);
             status(ui, Tone::Good, "That's all: your MPC is back as Akai made it. If the MPC asks again later, tapping Yes does nothing more.");
         });
@@ -1567,7 +1661,22 @@ impl eframe::App for Creator {
 
 #[cfg(test)]
 mod tests {
-    use super::why_it_ended;
+    use super::{local_backups, why_it_ended};
+
+    #[test]
+    fn counts_finished_backups_only() {
+        let dir =
+            std::env::temp_dir().join(format!("mpfree-creator-backups-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(local_backups(&dir), 0);
+        std::fs::create_dir_all(dir.join("mpc-one-emmc-20261116T014409Z.part")).unwrap();
+        std::fs::create_dir_all(dir.join("something else")).unwrap();
+        std::fs::write(dir.join("mpc-one-emmc-notes.txt"), b"").unwrap();
+        assert_eq!(local_backups(&dir), 0);
+        std::fs::create_dir_all(dir.join("mpc-one-emmc-20261116T014409Z")).unwrap();
+        assert_eq!(local_backups(&dir), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn says_why_a_step_ended_without_a_result() {

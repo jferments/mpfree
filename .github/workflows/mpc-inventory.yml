@@ -1271,7 +1271,7 @@ jobs:
       - name: Build and check the download helper, mpfree-fetch, linked dynamically (do not deploy)
         # The static pad player can't open libcurl itself (the 16 Nov run's "Insufficient randomness"), so
         # its downloads go through this helper beside it: dynamic, against glibc no newer than the MPC's 2.39
-        # (this toolchain's). Releases and the device rounds build it with cargo zigbuild for glibc 2.34.
+        # (this toolchain's). The device rounds build it with cargo zigbuild for glibc 2.34; releases as here.
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
         run: |
