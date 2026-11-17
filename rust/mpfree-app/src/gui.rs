@@ -172,6 +172,16 @@ struct LevelsUi {
     told: Option<(bool, bool)>,
 }
 
+/// The hint while the notes are ready ([`crate::rec_arm`]): what PLAY
+/// records and how to let go.
+fn rec_ready_hint(c: &play_widgets::RecChip) -> String {
+    let what = if c.add { "add to" } else { "record" };
+    format!(
+        "PLAY: {what} {}   ·   PLAY START: from bar 1   ·   STOP: not ready",
+        c.what
+    )
+}
+
 /// TRACK MUTE's hint line for bank `bank` of a project of `tracks` tracks.
 fn track_mute_hint(bank: usize, tracks: usize) -> String {
     format!(
@@ -606,8 +616,9 @@ pub enum ToUi {
         rows: Vec<String>,
         now: usize,
     },
-    /// REC (false) or OVERDUB (true) on the Play page ([`Player::play_rec`]).
-    PlayRec(bool),
+    /// What REC records and whether the notes wait for PLAY
+    /// ([`crate::rec_arm`]), after a press or a move of the arm.
+    Rec(crate::rec_arm::RecArm),
     /// The wheel, its push, - or + for the outline ([`Player::nav`]).
     Nav(Nav),
     /// Whether the Synth tab's and the mixer's turns ([`crate::undo`])
@@ -878,6 +889,9 @@ pub enum FromUi {
         pad: usize,
         down: bool,
     },
+    /// A page that arms what it shows opened: Play's Beats view the notes,
+    /// Play's Loop view and the Looper tab the loop ([`crate::rec_arm`]).
+    Arm(crate::rec_arm::Target),
     /// Save the project: the audio loop sends its engines' parts back
     /// (`ToUi::ProjectParts`).
     SaveProject,
@@ -1367,6 +1381,11 @@ pub struct Player {
     /// The Synth tab's and the mixer's turns can be undone (the audio
     /// thread keeps them), and what the UNDO light was last told.
     turns_ready: (bool, bool),
+    /// What REC records, as the desk last said ([`ToUi::Rec`]).
+    rec: crate::rec_arm::RecArm,
+    /// The page (and Play view) the arm was last moved for, so that a page
+    /// shown again doesn't move it twice.
+    arm_page: Option<(View, PlayView)>,
     undo_ready: bool,
     /// How many times something was said in place (the control audit
     /// counts a tell as a press that did something, even when the same
@@ -1563,6 +1582,8 @@ impl Player {
             undo_held: None,
             seen_loop: (0, 0, 0),
             turns_ready: (false, false),
+            rec: crate::rec_arm::RecArm::default(),
+            arm_page: None,
             undo_ready: false,
             tells: 0,
             outline_told: false,
@@ -2370,6 +2391,9 @@ impl Player {
         if v != PlayView::Beats {
             self.play.selected = None;
         }
+        if self.view == View::Play {
+            self.arm_for_page();
+        }
         self.refresh_pads_bar();
         self.refresh_play();
         self.refresh_qlinks();
@@ -2379,6 +2403,87 @@ impl Player {
             .set_quick_layout(&mut self.ui, &v.quick_layout_for(timing));
         if self.ready && self.view == View::Play {
             self.show_view(View::Play);
+        }
+    }
+
+    /// A tap on the REC chip: what REC records, and what arms another
+    /// target.
+    fn tell_rec(&mut self) {
+        let c = self.rec_chip();
+        let line = format!(
+            "REC records {}. The Beats view and picking a track arm the notes; the Loop view and \
+             the Looper tab arm the loop",
+            c.what
+        );
+        self.tell(&line);
+    }
+
+    /// The REC chip on both transport bars, when it changed: Play's card
+    /// and, as a chip at its right end, Arrange's bar. Returns it.
+    fn refresh_rec_chip(&mut self) -> play_widgets::RecChip {
+        let chip = self.rec_chip();
+        // The loop strip's empty text says whether REC records it.
+        let rec_loop = self.rec.target == crate::rec_arm::Target::Loop;
+        self.looper_page.set_rec_loop(&mut self.ui, rec_loop);
+        let bar = vec![Chip::new(chip.line(), Tone::Bad)];
+        if self.time.chips != bar {
+            self.time.chips = bar;
+            self.time_page.update(&mut self.ui, &self.time);
+        }
+        if let Some(t) = self.ui.get::<PlayTransport>(play_page::TRANSPORT) {
+            if t.look.rec.as_ref() != Some(&chip) {
+                if let Some(t) = self.ui.get_mut::<PlayTransport>(play_page::TRANSPORT) {
+                    t.look.rec = Some(chip.clone());
+                }
+            }
+        }
+        chip
+    }
+
+    /// The REC chip ([`crate::rec_arm`]): the notes' clip or the picked
+    /// loop, armed, ready or recording.
+    fn rec_chip(&self) -> play_widgets::RecChip {
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        use play_widgets::{RecChip, RecState};
+        match self.rec.target {
+            Target::Notes => self.play.notes_rec_chip(self.rec.ready),
+            Target::Loop => {
+                let phase = self.looper.status.phase;
+                RecChip {
+                    state: match phase {
+                        Phase::Recording | Phase::Overdubbing => RecState::Recording,
+                        Phase::Armed => RecState::Ready,
+                        Phase::Empty | Phase::Playing => RecState::Armed,
+                    },
+                    what: format!("Loop {}", self.looper.selected + 1),
+                    add: phase == Phase::Overdubbing,
+                }
+            }
+        }
+    }
+
+    /// The page showing arms what it shows ([`crate::rec_arm`]): Play's
+    /// Beats view the notes, Play's Loop view and the Looper tab the loop.
+    /// Once each time the page is shown, so an arm moved on it since (a
+    /// track picked) stays. The desk refuses it while a take records.
+    fn arm_for_page(&mut self) {
+        use crate::rec_arm::Target;
+        let page = (self.view, self.play.view);
+        if self.arm_page == Some(page) {
+            return;
+        }
+        self.arm_page = Some(page);
+        let target = match page {
+            (View::Play, PlayView::Beats) => Target::Notes,
+            (View::Play, PlayView::Loop) | (View::Looper, _) => Target::Loop,
+            _ => return,
+        };
+        if target != self.rec.target {
+            // Taken as armed until the desk says otherwise (ToUi::Rec), so
+            // the page doesn't ask twice.
+            self.rec.target = target;
+            self.outbox.push(FromUi::Arm(target));
         }
     }
 
@@ -2398,7 +2503,8 @@ impl Player {
     /// pattern, the throws, the XY pad and the timing. Only what changed
     /// is marked for drawing.
     fn refresh_play(&mut self) {
-        let look = self.play.transport_look();
+        let mut look = self.play.transport_look();
+        look.rec = Some(self.refresh_rec_chip());
         if self
             .ui
             .get::<PlayTransport>(play_page::TRANSPORT)
@@ -2973,6 +3079,8 @@ impl Player {
             STEP_ERASE_HINT.to_string()
         } else if self.status.erase && self.ready {
             ERASE_HINT.to_string()
+        } else if self.ready && self.rec.ready.is_some() {
+            rec_ready_hint(&self.rec_chip())
         } else if let Some(s) = self.status.steps.filter(|s| s.copying && !s.picking) {
             step_copy_hint(s)
         } else if let (Some(name), Some(_)) = (self.play.held_name(), self.status.steps) {
@@ -3481,23 +3589,6 @@ impl Player {
             }
         }
         self.refresh_history();
-    }
-
-    /// REC (or OVERDUB, `overdub`) on the Play page (Jay, 13 Nov 14:37Z):
-    /// the looper on the All and Loop views, as the loop strip's own
-    /// Record and Overdub; the takes on Beats.
-    fn play_rec(&mut self, overdub: bool) {
-        use crate::looper_page::{B_OVERDUB, B_RECORD};
-        let a = if self.view == View::Play && self.play.view != PlayView::Beats {
-            FromUi::Looper(if overdub { B_OVERDUB } else { B_RECORD })
-        } else {
-            FromUi::Time(TimeAction::Transport(if overdub {
-                mpfree_transport::Command::ToggleOverdub
-            } else {
-                mpfree_transport::Command::Record
-            }))
-        };
-        self.outbox.push(a);
     }
 
     /// The wheel, its push, - or + for the outline ([`Nav`]): move it from
@@ -4073,7 +4164,13 @@ impl Player {
                     self.show_history(title, rows, now);
                 }
             }
-            ToUi::PlayRec(overdub) => self.play_rec(overdub),
+            ToUi::Rec(a) => {
+                if a != self.rec {
+                    self.rec = a;
+                    self.refresh_play();
+                    self.refresh_hint();
+                }
+            }
             ToUi::Nav(n) => self.nav(n),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
             ToUi::Line(l) | ToUi::Event(l) => {
@@ -4351,6 +4448,9 @@ impl Player {
                 self.looper = *v;
                 if matches!(self.view, View::Looper | View::Play) {
                     self.refresh_looper();
+                }
+                if self.rec.target == crate::rec_arm::Target::Loop {
+                    self.refresh_rec_chip();
                 }
             }
             ToUi::LoopWave(w) => {
@@ -4830,6 +4930,8 @@ impl Player {
                     self.seen_takes = seen;
                 }
                 fill_sounds(&mut st, &self.track_sounds);
+                // The bar's REC chip is the screen's own (refresh_play).
+                st.chips = std::mem::take(&mut self.time.chips);
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
@@ -6658,6 +6760,7 @@ impl Player {
         }
         self.switch_page(&page);
         self.view = v;
+        self.arm_for_page();
         self.chain_page.entered(v);
         self.sync_mix_pick();
         if now && !was {
@@ -7090,6 +7193,12 @@ impl Player {
             }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
+            }
+            // The REC chip, on Play's card or Arrange's bar (its only chip).
+            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_REC))
+            | (time_view::TRANSPORT, EventKind::Select(0)) => {
+                self.tell_rec();
+                None
             }
             (crate::power::CARD, EventKind::Tab(i)) => {
                 self.power_tap(i);
@@ -8586,6 +8695,8 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     probes.publish();
     p.apply(ToUi::Engines(shared));
     p.show_play_view(v);
+    // (The view arming what it shows, for a desk there is none of here.)
+    p.outbox.retain(|a| !matches!(a, FromUi::Arm(_)));
     match v {
         PlayView::All => {
             p.play.throw(2, true);
@@ -8800,7 +8911,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             }
             Effect::Undo { redo } => p.apply(ToUi::Undo(redo)),
             Effect::UndoButton(down) => p.apply(ToUi::UndoButton(down)),
-            Effect::PlayRec { overdub } => p.apply(ToUi::PlayRec(overdub)),
+            // The desk carries it out (the transport and the looper).
+            Effect::Rec(_) => {}
             Effect::Nav(n) => p.apply(ToUi::Nav(n)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
@@ -9111,6 +9223,8 @@ fn sample_looper(fonts: Fonts) -> Result<Player, String> {
     const RATE: u32 = 44_100;
     let mut p = sample_player(fonts);
     p.apply(ToUi::Show(View::Looper));
+    // (The tab arming the loop, for a desk there is none of here.)
+    p.take_actions();
     // Loop 2, on a looper of its own (the view takes its line).
     let mut h = LoopHost::new(RATE, 20);
     let mut t = Transport::new(RATE, 92.0).map_err(|e| format!("{e:?}"))?;
@@ -9371,6 +9485,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     out.push(("loading-failed", failed));
     out.push(("play", sample_player(fonts())));
+    // REC pressed, stopped, with the notes armed: ready, PLAY starts the
+    // take (sequencer decision 1, mockup F's chip).
+    let mut ready = sample_player(fonts());
+    ready.apply(ToUi::Rec(crate::rec_arm::RecArm {
+        target: crate::rec_arm::Target::Notes,
+        ready: Some(crate::rec_arm::Take::Replace),
+    }));
+    out.push(("play-rec-ready", ready));
     // The list of kits the kit chip opens over the page (Jay's card, 13 Nov
     // 14:57Z).
     let mut kits = sample_player(fonts());
@@ -9382,7 +9504,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ("play-beats", PlayView::Beats),
         ("play-loop", PlayView::Loop),
     ] {
-        out.push((name, sample_play(fonts(), v)));
+        let mut p = sample_play(fonts(), v);
+        if v == PlayView::Loop {
+            // The Loop view arms the loop (the desk says so).
+            p.apply(ToUi::Rec(crate::rec_arm::RecArm {
+                target: crate::rec_arm::Target::Loop,
+                ready: None,
+            }));
+        }
+        out.push((name, p));
     }
     // The synth on the pads, A minor, In key: the pads panel's switch.
     let mut synth = sample_player(fonts());
@@ -11060,6 +11190,8 @@ mod tests {
         let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
         let (_, segs) = PlayTransport::switch(card);
         tap(&mut p, (segs[2].x + 10, segs[2].y + 10));
+        // (The Loop view arming the loop, for a desk there is none of here.)
+        p.take_actions();
         sample_loop(&mut p);
         let mut canvas = SoftCanvas::new(SCREEN.0, SCREEN.1);
         p.ui.paint(&mut canvas);
@@ -11114,6 +11246,8 @@ mod tests {
         let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
         let (_, segs) = PlayTransport::switch(card);
         tap(&mut p, (segs[2].x + 10, segs[2].y + 10));
+        // (The Loop view arming the loop, for a desk there is none of here.)
+        p.take_actions();
         sample_loop(&mut p);
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         let strip = p.ui.rect_of(LOOP_STRIP).unwrap();
@@ -12252,9 +12386,13 @@ mod tests {
         use mpfree_time_ui::view::TakeRow;
         let mut p = sample_play(Fonts::embedded(), PlayView::All);
         p.take_actions();
+        // (Leaving out the arm the pages move, tested below.)
         let undo = |p: &mut Player, redo: bool| {
             p.apply(ToUi::Undo(redo));
             p.take_actions()
+                .into_iter()
+                .filter(|a| !matches!(a, FromUi::Arm(_)))
+                .collect::<Vec<_>>()
         };
         let looper = |c| vec![FromUi::LoopCommand(c)];
         let takes = |a| vec![FromUi::Time(a)];
@@ -12293,22 +12431,32 @@ mod tests {
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
         p.apply(ToUi::Show(View::Arrange));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
-        // REC and OVERDUB on Play: the loop on All and Loop, takes on Beats.
-        let rec = |p: &mut Player, overdub: bool| {
-            p.apply(ToUi::PlayRec(overdub));
+        // The pages that arm what they show: Play's Loop view and the
+        // Looper tab the loop, Beats the notes; All leaves the arm.
+        use crate::rec_arm::Target;
+        let armed = |p: &mut Player| {
             p.take_actions()
+                .into_iter()
+                .filter_map(|a| match a {
+                    FromUi::Arm(t) => Some(t),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
         };
-        use crate::looper_page::{B_OVERDUB, B_RECORD};
+        p.take_actions();
+        // Play opens on Beats, and the notes are armed already.
         p.apply(ToUi::Show(View::Play));
+        assert_eq!(armed(&mut p), []);
         p.apply(ToUi::PlayView(Some(PlayView::All)));
-        assert_eq!(rec(&mut p, false), [FromUi::Looper(B_RECORD)]);
+        assert_eq!(armed(&mut p), []);
         p.apply(ToUi::PlayView(Some(PlayView::Loop)));
-        assert_eq!(rec(&mut p, true), [FromUi::Looper(B_OVERDUB)]);
+        assert_eq!(armed(&mut p), [Target::Loop]);
         p.apply(ToUi::PlayView(Some(PlayView::Beats)));
-        assert_eq!(
-            rec(&mut p, false),
-            takes(TimeAction::Transport(mpfree_transport::Command::Record))
-        );
+        assert_eq!(armed(&mut p), [Target::Notes]);
+        p.apply(ToUi::Show(View::Looper));
+        assert_eq!(armed(&mut p), [Target::Loop]);
+        p.apply(ToUi::Show(View::Play));
+        assert_eq!(armed(&mut p), [Target::Notes]);
         // The Synth tab and the mixer: their own turns.
         p.apply(ToUi::Show(View::Synth));
         assert_eq!(
@@ -12499,6 +12647,9 @@ mod tests {
         }
         tap(&mut p, seg(0));
         assert_eq!(p.page(), "Play");
+        // (Leaving out the arm the views moved, for a desk there is none
+        // of here.)
+        p.take_actions();
         // A drag up a card turns that knob: Swing, on the transport.
         let column = p.ui.rect_of(play_page::QLINKS).unwrap();
         let c = QLinkColumn::card_rects(column)[0];

@@ -43,6 +43,91 @@ pub struct TransportLook {
     pub bars: usize,
     /// The view lit in the switch.
     pub view: usize,
+    /// The REC chip: what REC records ([`crate::rec_arm`]).
+    pub rec: Option<RecChip>,
+}
+
+/// Where a take stands, for the REC chip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecState {
+    /// REC would record it: grey, with a red dot.
+    Armed,
+    /// PLAY starts the take: outlined in red.
+    Ready,
+    /// Recording (or counting in): solid red.
+    Recording,
+}
+
+/// The REC chip on the transport bars: what REC records and where its take
+/// stands (sequencer decision 1, mockups F and G).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecChip {
+    pub state: RecState,
+    /// "Drums · Clip 1", "Loop 1".
+    pub what: String,
+    /// The take adds (OVERDUB) rather than replaces.
+    pub add: bool,
+}
+
+impl RecChip {
+    /// Its first line: "REC", "READY · PLAY starts", "● REC", "● OVERDUB".
+    pub fn head(&self) -> String {
+        match (self.state, self.add) {
+            (RecState::Armed, _) => "REC".into(),
+            (RecState::Ready, false) => "READY · PLAY starts".into(),
+            (RecState::Ready, true) => "READY TO ADD · PLAY starts".into(),
+            (RecState::Recording, false) => "● REC".into(),
+            (RecState::Recording, true) => "● OVERDUB".into(),
+        }
+    }
+
+    /// The chip as one line, for the Arrange bar and the log: "REC → Loop 1".
+    pub fn line(&self) -> String {
+        format!("{} → {}", self.head(), self.what)
+    }
+}
+
+/// The chip's height on the Play transport card.
+const REC_CHIP_H: i32 = 52;
+/// A 16th's dot on the transport card, and the room between the dots and
+/// the view switch (narrowed for the REC chip).
+const DOT_CELL: i32 = 8;
+const DOTS_GAP: i32 = 16;
+
+fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
+    let t = cx.theme.clone();
+    let (fill, head_ink, ink) = match c.state {
+        RecState::Armed => (t.raised, t.text_dim, t.text),
+        RecState::Ready => (t.bad.mix(t.surface, 0.82), t.bad, t.text),
+        RecState::Recording => (t.bad, t.bg, t.bg),
+    };
+    cx.canvas.fill_round_rect(r, 10, fill);
+    if c.state == RecState::Ready {
+        cx.canvas.stroke_round_rect(r, 10, 2, t.bad);
+    }
+    let mut x = r.x + 12;
+    if c.state == RecState::Armed {
+        cx.canvas
+            .fill_round_rect(Rect::new(x, r.y + 13, 8, 8), 4, t.bad);
+        x += 14;
+    }
+    let half = r.h / 2;
+    cx.text(
+        FontId::Bold,
+        12.0,
+        Rect::new(x, r.y + 4, r.right() - 10 - x, half - 2),
+        Align::Left,
+        head_ink,
+        &c.head(),
+    );
+    cx.text(
+        FontId::Bold,
+        14.0,
+        Rect::new(r.x + 12, r.y + half - 2, r.w - 20, half),
+        Align::Left,
+        ink,
+        &format!("→ {}", c.what),
+    );
 }
 
 impl Default for TransportLook {
@@ -56,6 +141,7 @@ impl Default for TransportLook {
             bar: 0,
             bars: 4,
             view: 0,
+            rec: None,
         }
     }
 }
@@ -67,12 +153,17 @@ struct TransportAreas {
     dots: Rect,
     /// The tempo and its "BPM": a tap there is a tap of the tempo.
     bpm: Rect,
+    /// The REC chip, if it was drawn.
+    rec: Rect,
 }
 
 /// [`PlayTransport`]'s event for a tap on the tempo
 /// ([`EventKind::Select`] with this index): a tap of the tempo, as TAP
 /// TEMPO (live test 3: Jay wants the BPM tappable).
 pub const TAP_BPM: usize = 0;
+/// [`PlayTransport`]'s event for a tap on the REC chip: what REC records
+/// and how to change it is said.
+pub const TAP_REC: usize = 1;
 
 /// The transport card. A tap on the switch gives `Tab(view)`.
 #[derive(Default)]
@@ -144,7 +235,7 @@ impl PlayTransport {
             };
             cx.canvas.fill_round_rect(br, 3, c);
         }
-        let cell = 9;
+        let cell = DOT_CELL;
         let sy = a.y + 18;
         for s in 0..16 {
             let sx = a.x + s as i32 * cell + (s as i32 / 4) * 6;
@@ -239,7 +330,7 @@ impl Widget for PlayTransport {
             t.text,
             &self.look.bpm,
         );
-        cx.text(
+        let bpm_word = cx.text(
             FontId::Bold,
             12.0,
             Rect::new(x + bw + 6, inner.y + 6, 40, inner.h),
@@ -249,6 +340,19 @@ impl Widget for PlayTransport {
         );
         // The view switch at the right end: one tap each.
         let (b, segs) = PlayTransport::switch(r);
+        // The REC chip between the tempo and where the bar is.
+        let gw = 16 * DOT_CELL + 3 * 6;
+        let mut rec = Rect::default();
+        if let Some(c) = &self.look.rec {
+            let left = x + bw + 6 + bpm_word + 14;
+            let right = b.x - DOTS_GAP - gw - 14;
+            if right - left >= 96 {
+                let h = REC_CHIP_H.min(inner.h);
+                let cr = Rect::new(left, inner.y + (inner.h - h) / 2, right - left, h);
+                paint_rec_chip(cx, cr, c);
+                rec = cr;
+            }
+        }
         cx.canvas.fill_round_rect(b, 12, t.bg.mix(t.surface, 0.3));
         for (i, (sr, name)) in segs.iter().zip(VIEWS).enumerate() {
             let on = i == self.look.view;
@@ -265,14 +369,21 @@ impl Widget for PlayTransport {
             );
         }
         // Where the bar is: the loop's bars above, the 16ths of this bar below.
-        let gw = 16 * 9 + 3 * 6;
-        let dots = Rect::new(b.x - 22 - gw, inner.y + 6, gw, 18 + 26);
+        let dots = Rect::new(b.x - DOTS_GAP - gw, inner.y + 6, gw, 18 + 26);
         self.paint_dots(cx, dots);
         // The tempo's tap area: its number and "BPM", the card's full height
         // (at least 64 px wide for a finger).
         let bpm = Rect::new(x - 8, r.y, (bw + 52).max(64), r.h);
-        *self.painted.borrow_mut() =
-            Some((r, self.look.clone(), TransportAreas { pos, dots, bpm }));
+        *self.painted.borrow_mut() = Some((
+            r,
+            self.look.clone(),
+            TransportAreas {
+                pos,
+                dots,
+                bpm,
+                rec,
+            },
+        ));
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -291,6 +402,9 @@ impl Widget for PlayTransport {
                     a.bpm,
                 ));
             }
+            if let (true, false, Some(c)) = (*pr == r, a.rec.is_empty(), &self.look.rec) {
+                out.push(Target::tap("rec", 0, c.line(), a.rec));
+            }
         }
         out
     }
@@ -303,12 +417,18 @@ impl Widget for PlayTransport {
         if let Some(i) = segs.iter().position(|s| s.contains(x, y)) {
             return Some(EventKind::Tab(i));
         }
-        let on_bpm = self
-            .painted
-            .borrow()
-            .as_ref()
-            .is_some_and(|(pr, _, a)| *pr == r && a.bpm.contains(x, y));
-        on_bpm.then_some(EventKind::Select(TAP_BPM))
+        let painted = self.painted.borrow();
+        let (pr, _, a) = painted.as_ref()?;
+        if *pr != r {
+            return None;
+        }
+        if a.bpm.contains(x, y) {
+            Some(EventKind::Select(TAP_BPM))
+        } else if !a.rec.is_empty() && a.rec.contains(x, y) {
+            Some(EventKind::Select(TAP_REC))
+        } else {
+            None
+        }
     }
 }
 

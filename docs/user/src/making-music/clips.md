@@ -60,7 +60,7 @@ Set up the recording in the Record panel, beside the grid:
 
 Tap a row's arrows, or the left or right of its value, to change it. Or turn the data wheel to pick a row and press **–** or **+**. Push the wheel and turning it changes the row picked; push again to go back to picking rows.
 
-Then press **REC**, play, and press **STOP**. The new notes go into the armed track's clip.
+Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into the armed track's clip. Picking a track arms its notes, and the REC chip at the right of the transport bar names the clip REC records into (see [What REC records](../getting-started/first-beat.md#what-rec-records)).
 
 ### Pad pressure
 

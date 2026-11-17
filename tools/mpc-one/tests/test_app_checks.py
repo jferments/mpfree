@@ -119,6 +119,22 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no line like '^looper: Record' followed", detail)
 
+    def test_rec_arm_needs_the_ready_the_take_and_the_loop_armed(self):
+        w = checks.Window(lines(midi("button 73 pressed"), "rec: ready, PLAY records Track 1",
+                                midi("button 82 pressed"), "time: transport: Record, new clip in slot 1 of track 1",
+                                midi("button 67 pressed"), "Undid take 1 \u00b7 Track 1 / 1",
+                                "rec: the loop armed", "looper: Record: armed, the first pass starts on the next bar"))
+        self.assertTrue(all(ok for ok, _ in self.judge("rec-arm", w)))
+        # REC on the loop (the old way) is not the notes' ready.
+        w = checks.Window(lines(midi("button 73 pressed"), "looper: Record: armed, the first pass ..."))
+        got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
+        self.assertFalse(got["REC (73) readied the notes"])
+        self.assertFalse(got["the Loop view armed the loop"])
+        # A loop with a take already: REC's overdub waits for PLAY.
+        w = checks.Window(lines("rec: the loop armed", "looper: overdub on (layer 2)"))
+        got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
+        self.assertTrue(got["REC then went to the loop"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]

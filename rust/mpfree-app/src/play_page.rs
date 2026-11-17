@@ -30,7 +30,8 @@
 
 use crate::mixing::{self, PlayFx, PlayLevels, ThrowFx};
 use crate::play_widgets::{
-    Lane, Marks, StepGrid, Throw, Throws, TimedHit, TransportLook, XyPad, YourTiming,
+    Lane, Marks, RecChip, RecState, StepGrid, Throw, Throws, TimedHit, TransportLook, XyPad,
+    YourTiming,
 };
 use crate::time::{HitInfo, StepAction, StepsData, LINE, STEP_TICKS};
 use mpfree_arp::scale::pads::PadLayout;
@@ -2138,6 +2139,39 @@ impl PlayPage {
     }
 
     /// The transport card.
+    /// The REC chip with the notes armed: the clip they record into (the
+    /// one the pattern shows, or a new one when the track has none), and
+    /// whether the take is ready or records.
+    pub fn notes_rec_chip(&self, ready: Option<crate::rec_arm::Take>) -> RecChip {
+        let t = &self.transport;
+        let recording = matches!(t.state, State::Recording | State::CountIn);
+        let track = if self.steps.track_name.is_empty() {
+            "Track 1"
+        } else {
+            self.steps.track_name.as_str()
+        };
+        let clip = self
+            .steps
+            .clip
+            .as_ref()
+            .map_or("new clip", |c| c.name.as_str());
+        RecChip {
+            state: if recording {
+                RecState::Recording
+            } else if ready.is_some() {
+                RecState::Ready
+            } else {
+                RecState::Armed
+            },
+            what: format!("{track} · {clip}"),
+            add: if recording {
+                t.overdub
+            } else {
+                ready == Some(crate::rec_arm::Take::Add)
+            },
+        }
+    }
+
     pub fn transport_look(&self) -> TransportLook {
         let t = &self.transport;
         let (state, tone) = match t.state {
@@ -2163,6 +2197,7 @@ impl PlayPage {
             bar: (((pos - start).max(0) / bar_ticks) as usize) % bars,
             bars,
             view: self.view.index(),
+            rec: None,
         }
     }
 }

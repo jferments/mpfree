@@ -201,12 +201,49 @@ impl Desk<'_> {
             gui::FromUi::StepPage(page) => fx.extend(app.set_step_page(page)),
             gui::FromUi::Levels { on, open } => fx.extend(app.levels_shown(on, open)),
             gui::FromUi::Time(a) => {
-                fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a))
+                use crate::rec_arm::Press;
+                use mpfree_time_ui::TimeAction::Transport;
+                use mpfree_transport::Command;
+                let ready = app.rec.ready.is_some();
+                match a {
+                    // The bar's Rec is REC: it records what is armed.
+                    Transport(Command::Record) => {
+                        fx.push(app::Effect::Rec(Press::Rec));
+                        return None;
+                    }
+                    // Its Play with the notes ready starts the take, and its
+                    // Stop lets go, as the buttons do.
+                    Transport(Command::Play) if ready => {
+                        fx.push(app::Effect::Rec(Press::Play { from_start: false }));
+                        return None;
+                    }
+                    Transport(Command::Stop) if ready => fx.push(app::Effect::Rec(Press::Stop)),
+                    _ => {}
+                }
+                let picked = matches!(a, mpfree_time_ui::TimeAction::Arm(Some(_)));
+                fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a));
+                // Picking a track arms its notes, as Bitwig's auto-arm.
+                if picked {
+                    fx.extend(arm(app, time, looper, out, crate::rec_arm::Target::Notes));
+                }
             }
+            gui::FromUi::Arm(t) => fx.extend(arm(app, time, looper, out, t)),
             gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
             gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
             gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
-            gui::FromUi::Looper(k) => fx.extend(app.looper_tap(k)),
+            gui::FromUi::Looper(k) => {
+                // The loop's own Record and Overdub (the strip's, the Looper
+                // tab's) arm the loop for REC too, letting go of the notes'
+                // ready: the tap is the loop's record.
+                use crate::looper_page::{B_OVERDUB, B_RECORD};
+                if matches!(k, B_RECORD | B_OVERDUB)
+                    && app.rec.target != crate::rec_arm::Target::Loop
+                {
+                    app.rec.ready = None;
+                    fx.extend(arm(app, time, looper, out, crate::rec_arm::Target::Loop));
+                }
+                fx.extend(app.looper_tap(k));
+            }
             gui::FromUi::SamplePhrase(clip) => match time.put_clip(*clip) {
                 Ok(line) | Err(line) => out.note(&format!("time: {line}")),
             },
@@ -324,7 +361,12 @@ impl Desk<'_> {
             }
             app::Effect::Undo { redo } => out.show(gui::ToUi::Undo(redo)),
             app::Effect::UndoButton(down) => out.show(gui::ToUi::UndoButton(down)),
-            app::Effect::PlayRec { overdub } => out.show(gui::ToUi::PlayRec(overdub)),
+            app::Effect::Rec(p) => {
+                let now = rec_now(time, looper);
+                let done = app.rec.press(p, &now);
+                later.extend(rec_effects(done));
+                out.show(gui::ToUi::Rec(app.rec));
+            }
             app::Effect::Nav(n) => out.show(gui::ToUi::Nav(n)),
             app::Effect::Menu(m) => out.show(gui::ToUi::Menu(m)),
             app::Effect::Guide(g) => out.show(gui::ToUi::Guide(g)),
@@ -392,6 +434,57 @@ impl Desk<'_> {
         }
         None
     }
+}
+
+/// What the arm finds ([`crate::rec_arm::Now`]): the transport, the loops
+/// and the armed track's name.
+fn rec_now(time: &time::TimeHost, looper: &looping::LoopHost) -> crate::rec_arm::Now {
+    let info = time.info();
+    let (loop_taking, loop_armed) = looper.rec_now();
+    let notes = time
+        .armed()
+        .and_then(|t| time.project().tracks.get(t))
+        .map_or_else(|| "the notes".to_string(), |t| t.name.clone());
+    crate::rec_arm::Now {
+        state: info.state,
+        overdub: info.overdub,
+        loop_taking,
+        loop_armed,
+        notes,
+    }
+}
+
+/// Arm `t` (a page that arms what it shows, a track picked), and tell the
+/// screen.
+fn arm(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+    t: crate::rec_arm::Target,
+) -> Vec<app::Effect> {
+    let now = rec_now(time, looper);
+    let was = app.rec;
+    let done = app.rec.move_to(t, &now);
+    if app.rec != was {
+        out.note(&format!("rec: {} armed", app.rec.target.name()));
+    }
+    out.show(gui::ToUi::Rec(app.rec));
+    rec_effects(done)
+}
+
+/// What the arm does, as the app's effects (in order).
+fn rec_effects(done: Vec<crate::rec_arm::Do>) -> Vec<app::Effect> {
+    use crate::rec_arm::Do;
+    done.into_iter()
+        .map(|d| match d {
+            Do::Transport(c) => app::Effect::Time(mpfree_time_ui::TimeAction::Transport(c)),
+            Do::Looper(c) => app::Effect::Looper(looping::LoopAction::Command(c)),
+            Do::StopWaiting => app::Effect::Looper(looping::LoopAction::StopWaiting),
+            Do::Tell(s) => app::Effect::Tell(s),
+            Do::Note(s) => app::Effect::Note(s),
+        })
+        .collect()
 }
 
 /// What a Q-Link turned on the controller (`ticks` steps of knob `k`)
