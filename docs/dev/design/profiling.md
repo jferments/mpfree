@@ -250,7 +250,9 @@ cargo run --release -p mpfree-bench -- --afford [--calibration FILE]
 ```
 
 It plays each Poly preset at 1, 2, 4, 8 and 16 voices, the sampler with
-1, 4, 8, 16 and 32 looping pads held, and four granular pads held with 16,
+1, 4, 8, 16 and 32 looping pads held (tuned an octave down to just under an
+octave up, and again all 3 to 14.5 semitones up, so every voice takes the
+clean pitched-up read), and four granular pads held with 16,
 32, 64, 128 and 256 grains alive in all. It fits `p99 = fixed + voices x per
 voice`, and prints how many voices fit in the module's budget (synth 20 %,
 sampler 25 %). That is for one engine alone; several synth tracks share the
