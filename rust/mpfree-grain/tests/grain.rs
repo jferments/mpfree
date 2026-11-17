@@ -443,7 +443,8 @@ fn the_budget_caps_grains_across_voices() {
     assert_eq!(budget.live(), 0);
     assert!(budget.skipped > 0);
     assert_eq!(a.stats().skipped + b.stats().skipped, budget.skipped);
-    // A voice on its own never exceeds its array.
+    // A free-running cloud that wants more grains than fit thins evenly
+    // instead: it never fills its array and skips none.
     let mut c = GrainVoice::new(RATE, 3);
     c.set_params(Params {
         size_ms: 1000.0,
@@ -451,9 +452,70 @@ fn the_budget_caps_grains_across_voices() {
         ..Params::default()
     });
     c.start();
-    run(&mut c, &src, &mut Budget::new(10_000), 0, 24_000, 128);
-    assert_eq!(c.stats().peak_active, MAX_GRAINS);
-    assert!(c.stats().skipped > 0);
+    run(&mut c, &src, &mut Budget::new(10_000), 0, 96_000, 128);
+    assert!(c.stats().peak_active < MAX_GRAINS, "{:?}", c.stats());
+    assert!(c.stats().peak_active >= 50, "{:?}", c.stats());
+    assert_eq!(c.stats().skipped, 0);
+    assert!(c.stats().thinned);
+    // Synced grains keep the grid, so a voice on its own fills its array
+    // and never exceeds it: 64 grains a beat of one-second grains.
+    let mut d = GrainVoice::new(RATE, 4);
+    d.set_params(Params {
+        size_ms: 1000.0,
+        sync: Some(TempoSync {
+            frames_per_beat: 24_000.0,
+            grains_per_beat: Some(64.0),
+            size_beats: None,
+        }),
+        ..Params::default()
+    });
+    d.start();
+    run(&mut d, &src, &mut Budget::new(10_000), 0, 48_000, 128);
+    assert_eq!(d.stats().peak_active, MAX_GRAINS);
+    assert!(d.stats().skipped > 0);
+}
+
+#[test]
+fn a_cloud_sounds_at_once_without_a_bump() {
+    // A steady source (white noise): the cloud's 10 ms levels from the
+    // start, against its steady level, for short and long grains.
+    let mut x = 1u32;
+    let data: Vec<f32> = (0..96_000)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        })
+        .collect();
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    for (size_ms, density) in [(200.0f32, 20.0f32), (1000.0, 10.0)] {
+        let mut v = GrainVoice::new(RATE, 9);
+        v.set_params(Params {
+            size_ms,
+            density,
+            spray: 0.3,
+            ..Params::default()
+        });
+        v.start();
+        let frames = 4 * RATE as usize;
+        let (l, r) = run(&mut v, &src, &mut Budget::new(1_000), 0, frames, 128);
+        let level = |a: usize, b: usize| {
+            let e: f32 = l[a..b].iter().chain(&r[a..b]).map(|x| x * x).sum();
+            (e / (2 * (b - a)) as f32).sqrt()
+        };
+        let steady = level(2 * RATE as usize, frames);
+        let w = RATE as usize / 100;
+        let first: Vec<f32> = (0..100)
+            .map(|k| level(k * w, (k + 1) * w) / steady)
+            .collect();
+        // Within 3 dB from the second 10 ms on (the first holds the 4 ms
+        // fade-in), and never a swell or bump above it.
+        assert!(first[0] > 0.5, "{size_ms} ms: {first:?}");
+        assert!(
+            first[1..].iter().all(|&x| x > 0.708),
+            "{size_ms} ms: {first:?}"
+        );
+        assert!(first.iter().all(|&x| x < 1.413), "{size_ms} ms: {first:?}");
+    }
 }
 
 #[test]
