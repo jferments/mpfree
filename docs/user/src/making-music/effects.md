@@ -79,7 +79,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Drive** | Warm saturation up to hard distortion: **Soft**, **Hard**, **Tube**, **Foldback**, **Fuzz** and **Rectify**; and the colour of a mixing desk or a tape machine: **Console**, **Tape**, **Iron** and **Soften**. Auto-gain keeps the level steady as you turn it up, so you hear more grit, not more volume. **Bias** makes the curve lopsided, for a fuller sound with even harmonics, in every mode but Soft (there it is dimmed). Changing the mode or the Quality fades over 10 ms, so it doesn't click while you play. |
 | **Amp** | A guitar or bass amp (Clean, Crunch, Lead, Bass) with its tone controls and a speaker cabinet. |
 | **Exciter** | Adds sparkle and air to the top end. |
-| **Crush** | Bit and sample-rate reduction. |
+| **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
 | **Lo-fi** | Old sampler and worn tape character: wear, wow and noise. |
 | **Chorus**, **Flanger**, **Phaser** | Movement and width. |
 | **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. |

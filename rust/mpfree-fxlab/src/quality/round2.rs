@@ -877,6 +877,52 @@ pub(super) fn crush(r: &mut Report) {
         0.0,
     );
 
+    // B6 with Tails on Buzz (mid-riser): the quiet sine still sounds.
+    let mut d = make_with(
+        &main,
+        rate,
+        &[(c::BITS, 8.0), (c::RATE, 48_000.0), (c::TAILS, 1.0)],
+    );
+    let (y, _) = sine_out(&mut d, 1000.0, -50.0);
+    r.put(
+        "B6",
+        name,
+        "m50dbfs_bits8_buzz_out_dbfs",
+        Some(floor(db_amp(peak_of(&y)))),
+        Better::Higher,
+        Some(-60.0),
+        1.0,
+    );
+
+    // B7: the rate-tied low-passes as drawn. The tone's own line with both
+    // on, against both off, at 16 bits and 11,025 Hz, beside the drawing.
+    let rh = 11_025.0;
+    let level = |filters: f64, hz: f64| {
+        let mut d = make_with(
+            &main,
+            rate,
+            &[(c::BITS, 16.0), (c::RATE, rh), (c::FILTERS, filters)],
+        );
+        harmonics::measure(&mut d, hz, -12.0).out_db
+    };
+    let mut worst = 0.0f64;
+    for hz in [200.0, 1000.0, 2000.0, 3000.0, 4000.0, 4800.0] {
+        let heard = level(3.0, hz) - level(0.0, hz);
+        let drawn = f64::from(mpfree_fx::Crush::filters_response_db(
+            3.0, rh as f32, rate, hz as f32,
+        ));
+        worst = worst.max((heard - drawn).abs());
+    }
+    r.put(
+        "B7",
+        name,
+        "filters_drawn_vs_heard_db",
+        Some(worst),
+        Better::Lower,
+        Some(0.5),
+        0.1,
+    );
+
     // B8: Bits and Rate changes against the crushed signal's own steps.
     let mut d = make(&main, rate);
     r.put(
@@ -918,8 +964,13 @@ pub(super) fn crush(r: &mut Report) {
         );
         if s.preset.is_some() {
             // The preset's rate alone: at 16 bits, so the steps' own noise
-            // doesn't count as stray.
-            let mut d = make_with(s, rate, &[(c::BITS, 16.0), (c::DITHER, 0.0)]);
+            // doesn't count as stray, and with no jitter, whose wander of
+            // the sampling times is meant.
+            let mut d = make_with(
+                s,
+                rate,
+                &[(c::BITS, 16.0), (c::DITHER, 0.0), (c::JITTER, 0.0)],
+            );
             let (total, _) = off_grid(&mut d);
             r.put(
                 "B3",
@@ -1797,14 +1848,17 @@ mod tests {
     }
 
     #[test]
-    fn a_rate_that_divides_the_sessions_has_nothing_off_grid() {
+    fn holds_on_their_grid_read_clean_and_jittered_ones_do_not() {
         use ids::crush as c;
         let mut d = NodeDut::from_registry(CRUSH, RATE).unwrap();
         d.set(c::BITS, 16.0);
         d.set(c::RATE, RATE as f64 / 4.0);
         assert!(off_grid(&mut d).0 < -80.0);
-        // A rate that doesn't puts stray tones in today's crusher.
+        // A rate that doesn't divide the session's, held at exact times.
         d.set(c::RATE, 8000.0);
+        assert!(off_grid(&mut d).0 < -45.0);
+        // Holds moved off the grid on purpose: the measure sees them.
+        d.set(c::JITTER, 40.0);
         assert!(off_grid(&mut d).0 > -40.0);
     }
 }
