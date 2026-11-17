@@ -9,11 +9,15 @@
 //!
 //! ```text
 //! mpfree-clips 1
+//! perform
+//! launch bars 2
 //! track Drums
 //! dest 0
 //! swing 240 58
 //! clip 0 7680 Beat 1
 //! speed 1 1
+//! launch ticks 960
+//! legato
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! lock 480 36 pad36.4 0.25
@@ -49,8 +53,8 @@ use mpfree_transport::time::{Swing, Tick};
 use crate::arrange::{Marker, MorphRows, Placement, Source};
 use crate::scenes::{Follow, FollowAction, Scene, SCENES};
 use crate::{
-    Clip, Cond, Lock, LoopInput, Note, Project, Quantise, Speed, Touch, TouchPoint, Track,
-    TrackKind, MAX_TRACKS, SLOTS,
+    Clip, Cond, LaunchGrid, Lock, LoopInput, Note, Project, Quantise, Speed, Touch, TouchPoint,
+    Track, TrackKind, MAX_TRACKS, SLOTS,
 };
 
 /// The first line.
@@ -63,6 +67,12 @@ pub fn to_text(p: &Project) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(FORMAT);
     s.push('\n');
+    if p.perform {
+        s.push_str("perform\n");
+    }
+    if p.launch != LaunchGrid::default() {
+        let _ = writeln!(s, "launch {}", launch_text(p.launch));
+    }
     for t in &p.tracks {
         let _ = writeln!(s, "track {}", one_line(&t.name));
         let _ = writeln!(s, "dest {}", t.dest);
@@ -72,6 +82,9 @@ pub fn to_text(p: &Project) -> String {
         let _ = writeln!(s, "mute {}", u8::from(t.mute));
         let _ = writeln!(s, "arp {}", u8::from(t.through_arp));
         let _ = writeln!(s, "rectouch {}", u8::from(t.record_touch));
+        if let Some(grid) = t.record_quantise {
+            let _ = writeln!(s, "recquant {grid}");
+        }
         if let Some(input) = t.loops() {
             let _ = writeln!(s, "loops {}", input.word());
         }
@@ -139,6 +152,12 @@ fn clip_body(s: &mut String, c: &Clip) {
     }
     if let Some(f) = c.follow {
         let _ = writeln!(s, "follow {}", follow_text(f));
+    }
+    if let Some(g) = c.launch {
+        let _ = writeln!(s, "launch {}", launch_text(g));
+    }
+    if c.legato {
+        s.push_str("legato\n");
     }
     // Pressure first: the notes name runs of it.
     for chunk in c.touch.chunks(TOUCH_PER_LINE) {
@@ -249,6 +268,25 @@ fn parse_action(w: &str) -> Option<FollowAction> {
     ACTIONS.iter().find(|x| x.1 == w).map(|x| x.0)
 }
 
+/// A launch quantise as a line's words: `now`, `ticks 240`, `bars 2`.
+fn launch_text(g: LaunchGrid) -> String {
+    match g {
+        LaunchGrid::Now => "now".to_string(),
+        LaunchGrid::Ticks(t) => format!("ticks {t}"),
+        LaunchGrid::Bars(n) => format!("bars {n}"),
+    }
+}
+
+fn launch<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<LaunchGrid> {
+    let g = match w.next()? {
+        "now" => LaunchGrid::Now,
+        "ticks" => LaunchGrid::Ticks(num(w.next())?),
+        "bars" => LaunchGrid::Bars(num(w.next())?),
+        _ => return None,
+    };
+    g.ok().then_some(g)
+}
+
 fn follow_text(f: Follow) -> String {
     format!(
         "{} {} {} {}",
@@ -356,6 +394,13 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("rectouch", At::Track) => {
                 last(&mut p).record_touch = flag(w.next()).ok_or_else(|| bad("rectouch"))?
             }
+            ("recquant", At::Track) => {
+                let grid: u32 = num(w.next()).ok_or_else(|| bad("recquant"))?;
+                if Quantise::new(grid, 100).is_none() {
+                    return Err(bad("recquant"));
+                }
+                last(&mut p).record_quantise = Some(grid)
+            }
             ("loops", At::Track) => {
                 let input = w.next().and_then(LoopInput::from_word);
                 last(&mut p).kind = TrackKind::Loops(input.ok_or_else(|| bad("loops"))?)
@@ -389,6 +434,11 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("follow", At::Clip(c, _)) => {
                 c.follow = Some(follow(&mut w).ok_or_else(|| bad("follow"))?)
             }
+            ("launch", At::Clip(c, _)) => {
+                c.launch = Some(launch(&mut w).ok_or_else(|| bad("launch"))?)
+            }
+            ("legato", At::Clip(c, _)) => c.legato = true,
+            ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
                 for x in w {
                     let (a, v) = x.split_once(':').ok_or_else(|| bad("touch"))?;
@@ -536,6 +586,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 at = At::Top;
             }
             ("songlanes", At::Top | At::Track | At::Scene) => at = At::SongLanes(Moves::new()),
+            ("perform", At::Top) => p.perform = true,
             // A newer build's line: skipped.
             _ if !matches!(word, "end" | "lane") => {}
             _ => return Err(bad("out of place")),
@@ -659,6 +710,8 @@ mod tests {
         p.tracks[1].mute = true;
         p.tracks[2].through_arp = true;
         p.tracks[2].record_touch = false;
+        p.tracks[2].record_quantise = Some(160);
+        p.launch = crate::LaunchGrid::Bars(4);
         let mut c = Clip::new("Beat with  spaces", 7680);
         c.speed = Speed::new(2, 1).unwrap();
         c.swing = Swing::new(480, 66);
@@ -669,6 +722,8 @@ mod tests {
             other: FollowAction::Any,
             chance: 70,
         });
+        c.launch = Some(crate::LaunchGrid::Ticks(960));
+        c.legato = true;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,
@@ -770,6 +825,31 @@ mod tests {
             p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
         }
         assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // Perform (S4) is saved; Make, a new project's, writes nothing,
+        // so an older build reads the file as before.
+        assert!(!to_text(&p).contains("perform"));
+        p.perform = true;
+        assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // In a track it is out of place, and skipped.
+        let text = format!("{FORMAT}\ntrack Drums\ndest 0\nperform\n");
+        assert!(!from_text(&text).unwrap().perform);
+        // The project's launch quantise: 1 bar (the default) writes
+        // nothing; any other reads back; one out of range is refused.
+        let mut p = Project::new();
+        assert!(!to_text(&p).contains("launch"));
+        for g in crate::LAUNCH_GRIDS {
+            p.launch = g;
+            assert_eq!(from_text(&to_text(&p)).unwrap(), p, "{g:?}");
+        }
+        for bad in [
+            "launch bars 0",
+            "launch bars 17",
+            "launch ticks 0",
+            "launch ticks 99999",
+            "launch soon",
+        ] {
+            assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -812,6 +892,8 @@ mod tests {
         // Numbers that don't fit.
         let big = text.replace("rectouch 0", "rectouch 2");
         assert!(from_text(&big).is_err());
+        let coarse = text.replace("recquant 160", "recquant 99999");
+        assert!(from_text(&coarse).is_err());
         let nan = text.replace("lock 480 36 pad36.4 0.1", "lock 480 36 pad36.4 NaN");
         assert!(from_text(&nan).is_err());
     }

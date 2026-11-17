@@ -670,6 +670,7 @@ impl Session {
         self.fx.extend(held);
         let fx = self.app.button(note, down, t);
         self.fx.extend(fx);
+        crate::live_erase_let_go(&self.app, &mut self.time);
         self.run_periods(2)
     }
 
@@ -752,6 +753,17 @@ impl Session {
             }
             return;
         }
+        // Live erase: ERASE held while recording.
+        if down && crate::live_erase_starts(&self.app, &self.time) {
+            let tell = crate::live_erase(&mut self.time, pad);
+            self.fx.extend(tell);
+            return;
+        }
+        if !down && self.time.erases(pad as u8) {
+            self.time.erase_sound(pad as u8, false);
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
         if let Some(ev) = self.app.pressed_event(pad, velocity, down) {
             self.time.pad_pressed(0, ev);
         }
@@ -811,6 +823,9 @@ impl Session {
         self.change_kit();
         // The time engine, as player_session runs it.
         self.app.set_rolling(self.time.info().state.rolling());
+        if self.app.set_perform(self.time.perform()) {
+            self.out.show(ToUi::Rec(self.app.rec));
+        }
         self.app.set_track_count(self.time.track_count());
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
@@ -1202,6 +1217,7 @@ impl Session {
         if crate::step_turn(&a) {
             self.step_keys.turned();
         }
+        crate::record_knob(&a, &self.app, &self.mix, &mut self.time);
         let mut fx = std::mem::take(&mut self.fx);
         let rest = {
             let (mut d, out) = self.desk();
@@ -1220,6 +1236,8 @@ impl Session {
                 self.pad_edge(pad, v, down);
             }
             FromUi::Pad { .. } => {}
+            // A scale row's note: no sound is rendered here.
+            FromUi::Audition { .. } => {}
             FromUi::Kit(k) => self.kit_to = Some(k.min(self.kits)),
             FromUi::Synth(mpfree_synth_ui::SynthAction::Set { id, value }) => {
                 let from = self.synth.value(id);

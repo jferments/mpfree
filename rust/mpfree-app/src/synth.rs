@@ -1025,7 +1025,29 @@ impl Synth {
             colour: PAD_WHITE,
             chip: Some(self.chip()),
             synth: Some(synth),
+            pitches: self.pad_pitches(),
         }
+    }
+
+    /// Each pad's note (a chord pad's root) and whether its light is the
+    /// root's, for Beats' scale rows; none for the Drums engine, whose
+    /// pads are sounds.
+    pub fn pad_pitches(&self) -> Vec<Option<crate::play_page::PadPitch>> {
+        if self.settings.engine == Engine::Drums {
+            return Vec::new();
+        }
+        self.pads
+            .iter()
+            .map(|p| {
+                let &note = p.notes().last()?;
+                let root = match p.role {
+                    PadRole::Root => true,
+                    PadRole::Plain => note.is_multiple_of(12),
+                    _ => false,
+                };
+                Some(crate::play_page::PadPitch { note, root })
+            })
+            .collect()
     }
 
     /// Resting pad colours. With no scale: C, white and black keys. With a

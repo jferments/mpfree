@@ -890,6 +890,9 @@ pub struct Status {
     /// ERASE held: the next tap on the screen deletes what it lands on
     /// (Jay after live test 3).
     pub erase: bool,
+    /// COPY held: on Arrange, a tap on a clip copies it and a tap on an
+    /// empty slot pastes the copy (sequencer S3).
+    pub copy: bool,
 }
 
 /// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
@@ -1097,6 +1100,9 @@ pub enum Effect {
     Looper(LoopAction),
     /// MAIN on the Play page (None: the next view) and STEP SEQ (Beats).
     PlayView(Option<crate::play_page::PlayView>),
+    /// Arrange's view: the Song view (`Some(true)`), the Clips grid
+    /// (`Some(false)`), or the next of the two (`None`): MAIN in Perform.
+    ArrangeView(Option<bool>),
     /// SAMPLE EDIT: the Sample tab opens on this editor.
     SampleEditor(crate::sample_page::Editor),
     /// PROG EDIT: the sound the pads play: the Synth tab while the synth
@@ -1283,6 +1289,9 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
+    /// The project is in Perform, not Make (sequencer S4; the audio loop
+    /// says each period, [`App::set_perform`]).
+    perform: bool,
     /// What REC records, and whether the notes wait for PLAY
     /// ([`crate::rec_arm`]). Not saved: a new or opened project arms the
     /// notes.
@@ -1441,6 +1450,7 @@ impl App {
             sent_notes,
             arp_dirty: true,
             rolling: false,
+            perform: false,
             rec: crate::rec_arm::RecArm::default(),
             lights_shown: Self::startup_transport_lights(),
             undo_ready: false,
@@ -1492,6 +1502,19 @@ impl App {
     /// Whether the transport rolls, as the audio loop last told it.
     pub fn rolling(&self) -> bool {
         self.rolling
+    }
+
+    /// Make or Perform, as the project has it (the audio loop tells it
+    /// each period). Perform pins the arm (the design's "the arm is pinned
+    /// in Perform"), Make lets it follow the page again; true when that
+    /// changed, so the screen hears the arm.
+    pub fn set_perform(&mut self, on: bool) -> bool {
+        if self.perform == on {
+            return false;
+        }
+        self.perform = on;
+        self.rec.pinned = on;
+        true
     }
 
     /// The tempo, in BPM.
@@ -1886,6 +1909,7 @@ impl App {
             mute_bank: self.mute_bank,
             steps: self.step_pads(),
             erase: self.erase_held,
+            copy: self.copy_held(),
         })
     }
 
@@ -2213,6 +2237,20 @@ impl App {
                 return Some(vec![Effect::Browse(BrowseKey::Erase)]);
             }
             return Some(vec![self.status()]);
+        } else if is(m.main) && shift {
+            // SHIFT + MAIN: Make or Perform (sequencer S4), as the top
+            // bar's chip.
+            vec![Effect::Time(TimeAction::Perform(!self.perform))]
+        } else if is(m.main) && self.perform {
+            // MAIN in Perform: Arrange's Clips; on Arrange, the next view
+            // (Clips, Song).
+            if self.view == View::Arrange {
+                vec![Effect::ArrangeView(None)]
+            } else {
+                let mut fx = self.show(View::Arrange);
+                fx.push(Effect::ArrangeView(Some(false)));
+                fx
+            }
         } else if is(m.main) {
             // MAIN: Play; on Play, the next view (All, Beats, Loop).
             if self.view == View::Play {
@@ -7393,6 +7431,42 @@ mod tests {
         assert!(shifted(&mut app, 62)
             .iter()
             .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));
+    }
+
+    /// Make and Perform (sequencer S4, Jay's decision 5): SHIFT + MAIN
+    /// switches, as the top bar's chip does; in Perform MAIN goes to
+    /// Arrange's Clips grid and then steps its views, and the arm is pinned
+    /// until Make again.
+    #[test]
+    fn shift_main_switches_make_and_perform_and_perform_moves_main_home() {
+        const SHIFT: u8 = button::SHIFT;
+        let mut app = ready();
+        app.open_tab(View::Sample);
+        assert!(press(&mut app, button::MAIN).contains(&Effect::Show(View::Play)));
+        // SHIFT + MAIN asks for Perform; the project says so next period.
+        let fx = held(&mut app, SHIFT, |a| press(a, button::MAIN));
+        assert_eq!(fx, [Effect::Time(TimeAction::Perform(true))]);
+        assert!(!app.rec.pinned);
+        assert!(app.set_perform(true));
+        assert!(app.rec.pinned, "Perform pins the arm");
+        assert!(!app.set_perform(true), "no change, nothing to show");
+        // MAIN: Arrange's Clips grid, then the next of its views.
+        let fx = press(&mut app, button::MAIN);
+        assert!(fx.contains(&Effect::Show(View::Arrange)));
+        assert!(fx.contains(&Effect::ArrangeView(Some(false))));
+        assert_eq!(app.view(), View::Arrange);
+        assert_eq!(press(&mut app, button::MAIN), [Effect::ArrangeView(None)]);
+        // A hand-made unpin stays until the mode changes again.
+        app.rec.pinned = false;
+        assert!(!app.set_perform(true));
+        assert!(!app.rec.pinned);
+        // SHIFT + MAIN again: Make, the arm follows the page, MAIN is Play.
+        let fx = held(&mut app, SHIFT, |a| press(a, button::MAIN));
+        assert_eq!(fx, [Effect::Time(TimeAction::Perform(false))]);
+        app.rec.pinned = true;
+        assert!(app.set_perform(false));
+        assert!(!app.rec.pinned);
+        assert!(press(&mut app, button::MAIN).contains(&Effect::Show(View::Play)));
     }
 
     /// STEP SEQ on the synth (the sequencer design's "Synth tracks"): the
