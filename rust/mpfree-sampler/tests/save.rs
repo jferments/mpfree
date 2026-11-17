@@ -170,6 +170,11 @@ fn busy_kit() -> Project {
         },
     };
     g.grain_mode = GrainMode::Repeat;
+    g.grain_keys = GrainKeys {
+        size: true,
+        scan: false,
+    };
+    g.grain_glide_ms = 250.0;
     p.set_pad(5, Some(Pad::new("Cloud", Layer::new(g))), None)
         .unwrap();
     // A keygroup far up the pad list, a toggle and a gate pad.
