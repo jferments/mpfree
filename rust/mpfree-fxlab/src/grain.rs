@@ -71,6 +71,11 @@
 //!   a second down to half): the loudness against the same cloud
 //!   unmoved, and how much further its level swings (over 400 ms, every
 //!   100 ms, as a momentary meter moves).
+//! - **G14, the presets keep the level (step B6):** each grain preset
+//!   (`mpfree_sampler::grain_presets`) on pink and the pad at the same
+//!   position: the loudness against the default cloud's there. A
+//!   stutter's grains fill half of each sixteenth, with their fades, so
+//!   it sits about 4 LU down.
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
@@ -83,6 +88,8 @@ use mpfree_grain::{
 };
 use mpfree_sampler::bandlimit::Octaves;
 use mpfree_sampler::grain_clip::GrainClip;
+use mpfree_sampler::grain_presets;
+use mpfree_sampler::model::GrainMode;
 
 use crate::fft::Fft;
 use crate::loudness;
@@ -117,6 +124,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     tone(&mut rows, &lab);
     hits(&mut rows, &lab);
     movement(&mut rows, &lab);
+    presets(&mut rows, &lab);
     rows
 }
 
@@ -1176,6 +1184,40 @@ fn movement(rows: &mut Vec<Row>, lab: &Lab) {
                 Some(3.0),
                 // A random cloud's level wanders a few tenths either way.
                 0.5,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G14: the presets (step B6).
+
+fn presets(rows: &mut Vec<Row>, lab: &Lab) {
+    for (name, src) in [("pink", &lab.pink), ("pad", &lab.pad)] {
+        let (plain, _) = steady(src, lab.rate, base(), 4.0, 14);
+        let plain = lufs(&plain);
+        for preset in grain_presets::presets() {
+            let q = Params {
+                position: POSITION,
+                ..preset.grain
+            };
+            let (s, _) = steady(src, lab.rate, q, 4.0, 14);
+            // A stutter's grains fill half of each sixteenth, fading in
+            // and out: its gaps are its sound.
+            let at = if preset.mode == GrainMode::Repeat {
+                -4.0
+            } else {
+                0.0
+            };
+            put(
+                rows,
+                "G14",
+                format!("preset[{name}, {}]", preset.name),
+                "level_change_lu",
+                lufs(&s) - plain,
+                Better::Near(at),
+                Some(1.5),
+                0.1,
             );
         }
     }
