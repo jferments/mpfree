@@ -79,7 +79,7 @@ use mpfree_transport::{Block, Command, Transport};
 use std::f32::consts::TAU;
 
 pub use audio::TimeAudio;
-pub use control::TimeControl;
+pub use control::{MuteLight, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
 
@@ -847,15 +847,35 @@ impl TimeHost {
     /// TRACK MUTE's keys (control map decision 5): mute track `t` now, or
     /// let it play again. Its clip keeps its place, so it comes back in
     /// time; a scene's mutes set it again when the scene starts.
+    #[cfg(test)]
     pub fn toggle_mute(&mut self, t: usize) -> Result<String, String> {
-        let r = self.control.toggle_mute(t);
+        self.mute_or_solo(t, false, false)
+    }
+
+    /// TRACK MUTE's pad (sequencer S4): track `t`'s mute flips, or with
+    /// `solo` its solo; with `wait` (Perform, or SHIFT in Make) the change
+    /// joins the mute queue and lands on the launch line while the
+    /// transport rolls ([`TimeControl::mute_or_solo`]).
+    pub fn mute_or_solo(&mut self, t: usize, wait: bool, solo: bool) -> Result<String, String> {
+        let r = self.control.mute_or_solo(t, wait, solo);
         self.sent(r)
     }
 
-    /// Whether track `t` is muted (None: no such track), for TRACK MUTE's
-    /// pad lights.
+    /// Whether track `t` is muted (None: no such track).
+    #[allow(dead_code)]
     pub fn muted(&self, t: usize) -> Option<bool> {
         self.control.muted(t)
+    }
+
+    /// What TRACK MUTE's pad for track `t` shows (None: no such track).
+    pub fn mute_light(&self, t: usize) -> Option<MuteLight> {
+        self.control.mute_light(t)
+    }
+
+    /// The mute queue waiting, if any.
+    #[allow(dead_code)]
+    pub fn mute_wait(&self) -> Option<&mpfree_time_ui::view::MuteWait> {
+        self.control.mute_wait()
     }
 
     /// The project is in Perform, not Make (sequencer S4): the app follows
@@ -887,7 +907,8 @@ impl TimeHost {
     }
 
     /// Whether track `t` has a clip launched (playing, or waiting for the
-    /// transport), for TRACK MUTE's pad lights.
+    /// transport); TRACK MUTE's pad lights have it in [`MuteLight`].
+    #[cfg(test)]
     pub fn launched(&self, t: usize) -> bool {
         self.control.launched(t)
     }
@@ -2953,6 +2974,41 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// A Loop track's mute that waits: its loop goes off on the line, and
+    /// the plan gives that line for the one period that has it.
+    #[test]
+    fn a_loop_tracks_mute_that_waits_turns_its_loop_off_on_the_line() {
+        use mpfree_seq::LOOPS;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut t = Track::new_loops("Loops A", 8);
+        t.slots[0] = Some(Clip::new_loop(0, 3840));
+        h.control.project.tracks.push(t);
+        h.act(TimeAction::Launch { track: 8, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.mute_or_solo(8, true, false).unwrap();
+        assert!(h.loop_plan().on[0], "it plays until the line");
+        let mut said = Vec::new();
+        while pads.frame < BAR + 4 * u64::from(PERIOD) {
+            let to = pads.frame + u64::from(PERIOD);
+            run(&mut h, &mut pads, to, &[]);
+            let p = h.loop_plan();
+            if p.at[0].is_some() {
+                said.push((pads.frame, p));
+            }
+        }
+        let [(end, p)] = said[..] else {
+            panic!("one period says the line: {said:?}")
+        };
+        assert!(end - u64::from(PERIOD) <= BAR && BAR < end, "{end}");
+        assert_eq!((p.on[0], p.at[0], p.at[1]), (false, Some(3840), None));
+        assert!(p.on[1..].iter().all(|&on| on), "loops in no cell play on");
+        assert_eq!(h.muted(8), Some(true));
+        assert_eq!(h.loop_plan().at, [None; LOOPS]);
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// A loop recorded lands on a Loop track (a new one when every Loop
     /// track plays), launched; its cells follow its length and empty when
     /// it is cleared. The pads stay on note tracks, a Loop track takes no
@@ -3348,6 +3404,90 @@ mod tests {
         assert_eq!(at(4), (0..12).collect::<Vec<u64>>());
         assert_eq!(at(30), [0, 1, 8, 9, 10, 11]);
         assert!(h.toggle_mute(TRACKS).is_err());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The mute queue (sequencer S4): taps that wait land together on the
+    /// next bar line; a tap on a track waiting takes its change back; a
+    /// solo silences the others from its line; STOP lands what waits.
+    #[test]
+    fn mutes_that_wait_land_together_on_the_launch_line() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let beats = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = (0..4)
+                .map(|b| mpfree_seq::Note::new(b * 960, 100, note, 100))
+                .collect();
+            c
+        };
+        for (t, note) in [(0, 4), (1, 30), (2, 31)] {
+            h.control.project.tracks[t].slots[0] = Some(beats(note));
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2 - 1000, &[]);
+        assert_eq!(
+            h.mute_or_solo(1, true, false).unwrap(),
+            "track mute: Track 2 muted on the next bar"
+        );
+        assert_eq!(
+            h.mute_or_solo(0, true, false).unwrap(),
+            "track mute: Track 1 muted on the next bar"
+        );
+        assert_eq!(
+            h.mute_or_solo(0, true, false).unwrap(),
+            "track mute: Track 1: its change taken back"
+        );
+        let l = h.mute_light(1).unwrap();
+        assert!(l.waiting && !l.silent, "it plays until the line");
+        assert!(!h.mute_light(0).unwrap().waiting);
+        let st = h.state();
+        assert_eq!(st.mute_wait.as_ref().unwrap().want, vec![(1, true, false)]);
+        assert_eq!(st.waiting_reading().as_deref(), Some("Track 2 at 2.1"));
+        run(&mut h, &mut pads, BAR + BAR / 2 - 1000, &[]);
+        assert_eq!(h.muted(1), Some(true), "landed on bar 2");
+        assert!(h.mute_wait().is_none());
+        assert_eq!(
+            h.take_later_note().as_deref(),
+            Some("track mute: at 2.1, Track 2 muted")
+        );
+        // A solo waits too: track 3 alone from bar 3.
+        assert_eq!(
+            h.mute_or_solo(2, true, true).unwrap(),
+            "track mute: Track 3 solo on the next bar"
+        );
+        run(&mut h, &mut pads, 2 * BAR + BAR / 2 - 1000, &[]);
+        assert!(h.mute_light(0).unwrap().silent && h.mute_light(2).unwrap().solo);
+        // Its solo off waits, and STOP lands it.
+        h.mute_or_solo(2, true, true).unwrap();
+        assert!(h.mute_wait().is_some());
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        assert!(h.mute_wait().is_none());
+        assert!(!h.mute_light(2).unwrap().solo && !h.mute_light(0).unwrap().silent);
+        let note = h.take_later_note().unwrap();
+        assert!(
+            note.starts_with("track mute: at 3.") && note.ends_with(", Track 3 solo off (STOP)"),
+            "{note}"
+        );
+        let at = |pad: usize| {
+            pads.hits
+                .iter()
+                .filter(|&&(_, p, _)| p == pad)
+                .map(|&(f, _, _)| (f + BAR / 8) / (BAR / 4))
+                .collect::<Vec<u64>>()
+        };
+        // Track 1 for two bars, then silent by the solo; track 2 for one
+        // bar; track 3 throughout (to beat 2 of bar 3, where STOP was).
+        assert_eq!(at(4), (0..8).collect::<Vec<u64>>());
+        assert_eq!(at(30), [0, 1, 2, 3]);
+        assert_eq!(at(31), (0..10).collect::<Vec<u64>>());
+        // Stopped, a tap that would wait acts at once.
+        assert_eq!(
+            h.mute_or_solo(1, true, false).unwrap(),
+            "track mute: Track 2 plays"
+        );
         assert_eq!(h.dropped(), 0);
     }
 

@@ -152,7 +152,7 @@ impl SongRecorder {
                 }
             }
             for (t, m) in self.muted.iter_mut().enumerate() {
-                *m = project.tracks.get(t).is_some_and(|t| t.mute);
+                *m = project.silent(t);
             }
             self.morph = morph;
             self.rows = rows;

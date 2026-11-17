@@ -10861,6 +10861,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
     }
+    // The mute queue (sequencer S4): in Perform, Track 2's mute and
+    // Track 3's solo wait for the next bar, their headers hatched and the
+    // transport bar saying WAITING.
+    match sample_clips(fonts()) {
+        Ok(mut p) => {
+            let mut st = p.time.clone();
+            st.perform = true;
+            st.mute_wait = Some(mpfree_time_ui::view::MuteWait {
+                line: mpfree_seq::LaunchGrid::Bars(1),
+                want: vec![(1, true, false), (2, false, true)],
+            });
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-mutes", p));
+        }
+        Err(e) => eprintln!("clips-mutes sample: {e}"),
+    }
+    // A solo: Track 1 alone, the others silent by it.
+    match sample_clips(fonts()) {
+        Ok(mut p) => {
+            let mut st = p.time.clone();
+            for (i, t) in st.tracks.iter_mut().enumerate() {
+                t.solo = i == 0;
+                t.silent = i != 0;
+            }
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-solo", p));
+        }
+        Err(e) => eprintln!("clips-solo sample: {e}"),
+    }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
     match mpfree_time_ui::sample::loops_playing() {

@@ -14,6 +14,7 @@
 //! track Drums
 //! dest 0
 //! swing 240 58
+//! solo
 //! clip 0 7680 Beat 1
 //! speed 1 1
 //! launch ticks 960
@@ -80,6 +81,9 @@ pub fn to_text(p: &Project) -> String {
             let _ = writeln!(s, "swing {} {}", sw.grid, sw.amount);
         }
         let _ = writeln!(s, "mute {}", u8::from(t.mute));
+        if t.solo {
+            let _ = writeln!(s, "solo");
+        }
         let _ = writeln!(s, "arp {}", u8::from(t.through_arp));
         let _ = writeln!(s, "rectouch {}", u8::from(t.record_touch));
         if let Some(grid) = t.record_quantise {
@@ -388,6 +392,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 last(&mut p).swing = Some(swing(&mut w).ok_or_else(|| bad("swing"))?)
             }
             ("mute", At::Track) => last(&mut p).mute = flag(w.next()).ok_or_else(|| bad("mute"))?,
+            ("solo", At::Track) => last(&mut p).solo = true,
             ("arp", At::Track) => {
                 last(&mut p).through_arp = flag(w.next()).ok_or_else(|| bad("arp"))?
             }
@@ -708,6 +713,7 @@ mod tests {
         }
         p.tracks[1].swing = Swing::new(240, 58);
         p.tracks[1].mute = true;
+        p.tracks[2].solo = true;
         p.tracks[2].through_arp = true;
         p.tracks[2].record_touch = false;
         p.tracks[2].record_quantise = Some(160);

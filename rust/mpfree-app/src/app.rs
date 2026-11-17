@@ -328,6 +328,29 @@ pub enum MuteKeys {
     Pads,
 }
 
+/// A pad tapped as a mute key ([`App::mute_tap`]): what it does and when.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MuteTap {
+    /// Tracks or the kit's pads.
+    pub keys: MuteKeys,
+    /// TRACK MUTE's bank ([`App::mute_bank`]).
+    pub bank: usize,
+    /// The change waits for the launch line (Perform; SHIFT gives the
+    /// other timing).
+    pub wait: bool,
+    /// TRACK MUTE is held: the tap solos the track.
+    pub solo: bool,
+}
+
+/// TRACK MUTE held (sequencer S4): the pad mode before the press, and
+/// whether a pad was tapped while it was held (a solo, after which the
+/// mode goes back to what it was).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MuteHold {
+    before: MuteKeys,
+    used: bool,
+}
+
 /// FULL LEVEL (every hit 127) and Half Level (every hit 64).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PadLevel {
@@ -1174,6 +1197,8 @@ pub struct App {
     mute_keys: MuteKeys,
     /// TRACK MUTE's bank: pads 1-16 are tracks 16 * bank + 1 on.
     mute_bank: usize,
+    /// TRACK MUTE held (without SHIFT): a pad tapped solos its track.
+    mute_hold: Option<MuteHold>,
     /// The project's tracks (the audio loop tells it).
     track_count: usize,
     /// The 16 Levels panel shows on Play: the wheel picks its kind.
@@ -1393,6 +1418,7 @@ impl App {
             play_pressed_at: None,
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
+            mute_hold: None,
             track_count: 0,
             levels_open: false,
             levels_on: false,
@@ -1830,6 +1856,56 @@ impl App {
         self.mute_keys
     }
 
+    /// The pads are mute keys: TRACK MUTE's mode is on, or TRACK MUTE is
+    /// held (a pad solos its track).
+    pub fn pads_mute(&self) -> bool {
+        self.mute_keys != MuteKeys::Off || self.mute_hold.is_some()
+    }
+
+    /// A pad tapped as a mute key: what it does. In Make a mute acts at
+    /// once and in Perform it waits for the launch line; SHIFT gives the
+    /// other timing. With TRACK MUTE held the tap solos its track: the
+    /// pads show the tracks while it is held, and letting go leaves the
+    /// mode as it was before the press (the effects say so).
+    pub fn mute_tap(&mut self) -> (MuteTap, Vec<Effect>) {
+        let mut fx = Vec::new();
+        let solo = self.mute_hold.is_some();
+        if let Some(h) = &mut self.mute_hold {
+            h.used = true;
+            if self.mute_keys != MuteKeys::Tracks {
+                fx.extend(self.set_mute_keys(MuteKeys::Tracks));
+            }
+        }
+        let tap = MuteTap {
+            keys: self.mute_keys,
+            bank: self.mute_bank,
+            wait: self.perform != self.shift,
+            solo,
+        };
+        (tap, fx)
+    }
+
+    /// TRACK MUTE let go: after a solo, the mode it had before the press.
+    fn track_mute_up(&mut self) -> Vec<Effect> {
+        match self.mute_hold.take() {
+            Some(h) if h.used && h.before != self.mute_keys => self.set_mute_keys(h.before),
+            _ => Vec::new(),
+        }
+    }
+
+    /// TRACK MUTE's mode set to `keys`: its light, the status and the
+    /// PAD BANK lights follow.
+    fn set_mute_keys(&mut self, keys: MuteKeys) -> Vec<Effect> {
+        self.mute_keys = keys;
+        let mut fx = Vec::new();
+        if let Some(n) = self.map.track_mute {
+            let on = keys != MuteKeys::Off;
+            fx.push(Effect::Light(n, if on { LIGHT_ON } else { LIGHT_OFF }));
+        }
+        fx.extend([self.status(), Effect::BankLights]);
+        fx
+    }
+
     /// NOTE REPEAT is held or Latch is on.
     pub fn repeating(&self) -> bool {
         self.repeat_held || self.latched
@@ -1970,6 +2046,9 @@ impl App {
             }
             if Some(note) == self.map.step_seq {
                 fx.extend(self.step_seq_up());
+            }
+            if Some(note) == self.map.track_mute {
+                fx.extend(self.track_mute_up());
             }
             if note == button::COPY && self.copy_held() {
                 fx.extend(self.copy_button(false));
@@ -2291,7 +2370,12 @@ impl App {
         } else if is(m.track_mute) {
             // TRACK MUTE: the pads mute tracks; SHIFT + TRACK MUTE: the
             // kit's pads. The same press again leaves; the other one
-            // switches.
+            // switches. Held (without SHIFT), a pad solos its track, and
+            // letting go leaves the mode as it was (`track_mute_up`).
+            self.mute_hold = (!shift).then_some(MuteHold {
+                before: self.mute_keys,
+                used: false,
+            });
             let want = if shift {
                 MuteKeys::Pads
             } else {
@@ -2357,6 +2441,7 @@ impl App {
             // One pad mode at a time: STEP SEQ and TRACK MUTE give the
             // pads up to 16 Levels.
             fx.extend(self.steps_off());
+            self.mute_hold = None;
             if self.mute_keys != MuteKeys::Off {
                 self.mute_keys = MuteKeys::Off;
                 if let Some(n) = self.map.track_mute {
@@ -6898,6 +6983,69 @@ mod tests {
         press(&mut app, TRACK_MUTE);
         press(&mut app, TRACK_MUTE);
         assert_eq!(app.mute_keys(), MuteKeys::Off);
+    }
+
+    /// TRACK MUTE held with a pad tapped: a solo, and letting go leaves
+    /// the pad mode as it was before the press. A quick press still
+    /// toggles the mode. In Make a tap acts at once and in Perform it
+    /// waits; SHIFT gives the other timing.
+    #[test]
+    fn track_mute_held_with_a_pad_solos_and_leaves_the_mode_as_it_was() {
+        const SHIFT: u8 = button::SHIFT;
+        const TRACK_MUTE: u8 = 68;
+        let mut app = ready();
+        app.map.learn(mapper::Job::TrackMute, Some(TRACK_MUTE));
+        assert!(!app.pads_mute());
+        // From Off: held, the pads mute; a tap solos; let go, Off again.
+        app.button(TRACK_MUTE, true, 0.0);
+        assert!(app.pads_mute());
+        let (tap, fx) = app.mute_tap();
+        assert!(fx.is_empty(), "the pads show the tracks already");
+        assert_eq!(
+            tap,
+            MuteTap {
+                keys: MuteKeys::Tracks,
+                bank: 0,
+                wait: false,
+                solo: true
+            }
+        );
+        let fx = app.button(TRACK_MUTE, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        assert_eq!(fx[0], Effect::Light(TRACK_MUTE, LIGHT_OFF));
+        assert!(fx.contains(&Effect::BankLights));
+        assert!(!app.pads_mute());
+        // From Tracks: the press turns them off, a tap while held brings
+        // the tracks back to solo, and letting go leaves them on.
+        press(&mut app, TRACK_MUTE);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        app.button(TRACK_MUTE, true, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        let (tap, fx) = app.mute_tap();
+        assert!(tap.solo && tap.keys == MuteKeys::Tracks);
+        assert_eq!(fx[0], Effect::Light(TRACK_MUTE, LIGHT_ON));
+        app.button(TRACK_MUTE, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        // Not held: a plain tap mutes, at once in Make, waiting with SHIFT.
+        let (tap, _) = app.mute_tap();
+        assert!(!tap.solo && !tap.wait);
+        app.button(SHIFT, true, 0.0);
+        assert!(app.mute_tap().0.wait);
+        app.button(SHIFT, false, 0.0);
+        // Perform: the tap waits, and SHIFT acts at once.
+        app.set_perform(true);
+        assert!(app.mute_tap().0.wait);
+        app.button(SHIFT, true, 0.0);
+        assert!(!app.mute_tap().0.wait);
+        app.button(SHIFT, false, 0.0);
+        // SHIFT + TRACK MUTE held is no solo: the kit's pads mute.
+        app.button(SHIFT, true, 0.0);
+        app.button(TRACK_MUTE, true, 0.0);
+        app.button(SHIFT, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        assert!(!app.mute_tap().0.solo);
+        app.button(TRACK_MUTE, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
     }
 
     /// TRACK MUTE with more than 16 tracks (up to 128, Jay 14 Nov): PAD
