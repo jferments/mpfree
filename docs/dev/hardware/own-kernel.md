@@ -158,7 +158,7 @@ The build report must say:
 
 On `STOP: --own-kernel: …`, send the zip (`python3 tools/mpc-one/results.py zip`); nothing was written.
 
-**Block K2.2: write the stick** (**state-changing, the stick only**: erases partitions 1 to 3, keeps partition 4; asks for `WRITE`). Partition 1 is bigger with the modules, but partitions 1 to 3 still end before 1 GiB, where partition 4 starts, so it stays in place. Undo: write an older build the same way.
+**Block K2.2: write the stick** (**state-changing, the stick only**: erases partitions 1 to 3, keeps partition 4; asks for `WRITE`). Partition 1 is bigger with the modules (tens of MiB), but partitions 1 to 3 should still end before 1 GiB, where partition 4 starts, so it stays in place; the builder stops in K2.1 if they would not. Undo: write an older build the same way.
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run write-stick -- python3 tools/mpc-one/write-test-stick.py
