@@ -78,7 +78,7 @@
 37002	Perform FX, the 16 pads in turn
 100523	Phaser (12 stages)
 61610	Phaser (4 stages)
-186723	Plate reverb
+155797	Plate reverb
 307019	Pluck Bell, 16 voices
 249183	Pluck Harp, 16 voices
 127636	Pluck Marimba, 8 voices
