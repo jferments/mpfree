@@ -191,6 +191,9 @@ pub enum To {
     Nothing,
     /// MPFree never reads it (SysEx, tune request, undefined bytes).
     Ignored,
+    /// The port is set to ignore this kind coming in (its page's "Ignore
+    /// coming in").
+    PortIgnores,
     /// Out: this track (from 0) sent it.
     SentBy(u8),
     /// Out: MPFree's own clock.

@@ -8,8 +8,9 @@ use std::time::Duration;
 use mpfree_midi::output::MAX_TRACKS;
 use mpfree_midi::setup::{PortInput, TrackOut};
 
-use crate::form::{clamp_step, Choice, Field, Form, Group, Picker, Row, Tone};
-use crate::{IoModel, PortLive, LIGHT};
+use crate::form::{clamp_step, Choice, Field, Form, Group, Page, Picker, Row, Tone};
+use crate::port_page::PortPage;
+use crate::{IoModel, PortLive, Shared, LIGHT};
 
 pub(crate) struct Midi;
 
@@ -101,7 +102,7 @@ impl Form for Midi {
     }
 
     fn widths(&self) -> &'static [i32] {
-        &[330, 270, 150]
+        &[290, 240, 96, 80]
     }
 
     fn banner(&self, m: &IoModel) -> Option<String> {
@@ -116,15 +117,15 @@ impl Form for Midi {
             ));
         }
         (!m.live.built.notes_out).then(|| {
-            "MIDI out is off: tracks still play inside MPFree, and what you set \
-             here is kept with the project."
+            "MIDI out is off (Prefs): tracks still play inside MPFree, and what \
+             you set here is kept with the project."
                 .to_string()
         })
     }
 
     fn rows(&self, m: &IoModel, now: Duration) -> Vec<Row> {
         let built = m.live.built;
-        let mut rows = vec![Row::heading("Ports", vec!["Input", "Thru"])];
+        let mut rows = vec![Row::heading("Ports", vec!["Input", "Thru", "Page"])];
         for (name, live) in ports(m) {
             let p = m.setup.port(&name);
             let has_in = live.is_none_or(|l| l.has_in);
@@ -146,7 +147,8 @@ impl Form for Midi {
                         2,
                     )
                     .off(has_in && has_out),
-                );
+                )
+                .field(Field::page("Open ›"));
             row = match live {
                 None => row.note("not plugged in: its settings are kept", Tone::Warn),
                 Some(_) if p.thru && !built.thru => row.note("thru does nothing yet", Tone::Warn),
@@ -204,6 +206,11 @@ impl Form for Midi {
         }
         crate::learn::rows(m, &mut rows);
         rows
+    }
+
+    fn page(&self, model: &Shared, key: &str) -> Option<Box<dyn Page>> {
+        let name = parse_key(key, "port")?;
+        Some(Box::new(PortPage::new(model.clone(), name)))
     }
 
     fn step(&self, m: &mut IoModel, key: &str, col: usize, delta: i32) -> bool {
@@ -371,6 +378,7 @@ mod tests {
         live.ports.push(PortLive {
             name: "Keystep 37".into(),
             kind: "USB".into(),
+            about: "USB".into(),
             has_in: true,
             has_out: true,
             last_in: Some(Duration::from_millis(900)),
@@ -568,6 +576,51 @@ mod tests {
         let bg = c.pixel(5, 5);
         assert_eq!(c.pixel(AREA.x - 2, AREA.y + 10), bg);
         assert_ne!(c.pixel(AREA.x + 20, AREA.y + 20), bg);
+    }
+
+    /// A port's row opens its page from its Page field, its name or + on
+    /// its Page field; Back or ‹ MIDI closes it again.
+    #[test]
+    fn a_ports_row_opens_its_page() {
+        let s = model();
+        let mut sec = FormSection::new(Midi, s.clone());
+        let _ = paint(&sec);
+        assert_eq!(rows(&s)[0].heads, Some(vec!["Input", "Thru", "Page"]));
+        let f = sec_field(&sec, "port:Keystep 37", 2);
+        assert_eq!(tap(&mut sec, f.0, f.1), IoReply::Redraw);
+        assert!(sec.page_open());
+        let ts = sec.targets(AREA);
+        assert!(ts.iter().any(|t| t.id == "port-back"), "{ts:?}");
+        assert!(sec.back());
+        assert!(!sec.page_open());
+        // Its name, then ‹ MIDI.
+        let _ = paint(&sec);
+        let name = sec
+            .targets(AREA)
+            .into_iter()
+            .find(|t| t.id == "row" && t.label == "Keystep 37")
+            .unwrap();
+        assert!(name.enabled);
+        let (x, y) = (name.rect.x + 20, name.rect.y + name.rect.h / 2);
+        tap(&mut sec, x, y);
+        assert!(sec.page_open());
+        let back = sec
+            .targets(AREA)
+            .into_iter()
+            .find(|t| t.id == "port-back")
+            .unwrap();
+        let (x, y) = (back.rect.x + 10, back.rect.y + 10);
+        assert_eq!(tap(&mut sec, x, y), IoReply::Redraw);
+        assert!(!sec.page_open());
+        // + on the Page field; - only says what + does.
+        sec.input(IoInput::Step(-1));
+        assert!(!sec.page_open());
+        assert!(sec.take_note().unwrap().contains("+ opens its page"));
+        sec.input(IoInput::Step(1));
+        assert!(sec.page_open());
+        // Leaving the I/O view closes it.
+        sec.shown(false);
+        assert!(!sec.page_open());
     }
 
     /// The middle of field `col` of the row `key`.
