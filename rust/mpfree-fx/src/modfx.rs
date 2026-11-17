@@ -1,7 +1,8 @@
 //! Modulation effects: [`Chorus`], [`Flanger`] and [`Phaser`].
 //!
 //! They share an LFO that runs free (in Hz) or synced to the tempo (1/16
-//! to 8 bars a cycle). A synced LFO starts on the bar when the transport
+//! to 8 bars a cycle, and dotted and triplet eighths and quarters), a sine
+//! or a triangle with rounded corners. A synced LFO starts on the bar when the transport
 //! starts and follows the song while it plays: after a jump (a loop wrap,
 //! a locate) it glides back onto the bar over 50 ms, so a swept delay
 //! never steps. Width offsets the right side's LFO phase, so 100 % is a
@@ -9,7 +10,8 @@
 //! that can move glides, so turning a knob under a loop never clicks or
 //! zips; a change of voice or stage count crossfades.
 //!
-//! The LFO is a polynomial sine and the read tables are built at compile
+//! The LFO is a polynomial sine (or a triangle of parabolas and lines) and
+//! the read tables are built at compile
 //! time, so a render is the same on every machine (the phaser's tangent
 //! aside). The chorus and the flanger read their delays through an 8-tap
 //! windowed sinc that sounds the same at any fraction of a frame, so a
@@ -24,11 +26,39 @@ use crate::kit::{self, Blend, Glide};
 use crate::svf::Segs;
 use crate::{defaults, flush, lerp};
 
+/// The LFO's sync choices. The triplet and dotted ones were appended
+/// (FX quality PR M4), so saved projects keep the choice they had.
 const SYNCS: &[&str] = &[
-    "Free", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars", "8 bars",
+    "Free", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars", "8 bars", "1/8T", "1/8D",
+    "1/4T", "1/4D",
 ];
 /// Beats per LFO cycle for each sync choice (0 is free).
-const SYNC_BEATS: [f64; 9] = [0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0];
+const SYNC_BEATS: [f64; 13] = [
+    0.0,
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    4.0,
+    8.0,
+    16.0,
+    32.0,
+    1.0 / 3.0,
+    0.75,
+    2.0 / 3.0,
+    1.5,
+];
+
+/// The LFO's shapes (appended to all three effects by FX quality PR M4;
+/// Sine, the default, is the shape saved projects had).
+const SHAPES: &[&str] = &["Sine", "Triangle"];
+/// How far either side of each of the triangle's corners is rounded, in
+/// cycles: the sweep turns over a tenth of a cycle, so a chorus's bend
+/// swings through instead of flipping.
+const TRI_ROUND: f32 = 0.05;
+/// How long a change of shape takes, ms: a crossfade of the two shapes,
+/// so the sweep never steps.
+const SHAPE_MS: f32 = 50.0;
 
 /// A sine of `phase` cycles (0 to 1): a parabola with a cubic correction
 /// (error under 0.1 %), plain arithmetic, so it is the same everywhere.
@@ -44,6 +74,36 @@ fn sine(phase: f32) -> f32 {
 #[inline]
 fn wrap(p: f32) -> f32 {
     p - (p as u32) as f32
+}
+
+/// A triangle of `phase` cycles (0 to 1) in step with [`sine`] (0 at 0,
+/// 1 at a quarter, -1 at three quarters), each corner rounded by a
+/// parabola [`TRI_ROUND`] either side, so its slope never steps; the
+/// straight parts slope 4 / (1 - 2 TRI_ROUND) a cycle, under a sine's 2 pi.
+#[inline]
+fn triangle(phase: f32) -> f32 {
+    const PEAK: f32 = 1.0 - 2.0 * TRI_ROUND;
+    let x = if phase < 0.5 { phase } else { phase - 1.0 };
+    let d = (x.abs() - 0.25).abs();
+    let y = if d < TRI_ROUND {
+        PEAK - 2.0 / TRI_ROUND * d * d
+    } else {
+        1.0 - 4.0 * d
+    };
+    (y / PEAK).copysign(x)
+}
+
+/// The LFO at `phase` cycles (0 to 1), `tri` of the way from the sine to
+/// the triangle: 0 or 1, but while a change of shape crossfades.
+#[inline]
+fn wave(phase: f32, tri: f32) -> f32 {
+    if tri == 0.0 {
+        sine(phase)
+    } else if tri == 1.0 {
+        triangle(phase)
+    } else {
+        lerp(sine(phase), triangle(phase), tri)
+    }
 }
 
 /// Cubic Hermite (Catmull-Rom) weights at `t` (0 to 1) of the way from
@@ -79,6 +139,10 @@ struct Lfo {
     /// phase each frame for `fix_left` more frames.
     fix_step: f64,
     fix_left: u32,
+    /// The shape, 0 (sine) to 1 (triangle), gliding over [`SHAPE_MS`],
+    /// and its value this frame.
+    tri: Smooth,
+    tri_now: f32,
 }
 
 impl Default for Lfo {
@@ -90,6 +154,8 @@ impl Default for Lfo {
             playing: false,
             fix_step: 0.0,
             fix_left: 0,
+            tri: Smooth::new(0.0),
+            tri_now: 0.0,
         }
     }
 }
@@ -137,8 +203,33 @@ impl Lfo {
         };
         self.inc = cps / f64::from(rate.max(1));
     }
+    /// Aims the shape: the rounded triangle, or the sine.
+    fn set_shape(&mut self, triangle: bool) {
+        self.tri.target = if triangle { 1.0 } else { 0.0 };
+    }
+    fn prepare(&mut self, rate: u32) {
+        self.tri.set_time(rate, SHAPE_MS);
+    }
+    /// The LFO's values at several phases (cycles, any from 0 up), in
+    /// this frame's shape. The shape is picked once for all of them, so
+    /// the sines are worked out side by side (the chorus's eight sweeps
+    /// cost less this way than its two voices' four did one at a time).
+    #[inline]
+    fn waves<const N: usize>(&self, at: [f32; N]) -> [f32; N] {
+        let tri = self.tri_now;
+        if tri == 0.0 {
+            at.map(|p| sine(wrap(p)))
+        } else if tri == 1.0 {
+            at.map(|p| triangle(wrap(p)))
+        } else {
+            at.map(|p| lerp(sine(wrap(p)), triangle(wrap(p)), tri))
+        }
+    }
     #[inline]
     fn next(&mut self) -> f32 {
+        if self.tri.value != self.tri.target {
+            self.tri_now = self.tri.next();
+        }
         self.phase += self.inc;
         if self.fix_left > 0 {
             self.phase += self.fix_step;
@@ -155,6 +246,8 @@ impl Lfo {
         self.phase = 0.0;
         self.playing = false;
         self.fix_left = 0;
+        self.tri.snap(self.tri.target);
+        self.tri_now = self.tri.value;
     }
 }
 
@@ -441,6 +534,8 @@ pub mod chorus {
     /// How Mix blends: Equal (equal power), Dry first or Linear
     /// ([`crate::kit::MIX_CURVES`]), as on the delays and reverbs.
     pub const MIX_CURVE: u16 = 8;
+    /// The LFO's shape, Sine or a rounded Triangle (FX quality PR M4).
+    pub const SHAPE: u16 = 9;
 }
 
 static CHORUS_INFO: NodeInfo = NodeInfo {
@@ -448,7 +543,7 @@ static CHORUS_INFO: NodeInfo = NodeInfo {
     name: "Chorus",
     kind: Kind::Effect,
 };
-static CHORUS_PARAMS: [ParamInfo; 9] = [
+static CHORUS_PARAMS: [ParamInfo; 10] = [
     ParamInfo {
         id: 0,
         name: "Rate",
@@ -465,7 +560,7 @@ static CHORUS_PARAMS: [ParamInfo; 9] = [
         name: "Sync",
         group: "LFO",
         min: 0.0,
-        max: 8.0,
+        max: 12.0,
         default: 0.0,
         unit: Unit::None,
         curve: Curve::Choice(SYNCS),
@@ -548,6 +643,17 @@ static CHORUS_PARAMS: [ParamInfo; 9] = [
         curve: Curve::Choice(kit::MIX_CURVES),
         readonly: false,
     },
+    ParamInfo {
+        id: 9,
+        name: "Shape",
+        group: "LFO",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SHAPES),
+        readonly: false,
+    },
 ];
 
 /// LFO phase offsets per voice: any count of voices starts from the same
@@ -578,7 +684,7 @@ const MAX_CHORUS_MS: f32 = 46.0;
 /// copies sit and not how much they wobble, and the bend never passes a
 /// semitone, however fast the Rate.
 pub struct Chorus {
-    v: [f32; 9],
+    v: [f32; 10],
     rate: u32,
     lfo: Lfo,
     lines: [FlatLine; 2],
@@ -615,7 +721,8 @@ impl Chorus {
             return None;
         }
         let base = self.v[chorus::DELAY as usize];
-        Some(base + self.swing_ms() * sine(wrap(phase + VOICE_PHASE[voice])))
+        let shape = self.lfo.tri.target;
+        Some(base + self.swing_ms() * wave(wrap(phase + VOICE_PHASE[voice]), shape))
     }
 
     /// The sweep either side of the Delay, ms, for the settings set.
@@ -702,6 +809,7 @@ impl Chorus {
             chorus::TONE => self.log_tone.target = v.log2(),
             chorus::MIX => self.blend.set_mix(v / 100.0),
             chorus::MIX_CURVE => self.blend.set_curve(v),
+            chorus::SHAPE => self.lfo.set_shape(v >= 0.5),
             _ => {}
         }
         self.follow_rate();
@@ -730,17 +838,29 @@ impl Chorus {
             for (g, s) in g.iter_mut().zip(&mut self.gains) {
                 *g = s.glide();
             }
+            // Every voice's sweep on both sides, side by side (left's
+            // voices first).
+            let v = VOICE_PHASE;
+            let lfo = self.lfo.waves([
+                ph + v[0],
+                ph + v[1],
+                ph + v[2],
+                ph + v[3],
+                ph + v[0] + off_r,
+                ph + v[1] + off_r,
+                ph + v[2] + off_r,
+                ph + v[3] + off_r,
+            ]);
             let x = [l[i], r[i]];
             let mut y = [0.0f32; 2];
             for ch in 0..2 {
                 self.lines[ch].push(x[ch]);
-                let off = if ch == 0 { 0.0 } else { off_r };
                 let mut wet = 0.0;
                 for k in 0..4 {
                     if g[k] == 0.0 {
                         continue;
                     }
-                    let d = self.base + self.swing * sine(wrap(ph + VOICE_PHASE[k] + off));
+                    let d = self.base + self.swing * lfo[4 * ch + k];
                     wet += g[k] * self.lines[ch].read(d);
                 }
                 self.tone[ch] = flush(self.tone[ch] + self.tone_a * (wet - self.tone[ch]));
@@ -784,6 +904,7 @@ impl Node for Chorus {
             30.0,
         );
         self.spread.set_time(rate, SPREAD_MS);
+        self.lfo.prepare(rate);
         self.blend.set_time(rate, 30.0);
         for s in &mut self.gains {
             s.set_time(rate, 20.0);
@@ -848,6 +969,8 @@ pub mod flanger {
     pub const WIDTH: u16 = 5;
     pub const MIX: u16 = 6;
     pub const THROUGH_ZERO: u16 = 7;
+    /// The LFO's shape, Sine or a rounded Triangle (FX quality PR M4).
+    pub const SHAPE: u16 = 8;
 }
 
 static FLANGER_INFO: NodeInfo = NodeInfo {
@@ -855,7 +978,7 @@ static FLANGER_INFO: NodeInfo = NodeInfo {
     name: "Flanger",
     kind: Kind::Effect,
 };
-static FLANGER_PARAMS: [ParamInfo; 8] = [
+static FLANGER_PARAMS: [ParamInfo; 9] = [
     ParamInfo {
         id: 0,
         name: "Rate",
@@ -872,7 +995,7 @@ static FLANGER_PARAMS: [ParamInfo; 8] = [
         name: "Sync",
         group: "LFO",
         min: 0.0,
-        max: 8.0,
+        max: 12.0,
         default: 0.0,
         unit: Unit::None,
         curve: Curve::Choice(SYNCS),
@@ -944,6 +1067,17 @@ static FLANGER_PARAMS: [ParamInfo; 8] = [
         curve: Curve::Choice(THROUGH_ZERO),
         readonly: false,
     },
+    ParamInfo {
+        id: 8,
+        name: "Shape",
+        group: "LFO",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SHAPES),
+        readonly: false,
+    },
 ];
 
 /// The sweep at full depth: two octaves of delay each way.
@@ -1004,7 +1138,7 @@ fn flange_trim(g: f32, m: f32, tz: f32) -> f32 {
 /// a cycle and cancel there. The dry is read through the same flat read
 /// at the wait, so with no Feedback the crossing cancels exactly.
 pub struct Flanger {
-    v: [f32; 8],
+    v: [f32; 9],
     rate: u32,
     lfo: Lfo,
     lines: [FlatLine; 2],
@@ -1058,12 +1192,12 @@ impl Flanger {
         if self.through_zero() {
             let delay = self.v[flanger::DELAY as usize] * 0.001 * self.rate as f32;
             let reach = self.reach_frames(delay, self.v[flanger::DEPTH as usize] / 100.0);
-            return self.tz_at + reach * sine(wrap(phase));
+            return self.tz_at + reach * wave(wrap(phase), self.lfo.tri.target);
         }
         let log_delay = self.v[flanger::DELAY as usize].log2();
         let base = log_delay.exp2() * 0.001 * self.rate as f32;
         let oct = flange_octaves(self.v[flanger::DEPTH as usize] / 100.0, log_delay);
-        base * (oct * sine(wrap(phase))).exp2()
+        base * (oct * wave(wrap(phase), self.lfo.tri.target)).exp2()
     }
 
     /// The copy's delay in ms at LFO phase `phase` (0 to 1 a cycle), for
@@ -1076,7 +1210,7 @@ impl Flanger {
             self.v[flanger::DEPTH as usize] / 100.0,
             self.v[flanger::DELAY as usize].log2(),
         );
-        self.v[flanger::DELAY as usize] * (oct * sine(wrap(phase))).exp2()
+        self.v[flanger::DELAY as usize] * (oct * wave(wrap(phase), self.lfo.tri.target)).exp2()
     }
 
     /// How far the copy is behind the dry in ms at LFO phase `phase` (0 to
@@ -1167,6 +1301,7 @@ impl Flanger {
             flanger::WIDTH => self.width.target = v / 100.0,
             flanger::MIX => self.mix.target = v / 100.0,
             flanger::THROUGH_ZERO => self.tz.target = if v >= 0.5 { 1.0 } else { 0.0 },
+            flanger::SHAPE => self.lfo.set_shape(v >= 0.5),
             _ => {}
         }
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
@@ -1205,11 +1340,11 @@ impl Flanger {
                 self.trim_at = (fb, mix, 0.0);
             }
             let ph = self.lfo.next();
+            let lfo = self.lfo.waves([ph, ph + off_r]);
             let x = [l[i], r[i]];
             let mut y = [0.0f32; 2];
             for ch in 0..2 {
-                let off = if ch == 0 { 0.0 } else { off_r };
-                let d = self.base * (depth * sine(wrap(ph + off))).exp2();
+                let d = self.base * (depth * lfo[ch]).exp2();
                 // Read before the write: the last write is one frame back.
                 let (k, w) = flat_weights(d - 1.0, longest);
                 let wet = self.lines[ch].read_with(k, &w);
@@ -1253,11 +1388,11 @@ impl Flanger {
                 0.0
             };
             let ph = self.lfo.next();
+            let lfo = self.lfo.waves([ph, ph + off_r]);
             let x = [l[i], r[i]];
             let mut y = [0.0f32; 2];
             for ch in 0..2 {
-                let off = if ch == 0 { 0.0 } else { off_r };
-                let s = sine(wrap(ph + off));
+                let s = lfo[ch];
                 // Read before the write: the last write is one frame back.
                 let swept = if tz < 1.0 {
                     let d = self.base * (depth * s).exp2();
@@ -1328,6 +1463,7 @@ impl Node for Flanger {
         );
         self.tz.set_time(rate, TZ_FADE_MS);
         self.lfo.set(self.v[0], self.v[1] as usize, rate);
+        self.lfo.prepare(rate);
         self.set_base(self.log_delay.value);
     }
     fn reset(&mut self) {
@@ -1398,6 +1534,8 @@ pub mod phaser {
     /// How far apart the sides sweep at Width 100 %: a quarter cycle (0,
     /// as saved projects had it) or half (1, opposite sweeps).
     pub const STEREO: u16 = 8;
+    /// The LFO's shape, Sine or a rounded Triangle (FX quality PR M4).
+    pub const SHAPE: u16 = 9;
 }
 
 const STAGE_NAMES: &[&str] = &["2", "4", "6", "8", "12"];
@@ -1439,7 +1577,7 @@ static PHASER_INFO: NodeInfo = NodeInfo {
     name: "Phaser",
     kind: Kind::Effect,
 };
-static PHASER_PARAMS: [ParamInfo; 9] = [
+static PHASER_PARAMS: [ParamInfo; 10] = [
     ParamInfo {
         id: 0,
         name: "Rate",
@@ -1456,7 +1594,7 @@ static PHASER_PARAMS: [ParamInfo; 9] = [
         name: "Sync",
         group: "LFO",
         min: 0.0,
-        max: 8.0,
+        max: 12.0,
         default: 0.0,
         unit: Unit::None,
         curve: Curve::Choice(SYNCS),
@@ -1539,6 +1677,17 @@ static PHASER_PARAMS: [ParamInfo; 9] = [
         curve: Curve::Choice(PHASER_STEREO),
         readonly: false,
     },
+    ParamInfo {
+        id: 9,
+        name: "Shape",
+        group: "LFO",
+        min: 0.0,
+        max: 1.0,
+        default: 0.0,
+        unit: Unit::None,
+        curve: Curve::Choice(SHAPES),
+        readonly: false,
+    },
 ];
 
 /// A stereo phaser: 2 to 12 first-order all-pass stages (zero-delay
@@ -1547,7 +1696,7 @@ static PHASER_PARAMS: [ParamInfo; 9] = [
 /// trim ([`phaser_trim`]) holds it near the dry's level at any Feedback
 /// and Mix.
 pub struct Phaser {
-    v: [f32; 9],
+    v: [f32; 10],
     rate: u32,
     lfo: Lfo,
     depth: Smooth,
@@ -1611,7 +1760,7 @@ impl Phaser {
     pub fn center_hz(&self, phase: f32) -> f32 {
         let depth = PHASE_OCTAVES * self.v[phaser::DEPTH as usize] / 100.0;
         let center = self.v[phaser::CENTER as usize].log2();
-        (center + depth * sine(wrap(phase)))
+        (center + depth * wave(wrap(phase), self.lfo.tri.target))
             .exp2()
             .min(0.45 * self.rate as f32)
     }
@@ -1696,6 +1845,7 @@ impl Phaser {
             phaser::FEEDBACK => self.feedback.target = v / 100.0,
             phaser::WIDTH | phaser::STEREO => self.width.target = self.right_offset(),
             phaser::MIX => self.mix.target = v / 100.0,
+            phaser::SHAPE => self.lfo.set_shape(v >= 0.5),
             _ => {}
         }
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
@@ -1731,9 +1881,9 @@ impl Phaser {
                 // CTL frames (it lands at once after a reset). The counter
                 // runs on across blocks, so any block size sounds the same.
                 self.ctl = CTL;
+                let lfo = self.lfo.waves([ph, ph + off_r]);
                 for ch in 0..2 {
-                    let off = if ch == 0 { 0.0 } else { off_r };
-                    let hz = (center + depth * sine(wrap(ph + off))).exp2().min(top);
+                    let hz = (center + depth * lfo[ch]).exp2().min(top);
                     let g = (PI * hz / fs).tan();
                     let to = g / (1.0 + g);
                     if self.land {
@@ -1810,6 +1960,7 @@ impl Node for Phaser {
         }
         self.hp_r = 1.0 - 2.0 * PI * PHASER_FB_HP_HZ / self.rate as f32;
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
+        self.lfo.prepare(self.rate);
     }
     fn reset(&mut self) {
         for s in [
@@ -1877,6 +2028,88 @@ mod tests {
         for i in 0..1000 {
             let p = i as f32 / 1000.0;
             assert!((sine(p) - (2.0 * PI * p).sin()).abs() < 0.002, "{p}");
+        }
+    }
+
+    #[test]
+    fn the_triangle_is_in_step_with_the_sine_and_its_corners_are_round() {
+        let n = 10_000;
+        let tri: Vec<f32> = (0..=n).map(|i| triangle(i as f32 / n as f32)).collect();
+        // 0, 1, 0, -1 at the quarters, as the sine is, and the same sign.
+        for (q, want) in [(0, 0.0f32), (1, 1.0), (2, 0.0), (3, -1.0)] {
+            let got = tri[q * n / 4];
+            assert!((got - want).abs() < 1e-5, "quarter {q}: {got}");
+        }
+        for (i, t) in tri.iter().enumerate().take(n) {
+            let s = sine(i as f32 / n as f32);
+            assert!(t * s >= 0.0 && t.abs() <= 1.0 + 1e-6, "{i}: {t} {s}");
+        }
+        // The slope: steady between the corners, never more than the
+        // straight parts', and never stepping, so the bend doesn't flip.
+        let slope: Vec<f32> = tri.windows(2).map(|w| (w[1] - w[0]) * n as f32).collect();
+        let straight = 4.0 / (1.0 - 2.0 * TRI_ROUND);
+        assert!((slope[n / 2] + straight).abs() < 1e-2, "{}", slope[n / 2]);
+        assert!((slope[n / 8] - straight).abs() < 1e-2, "{}", slope[n / 8]);
+        let steepest = slope.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(steepest < straight * 1.002, "{steepest}");
+        let step = slope
+            .windows(2)
+            .fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+        // A corner turns the slope round over 2 TRI_ROUND cycles (with
+        // a little f32 rounding; a sharp corner would step 1,000 times this).
+        let turn = 2.0 * straight / (2.0 * TRI_ROUND) / n as f32;
+        assert!(step < turn * 1.5, "{step} against {turn}");
+        // Under the sine's steepest (2 pi), so a sweep limited for the
+        // sine is limited for the triangle too.
+        assert!(straight < 2.0 * PI);
+        // A crossfade sits between the two.
+        for i in 0..100 {
+            let p = i as f32 / 100.0;
+            let mid = wave(p, 0.5);
+            assert!((mid - 0.5 * (sine(p) + triangle(p))).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn the_dotted_and_triplet_syncs_take_their_beats() {
+        assert_eq!(SYNCS.len(), SYNC_BEATS.len());
+        let at_120 = |sync: usize| {
+            let mut lfo = Lfo::default();
+            let ctx = Ctx {
+                bpm: 120.0,
+                beats: 1.0,
+                playing: true,
+                ..Ctx::new(48_000, 0)
+            };
+            lfo.begin(&ctx, sync, f64::INFINITY);
+            lfo.set(1.0, sync, 48_000);
+            (lfo.phase, lfo.inc * 48_000.0)
+        };
+        // A beat at 120 BPM is half a second.
+        for (name, beats) in [
+            ("1/8T", 1.0 / 3.0),
+            ("1/8D", 0.75),
+            ("1/4T", 2.0 / 3.0),
+            ("1/4D", 1.5),
+        ] {
+            let k = SYNCS.iter().position(|s| *s == name).unwrap();
+            assert!(
+                k > 8,
+                "{name} appended after the choices saved projects have"
+            );
+            let (phase, hz) = at_120(k);
+            assert!((hz - 2.0 / beats).abs() < 1e-9, "{name}: {hz} Hz");
+            // One beat into the song.
+            assert!(
+                (phase - (1.0 / beats).rem_euclid(1.0)).abs() < 1e-9,
+                "{name}: {phase}"
+            );
+        }
+        for params in [&CHORUS_PARAMS[..], &FLANGER_PARAMS[..], &PHASER_PARAMS[..]] {
+            let sync = params.iter().find(|p| p.name == "Sync").unwrap();
+            assert_eq!(sync.max as usize, SYNCS.len() - 1);
+            let shape = params.iter().find(|p| p.name == "Shape").unwrap();
+            assert_eq!((shape.max as usize, shape.default), (SHAPES.len() - 1, 0.0));
         }
     }
 

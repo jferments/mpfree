@@ -26,6 +26,14 @@
 //! ([`Player::erased_locks`]), trigless ones too, so the new take does not
 //! play the old take's locks.
 //!
+//! **Live erase** (ERASE held on a pad while recording, the MPC's way;
+//! sequencer roadmap S1). While the transport records, the armed track's
+//! notes of the sounds [`Player::set_erasing`] names are erased as the
+//! playhead reaches them, on every pass, with that sound's locks; they
+//! go out through [`Player::erased`] and [`Player::erased_locks`] like a
+//! replace pass's, in the take being recorded, so its undo brings them
+//! back.
+//!
 //! **Chance.** A note with a chance below 100 % rolls each time it comes
 //! round. The roll is a hash of the note and the absolute frame it would
 //! play on, so it is the same for any period size, yet differs on every
@@ -449,6 +457,9 @@ pub struct Player {
     n_erased_locks: usize,
     /// Replace recording: the armed clip's pass being replaced.
     replacing: Option<i64>,
+    /// Live erase: the sounds (a bit each, by note) whose notes on the
+    /// armed track are erased while the transport records.
+    erasing: u128,
     /// This take (since the last record-on) has had its replace pass.
     replaced: bool,
     /// Record-ons so far: the number of the latest take.
@@ -503,6 +514,32 @@ const NO_ERASED_LOCK: ErasedLock = ErasedLock {
     take: 0,
 };
 
+/// What a clip's span erases: replace recording's pass, and live erase's
+/// sounds (a bit each, by note).
+#[derive(Clone, Copy, Debug)]
+struct Erase {
+    pass: Option<i64>,
+    notes: u128,
+}
+
+const NO_ERASE: Erase = Erase {
+    pass: None,
+    notes: 0,
+};
+
+impl Erase {
+    fn is_none(self) -> bool {
+        self.pass.is_none() && self.notes == 0
+    }
+
+    /// Whether live erase erases sound `note`.
+    fn sound(self, note: u8) -> bool {
+        1u128
+            .checked_shl(u32::from(note))
+            .is_some_and(|b| self.notes & b != 0)
+    }
+}
+
 const NO_ERASED: Erased = Erased {
     track: 0,
     slot: 0,
@@ -540,6 +577,7 @@ impl Player {
             n_erased_locks: 0,
             replacing: None,
             replaced: false,
+            erasing: 0,
             take: 0,
             switches: Switches::new(),
             started: [Started {
@@ -548,6 +586,7 @@ impl Player {
                 slot: None,
                 at: 0,
                 origin: 0,
+                from: 0,
             }; MAX_TRACKS],
             n_started: 0,
             lock_starts: [NO_LOCK_START; MAX_LOCK_STARTS],
@@ -579,6 +618,19 @@ impl Player {
     pub fn anchor_dice(&mut self, on: bool) {
         self.anchored = on;
         self.dice_from = 0;
+    }
+
+    /// Live erase: from the coming period, while the transport records,
+    /// erase the armed track's notes of these sounds (a bit each, by note:
+    /// bit 3 for note 3) as the playhead reaches them, with their sound's
+    /// locks; 0 erases nothing. Real-time safe.
+    pub fn set_erasing(&mut self, notes: u128) {
+        self.erasing = notes;
+    }
+
+    /// The sounds live erase erases (see [`Player::set_erasing`]).
+    pub fn erasing(&self) -> u128 {
+        self.erasing
     }
 
     /// Turn FILL on or off from frame `offset` of the coming period (the
@@ -773,10 +825,17 @@ impl Player {
         for (i, track) in view.tracks.iter().enumerate() {
             // A scene's mute switches with its cue, before the view shows it.
             let muted = self.switches.muted(view, i);
-            let replace = if view.armed == Some(i) {
-                self.replacing
+            let erase = if view.armed == Some(i) {
+                Erase {
+                    pass: self.replacing,
+                    notes: if span.state == State::Recording {
+                        self.erasing
+                    } else {
+                        0
+                    },
+                }
             } else {
-                None
+                NO_ERASE
             };
             // A cue starting in this span: the clip so far plays up to it.
             let switch = self.switches.due(view, i, &ticks, bar);
@@ -814,9 +873,9 @@ impl Player {
                 self.forget_moves(i);
             }
             if let Some((clip, origin, start)) = playing {
-                if !(muted && replace.is_none()) {
+                if !(muted && erase.is_none()) {
                     self.collect(
-                        clip, origin, start, i as u16, track.dest, span.swing, &before, replace,
+                        clip, origin, start, i as u16, track.dest, span.swing, &before, erase,
                         !muted, switch,
                     );
                 }
@@ -874,7 +933,7 @@ impl Player {
                     track.dest,
                     span.swing,
                     &(at..ticks.end),
-                    None,
+                    NO_ERASE,
                     true,
                     None,
                 );
@@ -1540,7 +1599,7 @@ impl Player {
                 track.dest,
                 swing,
                 &part,
-                None,
+                NO_ERASE,
                 true,
                 Some(end),
             );
@@ -1563,7 +1622,8 @@ impl Player {
     }
 
     /// The notes of `clip`, from `origin`, whose tick is in `ticks`. With
-    /// `replace`, the notes of that pass are erased instead; without
+    /// `erase`, the notes of its pass, and those of its sounds on any pass,
+    /// are erased instead; without
     /// `sound`, the rest are not played. With `cut`, notes end there at the
     /// latest. Passes count from 1 at `start`, for the trig conditions.
     #[allow(clippy::too_many_arguments)]
@@ -1576,7 +1636,7 @@ impl Player {
         dest: DestId,
         transport_swing: Swing,
         ticks: &Range<Tick>,
-        replace: Option<i64>,
+        erase: Erase,
         sound: bool,
         cut: Option<Tick>,
     ) {
@@ -1624,7 +1684,7 @@ impl Player {
                 if !ticks.contains(&tick) {
                     continue;
                 }
-                if replace == Some(pass as i64) {
+                if erase.pass == Some(pass as i64) || erase.sound(n.note) {
                     if self.n_erased == MAX_ERASED {
                         self.stats.dropped += 1;
                     } else {
@@ -1679,8 +1739,9 @@ impl Player {
                 });
             }
             // The pass's locks, placed as its notes are. A pass being
-            // replaced erases them; a muted track sends none.
-            if sound || replace == Some(pass as i64) {
+            // replaced erases them, and live erase its sounds' own; a
+            // muted track sends none.
+            if sound || erase.pass == Some(pass as i64) || erase.notes != 0 {
                 let first = clip.locks.partition_point(|l| l.local < from);
                 for l in &clip.locks[first..] {
                     if l.local > to {
@@ -1691,7 +1752,9 @@ impl Player {
                     if !ticks.contains(&tick) {
                         continue;
                     }
-                    if replace == Some(pass as i64) {
+                    if erase.pass == Some(pass as i64)
+                        || l.src.sound.is_some_and(|s| erase.sound(s))
+                    {
                         if self.n_erased_locks == MAX_ERASED {
                             self.stats.dropped += 1;
                         } else {
@@ -1704,7 +1767,7 @@ impl Player {
                             self.n_erased_locks += 1;
                             self.stats.erased += 1;
                         }
-                    } else {
+                    } else if sound {
                         self.push_lock(LockStart {
                             kind: LockKind::Step,
                             tick,

@@ -10,7 +10,7 @@ The Arrange tab turns clips into a song in two ways. You can play it live, launc
 
 ## Scenes
 
-A row of the clip grid is a scene. Tap a row's number on the left and every clip in that row starts on the next bar line, so the whole part of the song changes at once.
+A row of the clip grid is a scene. Tap a row's number on the left and every clip in that row starts on the next bar line (or the line the Record panel's **Launch** sets, see [Recording a clip](clips.md#recording-a-clip)), so the whole part of the song changes at once.
 
 {{shot: clips | The Arrange tab's clip grid, with the morph bar under it.}}
 

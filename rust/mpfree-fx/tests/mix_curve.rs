@@ -105,7 +105,10 @@ fn gains(c: usize, m: f64) -> (f64, f64) {
 }
 
 /// Controls added after the Mix curve, appended in turn (engine, name).
-const ADDED_AFTER: [(&str, &str); 1] = [("mpfree.fx.room", "Diffusion")];
+const ADDED_AFTER: [(&str, &str); 2] = [
+    ("mpfree.fx.room", "Diffusion"),
+    ("mpfree.fx.chorus", "Shape"),
+];
 
 #[test]
 fn every_delay_and_reverb_has_the_mix_curve_after_its_older_controls() {
