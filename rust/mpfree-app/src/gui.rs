@@ -231,12 +231,17 @@ enum HeldPlace {
 }
 
 /// While step pads are held: what the Q-Links of bank `bank` (or the
-/// Synth tab's knobs) and another tap do.
-fn step_held_hint(name: &str, bank: play_page::HeldBank, place: HeldPlace) -> String {
+/// Synth tab's knobs) and another tap do. `line`: steps of the synth's
+/// line, whose Step bank starts with the note and which take a keyboard's
+/// keys.
+fn step_held_hint(name: &str, bank: play_page::HeldBank, place: HeldPlace, line: bool) -> String {
     use play_page::HeldBank;
     let bank = match (place, bank) {
         (HeldPlace::Synth, _) => "a knob here: a lock   ·   ERASE: the locks off",
         (HeldPlace::Elsewhere, _) => "MAIN: Play, where the Q-Links set it",
+        (HeldPlace::QLinks, HeldBank::Step) if line => {
+            "Q-Links: note, velocity, length, chance   ·   keys: the notes   ·   Q-LINK: condition, ratchet"
+        }
         (HeldPlace::QLinks, HeldBank::Step) => {
             "Q-Links: velocity, length, nudge, chance   ·   Q-LINK: condition, ratchet"
         }
@@ -2971,7 +2976,7 @@ impl Player {
             } else {
                 HeldPlace::Elsewhere
             };
-            step_held_hint(&name, self.play.held_bank(), place)
+            step_held_hint(&name, self.play.held_bank(), place, self.play.on_line())
         } else if let Some(s) = self.status.steps {
             step_seq_hint(s)
         } else if self.status.mute_keys == MuteKeys::Tracks {

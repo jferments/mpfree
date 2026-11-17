@@ -380,6 +380,9 @@ pub enum Knob {
     Cond,
     Ratchet,
     NudgeTicks,
+    /// A step of the synth's line (STEP SEQ on the synth): its notes move
+    /// along the pads, the chord keeping its shape (`Change::Note`).
+    Note,
     /// No knob: an empty card (the Trig bank's fourth, for the ratchet's
     /// ramp to come).
     Empty,
@@ -888,14 +891,14 @@ impl PlayPage {
                     Knob::Sound(2),
                     Knob::Sound(3),
                 ],
-                HeldBank::Step => [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance],
+                HeldBank::Step => self.step_bank(),
             };
         }
         match self.view {
             PlayView::Beats if self.selected_step().is_some() => match self.bank {
                 // The inspector's Trig bank, or Q-LINK on a picked step.
                 HeldBank::Trig => [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Empty],
-                _ => [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance],
+                _ => self.step_bank(),
             },
             PlayView::All | PlayView::Beats => {
                 [Knob::Swing, Knob::Tune, Knob::DrumsFilter, Knob::DrumsSend]
@@ -907,6 +910,69 @@ impl PlayPage {
                 Knob::LoopFilter,
             ],
         }
+    }
+
+    /// The Step bank: a sound's velocity, length, nudge and chance; on the
+    /// synth's line the Note knob comes first and the nudge is on Trig (in
+    /// ticks), as the design's synth tracks have it.
+    fn step_bank(&self) -> [Knob; 4] {
+        if self.on_line() {
+            [Knob::Note, Knob::Velocity, Knob::Length, Knob::Chance]
+        } else {
+            [Knob::Velocity, Knob::Length, Knob::Nudge, Knob::Chance]
+        }
+    }
+
+    /// The steps the Q-Links set are the synth's line's: held on the pads,
+    /// or picked on its lane.
+    pub fn on_line(&self) -> bool {
+        match &self.held {
+            Some((sound, _)) => *sound == LINE,
+            None => self.selected.is_some_and(|(p, _)| p == usize::from(LINE)),
+        }
+    }
+
+    /// The pads (lowest first) that step `i` of the line sounds.
+    fn line_pads(&self, i: usize) -> Vec<u8> {
+        let Some(clip) = self.steps.clip.as_ref() else {
+            return Vec::new();
+        };
+        clip.rows
+            .iter()
+            .filter(|(p, row)| *p < 16 && row.get(i).copied().flatten().is_some())
+            .map(|(p, _)| *p)
+            .collect::<std::collections::BTreeSet<u8>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Step `i` of the line by its notes, as the pads name them: "C3", or
+    /// a chord's "C3 + Eb3 + G3".
+    pub fn line_notes(&self, i: usize) -> String {
+        let names: Vec<String> = self
+            .line_pads(i)
+            .into_iter()
+            .map(|p| self.pad_name(usize::from(p)))
+            .collect();
+        names.join(" + ")
+    }
+
+    /// How far the lowest note of the line's steps being set can go up the
+    /// pads with every note of each staying on them: 15 less the widest
+    /// chord's span.
+    fn note_top(&self) -> u8 {
+        let span = |i: usize| {
+            self.steps
+                .clip
+                .as_ref()
+                .and_then(|c| c.row(LINE).get(i).copied().flatten())
+                .map_or(0, |s| s.high.saturating_sub(s.low))
+        };
+        let steps: Vec<usize> = match &self.held {
+            Some((_, steps)) => steps.clone(),
+            None => self.selected.map(|(_, i)| i).into_iter().collect(),
+        };
+        15u8.saturating_sub(steps.into_iter().map(span).max().unwrap_or(0))
     }
 
     /// The step the Q-Links set: the step pad held first that has a note
@@ -1003,6 +1069,13 @@ impl PlayPage {
     pub fn inspect(&self) -> Option<Inspect> {
         let (pad, i, held) = self.inspected()?;
         let name = self.pad_name(pad);
+        // A step of the line by its notes ("Step 5 · C3 + G3").
+        let notes = if pad == usize::from(LINE) {
+            self.line_notes(i)
+        } else {
+            String::new()
+        };
+        let name = if notes.is_empty() { name } else { notes };
         let title = match (held, self.held_name()) {
             (true, Some(steps)) => format!("{steps} · {name} · held"),
             _ => format!("Step {} · {name}", i + 1),
@@ -1021,6 +1094,8 @@ impl PlayPage {
         };
         let bank = if held { self.held_bank() } else { self.bank };
         let turned = match bank {
+            // On the line, Note (in the title) takes the nudge's Q-Link.
+            HeldBank::Step if pad == usize::from(LINE) => [true, true, false, true, false, false],
             HeldBank::Step => [true, true, true, true, false, false],
             HeldBank::Trig => [false, false, true, false, true, true],
             HeldBank::Sound => [false; 6],
@@ -1267,7 +1342,8 @@ impl PlayPage {
             | Knob::Chance
             | Knob::Cond
             | Knob::Ratchet
-            | Knob::NudgeTicks => {
+            | Knob::NudgeTicks
+            | Knob::Note => {
                 let Some((pad, i, s)) = self.target_step() else {
                     return QLinkCard::default();
                 };
@@ -1276,6 +1352,16 @@ impl PlayPage {
                     None => format!("Step {} · {}", i + 1, self.pad_name(pad)),
                 };
                 match knob {
+                    Knob::Note => {
+                        // The lowest note; a chord says so in its name.
+                        let name = if s.notes > 1 { "Chord" } else { "Note" };
+                        QLinkCard::new(
+                            name,
+                            &scope,
+                            &self.pad_name(usize::from(s.low)),
+                            f32::from(s.low) / f32::from(self.note_top().max(1)),
+                        )
+                    }
                     Knob::Cond => {
                         let all = Cond::all();
                         let at = all.iter().position(|&c| c == s.cond).unwrap_or(0);
@@ -1437,9 +1523,21 @@ impl PlayPage {
             | Knob::Chance
             | Knob::Cond
             | Knob::Ratchet
-            | Knob::NudgeTicks => {
+            | Knob::NudgeTicks
+            | Knob::Note => {
                 let (pad, i, s) = self.target_step()?;
                 let change = match knob {
+                    // A pad a detent, every note of every step set staying
+                    // on the pads.
+                    Knob::Note => {
+                        let to = (i32::from(s.low) + ticks.signum())
+                            .clamp(0, i32::from(self.note_top()))
+                            as u8;
+                        if to == s.low {
+                            return None;
+                        }
+                        Change::Note(to)
+                    }
                     Knob::Cond => Change::Cond(s.cond.step(ticks.signum())),
                     Knob::Ratchet => Change::Ratchet(
                         (i32::from(s.ratchet) + ticks.signum())
@@ -1541,6 +1639,10 @@ impl PlayPage {
                 Change::Cond(c) if c.ok() => s.cond = c,
                 Change::Cond(_) => {}
                 Change::Ratchet(r) => s.ratchet = r.clamp(1, mpfree_seq::MAX_RATCHET),
+                Change::Note(to) => {
+                    s.high = to.saturating_add(s.high - s.low);
+                    s.low = to;
+                }
             }
         }
     }

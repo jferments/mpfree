@@ -194,9 +194,9 @@ Press **STEP SEQ** with the synth on the pads and the 16 pads become the steps o
 
 On the Beats view the line is the lane on the pads, named **Line**. Tap an empty step there to put the note or chord on it; tap a lit one to pick it, and tap it again to take it off.
 
-Everything else works as on a drum's steps (see [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads)): hold a step and turn the Q-Links to change its velocity, length, nudge and chance for every note on it; press **Q-LINK** for its condition and ratchet, and again for **Sound** to lock the synth's knobs on that step; hold a step and hit a later one for a long note; **COPY** and **ERASE** copy and clear whole steps; **UNDO** takes any of it back.
+**Changing a step's notes.** Hold a step and turn **Q-Link 1**: its card says **Note** (or **Chord**) and the lowest note, and each click moves the step a pad up or down, a chord keeping its shape. Or, with a keyboard on **MIDI IN** or the USB socket, hold a step and play: the keys you hold together go on the step in place of what it had, each as loud as you played it. Hold several steps to give them all the same notes. The keys play the pads' notes, so with a scale on, a key outside it (or past the pads' range) can't go on a step, and the hint line says so. **UNDO** takes the whole chord back in one go.
 
-To change one note of a chord on a step, take the step off and put the new chord there. A knob for a step's note comes next.
+Everything else works as on a drum's steps (see [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads)): the other Q-Links set the step's velocity, length and chance for every note on it; press **Q-LINK** for its condition, ratchet and nudge, and again for **Sound** to lock the synth's knobs on that step; hold a step and hit a later one for a long note; **COPY** and **ERASE** copy and clear whole steps; **UNDO** takes any of it back. Tap a step of the **Line** lane on Beats and the step inspector names its notes ("Step 1 · E3 + G3").
 
 ## Tuning
 
