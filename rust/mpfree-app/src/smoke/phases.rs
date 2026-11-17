@@ -389,6 +389,8 @@ mod looper {
             .touch(7, mpfree_ui::Touch::Down, x, y)
             .into_iter()
             .collect();
+        // Held still until it can lift (a move sooner swipes the rows).
+        s.run_for(f64::from(crate::looper_tab::LIFT_HOLD_S) + 0.05);
         for i in 1..=6 {
             let (mx, my) = (x + (tx - x) * i / 6, y + (ty - y) * i / 6);
             acts.extend(s.screen.touch(7, mpfree_ui::Touch::Move, mx, my));
