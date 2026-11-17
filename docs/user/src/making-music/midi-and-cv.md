@@ -1,18 +1,18 @@
 <!--
 status: changing
-covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/cv_out.rs
-checked: 2026-11-14 b76c3c7
+covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-midi-ui/src/port_page.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/midi_out.rs rust/mpfree-app/src/cv_out.rs
+checked: 2026-11-16 08282af
 -->
 
 # Playing other gear: MIDI, sync and CV
 
-The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too. Playing gear from **MIDI OUT** and the CV outputs stay off until they've been checked on an MPC One. This page says what each will do, so you can plan your setup.
+The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too. Playing gear from **MIDI OUT** and the CV outputs are built but not yet checked on an MPC One, so they stay off until you turn on **Send MIDI and CV out** in [Prefs](../reference/prefs.md). Its value reads **On (sends MIDI)** while it sends, and MPFree remembers it at the next start.
 
-All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon at the right end of the top bar, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. Each port's input and thru describe your gear, so they stay the same for every project: MPFree keeps them when it quits and puts them back at the next start (with a data folder on the stick). Everything else (what each track plays on, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the song: it is saved with the project and comes back when you open it, and a new project starts from the defaults.
+All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon at the right end of the top bar, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. Each port's input, thru, what it ignores and its delay describe your gear, so they stay the same for every project: MPFree keeps them when it quits and puts them back at the next start (with a data folder on the stick). Everything else (what each track plays on, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the song: it is saved with the project and comes back when you open it, and a new project starts from the defaults.
 
 ## Playing MPFree from a keyboard
 
-Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do. Its knobs, faders and pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs.
+Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do. Its knobs, faders and pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs. A USB interface with several MIDI ports shows each one as a port of its own, named as the device names it (up to 15 USB ports at once). If a keyboard sends **All notes off** (or **All sound off**), the keys it holds on that channel let go.
 
 - **With a synth on the pads,** each key plays its own note, through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard too. A note held on a key and a pad ends when both let go.
 - **With a drum kit,** the keys that match the MPC's own pad notes hit the pads: C#2 is pad 1, C2 is pad 2, and so on. Other keys play nothing.
@@ -25,10 +25,24 @@ Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and i
 
 A track can play a synth or drum machine through **MIDI OUT** instead of a sound inside MPFree. It has one setting for where it plays, **Plays on** in the I/O view's MIDI section: the port and the MIDI channel together. A track can also send a program change (**Program**), so the synth switches to the right sound when the song starts.
 
-If a track would send nothing, because no port is picked or the device is unplugged, it says so under the track's name.
+If a track would send nothing, because no port is picked, the device is unplugged or **Send MIDI and CV out** is off in Prefs, it says so under the track's name.
 
 > [!MPC]
 > On the MPC, a MIDI track needs two settings with nearly the same name before a note leaves the jack: the track's MIDI output channel and its MIDI Out routing. In MPFree it's one setting, the port and the channel together.
+
+## A port's page
+
+Each port's row in the MIDI section has **Open ›** at its right; it, or a tap on the port's name, opens the port's page. **‹ MIDI** or **BACK** closes it.
+
+- **This port** says what it is (the MPC's 5-pin jacks, or a USB device) and its **Input**: **Both**, **Plays tracks** or **Learn only**, the same setting as on its row.
+- **Ignore coming in** has four switches: **Clock**, **Program**, **Aftertouch** and **All notes off**. A lit one is ignored: those messages from this port play nothing, teach nothing and move no tempo. The Monitor still lists them, marked *ignored: this port's setting*, so you can see they arrive. **Clock** also covers the Start, Stop and Song Position that come with it. Ignore **Clock** on a drum machine that sends clock you don't want; ignore **Program** on a keyboard that sends one when you change its sound.
+- **What it does** lists, in words, what this port's messages do today and what plays on it: the tracks that play out of it with their channels, the controls learned from it, and whether the tempo follows it.
+- **Now** shows the newest message in (and, for the 5-pin jacks, out) and how long ago.
+- **Clock to this port** is **Off**, **While playing** or **Always**: the same setting as **Clock out** under Sync, saved with the project.
+- **This gear's delay** is how late the gear on this port sounds after MIDI reaches it, in steps of 0.5 ms (– and +, or Q-Link 3). MPFree sends that port's notes and clock that much early, so they land on the beat. It can send up to about 9 ms early (the sound's buffer, the time between MPFree making a sound and you hearing it); the card says when the delay is more than that.
+- **Send to it** (marked **SENDS MIDI**): **Test note** plays C4 for half a second on the first channel a track plays this port on (else channel 1), to check the cable and the synth's channel. **All notes off** ends MPFree's own notes on the port, then sends All notes off (CC 123) on all 16 channels, for a synth that hangs. Both are greyed while **Send MIDI and CV out** is off, and on USB devices, which MPFree doesn't send to yet.
+
+The wheel picks a setting on the page, – and + change it, and Q-Links 1 to 3 turn **Input**, **Clock** and the delay.
 
 ## Staying in time with other gear
 
@@ -76,7 +90,7 @@ The outputs are set in the mixer's I/O view, under CV. A track that drives CV st
 
 When one note ends just as the next starts, as a sequence's notes do, the gate drops for 2 ms between them, so the module's envelope starts again. Hold two notes at once for a legato line instead.
 
-CV 1 to 4 will work first, once MPFree has been checked on an MPC One with a meter; CV 5 to 8 come after that check. Until an output works, its row in the I/O view says it sends nothing. Modules differ, so each output will also be tunable against your module.
+CV 1 to 4 send while **Send MIDI and CV out** is on in Prefs. They haven't been checked on an MPC One with a meter yet, so treat their volts as a first guess; CV 5 to 8 come after that check. Until an output works, its row in the I/O view says it sends nothing. Modules differ, so each output will also be tunable against your module.
 
 ## Seeing what comes in and goes out
 
@@ -88,7 +102,7 @@ The mixer's I/O view has a **Monitor** section: open the mixer with the I/O icon
   - *Bass, the armed track*: a key played the track on screen. With a drum kit it says the pad the note plays (*Drums, pad 1*), or *nothing: no pad on Drums* for a note outside the 16 pad notes.
   - *Learn: Cutoff (Filter, Bass)*, in purple: a learned control moved that value. *Learn took it* marks the move that taught it.
   - *clock: the tempo follows it*, in green: the clock, Start, Stop or Song Position of the port the tempo comes from (Sync in the I/O view).
-  - In yellow, what nothing took: *nothing takes it* (a knob nobody learned, a pitch bend the tracks don't take from a keyboard yet), *not played: Learn only* (the port's input is Learn only), *not followed* (clock on a port the tempo isn't from), and *ignored* for messages MPFree never reads, such as SysEx.
+  - In yellow, what nothing took: *nothing takes it* (a knob nobody learned, a pitch bend the tracks don't take from a keyboard yet), *not played: Learn only* (the port's input is Learn only), *not followed* (clock on a port the tempo isn't from), *ignored: this port's setting* (switched off under **Ignore coming in** on [the port's page](#a-ports-page)), and *ignored* for messages MPFree never reads, such as SysEx.
   - Going out: *sent by Bass* names the track that played it, and *MPFree's clock* marks the clock MPFree sends.
 - **Picking what is listed.** The chips along the top switch each kind of message on and off (Notes, CC, Program, Bend & pressure, Clock, SysEx) and each way (In, Out). Tap a channel's light to list only that port, way and channel, or a port's name to list only that port and way; tap it again to list everything.
 - **Looking back.** Turn the data wheel (or use the page arrows) to scroll back; the list holds still while you look. Scroll back to the top and it follows again. **Hold** stops the list until you tap it again, and **Clear** empties it.

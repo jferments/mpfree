@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use mpfree_midi::setup::{IgnoreSet, Ignored, DIN_NAME};
 use mpfree_midi_ui::{sample, sections, Built, IoModel};
 use mpfree_mixer_ui::sample::{name, play, screen, song_mixer};
 use mpfree_mixer_ui::{MixState, MixView};
@@ -36,6 +37,8 @@ struct Shot {
     taps: Vec<(i32, i32)>,
     /// The app's clock when it is drawn (seconds).
     at: u64,
+    /// Then the page of this port, opened by its row's Open ›.
+    open: Option<&'static str>,
 }
 
 fn shots() -> Vec<Shot> {
@@ -74,6 +77,15 @@ fn shots() -> Vec<Shot> {
         built.setup.learned(l);
         built.live.learn_names.push(name.into());
     }
+    let rig_port = rig.clone();
+    let mut din_port = sample::monitored(built.clone());
+    din_port.live.early_ms = 8.7;
+    din_port.setup.set_port(DIN_NAME, |p| {
+        p.ignore = IgnoreSet::NONE
+            .with(Ignored::Clock, true)
+            .with(Ignored::Aftertouch, true);
+        p.delay_tenths = 65;
+    });
     vec![
         Shot {
             name: "io-midi",
@@ -83,6 +95,7 @@ fn shots() -> Vec<Shot> {
             wheel: 0,
             taps: vec![],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-midi-picker",
@@ -91,8 +104,9 @@ fn shots() -> Vec<Shot> {
             model: rig.clone(),
             // The Lead track's Plays on field (the rows' layout is fixed).
             wheel: 0,
-            taps: vec![(186 + 330 + 135, 0)],
+            taps: vec![(186 + 290 + 110, 0)],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-sync",
@@ -102,6 +116,7 @@ fn shots() -> Vec<Shot> {
             wheel: 0,
             taps: vec![],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-cv",
@@ -111,6 +126,7 @@ fn shots() -> Vec<Shot> {
             wheel: 0,
             taps: vec![],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-midi-built",
@@ -120,6 +136,7 @@ fn shots() -> Vec<Shot> {
             wheel: 0,
             taps: vec![],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-midi-learn",
@@ -129,6 +146,7 @@ fn shots() -> Vec<Shot> {
             wheel: 40,
             taps: vec![],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-cv-built",
@@ -138,6 +156,7 @@ fn shots() -> Vec<Shot> {
             wheel: 0,
             taps: vec![],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-monitor",
@@ -147,6 +166,7 @@ fn shots() -> Vec<Shot> {
             wheel: 0,
             taps: vec![],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-monitor-channel",
@@ -157,6 +177,7 @@ fn shots() -> Vec<Shot> {
             // y -1: the keyboard's channel 1 light, in.
             taps: vec![(0, -1)],
             at: 1,
+            open: None,
         },
         Shot {
             name: "io-monitor-now",
@@ -167,6 +188,27 @@ fn shots() -> Vec<Shot> {
             // y -2: the Now half of List | Now.
             taps: vec![(0, -2)],
             at: sample::HELD_AT as u64,
+            open: None,
+        },
+        Shot {
+            name: "io-midi-port",
+            about: "A port's page (board 6), the USB keyboard: Learn only, nothing ignored, what it does today; Send to it greyed until MPFree sends to USB devices",
+            section: 1,
+            model: rig_port,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: Some("Keystep 37"),
+        },
+        Shot {
+            name: "io-midi-port-din",
+            about: "The 5-pin jacks' page with MIDI out on: clock and aftertouch ignored, the gear 6.5 ms late so MIDI out sends that early, the newest message in and out, test note and All notes off",
+            section: 1,
+            model: din_port,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: Some(DIN_NAME),
         },
     ]
 }
@@ -209,6 +251,18 @@ fn render(shot: &Shot) -> Result<SoftCanvas, String> {
             -2 => monitor_now(&ui),
             _ => (x, y),
         };
+        tap(&mut ui, x, y);
+        set_hint(&mut ui);
+        ui.paint(&mut canvas);
+    }
+    if let Some(port) = shot.open {
+        let label = format!("{port}: Open ›");
+        let t = ui
+            .targets()
+            .into_iter()
+            .find(|t| t.target.id == "field" && t.target.label == label)
+            .ok_or_else(|| format!("{}: no Open › on {port}'s row", shot.name))?;
+        let (x, y) = t.target.centre();
         tap(&mut ui, x, y);
         set_hint(&mut ui);
         ui.paint(&mut canvas);

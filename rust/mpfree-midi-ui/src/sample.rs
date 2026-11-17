@@ -19,6 +19,7 @@ pub fn rig() -> IoModel {
     live.ports.push(PortLive {
         name: "Keystep 37".into(),
         kind: "USB".into(),
+        about: "USB".into(),
         has_in: true,
         has_out: true,
         last_in: None,

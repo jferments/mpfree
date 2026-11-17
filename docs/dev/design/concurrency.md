@@ -23,8 +23,8 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-lights` | The controller's lights and the session ping, queued by the audio loop ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-report` | The report's lines (`/run/mpfree-app/report.txt`), queued by the audio loop |
 | `mpfree-build` | Builds the chain editor's effects, and drops the ones edits take out |
-| `midi-out`, `cv-out` | MIDI Out and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC |
-| `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load` | Helper threads: USB keyboards, loading sounds |
+| `midi-out`, `cv-out` | MIDI Out and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC. Started from the audio loop when Prefs' Send MIDI and CV out goes on; when it goes off, each is set aside (`Closing`) and let go once its last messages have left, never joined from the loop |
+| `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load` | Helper threads: USB MIDI devices (every input of each, opened read only, handed to the audio loop), loading sounds |
 | `mpfree-print` | The looper's prints and buffers, at idle priority ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-screen` | Touch, the raster, the framebuffer. Ticks the pages every 33 ms and sleeps between ([profiling.md](profiling.md#the-screens-cost)) |
 | `mpfree-touch-bell` | The touchscreen's doorbell: sleeps in read(2) on a second read-only handle on the panel and wakes `mpfree-screen` when it sends something |
