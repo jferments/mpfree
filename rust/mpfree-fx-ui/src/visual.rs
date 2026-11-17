@@ -445,16 +445,21 @@ pub fn strip(
                 lofi::WOW,
                 lofi::FLUTTER,
                 lofi::SATURATION,
+                lofi::DROPOUTS,
                 lofi::CRACKLE,
                 lofi::NOISE,
+                lofi::HUM,
             ];
+            let (wow_pct, _) = l.wow_flutter_pct();
             s.push(
                 Card {
                     title: "Wear".into(),
-                    caption: format!("Amount {}", text(st, lofi::AMOUNT)),
+                    caption: format!("Amount {} · wow {wow_pct:.2} %", text(st, lofi::AMOUNT)),
                     bars: wear.iter().map(|&id| a * v(id) / 100.0).collect(),
-                    bar_colors: vec![t.accent, t.accent, t.accent, t.warn, t.warn],
-                    bar_labels: ["Wow", "Flutter", "Sat", "Crackle", "Noise"]
+                    bar_colors: vec![
+                        t.accent, t.accent, t.accent, t.accent, t.warn, t.warn, t.warn,
+                    ],
+                    bar_labels: ["Wow", "Flutter", "Sat", "Drop", "Crackle", "Noise", "Hum"]
                         .iter()
                         .map(|s| s.to_string())
                         .collect(),

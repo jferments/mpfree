@@ -874,8 +874,10 @@ impl Widget for WaveOverview {
         if self.peaks.is_none() {
             return Vec::new();
         }
-        // Zoomed all the way out the view has nowhere to move.
-        let whole = self.shown.0 <= 0.0 && self.shown.1 >= self.frames() as f64;
+        // Zoomed all the way out the view has nowhere to move (to within
+        // half a frame: the view's end is worked out in floating point, and
+        // some widths land a hair short).
+        let whole = self.shown.0 <= 0.5 && self.shown.1 >= self.frames() as f64 - 0.5;
         vec![Target::tap("overview", 0, "overview", Self::inner(r)).disabled_if(whole)]
     }
 

@@ -71,7 +71,7 @@ use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap};
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
 use crate::widgets::{
-    ButtonRow, InfoCard, KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList,
+    ButtonRow, KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList,
 };
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
@@ -82,7 +82,6 @@ pub const FILTER: &str = "smp-play-filter";
 pub const LIST: &str = "smp-play-list";
 pub const KEYS: &str = "smp-play-keys";
 pub const QLINKS: [&str; 4] = ["smp-play-q1", "smp-play-q2", "smp-play-q3", "smp-play-q4"];
-pub const WHEEL: &str = "smp-play-wheel";
 /// The scene strip: Store A, Store B and Return, and the crossfader.
 pub const SCENES: &str = "smp-play-scenes";
 pub const FADER: &str = "smp-play-fader";
@@ -95,18 +94,22 @@ pub const LAYER_EDIT: &str = "smp-play-layer-edit";
 /// over the filter, and under them the layer buttons and the scene strip,
 /// beside the section's list (tall enough for its eight rows), between the
 /// pad bar and the Q-Link cards.
-pub const LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, smp-play-sections:56, \
-                          row(col(row(smp-play-layers:*, col(smp-play-env:3*, smp-play-filter:2*):*):*, \
-                          row(smp-play-layer-edit:260, smp-play-scenes:330, smp-play-fader:*):56):*, smp-play-list:340):*, \
-                          row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
+pub const LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
+                          row(col(smp-play-sections:56, row(col(row(smp-play-layers:*, \
+                          col(smp-play-env:3*, smp-play-filter:2*):*):*, \
+                          row(smp-play-layer-edit:260, smp-play-scenes:*):56):*, \
+                          col(smp-play-list:*, smp-play-fader:56):340):*):*, \
+                          col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):168):*, hint:26)";
 
 /// The page while the pad is a keygroup or the pads play notes: the
 /// keyboard over the layer map, the envelope and the filter side by side
 /// (a layout file can set it under the page's name with `.keys` after it).
-pub const KEYS_LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, smp-play-sections:56, \
-                               row(col(smp-play-keys:190, row(smp-play-layers:*, smp-play-env:*, smp-play-filter:*):*, \
-                               row(smp-play-layer-edit:260, smp-play-scenes:330, smp-play-fader:*):56):*, smp-play-list:340):*, \
-                               row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
+pub const KEYS_LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
+                               row(col(smp-play-sections:56, row(col(smp-play-keys:190, \
+                               row(smp-play-layers:*, smp-play-env:*, smp-play-filter:*):*, \
+                               row(smp-play-layer-edit:260, smp-play-scenes:*):56):*, \
+                               col(smp-play-list:*, smp-play-fader:56):340):*):*, \
+                               col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):168):*, hint:26)";
 
 /// The velocity a key pressed on the keyboard plays at.
 pub const KEY_VELOCITY: u8 = 100;
@@ -893,10 +896,10 @@ impl PlayTab {
         for (k, row) in Section::Layers.qlinks().iter().enumerate() {
             ui.add(
                 QLINKS[k],
-                KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k]),
+                KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k])
+                    .on(k, Section::Layers.label()),
             );
         }
-        ui.add(WHEEL, InfoCard::new("The row picked"));
         ui.add(
             SCENES,
             ButtonRow::new(&["Store A", "Store B", "Return to A"]),
@@ -1333,16 +1336,13 @@ impl PlayTab {
             } else {
                 format!("Q-Link {} · {}", k + 1, r.label())
             };
+            c.scope = self.section.label().to_string();
             c.focused = *r == row;
             (c.value, c.sub) = card_text(&st.layer_text(self.layer, *r));
             c.pos = knob_pos(st, self.layer, *r);
             let why = faint_why(st, *r);
             c.enabled = why.is_none();
             c.why = why.unwrap_or_default().to_string();
-        }
-        let text = format!("{}: {}", row.label(), st.layer_text(self.layer, row));
-        if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
-            card.text = text;
         }
     }
 

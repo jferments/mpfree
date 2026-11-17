@@ -978,7 +978,7 @@ pub static PLANS: &[Plan] = &[
         id: "mpfree.fx.lofi",
         qlinks: &["Amount", "Saturation", "High cut", "Mix"],
         pages: &[page(
-            "row(col(lofi:300, row(tape, vinyl)):520, col(tone:300, output))",
+            "row(col(lofi:244, row(tape:290, vinyl)):520, col(tone:300, output))",
             &[
                 Section {
                     hero: &["Amount"],
@@ -986,8 +986,25 @@ pub static PLANS: &[Plan] = &[
                     note: Some("one knob for all of it"),
                     ..s("lofi", "Lo-fi", Tone, &["Amount", "Saturation"])
                 },
-                s("tape", "Wow and flutter", Motion, &["Wow", "Flutter"]),
-                s("vinyl", "Vinyl", Source, &["Crackle", "Noise"]),
+                Section {
+                    trim: &["Rate", "Stereo", "Dropouts"],
+                    ..s(
+                        "tape",
+                        "Tape",
+                        Motion,
+                        &["Wow", "Rate", "Flutter", "Stereo", "Dropouts"],
+                    )
+                },
+                Section {
+                    rows: &["Mains"],
+                    trim: &["Hum", "Follow"],
+                    ..s(
+                        "vinyl",
+                        "Noise",
+                        Source,
+                        &["Crackle", "Noise", "Hum", "Follow", "Mains"],
+                    )
+                },
                 Section {
                     drawings: &["Tone"],
                     ..s("tone", "Tone", Tone, &["Low cut", "High cut"])

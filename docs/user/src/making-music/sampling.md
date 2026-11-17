@@ -11,7 +11,7 @@ checked: 2026-11-16 ececc7e
 Two tabs share the work:
 
 - The **Pads** tab, next to Play, shows the whole bank of 16 pads with the browser beside it: which sound is on which pad.
-- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave**, **Warp**, **Chop**, **Play**, **Grain**, **FX** and **Rec**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)).
+- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave**, **Warp**, **Chop**, **Play**, **Grain**, **FX** and **Rec**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
 
 ## The Pads tab: sounds onto pads
 
@@ -109,7 +109,7 @@ Both buttons are faint while the pad picked has no sound.
 
 ## Wave: trim and loop
 
-{{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, and the region's settings on the right. Send to pad and Chop to pads are at the top right.}}
+{{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, the region's settings beside it, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
 
 The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too). Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** and **reverse**.
 

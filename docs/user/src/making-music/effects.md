@@ -81,7 +81,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Fuzz** | A fuzz pedal with three circuits: **Face** (two transistors, round and spitty), **Muff** (two clipping stages and a scooped tone, thick with long sustain) and **Octave** (an octave up on single notes, ring-mod clusters on chords). **Fuzz** changes the grit, not the loudness, and **Level** sets the rest. **Tone** darkens or brightens it; on Muff it moves from bassy to thin and bright, with the mids dipped in the middle. **Gate** starves the circuit, so quiet notes sputter and cut out (0 leaves it alone). **Low keep** keeps everything under 60 to 250 Hz clean, for 808s and bass, while the fuzz plays above it. Changing the model crossfades, so it doesn't click. |
 | **Exciter** | Adds sparkle and air to the top end. |
 | **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
-| **Lo-fi** | Old sampler and worn tape character: wear, wow and noise. |
+| **Lo-fi** | Worn tape and dusty vinyl under one **Amount** knob, from a hint of age to a broken machine. **Wow** is slow pitch drift that wanders like a worn tape, not a steady wobble, at about **Rate**; **Stereo** lets the two sides drift apart; **Flutter** is a fast waver; **Saturation** is the tape's soft grit; **Dropouts** are short dips in level where the tape is worn. **Crackle**, **Noise** (hiss) and **Hum** (at your country's **Mains**, 50 or 60 Hz) follow the music while **Follow** is at 100 %: they come in with the sound and fade about a second after it stops, so a stopped track is silent. Turn Follow down for a bed of noise that keeps going. **Low cut**, **High cut** and **Width** set the tone. At Amount 0 it is exactly the sound going in (see [Lo-fi](#lo-fi)). |
 | **Chorus**, **Flanger**, **Phaser** | Movement and width. The Chorus is below. |
 | **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. |
 | **Ring mod** | Bells, clangs and robot voices. |
@@ -201,6 +201,13 @@ The Mix tab's **EQ** look shows every strip's EQ at once (see [Mixing](mixing-an
 Pitch correct and the Harmonizer listen for one voice: a singer, or a solo instrument such as a whistle or a sax, not chords. Set **Range** to fit it: **Low** for bass and baritone voices, **Mid** for most singing, **High** for high voices.
 
 They hold the sound back a little while they listen (about 40 ms on Low, 28 on Mid and 17 on High), and the mixer holds everything else back to match, so the mix stays in time. When you sing live through one, High has the shortest delay.
+
+### Lo-fi
+
+Lo-fi plays about as loud as the sound going in, so switching it on and off compares the character, not the level. Its tape needs a moment of sound to bend, so it holds the sound back 10 ms, and the mixer holds everything else back to match, so the mix stays in time.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through Lo-fi: high notes no longer fizz through the saturation, the wow wanders instead of wobbling evenly, and it is 1 to 1.5 dB louder than before (as loud as the sound going in). Stereo, Dropouts and Hum start at 0 and Follow at 100 %, so nothing new is added to a saved Lo-fi.
 
 ### Master safety
 
