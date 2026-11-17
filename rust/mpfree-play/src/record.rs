@@ -10,8 +10,11 @@
 //! pad is released, or when a punch out, a loop jump, a locate or a stop
 //! ends it. It is handed over in [`Recorder::taken`] for the control thread
 //! to add to the clip (`Clip::add_note`) and compile a new view. The notes
-//! keep the exact tick they were played on; the clip's quantise applies on
-//! playback, so it can change later.
+//! keep the exact tick they were played on, unless the track has a record
+//! quantise grid (`Track::record_quantise`, sequencer S3): then each note
+//! starts on the grid's nearest line (its length kept), wrapping to the
+//! clip's start as the clip goes round. The clip's own quantise applies on
+//! playback either way, so it can change later.
 //!
 //! A note the playhead has not yet reached where it will play (quantise or
 //! swing move it later) waits until the playhead passes that point, so the
@@ -1116,8 +1119,22 @@ impl Recorder {
         let Some((clip, origin)) = self.switches.playing(view, track) else {
             return self.free_buf(h.buf);
         };
-        let Some((tick, pass)) = clip_tick(clip, origin, h.tick) else {
+        let Some((played, pass)) = clip_tick(clip, origin, h.tick) else {
             return self.free_buf(h.buf);
+        };
+        // Record quantise: the nearest line of the track's grid, wrapping
+        // to the clip's start in the next pass as the clip goes round. It
+        // waits for the playhead below like any note played early.
+        let (tick, pass) = match view.tracks.get(track).and_then(|t| t.record_quantise) {
+            Some(grid) => {
+                let g = Tick::from(grid.max(1));
+                let line = (played + g / 2) / g * g;
+                (
+                    line.rem_euclid(clip.length),
+                    pass + line.div_euclid(clip.length),
+                )
+            }
+            None => (played, pass),
         };
         let len = (clip.speed.to_clip((end - h.tick).max(1) as f64).round() as Tick)
             .clamp(1, clip.length);

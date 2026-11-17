@@ -31,11 +31,11 @@ use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::steps::{Edit, Grid};
-use mpfree_seq::{Clip, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
+use mpfree_seq::{Clip, LaunchGrid, ModelError, Project, TouchPoint, LOOPS, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow, TimeAction,
-    TimeState, TransportInfo,
+    bars_label, card_rows, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow,
+    TimeAction, TimeState, TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State};
@@ -43,6 +43,10 @@ use mpfree_transport::{Block, Command, State};
 use super::follow::FollowCounts;
 use super::link::{Counts, InPlace, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
 use super::{StepAction, StepClip, StepsData, LINE, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
+
+/// The clip settings card's join keys for its takes, a row each (see
+/// `Takes::set_clip`).
+const CARD_JOIN: u64 = 0xC1_0000;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
@@ -132,6 +136,8 @@ pub struct TimeControl {
     editor: Option<Editor>,
     pub(super) armed: Option<usize>,
     takes: Takes,
+    /// The clip COPY + a clip copied last, for COPY + an empty slot.
+    clipboard: Option<Clip>,
     /// The take a step lock's turn went into last: a turn that joins it
     /// writes no line, so a knob turned through many values is one line.
     lock_take: u32,
@@ -233,6 +239,7 @@ impl TimeControl {
             editor: None,
             armed: tracks.armed,
             takes: Takes::default(),
+            clipboard: None,
             lock_take: 0,
             costs: Costs::default(),
             capture: Box::new(Capture::new()),
@@ -1303,6 +1310,94 @@ impl TimeControl {
                 None => Ok("redo: nothing to redo".into()),
             },
             TimeAction::Capture => self.keep(),
+            TimeAction::ClipSettings {
+                track,
+                slot,
+                row,
+                settings,
+            } => {
+                let name = self
+                    .project
+                    .clip(track, slot)
+                    .map(|c| c.name.clone())
+                    .ok_or_else(|| {
+                        format!("clip: slot {} of track {} is empty", slot + 1, track + 1)
+                    })?;
+                // A row turned again joins its take: the wheel through
+                // many values is one undo.
+                self.takes
+                    .set_clip(
+                        &mut self.project,
+                        track,
+                        slot,
+                        settings,
+                        Some(CARD_JOIN + u64::from(row)),
+                    )
+                    .map_err(|e| format!("clip: {name}: {e:?}"))?;
+                self.compile()?;
+                let length = self.project.clip(track, slot).map_or(0, |c| c.length);
+                let said = card_rows(length, settings)
+                    .get(usize::from(row))
+                    .map_or_else(String::new, |r| format!("{} {}", r.name, r.value));
+                Ok(format!("clip: {name} · {said} (UNDO takes it back)"))
+            }
+            TimeAction::ClipLength {
+                track,
+                slot,
+                steps,
+                copy,
+            } => {
+                if self.step_focus() != (track, Some(slot)) {
+                    return Err("clip: the focused clip changed: try again".into());
+                }
+                self.step_action(StepAction::Length { steps, copy })
+            }
+            TimeAction::CopyClip { track, slot } => {
+                let c = self.project.clip(track, slot).ok_or_else(|| {
+                    format!("copy: slot {} of track {} is empty", slot + 1, track + 1)
+                })?;
+                if c.looped.is_some() {
+                    return Err(
+                        "copy: a loop cell copies with SHIFT + a drag onto another Loop track"
+                            .into(),
+                    );
+                }
+                let said = format!(
+                    "copy: {} copied · COPY + an empty slot puts a copy there",
+                    c.name
+                );
+                self.clipboard = Some(c.clone());
+                self.changed = true;
+                Ok(said)
+            }
+            TimeAction::PasteClip { track, slot } => {
+                let c = self
+                    .clipboard
+                    .clone()
+                    .ok_or("paste: nothing copied yet: COPY + a clip copies it")?;
+                let t = self
+                    .project
+                    .tracks
+                    .get(track)
+                    .ok_or_else(|| format!("paste: no track {}", track + 1))?;
+                if t.is_loops() {
+                    return Err(format!("paste: {} plays loops, not clips", t.name));
+                }
+                let place = format!("{} / {}", t.name, slot + 1);
+                self.takes
+                    .paste_clip(&mut self.project, track, slot, c.clone())
+                    .map_err(|e| match e {
+                        ModelError::BadSlot => {
+                            format!("paste: {place} holds a clip: COPY + an empty slot pastes")
+                        }
+                        e => format!("paste: {e:?}"),
+                    })?;
+                self.compile()?;
+                Ok(format!(
+                    "paste: a copy of {} in {place} (UNDO takes it away)",
+                    c.name
+                ))
+            }
             TimeAction::RecordPressure { track, on } => {
                 if !self.set_record_touch(track, on) {
                     return Err(format!("pad pressure: no track {}", track + 1));
@@ -1312,6 +1407,61 @@ impl TimeControl {
                     format!("pad pressure: {name} records it")
                 } else {
                     format!("pad pressure: {name} leaves it out")
+                })
+            }
+            TimeAction::RecordQuantise { track, grid } => {
+                if grid.is_some_and(|g| mpfree_seq::Quantise::new(g, 100).is_none()) {
+                    return Err("record quantise: not a grid".into());
+                }
+                let t = self
+                    .project
+                    .tracks
+                    .get_mut(track)
+                    .ok_or_else(|| format!("record quantise: no track {}", track + 1))?;
+                if t.record_quantise != grid {
+                    t.record_quantise = grid;
+                    self.changed = true;
+                    // The recorder reads the grid from the view.
+                    self.compile()?;
+                }
+                let name = &self.project.tracks[track].name;
+                Ok(match grid {
+                    Some(g) => format!(
+                        "record quantise: {name} records each note on the nearest {}",
+                        mpfree_time_ui::view::grid_name(g)
+                    ),
+                    None => format!("record quantise: {name} records the notes as played"),
+                })
+            }
+            // The project's launch quantise (S4). What waits already keeps
+            // the line it had (the design's edge case).
+            TimeAction::LaunchGrid(g) => {
+                if !g.ok() {
+                    return Err("launch: not a launch quantise".into());
+                }
+                let was = self.project.launch;
+                if was != g {
+                    for c in &self.cues {
+                        let own = c
+                            .slot
+                            .and_then(|s| self.project.clip(c.track, s))
+                            .and_then(|m| m.launch);
+                        if own.is_none() {
+                            self.perform.hold_line(c.track, was);
+                        }
+                    }
+                    self.project.launch = g;
+                    self.changed = true;
+                    self.compile()?;
+                }
+                let name = mpfree_time_ui::view::launch_name(g);
+                Ok(match g {
+                    LaunchGrid::Now => {
+                        "launch: a tapped clip, a stop or a scene starts at once".into()
+                    }
+                    _ => format!(
+                        "launch: a tapped clip, a stop or a scene starts on the next {name}"
+                    ),
                 })
             }
             TimeAction::Arm(Some(t))
@@ -1374,10 +1524,19 @@ impl TimeControl {
                 Ok(line)
             }
             TimeAction::Launch { .. } | TimeAction::StopClip(_) | TimeAction::Uncue(_) => {
-                if let TimeAction::Uncue(track) = a {
-                    self.perform.uncue(track);
-                }
-                // While the music plays, they wait for the next bar line.
+                // A new tap replaces the track's cue, which lands on the
+                // line Launch gives now, not one an earlier cue kept.
+                let kept = match a {
+                    TimeAction::Uncue(track) => {
+                        self.perform.uncue(track);
+                        None
+                    }
+                    TimeAction::Launch { track, .. } | TimeAction::StopClip(track) => {
+                        Some((track, self.perform.forget_line(track)))
+                    }
+                    _ => None,
+                };
+                // While the music plays, they wait for their launch line.
                 let after = clips_after(&self.project, &self.launches, &self.cues, &a, &info);
                 let before = (
                     std::mem::replace(&mut self.launches, after.0),
@@ -1385,6 +1544,9 @@ impl TimeControl {
                 );
                 if let Err(e) = self.compile() {
                     (self.launches, self.cues) = before;
+                    if let Some((track, line)) = kept {
+                        self.perform.restore_line(track, line);
+                    }
                     return Err(e);
                 }
                 Ok(format!("clips: {a:?}"))
@@ -1684,6 +1846,15 @@ impl TimeControl {
                     return Err(e);
                 }
                 Ok(if on { "song on" } else { "song off" }.into())
+            }
+            // Make or Perform (sequencer S4): how the app answers the
+            // hands; nothing playing or waiting changes.
+            TimeAction::Perform(on) => {
+                if self.project.perform != on {
+                    self.project.perform = on;
+                    self.changed = true;
+                }
+                Ok(perform_line(on).into())
             }
             TimeAction::SelectPlacement(i) => {
                 self.selected = i.filter(|&i| i < self.project.arrangement.placements.len());
@@ -2451,6 +2622,11 @@ impl TimeControl {
         self.song
     }
 
+    /// The project is in Perform, not Make (`Project::perform`).
+    pub fn perform(&self) -> bool {
+        self.project.perform
+    }
+
     /// Everything the screens show.
     pub fn state(&self) -> TimeState {
         let mut st = TimeState::from_engine(
@@ -2461,7 +2637,13 @@ impl TimeControl {
             &self.takes,
         );
         st.capture = self.pending.map(|p| bars_label(p.bars));
+        st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
         st.cues = self.cues.clone();
+        st.cue_lines = self
+            .cues
+            .iter()
+            .filter_map(|c| Some((c.track, self.perform.cue_line(c.track)?)))
+            .collect();
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();
         st.loop_cell = self.loop_cell();
@@ -2529,6 +2711,17 @@ impl TimeControl {
 
 /// "bar 9", or "bar 9 beat 3" off the bar line: song tick `t` as the Song
 /// view's drags and the wheel say where a block or section went.
+/// What Make or Perform switches, for the hint line (sequencer S4; the
+/// design's "Perform: mutes land on the bar, deletes need a hold" as its
+/// parts are built).
+pub fn perform_line(on: bool) -> &'static str {
+    if on {
+        "Perform: MAIN goes to the Clips grid, and only a tap on Arm moves the arm"
+    } else {
+        "Make: MAIN goes to Play, and the arm follows the page"
+    }
+}
+
 fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String {
     let bar = meter.bar_ticks().max(1);
     let beat = meter.beat_ticks().max(1);

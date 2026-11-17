@@ -20,8 +20,8 @@
 120120	Character (Iron)
 97075	Character (Soften)
 149818	Character (Tape)
-103784	Chorus (2 voices)
-173943	Chorus (4 voices)
+99180	Chorus (2 voices)
+147067	Chorus (4 voices)
 991771	Cloud reverb (Cloud)
 274985	Cloud reverb (Cloud, Eco)
 313193	Cloud reverb (Echoes)
@@ -48,8 +48,8 @@
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding
 188280	EQ (4 bands and both cuts), HQ 2x
-64257	Flanger
-92617	Flanger, through zero
+64907	Flanger
+92618	Flanger, through zero
 386476	Fuzz
 434564	Grains FX (dense)
 188538	Keys Dusty Keys, 16 voices
@@ -79,8 +79,8 @@
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
 37002	Perform FX, the 16 pads in turn
-107343	Phaser (12 stages)
-65998	Phaser (4 stages)
+107805	Phaser (12 stages)
+66460	Phaser (4 stages)
 155797	Plate reverb
 307019	Pluck Bell, 16 voices
 249183	Pluck Harp, 16 voices

@@ -547,6 +547,9 @@ pub struct KitView {
     /// The synth's pad layout, for the pads panel's Chromatic | In key
     /// switch; None for a kit.
     pub synth: Option<SynthPads>,
+    /// The synth's pads' notes, for Beats' scale rows (pad 1 first);
+    /// empty for a kit and the Drums engine.
+    pub pitches: Vec<Option<play_page::PadPitch>>,
 }
 
 /// Timing numbers from the audio thread.
@@ -817,6 +820,9 @@ pub enum ToUi {
     LooperQLink(usize, i32),
     /// MAIN on the Play page (None: the next view), STEP SEQ (Beats).
     PlayView(Option<PlayView>),
+    /// MAIN in Perform: Arrange's Song view (`Some(true)`), its Clips grid
+    /// (`Some(false)`), or the other of the two (`None`).
+    ArrangeView(Option<bool>),
     /// SAMPLE EDIT: the Sample tab's editor to open.
     SampleEditor(sample_page::Editor),
     /// The data folder's library, for the Pads tab's browser, with its
@@ -937,6 +943,12 @@ pub enum ToUi {
 #[derive(Debug, PartialEq)]
 pub enum FromUi {
     Pad {
+        pad: usize,
+        down: bool,
+    },
+    /// A finger on a scale row's name on Beats: the synth's pad sounds
+    /// until it lifts, never recorded and never a step press.
+    Audition {
         pad: usize,
         down: bool,
     },
@@ -1370,6 +1382,8 @@ pub struct Player {
     level_chip: Option<usize>,
     /// The "Pads: steps" chip's place: a tap gives the pads back.
     steps_chip: Option<usize>,
+    /// The MAKE or PERFORM chip's place: a tap switches (sequencer S4).
+    perform_chip: Option<usize>,
     /// The list of kits is open over the page (the kit chip); the view
     /// underneath stays `view`.
     kit_list: bool,
@@ -1644,6 +1658,7 @@ impl Player {
             mute_bank: 0,
             steps: None,
             erase: false,
+            copy: false,
         };
         let mut p = Player {
             save_sent: None,
@@ -1742,6 +1757,7 @@ impl Player {
             kit_chip: None,
             level_chip: None,
             steps_chip: None,
+            perform_chip: None,
             kit_list: false,
             chip_why: Vec::new(),
             fingers: Vec::new(),
@@ -1876,11 +1892,22 @@ impl Player {
                 .map(|i| PadInfo {
                     label: kit.pads.get(i).cloned().flatten(),
                     color: Some(Color::from_pad(kit.colour)),
+                    pitch: kit.pitches.get(i).copied().flatten(),
                 })
                 .collect(),
             None => vec![PadInfo::default(); 16],
         };
         if self.play.pads != pads {
+            // Scale rows start again from the notes in another layout.
+            if self
+                .play
+                .pads
+                .iter()
+                .map(|p| p.pitch)
+                .ne(pads.iter().map(|p| p.pitch))
+            {
+                self.play.low = None;
+            }
             self.play.pads = pads;
             self.refresh_play();
         }
@@ -2756,6 +2783,7 @@ impl Player {
             (g.page, g.pages, g.length) = (old.page, old.pages, old.length);
             g.on_pads = old.on_pads;
             g.held.clone_from(&old.held);
+            g.pitched = old.pitched;
         }
         self.play.fill_steps(&mut g);
         let same = self
@@ -2771,6 +2799,7 @@ impl Player {
                     && (old.page, old.pages, old.length) == (g.page, g.pages, g.length)
                     && old.on_pads == g.on_pads
                     && old.held == g.held
+                    && old.pitched == g.pitched
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -2783,6 +2812,7 @@ impl Player {
                 (w.page, w.pages, w.length) = (g.page, g.pages, g.length);
                 w.on_pads = g.on_pads;
                 w.held = g.held;
+                w.pitched = g.pitched;
             }
         }
         let mut th = Throws::default();
@@ -2899,6 +2929,12 @@ impl Player {
                     pad: *pad as u8,
                 })))
             }
+            // A scale row's name: that note's steps.
+            (play_page::STEPS, EventKind::Pad { index, down: true }) if *index < 16 => {
+                Some(Some(FromUi::Steps(StepAction::ClearPad {
+                    pad: *index as u8,
+                })))
+            }
             (time_view::CLIPS, EventKind::Select(i)) => {
                 let slots = mpfree_seq::SLOTS;
                 let (track, slot) = (i / slots, i % slots);
@@ -2910,6 +2946,29 @@ impl Player {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// COPY held on the Clips grid (sequencer S3): a tap on a clip copies
+    /// it, and a tap on an empty slot pastes the copy there (a take UNDO
+    /// takes away). `Some` is the answer to the touch; `None` lets the tap
+    /// do what it always does.
+    fn copy_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
+        let (time_view::CLIPS, EventKind::Select(i)) = (ev.widget.as_str(), &ev.kind) else {
+            return None;
+        };
+        let slots = mpfree_seq::SLOTS;
+        let (track, slot) = (i / slots, i % slots);
+        if track >= self.time.tracks.len() {
+            return None;
+        }
+        if self.time.clip(track, slot).is_some() {
+            Some(Some(FromUi::Time(TimeAction::CopyClip { track, slot })))
+        } else if self.time.clipboard.is_some() {
+            Some(Some(FromUi::Time(TimeAction::PasteClip { track, slot })))
+        } else {
+            self.tell("COPY: tap a clip first to copy it, then an empty slot");
+            Some(None)
         }
     }
 
@@ -3286,6 +3345,15 @@ impl Player {
             why.push(format!("{left} s left in this timed run"));
             chips.push(Chip::new(format!("{left} s left"), Tone::Dim));
         }
+        // MAKE or PERFORM, at the left of the chips (sequencer S4, Jay's
+        // decision 5): a tap switches, as SHIFT + MAIN does.
+        why.push(String::new());
+        self.perform_chip = Some(chips.len());
+        chips.push(if self.time.perform {
+            Chip::new("PERFORM", Tone::Accent2)
+        } else {
+            Chip::new("MAKE", Tone::Normal)
+        });
         self.chip_why = why;
         // Only when a chip changed: this runs every second, and the header
         // spans the screen, so redrawing it rewrites nearly every row of the
@@ -3364,6 +3432,14 @@ impl Player {
             REC_LIST_HINT.to_string()
         } else if self.ready && self.rec.ready.is_some() {
             rec_ready_hint(&self.rec_chip())
+        } else if self.status.copy
+            && self.ready
+            && self.status.steps.is_none()
+            && self.view == View::Arrange
+            && !self.time.song_view
+            && self.time.edit.is_none()
+        {
+            time_view::copy_hint(&self.time)
         } else if let Some(s) = self.status.steps.filter(|s| s.copying && !s.picking) {
             step_copy_hint(s)
         } else if let (Some(name), Some(_)) = (self.play.held_name(), self.status.steps) {
@@ -3401,6 +3477,7 @@ impl Player {
                         .to_string()
                 }
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
+                View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
@@ -4738,6 +4815,12 @@ impl Player {
                 });
                 self.show_play_view(v);
             }
+            ToUi::ArrangeView(v) => {
+                let song = v.unwrap_or(!self.time.song_view);
+                if song != self.time.song_view {
+                    self.outbox.push(FromUi::Time(TimeAction::SongView(song)));
+                }
+            }
             ToUi::Library { dir, lists } => self.open_library(&dir, &lists),
             ToUi::Browse(k) => self.browse_key(k),
             ToUi::PadsView(v) => {
@@ -5269,6 +5352,7 @@ impl Player {
                 // The lens the note editor shows, if it is open.
                 let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
                 let swapped = st.song_view != self.time.song_view || lens(&st) != lens(&self.time);
+                let switched = st.perform != self.time.perform;
                 // A take made, undone or redone: UNDO on All takes the takes.
                 let seen = (st.done.len(), st.undone.len());
                 if seen != self.seen_takes {
@@ -5302,6 +5386,10 @@ impl Player {
                     // The Song view and the note editor have their own
                     // hint lines.
                     self.refresh_hint();
+                }
+                if switched {
+                    // MAKE or PERFORM on the top bar.
+                    self.refresh_chips();
                 }
             }
             ToUi::AudioLevels(levels) => {
@@ -5398,7 +5486,11 @@ impl Player {
             if let Some(p) = self.synth.as_mut() {
                 p.set_editing(&mut self.ui, on);
             }
-            for list in [time_view::RECORD, time_view::EDIT_OPTIONS] {
+            for list in [
+                time_view::RECORD,
+                time_view::CLIP_CARD,
+                time_view::EDIT_OPTIONS,
+            ] {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
                     l.editing = on;
                 }
@@ -7541,6 +7633,11 @@ impl Player {
                 return answer;
             }
         }
+        if self.status.copy {
+            if let Some(answer) = self.copy_tap(&ev) {
+                return answer;
+            }
+        }
         match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
                 // The header moved its own highlight; the page follows when the app says.
@@ -7724,6 +7821,40 @@ impl Player {
                 self.refresh_qlinks();
                 // STEP SEQ: the pads turn to the page shown.
                 (moved && self.play.on_pads.is_some()).then_some(FromUi::StepPage(self.play.page))
+            }
+            // Scale rows (a synth track): Fold, and the octave down or up.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_FOLD)) => {
+                self.play.toggle_fold();
+                self.tell(if self.play.fold {
+                    "steps: Fold: only the notes the pattern uses"
+                } else {
+                    "steps: every note of the pads"
+                });
+                self.refresh_play();
+                None
+            }
+            (play_page::STEPS, EventKind::Tab(k))
+                if k == play_widgets::HEAD_LOWER || k == play_widgets::HEAD_HIGHER =>
+            {
+                let up = k == play_widgets::HEAD_HIGHER;
+                let n = self
+                    .ui
+                    .rect_of(play_page::STEPS)
+                    .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+                    .map_or(6, |(r, g)| g.note_rows(r));
+                if !self.play.turn_octave(up, n) {
+                    self.tell(if up {
+                        "steps: these are the pads' highest notes"
+                    } else {
+                        "steps: these are the pads' lowest notes"
+                    });
+                }
+                self.refresh_play();
+                None
+            }
+            // A finger on a scale row's name: its note sounds.
+            (play_page::STEPS, EventKind::Pad { index, down }) => {
+                Some(FromUi::Audition { pad: index, down })
             }
             (play_page::STEPS, EventKind::Tab(k)) => {
                 match self.play.length_action(k == play_widgets::HEAD_LONGER) {
@@ -7909,6 +8040,9 @@ impl Player {
             ("header", EventKind::Select(i)) if Some(i) == self.steps_chip => {
                 Some(FromUi::StepsOff)
             }
+            ("header", EventKind::Select(i)) if Some(i) == self.perform_chip => {
+                Some(FromUi::Time(TimeAction::Perform(!self.time.perform)))
+            }
             ("header", EventKind::Select(i))
                 if self.chip_why.get(i).is_some_and(|w| !w.is_empty()) =>
             {
@@ -7951,10 +8085,25 @@ impl Player {
                     Some(FromUi::TrackInstrument(t))
                 }
             }
+            // SHIFT + the clip card's arrows: Length and Speed halve or
+            // double.
+            (time_view::CLIP_CARD, EventKind::Step { index, delta }) if self.status.shift => {
+                match time_view::card_action(&self.time, index, delta, true) {
+                    Ok(a) => Some(FromUi::Time(a)),
+                    Err(why) => {
+                        if !why.is_empty() {
+                            self.tell(&why);
+                        }
+                        None
+                    }
+                }
+            }
             (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::RECORD | time_view::CLIP_CARD, EventKind::Tab(_))
                 if self.time_page.page_tracks(&ev, &self.time) =>
             {
-                // The grid's pager: the page's own, nothing for the app.
+                // The grid's pager and the Record panel's tabs: the page's
+                // own, nothing for the app.
                 self.time_page.update(&mut self.ui, &self.time);
                 None
             }
@@ -7962,6 +8111,7 @@ impl Player {
                 time_view::TRANSPORT
                 | time_view::CLIPS
                 | time_view::RECORD
+                | time_view::CLIP_CARD
                 | time_view::TAKES
                 | time_view::MORPH
                 | time_view::SONG
@@ -8704,6 +8854,7 @@ pub fn sample_kits() -> Vec<KitView> {
         colour,
         chip: None,
         synth: None,
+        pitches: Vec::new(),
     };
     // Kit 2 is the Play mockups' kit (F to I), so the previews show it.
     let mut boom_bap = kit("Boom Bap", [0x00, 0x2A, 0x3F], 16);
@@ -8747,6 +8898,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         mute_bank: 0,
         steps: None,
         erase: false,
+        copy: false,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -9024,6 +9176,86 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
     p.apply(ToUi::Steps(Box::new(h.steps())));
 }
 
+/// Beats on a synth track, as the sequencer design's mockup B: the synth
+/// on the pads in C minor, In key (C3 up), the timing strip off so the
+/// pattern has eight rows, and a bass line with a C minor triad on step 1,
+/// an accent, a 50 % note and a 1:2 note.
+pub fn sample_beats_synth(fonts: Fonts) -> Player {
+    use crate::time::{Pads, StepAction, TimeHost, STEP_TICKS};
+    use mpfree_seq::steps::Change;
+    let mut p = sample_player(fonts);
+    let mut s = crate::synth::Synth::new(44_100);
+    let mut set = s.settings();
+    set.scale = mpfree_arp::scale::by_name("Minor")
+        .map(|d| mpfree_arp::scale::Scale::with_down(0, d.mask, d.down));
+    set.set_layout(mpfree_arp::scale::pads::PadLayout::InKey);
+    s.set_settings(set);
+    let synth_kit = sample_kits().len();
+    p.apply(ToUi::KitChanged {
+        kit: synth_kit,
+        view: s.kit_view(),
+    });
+    p.apply(ToUi::Kit(synth_kit));
+    let mut settings = p.settings.clone();
+    settings.timing_strip = false;
+    p.apply(ToUi::Settings(settings));
+    struct Quiet;
+    impl Pads for Quiet {
+        fn hit_at(&mut self, _: usize, _: u8, _: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _: usize, _: u32) {}
+        fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: usize, _: u8, _: u32) {}
+    }
+    let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
+        return p;
+    };
+    // (pad, step, velocity, steps long): C3 is pad 1, Eb3 pad 3, G3 pad 5.
+    let notes: [(u8, usize, u8, i64); 11] = [
+        (0, 0, 100, 3),
+        (2, 0, 100, 3),
+        (4, 0, 100, 3),
+        (4, 4, 90, 1),
+        (6, 6, 96, 2),
+        (7, 8, 127, 1),
+        (5, 10, 84, 2),
+        (3, 12, 90, 1),
+        (4, 13, 90, 1),
+        (2, 14, 96, 2),
+        (0, 14, 70, 1),
+    ];
+    for (pad, step, velocity, len) in notes {
+        let _ = h.step_action(StepAction::Tap {
+            pad,
+            step,
+            velocity,
+        });
+        if len > 1 {
+            let _ = h.step_action(StepAction::Change {
+                pad,
+                step,
+                change: Change::Length(STEP_TICKS * len),
+            });
+        }
+    }
+    for (pad, step, change) in [
+        (5, 10, Change::Chance(50)),
+        (2, 14, Change::Cond(mpfree_seq::Cond::Every { a: 1, b: 2 })),
+    ] {
+        let _ = h.step_action(StepAction::Change { pad, step, change });
+    }
+    let mut q = Quiet;
+    h.period(128, &mut q);
+    p.apply(ToUi::Time(Box::new(h.state())));
+    p.apply(ToUi::Steps(Box::new(h.steps())));
+    p.show_play_view(PlayView::Beats);
+    p.outbox.retain(|a| !matches!(a, FromUi::Arm(_)));
+    let _ = p.take_actions();
+    p.ui.invalidate();
+    p
+}
+
 /// Hits played on the pads over the last two bars, a little off the grid
 /// as hands are (mostly early, as mockup I), for Beats' timing strip.
 pub fn sample_hits(p: &mut Player) {
@@ -9101,6 +9333,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         mute_bank: 0,
         steps: None,
         erase: false,
+        copy: false,
     }));
     sample_loop(&mut p);
     if v == PlayView::Loop {
@@ -9375,6 +9608,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::SamplePad(d) => p.apply(ToUi::SamplePad(d)),
             Effect::SampleUndo { redo } => p.apply(ToUi::SampleUndo(redo)),
             Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
+            Effect::ArrangeView(v) => p.apply(ToUi::ArrangeView(v)),
             Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
             Effect::SaveProject => p.ask_save(),
@@ -10000,6 +10234,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     synth.apply(ToUi::Kit(synth_kit));
     sample_loop(&mut synth);
     out.push(("play-synth-in-key", synth));
+    // Beats on a synth track (the sequencer design's mockup B): C minor
+    // in key, the scale rows high on top with the roots shaded, a triad on
+    // step 1.
+    out.push(("play-beats-synth", sample_beats_synth(fonts())));
     // The mixer over Play (TRACK MIX), a strip selected for the Q-Links.
     let mut mixer = sample_player(fonts());
     let mut m = mpfree_mixer_ui::sample::song_mixer();
@@ -10245,6 +10483,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         new_track: None,
         dropped: None,
         song: None,
+        settings: false,
+        pasted: false,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -10467,6 +10707,30 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips sample: {e}"),
     }
+    // The Record panel's Clip tab (sequencer S3): the focused clip's
+    // settings, half speed with its own swing, quantised to 1/16 at 60 %,
+    // and Next after 4 bars.
+    match sample_clips(fonts()) {
+        Ok(mut p) => {
+            let mut st = p.time.clone();
+            st.armed = Some(0);
+            if let Some(c) = st
+                .focus()
+                .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+            {
+                c.settings.speed = mpfree_seq::Speed::new(1, 2).unwrap_or_default();
+                c.settings.swing = mpfree_transport::time::Swing::new(240, 56);
+                c.settings.quantise = mpfree_seq::Quantise::new(240, 60);
+                c.settings.follow =
+                    Some(mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next));
+            }
+            p.time_page.clip_card = true;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-card", p));
+        }
+        Err(e) => eprintln!("clips-card sample: {e}"),
+    }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
     match mpfree_time_ui::sample::loops_playing() {
@@ -10663,6 +10927,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mute_bank: 0,
         steps: None,
         erase: false,
+        copy: false,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
     for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
@@ -10699,6 +10964,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mute_bank: 0,
         steps: None,
         erase: false,
+        copy: false,
     }));
     chords.apply(ToUi::KitChanged {
         kit: synth_kit,
@@ -11666,6 +11932,51 @@ mod tests {
             "Clips · slots 2–6 of 16"
         );
         assert!(p.take_actions().is_empty());
+        // The Record panel's Clip tab: the clip settings card for the
+        // focused clip, which the wheel then steps (its Length first).
+        let record = p.ui.rect_of(time_view::RECORD).unwrap();
+        let clip_tab =
+            p.ui.get::<OptionList>(time_view::RECORD)
+                .unwrap()
+                .tab_rect(record, 1)
+                .unwrap();
+        assert_eq!(tap(&mut p, (clip_tab.x + 10, clip_tab.y + 20)), None);
+        assert_eq!(
+            p.ui.layout_of(time_view::CLIPS_PAGE),
+            Some(time_view::CLIPS_CARD_LAYOUT)
+        );
+        // Bass, armed, has no clip yet: the card is empty.
+        assert_eq!(p.time.focus(), None);
+        assert!(p
+            .ui
+            .get::<OptionList>(time_view::CLIP_CARD)
+            .unwrap()
+            .rows
+            .is_empty());
+        p.time.armed = Some(0);
+        p.time_page.update(&mut p.ui, &p.time);
+        let (track, slot) = p.time.focus().unwrap();
+        p.apply(ToUi::ClipsWheel {
+            delta: 1,
+            scroll: false,
+        });
+        let got = p.take_actions();
+        assert!(
+            matches!(got[..], [FromUi::Time(TimeAction::ClipLength { track: t, slot: s, .. })] if (t, s) == (track, slot)),
+            "{got:?}"
+        );
+        // And back to the record settings.
+        let card = p.ui.rect_of(time_view::CLIP_CARD).unwrap();
+        let record_tab =
+            p.ui.get::<OptionList>(time_view::CLIP_CARD)
+                .unwrap()
+                .tab_rect(card, 0)
+                .unwrap();
+        assert_eq!(tap(&mut p, (record_tab.x + 10, record_tab.y + 20)), None);
+        assert_eq!(
+            p.ui.layout_of(time_view::CLIPS_PAGE),
+            Some(time_view::CLIPS_LAYOUT)
+        );
         // The morph bar under the grid: Save stores the A row (the
         // crossfader is at A).
         let morph = p.ui.rect_of(time_view::MORPH).unwrap();
@@ -12522,7 +12833,7 @@ mod tests {
         assert!(grid(&p).2.ends_with("pads: page 2 · BANK B"));
         apply_effects(&mut p, click(&mut app, button::PAD_BANK[0]));
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
-        let (x, y) = StepGrid::head_at(r, HEAD_NEXT);
+        let (x, y) = StepGrid::head_at(r, HEAD_NEXT, false);
         let a = p.touch(3, Touch::Down, x, y);
         p.touch(3, Touch::Up, x, y);
         assert_eq!(a, Some(FromUi::StepPage(1)));
@@ -12544,6 +12855,71 @@ mod tests {
         assert_eq!(grid(&p).0, None);
     }
 
+    /// Beats on a synth track (sequencer S3, mockup B): the pads' notes
+    /// as rows high on top, an octave at a time; Fold keeps the notes
+    /// used; a finger on a row's name plays it, and with ERASE held clears
+    /// its steps.
+    #[test]
+    fn beats_on_a_synth_track_shows_scale_rows_that_fold_and_play() {
+        use play_widgets::{HEAD_FOLD, HEAD_HIGHER, HEAD_LOWER};
+        let mut p = sample_beats_synth(Fonts::embedded());
+        p.take_actions();
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let tap = |p: &mut Player, k: usize| {
+            let (x, y) = StepGrid::head_at(r, k, true);
+            let a = p.touch(3, Touch::Down, x, y);
+            p.touch(3, Touch::Up, x, y);
+            a
+        };
+        let shown = |p: &Player| {
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes_shown(r)
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // C minor, In key from C3: C4 on top down to C3, eight rows with
+        // the timing strip off.
+        assert_eq!(shown(&p), [7, 6, 5, 4, 3, 2, 1, 0]);
+        // › an octave up, then as high as the pads go, then no further.
+        assert_eq!(tap(&mut p, HEAD_HIGHER), None);
+        assert_eq!(shown(&p), [14, 13, 12, 11, 10, 9, 8, 7]);
+        tap(&mut p, HEAD_HIGHER);
+        assert_eq!(shown(&p), [15, 14, 13, 12, 11, 10, 9, 8]);
+        tap(&mut p, HEAD_HIGHER);
+        assert!(hint(&p).contains("highest notes"), "{}", hint(&p));
+        // ‹ an octave down from D4: D3 up.
+        tap(&mut p, HEAD_LOWER);
+        assert_eq!(shown(&p), [8, 7, 6, 5, 4, 3, 2, 1]);
+        // Fold: the seven notes the line uses, from C3.
+        assert_eq!(tap(&mut p, HEAD_FOLD), None);
+        assert!(hint(&p).contains("only the notes"), "{}", hint(&p));
+        assert_eq!(shown(&p), [7, 6, 5, 4, 3, 2, 0]);
+        tap(&mut p, HEAD_FOLD);
+        assert_eq!(shown(&p), [7, 6, 5, 4, 3, 2, 1, 0]);
+        // A finger on C4's name plays it until it lifts.
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let (x, y) = g.name_at(r, 0);
+        assert_eq!(
+            p.touch(5, Touch::Down, x, y),
+            Some(FromUi::Audition { pad: 7, down: true })
+        );
+        assert_eq!(
+            p.touch(5, Touch::Up, x, y),
+            Some(FromUi::Audition {
+                pad: 7,
+                down: false
+            })
+        );
+        // ERASE held: the name clears C4's steps instead.
+        let mut st = p.status.clone();
+        st.erase = true;
+        p.apply(ToUi::Status(st));
+        assert_eq!(
+            p.touch(6, Touch::Down, x, y),
+            Some(FromUi::Steps(StepAction::ClearPad { pad: 7 }))
+        );
+    }
+
     /// UNDO follows the page (Jay, 13 Nov 13:53Z): the loop on the Loop
     /// view, the takes on Beats, and on All whichever changed last.
     /// Jay after live test 3: 32, 64 and 128 steps, with a clear way to
@@ -12556,7 +12932,7 @@ mod tests {
         p.take_actions();
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         let tap = |p: &mut Player, k: usize| {
-            let (x, y) = StepGrid::head_at(r, k);
+            let (x, y) = StepGrid::head_at(r, k, false);
             let a = p.touch(3, Touch::Down, x, y);
             p.touch(3, Touch::Up, x, y);
             a
@@ -12636,6 +13012,8 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
+            pasted: false,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -12975,6 +13353,8 @@ mod tests {
             new_track: None,
             dropped: None,
             song: None,
+            settings: false,
+            pasted: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
@@ -13064,6 +13444,67 @@ mod tests {
         assert_eq!(
             p.told.as_ref().map(|t| t.0.as_str()),
             Some("Nothing to undo on this page")
+        );
+    }
+
+    /// COPY held on Arrange (sequencer S3): a clip tapped is copied, an
+    /// empty slot tapped gets the copy, and the hint line says which.
+    #[test]
+    fn copy_held_copies_a_clip_and_pastes_it_in_an_empty_slot() {
+        use mpfree_time_ui::widgets::ClipGrid;
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let copy = |p: &mut Player, on: bool| {
+            let mut s = p.status.clone();
+            s.copy = on;
+            p.apply(ToUi::Status(s));
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let cell = |p: &Player, track, slot| {
+            let r =
+                p.ui.get::<ClipGrid>(time_view::CLIPS)
+                    .unwrap()
+                    .cell_rect(grid, track, slot)
+                    .unwrap();
+            (r.x + r.w / 2, r.y + r.h / 2)
+        };
+        copy(&mut p, true);
+        assert!(
+            hint(&p).starts_with("COPY held: tap a clip"),
+            "{}",
+            hint(&p)
+        );
+        let empty = cell(&p, 2, 1);
+        let clip = cell(&p, 0, 0);
+        assert_eq!(
+            tap(&mut p, clip),
+            Some(FromUi::Time(TimeAction::CopyClip { track: 0, slot: 0 }))
+        );
+        // The engine says what it copied; an empty slot pastes it.
+        let mut st = p.time.clone();
+        st.clipboard = Some("Clip 1".into());
+        p.apply(ToUi::Time(Box::new(st)));
+        copy(&mut p, true);
+        assert!(hint(&p).contains("a copy of Clip 1"), "{}", hint(&p));
+        assert_eq!(
+            tap(&mut p, empty),
+            Some(FromUi::Time(TimeAction::PasteClip { track: 2, slot: 1 }))
+        );
+        // Nothing copied: an empty slot says so and asks for nothing.
+        let mut st = p.time.clone();
+        st.clipboard = None;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(tap(&mut p, empty), None);
+        assert!(hint(&p).contains("tap a clip first"), "{}", hint(&p));
+        // Let go of COPY: taps are as always.
+        copy(&mut p, false);
+        assert_eq!(
+            tap(&mut p, empty),
+            Some(FromUi::Time(TimeAction::NewClip { track: 2, slot: 1 }))
         );
     }
 
@@ -19744,6 +20185,7 @@ mod tests {
             mute_bank: 0,
             steps: None,
             erase: false,
+            copy: false,
         };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);

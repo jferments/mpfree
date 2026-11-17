@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-fx/src/modfx.rs
-checked: 2026-11-17 14c3594
+checked: 2026-11-17 44eb341
 -->
 # Modulation: Chorus, Flanger and Phaser
 
-**Status:** built (F2); FX quality round 3 is under way. The research, targets and baseline are done (61 of 113 measured targets met before round 3). The chorus's rebuild, PR M1 (17 Nov, with the fxlab `modulation` class, the synced LFO's fix and a flat read), the flanger's, PR M2 (with through-zero flanging, off by default), and the phaser's, PR M3 (all 17 Nov), are in: 115 of 119 met, every chorus row among them; what is left is three presets' mono fold (two flanger, one phaser) and one flanger preset's click measure. Below, "before M1", "before M2" and "before M3" describe what was there before.
+**Status:** built (F2); FX quality round 3 is under way. The research, targets and baseline are done (61 of 113 measured targets met before round 3). The chorus's rebuild, PR M1 (17 Nov, with the fxlab `modulation` class, the synced LFO's fix and a flat read), the flanger's, PR M2 (with through-zero flanging, off by default), and the phaser's, PR M3 (all 17 Nov), are in, and PR M4 adds the LFO's Shape (Sine or a rounded Triangle) and the dotted and triplet syncs: 119 of 123 met, every chorus row among them; what is left is three presets' mono fold (two flanger, one phaser) and one flanger preset's click measure. Below, "before M1" to "before M4" describe what was there before.
 
 This page is the design of MPFree's three modulation effects as one effect type: what they are for, the ideas underneath them, the research behind ours, which algorithms each uses and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter-by-parameter summary lives in [fx.md](fx.md); the measured targets and their history in [fx-quality.md](fx-quality.md). The research notes, plan and baseline probe are in jferments/mpfree-claude `fx/quality/` (research-modulation.md, plan-3.md, tools/mod_baseline.rs, tools/mod_stereo_proto.py).
 
@@ -57,9 +57,11 @@ The conclusion: the three keep their structures (a swept delay, a swept delay wi
 
 ### The shared LFO
 
-One LFO type drives all three: a sine from a parabola with a cubic correction (error under 0.1 %, plain arithmetic, so a render is the same on every machine), its phase in f64 so a long free run never drifts. It runs free (Rate in Hz) or synced to the tempo, from 1/16 to 8 bars a cycle; **Width** offsets the right side's phase, so 100 % is a wide stereo sweep and 0 keeps both sides together. On `main` a synced LFO is set from the song position only when the transport starts.
+One LFO type drives all three: a sine from a parabola with a cubic correction (error under 0.1 %, plain arithmetic, so a render is the same on every machine), its phase in f64 so a long free run never drifts. It runs free (Rate in Hz) or synced to the tempo, from 1/16 to 8 bars a cycle (and, from M4, 1/8T, 1/8D, 1/4T and 1/4D, appended so saved choices keep their place); **Width** offsets the right side's phase, so 100 % is a wide stereo sweep and 0 keeps both sides together. On `main` a synced LFO is set from the song position only when the transport starts.
 
 From M1: while the transport plays, a synced LFO compares itself with the song position at the start of every block. A jump (a loop wrap, a locate) is caught up by adding a little phase each frame, so the swept delay glides instead of stepping, over 50 ms or, for the chorus, as slowly as it takes to add no more than the pitch ceiling's semitone of bend (a full-depth sweep half a cycle off takes about 0.3 s; at most a second); a jump during a catch-up restarts it with the whole gap. Catching up fast would chirp: half a cycle in 50 ms at a 5 ms sweep is a bend of several semitones. Small differences from rounding between the tempo and the frame count are snapped away when no catch-up is running.
+
+From M4, **Shape**: Sine, or a Triangle in step with it (0, 1, 0, -1 at the quarters). A plain triangle flips its slope at each corner, which on a chorus flips the bend from up to down in a frame; here each corner is a parabola a twentieth of a cycle either side (`TRI_ROUND`), so the slope turns round over a tenth of a cycle, and the peaks are scaled back to ±1 so a Triangle sweeps as far as the Sine. Its straight parts slope 4/0.9 a cycle, under the sine's 2π, so the chorus's semitone ceiling, worked out for the sine, holds for both. A change of Shape crossfades the two over 50 ms (`SHAPE_MS`). `Lfo::waves` works out a frame's sweeps together with the shape picked once (section 8). With Shape the flanger has nine controls, so it gets a Main page too, like the chorus and the phaser: Rate, Depth, Feedback, Mix (its Q-Links), then Sync, Delay, Width, Through zero.
 
 ### Chorus
 
@@ -110,13 +112,13 @@ From M3 (before it the phaser went in 0.9 to 1.9 LU quieter and up to 7.4 LU lou
 
 | Effect | Controls (range, default) |
 |---|---|
-| Chorus | Rate (0.05 to 10 Hz, 0.6), Sync (Free, 1/16 to 8 bars), Depth (0 to 100 %, 40), Delay (2 to 40 ms, 12), Voices (1 to 4, 2), Width (0 to 100 %, 100), Tone (1 to 20 kHz, 9 kHz), Mix (0 to 100 %, 50); from M1, Mix curve (Equal) |
-| Flanger | Rate (0.02 to 10 Hz, 0.2), Sync, Depth (0 to 100 %, 60), Delay (0.1 to 10 ms, 1.5), Feedback (-95 to +95 %, +50), Width (0 to 100 %, 100), Mix (0 to 100 %, 50); from M2, Through zero (Off, On; Off) |
-| Phaser | Rate (0.02 to 10 Hz, 0.3), Sync, Depth (0 to 100 %, 70), Centre (100 Hz to 8 kHz, 700 Hz), Stages (2, 4, 6, 8, 12; 4), Feedback (-95 to +95 %, +30), Width (0 to 100 %, 100), Mix (0 to 100 %, 50), Stereo (Quarter, Opposite; Quarter, from M3) |
+| Chorus | Rate (0.05 to 10 Hz, 0.6), Sync (Free, 1/16 to 8 bars), Depth (0 to 100 %, 40), Delay (2 to 40 ms, 12), Voices (1 to 4, 2), Width (0 to 100 %, 100), Tone (1 to 20 kHz, 9 kHz), Mix (0 to 100 %, 50); from M1, Mix curve (Equal); from M4, Shape (Sine, Triangle; Sine) |
+| Flanger | Rate (0.02 to 10 Hz, 0.2), Sync, Depth (0 to 100 %, 60), Delay (0.1 to 10 ms, 1.5), Feedback (-95 to +95 %, +50), Width (0 to 100 %, 100), Mix (0 to 100 %, 50); from M2, Through zero (Off, On; Off); from M4, Shape |
+| Phaser | Rate (0.02 to 10 Hz, 0.3), Sync, Depth (0 to 100 %, 70), Centre (100 Hz to 8 kHz, 700 Hz), Stages (2, 4, 6, 8, 12; 4), Feedback (-95 to +95 %, +30), Width (0 to 100 %, 100), Mix (0 to 100 %, 50), Stereo (Quarter, Opposite; Quarter, from M3); from M4, Shape |
 
 What the shared names mean:
 
-- **Rate** and **Sync**: a synced LFO ignores Rate; the sync list runs from 1/16 to 8 bars a cycle (dotted and triplet values are a planned addition).
+- **Rate**, **Sync** and **Shape**: a synced LFO ignores Rate; the sync list runs from 1/16 to 8 bars a cycle, then (from M4) 1/8T, 1/8D, 1/4T and 1/4D. Shape (M4) is Sine or Triangle, on all three, in the Movement section beside Sync.
 - **Depth** on the chorus is, from M1, a sweep in milliseconds (100 % is ±5 ms, bounded as section 4 says); on the flanger and phaser it is octaves of sweep (±2 and ±2.5 at 100 %).
 - **Delay** on the chorus is where the copies sit; on the flanger it is the centre of the sweep (a pedal's Manual), and with Through zero on, Delay × Depth is how far the copy swings either side of the dry.
 - **Width** is the right side's LFO offset (0 is mono movement, not a mono output).
@@ -160,7 +162,7 @@ The chorus presets' M1 Depth values keep each preset's sweep in milliseconds as 
 
 ## 7. Measuring quality
 
-`fxlab quality --class modulation` (from M1; `rust/mpfree-fxlab/src/quality/modulation.rs`) measures each effect at its defaults and every preset, at 44.1 kHz, 119 numbers with a target in all (113 before M2's through zero), with the ratchet (`rust/mpfree-fxlab/quality/ratchet.tsv`) failing a pull request that makes any of them worse. Its first commit records `main`'s numbers, so each later change shows as a diff. The targets (plan-3 section 3):
+`fxlab quality --class modulation` (from M1; `rust/mpfree-fxlab/src/quality/modulation.rs`) measures each effect at its defaults and every preset, at 44.1 kHz, 123 numbers with a target in all (113 before M2's through zero and M4), with the ratchet (`rust/mpfree-fxlab/quality/ratchet.tsv`) failing a pull request that makes any of them worse. Its first commit records `main`'s numbers, so each later change shows as a diff. The targets (plan-3 section 3):
 
 | Id | What | Target | Before M1 (fxlab) | With M1 and M2 |
 |---|---|---|---|---|
@@ -168,7 +170,7 @@ The chorus presets' M1 Depth values keep each preset's sweep in milliseconds as 
 | M2 | Level across Feedback (flanger, phaser) | Within ±3 LU of Feedback 0 | Flanger +6.5 at -95 %; phaser +7.4 at +95 % | Flanger -1.20 to -0.14 (M2); phaser -1.00 to +1.17 (M3) |
 | M3 | Wet left/right correlation above 300 Hz, every voice count | ≤ 0.3 | 3 voices 0.67, 4 voices 1.00 | -0.08 to 0.03 |
 | M4 | Mono fold-down beyond the stereo change | ≤ 1.5 LU | Flanger "Jet sweep" 1.75, "Hollow flange" 1.54; phaser "Liquid" 1.67 | Chorus ≤ 1.01; flanger "Jet sweep" 1.77, "Hollow flange" 1.56; phaser "Liquid" 1.68 (all three unmet) |
-| M5 | A 1 kHz tone's peak bend | ≤ ±100 cents, never backwards | ±866 cents at Rate 10, Depth 100, Delay 40 | ≤ ±96 |
+| M5 | A 1 kHz tone's peak bend | ≤ ±100 cents, never backwards | ±866 cents at Rate 10, Depth 100, Delay 40 | ≤ ±96; the Triangle ±68 (M4) |
 | M6 | Bend across Delay 5 to 40 ms at one Depth | Changes ≤ 10 % | 7.9 times | 1.00 |
 | M7 | Held flatness at half a frame | Within 0.5 dB to 16 kHz | Chorus 4.6 dB; flanger's high notches -21 dB | Chorus 0.16 dB; flanger's high notches -55 dB (M2) |
 | M8 | A 12 kHz tone's sidebands through the moving read | ≤ -70 dB | -49.8 dB | -87.3 dB |
@@ -176,10 +178,10 @@ The chorus presets' M1 Depth values keep each preset's sweep in milliseconds as 
 | M10 | The flanger's longest delay | ≤ 20 ms | 40 ms | 20 ms (M2) |
 | M11 | A synced LFO's phase after a 3.5-bar loop wraps | Within 1 % of a cycle | Half a cycle | 0.000 |
 | M12 | Feedback at ±95 % with extreme settings | Finite, rings out within the tail | Met | Met |
-| M13 | Clicks while a control sweeps | ≤ -60 dB | Flanger "Jet sweep" -54 dB | Chorus ≤ -66.4 dB; flanger ≤ -66.6 dB but "Tape flange" -63.4 and "Jet sweep" -55.0 (Rate at 10 Hz); phaser ≤ -79.5 dB (M3) |
+| M13 | Clicks while a control sweeps | ≤ -60 dB | Flanger "Jet sweep" -54 dB | Chorus ≤ -66.4 dB; flanger ≤ -66.6 dB but "Tape flange" -63.4 and "Jet sweep" -55.0 (Rate at 10 Hz); phaser ≤ -79.5 dB (M3); a change of Shape -85.9, -89.6 and -102.1 dB (M4) |
 | M14 | Cost | The instruction gate | Section 8 | Section 8 |
 
-With M1: 82 of 113 met (61 before); every chorus row met. With M2: 99 of 113, and with through zero 105 of 119 (the Tape flange preset's four rows and two drawn-against-heard rows, all met); what is left is the phaser's (M3) and three flanger rows: "Jet sweep" and "Hollow flange" in mono, whose high Feedback makes the two sides' resonances differ so they partly cancel when summed, and "Jet sweep" at Rate 10 Hz on the click measure, its sweep's sidebands round a 75 % loop. With M3: 115 of 119; the phaser's one left is "Liquid" in mono (1.68 LU): twelve stages at 70 % Feedback put the sides' resonances at different pitches, and fxlab hears 0.4 of its 10 s cycle (over a whole cycle the model gives 1.53). 60 % Feedback would about meet it but change the preset's character, so it stays.
+With M1: 82 of 113 met (61 before); every chorus row met. With M2: 99 of 113, and with through zero 105 of 119 (the Tape flange preset's four rows and two drawn-against-heard rows, all met); what is left is the phaser's (M3) and three flanger rows: "Jet sweep" and "Hollow flange" in mono, whose high Feedback makes the two sides' resonances differ so they partly cancel when summed, and "Jet sweep" at Rate 10 Hz on the click measure, its sweep's sidebands round a 75 % loop. With M3: 115 of 119; the phaser's one left is "Liquid" in mono (1.68 LU): twelve stages at 70 % Feedback put the sides' resonances at different pitches, and fxlab hears 0.4 of its 10 s cycle (over a whole cycle the model gives 1.53). 60 % Feedback would about meet it but change the preset's character, so it stays. M4 adds four rows, all met (the Triangle's bend and a change of Shape on each effect): 119 of 123.
 
 How the less obvious measures work:
 
@@ -189,7 +191,7 @@ How the less obvious measures work:
 - **Clicks (M13)**: each control is swept from end to end and back, 50 ms each way, under a 997 Hz tone at -12 dBFS, and the loudest millisecond above 6 kHz while it moves is reported against the tone. A swept delay bends the tone and a resonance raises it, but neither puts energy two octaves up; a stepped control or a click does. (fxlab's usual zipper measure read a resonant comb passing the tone as a zip, 6 to 21 dB on the flanger's Delay, which is why this one replaced it.) A fast Delay sweep through a feedback loop bends the pitch on every trip, so the Delay's row is reported, not held to the target.
 - **Sync (M11)**: a synced chorus is played through a 3.5-bar loop (not a whole number of cycles) and the LFO's phase just after the wrap is compared with the song's.
 
-**Unit tests** (`tests/modfx.rs`): on `main`, Mix 0 is the input bit for bit; the chorus delays by its Delay and Width 0 is mono; the flanger's feedback makes the comb it should; the phaser notches where the stages turn half a cycle; voice and stage changes don't click; the tail estimate covers the ring-out; and the registry-wide gates (block size, extremes, NaN, allocation). M1 added: width at every voice count; Depth in milliseconds and the semitone ceiling; a synced LFO back on the bar after a loop wrap, matching a chorus started fresh at that point; a catch-up held to the rate it is given; and the flat read flat, continuous across frames and exact at DC. M2 added: the flanger's comb heard equals the comb drawn (within 0.05 dB at whole and half frames, near the write, ±90 % Feedback and two Mixes); it goes in within 1 dB of the dry at any Feedback and Mix; its sweep never passes 20 ms and keeps its octaves below that; the flat read near the write is whole, follows a ramp and has no step where the cubic meets the sinc; and the feedback comb test now checks each echo's place and trimmed size. For Through zero: the dry waits 5 ms at 44.1, 48 and 96 kHz and the flanger reports it as its latency; held at the crossing with no Feedback, Mix 50 % is silence, exactly; the comb heard at the widest gap is the comb drawn (within 0.05 dB, at ±70 % Feedback and two Mixes); the gap sweeps Delay × Depth either way and never past the wait; switching it on and off mid-note stays far below a hard switch's spike; it goes in within 1 dB of the dry at any Feedback and Mix; and the tail estimate covers its ring-out at 95 %. M3 added: wet only, the phaser holds white noise's level within 0.5 dB at any Feedback, held or sweeping, at 2, 4 and 12 stages; at Mix 50 % a pink noise within 2.5 dB at any Feedback; its feedback never lifts DC; the notches sit 40 dB under the centre, which passes at the trim; and (in `modfx.rs`) Stereo puts the right side's corner a quarter or half a cycle behind the left's, times Width, mirrored about the centre on Opposite.
+**Unit tests** (`tests/modfx.rs`): on `main`, Mix 0 is the input bit for bit; the chorus delays by its Delay and Width 0 is mono; the flanger's feedback makes the comb it should; the phaser notches where the stages turn half a cycle; voice and stage changes don't click; the tail estimate covers the ring-out; and the registry-wide gates (block size, extremes, NaN, allocation). M1 added: width at every voice count; Depth in milliseconds and the semitone ceiling; a synced LFO back on the bar after a loop wrap, matching a chorus started fresh at that point; a catch-up held to the rate it is given; and the flat read flat, continuous across frames and exact at DC. M2 added: the flanger's comb heard equals the comb drawn (within 0.05 dB at whole and half frames, near the write, ±90 % Feedback and two Mixes); it goes in within 1 dB of the dry at any Feedback and Mix; its sweep never passes 20 ms and keeps its octaves below that; the flat read near the write is whole, follows a ramp and has no step where the cubic meets the sinc; and the feedback comb test now checks each echo's place and trimmed size. For Through zero: the dry waits 5 ms at 44.1, 48 and 96 kHz and the flanger reports it as its latency; held at the crossing with no Feedback, Mix 50 % is silence, exactly; the comb heard at the widest gap is the comb drawn (within 0.05 dB, at ±70 % Feedback and two Mixes); the gap sweeps Delay × Depth either way and never past the wait; switching it on and off mid-note stays far below a hard switch's spike; it goes in within 1 dB of the dry at any Feedback and Mix; and the tail estimate covers its ring-out at 95 %. M3 added: wet only, the phaser holds white noise's level within 0.5 dB at any Feedback, held or sweeping, at 2, 4 and 12 stages; at Mix 50 % a pink noise within 2.5 dB at any Feedback; its feedback never lifts DC; the notches sit 40 dB under the centre, which passes at the trim; and (in `modfx.rs`) Stereo puts the right side's corner a quarter or half a cycle behind the left's, times Width, mirrored about the centre on Opposite. M4 added: a change of Shape doesn't click on any of the three (in the voice and stage test, now `voice_stage_and_shape_changes_do_not_click`); the chorus's Triangle keeps the semitone ceiling and sweeps as far as the Sine, at a steady bend; and (in `modfx.rs`) the triangle is in step with the sine, its slope steady between the corners, never steeper than the straight parts and never stepping, and the dotted and triplet syncs take their beats and land on the song.
 
 **Listening**: each PR has a blind, loudness-matched A/B page (before against after) for Jay.
 
@@ -197,16 +199,16 @@ How the less obvious measures work:
 
 The instruction gate (`mpfree-bench`, a 128-frame stereo block at 44.1 kHz, `python3 tools/ci/instr_gate.py`, on CI):
 
-| Case | Before M1 | With M1 to M3 |
-|---|---|---|
-| Chorus, 2 voices | 95.0k | 103.8k (+9.2 %) |
-| Chorus, 4 voices | 154.9k | 173.9k (+12.3 %) |
-| Flanger | 55.1k | 64.3k (+16.6 %, M2) |
-| Flanger, through zero | | 92.6k (M2) |
-| Phaser, 4 stages | 61.6k | 66.0k (+7.1 %, M3) |
-| Phaser, 12 stages | 100.5k | 107.3k (+6.8 %, M3) |
+| Case | Before M1 | With M1 to M3 | With M4 |
+|---|---|---|---|
+| Chorus, 2 voices | 95.0k | 103.8k (+9.2 %) | 99.2k (+4.4 % on before M1) |
+| Chorus, 4 voices | 154.9k | 173.9k (+12.3 %) | 147.1k (-5.1 %) |
+| Flanger | 55.1k | 64.3k (+16.6 %, M2) | 64.9k |
+| Flanger, through zero | | 92.6k (M2) | 92.6k |
+| Phaser, 4 stages | 61.6k | 66.0k (+7.1 %, M3) | 66.5k |
+| Phaser, 12 stages | 100.5k | 107.3k (+6.8 %, M3) | 107.8k |
 
-The rise is the read: 8 taps a voice a side where the cubic took 4. A first sinc read gathered its taps with a wrap mask for each and cost 53 to 61 % more; writing every sample twice (so the taps are contiguous), summing four lanes and skipping the glides that have settled brought it to 9 to 12 %. A four-voice chorus then costs a little more than the rebuilt Room (146k), and these effects are stacked often, which is why the read is no longer than it needs to be. The flanger's rise (M2) is the same read, two a frame: its weights come from one table blend and are summed once, and using the sinc's fused read where it could was dearer (66.4k). Through zero off costs 0.8 % more than the flanger without it (63.7k to 64.3k: a check a block and the trim's third key); on, it reads each side's line at the crossing and its dry at the wait, 92.6k. The phaser's rise (M3) is the feedback's high-pass, the trim's two gains (Mix folded in) and a check each frame whether Feedback or Mix moved; the high-pass first sat before the stages, where it cost 15.7 to 17.6 %, the extra state there pushing the stage loop's values out of registers.
+The rise is the read: 8 taps a voice a side where the cubic took 4. A first sinc read gathered its taps with a wrap mask for each and cost 53 to 61 % more; writing every sample twice (so the taps are contiguous), summing four lanes and skipping the glides that have settled brought it to 9 to 12 %. A four-voice chorus then costs a little more than the rebuilt Room (146k), and these effects are stacked often, which is why the read is no longer than it needs to be. The flanger's rise (M2) is the same read, two a frame: its weights come from one table blend and are summed once, and using the sinc's fused read where it could was dearer (66.4k). Through zero off costs 0.8 % more than the flanger without it (63.7k to 64.3k: a check a block and the trim's third key); on, it reads each side's line at the crossing and its dry at the wait, 92.6k. The phaser's rise (M3) is the feedback's high-pass, the trim's two gains (Mix folded in) and a check each frame whether Feedback or Mix moved; the high-pass first sat before the stages, where it cost 15.7 to 17.6 %, the extra state there pushing the stage loop's values out of registers. M4 picks the LFO's shape once a frame and works out the frame's sweeps together (`Lfo::waves`): the compiler then does the sines side by side, so the chorus, which now works out all eight (four voices a side) at once, costs less than before M4 (-4.4 and -15.5 %), and the flanger and phaser about the same. Picking the shape for each read cost the flanger 8.5 % and the chorus 3.3 %.
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -222,7 +224,8 @@ The rise is the read: 8 taps a voice a side where the cubic took 4. A first sinc
 | A flanger that becomes a slapback | Sweep clamped to 20 ms (M2) | M10 |
 | A through-zero null that isn't complete, or latency that can't be made up | The dry through the copy's own read; a fixed 5 ms wait reported as latency (M2) | `tests/modfx.rs`, M9 |
 | Sync drift after a loop wrap | The LFO follows the song every block and glides back, no faster than a semitone's extra bend on the chorus (M1) | M11 |
-| Clicks as controls move | Every control glides; one glided sweep, not a kinked minimum; edge-zero sinc window | M13 |
+| Clicks as controls move | Every control glides; one glided sweep, not a kinked minimum; edge-zero sinc window; a change of Shape crossfades (M4) | M13 |
+| A triangle LFO's corner flipping the bend | Each corner rounded by a parabola, so the slope turns over a tenth of a cycle (M4) | Unit test, M5 |
 | Fast, deep phasing out of tune | Inherent; the defaults are slow | M5 (reported) |
 | Width and Manual interacting confusingly | Depth and Delay keep their own meanings; the page draws the sweep | Listening |
 
@@ -233,7 +236,8 @@ The rise is the read: 8 taps a voice a side where the cubic took 4. A first sinc
 - **M1** (chorus, 17 Nov): the fxlab `modulation` class, the LFO's sync fix for all three, the flat read, Depth in milliseconds with the semitone ceiling, width at every voice count, the Mix curve, a Main page, and the chorus presets retuned to keep their sweeps.
 - **M2** (flanger, 17 Nov): the flat read round the loop (fading to the cubic by the write), the drawing from the same weights, the 20 ms ceiling and the level trim; 99 of 113. Through-zero flanging, off by default, with a Tape flange preset (Jay's pick, 17 Nov); 105 of 119.
 - **M3** (phaser, 17 Nov): the level trim, a high-pass in the feedback, the Stereo choice (Quarter or Opposite) and a Main page; 115 of 119.
-- **Next:** the familiar extras (plan-3 P2): an LFO shape (sine or triangle, with a rounded corner), dotted and triplet syncs, and a Vintage colour for the chorus (a BBD's band limit, emphasis, soft clip and hiss). The MPC's own chorus, flanger and phaser are not yet captured as references (FXProbe).
+- **M4** (all three, 17 Nov): the LFO's Shape (Sine or a rounded Triangle), the dotted and triplet syncs, the frame's sweeps worked out together, and a Main page for the flanger; 119 of 123.
+- **Next:** if Jay wants it, the last familiar extra (plan-3 P2): a Vintage colour for the chorus (a BBD's band limit, emphasis, soft clip and hiss). The MPC's own chorus, flanger and phaser are not yet captured as references (FXProbe).
 
 ## 11. Sources
 

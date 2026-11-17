@@ -22,6 +22,8 @@ pub enum Tone {
     Normal,
     Dim,
     Accent,
+    /// The theme's second accent (the Perform chip, sequencer S4).
+    Accent2,
     Good,
     Warn,
     Bad,
@@ -320,6 +322,7 @@ impl Theme {
             Tone::Normal => self.text,
             Tone::Dim => self.text_dim,
             Tone::Accent => self.accent,
+            Tone::Accent2 => self.accent2,
             Tone::Good => self.good,
             Tone::Warn => self.warn,
             Tone::Bad => self.bad,

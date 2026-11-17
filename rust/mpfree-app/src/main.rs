@@ -2414,6 +2414,87 @@ fn erase_held_steps(
     keys.erase_locks(time).map(app::Effect::Tell)
 }
 
+/// Live erase (sequencer roadmap S1, the MPC's way): whether a pad
+/// pressed now erases in place of playing: ERASE is held while the
+/// transport records.
+fn live_erase_starts(app: &app::App, time: &time::TimeHost) -> bool {
+    app.erase_held() && time.info().state == mpfree_transport::State::Recording
+}
+
+/// Live erase: pad `pad` pressed with ERASE held while recording. Its
+/// notes on the armed track come out as the playhead reaches them, until
+/// the pad or ERASE is let go; it neither sounds nor records. What to
+/// tell.
+fn live_erase(time: &mut time::TimeHost, pad: usize) -> Option<app::Effect> {
+    let note = u8::try_from(pad).ok()?;
+    let first = !time.erasing();
+    time.erase_sound(note, true);
+    first.then(|| {
+        app::Effect::Tell(format!(
+            "ERASE: pad {}'s notes come out of the armed track's clip as the playhead passes them; UNDO brings them back",
+            pad + 1
+        ))
+    })
+}
+
+/// ERASE let go: live erase stops for every pad.
+fn live_erase_let_go(app: &app::App, time: &mut time::TimeHost) {
+    if !app.erase_held() && time.erasing() {
+        time.erase_none();
+    }
+}
+
+/// Knob recording (sequencer roadmap S1, the Elektron way): the parameter
+/// a screen action turns and its new value, as the recorder takes a knob
+/// move: a knob of the selected track's instrument (the Synth tab, its
+/// Q-Links), a strip control or an insert's knob on the mixer, or an
+/// effect's knob in the chain editor. Only parameters on a track; the
+/// recorder keeps the armed track's while the transport records, as a
+/// lock on the step it belongs to.
+fn knob_turn(
+    a: &gui::FromUi,
+    app: &app::App,
+    mix: &mixing::MixHost,
+) -> Option<(mpfree_play::mpfree_param::ParamAddr, f32)> {
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    let (addr, value) = match a {
+        gui::FromUi::Synth(SynthAction::Set { id, value }) => (
+            ParamAddr::new(Owner::Inst(u8::try_from(app.track()).ok()?), *id),
+            *value,
+        ),
+        gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Set { strip, id, value }) => (
+            ParamAddr::new(Owner::Strip(modmix::strip_of(*strip)?), *id),
+            *value,
+        ),
+        gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::SetInsert {
+            strip,
+            slot,
+            id,
+            value,
+        }) => {
+            let uid = mix.mixer.chain(*strip)?.uid(*slot)?;
+            (
+                ParamAddr::new(Owner::Insert(modmix::strip_of(*strip)?, uid), *id),
+                *value,
+            )
+        }
+        gui::FromUi::Chain(mpfree_chain_ui::ChainAction::Set { addr, value }) => (*addr, *value),
+        _ => return None,
+    };
+    (addr.owner.track().is_some() && value.is_finite()).then_some((addr, value))
+}
+
+/// Knob recording: a screen action's knob turn goes to the recorder while
+/// the transport records (see [`knob_turn`]).
+fn record_knob(a: &gui::FromUi, app: &app::App, mix: &mixing::MixHost, time: &mut time::TimeHost) {
+    if time.info().state != mpfree_transport::State::Recording {
+        return;
+    }
+    if let Some((addr, value)) = knob_turn(a, app, mix) {
+        time.knob(0, addr, value);
+    }
+}
+
 /// A Q-Link turn of the steps held on the step pads (or of the step
 /// picked on Beats): the steps held stay on their release.
 fn step_turn(a: &gui::FromUi) -> bool {
@@ -2446,6 +2527,27 @@ fn sound_step(
         }
     }
     p.tell.map(app::Effect::Tell)
+}
+
+/// A scale row's name pressed (`down`) or let go on Beats: the synth's pad
+/// (or the kit's) sounds while it is held, as a step pad's press does
+/// while stopped, recording nothing.
+fn audition(
+    pad: usize,
+    down: bool,
+    player: &mut sampler::Player,
+    synth: &mut synth::Synth,
+    synth_on: bool,
+) {
+    let v = play_page::TAP_VELOCITY;
+    match (synth_on, down) {
+        (true, true) => synth.note_on(pad, v, 0),
+        (true, false) => synth.note_off(pad, 0),
+        (false, true) => {
+            player.hit_at(pad, v, 0);
+        }
+        (false, false) => player.release_at(pad, 0),
+    }
 }
 
 /// A step pad let go: its line, and the sound its press played stops.
@@ -2665,6 +2767,7 @@ fn kit_views(kits: &[kit::Kit], synth: &synth::Synth) -> Vec<gui::KitView> {
                 colour: akai::kit_colour(k),
                 chip: None,
                 synth: None,
+                pitches: Vec::new(),
             }
         })
         .collect();
@@ -3958,18 +4061,24 @@ fn time_action(
             return Vec::new();
         }
     }
-    // ERASE + a clip, a drop on the Clips grid or the Song view, a block
-    // deleted, UNDO and REDO: said in place of the hint.
+    // ERASE + a clip, COPY + a clip or a slot, a clip settings card change,
+    // a drop on the Clips grid or the Song view, a block deleted, UNDO and
+    // REDO: said in place of the hint.
     let undo = matches!(a, TimeAction::Undo | TimeAction::Redo);
     let erase = matches!(
         a,
         TimeAction::DeleteClip { .. }
+            | TimeAction::ClipSettings { .. }
+            | TimeAction::ClipLength { .. }
+            | TimeAction::CopyClip { .. }
+            | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
             | TimeAction::DropRow { .. }
             | TimeAction::MovePlacement { .. }
             | TimeAction::StretchPlacement { .. }
             | TimeAction::MoveSection { .. }
             | TimeAction::DeletePlacement(_)
+            | TimeAction::Perform(_)
     );
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
@@ -4736,6 +4845,7 @@ fn player_session(
             if step_turn(&a) {
                 step_keys.turned();
             }
+            record_knob(&a, desk.app, desk.mix, desk.time);
             let a = desk.screen(a, t, out, &mut fx);
             save_shelf(&mut mix, &store, out);
             // UNDO on the mixer: a strip control's turn, from its value
@@ -4798,6 +4908,11 @@ fn player_session(
                     out.show(gui::ToUi::PadUp(pad));
                 }
                 gui::FromUi::Pad { .. } => {}
+                // A scale row's name on Beats: the pad sounds while held.
+                gui::FromUi::Audition { pad, down } if pad < 16 => {
+                    audition(pad, down, &mut player, &mut synth, synth_on);
+                }
+                gui::FromUi::Audition { .. } => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {
@@ -5680,6 +5795,15 @@ fn player_session(
                     mute_pressed[pad as usize] = false;
                     out.show(gui::ToUi::PadUp(pad as usize));
                 }
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16 && live_erase_starts(&app, &time) =>
+                {
+                    fx.extend(live_erase(&mut time, pad as usize));
+                }
+                Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 && time.erases(pad) => {
+                    time.erase_sound(pad, false);
+                    out.show(gui::ToUi::PadUp(pad as usize));
+                }
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
                     if let Some(ev) = app.pressed_event(pad, velocity, true) {
@@ -5786,7 +5910,8 @@ fn player_session(
                         note,
                         pressed,
                     ));
-                    fx.extend(app.button(note, pressed, t))
+                    fx.extend(app.button(note, pressed, t));
+                    live_erase_let_go(&app, &mut time);
                 }
                 // A finger on a Q-Link lights its card. The control mapper names the
                 // Q-Links. The release waits until the finger has been off for 150 ms
@@ -6175,6 +6300,9 @@ fn player_session(
         parts.lap(parts::APP);
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
+        if app.set_perform(time.perform()) {
+            out.show(gui::ToUi::Rec(app.rec));
+        }
         app.set_track_count(time.track_count());
         // The transport buttons' lights follow the transport and the
         // loops (only the ones that changed; next period's effects).

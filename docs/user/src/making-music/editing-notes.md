@@ -63,5 +63,5 @@ The Euclidean fill spreads a number of hits as evenly as they go over a number o
 Each turn of Hits, Steps or Rotate writes the pattern straight away, repeated through the whole clip. Steps that keep a hit keep their notes as they were; new hits are a step long and as loud as the sound's first note. Other sounds stay as they are. A pattern of 12 steps on a 16-step clip runs on into the next bar, for a part that drifts against the others. A run of turns is one take, so one **UNDO** puts the row back as it was.
 
 > [!MPC]
-> This is the MPC's Grid View, List Edit and Timing Correct in one place. TC here corrects notes already recorded. Correcting while you record is coming. The tracker and the Euclidean fill aren't on the MPC: the fill is like the Euclidean mode of Elektron's Digitakt.
+> This is the MPC's Grid View, List Edit and Timing Correct in one place. TC here corrects notes already recorded. To correct notes as you record them, set **Quantise** on the Record tab (see [Recording a clip](clips.md#recording-a-clip)). The tracker and the Euclidean fill aren't on the MPC: the fill is like the Euclidean mode of Elektron's Digitakt.
 
