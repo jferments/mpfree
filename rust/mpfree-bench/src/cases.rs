@@ -10,7 +10,8 @@ use mpfree_fx::ids;
 use mpfree_fx::{
     Amp, CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter,
     Drive, Eq, Flanger, Frozen, Fuzz, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter,
-    MultiTap, Perform, Phaser, Print, PrintJob, PrintState, StripId, Tail, TapeDelay,
+    MultiTap, Perform, Phaser, Plate, Print, PrintJob, PrintState, Room, Spring, StripId, Tail,
+    TapeDelay,
 };
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
@@ -1286,6 +1287,31 @@ pub fn all(rate: u32) -> Vec<Case> {
     // The wash throw (pad 16) held: its reverb fed and ringing all along.
     v.push(measured(|| {
         perform("Perform FX, a wash throw held", rate, &[15], false)
+    }));
+    // The Room, Plate and Spring at their defaults, all wet.
+    v.push(measured(|| {
+        effect(
+            "Room reverb",
+            rate,
+            Box::new(Room::new()),
+            &[(ids::room::MIX, 100.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "Plate reverb",
+            rate,
+            Box::new(Plate::new()),
+            &[(ids::plate::MIX, 100.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "Spring reverb",
+            rate,
+            Box::new(Spring::new()),
+            &[(ids::spring::MIX, 100.0)],
+        )
     }));
     // The reverb at Full (its cost before Eco, the worst case) and at
     // Eco, its default.

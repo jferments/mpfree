@@ -102,8 +102,11 @@ fn gains(c: usize, m: f64) -> (f64, f64) {
     }
 }
 
+/// Controls added after the Mix curve, appended in turn (engine, name).
+const ADDED_AFTER: [(&str, &str); 1] = [("mpfree.fx.room", "Diffusion")];
+
 #[test]
-fn every_delay_and_reverb_has_the_mix_curve_last() {
+fn every_delay_and_reverb_has_the_mix_curve_after_its_older_controls() {
     let all = engines();
     assert_eq!(all.len(), 7, "{all:?}");
     for id in all {
@@ -113,7 +116,13 @@ fn every_delay_and_reverb_has_the_mix_curve_last() {
         assert_eq!(p.curve, Curve::Choice(&CURVES), "{id}");
         assert_eq!((p.default, p.min, p.max), (0.0, 0.0, 2.0), "{id}");
         assert_eq!(p.group, "Output", "{id}");
-        assert!(ps.iter().all(|q| q.id <= p.id), "{id}: appended");
+        for q in ps.iter().filter(|q| q.id > p.id) {
+            assert!(
+                ADDED_AFTER.contains(&(id, q.name)),
+                "{id}: {} comes after the Mix curve",
+                q.name
+            );
+        }
         assert!(ps.iter().any(|q| q.name == "Mix"), "{id}");
         assert!(mpfree_fx::page_keeps(p.name), "presets leave it alone");
         assert_eq!(n.param(p.id), 0.0, "{id}: starts at Equal");

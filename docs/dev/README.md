@@ -64,6 +64,10 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Crush](design/fx-crush.md): the design of the bit crusher and decimator: bits, dither and the quantiser's shape, sample and hold at exact times with a minimum-phase band-limited step, the filters tied to the rate, jitter, the vintage presets, the B targets and the cost (`rust/mpfree-fx`, 2026-11-17).
 - [Amp](design/fx-amp.md): the design of the guitar and bass amp: the gate, the boosts, tube-like stages with antialiasing, the circuit's tone stack, sag, depth, presence, the filter cabinets, trims fitted on noise, the presets, the A targets and the cost (`rust/mpfree-fx`, 2026-11-17).
 - [Fuzz](design/fx-fuzz.md): the design of the fuzz pedal: Face, Muff and Octave as circuits, the starved Gate, Low keep's crossover for a clean sub, antialiasing, the presets, the targets and the cost (`rust/mpfree-fx`, 2026-11-17).
+- [Delays](design/fx-delay.md): the design of the Digital, Tape and Multi-tap delays: research, principles, algorithms and why, measuring, cost, defaults and presets (`rust/mpfree-fx`, 2026-11-17).
+- [EQ](design/fx-eq.md): the design of the eight-band EQ: matched bells and shelves, the HQ 2x Quality, measuring, cost, defaults and presets (`rust/mpfree-fx`, 2026-11-17).
+- [Reverbs](design/fx-reverb.md): the design of the Room, Plate, Spring and the Cloud engine (Hall, Cloud, Echoes): research, feedback delay networks, decay and level, measuring, cost, defaults and presets (`rust/mpfree-fx`, 2026-11-17).
+- [Chorus, flanger and phaser](design/fx-modulation.md): the design of the modulation effects: research, the moving read and its pitch, width, sync, measuring, cost, defaults and presets (`rust/mpfree-fx`, 2026-11-17).
 - [Export](design/export.md): the mixdown, stems and MIDI file from one pass over the song, Fast (quiet, the default) or Listen (real time), when an export has to listen, and the app's part (`rust/mpfree-export`).
 - [Modulation](design/modulation.md): parameter addresses, macros, the mod matrix, morph and Q-Link bindings (`rust/mpfree-param`, `rust/mpfree-mod`).
 
