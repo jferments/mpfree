@@ -176,6 +176,9 @@ pub enum To {
     Track { track: u8, pad: Option<u8> },
     /// The armed track plays a kit and no pad has this note.
     NoPad { track: u8 },
+    /// A route (the Routing section's Tracks by channel) played this track
+    /// (from 0), whichever track is armed.
+    Routed { track: u8 },
     /// A learned control: it moved this parameter.
     Learned(ParamAddr),
     /// MIDI Learn was armed: this control now moves this parameter.

@@ -855,10 +855,13 @@ impl MusicIn {
                         }
                     }
                     // A route plays its track, whatever the port's input.
-                    if let In::Routed { track, .. } = other {
-                        if key_note(&other).is_some() {
-                            to = To::Track { track, pad: None };
-                        }
+                    // Its other messages (a knob, a bend) nothing takes yet.
+                    if let In::Routed { track, msg, .. } = other {
+                        to = if key(msg).is_some() {
+                            To::Routed { track }
+                        } else {
+                            To::Nothing
+                        };
                         routed_key(other, routed);
                         return;
                     }
@@ -1304,6 +1307,14 @@ mod tests {
                 }
             )]
         );
+        // The monitor says the route played track 41, not the armed one.
+        m.sync(&io, 0.75);
+        {
+            let v = io.lock().unwrap();
+            let went: Vec<To> = v.monitor.newest().map(|(_, l)| l.to).collect();
+            assert!(went.contains(&To::Routed { track: 40 }), "{went:?}");
+            assert!(went.contains(&To::LearnOnly), "{went:?}");
+        }
         // The keyboard's route applies once it is plugged in; its keys
         // go to track 3, none to the armed track.
         let keystep = m.plugged("Keystep 37").unwrap();

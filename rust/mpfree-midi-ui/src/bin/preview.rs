@@ -1,5 +1,5 @@
-//! mpfree-midi-preview: WORKSTATION ONLY. Draws the MIDI, Sync and CV
-//! sections inside the mixer's real I/O view as PNG files, with a sample
+//! mpfree-midi-preview: WORKSTATION ONLY. Draws the MIDI, Routing, Sync,
+//! CV and Monitor sections inside the mixer's real I/O view as PNG files, with a sample
 //! rig (the 5-pin jacks, a USB keyboard, a drum machine the project names
 //! but that isn't plugged in), so the screens can be looked at before they
 //! go on the MPC. Opens no device.
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use mpfree_midi::setup::{ClockOut, IgnoreSet, Ignored, TrackOut, DIN_NAME};
+use mpfree_midi::setup::{ClockOut, IgnoreSet, Ignored, TrackOut, TrackRoute, DIN_NAME};
 use mpfree_midi_ui::{sample, sections, Built, IoModel};
 use mpfree_mixer_ui::sample::{name, play, screen, song_mixer};
 use mpfree_mixer_ui::{MixState, MixView};
@@ -39,6 +39,9 @@ struct Shot {
     at: u64,
     /// Then the page of this port, opened by its row's Open ›.
     open: Option<&'static str>,
+    /// Then a tap on the control whose label starts with this (a Routing
+    /// square: "Keystep 37 → Tracks").
+    pick: Option<&'static str>,
 }
 
 fn shots() -> Vec<Shot> {
@@ -99,6 +102,20 @@ fn shots() -> Vec<Shot> {
             .with(Ignored::Aftertouch, true);
         p.delay_tenths = 65;
     });
+    // Routing: the drum machine on the 5-pin jacks' channel 10 plays
+    // Drums, and the keyboard (Learn only) plays Bass on channel 2 and Lead
+    // on channel 1, whichever track is armed.
+    let mut routing = built.clone();
+    let route = |port: &str, channel: u8, track: u8| TrackRoute {
+        port: port.into(),
+        channel: Some(channel),
+        track,
+    };
+    routing.setup.routes = vec![
+        route(DIN_NAME, 9, 0),
+        route("Keystep 37", 1, 1),
+        route("Keystep 37", 0, 3),
+    ];
     vec![
         Shot {
             name: "io-midi",
@@ -109,6 +126,7 @@ fn shots() -> Vec<Shot> {
             taps: vec![],
             at: 1,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-midi-picker",
@@ -120,26 +138,40 @@ fn shots() -> Vec<Shot> {
             taps: vec![(186 + 290 + 110, 0)],
             at: 1,
             open: None,
+            pick: None,
+        },
+        Shot {
+            name: "io-routing",
+            about: "Routing (board 5, without blocks): inputs, the pads and the tracks down the side; the armed track, tracks by channel, Learn, each MIDI out and CV across; the keyboard's card picked: it is Learn only, yet plays Bass on channel 2 and Lead on channel 1",
+            section: 2,
+            model: routing,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Keystep 37 → Tracks"),
         },
         Shot {
             name: "io-sync",
             about: "Sync: tempo from the 5-pin jacks with clock arriving, following, and clock out per port; following not built yet",
-            section: 2,
+            section: 3,
             model: rig.clone(),
             wheel: 0,
             taps: vec![],
             at: 1,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-cv",
             about: "CV: the eight outputs with job, track and main setting; CV out not built yet",
-            section: 3,
+            section: 4,
             model: rig,
             wheel: 0,
             taps: vec![],
             at: 1,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-midi-built",
@@ -150,6 +182,7 @@ fn shots() -> Vec<Shot> {
             taps: vec![],
             at: 1,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-midi-learn",
@@ -160,48 +193,53 @@ fn shots() -> Vec<Shot> {
             taps: vec![],
             at: 1,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-cv-built",
             about: "CV once CV out is built: each output's volts now",
-            section: 3,
+            section: 4,
             model: built.clone(),
             wheel: 0,
             taps: vec![],
             at: 1,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-monitor",
             about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo, each line with where it went; lights per port and channel, in on top and out below",
-            section: 4,
+            section: 5,
             model: sample::monitored(built.clone()),
             wheel: 0,
             taps: vec![],
             at: 1,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-monitor-channel",
             about: "Monitor after a tap on the keyboard's channel 1 light: only what came in on it",
-            section: 4,
+            section: 5,
             model: sample::monitored(built.clone()),
             wheel: 0,
             // y -1: the keyboard's channel 1 light, in.
             taps: vec![(0, -1)],
             at: 1,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-monitor-now",
             about: "Monitor, Now view, 45 s into a session: the keyboard's chord held with E4 pressed harder, the controls that moved (the learned knob says what it moves), program and bank, the clock from the 5-pin jacks with a pulse lost, bend and pressure, and the Bass track's C2 stuck on MIDI out",
-            section: 4,
+            section: 5,
             model: sample::held_now(built),
             wheel: 0,
             // y -2: the Now half of List | Now.
             taps: vec![(0, -2)],
             at: sample::HELD_AT as u64,
             open: None,
+            pick: None,
         },
         Shot {
             name: "io-midi-port",
@@ -212,6 +250,7 @@ fn shots() -> Vec<Shot> {
             taps: vec![],
             at: 1,
             open: Some("Keystep 37"),
+            pick: None,
         },
         Shot {
             name: "io-midi-port-usb",
@@ -222,6 +261,7 @@ fn shots() -> Vec<Shot> {
             taps: vec![],
             at: 1,
             open: Some("Keystep 37"),
+            pick: None,
         },
         Shot {
             name: "io-midi-port-din",
@@ -232,6 +272,7 @@ fn shots() -> Vec<Shot> {
             taps: vec![],
             at: 1,
             open: Some(DIN_NAME),
+            pick: None,
         },
     ]
 }
@@ -285,6 +326,17 @@ fn render(shot: &Shot) -> Result<SoftCanvas, String> {
             .into_iter()
             .find(|t| t.target.id == "field" && t.target.label == label)
             .ok_or_else(|| format!("{}: no Open › on {port}'s row", shot.name))?;
+        let (x, y) = t.target.centre();
+        tap(&mut ui, x, y);
+        set_hint(&mut ui);
+        ui.paint(&mut canvas);
+    }
+    if let Some(pick) = shot.pick {
+        let t = ui
+            .targets()
+            .into_iter()
+            .find(|t| t.target.label.starts_with(pick))
+            .ok_or_else(|| format!("{}: nothing labelled {pick}", shot.name))?;
         let (x, y) = t.target.centre();
         tap(&mut ui, x, y);
         set_hint(&mut ui);
