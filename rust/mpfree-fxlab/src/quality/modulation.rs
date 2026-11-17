@@ -167,7 +167,7 @@ fn drawn_error(r: &[f64], rate: u32, drawn: impl Fn(f64) -> f64) -> f64 {
 /// delay or LFO bends the tone's pitch and a resonance raises its level,
 /// but neither puts energy two octaves up; a stepped control or a click
 /// does.
-fn hf_click(d: &mut NodeDut, id: u16, lo: f64, hi: f64, log: bool) -> f64 {
+pub(super) fn hf_click(d: &mut NodeDut, id: u16, lo: f64, hi: f64, log: bool) -> f64 {
     let rate = d.rate();
     let hz = 997.0;
     let rest = (0.3 * rate as f64) as usize;

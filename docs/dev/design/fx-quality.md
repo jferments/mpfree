@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-17 5c0286b9
+checked: 2026-11-17 1c113480
 -->
 # FX quality: targets, the report and the ratchet
 
@@ -12,11 +12,13 @@ An effect is good when it meets its measured targets, wins or ties in blind, lev
 
 **Fourth round** (measuring built 2026-11-17): the rest of the dynamics (Limiter and Master safety, Gate, De-esser, Multiband compressor, Ducker, Transient shaper, Channel strip), in [Round 4](#round-4-the-rest-of-the-dynamics) below; the fixes come one class at a time. Research and plan: jferments/mpfree-claude `fx/quality/` (research-dynamics.md, plan-4.md, baseline-dynamics-2026-11-17.md).
 
+**Fifth round** (measuring built 2026-11-17): the movement, pitch and voice effects (the shared LFO, Tremolo, Auto-pan, Rotary, Auto wah, Ring mod, Frequency shifter, Pitch shifter, Pitch correct, Harmonizer, Tuner and Talk box), in [Round 5](#round-5-movement-pitch-and-voice) below; the fixes come one class at a time, and a Vocoder joins with its own. Research and plan: jferments/mpfree-claude `fx/quality/` (research-movement.md, research-pitch.md, research-voice.md, plan-5.md, baseline-r5-2026-11-17.md).
+
 **The sampler** (measuring built 2026-11-17; the sampler review's engine item 7): a pad of `mpfree-sampler` measured by the same kind of numbers, with its own ratchet: [The sampler](#the-sampler) below.
 
 ## The report
 
-`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi`, `amp`, `modulation`, `limiter`, `gate`, `deesser`, `multiband`, `ducker`, `transient` or `strip`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq`, `eq[preset]` and `eq[HQ 2x]` (its Quality at HQ 2x); an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All seventeen classes take about 65 s in a release build (the round-2 classes 39 s: Lo-fi about 24 s of it, for its minute-long pitch reads, and most of the rest the Drive's 4x quality; the modulation class about 3 s; the seven dynamics classes of round 4 about 2.5 s together).
+`fxlab quality [--class CLASS]... [--out DIR]` (CLASS: `delay`, `eq`, `reverb`, `drive`, `crush`, `compressor`, `filter`, `lofi`, `amp`, `modulation`, `limiter`, `gate`, `deesser`, `multiband`, `ducker`, `transient`, `strip`, `movement`, `pitch` or `voice`) measures every target of a class (all of them when none is named) and prints one row per number: the target id, what was measured, the value, the target and whether it is met; DIR/quality.json holds the same. Subjects are the modes of the effect's family at their defaults (`delay/digital`, `reverb/hall`), and for the cheaper measures each family preset in its mode (`reverb/plate[Vocal plate]`). The EQ's subjects are `eq`, `eq[preset]` and `eq[HQ 2x]` (its Quality at HQ 2x); an engine that isn't in a family is `class/engine` (`crush/crush[Chip]`). All twenty classes take about 75 s in a release build (the round-2 classes 39 s: Lo-fi about 24 s of it, for its minute-long pitch reads, and most of the rest the Drive's 4x quality; the modulation class about 3 s; the seven dynamics classes of round 4 about 2.5 s together; the three of round 5 about 8 s).
 
 New analyses in `rust/mpfree-fxlab` for it, each tested on signals with known answers:
 
@@ -645,3 +647,115 @@ Cost isn't in the report: `mpfree-bench`'s "Sampler grains (per grain)" scaling 
 - **G6:** 22 % and 51 % of grains are skipped, and the clouds lose 4.5 and 5.7 LU.
 - **G7:** full spread loses 1.8 LU and leaves a correlation of 0.76.
 - **G8:** 97, 192 and 484 ms to speak with 200 ms, 500 ms and 1 s grains.
+
+## Round 5: movement, pitch and voice
+
+Measuring built 2026-11-17, by `quality/round5.rs`: the movement effects (class `movement`: the shared LFO heard through the tremolo, the Tremolo, Auto-pan, Rotary and Auto wah, ids W; the Ring mod and Frequency shifter, Z), the pitch effects (`pitch`: the Pitch shifter, Pitch correct, Harmonizer and Tuner, H) and the Talk box (`voice`, V). Research and plan: jferments/mpfree-claude `fx/quality/` (research-movement.md, research-pitch.md, research-voice.md, plan-5.md, baseline-r5-2026-11-17.md). The three classes take about 8 s together. Subjects are `class/engine` at its defaults and presets (`movement/rotary[Chorale]`, `pitch/pitch-correct`), and `movement/lfo` for the LFO (the tremolo at Depth 100). Clicks are round 3's M13 (each control swept end to end in 50 ms and back under a 997 Hz tone at -12 dBFS, the loudest millisecond above 6 kHz against the tone) for every control of every effect, under the id named below; the controls that move the sound past 6 kHz by design (the ring mod's Freq and Sweep, the frequency shifter's Shift and Feedback, the pitch shifter's Feedback, the rotary's Drive) are left out.
+
+The measures it adds, beside the earlier rounds':
+
+| Measure | What it reads |
+|---|---|
+| The LFO as heard | The tremolo's gain frame by frame from a steady input (Volume mode, Width 0, Depth 100), every shape at 0.5, 4 and 20 Hz, at the report's rate and again at 48 kHz (where a phase lands near a wrap depends on the rate): the largest change in one frame, and a Square's 10 to 90 % rise |
+| Steady clicks | A 997 Hz tone at -12 dBFS through the effect for 3 s with nothing moving: the loudest millisecond above 6 kHz against the tone (the LFO's own resets and edges) |
+| Sync after a wrap | The song position looping from 3.5 bars back to the start at 120 BPM, the LFO at 1 bar: the phase of the gain against the song position over the last bar before the wrap, against the same over the bar from 50 ms after it, in cycles |
+| A rotor | The analytic signal of one test tone through the rotary (the drum's 200 Hz and the horn's 1.5, 3 and 6 kHz at -18 dBFS, together): the tone's level swings once a rotation, so the swing's own analytic phase gives the rotor's speed at every moment, and which microphone hears it first; the tone's instantaneous frequency gives the Doppler |
+| Off the true products | A sine through the ring mod or the frequency shifter (Mix 100), Hann-windowed: the power more than 30 Hz (the shifter: 6 Hz) from every product it should make, against the products' |
+| A shifted tone | 1.5 s after half a second to settle: the power more than 2 % from the target against the target's; its pitch from the upward zero crossings, each placed between frames; its level per whole period of the target (at least 5 ms) |
+| A voice's pitch | The instantaneous frequency of the corrected or harmonized fundamental (fxlab's `flutter`), in cents against the note; averaged over 10 ms where a settling time or a vibrato is read, so a single-frame grain glitch doesn't count as unsettled |
+| Off the harmonics | A saw's spectrum: the power more than 1 % from every harmonic of the wanted pitch, against the whole |
+| Meters | Pitch correct's note and the tuner's cents and frequency, read after every 128-frame block |
+| A vowel | The talk box's impulse response (65,536 points): its peaks near each formant of Peterson and Barney's table, and the deepest dip between F1 and F2 under F2 against an all-pole cascade with the same formants (bandwidths 80, 100 and 140 Hz); on a 110 Hz saw, the harmonics nearest F2 and F3 under the one nearest F1, against the table's levels |
+
+### The LFO, tremolo and auto-pan (W1 to W8)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| W1 | `jump_<shape>_<hz>hz`, `click_db_<shape>_<hz>hz` (`_48k` at 48 kHz) | The largest one-frame change ≤ 0.05 of the range; ≤ -60 dB | A reset in one frame clicks every cycle |
+| W2 | `edge_ms_<hz>hz` | Square: 1 to 4 ms at 0.5, 4 and 20 Hz | A chop at any rate, and never a click |
+| W3 | `sync_error_cycles_tremolo`, `_autopan` | Within 0.01 of a cycle, 50 ms after a loop wrap | As M11 |
+| W4 | `click_db_<control>` (tremolo and auto-pan) | ≤ -60 dB, Shape included | Switching is a performance move |
+| W5 | `depth_error_db_<depth>`, `trough_db_depth100` | Depth d swings 20·log10(1/(1 - d)) dB within 0.2 dB; ≤ -60 dB at 100 (under -80 reads -80) | The knob says what it does |
+| W6 | `harmonic_whole_swing_db`, `harmonic_3khz_swing_db` | Harmonic mode on a 200 Hz and a 3 kHz tone: the whole ≤ 4.5 dB while the 3 kHz tone swings ≥ 20 dB | The swirl without a pump |
+| W7 | `click_db_mode` | ≤ -60 dB | As W4 |
+| W8 | `power_swing_db` | Auto-pan at 1 Hz on mono pink: left plus right power within 0.25 dB | A pan that pumps is a tremolo |
+
+The tremolo goes in quieter by what its depth takes, and the auto-pan is a balance on a stereo source; both are by design (plan-5 section 5).
+
+### Rotary (W9 to W14)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| W9 | `horn_hz_<speed>`, `drum_hz_<speed>`, `horn_doppler_cents`, `drum_doppler_cents` | Horn 0.8 and 6.7 Hz, drum 0.67 and 5.7 Hz, within 2 %; at Fast the horn ±30 to 45 cents, the drum ±5 to 10 | These numbers are the sound |
+| W10 | `ramp_up_s_<rotor>`, `ramp_down_over_up_<rotor>`, `click_db_<control>` | Slow to Fast at the default Ramp, until within 10 % of Fast for good: the horn in 0.8 to 1.6 s, the drum in 3.5 to 6 s; slowing down (to within 10 % of the span of Slow) no quicker; every control but Drive ≤ -60 dB | The ramp is played |
+| W11 | `lu_<pink or hits>_<speed>`, the presets' `lu_pink` | Within ±1.5 LU | Louder wins every A/B |
+| W12 | `beam_db` | At Fast, the horn's level swing on 6 kHz at least 4 dB more than on 1.5 kHz | A horn's beam narrows with frequency |
+| W13 | `alias_db_5khz_drive<n>` | Stopped, 5 kHz at -6 dBFS: ≤ -60 dB at Drive 50, ≤ -50 dB at 100 | Inharmonic fizz (round 2's G1 and G2) |
+| W14 | `opposite_rotation` | 1: the microphone that hears the horn first hears the drum last | The Leslie's rotors turn opposite ways |
+
+### Auto wah (W15 to W18)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| W15 | `peak_error_pct_res<n>` | Source Pedal: the peak within 3 % of Low·(High/Low)^Center at Center 0, 50 and 100, Resonance 0, 60 and 100 | The page is how it's set |
+| W16 | `lu_pink` | Within ±2 LU, the defaults and every preset | As W11 |
+| W17 | `lu_vs_res60_<wah or band-pass>_res<n>` | Within ±3 LU of the level at Resonance 60, from 0 to 100 | A sharper peak shouldn't be a quieter effect |
+| W18 | `click_db_<control>` | ≤ -60 dB, the Filter type included | As W4 |
+
+### Ring mod and frequency shifter (Z1 to Z6)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| Z1 | `image_db_<44k1 or 48k>_shift<hz>` | The wrong-way shift ≤ -60 dB on tones from 40 Hz to 18 kHz, shifts of 100 Hz and 1 kHz, at 44.1 and 48 kHz | The image is a second, opposite shift |
+| Z2 | `spurs_db_sine` (ring mod, a 7 kHz tone on a 3 kHz sine), `spurs_db_<rate>_shift<hz>` | ≤ -80 dB | An approximate sine adds products |
+| Z3 | `alias_db_triangle`, `alias_db_square`, `alias_db_sine_top_octave` | 440 Hz carriers on a 1 kHz tone ≤ -60 dB; a 5 kHz sine on a tone at 0.95 of Nyquist reported | Inharmonic fizz that moves the wrong way in a sweep |
+| Z4 | `wave_spread_lu` | The three waves within 1.5 LU of each other on pink | A choice of tone shouldn't be a jump in level |
+| Z5 | `wave_click_db_<from>-to-<to>`, `click_db_<control>` | The ring mod's Wave: round 2's switch click ≤ 3 dB (a square carrier's products pass 6 kHz, so M13 can't read it); the shifter's Mode and the rest ≤ -60 dB | As W4 |
+| Z6 | `feedback95_ringout_db` | 95 % feedback, 4 s of white noise at shifts 0.01, 5, 100 and 2000 Hz: finite, and the third second after it 60 dB under the level while it played (the peak reported) | No runaway |
+
+### Pitch shifter, pitch correct, harmonizer and tuner (H1 to H14)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| H1 | `off_target_db_<shift>`, `pitch_error_cents_<shift>`, `level_swing_db_<shift>` | 13 sines from 110 Hz to 1.8 kHz at +12, +7, -5 and -12 semitones, the default window: every tone ≤ -30 dB off target, within 5 cents, its level swing ≤ 3 dB (the median off target reported) | One note clean and the next gone is the classic delay-line flaw |
+| H2 | `chord_off_target_db` | A3, C#4 and E4 saws up an octave ≤ -15 dB off the target partials | Polyphonic material is the hard case |
+| H3 | `impulse_copies_up12`, `impulse_spread_ms_up12` | Reported: an impulse's copies over -12 dB at +12, and their spread | A hit becomes a flam |
+| H4 | `delay_ms`, `reported_latency_frames` | At 0 semitones and the default window: ≤ 15 ms, reported 0 (plan-5 decision 12.2: immediate, shortened); Mix 50's comb reported | Mixed with the dry, a 25 ms lag is a slapback |
+| H5 | `hf_tilt_error_db_up1` | A semitone up on pink: 12 to 16 kHz against 1 to 2 kHz within 0.5 dB of the input's | Interpolation dulls a moving read |
+| H6 | `accuracy_cents_<range>`, `wobble_cents_<range>`, the harmonizer's `interval_error_cents_<voice>` | Key C major, Speed 0: saws in each range's span (Low 60 to 600 Hz, Mid 90 to 900, High 150 to 1500) within 3 cents of the nearest scale note on average, wobble ≤ 2 cents; voices within 3 cents | Heard against an in-tune keyboard |
+| H7 | `vibrato_left_cents_speed0`, `vibrato_kept_speed100` | A ±40-cent vibrato at 5.5 Hz on A4: ≤ 5 cents left at Speed 0; ≥ 90 % kept at 100 | Speed 0 steps flat between notes |
+| H8 | `settle_ms_speed<n>` | A saw 30 cents sharp from silence: within 5 cents for good in at most 1.8 × Speed + 25 ms after the latency | Speed means its label |
+| H9 | `in_tune_off_harmonic_over_input_db`, `correcting_off_harmonic_db`, the harmonizer's `voice_off_harmonic_db_<voice>` | In tune (220 Hz): within 3 dB of the input's own; 45 cents sharp: ≤ -50 dB; each voice ≤ -40 dB | Rough grains are heard as buzz |
+| H10 | `formant_<f1 or f2>_error_harmonics_<voice>` | An "AH" sung at 130 Hz: F1 and F2 within one harmonic of the input's after an octave up or down or a 5th up | Without it a 5th up is a chipmunk |
+| H11 | `noise_change_db`, `wrong_notes` | White noise within 0.5 dB; the note meter right on a sine, saw, square and missing fundamental at A2, A3 and A4 | Breaths and "s" survive; no octave errors |
+| H12 | `latency_error_frames_<range>`, the harmonizer's `latency_error_frames` | The delay of pink (which passes uncorrected) within 1 frame of the reported latency | The mixer lines slots up by it |
+| H13 | `click_db_<control>` | ≤ -60 dB, every control of the four | As W4 |
+| H14 | `error_cents_<signal>`, `settle_ms_<signal>`, `jitter_cents_<signal>` | Twelve notes from A0 to G6, 13 cents sharp, as a sine, a saw and a saw with white noise 30 dB down: within 0.5 cent after 1 s, within 2 cents in ≤ 100 ms, jitter ≤ 1 cent | Pedal tuners quote ±1 cent |
+
+### Talk box (V1 to V5) and the Vocoder (V6)
+
+| Id | Row | Target | Why |
+|---|---|---|---|
+| V1 | `formant_error_pct_<vowel>` | Every formant within 3 % of the table | The vowel is recognised from F1 and F2 |
+| V2 | `dip_excess_db_<vowel>` | The dip between F1 and F2 within 3 dB of the cascade's | A mouth has no zeros between formants |
+| V3 | `f2_level_error_db_<vowel>`, `f3_level_error_db_<vowel>` | Within 4 dB of the table's levels under F1 (Peterson and Barney 1952, table II, the averages over all speakers; checked against the paper for this PR) | The levels make it a mouth |
+| V4 | `vowel_spread_lu`, `lu_pink` | ≤ 4 LU across the nine vowels on the saw; within ±2 LU on pink, the defaults and every preset | A vowel sweep shouldn't pump |
+| V5 | `click_db_<control>` | ≤ -60 dB | It is made to be moved |
+| V6 | (with the Vocoder) | Latency 0; within ±2 LU of the carrier at the defaults; a sung vowel's F1 and F2 on a saw carrier within one band of the voice's; an "s" (noise above 4 kHz) no more than 6 dB under the voice's level at the default Unvoiced; clicks ≤ -60 dB | Intelligible, level, playable live. Its rows come with the Vocoder (plan-5 decision 12.1) |
+
+The cost of each is in the instruction gate, at its defaults (new cases, instructions a 128-frame block): Tremolo 16.7k, Auto-pan 22.0k, Ring mod 24.6k, Auto wah 28.5k, Tuner 32.2k, Talk box 37.3k, Frequency shifter 55.3k, Pitch shifter 59.0k, Pitch correct 60.1k, Harmonizer 99.3k and Rotary 115.7k.
+
+### Baseline (2026-11-17, before any fix)
+
+183 of 307 targets met: movement 101 of 171, pitch 53 of 82, voice 29 of 54. These are at 44.1 kHz; plan-5's numbers were read at 48 kHz, and where the two differ it is said.
+
+- **LFO:** Sine, Triangle and Square meet W1 at every rate. The Ramps jump the whole range in one frame (-18 dB at 4 and 20 Hz, -31 at 0.5 Hz). Random is clean at 44.1 kHz, but at 48 kHz it jumps 0.60 and 0.91 of the range at 4 and 20 Hz (-20 and -17 dB): its phase rounds to 1.0 at the wrap on some rates and not others. A Square's edge takes 85.8 ms at 0.5 Hz and 10.7 ms at 4 Hz (2.2 ms at 20). Synced at a bar, the tremolo and auto-pan are half a cycle off after a 3.5-bar loop wraps.
+- **Tremolo and auto-pan:** Depth exact and a full cut at 100; Harmonic mode met (the whole 4.0 dB, the 3 kHz tone 33.1 dB); the auto-pan's power within 0.01 dB. Shape clicks -28.8 dB (auto-pan -21.4) and Mode -22.8 dB.
+- **Rotary:** the speeds within 0.1 % and the Doppler ±36.8 and ±8.1 cents; the horn ramps up in 0.82 s but the drum in 3.28 s (plan-5's 4.5 s was read one rotation at a time; the speed at every moment shows it gets there sooner), and both slow down 1.04 to 1.05 times as long; 3.2 LU quieter at Slow and Fast, on pink and hits (Gritty organ +0.2); the 6 kHz swing is 1.7 dB less than the 1.5 kHz one, so no beam; the rotors turn the same way; the drive folds back at -30.8 dB (Drive 50) and -13.3 dB (100).
+- **Auto wah:** the peak within 0.6 % at Resonance 60 and 100, 3.02 % at 0; 5.7 LU quieter at the defaults (the presets -7.0 to +0.1); Band-pass 3.6 LU louder at Resonance 0 than at 60; Filter clicks -8.4 dB, Resonance -42.3, Source -54.1.
+- **Ring mod and frequency shifter:** the ring mod's sine leaves spurs at -62.2 dB; a triangle carrier aliases at -62.5 dB (met), a square at -36.8; the sine's top-octave fold is as loud as the products; the waves are 5.0 LU apart; Sine to Triangle switches with a 5.8 dB spike. The shifter's image is -44.4 dB at 44.1 kHz and -44.3 at 48, at both shifts, and its spurs -59.8 to -60.8; 95 % feedback rings out (its peak -13.2 dBFS); Mode clicks -13.4 dB.
+- **Pitch shifter:** the worst of the 13 tones is 68.7 dB off target at +12 and 64.8 at -12 (+7: -2.5, -5: -3.5; the medians -43.4, -38.7, -39.0 and -31.1); the pitch 53.9, 36.2, 37.5 and 114.4 cents off at worst; levels swing 11.7 to 12.9 dB; the chord -5.8 dB; an impulse makes 2 copies 12.5 ms apart; the delay 25.0 ms, reported 0 (Mix 50 combs 57.7 dB deep); the highs 2.3 dB dull; Window clicks -57.5 dB.
+- **Pitch correct:** at worst 4.1 cents off the note on Low, 3.3 on Mid and 11.4 on High (plan-5's 7.9 was at 48 kHz), wobbling 2.2, 1.0 and 2.7 cents; Speed 0 leaves 16.7 cents of the vibrato (Speed 100 keeps all of it); it settles in 7, 25, 69, 145 and 289 ms at Speeds 0, 20, 50, 100 and 200, all within their labels (plan-5's 487 ms at 200 was a single-frame glitch read as unsettled); in tune it puts 20.0 dB more energy off the harmonics than the input has, and correcting 45 cents -33.9 dB; noise passes, the notes are right and the latency is exact; no control clicks.
+- **Harmonizer:** intervals within 0.06 cent and formants kept within a harmonic; each voice -26.0 to -27.6 dB off its harmonics; latency exact; Range clicks -19.5 dB and Voice 1 -57.1.
+- **Tuner:** within 0.34 cent, within 2 cents in 81 ms, jitter 0.49 cent with the noise. Met.
+- **Talk box:** formants within 1.7 %; the dips between F1 and F2 7.1 to 16.3 dB deeper than a cascade's ("AE" the deepest); levels off the table by 10.1 dB ("EE" F2), 7.3 ("OU" F2), 5.8 ("EE" F3), 5.1 ("AE" F2) and 4.7 ("OO" F3); 6.8 LU between the vowels on the saw; 6.4 LU quieter on pink (the presets 4.9 to 8.2); Vowel clicks -38.1 dB, LFO depth -40.8, Formant -42.8, Env depth -43.4 and Resonance -51.0.
