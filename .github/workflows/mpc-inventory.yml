@@ -712,16 +712,19 @@ jobs:
       - name: Per-crate table in the run summary
         run: |
           python3 tools/ci/coverage_summary.py "$RUNNER_TEMP/coverage.json" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Keep the lcov report for 7 days
-        # Report only: when the account's artifact storage is full ("Artifact
-        # storage quota has been hit", 2026-11-11) the upload fails, and that
-        # must not turn main red. The summary above is the report.
+      - name: Keep the lcov report for 3 days (hand-started runs only)
+        # The summary above is the report. Artifacts count against the account's
+        # storage, billed by the hour, and main merges many times a day, so only
+        # a hand-started run (Run workflow) keeps the per-line file. When the
+        # storage is full ("Artifact storage quota has been hit", 2026-11-11) the
+        # upload fails, and that must not turn the run red.
+        if: github.event_name == 'workflow_dispatch'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: rust-lcov
           path: ${{ runner.temp }}/lcov.info
-          retention-days: 7
+          retention-days: 3
 
   soak:
     name: The song for 2^21 periods without allocating (soak)
