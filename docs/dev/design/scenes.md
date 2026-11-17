@@ -8,10 +8,10 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
 
 - **Scene `k` is row `k`** of every track's slots, so there are 16 (`SCENES = SLOTS`). `Project::scenes` holds what a row has besides its clips. A row the project keeps nothing for is a plain scene: launching it still plays its clips. `Project::scene_mut(row)` makes the plain rows up to it when a row gets a name, mutes or a follow.
 - **`Scene { name, mutes, follow, values }`**.
-  - `mutes: Option<u16>`: bit `t` mutes track `t` while the scene plays. `None` leaves the mutes as they are.
+  - `mutes: Option<u128>`: bit `t` mutes track `t` while the scene plays. `None` leaves the mutes as they are.
   - `follow: Option<Follow>`: what happens after it has played some bars.
   - `values`: parameter values stored with the scene, for the scene morph (T10, below).
-- **`Clip::follow`**: a clip can have a follow action of its own.
+- **`Clip::follow`**: a clip can have a follow action of its own. A one-shot clip (`Clip::once`, S4) stops its track at the end of its pass instead, and its follow waits ([make-perform.md](make-perform.md#one-shot-clips-as-built-the-eighth-part)).
 - **`Follow { bars, action, other, chance }`**: after `bars` bars (1 to 999, counted from where it started), `action` with a chance of `chance` %, and `other` the rest of the time. These are Ableton's A and B.
 - **`FollowAction`**: Stay, Again, Next, Previous, First, Last, Any, Other, Stop.
   - For a clip, Next means the next filled slot down its track, wrapping round to the first after the last. Empty slots are skipped. For a scene, Next is the next row with a clip on any track.
@@ -36,12 +36,14 @@ The host calls `due` after every period while the transport rolls, with the next
 - **A scene's follow goes first.** It cues every track. A clip follow on a track that already has a cue waits, so whatever is cued wins: the user's launch, a stop or a scene.
 - **Stay** keeps playing and rolls again `bars` bars later. A follow with a chance between Next and Stay therefore plays on for a random number of passes. **Again** starts the same clip or scene again, which gives it a new start to count from.
 - The rolls come from a small xorshift generator seeded at `Perform::new`, so a test gets the same rolls every time.
+- **The song list** (S4's sixth part, [make-perform.md](make-perform.md#the-song-list-as-built-the-sixth-part)) goes before them: while it plays, `due` cues each step's scene in the bar before the step before it ends (its scene's length times its times), on that bar line, and the scenes' own follow actions wait.
 
 ## On the Clips page (`mpfree-time-ui`)
 
 - **The row numbers are scene buttons.** Each one shows a play mark over its number, beside its row. Tapping it sends `TimeAction::LaunchScene(row)`. The playing scene's button is lit green, and a scene waiting for its bar line has an amber ring.
 - **The square in the corner** over the scene buttons is Stop all (`TimeAction::StopAll`).
 - The column is 48 pixels wide, up from the 26 the row numbers took, so the buttons are big enough to hit.
+- **The scene editor** (S4's seventh part, [make-perform.md](make-perform.md#the-scene-editor-as-built-the-seventh-part)): the Record panel's Scene tab sets a scene's name, follow action and mutes (`SceneSettings`, one take a row through `Takes::set_scene`).
 
 ## In the pad player (`TimeHost`)
 
@@ -95,7 +97,8 @@ The project keeps the rows' values (`Project::scenes`), so a saved morph comes b
   - Stay rolling again;
   - chances picking both ways;
   - Stop all;
-  - a scene's cues taking the project's launch quantise, a follow's the bar, and a line kept when Launch changes (`scene_cues_take_the_projects_line_and_follows_the_bar`).
+  - a scene's cues taking the project's launch quantise, a follow's the bar, and a line kept when Launch changes (`scene_cues_take_the_projects_line_and_follows_the_bar`);
+  - the song list's steps in order, then the stop or the first again (`the_song_list_plays_its_steps_in_order_then_stops`).
 - `mpfree-perform/tests/scenes.rs` plays scenes through the transport and the player at periods of 1, 64, 128, 1000 and 4096 frames. Every period size must give the same events. It checks that:
   - a scene's clips start together on the bar line and its mute silences a track from exactly that tick;
   - clip follow actions chain on their bar lines (Next after 1 bar, Next after 2, then First);
@@ -116,8 +119,7 @@ The project keeps the rows' values (`Project::scenes`), so a saved morph comes b
 
 ## Not yet
 
-- Scene names and follow settings have no editor yet. They are set in the model only.
-- A launch quantise setting (1 beat to 8 bars, or none) is still to come. Scenes and follows use the bar.
+- A scene's colour has no editor yet (a row takes its clips' colours).
 - Clip follow actions count song bars. A clip at another speed still counts the song's bars, as Ableton does.
 - In a song loop shorter than a follow's time, the follow never comes due.
 - Scenes into a song and back are built: see [arrange.md](arrange.md).

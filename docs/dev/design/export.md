@@ -51,7 +51,7 @@ Jay's decision (14 Nov 15:16Z, in the demo songs thread): "Yes, definitely one s
 A track's stem by track comes from (`export::track_stems`):
 
 - **its own strip** in the first pass: a track with its own instrument (`StripId::Track(TRACKS + k)`), or the only track on the pads, or the only audio track that sounds;
-- **a replay** (`mpfree_export::Replay`): the range played again with only that track playing into the strip it shares: each track on the pads (the drum kit's strip, or the synth's while the pads play the synth) when two or more are, and each audio track that sounds (the Audio strip) when two or more do;
+- **a replay** (`mpfree_export::Replay`): the range played again with only that track playing into the strip it shares: each track on the pads (its kit's strip: Drums for kit 1, the first track's channel that plays it for another, Synth for the synth) when two or more share it, and each audio track that sounds (the Audio strip) when two or more do;
 - **nothing**: a track on outside gear (MIDI Out), a muted one, one with no notes in any clip. A frozen pads or Audio strip plays its take whatever the tracks do, so it gets one stem, named after the strip, in the first pass.
 
 The Loop and the returns follow the tracks, from the first pass. Audio tracks play only in song mode, so a range that doesn't play song mode gives them no replay (`Facts::track_count` counts each range for the panel, which says how many passes it takes).
