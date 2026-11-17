@@ -934,6 +934,10 @@ impl Session {
                 self.out.note(&format!("time: {line}"));
             }
         }
+        if let Some(end) = self.looper.copy_ended() {
+            let fx = crate::desk::copy_ended(&mut self.time, end);
+            self.fx.extend(fx);
+        }
         if self.periods.is_multiple_of(11) {
             let view = self.looper.view(self.app.settings.bpm);
             self.out.show(ToUi::Looper(Box::new(view)));
