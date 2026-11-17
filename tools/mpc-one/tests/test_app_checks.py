@@ -205,6 +205,20 @@ class JudgeTests(unittest.TestCase):
                 got = dict((what, ok) for ok, what in self.judge(name, checks.Window(lines(line))))
                 self.assertFalse(got["notes came in"], f"{name}: {line}")
 
+    def test_midi_learn_needs_the_knob_the_key_and_both_presses(self):
+        """midi-learn passes on a knob learned on a value, a key learned on the transport (MusicIn::bytes' lines)
+        and the key's PLAY and STOP reaching the time engine; a knob alone doesn't."""
+        knob = "+3.210 s MIDI In: MIDI Learn: CC 74 \u00b7 ch 1 \u00b7 MIDI In takes t1.vol.0"
+        key = "+6.500 s MIDI In: MIDI Learn: note C3 \u00b7 ch 1 \u00b7 MIDI In takes transport.0"
+        both = checks.Window(lines(knob, key, "time: transport: Play", "time: transport: Stop"))
+        self.assertTrue(all(ok for ok, _ in self.judge("midi-learn", both)))
+        got = dict((what, ok) for ok, what in self.judge("midi-learn", checks.Window(lines(knob))))
+        self.assertTrue(got["Learn took the knob"])
+        self.assertFalse(got["Learn took the key for PLAY and STOP"])
+        self.assertFalse(got["the key played and stopped MPFree"])
+        got = dict((what, ok) for ok, what in self.judge("midi-learn", checks.Window(lines(key))))
+        self.assertFalse(got["Learn took the knob"])
+
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
                  (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),
