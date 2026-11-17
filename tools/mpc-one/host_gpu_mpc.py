@@ -360,15 +360,12 @@ def main(argv):
     work = os.path.realpath(args.work)
     folder = kexec.newest_build(work)
     out.say(f"  test build: {folder}")
-    with open(os.path.join(folder, "report.txt")) as fh:
-        found = re.search(r"^its kernel release: (\S+)$", fh.read(), re.M)
-    if not found or not kexec.RELEASE.match(found.group(1)):
-        raise Stop(f"{folder}/report.txt does not name the test build's kernel release")
+    releases = app.test_build_releases(folder)
     pages = check_pages(out, args.pages or make_pages(out, work, args.host_app))
     mpc = kexec.Mpc(args, os.path.join(folder, "known_hosts"))
 
     out.say(f"\n[2/{total}] Checks on the test build (read-only; only its own host key is accepted)")
-    rc, text = mpc.run(kexec.fill(app.CHECK, NEW=found.group(1)), test=True)
+    rc, text = mpc.run(app.check_script(*releases), test=True)
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
