@@ -762,6 +762,8 @@ modulation/flanger/click_db_over_6k	-71.6272
 modulation/flanger/drawn_err_db_half_fbm90	0.0002
 modulation/flanger/drawn_err_db_half_fbp0	0.0003
 modulation/flanger/drawn_err_db_half_fbp90	0.0002
+modulation/flanger/drawn_err_db_tz_fbp0	0
+modulation/flanger/drawn_err_db_tz_fbp90	0.0007
 modulation/flanger/drawn_err_db_whole_fbp0	0.0003
 modulation/flanger/drawn_err_db_whole_fbp90	0.0002
 modulation/flanger/feedback_lu_m70	-0.2522
@@ -794,6 +796,10 @@ modulation/flanger[Metallic]/click_db_over_6k	-80.7858
 modulation/flanger[Metallic]/insert_lu_hits	-0.0607
 modulation/flanger[Metallic]/insert_lu_pink	0.0895
 modulation/flanger[Metallic]/mono_fold_lu	-1.2892
+modulation/flanger[Tape flange]/click_db_over_6k	-63.4158
+modulation/flanger[Tape flange]/insert_lu_hits	-0.3438
+modulation/flanger[Tape flange]/insert_lu_pink	0.2336
+modulation/flanger[Tape flange]/mono_fold_lu	-1.3027
 modulation/flanger[Two-bar sweep]/click_db_over_6k	-81.5742
 modulation/flanger[Two-bar sweep]/insert_lu_hits	-0.4209
 modulation/flanger[Two-bar sweep]/insert_lu_pink	-0.1092
