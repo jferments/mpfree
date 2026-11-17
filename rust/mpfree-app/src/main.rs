@@ -2414,6 +2414,36 @@ fn erase_held_steps(
     keys.erase_locks(time).map(app::Effect::Tell)
 }
 
+/// Live erase (sequencer roadmap S1, the MPC's way): whether a pad
+/// pressed now erases in place of playing: ERASE is held while the
+/// transport records.
+fn live_erase_starts(app: &app::App, time: &time::TimeHost) -> bool {
+    app.erase_held() && time.info().state == mpfree_transport::State::Recording
+}
+
+/// Live erase: pad `pad` pressed with ERASE held while recording. Its
+/// notes on the armed track come out as the playhead reaches them, until
+/// the pad or ERASE is let go; it neither sounds nor records. What to
+/// tell.
+fn live_erase(time: &mut time::TimeHost, pad: usize) -> Option<app::Effect> {
+    let note = u8::try_from(pad).ok()?;
+    let first = !time.erasing();
+    time.erase_sound(note, true);
+    first.then(|| {
+        app::Effect::Tell(format!(
+            "ERASE: pad {}'s notes come out of the armed track's clip as the playhead passes them; UNDO brings them back",
+            pad + 1
+        ))
+    })
+}
+
+/// ERASE let go: live erase stops for every pad.
+fn live_erase_let_go(app: &app::App, time: &mut time::TimeHost) {
+    if !app.erase_held() && time.erasing() {
+        time.erase_none();
+    }
+}
+
 /// A Q-Link turn of the steps held on the step pads (or of the step
 /// picked on Beats): the steps held stay on their release.
 fn step_turn(a: &gui::FromUi) -> bool {
@@ -5712,6 +5742,15 @@ fn player_session(
                     mute_pressed[pad as usize] = false;
                     out.show(gui::ToUi::PadUp(pad as usize));
                 }
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16 && live_erase_starts(&app, &time) =>
+                {
+                    fx.extend(live_erase(&mut time, pad as usize));
+                }
+                Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 && time.erases(pad) => {
+                    time.erase_sound(pad, false);
+                    out.show(gui::ToUi::PadUp(pad as usize));
+                }
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
                     if let Some(ev) = app.pressed_event(pad, velocity, true) {
@@ -5818,7 +5857,8 @@ fn player_session(
                         note,
                         pressed,
                     ));
-                    fx.extend(app.button(note, pressed, t))
+                    fx.extend(app.button(note, pressed, t));
+                    live_erase_let_go(&app, &mut time);
                 }
                 // A finger on a Q-Link lights its card. The control mapper names the
                 // Q-Links. The release waits until the finger has been off for 150 ms
