@@ -708,29 +708,29 @@ reverb/hall/wobble_cents	3.1489
 reverb/hall/zipper_worst_db	2.676
 reverb/hall[Big hall]/wet_lu	0.646
 reverb/hall[Big hall]/zipper_worst_db	1.9465
-reverb/plate/decay_error_pct@0.5s	14.5746
-reverb/plate/decay_error_pct@2s	9.4339
-reverb/plate/decay_error_pct@6s	6.1948
-reverb/plate/diffuse_ms	166.644
-reverb/plate/early_side_db	-0.1831
-reverb/plate/edt_t30_log2	-0.0053
-reverb/plate/iacc_tail	0.0409
-reverb/plate/mix_bump_lu	0.9413
+reverb/plate/decay_error_pct@0.5s	0.1843
+reverb/plate/decay_error_pct@2s	-1.0946
+reverb/plate/decay_error_pct@6s	-0.0789
+reverb/plate/diffuse_ms	10
+reverb/plate/early_side_db	6.0422
+reverb/plate/edt_t30_log2	-0.0309
+reverb/plate/iacc_tail	0.0288
+reverb/plate/mix_bump_lu	0.171
 reverb/plate/mix_dip_lu	0
-reverb/plate/mono_sum_lu	-3.0911
-reverb/plate/predelay_error_frames	1
-reverb/plate/tail_excess_over_ideal_db	2.7462
-reverb/plate/wet_lu	0.9413
-reverb/plate/wobble_cents	4.9468
-reverb/plate/zipper_worst_db	5.1395
-reverb/plate[Dark plate]/wet_lu	0.5037
-reverb/plate[Dark plate]/zipper_worst_db	5.259
-reverb/plate[Endless plate]/wet_lu	6.0301
-reverb/plate[Endless plate]/zipper_worst_db	7.0189
-reverb/plate[Snare plate]/wet_lu	0.4413
-reverb/plate[Snare plate]/zipper_worst_db	7.9974
-reverb/plate[Vocal plate]/wet_lu	0.7059
-reverb/plate[Vocal plate]/zipper_worst_db	6.4058
+reverb/plate/mono_sum_lu	-2.4035
+reverb/plate/predelay_error_frames	0
+reverb/plate/tail_excess_over_ideal_db	0.3758
+reverb/plate/wet_lu	0.171
+reverb/plate/wobble_cents	1.4725
+reverb/plate/zipper_worst_db	0.8398
+reverb/plate[Dark plate]/wet_lu	-0.8955
+reverb/plate[Dark plate]/zipper_worst_db	0.958
+reverb/plate[Endless plate]/wet_lu	0.4594
+reverb/plate[Endless plate]/zipper_worst_db	0.9703
+reverb/plate[Snare plate]/wet_lu	-0.3901
+reverb/plate[Snare plate]/zipper_worst_db	0.6011
+reverb/plate[Vocal plate]/wet_lu	0.0206
+reverb/plate[Vocal plate]/zipper_worst_db	0.2655
 reverb/room/decay_error_pct@0.3s	-3.7629
 reverb/room/decay_error_pct@0.8s	-1.1066
 reverb/room/decay_error_pct@2s	0.5575

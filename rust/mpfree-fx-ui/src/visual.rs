@@ -1631,8 +1631,8 @@ fn tail(pre: f32, decay: f32, gate: Option<f32>, span: f32, color: Color) -> Tra
 }
 
 /// The plate: its decay (the pre-delay, then the tail to -60 dB) and its
-/// tone (the input's low cut and bandwidth, and the damping's loss each
-/// time round the tank, dashed).
+/// tone (the input's low cut and bandwidth, and how much sooner the highs
+/// die over 100 ms, dashed: the Room's loss filters).
 fn plate_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
     let v = |id: u16| st.value(id);
     let (pre, decay) = (v(plate::PREDELAY), v(plate::DECAY));
@@ -1654,10 +1654,7 @@ fn plate_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
         page,
     );
     let rate = st.rate.max(1);
-    let (tone_k, damp_k) = (
-        pole_k(v(plate::TONE), rate),
-        1.0 - 0.85 * v(plate::DAMPING) / 100.0,
-    );
+    let tone_k = pole_k(v(plate::TONE), rate);
     let w = |hz: f32| std::f32::consts::TAU * hz.min(0.49 * rate as f32) / rate as f32;
     let input = freq_curve(
         |hz| {
@@ -1667,7 +1664,11 @@ fn plate_cards(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
         -30.0,
         30.0,
     );
-    let damp = freq_curve(|hz| one_pole_db(damp_k, w(hz)), -30.0, 30.0);
+    let damp = freq_curve(
+        |hz| room_hf_db(decay, v(plate::DAMPING), 0.1, rate, w(hz)),
+        -30.0,
+        30.0,
+    );
     s.push(
         Card {
             title: "Tone".into(),
