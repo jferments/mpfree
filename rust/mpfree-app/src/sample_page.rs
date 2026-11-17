@@ -1626,6 +1626,17 @@ impl SamplePage {
     /// A touch on one of the editor's widgets. Taps that play the pad go
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        // A finger dragged on a Q-Link card turns that knob, as the knob
+        // would (the drag is one undo step: the finger's lift ends it).
+        if let EventKind::Step { index, delta } = ev.kind {
+            if ui
+                .get::<mpfree_sampler_ui::widgets::KnobCard>(&ev.widget)
+                .is_some()
+            {
+                self.qlink(ui, index, delta, false);
+                return;
+            }
+        }
         let before = touched_row(ui, ev);
         let card = touched_card(ui, ev);
         // A faint button or Q-Link card tapped: why it is faint, and nothing

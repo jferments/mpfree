@@ -16309,6 +16309,59 @@ mod tests {
     }
 
     #[test]
+    fn the_sample_tabs_q_links_sit_in_the_right_hand_column_and_a_drag_turns_one() {
+        use mpfree_sampler_ui::widgets::KnobCard;
+        use mpfree_sampler_ui::{chop_tab, wave_tab};
+        let mut p = sample_sampler(Fonts::embedded());
+        let (w, _) = p.ui.size();
+        // The four cards down the right, as on every page, Q-Link 1 at the top.
+        let cards: Vec<_> = wave_tab::QLINKS
+            .iter()
+            .map(|q| p.ui.rect_of(q).unwrap())
+            .collect();
+        for (k, r) in cards.iter().enumerate() {
+            assert_eq!((r.w, r.right()), (168, w - p.ui.theme.gap), "card {k}");
+            if k > 0 {
+                assert!(r.y > cards[k - 1].bottom());
+            }
+        }
+        let wave = p.ui.rect_of(wave_tab::WAVE).unwrap();
+        assert!(wave.right() < cards[0].x);
+        assert_eq!(
+            p.ui.get::<KnobCard>(wave_tab::QLINKS[1]).unwrap().job(),
+            "End"
+        );
+        // A finger dragged down Q-Link 2's card three detents turns it as
+        // the knob would: End moves earlier, one undo step.
+        let end = p.sample.state().unwrap().region.end;
+        let c = cards[1];
+        let (x, y) = (c.x + c.w / 2, c.y + c.h / 2);
+        p.touch(4, Touch::Down, x, y);
+        p.touch(4, Touch::Move, x, y + 10);
+        p.touch(4, Touch::Move, x, y + 25);
+        p.touch(4, Touch::Up, x, y + 25);
+        let moved = p.sample.state().unwrap().region.end;
+        assert!(moved < end, "{moved} {end}");
+        let mut turned = sample_sampler(Fonts::embedded());
+        turned.apply(ToUi::SampleQLink(1, -3));
+        assert_eq!(turned.sample.state().unwrap().region.end, moved);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.sample.state().unwrap().region.end, end);
+        // The Chop tab's cards are in the same place.
+        let r = p.ui.rect_of(wave_tab::BAR).unwrap();
+        let t =
+            p.ui.get::<mpfree_sampler_ui::widgets::PadBar>(wave_tab::BAR)
+                .unwrap()
+                .tab_rect(r, chop_tab::TAB);
+        p.touch(9, Touch::Down, t.x + 5, t.y + 5);
+        p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        for (k, q) in chop_tab::QLINKS.iter().enumerate() {
+            assert_eq!(p.ui.rect_of(q).unwrap(), cards[k], "{q}");
+        }
+    }
+
+    #[test]
     fn the_sample_page_edits_the_pad_hit_last_and_sends_one_view_at_a_time() {
         use mpfree_sampler_ui::wave_tab::{BAR, QLINKS};
         use mpfree_sampler_ui::widgets::{KnobCard, PadBar};
