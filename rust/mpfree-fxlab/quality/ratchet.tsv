@@ -809,23 +809,23 @@ reverb/room[Gated snare]/wet_lu	0.9139
 reverb/room[Gated snare]/zipper_worst_db	0.0676
 reverb/room[Small booth]/wet_lu	0.1709
 reverb/room[Small booth]/zipper_worst_db	2.4147
-reverb/spring/decay_error_pct@1s	4.025
-reverb/spring/decay_error_pct@2.5s	-4.4519
-reverb/spring/decay_error_pct@6s	-14.5295
+reverb/spring/decay_error_pct@1s	-2.4969
+reverb/spring/decay_error_pct@2.5s	-4.0574
+reverb/spring/decay_error_pct@6s	-4.6593
 reverb/spring/diffuse_ms	10
-reverb/spring/early_side_db	0.7585
-reverb/spring/edt_t30_log2	-0.2358
-reverb/spring/iacc_tail	0.0416
-reverb/spring/mix_bump_lu	0.7286
-reverb/spring/mix_dip_lu	0
-reverb/spring/mono_sum_lu	-2.9529
-reverb/spring/tail_excess_over_ideal_db	5.6259
-reverb/spring/wet_lu	0.7286
-reverb/spring/wobble_cents	0.0187
-reverb/spring/zipper_worst_db	2.3648
-reverb/spring[Amp spring]/wet_lu	0.4191
-reverb/spring[Amp spring]/zipper_worst_db	2.3899
-reverb/spring[Dub splash]/wet_lu	1.2866
-reverb/spring[Dub splash]/zipper_worst_db	3.1996
-reverb/spring[Short tank]/wet_lu	0.8421
-reverb/spring[Short tank]/zipper_worst_db	2.5577
+reverb/spring/early_side_db	8.9688
+reverb/spring/edt_t30_log2	-0.0695
+reverb/spring/iacc_tail	0.0386
+reverb/spring/mix_bump_lu	0.0299
+reverb/spring/mix_dip_lu	-0.0167
+reverb/spring/mono_sum_lu	-2.9987
+reverb/spring/tail_excess_over_ideal_db	4.6801
+reverb/spring/wet_lu	0.0299
+reverb/spring/wobble_cents	0.0067
+reverb/spring/zipper_worst_db	0.1646
+reverb/spring[Amp spring]/wet_lu	0.119
+reverb/spring[Amp spring]/zipper_worst_db	0.1301
+reverb/spring[Dub splash]/wet_lu	-0.0081
+reverb/spring[Dub splash]/zipper_worst_db	0.0431
+reverb/spring[Short tank]/wet_lu	0.7099
+reverb/spring[Short tank]/zipper_worst_db	1.4206
