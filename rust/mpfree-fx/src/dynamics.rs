@@ -11,6 +11,7 @@ use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 use crate::kit::{
     self, meter, node_impl, param, Choice, Db, Glide, Hz, Linear, Log, Ms, Percent, Toggle, NONE,
 };
+use crate::limit::PeakLimit;
 use crate::svf::{Svf, SvfMode};
 use crate::{
     db_to_gain, defaults, fast_db_to_gain, fast_level_db, flush, gain_to_db, lerp, Preset,
@@ -47,39 +48,6 @@ pub mod limiter {
 
 /// The look-ahead, fixed so the latency never moves.
 const LIMIT_AHEAD_MS: f32 = 1.5;
-/// Taps of each true-peak interpolation phase (BS.1770's 4x filter has 12
-/// a phase too), and how far behind the newest input the detector runs.
-const TP_TAPS: usize = 12;
-const TP_LAG: usize = TP_TAPS / 2;
-
-/// The true-peak filter: for the points a quarter, a half and three
-/// quarters of the way between two samples, Hann-windowed sinc taps over
-/// the 12 samples around them, each phase normalised to unity at DC.
-fn tp_phases() -> [[f32; TP_TAPS]; 3] {
-    let mut out = [[0.0f32; TP_TAPS]; 3];
-    for (k, ph) in out.iter_mut().enumerate() {
-        let frac = (k + 1) as f64 * 0.25;
-        let mut sum = 0.0;
-        for (j, tap) in ph.iter_mut().enumerate() {
-            // Sample j sits at (j - (TP_LAG - 1)) from the left sample of
-            // the gap; the point is at frac.
-            let x = j as f64 - (TP_LAG as f64 - 1.0) - frac;
-            let sinc = if x.abs() < 1e-9 {
-                1.0
-            } else {
-                (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-            };
-            let w = 0.5 + 0.5 * (std::f64::consts::PI * x / (TP_LAG as f64 + 0.5)).cos();
-            let v = sinc * w;
-            *tap = v as f32;
-            sum += v;
-        }
-        for tap in ph.iter_mut() {
-            *tap /= sum as f32;
-        }
-    }
-    out
-}
 
 static LIMITER_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.limiter",
@@ -120,38 +88,20 @@ pub static LIMITER_PRESETS: &[Preset] = &[
 ];
 
 /// A brick-wall look-ahead limiter: the gain is down before each peak
-/// arrives, so nothing passes the ceiling and there is no overshoot. Auto
-/// release lets go fast after a short peak and slowly under a sustained
+/// arrives, so nothing passes the ceiling and there is no overshoot. The
+/// gain holds still for a moment after a peak (a quarter of Release, at
+/// most 5 ms), so it doesn't ride inside bass cycles, then comes back in
+/// decibels, 63 % of the way by Release. Auto release lets go at a third
+/// of Release after a short peak and at three times it after a sustained
 /// push, which keeps loud material from pumping. True peak also catches
-/// the peaks between samples that a converter would make.
+/// the peaks between samples that a converter would make, as a 4x meter
+/// reads them. See [`crate::limit`].
 pub struct Limiter {
     v: [f32; 6],
     rate: u32,
-    /// Look-ahead window in frames.
-    w: usize,
     gain: Smooth,
     ceiling: Smooth,
-    rel_fast: f32,
-    rel_slow: f32,
-    att_slow: f32,
-    env_fast: f32,
-    env_slow: f32,
-    /// Sliding minimum of the wanted gain: (frame, value), increasing.
-    dq: Vec<(u64, f32)>,
-    dq_head: usize,
-    dq_len: usize,
-    /// The minima of the last `w` frames, and their sum.
-    box_buf: Vec<f32>,
-    box_pos: usize,
-    box_sum: f64,
-    /// Input history for the detector, written twice so the last
-    /// TP_TAPS frames always sit side by side from `hist_at` (oldest
-    /// first), and the audio delay.
-    hist: [[f32; 2 * TP_TAPS]; 2],
-    hist_at: usize,
-    tp: [[f32; TP_TAPS]; 3],
-    delay: [kit::Line; 2],
-    frame: u64,
+    core: PeakLimit,
     least: f32,
 }
 
@@ -167,25 +117,9 @@ impl Limiter {
         let mut l = Limiter {
             v,
             rate: 48_000,
-            w: 1,
             gain: Smooth::new(db_to_gain(v[0])),
             ceiling: Smooth::new(db_to_gain(v[1])),
-            rel_fast: 0.0,
-            rel_slow: 0.0,
-            att_slow: 0.0,
-            env_fast: 1.0,
-            env_slow: 1.0,
-            dq: Vec::new(),
-            dq_head: 0,
-            dq_len: 0,
-            box_buf: Vec::new(),
-            box_pos: 0,
-            box_sum: 0.0,
-            hist: [[0.0; 2 * TP_TAPS]; 2],
-            hist_at: 0,
-            tp: tp_phases(),
-            delay: [kit::Line::default(), kit::Line::default()],
-            frame: 0,
+            core: PeakLimit::new(),
             least: 1.0,
         };
         l.setup(48_000);
@@ -195,155 +129,58 @@ impl Limiter {
         match id {
             limiter::GAIN => self.gain.target = db_to_gain(v),
             limiter::CEILING => self.ceiling.target = db_to_gain(v),
-            limiter::RELEASE | limiter::AUTO => self.set_release(),
+            limiter::RELEASE | limiter::AUTO => self.core.set_release(
+                self.v[limiter::RELEASE as usize],
+                self.v[limiter::AUTO as usize] >= 0.5,
+            ),
+            limiter::TRUE_PEAK => self.core.set_true_peak(v >= 0.5),
             _ => {}
-        }
-    }
-    fn set_release(&mut self) {
-        let ms = self.v[limiter::RELEASE as usize];
-        if self.v[limiter::AUTO as usize] >= 0.5 {
-            // Short peaks recover at a third of Release; a push that lasts
-            // pulls the slow envelope down, which lets go at three times
-            // Release.
-            self.rel_fast = kit::coef(ms / 3.0, self.rate);
-            self.rel_slow = kit::coef(ms * 3.0, self.rate);
-            self.att_slow = kit::coef(80.0, self.rate);
-        } else {
-            self.rel_fast = kit::coef(ms, self.rate);
-            self.rel_slow = 1.0;
-            self.att_slow = 0.0;
-        }
-    }
-
-    /// The detector's level for the sample TP_LAG frames back (with the
-    /// points between it and the next sample when True peak is on).
-    #[inline]
-    fn level(&self, ch: usize, tp: bool) -> f32 {
-        let h = &self.hist[ch][self.hist_at..self.hist_at + TP_TAPS];
-        let mut p = h[TP_LAG - 1].abs();
-        if tp {
-            for ph in &self.tp {
-                let mut y = 0.0;
-                for j in 0..TP_TAPS {
-                    y += ph[j] * h[j];
-                }
-                p = p.max(y.abs());
-            }
-        }
-        p
-    }
-
-    fn push_min(&mut self, g: f32) {
-        let cap = self.dq.len();
-        // Indices wrap by one subtraction: a `%` is a library call on
-        // the MPC's ARM, which has no divide instruction.
-        let wrap = |i: usize| if i >= cap { i - cap } else { i };
-        // Drop values no smaller than the new one from the back.
-        while self.dq_len > 0 {
-            let back = wrap(self.dq_head + self.dq_len - 1);
-            if self.dq[back].1 >= g {
-                self.dq_len -= 1;
-            } else {
-                break;
-            }
-        }
-        let at = wrap(self.dq_head + self.dq_len);
-        self.dq[at] = (self.frame, g);
-        self.dq_len += 1;
-        // Drop the front once it leaves the window.
-        let oldest = (self.frame + 1).saturating_sub(self.w as u64);
-        while self.dq[self.dq_head].0 < oldest {
-            self.dq_head = wrap(self.dq_head + 1);
-            self.dq_len -= 1;
         }
     }
 
     fn begin(&mut self, _ctx: &Ctx) {}
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
-        let tp = self.v[limiter::TRUE_PEAK as usize] >= 0.5;
-        let auto = self.v[limiter::AUTO as usize] >= 0.5;
-        let inv_w = 1.0 / self.w as f64;
+        // A quiet piece with the limiter at rest needs no limiting, only
+        // its delay (the same numbers as frame by frame).
+        let steady = self.gain.settled() && self.ceiling.settled();
+        if steady
+            && self
+                .core
+                .quiet_block(l, r, self.gain.target, self.ceiling.target)
+        {
+            return self.show_reduction();
+        }
         for i in 0..l.len() {
             let gain = self.gain.glide();
             let ceiling = self.ceiling.glide();
-            let x = [l[i] * gain, r[i] * gain];
-            for ch in 0..2 {
-                self.hist[ch][self.hist_at] = x[ch];
-                self.hist[ch][self.hist_at + TP_TAPS] = x[ch];
-                self.delay[ch].push(x[ch]);
-            }
-            self.hist_at += 1;
-            if self.hist_at == TP_TAPS {
-                self.hist_at = 0;
-            }
-            let peak = self.level(0, tp).max(self.level(1, tp));
-            let want = if peak > ceiling { ceiling / peak } else { 1.0 };
-            // Release: down at once, up at the release rate.
-            self.env_fast = if want < self.env_fast {
-                want
-            } else {
-                flush(self.env_fast + (want - self.env_fast) * self.rel_fast)
-            };
-            let env = if auto {
-                let k = if want < self.env_slow {
-                    self.att_slow
-                } else {
-                    self.rel_slow
-                };
-                self.env_slow = flush(self.env_slow + (want - self.env_slow) * k);
-                // The slow envelope only holds the gain down (it never
-                // goes under what a peak needs on its own).
-                self.env_fast.min(self.env_slow.max(want))
-            } else {
-                self.env_fast
-            };
-            self.push_min(env);
-            let m = self.dq[self.dq_head].1;
-            self.box_sum += f64::from(m) - f64::from(self.box_buf[self.box_pos]);
-            self.box_buf[self.box_pos] = m;
-            self.box_pos += 1;
-            if self.box_pos >= self.w {
-                self.box_pos = 0;
-            }
-            self.frame += 1;
-            let g = ((self.box_sum * inv_w) as f32).min(1.0);
+            let ([a, b], g) = self.core.run([l[i] * gain, r[i] * gain], ceiling);
             self.least = self.least.min(g);
-            // The audio, latency frames late (the detector runs TP_LAG
-            // frames behind the newest input, and the window adds w - 1);
-            // a tap of 1 is the newest frame.
-            let d = self.lat() as usize + 1;
-            l[i] = (self.delay[0].tap(d) * g).clamp(-ceiling, ceiling);
-            r[i] = (self.delay[1].tap(d) * g).clamp(-ceiling, ceiling);
+            // The gain already keeps every frame under the ceiling; the
+            // clamp only acts while the ceiling glides down.
+            l[i] = (a * g).clamp(-ceiling, ceiling);
+            r[i] = (b * g).clamp(-ceiling, ceiling);
         }
+        self.show_reduction();
+    }
+    fn show_reduction(&mut self) {
         self.v[limiter::REDUCTION as usize] = -gain_to_db(self.least).min(0.0);
         self.least = 1.0;
     }
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
-        self.w = ((LIMIT_AHEAD_MS * 0.001 * rate as f32).round() as usize).max(1);
-        self.dq = vec![(0, 1.0); self.w + 2];
-        self.box_buf = vec![1.0; self.w];
-        let d = self.w + TP_LAG + 4;
-        self.delay = [kit::Line::new(d), kit::Line::new(d)];
         self.gain.set_time(rate, 20.0);
         self.ceiling.set_time(rate, 20.0);
-        self.set_release();
+        self.core.set_release(
+            self.v[limiter::RELEASE as usize],
+            self.v[limiter::AUTO as usize] >= 0.5,
+        );
+        self.core
+            .set_true_peak(self.v[limiter::TRUE_PEAK as usize] >= 0.5);
+        self.core.setup(rate, LIMIT_AHEAD_MS);
         self.clear();
     }
     fn clear(&mut self) {
-        self.env_fast = 1.0;
-        self.env_slow = 1.0;
-        self.dq_head = 0;
-        self.dq_len = 0;
-        self.box_buf.fill(1.0);
-        self.box_pos = 0;
-        self.box_sum = self.w as f64;
-        self.hist = [[0.0; 2 * TP_TAPS]; 2];
-        self.hist_at = 0;
-        for d in &mut self.delay {
-            d.clear();
-        }
-        self.frame = 0;
+        self.core.clear();
         self.least = 1.0;
         self.v[limiter::REDUCTION as usize] = 0.0;
         self.gain.snap(self.gain.target);
@@ -353,17 +190,10 @@ impl Limiter {
         self.lat()
     }
     fn rest(&self) -> u32 {
-        // The gain lets go over ten of its slowest release (three times
-        // Release with Auto on), and the look-ahead window and true-peak
-        // history fill with silence.
-        let mut ms = self.v[limiter::RELEASE as usize];
-        if self.v[limiter::AUTO as usize] >= 0.5 {
-            ms *= 3.0;
-        }
-        (10.0 * ms * 0.001 * self.rate as f32) as u32 + self.lat()
+        self.core.rest()
     }
     fn lat(&self) -> u32 {
-        (self.w + TP_LAG - 1) as u32
+        self.core.latency()
     }
 }
 

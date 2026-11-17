@@ -2,7 +2,8 @@
 //! (delay, EQ, reverb; in the second round drive, crush, compressor,
 //! filter and lo-fi, in `quality/round2.rs`; in the third the modulation
 //! effects, in `quality/modulation.rs`; in the fourth the rest of the
-//! dynamics, in `quality/round4.rs`), for each mode of its family
+//! dynamics, in `quality/round4.rs`; in the fifth the movement, pitch and
+//! voice effects, in `quality/round5.rs`), for each mode of its family
 //! at its defaults and,
 //! for the cheaper measures, at each factory preset. Each row is a number
 //! with the plan's target id, which way is better, the target where the
@@ -30,6 +31,7 @@ use crate::{
 mod modulation;
 mod round2;
 mod round4;
+mod round5;
 
 /// A class of effect the plan covers so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,10 +53,13 @@ pub enum Class {
     Ducker,
     Transient,
     Strip,
+    Movement,
+    Pitch,
+    Voice,
 }
 
 impl Class {
-    pub const ALL: [Class; 17] = [
+    pub const ALL: [Class; 20] = [
         Class::Delay,
         Class::Eq,
         Class::Reverb,
@@ -72,6 +77,9 @@ impl Class {
         Class::Ducker,
         Class::Transient,
         Class::Strip,
+        Class::Movement,
+        Class::Pitch,
+        Class::Voice,
     ];
 
     pub fn name(self) -> &'static str {
@@ -93,6 +101,9 @@ impl Class {
             Class::Ducker => "ducker",
             Class::Transient => "transient",
             Class::Strip => "strip",
+            Class::Movement => "movement",
+            Class::Pitch => "pitch",
+            Class::Voice => "voice",
         }
     }
 
@@ -224,6 +235,9 @@ pub fn report(class: Class, rate: u32) -> Report {
         Class::Ducker => round4::ducker(&mut r),
         Class::Transient => round4::transient(&mut r),
         Class::Strip => round4::strip(&mut r),
+        Class::Movement => round5::movement(&mut r),
+        Class::Pitch => round5::pitch(&mut r),
+        Class::Voice => round5::voice(&mut r),
     }
     r
 }
