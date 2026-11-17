@@ -365,6 +365,11 @@ fn smooth(rows: &mut Vec<Row>, lab: &Lab) {
         (Window::Trapezoid { ramp: 0.1 }, "trapezoid 0.1", true),
         // Percussive on purpose: shown, not held to the target.
         (Window::Exponential { decay: 5.0 }, "exponential 5", false),
+        // The Shape knob (step B2) at its square, triangle, swell and pluck.
+        (Window::Shape { shape: 0.0 }, "shape 0 %, square", true),
+        (Window::Shape { shape: 0.4 }, "shape 40 %, triangle", true),
+        (Window::Shape { shape: 0.8 }, "shape 80 %, swell", true),
+        (Window::Shape { shape: 1.0 }, "shape 100 %, pluck", true),
     ] {
         cases.push((
             format!("{name}, overlap 2"),

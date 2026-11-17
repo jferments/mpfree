@@ -636,7 +636,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md); decision 11.1): the Limi
 | G1 | `level[pink]/range_lu`, `level[pad]/range_lu` | 3 LU | Loudness against the source's at 40, 80 and 400 ms grains overlapping 2, 4 and 16 times, sprayed (0.3), scanning (1) and both: largest less smallest. The quietest and loudest are shown, not kept |
 | G1 | `level[..., defaults]/offset_lu` | within 1 LU | The defaults against the source |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
-| G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2. The exponential window is percussive on purpose: shown, not kept |
+| G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
 | G3 | `smooth[defaults, 1 kHz]/sideband_db` | -40 dB | The first grain-rate sideband (1 kHz ± the density, ±3 Hz) of a held sine against the tone, from a 65536-point transform (0.7 Hz bins). Until step A3 it used 8192 points, whose window's main lobe (±21.5 Hz) let the tone itself into the band: the -16.4 and -20.9 dB there were mostly the tone. `flutter_db`, the held sine's 10 ms level against its mean, is shown, not kept |
 | G4 | `frozen[...]/swing_db` | 3 dB (pad), 6 dB (sine) | A frozen cloud (no scan, no spray) at every density from 15 to 60 a second: how far its RMS swings |
 | G5 | `pitch[...]/spur_db`, `heard_db` | -60 dB | A sine pitched by a sprayed cloud (200 ms, 20 a second): the power within 60 Hz of the loudest bin from 20 Hz to 20 kHz at least 200 Hz from the wanted tone (and never within 140 Hz of it), against the tone through the same cloud at pitch; `heard_db` where the wanted tone is above 20 kHz and must fold away. Where the spur is is shown, not kept |
@@ -706,6 +706,13 @@ A pad's grains pitched more than two semitones up read band-limited, as a sample
 - **Unchanged:** every other row (no grain there goes past two semitones up, so it reads as before, bit for bit).
 - **The Grains FX** (a live buffer) has no octave copies and keeps the Hermite read for now.
 - **Cost:** the band-limited read is 3 to 5 times Hermite's a frame. The bench's 4 granular pads (Pitch spray ±5 st, about 3 grains in 10 past two semitones) count 82 % more instructions, 20 pads 26 %, with the master grains 17 %, the song 8 %. A Vintage pad keeps the old cost. The MPC's numbers come from the device round (step A6).
+
+### Step B2: one Shape knob (2026-11-17)
+
+The window is one control from square to pluck (the plan's decision 2): square at 0 %, triangle at 40, Hann at 60 (the default), swell at 80, pluck at 100, each joined smoothly to the next ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Shape). The older windows (Tukey, trapezoid, percussive) stay as they were.
+
+- **G3 met at every named point, at overlap 2:** square ripples 0.005 dB (modulation -83.3 dB), triangle 0.007 dB (-81.2), swell 0.004 dB (-86.0), pluck 0.16 dB (-71.4). The pluck ripples most because its fast attack leaves the least overlap to even out; the level law keeps it well inside the target.
+- **Unchanged:** every other row (the default stays `Window::Hann`, so every cloud at 60 % plays as before, bit for bit).
 
 ## Round 5: movement, pitch and voice
 

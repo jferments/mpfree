@@ -121,7 +121,7 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         (Row::Scan, "0.25×"),
         (Row::Spray, "16 %"),
         (Row::PitchSpray, "±0.5 st"),
-        (Row::Window, "Tukey 0.5"),
+        (Row::Shape, "Tukey 0.5"),
         (Row::Reverse, "15 %"),
         (Row::Spread, "70 %"),
         (Row::Quantise, "Minor"),
@@ -300,8 +300,12 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Scan, 1, "0.5×"),
         (Row::Scan, -3, "Frozen"),
         (Row::PitchSpray, 2, "±1.5 st"),
-        (Row::Window, 1, "Tukey 0.2"),
-        (Row::Window, -9, "Hann"),
+        // From the old Tukey window (as a trapezoid, 20 %) onto the knob.
+        (Row::Shape, 1, "25 % · Trapezoid"),
+        (Row::Shape, -9, "0 % · Square"),
+        (Row::Shape, 12, "60 % · Hann"),
+        (Row::Shape, 4, "80 % · Swell"),
+        (Row::Shape, 9, "100 % · Pluck"),
         (Row::Spread, 7, "100 %"),
         (Row::Quantise, 1, "Pentatonic"),
         (Row::Quantise, -9, "Off"),
@@ -322,7 +326,7 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     );
     assert_eq!(
         s.project.pad(PAD).unwrap().layers[0].region.grain.window,
-        GrainWindow::Hann
+        GrainWindow::Shape { shape: 1.0 }
     );
 }
 
