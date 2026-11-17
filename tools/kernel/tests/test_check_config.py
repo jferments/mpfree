@@ -145,6 +145,34 @@ class FragmentTests(unittest.TestCase):
                     "CONFIG_DEVTMPFS"):
             self.assertEqual(self.frag.get(sym), "y", sym)
 
+    def test_the_board_as_akais_kernel_drives_it(self):
+        # Blocks K1.1 and K1.2 (2026-11-17): the drivers Akai's kernel binds on the MPC One.
+        for sym in ("CONFIG_REGULATOR_ACT8865", "CONFIG_REGULATOR_FAN53555", "CONFIG_RTC_DRV_HYM8563",
+                    "CONFIG_PHY_ROCKCHIP_USB", "CONFIG_ROCKCHIP_PM_DOMAINS", "CONFIG_ROCKCHIP_IOMMU",
+                    "CONFIG_POWER_RESET_GPIO_RESTART", "CONFIG_SYSCON_REBOOT_MODE", "CONFIG_PL330_DMA",
+                    "CONFIG_PWM_ROCKCHIP", "CONFIG_CMDLINE_EXTEND", "CONFIG_PANIC_ON_OOPS"):
+            self.assertEqual(self.frag.get(sym), "y", sym)
+        # Not the MPC One's power chip (an ACT8846 with two SYR827/828).
+        self.assertNotIn("CONFIG_REGULATOR_RK808", self.frag)
+        # MPFree's audio keeps cores 2 and 3, as on Akai's kernel.
+        self.assertIn("isolcpus=2-3", self.frag["CONFIG_CMDLINE"].strip('"').split())
+        self.assertIn("loadpin", self.frag["CONFIG_LSM"].strip('"').split(","))
+
+    def test_what_the_built_config_lacked_against_akais(self):
+        # The built config compared with Akai's, symbol by symbol (2026-11-17).
+        for sym in ("CONFIG_ARM_ERRATA_818325_852422", "CONFIG_ARM_ERRATA_821420",
+                    "CONFIG_ARM_ERRATA_825619", "CONFIG_ARM_ERRATA_852421", "CONFIG_ARM_ERRATA_852423",
+                    "CONFIG_ARM_ERRATA_857271", "CONFIG_ARM_ERRATA_857272", "CONFIG_IP_MULTICAST",
+                    "CONFIG_USB_CONFIGFS", "CONFIG_CGROUP_SCHED", "CONFIG_GPIO_SYSFS",
+                    "CONFIG_DM_VERITY", "CONFIG_SECURITY_LOADPIN_VERITY"):
+            self.assertEqual(self.frag.get(sym), "y", sym)
+        # Akai's kernel leaves the SoC's crypto engine alone.
+        self.assertIn("CONFIG_CRYPTO_DEV_ROCKCHIP", self.frag)
+        self.assertIsNone(self.frag["CONFIG_CRYPTO_DEV_ROCKCHIP"])
+        # Devices a musician plugs in are modules, never built in.
+        for sym in ("CONFIG_HFSPLUS_FS", "CONFIG_USB_ACM", "CONFIG_USB_SERIAL", "CONFIG_HID_APPLE"):
+            self.assertEqual(self.frag.get(sym), "m", sym)
+
     def test_the_fragment_passes_against_itself(self):
         self.assertEqual(cc.check(self.text, self.text), [])
 
