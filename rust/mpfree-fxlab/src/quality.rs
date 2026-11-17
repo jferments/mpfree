@@ -1,6 +1,7 @@
 //! The FX quality report: every measured target of one class of effect
-//! (delay, EQ, reverb; and in the second round drive, crush, compressor,
-//! filter and lo-fi, in `quality/round2.rs`), for each mode of its family
+//! (delay, EQ, reverb; in the second round drive, crush, compressor,
+//! filter and lo-fi, in `quality/round2.rs`; in the third the modulation
+//! effects, in `quality/modulation.rs`), for each mode of its family
 //! at its defaults and,
 //! for the cheaper measures, at each factory preset. Each row is a number
 //! with the plan's target id, which way is better, the target where the
@@ -25,6 +26,7 @@ use crate::{
     zipper,
 };
 
+mod modulation;
 mod round2;
 
 /// A class of effect the plan covers so far.
@@ -39,10 +41,11 @@ pub enum Class {
     Filter,
     Lofi,
     Amp,
+    Modulation,
 }
 
 impl Class {
-    pub const ALL: [Class; 9] = [
+    pub const ALL: [Class; 10] = [
         Class::Delay,
         Class::Eq,
         Class::Reverb,
@@ -52,6 +55,7 @@ impl Class {
         Class::Filter,
         Class::Lofi,
         Class::Amp,
+        Class::Modulation,
     ];
 
     pub fn name(self) -> &'static str {
@@ -65,6 +69,7 @@ impl Class {
             Class::Filter => "filter",
             Class::Lofi => "lofi",
             Class::Amp => "amp",
+            Class::Modulation => "modulation",
         }
     }
 
@@ -188,6 +193,7 @@ pub fn report(class: Class, rate: u32) -> Report {
         Class::Filter => round2::filter(&mut r),
         Class::Lofi => round2::lofi(&mut r),
         Class::Amp => round2::amp(&mut r),
+        Class::Modulation => modulation::modulation(&mut r),
     }
     r
 }

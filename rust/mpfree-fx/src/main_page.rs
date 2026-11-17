@@ -261,6 +261,13 @@ pub static MAIN_PAGES: &[MainPage] = &[
         ["Decay", "Size", "Pre-delay", "Mix"],
     ),
     main(
+        "mpfree.fx.chorus",
+        &[
+            "Rate", "Depth", "Delay", "Mix", "Sync", "Voices", "Width", "Tone",
+        ],
+        ["Rate", "Depth", "Delay", "Mix"],
+    ),
+    main(
         "mpfree.fx.granulator",
         &[
             "Size", "Density", "Pitch", "Mix", "Detune", "Jitter", "Feedback", "Freeze",
