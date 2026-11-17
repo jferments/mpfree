@@ -1320,31 +1320,33 @@ jobs:
           if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
             echo "mpfree must be statically linked"; exit 1
           fi
+          # Keep the static program for the preview run below, whatever the test builds leave in target/.
+          static="$RUNNER_TEMP/mpfree-static"
+          cp "$f" "$static"
           # Its unit tests and the GUI's as 32-bit ARM (the parameter blocks, event layout, drawing), under qemu.
           # The smoke module (the control sweep over every screen, the workflows and the song workflows)
           # took about 32 minutes of this job under qemu (14 Nov). It runs natively above on every run;
           # as ARM only by hand, with Run workflow's full_arm box ticked.
-          # The test programs link with --sort-section=name, which puts glibc's code first in .text.
-          # GNU ld 2.42 mislinks glibc's memcpy chooser (an IFUNC) once Thumb glibc code that
-          # calls memcpy lies over 16 MiB past the .iplt at the start of .text: the long-branch
-          # stub it adds (__memcpy_from_thumb) costs the IRELATIVE entry its Thumb bit, and the
-          # program dies at its first instructions. mpfree-app's unit-test program passed 16 MiB
-          # on 17 Nov (PR #503 on Train 79); mpfree itself is about 9.8 MiB and links as it ships.
-          # The test build relinks mpfree too (the cli tests run it), so the preview below runs a
-          # copy of the program as built and checked above.
-          cp "$f" "$RUNNER_TEMP/mpfree" && f="$RUNNER_TEMP/mpfree"
-          test_flags="$RUSTFLAGS -C link-arg=-Wl,--sort-section=name"
-          if [ "$FULL_ARM" = true ]; then
-            RUSTFLAGS="$test_flags" cargo test --manifest-path rust/Cargo.toml --release --locked \
-              --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-ui
-          else
-            RUSTFLAGS="$test_flags" cargo test --manifest-path rust/Cargo.toml --release --locked \
-              --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-ui -- --skip smoke::
-          fi
+          # The GUI's tests and the app's cli and plughost tests run static, as the MPC build is (plughost
+          # loads the test plugins with the static program's dlopen).
+          cargo test --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-ui
+          cargo test --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-app --test cli --test plughost
+          # The app's own unit tests link glibc dynamically (qemu finds the ARM libraries through
+          # QEMU_LD_PREFIX). Linked static, their program's code passed about 16 MiB on 17 Nov
+          # (train 80), and binutils 2.42 then wrote memcpy's IFUNC resolver address without its
+          # Thumb bit: the program faulted in glibc's start-up before any test ran. The static
+          # program itself is still run under qemu (the --preview run below).
+          skip=--skip=smoke::
+          [ "$FULL_ARM" = true ] && skip=
+          RUSTFLAGS= QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf \
+            cargo test --manifest-path rust/Cargo.toml --release --locked \
+            --target armv7-unknown-linux-gnueabihf -p mpfree-app --bin mpfree -- $skip
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
           # It took 110-115 s on the self-hosted runners with four mpfree jobs sharing the CPU
           # (2026-11-11) and two runs hit a 120 s limit, so the limit is 600 s; it only stops a hang.
-          timeout 600 qemu-arm "$f" --preview "$RUNNER_TEMP/app-preview"
+          timeout 600 qemu-arm "$static" --preview "$RUNNER_TEMP/app-preview"
           for n in console loading loading-failed play debug syslog prefs options guide touchlab calibrate prefs-touch; do
             head -c 8 "$RUNNER_TEMP/app-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
           done

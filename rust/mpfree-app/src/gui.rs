@@ -533,6 +533,16 @@ enum TypeTo {
     /// The Sample tab's pad and its sound, named on the text keyboard
     /// ([`sample_page::SamplePage::named`]).
     SampleName,
+    /// A MIDI port's name, from its page's Name (the port is the ask's
+    /// key: [`Player::port_named`]).
+    PortName,
+}
+
+impl TypeTo {
+    /// Typed on the text keyboard, not the number pad.
+    fn is_text(self) -> bool {
+        matches!(self, TypeTo::SampleName | TypeTo::PortName)
+    }
 }
 
 /// What the pad player shows about one kit.
@@ -2202,10 +2212,88 @@ impl Player {
     }
 
     /// What the I/O section couldn't do (a value at its end, a field that
-    /// can't change), said in place.
+    /// can't change), said in place. A port page's Name opens the text
+    /// keyboard.
     fn say_io_note(&mut self) {
         if let Some(n) = mpfree_mixer_ui::take_io_note(&mut self.ui) {
             self.tell(&n);
+        }
+        self.name_port_asked();
+    }
+
+    /// A port page's Name asked for the text keyboard: it opens on the
+    /// port's name now.
+    fn name_port_asked(&mut self) {
+        let Some(m) = &self.io_model else {
+            return;
+        };
+        let (port, shown) = {
+            let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(port) = m.asks.name_port.take() else {
+                return;
+            };
+            let shown = m.setup.shown(&port).to_string();
+            (port, shown)
+        };
+        if self.typing.is_some() {
+            return;
+        }
+        self.open_textpad(
+            vec![mpfree_ui::textpad::TextAsk {
+                key: port,
+                label: "Port".to_string(),
+                title: format!("Name {shown}"),
+                value: shown,
+                max_len: mpfree_midi::setup::MAX_SHOWN,
+            }],
+            TypeTo::PortName,
+        );
+    }
+
+    /// Enter on the text keyboard for a port: it shows as the name typed
+    /// from now on, in every project, and the keyboard closes. Another
+    /// port's name, or one too long, stays on the keyboard with why.
+    fn port_named(&mut self) {
+        let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) else {
+            return;
+        };
+        let Some(names) = p.entered() else {
+            return;
+        };
+        let Some((port, typed)) = names.into_iter().next() else {
+            // Nothing changed.
+            self.close_numpad();
+            return;
+        };
+        let Some(m) = &self.io_model else {
+            self.close_numpad();
+            return;
+        };
+        let done = {
+            let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+            let plugged: Vec<String> = m.live.ports.iter().map(|p| p.name.clone()).collect();
+            let done = m
+                .setup
+                .set_shown(&port, &typed, plugged.iter().map(String::as_str));
+            if done.is_ok() {
+                m.gen += 1;
+            }
+            done.map(|()| m.setup.shown(&port).to_string())
+        };
+        match done {
+            Ok(shown) => {
+                self.close_numpad();
+                if shown == port {
+                    self.tell(&format!("{port} goes by its own name again"));
+                } else {
+                    self.tell(&format!("{port} is called {shown} now"));
+                }
+            }
+            Err(why) => {
+                if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
+                    p.warning = why;
+                }
+            }
         }
     }
 
@@ -3410,7 +3498,7 @@ impl Player {
             }
             .to_string()
         } else if let Some(t) = &self.typing {
-            if t.to == TypeTo::SampleName {
+            if t.to.is_text() {
                 TEXTPAD_HINT
             } else {
                 NUMPAD_HINT
@@ -4179,18 +4267,15 @@ impl Player {
     }
 
     /// Opens the text keyboard for `asks` over the page showing (the
-    /// Sample tab's pad and its sound).
-    fn open_textpad(&mut self, asks: Vec<mpfree_ui::textpad::TextAsk>) {
+    /// Sample tab's pad and its sound, a MIDI port), its names going `to`.
+    fn open_textpad(&mut self, asks: Vec<mpfree_ui::textpad::TextAsk>, to: TypeTo) {
         let back = self.ui.page().to_string();
         if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
             p.open(asks);
         }
         if self.ui.show(TEXTPAD_PAGE).is_ok() {
             self.looper_page.sync_drag(&mut self.ui, self.status.shift);
-            self.typing = Some(Typing {
-                to: TypeTo::SampleName,
-                back,
-            });
+            self.typing = Some(Typing { to, back });
             self.outbox.push(FromUi::Overlay(true));
             self.refresh_hint();
         }
@@ -4427,11 +4512,7 @@ impl Player {
     /// closes; out of range, the pad stays and says the range; with
     /// nothing typed, it closes.
     fn numpad_enter(&mut self) -> Option<FromUi> {
-        if self
-            .typing
-            .as_ref()
-            .is_some_and(|t| t.to == TypeTo::SampleName)
-        {
+        if self.typing.as_ref().is_some_and(|t| t.to.is_text()) {
             self.textpad_enter();
             return None;
         }
@@ -4456,14 +4537,22 @@ impl Player {
                     mpfree_transport::Command::SetTempo(v),
                 )))
             }
-            TypeTo::SampleName => None,
+            TypeTo::SampleName | TypeTo::PortName => None,
         }
     }
 
     /// Enter on the text keyboard: the names typed go to the pad and its
     /// sound and the keyboard closes; with a name left empty it stays and
-    /// says so.
+    /// says so. A port's goes to [`Player::port_named`].
     fn textpad_enter(&mut self) {
+        if self
+            .typing
+            .as_ref()
+            .is_some_and(|t| t.to == TypeTo::PortName)
+        {
+            self.port_named();
+            return;
+        }
         let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) else {
             return;
         };
@@ -7742,7 +7831,7 @@ impl Player {
                 self.open_numpad(ask, TypeTo::Sample);
             }
             if let Some(asks) = self.sample.take_text_ask() {
-                self.open_textpad(asks);
+                self.open_textpad(asks, TypeTo::SampleName);
             }
             if let Some(plan) = self.sample.take_auto_request() {
                 // A copy of the patch, made here: the audio thread keeps
@@ -10895,6 +10984,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("clips-card", p));
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
+    }
+    // The mute queue (sequencer S4): in Perform, Track 2's mute and
+    // Track 3's solo wait for the next bar, their headers hatched and the
+    // transport bar saying WAITING.
+    match sample_clips(fonts()) {
+        Ok(mut p) => {
+            let mut st = p.time.clone();
+            st.perform = true;
+            st.mute_wait = Some(mpfree_time_ui::view::MuteWait {
+                line: mpfree_seq::LaunchGrid::Bars(1),
+                want: vec![(1, true, false), (2, false, true)],
+            });
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-mutes", p));
+        }
+        Err(e) => eprintln!("clips-mutes sample: {e}"),
+    }
+    // A solo: Track 1 alone, the others silent by it.
+    match sample_clips(fonts()) {
+        Ok(mut p) => {
+            let mut st = p.time.clone();
+            for (i, t) in st.tracks.iter_mut().enumerate() {
+                t.solo = i == 0;
+                t.silent = i != 0;
+            }
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-solo", p));
+        }
+        Err(e) => eprintln!("clips-solo sample: {e}"),
     }
     // Loop tracks: Loops A to C after three note tracks, row 2 playing,
     // Loop 2 overdubbing (its third layer), the loops' memory a third used.
@@ -17643,6 +17763,116 @@ mod tests {
         p.apply(ToUi::Show(View::Play));
         assert_ne!(p.page(), TEXTPAD_PAGE);
         assert_eq!(p.kits[0].pads[pad].as_deref(), Some("Break 92"));
+    }
+
+    /// A USB port's page: Name opens the text keyboard on its name; Enter
+    /// names it for every project (the rig moves on), and the page and
+    /// the hint line say so. A name another port has stays on the
+    /// keyboard with why.
+    #[test]
+    fn a_ports_name_is_typed_on_the_text_keyboard() {
+        use mpfree_mixer_ui::{MixState, MixView, MIXER_PAGE};
+        use mpfree_ui::textpad::{char_key, TextPad, KEY_CANCEL, KEY_CLEAR, KEY_ENTER, KEY_SPACE};
+        let mut p = sample_player(Fonts::embedded());
+        let model = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::sample::rig()));
+        p.apply(ToUi::IoModel(model.clone()));
+        p.apply(ToUi::Show(View::Mixer));
+        let mut m = mpfree_mixer_ui::sample::song_mixer();
+        let st = MixState::from_mixer(&mut m, MixView::Io, &mpfree_mixer_ui::sample::name);
+        p.apply(ToUi::Mixer(Box::new(st)));
+        assert!(p.open_io_section(mpfree_midi_ui::MIDI));
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            p.touch(7, Touch::Down, x, y);
+            p.touch(7, Touch::Up, x, y);
+        };
+        let tap_target = |p: &mut Player, id: &str, label: &str| {
+            p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+            let t =
+                p.ui.targets()
+                    .into_iter()
+                    .find(|t| t.target.id == id && t.target.label == label)
+                    .unwrap_or_else(|| panic!("no {id} \"{label}\""));
+            tap(p, t.target.centre());
+        };
+        tap_target(&mut p, "field", "Keystep 37: Open ›");
+        let open = |p: &mut Player, shown: &str| {
+            tap_target(p, "port-name", &format!("Name: {shown}"));
+            assert_eq!(p.page(), TEXTPAD_PAGE);
+            p.ui.rect_of(TEXTPAD).unwrap()
+        };
+        let r = open(&mut p, "Keystep 37");
+        {
+            let t = p.ui.get::<TextPad>(TEXTPAD).unwrap();
+            assert_eq!(t.text(), "Keystep 37");
+            assert_eq!(t.asks[0].title, "Name Keystep 37");
+            assert_eq!(t.asks[0].max_len, mpfree_midi::setup::MAX_SHOWN);
+        }
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Tap the letters, then Enter"));
+        let type_in = |p: &mut Player, text: &str| {
+            for c in text.chars() {
+                let k = if c == ' ' {
+                    KEY_SPACE
+                } else {
+                    char_key(c).unwrap().0
+                };
+                tap(p, TextPad::key_at(r, k));
+            }
+        };
+        // Another port's name, whatever the capitals: refused, with why.
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        type_in(&mut p, "midi out");
+        let gen = model.lock().unwrap().gen;
+        tap(&mut p, TextPad::key_at(r, KEY_ENTER));
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+        assert_eq!(
+            p.ui.get::<TextPad>(TEXTPAD).unwrap().warning,
+            "Another port is called Midi out: pick another name"
+        );
+        assert_eq!(model.lock().unwrap().gen, gen, "nothing changed");
+        // Lead keys: the rig keeps it and the page says it.
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        type_in(&mut p, "Lead keys");
+        tap(&mut p, TextPad::key_at(r, KEY_ENTER));
+        assert_eq!(p.page(), MIXER_PAGE);
+        assert!(p.io_showing());
+        {
+            let m = model.lock().unwrap();
+            assert!(m.gen > gen);
+            assert_eq!(m.setup.shown("Keystep 37"), "Lead keys");
+            assert!(m.setup.rig_text().contains("shown = Lead keys"));
+        }
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Keystep 37 is called Lead keys now"));
+        // Its own name again takes the given one off; Cancel names nothing.
+        let r2 = open(&mut p, "Lead keys");
+        assert_eq!(r2, r);
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        type_in(&mut p, "X");
+        tap(&mut p, TextPad::key_at(r, KEY_CANCEL));
+        assert_eq!(model.lock().unwrap().setup.shown("Keystep 37"), "Lead keys");
+        open(&mut p, "Lead keys");
+        tap(&mut p, TextPad::key_at(r, KEY_CLEAR));
+        type_in(&mut p, "Keystep 37");
+        tap(&mut p, TextPad::key_at(r, KEY_ENTER));
+        assert_eq!(
+            model.lock().unwrap().setup.shown("Keystep 37"),
+            "Keystep 37"
+        );
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Keystep 37 goes by its own name again"));
     }
 
     #[test]
