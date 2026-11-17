@@ -1,7 +1,8 @@
 //! The FX quality report: every measured target of one class of effect
 //! (delay, EQ, reverb; in the second round drive, crush, compressor,
 //! filter and lo-fi, in `quality/round2.rs`; in the third the modulation
-//! effects, in `quality/modulation.rs`), for each mode of its family
+//! effects, in `quality/modulation.rs`; in the fourth the rest of the
+//! dynamics, in `quality/round4.rs`), for each mode of its family
 //! at its defaults and,
 //! for the cheaper measures, at each factory preset. Each row is a number
 //! with the plan's target id, which way is better, the target where the
@@ -28,6 +29,7 @@ use crate::{
 
 mod modulation;
 mod round2;
+mod round4;
 
 /// A class of effect the plan covers so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,10 +44,17 @@ pub enum Class {
     Lofi,
     Amp,
     Modulation,
+    Limiter,
+    Gate,
+    Deesser,
+    Multiband,
+    Ducker,
+    Transient,
+    Strip,
 }
 
 impl Class {
-    pub const ALL: [Class; 10] = [
+    pub const ALL: [Class; 17] = [
         Class::Delay,
         Class::Eq,
         Class::Reverb,
@@ -56,6 +65,13 @@ impl Class {
         Class::Lofi,
         Class::Amp,
         Class::Modulation,
+        Class::Limiter,
+        Class::Gate,
+        Class::Deesser,
+        Class::Multiband,
+        Class::Ducker,
+        Class::Transient,
+        Class::Strip,
     ];
 
     pub fn name(self) -> &'static str {
@@ -70,6 +86,13 @@ impl Class {
             Class::Lofi => "lofi",
             Class::Amp => "amp",
             Class::Modulation => "modulation",
+            Class::Limiter => "limiter",
+            Class::Gate => "gate",
+            Class::Deesser => "deesser",
+            Class::Multiband => "multiband",
+            Class::Ducker => "ducker",
+            Class::Transient => "transient",
+            Class::Strip => "strip",
         }
     }
 
@@ -194,6 +217,13 @@ pub fn report(class: Class, rate: u32) -> Report {
         Class::Lofi => round2::lofi(&mut r),
         Class::Amp => round2::amp(&mut r),
         Class::Modulation => modulation::modulation(&mut r),
+        Class::Limiter => round4::limiter(&mut r),
+        Class::Gate => round4::gate(&mut r),
+        Class::Deesser => round4::deesser(&mut r),
+        Class::Multiband => round4::multiband(&mut r),
+        Class::Ducker => round4::ducker(&mut r),
+        Class::Transient => round4::transient(&mut r),
+        Class::Strip => round4::strip(&mut r),
     }
     r
 }

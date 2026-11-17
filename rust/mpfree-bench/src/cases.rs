@@ -8,10 +8,10 @@ use mpfree_audiotracks::{
 };
 use mpfree_fx::ids;
 use mpfree_fx::{
-    Amp, CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter,
-    Drive, Eq, Flanger, Frozen, Fuzz, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter,
-    MultiTap, Perform, Phaser, Plate, Print, PrintJob, PrintState, Room, Spring, StripId, Tail,
-    TapeDelay,
+    Amp, CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay,
+    DjFilter, Drive, Ducker, Eq, Flanger, Frozen, Fuzz, Gate, Limiter, LoFi, MasterSafety, Mixer,
+    MixerConfig, MultiFilter, MultiTap, MultibandCompressor, Perform, Phaser, Plate, Print,
+    PrintJob, PrintState, Room, Spring, StripId, Tail, TapeDelay, TransientShaper,
 };
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
@@ -1295,6 +1295,55 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         effect("Master safety", rate, Box::new(MasterSafety::new()), &[])
+    }));
+    // The rest of the dynamics (FX quality round 4), each set to work on
+    // the program: the limiter pushed 12 dB into its ceiling, the gate's
+    // threshold over the tone so it opens on each burst and shuts after,
+    // the ducker on the tempo.
+    for (name, tp) in [("Limiter", 0.0), ("Limiter (true peak)", 1.0)] {
+        v.push(measured(|| {
+            effect(
+                name,
+                rate,
+                Box::new(Limiter::new()),
+                &[(ids::limiter::GAIN, 12.0), (ids::limiter::TRUE_PEAK, tp)],
+            )
+        }));
+    }
+    v.push(measured(|| {
+        effect(
+            "Gate",
+            rate,
+            Box::new(Gate::new()),
+            &[(ids::gate::THRESHOLD, -10.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect("De-esser", rate, Box::new(DeEsser::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "Multiband compressor",
+            rate,
+            Box::new(MultibandCompressor::new()),
+            &[],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "Ducker (tempo)",
+            rate,
+            Box::new(Ducker::new()),
+            &[(ids::ducker::SOURCE, 1.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect(
+            "Transient shaper",
+            rate,
+            Box::new(TransientShaper::new()),
+            &[],
+        )
     }));
     // Perform FX: idle (no pad held), the default bank one pad at a time,
     // the heaviest stack (pitch drop with a gate, both sweeps, crush, the

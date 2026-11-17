@@ -237,6 +237,34 @@ crush/crush[Soft grit]/lu_pink18	-0.3847
 crush/crush[Soft grit]/off_grid_at_16bits	-68.2937
 crush/crush[Wobbly clock]/lu_pink18	-0.736
 crush/crush[Wobbly clock]/off_grid_at_16bits	-59.0316
+deesser/absolute/one_side_error_db	4.3972
+deesser/absolute/voice_reduction_db_-18dbfs	0.0007
+deesser/absolute/voice_reduction_db_-30dbfs	0
+deesser/absolute/voice_reduction_db_-6dbfs	0.2993
+deesser/deesser/zipper_freq	0.0859
+deesser/deesser/zipper_range	0.3259
+deesser/deesser/zipper_threshold	0.6083
+deesser/relative/one_side_error_db	0.6955
+deesser/relative/s_reduction_spread_db	0
+deesser/relative/voice_reduction_db_-18dbfs	0.04
+deesser/relative/voice_reduction_db_-30dbfs	0.04
+deesser/relative/voice_reduction_db_-6dbfs	0.04
+deesser/split/lift_db_range10_3000hz	1.3229
+deesser/split/lift_db_range10_6000hz	1.3064
+deesser/split/lift_db_range24_3000hz	1.8419
+deesser/split/lift_db_range24_6000hz	1.8122
+deesser/split/range_error_db_range10_3000hz	7.6944
+deesser/split/range_error_db_range10_6000hz	6.9197
+deesser/split/range_error_db_range24_3000hz	22.1214
+deesser/split/range_error_db_range24_6000hz	21.1912
+deesser/wide/lift_db_range10_3000hz	-10
+deesser/wide/lift_db_range10_6000hz	-10
+deesser/wide/lift_db_range24_3000hz	-24
+deesser/wide/lift_db_range24_6000hz	-24
+deesser/wide/range_error_db_range10_3000hz	0
+deesser/wide/range_error_db_range10_6000hz	0
+deesser/wide/range_error_db_range24_3000hz	0
+deesser/wide/range_error_db_range24_6000hz	0
 delay/digital/alias_5k_0_db	-95.5582
 delay/digital/hidden_loss_10k_db	-0.0045
 delay/digital/hidden_loss_15k_db	-0.0102
@@ -490,6 +518,24 @@ drive/tube/subsonic_hits_bias100	-23.4997
 drive/tube/zipper_db	0.1266
 drive/tube[Tube glow]/alias_5k_0dbfs	-80.1329
 drive/tube[Tube glow]/zipper_db	0.5672
+ducker/ducker/response_ms_attack0.1ms	0.4271
+ducker/ducker/response_ms_attack2ms	0.4271
+ducker/ducker[Big pump]/beat_error_db	17.7959
+ducker/ducker[Big pump]/drawing_error_db	1.0612
+ducker/ducker[Eighth pulse]/beat_error_db	19.7732
+ducker/ducker[Eighth pulse]/drawing_error_db	1.1791
+ducker/ducker[Sixteenth gate]/beat_error_db	34.3673
+ducker/ducker[Sixteenth gate]/drawing_error_db	8.2449
+ducker/ducker[Slow swell]/beat_error_db	15.4482
+ducker/ducker[Slow swell]/drawing_error_db	8.5167
+ducker/tempo/beat_error_db	17.7959
+ducker/tempo/drawing_error_db	1.0612
+ducker/tempo/drawing_error_db_after_jump	17.7088
+ducker/tempo/drawing_error_db_after_wrap	1.0612
+ducker/tempo/zipper_depth	0.0892
+ducker/tempo/zipper_mix	0.0327
+ducker/tempo/zipper_release	0.0231
+ducker/tempo/zipper_shape	2.901
 eq/bell_12k_q0.71_width_ratio	1.009
 eq/bell_12k_q0.71_worst_db	0.9284
 eq/bell_12k_q1.41_width_ratio	1.0342
@@ -708,6 +754,99 @@ fuzz/octave/model_change_db	0
 fuzz/octave/silence_out_dbfs_fuzz100_gate0	-140
 fuzz/octave/silence_out_dbfs_fuzz100_gate100	-140
 fuzz/octave/sustain_drop_db_fuzz100	2.494
+gate/gate/onset_1ms_db_attack0.1ms	0
+gate/gate/onset_1ms_db_attack0.5ms	0
+gate/gate/onset_1ms_db_attack1ms	0
+gate/gate/range_change_while_shut_error_db	88
+gate/gate/release_ratio_120ms	0.9979
+gate/gate/release_ratio_500ms	0.9997
+gate/gate/release_ratio_50ms	0.9988
+gate/gate/ripple_db_1000hz_hold0ms	0
+gate/gate/ripple_db_1000hz_hold30ms	0
+gate/gate/ripple_db_100hz_hold0ms	0.4082
+gate/gate/ripple_db_100hz_hold30ms	0
+gate/gate/ripple_db_40hz_hold0ms	3.7188
+gate/gate/ripple_db_40hz_hold30ms	0
+gate/gate/ripple_db_60hz_hold0ms	2.2978
+gate/gate/ripple_db_60hz_hold30ms	0
+gate/gate/shut_error_db_1000hz_hold0ms	1.0966
+gate/gate/shut_error_db_1000hz_hold30ms	0.0989
+gate/gate/shut_error_db_100hz_hold0ms	3.8334
+gate/gate/shut_error_db_100hz_hold30ms	2.9
+gate/gate/shut_error_db_40hz_hold0ms	3.7502
+gate/gate/shut_error_db_40hz_hold30ms	2.9168
+gate/gate/shut_error_db_60hz_hold0ms	3.8334
+gate/gate/shut_error_db_60hz_hold30ms	2.9445
+gate/gate/zipper_attack	0.0229
+gate/gate/zipper_hold	0.0229
+gate/gate/zipper_key-hp	0.0229
+gate/gate/zipper_key-lp	0.0229
+gate/gate/zipper_range	0
+gate/gate/zipper_release	0.0229
+gate/gate/zipper_threshold	0.0229
+gate/gate[Gated snare]/onset_1ms_db	0
+gate/gate[Kick trigger]/onset_1ms_db	0
+gate/gate[Soft cleanup]/onset_1ms_db	0
+gate/gate[Tight drums]/onset_1ms_db	0
+limiter/limiter-auto-off/release_ratio_20ms	0.8259
+limiter/limiter-auto-off/release_ratio_300ms	0.7966
+limiter/limiter-auto-off/release_ratio_80ms	0.8017
+limiter/limiter-auto-off/sample_peak_over_ceiling_db	0
+limiter/limiter-auto-off/thd_100hz_12db_over	-43.509
+limiter/limiter-auto-off/thd_100hz_6db_over	-48.4367
+limiter/limiter-auto-off/thd_50hz_12db_over	-31.9482
+limiter/limiter-auto-off/thd_50hz_6db_over	-36.9751
+limiter/limiter-auto-off/true_peak_over_ceiling_db	1.1533
+limiter/limiter-true-peak/alias_5khz_12db_over	-94.6414
+limiter/limiter-true-peak/alias_5khz_6db_over	-94.6421
+limiter/limiter-true-peak/release_slowdown	1
+limiter/limiter-true-peak/sample_peak_over_ceiling_db	0
+limiter/limiter-true-peak/thd_100hz_12db_over	-36.9668
+limiter/limiter-true-peak/thd_100hz_6db_over	-40.7607
+limiter/limiter-true-peak/thd_50hz_12db_over	-25.8096
+limiter/limiter-true-peak/thd_50hz_6db_over	-29.871
+limiter/limiter-true-peak/true_peak_over_ceiling_db	0.4822
+limiter/limiter/alias_5khz_12db_over	-89.8973
+limiter/limiter/alias_5khz_6db_over	-89.8969
+limiter/limiter/latency_spread_frames	0
+limiter/limiter/release_slowdown	1
+limiter/limiter/sample_peak_over_ceiling_db	0
+limiter/limiter/thd_100hz_12db_over	-36.769
+limiter/limiter/thd_100hz_6db_over	-40.6056
+limiter/limiter/thd_50hz_12db_over	-25.7446
+limiter/limiter/thd_50hz_6db_over	-29.8319
+limiter/limiter/true_peak_over_ceiling_db	1.3775
+limiter/limiter/zipper_ceiling	0.0229
+limiter/limiter/zipper_gain	0.3207
+limiter/limiter/zipper_release	0.0229
+limiter/limiter[Drum smash]/sample_peak_over_ceiling_db	0
+limiter/limiter[Drum smash]/thd_50hz_6db_over	-23.5139
+limiter/limiter[Drum smash]/true_peak_over_ceiling_db	1.3776
+limiter/limiter[Loud master]/sample_peak_over_ceiling_db	0
+limiter/limiter[Loud master]/thd_50hz_6db_over	-25.8096
+limiter/limiter[Loud master]/true_peak_over_ceiling_db	0.6088
+limiter/limiter[Safe peaks]/sample_peak_over_ceiling_db	0
+limiter/limiter[Safe peaks]/thd_50hz_6db_over	-29.8319
+limiter/limiter[Safe peaks]/true_peak_over_ceiling_db	1.3776
+limiter/master-safety/alias_5khz_12db_over	-117.1374
+limiter/master-safety/alias_5khz_6db_over	-117.1777
+limiter/master-safety/latency_spread_frames	0
+limiter/master-safety/release_ratio_20ms	0.8011
+limiter/master-safety/release_ratio_300ms	0.7959
+limiter/master-safety/release_ratio_80ms	0.8003
+limiter/master-safety/sample_peak_over_ceiling_db	0
+limiter/master-safety/thd_100hz_12db_over	-51.6312
+limiter/master-safety/thd_100hz_6db_over	-51.772
+limiter/master-safety/thd_50hz_12db_over	-35.8925
+limiter/master-safety/thd_50hz_6db_over	-38.6624
+limiter/master-safety/true_peak_over_ceiling_db	1.108
+limiter/master-safety/zipper_ceiling	0.0229
+limiter/master-safety/zipper_release	0.0229
+limiter/master-safety/zipper_trim	0.049
+limiter/master-soft-clip/alias_5khz_12db_over	-17.0077
+limiter/master-soft-clip/alias_5khz_6db_over	-27.5906
+limiter/master-soft-clip/sample_peak_over_ceiling_db	0
+limiter/master-soft-clip/true_peak_over_ceiling_db	4.373
 lofi/lofi/cuts_heard_vs_drawn_420_3200	0.0059
 lofi/lofi/cuts_heard_vs_drawn_80_8000	0.0059
 lofi/lofi/dropout_depth_error_db	0.005
@@ -867,6 +1006,38 @@ modulation/phaser[Slow swirl]/click_db_over_6k	-80.62
 modulation/phaser[Slow swirl]/insert_lu_hits	0.1815
 modulation/phaser[Slow swirl]/insert_lu_pink	0.2712
 modulation/phaser[Slow swirl]/mono_fold_lu	-0.6968
+multiband/multiband/attack_ratio_10ms	1.6929
+multiband/multiband/attack_ratio_1ms	2.076
+multiband/multiband/attack_ratio_30ms	1.6851
+multiband/multiband/curve_error_mid_1khz	0.5667
+multiband/multiband/idle_error_db	0.0624
+multiband/multiband/ratio1_error_db_mix25	5.8779
+multiband/multiband/ratio1_error_db_mix50	19.6753
+multiband/multiband/ratio1_error_db_mix75	5.8959
+multiband/multiband/release_ratio_150ms	0.8079
+multiband/multiband/release_ratio_500ms	0.8101
+multiband/multiband/release_ratio_60ms	0.8501
+multiband/multiband/thd_100hz_12db_over	-56.8766
+multiband/multiband/thd_50hz_12db_over	-50.0328
+multiband/multiband/zipper_attack	0.228
+multiband/multiband/zipper_high-gain	0.0253
+multiband/multiband/zipper_high-ratio	0.0177
+multiband/multiband/zipper_high-thresh	0.4404
+multiband/multiband/zipper_low-gain	0.0181
+multiband/multiband/zipper_low-mid	0.4844
+multiband/multiband/zipper_low-ratio	0.0177
+multiband/multiband/zipper_low-thresh	0.0177
+multiband/multiband/zipper_mid-gain	0.0393
+multiband/multiband/zipper_mid-high	0.5483
+multiband/multiband/zipper_mid-ratio	6.7801
+multiband/multiband/zipper_mid-thresh	10.6364
+multiband/multiband/zipper_mix	0.0556
+multiband/multiband/zipper_output	0.0393
+multiband/multiband/zipper_release	0.0211
+multiband/multiband[Drum crush]/thd_50hz_12db_over	-35.9094
+multiband/multiband[Master glue]/thd_50hz_12db_over	-53.1312
+multiband/multiband[Tight low end]/thd_50hz_12db_over	-46.977
+multiband/multiband[Vocal smooth]/thd_50hz_12db_over	-48.6861
 reverb/cloud/decay_error_pct@1s	-2.3747
 reverb/cloud/decay_error_pct@2.5s	-2.1424
 reverb/cloud/decay_error_pct@6s	-0.1823
@@ -985,3 +1156,28 @@ reverb/spring[Dub splash]/wet_lu	-0.0081
 reverb/spring[Dub splash]/zipper_worst_db	0.0431
 reverb/spring[Short tank]/wet_lu	0.7099
 reverb/spring[Short tank]/zipper_worst_db	1.4206
+strip/strip/comp_attack_ratio	1.0013
+strip/strip/comp_curve_error	0.0112
+strip/strip/comp_release_ratio	0.9951
+strip/strip/comp_thd_50hz_13db_over	-58.7892
+strip/strip/gate_onset_1ms_db	0
+strip/strip/gate_ripple_db_1000hz	0
+strip/strip/gate_ripple_db_40hz	0
+strip/strip/gate_shut_error_db_1000hz	0.1034
+strip/strip/gate_shut_error_db_40hz	2.7501
+strip/strip/latency_spread_frames	0
+strip/strip/switch_click_db_comp_off	0.3019
+strip/strip/switch_click_db_eq_off	9.2506
+strip/strip/switch_click_db_gate_on	12.911
+strip/strip/switch_click_db_order	54.3865
+transient/transient/front_spread_db_attack-100	4.3294
+transient/transient/front_spread_db_attack100	3.1068
+transient/transient/front_spread_db_attack50	8.7297
+transient/transient/ripple_db_attack100	0.3613
+transient/transient/ripple_db_sustain-100	0.0083
+transient/transient/ripple_db_sustain100	0.0083
+transient/transient/zipper_attack	0.0229
+transient/transient/zipper_mix	0.0229
+transient/transient/zipper_output	0.0412
+transient/transient/zipper_speed	0.0228
+transient/transient/zipper_sustain	0.0228

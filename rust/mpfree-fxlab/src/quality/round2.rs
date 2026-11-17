@@ -19,17 +19,21 @@ use crate::{dynamics, flutter, mixlaw, response, zipper};
 // ---------------------------------------------------------------------------
 // Shared measures.
 
-fn db_pow(p: f64) -> f64 {
+pub(super) fn db_pow(p: f64) -> f64 {
     10.0 * p.max(1e-30).log10()
 }
 
-fn db_amp(a: f64) -> f64 {
+pub(super) fn db_amp(a: f64) -> f64 {
     20.0 * a.max(1e-15).log10()
 }
 
 /// A single engine (not a family) at its defaults, then at each of its
 /// factory presets: `class/name` and `class/name[Preset]`.
-fn engine_subjects(id: &'static str, class: &str, name: &str) -> (Subject, Vec<Subject>) {
+pub(super) fn engine_subjects(
+    id: &'static str,
+    class: &str,
+    name: &str,
+) -> (Subject, Vec<Subject>) {
     let s = |preset: Option<&'static mpfree_fx::Preset>| Subject {
         name: match preset {
             None => format!("{class}/{name}"),
@@ -44,7 +48,7 @@ fn engine_subjects(id: &'static str, class: &str, name: &str) -> (Subject, Vec<S
 }
 
 /// `s` with `values` set on top of its preset and fixed values.
-fn make_with(s: &Subject, rate: u32, values: &[(u16, f64)]) -> NodeDut {
+pub(super) fn make_with(s: &Subject, rate: u32, values: &[(u16, f64)]) -> NodeDut {
     let mut d = make(s, rate);
     for (id, v) in values {
         d.set(*id, *v);
@@ -60,7 +64,7 @@ fn mode_of(s: &Subject) -> &str {
 
 /// Worst alias of a `hz` sine at `level` dBFS: dB against the fundamental,
 /// and dBFS.
-fn alias(d: &mut dyn Dut, hz: f64, level: f64) -> (f64, f64) {
+pub(super) fn alias(d: &mut dyn Dut, hz: f64, level: f64) -> (f64, f64) {
     let h = harmonics::measure(d, hz, level);
     (floor(h.alias_worst_db), floor(h.alias_worst_db + h.out_db))
 }
@@ -117,7 +121,7 @@ fn pink_at(rate: u32, rms_db: f64, secs: f64) -> Stereo {
 /// The largest second difference of `y[from..to]` against a clean sine's
 /// at the local level (its RMS over two periods), dB: 0 for a clean sine at
 /// any level, a click spikes. Levels under -80 dBFS count as -80.
-fn rel_d2(y: &[f64], hz: f64, rate: u32, from: usize, to: usize) -> f64 {
+pub(super) fn rel_d2(y: &[f64], hz: f64, rate: u32, from: usize, to: usize) -> f64 {
     let w = 2.0 * std::f64::consts::PI * hz / rate as f64;
     let k = 2.0 * (1.0 - w.cos());
     let win = (2.0 * rate as f64 / hz) as usize;
@@ -140,7 +144,7 @@ fn rel_d2(y: &[f64], hz: f64, rate: u32, from: usize, to: usize) -> f64 {
 /// linear effects whose ends attenuate the tone, where fxlab's usual
 /// zipper (against the resting ends) reads high.
 #[allow(clippy::too_many_arguments)]
-fn slope_zipper(d: &mut NodeDut, id: u16, lo: f64, hi: f64, log: bool, ms: f64) -> f64 {
+pub(super) fn slope_zipper(d: &mut NodeDut, id: u16, lo: f64, hi: f64, log: bool, ms: f64) -> f64 {
     let rate = d.rate();
     let hz = 997.0;
     let rest = (0.3 * rate as f64) as usize;
@@ -185,7 +189,7 @@ fn slope_zipper(d: &mut NodeDut, id: u16, lo: f64, hi: f64, log: bool, ms: f64) 
 /// The spike when control `id` jumps to `to` halfway through a second of a
 /// sine at `hz`, -12 dBFS: the largest [`rel_d2`] around the change over
 /// the larger of the steady signal's before and after it, dB, at least 0.
-fn switch_click(d: &mut NodeDut, id: u16, to: f64, hz: f64) -> f64 {
+pub(super) fn switch_click(d: &mut NodeDut, id: u16, to: f64, hz: f64) -> f64 {
     let rate = d.rate();
     let n = rate as usize;
     let x = sine(hz, db_to_amp(-12.0), n, rate);
@@ -209,7 +213,7 @@ fn switch_click(d: &mut NodeDut, id: u16, to: f64, hz: f64) -> f64 {
 /// The largest difference between `d`'s output and its input (delayed by
 /// its latency) on `x`, dBFS; -140 when they are the same. Nodes run in
 /// 32-bit floats, so the input is compared as the node saw it.
-fn null_dbfs(d: &mut NodeDut, x: &Stereo) -> f64 {
+pub(super) fn null_dbfs(d: &mut NodeDut, x: &Stereo) -> f64 {
     let lat = d.latency();
     let y = d.render(x, lat);
     let f32_of = |v: f64| f64::from(v as f32);
