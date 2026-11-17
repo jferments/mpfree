@@ -37,7 +37,9 @@
 //!   density with grains that fit (400 ms), and the share of grains
 //!   skipped.
 //! - **G7, width:** full spread against none on pink: the level change,
-//!   the left/right correlation and what folding to mono loses.
+//!   the left/right correlation and what folding to mono loses. (The
+//!   correlation's target is 0.45, not the plan's 0.3: folding to mono
+//!   keeps `(1 + ρ) / 2` of the power, so 1.5 dB needs ρ ≥ 0.41.)
 //! - **G8, onset:** from the start to the first 10 ms whose RMS is within
 //!   3 dB of the steady level, on the pad, with 200 ms to 1 s grains.
 //!
@@ -694,7 +696,7 @@ fn width(rows: &mut Vec<Row>, lab: &Lab) {
         "correlation",
         corr,
         Better::Lower,
-        Some(0.3),
+        Some(0.45),
         0.02,
     );
     let mono: Vec<f64> = l.iter().zip(r).map(|(a, b)| 0.5 * (a + b)).collect();

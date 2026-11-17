@@ -180,7 +180,10 @@ fn stealing_and_the_budget_bound_the_grains() {
             velocity: 100,
         });
     }
-    for _ in 0..40 {
+    // Each cloud starts with a few grains under way and fills in over a
+    // grain (thinned to fit its voice): within 0.35 s they want more than
+    // the budget holds.
+    for _ in 0..120 {
         run(&mut e, 128, 128);
         assert!(e.live_grains() <= GRAIN_BUDGET);
     }

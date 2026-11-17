@@ -26,6 +26,18 @@ const COVER: f32 = 0.25;
 /// counted on the voice's own clock), which keeps most grain frames to
 /// the four sums the level needs.
 const MEASURE_EVERY: u64 = 4;
+/// Grains one voice aims to keep alive at most: when a cloud wants more
+/// (a long size at a high density) the gaps widen to fit, so it thins
+/// evenly instead of skipping grains at random. Under [`MAX_GRAINS`] by
+/// enough that random timing's shorter gaps rarely reach the cap.
+const CAP_FIT: f64 = 54.0;
+/// A cloud starts with about this many grains under way (or fewer, as its
+/// density sets): enough to sound at its level at once, without the cost
+/// of the whole cloud for a short hit.
+const START_GRAINS: f64 = 8.0;
+/// A cloud that starts already running fades in over this long, so its
+/// first frame doesn't click (seconds).
+const START_FADE_SECS: f64 = 0.004;
 /// Mixed into the seed of the timing's own random sequence, so timing
 /// draws never shift the other parameters' draws (and timing 0 plays
 /// exactly as before it existed).
@@ -140,6 +152,9 @@ pub struct Stats {
     pub skipped: u64,
     pub active: usize,
     pub peak_active: usize,
+    /// True while the cloud wants more grains than a voice keeps
+    /// ([`GrainVoice`] then spaces them out to fit, keeping the level).
+    pub thinned: bool,
 }
 
 /// One grain, for drawing the cloud.
@@ -257,6 +272,16 @@ pub struct GrainVoice {
     trng: Rng,
     /// The gap to the next free-running grain, in density periods.
     gap: f64,
+    /// Set by [`GrainVoice::start`]: the next grain comes with the ones a
+    /// running cloud would have, part-way through their windows.
+    prefill: bool,
+    /// How long the grains can be (output frames): the size, or shorter
+    /// when a grain at the cloud's pitch would read past the source's
+    /// span. What the cap's fit and the running start go by.
+    fit_size: f64,
+    /// Frames left of the fade-in after a prefilled start, and its length.
+    fade_left: u32,
+    fade_len: u32,
     /// Output frames rendered.
     clock: u64,
     /// Voice clock frame of the next free-running grain.
@@ -308,6 +333,10 @@ impl GrainVoice {
             rng: Rng::new(seed),
             trng: Rng::new(seed ^ TIMING_SEED),
             gap: 1.0,
+            prefill: false,
+            fit_size: 2.0,
+            fade_left: 0,
+            fade_len: ((START_FADE_SECS * f64::from(out_rate.max(1))) as u32).max(1),
             clock: 0,
             next_at: 0.0,
             last_spawn: 0.0,
@@ -369,9 +398,16 @@ impl GrainVoice {
     }
 
     /// Starts making grains, the first at the start of the next render.
-    /// Scanning restarts from `position`.
+    /// Scanning restarts from `position`. The cloud starts already running:
+    /// with the first grain come a few that would be playing had it been
+    /// running for a grain's length (up to 8, each
+    /// part-way through its window), and the voice fades in over 4 ms, so
+    /// a cloud speaks at its level at once at any size and fills in to its
+    /// density over the next grain (a slow swell is the amp envelope's
+    /// attack).
     pub fn start(&mut self) {
         self.spawning = true;
+        self.prefill = true;
         self.next_at = self.clock as f64;
         self.last_spawn = self.clock as f64;
         self.scan_offset = 0.0;
@@ -487,6 +523,13 @@ impl GrainVoice {
         Some((s.frames_per_beat / f64::from(g)).max(1.0))
     }
 
+    /// The average gap between free-running grains, in output frames: the
+    /// density's, or wider when the cloud wants more grains than
+    /// [`CAP_FIT`] (it thins evenly).
+    fn period(&self) -> f64 {
+        (f64::from(self.out_rate) / self.density()).max(self.fit_size / CAP_FIT)
+    }
+
     /// Offset in this block (at or after `from`, before `n`) of the next grain.
     fn next_spawn(&mut self, transport_frame: u64, from: usize, n: usize) -> Option<usize> {
         if !self.spawning || from >= n {
@@ -504,7 +547,7 @@ impl GrainVoice {
             return (off < n).then_some(off);
         }
         // A faster density takes effect at once, not after a slow wait.
-        let gap = f64::from(self.out_rate) / self.density();
+        let gap = self.period();
         self.next_at = self.next_at.min(self.last_spawn + gap * self.gap);
         let off = (self.next_at - self.clock as f64).ceil().max(from as f64);
         (off < n as f64).then_some(off as usize)
@@ -554,6 +597,9 @@ impl GrainVoice {
         let len = (end - start) as f64;
         let src_ratio = f64::from(src.rate()) / f64::from(self.out_rate);
         let scan = f64::from(self.params.scan.clamp(-4.0, 4.0)) * src_ratio;
+        // As `spawn` shortens a grain whose read wouldn't fit.
+        let speed = f64::from((self.params.pitch.clamp(-48.0, 48.0) / 12.0).exp2()) * src_ratio;
+        self.fit_size = self.size_frames().min((len - 4.0) / speed).max(2.0);
         let floor_to = if self.spawning {
             floor_for(self.overlap())
         } else {
@@ -593,11 +639,15 @@ impl GrainVoice {
                 self.scan_offset = (self.scan_offset + scan * (seg - done) as f64).rem_euclid(len);
                 done = seg;
                 if let Some(off) = next {
-                    self.spawn(src, budget, src_ratio);
+                    if self.prefill {
+                        self.prefill = false;
+                        self.prefill_grains(src, budget, src_ratio, scan);
+                    }
+                    self.spawn(src, budget, src_ratio, 0, scan);
                     let now = self.clock as f64 + off as f64;
                     self.last_spawn = now;
                     self.gap = gap_factor(self.params.timing, self.trng.unit());
-                    self.next_at = now + f64::from(self.out_rate) / self.density() * self.gap;
+                    self.next_at = now + self.period() * self.gap;
                     search = off + 1;
                 }
             }
@@ -611,6 +661,44 @@ impl GrainVoice {
             at += m;
         }
         self.stats.active = self.active;
+        self.stats.thinned =
+            self.spawning && self.density() * self.fit_size / f64::from(self.out_rate) > CAP_FIT;
+    }
+
+    /// Grains a running cloud would have now, besides the one being born:
+    /// walking back one gap at a time (drawn as the timing draws them, or
+    /// the synced interval; at least a [`START_GRAINS`]th of a grain) while
+    /// a grain born then would still play, each made with that age.
+    fn prefill_grains<S: GrainSource>(
+        &mut self,
+        src: &S,
+        budget: &mut Budget,
+        src_ratio: f64,
+        scan: f64,
+    ) {
+        let size = self.fit_size;
+        let synced = self.sync_interval();
+        // A thinner cloud than the density's: enough for the level and the
+        // sound from the first frame, while the full density fills in
+        // over the next grain.
+        let thin = size / START_GRAINS;
+        let period = self.period().max(thin);
+        let mut age = 0.0;
+        let mut made = false;
+        loop {
+            age += match synced {
+                Some(iv) => iv.max(thin),
+                None => period * gap_factor(self.params.timing, self.trng.unit()),
+            };
+            if age >= size - 1.0 {
+                break;
+            }
+            self.spawn(src, budget, src_ratio, age as u32, scan);
+            made = true;
+        }
+        if made {
+            self.fade_left = self.fade_len;
+        }
     }
 
     /// Sets the level of the part in the scratch buffers (see
@@ -647,13 +735,27 @@ impl GrainVoice {
             self.coherence += k * (self.coherence_to - self.coherence);
             let c = self.coherence;
             let divisor = (c * s1 + (1.0 - c) * s2.sqrt()).max(self.floor);
-            let g = gain / divisor;
+            let mut g = gain / divisor;
+            if self.fade_left > 0 {
+                g *= 1.0 - self.fade_left as f32 / self.fade_len as f32;
+                self.fade_left -= 1;
+            }
             left[i] += yl * g;
             right[i] += yr * g;
         }
     }
 
-    fn spawn<S: GrainSource>(&mut self, src: &S, budget: &mut Budget, src_ratio: f64) {
+    /// Makes one grain. `age` (frames) makes it as if it had been born
+    /// that long ago: read from where the scan was then (`scan`, source
+    /// frames an output frame) and already that far through its window.
+    fn spawn<S: GrainSource>(
+        &mut self,
+        src: &S,
+        budget: &mut Budget,
+        src_ratio: f64,
+        age: u32,
+        scan: f64,
+    ) {
         // Draw the same random numbers every time, used or not, so changing
         // one parameter doesn't reshuffle the others.
         let r_spray = self.rng.bipolar();
@@ -690,27 +792,37 @@ impl GrainVoice {
         }
         let size = size.floor();
         let extent = (size - 1.0) * speed;
+        if age as f64 >= size - 1.0 {
+            return;
+        }
         let pos = start as f64
-            + (self.base_offset(len) + f64::from(p.spray.clamp(0.0, 1.0) * r_spray) * len * 0.5)
+            + (self.base_offset(len) - scan * f64::from(age)
+                + f64::from(p.spray.clamp(0.0, 1.0) * r_spray) * len * 0.5)
                 .rem_euclid(len);
         let pos = if reverse {
             pos.clamp(lo + extent, hi)
         } else {
             pos.clamp(lo, hi - extent)
         };
+        let inc = if reverse { -speed } else { speed };
 
-        let pan = p.spread.clamp(0.0, 1.0) * r_pan;
+        // Equal-power pan, 1 on both sides in the centre, so a spread cloud
+        // of unrelated grains keeps its level. At full spread the pans
+        // lean toward the sides (|r|^0.5), which widens the cloud.
+        let lean = r_pan.abs().sqrt().copysign(r_pan);
+        let pan = p.spread.clamp(0.0, 1.0) * lean;
+        let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
         // The cloud's level is set as the grains add up (`level`), so each
         // grain plays at full level here.
         self.grains[self.active] = Grain {
-            pos,
-            inc: if reverse { -speed } else { speed },
-            age: 0,
+            pos: pos + inc * f64::from(age),
+            inc,
+            age,
             len: size as u32,
             dphase: 1.0 / (size as f32 - 1.0),
             lvl: 1.0,
-            pl: (1.0 - pan).min(1.0),
-            pr: (1.0 + pan).min(1.0),
+            pl: angle.cos() * std::f32::consts::SQRT_2,
+            pr: angle.sin() * std::f32::consts::SQRT_2,
         };
         self.active += 1;
         budget.live += 1;

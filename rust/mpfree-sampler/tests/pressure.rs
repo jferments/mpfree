@@ -191,11 +191,16 @@ fn density_and_size_pressure_thicken_the_grain_cloud() {
             velocity: 127,
         });
         e.apply(Event::Pressure { pad: 0, value: 127 });
+        // Counted from 0.1 s, once the grains the cloud starts with (as
+        // if it had been running, at the density before pressure moved
+        // it) have played out. To 0.87 s.
         let mut most = 0;
-        for _ in 0..300 {
+        for k in 0..300 {
             run(&mut e, 128);
-            most = most.max(e.live_grains());
-        } // 0.87 s
+            if k >= 35 {
+                most = most.max(e.live_grains());
+            }
+        }
         most
     };
     let base = grains(PressureTarget::Off, 0.0);

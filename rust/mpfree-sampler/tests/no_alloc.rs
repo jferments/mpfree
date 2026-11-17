@@ -190,7 +190,9 @@ fn render_and_events_never_allocate() {
         p.set_pad(i, Some(pad), None).unwrap();
     }
     // Four granular pads: busy clouds, one reversed, one synced, so the grain
-    // budget fills and voices are stolen while grains play.
+    // budget fills and voices are stolen while grains play. (Free-running
+    // clouds thin to fit a voice; the synced one keeps its grid and wants
+    // more grains than a voice holds.)
     for i in 16..20usize {
         let mut r = Region::whole(if i % 2 == 0 { &s } else { &s16 });
         r.mode = PlayMode::Granular;
@@ -209,8 +211,8 @@ fn render_and_events_never_allocate() {
             r.grain.window = GrainWindow::Exponential { decay: 6.0 };
             r.grain.sync = Some(TempoSync {
                 frames_per_beat: 22_050.0,
-                grains_per_beat: Some(8.0),
-                size_beats: Some(0.25),
+                grains_per_beat: Some(96.0),
+                size_beats: Some(1.0),
             });
         }
         let mut pad = Pad::new("g", Layer::new(r));
