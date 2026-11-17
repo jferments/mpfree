@@ -785,6 +785,8 @@ jobs:
 
   rust:
     name: Rust host parity and ARMv7 hard-float cross-build
+    # The name is kept so required checks still match; the ARMv7 steps run in
+    # rust-arm beside this job since 17 Nov 2026.
     # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
     # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
     runs-on: [self-hosted, linux, x64, mpfree-ci]
@@ -1043,6 +1045,53 @@ jobs:
           python3 tests/check_cpp_rust_wav_parity.py \
             --cpp build/mpfree-render \
             --rust rust/target/release/mpfree-render
+  rust-arm:
+    name: ARMv7 hard-float cross-builds and the plugin sandbox under qemu (do not deploy)
+    # Split from the rust job (17 Nov 2026, Jay: make the builds go faster): these
+    # cross-builds need nothing the host tests make, so the two run side by side
+    # on two runners instead of one after the other (host tests ~12 min, this ~9).
+    # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
+    # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 120
+    env:
+      # Not `rustup default`: on the self-hosted runners that would change the
+      # shared runner account's default toolchain for every other project's jobs.
+      RUSTUP_TOOLCHAIN: stable
+      MPFREE_CARGO_TARGET_BUDGET_GIB: 15
+    steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # Each runner has its own /tmp (PrivateTmp) that lasts between jobs, unlike
+        # a GitHub host's; the steps below write fixed /tmp/mpfree-* names, and
+        # some create them with create_new, so leftovers fail the next job.
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
+      - uses: actions/checkout@v4
+      - name: Keep the Cargo target between runs (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          # Outside the checkout, so actions/checkout's clean keeps it; the runner
+          # installer (ci-infrastructure scripts/mpfree_runner.py) budgets the disk for it.
+          all="$RUNNER_WORKSPACE/cargo-target"
+          t="$all/rust"
+          mkdir -p "$t"
+          used=$(du -s -BG "$all" | cut -f1 | tr -d G)
+          if [ "$used" -gt "$MPFREE_CARGO_TARGET_BUDGET_GIB" ]; then
+            echo "Cargo targets hold ${used} GiB, over ${MPFREE_CARGO_TARGET_BUDGET_GIB}: starting rust afresh"
+            rm -rf "$t" && mkdir -p "$t"
+          fi
+          rm -rf rust/target && ln -s "$t" rust/target
+          echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        # The runner service's PATH has no ~/.cargo/bin; After's ci.yml does the same.
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Install Rust stable with ARMv7 target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add --toolchain stable armv7-unknown-linux-gnueabihf
+          rustc --version
+          cargo --version
       - name: Install GNU ARMv7 hard-float cross-linker
         run: |
           [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get update -qq

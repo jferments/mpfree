@@ -8,18 +8,34 @@ checked: 2026-11-16 08282af
 
 The **MIDI IN** and **MIDI OUT** jacks, USB keyboards and synths on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too. Playing gear from **MIDI OUT**, from a USB device and from the CV outputs is built but not yet checked on an MPC One, so it stays off until you turn on **Send MIDI and CV out** in [Prefs](../reference/prefs.md). Its value reads **On (sends MIDI)** while it sends, and MPFree remembers it at the next start.
 
-All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon at the right end of the top bar, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. Each port's input, thru, what it ignores and its delay describe your gear, so they stay the same for every project: MPFree keeps them when it quits and puts them back at the next start (with a data folder on the stick). Everything else (what each track plays on, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the song: it is saved with the project and comes back when you open it, and a new project starts from the defaults.
+All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon at the right end of the top bar, in its **MIDI**, **Routing**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. Each port's input, thru, what it ignores and its delay describe your gear, so they stay the same for every project: MPFree keeps them when it quits and puts them back at the next start (with a data folder on the stick). Everything else (what each track plays on, which channels play which tracks under Routing, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the song: it is saved with the project and comes back when you open it, and a new project starts from the defaults.
 
 ## Playing MPFree from a keyboard
 
-Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do. Its knobs, faders and pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs. A USB interface with several MIDI ports shows each one as a port of its own, named as the device names it (up to 15 USB ports at once). If a keyboard sends **All notes off** (or **All sound off**), the keys it holds on that channel let go.
+Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do (to play other tracks too, see [Playing several tracks from your keyboards](#playing-several-tracks-from-your-keyboards)). Its knobs, faders and pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs. A USB interface with several MIDI ports shows each one as a port of its own, named as the device names it (up to 15 USB ports at once). If a keyboard sends **All notes off** (or **All sound off**), the keys it holds on that channel let go.
 
 - **With a synth on the pads,** each key plays its own note, through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard too. A note held on a key and a pad ends when both let go.
 - **With a drum kit,** the keys that match the MPC's own pad notes hit the pads: C#2 is pad 1, C2 is pad 2, and so on. Other keys play nothing.
 - The pad velocity setting, and Full Level, shape the keys' velocity as they do the pads'.
 
+## Playing several tracks from your keyboards
+
+{{shot: mixer-io-routing | The I/O view's Routing section: channel 10 of MIDI IN plays Drums, whichever track is armed, and the rest of its notes play the armed track.}}
+
+The I/O view's **Routing** section shows where each source's MIDI goes, on one grid. Down the side are your ports (the 5-pin **MIDI in** and each USB device), **The pads**, and the tracks. Across the top: **Armed track**, **Tracks by channel**, **Learn**, each MIDI out port and **CV out**. A square with a green bar plays something in MPFree; a blue bar sends something out. **+** means a tap sets it up, **—** means nothing can go there, and **later** marks what isn't built yet.
+
+- **Tracks by channel** sends one channel of a port to one track, whichever track is armed. Tap a port's square and pick the channel and the track on the card below the grid (with – and +, or Q-Links 1 and 2). **+ Route** adds another, **Remove route** takes the picked one away. Two routes from the same channel to two tracks play both, to layer sounds. For example: a drum machine on **MIDI IN**, channel 10, plays **Drums**, while a keyboard on channel 1 plays **Bass** and you work on another track with the pads.
+- Notes a route takes go only to its track, never to the armed track as well, so nothing plays twice. The rest of the port's notes go to the armed track, as before.
+- A track played by a route plays where its clips play: its own sound, its synth or drum machine through MIDI out, and its CV outputs. With a drum kit, the keys that match the MPC's pad notes hit the pads. Only the armed track's notes go through the arpeggiator, and only the armed track records.
+- **Armed track** and **Learn** are the port's **Input** (Both, Plays tracks or Learn only), the same setting as on its row in the MIDI section. Turning both off isn't allowed: turn the other on first. A port set to **Learn only** still plays its routes.
+- A track's square under a port is its **Plays on**, as in the MIDI section: tap it to play that track on that port, and pick the channel on the card.
+- Routes belong to the song and are saved with it. A route from a device that isn't plugged in waits for it.
+- Up to 32 routes in a project.
+
+Not yet: sending a port's messages straight on to another port (thru), the pads to an output, and the blocks between a source and where it goes (an arpeggiator or a transpose on a route). Their squares say **later**.
+
 > [!MPC]
-> On the MPC, MIDI input can also be set to play a track of its choosing per channel. In MPFree a keyboard plays the armed track; playing several tracks from one keyboard is coming.
+> On the MPC, a track's MIDI input is set on each track. In MPFree the Routing section shows every port's routes on one grid, so you can see what goes where at a glance.
 
 ## Playing a synth from a track
 
@@ -36,7 +52,7 @@ Each port's row in the MIDI section has **Open ›** at its right; it, or a tap 
 
 - **This port** says what it is (the MPC's 5-pin jacks, or a USB device) and its **Input**: **Both**, **Plays tracks** or **Learn only**, the same setting as on its row.
 - **Ignore coming in** has four switches: **Clock**, **Program**, **Aftertouch** and **All notes off**. A lit one is ignored: those messages from this port play nothing, teach nothing and move no tempo. The Monitor still lists them, marked *ignored: this port's setting*, so you can see they arrive. **Clock** also covers the Start, Stop and Song Position that come with it. Ignore **Clock** on a drum machine that sends clock you don't want; ignore **Program** on a keyboard that sends one when you change its sound.
-- **What it does** lists, in words, what this port's messages do today and what plays on it: the tracks that play out of it with their channels, the controls learned from it, and whether the tempo follows it.
+- **What it does** lists, in words, what this port's messages do today and what plays on it: its routes to tracks (*Ch 10 → Drums*), where the rest of its notes go, the tracks that play out of it with their channels, the controls learned from it, and whether the tempo follows it. Change its routes in the Routing section.
 - **Now** shows the newest message in and out and how long ago.
 - **Clock to this port** is **Off**, **While playing** or **Always**: the same setting as **Clock out** under Sync, saved with the project.
 - **This gear's delay** is how late the gear on this port sounds after MIDI reaches it, in steps of 0.5 ms (– and +, or Q-Link 3). MPFree sends that port's notes and clock that much early, so they land on the beat. It can send up to about 9 ms early (the sound's buffer, the time between MPFree making a sound and you hearing it); the card says when the delay is more than that.
@@ -72,7 +88,7 @@ Each learned control is listed in the mixer's I/O view, under **MIDI** and then 
 - **Button: on, then off**: each press switches between the knob's top and bottom.
 - **Button: while held**: top while held, bottom when let go. A key starts as this.
 
-Tap **Forget** to take a learned control off. A row in amber says why its control does nothing: the device isn't plugged in, or its port is set to **Plays tracks**, which keeps every message for playing. A port set to **Learn only** turns knobs but plays no notes.
+Tap **Forget** to take a learned control off. A row in amber says why its control does nothing: the device isn't plugged in, or its port is set to **Plays tracks**, which keeps every message for playing. A port set to **Learn only** turns knobs but plays no notes on the armed track (its [routes](#playing-several-tracks-from-your-keyboards) still play).
 
 Learned controls are saved with the project. Still to come: learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
 
@@ -99,7 +115,7 @@ The mixer's I/O view has a **Monitor** section: open the mixer with the I/O icon
 - **The lights.** Each port has a row with a light for each of the 16 channels: the upper half lights green when something comes in on that channel, the lower half blue when something goes out. The last column shows the tempo of any clock coming in or going out.
 - **The list,** newest at the top: when it happened, the port and which way (*in* or *out*, the outgoing ones in blue), the channel, the message in words (*Note on · C3 · vel 100*, *CC 1 Mod wheel · 64*, *Program 5*), where it went, and its bytes. Clock, active sensing and time code arrive many times a second, so they are counted rather than listed: one line when each starts and one when it stops. A SysEx message is one line with its length and, for well-known makers, the maker's name.
 - **Where it went.** Each line says what took its message, so nothing that arrives goes unexplained:
-  - *Bass, the armed track*: a key played the track on screen. With a drum kit it says the pad the note plays (*Drums, pad 1*), or *nothing: no pad on Drums* for a note outside the 16 pad notes.
+  - *Bass, the armed track*: a key played the track on screen. *Drums, by its route*: a route in the Routing section played that track. With a drum kit it says the pad the note plays (*Drums, pad 1*), or *nothing: no pad on Drums* for a note outside the 16 pad notes.
   - *Learn: Cutoff (Filter, Bass)*, in purple: a learned control moved that value. *Learn took it* marks the move that taught it.
   - *clock: the tempo follows it*, in green: the clock, Start, Stop or Song Position of the port the tempo comes from (Sync in the I/O view).
   - In yellow, what nothing took: *nothing takes it* (a knob nobody learned, a pitch bend the tracks don't take from a keyboard yet), *not played: Learn only* (the port's input is Learn only), *not followed* (clock on a port the tempo isn't from), *ignored: this port's setting* (switched off under **Ignore coming in** on [the port's page](#a-ports-page)), and *ignored* for messages MPFree never reads, such as SysEx.

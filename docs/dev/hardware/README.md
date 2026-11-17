@@ -26,6 +26,8 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[The USB creator round](usb-creator-round.md)** is the runbook for a new musician's install from the USB creator: the MPC made a new musician's (no hook, developer mode off), a stick made in the window, one tap, the first start's fresh backup, the setup script switching developer mode off, and checks that the hook survives it and developer mode stays off. The Windows and macOS writers are optional blocks.
 
+**[The second 3.10.1 round](firmware-3.10.1-round-2.md)** is the next round's runbook: the fixes since 16 Nov and the checks for what merged since, on a stick the USB creator rewrites with partition 4 kept, then the GPU page flips, the lock, and FXProbe under Akai's system. It reuses the first round's blocks and leaves out what passed then and hasn't changed.
+
 **[Device checks: targeted rounds on the MPC](device-checks.md)** is how a device round asks only about what it tests. A round names its checks (`tools/mpc-one/app_checks.py`); each shows a few steps, judges them from the app's log, and asks at most one question about what only a person can see or hear. Everything the software can check is left to the app's own tests and UI smoke workflows, which a round runs once on the workstation.
 
 **[The targeted app run on the soft-boot stick](app-targeted-run.md)** is the runbook for the device checks that have a reason to run: what merged since live test 3 (TRACK MUTE's banks, the wheel, drag and drop, the transport buttons) and what it never reached, with the app's own tests for the rest. Switching on with the stick in starts MPFree; there is no kexec step.

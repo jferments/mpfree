@@ -134,6 +134,7 @@ const SLEEPERS: &[&str] = &[
     "mpfree.fx.drive",
     "mpfree.fx.character",
     "mpfree.fx.amp",
+    "mpfree.fx.fuzz",
     "mpfree.fx.exciter",
 ];
 

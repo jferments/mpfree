@@ -100,10 +100,12 @@ class BenchTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_helper(self, answers="\n" * 4, **env):
+    def run_helper(self, answers="\n" * 4, before=(), **env):
         cmd = [sys.executable, "-I", HELPER, "--ip", "192.0.2.141", "--key", self.key, "--work", self.work,
                "--report", self.report, "--default-program", self.programs["default"],
                "--a17-program", self.programs["a17"]]
+        for value in before:
+            cmd += ["--before", value]
         return subprocess.run(cmd, input=answers, env=dict(self.env, **env), text=True, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, timeout=120)
 
@@ -135,6 +137,49 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(f"{self.root}/run")), ["mpfree-bench"])
         with open(self.report) as fh:
             self.assertIn("RESULT: both builds ran", fh.read())
+
+    def test_earlier_builds_run_calibrate_and_json_only_after_the_two(self):
+        """--before COMMIT=PATH: each earlier build is checked and copied with the two, and runs the reference
+        kernels and every engine after them, in its own last step; s at that step skips them all."""
+        old = {c: os.path.join(self.tmp, c, "mpfree-bench") for c in ("11347cb0", "c0c9bce4")}
+        for path in old.values():
+            th.write(path, th.arm_elf(), 0o755)
+        before = [f"{c}={p}" for c, p in old.items()]
+        res = self.run_helper(answers="\n" * 4, before=before)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in ("11347cb0 (earlier): ", "c0c9bce4: copied; its hash on the MPC matches", "Copies 4 programs",
+                     "[6/6] The earlier builds, 11347cb0, c0c9bce4", "----- c0c9bce4.json -----",
+                     '{"schema": "mpfree-bench/1", "build": "11347cb0"}', "RESULT: both builds ran"):
+            self.assertIn(text, res.stdout)
+        self.assertEqual(self.lines("bench: ")[8:], ["11347cb0 --calibrate", "11347cb0 --json 11347cb0.json",
+                                                     "c0c9bce4 --calibrate", "c0c9bce4 --json c0c9bce4.json"])
+        for name, path in old.items():
+            with open(path, "rb") as a, open(f"{self.root}/run/mpfree-bench/{name}", "rb") as b:
+                self.assertEqual(hashlib.sha256(a.read()).digest(), hashlib.sha256(b.read()).digest())
+        self.assertIn("pad player: active (started again)", res.stdout)
+        # s at the last step skips the earlier builds; the two have run.
+        res = self.run_helper(answers="\n" * 3 + "s\n", before=before)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual([ln for ln in self.lines("bench: ")[12:] if not ln.startswith(("default ", "a17 "))], [])
+        # The copy starts afresh: the last run's JSON of an earlier build went before it was copied again.
+        self.assertNotIn("11347cb0.json", os.listdir(f"{self.root}/run/mpfree-bench"))
+        self.assertIn("11347cb0", os.listdir(f"{self.root}/run/mpfree-bench"))
+
+    def test_an_earlier_build_needs_a_commit_label_and_a_good_program(self):
+        for value in ("11347cb0", "main=/x", "11347CB0=/x", "1134=/x", "11347cb0=", "../x=/y", "a17=/x"):
+            res = self.run_helper(before=[value])
+            self.assertEqual(res.returncode, 1, value)
+            self.assertIn("give COMMIT=PATH", res.stdout, value)
+        path = os.path.join(self.tmp, "old", "mpfree-bench")
+        th.write(path, th.arm_elf(), 0o755)
+        res = self.run_helper(before=[f"11347cb0={path}", f"11347cb0={path}"])
+        self.assertIn("--before 11347cb0 is given twice", res.stdout)
+        th.write(path, th.arm_elf(interp=True), 0o755)
+        res = self.run_helper(before=[f"11347cb0={path}"])
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("dynamically linked", res.stdout)
+        self.assertEqual(self.lines("bench: "), [])
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-bench"))
 
     def test_needs_the_opt_in_and_refuses_stock(self):
         res = self.run_helper(MPFREE_ACCEPT_BENCH="")

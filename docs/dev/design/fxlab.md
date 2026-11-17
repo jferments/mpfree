@@ -31,7 +31,7 @@ Every analysis works on a device under test (`dut::Dut`): any MPFree node throug
 
 A **report card** (`card`) is one effect at one setting, measured by every analysis that fits its category, as named numbers (`resp_1k_db`, `thd_1k_-18_db`, `alias_5k_0_db`, `t30_1k_s`...). Effects that move frequencies (ring mod, frequency shifter, pitch, harmonizer, granulator) get no harmonics or response, which would mean nothing for them.
 
-The **quality report** (`quality`, `fxlab quality`) gathers every target of the FX quality plan (delay, EQ and reverb; drive, crush, compressor, filters, lo-fi and the amp), and **the ratchet** (`tests/quality.rs` against `quality/ratchet.tsv`, on CI in release) stops any of those numbers getting worse: [FX quality](fx-quality.md).
+The **quality report** (`quality`, `fxlab quality`) gathers every target of the FX quality plan (delay, EQ and reverb; drive, crush, compressor, filters, lo-fi, the amp and the fuzz), and **the ratchet** (`tests/quality.rs` against `quality/ratchet.tsv`, on CI in release) stops any of those numbers getting worse: [FX quality](fx-quality.md).
 
 **Quality gates** (`tests/gates.rs`, run by `cargo test`): lines of the plan our effects already meet, so a change that makes one worse fails. Transparent effects are flat within 0.01 dB with THD under -140 dB; Drive HQ keeps aliases 90 dB down at 5 kHz full scale, Eco 50 dB; the limiter in true-peak mode holds true peaks within 0.5 dB of its ceiling on hot pink noise; master safety never passes its ceiling; every effect's quick card is finite and is quiet one second after its tail. Gaps the plan still has to close are reported by `fxlab cards`, not asserted.
 
