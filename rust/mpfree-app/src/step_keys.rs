@@ -107,6 +107,14 @@ pub struct StepKeys {
     presses: u32,
     /// The steps held as the screen was last told.
     shown: Option<(u8, Vec<usize>)>,
+    /// A keyboard's keys on the pads they play, held while steps of the
+    /// line are: the chord they go on as (up to `MAX_PEN`).
+    keys: Pen,
+    /// The keys still down, a bit a pad: the next key after all are up
+    /// starts a new chord.
+    keys_down: u16,
+    /// Each key's velocity, by pad.
+    key_velocity: [u8; 16],
 }
 
 /// What a release did: a log line, and whether to let go of the sound the
@@ -190,6 +198,62 @@ impl StepKeys {
                 Err(e) => format!("steps: {e}"),
             },
         )
+    }
+
+    /// A keyboard's key on pad `pad` (the pad its note plays: the synth's
+    /// pad layout) at `velocity`. While steps of the line are held, the
+    /// keys held together go on every one of them, in place of what they
+    /// held, as one undo (`StepAction::Keys`), and the steps stay on their
+    /// release. None while no step of the line is held: the key just plays.
+    pub fn key_down(&mut self, pad: u8, velocity: u8, time: &mut TimeHost) -> Option<Pressed> {
+        let (sound, steps) = self.held_steps()?;
+        if sound != LINE || pad >= 16 {
+            return None;
+        }
+        if self.keys_down == 0 {
+            self.keys = Pen::default();
+        }
+        self.keys.add(pad);
+        self.keys_down |= 1 << pad;
+        self.key_velocity[usize::from(pad)] = velocity.max(1);
+        self.turned = true;
+        self.keep_all();
+        let bits = steps
+            .iter()
+            .filter(|&&i| i < 128)
+            .fold(0u128, |b, &i| b | 1u128 << i);
+        let (mut keys, n) = self.keys.keys(velocity.max(1));
+        for k in keys.iter_mut().take(usize::from(n)) {
+            k.1 = self.key_velocity[usize::from(k.0)];
+        }
+        Some(
+            match time.step_action(StepAction::Keys {
+                steps: bits,
+                keys,
+                n,
+            }) {
+                Ok(log) => Pressed {
+                    log,
+                    ..Pressed::default()
+                },
+                Err(e) => Pressed {
+                    tell: Some(format!("steps: {e}")),
+                    ..Pressed::default()
+                },
+            },
+        )
+    }
+
+    /// A keyboard's key on pad `pad` let go.
+    pub fn key_up(&mut self, pad: u8) {
+        if pad < 16 {
+            self.keys_down &= !(1 << pad);
+        }
+    }
+
+    /// Steps of the synth's line are held: a keyboard's keys go on them.
+    pub fn line_held(&self) -> bool {
+        self.held_steps().is_some_and(|(sound, _)| sound == LINE)
     }
 
     /// COPY was let go: the step picked is forgotten.
@@ -649,6 +713,8 @@ mod tests {
             cond: Cond::Always,
             ratchet: 1,
             notes: 1,
+            low: 0,
+            high: 0,
         })
     }
 
@@ -827,6 +893,73 @@ mod tests {
         assert!(p.tell.is_some_and(|t| t.contains("hold STEP SEQ")));
         keys.release(2, &mut time);
         assert_eq!(line(&time)[2], None);
+    }
+
+    /// On the synth, a keyboard's keys played while line steps are held go
+    /// on them, the keys held together as a chord (each at its own
+    /// velocity), one undo for the chord; the steps stay on their release.
+    /// With no step held, or on a sound's steps, a key does nothing here.
+    #[test]
+    fn keys_played_while_line_steps_are_held_go_on_them() {
+        use mpfree_time_ui::view::TimeAction;
+        let Ok(mut time) = TimeHost::new(44_100, 120.0) else {
+            return;
+        };
+        let mut keys = StepKeys::default();
+        let s = StepPads {
+            pen: Pen::of(2),
+            ..view(LINE, 0)
+        };
+        let pads = |time: &TimeHost, step: usize| -> Vec<(u8, u8)> {
+            let c = time.steps().clip.expect("a clip");
+            (0..16u8)
+                .filter_map(|p| Some((p, c.row(p).get(step).copied().flatten()?.velocity)))
+                .collect()
+        };
+        // Nothing held: a key just plays.
+        assert!(keys.key_down(4, 100, &mut time).is_none());
+        keys.key_up(4);
+        // Steps 1 and 5 put on with the pen, then both held: keys 4 and 7
+        // together go on both, in place of the pen.
+        for step in [0, 4] {
+            keys.press(s, step, at(90, false, true), &mut time);
+            keys.release(step, &mut time);
+        }
+        assert_eq!(pads(&time, 0), [(2, 90)]);
+        keys.press(s, 0, at(90, false, true), &mut time);
+        keys.press(s, 4, at(90, false, true), &mut time);
+        assert!(keys.line_held());
+        let p = keys.key_down(4, 80, &mut time).expect("held");
+        assert!(
+            p.log
+                .contains("steps 1, 5 of the line: pads 5 from the keys"),
+            "{}",
+            p.log
+        );
+        keys.key_down(7, 120, &mut time).expect("held");
+        assert_eq!(pads(&time, 0), [(4, 80), (7, 120)]);
+        assert_eq!(pads(&time, 4), [(4, 80), (7, 120)]);
+        // All keys up: the next key starts a new chord.
+        keys.key_up(4);
+        keys.key_up(7);
+        keys.key_down(9, 100, &mut time).expect("held");
+        assert_eq!(pads(&time, 0), [(9, 100)]);
+        keys.key_up(9);
+        // Let go: the steps stay (the keys kept them).
+        keys.release(0, &mut time);
+        keys.release(4, &mut time);
+        assert!(!keys.line_held());
+        assert_eq!(pads(&time, 4), [(9, 100)]);
+        // One UNDO takes the keys' chords back to the pen.
+        time.act(TimeAction::Undo).unwrap();
+        assert_eq!(pads(&time, 0), [(2, 90)]);
+        assert_eq!(pads(&time, 4), [(2, 90)]);
+        // A sound's steps (a kit) take no keys.
+        let kit = view(3, 0);
+        keys.press(kit, 8, at(90, false, true), &mut time);
+        assert!(!keys.line_held());
+        assert!(keys.key_down(4, 100, &mut time).is_none());
+        keys.release(8, &mut time);
     }
 
     /// The steps of sound 2 in the clip Beats shows: (step, velocity,

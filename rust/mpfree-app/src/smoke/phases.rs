@@ -1005,6 +1005,102 @@ mod step_seq {
         });
     }
 
+    /// A synth step's notes (sequencer S1, seventh part): a line step held,
+    /// Q-Link 1 is its Note and moves it up the pads; a keyboard's keys
+    /// played while it is held go on it as a chord, in place of what it
+    /// held, one UNDO for the chord; the inspector names the step's notes;
+    /// a key no pad plays says so.
+    #[test]
+    fn on_the_synth_the_note_knob_and_the_keys_set_a_steps_notes() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("header", "tab", "Synth");
+            s.button("STEP SEQ");
+            // The pen: pad 1 (C3), then steps 1 and 5.
+            s.button_edge("STEP SEQ", true);
+            s.pad(0, 100, 0.05);
+            s.button_edge("STEP SEQ", false);
+            s.pad(0, 100, 0.05);
+            s.pad(4, 100, 0.05);
+            let pads = |s: &Session, step: usize| -> Vec<u8> {
+                let c = s.time.steps().clip.expect("a clip");
+                (0..16u8)
+                    .filter(|&p| c.row(p).get(step).copied().flatten().is_some())
+                    .collect()
+            };
+            assert_eq!(pads(&s, 0), [0]);
+            let cards = |s: &Session| -> Vec<(String, String)> {
+                s.screen
+                    .ui
+                    .get::<mpfree_ui::qlink::QLinkColumn>(crate::play_page::QLINKS)
+                    .map(|q| {
+                        q.cards
+                            .iter()
+                            .map(|c| (c.name.clone(), c.value.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            // Step 1 held: Q-Link 1 is its note; a detent is a pad up.
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            assert!(s.hint().contains("Q-Links: note, velocity"), "{}", s.hint());
+            let c = cards(&s);
+            assert_eq!(c[0].0, "Note", "{c:?}");
+            assert_eq!(c[1].0, "Velocity", "{c:?}");
+            let before = c[0].1.clone();
+            s.qlink(0, 1);
+            assert_eq!(pads(&s, 0), [1]);
+            assert_ne!(cards(&s)[0].1, before, "the card follows");
+            // A keyboard's keys, E3 and G3 together: the step's chord.
+            let (e3, g3) = (52, 55);
+            assert_eq!(s.app.pad_of_key(e3), Some(4));
+            s.key_edge(e3, Some(90));
+            s.key_edge(g3, Some(110));
+            s.key_edge(e3, None);
+            s.key_edge(g3, None);
+            assert_eq!(pads(&s, 0), [4, 7]);
+            assert_eq!(cards(&s)[0].0, "Chord");
+            // A key no pad plays: said, and nothing changes.
+            s.key_edge(20, Some(100));
+            s.key_edge(20, None);
+            assert!(
+                s.hint().contains("isn't a note of the pads"),
+                "{}",
+                s.hint()
+            );
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            assert_eq!(pads(&s, 0), [4, 7], "the keys kept the step");
+            let c = s.time.steps().clip.unwrap();
+            assert_eq!(c.row(4)[0].map(|st| st.velocity), Some(90));
+            assert_eq!(c.row(7)[0].map(|st| st.velocity), Some(110));
+            // Picked on Beats, the inspector names its notes.
+            s.press("steps", "step", "Line step 1");
+            let title = s
+                .screen
+                .ui
+                .get::<crate::play_widgets::StepInspector>(crate::play_page::INSPECTOR)
+                .map(|i| i.inspect.title.clone())
+                .unwrap_or_default();
+            assert!(
+                title.starts_with("Step 1 · ") && title.contains(" + "),
+                "{title}"
+            );
+            // UNDO: the chord goes (one take for both keys), then the turn.
+            s.button("UNDO");
+            assert_eq!(pads(&s, 0), [1]);
+            s.button("UNDO");
+            assert_eq!(pads(&s, 0), [0]);
+            assert_eq!(pads(&s, 4), [0], "step 5 as it was");
+            // Keys with no step held only play.
+            s.key_edge(e3, Some(100));
+            s.key_edge(e3, None);
+            assert_eq!(pads(&s, 8), Vec::<u8>::new());
+        });
+    }
+
     /// Step pads held (sequencer S1): Q-Link 1 turned on the controller
     /// sets the step held, which stays on its release; a later step tapped
     /// while one is held is a tie; COPY + a step, then others, copies it,
@@ -1260,6 +1356,59 @@ mod device_log {
             s.pad(4, 100, 0.05);
             let l = wrote(&s, n, "steps: step 5 of the line erased", "");
             assert_eq!(l, "steps: step 5 of the line erased");
+        });
+    }
+
+    /// A synth step's notes (`^steps: step 1 of the line: lowest note on
+    /// pad \d+$`, `^steps: step 1 of the line: pads [\d, ]+ from the keys
+    /// on$`), as the `step-notes` and `step-keys` checks have them done:
+    /// a line a detent of Q-Link 1, and a line a key.
+    #[test]
+    fn step_notes_and_keys_write_their_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("header", "tab", "Synth");
+            s.button("STEP SEQ");
+            s.button_edge("STEP SEQ", true);
+            s.pad(0, 100, 0.05);
+            s.button_edge("STEP SEQ", false);
+            s.pad(0, 100, 0.05);
+            s.pad(4, 100, 0.05);
+            // Q-Link 1 two clicks right on step 1 held: C3 to D3.
+            let n = s.lines.len();
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            s.qlink(0, 1);
+            s.qlink(0, 1);
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            let l = wrote(&s, n, "steps: step 1 of the line: lowest note on pad 3", "");
+            assert_eq!(l, "steps: step 1 of the line: lowest note on pad 3");
+            // E3 and G3 on the keys, step 1 held.
+            let n = s.lines.len();
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            s.key_edge(52, Some(100));
+            s.key_edge(55, Some(100));
+            s.key_edge(52, None);
+            s.key_edge(55, None);
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            // A line a key: the first key alone, then both.
+            wrote(
+                &s,
+                n,
+                "steps: step 1 of the line: pads 5 from the keys on",
+                "",
+            );
+            let l = wrote(
+                &s,
+                n,
+                "steps: step 1 of the line: pads ",
+                "5, 8 from the keys on",
+            );
+            assert_eq!(l, "steps: step 1 of the line: pads 5, 8 from the keys on");
         });
     }
 

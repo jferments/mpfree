@@ -1475,8 +1475,36 @@ pub mod spring {
 /// Stretched all-pass stages per spring (Parker's low chirp path, cut to
 /// fit the MPC: 100 in the full model).
 const STAGES: usize = 40;
-/// The stretch: the chirp sits below rate / (2 K), about 4.8 kHz at 48 kHz.
-const STRETCH: usize = 5;
+/// The longest stretch a stage takes. A stage's stretch `K` is the rate
+/// over 8820 (5 at 44.1 and 48 kHz, 11 at 96 kHz), so the chirp sits below
+/// about 4.4 kHz and lasts as long at every rate.
+const KMAX: usize = 12;
+/// The springs work through a block this many frames at a time, at most,
+/// a stage at a time over the whole piece. Drip's all-pass hears the chain
+/// this many frames late, so a piece's input is known before it runs.
+const PIECE: usize = 32;
+/// How much of the other side each spring hears: a source keeps its side.
+const CROSS: f32 = 0.35;
+/// The fresh chirp heard straight away, against the returns.
+const DIRECT: f32 = 0.3;
+/// The second spring's period against the first's, so the sides differ.
+const SECOND: f32 = 1.13;
+/// The loop's own damping, a one-pole this high: each trip a little
+/// darker, as a spring's highs die first. (Tone filters what you hear,
+/// outside the loop, so it never changes how long the middle rings.)
+const DAMP_HZ: f32 = 5000.0;
+/// Drip's all-pass gain at Drip 100 %.
+const DRIP_MAX: f32 = 0.3;
+/// The wet signal's trim, so the defaults sit at the dry's loudness.
+const SPRING_TRIM: f32 = 1.25;
+/// Where the input's level is set from the loop's gain (the damping takes
+/// more above it, so a long Decay builds up less up there).
+const NORM_HZ: f32 = 1000.0;
+/// Where Decay is held: in the 500 Hz and 1 kHz octaves, where room
+/// acoustics quotes it, the lows of each ring on longest (the chain
+/// delays them more, the damping takes less) and set how fast it sounds
+/// to fall, so the loss is worked out at these two (measured).
+const DECAY_HZ: [f32; 2] = [410.0, 820.0];
 
 static SPRING_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.spring",
@@ -1527,30 +1555,39 @@ pub static SPRING_PRESETS: &[Preset] = &[
     },
 ];
 
-/// One spring: the chirp chain, the round-trip delay and its loss.
+/// One spring: the chirp chain, Drip's all-pass round it, the damping
+/// and the round-trip delay.
 #[derive(Clone, Debug)]
 struct OneSpring {
-    /// Each stage's last STRETCH inputs and outputs (fixed arrays, so
-    /// the chain's loop has no bounds checks).
-    xs: [[f32; STRETCH]; STAGES],
-    ys: [[f32; STRETCH]; STAGES],
-    at: usize,
+    /// The chain's input and each stage's output, the last `K` of each,
+    /// oldest first (a stage's input is the one before's output).
+    h: [[f32; KMAX]; STAGES + 1],
+    /// The chain's last PIECE outputs, at their frame's place mod PIECE.
+    cs: [f32; PIECE],
     line: Line,
-    lp: Svf,
-    fb: f32,
+    /// The damping's state.
+    lp: f32,
 }
 
 impl Default for OneSpring {
     fn default() -> Self {
         OneSpring {
-            xs: [[0.0; STRETCH]; STAGES],
-            ys: [[0.0; STRETCH]; STAGES],
-            at: 0,
+            h: [[0.0; KMAX]; STAGES + 1],
+            cs: [0.0; PIECE],
             line: Line::default(),
-            lp: Svf::default(),
-            fb: 0.0,
+            lp: 0.0,
         }
     }
+}
+
+/// A piece's controls, a frame each.
+struct Piece {
+    n: usize,
+    at: usize,
+    /// The stages' coefficient, or None while Tension glides (then `a`).
+    still: Option<f32>,
+    a: [f32; PIECE],
+    q: [f32; PIECE],
 }
 
 impl OneSpring {
@@ -1561,49 +1598,151 @@ impl OneSpring {
         }
     }
 
-    /// The chirp: STAGES first-order all-passes in z^-K, each
-    /// `y = a x + x[n-K] - a y[n-K]`, which delays lows more than highs
-    /// below rate / 2K, the spring's falling "pew".
-    #[inline]
-    fn chirp(&mut self, mut x: f32, a: f32) -> f32 {
-        let at = self.at.min(STRETCH - 1);
-        for (xs, ys) in self.xs.iter_mut().zip(self.ys.iter_mut()) {
-            let y = flush(a * (x - ys[at]) + xs[at]);
-            xs[at] = x;
-            ys[at] = y;
-            x = y;
+    /// One piece: `d` the line's delay, `g` the loss, `u` the input, each
+    /// a frame, `damp` the damping's coefficient; the spring's output into
+    /// `y`.
+    #[allow(clippy::too_many_arguments)]
+    fn piece(
+        &mut self,
+        k: usize,
+        damp: f32,
+        p: &Piece,
+        d: &[f32; PIECE],
+        g: &[f32; PIECE],
+        u: &[f32; PIECE],
+        y: &mut [f32; PIECE],
+    ) {
+        let n = p.n;
+        let mut buf = [[0.0f32; KMAX + PIECE]; 2];
+        let mut v = [0.0f32; PIECE];
+        let mut s = [0.0f32; PIECE];
+        let mut back = [0.0f32; PIECE];
+        // What comes back round (the line not yet written this piece, so
+        // frame i reads i frames nearer), and the chain PIECE frames ago.
+        for i in 0..n {
+            back[i] = self.line.read(d[i] - i as f32);
+            v[i] = flush(g[i] * back[i]);
+            s[i] = self.cs[(p.at + i) % PIECE];
+            buf[0][k + i] = flush(u[i] + v[i] + p.q[i] * s[i]);
         }
-        self.at = if at + 1 == STRETCH { 0 } else { at + 1 };
-        x
+        // The chirp: STAGES first-order all-passes in z^-K, each
+        // `y = a x + x[n-K] - a y[n-K]`, which delays lows more than highs
+        // below rate / 2K, the spring's falling "pew". A stage at a time,
+        // its input and output behind their last K frames (a stage's
+        // input is the one before's output).
+        buf[0][..k].copy_from_slice(&self.h[0][..k]);
+        for st in 0..STAGES {
+            let [b0, b1] = &mut buf;
+            let (x, o) = if st % 2 == 0 { (b0, b1) } else { (b1, b0) };
+            let (x, o) = (&x[..k + n], &mut o[..k + n]);
+            o[..k].copy_from_slice(&self.h[st + 1][..k]);
+            match p.still {
+                Some(a) => stage(x, o, k, |_| a),
+                None => stage(x, o, k, |i| p.a[i]),
+            }
+            self.h[st][..k].copy_from_slice(&x[n..]);
+        }
+        self.h[STAGES][..k].copy_from_slice(&buf[STAGES % 2][n..n + k]);
+        let c = &buf[STAGES % 2];
+        // Drip's all-pass round the chain, `(-q + z^-P C) / (1 - q z^-P C)`
+        // for what comes round (the input goes in without the -q leak, so
+        // it is never heard unchirped), then the damping into the line:
+        // the loop stays an all-pass whatever Drip, so Decay holds.
+        for i in 0..n {
+            self.cs[(p.at + i) % PIECE] = flush(c[k + i]);
+            let q = p.q[i];
+            self.lp = flush(self.lp + damp * ((1.0 - q * q) * s[i] - q * v[i] - self.lp));
+            let t = self.lp;
+            self.line.push(t);
+            y[i] = back[i] + DIRECT * t;
+        }
     }
 
     fn clear(&mut self) {
-        self.xs = [[0.0; STRETCH]; STAGES];
-        self.ys = [[0.0; STRETCH]; STAGES];
-        self.at = 0;
+        self.h = [[0.0; KMAX]; STAGES + 1];
+        self.cs = [0.0; PIECE];
         self.line.clear();
-        self.lp.reset();
-        self.fb = 0.0;
+        self.lp = 0.0;
     }
 }
 
-/// A spring tank: two springs of slightly different lengths (one per
-/// side). Each passes the sound through a long chain of stretched
-/// all-passes, which smears it into the spring's chirp, then round a
-/// delay of Length with a loss for Decay, so each return chirps again.
-/// Drip feeds more of each chirp back into the spring, for the dub splash
-/// a tap on the tank gives. After Välimäki, Parker and Abel's parametric
-/// spring model, with the chain cut to 40 stages for the MPC.
+/// One stage over a piece: `o[K + i] = a (x[K + i] - o[i]) + x[i]`, with
+/// `x` and `o` the piece behind their last `K` frames. Four frames at a
+/// time where `K` allows (each needs outputs at least `K` back), so the
+/// compiler can do them side by side; each frame's sum is the same.
+#[inline(always)]
+fn stage(x: &[f32], o: &mut [f32], k: usize, a: impl Fn(usize) -> f32) {
+    let n = x.len() - k;
+    let mut i = 0;
+    if k >= 4 {
+        while i + 4 <= n {
+            let xs: [f32; 4] = x[k + i..k + i + 4].try_into().unwrap();
+            let xb: [f32; 4] = x[i..i + 4].try_into().unwrap();
+            let ob: [f32; 4] = o[i..i + 4].try_into().unwrap();
+            let y = [0, 1, 2, 3].map(|j| a(i + j) * (xs[j] - ob[j]) + xb[j]);
+            o[k + i..k + i + 4].copy_from_slice(&y);
+            i += 4;
+        }
+    }
+    while i < n {
+        o[k + i] = a(i) * (x[k + i] - o[i]) + x[i];
+        i += 1;
+    }
+}
+
+/// A control's values over a piece, a frame each (one fill while it
+/// holds still).
+fn fill(sm: &mut Smooth, out: &mut [f32]) {
+    if sm.value == sm.target {
+        out.fill(sm.value);
+    } else {
+        for o in out {
+            *o = sm.next();
+        }
+    }
+}
+
+/// A stage's group delay at `hz`, frames: `K (1 - a²) / (1 + 2a cos Kω + a²)`.
+fn stage_delay(a: f32, k: usize, hz: f32, rate: u32) -> f32 {
+    let kw = k as f32 * std::f32::consts::TAU * hz / rate as f32;
+    k as f32 * (1.0 - a * a) / (1.0 + 2.0 * a * kw.cos() + a * a)
+}
+
+/// A spring tank: two springs of slightly different lengths, one a side,
+/// each hearing its own side and some of the other. Each passes the sound
+/// through a long chain of stretched all-passes, which smears it into the
+/// spring's chirp, then round a delay with a loss for Decay, so each
+/// return chirps again. The delay is shortened by what the chain, Drip
+/// and the tone filter add at mid frequencies, so a return comes back
+/// every Length there, and the loss is worked out from Length, so Decay is
+/// the time to fall 60 dB at 707 Hz whatever Tension, Drip or Tone; lows
+/// take longer round, so they ring on, as a spring's do. Drip wraps the
+/// chain in an all-pass that sends some of each chirp round it again, the
+/// dub splash a tap on the tank gives. After Välimäki, Parker and Abel's
+/// parametric spring model, with the chain cut to 40 stages for the MPC.
 pub struct Spring {
     v: [f32; 8],
     rate: u32,
+    /// The stages' stretch.
+    k: usize,
     springs: [OneSpring; 2],
     in_hp: Svf,
-    length: Smooth,
-    gain: f32,
-    a: f32,
+    tone: Svf,
+    /// The damping's coefficient.
+    damp: f32,
+    /// The first spring's period at mid frequencies, frames.
+    period: Smooth,
+    /// What the chain, Drip's wait and the damping add to a trip.
+    offset: Smooth,
+    a: Smooth,
     drip: Smooth,
+    /// Each spring's loss, and its input's level (so a longer Decay rings
+    /// longer rather than louder).
+    g: [Smooth; 2],
+    norm: [Smooth; 2],
     blend: Blend,
+    /// Frames since reset, mod PIECE.
+    at: usize,
 }
 
 impl Default for Spring {
@@ -1618,41 +1757,98 @@ impl Spring {
         let mut s = Spring {
             v,
             rate: 48_000,
+            k: 5,
             springs: Default::default(),
             in_hp: Svf::default(),
-            length: Smooth::new(v[0]),
-            gain: 0.5,
-            a: -0.6,
-            drip: Smooth::new(0.5),
+            tone: Svf::default(),
+            damp: 0.5,
+            period: Smooth::new(1920.0),
+            offset: Smooth::new(400.0),
+            a: Smooth::new(-0.6),
+            drip: Smooth::new(0.15),
+            g: [Smooth::new(0.9), Smooth::new(0.9)],
+            norm: [Smooth::new(0.4), Smooth::new(0.4)],
             blend: Blend::new(0.3, 0),
+            at: 0,
         };
         s.setup(48_000);
         s
     }
 
+    fn tension(v: f32) -> f32 {
+        // Negative, so lows are delayed more than highs below the corner
+        // (a positive coefficient chirps the other way).
+        -(0.45 + 0.3 * v / 100.0)
+    }
+
+    /// The damping's (gain, group delay in frames) at `hz`:
+    /// `k / (1 - p z^-1)` with `p = 1 - k`.
+    fn damp_at(&self, hz: f32) -> (f32, f32) {
+        let (k, p) = (self.damp, 1.0 - self.damp);
+        let c = (std::f32::consts::TAU * hz / self.rate as f32).cos();
+        let den = 1.0 - 2.0 * p * c + p * p;
+        (k / den.sqrt(), (p * c - p * p) / den)
+    }
+
+    /// What the chain, Drip's wait and the damping add to a trip at `hz`,
+    /// frames.
+    fn trip_extra(&self, hz: f32) -> f32 {
+        let a = Self::tension(self.v[spring::TENSION as usize]);
+        PIECE as f32 + STAGES as f32 * stage_delay(a, self.k, hz, self.rate) + self.damp_at(hz).1
+    }
+
+    fn set_offset(&mut self) {
+        self.offset.target = self.trip_extra(MID_HZ);
+    }
+
+    /// The loss each trip, so the 500 Hz and 1 kHz octaves fall 60 dB in
+    /// Decay on average. Each octave's trip takes its own time (the chain
+    /// delays lows more) and the damping takes its own loss, so with
+    /// `T` a trip's time, `l` the damping's log gain and `x` the loop's log
+    /// loss, the octaves' times `3 T / (x - l)` average Decay: a quadratic
+    /// in `x`.
     fn set_gain(&mut self) {
-        let secs = self.v[spring::LENGTH as usize] * 0.001;
-        self.gain = 10f32
-            .powf(-3.0 * secs / (self.v[spring::DECAY as usize] * 0.001))
-            .min(0.98);
+        let decay = self.v[spring::DECAY as usize] * 0.001 * self.rate as f32;
+        // Drip's all-pass makes some trips longer than others, and the
+        // longest ring on (measured: 4.1 q^1.7 of the chain's delay).
+        let q = DRIP_MAX * self.v[spring::DRIP as usize] / 100.0;
+        let mid = self.trip_extra(MID_HZ);
+        let slow = 4.1 * q.powf(1.7) * mid;
+        let [(o1, l1), (o2, l2)] =
+            DECAY_HZ.map(|hz| (self.trip_extra(hz) - mid + slow, self.damp_at(hz).0.log10()));
+        for s in 0..2 {
+            let p = self.period.target * if s == 0 { 1.0 } else { SECOND };
+            let (a1, a2) = (3.0 * (p + o1), 3.0 * (p + o2));
+            let two = 2.0 * decay;
+            let b = two * (l1 + l2) + a1 + a2;
+            let c = two * l1 * l2 + a1 * l2 + a2 * l1;
+            let x = (b + (b * b - 4.0 * two * c).max(0.0).sqrt()) / (2.0 * two);
+            let g = 10f32.powf(-x).min(0.999);
+            self.g[s].target = g;
+            // The input's level, so a longer Decay rings longer rather
+            // than louder: the loop's gain at 1 kHz, as loud as it builds.
+            let ge = g * self.damp_at(NORM_HZ).0;
+            self.norm[s].target = (1.0 - ge * ge).sqrt();
+        }
     }
 
     fn apply(&mut self, id: u16, v: f32) {
         match id {
             spring::LENGTH => {
-                self.length.target = v;
+                self.period.target = v * 0.001 * self.rate as f32;
                 self.set_gain();
             }
             spring::DECAY => self.set_gain(),
-            // Negative, so lows are delayed more than highs below the
-            // corner (a positive coefficient chirps the other way).
-            spring::TENSION => self.a = -(0.45 + 0.3 * v / 100.0),
-            spring::DRIP => self.drip.target = v / 100.0,
-            spring::TONE => {
-                for s in &mut self.springs {
-                    s.lp.set(SvfMode::LowPass, v, 0.6, 0.0, self.rate);
-                }
+            spring::TENSION => {
+                self.a.target = Self::tension(v);
+                self.set_offset();
+                self.set_gain();
             }
+            spring::DRIP => {
+                self.drip.target = DRIP_MAX * v / 100.0;
+                self.set_gain();
+            }
+            spring::TONE => self.tone.set(SvfMode::LowPass, v, 0.6, 0.0, self.rate),
             spring::LOW_CUT => self.in_hp.set(SvfMode::HighPass, v, 0.707, 0.0, self.rate),
             spring::MIX => self.blend.set_mix(v / 100.0),
             spring::MIX_CURVE => self.blend.set_curve(v),
@@ -1661,38 +1857,73 @@ impl Spring {
     }
 
     fn begin(&mut self, _ctx: &Ctx) {}
+
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
-        let ms = self.rate as f32 * 0.001;
-        for i in 0..l.len() {
-            let len = self.length.glide();
-            let drip = self.drip.glide();
-            let x = self.in_hp.run(0, 0.5 * (l[i] + r[i]));
-            let mut y = [0.0f32; 2];
-            for (k, s) in self.springs.iter_mut().enumerate() {
-                // The second spring is 13 % longer, so the sides differ.
-                let frames = len * ms * (1.0 + 0.13 * k as f32);
-                let back = s.line.read(frames - 1.0);
-                let into = x + s.fb;
-                let c = s.chirp(into, self.a);
-                let c = s.lp.run(0, c);
-                s.line.push(c);
-                // What comes back round, chirped again, plus Drip's extra
-                // ring of the fresh chirp.
-                s.fb = flush(self.gain * (back + drip * 0.25 * (c - back)));
-                y[k] = back + 0.3 * c;
-            }
-            let g = self.blend.next();
-            l[i] = kit::blend(l[i], y[0], g);
-            r[i] = kit::blend(r[i], y[1], g);
+        for (l, r) in l.chunks_mut(PIECE).zip(r.chunks_mut(PIECE)) {
+            self.piece(l, r);
+        }
+    }
+
+    fn piece(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let n = l.len();
+        let still = (self.a.value == self.a.target).then_some(self.a.value);
+        let mut p = Piece {
+            n,
+            at: self.at,
+            still,
+            a: [0.0; PIECE],
+            q: [0.0; PIECE],
+        };
+        fill(&mut self.a, &mut p.a[..n]);
+        fill(&mut self.drip, &mut p.q[..n]);
+        let mut period = [0.0f32; PIECE];
+        let mut offset = [0.0f32; PIECE];
+        fill(&mut self.period, &mut period[..n]);
+        fill(&mut self.offset, &mut offset[..n]);
+        let mut d = [[0.0f32; PIECE]; 2];
+        let mut g = [[0.0f32; PIECE]; 2];
+        let mut u = [[0.0f32; PIECE]; 2];
+        let mut norm = [[0.0f32; PIECE]; 2];
+        for s in 0..2 {
+            fill(&mut self.g[s], &mut g[s][..n]);
+            fill(&mut self.norm[s], &mut norm[s][..n]);
+        }
+        for i in 0..n {
+            d[0][i] = period[i] - offset[i];
+            d[1][i] = period[i] * SECOND - offset[i];
+            let (x0, x1) = (l[i] + CROSS * r[i], r[i] + CROSS * l[i]);
+            u[0][i] = self.in_hp.run(0, x0) * norm[0][i];
+            u[1][i] = self.in_hp.run(1, x1) * norm[1][i];
+        }
+        let mut y = [[0.0f32; PIECE]; 2];
+        let k = self.k;
+        let damp = self.damp;
+        for (s, (sp, y)) in self.springs.iter_mut().zip(y.iter_mut()).enumerate() {
+            sp.piece(k, damp, &p, &d[s], &g[s], &u[s], y);
+        }
+        self.at = (self.at + n) % PIECE;
+        for i in 0..n {
+            let b = self.blend.next();
+            let (y0, y1) = (self.tone.run(0, y[0][i]), self.tone.run(1, y[1][i]));
+            l[i] = kit::blend(l[i], SPRING_TRIM * y0, b);
+            r[i] = kit::blend(r[i], SPRING_TRIM * y1, b);
         }
     }
 
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
-        let frames = (80.0 * 1.13 * rate as f32 * 0.001) as usize + 8;
+        self.k = ((rate as f32 / 8820.0).round() as usize).clamp(2, KMAX);
+        self.damp = pole(DAMP_HZ, rate);
+        let frames = (80.0 * SECOND * rate as f32 * 0.001) as usize + 8;
         self.springs = [OneSpring::new(frames), OneSpring::new(frames)];
-        self.length.set_time(rate, 200.0);
+        self.period.set_time(rate, 200.0);
+        self.offset.set_time(rate, 200.0);
+        self.a.set_time(rate, 50.0);
         self.drip.set_time(rate, 30.0);
+        for s in 0..2 {
+            self.g[s].set_time(rate, 50.0);
+            self.norm[s].set_time(rate, 50.0);
+        }
         self.blend.set_time(rate, 20.0);
         for id in 0..SPRING_PARAMS.len() as u16 {
             self.apply(id, self.v[id as usize]);
@@ -1705,18 +1936,41 @@ impl Spring {
             s.clear();
         }
         self.in_hp.reset();
-        self.length.snap(self.length.target);
-        self.drip.snap(self.drip.target);
+        self.tone.reset();
+        for sm in [
+            &mut self.period,
+            &mut self.offset,
+            &mut self.a,
+            &mut self.drip,
+        ] {
+            sm.snap(sm.target);
+        }
+        for s in 0..2 {
+            self.g[s].snap(self.g[s].target);
+            self.norm[s].snap(self.norm[s].target);
+        }
         self.blend.snap();
+        self.at = 0;
+    }
+
+    /// How much longer than Decay the lowest notes ring: they take the
+    /// chain's longest way round.
+    fn low_stretch(&self) -> f32 {
+        let a = Self::tension(self.v[spring::TENSION as usize]);
+        let extra = STAGES as f32
+            * (stage_delay(a, self.k, 0.0, self.rate) - stage_delay(a, self.k, MID_HZ, self.rate));
+        let period = self.v[spring::LENGTH as usize] * 0.001 * self.rate as f32;
+        (period + extra) / period
     }
 
     fn tail(&self) -> u32 {
-        ((self.v[spring::DECAY as usize] * 0.0012 + 0.2) * self.rate as f32) as u32
+        let secs = self.v[spring::DECAY as usize] * 0.0012 * self.low_stretch() + 0.2;
+        (secs * self.rate as f32) as u32
     }
     fn rest(&self) -> u32 {
         // What it holds is its tail, here to 100 dB down (Decay is the
-        // time to fall 60).
-        let secs = self.v[spring::DECAY as usize] * 0.001 * 100.0 / 60.0 + 0.2;
+        // time to fall 60 at mid frequencies; the lows ring longer).
+        let secs = self.v[spring::DECAY as usize] * 0.001 * 100.0 / 60.0 * self.low_stretch() + 0.2;
         (secs * self.rate as f32) as u32
     }
     fn lat(&self) -> u32 {

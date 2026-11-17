@@ -232,6 +232,18 @@ impl App {
         }
     }
 
+    /// The pad a keyboard's key `note` puts on a step of the line: the
+    /// pad whose note (a chord pad's lowest) it is. None with a kit, or a
+    /// note no pad starts on.
+    pub fn pad_of_key(&self, note: u8) -> Option<u8> {
+        let layout = self.pad_layout.as_ref()?;
+        let pad = layout
+            .iter()
+            .take(16)
+            .position(|p| p.notes().first() == Some(&note))?;
+        u8::try_from(pad).ok()
+    }
+
     /// The pen's notes by name, for the lines and the chip: "C3", or a
     /// chord's "C3 Eb3 G3".
     pub fn pen_name(&self, pen: &Pen) -> String {
