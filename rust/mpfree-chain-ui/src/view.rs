@@ -29,7 +29,7 @@ use std::f32::consts::PI;
 
 use mpfree_fx::mpfree_node::Curve;
 use mpfree_mod::{Source, MACROS};
-use mpfree_param::{ParamAddr, Strip};
+use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::section_view::{Control, Kind, SectionBox, SectionView};
 use mpfree_synth_ui::sections::Job;
@@ -449,7 +449,9 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
     let mod_name = Rect::new(line.x + 4, line.y, (m0 - 12 - line.x - 4).max(0), line.h);
     let rows_link = Rect::new(mod_name.x, mod_name.y + 22, mod_name.w, mod_name.h - 22);
     let (mut rows_panel, mut depth_rows) = (None, Vec::new());
-    if open.rows && shown && st.focus.is_some() {
+    // A MIDI effect's page has the rows of its setting touched too.
+    let notes_shown = notes_page.is_some() && st.notes.as_ref().is_some_and(|n| !n.picking);
+    if open.rows && (shown || notes_shown) && st.focus.is_some() {
         let n = st.rows.len().max(1) as i32;
         let h = (44 + n * (DEPTH_ROW_H + 6) + 8).min(page.h);
         let panel = Rect::new(page.x, page.bottom() - h, ROWS_W.min(page.w), h);
@@ -1605,7 +1607,19 @@ impl ChainView {
         let Some(ns) = self.state.notes.as_ref() else {
             return;
         };
-        let Some(a) = notes::tap_page(pl, ns, x, y) else {
+        // The setting under the finger becomes the one the Modulate row
+        // works on.
+        let touched = notes::setting_at(pl, x, y).and_then(|(k, _)| {
+            let (_, id, _) = ns.page_fx()?;
+            Some(notes::addr(ns.track, id, k))
+        });
+        let a = notes::tap_page(pl, ns, x, y);
+        if let Some(addr) = touched.filter(|f| self.state.focus != Some(*f)) {
+            if self.state.params.iter().any(|p| p.addr == addr) {
+                self.push(ChainAction::Focus(addr));
+            }
+        }
+        let Some(a) = a else {
             return;
         };
         if matches!(a, NoteAction::Picker(false) | NoteAction::Add(_)) {
@@ -1614,6 +1628,16 @@ impl ChainView {
             }
         }
         self.set_note(a);
+    }
+
+    /// A MIDI effect's setting is the one touched last: the Modulate row
+    /// under its page is the usual one (its macro, Learn, + LFO, its rows).
+    fn notes_modulate(&self) -> bool {
+        self.state.notes.is_some()
+            && self
+                .state
+                .focused()
+                .is_some_and(|p| matches!(p.addr.owner, Owner::NoteFx(..)))
     }
 
     /// Setting `k` of the MIDI effect whose page shows, with its value
@@ -1764,6 +1788,13 @@ impl ChainView {
             self.open.modes = false;
             return;
         }
+        self.tap_modulate(l, x, y);
+    }
+
+    /// A tap on the Modulate row, for the control touched last: its macro
+    /// (again: off it), Learn, the link to its rows, + LFO or + Follower.
+    fn tap_modulate(&mut self, l: &Layout, x: i32, y: i32) {
+        let st = &self.state;
         let Some(focus) = st.focus else { return };
         if let Some(m) = l.macros.iter().position(|r| macro_hit(*r).contains(x, y)) {
             let now = st.focused().and_then(|p| p.macro_);
@@ -2075,7 +2106,9 @@ impl Widget for ChainView {
             // A row of the Notes group (or its picker) has the column.
             notes::paint_header(cx, &t, l.header, ns);
             notes::paint_page(cx, &t, notes_area(l.page, l.modulate, ns), pl, ns);
-            if !ns.picking {
+            if self.notes_modulate() {
+                self.paint_modulate(cx, &l);
+            } else if !ns.picking {
                 notes::paint_modulate(cx, &t, l.modulate, ns);
             }
         } else {
@@ -2532,6 +2565,12 @@ impl ChainView {
                         self.open.rows = false;
                         return;
                     }
+                }
+                // A MIDI effect's setting touched: the Modulate row works
+                // on it, as on a sound's knob.
+                if l.notes_page.is_some() && l.modulate.contains(x, y) && self.notes_modulate() {
+                    self.tap_modulate(&l, x, y);
+                    return;
                 }
                 if let (Some(pl), true) = (&l.notes_page, l.effect.contains(x, y)) {
                     let pl = pl.clone();

@@ -491,18 +491,20 @@ impl TimeControl {
                 continue;
             }
             for place in 0..MAX_FX {
-                let slot = now.slots[place];
-                if slot != was.slots[place]
+                let (slot, id) = (now.slots[place], now.ids[place]);
+                if (slot != was.slots[place] || id != was.ids[place])
                     && self
                         .tx
                         .send(ToAudio::NoteFx {
                             track: t as u16,
                             place: place as u8,
                             slot,
+                            id,
                         })
                         .is_ok()
                 {
                     was.slots[place] = slot;
+                    was.ids[place] = id;
                 }
             }
             if now.arp_at != was.arp_at
@@ -516,8 +518,6 @@ impl TimeControl {
             {
                 was.arp_at = now.arp_at;
             }
-            // The ids stay on this side (what names a setting).
-            was.ids = now.ids;
         }
     }
 

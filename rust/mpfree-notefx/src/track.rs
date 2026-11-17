@@ -55,6 +55,29 @@ impl TrackFx {
         id
     }
 
+    /// Setting `k` of the effect with id `id`, if it is there.
+    pub fn value(&self, id: u16, k: usize) -> Option<i32> {
+        let p = self.place_of(id)?;
+        let fx = self.slots[p]?.fx;
+        (k < fx.settings().len()).then(|| fx.get(k))
+    }
+
+    /// Sets setting `k` of the effect with id `id` to `v`, kept in its
+    /// range (a macro, an LFO or a lock moving it). False if the track has
+    /// no such effect or setting. Never allocates.
+    pub fn set_value(&mut self, id: u16, k: usize, v: i32) -> bool {
+        let Some(p) = self.place_of(id) else {
+            return false;
+        };
+        match self.slots[p].as_mut() {
+            Some(slot) if k < slot.fx.settings().len() => {
+                slot.fx.set(k, v);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The places before the arp: [`crate::Chain::process_range`] runs
     /// them on the notes going into it, and the rest on what it plays.
     pub fn arp_place(&self) -> usize {
@@ -622,5 +645,28 @@ mod tests {
         // Past the top it wraps to the lowest free one past 0.
         (t.slots[1], t.ids[1]) = (slot, u16::MAX);
         assert_eq!(t.new_id(), 1);
+    }
+
+    #[test]
+    fn a_setting_is_read_and_set_by_its_effects_id_and_kept_in_range() {
+        let mut t = TrackFx::default();
+        t.add(Fx::Chance { percent: 50 });
+        t.add(Fx::Chord(crate::Chord::default()));
+        let (chance, chord) = (t.ids[0], t.ids[1]);
+        assert_eq!(t.value(chance, 0), Some(50));
+        assert!(t.set_value(chance, 0, 80));
+        assert_eq!(t.slots[0].unwrap().fx, Fx::Chance { percent: 80 });
+        // Out of range is kept in it; a choice too.
+        assert!(t.set_value(chance, 0, 400));
+        assert_eq!(t.value(chance, 0), Some(100));
+        assert!(t.set_value(chord, 2, 9));
+        assert_eq!(t.value(chord, 2), Some(3), "inversion 0 to 3");
+        assert!(t.set_value(chord, 0, -5));
+        assert_eq!(t.value(chord, 0), Some(0));
+        // No such effect or setting.
+        assert!(!t.set_value(99, 0, 1));
+        assert!(!t.set_value(chance, 1, 1));
+        assert_eq!(t.value(chance, 1), None);
+        assert_eq!(t.value(0, 0), None);
     }
 }

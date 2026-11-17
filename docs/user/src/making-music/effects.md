@@ -96,7 +96,7 @@ Tap a MIDI effect's row for its page. Its choices are along the top as buttons (
 - On a drum track, the pads go through them but the track's clips don't.
 - On a drum track the MIDI effects see pads, not notes: **Transpose** by 1 plays the next pad, a pad moved off the kit doesn't play, and **Randomize**'s Pitch plays other pads at random. Velocity, Note length, Echo, Humanize, Chance, Strum and Latch work the same on any track.
 
-Macros, Learn and LFOs on a MIDI effect's settings come later: for now the Modulate row says which settings the Q-Links turn. Returns, submixes, the master and Loop tracks have no Notes.
+Touch a MIDI effect's setting and the **Modulate** row under the page works on it, as it does for a sound's knob: tap a macro number to put it on that macro, **Learn** to put it on the next Q-Link you turn, or **+ LFO** to sweep it (a choice, such as Chord's shape, takes a macro but not an LFO). A step can lock it, and while you record, a Q-Link turn of it records with the clip and plays back with it. What these do is heard from the next note; a note already playing keeps what it started as. Until you touch a setting, the row says which settings the Q-Links turn. Returns, submixes, the master and Loop tracks have no Notes.
 
 ## The effects
 
