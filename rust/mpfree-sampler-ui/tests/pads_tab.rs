@@ -181,6 +181,42 @@ fn a_tap_picks_a_pad_and_a_tap_on_the_pad_picked_plays_it() {
     assert!(s.ui.get::<PadMap>(pads_tab::MAP).unwrap().lit[6]);
 }
 
+/// The strip over the pads (sampler R3): the kit's banks A to H, a dot
+/// for each pad with a sound, the bank shown outlined. A tap on a bank,
+/// even in the gap before it, asks the app to put it on the pads; a pad
+/// picked on bank B shows bank B.
+#[test]
+fn the_bank_strip_shows_each_banks_sounds_and_a_tap_turns_the_bank() {
+    let mut s = pads(PAD);
+    let r = s.ui.rect_of(pads_tab::MAP).unwrap();
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    assert_eq!(map.banks.len(), 8);
+    assert_eq!(map.banks[0].count_ones(), 6, "bank A's six sounds");
+    assert!(map.banks[1..].iter().all(|&b| b == 0));
+    assert_eq!((map.bank, map.right.as_str()), (0, "bank A"));
+    let (cell, answer) = map.bank_rect(r, 2);
+    assert!(answer.x < cell.x && answer.contains(cell.x - 1, cell.y + 5));
+    assert!(
+        map.cell_rect(r, 12).y >= cell.bottom(),
+        "the pads sit under the strip"
+    );
+    let ev = s.ui.touch(1, Touch::Down, cell.x - 1, cell.y + 5).unwrap();
+    let st = s.state.clone();
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), Some(PadsAction::Bank(2)));
+    s.ui.touch(1, Touch::Up, cell.x - 1, cell.y + 5);
+
+    // A sound on B5: bank B gets its dot, and picking B5 shows bank B.
+    let a5 = s.project.pad(PAD).cloned();
+    s.project.set_pad(16 + PAD, a5, None).unwrap();
+    pick(&mut s, 16 + PAD);
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    assert_eq!(map.banks[1], 1 << PAD);
+    assert_eq!((map.bank, map.right.as_str()), (1, "bank B"));
+    assert_eq!((map.cells[PAD].label.as_str(), map.selected), ("B5", PAD));
+    let title = &s.ui.get::<PadBar>(pads_tab::BAR).unwrap().title;
+    assert!(title.starts_with("Pad B5 · "), "{title}");
+}
+
 #[test]
 fn copy_paste_and_clear_are_one_undo_step_each() {
     let mut s = pads(PAD);

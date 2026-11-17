@@ -33,11 +33,12 @@
 
 use mpfree_sampler::model::{
     ChannelPick, Fade, GrainParams, Layer, ModelError, Pad, PlayMode, Project, Region, SourceId,
+    PADS,
 };
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
-use crate::chop_tab::{bank_of, pad_text};
+use crate::chop_tab::{bank_of, pad_text, BANK};
 use crate::play_tab::{self, stepped, value_text};
 use crate::wave_tab::{default_loop, duration_text, mode_label, pad_color};
 use crate::widgets::{ButtonRow, PadBar, PadCell, PadMap, Setting, SettingList};
@@ -197,6 +198,9 @@ pub struct PadsState {
     /// pad has no strip of its own (only the first 16 pads have one). The
     /// app fills it from the mixer.
     pub effects: Option<Vec<String>>,
+    /// Each of the kit's banks A to H: its pads with a sound, pad 1 of the
+    /// bank the lowest bit.
+    pub banks: Vec<u16>,
 }
 
 impl PadsState {
@@ -218,6 +222,14 @@ impl PadsState {
                 pads: p.users_of(s.id()),
             })
             .collect();
+        let banks = (0..PADS.div_ceil(BANK))
+            .map(|b| {
+                (0..BANK).fold(0u16, |m, i| {
+                    let on = p.pad(b * BANK + i).is_some_and(|pd| !pd.layers.is_empty());
+                    m | (u16::from(on) << i)
+                })
+            })
+            .collect();
         PadsState {
             pad,
             first: bank.start,
@@ -225,6 +237,7 @@ impl PadsState {
             sounds,
             clips: vec![None; bank.len()],
             effects: None,
+            banks,
         }
     }
 
@@ -262,6 +275,9 @@ pub enum PadsAction {
     MapToKeys { pads: Vec<usize> },
     /// Show view `i` of [`VIEWS`] (the bar's switch).
     View(usize),
+    /// A tap on bank `b` (0 to 7, A to H) of the strip over the pads: the
+    /// app puts that bank on the pads, as PAD BANK does.
+    Bank(usize),
     /// The Effects row: open pad `pad`'s chain in the Mix tab.
     Effects(usize),
 }
@@ -495,6 +511,8 @@ impl PadsTab {
             m.lit.resize(cells.len(), false);
             m.cells = cells;
             m.selected = st.pad - st.first;
+            m.banks.clone_from(&st.banks);
+            m.bank = st.first / BANK;
         }
         let paste = self
             .copied
@@ -575,6 +593,7 @@ impl PadsTab {
                 Some(PadsAction::View(*i))
             }
             (MAP, EventKind::Select(i)) => Some(PadsAction::Pick(st.first + *i)),
+            (MAP, EventKind::Tab(b)) if *b < st.banks.len() => Some(PadsAction::Bank(*b)),
             (MAP, EventKind::Pad { index, down }) => Some(PadsAction::Audition {
                 pad: st.first + *index,
                 down: *down,

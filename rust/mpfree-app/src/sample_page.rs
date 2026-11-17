@@ -567,8 +567,13 @@ pub struct SamplePage {
     /// A). A new view of that kit clears the engine's live values, so they
     /// go again after it.
     morph: Option<(usize, f32)>,
-    /// The pad a tap on the waveform holds down (Gate, Loop, Granular).
-    auditioning: Option<usize>,
+    /// The pad a tap on the waveform holds down (Gate, Loop, Granular),
+    /// and whether it went to the pads as one of the 16 (else it plays
+    /// as an audition, off the page on the pads).
+    auditioning: Option<(usize, bool)>,
+    /// The bank of the kit on the pads (PAD BANK, the Pads tab's strip);
+    /// None while the synth has them.
+    pad_page: Option<usize>,
     last_turn: Option<Instant>,
     gesture: Option<Gesture>,
     /// A Play page Q-Link turning a pad: the pad, the knob and the turn's
@@ -725,6 +730,7 @@ impl SamplePage {
             in_flight: false,
             morph: None,
             auditioning: None,
+            pad_page: Some(0),
             last_turn: None,
             gesture: None,
             play_turn: None,
@@ -861,7 +867,7 @@ impl SamplePage {
             // Live chop: the hit marks a cut and the pad stays.
             return;
         }
-        if self.auditioning == Some(pad) {
+        if self.auditioning.is_some_and(|(p, _)| p == pad) {
             // Its own release lets it go.
             self.auditioning = None;
         }
@@ -901,6 +907,45 @@ impl SamplePage {
 
     /// Picks pad `pad` itself (a tap on its cell or its zone), whatever
     /// the pads play.
+    /// The pads show bank `page` of the kit (PAD BANK, or the Pads tab's
+    /// strip; None while the synth has them): the tabs move to the same
+    /// pad of that bank, so the pad they edit is one the pads play.
+    pub fn set_pad_page(&mut self, page: Option<usize>) {
+        self.pad_page = page;
+        if let Some(page) = page {
+            self.pick(page * 16 + self.pad % 16);
+        }
+    }
+
+    /// A tap on the tabs playing kit pad `pad`: one of the 16 pads while
+    /// it is on the bank the pads show (so it lights, records and plays
+    /// as a hit would), else an audition of the pad.
+    fn pad_press(&self, pad: usize, down: bool) -> (FromUi, bool) {
+        match self.pad_page {
+            Some(page) if pad / 16 != page => (FromUi::Audition { pad, down }, false),
+            Some(_) => (
+                FromUi::Pad {
+                    pad: pad % 16,
+                    down,
+                },
+                true,
+            ),
+            None => (FromUi::Pad { pad, down }, true),
+        }
+    }
+
+    /// Lets go of kit pad `pad` as [`SamplePage::pad_press`] pressed it.
+    fn pad_release(pad: usize, on_pads: bool) -> FromUi {
+        if on_pads {
+            FromUi::Pad {
+                pad: pad % 16,
+                down: false,
+            }
+        } else {
+            FromUi::Audition { pad, down: false }
+        }
+    }
+
     fn pick(&mut self, pad: usize) {
         if pad == self.pad || pad >= PADS {
             return;
@@ -2217,10 +2262,10 @@ impl SamplePage {
             }
             // The Effects row: the pad's chain in the Mix tab.
             PadsAction::Effects(pad) => out.push(FromUi::PadEffects { pad: *pad }),
-            PadsAction::Audition { pad, down } => out.push(FromUi::Pad {
-                pad: *pad,
-                down: *down,
-            }),
+            PadsAction::Audition { pad, down } => out.push(self.pad_press(*pad, *down).0),
+            // The strip over the pads: the app turns the pads' bank, and
+            // the tabs follow it (`set_pad_page`).
+            PadsAction::Bank(b) => out.push(FromUi::PadBank(*b)),
             PadsAction::Set { pad, gesture, .. } => {
                 let (kit, pad, gesture) = (self.kit, *pad, *gesture);
                 let before = self
@@ -3165,11 +3210,8 @@ impl SamplePage {
     }
 
     fn audition(&mut self, pad: usize, out: &mut Vec<FromUi>) {
-        if let Some(held) = self.auditioning.take() {
-            out.push(FromUi::Pad {
-                pad: held,
-                down: false,
-            });
+        if let Some((held, on_pads)) = self.auditioning.take() {
+            out.push(Self::pad_release(held, on_pads));
             return;
         }
         let held = self.state.as_ref().is_some_and(|st| {
@@ -3178,11 +3220,12 @@ impl SamplePage {
                 PlayMode::Gate | PlayMode::Loop | PlayMode::Granular
             )
         });
-        out.push(FromUi::Pad { pad, down: true });
+        let (press, on_pads) = self.pad_press(pad, true);
+        out.push(press);
         if held {
-            self.auditioning = Some(pad);
+            self.auditioning = Some((pad, on_pads));
         } else {
-            out.push(FromUi::Pad { pad, down: false });
+            out.push(Self::pad_release(pad, on_pads));
         }
     }
 
@@ -3252,8 +3295,8 @@ impl SamplePage {
 
     /// Leaving the page: let go of a pad a tap holds, end the gesture.
     pub fn leave(&mut self, out: &mut Vec<FromUi>) {
-        if let Some(pad) = self.auditioning.take() {
-            out.push(FromUi::Pad { pad, down: false });
+        if let Some((pad, on_pads)) = self.auditioning.take() {
+            out.push(Self::pad_release(pad, on_pads));
         }
         if self.live.is_some() {
             self.stop_live("stopped");

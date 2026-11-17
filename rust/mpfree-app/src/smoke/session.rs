@@ -1275,6 +1275,18 @@ impl Session {
             FromUi::Pad { .. } => {}
             // A scale row's note: no sound is rendered here.
             FromUi::Audition { .. } => {}
+            // The Pads tab's strip, as main.rs turns the page.
+            FromUi::PadBank(b) if b < app::KIT_PAGES && !self.synth_on => {
+                self.app.set_pad_page(b);
+                self.out.note(&format!(
+                    "pad bank {}: pads {}-{}",
+                    app::bank_letter(b),
+                    app::kit_pad_name(b * 16),
+                    app::kit_pad_name(b * 16 + 15)
+                ));
+                self.out.show(ToUi::PadPage(b));
+            }
+            FromUi::PadBank(_) => {}
             FromUi::Kit(k) => self.kit_to = Some(k.min(self.kits)),
             FromUi::Synth(mpfree_synth_ui::SynthAction::Set { id, value }) => {
                 let from = self.synth.value(id);
