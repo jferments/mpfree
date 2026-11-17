@@ -146,6 +146,49 @@ fn the_limiters_auto_release_lets_go_slower_after_a_long_push() {
 }
 
 #[test]
+fn the_multiband_is_flat_at_ratio_1_at_any_mix() {
+    // X2: the dry passes the crossovers' all-passes, so a Mix between
+    // adds the two in phase rather than notching the crossovers.
+    use mpfree_fx::ids::multiband as mb;
+    for mix in [25.0, 50.0, 75.0] {
+        let mut d = dut("mpfree.fx.multiband");
+        for b in 0..mb::BANDS {
+            d.set(mb::ratio(b), 1.0);
+        }
+        d.set(mb::MIX, mix);
+        let r = response::measure(&mut d, -20.0, 8192);
+        assert!(
+            r.worst_error(20.0, 20_000.0, |_| 0.0) < 0.5,
+            "Mix {mix}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn the_multibands_auto_makeup_keeps_pink_near_the_dry() {
+    // X7: with Auto makeup on, pink at -18 dBFS comes out within 1.5 LU
+    // of the dry at the defaults and at Drum crush's heavy settings.
+    use mpfree_fx::ids::multiband as mb;
+    let x = Stereo::mono(pink(6 * RATE as usize, db_to_amp(-18.0), 11), RATE);
+    let rate = RATE as usize;
+    let dry = loudness::integrated(&x.slice(rate, x.len() - 2 * rate));
+    let mut crush = vec![(mb::ATTACK, 1.0), (mb::RELEASE, 60.0)];
+    for b in 0..mb::BANDS {
+        crush.extend([(mb::threshold(b), -30.0), (mb::ratio(b), 8.0)]);
+    }
+    for set in [vec![], crush] {
+        let mut d = dut("mpfree.fx.multiband");
+        d.set(mb::AUTO_MAKEUP, 1.0);
+        for &(id, v) in &set {
+            d.set(id, v);
+        }
+        let out = d.render(&x, 0);
+        let lu = loudness::integrated(&out.slice(rate, x.len() - 2 * rate)) - dry;
+        assert!(lu.abs() <= 1.5, "{set:?}: {lu:+.2} LU");
+    }
+}
+
+#[test]
 fn every_effect_gets_a_finite_quick_card() {
     let opts = Options {
         rate: RATE,

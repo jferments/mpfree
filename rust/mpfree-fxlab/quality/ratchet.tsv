@@ -1181,38 +1181,43 @@ movement/tremolo/depth_error_db_75	0
 movement/tremolo/harmonic_3khz_swing_db	33.1396
 movement/tremolo/harmonic_whole_swing_db	4.0451
 movement/tremolo/trough_db_depth100	-80
-multiband/multiband/attack_ratio_10ms	1.6929
-multiband/multiband/attack_ratio_1ms	2.076
-multiband/multiband/attack_ratio_30ms	1.6851
-multiband/multiband/curve_error_mid_1khz	0.5667
+multiband/multiband/attack_ratio_10ms	0.974
+multiband/multiband/attack_ratio_1ms	1.441
+multiband/multiband/attack_ratio_30ms	0.943
+multiband/multiband/curve_error_mid_1khz	0.1213
 multiband/multiband/idle_error_db	0.0624
-multiband/multiband/ratio1_error_db_mix25	5.8779
-multiband/multiband/ratio1_error_db_mix50	19.6753
-multiband/multiband/ratio1_error_db_mix75	5.8959
-multiband/multiband/release_ratio_150ms	0.8079
-multiband/multiband/release_ratio_500ms	0.8101
-multiband/multiband/release_ratio_60ms	0.8501
-multiband/multiband/thd_100hz_12db_over	-56.8766
-multiband/multiband/thd_50hz_12db_over	-50.0328
-multiband/multiband/zipper_attack	0.228
-multiband/multiband/zipper_high-gain	0.0253
-multiband/multiband/zipper_high-ratio	0.0177
-multiband/multiband/zipper_high-thresh	0.4404
-multiband/multiband/zipper_low-gain	0.0181
-multiband/multiband/zipper_low-mid	0.4844
-multiband/multiband/zipper_low-ratio	0.0177
-multiband/multiband/zipper_low-thresh	0.0177
-multiband/multiband/zipper_mid-gain	0.0393
-multiband/multiband/zipper_mid-high	0.5483
-multiband/multiband/zipper_mid-ratio	6.7801
-multiband/multiband/zipper_mid-thresh	10.6364
-multiband/multiband/zipper_mix	0.0556
-multiband/multiband/zipper_output	0.0393
-multiband/multiband/zipper_release	0.0211
-multiband/multiband[Drum crush]/thd_50hz_12db_over	-35.9094
-multiband/multiband[Master glue]/thd_50hz_12db_over	-53.1312
-multiband/multiband[Tight low end]/thd_50hz_12db_over	-46.977
-multiband/multiband[Vocal smooth]/thd_50hz_12db_over	-48.6861
+multiband/multiband/lu_pink_auto	-0.3112
+multiband/multiband/ratio1_error_db_mix25	0.0624
+multiband/multiband/ratio1_error_db_mix50	0.0624
+multiband/multiband/ratio1_error_db_mix75	0.0624
+multiband/multiband/release_ratio_150ms	0.9967
+multiband/multiband/release_ratio_500ms	0.9955
+multiband/multiband/release_ratio_60ms	0.9987
+multiband/multiband/thd_100hz_12db_over	-74.4017
+multiband/multiband/thd_50hz_12db_over	-61.6697
+multiband/multiband/zipper_attack	0.0907
+multiband/multiband/zipper_high-gain	0.0285
+multiband/multiband/zipper_high-ratio	0.023
+multiband/multiband/zipper_high-thresh	0.0232
+multiband/multiband/zipper_low-gain	0.0234
+multiband/multiband/zipper_low-mid	0.5447
+multiband/multiband/zipper_low-ratio	0.023
+multiband/multiband/zipper_low-thresh	0.023
+multiband/multiband/zipper_mid-gain	0.0427
+multiband/multiband/zipper_mid-high	0.5813
+multiband/multiband/zipper_mid-ratio	0.0254
+multiband/multiband/zipper_mid-thresh	0.0477
+multiband/multiband/zipper_mix	0.0249
+multiband/multiband/zipper_output	0.0426
+multiband/multiband/zipper_release	0.0749
+multiband/multiband[Drum crush]/lu_pink_auto	0.79
+multiband/multiband[Drum crush]/thd_50hz_12db_over	-34.5091
+multiband/multiband[Master glue]/lu_pink_auto	-0.3138
+multiband/multiband[Master glue]/thd_50hz_12db_over	-69.671
+multiband/multiband[Tight low end]/lu_pink_auto	0.1897
+multiband/multiband[Tight low end]/thd_50hz_12db_over	-58.4684
+multiband/multiband[Vocal smooth]/lu_pink_auto	-0.1619
+multiband/multiband[Vocal smooth]/thd_50hz_12db_over	-52.3859
 pitch/harmonizer/click_db_dry	-65.4819
 pitch/harmonizer/click_db_glide	-64.9319
 pitch/harmonizer/click_db_key	-63.8981
