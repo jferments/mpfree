@@ -723,6 +723,119 @@ lofi/lofi[Vinyl bed]/zipper_db	0
 lofi/lofi[Worn tape]/lu_pink18	0.0677
 lofi/lofi[Worn tape]/mean_pitch_error_pct	0.0006
 lofi/lofi[Worn tape]/zipper_db	0.2229
+modulation/chorus/bend_cents_depth100_r10_d2	95.7365
+modulation/chorus/bend_cents_depth100_r10_d40	95.6743
+modulation/chorus/bend_cents_depth100_r1_d40	57.4683
+modulation/chorus/bend_ratio_delay5_to_40	1.0012
+modulation/chorus/click_db_over_6k	-84.5306
+modulation/chorus/half_frame_db_to_16k	0.1609
+modulation/chorus/insert_lu_hits	-0.4566
+modulation/chorus/insert_lu_pink	-0.5431
+modulation/chorus/mono_fold_lu	-0.982
+modulation/chorus/read_sidebands_db_12k	-87.3233
+modulation/chorus/sync_error_cycles_after_wrap	0
+modulation/chorus/wet_corr_300hz_1v	0.0176
+modulation/chorus/wet_corr_300hz_2v	0.0335
+modulation/chorus/wet_corr_300hz_3v	-0.0681
+modulation/chorus/wet_corr_300hz_4v	-0.0781
+modulation/chorus[Bar swirl]/click_db_over_6k	-85.9378
+modulation/chorus[Bar swirl]/insert_lu_hits	-0.4489
+modulation/chorus[Bar swirl]/insert_lu_pink	-0.556
+modulation/chorus[Bar swirl]/mono_fold_lu	-1.0111
+modulation/chorus[Dimension]/click_db_over_6k	-85.8173
+modulation/chorus[Dimension]/insert_lu_hits	-0.4965
+modulation/chorus[Dimension]/insert_lu_pink	-0.4978
+modulation/chorus[Dimension]/mono_fold_lu	-0.8617
+modulation/chorus[Fast wobble]/click_db_over_6k	-87.1575
+modulation/chorus[Fast wobble]/insert_lu_hits	-0.4484
+modulation/chorus[Fast wobble]/insert_lu_pink	-0.4815
+modulation/chorus[Fast wobble]/mono_fold_lu	0
+modulation/chorus[Lush ensemble]/click_db_over_6k	-66.4196
+modulation/chorus[Lush ensemble]/insert_lu_hits	-0.6611
+modulation/chorus[Lush ensemble]/insert_lu_pink	-0.6276
+modulation/chorus[Lush ensemble]/mono_fold_lu	-0.9926
+modulation/chorus[Subtle widen]/click_db_over_6k	-84.3067
+modulation/chorus[Subtle widen]/insert_lu_hits	0.0599
+modulation/chorus[Subtle widen]/insert_lu_pink	-0.2473
+modulation/chorus[Subtle widen]/mono_fold_lu	-0.8499
+modulation/flanger/click_db_over_6k	-77.9885
+modulation/flanger/drawn_err_db_half_fbm90	46.3333
+modulation/flanger/drawn_err_db_half_fbp0	8.9369
+modulation/flanger/drawn_err_db_half_fbp90	16.2841
+modulation/flanger/drawn_err_db_whole_fbp0	0.0005
+modulation/flanger/drawn_err_db_whole_fbp90	0.0005
+modulation/flanger/feedback_lu_m70	1.4125
+modulation/flanger/feedback_lu_m95	6.4533
+modulation/flanger/feedback_lu_p70	1.5191
+modulation/flanger/feedback_lu_p95	6.0206
+modulation/flanger/half_frame_notch_db_12k_16k	-21.4374
+modulation/flanger/insert_lu_hits	-2.3342
+modulation/flanger/insert_lu_pink	-2.368
+modulation/flanger/longest_delay_ms	40
+modulation/flanger/mono_fold_lu	-1.177
+modulation/flanger/rest_dbfs_fast_short_fbm95	-140
+modulation/flanger/rest_dbfs_fast_short_fbp95	-140
+modulation/flanger/rest_dbfs_slow_long_fbm95	-89.358
+modulation/flanger/rest_dbfs_slow_long_fbp95	-89.1098
+modulation/flanger/wet_corr_300hz	0.0043
+modulation/flanger[Gentle flange]/click_db_over_6k	-83.7706
+modulation/flanger[Gentle flange]/insert_lu_hits	-2.9411
+modulation/flanger[Gentle flange]/insert_lu_pink	-2.9182
+modulation/flanger[Gentle flange]/mono_fold_lu	-1.0497
+modulation/flanger[Hollow flange]/click_db_over_6k	-77.9355
+modulation/flanger[Hollow flange]/insert_lu_hits	-1.651
+modulation/flanger[Hollow flange]/insert_lu_pink	-1.63
+modulation/flanger[Hollow flange]/mono_fold_lu	-1.5396
+modulation/flanger[Jet sweep]/click_db_over_6k	-54.4268
+modulation/flanger[Jet sweep]/insert_lu_hits	-1.4089
+modulation/flanger[Jet sweep]/insert_lu_pink	-1.3564
+modulation/flanger[Jet sweep]/mono_fold_lu	-1.745
+modulation/flanger[Metallic]/click_db_over_6k	-82.471
+modulation/flanger[Metallic]/insert_lu_hits	-0.4861
+modulation/flanger[Metallic]/insert_lu_pink	-0.2646
+modulation/flanger[Metallic]/mono_fold_lu	-1.2521
+modulation/flanger[Two-bar sweep]/click_db_over_6k	-83.328
+modulation/flanger[Two-bar sweep]/insert_lu_hits	-2.419
+modulation/flanger[Two-bar sweep]/insert_lu_pink	-2.1118
+modulation/flanger[Two-bar sweep]/mono_fold_lu	-1.359
+modulation/phaser/click_db_over_6k	-85.2938
+modulation/phaser/drawn_err_db_st1_c4000_fbp90	0
+modulation/phaser/drawn_err_db_st1_c700_fbm70	0
+modulation/phaser/drawn_err_db_st1_c700_fbp0	0
+modulation/phaser/drawn_err_db_st1_c700_fbp30	0
+modulation/phaser/drawn_err_db_st4_c300_fbp0	0.0001
+modulation/phaser/feedback_lu_m70	0.7972
+modulation/phaser/feedback_lu_m95	5.6618
+modulation/phaser/feedback_lu_p70	1.9562
+modulation/phaser/feedback_lu_p95	7.354
+modulation/phaser/insert_lu_hits	-1.4513
+modulation/phaser/insert_lu_pink	-1.4942
+modulation/phaser/mono_fold_lu	-0.8095
+modulation/phaser/rest_dbfs_fast_high_fbm95	-140
+modulation/phaser/rest_dbfs_fast_high_fbp95	-140
+modulation/phaser/rest_dbfs_slow_low_fbm95	-140
+modulation/phaser/rest_dbfs_slow_low_fbp95	-140
+modulation/phaser/wet_corr_300hz	0.2318
+modulation/phaser[Deep phase]/click_db_over_6k	-81.0185
+modulation/phaser[Deep phase]/insert_lu_hits	-0.9636
+modulation/phaser[Deep phase]/insert_lu_pink	-0.9229
+modulation/phaser[Deep phase]/mono_fold_lu	-1.2421
+modulation/phaser[Funk wobble]/click_db_over_6k	-90.88
+modulation/phaser[Funk wobble]/insert_lu_hits	-1.7599
+modulation/phaser[Funk wobble]/insert_lu_pink	-1.5995
+modulation/phaser[Funk wobble]/mono_fold_lu	-0.9187
+modulation/phaser[Liquid]/click_db_over_6k	-89.794
+modulation/phaser[Liquid]/insert_lu_hits	-0.9614
+modulation/phaser[Liquid]/insert_lu_pink	-0.923
+modulation/phaser[Liquid]/mono_fold_lu	-1.6716
+modulation/phaser[Quarter pulse]/click_db_over_6k	-84.8089
+modulation/phaser[Quarter pulse]/insert_lu_hits	-1.9339
+modulation/phaser[Quarter pulse]/insert_lu_pink	-1.5608
+modulation/phaser[Quarter pulse]/mono_fold_lu	-1.1628
+modulation/phaser[Slow swirl]/click_db_over_6k	-76.0671
+modulation/phaser[Slow swirl]/insert_lu_hits	-1.6276
+modulation/phaser[Slow swirl]/insert_lu_pink	-1.5391
+modulation/phaser[Slow swirl]/mono_fold_lu	-0.6947
 reverb/cloud/decay_error_pct@1s	19.4439
 reverb/cloud/decay_error_pct@2.5s	21.7053
 reverb/cloud/decay_error_pct@6s	8.2076

@@ -82,7 +82,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Exciter** | Adds sparkle and air to the top end. |
 | **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
 | **Lo-fi** | Worn tape and dusty vinyl under one **Amount** knob, from a hint of age to a broken machine. **Wow** is slow pitch drift that wanders like a worn tape, not a steady wobble, at about **Rate**; **Stereo** lets the two sides drift apart; **Flutter** is a fast waver; **Saturation** is the tape's soft grit; **Dropouts** are short dips in level where the tape is worn. **Crackle**, **Noise** (hiss) and **Hum** (at your country's **Mains**, 50 or 60 Hz) follow the music while **Follow** is at 100 %: they come in with the sound and fade about a second after it stops, so a stopped track is silent. Turn Follow down for a bed of noise that keeps going. **Low cut**, **High cut** and **Width** set the tone. At Amount 0 it is exactly the sound going in (see [Lo-fi](#lo-fi)). |
-| **Chorus**, **Flanger**, **Phaser** | Movement and width. |
+| **Chorus**, **Flanger**, **Phaser** | Movement and width. The Chorus is below. |
 | **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. |
 | **Ring mod** | Bells, clangs and robot voices. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one. |
@@ -100,9 +100,9 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Stereo width** | Makes the sound narrower or wider, with the lows, mids and highs set apart: put the bass in the middle and open up the top. **Delay** widens a mono sound and still sounds right when the mix is played in mono. |
 | **Sample delay** | Delays the left or the right side by a few samples, and flips either side's polarity: for lining up two microphones, or a quick stereo spread. |
 
-### A delay's or reverb's Mix
+### A delay's, reverb's or chorus's Mix
 
-**Mix** sets how much of the echoes or the room you hear against the sound going in: 0 is the sound alone and 100 % the effect alone. Every delay and reverb mode also has a **Mix curve** in its Output section, a small choice you step with its arrows, for how the two blend in between. Touch it and the hint line at the bottom of the screen says what the choice does.
+**Mix** sets how much of the echoes, the room or the chorus you hear against the sound going in: 0 is the sound alone and 100 % the effect alone. Every delay and reverb mode, and the Chorus, also has a **Mix curve** in its Output section, a small choice you step with its arrows, for how the two blend in between. Touch it and the hint line at the bottom of the screen says what the choice does.
 
 - **Equal** (equal power, the default): the level stays the same as you turn Mix, so the effect comes in without the sound dipping half way.
 - **Dry first**: up to half way, Mix only adds the effect, with the sound going in at full level; from half way the dry sound fades out.
@@ -112,6 +112,17 @@ Changing the curve glides from one blend to the other, so it doesn't click. A pr
 
 > [!NOTE]
 > Projects saved before the Mix curve open at **Equal**, so a delay or reverb set between 0 and 100 % sounds a little louder and wetter than it did (at Mix 35 %, about 3 dB). Pick **Linear** for the blend it had before. The Room reverb is also about 4 dB louder than before, as loud as the other reverbs.
+
+### The Chorus
+
+- **Delay** sets where the copies sit, from 2 to 40 ms; **Depth** sets how far they swing either way, up to 5 ms at 100 %. The two are separate: a longer Delay doesn't make the chorus wobble more.
+- However fast you set **Rate**, the pitch never bends by more than about a semitone: at high rates Depth stops short of its full swing. Below that, deeper and faster wobble more, as on any chorus.
+- **Voices** stacks up to four copies at different points of the sweep, and at full **Width** the two sides always differ, at every number of voices, so the sound spreads wide. **Width** 0 moves both sides together.
+- The copies stay as bright as the sound going in, however they sweep; **Tone** takes the top off them when you want it warmer.
+- Synced to the tempo, the sweep stays on the bar: when a loop jumps back, it glides back into place within a beat instead of drifting.
+
+> [!NOTE]
+> Choruses saved before this change sound a little different: at the same Mix they are about 3 dB louder (pick **Linear** for the old blend), with three or four voices they are wide, and Depth now means the same swing at every Delay, so a chorus with a long Delay wobbles less than it did and one with a short Delay a little more. The presets keep the swing they had.
 
 ### A delay's repeats
 

@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-fx/src/modfx.rs
-checked: 2026-11-17 68709b4
+checked: 2026-11-17 ae27d20
 -->
 # Modulation: Chorus, Flanger and Phaser
 
-**Status:** built (F2); FX quality round 3 is under way. The research, targets and baseline are done (61 of 113 measured targets met on `main`). The chorus's rebuild, PR M1 (with the fxlab `modulation` class, the synced LFO's fix and a flat read), is written and measured but not yet open; its design is described below as "M1" and is not on `main` until that PR merges. The flanger (M2) and phaser (M3) follow, each its own pull request on Jay's go.
+**Status:** built (F2); FX quality round 3 is under way. The research, targets and baseline are done (61 of 113 measured targets met before round 3). The chorus's rebuild, PR M1 (17 Nov, with the fxlab `modulation` class, the synced LFO's fix and a flat read), is in: 82 of 113 met, every chorus row among them. Below, "before M1" and "on `main`" before a flanger or phaser paragraph describe what was there before. The flanger (M2) and phaser (M3) follow, each its own pull request on Jay's go.
 
 This page is the design of MPFree's three modulation effects as one effect type: what they are for, the ideas underneath them, the research behind ours, which algorithms each uses and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter-by-parameter summary lives in [fx.md](fx.md); the measured targets and their history in [fx-quality.md](fx-quality.md). The research notes, plan and baseline probe are in jferments/mpfree-claude `fx/quality/` (research-modulation.md, plan-3.md, tools/mod_baseline.rs, tools/mod_stereo_proto.py).
 
@@ -63,7 +63,7 @@ From M1: while the transport plays, a synced LFO compares itself with the song p
 
 ### Chorus
 
-**On `main`:** two lines (one a side) read with a 4-point cubic (Catmull-Rom). Up to four voices read each line at LFO phases 0, ½, ¼ and ¾ (any count starts from the same phases, so adding a voice never moves the others), with gains of 1/√n so the wet level holds as voices are added; the right side's voices are a quarter cycle on at full Width. The sweep is ±(Depth/2) of the Delay. **Tone** is a one-pole low-pass on the wet signal, keeping it warm as a BBD's was. Mix is linear; every knob glides over 30 ms and a voice-count change crossfades over 20 ms.
+**Before M1:** two lines (one a side) read with a 4-point cubic (Catmull-Rom). Up to four voices read each line at LFO phases 0, ½, ¼ and ¾ (any count starts from the same phases, so adding a voice never moves the others), with gains of 1/√n so the wet level holds as voices are added; the right side's voices are a quarter cycle on at full Width. The sweep is ±(Depth/2) of the Delay. **Tone** is a one-pole low-pass on the wet signal, keeping it warm as a BBD's was. Mix is linear; every knob glides over 30 ms and a voice-count change crossfades over 20 ms.
 
 **From M1**, the chorus changes in four ways:
 
@@ -141,7 +141,7 @@ The chorus presets' M1 Depth values keep each preset's sweep in milliseconds as 
 
 `fxlab quality --class modulation` (from M1; `rust/mpfree-fxlab/src/quality/modulation.rs`) measures each effect at its defaults and every preset, at 44.1 kHz, 113 numbers in all, with the ratchet (`rust/mpfree-fxlab/quality/ratchet.tsv`) failing a pull request that makes any of them worse. Its first commit records `main`'s numbers, so each later change shows as a diff. The targets (plan-3 section 3):
 
-| Id | What | Target | `main` (fxlab) | With M1 |
+| Id | What | Target | Before M1 (fxlab) | With M1 |
 |---|---|---|---|---|
 | M1 | Insert level, pink and hits | Within ±1 LU | Chorus -3.0 to -3.7; flanger -0.3 to -2.9; phaser -0.9 to -1.9 | Chorus -0.66 to +0.06 |
 | M2 | Level across Feedback (flanger, phaser) | Within ±3 LU of Feedback 0 | Flanger +6.5 at -95 %; phaser +7.4 at +95 % | M2, M3 |
@@ -158,7 +158,7 @@ The chorus presets' M1 Depth values keep each preset's sweep in milliseconds as 
 | M13 | Clicks while a control sweeps | ≤ -60 dB | Flanger "Jet sweep" -54 dB | Chorus ≤ -66.4 dB |
 | M14 | Cost | The instruction gate | Section 8 | Section 8 |
 
-With M1 as it stands: 82 of 113 met (61 on `main`); every chorus row met; what is left is the flanger's and phaser's (M2 and M3). The numbers may still move a little before the PR opens.
+With M1: 82 of 113 met (61 before); every chorus row met; what is left is the flanger's and phaser's (M2 and M3).
 
 How the less obvious measures work:
 
@@ -168,7 +168,7 @@ How the less obvious measures work:
 - **Clicks (M13)**: each control is swept from end to end and back, 50 ms each way, under a 997 Hz tone at -12 dBFS, and the loudest millisecond above 6 kHz while it moves is reported against the tone. A swept delay bends the tone and a resonance raises it, but neither puts energy two octaves up; a stepped control or a click does. (fxlab's usual zipper measure read a resonant comb passing the tone as a zip, 6 to 21 dB on the flanger's Delay, which is why this one replaced it.) A fast Delay sweep through a feedback loop bends the pitch on every trip, so the Delay's row is reported, not held to the target.
 - **Sync (M11)**: a synced chorus is played through a 3.5-bar loop (not a whole number of cycles) and the LFO's phase just after the wrap is compared with the song's.
 
-**Unit tests** (`tests/modfx.rs`): on `main`, Mix 0 is the input bit for bit; the chorus delays by its Delay and Width 0 is mono; the flanger's feedback makes the comb it should; the phaser notches where the stages turn half a cycle; voice and stage changes don't click; the tail estimate covers the ring-out; and the registry-wide gates (block size, extremes, NaN, allocation). M1 adds, being written now: width at every voice count; Depth in milliseconds and the semitone ceiling; a synced LFO back on the bar after a loop wrap, matching a chorus started fresh at that point; a catch-up held to the rate it is given; and the flat read flat, continuous across frames and exact at DC.
+**Unit tests** (`tests/modfx.rs`): on `main`, Mix 0 is the input bit for bit; the chorus delays by its Delay and Width 0 is mono; the flanger's feedback makes the comb it should; the phaser notches where the stages turn half a cycle; voice and stage changes don't click; the tail estimate covers the ring-out; and the registry-wide gates (block size, extremes, NaN, allocation). M1 added: width at every voice count; Depth in milliseconds and the semitone ceiling; a synced LFO back on the bar after a loop wrap, matching a chorus started fresh at that point; a catch-up held to the rate it is given; and the flat read flat, continuous across frames and exact at DC.
 
 **Listening**: each PR has a blind, loudness-matched A/B page (before against after) for Jay.
 
@@ -176,7 +176,7 @@ How the less obvious measures work:
 
 The instruction gate (`mpfree-bench`, a 128-frame stereo block at 44.1 kHz, `python3 tools/ci/instr_gate.py`, on CI):
 
-| Case | `main` | With M1 |
+| Case | Before M1 | With M1 |
 |---|---|---|
 | Chorus, 2 voices | 95.0k | 103.8k (+9.2 %) |
 | Chorus, 4 voices | 154.9k | 173.9k (+12.3 %) |
@@ -207,7 +207,7 @@ The rise is the read: 8 taps a voice a side where the cubic took 4. A first sinc
 
 - **Built** (F2): the chorus, flanger and phaser with the shared LFO, tempo sync, gliding controls and their pages' drawings; factory presets for each (the FX skill tree's last nodes, 11 Nov).
 - **17 Nov:** research, the targets M1 to M14 and the baseline (plan-3.md; 61 of 113 met when measured by fxlab). Jay's decision on the chorus's Mix law: Equal power by default; the flanger and phaser stay linear with a trim.
-- **M1** (chorus, built, not yet open): the fxlab `modulation` class, the LFO's sync fix for all three, the flat read, Depth in milliseconds with the semitone ceiling, width at every voice count, the Mix curve, a Main page, and the chorus presets retuned to keep their sweeps. It needs Jay's go after its last code change.
+- **M1** (chorus, 17 Nov): the fxlab `modulation` class, the LFO's sync fix for all three, the flat read, Depth in milliseconds with the semitone ceiling, width at every voice count, the Mix curve, a Main page, and the chorus presets retuned to keep their sweeps.
 - **Next:** M2, the flanger (the flat read in its loop, its range, level and feedback gain, its drawn comb; through-zero if Jay wants it); M3, the phaser (level, feedback gain, a stereo choice). Then the familiar extras (plan-3 P2): an LFO shape (sine or triangle, with a rounded corner), dotted and triplet syncs, a Vintage colour for the chorus (a BBD's band limit, emphasis, soft clip and hiss), and the phaser's stereo modes. The MPC's own chorus, flanger and phaser are not yet captured as references (FXProbe).
 
 ## 11. Sources
