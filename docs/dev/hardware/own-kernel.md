@@ -119,6 +119,8 @@ CI lists every setting of the built kernel in its job log ([`config-digest.py`](
 - **What a musician plugs in**, as modules: HFS and HFS+, ISO 9660 and UDF, NTFS's compressed files, more FAT code pages; keyboards, mice, game and touch controllers that need their own HID driver; USB serial and ACM devices. Also dynamic debug and usbmon, for bringing up steps 3 and 4.
 - **Off, as on Akai's:** the SoC's crypto engine. Akai's kernel never binds it, and `multi_v7_defconfig` would have udev load its driver.
 
+CI built those (run 44061371825, every line took), and the same comparison on its settings list gives 1207 the same, 97 missing and 78 different, each of them one of the cases below.
+
 Left different on purpose:
 
 - kexec and crash dumps off (ours is the chain's last kernel); the eMMC and SD card drivers and exFAT as modules; I2S built in; `-mpfree`; the two command-line words above.
@@ -127,6 +129,7 @@ Left different on purpose:
 - No netfilter: Akai's has the iptables core but no table, so iptables can do nothing there either. No USB network adapters, modems, Bluetooth HID or the old wireless API: the MPC One has Ethernet, and its board file leaves the SDIO Wi-Fi switched off.
 - Optimised for speed (Akai's for size), with Spectre hardening on (Akai's has it off); step 5 measures both.
 - Modules where Akai builds in (Bluetooth, some crypto, I2C over GPIO, SPI, the PWM fan, simple sound cards, another board's touch chip): none of these devices is on the MPC One, and the crypto API loads its modules when asked.
+- Small things nothing here uses: ext2 (ext4 mounts it), device-tree overlays, polled GPIO keys (the power key has an interrupt), the key-agreement crypto that Wi-Fi tools use, RAID offload, dynamic USB minor numbers.
 - Numbers that change nothing here: `NR_CPUS`, the largest allocation order, the 8250 port count, the mmap floor (4096 against 65536), the SysRq mask, and the panic timeout (the stick's command line says `panic=10`).
 
 ## Risks
