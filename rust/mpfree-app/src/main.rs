@@ -102,6 +102,7 @@ mod imagecopy;
 mod instruments;
 mod kit;
 mod locks;
+mod looper_deck;
 mod looper_page;
 mod looper_tab;
 mod looping;
@@ -4100,10 +4101,6 @@ fn looper_action(
             out.note(&looper.command(c));
             Vec::new()
         }
-        looping::LoopAction::Resample(n) => {
-            out.note(&looper.resample_into(n));
-            Vec::new()
-        }
         looping::LoopAction::Steps(n) => {
             out.note(&looper.steps(n));
             Vec::new()
@@ -4149,6 +4146,22 @@ fn looper_action(
         }
         looping::LoopAction::ToggleMute(n) => {
             out.note(&looper.toggle_mute(n));
+            Vec::new()
+        }
+        looping::LoopAction::Level(n, level) => {
+            out.note(&looper.set_level(n, level));
+            Vec::new()
+        }
+        looping::LoopAction::RecordLoops(on) => {
+            looper.resample = on;
+            out.note(&format!(
+                "looper: records from {}",
+                if on {
+                    "the loops: a new loop resamples them"
+                } else {
+                    "the input"
+                }
+            ));
             Vec::new()
         }
         looping::LoopAction::StopWaiting => {
