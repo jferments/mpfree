@@ -4462,8 +4462,8 @@ impl Player {
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
                 }
                 View::Sample if self.sample.page() == sample_page::GRAIN_PAGE => {
-                    format!("Hit the pad to see its grains   ·   Q-Links 1-4: position, size, density, pitch (SHIFT: sprays, \
-                     finer)   ·   {ROWS_HINT}")
+                    format!("Tap a section for its controls   ·   Q-Links 1-4: position, size, density, pitch \
+                     (SHIFT: sprays, finer)   ·   {ROWS_HINT}")
                 }
                 View::Sample if self.sample.page() == sample_page::FX_PAGE => {
                     format!("Touch an effect: its knobs on the Q-Links   ·   + Add effect: pick one   ·   \
@@ -13194,36 +13194,57 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         out.push(("sample-play-scenes", scenes));
     }
     // The Grain tab on the same pad, set to play grains: the engine's own
-    // cloud 1.5 s after a hit, as the audio thread sends it.
-    let mut grain = sample_sampler(fonts());
-    let (project, _) = mpfree_sampler_ui::sample::grain_project();
-    let (grains, head, live) = mpfree_sampler_ui::sample::grains_after(&project, 1.5);
-    let region = project
-        .pad(mpfree_sampler_ui::sample::PAD)
-        .and_then(|pd| pd.layers.first())
-        .map(|l| l.region.clone());
-    grain.apply(ToUi::SampleKits {
-        projects: vec![project],
-        rate: mpfree_sampler_ui::sample::RATE,
-    });
-    grain.on_event(UiEvent {
-        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-        kind: EventKind::Tab(mpfree_sampler_ui::grain_tab::TAB),
-    });
-    if let Some(FromUi::SampleGrains(mut c)) = grain
-        .take_actions()
-        .into_iter()
-        .find(|a| matches!(a, FromUi::SampleGrains(_)))
+    // cloud 1.5 s after a hit, as the audio thread sends it. Then its
+    // other sections, a section chip tapped: Movement, with an LFO and the
+    // envelope moving the cloud; Filter and keys, a sprayed band pass with
+    // glide; and Presets, with one put on the pad.
     {
-        c.len = grains.len().min(crate::sampler::CLOUD_GRAINS);
-        c.grains[..c.len].copy_from_slice(&grains[..c.len]);
-        c.head = head
-            .zip(region)
-            .map(|(h, r)| r.start + (f64::from(h) * r.frames() as f64) as u64);
-        c.live = live;
-        grain.apply(ToUi::SampleGrains(c));
+        use mpfree_sampler_ui::grain_tab::{View as GrainView, SECTIONS};
+        for (name, section) in [
+            ("sample-grain", GrainView::Grains),
+            ("sample-grain-movement", GrainView::Movement),
+            ("sample-grain-filter", GrainView::FilterKeys),
+            ("sample-grain-presets", GrainView::Presets),
+        ] {
+            let mut grain = sample_sampler(fonts());
+            let Ok((project, _)) = mpfree_sampler_ui::sample::grain_section_project(section) else {
+                continue;
+            };
+            let (grains, head, live) = mpfree_sampler_ui::sample::grains_after(&project, 1.5);
+            let region = project
+                .pad(mpfree_sampler_ui::sample::PAD)
+                .and_then(|pd| pd.layers.first())
+                .map(|l| l.region.clone());
+            grain.apply(ToUi::SampleKits {
+                projects: vec![project],
+                rate: mpfree_sampler_ui::sample::RATE,
+            });
+            grain.on_event(UiEvent {
+                widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+                kind: EventKind::Tab(mpfree_sampler_ui::grain_tab::TAB),
+            });
+            if let Some(i) = GrainView::ALL.iter().position(|v| *v == section) {
+                grain.on_event(UiEvent {
+                    widget: SECTIONS.into(),
+                    kind: EventKind::Tab(i),
+                });
+            }
+            if let Some(FromUi::SampleGrains(mut c)) = grain
+                .take_actions()
+                .into_iter()
+                .find(|a| matches!(a, FromUi::SampleGrains(_)))
+            {
+                c.len = grains.len().min(crate::sampler::CLOUD_GRAINS);
+                c.grains[..c.len].copy_from_slice(&grains[..c.len]);
+                c.head = head
+                    .zip(region)
+                    .map(|(h, r)| r.start + (f64::from(h) * r.frames() as f64) as u64);
+                c.live = live;
+                grain.apply(ToUi::SampleGrains(c));
+            }
+            out.push((name, grain));
+        }
     }
-    out.push(("sample-grain", grain));
     // The Rec tab with the line input on: 40 s of drums came in with the
     // transport playing, and a take on the next bar is two bars in.
     let mut rec = sample_sampler(fonts());
@@ -22099,7 +22120,7 @@ mod tests {
             p.ui.get::<PadBar>(grain_tab::BAR).unwrap().title,
             "Pad A5 · Break 92 · layer 2"
         );
-        let row = |r: grain_tab::Row| grain_tab::Row::ALL.iter().position(|x| *x == r).unwrap();
+        let row = |r: grain_tab::Row| grain_tab::Row::GRAINS.iter().position(|x| *x == r).unwrap();
         for r in [grain_tab::Row::Mode, grain_tab::Row::Sync] {
             ev(
                 &mut p,
@@ -22829,7 +22850,7 @@ mod tests {
             "Pad A5 · Break 92"
         );
         // Mode, stepped from the list, makes the loop play grains: one log line.
-        let mode = Row::ALL.iter().position(|r| *r == Row::Mode).unwrap();
+        let mode = Row::GRAINS.iter().position(|r| *r == Row::Mode).unwrap();
         ev(
             &mut p,
             grain_tab::LIST,

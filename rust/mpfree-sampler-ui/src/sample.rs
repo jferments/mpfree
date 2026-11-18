@@ -1170,6 +1170,61 @@ pub fn grain_project() -> (Project, Arc<SourceView>) {
     (p, view)
 }
 
+/// The grain pad set up to show off one section of the Grain tab:
+/// Movement, a triangle LFO drifting the position and the envelope opening
+/// the size out after each hit; Filter and keys, a resonant band pass on
+/// each grain, its cutoff sprayed, with glide and the size following the
+/// keys; Presets, Shimmer fifths put on the pad. Grains is
+/// [`grain_project`] as it is.
+pub fn grain_section_project(
+    section: grain_tab::View,
+) -> Result<(Project, Arc<SourceView>), String> {
+    use mpfree_sampler::model::{
+        GrainEnv, GrainFilter, GrainFilterKind, GrainKeys, GrainLfo, LfoShape, MotionTarget,
+    };
+    let (mut p, view) = grain_project();
+    let Some(mut pad) = p.pad(PAD).cloned() else {
+        return Err("no pad".into());
+    };
+    let r = &mut pad.layers[0].region;
+    match section {
+        grain_tab::View::Grains => {}
+        grain_tab::View::Movement => {
+            r.grain.lfo = GrainLfo {
+                shape: LfoShape::Triangle,
+                rate_hz: 0.5,
+                beats: None,
+                target: MotionTarget::Position,
+                depth: 0.4,
+            };
+            r.grain.env = GrainEnv {
+                attack_ms: 500.0,
+                decay_ms: 1500.0,
+                sustain: 0.4,
+                target: MotionTarget::Size,
+                depth: 0.6,
+            };
+        }
+        grain_tab::View::FilterKeys => {
+            r.grain.filter = GrainFilter {
+                kind: GrainFilterKind::Band,
+                cutoff_hz: 1_200.0,
+                resonance: 0.6,
+                spray: 1.0,
+            };
+            r.grain_keys = GrainKeys {
+                size: true,
+                scan: false,
+            };
+            r.grain_glide_ms = 300.0;
+        }
+        grain_tab::View::Presets => *r = mpfree_sampler::grain_presets::apply(r, 4),
+    }
+    p.set_pad(PAD, Some(pad), None)
+        .map_err(|e| format!("{e:?}"))?;
+    Ok((p, view))
+}
+
 /// The Grain tab on `project`'s pad A5, shown.
 pub fn grain_on(
     fonts: Fonts,
@@ -1304,5 +1359,31 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, Stri
     );
     show_played(&mut s, 1.5);
     out.push(s);
+
+    for (view, name, about) in [
+        (
+            grain_tab::View::Movement,
+            "grain-movement",
+            "Movement: a triangle LFO drifts the position, the envelope opens the size after each hit",
+        ),
+        (
+            grain_tab::View::FilterKeys,
+            "grain-filter",
+            "Filter and keys: a resonant band pass on each grain, its cutoff sprayed; glide and size follow key",
+        ),
+        (
+            grain_tab::View::Presets,
+            "grain-presets",
+            "Presets: the eight starting points as buttons, Shimmer fifths on the pad and lit",
+        ),
+    ] {
+        let (p, source) = grain_section_project(view)?;
+        let mut s = grain_on(fonts(), p, source)?;
+        (s.name, s.about) = (name, about);
+        let st = s.state.clone();
+        s.tab.open(&mut s.ui, &st, view);
+        show_played(&mut s, 1.5);
+        out.push(s);
+    }
     Ok(out)
 }
