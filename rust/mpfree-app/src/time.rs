@@ -775,21 +775,21 @@ impl TimeHost {
         bpm: Option<f64>,
         take: Option<bool>,
     ) -> Result<Option<String>, String> {
+        // The clip REC readies comes first, so with none to record into
+        // the song starts without the take, and no punch-in needs taking
+        // back. Only when the start will go in.
+        let ready = match take {
+            Some(_) if self.audio.start_refusal(bpm, take).is_none() => {
+                Some(self.control.take_started_on_note())
+            }
+            _ => None,
+        };
+        let take = take.filter(|_| ready.as_ref().is_some_and(Result::is_ok));
         self.audio.start_at(at, bpm, take)?;
-        if take.is_none() {
-            return Ok(None);
-        }
-        let r = self.control.take_started_on_note();
-        // No clip to record into (no empty slot): it plays without
-        // recording, the punch-in taken back on its frame.
-        if r.is_err() {
-            self.control.command(Command::Record);
-            self.audio.receive();
-        }
-        Ok(Some(
+        Ok(ready.map(|r| {
             self.sent(r)
-                .unwrap_or_else(|e| format!("rec: {e}, so it only plays")),
-        ))
+                .unwrap_or_else(|e| format!("rec: {e}, so it only plays"))
+        }))
     }
 
     /// Starts on a note refused so far ([`TimeHost::start_at`]); the
@@ -5026,12 +5026,17 @@ mod tests {
                 "asked again"
             );
         }
-        // A real change still goes in (on the next 1/16 line).
+        // A real change still goes in (on the next 1/16 line), asked for
+        // once: until that line it counts as asked.
+        let mut asked = 0;
         for _ in 0..60 {
+            let room = h.audio.queue_room();
             h.follow_tempo(100.0);
+            asked += room - h.audio.queue_room().min(room);
             h.period(PERIOD, &mut pads);
         }
         assert_eq!(h.info().bpm, 100.0);
+        assert_eq!(asked, 1, "asked again before the line");
         // Refused while it plays, and while it counts in.
         let r = h.start_at(h.next_frame(), None, None);
         assert_eq!(r, Err("the song is playing already".to_string()));
@@ -5058,6 +5063,41 @@ mod tests {
         assert_eq!((span.state, span.frame), (State::Recording, at));
         assert_eq!(span.ticks().start, 0);
         assert!(h.info().overdub, "adding");
+        // No clip to record into (here, an armed track that has gone):
+        // the song starts on the note's frame without the take, with no
+        // punch-in before it to take back.
+        assert!(h.command(Command::StopAndRewind));
+        h.period(PERIOD, &mut pads);
+        h.control.armed = Some(h.control.project.tracks.len());
+        let at = h.next_frame() + 40;
+        let line = h.start_at(at, None, Some(false)).unwrap().unwrap();
+        assert!(line.ends_with("so it only plays"), "{line}");
+        for _ in 0..8 {
+            h.period(PERIOD, &mut pads);
+            assert!(
+                h.block()
+                    .spans()
+                    .iter()
+                    .all(|s| s.state != State::Recording),
+                "recorded"
+            );
+        }
+        assert_eq!(h.info().state, State::Playing);
+        // A queue without room for every command refuses the start and
+        // leaves nothing behind (no Locate, no tempo).
+        assert!(h.command(Command::Stop));
+        h.period(PERIOD, &mut pads);
+        let pos = h.info().position;
+        let bpm = h.info().bpm;
+        let far = h.next_frame() + 1_000_000;
+        while h.audio.queue_room() > 2 {
+            assert!(h.audio.command_at(far, Command::Stop));
+        }
+        let r = h.start_at(h.next_frame(), Some(90.0), None);
+        assert_eq!(r, Err("the transport's queue is full".to_string()));
+        assert_eq!(h.audio.queue_room(), 2, "nothing queued");
+        h.period(PERIOD, &mut pads);
+        assert_eq!((h.info().position, h.info().bpm), (pos, bpm));
     }
 
     fn xorshift(mut x: u64) -> impl FnMut() -> u64 {
