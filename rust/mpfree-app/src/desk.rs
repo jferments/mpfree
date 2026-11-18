@@ -802,7 +802,7 @@ pub fn perform_pad(
 pub fn throw_strips(mix: &mixing::MixHost, time: &time::TimeHost) -> gui::ToUi {
     gui::ToUi::ThrowStrips(mixing::throw_strips(
         &mix.mixer,
-        mix.channels_in_use(),
+        mix.own_channels_in_use(),
         &crate::export::track_names(time),
     ))
 }
