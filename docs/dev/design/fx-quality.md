@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-18 1a0b4bde
+checked: 2026-11-18 dd1645f
 -->
 # FX quality: targets, the report and the ratchet
 
@@ -15,6 +15,8 @@ An effect is good when it meets its measured targets, wins or ties in blind, lev
 **Fifth round** (measuring built 2026-11-17): the movement, pitch and voice effects (the shared LFO, Tremolo, Auto-pan, Rotary, Auto wah, Ring mod, Frequency shifter, Pitch shifter, Pitch correct, Harmonizer, Tuner and Talk box), in [Round 5](#round-5-movement-pitch-and-voice) below; the fixes come one class at a time, and a Vocoder joins with its own. Movement and pitch are done (PRs W and 2 to 6, 18 Nov: every target met); the talk box and the vocoder (PRs 7 and 8, plan-5 sections 10 and 11) are held for a later session. Research and plan: jferments/mpfree-claude `fx/quality/` (research-movement.md, research-pitch.md, research-voice.md, plan-5.md, baseline-r5-2026-11-17.md).
 
 **The sampler** (measuring built 2026-11-17; the sampler review's engine item 7): a pad of `mpfree-sampler` measured by the same kind of numbers, with its own ratchet: [The sampler](#the-sampler) below.
+
+**The synths** (measuring built 2026-11-18; synth library stage 2): every synth engine and factory preset by the same method, with its own ratchet (`tests/synth.rs`, `quality/synth.tsv`): [Synth quality](synth-quality.md).
 
 ## The report
 

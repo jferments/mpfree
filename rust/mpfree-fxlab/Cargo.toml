@@ -10,3 +10,4 @@ mpfree-node = { path = "../mpfree-node" }
 mpfree-fx = { path = "../mpfree-fx" }
 mpfree-grain = { path = "../mpfree-grain" }
 mpfree-sampler = { path = "../mpfree-sampler" }
+mpfree-synth = { path = "../mpfree-synth" }
