@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tool.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
 checked: 2026-11-18 ec8cb82
 -->
 
@@ -11,7 +11,7 @@ checked: 2026-11-18 ec8cb82
 Two tabs share the work:
 
 - The **Pads** tab, next to Play, shows the whole bank of 16 pads beside the settings of the pad picked: which sound is on which pad, and how it plays. **Browse for** at its top right opens the browser to find a sound for that pad, and **Kit** beside it opens the list of kits, to put another kit on the selected track.
-- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave** (with the recorder), **Warp**, **Chop** and **Play**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
+- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave** (with the recorder), **Chop** and **Play**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
 
 ## The Pads tab: sounds onto pads
 
@@ -118,7 +118,7 @@ A take that stays is kept with the kit, on no pad, until you put it somewhere. T
 
 - **Send to pad**, then hit a pad: the take goes on that pad, replacing any sound there, and leaves the page; the page shows the pad. One **UNDO** puts it back on the page.
 - **SHIFT + the wheel** steps through the takes on the page, then the pads with a sound (**SHIFT + –** / **+** still zooms).
-- **Chop to pads**, the other pages and **Process** work on pads, so put the take on a pad first; they say so if you try.
+- **Chop to pads**, the other pages and the Warp tool's **New sound** work on pads, so put the take on a pad first; they say so if you try.
 - A take on the page is part of the kit, so you never lose one without being asked: saving the project keeps it, autosave keeps it too, and opening another project or **New project** asks first, as for any change you haven't saved. The page keeps up to 32 takes.
 
 ### Keep what just came in
@@ -219,9 +219,9 @@ The pad's name at the top left of every Sample page has a dotted line under it: 
 
 {{shot: sample | The Wave page: the recorder row at the top (REC, Source, Starts and Ends), the tools (Trim, Slice, Warp and Grain) beside the whole sample under it, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
 
-The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
+The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Chop page too); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
 
-**The tools.** At the left of the strip over the wave are four tools: **Trim**, **Slice**, **Warp** and **Grain**. The tool you pick decides what a finger on the wave moves, what the section under it holds and what the Q-Links turn. Every tool's marks stay on the wave, but only the tool you pick has tabs along the top: the other tools' marks are grey lines with no tab, and you move them by picking their tool. **Trim** is Start, End, the loop and the fades. **Grain** is the grain window, where the grains start and how long they are, with the Grain section under the wave (see [Grain](shaping-a-pad.md#grain-stretch-and-smear)). The other two are moving onto this page one at a time; until each one has, its button opens its own page (**Slice** opens [Chop](#chop-slice-across-the-pads), **Warp** opens [Warp](#warp-put-the-hits-on-the-beat)), and **Wave** at the top right brings you back. While a take records the tools are grey: they wait for the take.
+**The tools.** At the left of the strip over the wave are four tools: **Trim**, **Slice**, **Warp** and **Grain**. The tool you pick decides what a finger on the wave moves, what the section under it holds and what the Q-Links turn. Every tool's marks stay on the wave, but only the tool you pick has tabs along the top: the other tools' marks are grey lines with no tab, and you move them by picking their tool. **Trim** is Start, End, the loop and the fades. **Warp** is the pins that put the sound's hits on the beat, with the Warp section under the wave (see [Warp](#warp-put-the-hits-on-the-beat)). **Grain** is the grain window, where the grains start and how long they are, with the Grain section under the wave (see [Grain](shaping-a-pad.md#grain-stretch-and-smear)). **Slice** is moving onto this page next; until it has, its button opens the [Chop](#chop-slice-across-the-pads) page, and **Wave** at the top right brings you back. While a take records the tools are grey: they wait for the take.
 
 Under the wave, with Trim picked, the region's settings are laid out like an instrument's panel, in three sections, with the pad's **Sound** beside them:
 
@@ -240,18 +240,18 @@ MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap a
 
 ## Warp: put the hits on the beat
 
-{{shot: sample-warp | The Warp page: a break at 92 BPM with 14 hits pinned to the 1/16 grid, pin 4 picked, and its settings in the panel under it.}}
+{{shot: sample-warp | The Warp tool: a break with its hits pinned to the 1/16 grid, pin 4 picked, and the Warp section under the wave.}}
 
-**Warp** plays the sound in time with the project's tempo: **Stretch** keeps its pitch, **Repitch** speeds it up or slows it down like a record. **Warp tempo** is the tempo it was played at. Both are on the **Warp** page, which is also for a warped sound whose hits don't sit quite on the beat, such as a loop played by hand. It draws the sound against the bars and beats of its warp tempo, with the hits MPFree finds marked along the bottom.
+**Warp** plays the sound in time with the project's tempo: **Stretch** keeps its pitch, **Repitch** speeds it up or slows it down like a record. **Warp tempo** is the tempo it was played at. Pick **Warp** in the tools over the wave to set both, and to fix a warped sound whose hits don't sit quite on the beat, such as a loop played by hand. The wave then shows the bars and beats of its warp tempo, and the hits MPFree finds are small ticks along its bottom.
 
-- **Tap near a hit** to pin it to the nearest grid line. A pin is a numbered flag; the sound between two pins stretches to fit.
-- **Drag a pin's handle** to move it along the grid.
+- **Tap near a hit** to pin it to the nearest grid line, or tap a pinned hit to pick its pin. A pin is a numbered tab over the wave; the sound between two pins stretches to fit.
+- **Drag a pin's tab** along the beats to move it. The wave is drawn as it plays, stretched between the pins, so a pinned hit sits right on its beat line and follows your finger.
 - **Pin hits** pins every hit near a grid line onto it, which tightens a loose loop in one go. **Remove pin** takes the picked pin off, and **Clear pins** all of them.
-- The panel under the sound holds **Warp** (**Off**, **Stretch** or **Repitch**) and **Warp tempo** (tap the number to type one) with the **Grid** (1/4 to 1/32); which **Hits** it finds (**Strongest**, **Most** or **All**) with **Pin hits**; the picked **Pin** and its **Pin beat** with **Remove pin** and **Clear pins**; and **Shift** and **Process**. A grey button says why when you tap it, such as "Tap a pin first".
-- **Process** makes a new sound from the region. With Warp on, the new sound is at the project's tempo, its pinned hits right on their beats, so it plays without stretching. **Shift** first moves it up or down, in semitones (–24 to +24), keeping its length and its hits sharp; with Warp off, Shift alone is what changes. Tap **New sound**: it is made in the background while you work, the button shows how far it has got, and tapping it again stops it. The new sound takes the region's place; **UNDO** brings the old one back.
-- The Q-Links pick a pin, nudge its beat, fine-tune the warp tempo and scroll. Hold **SHIFT** for finer steps.
+- The Warp section under the wave has two parts. **Warp** holds **Warp** (**Off**, **Stretch** or **Repitch**), **Warp tempo** (tap the number to type one), the **Grid** (1/4 to 1/32), and **New sound's pitch** with **New sound**. **Pins** holds which **Hits** it finds (**Strongest**, **Most** or **All**), the picked **Pin** and its **Pin beat**, and **Pin hits**, **Remove pin** and **Clear pins**. A grey button says why when you tap it, such as "Tap a pin first".
+- **New sound** makes a new sound from the region, with the warp built in. With Warp on, the new sound is at the project's tempo, its pinned hits right on their beats, so it plays without stretching. **New sound's pitch** moves it up or down as well, in semitones (–24 to +24), keeping its length and its hits sharp; with Warp off, the pitch alone is what changes. It changes nothing you hear until the new sound is made (the part's note says what a tap will make, such as "new sound: 2 st up"); to tune the pad as it plays, use **Tune** in the Sound section. Tap **Make it**: the new sound is made in the background while you work, the button shows how far it has got, and tapping it again stops it. The new sound takes the region's place; **UNDO** brings the old one back.
+- **Q-Link 1** picks a pin, **2** nudges its beat, **3** fine-tunes the warp tempo and **4** scrolls along the wave. Hold **SHIFT** for finer steps. The data wheel zooms in and out round the pin picked.
 
-Pins only work while the sound is stretched. With Warp on Repitch, the sound plays straight through.
+Pins only work while the sound is stretched. With Warp on Repitch, the sound plays straight through. With another tool picked, the pins stay on the wave as grey lines.
 
 **Typing a number.** A value with a dotted line under it, such as **Warp tempo**, can be typed: tap the value and a number pad opens. Tap the number and **Enter**; the pad shows the range it takes and the value now, and says so if the number is out of range. **Cancel** leaves the value as it was. The data wheel and **–** / **+** step the number too, and pushing the wheel is Enter. **UNDO** takes a typed value back.
 

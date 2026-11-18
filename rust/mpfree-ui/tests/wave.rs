@@ -138,6 +138,7 @@ fn markers_bar_lines_and_fades_are_drawn() {
         first: 0.0,
         frames_per_beat: 5_512.5,
         per_bar: 4,
+        per_beat: 1,
     }));
     let c = paint(&w, R);
     let top = Waveform::wave_rect(R).y + 2; // above the lane, where no wave is drawn

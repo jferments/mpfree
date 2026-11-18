@@ -123,6 +123,7 @@ fn main() -> Result<(), String> {
             first: 0.0,
             frames_per_beat: beat,
             per_bar: 4,
+            per_beat: 1,
         }));
         wave.zoom(1.25, wr.w);
         wave.set_playheads(&[at(3.1)]);
