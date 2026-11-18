@@ -299,11 +299,17 @@ there. Jay (12 Nov): keep one core for interrupts.
   a second track host, so `Cores::start_pads` gives it lanes of its own on
   the same cores ("mpfree-lane-pad" on core 2, "mpfree-lane-pad1" on core 1
   in `three`), placed by cost the same way. They render right after the
-  tracks' instruments, so the two hosts' lanes never run at once. The same
+  tracks' instruments, so the two hosts' lanes don't run at once, unless
+  the tracks' lane was late: it is then still running on core 2 when the
+  pads' lane is posted to the same core at the same priority, and the
+  pads usually go late that period too (counted, so it shows). The same
   deadline, `PadSynths::settle` after the write, and their own Dev rows
   ("Pad synths lane (core N)", and "Pad synths on lanes" with its periods,
-  late, waited and moves); a late lane's pads are left out of that period and counted with
-  the tracks' in the late line ("tracks' or pads' own synths left out").
+  late, waited and moves); a late lane's pads are left out of that period
+  and counted with the tracks' in the late line ("tracks' or pads' own
+  synths left out"). Two fork and joins a period, not one: if device
+  round 2 shows the second wake costs much, the pads could share the
+  tracks' post.
 
 - **When.** The audio thread pins itself and splits the sampler just before
   the sound card opens, and the mixer's lane starts right after the mixer is
