@@ -7,7 +7,9 @@ use std::str::FromStr;
 use mpfree_scale::{Scale, Snap};
 
 use crate::chain::{Slot, MAX_FX};
-use crate::fx::{Chord, Echo, Fx, Shape, Time, Velocity, Voicing};
+use crate::fx::{
+    Chord, Echo, Fx, LatchMode, Randomize, Shape, Strum, StrumOrder, Time, Velocity, Voicing,
+};
 
 /// A track's Notes stage: up to [`MAX_FX`] effects in places, top to
 /// bottom, and where the track's arp sits among them: after the first
@@ -53,10 +55,147 @@ impl TrackFx {
         id
     }
 
+    /// Setting `k` of the effect with id `id`, if it is there.
+    pub fn value(&self, id: u16, k: usize) -> Option<i32> {
+        let p = self.place_of(id)?;
+        let fx = self.slots[p]?.fx;
+        (k < fx.settings().len()).then(|| fx.get(k))
+    }
+
+    /// Sets setting `k` of the effect with id `id` to `v`, kept in its
+    /// range (a macro, an LFO or a lock moving it). False if the track has
+    /// no such effect or setting. Never allocates.
+    pub fn set_value(&mut self, id: u16, k: usize, v: i32) -> bool {
+        let Some(p) = self.place_of(id) else {
+            return false;
+        };
+        match self.slots[p].as_mut() {
+            Some(slot) if k < slot.fx.settings().len() => {
+                slot.fx.set(k, v);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The places before the arp: [`crate::Chain::process_range`] runs
     /// them on the notes going into it, and the rest on what it plays.
     pub fn arp_place(&self) -> usize {
         usize::from(self.arp_at).min(MAX_FX)
+    }
+}
+
+/// One row of a track's Notes list, top to bottom: an effect in its
+/// place, or the track's arp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Item {
+    Fx(usize),
+    Arp,
+}
+
+#[derive(Clone, Copy)]
+enum Row {
+    /// An effect and its id.
+    Fx(Slot, u16),
+    Arp,
+}
+
+impl TrackFx {
+    /// How many effects it has.
+    pub fn count(&self) -> usize {
+        self.slots.iter().flatten().count()
+    }
+
+    /// The Notes list, top to bottom: the effects above the arp, the arp,
+    /// the effects below it.
+    pub fn items(&self) -> Vec<Item> {
+        let at = self.arp_place();
+        let fx = |r: std::ops::Range<usize>| {
+            r.filter(|&i| self.slots[i].is_some())
+                .map(Item::Fx)
+                .collect::<Vec<_>>()
+        };
+        let mut out = fx(0..at);
+        out.push(Item::Arp);
+        out.extend(fx(at..MAX_FX));
+        out
+    }
+
+    fn rows(&self) -> Vec<Row> {
+        self.items()
+            .into_iter()
+            .map(|i| match i {
+                Item::Fx(p) => Row::Fx(
+                    self.slots[p].unwrap_or(Slot {
+                        fx: Fx::Chance { percent: 100 },
+                        on: false,
+                    }),
+                    self.ids[p],
+                ),
+                Item::Arp => Row::Arp,
+            })
+            .collect()
+    }
+
+    fn from_rows(rows: &[Row]) -> TrackFx {
+        let mut t = TrackFx::default();
+        let mut place = 0;
+        for r in rows {
+            match r {
+                Row::Fx(s, id) if place < MAX_FX => {
+                    t.slots[place] = Some(*s);
+                    t.ids[place] = *id;
+                    place += 1;
+                }
+                Row::Fx(..) => {}
+                Row::Arp => t.arp_at = place as u8,
+            }
+        }
+        t
+    }
+
+    /// The row of the list where `item` is.
+    pub fn row_of(&self, item: Item) -> Option<usize> {
+        self.items().iter().position(|i| *i == item)
+    }
+
+    /// Adds `fx` (on, with a new id) as the last effect above the arp, the
+    /// places packed in order. The row it landed in, or None when every
+    /// place is taken.
+    pub fn add(&mut self, fx: Fx) -> Option<usize> {
+        if self.count() >= MAX_FX {
+            return None;
+        }
+        let mut rows = self.rows();
+        let arp = rows.iter().position(|r| matches!(r, Row::Arp)).unwrap_or(0);
+        rows.insert(arp, Row::Fx(Slot { fx, on: true }, self.new_id()));
+        *self = TrackFx::from_rows(&rows);
+        Some(arp)
+    }
+
+    /// Takes out the effect in row `row` (the arp stays), the places
+    /// packed in order. False when the row is the arp or past the end.
+    pub fn remove(&mut self, row: usize) -> bool {
+        let mut rows = self.rows();
+        if !matches!(rows.get(row), Some(Row::Fx(..))) {
+            return false;
+        }
+        rows.remove(row);
+        *self = TrackFx::from_rows(&rows);
+        true
+    }
+
+    /// Moves row `from` to row `to` (the arp too: the effects it passes
+    /// change side), the places packed in order.
+    pub fn move_row(&mut self, from: usize, to: usize) -> bool {
+        let mut rows = self.rows();
+        if from >= rows.len() || to >= rows.len() || from == to {
+            return false;
+        }
+        let r = rows.remove(from);
+        rows.insert(to, r);
+        *self = TrackFx::from_rows(&rows);
+        true
     }
 }
 
@@ -105,6 +244,17 @@ const VOICINGS: [(Voicing, &str); 3] = [
     (Voicing::Close, "close"),
     (Voicing::Spread, "spread"),
     (Voicing::Drop2, "drop2"),
+];
+
+const ORDERS: [(StrumOrder, &str); 3] = [
+    (StrumOrder::Up, "up"),
+    (StrumOrder::Down, "down"),
+    (StrumOrder::Played, "played"),
+];
+
+const LATCHES: [(LatchMode, &str); 2] = [
+    (LatchMode::NextChord, "chord"),
+    (LatchMode::Toggle, "toggle"),
 ];
 
 const SNAPS: [(Snap, &str); 4] = [
@@ -225,6 +375,18 @@ impl Slot {
                 write!(s, "humanize ms={time_ms} vel={velocity}")
             }
             Fx::Chance { percent } => write!(s, "chance pct={percent}"),
+            Fx::Strum(st) => write!(
+                s,
+                "strum ms={} order={}",
+                st.time_ms,
+                word_of(&ORDERS, st.order)
+            ),
+            Fx::Latch { mode } => write!(s, "latch mode={}", word_of(&LATCHES, mode)),
+            Fx::Randomize(r) => write!(
+                s,
+                "random pitch={} often={} vel={} longer={}",
+                r.pitch, r.often, r.velocity, r.longer_ms
+            ),
         };
         s
     }
@@ -249,6 +411,11 @@ impl Slot {
             "echo" => Fx::Echo(Echo::default()),
             "humanize" => Fx::all()[6],
             "chance" => Fx::all()[7],
+            "strum" => Fx::Strum(Strum::default()),
+            "latch" => Fx::Latch {
+                mode: LatchMode::NextChord,
+            },
+            "random" => Fx::Randomize(Randomize::default()),
             k => return Err(format!("no effect {k}")),
         };
         for pair in w {
@@ -305,6 +472,23 @@ impl Slot {
                         *percent = num(v, 0, 100, k)?;
                     }
                 }
+                Fx::Strum(st) => match k {
+                    "ms" => st.time_ms = num(v, 1, 200, k)?,
+                    "order" => st.order = from_word(&ORDERS, v, k)?,
+                    _ => {}
+                },
+                Fx::Latch { mode } => {
+                    if k == "mode" {
+                        *mode = from_word(&LATCHES, v, k)?;
+                    }
+                }
+                Fx::Randomize(r) => match k {
+                    "pitch" => r.pitch = num(v, 0, 24, k)?,
+                    "often" => r.often = num(v, 0, 100, k)?,
+                    "vel" => r.velocity = num(v, 0, 64, k)?,
+                    "longer" => r.longer_ms = num(v, 0, 1000, k)?,
+                    _ => {}
+                },
             }
         }
         Ok(Slot { fx, on })
@@ -347,6 +531,19 @@ mod tests {
             pitch: -12,
         }));
         list.push(Fx::Transpose { semitones: -48 });
+        list.push(Fx::Strum(Strum {
+            time_ms: 200,
+            order: StrumOrder::Played,
+        }));
+        list.push(Fx::Latch {
+            mode: LatchMode::Toggle,
+        });
+        list.push(Fx::Randomize(Randomize {
+            pitch: 24,
+            often: 100,
+            velocity: 64,
+            longer_ms: 1000,
+        }));
         for (i, fx) in list.into_iter().enumerate() {
             let slot = Slot { fx, on: i % 2 == 0 };
             let words = slot.to_words();
@@ -371,6 +568,47 @@ mod tests {
         assert!(Slot::from_words("on flanger").is_err());
         assert!(Slot::from_words("maybe chance pct=5").is_err());
         assert!(Slot::from_words("on scale scale=12:1:1").is_err());
+    }
+
+    #[test]
+    fn the_list_adds_above_the_arp_and_moves_effects_past_it() {
+        let all = Fx::all();
+        let mut t = TrackFx::default();
+        assert_eq!(t.items(), [Item::Arp]);
+        assert_eq!(t.add(all[0]), Some(0)); // Scale
+        assert_eq!(t.add(all[1]), Some(1)); // Chord
+        assert_eq!(t.add(all[6]), Some(2)); // Humanize
+        assert_eq!(
+            t.items(),
+            [Item::Fx(0), Item::Fx(1), Item::Fx(2), Item::Arp]
+        );
+        // Humanize goes below the arp: board 7's list.
+        assert!(t.move_row(2, 3));
+        assert_eq!(
+            t.items(),
+            [Item::Fx(0), Item::Fx(1), Item::Arp, Item::Fx(2)]
+        );
+        assert_eq!(t.arp_at, 2);
+        assert_eq!(t.slots[2].unwrap().fx, all[6]);
+        // Each keeps its id when it moves.
+        assert_eq!(t.ids, [1, 2, 3, 0, 0, 0, 0, 0]);
+        // The arp moves to the top: every effect is below it.
+        assert!(t.move_row(2, 0));
+        assert_eq!(t.arp_at, 0);
+        assert_eq!(t.row_of(Item::Fx(1)), Some(2));
+        // Taking one out packs the places; the arp can't be taken out.
+        assert!(!t.remove(0));
+        assert!(t.remove(1));
+        assert_eq!(t.count(), 2);
+        assert_eq!(t.slots[0].unwrap().fx, all[1]);
+        assert_eq!(t.slots[1].unwrap().fx, all[6]);
+        assert_eq!((t.ids[0], t.ids[1], t.ids[2]), (2, 3, 0));
+        assert_eq!(t.place_of(3), Some(1));
+        assert!(!t.move_row(0, 9));
+        for _ in 0..6 {
+            assert!(t.add(all[7]).is_some());
+        }
+        assert_eq!(t.add(all[7]), None, "eight places");
     }
 
     #[test]
@@ -407,5 +645,28 @@ mod tests {
         // Past the top it wraps to the lowest free one past 0.
         (t.slots[1], t.ids[1]) = (slot, u16::MAX);
         assert_eq!(t.new_id(), 1);
+    }
+
+    #[test]
+    fn a_setting_is_read_and_set_by_its_effects_id_and_kept_in_range() {
+        let mut t = TrackFx::default();
+        t.add(Fx::Chance { percent: 50 });
+        t.add(Fx::Chord(crate::Chord::default()));
+        let (chance, chord) = (t.ids[0], t.ids[1]);
+        assert_eq!(t.value(chance, 0), Some(50));
+        assert!(t.set_value(chance, 0, 80));
+        assert_eq!(t.slots[0].unwrap().fx, Fx::Chance { percent: 80 });
+        // Out of range is kept in it; a choice too.
+        assert!(t.set_value(chance, 0, 400));
+        assert_eq!(t.value(chance, 0), Some(100));
+        assert!(t.set_value(chord, 2, 9));
+        assert_eq!(t.value(chord, 2), Some(3), "inversion 0 to 3");
+        assert!(t.set_value(chord, 0, -5));
+        assert_eq!(t.value(chord, 0), Some(0));
+        // No such effect or setting.
+        assert!(!t.set_value(99, 0, 1));
+        assert!(!t.set_value(chance, 1, 1));
+        assert_eq!(t.value(chance, 1), None);
+        assert_eq!(t.value(0, 0), None);
     }
 }
