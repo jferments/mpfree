@@ -831,6 +831,17 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// A control learned on Play's own control `id` (the Learn section's
+    /// Play card) moved to `value` (0 to 1), as player_session takes MIDI
+    /// Learn's: on any page.
+    pub fn play_knob(&mut self, id: u16, value: f32) -> &mut Session {
+        let mut moves = crate::remote::PlayMoves::default();
+        moves.set(id, value);
+        let fx = crate::desk::play_remote(&self.time, &mut self.mix, &mut self.out, &mut moves);
+        self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
     pub fn pad(&mut self, pad: usize, velocity: u8, hold: f64) -> &mut Session {
         self.pad_edge(pad, velocity, true);
         self.run_for(hold);

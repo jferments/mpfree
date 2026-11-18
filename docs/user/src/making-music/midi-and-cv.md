@@ -238,12 +238,12 @@ MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a d
 
 ## MIDI Learn
 
-MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the arp's rate, gate, swing and octaves, a pad's level, tune, filter and envelope, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
+MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the arp's rate, gate, swing and octaves, a pad's level, tune, filter and envelope, the tempo, the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)), or the Play page's Swing, Filter and XY pad (see [Play's swing, filter and XY pad from your controller](#plays-swing-filter-and-xy-pad-from-your-controller)).
 
 **The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
 
 - the mixer's Faders look: a strip's fader, pan and sends, and its **M** (mute) and **S** (solo);
-- on the Play page: the tempo, the master bar (the master's level), and the Q-Link cards that set a level or a send (the drums' delay send; the looper's and the line input's levels are in the mixer, on the Loop and Line strips). The other cards, such as Swing and the filters, learn nothing yet;
+- on the Play page: the tempo, the master bar (the master's level), and the Q-Link cards that set a level or a send (the drums' delay send; the looper's and the line input's levels are in the mixer, on the Loop and Line strips). The other cards, such as Swing and the filters, and the XY pad keep their own jobs with SHIFT: learn Swing, the Filter and the XY pad on the Learn section's **Play** card instead;
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
 - the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads), and an MPC plugin's own screen (its skin): its knobs, sliders and buttons;
@@ -278,15 +278,15 @@ Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
   - **Jump**: the value goes straight to where the knob is.
   - **Pick up**: the value waits until the knob passes it, so nothing jumps.
   - **Scale**: the value moves at once, but in step with the knob, so the two meet at the end the knob turns to.
-- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. A control learned on the transport, the tempo or the looper starts in **Rig**, anything else in **Project**. While a song has its own mapping for the same control, the song's wins.
+- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. A control learned on the transport, the tempo, the looper or the Play card starts in **Rig**, anything else in **Project**. While a song has its own mapping for the same control, the song's wins.
 - **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
 - **Remove** takes the control off.
 
-Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning Swing, the filters and the XY pad on the Play page.
+Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick).
 
 ### Recording a learned control
 
-While you record, a learned control that turns something on the armed track (a synth's knob, a pad's own setting, the track's fader, pan or sends, an effect on the track, a MIDI effect's setting) records into the clip as if you turned that knob on the screen: each move becomes a lock on the note you are playing, or on the nearest step ([Knob moves while you record](clips.md#knob-moves-while-you-record)). The arpeggiator's settings, the tempo, the transport, the looper and the macros only move; they don't record.
+While you record, a learned control that turns something on the armed track (a synth's knob, a pad's own setting, the track's fader, pan or sends, an effect on the track, a MIDI effect's setting) records into the clip as if you turned that knob on the screen: each move becomes a lock on the note you are playing, or on the nearest step ([Knob moves while you record](clips.md#knob-moves-while-you-record)). The arpeggiator's settings, the tempo, the transport, the looper, the Play card's controls and the macros only move; they don't record.
 
 ### Playing and stopping from your controller
 
@@ -314,6 +314,18 @@ In the Learn section, tap **Looper** by the heading, tap one, then press the foo
 - **Next loop** picks the next loop (after Loop 8, Loop 1). **Undo**, **Redo** and **Clear** are the Looper tab's buttons, on the picked loop. **Capture** keeps the bars you just played as a loop.
 
 These work on every page, whatever the pads are doing. A **Key** or a press starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by what it plays: **Looper · Loop 3 key**, **Looper · picked loop's key**, **Looper · Next loop**. Looper controls are kept in **Rig**, so your pedalboard works in every project.
+
+### Play's swing, filter and XY pad from your controller
+
+{{shot: mixer-io-learn-play | The Learn section's Play card: Swing, Filter, XY across and XY up, each for a knob to learn.}}
+
+A knob or fader on your controller can turn the Play page's **Swing** and **Filter**, and two of them can move the **XY pad**, so you can play them without looking at the screen. On Play, SHIFT and a touch on these keeps its own job, so they are learned here instead. In the Learn section, tap **Play** by the heading, tap one, then move the knob:
+
+- **Swing**: from straight (50 %) to the most swing (75 %), as Play's Swing Q-Link turns it.
+- **Filter**: the filter Play's Filter Q-Link turns, the same way: track 1's, which Play's card calls Drums, whatever your project names track 1; low-pass below the middle, high-pass above it, and off in the middle.
+- **XY across** and **XY up**: each moves the XY pad one way, as your finger does, and the other way stays where it is. The pad on the Play page follows. Its effect plays until both are back where the pad rests: across in the middle and up at the bottom. Learn one on a joystick's two directions, or on two knobs side by side.
+
+These work on every page. The Learn section lists them as **Play · Swing**, **Play · Filter**, **Play · XY across** and **Play · XY up**. They are kept in **Rig**, so your controller works the same in every project, and they move the sound but don't record into a clip. Touching Play's own cards and pad still works as before.
 
 ### MIDI Follow: your controller's knobs on the Q-Links
 

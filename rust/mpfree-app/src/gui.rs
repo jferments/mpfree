@@ -1206,6 +1206,14 @@ pub enum ToUi {
     Hit(HitInfo),
     /// The mixer's values the Play page's Q-Links and speakers show.
     PlayLevels(PlayLevels),
+    /// Learned controls moved the XY pad (the Learn section's Play card):
+    /// where it is now, and whether it is held away from where it rests.
+    /// The pad on the Play page follows, as it would a finger.
+    PlayXy {
+        x: f32,
+        y: f32,
+        down: bool,
+    },
     /// On the Play page (no arp): Q-Link `0` turned by `1` detents.
     PlayQLink(usize, i32),
     /// The master meter: each side's peak and Master safety's gain
@@ -7069,6 +7077,11 @@ impl Player {
                 if self.timing_shown() {
                     self.refresh_play();
                 }
+            }
+            ToUi::PlayXy { x, y, down } => {
+                // The sound has it already: only the pad's dot moves.
+                let _ = self.play.xy(x, y, down);
+                self.refresh_play();
             }
             ToUi::PlayLevels(l) => {
                 if self.play.levels != l {
@@ -14211,6 +14224,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let _ = looper_card.take_actions();
     looper_card.ui.invalidate();
     out.push(("mixer-io-learn-looper", looper_card));
+    // The Learn section's Play card (Jay's pick, 18 Nov 2026): a knob on
+    // Play's Swing kept in the rig, and the card open.
+    let swing = "port Knobs | ch 1 | cc 21 | play.0 | 0 1 | absolute | pickup";
+    let l = mpfree_midi::learn::Saved::parse(swing).expect("a learned control");
+    let mut rig = learn_rig();
+    rig.setup.learned_in(mpfree_midi::setup::Kept::Rig, l);
+    rig.live.learn_names.push("Play · Swing".into());
+    let mut play_card = io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN);
+    let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+    play_card.ui.paint(&mut c);
+    if let Some(t) = play_card
+        .ui
+        .targets()
+        .into_iter()
+        .find(|t| t.widget == mpfree_mixer_ui::MIXER && t.target.id == "learn-play")
+    {
+        let (x, y) = t.target.centre();
+        play_card.touch(1, Touch::Down, x, y);
+        play_card.touch(1, Touch::Up, x, y);
+    }
+    let _ = play_card.take_actions();
+    play_card.ui.invalidate();
+    out.push(("mixer-io-learn-play", play_card));
     // The CV section with an envelope and two LFOs, each with its two
     // more rows.
     out.push((
@@ -28868,6 +28904,14 @@ mod tests {
                                 .iter()
                                 .any(|t| t.target.id == "learn-looper-pick"),
                             "{name}: the Looper card shows"
+                        );
+                    }
+                    if name == "mixer-io-learn-play" {
+                        assert!(
+                            p.ui.targets()
+                                .iter()
+                                .any(|t| t.target.id == "learn-play-pick"),
+                            "{name}: the Play card shows"
                         );
                     }
                     if name == "mixer-io-routing" {

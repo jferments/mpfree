@@ -34,6 +34,13 @@
 //!   tap arms Learn on one, as the transport's do; the control that takes
 //!   it works in every project. The MPC One has no footswitch jack, so a
 //!   footswitch comes in through a MIDI controller or pedal.
+//! - **Play** (the button beside Transport and tempo; the owner's pick of
+//!   18 Nov 2026, "A Play card in Learn"): Play's **Swing**, **Filter**
+//!   (the one Play's Filter Q-Link turns: track 1's, which Play calls
+//!   Drums), **XY across** and **XY up** (`Owner::Play`,
+//!   [`play`]), what SHIFT + a touch on Play can't learn (those touches
+//!   keep their own jobs). A tap arms Learn on one; the control that takes
+//!   it works in every project.
 //! - **MIDI Follow** (the card beside the picked row's, or in its place
 //!   from the heading's MIDI Follow when the section is narrower than the
 //!   two): the **Controller**, **Follow** Off or On, its **Knobs** (its
@@ -62,7 +69,7 @@ use mpfree_midi::learn::{Encoding, Mode, Saved, Source, Takeover};
 use mpfree_midi::setup::{Kept, PortInput, DIN_NAME, FOLLOW_KNOBS};
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
 use mpfree_param::looper::{self, Which};
-use mpfree_param::{clips, transport, Owner, ParamAddr};
+use mpfree_param::{clips, play, transport, Owner, ParamAddr};
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target, Touch};
 
 use crate::{note_name, IoModel, Shared};
@@ -80,11 +87,13 @@ const LABEL_W: i32 = 110;
 const LINE_H: i32 = 40;
 const SEG_W: i32 = 104;
 /// The heading's Transport and tempo button.
-const TRANSPORT_W: i32 = 190;
+const TRANSPORT_W: i32 = 164;
+/// The heading's Play button, left of it.
+const PLAY_W: i32 = 64;
 /// The heading's Clips and scenes button.
-const CLIPS_W: i32 = 150;
+const CLIPS_W: i32 = 136;
 /// The heading's Looper button.
-const LOOPER_W: i32 = 96;
+const LOOPER_W: i32 = 76;
 /// The Clips and scenes card's track stepper's - and +.
 const CLIP_STEP_W: i32 = 34;
 /// Where the heading's key may start, after its words ("WHAT YOUR
@@ -101,7 +110,7 @@ const FOLLOW_W: i32 = 340;
 const ROW_CARD_W: i32 = 14 + LABEL_W + 190 + 36 + 190 + 14;
 /// The heading's MIDI Follow button, in a section too narrow for the
 /// two cards side by side.
-const FOLLOW_BUTTON_W: i32 = 130;
+const FOLLOW_BUTTON_W: i32 = 104;
 /// The Follow card's labels.
 const FOLLOW_LABEL_W: i32 = 100;
 /// A line of the Follow card's words.
@@ -116,6 +125,9 @@ pub(crate) const CLIPS_HINT: &str =
 pub(crate) const LOOPER_HINT: &str =
     "Tap a button, then press your footswitch  ·  - and +: the loop for Key and Mute";
 
+/// The hint line while Play's card shows.
+pub(crate) const PLAY_HINT: &str = "Tap one, then move a knob or a fader on your controller";
+
 /// The card of buttons to learn that shows in the picked row's place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Buttons {
@@ -126,6 +138,8 @@ enum Buttons {
     /// A loop's Key and Mute and the looper's own presses (the
     /// footswitch).
     Looper,
+    /// Play's Swing, Filter, XY across and XY up ([`play::ALL`]).
+    Play,
 }
 
 /// The Clips and scenes card's buttons, after the track's stepper: the
@@ -186,6 +200,11 @@ fn looper_target(i: usize, w: Which) -> ParamAddr {
         _ => looper::CLEAR,
     };
     ParamAddr::new(Owner::Looper, id)
+}
+
+/// The address Play's card's button `i` arms ([`play::ALL`]'s order).
+fn play_target(i: usize) -> ParamAddr {
+    ParamAddr::new(Owner::Play, play::ALL[i].0)
 }
 
 /// How a learned control can move its parameter, in the order Works as
@@ -259,6 +278,11 @@ enum Hit {
     LoopStep(i32),
     /// One of its buttons ([`LOOPER_BUTTONS`]).
     LooperPick(usize),
+    /// The heading's Play: the card shows Play's controls, or the picked
+    /// row again.
+    Play,
+    /// One of its buttons ([`play::ALL`]).
+    PlayPick(usize),
     /// The heading's MIDI Follow, in a narrow section: the card shows it,
     /// or the picked row again.
     Follow,
@@ -280,7 +304,9 @@ struct Layout {
     head: Rect,
     /// The heading's Transport and tempo button.
     transport: Rect,
-    /// The heading's Clips and scenes button, left of it.
+    /// The heading's Play button, left of it.
+    play: Rect,
+    /// The heading's Clips and scenes button, left of Play.
     clips: Rect,
     /// The heading's Looper button, left of Clips and scenes.
     looper: Rect,
@@ -325,7 +351,8 @@ fn layout(r: Rect, learning: bool) -> Layout {
     });
     let right = follow_button.map_or(head.right(), |b| b.x - 8);
     let transport = Rect::new(right - TRANSPORT_W, head.y, TRANSPORT_W, head.h);
-    let clips = Rect::new(transport.x - 8 - CLIPS_W, head.y, CLIPS_W, head.h);
+    let play = Rect::new(transport.x - 8 - PLAY_W, head.y, PLAY_W, head.h);
+    let clips = Rect::new(play.x - 8 - CLIPS_W, head.y, CLIPS_W, head.h);
     let looper = Rect::new(clips.x - 8 - LOOPER_W, head.y, LOOPER_W, head.h);
     // The key between the heading's words and the buttons, where they
     // leave it room.
@@ -367,6 +394,7 @@ fn layout(r: Rect, learning: bool) -> Layout {
         cancel,
         head,
         transport,
+        play,
         clips,
         looper,
         key,
@@ -675,6 +703,13 @@ fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 7]) {
     (steps, [p[1], p[2], p[3], p[4], p[5], p[6], p[7]])
 }
 
+/// Play's card's buttons, on the same grid: Swing, Filter, XY across and
+/// XY up on the first row.
+fn play_rects(l: &Layout) -> [Rect; 4] {
+    let p = pick_rects(l);
+    [p[0], p[1], p[2], p[3]]
+}
+
 /// The table's columns: Control, Moves, Now, Kept in (x and width).
 fn columns(body: Rect) -> [(i32, i32); 4] {
     let kept = 96;
@@ -951,6 +986,11 @@ impl Learn {
         self.arm_as(target, &name, how)
     }
 
+    /// Play's card's button `i`: Learn waits for a control to take it.
+    fn arm_play(&mut self, i: usize) -> IoReply {
+        self.arm_as(play_target(i), play::ALL[i].1, "move a knob or a fader")
+    }
+
     fn top_for(&self, rows: usize, shown: usize) -> usize {
         let mut top = self.top.get();
         if self.pick < top {
@@ -984,6 +1024,9 @@ impl Learn {
         let n = m.setup.all_learned().count();
         if l.transport.contains(x, y) {
             return Some(Hit::Transport);
+        }
+        if l.play.contains(x, y) {
+            return Some(Hit::Play);
         }
         if l.clips.contains(x, y) {
             return Some(Hit::Clips);
@@ -1032,6 +1075,10 @@ impl Learn {
                             .map(Hit::LooperPick),
                     }
                 }
+                Buttons::Play => play_rects(&l)
+                    .iter()
+                    .position(|p| p.contains(x, y))
+                    .map(Hit::PlayPick),
             };
         }
         if l.again.contains(x, y) {
@@ -1284,6 +1331,8 @@ impl Learn {
             Hit::Looper => self.show_buttons(Buttons::Looper),
             Hit::LoopStep(d) => self.loop_step(d),
             Hit::LooperPick(i) => self.arm_looper(i),
+            Hit::Play => self.show_buttons(Buttons::Play),
+            Hit::PlayPick(i) => self.arm_play(i),
             Hit::Follow => {
                 self.follow = !self.follow;
                 IoReply::Redraw
@@ -1566,6 +1615,51 @@ impl Learn {
         );
     }
 
+    /// Play's card: its Swing, Filter, XY across and XY up, the one Learn
+    /// waits for lit.
+    fn paint_play(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        let ci = l.card.inset(14);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            Rect::new(ci.x, ci.y, l.again.x - ci.x - 8, BUTTON_H),
+            Align::Left,
+            t.text_dim,
+            "PLAY",
+        );
+        if back {
+            button(cx, l.remove, "Back", false);
+        }
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(ci.x, ci.y + BUTTON_H, ci.w, 2 * SAYS_LINE_H),
+            t.text_dim,
+            "Tap one, then move a knob or a fader on your controller. It works in every project.",
+        );
+        for (i, r) in play_rects(l).into_iter().enumerate() {
+            button(cx, r, play::ALL[i].1, self.waits_for(m, play_target(i)));
+        }
+        let last = play_rects(l)[3];
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(
+                ci.x,
+                last.bottom() + 6,
+                ci.w,
+                ci.bottom() - last.bottom() - 6,
+            ),
+            t.text_faint,
+            "Swing and Filter turn as Play's Q-Links do (Filter is track 1's, which Play calls Drums). \
+             XY across and XY up move the XY pad as a finger does: its effect plays until \
+             both are back, across in the middle and up at the bottom. \
+             Play's own touches stay as they are.",
+        );
+    }
+
     /// The cards under the list: the picked row's (or a card of buttons)
     /// and MIDI Follow's, side by side or the one asked for.
     fn paint_cards(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, n: usize) {
@@ -1579,6 +1673,7 @@ impl Learn {
             Some(Buttons::Transport) => self.paint_transport(cx, m, l, n > 0),
             Some(Buttons::Clips) => self.paint_clips(cx, m, l, n > 0),
             Some(Buttons::Looper) => self.paint_looper(cx, m, l, n > 0),
+            Some(Buttons::Play) => self.paint_play(cx, m, l, n > 0),
             None => self.paint_card(cx, m, l, self.pick.min(n - 1)),
         }
     }
@@ -1745,6 +1840,9 @@ impl IoSection for Learn {
         if self.buttons == Some(Buttons::Looper) && !self.follow {
             return Some(LOOPER_HINT);
         }
+        if self.buttons == Some(Buttons::Play) && !self.follow {
+            return Some(PLAY_HINT);
+        }
         Some(HINT)
     }
 
@@ -1803,6 +1901,7 @@ impl IoSection for Learn {
             "Transport and tempo",
             card == Some(Buttons::Transport),
         );
+        button(cx, l.play, "Play", card == Some(Buttons::Play));
         button(
             cx,
             l.clips,
@@ -2001,6 +2100,7 @@ impl IoSection for Learn {
             "Transport and tempo",
             l.transport,
         ));
+        out.push(Target::tap("learn-play", 0, "Play controls", l.play));
         out.push(Target::tap("learn-clips", 0, "Clips and scenes", l.clips));
         out.push(Target::tap("learn-looper", 0, "Looper controls", l.looper));
         if let Some(b) = l.follow_button {
@@ -2067,6 +2167,11 @@ impl IoSection for Learn {
                     out.push(Target::tap("learn-loop", 1, "Loop +", steps[1]));
                     for (i, r) in buttons.into_iter().enumerate() {
                         out.push(Target::tap("learn-looper-pick", i, LOOPER_BUTTONS[i], r));
+                    }
+                }
+                Buttons::Play => {
+                    for (i, r) in play_rects(&l).into_iter().enumerate() {
+                        out.push(Target::tap("learn-play-pick", i, play::ALL[i].1, r));
                     }
                 }
             }
@@ -2372,15 +2477,16 @@ mod tests {
         let _ = paint(&s);
         let empty = ids(&s, AREA);
         assert_eq!(
-            empty[..4],
+            empty[..5],
             [
                 "learn-transport",
+                "learn-play",
                 "learn-clips",
                 "learn-looper",
                 "learn-follow"
             ]
         );
-        assert_eq!(empty[4..], ["learn-pick"; 8]);
+        assert_eq!(empty[5..], ["learn-pick"; 8]);
         // Clips and scenes in its place, and back.
         tap(&mut s, "learn-clips", 0);
         fits(&s, AREA);
@@ -2388,9 +2494,14 @@ mod tests {
         assert!(!ids(&s, AREA).contains(&"learn-back"));
         tap(&mut s, "learn-clips", 0);
         assert!(ids(&s, AREA).contains(&"learn-pick"));
-        // The transport card fits too, and Clips and scenes' and the
-        // looper's.
-        for card in ["learn-transport", "learn-clips", "learn-looper"] {
+        // The transport card fits too, and Clips and scenes', the
+        // looper's and Play's.
+        for card in [
+            "learn-transport",
+            "learn-clips",
+            "learn-looper",
+            "learn-play",
+        ] {
             let mut s = Learn::new(model());
             assert_eq!(tap(&mut s, card, 0), IoReply::Redraw);
             fits(&s, AREA);
@@ -2820,6 +2931,57 @@ mod tests {
         assert!(ids(&s, AREA).contains(&"learn-pick"));
     }
 
+    /// Play's card (the owner's pick, 18 Nov 2026): Swing, Filter, XY
+    /// across and XY up, each arming Learn on Play's own control, kept in
+    /// every project; Play again or Back shows the picked row's.
+    #[test]
+    fn plays_card_arms_learn_on_its_swing_filter_and_xy_pad() {
+        let m = model();
+        let mut s = Learn::new(m.clone());
+        let _ = paint(&s);
+        assert!(!ids(&s, AREA).contains(&"learn-play-pick"));
+        assert_eq!(tap(&mut s, "learn-play", 0), IoReply::Redraw);
+        let _ = paint(&s);
+        let labels: Vec<String> = s
+            .targets(AREA)
+            .into_iter()
+            .filter(|t| t.id == "learn-play-pick")
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(labels, ["Swing", "Filter", "XY across", "XY up"]);
+        assert_eq!(s.hint(), Some(PLAY_HINT));
+        // Nothing for the Q-Links or - and + while it shows.
+        assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
+        assert_eq!(s.input(IoInput::Step(1)), IoReply::Handled);
+        let armed = |m: &Shared| m.lock().unwrap().asks.learn_target;
+        for (i, id) in [play::SWING, play::FILTER, play::XY_ACROSS, play::XY_UP]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(tap(&mut s, "learn-play-pick", i), IoReply::Redraw);
+            let at = ParamAddr::new(Owner::Play, id);
+            assert_eq!(armed(&m), Some(at));
+            assert!(s.waits_for(&m.lock().unwrap(), at), "lit");
+        }
+        assert_eq!(
+            s.take_note().unwrap(),
+            "XY up: move a knob or a fader on your controller"
+        );
+        let _ = paint(&s);
+        // Play again shows the picked row's; Back does too.
+        tap(&mut s, "learn-play", 0);
+        assert!(ids(&s, AREA).contains(&"learn-again"));
+        tap(&mut s, "learn-play", 0);
+        tap(&mut s, "learn-back", 0);
+        assert!(ids(&s, AREA).contains(&"learn-again"));
+        // With nothing learned it shows in the transport's place.
+        let mut s = Learn::new(Arc::new(Mutex::new(crate::sample::rig())));
+        tap(&mut s, "learn-play", 0);
+        let shown = ids(&s, AREA);
+        assert!(shown.contains(&"learn-play-pick") && !shown.contains(&"learn-back"));
+        fits(&s, WIDE);
+    }
+
     /// The heading's words keep their room before the buttons: the long
     /// ones where they fit, else the short.
     #[test]
@@ -2829,7 +2991,8 @@ mod tests {
             let l = layout(area, false);
             assert!(l.looper.x - 8 > l.head.x + 100, "{area:?}");
             assert!(l.looper.right() + 8 <= l.clips.x);
-            assert!(l.clips.right() + 8 <= l.transport.x);
+            assert!(l.clips.right() + 8 <= l.play.x);
+            assert!(l.play.right() + 8 <= l.transport.x);
             fits(&s, area);
         }
     }

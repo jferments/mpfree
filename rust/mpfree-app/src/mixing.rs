@@ -1356,6 +1356,37 @@ impl MixHost {
             .map(|n| n.param(id))
     }
 
+    /// Where the XY pad stands, 0 to 1 across and up, as its effect has
+    /// it: the XY FX's X and Y while the pad plays one (where it starts
+    /// while it is being put on), else the Perform FX's DJ filter across
+    /// and echo up. For MIDI Learn's XY across and up, which move one way
+    /// and leave the other where it is.
+    pub fn xy_at(&self) -> (f32, f32) {
+        match self.xy_effect {
+            Some(_) => {
+                use mpfree_fx::xyfx::ids as xy;
+                let node = self
+                    .xy_slot()
+                    .and_then(|slot| self.mixer.chain(StripId::Master)?.node(slot));
+                match node {
+                    Some(n) => (
+                        (n.param(xy::X) / 100.0).clamp(0.0, 1.0),
+                        (n.param(xy::Y) / 100.0).clamp(0.0, 1.0),
+                    ),
+                    None => (0.5, 0.25),
+                }
+            }
+            None => {
+                let pad = mpfree_fx::XyPad::perform();
+                let at = |a: mpfree_fx::XyAxis| {
+                    self.perform_param(a.param)
+                        .map_or(a.rest, |v| a.position(v))
+                };
+                (at(pad.x), at(pad.y))
+            }
+        }
+    }
+
     /// The master's XY FX, the first on its chain, if it has one.
     fn xy_slot(&self) -> Option<usize> {
         let c = self.mixer.chain(StripId::Master)?;
@@ -2731,6 +2762,7 @@ mod tests {
         );
         assert_eq!(perform(&h, perf::DJ_FILTER), Some(-100.0), "low-pass");
         assert_eq!(perform(&h, perf::ECHO), Some(100.0));
+        assert_eq!(h.xy_at(), (0.0, 1.0), "where Learn reads the pad");
         h.play(PlayFx::Throw {
             fx: ThrowFx::Delay,
             down: false,
@@ -2744,6 +2776,7 @@ mod tests {
         run(&mut h, 2, 0.0, 0.0);
         assert_eq!(perform(&h, perf::hold(9)), Some(0.0));
         assert_eq!(perform(&h, perf::DJ_FILTER), Some(0.0), "off in the middle");
+        assert_eq!(h.xy_at(), (0.5, 0.0));
         // Each throw holds a pad of its own.
         let all = [
             ThrowFx::Delay,
@@ -2791,6 +2824,7 @@ mod tests {
         assert_eq!(xyfx(&h, xy::X), Some(25.0));
         assert_eq!(xyfx(&h, xy::Y), Some(100.0));
         assert_eq!(xyfx(&h, xy::ACTIVE), Some(1.0), "open while held");
+        assert_eq!(h.xy_at(), (0.25, 1.0), "the XY FX's X and Y");
         let dj = |h: &MixHost| {
             h.mixer
                 .chain(StripId::Master)

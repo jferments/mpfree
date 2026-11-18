@@ -978,9 +978,13 @@ impl MusicIn {
         };
         if !self.unsaved.is_empty() {
             for mut l in self.unsaved.drain(..) {
-                // The transport, the tempo and the looper's footswitch
-                // work in every song; the rest belongs to this one.
-                let mut kept = if matches!(l.target.owner, Owner::Transport | Owner::Looper) {
+                // The transport, the tempo, the looper's footswitch and
+                // Play's own controls work in every song; the rest
+                // belongs to this one.
+                let mut kept = if matches!(
+                    l.target.owner,
+                    Owner::Transport | Owner::Looper | Owner::Play
+                ) {
                     Kept::Rig
                 } else {
                     Kept::Project
