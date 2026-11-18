@@ -421,6 +421,72 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("sample-gear", checks.Window(lines(on, *run))))
         self.assertFalse(got["sending was turned off again"])
 
+    def test_the_grain_page_checks_read_the_grains_kits_pad_2(self):
+        """Each Grain page check passes on the lines the app writes for its steps (the lines of the app's
+        the_grain_pages_device_checks_log_what_they_set_and_end_where_they_began, on the Grains kit's pad 2,
+        with - and + run together or one press a line), and not on another kit's pad or another pad."""
+        head = "sample: kit 3 (Grains: House) pad A2 Snare: "
+        x, pm, dash = "×", "±", "—"
+        undo = midi("button 67 pressed")
+        runs = {
+            "grain-stretch-hits": [
+                f"grain mode Cloud -> Stretch, scan speed 0.25{x} -> 1{x}, timing 30 % random -> Regular",
+                f"scan speed 1{x} -> 0.5{x}", f"scan speed 0.5{x} -> 2{x}"],
+            "grain-movement": [
+                "lfo to Off -> Position", "lfo rate 1.0 Hz -> 0.50 Hz", "envelope to Off -> Position",
+                "envelope to Position -> Size", "env attack 1.00 s -> 500 ms"],
+            "grain-cloud-view": ["lfo to Pitch -> Spray", "size 60 ms -> 2.00 s", "density 25 /s -> 50 /s"],
+            "grain-filter": ["filter Off -> Band pass", "resonance 0 % -> 60 %", f"filter spray Off -> {pm}3 oct",
+                             "lfo to Spray -> Cutoff"],
+            "grain-keys": ["tune +0 st -> +12 st", "size follows key Off -> On", "size follows key On -> Off",
+                           "tune +12 st -> +0 st"],
+            "grain-presets": [
+                f"preset {dash} -> Glass pad, spray 5 % -> 8 %", "preset Glass pad -> Frozen choir, spray 8 % -> 5 %",
+                f"grain mode Cloud -> Stretch, preset Frozen choir -> Tape stretch, scan speed 0.25{x} -> 0.5{x}",
+                "grain mode Stretch -> Repeat, preset Tape stretch -> Stutter 1/16",
+                "grain mode Repeat -> Cloud, preset Stutter 1/16 -> Shimmer fifths",
+                "preset Shimmer fifths -> Grit cloud", "preset Grit cloud -> Swarm",
+                "grain mode Cloud -> Tone, preset Swarm -> Sub drone, glide Off -> 150 ms"],
+            "grain-quality": ["quality Clean -> Tape", "quality Tape -> Lo-fi", "quality Lo-fi -> Tape",
+                              "quality Tape -> Clean"],
+        }
+        for name, items in runs.items():
+            got = self.judge(name, checks.Window(lines(*[head + i for i in items], undo)))
+            seen = [what for ok, what in got if ok is False]
+            self.assertEqual(seen, [], name)
+            for other in ("sample: kit 1 (House) pad A2 Snare: ", "sample: kit 3 (Grains: House) pad A5 Clap: "):
+                got = self.judge(name, checks.Window(lines(*[other + i for i in items], undo)))
+                self.assertTrue(any(ok is False for ok, _ in got), f"{name} on {other}")
+        # One press a line: the last one is what the look reads.
+        got = dict((what, ok) for ok, what in self.judge("grain-stretch-hits", checks.Window(lines(
+            head + f"scan speed 1{x} -> 0.75{x}", head + f"scan speed 0.75{x} -> 0.5{x}",
+            head + f"scan speed 1.5{x} -> 2{x}"))))
+        self.assertTrue(got["Scan went to 0.5x"] and got["Scan went to 2x"])
+        got = dict((what, ok) for ok, what in self.judge("grain-stretch-hits", checks.Window(lines(
+            head + f"scan speed 1{x} -> 0.75{x}", head + f"scan speed 1{x} -> 1.5{x}"))))
+        self.assertFalse(got["Scan went to 0.5x"] or got["Scan went to 2x"])
+        got = dict((what, ok) for ok, what in self.judge("grain-presets", checks.Window(lines(
+            *[head + f"preset {dash} -> Glass pad"] * 7))))
+        self.assertFalse(got["all eight"])
+
+    def test_the_grains_effect_checks_see_the_latch_and_the_capture(self):
+        """grains-repeat starts on Latch, grains-feedback turns it off, and grains-capture needs its Grains pad
+        on bank B and UNDO; any refusal from the mixer or the chain editor fails all three."""
+        for name in ("grains-repeat", "grains-feedback", "grains-capture"):
+            got = dict((what, ok) for ok, what in self.judge(name, checks.Window(lines("mixer: The chain is full"))))
+            self.assertFalse(got["no refusal"], name)
+        got = dict((what, ok) for ok, what in self.judge("grains-repeat", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the snare repeating"])
+        got = dict((what, ok) for ok, what in self.judge("grains-feedback", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        capture = "sample: grains capture: Grains 1, 8.00 s stereo on pad B2, playing as grains"
+        got = dict((what, ok) for ok, what in self.judge("grains-capture", checks.Window(lines(
+            "Latch on", "Latch off", capture, midi("button 67 pressed")))))
+        self.assertTrue(all(got.values()), got)
+        got = dict((what, ok) for ok, what in self.judge("grains-capture", checks.Window(lines(
+            "Latch on", "Latch off", "sample: nothing captured: no empty pad in this bank"))))
+        self.assertFalse(got["Grains 1 landed on a pad of bank B"])
+
     def test_sample_names_needs_the_pad_and_its_sound_named(self):
         got = dict((what, ok) for ok, what in self.judge("sample-names", checks.Window(lines(
             "sample: pad A5 named Ox", "sample: pad A5's sound named Loop", midi("button 67 pressed")))))

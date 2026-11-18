@@ -2318,6 +2318,129 @@ mod tests {
         assert!(!r.h.shelf_dirty);
     }
 
+    /// The Grains effect as the device checks play it (R7, round 2:
+    /// `grains-repeat` and `grains-feedback` in
+    /// tools/mpc-one/app_checks.py): added on the Drums row from the picker
+    /// under a repeating snare, Mix up to 100 %, Repeat 1/16, 1/32 and Off,
+    /// each Quality; then Feedback at 100 % with the snare stopped: the
+    /// trail holds on by itself and never grows, and with Feedback back at
+    /// 0 it dies away.
+    #[test]
+    fn the_grains_effect_repeats_and_holds_its_trail_at_full_feedback_on_the_drums() {
+        use mpfree_sampler::engine::PadOut;
+        let mut r = Rig::new();
+        let mut c = ChainHost::from_mixer(drums(), None).unwrap();
+        assert_eq!(
+            c.action(&mut r.h, &ChainAction::Add("mpfree.grains"), false),
+            ChainOut::Shown
+        );
+        r.run(20);
+        let st = c.state(&r.h);
+        let slot = st.selected.unwrap();
+        assert!(
+            st.slots[slot].name.starts_with("Grains"),
+            "{}",
+            st.slots[slot].name
+        );
+        let addr = |name: &str| {
+            st.params
+                .iter()
+                .find(|p| p.info.name == name)
+                .unwrap_or_else(|| panic!("{name} on the Main page"))
+                .addr
+        };
+        let (mix, feedback, repeat, quality) = (
+            addr("Mix"),
+            addr("Feedback"),
+            addr("Repeat"),
+            addr("Quality"),
+        );
+        assert_eq!(r.param(mix), 50.0, "Grains opens at Mix 50 %");
+        let set = |c: &mut ChainHost, r: &mut Rig, a: ParamAddr, value: f32| {
+            c.action(&mut r.h, &ChainAction::Set { addr: a, value }, false);
+            c.action(&mut r.h, &ChainAction::Release(a), false);
+            r.run(2);
+            assert_eq!(r.param(a), value);
+        };
+        // Pad 2 of kit 1 into the Drums row: a snare (a 180 Hz body and a
+        // burst of softened noise, dying away in about 80 ms) on every
+        // eighth at 120 BPM, or nothing. The master's left side.
+        let mut noise = 0x2545_f491_u32;
+        let mut soft = 0f32;
+        let mut play = |r: &mut Rig, seconds: usize, snare: bool| -> Vec<f32> {
+            let z = [0f32; PERIOD];
+            let (mut l, mut rr) = ([0f32; PERIOD], [0f32; PERIOD]);
+            let periods = seconds * RATE as usize / PERIOD;
+            let mut out = Vec::with_capacity(periods * PERIOD);
+            for _ in 0..periods {
+                let at = r.period * PERIOD as u64;
+                if snare {
+                    let mut pads = r.h.pads();
+                    let (pl, pr) = pads.pad(0, 1).unwrap();
+                    for i in 0..PERIOD {
+                        noise ^= noise << 13;
+                        noise ^= noise >> 17;
+                        noise ^= noise << 5;
+                        let t = ((at + i as u64) % (RATE as u64 / 4)) as f32 / RATE as f32;
+                        soft += 0.35 * (noise as f32 / u32::MAX as f32 - 0.5 - soft);
+                        let x = (0.5 * (std::f32::consts::TAU * 180.0 * t).sin() + 0.8 * soft)
+                            * (-t / 0.08).exp();
+                        pl[i] += x;
+                        pr[i] += x;
+                    }
+                }
+                let ctx = Ctx::new(RATE, at);
+                r.h.period(
+                    &ctx,
+                    (&z, &z),
+                    (&z, &z),
+                    (&z, &z),
+                    (&z, &z),
+                    &mut l,
+                    &mut rr,
+                );
+                r.period += 1;
+                out.extend_from_slice(&l);
+            }
+            assert!(out.iter().all(|x| x.is_finite()));
+            out
+        };
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let seconds = |x: &[f32]| x.chunks(RATE as usize).map(rms).collect::<Vec<f32>>();
+        // Mix 100 %: the cloud alone, once its memory is full.
+        set(&mut c, &mut r, mix, 100.0);
+        play(&mut r, 10, true);
+        let clean = rms(&play(&mut r, 5, true));
+        assert!(clean > 1e-3, "the cloud plays: {clean}");
+        // Repeat 1/16, then 1/32 while it repeats, then Off.
+        for (value, name) in [(4.0, "1/16"), (5.0, "1/32"), (0.0, "Off")] {
+            set(&mut c, &mut r, repeat, value);
+            let level = rms(&play(&mut r, 2, true));
+            assert!(
+                level > clean * 0.25,
+                "repeat {name}: {level} against {clean}"
+            );
+        }
+        // Each Quality about as loud as Clean.
+        for (value, name) in [(1.0, "Tape"), (2.0, "Lo-fi"), (0.0, "Clean")] {
+            set(&mut c, &mut r, quality, value);
+            let level = rms(&play(&mut r, 6, true)[RATE as usize..]);
+            let db = 20.0 * (level / clean).log10();
+            assert!(db.abs() < 2.0, "{name}: {db:+.2} dB");
+        }
+        // Feedback 100 %, the snare for 4 s more, then stopped: the trail.
+        set(&mut c, &mut r, feedback, 100.0);
+        play(&mut r, 4, true);
+        let trail = seconds(&play(&mut r, 12, false));
+        let worst = trail.iter().fold(0f32, |m, x| m.max(*x));
+        assert!(worst < trail[0] * 1.12, "it grew: {trail:?}");
+        assert!(trail[11] > trail[0] * 0.1, "it held: {trail:?}");
+        // Feedback 0: it dies away.
+        set(&mut c, &mut r, feedback, 0.0);
+        let after = seconds(&play(&mut r, 6, false));
+        assert!(after[5] < trail[11] * 0.01, "it died away: {after:?}");
+    }
+
     /// A preset from the header's list sets the effect to it, all but its
     /// Mix, and the header then names it.
     #[test]
