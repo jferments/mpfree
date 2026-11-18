@@ -1,7 +1,7 @@
 //! The track host with real instruments (Poly and FM) and the real mixer.
 
 use mpfree_fx::{Mixer, MixerConfig};
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
+use mpfree_node::{Ctl, Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
 use mpfree_play::{Event, Out, Sink, ALL};
 use mpfree_synth::{Fm, Poly};
 use mpfree_track::{
@@ -598,4 +598,212 @@ fn the_quietest_voice_across_the_slots_is_given_up_first() {
     // An empty slot has nothing to give up.
     assert!(!host.cull(2));
     assert_eq!(host.cull_candidate().map(|(s, _)| s), Some(0));
+}
+
+/// Keeps every event it is given, and says whether it hears the pedals.
+struct Rec {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<Timed>>>,
+    hears: bool,
+}
+
+static REC: NodeInfo = NodeInfo {
+    id: "test.rec",
+    name: "Rec",
+    kind: Kind::Instrument,
+};
+
+impl Node for Rec {
+    fn info(&self) -> &'static NodeInfo {
+        &REC
+    }
+    fn params(&self) -> &'static [ParamInfo] {
+        &[]
+    }
+    fn set_param(&mut self, _id: u16, _value: f32) {}
+    fn param(&self, _id: u16) -> f32 {
+        0.0
+    }
+    fn prepare(&mut self, _rate: u32, _max_block: usize) {}
+    fn reset(&mut self) {}
+    fn process(&mut self, _ctx: &Ctx, events: &[Timed], _l: &mut [f32], _r: &mut [f32]) {
+        self.seen.lock().unwrap().extend_from_slice(events);
+    }
+    fn hears(&self, ctl: Ctl) -> bool {
+        self.hears && ctl.is_pedal()
+    }
+}
+
+fn rec(hears: bool) -> (Instrument, std::sync::Arc<std::sync::Mutex<Vec<Timed>>>) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let node = Rec {
+        seen: seen.clone(),
+        hears,
+    };
+    (Instrument::new(Box::new(node), RATE, 1024), seen)
+}
+
+fn evs(seen: &std::sync::Arc<std::sync::Mutex<Vec<Timed>>>) -> Vec<Timed> {
+    std::mem::take(&mut *seen.lock().unwrap())
+}
+
+#[test]
+fn the_host_holds_the_notes_for_an_instrument_that_doesnt_hear_the_pedal() {
+    let mut host = TrackHost::new(1, RATE, 128);
+    let (inst, seen) = rec(false);
+    host.swap(0, Some(inst)).unwrap();
+    let mut out = Split::new(1, 128);
+    let mut frame = 0;
+    host.note_on(0, 0, 60, 100);
+    host.control(0, 10, Ctl::Sustain, 1.0);
+    host.note_off(0, 20, 60);
+    host.control(0, 30, Ctl::ModWheel, 0.5);
+    run(&mut host, &mut out, &mut frame, 1, 128);
+    // The note-off is held and the pedal isn't passed on; the wheel is.
+    assert_eq!(
+        evs(&seen),
+        vec![
+            Timed::new(
+                0,
+                NodeEvent::NoteOn {
+                    note: 60,
+                    velocity: 100
+                }
+            ),
+            Timed::new(
+                30,
+                NodeEvent::Control {
+                    ctl: Ctl::ModWheel,
+                    value: 0.5
+                }
+            ),
+        ]
+    );
+    // Struck again under the pedal: the old note ends on the same frame.
+    host.note_on(0, 5, 60, 90);
+    host.note_off(0, 6, 60);
+    host.control(0, 40, Ctl::Sustain, 0.0);
+    run(&mut host, &mut out, &mut frame, 1, 128);
+    assert_eq!(
+        evs(&seen),
+        vec![
+            Timed::new(5, NodeEvent::NoteOff { note: 60 }),
+            Timed::new(
+                5,
+                NodeEvent::NoteOn {
+                    note: 60,
+                    velocity: 90
+                }
+            ),
+            Timed::new(40, NodeEvent::NoteOff { note: 60 }),
+        ]
+    );
+}
+
+#[test]
+fn an_instrument_that_hears_the_pedal_gets_it_as_it_came() {
+    let mut host = TrackHost::new(1, RATE, 128);
+    let (inst, seen) = rec(true);
+    host.swap(0, Some(inst)).unwrap();
+    let mut out = Split::new(1, 128);
+    let mut frame = 0;
+    host.note_on(0, 0, 60, 100);
+    host.control(0, 10, Ctl::Sustain, 1.0);
+    host.note_off(0, 20, 60);
+    host.control(0, 30, Ctl::Sustain, 0.0);
+    run(&mut host, &mut out, &mut frame, 1, 128);
+    let pedal = |value| NodeEvent::Control {
+        ctl: Ctl::Sustain,
+        value,
+    };
+    assert_eq!(
+        evs(&seen),
+        vec![
+            Timed::new(
+                0,
+                NodeEvent::NoteOn {
+                    note: 60,
+                    velocity: 100
+                }
+            ),
+            Timed::new(10, pedal(1.0)),
+            Timed::new(20, NodeEvent::NoteOff { note: 60 }),
+            Timed::new(30, pedal(0.0)),
+        ]
+    );
+}
+
+#[test]
+fn the_sostenuto_catches_the_keys_down_when_it_goes_down() {
+    // The keys go down while both pedals are up, the quick way, so the
+    // host tells the pedals which keys are down when the sostenuto goes
+    // down; and again after the pedals have been up a while.
+    let mut host = TrackHost::new(1, RATE, 128);
+    let (inst, seen) = rec(false);
+    host.swap(0, Some(inst)).unwrap();
+    let mut out = Split::new(1, 128);
+    let mut frame = 0;
+    let on = |note| NodeEvent::NoteOn {
+        note,
+        velocity: 100,
+    };
+    let off = |note| NodeEvent::NoteOff { note };
+    for round in 0..2 {
+        host.note_on(0, 0, 60, 100);
+        host.note_on(0, 1, 64, 100);
+        host.note_off(0, 2, 64);
+        host.control(0, 3, Ctl::Sostenuto, 1.0);
+        host.note_off(0, 4, 60);
+        host.note_on(0, 5, 67, 100);
+        host.note_off(0, 6, 67);
+        host.control(0, 7, Ctl::Sostenuto, 0.0);
+        run(&mut host, &mut out, &mut frame, 1, 128);
+        // 60 was down as the pedal went down: it is held to the pedal's
+        // rise. 64 was already up and 67 came after: they end at once.
+        assert_eq!(
+            evs(&seen),
+            vec![
+                Timed::new(0, on(60)),
+                Timed::new(1, on(64)),
+                Timed::new(2, off(64)),
+                Timed::new(5, on(67)),
+                Timed::new(6, off(67)),
+                Timed::new(7, off(60)),
+            ],
+            "round {round}"
+        );
+        // Plain notes between the rounds, with both pedals up.
+        host.note_on(0, 0, 72, 100);
+        host.note_off(0, 1, 72);
+        run(&mut host, &mut out, &mut frame, 1, 128);
+        assert_eq!(
+            evs(&seen),
+            vec![Timed::new(0, on(72)), Timed::new(1, off(72))]
+        );
+    }
+}
+
+#[test]
+fn a_poly_note_sustains_on_the_pedal_and_rings_out_when_it_comes_up() {
+    let mut host = TrackHost::new(1, RATE, 128);
+    host.swap(0, Some(poly())).unwrap();
+    let mut out = Split::new(1, 128);
+    let mut frame = 0;
+    host.control(0, 0, Ctl::Sustain, 1.0);
+    host.note_on(0, 0, 60, 110);
+    run(&mut host, &mut out, &mut frame, 20, 128);
+    host.note_off(0, 0, 60);
+    // A second after the key is let go, the pedal still holds the note.
+    let held = run(&mut host, &mut out, &mut frame, 345, 128);
+    assert!(held.last().unwrap()[0] > 0.01, "{:?}", held.last());
+    host.control(0, 0, Ctl::Sustain, 0.0);
+    let after = run(&mut host, &mut out, &mut frame, 690, 128);
+    assert!(after.last().unwrap()[0] < 1e-4, "{:?}", after.last());
+    // A swap forgets what the pedal held.
+    host.note_on(0, 0, 64, 100);
+    host.control(0, 1, Ctl::Sustain, 1.0);
+    host.note_off(0, 2, 64);
+    host.swap(0, Some(poly())).unwrap();
+    host.control(0, 0, Ctl::Sustain, 0.0);
+    run(&mut host, &mut out, &mut frame, 2, 128);
+    assert_eq!(host.stats(0).dropped, 0);
 }

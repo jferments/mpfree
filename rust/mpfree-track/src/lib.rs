@@ -44,7 +44,8 @@
 #![forbid(unsafe_code)]
 
 use mpfree_fx::Mixer;
-use mpfree_node::{Ctx, Cull, Node, NodeEvent, ParamInfo, Timed, Tuning};
+use mpfree_node::pedal::{NoteSet, Pedals};
+use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed, Tuning};
 use mpfree_play::{Event, Out, Sink, ALL};
 use mpfree_prof::{Probe, Span};
 
@@ -188,6 +189,16 @@ struct Slot {
     /// Its track wanted nothing last block (frozen): the instrument
     /// rested, and gets an AllOff before it plays again.
     resting: bool,
+    /// The pedals, for an instrument that doesn't hear them
+    /// (`Node::hears`): the host holds its note-offs while a pedal keeps
+    /// the notes.
+    pedals: Pedals,
+    /// Whether the instrument hears the pedals itself, asked once when it
+    /// takes the slot rather than on every event.
+    hears_pedal: bool,
+    /// Events reach the instrument as they came: it hears the pedals, or
+    /// both are up. Kept with them, so a note checks one flag.
+    plain: bool,
 }
 
 /// The track host. See the crate docs.
@@ -220,6 +231,9 @@ impl TrackHost {
                 right: vec![0.0; max_block],
                 stats: SlotStats::default(),
                 resting: false,
+                pedals: Pedals::new(),
+                hears_pedal: false,
+                plain: true,
             })
             .collect::<Vec<_>>();
         let retired = Vec::with_capacity(2 * slots.len() + 2);
@@ -282,7 +296,10 @@ impl TrackHost {
         // Notes queued for the old instrument end with its AllOff.
         s.events.clear();
         s.held = [0; 128];
+        s.pedals.clear_notes();
         s.inst = inst;
+        s.hears_pedal = s.inst.as_ref().is_some_and(|i| i.node.hears(Ctl::Sustain));
+        s.plain = s.hears_pedal || s.pedals.idle();
         if let Some(i) = s.inst.as_mut() {
             i.node.set_tuning(&s.tuning);
         }
@@ -396,13 +413,38 @@ impl TrackHost {
     // ------------------------------------------------------------ events
 
     fn push(s: &mut Slot, t: Timed) -> bool {
-        if s.events.len() < s.events.capacity() {
-            s.events.push(t);
+        Self::push_to(&mut s.events, &mut s.stats, t)
+    }
+
+    fn push_to(events: &mut Vec<Timed>, stats: &mut SlotStats, t: Timed) -> bool {
+        if events.len() < events.capacity() {
+            events.push(t);
             true
         } else {
-            s.stats.dropped += 1;
+            stats.dropped += 1;
             false
         }
+    }
+
+    /// Queues `t` for the slot's instrument: as it came, or through the
+    /// slot's [`Pedals`] (`PEDALLED`), which hold note-offs while a pedal
+    /// keeps the notes. False if anything was dropped.
+    #[inline(always)]
+    fn send<const PEDALLED: bool>(s: &mut Slot, t: Timed) -> bool {
+        if !PEDALLED {
+            return Self::push(s, t);
+        }
+        let Slot {
+            pedals,
+            events,
+            stats,
+            ..
+        } = s;
+        let mut all = true;
+        pedals.filter(t.ev, |ev| {
+            all &= Self::push_to(events, stats, Timed::new(t.offset, ev));
+        });
+        all
     }
 
     /// An event for slot `slot`, `offset` frames into the next render.
@@ -412,10 +454,47 @@ impl TrackHost {
         let Some(s) = self.slots.get_mut(slot) else {
             return false;
         };
+        // The usual case first, so a plain note costs what it did before
+        // the pedals: one flag. A pedal moving leaves it in `count`.
+        if s.plain {
+            Self::count::<false>(s, t)
+        } else {
+            Self::event_pedalled(s, t)
+        }
+    }
+
+    /// [`TrackHost::event`] while a pedal is down or moving, out of line.
+    #[cold]
+    #[inline(never)]
+    fn event_pedalled(s: &mut Slot, t: Timed) -> bool {
+        if s.hears_pedal {
+            // The instrument's own pedal: it goes as it came.
+            return Self::push(s, t);
+        }
+        if s.pedals.idle() {
+            // A pedal goes down. The quick path doesn't tell the pedals
+            // which keys are down; the counts know.
+            let mut keys = NoteSet::new();
+            for (n, &c) in s.held.iter().enumerate() {
+                if c > 0 {
+                    keys.put(n as u8);
+                }
+            }
+            s.pedals.set_keys(keys);
+        }
+        let sent = Self::count::<true>(s, t);
+        s.plain = s.pedals.idle();
+        sent
+    }
+
+    /// Counts `t` against the slot's notes and sends what reaches the
+    /// instrument ([`TrackHost::send`]).
+    #[inline(always)]
+    fn count<const PEDALLED: bool>(s: &mut Slot, t: Timed) -> bool {
         match t.ev {
             NodeEvent::NoteOn { note, velocity } if velocity > 0 => {
                 let n = usize::from(note & 0x7F);
-                if !Self::push(s, t) {
+                if !Self::send::<PEDALLED>(s, t) {
                     return false;
                 }
                 s.held[n] = s.held[n].saturating_add(1);
@@ -434,7 +513,7 @@ impl TrackHost {
                         // if it is dropped the count stays, so a later
                         // AllOff or note-off still ends it.
                         let off = Timed::new(t.offset, NodeEvent::NoteOff { note });
-                        let sent = Self::push(s, off);
+                        let sent = Self::send::<PEDALLED>(s, off);
                         if sent {
                             s.held[n] = 0;
                         }
@@ -448,9 +527,12 @@ impl TrackHost {
             }
             NodeEvent::AllOff => {
                 s.held = [0; 128];
-                Self::push(s, t)
+                Self::send::<PEDALLED>(s, t)
             }
-            _ => Self::push(s, t),
+            NodeEvent::Control { .. } if !PEDALLED && Pedals::moves(&t.ev) => {
+                Self::event_pedalled(s, t)
+            }
+            _ => Self::send::<PEDALLED>(s, t),
         }
     }
 
@@ -470,6 +552,13 @@ impl TrackHost {
 
     pub fn note_off(&mut self, slot: usize, offset: u32, note: u8) -> bool {
         self.event(slot, Timed::new(offset, NodeEvent::NoteOff { note }))
+    }
+
+    /// A controller for slot `slot`'s instrument (a pedal, the mod wheel,
+    /// breath) on an exact frame. For an instrument that doesn't hear the
+    /// pedals the host holds its notes ([`Pedals`]).
+    pub fn control(&mut self, slot: usize, offset: u32, ctl: Ctl, value: f32) -> bool {
+        self.event(slot, Timed::new(offset, NodeEvent::Control { ctl, value }))
     }
 
     /// A parameter change on an exact frame.
@@ -536,6 +625,7 @@ impl TrackHost {
             if !s.track.is_none_or(|t| out.wants(t)) {
                 events.clear();
                 s.held = [0; 128];
+                s.pedals.clear_notes();
                 s.resting = true;
                 s.stats.rested += 1;
                 if self.retired.len() < self.retired.capacity() {

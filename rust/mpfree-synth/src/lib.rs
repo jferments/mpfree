@@ -38,6 +38,9 @@
 //!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
+//! - [`voice`]: the shared voice core the new engines are built on (held
+//!   notes and priority, voice stealing, glide by time or rate, envelopes
+//!   whose times mean what they say, velocity, play routes, a DC blocker).
 //!
 //! The design and roadmap are in `docs/dev/design/synths.md`. Every synth keeps
 //! the node rules: no allocation, lock or panic in `process`, and the same
@@ -64,6 +67,7 @@ pub mod poly;
 pub mod pressure;
 pub mod squelch;
 pub mod squelch_params;
+pub mod voice;
 pub mod wavetable;
 
 pub use analog::Analog;

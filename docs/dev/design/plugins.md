@@ -23,6 +23,7 @@ A CLAP plugin becomes an `mpfree_node::Node`, so anything that holds a node can 
   - Bend, as MIDI pitch bend when the plugin takes MIDI. Otherwise it is a tuning expression on each held note, 2 semitones at full bend.
   - Per-note expression: a note's slide is its tuning expression (plus the bend when the bend goes as tuning), its tone the brightness expression, and its release velocity goes in its note-off. A note that starts under a held bend or slide starts there.
   - `AllOff`, as a note-off for every held note.
+  - The mod wheel, breath and foot controller (`NodeEvent::Control`), as MIDI controllers 1, 2 and 11 when the plugin takes MIDI. The pedals reach a plugin as held notes: the host holds its note-offs (`mpfree_node::pedal`).
   - Parameter changes.
   - The transport (tempo, position in beats and seconds, playing) goes with every block.
   - Parameter values the plugin sends back (its own meters, its own changes) show in `param()`.
