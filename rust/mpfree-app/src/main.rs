@@ -8898,6 +8898,9 @@ fn player_session(
         if let Some(line) = mix.poll_built() {
             out.note(line);
         }
+        // A Perform FX the set put on and no throw plays on now, taken
+        // off once it was in.
+        desk::tell_throw_said(&mut mix, out);
         // A switch of mode that came in: Q-Links and MIDI controls learned
         // on the insert's controls follow them.
         for landed in mix.modes.take_landed() {
