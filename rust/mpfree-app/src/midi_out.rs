@@ -1466,6 +1466,14 @@ impl MidiOut {
         since as f64 >= floor
     }
 
+    /// Track `t`'s control `id` (`Owner::Midi`'s parameter) as last given
+    /// ([`MidiOut::control`], raw, before its CC effects), if anything
+    /// has given it one: what MIDI out sends again at the song's start.
+    pub fn value(&self, t: usize, id: u16) -> Option<i16> {
+        let v = *self.controls.value.get(t)?.get(usize::from(id))?;
+        (v != UNSET).then_some(v)
+    }
+
     /// A control's message from track `t`, put before the notes already
     /// on its frame (the mixer, and so the mod engine, runs after the
     /// notes): a step's lock reaches the gear before the step's note.

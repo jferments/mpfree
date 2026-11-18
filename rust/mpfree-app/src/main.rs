@@ -4896,6 +4896,13 @@ impl time::Pads for SeqPads<'_> {
         );
         self.cv.send(o, is);
         self.tap.send(o, is);
+        // A lock or lane on the track's gear that MIDI out sent ahead
+        // never reaches the mod engine: the file takes it here, on its
+        // frame (an unlock as the control's own value, as it went out).
+        if mpfree_play::is_gear_control(o) {
+            self.tap
+                .gear_control(o, |addr| self.modu.engine().base(addr));
+        }
         self.flash(o);
     }
 }
@@ -6805,6 +6812,16 @@ fn player_session(
                 }
                 gui::FromUi::Export(run) => match export.begin(run, &mut mix.mixer, &mut time) {
                     Ok(()) => {
+                        // The tracks' controls as they are: MIDI out sends
+                        // them again as the song starts, and so the file
+                        // has them at the range's start.
+                        for t in 0..mpfree_midi::output::MAX_TRACKS {
+                            for id in 0..mpfree_play::mpfree_param::midi::COUNT {
+                                if let Some(v) = midi_out.value(t, id) {
+                                    export.tap.at_start(t as u16, id, v);
+                                }
+                            }
+                        }
                         // With replays, the arps' random notes start the
                         // same in every pass.
                         if export.replays() {
@@ -8691,6 +8708,10 @@ fn player_session(
         time.follow_tempo(app.settings.bpm);
         // The transport runs first; the clips and the arps follow its clock.
         time.advance(PERIOD as u32);
+        // An export's MIDI file: each control may take a value again this
+        // period (before the player's pass, which taps a slow-gear track's
+        // locks and lanes, and the mixer's, which taps the mod engine's).
+        export.tap.period(time.block().start_frame);
         // A take the leader's Start began isn't ready any more.
         if app.rec.ready.is_some() && time.info().state == mpfree_transport::State::Recording {
             app.rec.ready = None;
