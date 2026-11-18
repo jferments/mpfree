@@ -2038,6 +2038,10 @@ impl SamplePage {
                     ui.get::<mpfree_sampler_ui::widgets::SettingList>(&ev.widget)
                         .and_then(|l| l.why_faint(i))
                 })
+                .or_else(|| {
+                    ui.get::<mpfree_sampler_ui::widgets::ToolStrip>(&ev.widget)
+                        .and_then(|l| l.why_faint(i))
+                })
                 .map(str::to_string)
                 .or(card);
             if let Some(why) = why {
