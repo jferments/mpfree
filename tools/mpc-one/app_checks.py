@@ -2337,6 +2337,7 @@ CHECKS = (
         "Did B1 play the Poly synth's C4 for as long as you held pad 1, and A1's loop keep time until you hit it again?",
         ["the_pads_tabs_type_switch_makes_a_midi_out_pad_the_sound_loop_routes",
          "a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear",
+         "routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind",
          "an_instrument_pads_note_ends_with_the_last_that_holds_it"],
         needs=['UNDO']),
     Check(

@@ -910,13 +910,12 @@ fn routed_keys_play_their_track_where_its_clips_play() {
         (5, up(PAD_NOTES[0])),
     ];
     let mut routed_pads = crate::midi_in::RoutedPads::new();
-    let synth = &*rig.synth;
     let ((), calls) = crate::sys::alloc_count::calls(|| {
         for (track, key) in keys {
             // As the sound loop does: CAPTURE's history first, with the
             // synth's pad layout for track 4 (as if it played the synth).
             let t = usize::from(track);
-            let synth_has = (t == 3).then_some(synth);
+            let synth_has = (t == 3).then_some(&*rig.synth);
             let kept = routed_pads.event(track, key, |n| {
                 crate::midi_file::pad_on_track(&rig.mix.instruments, synth_has, t, n)
             });
@@ -929,7 +928,8 @@ fn routed_keys_play_their_track_where_its_clips_play() {
                 &mut rig.midi,
                 &mut rig.cv,
                 &mut rig.mix.instruments,
-                None,
+                &mut rig.synth,
+                false,
                 &mut rig.player,
                 0,
             );
@@ -1360,6 +1360,113 @@ fn a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear() {
     );
     seq.midi
         .period_end(PERIOD as u32, std::time::Instant::now());
+    assert!(rig.midi.close());
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        [0x99, 36, 100, 0x89, 36, 64],
+        "pad 3's own note on channel 10, and its end"
+    );
+}
+
+/// Keys a route sends to a track that plays a kit (the I/O view's
+/// Routing) play its pads as their kinds have them, as its clips' notes
+/// do: the MIDI out pad's key goes out on that pad's own port, channel
+/// and note, and the Instrument pad's key starts a voice of its engine
+/// (with its pressure and its end); the sampler plays neither, and none
+/// of it allocates or frees.
+#[test]
+fn routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind() {
+    use crate::midi_in::Key;
+    use crate::synth::Engine;
+    use mpfree_midi::profile::kit_pad_of_note;
+    use mpfree_midi::setup::DIN_NAME;
+    use mpfree_node::NodeEvent;
+    let mut rig = Rig::new(false);
+    let sink = MidiSink::default();
+    rig.midi
+        .open(sink.clone(), std::time::Instant::now())
+        .unwrap();
+    rig.midi.sync(&rig.io, false);
+    // Kit 1's pad 3 sends note 36 on channel 10 to the jacks; pad 4 plays
+    // Analog at C3.
+    let mut routes = vec![None; mpfree_sampler::model::PADS];
+    routes[2] = Some(sampler::PadRoute::Midi {
+        port: DIN_NAME.into(),
+        channel: 9,
+        note: 36,
+    });
+    routes[3] = Some(sampler::PadRoute::Voice(Engine::Analog, 48));
+    let mut swap = sampler::ViewSwap {
+        kit: 0,
+        view: Some(mpfree_sampler::engine::EngineView::build(
+            &mpfree_sampler::model::Project::new(),
+            RATE,
+        )),
+        routes,
+    };
+    assert!(rig.player.swap_view(&mut swap));
+    // The keys that hit pads 3 and 4 (the MPC's pad notes).
+    let (out_key, voice_key) = (PAD_NOTES[2], PAD_NOTES[3]);
+    assert_eq!(
+        (kit_pad_of_note(out_key), kit_pad_of_note(voice_key)),
+        (2, 3)
+    );
+    let hits = rig.player.hits();
+    let keys = [
+        Key::Down {
+            note: out_key,
+            velocity: 100,
+        },
+        Key::Down {
+            note: voice_key,
+            velocity: 90,
+        },
+        Key::Pressure {
+            note: voice_key,
+            value: 60,
+        },
+        Key::Up { note: out_key },
+        Key::Up { note: voice_key },
+    ];
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for key in keys {
+            // Track 6, not armed, playing kit 1.
+            crate::play_routed(
+                5,
+                key,
+                &mut rig.midi,
+                &mut rig.cv,
+                &mut rig.mix.instruments,
+                &mut rig.synth,
+                false,
+                &mut rig.player,
+                0,
+            );
+        }
+        rig.midi
+            .period_end(PERIOD as u32, std::time::Instant::now());
+    });
+    assert_eq!(calls, 0, "allocations or frees playing the pads' kinds");
+    assert_eq!(
+        rig.synth.queued_on(Engine::Analog),
+        [
+            NodeEvent::NoteOn {
+                note: 48,
+                velocity: 90
+            },
+            NodeEvent::Pressure {
+                note: 48,
+                value: 60
+            },
+            NodeEvent::NoteOff { note: 48 },
+        ]
+    );
+    assert!(
+        rig.synth.queued().is_empty(),
+        "nothing on the engine on the pads (Poly)"
+    );
+    rig.period(0);
+    assert_eq!(rig.player.hits(), hits, "the sampler played neither");
     assert!(rig.midi.close());
     assert_eq!(
         *sink.0.lock().unwrap(),
