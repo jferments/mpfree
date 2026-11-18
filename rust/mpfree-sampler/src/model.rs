@@ -16,7 +16,8 @@ pub use crate::dsp::{Ahdsr, Filter, FilterKind};
 pub const PADS: usize = 128;
 /// Layers per pad.
 pub const MAX_LAYERS: usize = 16;
-/// Slices per chop set.
+/// Slices per chop set, and the most a sliced region plays as (R4: a
+/// whole break on one pad).
 pub const MAX_SLICES: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -909,6 +910,13 @@ pub struct Region {
     /// Plays at the project tempo (not in granular mode, whose grains have
     /// their own tempo sync).
     pub warp: Option<Warp>,
+    /// A sliced region's slice boundaries, in source frames, sorted (at
+    /// most [`MAX_SLICES`] - 1): slice i runs from boundary i to boundary
+    /// i + 1, where the boundaries are its start, these, then its end. A
+    /// hit plays one slice (the pad's [`Pad::slice`], or the note's on
+    /// keys). Empty: not sliced. A boundary outside the region (after a
+    /// trim) is passed over ([`Region::slice_bounds`]).
+    pub slices: Vec<u64>,
 }
 
 impl Region {
@@ -931,6 +939,12 @@ impl Region {
             let room = ((l.end - l.start) / 2).min(l.start - self.start);
             l.crossfade = u64::from(r.length(l.crossfade)).min(room) as u32;
         }
+        // Slices at the same moments, still in order and inside the sound.
+        for x in &mut self.slices {
+            *x = r.frame(*x);
+        }
+        self.slices.retain(|&x| x > 0 && x < r.frames);
+        self.slices.dedup();
         let len = self.frames();
         self.fade_in.frames = r.length(self.fade_in.frames);
         self.fade_out.frames = r.length(self.fade_out.frames);
@@ -969,6 +983,7 @@ impl Region {
             grain: GrainParams::default(),
             grain_mode: GrainMode::Cloud,
             warp: None,
+            slices: Vec::new(),
         }
     }
 
@@ -1006,9 +1021,38 @@ impl Region {
             .fold(0.0, f32::max)
     }
 
+    /// Its slice boundaries inside it (the ones a trim left outside are
+    /// passed over).
+    pub fn cuts(&self) -> impl Iterator<Item = u64> + '_ {
+        let (a, b) = (self.start, self.end);
+        self.slices.iter().copied().filter(move |&x| x > a && x < b)
+    }
+
+    /// How many slices it plays as: 1 when it isn't sliced.
+    pub fn slice_count(&self) -> usize {
+        self.cuts().count() + 1
+    }
+
+    /// Slice `i`'s start and end (slice 0 of a region that isn't sliced is
+    /// the whole of it); None past the last.
+    pub fn slice_bounds(&self, i: usize) -> Option<(u64, u64)> {
+        let mut edges = std::iter::once(self.start)
+            .chain(self.cuts())
+            .chain(std::iter::once(self.end));
+        let a = edges.nth(i)?;
+        let b = edges.next()?;
+        Some((a, b))
+    }
+
     pub fn check(&self, source: &Source) -> Result<(), ModelError> {
         if self.source != source.id() {
             return Err(ModelError::UnknownSource);
+        }
+        if self.slices.len() >= MAX_SLICES
+            || self.slices.windows(2).any(|w| w[0] >= w[1])
+            || self.slices.iter().any(|&x| x == 0 || x >= source.frames())
+        {
+            return Err(ModelError::BadRegion("slices"));
         }
         if self.start >= self.end || self.end > source.frames() {
             return Err(ModelError::BadRegion("start/end"));
@@ -1293,6 +1337,22 @@ impl ChopSet {
             ..Region::whole(source)
         })
     }
+
+    /// The whole sound as one sliced region (R4, Chop to one pad): slice
+    /// i plays as [`ChopSet::region`] for slice i does. More than
+    /// [`MAX_SLICES`] slices don't fit on one pad.
+    pub fn sliced(&self, source: &Source) -> Result<Region, ModelError> {
+        if source.id() != self.source {
+            return Err(ModelError::UnknownSource);
+        }
+        if self.slices() > MAX_SLICES {
+            return Err(ModelError::BadSlice);
+        }
+        Ok(Region {
+            slices: self.markers.clone(),
+            ..Region::whole(source)
+        })
+    }
 }
 
 /// How a pad chooses among layers whose velocity range contains the hit.
@@ -1385,6 +1445,11 @@ pub struct Pad {
     /// purpose). Off, a pad pitched up is read band-limited
     /// ([`crate::bandlimit`]) and stays clean.
     pub vintage: bool,
+    /// On a sliced layer ([`Region::slices`]), the slice a hit on the pad
+    /// plays, from 0 (below [`MAX_SLICES`]). A step lock or a knob on
+    /// [`crate::engine::PadField::Slice`] picks another for a hit; a note
+    /// on keys plays its own slice.
+    pub slice: u8,
 }
 
 /// The longest key fade, in notes.
@@ -1600,6 +1665,7 @@ impl Pad {
             key_fade: 0,
             vel_fade: 0,
             vintage: false,
+            slice: 0,
         }
     }
 
@@ -1836,6 +1902,7 @@ impl Project {
             return Err(ModelError::BadPad);
         }
         if pad.polyphony == 0
+            || usize::from(pad.slice) >= MAX_SLICES
             || !(0.0..=1.0).contains(&pad.wow)
             || pad.key_fade > MAX_KEY_FADE
             || pad.vel_fade > MAX_VEL_FADE
@@ -2122,11 +2189,15 @@ impl Project {
         } else {
             r.mode
         };
+        // A sliced region's slices on the same hits in the new audio.
+        let mut slices: Vec<u64> = r.cuts().map(at).filter(|&x| x > 0 && x < len).collect();
+        slices.dedup();
         p.layers[layer].region = Region {
             source: s.id(),
             start: 0,
             end: len,
             sustain_loop,
+            slices,
             fade_in,
             fade_out,
             mode,
