@@ -1068,6 +1068,7 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         pitch_env,
         vel_to_cutoff,
         vel_to_pitch,
+        mono,
         kind,
         on_launch,
     } = p;
@@ -1148,6 +1149,18 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
     });
     f.num("vel_to_cutoff", vel_to_cutoff);
     f.num("vel_to_pitch", vel_to_pitch);
+    f.scope("mono", |f| {
+        let Mono {
+            on,
+            legato,
+            glide_ms,
+            glide_held,
+        } = mono;
+        f.flag("on", on);
+        f.flag("legato", legato);
+        f.num("glide_ms", glide_ms);
+        f.flag("glide_held", glide_held);
+    });
     visit_kind(f, kind);
     f.flag("on_launch", on_launch);
 }

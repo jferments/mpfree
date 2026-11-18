@@ -32,7 +32,7 @@ Its settings come in **sections**, a button each across the top of the page, wit
 | **Layers** | how a hit picks layers, Vel fade, the picked layer's Sound, Vel low, Vel high, Level, Pan and Tune, and Add layer and Remove layer | the layer's level, pan, tune and lowest velocity |
 | **Amp** | the pad's Level and Pan, Attack, Hold, Decay, Sustain and Release | attack, decay, sustain, release |
 | **Filter** | the filter's type, Cutoff, Resonance, and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
-| **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade | tune, wow, low key, high key |
+| **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade, and Mono, Legato, Glide and Glide on | tune, wow, low key, high key |
 | **Mod** | Vel → level, Vel → start, Vel → cutoff, Vel → pitch, Pressure and its Depth | vel → level, vel → start, pressure, depth |
 | **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
 | **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
@@ -212,6 +212,19 @@ Where one zone ends and the next begins, the sound can switch at a hard edge or 
 The keyboard and the layer map draw each fade as a curve at the ends of its bar.
 
 {{shot: sample-keys-crossfade | Key fade at 4 notes: the zones that met now overlap and blend over four keys.}}
+
+### One note at a time: Mono, Legato and Glide
+
+A bass line or a lead plays one note at a time, sliding from note to note. The Pitch section's Keys part does that for a pad with keys:
+
+- **Mono**: the pad plays one note, the last key you play. Let go of it while an earlier key is still held and the pad goes back to that key.
+- **Legato**: with Mono on, a key played while another is held moves the sounding note to the new pitch without starting it again. Its envelope and its place in the sound carry on, so a slow attack doesn't come in again. A key played on its own starts the sound as usual.
+- **Glide**: how long the pitch takes to slide to the next note, from Off up to 2 s. Every interval takes that long, a semitone or an octave.
+- **Glide on**: **Every note** slides into each note from the last one played, even after you let go. **Held keys** only slides when you play a key while another is held, so separate notes land on their pitch at once.
+
+They work on a pad's keys, from MIDI or with the pads playing notes. A hit on the pad itself plays as before, and while Keys is off the four say so. A warped sound and a sliced pad keep their pitch, and a grain layer slides with its own Glide on the Grain page. The Pitch chip says **mono** or **legato** while Mono is on.
+
+{{shot: sample-play-mono | The Pitch section of a pad with keys: Mono and Legato on, and a 200 ms glide on held keys.}}
 
 > [!MPC]
 > On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
