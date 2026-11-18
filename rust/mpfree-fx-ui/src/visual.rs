@@ -18,8 +18,8 @@
 use crate::state::{FxState, Scratch};
 use mpfree_fx::ids::{
     channel_strip as cs, character, chorus, cloud, comb, compressor as comp, crush, delay, drive,
-    ducker, eq, filter, flanger, harmonizer as harm, lofi, master, multitap, phaser, pitch,
-    pitch_correct as tune, plate, room, spring, tape, transient, tuner,
+    ducker, ensemble, eq, filter, flanger, harmonizer as harm, lofi, master, multitap, phaser,
+    pitch, pitch_correct as tune, plate, room, spring, tape, transient, tuner,
 };
 use mpfree_fx::{
     interval_semis, nearest_note, room_early_taps, room_loss, room_size, Cloud, Crush, Ducker, Svf,
@@ -58,6 +58,7 @@ pub fn has_visuals(id: &str) -> bool {
             | "mpfree.fx.crush"
             | "mpfree.fx.delay"
             | "mpfree.fx.chorus"
+            | "mpfree.fx.ensemble"
             | "mpfree.fx.flanger"
             | "mpfree.fx.phaser"
             | "mpfree.fx.lofi"
@@ -336,6 +337,43 @@ pub fn strip(
                         ms_text(base),
                         ms_text(swing),
                         lfo_rate(st, chorus::SYNC, chorus::RATE)
+                    ),
+                    traces,
+                    midline: true,
+                    active: true,
+                    ..Card::default()
+                },
+                page,
+            );
+        }
+        Scratch::Ensemble(e) => {
+            // One slow cycle across, the fast wobble riding on it; each
+            // line's delay, the midline the lines' shared delay.
+            let (slow, fast, base) = e.sweeps_ms();
+            let lines = if v(ensemble::LINES) >= 0.5 { 4 } else { 3 };
+            let ratio = v(ensemble::FAST_RATE) / v(ensemble::SLOW_RATE).max(1e-3);
+            let span = (slow + fast).max(1e-3);
+            let colors = [t.accent, t.good, t.warn, t.text];
+            let traces = (0..lines)
+                .filter_map(|k| {
+                    let pts: Option<Vec<(f32, f32)>> = (0..N)
+                        .map(|i| {
+                            let x = i as f32 / (N - 1) as f32;
+                            e.delay_ms(k, x, (ratio * x).fract())
+                                .map(|d| (x, (0.5 + 0.5 * (d - base) / span).clamp(0.0, 1.0)))
+                        })
+                        .collect();
+                    pts.map(|p| line(p, colors[k]))
+                })
+                .collect();
+            s.push(
+                Card {
+                    title: "Sweep".into(),
+                    caption: format!(
+                        "{lines} lines · {} · slow {} · fast {}",
+                        ms_text(base),
+                        text(st, ensemble::SLOW_RATE),
+                        text(st, ensemble::FAST_RATE)
                     ),
                     traces,
                     midline: true,
