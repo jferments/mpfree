@@ -1502,6 +1502,26 @@ impl SamplePage {
                 }
             },
         }
+        // Pitch waiting for the sound's pitch: the worker follows it. Once
+        // it has, the tab's chop is new, and kept.
+        self.follow_chop_pitch();
+        self.keep_chop();
+    }
+
+    /// The Chop tab waits for its sound's pitch (Pitch picked,
+    /// `ChopTab::wants_pitch`): the analysis worker follows it, and the
+    /// page shows the view with it when it lands (`Views::take_done`).
+    fn follow_chop_pitch(&mut self) {
+        let (Some(tab), Some(st)) = (self.chop.as_ref(), self.chop_state.as_ref()) else {
+            return;
+        };
+        if !tab.wants_pitch(st) {
+            return;
+        }
+        let id = st.source.id;
+        if let Some(s) = self.projects.get(self.kit).and_then(|p| p.source(id)) {
+            self.sources.follow_pitch(s);
+        }
     }
 
     fn refresh_pads(&mut self, ui: &mut Ui, bank: Option<char>) {
@@ -2298,6 +2318,7 @@ impl SamplePage {
     /// (`ChopTab::take_kept`): not an undo step, but saved with the
     /// project, so they are there when the tab comes back to the sound.
     fn keep_chop(&mut self) {
+        self.follow_chop_pitch();
         let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_mut()) else {
             return;
         };

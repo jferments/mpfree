@@ -1006,7 +1006,80 @@ pub fn chop_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<ChopSample>, String
     s.tab.qlink(&mut s.ui, &st, 0, 1, false);
     s.tab.press(&mut s.ui, &st, Button::Split);
     out.push(s);
+
+    // A sung line chopped where its notes change (R4.7).
+    let mut s = chop_sample(fonts())?;
+    (s.name, s.about) = (
+        "chop-pitch",
+        "Pitch: a sung line cut where each note changes by a semitone or more, and after its rest",
+    );
+    let (project, view) = melody_project();
+    s.project = project;
+    s.state = ChopState::from_project(&s.project, PAD, 0, view).ok_or("no pad")?;
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    while s.tab.method() != chop_tab::Method::Pitch {
+        step(&mut s, Row::Method, 1);
+    }
+    out.push(s);
     Ok(out)
+}
+
+/// A sung line for the Chop tab's Pitch method (R4.7): C3, E3, G3, a
+/// rest, G3 again and C4, each a tone of four harmonics with a soft start
+/// and end, mono at [`RATE`]; and where each note starts, frames.
+pub fn melody() -> (Vec<f32>, Vec<u64>) {
+    let notes: [(Option<f32>, f64); 6] = [
+        (Some(48.0), 0.3),
+        (Some(52.0), 0.3),
+        (Some(55.0), 0.3),
+        (None, 0.15),
+        (Some(55.0), 0.3),
+        (Some(60.0), 0.4),
+    ];
+    let rate = f64::from(RATE);
+    let mut out = Vec::new();
+    let mut starts = Vec::new();
+    let mut phase = 0.0f64;
+    for (note, secs) in notes {
+        starts.push(out.len() as u64);
+        let n = (secs * rate) as usize;
+        let Some(note) = note else {
+            out.extend(std::iter::repeat_n(0.0, n));
+            continue;
+        };
+        let hz = 440.0 * 2f64.powf((f64::from(note) - 69.0) / 12.0);
+        for i in 0..n {
+            phase += std::f64::consts::TAU * hz / rate;
+            // 5 ms in and out where a rest is next to it.
+            let edge = (i.min(n - 1 - i) as f64 / (rate * 0.005)).min(1.0);
+            let v: f64 = [1.0, 0.5, 0.3, 0.2]
+                .iter()
+                .enumerate()
+                .map(|(k, a)| a * (phase * (k + 1) as f64).sin())
+                .sum();
+            out.push((v * 0.3 * edge) as f32);
+        }
+    }
+    (out, starts)
+}
+
+/// The sample project with pad A5 playing [`melody`] whole, as a
+/// one-shot; its view with its pitch followed.
+pub fn melody_project() -> (Project, Arc<SourceView>) {
+    let (mut p, _) = project();
+    let source = Source::new("Sung line", RATE, 1, melody().0).expect("the melody is valid");
+    let view = SourceView::analyse(&source);
+    let view = Arc::new(match view.follow_pitch(RATE) {
+        Some(t) => view.with_pitch(t),
+        None => view,
+    });
+    let mut region = Region::whole(&source);
+    region.mode = PlayMode::OneShot;
+    p.add_source(source);
+    p.set_pad(PAD, Some(Pad::new("Sung line", Layer::new(region))), None)
+        .expect("the melody pad is valid");
+    (p, view)
 }
 
 /// The sample screens the preview draws.

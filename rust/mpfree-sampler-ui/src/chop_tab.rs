@@ -11,8 +11,12 @@
 //!   **Transient**
 //!   (where the hits start, at a sensitivity), **Beat** (on the source's
 //!   beat grid, a slice every 16th, 8th, beat, two beats or bar), **Grid**
-//!   (equal slices), **Silence** (one slice per sound, below a threshold)
-//!   and **Manual** (the cuts as they are), and **Live**: **Start** plays
+//!   (equal slices), **Silence** (one slice per sound, below a threshold),
+//!   **Pitch** (where the note changes by a number of semitones or more,
+//!   or starts after a rest: a sung line or a bass part, note by note; the
+//!   sound's pitch is followed the first time Pitch is picked on it, off
+//!   the screen thread: [`ChopTab::wants_pitch`], [`SourceView::pitch`]) and
+//!   **Manual** (the cuts as they are), and **Live**: **Start** plays
 //!   the region once and every pad played meanwhile drops a cut where the
 //!   sound is (the sampler marks it to the frame, [`ChopAction::Live`]),
 //!   moved onto the nearest hit within the **Pull to hits** window; Stop,
@@ -135,6 +139,11 @@ const THRESHOLD_STEP_DB: i32 = 3;
 const HIT_WINDOWS_MS: [u16; 5] = [0, 10, 20, 40, 80];
 /// Live: the sensitivity the hits it snaps to are found at.
 const LIVE_HITS_SENSITIVITY: f32 = 0.6;
+/// Pitch: the change in semitones that makes a cut, 1 to an octave.
+const PITCH_CHANGES: (u8, u8) = (1, 12);
+/// Pitch: the shortest note that counts, ms; shorter ones (a slide's
+/// passing notes, a scoop into a note) don't make a cut.
+const PITCH_MIN_NOTE_MS: u64 = 50;
 
 /// How the tab cuts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -144,17 +153,20 @@ pub enum Method {
     Beat,
     Grid,
     Silence,
+    /// Where the note changes (R4.7).
+    Pitch,
     Manual,
     /// Cuts dropped by hitting pads while the sound plays.
     Live,
 }
 
 impl Method {
-    pub const ALL: [Method; 6] = [
+    pub const ALL: [Method; 7] = [
         Method::Transient,
         Method::Beat,
         Method::Grid,
         Method::Silence,
+        Method::Pitch,
         Method::Manual,
         Method::Live,
     ];
@@ -165,6 +177,7 @@ impl Method {
             Method::Beat => "Beat",
             Method::Grid => "Grid",
             Method::Silence => "Silence",
+            Method::Pitch => "Pitch",
             Method::Manual => "Manual",
             Method::Live => "Live",
         }
@@ -177,6 +190,7 @@ impl Method {
             Method::Beat => ChopMode::Beat,
             Method::Grid => ChopMode::Grid,
             Method::Silence => ChopMode::Silence,
+            Method::Pitch => ChopMode::Pitch,
             Method::Manual | Method::Live => ChopMode::Manual,
         }
     }
@@ -188,6 +202,7 @@ impl Method {
             ChopMode::Beat => Method::Beat,
             ChopMode::Grid => Method::Grid,
             ChopMode::Silence => Method::Silence,
+            ChopMode::Pitch => Method::Pitch,
             ChopMode::Manual => Method::Manual,
         }
     }
@@ -530,6 +545,12 @@ pub struct ChopTab {
     threshold_db: i32,
     /// Live: an index into [`HIT_WINDOWS_MS`].
     hit_window: usize,
+    /// Pitch: the change in semitones that makes a cut.
+    semitones: u8,
+    /// Pitch chopped before the sound's pitch was followed: the cuts come
+    /// when it is ([`ChopTab::update`]), and until then there is nothing
+    /// to keep.
+    pitch_pending: bool,
     /// Live chop is on: the hits its cuts snap to.
     live: Option<Vec<u64>>,
     /// Live chop was stopped by a change here: the app hears of it with
@@ -537,7 +558,8 @@ pub struct ChopTab {
     stop_due: bool,
     /// Why the last touch changed nothing, once ([`ChopTab::take_note`]).
     note: Option<String>,
-    /// Snap cuts made by hand, and by Beat and Grid, to zero crossings.
+    /// Snap cuts made by hand, and by Beat, Grid and Pitch, to zero
+    /// crossings.
     snap: bool,
     /// Slice starts strictly inside the region, sorted.
     cuts: Vec<u64>,
@@ -608,6 +630,8 @@ impl ChopTab {
             grid: 8,
             threshold_db: SilenceSettings::default().threshold_db as i32,
             hit_window: 3,
+            semitones: PITCH_CHANGES.0,
+            pitch_pending: false,
             live: None,
             stop_due: false,
             note: None,
@@ -844,6 +868,7 @@ impl ChopTab {
                 // The slices as the tab last left them on this sound.
                 self.method = Method::of_mode(mode);
                 self.cuts = cuts;
+                self.pitch_pending = false;
             } else if matches!(self.method, Method::Manual | Method::Live) && same_source {
                 // Keep the hand-made cuts that are still inside.
                 self.cuts = ChopTab::inside(st, &self.cuts);
@@ -868,10 +893,15 @@ impl ChopTab {
                     self.method = Method::of_mode(mode);
                 }
                 self.cuts = cuts;
+                self.pitch_pending = false;
                 self.told = Some((key.0, self.method.mode(), self.cuts.clone()));
             }
         }
         self.heard = heard;
+        if self.pitch_pending && self.method == Method::Pitch && st.source.pitch.is_some() {
+            // The sound's pitch came in: the chop Pitch was waiting for.
+            self.rechop(st);
+        }
         self.selected = self.selected.min(self.cuts.len());
         self.show(ui, st);
     }
@@ -883,6 +913,10 @@ impl ChopTab {
     /// are there when the tab comes back to the sound, and in the saved
     /// project.
     pub fn take_kept(&mut self, st: &ChopState) -> Option<(ChopMode, Vec<u64>)> {
+        if self.pitch_pending {
+            // Nothing to keep until the sound's pitch is followed.
+            return None;
+        }
         let now = (st.source.id, self.method.mode(), self.cuts.clone());
         if self.told.as_ref() == Some(&now) {
             return None;
@@ -908,7 +942,8 @@ impl ChopTab {
     }
 
     /// The cuts the method makes in the region.
-    fn chop(&self, st: &ChopState) -> Vec<u64> {
+    fn chop(&mut self, st: &ChopState) -> Vec<u64> {
+        self.pitch_pending = false;
         let (rs, re) = (st.region.start, st.region.end);
         let raw: Vec<u64> = match self.method {
             Method::Manual | Method::Live => return self.cuts.clone(),
@@ -942,6 +977,19 @@ impl ChopTab {
                 sound_spans(&st.source.mono, 1, st.rate, settings)
                     .map_or_else(|_| Vec::new(), |s| s.iter().map(|s| s.0).collect())
             }
+            Method::Pitch => {
+                let Some(track) = st.source.pitch.clone() else {
+                    self.pitch_pending = true;
+                    return Vec::new();
+                };
+                let min = u64::from(st.rate) * PITCH_MIN_NOTE_MS / 1000;
+                track
+                    .changes(f32::from(self.semitones), min)
+                    .into_iter()
+                    .filter(|c| (rs..re).contains(c))
+                    .map(|c| self.snapped(st, c, 0, None))
+                    .collect()
+            }
         };
         // Inside the region, apart, and no more than the tab cuts.
         let gap = st.min_slice();
@@ -953,6 +1001,14 @@ impl ChopTab {
         }
         cuts.truncate(MAX_CUT_SLICES - 1);
         cuts
+    }
+
+    /// Whether the tab waits for the sound's pitch to be followed: Pitch
+    /// is the method and the sound has a mono mix but no pitch yet. The
+    /// app then follows it off the screen thread
+    /// ([`SourceView::follow_pitch`]) and shows the tab the view with it.
+    pub fn wants_pitch(&self, st: &ChopState) -> bool {
+        self.method == Method::Pitch && st.source.pitch.is_none() && !st.source.mono.is_empty()
     }
 
     fn show(&self, ui: &mut Ui, st: &ChopState) {
@@ -1088,6 +1144,7 @@ impl ChopTab {
             Method::Silence => {
                 ((THRESHOLD_RANGE_DB.1 - THRESHOLD_RANGE_DB.0) / THRESHOLD_STEP_DB) as u32
             }
+            Method::Pitch => u32::from(PITCH_CHANGES.1 - PITCH_CHANGES.0),
             Method::Manual => 1,
             Method::Live => HIT_WINDOWS_MS.len() as u32 - 1,
         };
@@ -1233,6 +1290,18 @@ impl ChopTab {
                     "Threshold",
                     format!("{} dB", self.threshold_db),
                     (self.threshold_db - lo) as f32 / (hi - lo) as f32,
+                )
+            }
+            Method::Pitch => {
+                let (lo, hi) = PITCH_CHANGES;
+                (
+                    "Change",
+                    match self.semitones {
+                        1 => "1 semi".into(),
+                        12 => "Octave".into(),
+                        n => format!("{n} semis"),
+                    },
+                    f32::from(self.semitones - lo) / f32::from(hi - lo),
                 )
             }
             Method::Manual => ("Setting", "—".into(), 0.0),
@@ -1570,7 +1639,7 @@ impl ChopTab {
             Row::Amount => self.turn_amount(st, d),
             Row::Snap => {
                 self.snap ^= d % 2 != 0;
-                if matches!(self.method, Method::Beat | Method::Grid) {
+                if matches!(self.method, Method::Beat | Method::Grid | Method::Pitch) {
                     self.rechop(st);
                 }
             }
@@ -1614,6 +1683,11 @@ impl ChopTab {
             Method::Silence => {
                 let (lo, hi) = THRESHOLD_RANGE_DB;
                 self.threshold_db = (self.threshold_db + delta * THRESHOLD_STEP_DB).clamp(lo, hi);
+            }
+            Method::Pitch => {
+                let (lo, hi) = PITCH_CHANGES;
+                let n = i32::from(self.semitones) + delta;
+                self.semitones = n.clamp(i32::from(lo), i32::from(hi)) as u8;
             }
             Method::Manual => return,
             Method::Live => {

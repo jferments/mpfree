@@ -1252,6 +1252,8 @@ pub enum ChopMode {
     Beat,
     Manual,
     Silence,
+    /// Where the notes change (R4.7).
+    Pitch,
 }
 
 /// The name a chop kept for its sound goes by ([`Project::keep_chop`]).
