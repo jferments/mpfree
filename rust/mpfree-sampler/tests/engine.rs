@@ -476,6 +476,7 @@ fn full_voices_keep_to_their_limit_and_plain_hits_use_the_rest() {
         cutoff_hz: 2000.0,
         resonance: 0.0,
         env_octaves: 0.0,
+        drive_db: 0.0,
     };
     let plain = Pad::new("plain", Layer::new(Region::whole(&s)));
     let p = project_with(&[(0, full), (1, plain)], vec![s]);
@@ -518,6 +519,7 @@ fn renders_are_deterministic() {
         cutoff_hz: 800.0,
         resonance: 0.4,
         env_octaves: 2.0,
+        drive_db: 0.0,
     };
     pad.filter_env = Ahdsr {
         attack_ms: 1.0,
@@ -565,6 +567,7 @@ fn low_pass_takes_the_edge_off() {
         cutoff_hz: 300.0,
         resonance: 0.0,
         env_octaves: 0.0,
+        drive_db: 0.0,
     };
     open.vel_to_level = 0.0;
     closed.vel_to_level = 0.0;

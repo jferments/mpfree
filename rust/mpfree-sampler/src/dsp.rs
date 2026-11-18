@@ -254,6 +254,15 @@ pub enum FilterKind {
     LowPass,
     HighPass,
     BandPass,
+    /// Everything but a band around the cutoff (sampler R5.6).
+    Notch,
+    /// A 4-pole ladder low-pass with a resonance that sings and a Drive
+    /// into it ([`Ladder`], sampler R5.6).
+    Ladder,
+    /// Two formant band-passes: the cutoff moves the vowel from "oo"
+    /// through "oh", "ah" and "eh" to "ee" ([`vowel_formants`], sampler
+    /// R5.6).
+    Vowel,
 }
 
 /// A filter setting. `poles` is 2 or 4 (4 = two 2-pole stages in series).
@@ -266,7 +275,13 @@ pub struct Filter {
     /// 0 = no resonance, 1 = close to self-oscillation.
     pub resonance: f32,
     pub env_octaves: f32,
+    /// How hard the ladder is driven, in dB (0 to [`MAX_DRIVE_DB`]); the
+    /// other kinds leave it be (sampler R5.6).
+    pub drive_db: f32,
 }
+
+/// The ladder's strongest drive, in dB.
+pub const MAX_DRIVE_DB: f32 = 24.0;
 
 impl Default for Filter {
     fn default() -> Self {
@@ -276,8 +291,352 @@ impl Default for Filter {
             cutoff_hz: 20_000.0,
             resonance: 0.0,
             env_octaves: 0.0,
+            drive_db: 0.0,
         }
     }
+}
+
+/// A smooth clip that is `tanh` to within 2.5 % (a rational fit, cheap
+/// enough for every frame of every voice): straight through 0 with a slope
+/// of 1, flat at ±1 from ±3 (where its slope has come down to 0, so the
+/// join has no corner).
+#[inline(always)]
+pub fn soft_clip(x: f32) -> f32 {
+    let x = x.clamp(-3.0, 3.0);
+    let x2 = x * x;
+    x * (27.0 + x2) / (27.0 + 9.0 * x2)
+}
+
+/// The Drive's curve, in units of [`DRIVE_KNEE`] (`u = x / knee`): the
+/// quintic smoothstep `(15u - 10u³ + 3u⁵) / 8`, flat at ±1 from ±1 with its
+/// first two derivatives 0 there, so its harmonics fall away fast. Slope 1
+/// through 0 in `x`.
+#[inline(always)]
+fn drive_curve_u(u: f32) -> f32 {
+    let u = u.clamp(-1.0, 1.0);
+    let u2 = u * u;
+    u * (15.0 + u2 * (3.0 * u2 - 10.0)) * 0.125
+}
+
+/// Where the Drive's curve flattens: its slope at 0 is `15 / 8` in `u`.
+const DRIVE_KNEE: f32 = 15.0 / 8.0;
+
+/// The Drive's curve at `x`.
+#[inline(always)]
+fn drive_curve(x: f32) -> f32 {
+    drive_curve_u(x / DRIVE_KNEE)
+}
+
+/// The curve's average from `w` to `u` (first-order antiderivative
+/// antialiasing): its antiderivative `(15u² - 5u⁴ + u⁶) / 16` (then `|u|`
+/// plus a constant from ±1), divided by the step. Between ±1 the quotient
+/// is worked out as a polynomial in `u` and `w`, exact at any step with no
+/// division; across ±1, the quotient itself, or the curve at the midpoint
+/// where the step is too small for it.
+#[inline(always)]
+fn drive_average_u(u: f32, w: f32) -> f32 {
+    if u.abs() <= 1.0 && w.abs() <= 1.0 {
+        let (s1, p2, uw) = (u + w, u * u + w * w, u * w);
+        s1 * (15.0 - 5.0 * p2 + p2 * p2 - uw * uw) * 0.0625
+    } else if u >= 1.0 && w >= 1.0 {
+        1.0
+    } else if u <= -1.0 && w <= -1.0 {
+        -1.0
+    } else if (u - w).abs() < 1.0e-4 {
+        drive_curve_u(0.5 * (u + w))
+    } else {
+        let big = |u: f32| {
+            let a = u.abs();
+            if a >= 1.0 {
+                a - 1.0 + 11.0 / 16.0
+            } else {
+                let u2 = u * u;
+                u2 * (15.0 + u2 * (u2 - 5.0)) * 0.0625
+            }
+        };
+        (big(u) - big(w)) / (u - w)
+    }
+}
+
+/// The level a driven sound keeps: a sine peaking here (-12 dBFS) into
+/// the drive comes out at the same loudness (RMS), whatever the Drive.
+const DRIVE_REF: f32 = 0.25;
+
+/// The scale after the curve at gain `drive` that keeps a sine at
+/// [`DRIVE_REF`] at its RMS (a quarter cycle at 32 points; on a change of
+/// Drive only).
+fn drive_norm(drive: f32) -> f32 {
+    const N: usize = 32;
+    let ms = (0..N)
+        .map(|i| {
+            let s = ((i as f32 + 0.5) / N as f32 * FRAC_PI_2).sin();
+            drive_curve(drive * DRIVE_REF * s).powi(2)
+        })
+        .sum::<f32>()
+        / N as f32;
+    (0.5 * DRIVE_REF * DRIVE_REF / ms).sqrt()
+}
+
+/// The half-band's all-pass coefficients, the even sections' and the odd
+/// ones' (6 sections, transition 0.2 to 0.3 of the higher rate:
+/// Valenzuela and Constantinides' elliptic design, as mpfree-synth's
+/// Squelch and mpfree-fx's oversampler have it).
+const HB_EVEN: [f32; 3] = [0.060_297_39, 0.412_590_7, 0.772_715_6];
+const HB_ODD: [f32; 3] = [0.215_971_44, 0.604_358_6, 0.923_886_1];
+
+/// One polyphase all-pass section, `y = a (x - y1) + x1`, state `[x1, y1]`.
+#[inline(always)]
+fn ap(a: f32, s: &mut [f32; 2], x: f32) -> f32 {
+    let y = a * (x - s[1]) + s[0];
+    *s = [x, y];
+    y
+}
+
+/// The Drive for one channel (sampler R5.6): its curve
+/// ([`drive_curve`]) at twice the rate through an IIR half-band each way,
+/// each sample the curve's average over the straight line from the last
+/// (first-order antiderivative antialiasing, Parker, Zavalishin and Le
+/// Bihan, DAFx 2016, as mpfree-fx's Drive does it). A 5 kHz sine at 0 dBFS
+/// driven 12 dB aliases about 84 dB under the tone; the bare curve at the
+/// base rate gives -18 dB. The average is half a step late and a little
+/// dull at the very top (about -2.4 dB at 20 kHz), under a low-pass anyway.
+#[derive(Clone, Copy, Debug, Default)]
+struct DriveOs {
+    /// The up-sampler's sections (even then odd) and the down-sampler's.
+    up: [[f32; 2]; 6],
+    down: [[f32; 2]; 6],
+    /// The curve's last input, in units of [`DRIVE_KNEE`].
+    w: f32,
+    /// Running: it starts from the first sample as if that had been there
+    /// all along, so turning Drive up on a sounding note doesn't click.
+    live: bool,
+}
+
+impl DriveOs {
+    /// Settles every state on `x` held steady (all-pass sections pass a
+    /// steady value as it is).
+    fn seed(&mut self, x: f32) {
+        let y = drive_curve(x);
+        self.up = [[x, x]; 6];
+        self.down = [[y, y]; 6];
+        self.w = x / DRIVE_KNEE;
+        self.live = true;
+    }
+
+    /// The curve's average from the last input to `x`.
+    #[inline(always)]
+    fn curve(&mut self, x: f32) -> f32 {
+        let u = x * (1.0 / DRIVE_KNEE);
+        let y = drive_average_u(u, self.w);
+        self.w = u;
+        y
+    }
+
+    /// `x` (already times the drive's gain) through the curve.
+    #[inline(always)]
+    fn run(&mut self, x: f32) -> f32 {
+        if !self.live {
+            self.seed(x);
+        }
+        let [u0, u1, u2, u3, u4, u5] = &mut self.up;
+        let e = ap(HB_EVEN[2], u2, ap(HB_EVEN[1], u1, ap(HB_EVEN[0], u0, x)));
+        let o = ap(HB_ODD[2], u5, ap(HB_ODD[1], u4, ap(HB_ODD[0], u3, x)));
+        let (a, b) = (self.curve(e), self.curve(o));
+        // Down: the later sample through the even sections, the earlier
+        // through the odd ones.
+        let [d0, d1, d2, d3, d4, d5] = &mut self.down;
+        let e = ap(HB_EVEN[2], d2, ap(HB_EVEN[1], d1, ap(HB_EVEN[0], d0, b)));
+        let o = ap(HB_ODD[2], d5, ap(HB_ODD[1], d4, ap(HB_ODD[0], d3, a)));
+        0.5 * (e + o)
+    }
+
+    fn flush(&mut self) {
+        for x in self.up.iter_mut().chain(self.down.iter_mut()).flatten() {
+            if x.abs() < TINY {
+                *x = 0.0;
+            }
+        }
+    }
+}
+
+/// A 4-pole ladder low-pass, Moog style (sampler R5.6): four one-pole
+/// stages in a loop, solved without a delay in the loop (Zavalishin's TPT
+/// ladder), the feedback taken through [`soft_clip`], so a high Resonance
+/// sings at a steady level instead of running away while the sound itself
+/// passes straight. Drive goes before it ([`DriveOs`]). Both channels; one
+/// per voice.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Ladder {
+    s: [[f32; 4]; 2],
+    /// One stage's `g / (1 + g)` and `1 / (1 + g)`.
+    big_g: f32,
+    inv_1g: f32,
+    /// The feedback (0 to [`LADDER_K`]; from 4 it sings) and the gain that
+    /// gives back part of the bass a resonant ladder loses.
+    k: f32,
+    makeup: f32,
+    /// Drive's gain into the curve and its scale after it; gain 0: none.
+    /// The Drive (dB) they are for.
+    drive: f32,
+    norm: f32,
+    drive_db: f32,
+    os: [DriveOs; 2],
+}
+
+/// The ladder's feedback at Resonance 1: past 4, where it sings.
+pub const LADDER_K: f32 = 4.2;
+
+/// The ladder's make-up gain at feedback `k`: half the bass it loses
+/// (a ladder's gain at 0 Hz is `1 / (1 + k)`).
+pub fn ladder_makeup(k: f32) -> f32 {
+    1.0 + 0.5 * k
+}
+
+impl Ladder {
+    /// Resonance 0 to 1 (from about 0.95 it sings), Drive in dB.
+    pub fn set(&mut self, cutoff_hz: f32, resonance: f32, drive_db: f32, rate: f32) {
+        let fc = cutoff_hz.clamp(10.0, rate * 0.45);
+        let g = (PI * fc / rate).tan();
+        self.big_g = g / (1.0 + g);
+        self.inv_1g = 1.0 / (1.0 + g);
+        self.k = LADDER_K * resonance.clamp(0.0, 1.0);
+        self.makeup = ladder_makeup(self.k);
+        let drive_db = drive_db.clamp(0.0, MAX_DRIVE_DB);
+        if drive_db > 0.0 {
+            if drive_db != self.drive_db || self.drive == 0.0 {
+                self.drive = db_to_gain(drive_db);
+                self.norm = drive_norm(self.drive);
+                self.drive_db = drive_db;
+            }
+        } else {
+            (self.drive, self.norm) = (0.0, 1.0);
+            // Off: it starts afresh when it next comes on.
+            self.os[0].live = false;
+            self.os[1].live = false;
+        }
+    }
+
+    /// Zeros a state too small to hear (see [`Svf::flush`]).
+    #[inline]
+    pub fn flush(&mut self) {
+        for ch in &mut self.s {
+            for x in ch.iter_mut() {
+                if x.abs() < TINY {
+                    *x = 0.0;
+                }
+            }
+        }
+        if self.drive > 0.0 {
+            self.os[0].flush();
+            self.os[1].flush();
+        }
+    }
+
+    #[inline]
+    pub fn process(&mut self, ch: usize, x: f32) -> f32 {
+        let x = if self.drive > 0.0 {
+            self.os[ch].run(x * self.drive) * self.norm
+        } else {
+            x
+        };
+        let g = self.big_g;
+        let s = &mut self.s[ch];
+        let (g2, g3) = (g * g, g * g * g);
+        let g4 = g2 * g2;
+        // The loop's output, solved as if the feedback were straight;
+        // then the feedback through the curve.
+        let sig = self.inv_1g * (g3 * s[0] + g2 * s[1] + g * s[2] + s[3]);
+        let y4 = (g4 * x + sig) / (1.0 + self.k * g4);
+        let mut u = x - soft_clip(self.k * y4);
+        for st in s.iter_mut() {
+            let v = (u - *st) * g;
+            let y = v + *st;
+            *st = y + v;
+            u = y;
+        }
+        u * self.makeup
+    }
+}
+
+/// The two formants (Hz) of the vowel at `cutoff_hz` (sampler R5.6): 200 Hz
+/// and below is "oo", then "oh", "ah", "eh" and, from 5 kHz, "ee", each
+/// gliding into the next. Male voice formants (Peterson and Barney 1952).
+pub fn vowel_formants(cutoff_hz: f32) -> (f32, f32) {
+    const VOWELS: [(f32, f32); 5] = [
+        (300.0, 870.0),  // oo
+        (570.0, 840.0),  // oh
+        (730.0, 1090.0), // ah
+        (530.0, 1840.0), // eh
+        (270.0, 2290.0), // ee
+    ];
+    let t = ((cutoff_hz.max(1.0) / 200.0).ln() / 25.0f32.ln() * 4.0).clamp(0.0, 4.0);
+    let i = (t.floor() as usize).min(3);
+    let u = t - i as f32;
+    let (a, b) = (VOWELS[i], VOWELS[i + 1]);
+    // Glide in pitch, not in Hz.
+    let mix = |x: f32, y: f32| x * (y / x).powf(u);
+    (mix(a.0, b.0), mix(a.1, b.1))
+}
+
+/// The vowel's name at `cutoff_hz`, for the screen.
+pub fn vowel_name(cutoff_hz: f32) -> &'static str {
+    let t = ((cutoff_hz.max(1.0) / 200.0).ln() / 25.0f32.ln() * 4.0).clamp(0.0, 4.0);
+    ["oo", "oh", "ah", "eh", "ee"][t.round() as usize]
+}
+
+/// The formants' `k` (one over their Q) at the filter's `resonance` (0 to
+/// 1): a Q of 5 at 0 to 12.5 at 1, the spread of a voice's formants.
+fn vowel_k(resonance: f32) -> f32 {
+    0.2 * 0.4f32.powf(resonance.clamp(0.0, 1.0))
+}
+
+/// The resonance each formant's [`Svf`] is set to for the filter's
+/// `resonance` (0 to 1).
+pub fn vowel_resonance(resonance: f32) -> f32 {
+    (2.0 - vowel_k(resonance)) / 1.95
+}
+
+/// The second formant's level against the first's.
+pub const FORMANT_2: f32 = 0.6;
+
+/// The gain after the formants at `resonance`: the narrower they are, the
+/// more of a full sound they take away, so a saw at 110 Hz comes out
+/// about 4 dB under its level at any resonance, and a sine right on the
+/// first formant 8 to 12 dB over it.
+pub fn vowel_gain(resonance: f32) -> f32 {
+    1.1 / vowel_k(resonance).sqrt()
+}
+
+/// A Vowel filter's gain at `hz` (dB): its two formants at `cutoff_hz`,
+/// in parallel as [`Svf`] band-passes peaking at 1, the analog
+/// prototype the engine follows. For the Play page's picture.
+pub fn vowel_db(cutoff_hz: f32, resonance: f32, hz: f32) -> f32 {
+    let (f1, f2) = vowel_formants(cutoff_hz);
+    let k = vowel_k(resonance);
+    // k jx / (1 - x² + k jx), as (re, im).
+    let band = |f: f32| {
+        let x = hz / f;
+        let (re, im) = (1.0 - x * x, k * x);
+        let d = re * re + im * im;
+        (k * x * im / d, k * x * re / d)
+    };
+    let (a, b) = (band(f1), band(f2));
+    let g = vowel_gain(resonance);
+    let (re, im) = (g * (a.0 + FORMANT_2 * b.0), g * (a.1 + FORMANT_2 * b.1));
+    10.0 * (re * re + im * im).max(1e-12).log10()
+}
+
+/// A Ladder's small-signal gain at `hz` (dB), no Drive: four one-pole
+/// stages at `cutoff_hz` in a loop with feedback `k`, then the make-up,
+/// `m / ((1 + s)^4 + k)`. For the Play page's picture.
+pub fn ladder_db(cutoff_hz: f32, resonance: f32, hz: f32) -> f32 {
+    let k = LADDER_K * resonance.clamp(0.0, 1.0);
+    let x = hz / cutoff_hz.max(1.0);
+    // (1 + jx)^4 = 1 - 6x² + x⁴ + j(4x - 4x³).
+    let x2 = x * x;
+    let (re, im) = (1.0 - 6.0 * x2 + x2 * x2 + k, 4.0 * x - 4.0 * x * x2);
+    let m = ladder_makeup(k);
+    10.0 * (m * m / (re * re + im * im)).max(1e-12).log10()
 }
 
 /// One 2-pole topology-preserving state-variable filter stage per channel
@@ -327,6 +686,11 @@ impl Svf {
             FilterKind::LowPass => v2,
             FilterKind::BandPass => v1,
             FilterKind::HighPass => x - self.k * v1 - v2,
+            FilterKind::Notch => x - self.k * v1,
+            // A formant: the band-pass, its peak at unity.
+            FilterKind::Vowel => self.k * v1,
+            // The ladder runs on its own ([`Ladder`]).
+            FilterKind::Ladder => v2,
         }
     }
 }
@@ -451,5 +815,42 @@ mod tests {
         for _ in 0..10 {
             assert_eq!(a.next_u32(), b.next_u32());
         }
+    }
+
+    #[test]
+    fn the_drives_average_is_the_curves_mean_over_the_step() {
+        // Against the mean of the curve at many points along the step.
+        let mean = |u: f32, w: f32| {
+            let n = 4000;
+            (0..n)
+                .map(|i| drive_curve_u(w + (u - w) * (i as f32 + 0.5) / n as f32))
+                .sum::<f32>()
+                / n as f32
+        };
+        for (u, w) in [
+            (0.3, -0.2),
+            (0.9, 0.95),
+            (-0.7, 0.1),
+            (1.4, 0.5),
+            (-2.0, 0.8),
+            (1.5, 3.0),
+            (-1.2, -4.0),
+            (1.00005, 0.99995),
+        ] {
+            let got = drive_average_u(u, w);
+            assert!(
+                (got - mean(u, w)).abs() < 2e-4,
+                "{u} {w}: {got} {}",
+                mean(u, w)
+            );
+        }
+        // A step of nothing: the curve itself.
+        for u in [-1.5, -0.5, 0.0, 0.25, 0.99, 2.0] {
+            assert!((drive_average_u(u, u) - drive_curve_u(u)).abs() < 1e-6);
+        }
+        // Slope 1 through 0, flat at 1 from the knee.
+        assert!((drive_curve(1e-3) / 1e-3 - 1.0).abs() < 1e-3);
+        assert_eq!(drive_curve(DRIVE_KNEE), 1.0);
+        assert_eq!(drive_curve(10.0), 1.0);
     }
 }

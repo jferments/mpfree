@@ -181,6 +181,7 @@ fn render_and_events_never_allocate() {
             cutoff_hz: 1000.0,
             resonance: 0.5,
             env_octaves: 3.0,
+            drive_db: 0.0,
         };
         pad.amp = Ahdsr {
             attack_ms: 2.0,
@@ -242,6 +243,7 @@ fn render_and_events_never_allocate() {
             cutoff_hz: 3000.0,
             resonance: 0.2,
             env_octaves: 1.0,
+            drive_db: 0.0,
         };
         let targets = [
             PressureTarget::GrainDensity,
