@@ -8256,6 +8256,11 @@ fn player_session(
         // mod engine moved in the mixer's (a step's lock, a lane, a macro,
         // a learned knob) join this period's notes on their frames, a
         // step's ahead of its note.
+        // Each track's CC scale and CC smooth as they are now (macros and
+        // LFOs on their settings too) shape its controls from here.
+        for t in 0..mpfree_midi::output::MAX_TRACKS {
+            midi_out.set_note_fx(t, &time.note_fx_now(t));
+        }
         for (offset, addr, value) in mix.modu.take_midi_values() {
             midi_out.control(offset, addr, value);
         }
