@@ -2446,6 +2446,18 @@ impl Player {
         rows
     }
 
+    /// The I/O view's tracks (Tracks out, Routing, the Clips card, CV's
+    /// Track) are the project's, by name: every one of them, up to 128,
+    /// so any track can play outside gear. Written only when they change.
+    fn name_io_tracks(&self) {
+        let Some(m) = &self.io_model else { return };
+        let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+        let names = self.time.tracks.iter().map(|t| &t.name);
+        if !m.live.tracks.iter().eq(names.clone()) {
+            m.live.tracks = names.cloned().collect();
+        }
+    }
+
     /// The Pads tab's Kit of row: each track that plays a kit, with the
     /// kit (the armed one outlined), and the tracks with clips or the
     /// armed one that play the synth or an instrument of their own, faint.
@@ -8112,6 +8124,7 @@ impl Player {
                 // The bar's REC chip is the screen's own (refresh_play).
                 st.chips = std::mem::take(&mut self.time.chips);
                 self.time = *st;
+                self.name_io_tracks();
                 self.kit_track_armed();
                 self.refresh_kit_tracks();
                 self.play.track = self.track_look();
@@ -20714,6 +20727,31 @@ mod tests {
             panic!("{a:?}");
         };
         assert_eq!((pad, addr.on), (crate::time::LINE, OnTrack::Inst));
+    }
+
+    /// The I/O view's tracks are the project's, by name, every one: a
+    /// project of 20 lists its 20th, so a track past 16 can play gear.
+    #[test]
+    fn the_io_view_lists_the_projects_tracks_by_name() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        let io = crate::midi_in::io_model();
+        p.apply(ToUi::IoModel(io.clone()));
+        assert_eq!(io.lock().unwrap().live.tracks.len(), 16);
+        let mut st = p.time.clone();
+        let one = st.tracks[0].clone();
+        st.tracks = (1..=20)
+            .map(|i| mpfree_time_ui::view::TrackInfo {
+                name: format!("Part {i}"),
+                ..one.clone()
+            })
+            .collect();
+        p.apply(ToUi::Time(Box::new(st)));
+        let names = io.lock().unwrap().live.tracks.clone();
+        assert_eq!(names.len(), 20);
+        assert_eq!(
+            (names[0].as_str(), names[19].as_str()),
+            ("Part 1", "Part 20")
+        );
     }
 
     #[test]
