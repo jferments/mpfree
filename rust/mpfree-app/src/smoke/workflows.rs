@@ -482,8 +482,7 @@ mod tests {
             let mut s = Session::new();
             s.press("header", "tab", "Pads");
             s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank B")
-                .run_for(0.1);
-            s.press("smp-pads-bar", "tab", "Pad").run_for(0.3);
+                .run_for(0.3);
             s.pad(4, 100, 0.05);
             s.run_for(0.2);
             assert_eq!(s.screen.sample.pad(), 20, "B5");
