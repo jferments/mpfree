@@ -234,6 +234,10 @@ Throws play on the master. A throw's Starts, Let go and 1 bar are the pad's own:
 
 {{shot: pads-perform | The Pads tab showing the Perform set: page B's throws, a macro pad, two track mutes, a loop key and a scene, with Reverb wash on B2 picked.}}
 
+### A footswitch
+
+A MIDI footswitch or pedalboard can play the looper while your hands stay on your instrument: a loop's key and mute, the picked loop's key, **Next loop**, **Undo**, **Redo**, **Capture** and **Clear**, on every page. A key held for a second clears its loop, as a pad does. The MPC One has no footswitch jack, so the footswitch goes into a MIDI controller or pedal. Teach it in the mixer's Learn section: see [Playing the looper from a footswitch](midi-and-cv.md#playing-the-looper-from-a-footswitch).
+
 ### Moving a layer to another loop
 
 Drag a layer out of the lanes to give it to another loop. **Press and hold** the layer's lane for a moment, until it gets a blue outline, then move your finger: a card with the layer's name follows it, and the loops on the deck that can take it light up. The card says what will happen if you let go there.

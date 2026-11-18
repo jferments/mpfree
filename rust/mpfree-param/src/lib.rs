@@ -114,6 +114,12 @@ pub enum Owner {
     /// lock, a lane, a macro, the morph and the mod matrix move it as they
     /// move a mixer control; a track that plays on the pads sends nothing.
     Midi(u8),
+    /// The looper, for MIDI Learn's remote control (the looper redesign's
+    /// footswitch, step 5): a learned footswitch, button or key plays a
+    /// loop's key as its pad does, mutes a loop, picks the next one, or
+    /// presses Undo, Redo, Capture or Clear. Its parameter ids are in
+    /// [`looper`]. Locks, macros and the mod matrix never target it.
+    Looper,
 }
 
 /// [`Owner::Midi`]'s parameters: a track's controllers, pitch bend and
@@ -280,6 +286,120 @@ pub mod clips {
     /// than a press.
     pub fn is_value(id: u16) -> bool {
         matches!(of(id), Some(Clips::Mute(_) | Clips::Solo(_)))
+    }
+}
+
+/// [`Owner::Looper`]'s parameters. The numbers are fixed and never
+/// renumbered: a rig keeps its footswitches by them.
+pub mod looper {
+    /// The picked loop's key: what a tap on its ring on the Looper tab
+    /// does (record, end the first pass, overdub, play), held for a
+    /// second it clears the loop.
+    pub const PICKED_KEY: u16 = 0;
+    /// The picked loop's mute: on (muted) from the middle up.
+    pub const PICKED_MUTE: u16 = 1;
+    /// Pick the next loop (after Loop 8, Loop 1).
+    pub const NEXT_LOOP: u16 = 2;
+    /// The picked loop's Undo.
+    pub const UNDO: u16 = 3;
+    /// The picked loop's Redo.
+    pub const REDO: u16 = 4;
+    /// Capture: the last bars heard become a loop.
+    pub const CAPTURE: u16 = 5;
+    /// The picked loop's Clear (Undo brings it back).
+    pub const CLEAR: u16 = 6;
+    /// The loops the ids below count to (`mpfree_looper::MAX_LOOPS`).
+    pub const LOOPS: u16 = 8;
+    const KEY: u16 = 0x100;
+    const MUTE: u16 = 0x200;
+
+    /// Which loop a key or a mute is for.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum Which {
+        /// The loop picked when the control moves.
+        Picked,
+        /// Loop `n` (0 is Loop 1).
+        Loop(u8),
+    }
+
+    /// What a [`Owner::Looper`](super::Owner::Looper) parameter does.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum Looper {
+        /// A loop's key, pressed and let go as its pad is.
+        Key(Which),
+        /// A loop's mute, on or off.
+        Mute(Which),
+        NextLoop,
+        Undo,
+        Redo,
+        Capture,
+        Clear,
+    }
+
+    /// Loop `n`'s key (0 is Loop 1).
+    pub const fn key(n: u8) -> u16 {
+        KEY + n as u16
+    }
+    /// Loop `n`'s mute.
+    pub const fn mute(n: u8) -> u16 {
+        MUTE + n as u16
+    }
+    /// A key or a mute for `which`.
+    pub const fn key_of(which: Which) -> u16 {
+        match which {
+            Which::Picked => PICKED_KEY,
+            Which::Loop(n) => key(n),
+        }
+    }
+    pub const fn mute_of(which: Which) -> u16 {
+        match which {
+            Which::Picked => PICKED_MUTE,
+            Which::Loop(n) => mute(n),
+        }
+    }
+
+    /// What parameter `id` does, if it is one.
+    pub fn of(id: u16) -> Option<Looper> {
+        let (kind, n) = (id & !0xFF, id & 0xFF);
+        Some(match kind {
+            0 => match id {
+                PICKED_KEY => Looper::Key(Which::Picked),
+                PICKED_MUTE => Looper::Mute(Which::Picked),
+                NEXT_LOOP => Looper::NextLoop,
+                UNDO => Looper::Undo,
+                REDO => Looper::Redo,
+                CAPTURE => Looper::Capture,
+                CLEAR => Looper::Clear,
+                _ => return None,
+            },
+            KEY if n < LOOPS => Looper::Key(Which::Loop(n as u8)),
+            MUTE if n < LOOPS => Looper::Mute(Which::Loop(n as u8)),
+            _ => return None,
+        })
+    }
+
+    /// Whether `id` takes a value (a mute, on or off) rather than a press.
+    pub fn is_value(id: u16) -> bool {
+        matches!(of(id), Some(Looper::Mute(_)))
+    }
+
+    /// The parameter's name, as the Learn section lists it after
+    /// "Looper · ": "Loop 3 key", "picked loop's key", "Loop 3 mute",
+    /// "picked loop's mute", "Next loop", "Undo" ...
+    pub fn name(id: u16) -> Option<String> {
+        let loop_name = |w: Which, what: &str| match w {
+            Which::Picked => format!("picked loop's {what}"),
+            Which::Loop(n) => format!("Loop {} {what}", u16::from(n) + 1),
+        };
+        Some(match of(id)? {
+            Looper::Key(w) => loop_name(w, "key"),
+            Looper::Mute(w) => loop_name(w, "mute"),
+            Looper::NextLoop => "Next loop".to_string(),
+            Looper::Undo => "Undo".to_string(),
+            Looper::Redo => "Redo".to_string(),
+            Looper::Capture => "Capture".to_string(),
+            Looper::Clear => "Clear".to_string(),
+        })
     }
 }
 
@@ -532,6 +652,7 @@ impl fmt::Display for Owner {
             Owner::Morph(n) => write!(f, "morph{n}"),
             Owner::Transport => f.write_str("transport"),
             Owner::Clips => f.write_str("clips"),
+            Owner::Looper => f.write_str("looper"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -614,6 +735,7 @@ fn owner(words: &[&str]) -> Option<Owner> {
     match *words {
         ["transport"] => Some(Owner::Transport),
         ["clips"] => Some(Owner::Clips),
+        ["looper"] => Some(Owner::Looper),
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
@@ -689,6 +811,7 @@ mod tests {
             Owner::Morph(0),
             Owner::Transport,
             Owner::Clips,
+            Owner::Looper,
         ];
         for s in strips {
             v.push(Owner::Strip(s));
@@ -739,6 +862,8 @@ mod tests {
                 "transport.7",
             ),
             (ParamAddr::new(Owner::Clips, clips::scene(2)), "clips.258"),
+            (ParamAddr::new(Owner::Looper, looper::key(2)), "looper.258"),
+            (ParamAddr::new(Owner::Looper, looper::CLEAR), "looper.6"),
         ];
         for (a, s) in cases {
             assert_eq!(a.to_string(), s);
@@ -784,6 +909,69 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 2 + 16 + 4 * 128 + 128 * 16);
+    }
+
+    /// The looper's footswitch ids are fixed numbers (a rig keeps its
+    /// footswitches by them): every one reads back, no two say the same,
+    /// and only the mutes take a value.
+    #[test]
+    fn the_loopers_ids_are_fixed_and_each_says_one_thing() {
+        use looper::{Looper, Which};
+        // The numbers a saved rig has: never renumbered.
+        assert_eq!(
+            [
+                looper::PICKED_KEY,
+                looper::PICKED_MUTE,
+                looper::NEXT_LOOP,
+                looper::UNDO,
+                looper::REDO,
+                looper::CAPTURE,
+                looper::CLEAR,
+                looper::key(0),
+                looper::key(7),
+                looper::mute(0),
+                looper::mute(7),
+            ],
+            [0, 1, 2, 3, 4, 5, 6, 0x100, 0x107, 0x200, 0x207]
+        );
+        assert_eq!(
+            looper::of(looper::key(2)),
+            Some(Looper::Key(Which::Loop(2)))
+        );
+        assert_eq!(
+            looper::of(looper::mute(7)),
+            Some(Looper::Mute(Which::Loop(7)))
+        );
+        assert_eq!(
+            looper::of(looper::PICKED_KEY),
+            Some(Looper::Key(Which::Picked))
+        );
+        assert_eq!(looper::of(looper::key(8)), None, "8 loops");
+        assert_eq!(looper::of(looper::mute(8)), None, "8 loops");
+        assert_eq!(looper::of(0x1FF), None);
+        assert_eq!(looper::of(7), None);
+        for w in [Which::Picked, Which::Loop(0), Which::Loop(7)] {
+            assert_eq!(looper::of(looper::key_of(w)), Some(Looper::Key(w)));
+            assert_eq!(looper::of(looper::mute_of(w)), Some(Looper::Mute(w)));
+            assert!(looper::is_value(looper::mute_of(w)));
+            assert!(!looper::is_value(looper::key_of(w)));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut names = std::collections::HashSet::new();
+        for id in 0..=u16::MAX {
+            if let Some(c) = looper::of(id) {
+                assert!(seen.insert(c), "{id}");
+                assert!(names.insert(looper::name(id).unwrap()), "{id}");
+            }
+        }
+        assert_eq!(seen.len(), 7 + 2 * 8);
+        assert_eq!(looper::name(looper::key(2)).unwrap(), "Loop 3 key");
+        assert_eq!(
+            looper::name(looper::PICKED_KEY).unwrap(),
+            "picked loop's key"
+        );
+        assert_eq!(looper::name(looper::mute(0)).unwrap(), "Loop 1 mute");
+        assert_eq!(looper::name(looper::NEXT_LOOP).unwrap(), "Next loop");
     }
 
     /// A track's MIDI out controls: controllers 0-119 by their own number,
