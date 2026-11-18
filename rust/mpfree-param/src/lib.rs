@@ -40,6 +40,7 @@
 //! | the transport's tempo (MIDI Learn) | `transport.7` |
 //! | launch scene 3 (MIDI Learn) | `clips.258` |
 //! | track 3's CC 74 / pitch bend out (its outside gear) | `t3.midi.74` / `t3.midi.128` |
+//! | Play's Swing / the XY pad across (MIDI Learn) | `play.0` / `play.2` |
 //!
 //! A [`RelAddr`] leaves the track out: `inst.12`, `pad5.2`, `mix.0`,
 //! `fx7.4`, `arp.1`, `seq.0`, `nfx2.4`, `midi.74`. Its `mix` and `fx` go
@@ -162,6 +163,12 @@ pub enum Owner {
     /// does, whatever the MPC's pads show. Its parameter ids are in
     /// [`perform`]. Locks, macros and the mod matrix never target it.
     Perform,
+    /// The Play page's own controls, for MIDI Learn's remote control (the
+    /// Learn section's Play card, Jay's pick on 18 Nov 2026): a learned
+    /// knob turns the Swing or the Filter as Play's Q-Links do, or
+    /// moves the XY pad across or up as a finger does. Its parameter ids
+    /// are in [`play`]. Locks, macros and the mod matrix never target it.
+    Play,
 }
 
 /// [`Owner::Midi`]'s parameters: a track's controllers, pitch bend and
@@ -542,6 +549,34 @@ pub mod arp {
     }
 }
 
+/// [`Owner::Play`]'s parameters: the Play page's own controls, for MIDI
+/// Learn. Learned controls are saved with these numbers in the rig and the
+/// project, so they never change: a new control takes the next number.
+pub mod play {
+    /// The swing, 50 % (straight) to 75 %, as Play's Swing Q-Link turns it.
+    pub const SWING: u16 = 0;
+    /// The filter Play's Filter Q-Link turns: track 1's DJ filter (Play
+    /// calls it Drums), whatever the project names track 1. -100
+    /// (low-pass) to 100 (high-pass), 0 off.
+    pub const FILTER: u16 = 1;
+    /// The XY pad across, 0 (left) to 1 (right).
+    pub const XY_ACROSS: u16 = 2;
+    /// The XY pad up, 0 (bottom) to 1 (top).
+    pub const XY_UP: u16 = 3;
+    /// Every one, in the order the Learn section lists them, with its name.
+    pub const ALL: [(u16, &str); 4] = [
+        (SWING, "Swing"),
+        (FILTER, "Filter"),
+        (XY_ACROSS, "XY across"),
+        (XY_UP, "XY up"),
+    ];
+
+    /// The name of parameter `id`, if it is one.
+    pub fn name(id: u16) -> Option<&'static str> {
+        ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
+    }
+}
+
 /// What on a track a [`RelAddr`] names, without the track.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum OnTrack {
@@ -729,6 +764,7 @@ impl fmt::Display for Owner {
             Owner::Clips => f.write_str("clips"),
             Owner::Looper => f.write_str("looper"),
             Owner::Perform => f.write_str("perform"),
+            Owner::Play => f.write_str("play"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -813,6 +849,7 @@ fn owner(words: &[&str]) -> Option<Owner> {
         ["clips"] => Some(Owner::Clips),
         ["looper"] => Some(Owner::Looper),
         ["perform"] => Some(Owner::Perform),
+        ["play"] => Some(Owner::Play),
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
@@ -890,6 +927,7 @@ mod tests {
             Owner::Clips,
             Owner::Looper,
             Owner::Perform,
+            Owner::Play,
         ];
         for s in strips {
             v.push(Owner::Strip(s));
@@ -946,6 +984,8 @@ mod tests {
                 ParamAddr::new(Owner::Perform, perform::pad(1, 1)),
                 "perform.17",
             ),
+            (ParamAddr::new(Owner::Play, play::SWING), "play.0"),
+            (ParamAddr::new(Owner::Play, play::XY_UP), "play.3"),
         ];
         for (a, s) in cases {
             assert_eq!(a.to_string(), s);
@@ -1176,12 +1216,26 @@ mod tests {
             "t1.transport.0",
             "bus2.midi.7",
             "t3.midi3.7",
+            "play0.1",
+            "t1.play.0",
         ] {
             assert!(s.parse::<ParamAddr>().is_err(), "{s:?} should not parse");
         }
         for s in ["", "inst", "inst.", "t3.inst.1", "pad.1", "mix.x"] {
             assert!(s.parse::<RelAddr>().is_err(), "{s:?} should not parse");
         }
+    }
+
+    /// Play's ids are a saved format: these numbers never change.
+    #[test]
+    fn plays_ids_stay_put() {
+        assert_eq!(
+            [play::SWING, play::FILTER, play::XY_ACROSS, play::XY_UP],
+            [0, 1, 2, 3]
+        );
+        assert_eq!(play::name(play::XY_ACROSS), Some("XY across"));
+        assert_eq!(play::name(4), None);
+        assert_eq!(Owner::Play.track(), None);
     }
 
     #[test]

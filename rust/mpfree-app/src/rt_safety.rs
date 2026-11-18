@@ -312,6 +312,7 @@ impl Rig {
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         mix.mixer.set_lane_deadline(Some(until));
+        mix.instruments.set_lane_deadline(Some(until));
         let (p, _) = mix.period(
             &ctx,
             (synth_l, synth_r),
@@ -321,8 +322,11 @@ impl Rig {
             left,
             right,
         );
-        // The tracks' controllers out, as the loop sends them.
+        // The tracks' controllers out, as the loop sends them, and into
+        // an export's MIDI file.
+        let period_frame = time.block().start_frame;
         for (offset, addr, value) in mix.modu.take_midi_values() {
+            tap.control(period_frame + u64::from(offset), addr, value);
             midi.control(offset, addr, value);
         }
         midi.period_end(PERIOD as u32, std::time::Instant::now());
@@ -335,6 +339,7 @@ impl Rig {
         self.peak = self.peak.max(p);
         // After the write, in the loop.
         synth.settle(until);
+        mix.instruments.settle(until);
     }
 }
 
@@ -347,6 +352,7 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     // starts the lanes' threads).
     let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
     let lanes = matches!(
         sound_cores,
         cores::SoundCores::Two | cores::SoundCores::Three
@@ -411,7 +417,7 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     // played every period on its lane. (Late parts are allowed here: under
     // qemu or a busy machine a lane can be slow, and a late part allocates
     // nothing either.)
-    let n = cores::Counts::read(&rig.player, &rig.mix.mixer, &rig.synth);
+    let n = cores::Counts::read(&rig.player, &rig.mix, &rig.synth);
     if lanes {
         // The reverb ran a block late on its lane the whole time.
         assert!(n.returns_blocks > 12_000, "{n:?}");
@@ -432,7 +438,20 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
 /// nothing on the sound path.
 #[test]
 fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
+    own_instrument(cores::SoundCores::Shared);
+}
+
+/// The same on two cores: the Poly plays on the tracks' lane on core 2.
+#[test]
+fn a_tracks_own_instrument_plays_on_another_core_and_never_allocates() {
+    own_instrument(cores::SoundCores::Two);
+}
+
+fn own_instrument(sound_cores: cores::SoundCores) {
     let mut rig = Rig::new(false);
+    let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
+    c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
     // Setup, which may allocate: Poly made for track 1 (no builder here,
     // so made at once) and put in on the next period.
     let job = crate::instrument_job(&rig.synth, 0, "mpfree.poly", None);
@@ -482,6 +501,15 @@ fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
     assert_eq!(names, vec![mixing::TRACK_1, "Synth", "Loop", "Audio"]);
     assert_eq!(st.strips[0].id, mpfree_fx::StripId::Track(mixing::DRUMS));
     assert!(st.strips[0].peak[0] > 0.0, "{:?}", st.strips[0].peak);
+    // On two cores the lane played it every period (late ones allowed, as
+    // above: they allocate nothing either).
+    let n = cores::Counts::read(&rig.player, &rig.mix, &rig.synth);
+    if sound_cores == cores::SoundCores::Two {
+        assert_eq!(rig.mix.instruments.lanes(), 1);
+        assert!(n.track_periods > 12_000, "{n:?}");
+    } else {
+        assert_eq!(n.track_periods, 0, "{n:?}");
+    }
 }
 
 /// A send reverb that goes a block late on the returns lane (cores.rs):
@@ -565,6 +593,7 @@ fn track_on_midi_out_never_allocates(usb: bool, delay_tenths: u16) {
     let mut c =
         cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
     rig.time
         .act(TimeAction::NewClip { track: 0, slot: 0 })
         .unwrap();
@@ -680,6 +709,89 @@ fn track_on_midi_out_never_allocates(usb: bool, delay_tenths: u16) {
     if usb {
         assert!(din.0.lock().unwrap().is_empty(), "the jacks got none of it");
     }
+}
+
+/// The keys' wheel and pressure on a track that plays on MIDI Out, while
+/// it records (the MIDI plan's 3.7): what the gear is sent goes through
+/// `ExprRec`'s thinning to `TimeHost::gesture` each period, as the main
+/// loop does, without allocating or freeing; let go, the wheel is a lane
+/// of the clip with far fewer points than the values it was sent.
+#[test]
+fn the_keys_wheel_on_a_midi_out_track_records_and_never_allocates() {
+    use mpfree_midi::expr_out::In;
+    use mpfree_midi::setup::{TrackOut, DIN_NAME};
+    use mpfree_play::mpfree_param::{midi, Owner, ParamAddr};
+    use mpfree_seq::mpfree_moves::Target;
+    let mut rig = Rig::new(false);
+    let mut c =
+        cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
+    c.start_mixer(&mut rig.mix.mixer);
+    rig.time.command(Command::SetLoop(Some((0, 4 * 3840))));
+    rig.time
+        .act(TimeAction::NewClip { track: 0, slot: 0 })
+        .unwrap();
+    let din = MidiSink::default();
+    rig.midi
+        .open(din.clone(), std::time::Instant::now())
+        .unwrap();
+    {
+        let mut m = rig.io.lock().unwrap();
+        m.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 0));
+        m.gen += 1;
+    }
+    let mut i = 0u64;
+    for _ in 0..200 {
+        rig.period(i);
+        i += 1;
+    }
+    assert!(rig.midi.takes(0));
+    assert_eq!(rig.time.info().state, mpfree_transport::State::Recording);
+    let mut rec = crate::expr_rec::ExprRec::new();
+    let mut sent = 0u32;
+    let mut step = |rig: &mut Rig, rec: &mut crate::expr_rec::ExprRec, i: u64, wheel: f32| {
+        // Four wheel values a period, as a 14-bit wheel can send (the
+        // last of them where it rests).
+        for k in 0..4 {
+            let w = wheel + (3 - k) as f32 * 0.0005;
+            assert!(rig.midi.expression(0, In::Wheel(w)));
+        }
+        let (bend, pressure) = rig.midi.expression_sent(0).unwrap();
+        rec.sent(bend, pressure);
+        let t = i as f64 * PERIOD as f64 / f64::from(RATE);
+        rec.period(Some(0), true, t, |input| rig.time.gesture(0, input));
+        rig.period(i);
+        sent += 4;
+    };
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for n in 0..600 {
+            let wheel = (n as f32 * 0.01).sin() * 0.9;
+            step(&mut rig, &mut rec, i, wheel);
+            i += 1;
+        }
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    // Let go: the wheel back in the middle ends the gesture, and the clip
+    // has its lane.
+    for _ in 0..100 {
+        step(&mut rig, &mut rec, i, 0.0);
+        i += 1;
+    }
+    let bend = ParamAddr::new(Owner::Midi(0), midi::BEND);
+    let points = rig
+        .time
+        .project()
+        .clip(0, 0)
+        .and_then(|c| c.moves.lane(Target::for_track(bend, 0)))
+        .map(|l| l.points.len());
+    assert!(
+        points.is_some_and(|n| n >= 20 && n < sent as usize / 4),
+        "{points:?} points for {sent} values"
+    );
+    assert!(rig.midi.close());
+    assert!(
+        din.0.lock().unwrap().windows(1).any(|b| b[0] == 0xE0),
+        "the wheel went out on channel 1"
+    );
 }
 
 /// An arp's note (the pads played live) on a track that plays on MIDI Out:
@@ -1094,6 +1206,7 @@ fn cv_follows_a_track_and_never_allocates() {
     let mut c =
         cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
     rig.time
         .act(TimeAction::NewClip { track: 0, slot: 0 })
         .unwrap();

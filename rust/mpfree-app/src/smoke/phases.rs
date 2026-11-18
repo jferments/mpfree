@@ -1076,6 +1076,39 @@ mod looper {
         });
     }
 
+    /// Play's Swing, Drums filter and XY pad learned on a controller's
+    /// knobs (the Learn section's Play card): each turns as Play's own
+    /// Q-Link or finger does, from any page, and the XY pad on the screen
+    /// follows; the pad lets go once it is back in the middle and at the
+    /// bottom.
+    #[test]
+    fn learned_knobs_turn_plays_swing_filter_and_xy_pad_from_any_page() {
+        use mpfree_play::mpfree_param::play;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Mix");
+            s.play_knob(play::SWING, 1.0);
+            s.run_periods(2);
+            assert_eq!(s.time.info().swing.amount, 75);
+            s.play_knob(play::FILTER, 0.25).run_periods(2);
+            assert_eq!(s.mix.play_levels().drums_filter, -50.0);
+            // A knob's middle is the filter off.
+            s.play_knob(play::FILTER, 64.0 / 127.0).run_periods(2);
+            assert_eq!(s.mix.play_levels().drums_filter, 0.0);
+            // XY across, then up: each leaves the other where it is.
+            s.play_knob(play::XY_ACROSS, 1.0).run_periods(2);
+            s.play_knob(play::XY_UP, 0.5).run_periods(2);
+            assert_eq!(s.mix.xy_at(), (1.0, 0.5));
+            assert_eq!(s.screen.play.xy.position(), (1.0, 0.5), "the pad follows");
+            // Back in the middle and at the bottom: let go, and nothing
+            // glides anywhere else.
+            s.play_knob(play::XY_ACROSS, 64.0 / 127.0).run_periods(2);
+            s.play_knob(play::XY_UP, 0.0).run_for(0.5);
+            assert_eq!(s.mix.xy_at(), (0.5, 0.0));
+            assert_eq!(s.screen.play.xy.position(), (0.5, 0.0));
+        });
+    }
+
     /// Overdubs: Replace (step 3b): an overdub with a pad in it takes the
     /// place of what was there for as long as it records; its lane says
     /// "replace", and UNDO takes it away.

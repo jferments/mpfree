@@ -579,6 +579,16 @@ impl EngineView {
         }
     }
 
+    /// How many slices pad `pad` plays from: its most sliced layer's, 1
+    /// when none is sliced (or there is no such pad).
+    pub fn pad_slices(&self, pad: usize) -> usize {
+        self.pads
+            .get(pad)
+            .and_then(|p| p.as_ref())
+            .and_then(|p| p.layers.iter().map(|l| l.cuts.len() + 1).max())
+            .unwrap_or(1)
+    }
+
     /// Layer `layer` of pad `pad`, as resolved.
     pub fn layer(&self, pad: usize, layer: usize) -> Option<&ViewLayer> {
         self.pads.get(pad)?.as_ref()?.layers.get(layer)
@@ -1267,7 +1277,7 @@ impl Default for Motion {
 }
 
 /// The pitch envelope's fall over its decay: e^-9.21 is 1e-4, as the
-/// Grain page's envelope (24 semitones come back to under a cent).
+/// grain envelope (24 semitones come back to under a cent).
 const ENV_FALL: f32 = 9.21;
 
 impl Motion {
@@ -2238,6 +2248,17 @@ impl Engine {
     /// How many kits the engine plays ([`Engine::with_kits`]).
     pub fn kits(&self) -> usize {
         self.views.len()
+    }
+
+    /// [`EngineView::pad_own`] of kit `kit`'s pad, as its view has it
+    /// (MIDI Learn reads where a learned pad setting stands).
+    pub fn kit_pad_own(&self, kit: usize, pad: usize, field: PadField) -> Option<f32> {
+        self.views.get(kit)?.pad_own(pad, field)
+    }
+
+    /// [`EngineView::pad_slices`] of kit `kit`'s pad (1 past the kits).
+    pub fn kit_pad_slices(&self, kit: usize, pad: usize) -> usize {
+        self.views.get(kit).map_or(1, |v| v.pad_slices(pad))
     }
 
     /// Whether a live hit on kit `kit`'s pad `pad` waits for the launch
