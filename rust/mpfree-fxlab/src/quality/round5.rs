@@ -1135,9 +1135,13 @@ fn freqshift(r: &mut Report) {
                 let (p, bin) = spec(&y[settle..], at);
                 let w = band(&p, bin, fi + shift, 6.0);
                 let im = band(&p, bin, down, 6.0);
-                let total: f64 = p.iter().sum();
                 image.push(floor(db_pow(im / w)));
-                spurs.push(floor(db_pow((total - w - im).max(1e-30) / w)));
+                // Spurs: everything else, beyond ±30 Hz of the two (as the
+                // ring mod's), since ±6 Hz is inside the Hann window's own
+                // skirt (-67 to -80 dB).
+                let (w30, im30) = (band(&p, bin, fi + shift, 30.0), band(&p, bin, down, 30.0));
+                let total: f64 = p.iter().sum();
+                spurs.push(floor(db_pow((total - w30 - im30).max(1e-30) / w)));
             }
             r.put(
                 "Z1",

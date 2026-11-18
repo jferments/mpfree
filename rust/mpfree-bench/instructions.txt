@@ -54,7 +54,7 @@
 188280	EQ (4 bands and both cuts), HQ 2x
 64907	Flanger
 92618	Flanger, through zero
-55287	Frequency shifter
+53403	Frequency shifter
 386476	Fuzz
 17292	Gate
 472729	Grains FX (dense)
@@ -108,7 +108,7 @@
 209421	Poly Pluck, 8 voices
 33542	Poly Sub Bass, 8 voices
 374672	Poly Supersaw, 8 voices
-20295	Ring mod
+12921	Ring mod
 145867	Room reverb
 108213	Rotary
 546477	Sampler x16 held
