@@ -7754,9 +7754,11 @@ impl Player {
     fn rows(&mut self, k: crate::app::RowKey) {
         use crate::app::RowKey;
         if let RowKey::Editing(on) = k {
-            // The Song view with a block or a section picked: the push
-            // grabs it for the wheel, and lets go again.
-            let picked = self.time.selected.is_some() || self.time.section.is_some();
+            // The Song view with a block, a section or a tempo point
+            // picked: the push grabs it for the wheel, and lets go again.
+            let picked = self.time.selected.is_some()
+                || self.time.section.is_some()
+                || self.time.tempo_pick.is_some();
             let song = self.view == View::Arrange && self.time.song_view;
             if song && ((on && picked) || (!on && self.song_grab)) {
                 self.song_grab = on;
@@ -7766,10 +7768,14 @@ impl Player {
                 } else {
                     "a section"
                 };
-                self.tell(&if on {
-                    format!("The wheel moves {name} {each} at a time · push again to put it down")
-                } else {
-                    format!("Put {name} down · the wheel picks a row again")
+                self.tell(&match (on, self.time.tempo_pick.is_some()) {
+                    (true, true) => format!(
+                        "The wheel sets {name}'s tempo, 1 BPM at a time · push again to let go"
+                    ),
+                    (true, false) => format!(
+                        "The wheel moves {name} {each} at a time · push again to put it down"
+                    ),
+                    (false, _) => format!("Put {name} down · the wheel picks a row again"),
                 });
                 return;
             }
@@ -7878,6 +7884,10 @@ impl Player {
     /// says.
     fn song_picked_name(&self) -> String {
         let st = &self.time;
+        if let Some(&(at, _, _)) = st.tempo_pick.and_then(|k| st.tempo_points.get(k)) {
+            let bar = st.transport.meter.bar_ticks().max(1);
+            return format!("the tempo point at bar {}", at.div_euclid(bar) + 1);
+        }
         if let Some(p) = st.selected.and_then(|i| st.placements.get(i)) {
             return p.name.clone();
         }
@@ -7888,11 +7898,20 @@ impl Player {
 
     /// The wheel turned with the Song view's picked block grabbed: it
     /// moves `d` beats; with a section grabbed, the section moves one
-    /// place. False when nothing is picked any more (the grab ends and
-    /// the wheel steps the row as before).
+    /// place; with a tempo point grabbed, its tempo moves `d` BPM. False
+    /// when nothing is picked any more (the grab ends and the wheel steps
+    /// the row as before).
     fn song_wheel(&mut self, d: i32) -> bool {
         let st = &self.time;
-        let a = if let Some(p) = st
+        let a = if let Some((index, &(_, bpm, _))) = st
+            .tempo_pick
+            .and_then(|k| st.tempo_points.get(k).map(|p| (k, p)))
+        {
+            Some(TimeAction::SongTempo(mpfree_time_ui::TempoEdit::Bpm {
+                index,
+                bpm: bpm + f64::from(d),
+            }))
+        } else if let Some(p) = st
             .selected
             .and_then(|i| st.placements.get(i).map(|p| (i, p)))
         {
@@ -14667,6 +14686,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song", p));
         }
         Err(e) => eprintln!("arrange-song sample: {e}"),
+    }
+    // The song's tempo points on the lane over the bars: 100 BPM from
+    // bar 3 ramping to 128 at bar 6, the ramping point picked (its Ramp
+    // and Delete in place of the clip buttons).
+    match mpfree_time_ui::sample::song_tempo_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-tempo", p));
+        }
+        Err(e) => eprintln!("arrange-song-tempo sample: {e}"),
     }
     // The same with two audio lanes under the song (layout spec 4c): a
     // vocal punched in over bars 5-8 and that region picked, a guitar

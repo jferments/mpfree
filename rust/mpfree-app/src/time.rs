@@ -737,10 +737,30 @@ impl TimeHost {
         self.audio.command_at(at, cmd)
     }
 
-    /// Follow the app's tempo (TAP TEMPO, the menu). Does nothing while
-    /// a followed clock arrives ([`TimeHost::followed_bpm`]).
+    /// Follow the app's tempo (TAP TEMPO, the menu), the project's: the
+    /// whole song's, or while song mode plays the song's tempo points
+    /// the tempo before the first. Does nothing while a followed clock
+    /// arrives ([`TimeHost::followed_bpm`]).
     pub fn follow_tempo(&mut self, bpm: f64) {
+        if self.audio.followed_bpm().is_none() {
+            self.control.project_tempo(bpm);
+            self.audio.receive();
+        }
         self.audio.follow_tempo(bpm);
+    }
+
+    /// Song mode plays the song's tempo points: the tempo turned sets the
+    /// point in effect at the playhead (`TempoEdit::AtPlayhead`), not the
+    /// project's tempo.
+    pub fn song_tempo_plays(&self) -> bool {
+        self.control.song_tempo_plays()
+    }
+
+    /// While song mode plays the song's tempo points, the tempo of the
+    /// point in effect at the playhead (None before the first): what the
+    /// tempo turned steps from.
+    pub fn tempo_here(&self) -> Option<f64> {
+        self.control.tempo_here()
     }
 
     /// Follow another device's MIDI clock with these options (the
@@ -5344,6 +5364,139 @@ mod tests {
         h.follow_tempo(96.0);
         h.period(PERIOD, &mut pads);
         assert_eq!(h.info().bpm, 96.0);
+    }
+
+    /// Tempo ramps in the app. The Song view's tempo lane edits the
+    /// song's points (UNDO takes them back; the wheel's and the tempo's
+    /// turns on one point are one undo). Song mode plays them: the
+    /// project's tempo before the first, a ramp gliding on the
+    /// transport's staircase, then the last point's; off, the project's
+    /// tempo throughout. Turning the tempo sets the point in effect at the
+    /// playhead, or before the first adds one at the playhead's bar. The
+    /// project's tempo moves the song's before its first point only.
+    #[test]
+    fn song_mode_plays_the_songs_tempo_points() {
+        use mpfree_time_ui::TempoEdit::{Add, AtPlayhead, Bpm, Delete, Ramp};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tempo = |h: &mut TimeHost, e| h.act(TimeAction::SongTempo(e));
+        // Bar 3 at 100 gliding to 140 on bar 5.
+        tempo(&mut h, Add(2 * 3840)).unwrap();
+        assert_eq!(
+            (h.state().tempo_points, h.state().tempo_pick),
+            (vec![(7680, 120.0, false)], Some(0))
+        );
+        tempo(
+            &mut h,
+            Bpm {
+                index: 0,
+                bpm: 101.0,
+            },
+        )
+        .unwrap();
+        tempo(
+            &mut h,
+            Bpm {
+                index: 0,
+                bpm: 100.0,
+            },
+        )
+        .unwrap();
+        tempo(&mut h, Add(4 * 3840)).unwrap();
+        tempo(
+            &mut h,
+            Bpm {
+                index: 1,
+                bpm: 140.0,
+            },
+        )
+        .unwrap();
+        tempo(&mut h, Ramp { index: 0, on: true }).unwrap();
+        let points = vec![(7680, 100.0, true), (15_360, 140.0, false)];
+        assert_eq!(h.state().tempo_points, points);
+        // Add, the wheel's two turns, add, a turn, the ramp.
+        assert_eq!(h.state().done.len(), 5);
+        let period = |h: &mut TimeHost, pads: &mut Fake, bpm: f64| {
+            h.follow_tempo(bpm);
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+        };
+
+        // Song mode off: the project's tempo throughout.
+        period(&mut h, &mut pads, 120.0);
+        assert_eq!(h.tempo_map().segments().len(), 1);
+        assert!(!h.song_tempo_plays() && h.state().tempo_here.is_none());
+        h.act(TimeAction::SongMode(true)).unwrap();
+        period(&mut h, &mut pads, 120.0);
+        let map = h.control.project.arrangement.tempo_map(120.0).unwrap();
+        assert_eq!(*h.tempo_map(), map);
+        assert!(h.song_tempo_plays());
+
+        // Playing: 120 for two bars, gliding up over bars 3 and 4, then 140.
+        assert!(h.command(Command::Play));
+        let mut heard: Vec<(Tick, f64)> = Vec::new();
+        while h.info().position < 6 * 3840 {
+            period(&mut h, &mut pads, 120.0);
+            let i = h.info();
+            heard.push((i.position, i.bpm));
+        }
+        assert!(heard.iter().filter(|h| h.0 < 7680).all(|h| h.1 == 120.0));
+        // (A period that ends on a line takes its tempo in the next.)
+        let ramp: Vec<f64> = heard
+            .iter()
+            .filter(|h| h.0 > 7680 && h.0 <= 15_360)
+            .map(|h| h.1)
+            .collect();
+        assert!(ramp.windows(2).all(|w| w[1] >= w[0]));
+        assert!(ramp[0] > 100.0 && ramp[0] < 102.0, "{}", ramp[0]);
+        let last = *ramp.last().unwrap();
+        assert!(last > 138.0 && last < 140.0, "{last}");
+        // A step every 1/16 through the ramp.
+        let mut steps = ramp.clone();
+        steps.dedup();
+        assert_eq!(steps.len(), 32);
+        assert!(heard.iter().filter(|h| h.0 > 15_360).all(|h| h.1 == 140.0));
+        assert_eq!(h.state().tempo_here, Some(140.0));
+
+        // The tempo turned in bar 6: the point on bar 5 takes it, and the
+        // turns are one undo.
+        let done = h.state().done.len();
+        tempo(&mut h, AtPlayhead(141.0)).unwrap();
+        tempo(&mut h, AtPlayhead(142.0)).unwrap();
+        assert_eq!(h.state().tempo_points[1], (15_360, 142.0, false));
+        assert_eq!(h.state().done.len(), done + 1);
+        for _ in 0..50 {
+            period(&mut h, &mut pads, 120.0);
+        }
+        assert_eq!(h.info().bpm, 142.0);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().tempo_points, points);
+        for _ in 0..50 {
+            period(&mut h, &mut pads, 120.0);
+        }
+        assert_eq!(h.info().bpm, 140.0);
+
+        // Back to bar 1: the project's tempo moves the song's before its
+        // first point; turning the tempo there adds a point on bar 1.
+        assert!(h.command(Command::StopAndRewind));
+        period(&mut h, &mut pads, 90.0);
+        period(&mut h, &mut pads, 90.0);
+        assert_eq!((h.info().position, h.info().bpm), (0, 90.0));
+        assert_eq!(h.tempo_map().segments()[1].bpm, 100.0);
+        assert_eq!(h.state().tempo_base, 90.0);
+        tempo(&mut h, AtPlayhead(95.0)).unwrap();
+        assert_eq!(h.state().tempo_points[0], (0, 95.0, false));
+        period(&mut h, &mut pads, 90.0);
+        assert_eq!(h.info().bpm, 95.0);
+        tempo(&mut h, Delete(0)).unwrap();
+
+        // Song mode off: the project's tempo throughout again.
+        h.act(TimeAction::SongMode(false)).unwrap();
+        period(&mut h, &mut pads, 90.0);
+        period(&mut h, &mut pads, 90.0);
+        assert_eq!(h.tempo_map().segments().len(), 1);
+        assert_eq!(h.info().bpm, 90.0);
+        assert_eq!(h.state().tempo_points, points, "the points stay");
     }
 
     /// The looper's Starts: When I play (start_at): the song starts on

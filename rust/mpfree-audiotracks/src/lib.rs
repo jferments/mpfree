@@ -67,7 +67,7 @@ use std::collections::VecDeque;
 
 use save::{Saved, TakeFile, TrackFile};
 
-use mpfree_transport::time::{TempoMap, Tick, PPQ};
+use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Mark, Span, State};
 
@@ -570,51 +570,15 @@ struct Snap {
     regions: [Region; MAX_REGIONS],
 }
 
-/// Frames from tick `a` to tick `b` (fractional) along the tempo map.
+/// Frames from tick `a` to tick `b` (fractional) along the tempo map, as
+/// the transport plays it (tempo ramps included).
 pub fn frames_from(map: &TempoMap, a: f64, b: f64, rate: u32) -> f64 {
-    if b < a {
-        return -frames_from(map, b, a, rate);
-    }
-    let segs = map.segments();
-    let per_tick = |bpm: f64| 60.0 * f64::from(rate) / (bpm * f64::from(PPQ));
-    let mut f = 0.0;
-    let mut t = a;
-    for (i, s) in segs.iter().enumerate() {
-        let seg_end = segs.get(i + 1).map_or(f64::INFINITY, |n| n.start as f64);
-        if seg_end <= t {
-            continue;
-        }
-        let e = seg_end.min(b);
-        if e > t {
-            f += (e - t) * per_tick(s.bpm);
-            t = e;
-        }
-        if t >= b {
-            break;
-        }
-    }
-    f
+    map.frames_between(a, b, rate)
 }
 
 /// The tick (fractional) `frames` frames after tick `a` along the tempo map.
 pub fn tick_after(map: &TempoMap, a: f64, frames: f64, rate: u32) -> f64 {
-    let segs = map.segments();
-    let per_tick = |bpm: f64| 60.0 * f64::from(rate) / (bpm * f64::from(PPQ));
-    let mut left = frames;
-    let mut t = a;
-    for (i, s) in segs.iter().enumerate() {
-        let seg_end = segs.get(i + 1).map_or(f64::INFINITY, |n| n.start as f64);
-        if seg_end <= t {
-            continue;
-        }
-        let room = (seg_end - t) * per_tick(s.bpm);
-        if left <= room {
-            return t + left / per_tick(s.bpm);
-        }
-        left -= room;
-        t = seg_end;
-    }
-    t
+    map.tick_after(a, frames, rate)
 }
 
 /// Equal-power fade-in over [`FADE`] frames: `xfade_in(j)` for frame `j`
