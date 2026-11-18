@@ -15287,6 +15287,32 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         moving.take_actions();
         out.push(("sample-play-movement", moving));
     }
+    // The Pitch section of a pad with keys played one note at a time:
+    // Mono and Legato on, a 200 ms glide on held keys (sampler R5.5).
+    {
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
+        let mut mono = sample_sampler(fonts());
+        mono.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
+        });
+        for (row, delta) in [
+            (Row::Keys, 1),
+            (Row::Mono, 1),
+            (Row::Legato, 1),
+            (Row::Glide, 5),
+            (Row::GlideOn, 1),
+        ] {
+            let index = play_row(&mut mono, row);
+            mono.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+            mono.apply(ToUi::SampleLift);
+        }
+        mono.take_actions();
+        out.push(("sample-play-mono", mono));
+    }
     // 16 LEVEL on Play: the 16 Levels panel, by tune, pad 12 held.
     {
         let mut levels = sample_sampler(fonts());

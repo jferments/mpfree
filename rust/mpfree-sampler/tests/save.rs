@@ -547,3 +547,44 @@ fn lfo_pitch_envelope_and_velocity_routes_save_and_open() {
         (PadLfo::default(), PitchEnv::default(), 0.0, 0.0)
     );
 }
+
+/// A pad's Mono, Legato and Glide (sampler R5.5) save and open; a kit saved
+/// before them opens with them off.
+#[test]
+fn mono_legato_and_glide_save_and_open() {
+    let s = noise(3_000, 2, 6, "Bass");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut pd = Pad::new("Bass", Layer::new(Region::whole(&s)));
+    pd.keys = Some(Keys::all(48));
+    pd.mono = Mono {
+        on: true,
+        legato: true,
+        glide_ms: 120.0,
+        glide_held: true,
+    };
+    p.set_pad(5, Some(pd), None).unwrap();
+    let (text, files) = save(&[("Bass", &p)], 0);
+    for line in [
+        "kit.0.pad.5.mono.on = yes",
+        "kit.0.pad.5.mono.legato = yes",
+        "kit.0.pad.5.mono.glide_ms = 120",
+        "kit.0.pad.5.mono.glide_held = yes",
+    ] {
+        assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
+    }
+    let read = |text: &str| {
+        from_text(text, &mut |f| wav::read("x", &files[f]))
+            .unwrap()
+            .kits
+            .remove(0)
+            .1
+    };
+    assert_same(&read(&text), &p);
+    let old: String = text
+        .lines()
+        .filter(|l| !l.contains(".mono."))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(read(&old).pad(5).unwrap().mono, Mono::default());
+}

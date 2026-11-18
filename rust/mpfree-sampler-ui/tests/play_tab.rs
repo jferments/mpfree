@@ -1790,3 +1790,55 @@ fn the_movement_section_runs_the_lfo_and_the_pitch_envelope() {
         assert!(log.contains(part), "{part} in {log}");
     }
 }
+
+/// Mono, Legato and Glide (sampler R5.5) in the Pitch section: for a pad
+/// with keys, saying why while they do nothing.
+#[test]
+fn the_pitch_section_plays_a_keyed_pad_one_note_at_a_time() {
+    let mut s = play(false);
+    open(&mut s, Section::Pitch);
+    let why = |s: &PlaySample, row: Row| {
+        let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+        l.controls[row.place()].why.clone()
+    };
+    let chip = |s: &PlaySample| {
+        let c = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+        let i = Section::ALL.iter().position(|x| *x == Section::Pitch);
+        c.chips[i.unwrap()].sub.clone()
+    };
+    assert_eq!(
+        why(&s, Row::Mono),
+        "Mono plays the pad's keys: turn Keys on"
+    );
+    step_apply(&mut s, Row::Keys, 1);
+    assert!(s.state.settings.keys.is_some());
+    assert_eq!(why(&s, Row::Mono), "");
+    assert_eq!(
+        why(&s, Row::Legato),
+        "These play one note at a time: turn Mono on"
+    );
+    step_apply(&mut s, Row::Mono, 1);
+    assert!(s.state.settings.mono.on);
+    assert_eq!(row_value(&mut s, Row::Mono), "On");
+    assert!(chip(&s).ends_with(" · mono"), "{}", chip(&s));
+    assert_eq!(row_value(&mut s, Row::Glide), "Off");
+    assert_eq!(why(&s, Row::GlideOn), "Glide is off: give it a time");
+    // Glide steps through its list: 10 ms, then up to 200 ms.
+    step_apply(&mut s, Row::Glide, 1);
+    assert_eq!(row_value(&mut s, Row::Glide), "10 ms");
+    step_apply(&mut s, Row::Glide, 4);
+    assert_eq!(s.state.settings.mono.glide_ms, 200.0);
+    assert_eq!(row_value(&mut s, Row::GlideOn), "Every note");
+    assert_eq!(why(&s, Row::GlideOn), "");
+    step_apply(&mut s, Row::GlideOn, 1);
+    assert!(s.state.settings.mono.glide_held);
+    assert_eq!(row_value(&mut s, Row::GlideOn), "Held keys");
+    step_apply(&mut s, Row::Legato, 1);
+    assert!(s.state.settings.mono.legato);
+    assert!(chip(&s).ends_with(" · legato"), "{}", chip(&s));
+    // Down past the shortest is off; up past the longest stays at 2 s.
+    step_apply(&mut s, Row::Glide, -9);
+    assert_eq!(row_value(&mut s, Row::Glide), "Off");
+    step_apply(&mut s, Row::Glide, 20);
+    assert_eq!(row_value(&mut s, Row::Glide), "2.00 s");
+}
