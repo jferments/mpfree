@@ -20,6 +20,8 @@
 //! pad.A1 = 36 ch 10
 //! pad.B3 = F#1
 //! mpe = lower 15
+//! bend = 12
+//! pressure = poly
 //! ```
 //!
 //! `match` (any number of them) is a USB name the profile is for: a port
@@ -34,9 +36,13 @@
 //! (Jay's card 17 Nov 23:28Z: drum pads out by the gear's profile); a pad
 //! it leaves out plays [`kit_note`]. `mpe` is an MPE controller's zone
 //! (`lower` or `upper`, with its member channels, or `off`;
-//! [`crate::mpe::Zone`]), for one that doesn't say so itself. A line that
-//! can't be read is skipped
-//! with a warning; a file without a name isn't a profile.
+//! [`crate::mpe::Zone`]), for one that doesn't say so itself. `bend` is a
+//! synth's pitch bend range in semitones (1 to 96), which expression out
+//! bends it by ([`crate::expr_out`]; 2 when it doesn't say). `pressure`
+//! is what a synth takes for the keys' pressure: `channel` (one value for
+//! all its notes, the default, which most synths take) or `poly` (each
+//! note's own). A line that can't be read is skipped with a warning; a
+//! file without a name isn't a profile.
 //!
 //! [`Profiles`] holds the built-in profiles ([`Profiles::builtin`]: General
 //! MIDI) and the ones the musician put in the store's
@@ -141,6 +147,11 @@ pub struct Profile {
     pads: Vec<(u8, PadOut)>,
     /// An MPE controller's zone, if the profile says.
     pub mpe: Option<crate::mpe::Zone>,
+    /// A synth's pitch bend range in semitones, if the profile says.
+    pub bend: Option<u8>,
+    /// A synth takes each note's own pressure (`pressure = poly`), not one
+    /// value for all its notes.
+    pub poly_pressure: bool,
 }
 
 impl Profile {
@@ -249,6 +260,12 @@ impl Profile {
         if let Some(z) = self.mpe {
             let _ = writeln!(s, "mpe = {}", z.to_text());
         }
+        if let Some(b) = self.bend {
+            let _ = writeln!(s, "bend = {b}");
+        }
+        if self.poly_pressure {
+            s.push_str("pressure = poly\n");
+        }
         s
     }
 
@@ -346,6 +363,14 @@ impl Profile {
                 self.set_pad(pad, PadOut { note, channel });
             }
             ["mpe"] => self.mpe = Some(crate::mpe::Zone::parse(v)?),
+            ["bend"] => self.bend = Some(number(v, 1, 96)? as u8),
+            ["pressure"] => {
+                self.poly_pressure = match v.to_ascii_lowercase().as_str() {
+                    "poly" => true,
+                    "channel" => false,
+                    _ => return Err("expected poly or channel".into()),
+                }
+            }
             _ => return Err("unknown key".into()),
         }
         Ok(())
@@ -823,6 +848,31 @@ mod tests {
 
     /// An MPE controller's profile names its zone; a bad zone is skipped
     /// with why.
+    #[test]
+    fn a_synths_profile_gives_its_bend_range() {
+        let (p, warn) = Profile::parse("mpfree-profile 1\nname = Juno\nbend = 12\n").unwrap();
+        assert_eq!((p.bend, warn.len()), (Some(12), 0));
+        assert!(p.to_text().contains("bend = 12\n"));
+        let (p, warn) = Profile::parse("mpfree-profile 1\nname = X\nbend = 0\n").unwrap();
+        assert_eq!((p.bend, warn.len()), (None, 1));
+    }
+
+    /// A synth that takes each note's own pressure says so; channel
+    /// pressure is the default.
+    #[test]
+    fn a_synths_profile_says_what_pressure_it_takes() {
+        let (p, warn) =
+            Profile::parse("mpfree-profile 1\nname = Osmose\npressure = Poly\n").unwrap();
+        assert_eq!((p.poly_pressure, warn.len()), (true, 0));
+        assert!(p.to_text().contains("pressure = poly\n"));
+        assert_eq!(Profile::parse(&p.to_text()).unwrap(), (p, vec![]));
+        let (p, warn) =
+            Profile::parse("mpfree-profile 1\nname = X\npressure = channel\npressure = hard\n")
+                .unwrap();
+        assert_eq!((p.poly_pressure, warn.len()), (false, 1));
+        assert!(!p.to_text().contains("pressure"));
+    }
+
     #[test]
     fn an_mpe_controllers_profile_names_its_zone() {
         use crate::mpe::Zone;

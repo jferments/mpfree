@@ -584,6 +584,10 @@ pub struct FollowSetup {
     /// The CCs its knobs send, in Q-Link order (at most
     /// [`FOLLOW_KNOBS`]); empty: its profile's `knobs`.
     pub knobs: Vec<u8>,
+    /// Send values back (plan item 3.5, board 8): each knob's CC goes
+    /// back to the controller with where its Q-Link's value is, so its
+    /// lights or motor faders follow the screen. Off unless asked for.
+    pub send_back: bool,
 }
 
 impl FollowSetup {
@@ -1153,6 +1157,9 @@ impl MidiSetup {
             let k: Vec<String> = f.knobs.iter().map(u8::to_string).collect();
             line(&mut s, "midi-follow.knobs", &k.join(" "));
         }
+        if f.send_back {
+            line(&mut s, "midi-follow.send-back", "on");
+        }
         // Controller mode, but never its switch: MPFree starts with the
         // pads its own.
         let c = &self.controller;
@@ -1268,6 +1275,7 @@ impl MidiSetup {
             ["midi-follow"] => self.follow.on = parse_on(v)?,
             ["midi-follow", "port"] => self.follow.port = v.to_string(),
             ["midi-follow", "knobs"] => self.follow.knobs = parse_knobs(v)?,
+            ["midi-follow", "send-back"] => self.follow.send_back = parse_on(v)?,
             ["controller", "port"] => self.controller.port = v.to_string(),
             ["controller", "channel"] => self.controller.channel = number(v, 1, 16)? as u8 - 1,
             ["controller", "pads"] => {
@@ -2525,13 +2533,15 @@ mod tests {
                 on: true,
                 port: "Keystep 37".into(),
                 knobs: vec![74, 71, 76, 77],
+                send_back: true,
             },
             ..MidiSetup::default()
         };
         let rig = m.rig_text();
         assert!(
             rig.ends_with(
-                "midi-follow = on\nmidi-follow.port = Keystep 37\nmidi-follow.knobs = 74 71 76 77\n"
+                "midi-follow = on\nmidi-follow.port = Keystep 37\nmidi-follow.knobs = 74 71 76 77\n\
+                 midi-follow.send-back = on\n"
             ),
             "{rig}"
         );

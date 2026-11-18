@@ -491,6 +491,7 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
             Went::Sent,
         ),
         To::Controller => ("sent by controller mode".to_string(), Went::Sent),
+        To::SentBack => ("MIDI Follow: a value sent back".to_string(), Went::Sent),
         To::ThruFrom(p) => (
             format!("thru from {}", port_text(&m.monitor, p, Dir::In)),
             Went::Sent,

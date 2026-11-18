@@ -374,7 +374,9 @@ impl Desk<'_> {
             | gui::FromUi::ExportAsk
             | gui::FromUi::Export(_)
             // Controller mode's chip: the I/O model and MIDI out's.
-            | gui::FromUi::ControllerOff) => return Some(a),
+            | gui::FromUi::ControllerOff
+            // The Q-Links' values, for MIDI Follow's Send values back.
+            | gui::FromUi::QLinkValues(_)) => return Some(a),
         }
         None
     }

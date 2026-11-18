@@ -51,6 +51,9 @@ const PAGE: u8 = 0xFE;
 /// [`Timed`]'s track when the Sample tab's auto-sample of outside gear
 /// sent it.
 const SAMPLER: u8 = 0xFD;
+/// [`Timed`]'s track when MIDI Follow sent a value back to its
+/// controller (Send values back).
+const SENT_BACK: u8 = 0xFC;
 /// [`Timed`]'s track when thru passed it on: this bit, with the input
 /// port's number below it (tracks are below [`MAX_TRACKS`]).
 const THRU: u8 = 0x80;
@@ -110,8 +113,23 @@ impl Timed {
 
     /// The input port thru passed it on from, if it did.
     pub fn thru_from(&self) -> Option<PortId> {
-        (self.track >= THRU && ![NO_TRACK, PAGE, SAMPLER, CONTROLLER].contains(&self.track))
-            .then_some(PortId(self.track & 0x7F))
+        (self.track >= THRU
+            && ![NO_TRACK, PAGE, SAMPLER, SENT_BACK, CONTROLLER].contains(&self.track))
+        .then_some(PortId(self.track & 0x7F))
+    }
+
+    /// The same message, sent back to MIDI Follow's controller with a
+    /// Q-Link's value (for the MIDI monitor).
+    pub fn sent_back(self) -> Timed {
+        Timed {
+            track: SENT_BACK,
+            ..self
+        }
+    }
+
+    /// MIDI Follow sent it back to its controller.
+    pub fn is_sent_back(&self) -> bool {
+        self.track == SENT_BACK
     }
 
     /// Controller mode sent it (the MPC's pads and Q-Links).

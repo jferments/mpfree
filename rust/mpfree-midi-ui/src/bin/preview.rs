@@ -123,6 +123,7 @@ fn shots() -> Vec<Shot> {
         on: true,
         port: "Keystep 37".into(),
         knobs: vec![74, 71, 76, 77],
+        ..Default::default()
     };
     // Learn knobs listening, two found.
     let mut knobs = learn.clone();

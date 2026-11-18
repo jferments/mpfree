@@ -3470,6 +3470,13 @@ fn play_routed(
 ) {
     use mpfree_play::Event;
     let t = usize::from(track);
+    // Expression out: the track's gear on MIDI out takes the keys' wheel,
+    // pressure and MPE, and their going down (before the note, so its bend
+    // leads it) and up (after the note-off, below).
+    let gear = !matches!(key, midi_in::Key::Up { .. })
+        && key
+            .expr_out()
+            .is_some_and(|i| midi.expression(u16::from(track), i));
     let event = match key {
         midi_in::Key::Down { note, velocity } => Event::NoteOn {
             note,
@@ -3478,10 +3485,10 @@ fn play_routed(
         midi_in::Key::Up { note } => Event::NoteOff { note },
         midi_in::Key::Pressure { note, value } => Event::Pressure { note, value },
         // The wheel and an MPE note's own slide and tone: the track's
-        // instrument or the synth (MIDI out and CV take none yet; Thru
-        // passes a keyboard's on as it came).
+        // gear (above), else its instrument, else the synth (CV takes none
+        // yet; Thru passes a keyboard's on as it came).
         midi_in::Key::Bend { value } => {
-            if !own.bend(t, value) {
+            if !gear && !own.bend(t, value) {
                 if let Some(s) = synth {
                     s.bend(value);
                 }
@@ -3489,7 +3496,7 @@ fn play_routed(
             return;
         }
         midi_in::Key::Expr { note, kind, value } => {
-            if !own.note_expression(t, note, kind, value) {
+            if !gear && !own.note_expression(t, note, kind, value) {
                 if let Some(s) = synth {
                     s.expression_note(note, kind, value);
                 }
@@ -3505,7 +3512,13 @@ fn play_routed(
         event,
     };
     cv.send(&o, midi_out::NoteIs::Note);
+    if gear && matches!(event, Event::Pressure { .. }) {
+        return;
+    }
     if midi.send(&o, midi_out::NoteIs::Note) {
+        if let midi_in::Key::Up { note } = key {
+            midi.expression(u16::from(track), mpfree_midi::expr_out::In::Up { note });
+        }
         return;
     }
     if own.holds(t) {
@@ -5295,6 +5308,9 @@ fn player_session(
     // Keys a route sends to a track that isn't armed, played at once.
     let mut routed_keys: Vec<(u8, midi_in::Key)> = Vec::with_capacity(64);
     let mut routed_held = midi_in::RoutedHeld::new();
+    // The track the keys' expression last went to on MIDI out: when
+    // another is armed, its gear's bend and pressure go back to rest.
+    let mut expr_track = 0usize;
     let mut key_misses = 0u64;
     // Messages each port's MIDI out writer dropped with its queue full, as
     // the monitor was last told.
@@ -5319,6 +5335,12 @@ fn player_session(
         // Hits are timed only when they sound at once (not on the arp's grid).
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
+            // The Q-Links' values on screen, for MIDI Follow's Send values
+            // back.
+            if let gui::FromUi::QLinkValues(v) = a {
+                music.set_qlink_values(v);
+                continue;
+            }
             // Controller mode: a drag on a Q-Link card and the screen's
             // pads are the controller's too.
             if controller.on() {
@@ -6256,7 +6278,17 @@ fn player_session(
         // Keys play the armed track: by note while the pads play notes (a
         // synth pad layout), else as the pad the MPC gives that note.
         let key_notes = synth_on && app.arp_plays_notes();
+        if armed != expr_track {
+            midi_out.rest_expression(expr_track);
+            expr_track = armed;
+        }
         for k in keys.drain(..) {
+            // Expression out: the armed track's gear on MIDI out takes the
+            // keys' wheel, pressure and MPE (the keys going down and up
+            // say whose count).
+            let to_gear = key_notes
+                && k.expr_out()
+                    .is_some_and(|i| midi_out.expression(armed as u16, i));
             let pad_event = match k {
                 midi_in::Key::Down { note, velocity } if key_notes => {
                     app.key_down(note, velocity);
@@ -6273,9 +6305,16 @@ fn player_session(
                     None
                 }
                 // Pressure, the wheel and an MPE note's own slide and tone:
-                // the armed track's instrument, else the synth (the notes
-                // it holds as they came: a note the MIDI effects moved
-                // takes none of its key's).
+                // the armed track's gear (above), else its instrument, else
+                // the synth (the notes it holds as they came: a note the
+                // MIDI effects moved takes none of its key's).
+                midi_in::Key::Pressure { .. }
+                | midi_in::Key::Bend { .. }
+                | midi_in::Key::Expr { .. }
+                    if to_gear =>
+                {
+                    None
+                }
                 midi_in::Key::Pressure { note, value } if key_notes => {
                     if !mix.instruments.note_pressure(armed, note, value) {
                         synth.pressure_note(note, value);
@@ -6342,6 +6381,9 @@ fn player_session(
                 music: true,
             });
         }
+        // Its Send values back: the Q-Links' values to the controller's
+        // lights or motor faders, when they change.
+        music.send_back(mt, |to, msg| midi_out.send_back(to, msg));
         // What thru passes on (the I/O view's Routing): out of its output
         // now, if MIDI out is on.
         for p in music.take_thru() {
@@ -7222,6 +7264,8 @@ fn player_session(
                 To::Sampler
             } else if m.is_from_controller() {
                 To::Controller
+            } else if m.is_sent_back() {
+                To::SentBack
             } else if let Some(from) = m.thru_from() {
                 To::ThruFrom(from)
             } else {

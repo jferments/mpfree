@@ -104,6 +104,32 @@ pub enum Key {
     },
 }
 
+impl Key {
+    /// The key as expression out takes it for a track's gear
+    /// ([`mpfree_midi::expr_out`]); None for an expression it doesn't
+    /// send (a release velocity).
+    pub fn expr_out(self) -> Option<mpfree_midi::expr_out::In> {
+        use mpfree_midi::expr_out::In;
+        Some(match self {
+            Key::Down { note, .. } => In::Down { note },
+            Key::Up { note } => In::Up { note },
+            Key::Pressure { note, value } => In::Pressure { note, value },
+            Key::Bend { value } => In::Wheel(value),
+            Key::Expr {
+                note,
+                kind: mpfree_node::Expr::Slide,
+                value,
+            } => In::Slide { note, semis: value },
+            Key::Expr {
+                note,
+                kind: mpfree_node::Expr::Tone,
+                value,
+            } => In::Tone { note, value },
+            Key::Expr { .. } => return None,
+        })
+    }
+}
+
 /// What an expression does, as a key.
 fn expr_key(e: mpfree_midi::mpe::Expr) -> Key {
     use mpfree_midi::mpe::Expr;
@@ -245,7 +271,23 @@ struct Knobs {
     found: [Option<u8>; FOLLOW_KNOBS],
     /// A knob was found since the setup last took them.
     found_new: bool,
+    /// Send values back: the controller's output, while Follow and it
+    /// are on and it is plugged in.
+    back: Option<PortId>,
+    /// The channel each knob last came in on (its value goes back there).
+    ch: [u8; FOLLOW_KNOBS],
+    /// When each knob last turned its Q-Link (the app's clock, s).
+    turned: [f64; FOLLOW_KNOBS],
+    /// Each Q-Link's value as the screen shows it, 0 to 127.
+    want: [Option<u8>; FOLLOW_KNOBS],
+    /// The value last sent back on each knob.
+    sent: [Option<u8>; FOLLOW_KNOBS],
 }
+
+/// How long after a knob turns before its Q-Link's value goes back to
+/// it: the hand is on it, its own turns moved the value, and a motor
+/// fader would fight the finger.
+pub const HOLD_BACK: f64 = 0.3;
 
 impl Knobs {
     fn new() -> Knobs {
@@ -257,13 +299,18 @@ impl Knobs {
             learning: false,
             found: [None; FOLLOW_KNOBS],
             found_new: false,
+            back: None,
+            ch: [0; FOLLOW_KNOBS],
+            turned: [f64::NEG_INFINITY; FOLLOW_KNOBS],
+            want: [None; FOLLOW_KNOBS],
+            sent: [None; FOLLOW_KNOBS],
         }
     }
 
     /// A CC from `port`: the Q-Link it turns, or the knob Learn knobs
     /// found it as; None when it isn't Follow's. A knob's first value
     /// only says where it is.
-    fn cc(&mut self, port: PortId, cc: u8, value: u8) -> Option<u8> {
+    fn cc(&mut self, port: PortId, ch: u8, cc: u8, value: u8, t: f64) -> Option<u8> {
         if self.port != Some(port) || cc >= 120 {
             return None;
         }
@@ -280,6 +327,8 @@ impl Knobs {
             return Some(n as u8);
         }
         let k = self.ccs.iter().position(|c| *c == Some(cc))?;
+        self.ch[k] = ch;
+        self.turned[k] = t;
         if let Some(was) = self.at[k].replace(value) {
             let d = i32::from(value) - i32::from(was);
             if d != 0 && self.turns.len() < self.turns.capacity() {
@@ -353,8 +402,8 @@ fn learn_or_follow(
     }
     // MIDI Follow: the controller's knob turns a Q-Link (a learned
     // control above wins), and plays nothing.
-    if let Msg::Cc { cc, value, .. } = *raw {
-        if let Some(k) = knobs.cc(port, cc, value) {
+    if let Msg::Cc { ch, cc, value } = *raw {
+        if let Some(k) = knobs.cc(port, ch, cc, value, t) {
             *to = To::QLink(k);
             return true;
         }
@@ -560,6 +609,43 @@ impl MusicIn {
         if shown != self.shown {
             self.shown = shown.clone();
             m.monitor.set_shown(shown);
+        }
+    }
+
+    /// The four Q-Links' values as the screen shows them (0 to 127; None
+    /// where a Q-Link turns nothing on the page), for MIDI Follow's Send
+    /// values back.
+    pub fn set_qlink_values(&mut self, values: [Option<u8>; FOLLOW_KNOBS]) {
+        self.knobs.want = values;
+    }
+
+    /// MIDI Follow's Send values back, at `t` (the app's clock, s): each
+    /// knob whose Q-Link's value differs from the one it was last sent,
+    /// as its CC on the channel it last came in on, through `send`
+    /// (false: nothing could go, so it tries again later). Not while the
+    /// knob turned in the last [`HOLD_BACK`] s. A knob's next value counts
+    /// from the one sent, since its lights or fader show it now.
+    pub fn send_back(&mut self, t: f64, mut send: impl FnMut(PortId, Msg) -> bool) {
+        let k = &mut self.knobs;
+        let Some(port) = k.back else { return };
+        for i in 0..FOLLOW_KNOBS {
+            let (Some(cc), Some(value)) = (k.ccs[i], k.want[i]) else {
+                continue;
+            };
+            if k.sent[i] == Some(value) || t - k.turned[i] < HOLD_BACK {
+                continue;
+            }
+            if send(
+                port,
+                Msg::Cc {
+                    ch: k.ch[i],
+                    cc,
+                    value,
+                },
+            ) {
+                k.sent[i] = Some(value);
+                k.at[i] = Some(value);
+            }
         }
     }
 
@@ -951,8 +1037,25 @@ impl MusicIn {
                 })
                 .flatten();
             let ccs = f.knobs_of(m.profile(&f.port));
-            self.knobs.ccs = std::array::from_fn(|i| ccs.get(i).copied());
+            let ccs: [Option<u8>; FOLLOW_KNOBS] = std::array::from_fn(|i| ccs.get(i).copied());
             self.knobs.at = [None; FOLLOW_KNOBS];
+            // Send values back: its output (a USB device's is under the
+            // same name), and every value again when it or the knobs
+            // change.
+            let back = (f.on && f.send_back)
+                .then(|| {
+                    self.ports
+                        .all()
+                        .iter()
+                        .find(|p| p.name == f.port && p.has_out)
+                        .map(|p| p.id)
+                })
+                .flatten();
+            if back != self.knobs.back || ccs != self.knobs.ccs {
+                self.knobs.sent = [None; FOLLOW_KNOBS];
+            }
+            self.knobs.back = back;
+            self.knobs.ccs = ccs;
             // Controller mode: its output by name (on this run's number,
             // None until it is plugged in) and the profile that names its
             // notes and controls.
@@ -2660,6 +2763,97 @@ mod tests {
         assert_eq!(m.learning().count(), 0);
     }
 
+    /// MIDI Follow's Send values back: each knob's Q-Link value goes to
+    /// the controller's output, on the channel the knob came in on, once
+    /// per change; not while the knob turns; the knob's next value counts
+    /// from the one sent; nothing with it off, or with no output.
+    #[test]
+    fn midi_follow_sends_values_back_when_asked() {
+        use mpfree_midi::setup::FollowSetup;
+        let mut m = MusicIn::new();
+        let usb = m
+            .plug(&UsbPort {
+                name: "Twister".into(),
+                input: Some(0),
+                output: Some(0),
+                about: "USB".into(),
+            })
+            .unwrap();
+        let s = model();
+        let set = |back: bool| {
+            let mut v = s.lock().unwrap();
+            v.setup.follow = FollowSetup {
+                on: true,
+                port: "Twister".into(),
+                knobs: vec![10, 11, 12, 13],
+                send_back: back,
+            };
+            v.gen += 1;
+        };
+        let sent = |m: &mut MusicIn, t: f64| {
+            let mut out = Vec::new();
+            m.send_back(t, |to, msg| {
+                out.push((to, msg));
+                true
+            });
+            out
+        };
+        set(false);
+        m.sync(&s, 0.0);
+        m.set_qlink_values([Some(64), Some(0), None, Some(127)]);
+        assert!(sent(&mut m, 0.0).is_empty(), "off by default");
+        set(true);
+        m.sync(&s, 0.1);
+        let cc = |cc, value| (usb, Msg::Cc { ch: 0, cc, value });
+        assert_eq!(
+            sent(&mut m, 0.1),
+            [cc(10, 64), cc(11, 0), cc(13, 127)],
+            "a blank card sends nothing"
+        );
+        assert!(sent(&mut m, 0.2).is_empty(), "once per change");
+        // Knob 1 turns on channel 3: its Q-Link moves, but nothing goes
+        // back while the hand is on it.
+        run(&mut m, usb, &[0xB2, 10, 64, 0xB2, 10, 70]);
+        assert_eq!(m.take_knob_turns().collect::<Vec<_>>(), [(0, 6)]);
+        m.set_qlink_values([Some(69), Some(0), None, Some(127)]);
+        assert!(sent(&mut m, 0.0).is_empty());
+        let later = sent(&mut m, 1.0 + HOLD_BACK + 0.01);
+        assert_eq!(
+            later,
+            [(
+                usb,
+                Msg::Cc {
+                    ch: 2,
+                    cc: 10,
+                    value: 69
+                }
+            )]
+        );
+        // Its next value counts from the one sent.
+        run(&mut m, usb, &[0xB2, 10, 71]);
+        assert_eq!(m.take_knob_turns().collect::<Vec<_>>(), [(0, 2)]);
+        // A send that couldn't go goes again.
+        m.set_qlink_values([Some(69), Some(5), None, Some(127)]);
+        let mut tries = 0;
+        m.send_back(10.0, |_, _| {
+            tries += 1;
+            false
+        });
+        assert_eq!(tries, 1);
+        assert_eq!(sent(&mut m, 10.1), [cc(11, 5)]);
+        // A keyboard with no output: nothing goes back.
+        let kb = m.plugged("Keystep 37").unwrap();
+        assert_ne!(kb, usb);
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.follow.port = "Keystep 37".into();
+            v.gen += 1;
+        }
+        m.sync(&s, 11.0);
+        m.set_qlink_values([Some(1), Some(2), Some(3), Some(4)]);
+        assert!(sent(&mut m, 12.0).is_empty());
+    }
+
     /// MIDI Follow: the keyboard's knobs turn the Q-Links by as much as
     /// they move and play nothing; its other CCs and keys, and another
     /// port's, play as before; a learned control wins; Learn knobs takes
@@ -2676,6 +2870,7 @@ mod tests {
                 on: true,
                 port: "Keystep 37".into(),
                 knobs: vec![74, 71],
+                ..FollowSetup::default()
             };
             v.gen += 1;
         }

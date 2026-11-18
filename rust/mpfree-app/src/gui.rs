@@ -1174,6 +1174,10 @@ pub enum FromUi {
     /// A tap on the Controller chip: controller mode off, the pads and
     /// Q-Links MPFree's again.
     ControllerOff,
+    /// The Q-Link column's four values now (0 to 127; None for a card
+    /// with nothing to turn), when they change: MIDI Follow sends them
+    /// back to its controller's lights or faders, if asked to.
+    QLinkValues([Option<u8>; 4]),
     /// The pattern's ‹ or › while the pads are steps: the pads show this
     /// page too.
     StepPage(usize),
@@ -1563,6 +1567,9 @@ pub struct Player {
     /// Actions that came from something other than a touch (a page change
     /// letting go of a pad, the wheel in the workspace), for the audio thread.
     outbox: Vec<FromUi>,
+    /// The Q-Link column's values last handed to the audio thread
+    /// ([`Player::qlink_values_changed`]).
+    qlink_sent: [Option<u8>; 4],
     /// The time engine's bar and Arrange page, and what they show.
     pub(crate) time_page: TimePage,
     pub time: TimeState,
@@ -1943,6 +1950,7 @@ impl Player {
             chip_why: Vec::new(),
             fingers: Vec::new(),
             outbox: Vec::new(),
+            qlink_sent: [None; 4],
             time_page,
             time: TimeState::default(),
             debug,
@@ -2380,6 +2388,38 @@ impl Player {
                 q.cards = cards;
             }
         }
+    }
+
+    /// The Q-Link column's four values (0 to 127; None for a blank card),
+    /// the Looper tab's own column while it shows.
+    pub fn qlink_values(&self) -> [Option<u8>; 4] {
+        let column = if self.view == View::Looper {
+            crate::looper_tab::QLINKS
+        } else {
+            play_page::QLINKS
+        };
+        self.ui.get::<QLinkColumn>(column).map_or([None; 4], |q| {
+            std::array::from_fn(|i| {
+                let c = &q.cards[i];
+                (!c.name.is_empty()).then(|| (c.pos.clamp(0.0, 1.0) * 127.0).round() as u8)
+            })
+        })
+    }
+
+    /// The Q-Link column's values when they changed since last handed on
+    /// (for MIDI Follow's Send values back), marking them handed on.
+    pub fn qlink_values_changed(&mut self) -> Option<[Option<u8>; 4]> {
+        let v = self.qlink_values();
+        (v != self.qlink_sent).then(|| {
+            self.qlink_sent = v;
+            v
+        })
+    }
+
+    /// The Q-Link values didn't reach the audio thread: hand them on
+    /// again next time.
+    pub fn qlink_unsent(&mut self) {
+        self.qlink_sent = [Some(u8::MAX); 4];
     }
 
     /// Whether the mixer shows its I/O view.
@@ -9659,6 +9699,13 @@ fn send_actions(player: &mut Player, tx: &SyncSender<FromUi>) {
         match tx.try_send(a) {
             Ok(()) => {}
             Err(TrySendError::Full(a) | TrySendError::Disconnected(a)) => player.unsent(a),
+        }
+    }
+    // The Q-Links' values, for MIDI Follow's Send values back; with the
+    // queue full they go again next time.
+    if let Some(v) = player.qlink_values_changed() {
+        if tx.try_send(FromUi::QLinkValues(v)).is_err() {
+            player.qlink_unsent();
         }
     }
 }
