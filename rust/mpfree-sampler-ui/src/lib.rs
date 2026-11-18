@@ -36,12 +36,12 @@
 //!   (the page went on 18 Nov 2026).
 //! - [`recorder`]: the one Sample page's recorder row (REC, Source,
 //!   Starts, Ends) on the Wave page, with the Input section while REC is on.
-//! - [`rec_tab`]: the pad editor's Rec tab: the line input's meters and
-//!   its last half minute, takes that start now, over a threshold or on the
-//!   next bar and end on a press, silence or a length, and Skip back over
-//!   the last seconds or bars, each onto a pad ([`RecAction`]). Its picture
-//!   is in [`rec_widgets`].
-//! - [`auto_tab`]: the Rec tab's Auto-sample mode: the synth on the pads
+//! - [`rec_tab`]: the recorder's settings (once the pad editor's Rec tab,
+//!   which went in the one Sample page's step 2f, part 4): how a take
+//!   starts and ends, its tail, gain and channels, where it goes, and how a
+//!   Flatten plays its pad. [`rec_widgets`] holds the meter's [`rec_widgets::Strip`].
+//! - [`live_take`]: the take recording, drawn into the Sample page's wave.
+//! - [`auto_tab`]: the recorder's Auto-sample mode: the synth on the pads
 //!   sampled note by note into a keygroup instrument, with the keyboard,
 //!   the velocity layers and the plan's cost shown first ([`AutoAction`]).
 //!   Its picture is in [`auto_widgets`].
@@ -88,7 +88,7 @@ pub use chop_tab::{ChopAction, ChopState, ChopTab};
 pub use mpfree_analysis::note_name;
 pub use pads_tab::{PadsAction, PadsState, PadsTab};
 pub use play_tab::{PlayAction, PlayState, PlayTab};
-pub use rec_tab::{RecAction, RecSettings, RecState, RecTab};
+pub use rec_tab::RecSettings;
 pub use source::{PyramidPeaks, SourceView};
 pub use warp_tab::WarpTab;
 pub use wave_tab::{Mark, Snap, WaveAction, WaveState, WaveTab};

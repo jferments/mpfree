@@ -245,7 +245,7 @@ pub const DELAY_RETURN: usize = 0;
 const PERFORM_SLOT: usize = 0;
 /// A send this low is off.
 pub const SEND_OFF_DB: f32 = -60.0;
-/// The capture point the sampler resamples from (the Rec tab's Source):
+/// The capture point the sampler resamples from (the recorder's Source):
 /// the last of the mixer's [`CAPTURES`], so the others stay free for
 /// print, stems and the looper.
 pub const SAMPLER_CAPTURE: usize = CAPTURES - 1;

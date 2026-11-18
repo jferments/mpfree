@@ -104,7 +104,7 @@ checked: 2026-11-14 b76c3c7
 
 **Sequencer** — The tab after Play: the armed track's clip as steps (**Steps**) or as notes in the note editor (**Notes**). **STEP SEQ** opens it.
 
-**Skip back** — Keep what came into the Rec page in the last seconds or bars, without having pressed Record.
+**Skip back** — The Rec page's way to keep what had just come in, without having pressed Record. The Rec page has gone: Sample Recall's **From** set to the recorder's Source does it now.
 
 **Song** — Clips laid out on a timeline on the Arrange tab, one lane per track, with the audio tracks under them.
 

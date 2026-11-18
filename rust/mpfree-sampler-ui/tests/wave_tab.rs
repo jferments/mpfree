@@ -480,25 +480,23 @@ fn tabs_taps_and_the_sample_screens() {
     let mut s = sample();
     let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
     let pb = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
-    let (warp_tab_r, chop_tab_r, play_tab_r, rec_tab_r) = (
+    let (warp_tab_r, chop_tab_r, play_tab_r) = (
         pb.tab_rect(bar, warp_tab::TAB),
         pb.tab_rect(bar, chop_tab::TAB),
         pb.tab_rect(bar, play_tab::TAB),
-        pb.tab_rect(bar, rec_tab::TAB),
     );
     assert_eq!(pb.active, wave_tab::TAB);
     assert_eq!(
         pb.tabs,
-        ["Wave", "Warp", "Chop", "Play", "Rec"],
-        "the pads are the app's Pads tab, a pad's effects are in Mix (no FX tab), and Grain \
-         is a tool on the page (no Grain tab)"
+        ["Wave", "Warp", "Chop", "Play"],
+        "the pads are the app's Pads tab, a pad's effects are in Mix (no FX tab), Grain is \
+         a tool on the page (no Grain tab) and recording is the recorder row's (no Rec tab)"
     );
     let st = s.state.clone();
     for (id, r, tab, what) in [
         (7, warp_tab_r, warp_tab::TAB, "Warp opens"),
         (2, chop_tab_r, chop_tab::TAB, "Chop opens"),
         (4, play_tab_r, play_tab::TAB, "Play opens"),
-        (6, rec_tab_r, rec_tab::TAB, "Rec opens"),
     ] {
         let ev = s.ui.touch(id, Touch::Down, r.x + 5, r.y + 5).unwrap();
         assert_eq!(

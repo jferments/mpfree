@@ -1,102 +1,24 @@
-//! The pad editor's Rec tab: the line input, or any point in the mix,
-//! onto a pad.
+//! The recorder's settings and how they step: once the pad editor's Rec
+//! tab, whose controls now live on the one Sample page (steps 2a to 2f):
+//! the recorder row's Source, Starts and Ends cards
+//! ([`crate::recorder`]), its Input section while REC is on (Channels,
+//! Onto, Tail, Gain, Threshold, Pre-roll, Silence for, Monitor), Skip back
+//! in Sample Recall's From ([`crate::recall`]), and Flatten and
+//! Auto-sample as Sources. The Rec tab itself went in step 2f, part 4.
 //!
-//! - The **Source** row picks what it records: the line input, or a point
-//!   in the mix the app offers (the master as heard, a track, a pad's
-//!   channel, a return): resampling. The app keeps one buffer and starts
-//!   it afresh on a new source, so Skip back reaches back to the change at
-//!   most. A take being made keeps its source: the row waits for it.
-//! - The **input** picture shows the source's level on two meters and
-//!   the last half minute of it scrolling past, with the transport's bar
-//!   lines, the span **Skip back** would keep and the take being recorded.
-//! - **Record** starts a take with the Record list's settings: at once, when
-//!   the input goes over the threshold (keeping a pre-roll from before),
-//!   or on the next bar line; it ends on **Stop**, on silence, or after a
-//!   number of bars (exactly on the bar line when it started on one). A
-//!   take still waiting for its start is cancelled by Stop.
-//! - After its bars a take is cut, **rings out** until it has been under
-//!   -60 dB for the Silence time (at most 20 s more: a one-shot with its
-//!   reverb), or **loops**, exactly its bars long and without a seam
-//!   (Print N bars to a pad): music already going round when it started
-//!   is cut on the bar line (its start holds the ringing of the time
-//!   before); music that started with it is let ring, and the ringing is
-//!   folded onto its start, or, if the music is still going a whole length
-//!   on, that second time round is kept. Takes of whole bars land warped
-//!   at the project tempo, so they follow it.
-//! - **Skip back** keeps what already came in: the last 5 to 60 seconds,
-//!   or the last 1 to 8 whole bars, cut on the bar lines.
-//! - Either way the sound goes onto the next empty pad from the pad picked
-//!   (or onto the pad picked, replacing its sound), as one undo step, and
-//!   the editor picks that pad.
-//! - **Flatten** resamples the pad picked as it plays: the app records the
-//!   pad's own channel, plays the pad once at the Flatten velocity, lets
-//!   go after the Flatten hold, and keeps the sound until it has been
-//!   silent (under -60 dB) for the Silence time. Its layers, envelopes,
-//!   filter, warp and pan are in the one sound; onto the next empty pad
-//!   its channel's insert effects are too (onto the pad itself they are
-//!   left out, as the channel will play them again).
-//! - **Auto-sample** opens the mode that plays the synth on the pads note
-//!   by note and makes a keygroup instrument of it ([`crate::auto_tab`]).
-//! - The **panel** under the input ([`crate::panel`]) holds the settings
-//!   and the buttons in five sections: **Input** (the source and which
-//!   channels: both, left, right, or both mixed to mono), **Start** (how
-//!   a take starts, the threshold and pre-roll), **End** (how it ends,
-//!   its length, the silence it waits for and its tail), **Take** (Record
-//!   or Stop, Skip back with how far it goes, and which pad a take goes
-//!   onto) and **Resample** (Flatten and Auto-sample, and how Flatten
-//!   plays the pad). A touch on a control picks it; the **wheel** (and
-//!   the - / + keys) step the control picked, and a finger resting on one
-//!   lets the wheel turn it.
-//!
-//! The settings live in the tab ([`RecTab::settings`]); the app makes the
-//! [`Recording`] from them on [`RecAction::Record`], polls it, and puts the
-//! sound on the pad. The tab only reads the sampler's [`Input`].
+//! - [`RecSettings`] is how a take starts (at once, over the threshold
+//!   keeping a pre-roll, or on the next bar line) and ends (on STOP, on
+//!   silence, or after a number of bars), what it does after its bars
+//!   (cut, ring out until the Silence time of quiet, or loop), the input's
+//!   gain, which channels it keeps and where it goes (Onto), and how a
+//!   Flatten plays its pad. [`RecSettings::recording`] and
+//!   [`RecSettings::flatten_recording`] make the [`Recording`].
+//! - [`Row`] names each setting, [`value_text`] says it, [`stepped`] steps
+//!   it and [`target`] finds the pad a take goes onto.
 
-use mpfree_sampler::record::{
-    End, Input, Pick, Progress, Recording, RingOut, Start, Tail, BAR_LINES,
-};
-use mpfree_ui::{EventKind, Ui, UiEvent};
+use mpfree_sampler::record::{End, Input, Pick, Recording, RingOut, Start, Tail};
 
-use crate::chop_tab::pad_text;
-use crate::panel::{Control, Item, Look, Panel, Section};
-use crate::rec_widgets::{InputView, Span, Strip};
-use crate::wave_tab::{self, duration_text, pad_color, TABS};
-use crate::widgets::{PadBar, Setting, SettingList};
-
-/// Widget names the tab adds. The app's own are `header` and `hint`.
-pub const BAR: &str = "smp-rec-bar";
-pub const VIEW: &str = "smp-rec-view";
-/// The settings and buttons, drawn as the panel under the input.
-pub const LIST: &str = "smp-rec-list";
-/// The Q-Link column, as on every page: the Q-Links turn nothing here,
-/// so its four cards are free.
-pub const QLINKS: &str = "smp-rec-qlinks";
-
-/// The tab's page: the input across the page, the panel under it, and
-/// the Q-Link column on the right.
-pub const LAYOUT: &str = "col(header:60, row(smp-rec-bar:*, smp-send:330):60, \
-                          row(col(smp-rec-view:*, smp-rec-list:242):*, smp-rec-qlinks:128):*, hint:26)";
-
-/// The tab's place in [`TABS`].
-pub const TAB: usize = 4;
-
-/// The hint line the app shows under the tab.
-pub const HINT: &str =
-    "Record, or keep what just came in with Skip back · Flatten resamples the pad picked · touch a control, \
-                        then the wheel or - / + change it · UNDO takes a take off its pad again";
-
-/// The button that resamples the pad picked.
-pub const FLATTEN_LABEL: &str = "Flatten";
-
-/// The button that opens the Auto-sample mode.
-pub const AUTO_LABEL: &str = "Auto-sample";
-
-/// The button that keeps what Skip back covers.
-pub const SKIP_LABEL: &str = "Skip back";
-
-/// The bar's title while Onto is on Stay here (one-page step 2b): the take
-/// stays on the Sample page until it is put on a pad.
-pub const STAYS_TITLE: &str = "Record: the take stays here";
+use crate::panel::{Control, Look};
 
 /// Flatten's level for silence: under it for the Silence time, the sound
 /// has ended (and a sound starts when it goes over it).
@@ -108,19 +30,6 @@ pub const TAIL_SILENCE_DB: f32 = FLATTEN_SILENCE_DB;
 
 /// The longest a take rings on after its bars.
 pub const TAIL_MAX_SECONDS: u32 = 20;
-
-/// What the picture says while the line input is off (and is the source).
-pub const OFF_NOTE: &str =
-    "The line input is off: Looper tab, MENU, Line input · or pick another Source";
-
-/// The input the strip shows, in seconds, and its columns a second.
-pub const STRIP_SECONDS: u32 = 30;
-const STRIP_COLUMNS_PER_SECOND: u32 = 30;
-/// While the input view's picture moves, the shortest time between two
-/// redraws of it, in seconds: every other frame, about 15 a second. It
-/// spans 904 of the turned panel's 1280 rows, and a loud input moves it
-/// at every frame. A change of settings still shows at the next frame.
-pub const LIVE_GAP_S: f32 = 0.06;
 
 /// The longest take: three minutes (about 64 MB of stereo).
 pub const MAX_TAKE_SECONDS: u32 = 180;
@@ -141,17 +50,6 @@ const LENGTHS_BARS: [u32; 6] = [1, 2, 4, 8, 16, 32];
 const SILENCES_MS: [u32; 5] = [250, 500, 1000, 2000, 4000];
 const VELOCITIES: [u8; 9] = [16, 32, 48, 64, 80, 96, 110, 120, 127];
 const HOLDS_MS: [u32; 7] = [100, 250, 500, 1000, 2000, 4000, 8000];
-const SKIPS: [Skip; 9] = [
-    Skip::Seconds(5),
-    Skip::Seconds(10),
-    Skip::Seconds(20),
-    Skip::Seconds(30),
-    Skip::Seconds(60),
-    Skip::Bars(1),
-    Skip::Bars(2),
-    Skip::Bars(4),
-    Skip::Bars(8),
-];
 
 /// How a take starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +78,8 @@ pub enum TailAt {
     Loop,
 }
 
-/// How far Skip back goes.
+/// A span of seconds or whole bars, as said: "10 s", "1 min", "2 bars"
+/// (the recorder's Ends card's After N bars; once Skip back's reach).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Skip {
     Seconds(u32),
@@ -230,7 +129,6 @@ pub struct RecSettings {
     /// After a length: cut, ring out or loop.
     pub tail: TailAt,
     pub silence_ms: u32,
-    pub skip: Skip,
     pub onto: Onto,
     /// Flatten plays the pad at this velocity and lets it go after this
     /// long (a gated or looping sound plays that long; a one-shot plays
@@ -252,7 +150,6 @@ impl Default for RecSettings {
             bars: 4,
             tail: TailAt::Cut,
             silence_ms: 1000,
-            skip: Skip::Seconds(10),
             onto: Onto::Stay,
             flatten_velocity: 127,
             flatten_hold_ms: 1000,
@@ -389,22 +286,13 @@ pub enum Row {
     Length,
     Silence,
     Tail,
-    /// The button: Record, or Stop while a take (or a Flatten) runs.
-    Record,
-    /// The button that keeps what Skip back covers, now.
-    Keep,
-    SkipBack,
     Onto,
-    /// The button: resample the pad picked.
-    Flatten,
-    /// The button: the Auto-sample mode.
-    Auto,
     FlattenVelocity,
     FlattenHold,
 }
 
 impl Row {
-    pub const ALL: [Row; 18] = [
+    pub const ALL: [Row; 13] = [
         Row::Source,
         Row::Input,
         Row::Gain,
@@ -415,18 +303,10 @@ impl Row {
         Row::Length,
         Row::Silence,
         Row::Tail,
-        Row::Record,
-        Row::Keep,
-        Row::SkipBack,
         Row::Onto,
-        Row::Flatten,
-        Row::Auto,
         Row::FlattenVelocity,
         Row::FlattenHold,
     ];
-
-    /// The buttons, pressed rather than stepped.
-    pub const BUTTONS: [Row; 4] = [Row::Record, Row::Keep, Row::Flatten, Row::Auto];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -440,14 +320,9 @@ impl Row {
             Row::Length => "Length",
             Row::Tail => "Tail",
             Row::Silence => "Silence for",
-            Row::SkipBack => "Skip back",
             Row::Onto => "Onto",
             Row::FlattenVelocity => "Flatten velocity",
             Row::FlattenHold => "Flatten hold",
-            Row::Record => "Record",
-            Row::Keep => "Skip back now",
-            Row::Flatten => FLATTEN_LABEL,
-            Row::Auto => AUTO_LABEL,
         }
     }
 
@@ -491,9 +366,6 @@ pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
         Row::Silence => ms_text(s.silence_ms),
         Row::FlattenVelocity => s.flatten_velocity.to_string(),
         Row::FlattenHold => ms_text(s.flatten_hold_ms),
-        // The buttons say what they do.
-        Row::Record | Row::Keep | Row::Flatten | Row::Auto => String::new(),
-        Row::SkipBack => s.skip.label(),
         Row::Onto => match s.onto {
             Onto::Stay => "Stay here",
             Onto::NextEmpty => "Next empty",
@@ -556,17 +428,32 @@ pub fn stepped(s: &RecSettings, row: Row, delta: i32, sources: usize) -> RecSett
             s.threshold_db = THRESHOLDS_DB[shift(i, delta, THRESHOLDS_DB.len())];
         }
         Row::PreRoll => s.pre_roll_ms = step_in(&PRE_ROLLS_MS, s.pre_roll_ms, delta),
-        Row::End => s.end = step_in(&[EndAt::Press, EndAt::Silence, EndAt::Length], s.end, delta),
+        Row::End => {
+            // One list, so the Ends card reaches every length (one-page
+            // step 2f, part 4: the Rec page's Length row goes): On STOP,
+            // On silence, then After 1 bar to After 32 bars.
+            let now = match s.end {
+                EndAt::Press => 0,
+                EndAt::Silence => 1,
+                EndAt::Length => 2 + LENGTHS_BARS.iter().position(|b| *b == s.bars).unwrap_or(2),
+            };
+            match shift(now, delta, 2 + LENGTHS_BARS.len()) {
+                0 => s.end = EndAt::Press,
+                1 => s.end = EndAt::Silence,
+                i => {
+                    s.end = EndAt::Length;
+                    s.bars = LENGTHS_BARS[i - 2];
+                }
+            }
+        }
         Row::Length => s.bars = step_in(&LENGTHS_BARS, s.bars, delta),
         Row::Tail => s.tail = step_in(&[TailAt::Cut, TailAt::Ring, TailAt::Loop], s.tail, delta),
         Row::Silence => s.silence_ms = step_in(&SILENCES_MS, s.silence_ms, delta),
-        Row::SkipBack => s.skip = step_in(&SKIPS, s.skip, delta),
         Row::Onto => s.onto = step_in(&ONTOS, s.onto, delta),
         Row::FlattenVelocity => {
             s.flatten_velocity = step_in(&VELOCITIES, s.flatten_velocity, delta)
         }
         Row::FlattenHold => s.flatten_hold_ms = step_in(&HOLDS_MS, s.flatten_hold_ms, delta),
-        Row::Record | Row::Keep | Row::Flatten | Row::Auto => {}
     }
     s
 }
@@ -608,569 +495,6 @@ fn gain_knob(db: f32) -> Control {
     })
 }
 
-/// What the tab shows besides the input: the pad picked and where a take
-/// would go.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RecState {
-    /// The pad picked in the editor, and its sound's name if it has one.
-    pub pad: usize,
-    pub pad_name: Option<String>,
-    /// The pad a take goes onto now (None: no empty pad left). With the
-    /// settings' Onto on [`Onto::Stay`], where a Flatten goes (the next
-    /// empty pad): a take stays on the page.
-    pub target: Option<usize>,
-    /// The sources it can record from, by name; the first is the line
-    /// input.
-    pub sources: Vec<String>,
-    /// The source picked comes in (for the line input: it is on, on the
-    /// Looper tab's MENU; a point in the mix always does).
-    pub live: bool,
-    /// The last take, said in a line.
-    pub last: String,
-    /// Flatten can resample the pad picked now (it has a sound that plays
-    /// on its own channel, and there is a pad to put it on).
-    pub can_flatten: bool,
-    /// A Flatten running, said in a line (the bar's title while it runs).
-    pub flattening: Option<String>,
-}
-
-/// What a touch or control on the tab asks for. The app does it.
-#[derive(Clone, Debug, PartialEq)]
-pub enum RecAction {
-    /// Start a take with [`RecTab::settings`].
-    Record,
-    /// Stop the take (cancel one still waiting), or a Flatten.
-    Stop,
-    /// Keep what the settings' Skip back covers, now.
-    SkipBack,
-    /// The Source row picked source `i` of [`RecState::sources`].
-    Source(usize),
-    /// Open the editor's tab `i` of [`TABS`].
-    Tab(usize),
-    /// Resample the pad picked as it plays ([`RecState::can_flatten`]).
-    Flatten,
-    /// Open the Auto-sample mode ([`crate::auto_tab`]).
-    Auto,
-}
-
-/// The Rec tab's widgets and settings.
-pub struct RecTab {
-    /// The page name the tab's layout is added under.
-    pub name: String,
-    /// The bank letter shown in pad names, as [`wave_tab::WaveTab::bank`].
-    pub bank: Option<char>,
-    pub settings: RecSettings,
-    /// A take is being recorded (or waits for its start): the first button
-    /// stops it.
-    recording: bool,
-    /// A Flatten is running: the first button stops it too.
-    flattening: bool,
-    /// The sources' names, as last shown.
-    sources: Vec<String>,
-    /// What the tab showed last ([`RecTab::update`]): the panel's buttons
-    /// follow a take starting and ending from it.
-    shown: Option<RecState>,
-    /// A line for the app to show ([`RecTab::take_note`]).
-    note: Option<String>,
-    /// Seconds since [`RecTab::feed`] last had the input view redrawn.
-    since_drawn: f32,
-}
-
-impl RecTab {
-    /// Adds the widgets and the page `name` to `ui` (the app adds `header`
-    /// and `hint` first) and shows `st`. The strip shows input at `rate`.
-    pub fn add(ui: &mut Ui, name: &str, st: &RecState, rate: u32) -> Result<RecTab, String> {
-        crate::send::add(ui);
-        let mut bar = PadBar::new(&TABS);
-        bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
-        bar.active = TAB;
-        ui.add(BAR, bar);
-        let per = u64::from(rate / STRIP_COLUMNS_PER_SECOND).max(1);
-        let strip = Strip::new(per, (STRIP_SECONDS * STRIP_COLUMNS_PER_SECOND) as usize);
-        ui.add(VIEW, InputView::new("Line input", strip, rate));
-        let mut list = SettingList::new("Record");
-        list.selected = Row::Start.index();
-        list.buttons = Row::BUTTONS.map(Row::index).to_vec();
-        ui.add(LIST, list);
-        ui.add(QLINKS, mpfree_ui::qlink::QLinkColumn::new());
-        ui.add_page(name, LAYOUT)?;
-        let mut tab = RecTab {
-            name: name.to_string(),
-            bank: None,
-            settings: RecSettings::default(),
-            recording: false,
-            flattening: false,
-            sources: st.sources.clone(),
-            shown: None,
-            note: None,
-            since_drawn: f32::INFINITY,
-        };
-        tab.update(ui, st);
-        Ok(tab)
-    }
-
-    /// The control picked on the panel.
-    pub fn row(&self, ui: &Ui) -> Row {
-        ui.get::<SettingList>(LIST)
-            .and_then(|l| Row::ALL.get(l.selected).copied())
-            .unwrap_or(Row::Start)
-    }
-
-    /// Shows `st` and the settings.
-    pub fn update(&mut self, ui: &mut Ui, st: &RecState) {
-        let target = st.target.map(|p| pad_text(self.bank, p));
-        if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
-            bar.color = pad_color(st.target.unwrap_or(st.pad));
-            bar.active = TAB;
-            // A pad without a sound has nothing for the other tabs to edit.
-            bar.enabled = TABS
-                .iter()
-                .map(|t| wave_tab::BUILT.contains(t) && (st.pad_name.is_some() || *t == TABS[TAB]))
-                .collect();
-            bar.title = match (&st.flattening, &target) {
-                (Some(f), _) => f.clone(),
-                (None, _) if self.stays() => STAYS_TITLE.to_string(),
-                (None, Some(p)) => format!("Record onto pad {p}"),
-                (None, None) => "Record: no empty pad in this bank".to_string(),
-            };
-            bar.subtitle = if st.flattening.is_some() {
-                format!(
-                    "velocity {} · held {} · until {} of silence",
-                    self.settings.flatten_velocity,
-                    ms_text(self.settings.flatten_hold_ms),
-                    ms_text(self.settings.silence_ms)
-                )
-            } else if st.last.is_empty() {
-                match (&st.pad_name, self.settings.onto) {
-                    (Some(n), Onto::ThisPad) => format!("replacing {n}"),
-                    _ if self.settings.source == 0 => format!(
-                        "{} · from the line input",
-                        value_text(&self.settings, Row::Input, &st.sources)
-                    ),
-                    _ => format!(
-                        "{} · resampling {}",
-                        value_text(&self.settings, Row::Input, &st.sources),
-                        value_text(&self.settings, Row::Source, &st.sources)
-                    ),
-                }
-            } else {
-                st.last.clone()
-            };
-        }
-        let rows = Row::ALL
-            .iter()
-            .map(|r| Setting {
-                name: r.label().into(),
-                value: value_text(&self.settings, *r, &st.sources),
-            })
-            .collect();
-        let title = if st.flattening.is_some() {
-            format!("Pad {} channel", pad_text(self.bank, st.pad))
-        } else if self.settings.source == 0 {
-            "Line input".to_string()
-        } else {
-            value_text(&self.settings, Row::Source, &st.sources)
-        };
-        if let Some(v) = ui.get_mut::<InputView>(VIEW) {
-            v.title = title;
-        }
-        if let Some(list) = ui.get_mut::<SettingList>(LIST) {
-            list.rows = rows;
-            list.right = if self.stays() {
-                "stays here".to_string()
-            } else {
-                target.map(|p| format!("onto {p}")).unwrap_or_default()
-            };
-        }
-        self.flattening = st.flattening.is_some();
-        self.sources = st.sources.clone();
-        self.shown = Some(st.clone());
-        self.show_panel(ui, st.live);
-    }
-
-    /// The panel's controls and sections for what was shown last, with
-    /// the source coming in or not (`live`). Changes the list only when
-    /// they differ, as it is called every frame while there is no input.
-    fn show_panel(&self, ui: &mut Ui, live: bool) {
-        let Some(st) = self.shown.as_ref() else {
-            return;
-        };
-        let controls = self.controls(st, live);
-        let panel = self.panel(st);
-        let same = ui
-            .get::<SettingList>(LIST)
-            .is_some_and(|l| l.controls == controls && l.panel.as_ref() == Some(&panel));
-        if !same {
-            if let Some(list) = ui.get_mut::<SettingList>(LIST) {
-                list.controls = controls;
-                list.panel = Some(panel);
-            }
-        }
-    }
-
-    /// How each row looks on the panel, in [`Row::ALL`]'s order.
-    fn controls(&self, st: &RecState, live: bool) -> Vec<Control> {
-        let s = &self.settings;
-        let busy = self.recording || self.flattening;
-        let can = live && (self.stays() || st.target.is_some()) && !self.flattening;
-        let cannot = if !live {
-            OFF_NOTE
-        } else if !self.stays() && st.target.is_none() {
-            "No empty pad left for a take"
-        } else {
-            "Wait for Flatten to finish"
-        };
-        let stop_first = "Stop the take first";
-        let choice = |options: &[&str], on: usize| {
-            Control::new(Look::Choice {
-                options: options.iter().map(|o| o.to_string()).collect(),
-                on,
-                off: Vec::new(),
-            })
-        };
-        let knob = |pos: f32, len: usize| {
-            Control::new(Look::Knob {
-                pos,
-                steps: len.saturating_sub(1) as u32,
-                bipolar: false,
-            })
-        };
-        Row::ALL
-            .iter()
-            .map(|row| match row {
-                Row::Source => Control::new(Look::Chip).faint_because(busy, stop_first),
-                Row::Input
-                | Row::Length
-                | Row::Silence
-                | Row::SkipBack
-                | Row::FlattenVelocity
-                | Row::FlattenHold => Control::new(Look::Chip),
-                Row::Start => choice(
-                    &["Now", "Threshold", "Next bar"],
-                    match s.start {
-                        StartAt::Now => 0,
-                        StartAt::Threshold => 1,
-                        StartAt::NextBar => 2,
-                    },
-                ),
-                Row::End => choice(
-                    &["Stop", "Silence", "Length"],
-                    match s.end {
-                        EndAt::Press => 0,
-                        EndAt::Silence => 1,
-                        EndAt::Length => 2,
-                    },
-                ),
-                Row::Tail => choice(
-                    &["Cut", "Ring out", "Loop"],
-                    match s.tail {
-                        TailAt::Cut => 0,
-                        TailAt::Ring => 1,
-                        TailAt::Loop => 2,
-                    },
-                ),
-                // Three choices don't fit the Take section's width: the
-                // value between arrows, as on the Wave page's Input.
-                Row::Onto => Control::new(Look::Chip),
-                Row::Threshold => knob(
-                    place_in(&THRESHOLDS_DB, &s.threshold_db),
-                    THRESHOLDS_DB.len(),
-                ),
-                Row::PreRoll => knob(place_in(&PRE_ROLLS_MS, &s.pre_roll_ms), PRE_ROLLS_MS.len()),
-                // The line input's (one-page step 2d): resampling records
-                // the mix as it is heard.
-                Row::Gain => gain_knob(s.gain_db).faint_because(s.source != 0, GAIN_LINE_ONLY),
-                Row::Record => Control::new(Look::Primary(
-                    if busy { "Stop" } else { "Record" }.to_string(),
-                ))
-                .faint_because(!(busy || can), cannot),
-                Row::Keep => Control::new(Look::Button(SKIP_LABEL.to_string()))
-                    .faint_because(!can || busy, if busy { stop_first } else { cannot }),
-                Row::Flatten => Control::new(Look::Button(FLATTEN_LABEL.to_string()))
-                    .faint_because(
-                        !st.can_flatten || busy,
-                        if busy {
-                            stop_first
-                        } else {
-                            "Flatten needs a pad with a sound, and an empty pad to put it on"
-                        },
-                    ),
-                Row::Auto => Control::new(Look::Button(AUTO_LABEL.to_string()))
-                    .faint_because(busy, stop_first),
-            })
-            .collect()
-    }
-
-    /// The panel: Input, Start, End, Take and Resample across the band
-    /// under the input, as the mockup Jay approved (17 Nov), with the
-    /// settings it left out (Onto, Skip back's length, Flatten's) beside
-    /// their buttons.
-    fn panel(&self, st: &RecState) -> Panel {
-        let it = |k: Row| Item::new(k.index());
-        let onto = match st.target {
-            _ if self.stays() => "stays here".to_string(),
-            Some(p) => format!("onto {}", pad_text(self.bank, p)),
-            None => "no empty pad".to_string(),
-        };
-        Panel {
-            sections: vec![
-                Section::new(
-                    "Input",
-                    170,
-                    vec![
-                        vec![it(Row::Source).labelled()],
-                        vec![it(Row::Input).labelled()],
-                    ],
-                ),
-                Section::new(
-                    "Start",
-                    280,
-                    vec![
-                        vec![it(Row::Start)],
-                        // Gain (one-page step 2d) beside them: the
-                        // threshold hears the input as Gain turns it.
-                        vec![it(Row::Gain), it(Row::Threshold), it(Row::PreRoll)],
-                    ],
-                ),
-                Section::new(
-                    "End",
-                    270,
-                    vec![
-                        vec![it(Row::End)],
-                        vec![it(Row::Length).labelled(), it(Row::Silence).labelled()],
-                        vec![it(Row::Tail)],
-                    ],
-                ),
-                Section::new(
-                    "Take",
-                    240,
-                    vec![
-                        vec![it(Row::Record)],
-                        vec![it(Row::Keep), it(Row::SkipBack).wide(100)],
-                        vec![it(Row::Onto)],
-                    ],
-                )
-                .note(&onto),
-                Section::new(
-                    "Resample",
-                    240,
-                    vec![
-                        vec![it(Row::Flatten), it(Row::Auto)],
-                        vec![it(Row::FlattenVelocity).labelled()],
-                        vec![it(Row::FlattenHold).labelled()],
-                    ],
-                ),
-            ],
-        }
-    }
-
-    /// A line for the app to show, once.
-    pub fn take_note(&mut self) -> Option<String> {
-        self.note.take()
-    }
-
-    /// Reads what came into `input` since the last call (`dt` seconds ago)
-    /// and marks the bar lines, what Skip back would keep, and `rec` (the
-    /// take, if one is being made) on the strip. `live`: the source
-    /// comes in.
-    pub fn feed(
-        &mut self,
-        ui: &mut Ui,
-        input: &Input,
-        rec: Option<&Recording>,
-        live: bool,
-        dt: f32,
-    ) {
-        let was = self.recording;
-        self.recording = rec.is_some_and(|r| {
-            matches!(r.progress(), Progress::Waiting | Progress::Recording { .. })
-        });
-        let settings = self.settings;
-        let area = ui.rect_of(VIEW);
-        let Some(v) = ui.get_mut_quiet::<InputView>(VIEW) else {
-            return;
-        };
-        v.update(input, dt);
-        let now = v.now;
-        let rate = input.rate;
-        v.bars = (0..BAR_LINES).map_while(|n| input.bars.back(n)).collect();
-        v.threshold = (settings.start == StartAt::Threshold || settings.end == EndAt::Silence)
-            .then(|| settings.level());
-        v.skip = match settings.skip {
-            _ if !live => None,
-            Skip::Seconds(s) => {
-                let start = now
-                    .saturating_sub(u64::from(s) * u64::from(rate))
-                    .max(input.audio.oldest());
-                (now > start).then(|| Span {
-                    start,
-                    end: now,
-                    label: format!("Skip back {}", settings.skip.label()),
-                })
-            }
-            Skip::Bars(n) => match input.bars_back(n as usize) {
-                Some((start, end)) if start >= input.audio.oldest() => Some(Span {
-                    start,
-                    end,
-                    label: format!("Skip back {}", settings.skip.label()),
-                }),
-                _ => None,
-            },
-        };
-        v.take = rec.and_then(|r| {
-            let start = r.started_at()?;
-            let frames = match r.progress() {
-                Progress::Recording { frames } | Progress::Done { frames } => frames,
-                _ => 0,
-            };
-            Some(Span {
-                start,
-                end: (start + frames).max(start + 1),
-                label: format!("● {}", duration_text(frames, rate)),
-            })
-        });
-        v.note = if !live {
-            OFF_NOTE.to_string()
-        } else {
-            match rec.map(Recording::progress) {
-                Some(Progress::Waiting) => match settings.start {
-                    StartAt::NextBar if input.bars.bar_frames().is_none() => {
-                        "Waiting for the next bar line: press PLAY".to_string()
-                    }
-                    StartAt::NextBar => "Waiting for the next bar line".to_string(),
-                    _ => format!(
-                        "Waiting for the input to go over {:.0} dB",
-                        settings.threshold_db
-                    ),
-                },
-                _ => String::new(),
-            }
-        };
-        let held = input.held();
-        v.caption = if matches!(settings.skip, Skip::Bars(_)) && v.skip.is_none() {
-            "Skip back by bars: the transport has to play that many bars first".to_string()
-        } else {
-            // Whole seconds: in hundredths the caption, and so the view,
-            // changed at every frame until the buffer was full.
-            let rate64 = u64::from(rate.max(1));
-            match (held + rate64 / 2) / rate64 {
-                0 => format!("{} held", duration_text(held, rate)),
-                secs => format!("{secs} s held"),
-            }
-        };
-        v.right = match input.bars.bar_frames() {
-            Some(bar) => format!(
-                "bar lines every {}",
-                duration_text(bar.round() as u64, rate)
-            ),
-            None => "transport stopped".to_string(),
-        };
-        // Redrawn only when its picture differs from the one on the screen
-        // (InputView::look), and at most every LIVE_GAP_S: the view spans
-        // most of the panel's rows.
-        self.since_drawn += dt;
-        if self.since_drawn >= LIVE_GAP_S && area.is_some_and(|r| v.painted() != Some(v.look(r))) {
-            ui.get_mut::<InputView>(VIEW);
-            self.since_drawn = 0.0;
-        }
-        if was != self.recording {
-            self.show_panel(ui, live);
-        }
-    }
-
-    /// No input to show (the line input is off, or just turned on): the
-    /// picture says so and the strip starts again.
-    ///
-    /// Called every frame while that lasts, so it changes the widgets (and
-    /// has them redrawn) only the first time.
-    pub fn idle(&mut self, ui: &mut Ui, live: bool) {
-        self.recording = false;
-        let note = if live { "Starting the input" } else { OFF_NOTE };
-        let shown = ui.get::<InputView>(VIEW).is_none_or(|v| {
-            v.strip.read_to() == 0
-                && v.skip.is_none()
-                && v.take.is_none()
-                && v.bars.is_empty()
-                && v.threshold.is_none()
-                && v.meter_db == [f32::NEG_INFINITY; 2]
-                && v.note == note
-                && v.caption.is_empty()
-                && v.right.is_empty()
-        });
-        if !shown {
-            if let Some(v) = ui.get_mut::<InputView>(VIEW) {
-                v.strip.reset();
-                v.skip = None;
-                v.take = None;
-                v.bars.clear();
-                v.threshold = None;
-                v.meter_db = [f32::NEG_INFINITY; 2];
-                v.note = note.to_string();
-                v.caption.clear();
-                v.right.clear();
-            }
-        }
-        // Record and Skip back wait for the input.
-        self.show_panel(ui, false);
-    }
-
-    /// What a touch on one of the tab's widgets asks for; None for touches
-    /// that only change the settings or what the tab shows.
-    pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &RecState) -> Option<RecAction> {
-        match (ev.widget.as_str(), &ev.kind) {
-            (BAR, EventKind::Tab(i)) => Some(RecAction::Tab(*i)),
-            (LIST, EventKind::Tab(i)) => self.press(st, *Row::ALL.get(*i)?),
-            (LIST, EventKind::Step { index, delta }) => {
-                let row = *Row::ALL.get(*index)?;
-                self.step(ui, st, row, *delta)
-            }
-            _ => None,
-        }
-    }
-
-    /// The data wheel: steps the row picked by `delta` detents. A new
-    /// source is for the app to start.
-    pub fn wheel(&mut self, ui: &mut Ui, st: &RecState, delta: i32) -> Option<RecAction> {
-        let row = self.row(ui);
-        self.step(ui, st, row, delta)
-    }
-
-    /// Button `row` pressed (a tap, or the wheel's push).
-    fn press(&mut self, st: &RecState, row: Row) -> Option<RecAction> {
-        let busy = self.recording || self.flattening;
-        match row {
-            Row::Record if busy => Some(RecAction::Stop),
-            Row::Record => Some(RecAction::Record),
-            Row::Keep => Some(RecAction::SkipBack),
-            Row::Flatten if !busy && st.can_flatten => Some(RecAction::Flatten),
-            Row::Auto if !busy => Some(RecAction::Auto),
-            _ => None,
-        }
-    }
-
-    fn step(&mut self, ui: &mut Ui, st: &RecState, row: Row, delta: i32) -> Option<RecAction> {
-        if row == Row::Source && (self.recording || self.flattening) {
-            // A take keeps its source until it ends.
-            self.note = Some("Source: stop the take first".to_string());
-            return None;
-        }
-        let was = self.settings.source;
-        self.settings = stepped(&self.settings, row, delta, st.sources.len());
-        self.update(ui, st);
-        (self.settings.source != was).then_some(RecAction::Source(self.settings.source))
-    }
-
-    /// A take stays on the Sample page when it stops ([`Onto::Stay`]).
-    fn stays(&self) -> bool {
-        self.settings.onto == Onto::Stay
-    }
-
-    /// A take is being made (the first button says Stop).
-    pub fn recording(&self) -> bool {
-        self.recording
-    }
-}
-
 /// The pad a take goes onto, by `onto`, from pad `pad` within its bank of
 /// 16: the pad itself if it has no sound (or `onto` is
 /// [`Onto::ThisPad`]), else the next one without a sound after it,
@@ -1201,10 +525,8 @@ mod tests {
         assert_eq!(s.start, StartAt::NextBar, "stops at the end");
         let s = stepped(&s, Row::Threshold, 2, 2);
         assert_eq!(s.threshold_db, -24.0);
-        let s = stepped(&s, Row::SkipBack, 5, 2);
-        assert_eq!(s.skip, Skip::Bars(2));
-        assert_eq!(value_text(&s, Row::SkipBack, &names), "2 bars");
         assert_eq!(Skip::Seconds(60).label(), "1 min");
+        assert_eq!(Skip::Bars(2).label(), "2 bars");
         assert_eq!(
             value_text(&stepped(&s, Row::Silence, -1, 2), Row::Silence, &names),
             "500 ms"

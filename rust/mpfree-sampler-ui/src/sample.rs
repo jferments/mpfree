@@ -10,7 +10,7 @@ use mpfree_sampler::model::{
     LayerSelect, Loop, LoopMode, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region,
     Source, Warp,
 };
-use mpfree_sampler::record::{self, Feed, Input, Recording};
+use mpfree_sampler::record::Feed;
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
@@ -20,7 +20,6 @@ use crate::grain_tab::{self, CloudNow};
 use crate::grain_tool::GrainPart;
 use crate::pads_tab::{self, PadsState, PadsTab};
 use crate::play_tab::{self, PlayState, PlayTab};
-use crate::rec_tab::{self, EndAt, RecState, RecTab, Skip, StartAt};
 use crate::source::SourceView;
 use crate::warp_tab::{self, WarpTab};
 use crate::wave_tab::{pad_label, WaveState, WaveTab, HINT};
@@ -36,7 +35,6 @@ pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 pub const PADS_PAGE: &str = "Pads · Pad";
-pub const REC_PAGE: &str = "Sample · Rec";
 pub const WARP_PAGE: &str = "Sample · Warp";
 pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 pub const RATE: u32 = 44_100;
@@ -316,18 +314,6 @@ pub struct PadsSample {
     pub state: PadsState,
 }
 
-/// One sample screen of the Rec tab, with the input behind it.
-pub struct RecSample {
-    pub name: &'static str,
-    pub about: &'static str,
-    pub ui: Ui,
-    pub tab: RecTab,
-    pub state: RecState,
-    pub feed: Feed,
-    pub input: Input,
-    pub recording: Option<Recording>,
-}
-
 /// A bar of 4/4 at [`BPM`], in frames.
 pub fn bar_frames() -> f64 {
     4.0 * 60.0 / BPM * f64::from(RATE)
@@ -372,117 +358,7 @@ pub fn rec_sources() -> Vec<String> {
     v
 }
 
-/// The Rec tab's sample screens.
-pub fn rec_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<RecSample>, String> {
-    let make = |name: &'static str, about: &'static str, live: bool| -> Result<RecSample, String> {
-        let (project, _) = kit_project();
-        let (feed, input) = record::input(120, RATE);
-        let state = RecState {
-            pad: PAD,
-            pad_name: project.pad(PAD).map(|p| p.name.clone()),
-            target: rec_tab::target(PAD, rec_tab::Onto::NextEmpty, |p| project.pad(p).is_some()),
-            sources: rec_sources(),
-            live,
-            last: String::new(),
-            can_flatten: project.pad(PAD).is_some(),
-            flattening: None,
-        };
-        let mut ui = app_ui_with(fonts(), &project, rec_tab::HINT);
-        let tab = RecTab::add(&mut ui, REC_PAGE, &state, RATE)?;
-        ui.show(REC_PAGE)?;
-        Ok(RecSample {
-            name,
-            about,
-            ui,
-            tab,
-            state,
-            feed,
-            input,
-            recording: None,
-        })
-    };
-    let mut out = Vec::new();
-
-    let mut s = make(
-        "rec",
-        "The drums coming in on the line input, the transport playing: Skip back would keep the last 10 s",
-        true,
-    )?;
-    feed_input(&mut s.feed, 40.0, 0.4, true);
-    s.tab.feed(&mut s.ui, &s.input, None, true, 0.05);
-    out.push(s);
-
-    let mut s = make(
-        "rec-take",
-        "A take of 4 bars that started on the next bar line, two bars in; Skip back set to 2 bars",
-        true,
-    )?;
-    s.tab.settings.start = StartAt::NextBar;
-    s.tab.settings.end = EndAt::Length;
-    s.tab.settings.skip = Skip::Bars(2);
-    feed_input(&mut s.feed, 20.0, 0.4, true);
-    let mut rec = s.tab.settings.recording(&s.input, bar_frames());
-    feed_input(
-        &mut s.feed,
-        bar_frames() * 2.4 / f64::from(RATE) + 0.5,
-        0.4,
-        true,
-    );
-    rec.poll(&s.input).map_err(|e| e.to_string())?;
-    s.tab.feed(&mut s.ui, &s.input, Some(&rec), true, 0.05);
-    let st = s.state.clone();
-    s.tab.update(&mut s.ui, &st);
-    s.recording = Some(rec);
-    out.push(s);
-
-    let mut s = make(
-        "rec-master",
-        "Resampling the master: Source turned to Master, the last 4 bars ready for Skip back",
-        true,
-    )?;
-    let st = s.state.clone();
-    s.tab.settings.source = 1;
-    s.tab.settings.skip = Skip::Bars(4);
-    s.tab.update(&mut s.ui, &st);
-    feed_input(&mut s.feed, 25.0, 0.7, true);
-    s.tab.feed(&mut s.ui, &s.input, None, true, 0.05);
-    out.push(s);
-
-    let mut s = make(
-        "rec-flatten",
-        "Flatten: the pad picked resampled from its own channel as it plays, held for 1 s, onto the next empty pad",
-        true,
-    )?;
-    let mut st = s.state.clone();
-    st.flattening = Some(format!(
-        "Flattening {} onto {}",
-        chop_tab::pad_text(None, PAD),
-        st.target
-            .map_or_else(String::new, |p| chop_tab::pad_text(None, p))
-    ));
-    s.tab.update(&mut s.ui, &st);
-    s.state = st;
-    feed_input(&mut s.feed, 3.0, 0.0, false);
-    let rec = s.tab.settings.flatten_recording(&s.input);
-    feed_input(&mut s.feed, 1.4, 0.6, false);
-    let mut rec = rec;
-    rec.poll(&s.input).map_err(|e| e.to_string())?;
-    s.tab.feed(&mut s.ui, &s.input, Some(&rec), true, 0.05);
-    s.recording = Some(rec);
-    out.push(s);
-
-    let mut s = make(
-        "rec-off",
-        "The line input is off: the tab says where to turn it on",
-        false,
-    )?;
-    feed_input(&mut s.feed, 5.0, 0.0, false);
-    s.tab.feed(&mut s.ui, &s.input, None, false, 0.05);
-    out.push(s);
-    Ok(out)
-}
-
-/// One sample screen of the Rec tab's Auto-sample mode.
+/// One sample screen of the recorder's Auto-sample mode.
 pub struct AutoSample {
     pub name: &'static str,
     pub about: &'static str,
