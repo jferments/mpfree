@@ -1108,6 +1108,10 @@ impl Synth {
     /// unless it hears the pedals itself.
     fn push(&mut self, engine: Engine, offset: u32, ev: NodeEvent) {
         if engine == self.settings.engine && !self.engine_node(engine).hears(Ctl::Sustain) {
+            if self.pedals.pass(&ev) {
+                self.push_raw(engine, offset, ev);
+                return;
+            }
             let mut pedals = self.pedals;
             pedals.filter(ev, |e| self.push_raw(engine, offset, e));
             self.pedals = pedals;

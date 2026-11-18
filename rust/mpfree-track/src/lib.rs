@@ -193,6 +193,9 @@ struct Slot {
     /// (`Node::hears`): the host holds its note-offs while a pedal keeps
     /// the notes.
     pedals: Pedals,
+    /// Whether the instrument hears the pedals itself, asked once when it
+    /// takes the slot rather than on every event.
+    hears_pedal: bool,
 }
 
 /// The track host. See the crate docs.
@@ -226,6 +229,7 @@ impl TrackHost {
                 stats: SlotStats::default(),
                 resting: false,
                 pedals: Pedals::new(),
+                hears_pedal: false,
             })
             .collect::<Vec<_>>();
         let retired = Vec::with_capacity(2 * slots.len() + 2);
@@ -290,6 +294,7 @@ impl TrackHost {
         s.held = [0; 128];
         s.pedals.clear_notes();
         s.inst = inst;
+        s.hears_pedal = s.inst.as_ref().is_some_and(|i| i.node.hears(Ctl::Sustain));
         if let Some(i) = s.inst.as_mut() {
             i.node.set_tuning(&s.tuning);
         }
@@ -421,8 +426,9 @@ impl TrackHost {
     /// note-offs while a pedal keeps the notes. False if anything was
     /// dropped.
     fn send(s: &mut Slot, t: Timed) -> bool {
-        let hears = s.inst.as_ref().is_some_and(|i| i.node.hears(Ctl::Sustain));
-        if hears {
+        // Most events take the quick way: the instrument hears the pedals,
+        // or no pedal is down and none holds a note.
+        if s.hears_pedal || s.pedals.pass(&t.ev) {
             return Self::push(s, t);
         }
         let Slot {
