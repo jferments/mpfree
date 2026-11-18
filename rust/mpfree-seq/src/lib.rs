@@ -459,6 +459,158 @@ impl ClipProgram {
     }
 }
 
+/// The order a clip plays its steps in (sequencer S6, the Deluge's and
+/// the Hapax's play direction): its 1/16 steps ([`DIRECTION_STEP`] clip
+/// ticks), each step's notes and locks moving with it, their place within
+/// the step kept. Pass 0 is the one the clip started in.
+///
+/// - **Forward**: as written.
+/// - **Reverse**: the last step first, every pass.
+/// - **Ping-pong**: forward, then back, the end steps once each turn
+///   (0 1 2 3 2 1 0 1 ...), the turns running on across passes.
+/// - **Random**: every step once a pass, in an order of its own each pass,
+///   which the clip's seed and the pass pick, so a pass plays the same
+///   every time it is played (an export too).
+///
+/// Only a clip of two whole steps or more plays it ([`Clip::direction_steps`]):
+/// another plays forward. Its moves (FX lanes) play forward whatever it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Direction {
+    #[default]
+    Forward,
+    Reverse,
+    PingPong,
+    Random,
+}
+
+/// The step a clip's [`Direction`] moves, in clip ticks: a 1/16.
+pub const DIRECTION_STEP: Tick = (PPQ / 4) as Tick;
+
+impl Direction {
+    /// In the order the clip card's Direction row steps through them.
+    pub const ALL: [Direction; 4] = [
+        Direction::Forward,
+        Direction::Reverse,
+        Direction::PingPong,
+        Direction::Random,
+    ];
+
+    /// Its word in a saved clip (`direction reverse`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Direction::Forward => "forward",
+            Direction::Reverse => "reverse",
+            Direction::PingPong => "pingpong",
+            Direction::Random => "random",
+        }
+    }
+
+    pub fn from_word(w: &str) -> Option<Direction> {
+        Direction::ALL.into_iter().find(|d| d.word() == w)
+    }
+
+    /// The clip step a clip of `n` steps plays as its step `s` (0 to
+    /// `n - 1`) of pass `pass` (0: the pass it started in; earlier ones
+    /// count down), `seed` picking Random's orders. A pure function, so the
+    /// player and the recorder agree, and it never allocates.
+    pub fn step(self, s: u32, pass: i64, n: u32, seed: u64) -> u32 {
+        if n < 2 || s >= n {
+            return s.min(n.saturating_sub(1));
+        }
+        match self {
+            Direction::Forward => s,
+            Direction::Reverse => n - 1 - s,
+            Direction::PingPong => {
+                let period = 2 * i64::from(n) - 2;
+                let q = (pass * i64::from(n) + i64::from(s)).rem_euclid(period) as u32;
+                if q < n {
+                    q
+                } else {
+                    period as u32 - q
+                }
+            }
+            Direction::Random => shuffle(s, n, mix64(seed ^ mix64(pass as u64))),
+        }
+    }
+
+    /// The step of pass `pass` that plays clip step `k`: the inverse of
+    /// [`Direction::step`] in that pass, for the recorder. Ping-pong plays
+    /// a step twice in some passes (going and coming back): this is the
+    /// first; and none in others: then `k` itself.
+    pub fn played_at(self, k: u32, pass: i64, n: u32, seed: u64) -> u32 {
+        match self {
+            Direction::Forward => k,
+            Direction::Reverse if n >= 2 && k < n => n - 1 - k,
+            Direction::Reverse => k,
+            Direction::Random if n >= 2 && k < n => {
+                unshuffle(k, n, mix64(seed ^ mix64(pass as u64)))
+            }
+            Direction::Random => k,
+            Direction::PingPong => (0..n)
+                .find(|&s| self.step(s, pass, n, seed) == k)
+                .unwrap_or(k),
+        }
+    }
+}
+
+/// The steps a clip `length` ticks long with `direction` moves
+/// ([`Clip::direction_steps`]).
+pub fn direction_steps(direction: Direction, length: Tick) -> Option<u32> {
+    let n = length / DIRECTION_STEP;
+    (direction != Direction::Forward && length % DIRECTION_STEP == 0 && n >= 2)
+        .then(|| u32::try_from(n).ok())
+        .flatten()
+}
+
+/// splitmix64's finish: spreads a word over every bit.
+fn mix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// `s`'s place in an order of 0 to `n - 1` that `key` picks: a
+/// four-round Feistel network over the smallest even number of bits that
+/// holds `n`, walked until it lands under `n` (its cycles always come
+/// back under it). No allocation, so the audio thread can call it.
+fn shuffle(s: u32, n: u32, key: u64) -> u32 {
+    let bits = (32 - (n - 1).leading_zeros()).max(2);
+    let half = bits.div_ceil(2);
+    let mask = (1u32 << half) - 1;
+    let round = |i: u64, r: u32| mix64(key ^ (i << 32) ^ u64::from(r)) as u32 & mask;
+    let mut x = s;
+    loop {
+        let (mut l, mut r) = (x >> half, x & mask);
+        for i in 0..4u64 {
+            (l, r) = (r, l ^ round(i, r));
+        }
+        x = (l << half) | r;
+        if x < n {
+            return x;
+        }
+    }
+}
+
+/// [`shuffle`] backwards: the `s` whose place is `k`.
+fn unshuffle(k: u32, n: u32, key: u64) -> u32 {
+    let bits = (32 - (n - 1).leading_zeros()).max(2);
+    let half = bits.div_ceil(2);
+    let mask = (1u32 << half) - 1;
+    let round = |i: u64, r: u32| mix64(key ^ (i << 32) ^ u64::from(r)) as u32 & mask;
+    let mut x = k;
+    loop {
+        let (mut l, mut r) = (x >> half, x & mask);
+        for i in (0..4u64).rev() {
+            (l, r) = (r ^ round(i, l), l);
+        }
+        x = (l << half) | r;
+        if x < n {
+            return x;
+        }
+    }
+}
+
 /// When a launched clip starts, and a stop or a mute lands (launch
 /// quantise, sequencer S4): at once, on the next line of a note grid, or
 /// on the next line of a number of bars counted from the song's start.
@@ -629,6 +781,8 @@ pub struct Clip {
     /// The program change it sends when it starts (sequencer S5); None
     /// sends none.
     pub program: Option<ClipProgram>,
+    /// The order it plays its steps in (sequencer S6).
+    pub direction: Direction,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -648,6 +802,8 @@ pub struct ClipSettings {
     pub once: bool,
     /// Its program change (S5).
     pub program: Option<ClipProgram>,
+    /// Its play direction (S6).
+    pub direction: Direction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -710,6 +866,7 @@ impl Clip {
             legato: self.legato,
             once: self.once,
             program: self.program,
+            direction: self.direction,
         }
     }
 
@@ -748,7 +905,15 @@ impl Clip {
         self.legato = s.legato;
         self.once = s.once;
         self.program = s.program;
+        self.direction = s.direction;
         Ok(())
+    }
+
+    /// The number of [`DIRECTION_STEP`] steps its [`Direction`] moves:
+    /// None when it plays forward, or its length isn't two whole steps or
+    /// more (then it plays forward whatever its direction says).
+    pub fn direction_steps(&self) -> Option<u32> {
+        direction_steps(self.direction, self.length)
     }
 
     /// An empty clip of `length` ticks at normal speed.
@@ -769,6 +934,7 @@ impl Clip {
             legato: false,
             once: false,
             program: None,
+            direction: Direction::Forward,
         }
     }
 
@@ -1234,6 +1400,57 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Play directions (S6): each a pass plays every step it should, and
+    /// `played_at` finds where a step plays.
+    #[test]
+    fn play_directions_order_the_steps() {
+        let order = |d: Direction, pass: i64, n: u32| -> Vec<u32> {
+            (0..n).map(|s| d.step(s, pass, n, 7)).collect()
+        };
+        assert_eq!(order(Direction::Forward, 3, 4), [0, 1, 2, 3]);
+        assert_eq!(order(Direction::Reverse, 3, 4), [3, 2, 1, 0]);
+        // 0 1 2 3 2 1 | 0 1 2 3 2 1 ..., the turns across passes.
+        assert_eq!(order(Direction::PingPong, 0, 4), [0, 1, 2, 3]);
+        assert_eq!(order(Direction::PingPong, 1, 4), [2, 1, 0, 1]);
+        assert_eq!(order(Direction::PingPong, 2, 4), [2, 3, 2, 1]);
+        assert_eq!(order(Direction::PingPong, -1, 4), [2, 3, 2, 1]);
+        assert_eq!(order(Direction::PingPong, 5, 2), [0, 1]);
+        for n in [2u32, 3, 5, 16, 17, 64, 255, 256, 1000, 4096] {
+            for pass in [-3i64, 0, 1, 2, 1 << 40] {
+                let mut o = order(Direction::Random, pass, n);
+                for (s, &k) in o.iter().enumerate() {
+                    assert_eq!(Direction::Random.played_at(k, pass, n, 7), s as u32);
+                    assert_eq!(
+                        Direction::Reverse.played_at(n - 1 - s as u32, pass, n, 7),
+                        s as u32
+                    );
+                }
+                o.sort_unstable();
+                assert!(o.iter().copied().eq(0..n), "n {n}, pass {pass}");
+            }
+        }
+        // Another pass, or another seed, plays another order; the same
+        // pass plays the same.
+        let r = |pass, seed| -> Vec<u32> {
+            (0..16)
+                .map(|s| Direction::Random.step(s, pass, 16, seed))
+                .collect()
+        };
+        assert_ne!(r(0, 7), r(1, 7));
+        assert_ne!(r(0, 7), r(0, 8));
+        assert_eq!(r(4, 9), r(4, 9));
+        // Pass 1 of four steps plays 2 1 0 1: step 1 first where it comes
+        // first, and step 3 not at all (it says where it would be).
+        let at = |k| Direction::PingPong.played_at(k, 1, 4, 0);
+        assert_eq!([at(0), at(1), at(2), at(3)], [2, 1, 0, 3]);
+        // Only whole steps, two or more.
+        assert_eq!(direction_steps(Direction::Reverse, 3840), Some(16));
+        assert_eq!(direction_steps(Direction::Forward, 3840), None);
+        assert_eq!(direction_steps(Direction::Reverse, 3841), None);
+        assert_eq!(direction_steps(Direction::Reverse, DIRECTION_STEP), None);
+        assert_eq!(Direction::Reverse.step(0, 0, 1, 0), 0);
+    }
 
     #[test]
     fn a_notes_pressure_is_a_run_in_its_clip() {

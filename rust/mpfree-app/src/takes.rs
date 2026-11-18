@@ -194,6 +194,15 @@ impl Song<'_> {
         };
         let ppq = f64::from(PPQ);
         if kind == Kind::Freeze {
+            // A clip in random order (S6) never plays the same twice.
+            if self
+                .playing(feed)
+                .any(|(_, p)| !p.muted && p.song_len > 0.0 && !p.repeats)
+            {
+                return Err(format!(
+                    "{name}: a clip plays its steps in random order, so it never repeats; set its Direction to another to freeze"
+                ));
+            }
             for &len in &lens[..n] {
                 let r = l.song_len / len;
                 if (r - r.round()).abs() > 1e-6 {
@@ -1117,6 +1126,51 @@ mod tests {
         assert_eq!(
             song.loop_of(Feed::Pads, Kind::Freeze, "Drums").map(|l| l.1),
             Ok(16.0)
+        );
+    }
+
+    /// A clip in random order (S6) has no loop to freeze, but prints; a
+    /// ping-pong clip's loop is every pass before it comes round the same
+    /// (NowPlaying's `song_len`).
+    #[test]
+    fn a_clip_in_random_order_has_no_loop_to_freeze() {
+        let playing = |repeats: bool, song_len: f64| NowPlaying {
+            slot: 0,
+            origin: 0,
+            song_len,
+            stamp: 1,
+            muted: false,
+            repeats,
+        };
+        let random = |t: usize| Some(playing(t != 0, 3840.0));
+        let song = Song {
+            tracks: 2,
+            own: 0,
+            bpm: 120.0,
+            now: &random,
+            instrument: &|_| 0,
+        };
+        let freeze = song.loop_of(Feed::Pads, Kind::Freeze, "Drums");
+        assert_eq!(
+            freeze,
+            Err("Drums: a clip plays its steps in random order, so it never repeats; set its Direction to another to freeze".to_string())
+        );
+        assert_eq!(
+            song.loop_of(Feed::Track(1), Kind::Freeze, "Bass"),
+            Ok((0.0, 4.0))
+        );
+        assert_eq!(
+            song.loop_of(Feed::Pads, Kind::Print, "Drums"),
+            Ok((0.0, 4.0))
+        );
+        let ping_pong = |_| Some(playing(true, 15.0 * 3840.0));
+        let song = Song {
+            now: &ping_pong,
+            ..song
+        };
+        assert_eq!(
+            song.loop_of(Feed::Track(1), Kind::Freeze, "Bass"),
+            Ok((0.0, 60.0))
         );
     }
 
