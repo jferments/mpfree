@@ -39,7 +39,10 @@
 //!   ends them too.
 //! - **The gear's delay** (each port's page): each message leaves that
 //!   much before its frame is heard, but never before its period was made,
-//!   so at most the sound's lead early ([`leave_at`]).
+//!   so at most the sound's lead early ([`leave_at`]). Past the lead, a
+//!   track's clips play ahead ([`MidiOut::ahead`], the sequencer's
+//!   look-ahead, S5): their events come a period early with offsets past
+//!   the period's end, so they too leave the whole delay early.
 //! - `OutputRouter` remembers every note that is on, so a route change, a
 //!   stop or a panic ends exactly those notes, and closing a port ends
 //!   them before it lets go. A USB device unplugged
@@ -1047,6 +1050,25 @@ impl MidiOut {
             .copied()
             .flatten()
             .is_some_and(|a| self.ports[usize::from(a.port.0)].writer.is_some())
+    }
+
+    /// Each track's ahead for the sequencer's look-ahead (S5), in frames:
+    /// how much more than the sound's lead its port's gear delay is, for a
+    /// track MIDI out takes now; 0 for the rest. Its clips' notes reach
+    /// MIDI out that much before their period (`Pads::out_ahead`), so they
+    /// leave the whole delay early. Never allocates.
+    pub fn ahead(&self) -> [u32; MAX_TRACKS] {
+        let mut out = [0; MAX_TRACKS];
+        for (a, applied) in out.iter_mut().zip(self.tracks.iter()) {
+            let Some(p) = applied.and_then(|t| self.ports.get(usize::from(t.port.0))) else {
+                continue;
+            };
+            if p.writer.is_some() {
+                let more = p.early.saturating_sub(self.lead);
+                *a = (more.as_secs_f64() * f64::from(self.rate)).ceil() as u32;
+            }
+        }
+        out
     }
 
     /// Once a period, before the notes: takes the project's track outputs
@@ -3356,6 +3378,53 @@ mod tests {
         }
         mo.sync(&m, false);
         assert_eq!(mo.ports[0].early, Duration::ZERO);
+        assert!(mo.close());
+    }
+
+    /// Gear slower than the sound's lead (sequencer S5): a track on it
+    /// plays its clips ahead by the rest of the delay, and an event handed
+    /// over ahead (its offset past the period's end) leaves the whole
+    /// delay before its frame is heard. A track on the pads, or on a port
+    /// the lead covers, has none.
+    #[test]
+    fn a_track_on_slow_gear_plays_the_rest_of_its_delay_ahead() {
+        let ms = Duration::from_millis;
+        let lead = ms(10);
+        let (mut mo, sink) = open(lead);
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
+        m.lock()
+            .unwrap()
+            .setup
+            .set_port(DIN_NAME, |p| p.delay_tenths = 400);
+        mo.sync(&m, true);
+        // 40 ms of delay, 10 of lead: 30 ms (1,323 frames) ahead.
+        let ahead = mo.ahead();
+        assert_eq!(ahead[0], 1_323);
+        assert!(ahead[1..].iter().all(|&a| a == 0), "{ahead:?}");
+        // A note whose frame is 1,323 frames past this period's end,
+        // handed over now, is heard 10 ms + 1,451 frames after t0, and
+        // leaves 40 ms before that: as the period ends.
+        let t0 = Instant::now();
+        let offset = PERIOD + 1_323;
+        assert!(mo.send(&ev(0, offset, on(0, 100)), NoteIs::Pad(kit_notes(0))));
+        mo.period_end(PERIOD, t0);
+        thread::sleep(ms(80));
+        let writes = sink.0.lock().unwrap().clone();
+        assert_eq!(writes.len(), 1);
+        let heard = t0 + lead + Duration::from_secs_f64(f64::from(offset) / f64::from(RATE));
+        assert!(writes[0].0 >= heard - ms(40));
+        // Due the whole delay early, and not before the period was made.
+        let early = mo.ports[0].early;
+        assert_eq!(leave_at(heard, early, t0), heard - ms(40));
+        assert!(heard - ms(40) > t0);
+        // 5 ms of delay: the lead covers it.
+        {
+            let mut g = m.lock().unwrap();
+            g.setup.set_port(DIN_NAME, |p| p.delay_tenths = 50);
+            g.gen += 1;
+        }
+        mo.sync(&m, true);
+        assert_eq!(mo.ahead(), [0; MAX_TRACKS]);
         assert!(mo.close());
     }
 

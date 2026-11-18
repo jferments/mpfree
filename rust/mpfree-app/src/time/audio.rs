@@ -13,7 +13,9 @@
 //! compile again, and the view that holds everything plays on.
 
 use mpfree_notefx::{Chain, Slot, TrackFx, MAX_FX};
-use mpfree_play::{Event, Out, PlayView, Player, Rec, Recent, Recorder, TrackArps};
+use mpfree_play::{
+    Ahead, AheadCounts, Event, Out, PlayView, Player, Rec, Recent, Recorder, TrackArps,
+};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
 use mpfree_seq::{LaunchGrid, TouchPoint, MAX_TRACKS};
@@ -120,6 +122,8 @@ pub struct TimeAudio {
     map_asked: Option<TempoMap>,
     /// Starts on a note refused ([`TimeAudio::start_at`]).
     starts_refused: u64,
+    /// The look-ahead for tracks on slow gear (sequencer S5).
+    ahead: Ahead,
     /// Live pad hits waiting for the launch line (sampler R5.3b).
     waits: PadWaits,
 }
@@ -141,6 +145,7 @@ impl TimeAudio {
             dest: 0,
             event: Event::AllOff,
         };
+        let ahead = Ahead::new(&transport);
         TimeAudio {
             transport,
             player: Box::new(Player::new()),
@@ -184,8 +189,26 @@ impl TimeAudio {
             tempo_asked: None,
             map_asked: None,
             starts_refused: 0,
+            ahead,
             waits: PadWaits::default(),
         }
+    }
+
+    /// Each track's ahead in frames (sequencer S5, `MidiOut::ahead`): how
+    /// far before its frame its gear needs a note handed over, past the
+    /// sound's lead. A track whose clips play through its arp plays none.
+    pub fn set_ahead(&mut self, frames: &[u32]) {
+        self.ahead.set(frames);
+        for t in 0..self.tracks.n {
+            if self.tracks.set[t].through_arp {
+                self.ahead.clear(t);
+            }
+        }
+    }
+
+    /// What the look-ahead did, for the log.
+    pub fn ahead_counts(&self) -> AheadCounts {
+        self.ahead.counts()
     }
 
     /// Take what the control half sent: views, transport commands and the
@@ -1001,6 +1024,13 @@ impl TimeAudio {
                 }
                 continue;
             }
+            // A track that plays ahead (S5) had this event go out to its
+            // gear already, if the forecast had it: the rest of what
+            // `Pads::out` does happens now, MIDI out's part doesn't again.
+            if self.ahead.sent_already(&o) {
+                pads.out_sent(&o);
+                continue;
+            }
             // A track that plays elsewhere (MIDI OUT) takes its clips'
             // events first.
             if pads.out(&o) {
@@ -1055,6 +1085,21 @@ impl TimeAudio {
                 Event::Program { .. } => {}
             }
         }
+        // The look-ahead (S5): a note-on sent ahead that this pass didn't
+        // play gets its note-off now; then the coming periods' events of
+        // the tracks that play ahead go out.
+        let start = self.transport.frame().saturating_sub(u64::from(frames));
+        self.ahead.check(self.transport.frame(), |o| {
+            pads.out(&Out {
+                offset: 0,
+                frame: start,
+                ..*o
+            });
+        });
+        self.ahead
+            .forecast(&self.transport, &self.player, &self.view, frames, |o| {
+                pads.out_ahead(o)
+            });
         self.recorder.process(&self.view, &self.block);
         // Cues that started on a bar line: the player switched already;
         // the control half makes them the tracks' launches.

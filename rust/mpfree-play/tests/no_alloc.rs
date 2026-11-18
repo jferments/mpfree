@@ -7,7 +7,8 @@
 //! mode: a track playing only placements, one linked and one made unique,
 //! and a track going back to the song after its clip stops, and pad
 //! pressure played on every note and recorded on the armed track) at
-//! period sizes from 1 to 4096 frames.
+//! period sizes from 1 to 4096 frames, with the look-ahead for slow gear
+//! (`Ahead`) forecasting three tracks each period.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -20,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_arp::{Engine, Mode, Rate, Settings};
 use mpfree_play::{
-    ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL, SONG_TRACK,
+    Ahead, ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL, SONG_TRACK,
 };
 use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
 use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr, Strip};
@@ -274,6 +275,12 @@ fn playing_never_allocates() {
     watch(false);
     assert_eq!(CALLS.swap(0, Ordering::SeqCst), 2, "the counter works");
 
+    // The look-ahead for slow gear (S5): tracks 1, 3 and 5 play ahead, a
+    // copy of the transport and the player forecasting each period.
+    let mut ahead = Ahead::new(&t);
+    ahead.set(&[2_000, 0, 4_800, 0, 700]);
+    let mut ahead_offs = 0u64;
+
     let sizes = [1u32, 7, 128, 333, 4096, 64];
     watch(true);
     t.command(0, Command::SetLoop(Some((0, 7680))));
@@ -308,6 +315,8 @@ fn playing_never_allocates() {
         t.process(n, &mut block);
         sink.last = block.start_frame;
         player.process(&view, &block, &mut sink);
+        ahead.check(t.frame(), |_| ahead_offs += 1);
+        ahead.forecast(&t, &player, &view, n, |_| true);
         started += player.started().len();
         sink.arp.process(&block, &mut |_, _| arp_notes += 1);
         // Pads on the recording track: notes held a few periods, some overlapping.
@@ -383,6 +392,11 @@ fn playing_never_allocates() {
         "allocations or frees while playing"
     );
     assert!(sink.events > 2000, "{}", sink.events);
+    let counts = ahead.counts();
+    assert!(
+        counts.ahead > 500 && ahead_offs > 50,
+        "{counts:?}, {ahead_offs} offs"
+    );
     assert_eq!(player.stats().dropped, 0);
     assert!(player.stats().erased > 20, "{:?}", player.stats());
     assert!(player.stats().unmet > 20, "{:?}", player.stats());

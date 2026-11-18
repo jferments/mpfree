@@ -19,12 +19,17 @@
 //! - [`recorded`]: recorded changes numbered, made to the view in place
 //!   and to the project alike, and kept to catch up a view compiled a
 //!   little late, for a host that compiles on another thread.
+//! - [`ahead`]: the look-ahead for slow gear (sequencer S5): a copy of the
+//!   transport and the player plays on ahead each period, so a track on
+//!   MIDI gear slower than the sound's lead gets its notes early, and the
+//!   real pass checks the forecast.
 //!
 //! The same session gives the same events for any period size, and the
 //! audio-thread call never allocates; `tests/` proves both. Host-only for
 //! now: nothing here touches a device.
 #![forbid(unsafe_code)]
 
+pub mod ahead;
 pub mod arp;
 pub mod arps;
 pub mod player;
@@ -34,6 +39,7 @@ mod steps;
 pub mod takes;
 pub mod view;
 
+pub use ahead::{Ahead, AheadCounts, MAX_AHEAD};
 pub use arp::ArpHost;
 pub use arps::{Through, TrackArps};
 pub use mpfree_param;
