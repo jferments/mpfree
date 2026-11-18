@@ -467,6 +467,53 @@ impl Instruments {
         true
     }
 
+    /// A keyboard's pressure on note `note` of track `track`'s instrument,
+    /// while it holds the note.
+    pub fn note_pressure(&mut self, track: usize, note: u8, value: u8) -> bool {
+        let Some(s) = self.slot(track) else {
+            return false;
+        };
+        if self.host.holds_note(s, note) {
+            self.host
+                .event(s, Timed::new(0, NodeEvent::Pressure { note, value }));
+        }
+        true
+    }
+
+    /// A keyboard's pitch wheel on track `track`'s instrument, -1 to 1 of
+    /// its bend range.
+    pub fn bend(&mut self, track: usize, value: f32) -> bool {
+        let Some(s) = self.slot(track) else {
+            return false;
+        };
+        if value.is_finite() {
+            let value = value.clamp(-1.0, 1.0);
+            self.host.event(s, Timed::new(0, NodeEvent::Bend { value }));
+        }
+        true
+    }
+
+    /// One note's own expression (an MPE controller's slide or tone) on
+    /// track `track`'s instrument, while it holds the note.
+    pub fn note_expression(
+        &mut self,
+        track: usize,
+        note: u8,
+        kind: mpfree_node::Expr,
+        value: f32,
+    ) -> bool {
+        let Some(s) = self.slot(track) else {
+            return false;
+        };
+        if self.host.holds_note(s, note) {
+            self.host.event(
+                s,
+                Timed::new(0, NodeEvent::Expression { note, kind, value }),
+            );
+        }
+        true
+    }
+
     /// A parameter of track `track`'s instrument (the Synth tab's knobs),
     /// from the next block's first frame.
     pub fn param(&mut self, track: usize, id: u16, value: f32) -> bool {
@@ -615,9 +662,12 @@ mod tests {
     const RATE: u32 = 44_100;
     const BLOCK: usize = 64;
 
-    /// A test instrument: a constant level while any note sounds.
+    /// A test instrument: a constant level while any note sounds, raised
+    /// by its bend and by a note's tone.
     struct Hum {
         sounding: [u8; 128],
+        bend: f32,
+        tone: f32,
     }
 
     static HUM: NodeInfo = NodeInfo {
@@ -640,6 +690,7 @@ mod tests {
         fn prepare(&mut self, _: u32, _: usize) {}
         fn reset(&mut self) {
             self.sounding = [0; 128];
+            (self.bend, self.tone) = (0.0, 0.0);
         }
         fn process(&mut self, _: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
             for e in events {
@@ -647,11 +698,13 @@ mod tests {
                     NodeEvent::NoteOn { note, .. } => self.sounding[usize::from(note)] += 1,
                     NodeEvent::NoteOff { note } => self.sounding[usize::from(note)] = 0,
                     NodeEvent::AllOff => self.sounding = [0; 128],
+                    NodeEvent::Bend { value } => self.bend = value,
+                    NodeEvent::Expression { value, .. } => self.tone = value,
                     _ => {}
                 }
             }
             let v = if self.sounding.iter().any(|&n| n > 0) {
-                0.5
+                0.5 + 0.25 * self.bend + 0.125 * self.tone
             } else {
                 0.0
             };
@@ -663,7 +716,11 @@ mod tests {
     }
 
     fn hum() -> (Instrument, Held) {
-        let node = Box::new(Hum { sounding: [0; 128] });
+        let node = Box::new(Hum {
+            sounding: [0; 128],
+            bend: 0.0,
+            tone: 0.0,
+        });
         (
             Instrument::new(node, RATE, BLOCK),
             Held {
@@ -721,6 +778,33 @@ mod tests {
         let mut t = tracks();
         i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
         assert_eq!(level(&t, first_track() + 2), 0.0);
+    }
+
+    /// A keyboard's wheel, pressure and an MPE note's tone reach a track's
+    /// own instrument; a note's own reach it only while it holds the note.
+    #[test]
+    fn a_keyboards_wheel_and_a_notes_tone_reach_a_tracks_instrument() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        let tone = mpfree_node::Expr::Tone;
+        assert!(!i.bend(1, 0.5), "no instrument: the synth takes it");
+        assert!(!i.note_expression(1, 60, tone, 1.0));
+        assert!(!i.note_pressure(1, 60, 9));
+        let pads = std::array::from_fn(|p| Pad::single(60 + p as i16));
+        i.put(1, hum(), pads, &Tuning::standard()).unwrap();
+        assert!(i.note_on(1, 60, 90, 0));
+        assert!(i.bend(1, 0.5));
+        assert!(
+            i.note_expression(1, 61, tone, 1.0),
+            "taken, but 61 isn't held"
+        );
+        assert!(i.note_pressure(1, 60, 9));
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
+        assert_eq!(level(&t, first_track() + 1), 0.625);
+        i.note_expression(1, 60, tone, 1.0);
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, BLOCK as u64), BLOCK, &mut t);
+        assert_eq!(level(&t, first_track() + 1), 0.75);
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub mod cv_wire;
 pub mod input;
 pub mod learn;
 pub mod monitor;
+pub mod mpe;
 pub mod msg;
 pub mod output;
 pub mod port;

@@ -3435,6 +3435,7 @@ fn play_routed(
     kit: usize,
 ) {
     use mpfree_play::Event;
+    let t = usize::from(track);
     let event = match key {
         midi_in::Key::Down { note, velocity } => Event::NoteOn {
             note,
@@ -3442,6 +3443,25 @@ fn play_routed(
         },
         midi_in::Key::Up { note } => Event::NoteOff { note },
         midi_in::Key::Pressure { note, value } => Event::Pressure { note, value },
+        // The wheel and an MPE note's own slide and tone: the track's
+        // instrument or the synth (MIDI out and CV take none yet; Thru
+        // passes a keyboard's on as it came).
+        midi_in::Key::Bend { value } => {
+            if !own.bend(t, value) {
+                if let Some(s) = synth {
+                    s.bend(value);
+                }
+            }
+            return;
+        }
+        midi_in::Key::Expr { note, kind, value } => {
+            if !own.note_expression(t, note, kind, value) {
+                if let Some(s) = synth {
+                    s.expression_note(note, kind, value);
+                }
+            }
+            return;
+        }
     };
     let o = mpfree_play::Out {
         offset: 0,
@@ -3454,7 +3474,6 @@ fn play_routed(
     if midi.send(&o, midi_out::NoteIs::Note) {
         return;
     }
-    let t = usize::from(track);
     if own.holds(t) {
         match event {
             Event::NoteOn { note, velocity } => {
@@ -3462,6 +3481,9 @@ fn play_routed(
             }
             Event::NoteOff { note } => {
                 own.note_off(t, note, 0);
+            }
+            Event::Pressure { note, value } => {
+                own.note_pressure(t, note, value);
             }
             _ => {}
         }
@@ -6155,8 +6177,26 @@ fn player_session(
                     step_key(&app, &mut step_keys, &mut time, note, None);
                     None
                 }
+                // Pressure, the wheel and an MPE note's own slide and tone:
+                // the armed track's instrument, else the synth (the notes
+                // it holds as they came: a note the MIDI effects moved
+                // takes none of its key's).
                 midi_in::Key::Pressure { note, value } if key_notes => {
-                    synth.pressure_note(note, value);
+                    if !mix.instruments.note_pressure(armed, note, value) {
+                        synth.pressure_note(note, value);
+                    }
+                    None
+                }
+                midi_in::Key::Bend { value } if key_notes => {
+                    if !mix.instruments.bend(armed, value) {
+                        synth.bend(value);
+                    }
+                    None
+                }
+                midi_in::Key::Expr { note, kind, value } if key_notes => {
+                    if !mix.instruments.note_expression(armed, note, kind, value) {
+                        synth.expression_note(note, kind, value);
+                    }
                     None
                 }
                 midi_in::Key::Down { note, velocity } => {
@@ -6171,6 +6211,8 @@ fn player_session(
                         pressure: value,
                     })
                 }
+                // A kit's pads take no bend.
+                midi_in::Key::Bend { .. } | midi_in::Key::Expr { .. } => None,
             };
             match pad_event {
                 Some(event) => got.push(Incoming {
