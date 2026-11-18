@@ -21712,6 +21712,7 @@ mod tests {
                 pitches: Vec::new(),
                 user: true,
                 key: None,
+                tags: Vec::new(),
             },
         );
         p.apply(ToUi::Kits(kits));
