@@ -710,7 +710,7 @@ const LFO_TARGETS: [(&str, LfoTarget); 5] = [
     ("Level", LfoTarget::Level),
     ("Pan", LfoTarget::Pan),
 ];
-/// The LFO's waves, as the Grain page names them.
+/// The LFO's waves, as the grain LFO names them.
 const LFO_WAVES: [(&str, LfoShape); 7] = [
     ("Sine", LfoShape::Sine),
     ("Triangle", LfoShape::Triangle),
@@ -720,7 +720,7 @@ const LFO_WAVES: [(&str, LfoShape); 7] = [
     ("Hold", LfoShape::Hold),
     ("Drift", LfoShape::Drift),
 ];
-/// Free LFO rates the arrows step through, Hz (the Grain page's).
+/// Free LFO rates the arrows step through, Hz (the grain LFO's).
 const LFO_RATES: [f32; 20] = [
     0.05, 0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.0,
     20.0, 30.0, 40.0,
@@ -3529,7 +3529,7 @@ pub fn lfo_rate_text(l: &PadLfo) -> String {
 
 /// The pad with its LFO synced to the tempo, or free again: on, the
 /// cycle nearest the rate heard at `bpm`; off, the rate nearest the
-/// cycle's (as the Grain page's Sync to tempo).
+/// cycle's (as the grain LFO's Sync).
 fn synced(p: &Pad, bpm: f64) -> Pad {
     let mut p = p.clone();
     let beat_hz = (bpm.clamp(20.0, 400.0) / 60.0) as f32;
