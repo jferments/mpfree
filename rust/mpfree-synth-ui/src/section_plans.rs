@@ -703,7 +703,18 @@ fn keys(page: &str) -> Option<Plan> {
                 s("pickup", "Pickup", Tone, &[VOICING, BARK])
                     .hero(&[VOICING])
                     .draw("Pickup"),
-                s("tone", "Tone", Tone, &[TONE, VEL_TONE]),
+                s("tone", "Tone and touch", Tone, &[TONE, VEL_TONE, VELOCITY]),
+            ],
+        ),
+        "Clav" => (
+            "row(pickups:56*, damping:44*)",
+            vec![
+                s("pickups", "Pickups", Tone, &[PICKUP, CLAV_TONE])
+                    .labels(&[(CLAV_TONE, "Tone")])
+                    .draw("Pickups"),
+                s("damping", "Mute and drop", Shape, &[MUTE, DROP])
+                    .labels(&[(DROP, "Drop")])
+                    .draw("Mute"),
             ],
         ),
         "Amp" => (
