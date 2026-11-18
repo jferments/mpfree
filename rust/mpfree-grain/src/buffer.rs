@@ -62,6 +62,28 @@ pub trait GrainSource {
         let f = pos.floor();
         self.read(f as i64, (pos - f) as f32)
     }
+
+    /// The first hit (where a drum or a note starts) after frame `from`
+    /// and at or before `to`, for a stretch that keeps its hits sharp:
+    /// grains then stop reading at a hit rather than play it softly and
+    /// early or late, and the scan reaching one starts a grain there (see
+    /// [`crate::GrainVoice::render`], "Hits"). The default has none.
+    #[inline]
+    fn next_hit(&self, from: f64, to: f64) -> Option<f64> {
+        let _ = (from, to);
+        None
+    }
+}
+
+/// The first of `hits` (frames, in order) after `from` and at or before
+/// `to`: [`GrainSource::next_hit`] for a source that keeps a list.
+#[inline]
+pub fn first_hit(hits: &[u64], from: f64, to: f64) -> Option<f64> {
+    if hits.is_empty() || to <= from {
+        return None;
+    }
+    let i = hits.partition_point(|&h| h as f64 <= from);
+    hits.get(i).map(|&h| h as f64).filter(|&h| h <= to)
 }
 
 /// Interpolates four interleaved frames that are known to be in range.
@@ -88,6 +110,7 @@ pub struct Clip<'a> {
     rate: u32,
     start: i64,
     end: i64,
+    hits: &'a [u64],
 }
 
 impl<'a> Clip<'a> {
@@ -104,6 +127,7 @@ impl<'a> Clip<'a> {
             rate,
             start: 0,
             end,
+            hits: &[],
         })
     }
 
@@ -112,6 +136,13 @@ impl<'a> Clip<'a> {
         let frames = (self.data.len() / self.channels) as i64;
         self.start = (start.min(i64::MAX as u64) as i64).min(frames);
         self.end = (end.min(i64::MAX as u64) as i64).clamp(self.start, frames);
+        self
+    }
+
+    /// The sample's hits (frames, in order), for a stretch that keeps them
+    /// sharp ([`GrainSource::next_hit`]).
+    pub fn with_hits(mut self, hits: &'a [u64]) -> Self {
+        self.hits = hits;
         self
     }
 }
@@ -141,6 +172,10 @@ impl GrainSource for Clip<'_> {
         let c = self.channels;
         let at = (frame - 1) as usize * c;
         read4(&self.data[at..at + 4 * c], c, t)
+    }
+    #[inline]
+    fn next_hit(&self, from: f64, to: f64) -> Option<f64> {
+        first_hit(self.hits, from, to)
     }
 }
 

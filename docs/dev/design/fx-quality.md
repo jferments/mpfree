@@ -683,6 +683,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#transient-shaper); decisio
 | G1 | `level[pink]/range_lu`, `level[pad]/range_lu` | 3 LU | Loudness against the source's at 40, 80 and 400 ms grains overlapping 2, 4 and 16 times, sprayed (0.3), scanning (1) and both: largest less smallest. The quietest and loudest are shown, not kept |
 | G1 | `level[..., defaults]/offset_lu` | within 1 LU | The defaults against the source |
 | G11 | `tone[A2, A4, B5]/pitch_cents` | within 5 cents | Short regular grains of one spot of the pad, four cycles long, at the note's density: the spectrum's peak near the note (65536-point transform, parabolic) against the note (step B5) |
+| G12 | `hits[drums, half speed or double speed]/pre_db`, `attack_ms`, `flam_db` | ≤ -24 dB; ≤ 1 ms; ≤ 3 dB | White-noise bursts from silence every 0.25 s, each decaying 40 ms, stretched as Stretch sets it (90 ms, 45 a second, regular, from the start) to half and double speed with the bursts' starts as hits; the medians over the hits of: the loudest millisecond in the 30 ms before each hit's time against the hit's; from its time until the level first reaches half the hit's, in half milliseconds; the largest rise of the level (4 ms, a millisecond at a time) over its lowest since the hit's peak, in the next 60 ms. The loudness against the drums' and the same without hits are shown (step B5) |
 | G1 | `vary[...]/level_change_lu` | within 1 LU | Full size spray, full level spray and peaked spray, each against the same cloud without it (40 a second, spray 0.3), on pink and the pad (step B1) |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
@@ -770,12 +771,17 @@ Each way grains differ has its own amount: Spray (with Spray shape, Even or Peak
 - **G1 met:** full size spray -0.05 LU on pink and +0.14 on the pad, full level spray -0.08 and -0.01, peaked spray +0.11 and -0.25. Level spray first measured -1.1 LU on pink: the level law's floor (0.3 from overlap 2) held a cloud of quieter grains under its level, so the floor's dense end now comes down with the grains' RMS level.
 - **Unchanged:** every other row, bit for bit (with no variation nothing moves: size and level draw from a sequence of their own).
 
-### Step B5: grain modes and a tone in tune (2026-11-17)
+### Step B5: grain modes, a tone in tune and a stretch that keeps its hits (2026-11-17)
 
 Grain modes (Cloud, Stretch, Repeat, Tone) set which controls the Grain page shows and where they start ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Modes). Cloud, Stretch and Repeat are today's engine with their own settings. Tone needs the grain rate to be a note in tune, so regular grains now keep their exact times, between frames when the period isn't a whole number of frames (Timing). New rows: G11, a tone's pitch at A2, A4 and B5.
 
 - **G11 met:** A2 +0.01 cents, A4 -0.01, B5 -0.00. Started on whole frames, as before this step, the same tones were -0.4, -13.3 and -13.7 cents flat (each period rounded up to the next frame).
 - **Unchanged:** every other row (only regular, free-running grains start between frames, and the lab's regular rows fall on whole frames).
+
+Part 4, Stretch keeps hits (`GrainSource::next_hit`, `GrainVoice::render` "Hits", the sampler's `hits` module): a pad in Stretch gives its grains the sound's hits as `mpfree-stretch` finds them; a forward grain stops at the next hit (its window fitted to end there, dropped under a quarter of its size), the scan reaching a hit starts one grain on it at its window's peak (to the window's end over at least half the size, at the cloud's pitch, centred, full level), the grains playing fade out under it over 3 ms outside the level's sums, and the regular grains start again a period after it. A scanning cloud's running start no longer wraps round the region: a grain born before the start began where the scan was then, before the region's start if it must, as only what it still has to play is read, so a cloud scanning from the start opens in step with what follows instead of with the region's far end.
+
+- **G12 met:** half speed, the 30 ms before a hit -70.8 dB under it (without hits +2.4: every grain reading ahead plays it early, louder than the hit itself); double speed, half the hit's level 0.5 ms after its time (without hits 20.0 ms: the grains reach it one by one); no second attack (1.9 and 0.4 dB). A stretch keeping its hits is 1.4 LU quieter at half speed (its hits are half as many a second, and what a slowed stretch has too little of just before each thins out) and 1.5 LU louder at double speed (twice as many whole hits).
+- **Unchanged:** every other row.
 
 ## Round 5: movement, pitch and voice
 
