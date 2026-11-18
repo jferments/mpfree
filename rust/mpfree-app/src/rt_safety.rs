@@ -62,6 +62,9 @@ struct Rig {
     tap: crate::export::Tap,
     /// Sample Recall's master, kept every period (sampler R5 part 1).
     recall: sampler::RecFeed,
+    /// When kept: every message MIDI out sent, as (the first frame of the
+    /// period it was handed over in, its frame, its bytes).
+    sent: Option<Vec<(u64, u64, Vec<u8>)>>,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -123,6 +126,7 @@ impl Rig {
             recall: sampler::RecFeed(
                 mpfree_sampler::record::input16(crate::sample_page::SCREEN_RECALL_SECONDS, RATE).0,
             ),
+            sent: None,
         }
     }
 
@@ -175,6 +179,7 @@ impl Rig {
             cv,
             tap,
             recall,
+            sent,
             ..
         } = self;
         let synth_on = *synth_on;
@@ -261,6 +266,7 @@ impl Rig {
             midi,
             cv,
             own: &mut mix.instruments,
+            modu: &mix.modu,
             tap,
             only: None,
             shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -273,6 +279,14 @@ impl Rig {
         seq.tap.take();
         *clip_hits += seq.hits;
         time.clear_hits();
+        // The clips' locks and lanes to the mod engine, as the loop does.
+        for &(offset, addr, value) in time.locks() {
+            mix.lock(offset, addr, value);
+        }
+        for &(offset, addr, value) in time.lanes() {
+            mix.lane(offset, addr, value);
+        }
+        time.clear_locks();
         // The pads, each into its mixer channel, and on to the Drums track.
         player.set_tempo(time.info().bpm);
         // The period's deadline for the lanes, as the loop sets it after
@@ -323,6 +337,12 @@ impl Rig {
             midi.control(offset, addr, value);
         }
         midi.period_end(PERIOD as u32, std::time::Instant::now());
+        if let Some(log) = sent {
+            let start = i * PERIOD as u64;
+            for (_, _, m) in midi.sent() {
+                log.push((start, start + u64::from(m.offset), m.bytes().to_vec()));
+            }
+        }
         // Freeze and Print's check of the frozen strips, each period.
         let n_tracks = time.project().tracks.len();
         let said = mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t));
@@ -679,6 +699,227 @@ fn track_on_midi_out_never_allocates(usb: bool, delay_tenths: u16) {
     }
 }
 
+/// What a track on gear `delay_tenths` slow (its port page's delay, in
+/// tenths of a ms; the rig's lead is 0, so all of it is ahead) sends over
+/// two bars of a one-bar clip: a note on step 1 (pad 1) and step 5 (pad
+/// 2), a lock of CC 74 at 100 on step 5, and, with `lane`, a move lane on
+/// CC 1 that ramps from 0 to 127 over beat 3 and ends on beat 4's second
+/// eighth. With `lfo`, an LFO row moves CC 74 too. Each message as (the
+/// first frame of the period it was handed over in, its frame, bytes).
+fn slow_gear_moves(delay_tenths: u16, lane: bool, lfo: bool) -> Vec<(u64, u64, Vec<u8>)> {
+    use mpfree_midi::setup::{TrackOut, DIN_NAME};
+    use mpfree_play::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
+    use mpfree_seq::mpfree_moves::{Kind, Map, Steps, Target};
+    use mpfree_seq::{Clip, Cond, Join, Lock, Note, Project, Touch, Track};
+    let step = 240;
+    let mut clip = Clip::new("c", 16 * step);
+    clip.notes = [(0, 0u8), (4, 1)]
+        .iter()
+        .map(|&(k, pad)| Note {
+            tick: k * step,
+            len: step - 40,
+            note: pad,
+            velocity: 100,
+            chance: 100,
+            cond: Cond::Always,
+            ratchet: 1,
+            touch: Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: Join::Attack,
+        })
+        .collect();
+    clip.locks = vec![Lock::new(
+        4 * step,
+        None,
+        RelAddr::new(OnTrack::Midi, 74),
+        100.0,
+    )];
+    if lane {
+        let map = Map {
+            min: 0.0,
+            max: 127.0,
+            log: false,
+            steps: Steps::None,
+        };
+        clip.moves
+            .put(
+                Target::Track(RelAddr::new(OnTrack::Midi, 1)),
+                map,
+                &[
+                    (f64::from(8 * step as u32), 0.0, Kind::Ramp),
+                    (f64::from(12 * step as u32), 1.0, Kind::Step),
+                    (f64::from(14 * step as u32), 0.0, Kind::End),
+                ],
+                16 * step as u32,
+            )
+            .unwrap();
+    }
+    let mut project = Project::new();
+    let mut track = Track::new("Track 1", 0);
+    track.slots[0] = Some(clip);
+    project.tracks.push(track);
+    let mut rig = Rig::new(false);
+    rig.time = time::TimeHost::with_project(RATE, 120.0, project).unwrap();
+    let din = MidiSink::default();
+    rig.midi
+        .open(din.clone(), std::time::Instant::now())
+        .unwrap();
+    {
+        let mut m = rig.io.lock().unwrap();
+        m.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 9));
+        m.setup
+            .set_port(DIN_NAME, |p| p.delay_tenths = delay_tenths);
+        m.gen += 1;
+    }
+    if lfo {
+        let row = mpfree_mod::Row {
+            source: mpfree_mod::Source::Lfo(0),
+            via: None,
+            target: ParamAddr::new(Owner::Midi(0), 74),
+            depth: 0.25,
+        };
+        assert!(rig
+            .mix
+            .modu
+            .change(&rig.mix.mixer, mpfree_mod::Change::AddRow(row))
+            .is_ok());
+    }
+    let mut i = 0u64;
+    rig.period(i);
+    i += 1;
+    rig.time
+        .act(TimeAction::Launch { track: 0, slot: 0 })
+        .unwrap();
+    rig.time.command(Command::Play);
+    rig.sent = Some(Vec::with_capacity(4_096));
+    // Two bars at 120 BPM.
+    let bars = 2 * 2 * u64::from(RATE);
+    while i * (PERIOD as u64) < bars {
+        rig.period(i);
+        i += 1;
+    }
+    assert!(rig.midi.takes(0));
+    rig.sent.take().unwrap()
+}
+
+/// The step 5 note-ons (pad 2) of [`slow_gear_moves`]' log.
+fn step_5_notes(log: &[(u64, u64, Vec<u8>)]) -> Vec<(u64, u64)> {
+    log.iter()
+        .filter(|m| m.2[..2] == [0x99, PAD_NOTES[1]] && m.2[2] > 0)
+        .map(|m| (m.0, m.1))
+        .collect()
+}
+
+/// The messages of controller `cc` on channel 10.
+fn ccs(log: &[(u64, u64, Vec<u8>)], cc: u8) -> Vec<(u64, u64, u8)> {
+    log.iter()
+        .filter(|m| m.2[..2] == [0xB9, cc])
+        .map(|m| (m.0, m.1, m.2[2]))
+        .collect()
+}
+
+/// 90 ms at the rig's rate, in frames.
+const NINETY_MS: u64 = RATE as u64 * 90 / 1000;
+
+/// Sequencer S5's gap closed: a track 90 ms ahead with a CC 74 lock on
+/// step 5. The lock's CC goes out with step 5's note, handed over in the
+/// same period, the same ahead of its frame, and once only; so does its
+/// end, back to the control's own value (64).
+#[test]
+fn a_lock_on_slow_gear_goes_ahead_with_its_note_once() {
+    let log = slow_gear_moves(900, false, false);
+    let notes = step_5_notes(&log);
+    assert_eq!(notes.len(), 2, "two passes: {log:?}");
+    let cc = ccs(&log, 74);
+    let locks: Vec<_> = cc.iter().filter(|c| c.2 == 100).collect();
+    assert_eq!(locks.len(), 2, "once a pass: {cc:?}");
+    for (&(handed, frame), lock) in notes.iter().zip(&locks) {
+        assert_eq!((lock.0, lock.1), (handed, frame), "with its note: {cc:?}");
+        assert!(
+            handed <= frame - NINETY_MS && frame - NINETY_MS < handed + PERIOD as u64,
+            "ahead: handed at {handed}, plays at {frame}"
+        );
+        // The lock's CC leaves before the note on its frame.
+        let at = |b: &[u8]| log.iter().position(|m| m.1 == frame && m.2 == b);
+        assert!(at(&[0xB9, 74, 100]) < at(&[0x99, PAD_NOTES[1], 100]));
+    }
+    // Its end: CC 74 back to 64, ahead too, once each pass.
+    let ends: Vec<_> = cc.iter().filter(|c| c.2 == 64).collect();
+    assert_eq!(ends.len(), 2, "{cc:?}");
+    for e in ends {
+        assert!(e.1 > e.0 + NINETY_MS - PERIOD as u64, "ahead: {e:?}");
+    }
+    assert_eq!(cc.len(), 4, "nothing more: {cc:?}");
+}
+
+/// The same track with a move lane on CC 1: its values go out ahead, each
+/// in the period that holds its frame less the ahead, at most two a
+/// period, never a value twice in a row, up to 127, then its end (0).
+#[test]
+fn a_lane_on_slow_gear_goes_ahead_too() {
+    let log = slow_gear_moves(900, true, false);
+    let cc = ccs(&log, 1);
+    assert!(cc.len() > 20, "{cc:?}");
+    for c in &cc {
+        assert!(
+            c.0 <= c.1 - NINETY_MS && c.1 - NINETY_MS < c.0 + PERIOD as u64,
+            "ahead: {c:?} in {cc:?}"
+        );
+    }
+    for w in cc.windows(3) {
+        assert!(w[2].0 > w[0].0, "at most two a period: {w:?}");
+    }
+    let values: Vec<u8> = cc.iter().map(|c| c.2).collect();
+    // Each pass: the ramp's first value (0), up a value or two at a time to
+    // 127, never one twice, then its end, back to the control's own (0).
+    let top = values.iter().position(|&v| v == 127).unwrap();
+    assert!(values[..=top].windows(2).all(|w| w[0] < w[1]), "{values:?}");
+    assert_eq!(values[top + 1], 0, "its end: {values:?}");
+    assert_eq!(
+        values[..top + 2],
+        values[top + 2..],
+        "the second pass the same"
+    );
+    // The lock on the same track still goes ahead, once a pass.
+    assert_eq!(ccs(&log, 74).iter().filter(|c| c.2 == 100).count(), 2);
+}
+
+/// A track that isn't ahead is as it was: its lock goes out on its note's
+/// frame in that frame's own period, from the mod engine.
+#[test]
+fn a_lock_on_gear_that_isnt_slow_goes_in_its_period() {
+    let log = slow_gear_moves(0, false, false);
+    let notes = step_5_notes(&log);
+    assert_eq!(notes.len(), 2);
+    let cc = ccs(&log, 74);
+    let locks: Vec<_> = cc.iter().filter(|c| c.2 == 100).collect();
+    assert_eq!(locks.len(), 2, "{cc:?}");
+    for (&(handed, frame), lock) in notes.iter().zip(&locks) {
+        assert!(frame < handed + PERIOD as u64, "in its period");
+        assert_eq!((lock.0, lock.1), (handed, frame));
+    }
+}
+
+/// A CC an LFO row moves stays with the mod engine, a period at a time,
+/// though its track plays ahead (the engine's value mixes the lock and
+/// the LFO): nothing of it goes ahead, and the track's notes still do.
+#[test]
+fn a_control_an_lfo_moves_stays_a_period_at_a_time() {
+    let log = slow_gear_moves(900, false, true);
+    let cc = ccs(&log, 74);
+    assert!(cc.len() > 20, "{cc:?}");
+    for c in &cc {
+        assert!(c.1 < c.0 + PERIOD as u64, "in its own period: {c:?}");
+    }
+    for (handed, frame) in step_5_notes(&log) {
+        assert!(
+            handed <= frame - NINETY_MS && frame - NINETY_MS < handed + PERIOD as u64,
+            "the notes go ahead"
+        );
+    }
+}
+
 /// An arp's note (the pads played live) on a track that plays on MIDI Out:
 /// it goes out with the pads' velocity, the pads don't sound it, the pad
 /// still shows, and the armed track records the pad as heard.
@@ -710,6 +951,7 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        modu: &rig.mix.modu,
         tap: &mut rig.tap,
         only: None,
         shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -788,6 +1030,7 @@ fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        modu: &rig.mix.modu,
         tap: &mut rig.tap,
         only: None,
         shifts,
@@ -1031,6 +1274,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        modu: &rig.mix.modu,
         tap: &mut rig.tap,
         only: None,
         shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -1235,6 +1479,7 @@ fn each_track_plays_its_own_kit_at_once() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        modu: &rig.mix.modu,
         tap: &mut rig.tap,
         only: None,
         shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -1321,6 +1566,7 @@ fn a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        modu: &rig.mix.modu,
         tap: &mut rig.tap,
         only: None,
         shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
