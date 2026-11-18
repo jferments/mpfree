@@ -7,7 +7,8 @@ use std::f32::consts::PI;
 
 use mpfree_fx::mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
 use mpfree_fx::{
-    ids, perform_state, Perform, XyPad, PERFORM_EFFECTS, PERFORM_LENGTHS, PERFORM_SLOTS,
+    ids, perform_state, Perform, XyPad, PERFORM_EFFECTS, PERFORM_LENGTHS, PERFORM_LET_GO,
+    PERFORM_PLAYS, PERFORM_SLOTS, PERFORM_STARTS,
 };
 
 const RATE: u32 = 48_000;
@@ -149,9 +150,23 @@ fn the_description_is_valid_and_the_bank_is_full() {
     check_params(p.params()).unwrap();
     assert_eq!(
         p.params().len(),
-        2 + 4 * PERFORM_SLOTS + 3 + PERFORM_SLOTS + 1
+        2 + 4 * PERFORM_SLOTS + 3 + PERFORM_SLOTS + 1 + 3 * PERFORM_SLOTS
     );
     assert_eq!(ids::perform::MIX, 85);
+    // Each pad's Starts, Let go and Plays come after the mix, so a saved
+    // project's ids keep their meaning; all start as before.
+    assert_eq!(ids::perform::starts(0), 86);
+    assert_eq!(ids::perform::let_go(0), 102);
+    assert_eq!(ids::perform::plays(15), 133);
+    for k in 0..PERFORM_SLOTS {
+        for id in [
+            ids::perform::starts(k),
+            ids::perform::let_go(k),
+            ids::perform::plays(k),
+        ] {
+            assert_eq!(p.param(id), 0.0, "pad {} id {id}", k + 1);
+        }
+    }
     assert_eq!(p.param(ids::perform::MIX), 100.0);
     assert_eq!(
         p.param(ids::perform::slot(15) + ids::perform::EFFECT),
@@ -815,5 +830,242 @@ fn the_mix_sets_how_much_of_the_effects_is_heard() {
             "mix 50 at frame {i}: {} vs {want}",
             half.0[i]
         );
+    }
+}
+
+/// Sets pad `k`'s Starts, Let go and Plays by their names.
+fn how(p: &mut Perform, k: usize, starts: &str, let_go: &str, plays: &str) {
+    let at = |list: &[&str], name: &str| list.iter().position(|e| *e == name).unwrap() as f32;
+    p.set_param(ids::perform::starts(k), at(PERFORM_STARTS, starts));
+    p.set_param(ids::perform::let_go(k), at(PERFORM_LET_GO, let_go));
+    p.set_param(ids::perform::plays(k), at(PERFORM_PLAYS, plays));
+}
+
+/// Renders blocks of 1 000 frames of a quiet hum from frame `from`, with
+/// `events` at absolute frames, and gives pad `k`'s State after each.
+fn states(
+    p: &mut Perform,
+    k: usize,
+    from: usize,
+    blocks: usize,
+    events: &[(usize, NodeEvent)],
+) -> Vec<f32> {
+    let mut out = Vec::new();
+    for b in 0..blocks {
+        let at = from + b * 1_000;
+        let evs: Vec<Timed> = events
+            .iter()
+            .filter(|(f, _)| (at..at + 1_000).contains(f))
+            .map(|&(f, e)| Timed::new((f - at) as u32, e))
+            .collect();
+        let (mut l, mut r) = (vec![0.1; 1_000], vec![0.1; 1_000]);
+        let ctx = Ctx {
+            bpm: 120.0,
+            beats: at as f64 * 2.0 / RATE as f64,
+            playing: true,
+            ..Ctx::new(RATE, at as u64)
+        };
+        p.process(&ctx, &evs, &mut l, &mut r);
+        out.push(p.param(ids::perform::slot(k) + ids::perform::STATE));
+    }
+    out
+}
+
+#[test]
+fn a_pads_starts_picks_its_own_grid() {
+    // Pressed at frame 1 500 with the transport playing: on the bank's
+    // Punch in (1/16, frame 6 000), at once, on the next 1/16, or on the
+    // next beat (frame 24 000).
+    let first_on = |starts: &str| {
+        let mut p = Perform::new();
+        slot(&mut p, 0, "Trance gate", "1/16", 100.0);
+        how(&mut p, 0, starts, "Ring out", "While held");
+        let s = states(&mut p, 0, 0, 30, &[(1_500, on(0))]);
+        s.iter().position(|&v| v == perform_state::ON).unwrap()
+    };
+    // The block after the one the effect starts in: frame 6 000 is the
+    // start of block 6, so block 6 (index 6) is the first to end with it
+    // on; at once, block 1.
+    assert_eq!(first_on("Punch in"), 6);
+    assert_eq!(first_on("At once"), 1);
+    assert_eq!(first_on("Next 1/16"), 6);
+    assert_eq!(first_on("Next beat"), 24);
+    // The bank's Punch in is the default's grid: set to a beat, a pad on
+    // Punch in follows it and one on Next 1/16 doesn't.
+    let mut p = Perform::new();
+    p.set_param(ids::perform::QUANTISE, 4.0);
+    slot(&mut p, 0, "Trance gate", "1/16", 100.0);
+    slot(&mut p, 1, "Trance gate", "1/16", 100.0);
+    how(&mut p, 1, "Next 1/16", "Ring out", "While held");
+    let a = states(&mut p, 0, 0, 30, &[(1_500, on(0)), (1_500, on(1))]);
+    assert_eq!(a.iter().position(|&v| v == perform_state::ON), Some(24));
+    assert_eq!(
+        p.param(ids::perform::slot(1) + ids::perform::STATE),
+        perform_state::ON
+    );
+}
+
+#[test]
+fn a_pad_set_to_play_a_bar_plays_a_bar_from_a_tap() {
+    // 120 BPM: a bar is 96 000 frames. Tapped at 1 500 (let go at 1 600),
+    // it starts at 6 000 and stops at 102 000.
+    let mut p = Perform::new();
+    slot(&mut p, 0, "Stutter", "1/16", 100.0);
+    how(&mut p, 0, "Next 1/16", "Ring out", "1 bar");
+    let s = states(&mut p, 0, 0, 110, &[(1_500, on(0)), (1_600, off(0))]);
+    assert_eq!(
+        s[3],
+        perform_state::WAITING,
+        "let go before the grid: it still waits"
+    );
+    assert_eq!(s[6], perform_state::ON);
+    assert_eq!(s[100], perform_state::ON, "frame 101 000: still in its bar");
+    assert_eq!(s[102], perform_state::OFF, "the bar is over");
+    // A press while it plays starts it again, and a Hold works the same
+    // way; AllOff ends it at once.
+    let mut p = Perform::new();
+    slot(&mut p, 0, "Stutter", "1/16", 100.0);
+    how(&mut p, 0, "At once", "Ring out", "1 bar");
+    let s = states(
+        &mut p,
+        0,
+        0,
+        150,
+        &[
+            (500, hold(0, true)),
+            (600, hold(0, false)),
+            (50_000, on(0)),
+            (50_100, off(0)),
+        ],
+    );
+    assert_eq!(s[120], perform_state::ON, "frame 121 000: the second bar");
+    assert_eq!(s[147], perform_state::OFF, "50 000 + 96 000: over");
+    let s = states(
+        &mut p,
+        0,
+        200_000,
+        3,
+        &[(200_100, on(0)), (201_500, NodeEvent::AllOff)],
+    );
+    assert_eq!(
+        s,
+        vec![perform_state::ON, perform_state::OFF, perform_state::OFF]
+    );
+    // While held is as before: let go, it stops.
+    let mut p = Perform::new();
+    slot(&mut p, 0, "Stutter", "1/16", 100.0);
+    how(&mut p, 0, "At once", "Ring out", "While held");
+    let s = states(&mut p, 0, 0, 3, &[(100, on(0)), (1_100, off(0))]);
+    assert_eq!(
+        s,
+        vec![perform_state::ON, perform_state::OFF, perform_state::OFF]
+    );
+}
+
+#[test]
+fn a_cut_stops_an_echo_and_a_wash_where_ring_out_lets_them_ring() {
+    let sec = RATE as usize;
+    let tail = |fx: &str, let_go: &str| {
+        let mut p = Perform::new();
+        let k = 3;
+        slot(&mut p, k, fx, "1/8", 70.0);
+        how(&mut p, k, "At once", let_go, "While held");
+        let mut x = noise(3 * sec, 31);
+        for v in x.0.iter_mut().chain(x.1.iter_mut()) {
+            *v *= 0.3;
+        }
+        x.0[sec / 2..].fill(0.0);
+        x.1[sec / 2..].fill(0.0);
+        let y = run(
+            &mut p,
+            &x,
+            &[(0, on(k as u8)), (sec / 2, off(k as u8))],
+            true,
+        );
+        // The dry sound is gone from sec / 2; what is left is the effect.
+        let rest = rms(&y.0[sec / 2 + 400..sec]);
+        (rest, y, p)
+    };
+    for fx in ["Echo throw", "Wash throw"] {
+        let (ring, _, _) = tail(fx, "Ring out");
+        let (cut, y, p) = tail(fx, "Cut");
+        assert!(ring > 1e-3, "{fx} rings out: {ring}");
+        // The Fade (4 ms, 192 frames) is over by 400 frames after the let
+        // go: silence, and nothing left to ring.
+        assert_eq!(cut, 0.0, "{fx} cut");
+        assert!(y.0[sec / 2 + 192..].iter().all(|&v| v == 0.0), "{fx}");
+        assert!(p.tail_frames() < 1_000, "{fx} tail {}", p.tail_frames());
+    }
+    // A Cut leaves an echo that another pad still holds.
+    let mut p = Perform::new();
+    slot(&mut p, 0, "Echo throw", "1/8", 70.0);
+    slot(&mut p, 1, "Echo throw", "1/8", 70.0);
+    how(&mut p, 0, "At once", "Cut", "While held");
+    how(&mut p, 1, "At once", "Ring out", "While held");
+    let mut x = noise(2 * sec, 33);
+    x.0[sec / 4..].fill(0.0);
+    x.1[sec / 4..].fill(0.0);
+    let y = run(
+        &mut p,
+        &x,
+        &[(0, on(0)), (0, on(1)), (sec / 8, off(0)), (sec, off(1))],
+        true,
+    );
+    assert!(
+        rms(&y.0[sec / 2..sec]) > 1e-3,
+        "the other pad's echo rings on"
+    );
+}
+
+#[test]
+fn starts_plays_and_cuts_give_the_same_output_for_any_block_size() {
+    let n = 8 * RATE as usize;
+    let x = noise(n, 41);
+    let mut g = Lcg(42);
+    let mut events = Vec::new();
+    let mut at = 0;
+    while at < n {
+        at += 1 + (g.next() as usize % 12_000);
+        let k = [0u8, 9, 15][(g.next() % 3) as usize];
+        let ev = match g.next() % 6 {
+            0 | 1 => on(k),
+            2 | 3 => off(k),
+            4 => NodeEvent::Param {
+                id: ids::perform::starts(k as usize),
+                value: (g.next() % 4) as f32,
+            },
+            _ => NodeEvent::Param {
+                id: if g.next().is_multiple_of(2) {
+                    ids::perform::let_go(k as usize)
+                } else {
+                    ids::perform::plays(k as usize)
+                },
+                value: (g.next() % 2) as f32,
+            },
+        };
+        events.push((at.min(n - 1), ev));
+    }
+    let reference = render(&mut Perform::new(), &x, &events, true, &mut || 64);
+    let mut sizes = Lcg(43);
+    for (how, mut next) in [
+        ("1 frame", Box::new(|| 1usize) as Box<dyn FnMut() -> usize>),
+        ("odd 37", Box::new(|| 37)),
+        (
+            "random",
+            Box::new(move || 1 + (sizes.next() as usize % 700)),
+        ),
+    ] {
+        let y = render(&mut Perform::new(), &x, &events, true, &mut *next);
+        for (ch, (a, b)) in [(&reference.0, &y.0), (&reference.1, &y.1)]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(i) = (0..n).find(|&i| a[i].to_bits() != b[i].to_bits()) {
+                panic!(
+                    "{how}: channel {ch} differs first at frame {i}: {} vs {}",
+                    a[i], b[i]
+                );
+            }
+        }
     }
 }
