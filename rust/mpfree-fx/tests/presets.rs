@@ -36,6 +36,7 @@ fn nodes() -> Vec<Box<dyn Node>> {
         Box::new(PitchCorrect::new()),
         Box::new(Harmonizer::new()),
         Box::new(Tuner::new()),
+        mpfree_fx::registry::make("mpfree.grains").unwrap(),
     ]
 }
 
