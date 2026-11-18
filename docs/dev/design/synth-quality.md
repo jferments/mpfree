@@ -91,16 +91,16 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
-| B1 | Pitch of a held note 100 ms in, C0 to C3, both bodies | Within 3 cents | Not measured below C1 |
-| B2 | Glide (with V7) | Lands within 2 cents; time within 10 % | Poly: 0.04 cents, 1.2 % |
-| B3 | The 808's drop | Amount and time as set, within 5 %; then settles per B1 | No 808 that plays a line |
-| B4 | The note's start | Largest step in the first four frames under −40 dBFS with start phase 0° | 16 of 16 bass presets |
-| B5 | Heard on small speakers | 100 to 400 Hz at least −12 dB against below 100 Hz, C1 and C2, default drive | 9 of 16 bass presets |
-| B6 | Level across the keys | Loudness spread under 3 dB, C0 to C3 | Reported in L11 (C1 to C3) |
-| B7 | Low end stays mono | Correlation at least 0.95 under 120 Hz | 16 of 16 |
-| B9 | The ladder | Within 1 dB of the analog prototype at rest; resonance peak within 25 cents | Poly's: 0.16 dB, 5.3 cents |
-| B10 | Aliasing at full drive | Worst alias under −60 dB at C5 | Poly saw with 24 dB drive: −42 dB at C5 |
-| B11 | Cost | One voice under 5 % of a period in the worst block on the MPC; the workstation's reported | Device round |
+| B1 | Pitch of a held note 100 ms in, C0 to C3, both bodies | Within 3 cents | Bass: met, 0.07 cents (synth) and 0.05 (808) at worst |
+| B2 | Glide (with V7) | Lands within 2 cents; time within 10 % | Bass by rate: met, 0.002 cents, 0.3 % (V7); Poly by time: 0.04 cents, 1.2 % |
+| B3 | The 808's drop | Amount and time as set, within 5 %; then settles per B1 | Bass: met, 12 semitones over 200 ms on C4 within 1.9 % and on time, then 0.0005 cents |
+| B4 | The note's start | Largest step in the first four frames under −40 dBFS with start phase 0° | Bass: met on 32 of 32 (−75 dBFS at worst, 808 Kick Bass); other engines' bass presets 16 of 16 |
+| B5 | Heard on small speakers | 100 to 400 Hz at least −12 dB against below 100 Hz, C1 and C2, default drive | Bass: 21 of 32. Not met by the plain subs (Sub Sine, Sub Triangle), the clean 808s, Soft Triangle and Soft Reese, which are pure low end by design, nor Distorted 808 (−16.7 dB). Other engines' bass presets 9 of 16 |
+| B6 | Level across the keys | Loudness spread under 3 dB, C0 to C3 | Bass: met on 32 of 32 in L11 (0.6 to 2.9 dB), with the level rising under C3 |
+| B7 | Low end stays mono | Correlation at least 0.95 under 120 Hz | Bass: met on 32 of 32 (it is mono); other engines' bass presets 16 of 16 |
+| B9 | The ladder | Within 1 dB of the analog prototype at rest; resonance peak within 25 cents | Poly's: 0.16 dB, 5.3 cents. Bass's (Analog's ladder) is not measured yet |
+| B10 | Aliasing at full drive | Worst alias under −60 dB at C5 | Bass saw at Drive 100: met, −63.7 dB at C5 (−58.8 at C6, −54.0 at C7); Poly saw with 24 dB drive: −42 dB at C5 |
+| B11 | Cost | One voice under 5 % of a period in the worst block on the MPC; the workstation's reported | Workstation, a sixteenth-note line, instructions a block: Bass Init 93k, Reese 128k, Distorted 808 65k. MPC: device round |
 
 **Keys (K)**, on Keys' presets, the clav's included:
 

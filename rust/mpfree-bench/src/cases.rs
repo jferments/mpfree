@@ -32,7 +32,7 @@ use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
 use mpfree_synth::{
-    Analog, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PRESETS,
+    Analog, Bass, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PRESETS,
 };
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
@@ -1092,6 +1092,22 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // Bass: the synth bass through its ladder, the reese's pair over the
+    // sub, and the 808 driven hard.
+    for name in ["Init", "Reese", "Distorted 808"] {
+        v.push(measured(|| {
+            let p = Bass::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("bass preset {name}"));
+            line(
+                format!("Bass {name}, a line"),
+                rate,
+                Box::new(Bass::new(rate)),
+                p.values,
+            )
+        }));
+    }
     // Analog: the plain init, the pad with the chorus, and the brass on
     // the two-pole; Worn Cards adds Age's drift on every oscillator.
     for (name, voices) in [
@@ -1767,6 +1783,16 @@ fn engine_scaling(rate: u32) -> Vec<Scaling> {
             format!("Squelch {}", p.name),
             rate,
             || Box::new(Squelch::new(rate)),
+            p.values,
+            None,
+            true,
+        ));
+    }
+    for p in Bass::presets() {
+        v.push(preset_scaling(
+            format!("Bass {}", p.name),
+            rate,
+            || Box::new(Bass::new(rate)),
             p.values,
             None,
             true,
