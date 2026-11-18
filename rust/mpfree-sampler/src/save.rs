@@ -678,6 +678,11 @@ const GRAIN_FILTERS: &[(&str, GrainFilterKind)] = &[
     ("band", GrainFilterKind::Band),
     ("high", GrainFilterKind::High),
 ];
+const GRAIN_QUALITIES: &[(&str, GrainQuality)] = &[
+    ("clean", GrainQuality::Clean),
+    ("tape", GrainQuality::Tape),
+    ("lofi", GrainQuality::LoFi),
+];
 const PAD_LFO_TARGETS: &[(&str, LfoTarget)] = &[
     ("off", LfoTarget::Off),
     ("pitch", LfoTarget::Pitch),
@@ -762,6 +767,7 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         lfo,
         env,
         filter,
+        quality,
     } = g;
     f.num("position", position);
     f.num("spray", spray);
@@ -838,6 +844,8 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         f.num("resonance", resonance);
         f.num("spray", spray);
     });
+    // Saves before quality modes open Clean.
+    f.word("quality", quality, GRAIN_QUALITIES);
     let none = TempoSync {
         frames_per_beat: 22_050.0,
         grains_per_beat: None,

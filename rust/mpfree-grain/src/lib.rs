@@ -10,7 +10,9 @@
 //!
 //! A [`GrainVoice`] spawns grains from either, each with its own position,
 //! length, pitch, direction, pan and window, and mixes them into the output.
-//! Its LFO and envelope ([`motion`]) move its settings as it plays.
+//! Its LFO and envelope ([`motion`]) move its settings as it plays, and
+//! its quality mode ([`quality`]: Clean, Tape or Lo-fi) colours what it
+//! plays on its way out.
 //! Architecture: `docs/dev/design/sampler-architecture.md` ("Granular engine").
 //!
 //! Real-time rules, checked by `tests/no_alloc.rs`:
@@ -28,6 +30,7 @@ pub mod filter;
 pub mod fx;
 pub mod motion;
 pub mod node;
+pub mod quality;
 pub mod rng;
 pub mod voice;
 pub mod window;
@@ -39,6 +42,7 @@ pub use filter::{
 pub use fx::GrainFx;
 pub use motion::{GrainEnv, GrainLfo, LfoShape, MotionTarget};
 pub use node::GrainNode;
+pub use quality::Quality;
 pub use rng::Rng;
 pub use voice::{
     quantise, Budget, GrainView, GrainVoice, Params, SprayShape, Stats, TempoSync, MAX_GRAINS,

@@ -242,7 +242,8 @@ pub fn presets() -> [GrainPreset; 8] {
 
 /// `r` playing as preset `i` (`r` itself if there is no such preset): a
 /// granular region in the preset's mode with its settings, keeping the
-/// sound, its points, the position and the level.
+/// sound, its points, the position, the level and the quality mode (a
+/// Tape pad stays Tape as presets are tried on it).
 pub fn apply(r: &Region, i: usize) -> Region {
     let Some(p) = presets().get(i).copied() else {
         return r.clone();
@@ -253,6 +254,7 @@ pub fn apply(r: &Region, i: usize) -> Region {
     out.grain = GrainParams {
         position: r.grain.position,
         gain: r.grain.gain,
+        quality: r.grain.quality,
         ..p.grain
     };
     out.grain_keys = p.keys;
@@ -295,6 +297,12 @@ mod tests {
             assert!(p.check(&source()).is_ok(), "{}", presets()[i].name);
         }
         assert_eq!(apply(&r, 99), r);
+        // The quality mode stays too, and the preset still matches.
+        let mut tape = region();
+        tape.grain.quality = crate::model::GrainQuality::Tape;
+        let p = apply(&tape, 2);
+        assert_eq!(p.grain.quality, crate::model::GrainQuality::Tape);
+        assert_eq!(matching(&p), Some(2));
     }
 
     #[test]

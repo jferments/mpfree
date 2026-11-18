@@ -28,6 +28,7 @@ use mpfree_node::{
 
 use crate::filter::{FilterKind, GrainFilter, CUTOFF_MAX_HZ, CUTOFF_MIN_HZ};
 use crate::fx::GrainFx;
+use crate::quality::Quality;
 use crate::voice::{Budget, Params, SprayShape};
 use crate::window::Window;
 
@@ -74,13 +75,19 @@ pub mod param {
     /// How far each grain's cutoff lands from the cutoff, per cent (100:
     /// three octaves either way).
     pub const FILTER_SPRAY: u16 = 21;
+    /// How the cloud is coloured on its way out: Clean, Tape or Lo-fi
+    /// ([`super::QUALITY_NAMES`], [`crate::Quality`]).
+    pub const QUALITY: u16 = 22;
 }
 
 /// Parameters, counting the meter's id.
-const COUNT: usize = 22;
+const COUNT: usize = 23;
 
 /// The filter's choices, as the page shows them.
 pub const FILTER_NAMES: &[&str] = &["Off", "Low pass", "Band pass", "High pass"];
+
+/// Quality's choices, as the page shows them (in [`Quality::ALL`]'s order).
+pub const QUALITY_NAMES: &[&str] = &["Clean", "Tape", "Lo-fi"];
 
 /// Repeat's choices, as the page shows them.
 pub const REPEAT_NAMES: &[&str] = &["Off", "1/2", "1/4", "1/8", "1/16", "1/32"];
@@ -322,6 +329,16 @@ static PARAMS: [ParamInfo; COUNT] = [
         Unit::Percent,
         Curve::Linear,
     ),
+    p(
+        param::QUALITY,
+        "Quality",
+        "Mix",
+        0.0,
+        2.0,
+        0.0,
+        Unit::None,
+        Curve::Choice(QUALITY_NAMES),
+    ),
     ParamInfo {
         id: param::GRAINS,
         name: "Grains",
@@ -372,6 +389,7 @@ fn params_of(v: &[f32; COUNT]) -> Params {
             resonance: v[usize::from(param::RESONANCE)] / 100.0,
             spray: v[usize::from(param::FILTER_SPRAY)] / 100.0,
         },
+        quality: Quality::from_index(v[usize::from(param::QUALITY)].round().max(0.0) as usize),
         ..Params::default()
     }
 }
