@@ -322,12 +322,16 @@ impl Desk<'_> {
             gui::FromUi::LoopMute(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::ToggleMute(n)))
             }
+            gui::FromUi::LoopLevel(n, level) => {
+                fx.push(app::Effect::Looper(looping::LoopAction::Level(n, level)))
+            }
+            gui::FromUi::LoopRecordLoops(on) => {
+                fx.push(app::Effect::Looper(looping::LoopAction::RecordLoops(on)))
+            }
+            gui::FromUi::LoopBars(bars) => fx.extend(app.set_loop_bars(bars)),
             gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
             gui::FromUi::LoopCommand(c) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
-            }
-            gui::FromUi::LoopResample(n) => {
-                fx.push(app::Effect::Looper(looping::LoopAction::Resample(n)))
             }
             gui::FromUi::LoopSteps(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))

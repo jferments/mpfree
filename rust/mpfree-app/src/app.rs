@@ -2398,10 +2398,12 @@ impl App {
             vec![Effect::ProgEdit]
         } else if is(m.q_link) {
             // Q-LINK: the column's next bank (Macros 1-4, 5-8, the page's
-            // own knobs), where the column has macro banks (layout spec 4b).
+            // own knobs), where the column has macro banks (layout spec 4b);
+            // on the Looper tab, loops 1-4's levels, 5-8's, the picked
+            // loop's knobs.
             if matches!(
                 self.view,
-                View::Play | View::Arrange | View::Chain | View::Macros
+                View::Play | View::Arrange | View::Chain | View::Macros | View::Looper
             ) {
                 vec![Effect::QLinkBank]
             } else {
@@ -3171,6 +3173,22 @@ impl App {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The Looper tab's Length: the picked loop's first pass (None: free).
+    /// The setting follows, so MENU's First pass length and the next start
+    /// agree with the last choice.
+    pub fn set_loop_bars(&mut self, bars: Option<u32>) -> Vec<Effect> {
+        self.save_dirty = true;
+        self.settings.loop_bars = bars;
+        let mut fx = vec![
+            Effect::Looper(LoopAction::Command(LoopCommand::SetBars(bars))),
+            Effect::Settings(self.settings.clone()),
+        ];
+        if self.in_menu() {
+            fx.push(self.menu_view());
+        }
+        fx
     }
 
     /// The line input could not open (or closed itself): the row and the
