@@ -517,7 +517,7 @@ A mutation check: with Vintage on, S2 reads -3.0 and -4.1 dB and the ratchet fai
 
 ## Round 4: the rest of the dynamics
 
-Measuring built 2026-11-17, by `quality/round4.rs`: the Limiter and Master safety (class `limiter`, ids P), the Gate (`gate`, N), the De-esser (`deesser`, S), the Multiband compressor (`multiband`, X), the Ducker (`ducker`, U), the Transient shaper (`transient`, T) and the Channel strip (`strip`, C). Research and plan: jferments/mpfree-claude `fx/quality/` (research-dynamics.md, plan-4.md, baseline-dynamics-2026-11-17.md). The seven classes take about 2.5 s together. Subjects are `class/engine` at its defaults and presets, and named settings: `limiter/limiter-true-peak`, `limiter/limiter-auto-off`, `limiter/master-safety` (Safe limiter), `limiter/master-soft-clip`, `deesser/split`, `deesser/wide`, `deesser/relative`, `deesser/absolute`, `ducker/tempo`.
+Measuring built 2026-11-17, by `quality/round4.rs`: the Limiter and Master safety (class `limiter`, ids P), the Gate (`gate`, N), the De-esser (`deesser`, S), the Multiband compressor (`multiband`, X), the Ducker (`ducker`, U), the Transient shaper (`transient`, T) and the Channel strip (`strip`, C). Research and plan: jferments/mpfree-claude `fx/quality/` (research-dynamics.md, plan-4.md, baseline-dynamics-2026-11-17.md). The seven classes take about 2.5 s together. Subjects are `class/engine` at its defaults and presets, and named settings: `limiter/limiter-true-peak`, `limiter/limiter-auto-off`, `limiter/master-safety` (Safe limiter), `limiter/master-soft-clip`, `deesser/split`, `deesser/wide`, `deesser/relative`, `deesser/absolute`, `ducker/tempo`, and (from the Ducker PR) `ducker/tempo-dotted8` and `ducker/tempo-triplet4`.
 
 The measures it adds, beside the earlier rounds':
 
@@ -586,9 +586,10 @@ The measures it adds, beside the earlier rounds':
 | Id | Row | Target | Why |
 |---|---|---|---|
 | U1 | `beat_error_db` | Tempo mode: within 1 dB of full depth from each beat until the hold ends, the defaults and every tempo preset | The kick lands where the bass is already down |
-| U2 | `drawing_error_db` | Within 1 dB of the drawing over the whole step | The page is how it's set |
+| U2 | `drawing_error_db` | Within 1 dB of the drawing over the whole step: of the gains it passes through within a quarter of a millisecond either way (the Ducker PR; before, of its points a quarter of a millisecond apart) | The page is how it's set |
 | U3 | `response_ms_attack<ms>` | Side-chain: the duck reaches -1 dB within 1 ms of the key crossing the threshold | |
-| U4 | `click_db_attack<ms>` | Reported: a 60 Hz tone ducked by the beat (the shortest attacks click by choice) | |
+| U3 | `hats_duck_db_key_lp120`, `kick_depth_error_db_key_lp120` | Key LP at 120 Hz on a drum key: hats at -6 dBFS duck the tone by at most 1 dB, and each 55 Hz kick takes it within 1 dB of Depth (the Ducker PR) | A drum bus keys on its kick |
+| U4 | `click_db_attack<ms>` | Reported: a 60 Hz tone ducked by the beat, the worst of eight starting phases (the shortest attacks click by choice) | |
 | U5 | `drawing_error_db_after_jump`, `_after_wrap` | Within 1 dB of the drawing from 50 ms after the song position jumps into a step or a loop wraps to the start | As M11 |
 | U6 | `zipper_<control>` | ≤ 3 dB, while a long duck holds and releases | Smooth automation |
 
@@ -654,6 +655,15 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#gate) and [Channel strip](
 - **Met now:** no chatter at 40, 60 or 100 Hz with Hold 0 (3.7, 2.3 and 0.41 dB) (N2); it shuts within 0.37 to 0.61 dB of the threshold less 4 dB from 40 Hz to 1 kHz at Hold 0 and 30 (up to 3.8) (N3); Range moved from -80 to -40 dB while shut lands within 0.001 dB (88: it didn't move) (N5); the expander's curve within 0.02 dB (N6). The strip's gate shuts within 0.75 dB at 40 Hz (2.75) (C1); with Auto makeup the strip is within -0.77 to +0.65 LU of the dry at its defaults and presets (C2); switching its gate on reads 0 dB over the tone (12.9), a 6 dB EQ off 0.43 (9.3) and an Order change 2.2 (54.4) (C3).
 - **Blessed worse, and why:** the gate's 1 kHz shut at Hold 30 went from 0.10 to 0.51 dB and the strip gate's from 0.10 to 0.72 (both under the 1 dB target): the old 0.1 was two errors cancelling, the detector falling 1.1 dB early between peaks and the 30 ms Hold making it up; now Hold counts from the last peak, so it shuts Hold's worth of the falling tone late, as it does at every pitch. Range's zipper went from 0 to 0.05 dB (with the gate shut it used to do nothing at all). The strip's compressor switch went from 0.30 to 0.35 dB (the S-curve fades in 20 ms where the one-pole was 95 % there). The gate's release ratios at 120 and 500 ms moved by 0.004 and 0.0005 from 1.
 - **Cost:** Gate 17.4k to 17.3k instructions a block (-0.8 %; the bench's tone sits just over the shut level, so it now stays open, as it should). The strip has no bench case; its idle gate now writes two samples a frame into its look-ahead.
+
+### Ducker PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#ducker); decision 11.3): on Tempo the envelope is the step itself, from where the song is in it: down from the beat through the hold and release, with the next beat's attack running before the beat so the duck is down when it lands; the drawing is the same function; after a jump, a wrap or a turn it catches up at the attack's speed (5 ms at most), and its timing controls glide. Nudge (±20 ms), the 1/8T, 1/8D, 1/4T and 1/4D rates, Key HP and Key LP, and a Kick from drums preset are new. fxlab: U2 compares with the drawing's span within a quarter of a millisecond (it compared with points that far apart, between which a steep attack moves several dB), U4 takes the worst of eight phases of its tone, and rows for the new rates and the key filter are added. After it: all 24 ducker targets met (6 of 18 before); the other classes are unchanged.
+
+- **Met now:** each beat within 0.003 dB of full depth (17.8 at the defaults, 15.4 to 34.4 in the presets) (U1); every tempo setting on its drawing, Slow swell's release longer than its step included (8.4 measured the new way; 8.5 the old) (U2); 50 ms after a jump into a step, on its drawing (17.7) (U5); hats through Key LP 120 Hz don't duck (U3).
+- **Reported:** clicks on a 60 Hz tone, the worst of eight phases, at Attack 0.1, 0.5, 2 and 10 ms: 70.5, 64.1, 50.9 and 38.8 dB (77.1, 64.7, 52.9 and 38.9 measured the same way on the old engine).
+- **Blessed worse, and why:** the Release zipper rose from 0.023 to 0.024 dB: turning Release on Tempo moves where in the step's release the duck is (it glides over 20 ms). Shape's zipper fell from 2.90 to 0.026.
+- **Cost:** Ducker (tempo) 14.8k to 16.1k instructions a block (+8.9 %): the step's value on every frame, where the stage machine sat idle between ducks.
 
 ## The grain engine
 

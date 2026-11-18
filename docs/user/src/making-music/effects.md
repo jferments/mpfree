@@ -65,7 +65,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | Effect | What it does |
 |---|---|
 | **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can be keyed from another strip, for side-chain pumping. **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
-| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
+| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2, bar, dotted or triplet beat of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing; as an **Expander** it turns quiet sound down gently instead. It can open from another strip's sound, for rhythmic gating. |
@@ -295,6 +295,15 @@ The **Gate**, **Comp** and **EQ** switches fade their stage in or out over 20 ms
 
 > [!NOTE]
 > Projects saved before this change sound a little different through the Channel strip: its gate stays open through bass notes and shuts closer to 4 dB under its threshold. They keep the Clean style and their own Makeup. The presets now use Auto makeup instead of their own makeup, and a style each: Vocal and Bass Opto, Snare FET, Gentle glue Bus, Kick Clean.
+
+### The Ducker
+
+**Source** picks what makes it duck. On **Sidechain** it listens to another strip (usually the kick) and ducks when that goes over **Threshold**; **Key HP** and **Key LP** filter what it listens to, so with Key LP around 120 Hz it ducks on the kick of a whole drum bus and not on the hats (the Kick from drums preset). On **Tempo** it ducks on every step of **Rate**, from 1/16 to a bar, or a dotted or triplet eighth or quarter, in time with the song, and it is already down when each beat lands: it starts going down **Attack** before the beat. **Nudge** moves the duck up to 20 ms later or earlier, for a kick that sits behind or ahead of the beat.
+
+**Depth** is how far it turns down, **Hold** how long it stays there, and **Release** how long it takes to come back, on a curve **Shape** bends from straight to a slow start and fast finish, the classic pump. If the Release is longer than the step, the duck never comes all the way back before the next one, and the drawing shows it as you hear it.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through a Ducker on Tempo: each duck now starts Attack earlier, so it is fully down on the beat (2 ms earlier at the default Attack), and one with a Release longer than its step pumps as its drawing shows.
 
 ### Master safety
 

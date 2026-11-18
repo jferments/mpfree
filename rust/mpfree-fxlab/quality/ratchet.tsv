@@ -518,24 +518,30 @@ drive/tube/subsonic_hits_bias100	-23.4997
 drive/tube/zipper_db	0.1266
 drive/tube[Tube glow]/alias_5k_0dbfs	-80.1329
 drive/tube[Tube glow]/zipper_db	0.5672
+ducker/ducker/hats_duck_db_key_lp120	0
+ducker/ducker/kick_depth_error_db_key_lp120	0
 ducker/ducker/response_ms_attack0.1ms	0.4271
 ducker/ducker/response_ms_attack2ms	0.4271
-ducker/ducker[Big pump]/beat_error_db	17.7959
-ducker/ducker[Big pump]/drawing_error_db	1.0612
-ducker/ducker[Eighth pulse]/beat_error_db	19.7732
-ducker/ducker[Eighth pulse]/drawing_error_db	1.1791
-ducker/ducker[Sixteenth gate]/beat_error_db	34.3673
-ducker/ducker[Sixteenth gate]/drawing_error_db	8.2449
-ducker/ducker[Slow swell]/beat_error_db	15.4482
-ducker/ducker[Slow swell]/drawing_error_db	8.5167
-ducker/tempo/beat_error_db	17.7959
-ducker/tempo/drawing_error_db	1.0612
-ducker/tempo/drawing_error_db_after_jump	17.7088
-ducker/tempo/drawing_error_db_after_wrap	1.0612
+ducker/ducker[Big pump]/beat_error_db	0
+ducker/ducker[Big pump]/drawing_error_db	0
+ducker/ducker[Eighth pulse]/beat_error_db	0.0032
+ducker/ducker[Eighth pulse]/drawing_error_db	0
+ducker/ducker[Sixteenth gate]/beat_error_db	0
+ducker/ducker[Sixteenth gate]/drawing_error_db	0
+ducker/ducker[Slow swell]/beat_error_db	0
+ducker/ducker[Slow swell]/drawing_error_db	0
+ducker/tempo-dotted8/beat_error_db	0
+ducker/tempo-dotted8/drawing_error_db	0
+ducker/tempo-triplet4/beat_error_db	0
+ducker/tempo-triplet4/drawing_error_db	0
+ducker/tempo/beat_error_db	0
+ducker/tempo/drawing_error_db	0
+ducker/tempo/drawing_error_db_after_jump	0
+ducker/tempo/drawing_error_db_after_wrap	0
 ducker/tempo/zipper_depth	0.0892
 ducker/tempo/zipper_mix	0.0327
-ducker/tempo/zipper_release	0.0231
-ducker/tempo/zipper_shape	2.901
+ducker/tempo/zipper_release	0.024
+ducker/tempo/zipper_shape	0.0255
 eq/bell_12k_q0.71_width_ratio	1.009
 eq/bell_12k_q0.71_worst_db	0.9284
 eq/bell_12k_q1.41_width_ratio	1.0342
