@@ -13,7 +13,11 @@
 //!
 //! Each gap times its amount (-100 to +100 %) becomes the gain, limited to
 //! ±15 dB. Level doesn't matter, only the shape of the sound, so the same
-//! setting works on a quiet and a loud kick.
+//! setting works on a quiet and a loud kick: the slow followers never sit
+//! more than [`GAP`] under the fast ones, so a hit out of silence opens the
+//! same gap at any level (FX quality round 4; they used to start from a
+//! -60 dBFS floor, so a loud hit's front got 8.7 dB more than a quiet
+//! one's at Attack 50).
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
@@ -135,10 +139,13 @@ static PARAMS: [ParamInfo; 6] = [
 const LIMIT: f32 = 15.0;
 /// How many dB of gain a 1 dB envelope gap makes at 100 %.
 const SENS: f32 = 0.6;
-/// The detector's floor, in dBFS: quieter than this counts as this, so a
-/// hit out of silence opens a gap of its level above -60 dB, not above
-/// the noise.
-const FLOOR: f32 = -60.0;
+/// The detector's floor, in dBFS: quieter than this counts as this.
+const FLOOR: f32 = -80.0;
+/// The widest gap either pair opens, in dB: each slow follower is kept
+/// within this of its fast one, so a hit out of silence (or a decay into
+/// it) opens this much whatever its level, and Attack or Sustain at 100 %
+/// reaches the 15 dB limit (25 × 0.6) on it.
+const GAP: f32 = 25.0;
 
 /// A one-pole follower in dB with separate rise and fall coefficients.
 #[derive(Clone, Copy, Debug)]
@@ -265,8 +272,12 @@ impl TransientShaper {
                 self.peak = crate::flush(a.max(self.peak * self.fall));
             }
             let x = fast_level_db(self.peak).max(FLOOR);
-            let front = (self.fast.next(x) - self.slow.next(x)).max(0.0);
-            let body = (self.hang.next(x) - self.drop.next(x)).max(0.0);
+            let fast = self.fast.next(x);
+            self.slow.y = self.slow.next(x).max(fast - GAP);
+            let front = (fast - self.slow.y).max(0.0);
+            let hang = self.hang.next(x);
+            self.drop.y = self.drop.next(x).max(hang - GAP);
+            let body = (hang - self.drop.y).max(0.0);
             shaped = ((attack * front + sustain * body) * SENS).clamp(-LIMIT, LIMIT);
             let g = fast_db_to_gain(shaped + output);
             let wet = 1.0 + mix * (g - 1.0);
@@ -305,10 +316,10 @@ impl Node for TransientShaper {
         self.times();
     }
     fn rest_frames(&self) -> u32 {
-        // The hold and the peak's fall to the -60 dB floor, then the
+        // The hold and the peak's fall to the -80 dB floor, then the
         // slowest follower (down at 20 x the speed) within 0.01 dB of it:
         // ten time constants.
-        let ms = 25.0 + 40.0 + 10.0 * 20.0 * self.v[2];
+        let ms = 25.0 + 50.0 + 10.0 * 20.0 * self.v[2];
         (ms * 0.001 * self.rate as f32) as u32
     }
     fn reset(&mut self) {

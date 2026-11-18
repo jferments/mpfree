@@ -1445,9 +1445,9 @@ strip/strip[Gentle glue]/lu_pink_auto	-0.7732
 strip/strip[Kick]/lu_pink_auto	-0.7379
 strip/strip[Snare]/lu_pink_auto	0.6479
 strip/strip[Vocal]/lu_pink_auto	-0.0479
-transient/transient/front_spread_db_attack-100	4.3294
-transient/transient/front_spread_db_attack100	3.1068
-transient/transient/front_spread_db_attack50	8.7297
+transient/transient/front_spread_db_attack-100	3.1412
+transient/transient/front_spread_db_attack100	0.6675
+transient/transient/front_spread_db_attack50	0.4958
 transient/transient/ripple_db_attack100	0.3613
 transient/transient/ripple_db_sustain-100	0.0083
 transient/transient/ripple_db_sustain100	0.0083

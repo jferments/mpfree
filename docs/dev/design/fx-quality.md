@@ -665,6 +665,15 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#ducker); decision 11.3): o
 - **Blessed worse, and why:** the Release zipper rose from 0.023 to 0.024 dB: turning Release on Tempo moves where in the step's release the duck is (it glides over 20 ms). Shape's zipper fell from 2.90 to 0.026.
 - **Cost:** Ducker (tempo) 14.8k to 16.1k instructions a block (+8.9 %): the step's value on every frame, where the stage machine sat idle between ducks.
 
+### Transient shaper PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#transient-shaper); decision 11.4): each slow follower is kept within 25 dB of its fast one, so a hit out of silence opens the same gap at any level; the followers' floor moved from -60 to -80 dBFS. Attack 50 stays the default. After it: all 10 transient targets met (8 before); the other classes are unchanged.
+
+- **Met now:** the fronts' gain across hits at 0, -12, -24 and -36 dB spreads 0.50 dB at Attack 50 (8.73) and 0.67 at Attack 100 (3.11) (T1): at Attack 50 the loudest hit's front comes up 7.5 dB (14.2) and the quietest's 7.0 (5.5).
+- **Reported:** Attack -100 takes 11.0 dB off the loudest front and 7.8 off the quietest (9.5 and 5.2), a 3.1 dB spread (4.3): the first millisecond passes before the detector hears it. An insert at the defaults raises hits' peaks 7.5 dB and their loudness 6.9 LU (12.8 and 13.6); the presets' peaks Punchy kick +11.2 (+15.0), Snappy snare +10.7 (+14.6), Tight room -1.3 (+0.6), Soft hits -5.9 (-5.5), Long tails +0.2 (-1.2). Steady tones (T2) and the zippers (T4) as before.
+- **Blessed worse, and why:** none.
+- **Cost:** Transient shaper 26.0k to 27.1k instructions a block (+3.9 %): the two clamps a frame.
+
 ## The grain engine
 
 `mpfree_fxlab::grain` measures `mpfree-grain`'s `GrainVoice` on its own (no amp envelope, filter or effects after it), at 44.1 kHz in 128-frame blocks with fixed seeds, on pink noise and a pad (an A minor chord of detuned band-limited saws, both -20 dBFS RMS), a 1 kHz sine and a steady level (DC, whose output is the sum of the grains' windows). Grains read from 30 % into the source, with the voice's defaults (80 ms, 25 a second, Hann, timing 30 % random, no spray, no scan; before step A3, 20 a second and regular) unless a row says otherwise. `tests/grain.rs` holds every number to `rust/mpfree-fxlab/quality/grain.tsv` as the sampler's ratchet does, and prints the report; it takes under two seconds, so it runs with the workspace's tests. Record a change with `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test grain`. The targets are the granular engine plan's (sampler roadmap R7, mpfree-claude `sampler/granular/plan.md`).

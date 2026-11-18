@@ -305,6 +305,15 @@ The **Gate**, **Comp** and **EQ** switches fade their stage in or out over 20 ms
 > [!NOTE]
 > Projects saved before this change sound a little different through a Ducker on Tempo: each duck now starts Attack earlier, so it is fully down on the beat (2 ms earlier at the default Attack), and one with a Release longer than its step pumps as its drawing shows.
 
+### The Transient shaper
+
+It has no threshold: it follows the shape of the sound, so the same setting does the same to a quiet hit and a loud one. **Attack** turns the start of each hit up (more punch, more click) or down (softer, further away); **Sustain** turns up or down what rings on after it (more room and body, or a tighter, drier hit). **Speed** is how long the start lasts: short for a snappy click, long to take in the whole thump of a kick. **Output** sets the level after it and **Mix** blends it with the dry sound. A steady sound, a held pad or bass note, passes untouched.
+
+At the default (Attack 50) every hit's front comes up by the same amount, about half of what Attack 100 gives; turn Attack to 0 for no change.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through a Transient shaper: quiet hits now get as much lift (or softening) as loud ones. At Attack 50 a loud hit's front comes up about 7 dB less than it did, and a quiet one's a little more.
+
 ### Master safety
 
 The master strip always ends in **Master safety**, which keeps the output from going past its **Ceiling** (-0.3 dB), including the peaks a converter rebuilds between samples. It isn't in the list: it is always there. Its **Mode**:

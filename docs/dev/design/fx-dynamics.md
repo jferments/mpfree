@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-fx/src/limit.rs rust/mpfree-fx/src/master.rs rust/mpfree-fx/src/dynamics.rs rust/mpfree-fx/src/ducker.rs rust/mpfree-fx/src/transient.rs rust/mpfree-fx/src/strip.rs rust/mpfree-fxlab/src/quality/round4.rs
-checked: 2026-11-17 1c113480
+checked: 2026-11-18 052285c1
 -->
 # Dynamics: design
 
-**Status:** 2026-11-17, FX quality round 4's Ducker PR (after the Limiter and Master safety, Multiband, De-esser, and Gate and Channel strip PRs). This page covers the dynamics effects other than the Compressor ([fx-compressor.md](fx-compressor.md)): the **Limiter**, **Master safety**, the **Gate**, the **De-esser**, the **Multiband comp**, the **Ducker**, the **Transient shaper** and the **Channel strip**. Round 4 improves them one pull request at a time, in the order of the plan (jferments/mpfree-claude `fx/quality/plan-4.md`, with research-dynamics.md and baseline-dynamics-2026-11-17.md): the Limiter and Master safety first, then the Multiband, the De-esser, the Gate with the Channel strip, the Ducker (this one) and the Transient shaper. The sections on the effects not yet reworked say what they are today and what their pull request is planned to change. Their short entries are in [fx.md](fx.md); their measured targets are in [fx-quality.md](fx-quality.md) (ids P, N, S, X, U, T and C).
+**Status:** 2026-11-18, FX quality round 4's Transient shaper PR, the round's last (after the Limiter and Master safety, Multiband, De-esser, Gate and Channel strip, and Ducker PRs). This page covers the dynamics effects other than the Compressor ([fx-compressor.md](fx-compressor.md)): the **Limiter**, **Master safety**, the **Gate**, the **De-esser**, the **Multiband comp**, the **Ducker**, the **Transient shaper** and the **Channel strip**. Round 4 improved them one pull request at a time, in the order of the plan (jferments/mpfree-claude `fx/quality/plan-4.md`, with research-dynamics.md and baseline-dynamics-2026-11-17.md); the familiar features it left for later are listed under [History and next](#10-history-and-next), and written up in jferments/mpfree-claude `handoffs/2026-11-18-fx-quality-round-4.md`. Their short entries are in [fx.md](fx.md); their measured targets are in [fx-quality.md](fx-quality.md) (ids P, N, S, X, U, T and C).
 
 ## 1. What they are for
 
@@ -128,9 +128,12 @@ A volume envelope from 0 (untouched) to 1 (down by Depth): a straight attack, a 
 - **Key filters** (Key HP id 10, 20 Hz to 2 kHz; Key LP id 11, 50 Hz to 20 kHz; both off at their ends) filter the side-chain key with 12 dB an octave state-variable filters, as the Gate's, so a drum bus can key it on its kick alone: with Key LP at 120 Hz, hats at -6 dBFS don't duck at all and each kick still ducks by Depth. The new **Kick from drums** preset is that setting.
 - The side-chain duck is the stage machine as before (a trigger during the release attacks from where the envelope is). Switching Source from Tempo to Sidechain releases from where the duck is, over Release.
 
-### Transient shaper (round 4's last PR)
+### Transient shaper
 
-Today: a held peak and two pairs of dB followers (Attack: fast minus slow-rising; Sustain: slow-falling minus fast-falling) from a -60 dBFS floor, so a hit out of silence gets more than a hit over a quiet bed: its fronts' gain spreads 8.7 dB across levels. Planned (plan-4 section 9): a level-independent front (decision 11.4 on its default).
+The stereo-linked peak, held 25 ms (so a steady tone over 40 Hz reads as a steady level), feeds two pairs of followers in dB. **Attack** is a fast follower (0.3 ms up) minus one that rises over Speed: the gap opens at each hit's front and closes as the slow one catches up. **Sustain** is a slow-falling follower (20 times Speed) minus a fast-falling one (twice Speed): the gap opens as a hit decays. Each gap times its amount (-100 to +100 %) times 0.6 is the gain, within ±15 dB, then Output and Mix.
+
+- **The same front at any level.** Each slow follower is kept within 25 dB of its fast one, so a hit out of silence opens a 25 dB gap whatever its level, and Attack 100 reaches the 15 dB limit on it (25 × 0.6). The followers used to start from a -60 dBFS floor, so the gap was the hit's level above -60 dB: a loud hit's front got 14.2 dB at Attack 50 and one 36 dB quieter 5.5 dB (T1: an 8.7 dB spread). A hit over a bed that never falls 25 dB still opens only its own rise, as before, so the shaper still follows the shape of the sound and not its level. The floor is now -80 dBFS, so every hit peaking over -55 dBFS opens the full gap.
+- **The default** (decision 11.4) stays Attack 50: an insert is heard at once, every hit's front coming up by the same 7 to 7.5 dB (about half of Attack 100's 14.3 to 15 dB).
 
 ### Channel strip
 
@@ -164,6 +167,8 @@ MPFree's Gate, Compressor and EQ in one insert, with Order and Output. The gate 
 
 **Ducker** (ids 0 to 9 unchanged; Key HP, Key LP and Nudge new, appended; four rates appended): Source (Sidechain, Tempo), Depth (0 to 48 dB, 18; 20 ms glide), Threshold (-60 to 0 dB, -24; Sidechain), Rate (1/16, 1/8, 1/4, 1/2, 1 bar, 1/8T, 1/8D, 1/4T, 1/4D; 1/4; Tempo), Attack (0.1 to 50 ms, 2; log), Hold (0 to 500 ms, 20), Release (10 ms to 2 s, 180; log), Shape (0 to 100 %, 50) (on Tempo the four glide over 20 ms), Mix (0 to 100 %, 100; 20 ms glide), Key HP (20 Hz to 2 kHz, off at 20), Key LP (50 Hz to 20 kHz, off at the top), Nudge (-20 to +20 ms, 0; Tempo), and the Gain meter. No latency.
 
+**Transient shaper** (ids unchanged): Attack (-100 to +100 %, 50), Sustain (-100 to +100 %, 0), Speed (5 to 50 ms, 15; log; how long the front lasts, the followers' times scale with it), Output (-12 to +12 dB, 0), Mix (0 to 100 %, 100), each but Speed on a 20 ms glide, and the Gain meter. No latency; at Attack and Sustain 0 the output is the input, bit for bit.
+
 **Master safety** (ids unchanged): Mode (Safe limiter, Soft clip, Raw; Safe limiter; a 10 ms glide between modes), Trim (-24 to +12 dB, 0; 20 ms glide), Ceiling (-6 to 0 dB, -0.3; 20 ms glide, new), Release (10 ms to 1 s, 80; log, as the Limiter's), and the meters Limiting, Overs and Clipped.
 
 ## 6. Defaults and presets
@@ -175,6 +180,8 @@ The De-esser's defaults (6 kHz, -30 dB Relative, Range 10, Split) and presets (M
 The Gate's defaults (Threshold -40, Range -80, Attack 0.5, Hold 30, Release 120) and presets (Tight drums, Gated snare, Kick trigger) are unchanged but for **Soft cleanup**, now an expander at Ratio 2 (Threshold -50, Range -12, Release 300): it turns what is under the threshold down gradually instead of switching to Range. The Channel strip's defaults are unchanged (the gate off, Clean, Auto makeup off, so saved projects sound as set); its presets now turn Auto makeup on in place of their own Makeup and each take a style: **Vocal** Opto, **Kick** Clean, **Snare** FET, **Bass** Opto, **Gentle glue** Bus.
 
 The Ducker's defaults (Sidechain at -24 dB, Depth 18, Attack 2, Hold 20, Release 180, Shape 50; on Tempo, quarters) and presets (Kick duck, and on Tempo Big pump, Eighth pulse, Sixteenth gate and Slow swell) are unchanged; their tempo ducks now land on the beat. **Kick from drums** is new (appended, so saved preset choices keep their place): Key LP at 120 Hz, Threshold -30, Depth 12, Attack 1, Hold 10, Release 120.
+
+The Transient shaper's defaults (Attack 50, Sustain 0, Speed 15) and presets (Punchy kick, Snappy snare, Tight room, Soft hits, Long tails) are unchanged; with the level fix each now does the same to a quiet hit as to a loud one (decision 11.4 kept Attack 50 as the default).
 
 The Multiband's defaults (200 Hz and 2.5 kHz, every band at -18 dB and 2:1, Attack 10 ms, Release 150 ms) are gentle glue. Its presets now all turn Auto makeup on: **Master glue**, **Tight low end** (keeps its +2 dB on the low band, a tilt), **Vocal smooth** and **Drum crush**, which drops the +6 dB it gave each band for Auto makeup (it was 5.6 LU quieter than the dry on pink, now 0.8 louder).
 
@@ -255,6 +262,22 @@ The fronts (N1), the release's label (N4) and the zippers (N5) are as before, al
 
 U2 compares the heard gain with what the drawing passes through within a quarter of a millisecond either way, as its target says; it used to compare with drawn points a quarter of a millisecond apart, between which a steep attack moves several dB, which is why the defaults read 1.1 dB and Sixteenth gate (0.5 ms to 36 dB) 8.2. Measured that way the old Ducker met U2 everywhere but Slow swell. U4 is the worst of eight starting phases of the tone, since a duck's corner that falls on a zero crossing hides (the old engine's attack started at the beat, where the tone crossed zero: 17.1 dB at 10 ms then). `tests/duck_shape_pitch.rs` checks that the tempo duck is down by Depth on each beat and halfway 5 ms before it at Attack 10, playing and stopped; that a release longer than its step plays its drawing; that the dotted and triplet rates and Nudge put each duck where the song says; that Key LP ducks on a kick and not on a hat; and that switching to Sidechain lets go without a step.
 
+### Transient shaper
+
+`fxlab quality --class transient` measures the T targets ([fx-quality.md](fx-quality.md#transient-shaper-t-and-channel-strip-c)). After the Transient shaper PR all 10 are met (8 before):
+
+| | Before | After |
+|---|---|---|
+| Fronts' gain across hits at 0, -12, -24 and -36 dB (T1): spread at Attack 50, 100 | 8.7, 3.1 dB | 0.50, 0.67 dB |
+| Attack 50: the loudest hit's front, the quietest's | +14.2, +5.5 dB | +7.5, +7.0 dB |
+| Attack 100: the same | +14.9, +11.8 dB | +15.0, +14.3 dB |
+| Attack -100 (reported): the same, and the spread | -9.5, -5.2; 4.3 dB | -11.0, -7.8; 3.1 dB |
+| Steady tones, 30 Hz to 1 kHz (T2) | 0.36 dB | 0.36 dB |
+| An insert at the defaults, hits' peaks and loudness (T3, reported; decision 11.4) | +12.8 dB, +13.6 LU | +7.5 dB, +6.9 LU |
+| The presets, hits' peaks (T3, reported): Punchy kick, Snappy snare, Tight room, Soft hits, Long tails | +15.0, +14.6, +0.6, -5.5, -1.2 dB | +11.2, +10.7, -1.3, -5.9, +0.2 dB |
+
+The zippers (T4) are as before, all under 0.05 dB. Attack -100 still can't take the first millisecond off a hit (the detector hears the front as it passes): that is the look-ahead left for later. `tests/duck_shape_pitch.rs` checks that plucks at 0, -12, -24 and -36 dB get the same front gain within 1 dB at Attack 50 and 100.
+
 ## 8. Cost
 
 The instruction gate (rustc 1.97.0, a 128-frame block at 44.1 kHz), before and after:
@@ -272,8 +295,9 @@ The instruction gate (rustc 1.97.0, a 128-frame block at 44.1 kHz), before and a
 | De-esser (defaults) | 42.4k | 59.0k (+39.0 %) |
 | Gate (threshold over the program's tone) | 17.4k | 17.3k (-0.8 %) |
 | Ducker (tempo) | 14.8k | 16.1k (+8.9 %) |
+| Transient shaper | 26.0k | 27.1k (+3.9 %) |
 
-The rises are the true peaks: Master safety now always catches them (decision 11.1). In the routing-only mixer cases a dozen loud tracks keep the master limiting nearly all the time, so the detector works out every point between samples for both channels on almost every frame. A mix that isn't pushing the master costs less than before (quiet blocks), and one near the ceiling pays for the near taps on most frames. The x86 host vectorises these sums poorly, so the numbers are a rough guide; on the MPC's ARM, which does floats one at a time, the folding and the near taps cut the detector's multiplies to 18 or 48 a channel from 96. Soft clip costs more than Safe limiter (the half-bands and four ADAA steps a frame); it isn't in the gate. The Multiband's rise is the detector in decibels and the six new glides; taking the dry from the bands kept the Mix fix free (a second pair of all-passes cost 22 %). The De-esser's rise is its split, five stages a side for one, and the look-ahead's delay. The Gate costs what it did (the bench's tone now sits just over its shut level, so it stays open, as it should); the expander's held peak and curve run only in Expander mode. The Channel strip has no bench case; with its gate off it now writes two samples a frame into the gate's look-ahead. The Ducker on Tempo works out its step's value on every frame (the release's curve where the old stage machine sat idle); the phase is counted from each block's start and the reciprocals glide, so no division runs per frame. A first version that worked each frame out from the song position, with divisions, cost 2.4 times as much.
+The rises are the true peaks: Master safety now always catches them (decision 11.1). In the routing-only mixer cases a dozen loud tracks keep the master limiting nearly all the time, so the detector works out every point between samples for both channels on almost every frame. A mix that isn't pushing the master costs less than before (quiet blocks), and one near the ceiling pays for the near taps on most frames. The x86 host vectorises these sums poorly, so the numbers are a rough guide; on the MPC's ARM, which does floats one at a time, the folding and the near taps cut the detector's multiplies to 18 or 48 a channel from 96. Soft clip costs more than Safe limiter (the half-bands and four ADAA steps a frame); it isn't in the gate. The Multiband's rise is the detector in decibels and the six new glides; taking the dry from the bands kept the Mix fix free (a second pair of all-passes cost 22 %). The De-esser's rise is its split, five stages a side for one, and the look-ahead's delay. The Gate costs what it did (the bench's tone now sits just over its shut level, so it stays open, as it should); the expander's held peak and curve run only in Expander mode. The Channel strip has no bench case; with its gate off it now writes two samples a frame into the gate's look-ahead. The Ducker on Tempo works out its step's value on every frame (the release's curve where the old stage machine sat idle); the phase is counted from each block's start and the reciprocals glide, so no division runs per frame. A first version that worked each frame out from the song position, with divisions, cost 2.4 times as much. The Transient shaper's rise is its two clamps a frame (each slow follower kept within 25 dB of its fast one).
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -304,6 +328,7 @@ The rises are the true peaks: Master safety now always catches them (decision 11
 | A drawing of one duck from silence when the next step cuts the release short | The step is a function of where the song is, and the drawing is that function |
 | A jump in song position heard as a new beat | The envelope follows the step's value, catching up at the attack's speed |
 | A drum bus that ducks on every hat | Key HP and Key LP on the key |
+| A transient shaper that gives a loud hit more than a quiet one | Each slow follower kept within 25 dB of its fast one, so every hit out of silence opens the same gap |
 
 ## 10. History and next
 
@@ -313,7 +338,8 @@ The rises are the true peaks: Master safety now always catches them (decision 11
 - The Multiband PR: Mix in phase, the Compressor's detector in each band, gliding thresholds and ratios, Auto makeup (on in every preset).
 - The Gate and Channel strip PR: Hold from the last peak (at least 20 ms), Range while shut, the Expander mode and Key listen (plan-4 section 5.2's P2s), the Soft cleanup preset as an expander; the strip's S-curve switches, its gate back on open, the Order dip, Style and Auto makeup (on in every preset).
 - The Ducker PR: on Tempo, the duck down when the beat lands (decision 11.3) and the step played as drawn, catching up after jumps; Nudge, dotted and triplet rates, key filters and the Kick from drums preset.
-- Next, from plan-4 section 4.2: styles in the spirit of Pro-L 2's (Transparent, Punchy with a shorter hold, Safe with a longer one) and a channel link amount, if the device round shows the cost allows. Then the rest of round 4 as section 4 says.
+- The Transient shaper PR: the same front at any level (each slow follower within 25 dB of its fast one); Attack 50 kept as the default (decision 11.4).
+- Next, the familiar features round 4 left for later (plan-4's P2s; each written up with where it goes, what to measure and what to watch in jferments/mpfree-claude `handoffs/2026-11-18-fx-quality-round-4.md`): the Limiter's styles (Transparent, Punchy, Safe) and a channel link amount, if the device round shows the cost allows; the De-esser's band-pass focus and mid/side; the Multiband's per-band times, band bypass and Range, and a look-ahead so its 1 ms attack means its label (X4, 1.44 today); the Ducker's curve shapes and a MIDI-note trigger; a look-ahead for the Transient shaper's negative Attack. The Channel strip has no instruction-gate case yet.
 
 ## 11. Sources
 
