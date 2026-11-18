@@ -946,6 +946,9 @@ pub enum ToUi {
         pad: usize,
         velocity: u8,
     },
+    /// The pads (bit `i` for pad `i`) whose hit waits for the launch line
+    /// (a Loop pad's, sampler R5.3b): outlined in amber until it sounds.
+    PadsWaiting(u16),
     Kit(usize),
     /// PAD BANK turned the kit's page (A = 0 to H = 7): the 16 pads are
     /// its pads 16 * page + 1 on. `PadDown`, `PadUp` and `PadFlash` name
@@ -6892,6 +6895,11 @@ impl Player {
                 let pad = self.kit_pad(cell);
                 self.sample.pad_up(&mut self.ui, pad);
                 self.levels_hit(cell, pad, false);
+            }
+            ToUi::PadsWaiting(bits) => {
+                if let Some(m) = self.ui.get_mut::<MiniPads>(play_page::PADS) {
+                    m.waiting = bits;
+                }
             }
             ToUi::PadFlash { pad, velocity } => {
                 if let Some(g) = self

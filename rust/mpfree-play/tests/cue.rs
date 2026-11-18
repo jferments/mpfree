@@ -769,3 +769,19 @@ fn a_clips_program_goes_out_once_as_it_starts() {
     assert_eq!(back[1].1, pa);
     assert!(back[1].0 >= at(2 * BAR), "{back:?}");
 }
+
+/// Sampler R5.3b: the view carries the project's launch quantise, for the
+/// host's pads that start on the line; a change of it is a change of the
+/// view, so the audio half gets the new line.
+#[test]
+fn the_view_carries_the_projects_launch_line() {
+    use mpfree_seq::LaunchGrid;
+    let mut p = Project::new();
+    p.tracks.push(Track::new("drums", 0));
+    let one = PlayView::compile(&p, &[]).unwrap();
+    assert_eq!(one.launch(), LaunchGrid::Bars(1));
+    p.launch = LaunchGrid::Ticks(960);
+    let beat = PlayView::compile(&p, &[]).unwrap();
+    assert_eq!(beat.launch(), LaunchGrid::Ticks(960));
+    assert_ne!(one, beat);
+}
