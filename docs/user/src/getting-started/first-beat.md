@@ -10,7 +10,7 @@ In this chapter you play a drum kit, set the tempo, program a pattern one step a
 
 ## Play the pads
 
-MPFree starts on the **Play** page with a drum kit on the pads. Hit a few pads: the kick is usually on pad 1, the snare on pad 2 and the hi-hats nearby. The pattern on the screen has a row for each pad, named after its sound.
+MPFree starts on the **Play** page with a drum kit on the pads. Hit a few pads: the kick is usually on pad 1, the snare on pad 2 and the hi-hats nearby. The rows on the screen are the pads, A1 at the top, each named after its sound: tap a step on a row and that pad plays there (see [The pads as rows of steps](../making-music/playing-live.md#the-pads-as-rows-of-steps)).
 
 - **Change the kit:** hold **SHIFT** and turn the data wheel to step through every kit, or tap the chip at the top right for the list. The chip shows which kit you're on and its bank ("Kit 2 of 7 · Bank A").
 - **More pads:** a kit has 128 pads, 16 to a bank. **PAD BANK B**, **C** or **D** (with **SHIFT** for E to H) put the kit's other banks on the pads, and **PAD BANK A** brings the first 16 back.
