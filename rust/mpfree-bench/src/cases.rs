@@ -2044,6 +2044,9 @@ fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
                     },
                     ratchet: if trigs && k % 4 == 3 { 3 } else { 1 },
                     touch: mpfree_seq::Touch::NONE,
+                    on: true,
+                    ramp: 0,
+                    join: mpfree_seq::Join::Attack,
                 })
             })
             .collect();

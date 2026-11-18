@@ -25,13 +25,25 @@ Workflow: [`.github/workflows/mpc-inventory.yml`](../../../.github/workflows/mpc
 It runs on every pull request, every push to `main` and by hand, with no path
 filters, so the check always reports.
 
+- **Draft pull requests skip every job** (they report as skipped). A PR handed
+  to the merge desk is marked draft: its commits are tested in the desk's
+  train, and its own runs would only hold the runners while the train waits.
+  Marking it ready runs CI in full; so does any push to a ready PR.
+- **`rust` and `rust-arm` wait for `instructions`.** The gate takes about two
+  minutes, so a rise over 5 % fails the run before the two long jobs start;
+  when the gate fails they are skipped.
+- **A numbers-only fix merges without a second full run.** When a run's only
+  red job is the instruction gate and the fix changes only
+  `rust/mpfree-bench/instructions.txt` (setting rows to what CI measured on the
+  same build), no other job reads that file, so their results stand.
+
 | Job | Checks | Typical time |
 | --- | --- | --- |
 | `syntax` | Shell syntax; static no-write checks on the read-only scripts; about 20 Python test files for the device tools against fakes (BusyBox, offline images, DTBs, the RK3288 ROM tools); `python3 -m unittest discover -s tests` (12 more) | ~1 min |
 | `core` | C++ reference engine build, `ctest`, WAV format and size | ~10 s |
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
-| `rust` | All workspace tests, natively in debug; the `mpfree-bench` no-allocation check; the FX quality ratchet; host self-tests and fixed-output renders; C++/Rust WAV parity | ~12 min |
-| `rust-arm` | The ARMv7 hard-float cross-build, ELF checks, the app's and UI's tests as ARM and previews under qemu, the example plugins and the plugin sandbox. Split from `rust` on 17 Nov so the two run side by side on two runners. Under qemu it leaves out the app's smoke module (the control sweep, workflows and song workflows, about 32 minutes there; they run natively every time): **Run workflow** with the `full_arm` box ticked runs them as ARM too | ~9 min |
+| `rust` | After `instructions`: all workspace tests, natively in debug; the `mpfree-bench` no-allocation check; the FX quality ratchet; host self-tests and fixed-output renders; C++/Rust WAV parity | ~12 min |
+| `rust-arm` | After `instructions`: the ARMv7 hard-float cross-build, ELF checks, the app's and UI's tests as ARM and previews under qemu, the example plugins and the plugin sandbox. Split from `rust` on 17 Nov so the two run side by side on two runners. Under qemu it leaves out the app's smoke module (the control sweep, workflows and song workflows, about 32 minutes there; they run natively every time): **Run workflow** with the `full_arm` box ticked runs them as ARM too | ~9 min |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
 | `gpu` | The GPU renderer (`rust/mpfree-gpu`, OpenGL ES through EGL) with Mesa's software GPU: clippy, then its frames against the software path's for the MPC's screen and every panel turn, and a compute round trip against the CPU; then `mpfree-gpu-bench` built for the MPC (ARMv7) and checked as `host_gpu_mpc.py` checks it | ~2 min warm |
 | `instructions` | Instructions per 128-frame block for every `mpfree-bench` case under callgrind, against `rust/mpfree-bench/instructions.txt`; fails when a case rises more than 5 % (see [profiling](../design/profiling.md#instruction-counts-the-instructions-ci-job)) | ~2 min warm |

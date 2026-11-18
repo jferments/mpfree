@@ -10,7 +10,7 @@
 202601	Analog Poly Brass, 8 voices
 320632	Analog Warm Pad, 8 voices
 465556	Analog Worn Cards, 16 voices
-9187	Arps: 16 latched arps at 32nds
+9679	Arps: 16 latched arps at 32nds
 3435	Arps: 4 latched arps at 32nds
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
@@ -130,7 +130,7 @@
 64328	Squelch Square Acid, a line
 30240	Talk box
 87944	Tape delay
-8130	Time with trig conditions and ratchets, 8 clips, arp
+8572	Time with trig conditions and ratchets, 8 clips, arp
 8882	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices

@@ -183,6 +183,11 @@ impl Timed {
     pub fn is_clock(&self) -> bool {
         self.track == NO_TRACK && matches!(self.bytes[0], 0xF2 | 0xF8 | 0xFA | 0xFB | 0xFC)
     }
+
+    /// A note on, a note off or a key's pressure.
+    pub fn is_note(&self) -> bool {
+        self.len > 0 && matches!(self.bytes[0] & 0xF0, 0x80 | 0x90 | 0xA0)
+    }
 }
 
 /// One port's messages for one period.
@@ -248,6 +253,24 @@ impl OutQueue {
                 self.buf.swap(j - 1, j);
                 j -= 1;
             }
+        }
+    }
+
+    /// Moves the message pushed last to just before the first note (on,
+    /// off or key pressure) pushed for its frame, if there is one, so that
+    /// after [`OutQueue::sort_by_frame`] a step's controller or bend
+    /// reaches the gear before the step's note. Every other message keeps
+    /// its order.
+    pub fn lift_last_before_notes(&mut self) {
+        let Some(last) = self.len.checked_sub(1) else {
+            return;
+        };
+        let at = self.buf[last].offset;
+        if let Some(i) = self.buf[..last]
+            .iter()
+            .position(|t| t.offset == at && t.is_note())
+        {
+            self.buf[i..=last].rotate_right(1);
         }
     }
 
@@ -619,6 +642,68 @@ mod tests {
 
     fn queues() -> Vec<OutQueue> {
         (0..MAX_PORTS).map(|_| OutQueue::new()).collect()
+    }
+
+    /// A controller lifted before the notes of its frame, after the rest
+    /// of that frame; a frame with no notes, and other frames, keep their
+    /// order.
+    #[test]
+    fn a_lifted_message_goes_before_the_notes_of_its_frame() {
+        let mut q = OutQueue::new();
+        let cc = |value| Msg::Cc {
+            ch: 0,
+            cc: 74,
+            value,
+        };
+        q.push(Timed::msg(
+            0,
+            Msg::NoteOff {
+                ch: 0,
+                note: 60,
+                vel: 64,
+            },
+        ));
+        q.push(Timed::raw(10, &[0xF2, 16, 0]));
+        q.push(Timed::msg(
+            10,
+            Msg::NoteOn {
+                ch: 0,
+                note: 62,
+                vel: 100,
+            },
+        ));
+        q.push(Timed::msg(
+            10,
+            Msg::NoteOff {
+                ch: 0,
+                note: 61,
+                vel: 64,
+            },
+        ));
+        q.push(Timed::msg(10, cc(20)));
+        q.lift_last_before_notes();
+        q.push(Timed::msg(30, cc(21)));
+        q.lift_last_before_notes();
+        q.sort_by_frame();
+        let firsts: Vec<(u32, u8)> = q
+            .as_slice()
+            .iter()
+            .map(|t| (t.offset, t.bytes()[0]))
+            .collect();
+        assert_eq!(
+            firsts,
+            [
+                (0, 0x80),
+                (10, 0xF2),
+                (10, 0xB0),
+                (10, 0x90),
+                (10, 0x80),
+                (30, 0xB0)
+            ]
+        );
+        let mut empty = OutQueue::new();
+        empty.lift_last_before_notes();
+        assert!(empty.is_empty());
     }
 
     #[test]
