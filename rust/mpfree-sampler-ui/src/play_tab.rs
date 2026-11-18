@@ -1237,20 +1237,12 @@ impl PlayTab {
     /// slice picked's for the Slices rows, the layer picked's for a
     /// layer's.
     fn text(&self, st: &PlayState, row: Row) -> String {
-        if row == Row::SlicePick || row.of_slice() {
-            slice_text(&st.settings, self.slice, row)
-        } else {
-            st.layer_text(self.layer, row)
-        }
+        text_of(st, self.layer, self.slice, row)
     }
 
     /// How far round row `row`'s knob is lit, 0 to 1.
     fn pos(&self, st: &PlayState, row: Row) -> f32 {
-        if row == Row::SlicePick || row.of_slice() {
-            slice_pos(&st.settings, self.slice, row)
-        } else {
-            knob_pos(st, self.layer, row)
-        }
+        place_of(st, self.layer, self.slice, row)
     }
 
     /// The Slice row (or a tap on the picture) picked slice `k`: its
@@ -1629,133 +1621,10 @@ impl PlayTab {
     /// How each of the open section's rows looks on the panel, in its
     /// list's order.
     fn controls(&self, st: &PlayState) -> Vec<Control> {
-        let p = &st.settings;
-        let n = p.layers.len();
-        let source = p.layers.get(self.layer).map(|l| l.region.source);
-        let times = TIMES_MS.len() as u32 - 1;
-        let level = ((LEVEL_RANGE_DB.1 - LEVEL_RANGE_DB.0) / LEVEL_STEP_DB) as u32;
-        let tune = (2 * TUNE_LIMIT_CENTS / 100) as u32;
         self.section
             .rows()
             .iter()
-            .map(|&row| {
-                let knob = |steps: u32, bipolar: bool| Look::Knob {
-                    pos: self.pos(st, row),
-                    steps,
-                    bipolar,
-                };
-                let look = match row {
-                    Row::Layers => Look::Choice {
-                        options: SELECTS.iter().map(|s| select_label(*s).into()).collect(),
-                        on: SELECTS.iter().position(|s| *s == p.select).unwrap_or(0),
-                        off: Vec::new(),
-                    },
-                    Row::PadsPlay => Look::Choice {
-                        options: PADS_PLAY.iter().map(|s| s.to_string()).collect(),
-                        on: match st.pads_play {
-                            PadsPlay::Pads => 0,
-                            PadsPlay::Keys { .. } => 1,
-                            PadsPlay::Levels { .. } => 2,
-                        },
-                        off: Vec::new(),
-                    },
-                    Row::Level | Row::LayerLevel => knob(level, false),
-                    Row::Pan | Row::LayerPan | Row::Depth | Row::LfoDepth => knob(40, true),
-                    Row::Tune | Row::LayerTune => knob(tune, true),
-                    Row::Wow => knob(10, false),
-                    Row::Attack
-                    | Row::Hold
-                    | Row::Decay
-                    | Row::Release
-                    | Row::EnvAttack
-                    | Row::EnvDecay
-                    | Row::EnvRelease => knob(times, false),
-                    Row::Sustain
-                    | Row::EnvSustain
-                    | Row::Resonance
-                    | Row::VelToLevel
-                    | Row::VelToStart
-                    | Row::VelToCutoff => knob(20, false),
-                    Row::VelToPitch => knob((2.0 * VEL_PITCH_ST) as u32, true),
-                    Row::PitchEnv => knob((2.0 * PITCH_ENV_ST) as u32, true),
-                    Row::PitchDecay => knob(times, false),
-                    Row::LfoRate => match p.lfo.beats {
-                        Some(_) => knob(LFO_SYNCS.len() as u32 - 1, false),
-                        None => knob(LFO_RATES.len() as u32 - 1, false),
-                    },
-                    Row::LfoTo => Look::Choice {
-                        options: LFO_TARGETS.iter().map(|t| t.0.to_string()).collect(),
-                        on: LFO_TARGETS
-                            .iter()
-                            .position(|t| t.1 == p.lfo.target)
-                            .unwrap_or(0),
-                        off: Vec::new(),
-                    },
-                    Row::LfoSync => Look::Toggle(p.lfo.beats.is_some()),
-                    Row::LfoRetrig => Look::Toggle(p.lfo.retrig),
-                    Row::Mono => Look::Toggle(p.mono.on),
-                    Row::Legato => Look::Toggle(p.mono.legato),
-                    Row::Glide => Look::Stepper,
-                    Row::GlideOn => Look::Choice {
-                        options: GLIDE_ON.iter().map(|g| g.to_string()).collect(),
-                        on: usize::from(p.mono.glide_held),
-                        off: Vec::new(),
-                    },
-                    // A third of an octave a step, 20 Hz to 20 kHz.
-                    Row::Cutoff => knob(30, false),
-                    Row::Drive => knob(MAX_DRIVE_DB as u32, false),
-                    Row::FilterEnv => knob((2.0 * ENV_OCTAVES / 0.25) as u32, true),
-                    Row::Vintage => Look::Toggle(p.vintage),
-                    Row::Keys => Look::Toggle(p.keys.is_some()),
-                    Row::Latch => Look::Toggle(p.latch),
-                    Row::Slice => Look::Stepper,
-                    Row::VelLow
-                    | Row::VelHigh
-                    | Row::LowKey
-                    | Row::HighKey
-                    | Row::RootKey
-                    | Row::KeyFade
-                    | Row::PadsFrom => Look::Stepper,
-                    Row::AddLayer | Row::RemoveLayer => Look::Button(row.label().into()),
-                    Row::SlicePick => Look::Stepper,
-                    Row::SliceTune => knob(48, true),
-                    Row::SliceLevel => knob(level, false),
-                    Row::SliceReverse => {
-                        Look::Toggle(slice_on(p, self.slice).is_some_and(|s| s.reverse))
-                    }
-                    Row::SliceCutoff => knob(30, false),
-                    Row::SliceFade => knob(SLICE_FADES.len() as u32, false),
-                    Row::SliceTo => Look::Choice {
-                        options: vec!["Its end".into(), "Sound end".into()],
-                        on: usize::from(slice_on(p, self.slice).is_some_and(|s| s.to_end)),
-                        off: Vec::new(),
-                    },
-                    Row::Sound
-                    | Row::VelFade
-                    | Row::Filter
-                    | Row::Pressure
-                    | Row::Polyphony
-                    | Row::MuteGroup
-                    | Row::Chokes
-                    | Row::Links
-                    | Row::LevelsBy
-                    | Row::LfoWave => Look::Chip,
-                };
-                let why = match row {
-                    Row::AddLayer if n >= MAX_LAYERS => {
-                        Some(format!("{MAX_LAYERS} layers at most"))
-                    }
-                    Row::RemoveLayer if n < 2 => Some("A pad keeps one layer at least".into()),
-                    Row::Sound if !st.kit_sounds.iter().any(|s| Some(s.id) != source) => {
-                        Some("The kit has no other sound".into())
-                    }
-                    Row::KeyFade if st.zones.is_empty() => {
-                        Some("No pad of the kit is a keygroup: turn Keys on".into())
-                    }
-                    _ => faint_why(st, row).map(str::to_string),
-                };
-                Control::new(look).faint_because(why.is_some(), why.as_deref().unwrap_or(""))
-            })
+            .map(|&row| control_of(st, self.layer, self.slice, row))
             .collect()
     }
 
@@ -2657,6 +2526,156 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
             Some("The pad isn't sliced: chop it on the Chop tab with Put on at 1 pad")
         }
         _ => None,
+    }
+}
+
+/// How row `row` looks on a panel for pad `st`, with layer `layer` and
+/// slice `slice` picked, faint (saying why) when it changes nothing now.
+/// The Play page's panel and the Sound section beside the wave
+/// ([`crate::sound_panel`]) both draw their rows with it.
+pub fn control_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> Control {
+    let p = &st.settings;
+    let n = p.layers.len();
+    let source = p.layers.get(layer).map(|l| l.region.source);
+    let times = TIMES_MS.len() as u32 - 1;
+    let level = ((LEVEL_RANGE_DB.1 - LEVEL_RANGE_DB.0) / LEVEL_STEP_DB) as u32;
+    let tune = (2 * TUNE_LIMIT_CENTS / 100) as u32;
+    let knob = |steps: u32, bipolar: bool| Look::Knob {
+        pos: place_of(st, layer, slice, row),
+        steps,
+        bipolar,
+    };
+    let look = match row {
+        Row::Layers => Look::Choice {
+            options: SELECTS.iter().map(|s| select_label(*s).into()).collect(),
+            on: SELECTS.iter().position(|s| *s == p.select).unwrap_or(0),
+            off: Vec::new(),
+        },
+        Row::PadsPlay => Look::Choice {
+            options: PADS_PLAY.iter().map(|s| s.to_string()).collect(),
+            on: match st.pads_play {
+                PadsPlay::Pads => 0,
+                PadsPlay::Keys { .. } => 1,
+                PadsPlay::Levels { .. } => 2,
+            },
+            off: Vec::new(),
+        },
+        Row::Level | Row::LayerLevel => knob(level, false),
+        Row::Pan | Row::LayerPan | Row::Depth | Row::LfoDepth => knob(40, true),
+        Row::Tune | Row::LayerTune => knob(tune, true),
+        Row::Wow => knob(10, false),
+        Row::Attack
+        | Row::Hold
+        | Row::Decay
+        | Row::Release
+        | Row::EnvAttack
+        | Row::EnvDecay
+        | Row::EnvRelease => knob(times, false),
+        Row::Sustain
+        | Row::EnvSustain
+        | Row::Resonance
+        | Row::VelToLevel
+        | Row::VelToStart
+        | Row::VelToCutoff => knob(20, false),
+        Row::VelToPitch => knob((2.0 * VEL_PITCH_ST) as u32, true),
+        Row::PitchEnv => knob((2.0 * PITCH_ENV_ST) as u32, true),
+        Row::PitchDecay => knob(times, false),
+        Row::LfoRate => match p.lfo.beats {
+            Some(_) => knob(LFO_SYNCS.len() as u32 - 1, false),
+            None => knob(LFO_RATES.len() as u32 - 1, false),
+        },
+        Row::LfoTo => Look::Choice {
+            options: LFO_TARGETS.iter().map(|t| t.0.to_string()).collect(),
+            on: LFO_TARGETS
+                .iter()
+                .position(|t| t.1 == p.lfo.target)
+                .unwrap_or(0),
+            off: Vec::new(),
+        },
+        Row::LfoSync => Look::Toggle(p.lfo.beats.is_some()),
+        Row::LfoRetrig => Look::Toggle(p.lfo.retrig),
+        Row::Mono => Look::Toggle(p.mono.on),
+        Row::Legato => Look::Toggle(p.mono.legato),
+        Row::Glide => Look::Stepper,
+        Row::GlideOn => Look::Choice {
+            options: GLIDE_ON.iter().map(|g| g.to_string()).collect(),
+            on: usize::from(p.mono.glide_held),
+            off: Vec::new(),
+        },
+        // A third of an octave a step, 20 Hz to 20 kHz.
+        Row::Cutoff => knob(30, false),
+        Row::Drive => knob(MAX_DRIVE_DB as u32, false),
+        Row::FilterEnv => knob((2.0 * ENV_OCTAVES / 0.25) as u32, true),
+        Row::Vintage => Look::Toggle(p.vintage),
+        Row::Keys => Look::Toggle(p.keys.is_some()),
+        Row::Latch => Look::Toggle(p.latch),
+        Row::Slice => Look::Stepper,
+        Row::VelLow
+        | Row::VelHigh
+        | Row::LowKey
+        | Row::HighKey
+        | Row::RootKey
+        | Row::KeyFade
+        | Row::PadsFrom => Look::Stepper,
+        Row::AddLayer | Row::RemoveLayer => Look::Button(row.label().into()),
+        Row::SlicePick => Look::Stepper,
+        Row::SliceTune => knob(48, true),
+        Row::SliceLevel => knob(level, false),
+        Row::SliceReverse => {
+            Look::Toggle(slice_on(p, slice).is_some_and(|s| s.reverse))
+        }
+        Row::SliceCutoff => knob(30, false),
+        Row::SliceFade => knob(SLICE_FADES.len() as u32, false),
+        Row::SliceTo => Look::Choice {
+            options: vec!["Its end".into(), "Sound end".into()],
+            on: usize::from(slice_on(p, slice).is_some_and(|s| s.to_end)),
+            off: Vec::new(),
+        },
+        Row::Sound
+        | Row::VelFade
+        | Row::Filter
+        | Row::Pressure
+        | Row::Polyphony
+        | Row::MuteGroup
+        | Row::Chokes
+        | Row::Links
+        | Row::LevelsBy
+        | Row::LfoWave => Look::Chip,
+    };
+    let why = match row {
+        Row::AddLayer if n >= MAX_LAYERS => {
+            Some(format!("{MAX_LAYERS} layers at most"))
+        }
+        Row::RemoveLayer if n < 2 => Some("A pad keeps one layer at least".into()),
+        Row::Sound if !st.kit_sounds.iter().any(|s| Some(s.id) != source) => {
+            Some("The kit has no other sound".into())
+        }
+        Row::KeyFade if st.zones.is_empty() => {
+            Some("No pad of the kit is a keygroup: turn Keys on".into())
+        }
+        _ => faint_why(st, row).map(str::to_string),
+    };
+    Control::new(look).faint_because(why.is_some(), why.as_deref().unwrap_or(""))
+}
+
+/// Row `row`'s value as a list, a panel or a Q-Link card shows it, with
+/// layer `layer` and slice `slice` picked: the slice's for the Slices
+/// rows, the layer's for a layer's.
+pub fn text_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> String {
+    if row == Row::SlicePick || row.of_slice() {
+        slice_text(&st.settings, slice, row)
+    } else {
+        st.layer_text(layer, row)
+    }
+}
+
+/// How far round row `row`'s knob is lit, 0 to 1, with layer `layer` and
+/// slice `slice` picked.
+pub fn place_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> f32 {
+    if row == Row::SlicePick || row.of_slice() {
+        slice_pos(&st.settings, slice, row)
+    } else {
+        knob_pos(st, layer, row)
     }
 }
 
