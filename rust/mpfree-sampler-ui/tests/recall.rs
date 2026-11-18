@@ -192,7 +192,7 @@ fn the_page_shows_the_bracket_the_panel_and_the_cards() {
     // A6 has a sound; A7 is the next free pad.
     let mut filled = vec![false; 128];
     filled[5] = true;
-    let mut p = RecallPage::open(&mut ui, &i, r, 92.0, filled);
+    let mut p = RecallPage::open(&mut ui, &i, r, 92.0, filled, Ok("Line in".to_string()));
     ui.show(PAGE).unwrap();
     let v = ui.get::<RecallView>(VIEW).unwrap();
     assert_eq!(v.chip, "REC → Pad A7 · Master, effects on");
@@ -271,4 +271,111 @@ fn the_page_shows_the_bracket_the_panel_and_the_cards() {
     p.tick(&mut ui, &i, 0.1);
     ui.paint(&mut c);
     assert_ne!(ui.get::<RecallView>(VIEW).unwrap().painted(), moved);
+}
+
+/// From (the one Sample page's step 2f: Skip back moves into Sample
+/// Recall): the master, or what the recorder's Source has kept. A switch
+/// reads the other buffer from its start, with the bracket ending there
+/// now; with no Source to read, From is faint and says why.
+#[test]
+fn from_reads_the_master_or_what_the_recorders_source_kept() {
+    use mpfree_sampler_ui::panel::Look;
+    use mpfree_sampler_ui::recall::{RecallFrom, RecallView, LIST, VIEW};
+    use mpfree_sampler_ui::widgets::SettingList;
+    let (mut f, master) = input();
+    feed(&mut f, 50.0, true);
+    // The Source's buffer holds 75 s, and has had 20 s of the music.
+    let (mut lf, line) = input16(75, RATE);
+    feed(&mut lf, 20.0, true);
+    let (project, _) = mpfree_sampler_ui::sample::project();
+    let mut ui = mpfree_sampler_ui::sample::app_ui_with(
+        mpfree_ui::Fonts::embedded(),
+        &project,
+        mpfree_sampler_ui::recall::HINT,
+    );
+    RecallPage::add(&mut ui, RATE).unwrap();
+    let r = Recall::open(&master, 5, 5, 128);
+    assert_eq!(r.from, RecallFrom::Master);
+    let mut p = RecallPage::open(
+        &mut ui,
+        &master,
+        r,
+        92.0,
+        vec![false; 128],
+        Ok("Line in".to_string()),
+    );
+    ui.show(PAGE).unwrap();
+    let from = Row::From.index();
+    let list = ui.get::<SettingList>(LIST).unwrap();
+    assert_eq!(list.rows[from].value, "Master");
+    assert!(matches!(
+        &list.controls[from].look,
+        Look::Choice { options, on: 0, off } if options == &["Master", "Line in"] && off.is_empty()
+    ));
+    assert_eq!(
+        ui.get::<RecallView>(VIEW).unwrap().sub,
+        "the master's last 2:00, always kept"
+    );
+    // A tap on Line in asks for its buffer; the app hands it over.
+    assert_eq!(
+        p.step(&mut ui, &master, from, 1),
+        Ask::Switch(RecallFrom::Source)
+    );
+    assert_eq!(p.recall.from, RecallFrom::Master, "not until it reads it");
+    p.switch(&mut ui, &line, RecallFrom::Source);
+    assert_eq!(
+        (p.recall.from, p.recall.at, p.recall.length),
+        (RecallFrom::Source, line.now(), Length::Bars(4))
+    );
+    let b = p.recall.bracket(&line).unwrap();
+    assert_eq!(b.end, 7 * BAR, "bar 8's line, the latest in 20 s");
+    let v = ui.get::<RecallView>(VIEW).unwrap();
+    assert_eq!(v.chip, "REC → Pad A6 · Line in");
+    assert_eq!(v.sub, "Line in's last 1:15, kept while it is the Source");
+    // The overview spans the 75 s (to a frame a column).
+    assert!(
+        75 * u64::from(RATE) - v.strip.span() < 600,
+        "{}",
+        v.strip.span()
+    );
+    let list = ui.get::<SettingList>(LIST).unwrap();
+    assert_eq!(list.rows[from].value, "Line in");
+    // Every section's note fits beside its title with Line in picked, on
+    // the screen's 1280 px (panel.rs: 12 px in from a section's edge, 8 px
+    // between the title and the note).
+    let rect = ui.rect_of(LIST).unwrap();
+    let panel = list.panel.as_ref().unwrap();
+    let mut fonts = mpfree_ui::Fonts::embedded();
+    for (s, sr) in panel.sections.iter().zip(panel.section_rects(rect)) {
+        let used = fonts.measure(mpfree_ui::FontId::Bold, 12.0, &s.title.to_uppercase())
+            + 8
+            + fonts.measure(mpfree_ui::FontId::Sans, 12.0, &s.note);
+        assert!(
+            s.note.is_empty() || used <= sr.w - 2 * 12,
+            "{}: {used} px of {}",
+            s.title,
+            sr.w - 2 * 12
+        );
+    }
+    // The wheel's push on From goes back to the master.
+    assert_eq!(
+        p.step(&mut ui, &line, from, 0),
+        Ask::Switch(RecallFrom::Master)
+    );
+    p.switch(&mut ui, &master, RecallFrom::Master);
+    assert_eq!(p.recall.bracket(&master).unwrap().bars, Some((16, 19)));
+    assert_eq!(
+        ui.get::<RecallView>(VIEW).unwrap().strip.span(),
+        120 * u64::from(RATE)
+    );
+    // No Source to read: its choice is faint (Master stays lit), and the
+    // control holds why for a tap to say.
+    p.second = Err("Line in off: Looper tab, MENU".to_string());
+    p.show(&mut ui, &master);
+    let list = ui.get::<SettingList>(LIST).unwrap();
+    let c = &list.controls[from];
+    assert!(!c.faint && c.why == "Line in off: Looper tab, MENU");
+    assert!(
+        matches!(&c.look, Look::Choice { options, on: 0, off } if off == &[1] && options[1] == "Source")
+    );
 }

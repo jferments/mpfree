@@ -60,6 +60,7 @@ use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_sampler::model::Levels;
 use mpfree_sampler::model::Project;
 use mpfree_sampler_ui::levels_panel::{self, LevelsAction, LevelsModel, LevelsPanel};
+use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::editor::{EditAction, Lens};
@@ -6485,7 +6486,8 @@ impl Player {
         }
         let back = self.ui.page().to_string();
         let r = Recall::open(input, pad, onto, filled.len());
-        let page = RecallPage::open(&mut self.ui, input, r, self.sample.tempo(), filled);
+        let second = self.sample.recall_second();
+        let page = RecallPage::open(&mut self.ui, input, r, self.sample.tempo(), filled, second);
         if self.ui.show(PAGE).is_err() {
             return;
         }
@@ -6524,10 +6526,10 @@ impl Player {
     /// change goes on).
     fn recall_input(&mut self, msg: &ToUi) -> bool {
         use crate::app::{RecallKey, RowKey};
-        let Some(input) = self.sample.recall() else {
+        let Some(open) = self.recall.as_mut() else {
             return false;
         };
-        let Some(open) = self.recall.as_mut() else {
+        let Some(input) = self.sample.recall_from(open.page.recall.from) else {
             return false;
         };
         let ask = match msg {
@@ -6568,6 +6570,21 @@ impl Player {
         let r = open.page.recall;
         match ask {
             Ask::Nothing => {}
+            // From: the other buffer, when there is one.
+            Ask::Switch(from) => match self.sample.recall_from(from) {
+                Some(input) => {
+                    open.page.switch(&mut self.ui, input, from);
+                    let what = match from {
+                        RecallFrom::Master => "the master".to_string(),
+                        RecallFrom::Source => self.sample.source_name(),
+                    };
+                    self.say(format!("sample: Sample Recall reads {what}"));
+                }
+                None => {
+                    let why = self.sample.recall_second().err().unwrap_or_default();
+                    self.tell(&why);
+                }
+            },
             Ask::Audition => match self.sample.recall_audition(&r) {
                 Ok(src) => {
                     open.heard = true;
@@ -6597,10 +6614,10 @@ impl Player {
     /// A touch on Sample Recall's panel or Q-Link cards.
     fn recall_event(&mut self, ev: &UiEvent) {
         use mpfree_sampler_ui::recall::{Ask, LIST, QLINKS};
-        let Some(input) = self.sample.recall() else {
+        let Some(open) = self.recall.as_mut() else {
             return;
         };
-        let Some(open) = self.recall.as_mut() else {
+        let Some(input) = self.sample.recall_from(open.page.recall.from) else {
             return;
         };
         let ask = match (ev.widget.as_str(), &ev.kind) {
@@ -6609,12 +6626,17 @@ impl Player {
             }
             (LIST, EventKind::Tab(k)) => open.page.step(&mut self.ui, input, *k, 0),
             (LIST, EventKind::Select(k)) => {
-                // A faint control says why.
+                // A faint control says why, as does From with no Source to
+                // read (a tap on its faint choice).
+                use mpfree_sampler_ui::panel::Look;
                 let why = self
                     .ui
                     .get::<mpfree_sampler_ui::widgets::SettingList>(LIST)
                     .and_then(|l| l.controls.get(*k))
-                    .filter(|c| c.faint && !c.why.is_empty())
+                    .filter(|c| {
+                        let off = matches!(&c.look, Look::Choice { off, .. } if !off.is_empty());
+                        (c.faint || off) && !c.why.is_empty()
+                    })
                     .map(|c| c.why.clone());
                 if let Some(why) = why {
                     self.tell(&why);
@@ -10208,7 +10230,7 @@ impl Player {
             let mut rows = crate::cores::rows(&shared.cores);
             rows.extend(crate::parts::rows(&shared.parts));
             let (rss_kb, total_kb, free_kb) = self.debug.memory_kb();
-            let memory = crate::memory::rows(&crate::memory::Held {
+            let mut memory = crate::memory::rows(&crate::memory::Held {
                 samples: self.sample.memory(),
                 loops: (self.looper.memory.used, self.looper.memory.capacity),
                 synth: mpfree_synth::wavetable::factory::factory_bytes(),
@@ -10216,6 +10238,14 @@ impl Player {
                 total_kb,
                 free_kb,
             });
+            let fell = self.sample.recall_fallbacks();
+            if fell > 0 {
+                memory.push((
+                    "Sampler: Recall fell back to the master".to_string(),
+                    format!("{fell}×"),
+                    Tone::Warn,
+                ));
+            }
             DebugPages::set_engines(&mut self.ui, &snap, memory, rows);
         }
     }
@@ -11697,9 +11727,24 @@ impl Player {
             h.ask_in -= dt.max(0.0);
             self.refresh_history();
         }
-        // Sample Recall open: it follows the master as it comes in.
-        if let (Some(open), Some(input)) = (self.recall.as_mut(), self.sample.recall()) {
-            open.page.tick(&mut self.ui, input, dt.max(0.0));
+        // Sample Recall open: it follows what it reads as it comes in. The
+        // Source's buffer gone (the line input off): back to the master, a
+        // fallback counted, logged and shown (Dev > CPU by engine).
+        if let Some(open) = self.recall.as_mut() {
+            match self.sample.recall_from(open.page.recall.from) {
+                Some(input) => open.page.tick(&mut self.ui, input, dt.max(0.0)),
+                None => {
+                    if let Some(input) = self.sample.recall() {
+                        open.page.second = self.sample.recall_second();
+                        open.page.switch(&mut self.ui, input, RecallFrom::Master);
+                        let line = self.sample.recall_fell_back();
+                        self.say(line);
+                        self.tell(
+                            "Sample Recall: the Source isn't kept now, so it reads the master",
+                        );
+                    }
+                }
+            }
         }
         // A finger held on the Keep card: Sample Recall, on the page's pad.
         if let Some((f, held, x, y)) = self.keep_press {
@@ -14969,6 +15014,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mem_total_kb: Some(1_969_436),
         ..ProcView::default()
     });
+    // One Sample Recall fallback, so the picture shows its row.
+    let _ = eng.sample.recall_fell_back();
     eng.apply(ToUi::Engines(probes.shared()));
     eng.apply(ToUi::Show(View::Engines));
     eng.refresh_engines();
@@ -16035,6 +16082,45 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         recall.take_actions();
     }
     out.push(("sample-recall", recall));
+    // Sample Recall's From on the recorder's Source (one-page step 2f):
+    // the line input on, 30 s of it playing along, read in place of the
+    // master.
+    let mut from = sample_sampler(fonts());
+    {
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
+        use mpfree_sampler_ui::recall::{Row, LIST};
+        use mpfree_sampler_ui::sample::{feed_input, BPM, PAD, RATE};
+        from.apply(ToUi::Transport(TransportInfo {
+            bpm: BPM,
+            ..TransportInfo::default()
+        }));
+        settle_views(&mut from);
+        let (mut feed, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        from.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut feed, 40.0, 0.4, true);
+        let mut s = from.settings.clone();
+        s.line_input = true;
+        from.apply(ToUi::Settings(s));
+        let line = from.take_actions().into_iter().find_map(|a| match a {
+            FromUi::SampleInput(Some(f)) => Some(f),
+            _ => None,
+        });
+        if let Some(mut line) = line {
+            feed_input(&mut line.0, 30.0, 0.25, true);
+        }
+        from.apply(ToUi::Show(View::Play));
+        from.apply(ToUi::Recall(crate::app::RecallKey::Open { pad: PAD }));
+        from.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::From.index(),
+                delta: 1,
+            },
+        });
+        from.tick(0.2);
+        from.take_actions();
+    }
+    out.push(("sample-recall-from", from));
     // The Rec tab's Auto-sample mode on the Synth tab's patch: every 5
     // semitones, 10 notes onto the empty pads after the break.
     let mut auto = sample_sampler(fonts());
@@ -28100,6 +28186,147 @@ mod tests {
         p.apply(ToUi::Show(View::Play));
         assert_ne!(p.ui.page(), recall::PAGE);
         assert!(p.take_actions().contains(&FromUi::Recall(false)));
+    }
+
+    /// From (one-page step 2f; Jay 18 Nov 19:48Z: Skip back moves into
+    /// Sample Recall as a second source): Sample Recall reads the master,
+    /// or what the recorder's Source has kept, and keeps from it as from
+    /// the master. The Source's buffer gone, it reads the master again;
+    /// with the master as the Source, From says it has it.
+    #[test]
+    fn sample_recall_reads_the_recorders_source_as_skip_back_did() {
+        use crate::app::RecallKey;
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
+        use mpfree_sampler_ui::recall::{self, RecallView, Row};
+        use mpfree_sampler_ui::recorder;
+        use mpfree_sampler_ui::sample::{feed_input, PAD, RATE};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let (mut master, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        p.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut master, 20.0, 0.4, true);
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        let line_in = |p: &mut Player, on: bool| {
+            let mut s = p.settings.clone();
+            s.line_input = on;
+            p.apply(ToUi::Settings(s));
+        };
+        line_in(&mut p, true);
+        let Some(FromUi::SampleInput(Some(mut line))) = take(&mut p).pop() else {
+            panic!("the input's writer");
+        };
+        // The line input plays quieter than the master.
+        feed_input(&mut line.0, 20.0, 0.1, true);
+        p.tick(0.033);
+        let from = Row::From.index();
+        let row = |p: &Player| {
+            let list = p.ui.get::<SettingList>(recall::LIST).unwrap();
+            let c = &list.controls[from];
+            (list.rows[from].value.clone(), c.faint, c.why.clone())
+        };
+        let step = |p: &mut Player, delta: i32| {
+            p.on_event(UiEvent {
+                widget: recall::LIST.into(),
+                kind: EventKind::Step { index: from, delta },
+            })
+        };
+        let next = crate::app::kit_pad_name(PAD + 1);
+        // Opened on the master; From Line in reads the line input.
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        assert_eq!(row(&p), ("Master".to_string(), false, String::new()));
+        step(&mut p, 1);
+        assert_eq!(row(&p).0, "Line in");
+        let v = p.ui.get::<RecallView>(recall::VIEW).unwrap();
+        assert_eq!(v.chip, format!("REC → Pad {next} · Line in"));
+        assert_eq!(v.sub, "Line in's last 1:15, kept while it is the Source");
+        assert!(v.caption.starts_with("Bars "), "{}", v.caption);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: Sample Recall reads Line in"));
+        // REC keeps the line input's last bars on the next free pad.
+        p.apply(ToUi::Recall(RecallKey::Keep));
+        assert_ne!(p.ui.page(), recall::PAGE);
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l.starts_with("sample: recall bars ")
+                && l.contains(" of Line in: Recall 1, ")
+                && l.contains(&format!(" stereo on pad {next}, warped at "))),
+            "{log:?}"
+        );
+        let project = p.sample.project(0).unwrap();
+        let layer = &project.pad(PAD + 1).unwrap().layers[0];
+        let peak = project
+            .source(layer.region.source)
+            .unwrap()
+            .data()
+            .iter()
+            .fold(0.0f32, |m, x| m.max(x.abs()));
+        // A quarter of the master's level: the line input's, not the master's.
+        assert!(peak > 0.02 && peak < 0.3, "the line input's: {peak}");
+        // The line input off while it reads it: back to the master.
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        step(&mut p, 1);
+        line_in(&mut p, false);
+        take(&mut p);
+        p.tick(0.2);
+        assert_eq!(p.ui.page(), recall::PAGE);
+        assert_eq!(
+            row(&p),
+            (
+                "Master".to_string(),
+                false,
+                sample_page::RECORDER_OFF.to_string()
+            )
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(
+            hint,
+            tell_text("Sample Recall: the Source isn't kept now, so it reads the master")
+        );
+        // A fallback: counted and logged as well as said.
+        assert_eq!(p.sample.recall_fallbacks(), 1);
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: fallback: Sample Recall's Source (Line in) isn't kept now, \
+                    so it reads the master (1 so far)"),
+            "{log:?}"
+        );
+        // A step to it now says why, and it stays on the master.
+        step(&mut p, 1);
+        assert_eq!(row(&p).0, "Master");
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(hint, tell_text(sample_page::RECORDER_OFF));
+        // The master as the recorder's Source: From has it already.
+        p.apply(ToUi::Recall(RecallKey::Close));
+        p.on_event(UiEvent {
+            widget: recorder::RECORDER.into(),
+            kind: EventKind::Step { index: 0, delta: 1 },
+        });
+        take(&mut p);
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        assert_eq!(
+            row(&p),
+            (
+                "Master".to_string(),
+                false,
+                sample_page::RECALL_SOURCE_MASTER.to_string()
+            )
+        );
+        // A tap on From says so.
+        p.on_event(UiEvent {
+            widget: recall::LIST.into(),
+            kind: EventKind::Select(from),
+        });
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(hint, tell_text(sample_page::RECALL_SOURCE_MASTER));
     }
 
     #[test]
