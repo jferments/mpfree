@@ -303,7 +303,10 @@ pub fn clips(
 /// The pad that plays `note` alone on track `track`, as its clips play
 /// (`SeqPads` in main.rs): a track's own instrument through its pad map;
 /// else the synth's pad layout if the track plays the synth (`synth`), or
-/// its kit's pads by the MPC's own pad notes (`midi_out::kit_notes`).
+/// the kit pad that sends the note on MIDI out, in any of its 8 banks
+/// (`profile::kit_pad_of_note`, every note has one), so a kit's export
+/// comes back on the pads that played it. It allocates nothing: CAPTURE
+/// asks it for each key a route plays.
 pub fn pad_on_track(
     own: &crate::instruments::Instruments,
     synth: Option<&crate::synth::Synth>,
@@ -314,13 +317,13 @@ pub fn pad_on_track(
         return p;
     }
     match synth {
-        Some(s) => pad_playing(note, |p| s.notes(p).to_vec()),
-        None => pad_playing(note, |p| crate::midi_out::kit_notes(p).to_vec()),
+        Some(s) => pad_playing(note, |p| s.notes(p)),
+        None => Some(mpfree_midi::profile::kit_pad_of_note(note) as u8),
     }
 }
 
 /// The pad of `notes(pad)` (pads 0 to 15) that plays `note` alone.
-pub fn pad_playing(note: u8, notes: impl Fn(usize) -> Vec<u8>) -> Option<u8> {
+pub fn pad_playing<'a>(note: u8, notes: impl Fn(usize) -> &'a [u8]) -> Option<u8> {
     (0..16).find(|&p| notes(p) == [note]).map(|p| p as u8)
 }
 
@@ -550,26 +553,33 @@ mod tests {
     #[test]
     fn notes_go_on_the_pads_that_play_them_and_the_rest_are_counted() {
         let m = import("Sequence01.mid", &mpc_export()).unwrap();
-        // Track 1 a kit (the MPC's pad notes), track 2 a synth whose pad 5
-        // plays E1 (40) alone.
-        let kit = |n: u8| mpfree_controller::mpc_one::pad_index(n);
+        // Track 1 a kit (each note the kit pad that sends it, in any
+        // bank), track 2 a synth whose pad 5 plays E1 (40) alone.
+        let kit = |n: u8| Some(mpfree_midi::profile::kit_pad_of_note(n) as u8);
+        let synth: Vec<[u8; 1]> = (0..16u8)
+            .map(|p| if p == 4 { [40] } else { [p + 70] })
+            .collect();
         let made = clips(&m, 0, 2, |t, n| {
             if t == 0 {
                 kit(n)
             } else {
-                pad_playing(n, |p| if p == 4 { vec![40] } else { vec![p as u8 + 70] })
+                pad_playing(n, |p| &synth[p])
             }
         });
         assert_eq!(made.clips.len(), 2);
         let drums = &made.clips[0].1;
         assert_eq!(made.clips[0].0, 0);
-        let pads: Vec<u8> = drums.notes.iter().map(|n| n.note).collect();
-        assert_eq!(pads, [0, 1], "pads A01 and A02");
+        let pads: Vec<String> = drums
+            .notes
+            .iter()
+            .map(|n| mpfree_midi::profile::pad_name(usize::from(n.note)))
+            .collect();
+        assert_eq!(pads, ["A1", "A2", "E1"], "note 99 is E1's");
         assert_eq!(drums.length, 7680);
         assert_eq!(made.clips[1].1.notes.len(), 1);
         assert_eq!(made.clips[1].1.notes[0].note, 4);
-        // Note 99 and G1 (43) play no pad.
-        assert_eq!((made.unplayed, made.no_track), (2, 0));
+        // G1 (43) plays no pad of the synth.
+        assert_eq!((made.unplayed, made.no_track), (1, 0));
         // From the last track: the bass has nowhere to go.
         let made = clips(&m, 1, 2, |_, n| kit(n));
         assert_eq!((made.clips.len(), made.no_track), (1, 1));

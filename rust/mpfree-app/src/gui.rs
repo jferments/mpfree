@@ -2921,16 +2921,23 @@ impl Player {
     /// What track `t` plays on, for its Notes stage's Plays on row: its own
     /// sound, or a MIDI out port and channel (the MIDI section's Tracks
     /// out), and where to change it.
-    fn plays_on(&self, t: usize) -> (String, String) {
+    /// A note track's Plays on row: where its notes play and the line
+    /// under it, and why the controllers it sends to MIDI out would send
+    /// nothing (it plays its own sound), for the CC effects' pages.
+    fn plays_on(&self, t: usize) -> (String, String, Option<String>) {
         let out = self.io_model.as_ref().and_then(|m| {
             let m = m.lock().unwrap_or_else(|e| e.into_inner());
             m.setup.tracks.get(t).cloned().flatten()
         });
-        let on = match out {
-            Some(o) => o.label(),
-            None => "Its own sound".to_string(),
-        };
-        (on, "Change it in MIDI, Tracks out".to_string())
+        let change = "Change it in MIDI, Tracks out".to_string();
+        match out {
+            Some(o) => (o.label(), change, None),
+            None => (
+                "Its own sound".to_string(),
+                change,
+                Some("sends nothing: the track plays its own sound".to_string()),
+            ),
+        }
     }
 
     /// Opens the mixer's I/O view on the section titled `title` (the tempo
@@ -6104,7 +6111,8 @@ impl Player {
             ToUi::Chain(mut st) => {
                 // A note track's Plays on, from the MIDI set-up's Tracks out.
                 if let Some(ns) = st.notes.as_mut() {
-                    (ns.plays_on, ns.plays_detail) = self.plays_on(usize::from(ns.track));
+                    (ns.plays_on, ns.plays_detail, ns.ccs_send_nothing) =
+                        self.plays_on(usize::from(ns.track));
                 }
                 self.chain_page.set_chain(&mut self.ui, *st);
                 if self.chain_page.drives(self.view) {
@@ -7027,10 +7035,12 @@ impl Player {
         // Load names the pad it puts a sound on: the pad picked, which a
         // pad hit moves (none while the pads play an instrument).
         let target = self.sample.load_target();
+        let map = target.as_ref().and_then(|_| self.browser_pad_map());
         let Some(b) = self.browser.as_mut() else {
             return;
         };
         b.set_pad_target(target);
+        b.set_pad_map(map);
         for a in mpfree_browser_ui::step(&mut self.ui, b) {
             self.browse_action(a);
         }
@@ -7042,9 +7052,47 @@ impl Player {
         }
     }
 
+    /// The kit the pads play, for the browser's pad map under a sound:
+    /// its name, each pad's sound and the pad picked (None while the pads
+    /// play an instrument).
+    fn browser_pad_map(&self) -> Option<mpfree_browser_ui::PadMap> {
+        let kit = self.sample.kit();
+        let project = self.sample.project(kit)?;
+        let pads = (0..mpfree_sampler::model::PADS)
+            .map(|i| {
+                project
+                    .pad(i)
+                    .filter(|p| !p.layers.is_empty())
+                    .map(|p| match p.name.as_str() {
+                        "" => "a sound".to_string(),
+                        n => n.to_string(),
+                    })
+            })
+            .collect();
+        Some(mpfree_browser_ui::PadMap {
+            kit: self
+                .sample
+                .kit_name(kit)
+                .map_or_else(|| format!("Kit {}", kit + 1), str::to_string),
+            pads,
+            picked: self.sample.pad(),
+        })
+    }
+
     fn browse_action(&mut self, a: mpfree_browser_ui::BrowseAction) {
         use mpfree_browser_ui::BrowseAction as A;
         match a {
+            // A finger on the pad map: the pad picked, as a hit on the
+            // MPC's pad picks it (so Load names it), and heard while held.
+            A::PadPress { pad, down } => {
+                if down {
+                    self.sample.hit(pad);
+                    let (label, name) = self.sample.pad_names(pad);
+                    let what = if name.is_empty() { "empty" } else { &name };
+                    self.say(format!("browser: pad {label} picked ({what})"));
+                }
+                self.outbox.push(FromUi::Audition { pad, down });
+            }
             // Load: onto the pad picked. Load to pad: onto the next pad hit.
             A::LoadSample { path, .. } => self.sample.load_file(path, false),
             A::LoadToPad { path, .. } => self.sample.load_file(path, true),
@@ -8904,8 +8952,10 @@ impl Player {
 
     /// The value under (`x`, `y`) that SHIFT + a touch hands to MIDI
     /// Learn: a mixer strip's fader, pan, send, M or S (the Faders look), a
-    /// knob, fader, slider or drawbar on the chain editor or the Synth tab,
-    /// a macro's knob on the macros panel, or Play's tempo. None anywhere
+    /// knob, fader, slider or drawbar on the chain editor or the Synth tab
+    /// (an MPC plugin's skin's controls too), a macro's knob on the macros
+    /// panel, Play's tempo, its master bar, or a Play Q-Link card that
+    /// turns a strip's send or level ([`play_page::Knob::learn_addr`]). None anywhere
     /// else (a value that
     /// learns nothing yet, or no value at all: SHIFT + a touch there keeps
     /// its own job). The smallest control there, as the outline picks.
@@ -8925,6 +8975,24 @@ impl Player {
                 mpfree_play::mpfree_param::transport::TEMPO,
             )));
         }
+        // Play's master bar: the master's level, as the mixer's master
+        // fader learns it.
+        if w == play_page::MASTER {
+            return Some(LearnValue::Param(ParamAddr::new(
+                mpfree_play::mpfree_param::Owner::Strip(mpfree_play::mpfree_param::Strip::Master),
+                mpfree_fx::ids::mixer::VOLUME,
+            )));
+        }
+        // A Play Q-Link card that turns a strip's send or level (not the
+        // audio tracks' or a band's cards, which turn other things).
+        if w == play_page::QLINKS
+            && matches!(self.view, View::Play | View::Sequencer | View::Arrange)
+            && !self.band_showing()
+            && self.audio_cards().is_none()
+        {
+            let knob = *self.play.knobs().get(t.index)?;
+            return knob.learn_addr().map(LearnValue::Param);
+        }
         if w == mpfree_mixer_ui::MIXER {
             let (sid, param) = mpfree_mixer_ui::param_of(&self.ui, t)?;
             let strip = crate::modmix::strip_of(sid)?;
@@ -8935,6 +9003,13 @@ impl Player {
         }
         if w == synth_view::TILES {
             return self.synth.as_ref()?.param_of(t).map(LearnValue::Synth);
+        }
+        // An MPC plugin's skin: its control's parameter, as MPFree's own
+        // page for the plugin learns it.
+        if w == skin_page::SKIN {
+            let r = self.ui.rect_of(skin_page::SKIN)?;
+            let skin = self.ui.get::<skin_page::SkinWidget>(skin_page::SKIN)?;
+            return skin.param_id_at(x, y, r).map(LearnValue::Synth);
         }
         mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
     }
@@ -13139,6 +13214,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("looper-empty", p)),
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // Loop 5 armed to start when you play (Starts: When I play), the song
+    // stopped: it listens for the first pad, which starts the song too.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            let l = &mut v.loops[4];
+            l.phase = mpfree_looper::Phase::Armed;
+            l.starts = mpfree_looper::Starts::Play;
+            l.listening = true;
+            v.status = v.loops[4];
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-listening", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
     // The same with the undo history open: the bass and the chop overdubs.
     match sample_looper(fonts()) {
         Ok(mut p) => {
@@ -16264,6 +16354,82 @@ mod tests {
     /// Remote control: SHIFT + a touch on Play's tempo or a strip's M arms
     /// MIDI Learn on it. Arrange's PLAY is no value: it keeps its job.
     #[test]
+    fn shift_and_a_touch_on_plays_master_or_a_strip_card_arms_midi_learn() {
+        use mpfree_play::mpfree_param::{Owner, Strip};
+        use mpfree_ui::Rect;
+        let strip = |s, id| FromUi::LearnValue(LearnValue::Param(ParamAddr::new(s, id)));
+        let send = mpfree_fx::ids::mixer::send(crate::mixing::DELAY_RETURN);
+        let vol = mpfree_fx::ids::mixer::VOLUME;
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.show_play_view(play_page::PlayView::All);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let cards = |p: &Player| QLinkColumn::card_rects(p.ui.rect_of(play_page::QLINKS).unwrap());
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        p.take_actions();
+        p.status.shift = true;
+        // All: Swing, Tune, the drums' filter and send. The send learns the
+        // drums strip's delay send; Swing and the filter keep their touch.
+        assert_eq!(
+            {
+                let at = centre(cards(&p)[3]);
+                press(&mut p, at)
+            },
+            [strip(Owner::Strip(Strip::Track(0)), send)]
+        );
+        for k in [0, 2] {
+            let at = centre(cards(&p)[k]);
+            assert!(
+                !press(&mut p, at)
+                    .iter()
+                    .any(|a| matches!(a, FromUi::LearnValue(_))),
+                "card {k}"
+            );
+        }
+        // The master bar: the master's level.
+        let master = p.ui.rect_of(play_page::MASTER).unwrap();
+        assert_eq!(
+            press(&mut p, centre(master)),
+            [strip(Owner::Strip(Strip::Master), vol)]
+        );
+        // Loop: the looper's level and send, and the line input's level.
+        p.show_play_view(play_page::PlayView::Loop);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let looper = Owner::Strip(Strip::Track(crate::mixing::LOOP as u8));
+        assert_eq!(
+            {
+                let at = centre(cards(&p)[0]);
+                press(&mut p, at)
+            },
+            [strip(looper, vol)]
+        );
+        assert_eq!(
+            {
+                let at = centre(cards(&p)[1]);
+                press(&mut p, at)
+            },
+            [strip(looper, send)]
+        );
+        assert_eq!(
+            {
+                let at = centre(cards(&p)[2]);
+                press(&mut p, at)
+            },
+            [strip(Owner::Strip(Strip::Input(0)), vol)]
+        );
+    }
+
+    #[test]
     fn shift_and_a_touch_on_the_tempo_or_a_mute_arms_midi_learn() {
         use mpfree_play::mpfree_param::{transport as tr, Owner};
         use mpfree_time_ui::widgets::{BarButton, TransportBar};
@@ -18651,6 +18817,38 @@ mod tests {
                 FromUi::Synth(SynthAction::Set { id: 0, value }) if (*value - 0.7).abs() < 1e-3)),
             "{acts:?}"
         );
+        // SHIFT + a touch on a skin's control hands its parameter to MIDI
+        // Learn, as on MPFree's own page, and moves nothing; off the
+        // controls it learns nothing.
+        p.status.shift = true;
+        p.refresh_hint();
+        let acts: Vec<FromUi> = [
+            p.touch(4, Touch::Down, 500, skin.y + 200),
+            p.touch(4, Touch::Move, 500, skin.y + 120),
+            p.touch(4, Touch::Up, 500, skin.y + 120),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(p.take_actions())
+        .collect();
+        assert!(
+            acts.contains(&FromUi::LearnValue(LearnValue::Synth(1))),
+            "{acts:?}"
+        );
+        assert!(
+            !acts
+                .iter()
+                .any(|a| matches!(a, FromUi::Synth(SynthAction::Set { .. }))),
+            "{acts:?}"
+        );
+        p.touch(5, Touch::Down, 1200, skin.y + 600);
+        p.touch(5, Touch::Up, 1200, skin.y + 600);
+        assert!(!p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::LearnValue(_))));
+        p.status.shift = false;
+        p.refresh_hint();
         // Q-Link 4 turns what the skin's Q-Links give it (parameter A).
         p.apply(ToUi::SynthQLink(3, -20));
         let acts = p.take_actions();
@@ -19782,6 +19980,7 @@ mod tests {
                     muted: false,
                     bars: Some(1),
                     after: mpfree_looper::After::Play,
+                    starts: mpfree_looper::Starts::Bar,
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
@@ -20632,6 +20831,48 @@ mod tests {
         p.apply(ToUi::PadUp(1));
         p.tick(0.033);
         assert_eq!(load_on(&p).as_deref(), Some("A2"));
+        assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE, "it stays open");
+    }
+
+    /// The browser's pad map (the redesign's board 8): under a sound, the
+    /// kit the pads play, bank by bank, with each pad's sound and the pad
+    /// picked. A finger on one of its pads picks that pad, as a hit on the
+    /// MPC's pad does (Load follows: Load on A9), and plays what is on it
+    /// until the finger lifts.
+    #[test]
+    fn the_browsers_pad_map_picks_a_pad_and_plays_it_while_held() {
+        use mpfree_browser_ui::{BrowserView, BROWSER};
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        let screen = p.browser.as_ref().unwrap().screen();
+        let map = screen.pad_map.clone().expect("the map under Kick 01");
+        assert_eq!(map.title, "Breaks · bank A · tap a pad");
+        assert_eq!(map.cells[4].name.as_deref(), Some("Break 92"));
+        assert!(map.cells[4].picked, "A5, the pad picked");
+        assert_eq!(map.cells[8].name, None);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(BROWSER).unwrap();
+        let (x, y) = BrowserView::map_point(r, &screen, 8).unwrap();
+        p.take_actions();
+        p.touch(1, Touch::Down, x, y);
+        p.tick(0.033);
+        assert!(
+            p.take_actions()
+                .contains(&FromUi::Audition { pad: 8, down: true }),
+            "A9 sounds while held"
+        );
+        assert_eq!(p.sample.pad(), 8);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "browser: pad A9 picked (empty)"));
+        let screen = p.browser.as_ref().unwrap().screen();
+        assert_eq!(screen.load_on.as_deref(), Some("A9"));
+        assert!(screen.pad_map.unwrap().cells[8].picked);
+        p.touch(1, Touch::Up, x, y);
+        p.tick(0.033);
+        assert!(p.take_actions().contains(&FromUi::Audition {
+            pad: 8,
+            down: false
+        }));
         assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE, "it stays open");
     }
 

@@ -788,6 +788,7 @@ CHECKS = (
          "the_loop_records_the_pads_with_their_effects",
          "rec_closes_on_the_bar_line_and_stop_stops_the_loop_at_once",
          "capture_turns_what_you_played_into_a_loop",
+         "when_i_play_starts_the_loop_and_the_song_on_the_first_pad",
          "note_repeat_latch_stop_and_the_looper_write_their_lines"],
         needs=['SAMPLER']),
     Check(
@@ -1049,6 +1050,23 @@ CHECKS = (
         ["the_clip_cards_program_goes_out_as_the_clip_starts",
          "a_clips_program_goes_after_the_tracks_own"],
         needs=['TRACK MIX / PAD MIX', 'SHIFT', 'MENU']),
+    Check(
+        "browser-pad-map", "BROWSE's pad map: a kit pad held plays, a tap picks the pad Load goes on",
+        "The Play, Pads and Sequencer redesign's step 1 (board 8): under a sample BROWSE shows the kit's 16 pads; "
+        "a held cell plays that pad and picks it (state-changing only in the app: the pad picked)", "hands",
+        ["1. Press BROWSE and tap Samples. Tap a sample in the list: under its details the kit's pads show,",
+         "   titled with the kit's name, bank A and \"tap a pad\".",
+         "2. Hold the A1 cell: pad 1 plays while you hold it, and A1 lights. Let go.",
+         "3. Tap \u203a beside the title: bank B shows. Tap \u2039 to come back to bank A.",
+         "4. Tap the A16 cell: Load now reads Load on A16. Press BROWSE to close the browser without loading:",
+         "   the Sample tab has pad A16 picked."],
+        [("the A1 cell picked pad A1", seen(r"^browser: pad A1 picked \(")),
+         ("the A16 cell picked pad A16", seen(r"^browser: pad A16 picked \(")),
+         ("the touchscreen was used", touch_rose()),
+         ("the app kept running", stayed_up())],
+        "Did pad 1 sound for as long as you held its cell, and stop when you let go?",
+        ["the_browsers_pad_map_picks_a_pad_and_plays_it_while_held"],
+        needs=['BROWSE']),
     Check(
         "midi-file", "A MIDI file loaded from BROWSE as clips, on the pads that played it",
         "new: BROWSE loads a .mid as clips (MIDI powerhouse PR 6); an export's own MIDI file comes back", "hands",

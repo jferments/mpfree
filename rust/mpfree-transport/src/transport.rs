@@ -565,6 +565,12 @@ impl Transport {
         self.tempo_grid = ticks.max(MIN_SPAN_TICKS);
     }
 
+    /// Commands [`Transport::command`] can still queue before the queue is
+    /// full, for a caller whose commands must all go in or none.
+    pub fn queue_room(&self) -> usize {
+        MAX_COMMANDS - self.queued
+    }
+
     /// Queue a command for absolute frame `at`. Commands on the same frame
     /// apply in the order given. Returns false if the queue is full.
     pub fn command(&mut self, at: u64, cmd: Command) -> bool {

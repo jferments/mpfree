@@ -20,7 +20,7 @@ use crate::looper_tab::{
 };
 use crate::looping::{LoopSource, LoopWave, LooperView};
 use mpfree_looper::{
-    After, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Status, Step,
+    After, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Starts, Status, Step,
     MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
 };
 use mpfree_time_ui::view::{LoopPlace, TransportInfo};
@@ -584,6 +584,11 @@ pub fn strip_command(c: Ctl, s: &Status) -> Option<Command> {
             Some(Command::Edit(Edit::Speed(i as i8 - 1)))
         }
         Ctl::Merge if editable(s) && s.layers > 1 => Some(Command::Merge),
+        Ctl::Starts(i) => Some(Command::SetStarts(if i == 0 {
+            Starts::Bar
+        } else {
+            Starts::Play
+        })),
         Ctl::Then(i) => Some(Command::SetAfter(if i == 0 {
             After::Play
         } else {
@@ -617,6 +622,9 @@ pub fn why_faint(c: Ctl, s: &Status) -> &'static str {
         Ctl::History => "No history yet: overdub a layer first",
         Ctl::Merge if s.phase == Phase::Playing && s.merging.is_none() => {
             "Merge needs two layers or more: overdub one first"
+        }
+        Ctl::Starts(_) => {
+            "Recording the other loops starts on the bar: When I play is for the pads and the line input"
         }
         _ => phase,
     }
@@ -1347,6 +1355,10 @@ impl LooperPage {
                             },
                         )
                     }
+                    // Starts: When I play, and no note yet: play to start.
+                    RingState::Waiting(_) if l.listening => {
+                        (0.0, 0, ("Play".to_string(), "to start".to_string()))
+                    }
                     RingState::Waiting(b) => (
                         0.0,
                         0,
@@ -1457,6 +1469,9 @@ impl LooperPage {
             }
             match s.phase {
                 Phase::Empty => parts.push(format!("empty · {records}")),
+                Phase::Armed if s.listening => {
+                    parts.push(format!("waits for you to play · {records}"))
+                }
                 Phase::Armed => parts.push(format!("waits for the bar line · {records}")),
                 Phase::Recording => parts.push("recording the first pass".to_string()),
                 _ => {
@@ -1589,6 +1604,12 @@ impl LooperPage {
                 monitor: (!v.resample && v.source == LoopSource::Line && v.line_on)
                     .then_some(v.monitor),
                 bars: BAR_CHOICES.iter().position(|&b| b == s.bars).unwrap_or(0) as u8,
+                // A resample starts on the bar.
+                starts: match (v.resample, s.starts) {
+                    (true, _) => (0, false),
+                    (false, Starts::Bar) => (0, true),
+                    (false, Starts::Play) => (1, true),
+                },
                 then: match s.after {
                     After::Play => 0,
                     After::Overdub => 1,
@@ -1602,6 +1623,18 @@ impl LooperPage {
                     "Capture: Loop {} plays once what you played is in (Capture again: stop)",
                     n + 1
                 ),
+                Phase::Armed if s.listening => format!(
+                    "Loop {} records when you play: {} starts it {}",
+                    n + 1,
+                    match v.source {
+                        LoopSource::Pads => "the first pad you play",
+                        LoopSource::Line => "the line input's first note",
+                    },
+                    match self.transport.state {
+                        State::Playing | State::Recording => "on the nearest bar line",
+                        _ => "and the song with it",
+                    }
+                ),
                 Phase::Armed => format!("Loop {} records from the next bar line", n + 1),
                 _ if s.kept => format!(
                     "Loop {} cleared: UNDO brings it back, or tap its ring to record",
@@ -1610,6 +1643,7 @@ impl LooperPage {
                 _ => format!("Tap Loop {}'s ring or press REC: it {records}", n + 1),
             },
             waits: match s.phase {
+                Phase::Armed if s.listening => Some("REC starts when you play".to_string()),
                 Phase::Armed => Some(match self.transport.state {
                     State::Playing | State::Recording => {
                         let beats = i64::from(self.transport.meter.beats.max(1));
@@ -2294,6 +2328,7 @@ mod tests {
                 source: 1,
                 monitor: Some(false),
                 bars: 2,
+                starts: (0, true),
                 then: 0
             },
             "the line in shows its monitor; 2 bars is the third length"

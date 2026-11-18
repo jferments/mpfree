@@ -1138,7 +1138,7 @@ impl SamplePage {
         self.projects.get_mut(kit)
     }
 
-    #[cfg(test)]
+    /// Kit `kit` (the browser's pad map reads its pads).
     pub fn project(&self, kit: usize) -> Option<&Project> {
         self.projects.get(kit)
     }

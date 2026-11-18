@@ -162,7 +162,7 @@ use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use mpfree_midi::monitor::{Dir, Event, Mpc, To};
-use mpfree_midi::profile::KIT_PADS;
+use mpfree_midi::profile::{self, KIT_PADS};
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::{SynthAction, SynthState};
 use mpfree_time_ui::view::AudioAction;
@@ -525,6 +525,17 @@ impl Out {
             }
         } else {
             self.note(line);
+        }
+    }
+
+    /// What a loop that starts when you play said ([`LoopStart`]): the
+    /// log, and the screen too for a start refused.
+    fn loop_start(&mut self, said: LoopStart) {
+        if let Some((line, tell)) = said {
+            self.note(&line);
+            if tell {
+                self.show(gui::ToUi::Tell(line));
+            }
         }
     }
 
@@ -2009,6 +2020,20 @@ fn pad_note_names() -> String {
         .join(", ")
 }
 
+/// How keys play the armed track: by note while the pads play notes (a
+/// synth pad layout, `key_notes`), the kit's own pads while it plays a kit
+/// (not the synth, nor an instrument of its own), else as the pad (1 to
+/// 16) the MPC gives each note.
+fn keys_play(synth_on: bool, key_notes: bool, own: bool) -> midi_in::KeysPlay {
+    if key_notes {
+        midi_in::KeysPlay::Notes
+    } else if !synth_on && !own {
+        midi_in::KeysPlay::KitPads
+    } else {
+        midi_in::KeysPlay::Pads
+    }
+}
+
 /// Controller mode as the screen shows it, while it is on: the header's
 /// chip ("Controller → Juno-X · ch 3 · A", or why nothing goes) and the
 /// Q-Link column's cards.
@@ -2596,6 +2621,88 @@ fn erase_held_steps(
         return None;
     }
     keys.erase_locks(time).map(app::Effect::Tell)
+}
+
+/// What a loop that starts when you play (the Looper tab's Starts: When I
+/// play) said: a line for the log, and whether the screen says it too
+/// (a start refused).
+type LoopStart = Option<(String, bool)>;
+
+/// Starts: When I play, a pad played. Pads are read at the period's top,
+/// before the transport runs, so the hit is on the coming period's first
+/// frame: a loop listening for the pads starts on it, and with the song
+/// stopped the song starts on it too (from the bar it stopped in), so
+/// bar 1 is your note. `take`: a take ready on the armed track (as for
+/// [`time::TimeHost::take_waits`]) records from there too.
+fn pad_starts_loop(
+    looper: &mut looping::LoopHost,
+    time: &mut time::TimeHost,
+    take: Option<bool>,
+    exporting: bool,
+) -> LoopStart {
+    let at = time.next_frame();
+    let n = looper.listens_for_pads(at)?;
+    let mut line = format!("looper: Loop {} starts on your note", n + 1);
+    if time.info().state == mpfree_transport::State::Stopped {
+        match start_song_on_note(time, at, take, exporting) {
+            Ok(more) => {
+                line.push_str(", and the song with it");
+                if let Some(m) = more {
+                    line = format!("{line}; {m}");
+                }
+            }
+            Err(why) => return Some((looper.note_refused(n, &why), true)),
+        }
+    }
+    if !looper.played(at) {
+        return Some((
+            format!(
+                "looper: Loop {}: NOT started, the command queue is full",
+                n + 1
+            ),
+            true,
+        ));
+    }
+    Some((line, false))
+}
+
+/// Starts: When I play, after the looper's period: a loop that heard the
+/// line input with the song stopped starts the song on the next period's
+/// first frame (its first pass lines up with that, from your note).
+fn loop_starts_song(
+    looper: &mut looping::LoopHost,
+    time: &mut time::TimeHost,
+    take: Option<bool>,
+    exporting: bool,
+) -> LoopStart {
+    let n = looper.take_start()?;
+    Some(
+        match start_song_on_note(time, time.next_frame(), take, exporting) {
+            Ok(more) => (
+                format!(
+                    "looper: Loop {} heard you: the song starts on your note{}",
+                    n + 1,
+                    more.map(|m| format!("; {m}")).unwrap_or_default()
+                ),
+                false,
+            ),
+            Err(why) => (looper.start_refused(n, &why), true),
+        },
+    )
+}
+
+/// The song starts on a note on frame `at`, unless an export runs (the
+/// transport's own refusals: [`time::TimeHost::start_at`]).
+fn start_song_on_note(
+    time: &mut time::TimeHost,
+    at: u64,
+    take: Option<bool>,
+    exporting: bool,
+) -> Result<Option<String>, String> {
+    if exporting {
+        return Err("an export is running".to_string());
+    }
+    time.start_at(at, None, take)
 }
 
 /// Live erase (sequencer roadmap S1, the MPC's way): whether a pad
@@ -3572,8 +3679,9 @@ struct SeqPads<'a> {
 
 /// A key a route sends to a track that isn't armed (the I/O view's
 /// Routing): played at once where the track's clips play, on MIDI out, its
-/// own instrument, or what it plays (its kit's pad by the MPC's pad notes,
-/// or the synth by note: `synth` if the track plays it, else `kit`), and
+/// own instrument, or what it plays (its kit's pad that sends the note,
+/// `profile::kit_pad_of_note`, or the synth by note: `synth` if the track
+/// plays it, else `kit`), and
 /// on CV out if it follows the track. It goes through no arp, and nothing
 /// records it: REC records the armed track.
 // What a track plays comes in pieces the sound loop holds apart.
@@ -3668,20 +3776,15 @@ fn play_routed(
         (Some(s), Event::NoteOn { note, velocity }) => s.note_on_note(note, velocity, 0),
         (Some(s), Event::NoteOff { note }) => s.note_off_note(note, 0),
         (Some(s), Event::Pressure { note, value }) => s.pressure_note(note, value),
+        // A kit: the pad that sends the note, in any bank.
         (None, Event::NoteOn { note, velocity }) => {
-            if let Some(pad) = mpc_one::pad_index(note) {
-                player.hit_kit_at(kit, usize::from(pad), velocity, 0);
-            }
+            player.hit_kit_at(kit, profile::kit_pad_of_note(note), velocity, 0);
         }
         (None, Event::NoteOff { note }) => {
-            if let Some(pad) = mpc_one::pad_index(note) {
-                player.release_kit_at(kit, usize::from(pad), 0);
-            }
+            player.release_kit_at(kit, profile::kit_pad_of_note(note), 0);
         }
         (None, Event::Pressure { note, value }) => {
-            if let Some(pad) = mpc_one::pad_index(note) {
-                player.pressure_kit_at(kit, usize::from(pad), value, 0);
-            }
+            player.pressure_kit_at(kit, profile::kit_pad_of_note(note), value, 0);
         }
         _ => {}
     }
@@ -5571,6 +5674,7 @@ fn player_session(
     // Keys a route sends to a track that isn't armed, played at once.
     let mut routed_keys: Vec<(u8, midi_in::Key)> = Vec::with_capacity(64);
     let mut routed_held = midi_in::RoutedHeld::new();
+    let mut routed_pads = midi_in::RoutedPads::new();
     // The track the keys' expression last went to on MIDI out: when
     // another is armed, its gear's bend and pressure go back to rest.
     let mut expr_track = 0usize;
@@ -5710,6 +5814,13 @@ fn player_session(
                 }
                 gui::FromUi::Pad { pad, down: true } if pad < 16 => {
                     let v = app.settings.screen_velocity;
+                    let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
+                    out.loop_start(pad_starts_loop(
+                        &mut looper,
+                        &mut time,
+                        take,
+                        export.running(),
+                    ));
                     if let Some(ev) = app.pressed_event(pad, v, true) {
                         time.pad_pressed(0, ev);
                     }
@@ -6301,7 +6412,14 @@ fn player_session(
         ports.show_pressure = app.settings.show_pressure;
         // The MIDI monitor: where keys go, and the debug sources while the
         // developer tools are on.
-        music.set_armed(app.track() as u8, synth_on && app.arp_plays_notes());
+        music.set_armed(
+            app.track() as u8,
+            keys_play(
+                synth_on,
+                synth_on && app.arp_plays_notes(),
+                mix.instruments.holds(app.track()),
+            ),
+        );
         music.feed.debug = app.settings.debug_mode;
         // Prefs' "Send MIDI and CV out" turned on or off (and its kept
         // value at the first period).
@@ -6619,8 +6737,12 @@ fn player_session(
             }
         }
         // Keys play the armed track: by note while the pads play notes (a
-        // synth pad layout), else as the pad the MPC gives that note.
+        // synth pad layout); on a kit, each note the kit pad that sends it
+        // (`profile::kit_pad_of_note`, A1 to H16 whatever bank the pads
+        // show); else as the pad the MPC gives that note.
         let key_notes = synth_on && app.arp_plays_notes();
+        let kit_keys = keys_play(synth_on, key_notes, mix.instruments.holds(armed))
+            == midi_in::KeysPlay::KitPads;
         if armed != expr_track {
             midi_out.rest_expression(expr_track);
             cv_out.rest_expression(expr_track);
@@ -6637,6 +6759,15 @@ fn player_session(
             let to_gear = expr.is_some_and(|i| midi_out.expression(armed as u16, i));
             let pad_event = match k {
                 midi_in::Key::Down { note, velocity } if key_notes => {
+                    // A key is a note too, for a loop that starts when you
+                    // play (with a kit, keys come back as pads, below).
+                    let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
+                    out.loop_start(pad_starts_loop(
+                        &mut looper,
+                        &mut time,
+                        take,
+                        export.running(),
+                    ));
                     app.key_down(note, velocity);
                     // Step pads of the line held: the key goes on them.
                     let p = step_key(&app, &mut step_keys, &mut time, note, Some(velocity));
@@ -6679,6 +6810,32 @@ fn player_session(
                     }
                     None
                 }
+                // A kit: the key plays its kit pad through the track's arp
+                // (and records), as a pad would, but in any bank and never
+                // as STEP SEQ's, TRACK MUTE's or the loop keys' pads.
+                midi_in::Key::Down { note, velocity } if kit_keys => {
+                    let pad = profile::kit_pad_of_note(note) as u8;
+                    if let Some(ev) = app.pressed_pad_event(pad, velocity, true) {
+                        time.pad_pressed(0, ev);
+                    }
+                    fx.extend(app.kit_key_down(pad, velocity));
+                    None
+                }
+                midi_in::Key::Up { note } if kit_keys => {
+                    let pad = profile::kit_pad_of_note(note) as u8;
+                    if let Some(ev) = app.pressed_pad_event(pad, 0, false) {
+                        time.pad_pressed(0, ev);
+                    }
+                    fx.extend(app.kit_key_up(pad));
+                    None
+                }
+                midi_in::Key::Pressure { note, value } if kit_keys => {
+                    let pad = profile::kit_pad_of_note(note) as u8;
+                    time.pad_pressure(0, pad, value);
+                    app.kit_key_pressure(pad, value);
+                    player.pressure(usize::from(pad), value);
+                    None
+                }
                 midi_in::Key::Down { note, velocity } => {
                     mpc_one::pad_index(note).map(|pad| ControlEvent::PadDown { pad, velocity })
                 }
@@ -6701,11 +6858,11 @@ fn player_session(
                     event: Some(event),
                     music: true,
                 }),
-                None if !key_notes && matches!(k, midi_in::Key::Down { .. }) => {
+                None if !key_notes && !kit_keys && matches!(k, midi_in::Key::Down { .. }) => {
                     key_misses += 1;
                     if key_misses == 1 {
                         out.midi(&format!(
-                            "+{mt:.3} s a key with no pad: with a kit, keys play the pads by the MPC's pad notes ({}); \
+                            "+{mt:.3} s a key with no pad: on 16 pads (no pad layout), keys play the pads by the MPC's pad notes ({}); \
                              other notes are counted",
                             pad_note_names()
                         ));
@@ -6736,6 +6893,16 @@ fn player_session(
             midi_out.thru(p.from, p.to, p.msg);
         }
         for (track, k) in routed_keys.drain(..) {
+            // CAPTURE keeps the key as the pad that plays its note on the
+            // track, and puts it in that track.
+            let t = usize::from(track);
+            let synth_has = track_kits.plays_synth(t).then_some(&*synth);
+            let kept = routed_pads.event(track, k, |n| {
+                midi_file::pad_on_track(&mix.instruments, synth_has, t, n)
+            });
+            if let Some(ev) = kept {
+                time.routed_played(track, 0, ev);
+            }
             play_routed(
                 track,
                 k,
@@ -6858,6 +7025,13 @@ fn player_session(
                 }
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
+                    let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
+                    out.loop_start(pad_starts_loop(
+                        &mut looper,
+                        &mut time,
+                        take,
+                        export.running(),
+                    ));
                     if let Some(ev) = app.pressed_event(pad, velocity, true) {
                         time.pad_pressed(0, ev);
                     }
@@ -7428,16 +7602,16 @@ fn player_session(
         }
         // Another device's clock, when the project's tempo is from a port
         // (M4): the leader's bytes read this period go to the follower
-        // before the transport runs, as read at the period's top. A take
-        // ready now records from the leader's Start (sequencer S5).
+        // before the transport runs, stamped half a period before its top
+        // (they came during the period before). A take ready now records
+        // from the leader's Start (sequencer S5).
         time.set_leader(music.leader_name());
         time.take_waits(app.rec.ready.map(|take| take == rec_arm::Take::Add));
         let mut took = None;
         music.leader_clock(|follow, bytes| {
             time.follow(follow);
             if !bytes.is_empty() {
-                let frame = time.next_frame();
-                took = time.clock_in(frame, bytes);
+                took = time.clock_read(PERIOD as u32, bytes);
             }
         });
         if let Some(line) = took {
@@ -8029,6 +8203,14 @@ fn player_session(
             out.note(&line);
         }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
+        // A loop that heard the line input with the song stopped starts it.
+        let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
+        out.loop_start(loop_starts_song(
+            &mut looper,
+            &mut time,
+            take,
+            export.running(),
+        ));
         // The audio tracks record the same line input onto the Song view's
         // lanes, and play into the mixer's Audio track (song mode only).
         tracks.follow_latency(app.settings.loop_latency);
@@ -8199,6 +8381,11 @@ fn player_session(
         // mod engine moved in the mixer's (a step's lock, a lane, a macro,
         // a learned knob) join this period's notes on their frames, a
         // step's ahead of its note.
+        // Each track's CC scale and CC smooth as they are now (macros and
+        // LFOs on their settings too) shape its controls from here.
+        for t in 0..mpfree_midi::output::MAX_TRACKS {
+            midi_out.set_note_fx(t, &time.note_fx_now(t));
+        }
         for (offset, addr, value) in mix.modu.take_midi_values() {
             midi_out.control(offset, addr, value);
         }

@@ -918,6 +918,100 @@ mod looper {
             s.button("STOP");
         });
     }
+
+    /// Starts: When I play (design step 4b). Armed with the song stopped,
+    /// the loop waits for you: nothing starts until the first pad, which
+    /// starts the song and the loop together, bar 1 on the hit. With the
+    /// song playing, a pad early in a bar starts the next loop on that
+    /// bar's line, the pad's sound in it.
+    #[test]
+    fn when_i_play_starts_the_loop_and_the_song_on_the_first_pad() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            let starts = at(&mut s, "leditor", "starts", 1);
+            assert_eq!(starts.label, "When I play");
+            s.press_target(&starts).run_for(0.1);
+            let one = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&one).run_for(0.1);
+            s.button("REC").run_for(0.1);
+            assert!(
+                s.said().iter().any(|l| l
+                    == "looper: Record: armed, the first pass starts when you play \
+                        (the first pad you play) (1 bar)"),
+                "{:?}",
+                s.said()
+            );
+            let ring = at(&mut s, "ldeck", "ring", 0);
+            assert_eq!(ring.label, "Loop 1 ring: cancel");
+            // It waits for you, the song stopped, as long as you like.
+            s.run_for(3.0);
+            let st = status(&s);
+            assert_eq!((st.phase, st.listening), (Phase::Armed, true));
+            assert_eq!(s.time.info().state, mpfree_transport::State::Stopped);
+            // The first pad starts the song and the loop on it.
+            s.pad(0, 120, 0.1);
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "looper: Loop 1 starts on your note, and the song with it"),
+                "{:?}",
+                s.said()
+            );
+            assert!(s.time.info().state.rolling(), "the song plays");
+            until_phase(&mut s, Phase::Playing, 2.5);
+            let bar = 4 * PPQ as i64;
+            let st = status(&s);
+            assert_eq!(
+                (st.origin, st.ticks, st.lead),
+                (0, bar, 0),
+                "bar 1, one bar"
+            );
+            let start = {
+                let v = s.looper.looper.loop_layer(0, 0).expect("a layer");
+                let mut f = vec![[0.0f32; 2]; 4_410];
+                v.read(0, &mut f);
+                f.iter().fold(0.0f32, |m, x| m.max(x[0].abs()))
+            };
+            assert!(start > 0.05, "the pad at the loop's start: {start}");
+
+            // The song playing: Loop 2, When I play, and a pad a quarter
+            // of a second into a bar (a bar is 2 s at 120 BPM).
+            let ring = at(&mut s, "ldeck", "ring", 1);
+            s.press_target(&ring).run_for(0.1);
+            let starts = at(&mut s, "leditor", "starts", 1);
+            s.press_target(&starts).run_for(0.1);
+            let one = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&one).run_for(0.1);
+            let l2 = |s: &Session| s.looper.looper.loop_status(1).unwrap();
+            assert!(l2(&s).listening, "{:?}", l2(&s));
+            let pos = |s: &Session| s.time.info().position;
+            let end = s.t() + 2.5;
+            while pos(&s).rem_euclid(bar) < bar / 8 && s.t() < end {
+                s.run_periods(1);
+            }
+            while pos(&s).rem_euclid(bar) >= bar / 8 && s.t() < end {
+                s.run_periods(1);
+            }
+            s.run_for(0.25);
+            let line = pos(&s) - pos(&s).rem_euclid(bar);
+            s.pad(1, 120, 0.1);
+            let end = s.t() + 2.5;
+            while l2(&s).phase != Phase::Playing && s.t() < end {
+                s.run_periods(1);
+            }
+            let st = l2(&s);
+            assert_eq!(st.phase, Phase::Playing, "Loop 2 plays");
+            assert_eq!(
+                (st.origin, st.lead),
+                (line, 0),
+                "on the bar line before the pad"
+            );
+            assert_eq!(status(&s).phase, Phase::Playing, "Loop 1 plays on");
+            s.button("STOP");
+        });
+    }
 }
 
 #[cfg(test)]
