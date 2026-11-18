@@ -690,6 +690,8 @@ impl Keys {
                     }
                 }
             }
+            // The pedals are held by the host for this engine (`Node::hears`).
+            NodeEvent::Control { .. } => {}
         }
     }
 

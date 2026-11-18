@@ -31,6 +31,11 @@ pub struct PadBar {
     /// a chevron: the Pads tab's Kit, which opens the list of kits); a tap
     /// gives [`EventKind::Tab`] 1. Only beside `button`.
     pub kit: Option<String>,
+    /// `button` is a switch, on or off (the Pads tab's Perform view's "On
+    /// the pads"): a light at its left in place of the folder, lit and
+    /// the button outlined while on. A tap still gives
+    /// [`EventKind::Tab`] 0.
+    pub switch: Option<bool>,
 }
 
 const SEG_H: i32 = 40;
@@ -55,6 +60,7 @@ impl PadBar {
             nameable: false,
             button: None,
             kit: None,
+            switch: None,
         }
     }
 
@@ -178,6 +184,21 @@ impl Widget for PadBar {
                 cx.canvas
                     .fill_rect(Rect::new(cx0 + chev - 2 - i, y, 2, 2), t.text_dim);
             }
+        }
+        if let (Some(b), Some(label), Some(on)) =
+            (self.button_rect(r), self.button.as_ref(), self.switch)
+        {
+            // A switch: a light at its left, lit and outlined while on.
+            cx.canvas.fill_round_rect(b, 12, t.raised);
+            if on {
+                cx.canvas.stroke_round_rect(b, 12, 2, t.accent);
+            }
+            let dot = Rect::new(b.x + 18, b.y + b.h / 2 - 5, 10, 10);
+            cx.canvas
+                .fill_round_rect(dot, 5, if on { t.accent } else { t.text_faint });
+            let text = Rect::new(dot.right() + 12, b.y, b.right() - dot.right() - 22, b.h);
+            cx.text(FontId::Bold, t.size_body, text, Align::Left, t.text, label);
+            return;
         }
         if let (Some(b), Some(label)) = (self.button_rect(r), self.button.as_ref()) {
             // The button: raised, a folder at its left, the label after it.
@@ -1249,10 +1270,19 @@ pub struct KitTrack {
 /// [`EventKind::Select`] with its place in the project; a tap on + Kit
 /// track gives [`EventKind::Tab`]`(0)`. Tracks that don't fit are left
 /// out, but the armed one always shows (in the last place).
+///
+/// With [`KitTracks::perform`] set the row is "Pads of" (board 7): the
+/// project's **Perform pads** have a chip at the far right, past a rule,
+/// and a tap on it gives [`EventKind::Tab`]`(1)`. While it shows, its chip
+/// is outlined in place of the armed track's, and a tap on any enabled
+/// track (the armed one too) goes back to the kit's pads.
 pub struct KitTracks {
     pub tracks: Vec<KitTrack>,
     /// + Kit track can add a track (faint when not).
     pub can_add: bool,
+    /// The Perform chip: None for none; Some(true) while the Perform set
+    /// shows.
+    pub perform: Option<bool>,
 }
 
 const KT_CAPTION_W: i32 = 64;
@@ -1260,12 +1290,16 @@ const KT_ADD_W: i32 = 124;
 const KT_GAP: i32 = 8;
 const KT_CHIP_MIN: i32 = 150;
 const KT_CHIP_MAX: i32 = 220;
+/// The Perform chip's width, and the room for the rule before it.
+const KT_PERFORM_W: i32 = 300;
+const KT_RULE_W: i32 = 17;
 
 impl KitTracks {
     pub fn new() -> KitTracks {
         KitTracks {
             tracks: Vec::new(),
             can_add: true,
+            perform: None,
         }
     }
 
@@ -1273,17 +1307,41 @@ impl KitTracks {
         r.inset_xy(12, 6)
     }
 
+    /// The Perform chip, when the row has one.
+    pub fn perform_rect(&self, r: Rect) -> Option<Rect> {
+        self.perform?;
+        let b = Self::inner(r);
+        Some(Rect::new(b.right() - KT_PERFORM_W, b.y, KT_PERFORM_W, b.h))
+    }
+
+    /// The room right of the tracks taken by the Perform chip and its rule.
+    fn perform_room(&self) -> i32 {
+        if self.perform.is_some() {
+            KT_PERFORM_W + KT_RULE_W
+        } else {
+            0
+        }
+    }
+
     /// + Kit track's button.
     pub fn add_rect(&self, r: Rect) -> Rect {
         let b = Self::inner(r);
-        Rect::new(b.right() - KT_ADD_W, b.y, KT_ADD_W, b.h)
+        let right = b.right() - self.perform_room();
+        Rect::new(right - KT_ADD_W, b.y, KT_ADD_W, b.h)
+    }
+
+    /// A tap on track chip `k` arms it: an enabled track, not the armed
+    /// one, unless the Perform set shows (then any enabled track goes
+    /// back to the kit's pads).
+    fn tappable(&self, k: &KitTrack) -> bool {
+        k.enabled && (!k.armed || self.perform == Some(true))
     }
 
     /// The tracks shown, in order, by their place in [`KitTracks::tracks`],
     /// and each chip's width.
     pub fn shown(&self, r: Rect) -> (Vec<usize>, i32) {
         let b = Self::inner(r);
-        let room = (b.w - KT_CAPTION_W - KT_ADD_W - KT_GAP).max(0);
+        let room = (b.w - KT_CAPTION_W - KT_ADD_W - KT_GAP - self.perform_room()).max(0);
         let fit = ((room + KT_GAP) / (KT_CHIP_MIN + KT_GAP)).max(1) as usize;
         let mut shown: Vec<usize> = (0..self.tracks.len().min(fit)).collect();
         if let Some(armed) = self.tracks.iter().position(|t| t.armed) {
@@ -1329,15 +1387,22 @@ impl Widget for KitTracks {
             caption,
             Align::Left,
             t.text_dim,
-            "KIT OF",
+            if self.perform.is_some() {
+                "PADS OF"
+            } else {
+                "KIT OF"
+            },
         );
+        // While the Perform set shows, its chip is the one outlined.
+        let perform_open = self.perform == Some(true);
         for (i, k) in self.tracks.iter().enumerate() {
             let Some(c) = self.chip_rect(r, i) else {
                 continue;
             };
+            let outlined = k.armed && !perform_open;
             cx.canvas
-                .fill_round_rect(c, 10, if k.armed { t.surface } else { t.raised });
-            if k.armed {
+                .fill_round_rect(c, 10, if outlined { t.surface } else { t.raised });
+            if outlined {
                 cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
             }
             let inner = c.inset_xy(12, 0);
@@ -1407,6 +1472,40 @@ impl Widget for KitTracks {
             c,
             "+ Kit track",
         );
+        if let Some(p) = self.perform_rect(r) {
+            // A rule between the tracks and the set: it isn't a track.
+            let x = p.x - KT_RULE_W / 2 - 1;
+            cx.canvas
+                .fill_rect(Rect::new(x, p.y + 6, 2, (p.h - 12).max(0)), t.outline);
+            cx.canvas
+                .fill_round_rect(p, 10, if perform_open { t.surface } else { t.raised });
+            if perform_open {
+                cx.canvas.stroke_round_rect(p, 10, 2, t.accent);
+            }
+            let inner = p.inset_xy(14, 0);
+            let w = cx.text(
+                FontId::Bold,
+                t.size_small,
+                inner,
+                Align::Left,
+                t.text,
+                "Perform pads",
+            );
+            let rest = Rect::new(
+                inner.x + w + 10,
+                inner.y,
+                (inner.w - w - 10).max(0),
+                inner.h,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                rest,
+                Align::Left,
+                t.text_dim,
+                "one set for the project",
+            );
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -1417,12 +1516,18 @@ impl Widget for KitTracks {
             .filter_map(|(i, k)| {
                 let c = self.chip_rect(r, i)?;
                 Some(
-                    Target::tap("track", k.track, k.name.clone(), c)
-                        .disabled_if(!k.enabled || k.armed),
+                    Target::tap("track", k.track, k.name.clone(), c).disabled_if(!self.tappable(k)),
                 )
             })
             .collect();
         out.push(Target::tap("add", 0, "+ Kit track", self.add_rect(r)).disabled_if(!self.can_add));
+        if let Some(p) = self.perform_rect(r) {
+            // The set showing already: the tap changes nothing.
+            out.push(
+                Target::tap("perform", 1, "Perform pads", p)
+                    .disabled_if(self.perform == Some(true)),
+            );
+        }
         out
     }
 
@@ -1433,10 +1538,13 @@ impl Widget for KitTracks {
         if self.add_rect(r).contains(x, y) {
             return self.can_add.then_some(EventKind::Tab(0));
         }
+        if self.perform_rect(r).is_some_and(|p| p.contains(x, y)) {
+            return (self.perform == Some(false)).then_some(EventKind::Tab(1));
+        }
         let i = (0..self.tracks.len())
             .find(|&i| self.chip_rect(r, i).is_some_and(|c| c.contains(x, y)))?;
         let k = &self.tracks[i];
-        (k.enabled && !k.armed).then_some(EventKind::Select(k.track))
+        self.tappable(k).then_some(EventKind::Select(k.track))
     }
 }
 
@@ -1634,14 +1742,14 @@ impl Widget for PadMap {
             }
             let (name, detail) = rest.take_top(rest.h / 2 + 4);
             if filled {
-                cx.text(
-                    FontId::Bold,
-                    t.size_small,
-                    name,
-                    Align::Left,
-                    t.text,
-                    &c.name,
-                );
+                // A name a little too long for its pad ("Delay throw") is
+                // drawn smaller before it is cut.
+                let px = if cx.measure(FontId::Bold, t.size_small, &c.name) > name.w {
+                    t.size_small - 2.0
+                } else {
+                    t.size_small
+                };
+                cx.text(FontId::Bold, px, name, Align::Left, t.text, &c.name);
                 cx.text(
                     FontId::Sans,
                     t.size_small - 2.0,

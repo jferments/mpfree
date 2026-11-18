@@ -62,8 +62,9 @@ pub mod view;
 pub use macros::{MacroAction, MacrosView};
 pub use notes::{NoteAction, NotesState};
 pub use state::{
-    macro_color, picks, picture, strip_id, strip_of, ChainState, MacrosState, ParamView, Pick,
-    SlotView, StripList, StripPick, TargetView, STRIP_GROUPS,
+    macro_color, picks, picture, sidechain_group, sidechain_summary, strip_id, strip_of,
+    ChainState, MacrosState, ParamView, Pick, SidechainFor, SidechainView, SlotView, StripList,
+    StripPick, TargetView, STRIP_GROUPS,
 };
 pub use view::{ChainAction, ChainView};
 
@@ -96,6 +97,8 @@ pub const EQ_SOLO_HINT: &str = "Solo band: you hear only the part of the sound t
 /// The hint line while the strip list is open.
 pub const STRIPS_HINT: &str =
     "Tap a strip: its chain  ·  Tracks, Pads and the rest: those strips  ·  Back: keep this one";
+/// The hint line while the sidechain list is open.
+pub const SIDECHAIN_HINT: &str = "Tap a track: the effect listens to it  ·  Off: its own sound  ·  greyed: it can't, and why  ·  Back: keep it as it is";
 /// The hint while the effect picker is open.
 pub const PICKER_HINT: &str = "Wheel: effect  ·  SHIFT + wheel: category  ·  push: its presets, then add  ·  hold a tile: presets  ·  star: favourite";
 pub const MACROS_HINT: &str = "Q-Links: the 4 macros shown  ·  SHIFT + Q-Link: fine  ·  tap a target to edit its range and curve  ·  Back closes";
@@ -202,6 +205,8 @@ pub fn chain_hint(ui: &Ui) -> &'static str {
         }
     } else if st.picking {
         PICKER_HINT
+    } else if st.list.as_ref().is_some_and(|l| l.sidechain.is_some()) {
+        SIDECHAIN_HINT
     } else if st.list.is_some() {
         STRIPS_HINT
     } else if st.eq && st.selected.is_some() {

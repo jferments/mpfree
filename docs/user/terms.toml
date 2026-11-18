@@ -18,6 +18,8 @@
 "mixer icon" = "the Mix tab (the sliders icon is gone, 2026-11-14)"
 "MPCFree" = "MPFree"
 "FX page" = "the Pads tab's Effects row (the Sample tab's FX page went with the one Sample page, 2026-11-18)"
+"Key HP" = "SC low cut (renamed 2026-11-18)"
+"Key LP" = "SC high cut (renamed 2026-11-18)"
 
 [names]
 tabs = ["Play", "Pads", "Arrange", "Synth", "Looper", "Sample", "Mix", "Dev"]
