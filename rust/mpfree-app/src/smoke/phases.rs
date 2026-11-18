@@ -663,8 +663,11 @@ mod looper {
             });
             set.pages[2].pads[0] = PadAction::Mute(0);
             set.pages[2].pads[4] = PadAction::Scene(0);
+            // Only the screen's copy: nothing played to let go.
             let fx = s.app.set_perform_set(set);
-            assert!(fx.is_empty());
+            assert!(fx
+                .iter()
+                .all(|e| matches!(e, crate::app::Effect::PerformSet { .. })));
             s.press("header", "tab", "Looper");
             s.button_with("SHIFT", "SAMPLER");
             s.run_for(0.1);
