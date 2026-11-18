@@ -64,6 +64,10 @@ pub struct TimeAudio {
     /// Routed keys for another armed track past [`super::MAX_ALSO`]: not
     /// recorded.
     also_dropped: u64,
+    /// Pressure from routed keys on another armed track while the
+    /// transport records: not recorded (that recorder keeps notes only),
+    /// so counted with the pressure values lost ([`Counts::touch_dropped`]).
+    also_pressure: u64,
     block: Box<Block>,
     pub(super) sink: Box<Collect>,
     pub(super) view: Box<PlayView>,
@@ -164,6 +168,7 @@ impl TimeAudio {
             also: (0..super::MAX_ALSO).map(Recorder::also).collect(),
             also_live: 0,
             also_dropped: 0,
+            also_pressure: 0,
             block: Box::new(Block::new()),
             sink: Box::new(Collect {
                 out: [blank; MAX_OUT],
@@ -699,16 +704,20 @@ impl TimeAudio {
     /// `AllOff` for every note held there ending at once, for CAPTURE's
     /// history; and, on another armed track ([`PlayView::set_also`]), for
     /// its recorder while the transport records (its notes, not its
-    /// pressure: that is the armed track's alone for now).
+    /// pressure: that is the armed track's alone for now, and counted).
     pub fn routed(&mut self, track: u8, offset: u32, event: Event) {
-        if matches!(
-            event,
-            Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff
-        ) {
-            match self.view.also_rank(usize::from(track)) {
-                Some(k) if k < self.also.len() => self.also[k].input(offset, event),
-                Some(_) => self.also_dropped += 1,
-                None => {}
+        if let Some(k) = self.view.also_rank(usize::from(track)) {
+            match event {
+                Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff => {
+                    match self.also.get_mut(k) {
+                        Some(r) => r.input(offset, event),
+                        None => self.also_dropped += 1,
+                    }
+                }
+                Event::Pressure { .. } if self.transport.state() == State::Recording => {
+                    self.also_pressure += 1
+                }
+                _ => {}
             }
         }
         if matches!(
@@ -731,7 +740,7 @@ impl TimeAudio {
     }
 
     pub fn touch_dropped(&self) -> u64 {
-        self.recorder.touch_dropped()
+        self.recorder.touch_dropped() + self.also_pressure
     }
 
     /// Live erase: sound `note` erased on the armed track while the
@@ -1232,7 +1241,7 @@ impl TimeAudio {
                 + self.also_dropped
                 + self.player.stats().dropped
                 + self.locks_dropped,
-            touch_dropped: self.recorder.touch_dropped(),
+            touch_dropped: self.touch_dropped(),
             lost: self.lost,
             behind: self.behind,
             kept: self.kept,
