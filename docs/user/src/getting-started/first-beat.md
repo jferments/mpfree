@@ -102,6 +102,12 @@ The REC chip on the transport bar always names what REC records: the notes of th
 
 On the Play page, the loop row and the pattern each start their heading with an **Arm** pill: red on what REC records, grey on the other. Tap a grey one to record that instead, or hold **SHIFT** and tap it to record both in one pass: the pads into the clip and what you play into a loop (the chip says "Track 1 + Loop 1"; a plain tap on one pill goes back to that one alone). Tap the REC chip for the list of everything that can record: tap a row to arm it, and turn on **Pin the arm** to keep pages and track picks from moving it, so only a tap on Arm does (the chip says "REC · PINNED"). If you started recording by mistake, press **UNDO**: the take so far is thrown away and the music plays on.
 
+#### Record several tracks at once
+
+{{shot: play-rec-tracks-list | The REC chip's list with Drums (the pads' track) and Keys armed: a row for each track, the armed ones red, and the loop's row last. The chip says "Drums + Keys".}}
+
+The list has a row for each track. Hold **SHIFT** and tap a track's row to record that track too: one REC and PLAY then record the pads into the pads' track and, into each other armed track, what its keyboard or drum machine plays it (set up its channel under the I/O view's [Routing](../making-music/midi-and-cv.md#playing-several-tracks-from-your-keyboards)). For example, a keyboard on channel 1 routed to **Bass** and a drum pad controller on channel 10 routed to **Perc**: arm both with SHIFT, play the pads on **Drums**, and one take records all three. Each track records into the clip it plays, or a new clip in its first empty slot (a track with no room is left out, and the hint line says so). The chip names them ("REC → Drums + Bass + Perc", or "Drums + 2 tracks" when the names don't fit). SHIFT and a tap on an added track lets it go; a plain tap on a row, or picking a track, records that one track again. One **UNDO** takes the whole take back, on every track. Up to 16 tracks record at once. For now a routed keyboard's pressure records only on the pads' track.
+
 > [!MPC]
 > As on the MPC, **REC** readies recording and **PLAY** starts it. MPFree's REC chip shows what it will record before you start.
 

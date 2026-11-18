@@ -2532,6 +2532,130 @@ mod tests {
         });
     }
 
+    /// SHIFT + a track's row of the REC chip's list records that track
+    /// too (the MPC 3.10.1 guide's Rec Arm Behavior): the chip names them,
+    /// REC then PLAY records the pads into Track 1 and a keyboard routed to
+    /// Track 2 into Track 2, one take, and a plain tap on a row arms that
+    /// track alone.
+    #[test]
+    fn shift_and_a_track_row_record_several_tracks_in_one_take() {
+        use crate::play_widgets::{ArmPill, PlayTransport};
+        use crate::rec_list::{RecList, REC_LIST};
+        use mpfree_transport::State;
+        fn chip(s: &Session) -> String {
+            s.screen
+                .ui
+                .get::<PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.clone())
+                .expect("the REC chip")
+                .what
+        }
+        fn rows(s: &Session) -> Vec<(String, ArmPill)> {
+            s.screen
+                .ui
+                .get::<RecList>(REC_LIST)
+                .unwrap()
+                .rows
+                .iter()
+                .map(|r| (r.title.clone(), r.pill))
+                .collect()
+        }
+        fn notes(s: &Session, t: usize) -> Vec<u8> {
+            s.time.project().tracks[t]
+                .slots
+                .iter()
+                .flatten()
+                .flat_map(|c| c.notes.iter().map(|n| n.note))
+                .collect()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let open = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&open);
+            s.settle();
+            assert_eq!(s.screen.ui.page(), crate::rec_list::REC_PAGE);
+            let list = rows(&s);
+            assert!(list.len() >= 3, "{list:?}");
+            assert!(list[0].0.starts_with("Track 1 · "), "{list:?}");
+            assert_eq!(list[1], ("Track 2 · new clip".to_string(), ArmPill::Arm));
+            assert!(list.last().unwrap().0.starts_with("Looper"), "{list:?}");
+            s.button_edge("SHIFT", true);
+            s.press("rec-list", "row", "Track 2 · new clip").settle();
+            s.button_edge("SHIFT", false);
+            assert_eq!(s.time.also(), 1 << 1);
+            assert_eq!(chip(&s), "Track 1 + Track 2");
+            assert_eq!(rows(&s)[1].1, ArmPill::Armed, "its row red with its pill");
+            s.button_edge("SHIFT", true);
+            s.press("rec-list", "row", "Track 3 · new clip").settle();
+            s.button_edge("SHIFT", false);
+            assert_eq!(s.time.also(), 1 << 1 | 1 << 2);
+            assert_eq!(chip(&s), "Track 1 + 2 tracks", "too long to name them all");
+            // Again: lets go of Track 3.
+            s.button_edge("SHIFT", true);
+            s.press("rec-list", "row", "Track 3 · new clip").settle();
+            s.button_edge("SHIFT", false);
+            assert_eq!(s.time.also(), 1 << 1);
+            s.press("rec-list", "close", "Close").settle();
+            // REC, PLAY: both tracks record, no count-in.
+            s.route(crate::gui::FromUi::Time(
+                mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::SetCountIn(0)),
+            ));
+            s.button("REC");
+            s.run_periods(4).settle();
+            s.button("PLAY");
+            let end = s.t() + 4.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            assert_eq!(chip(&s), "Track 1 + Track 2");
+            s.run_for(0.3);
+            s.pad(0, 100, 0.05);
+            // A keyboard routed to Track 2 (the I/O view's Routing).
+            s.time.routed_played(
+                1,
+                0,
+                mpfree_play::Event::NoteOn {
+                    note: 9,
+                    velocity: 90,
+                },
+            );
+            s.run_for(0.2);
+            s.time
+                .routed_played(1, 0, mpfree_play::Event::NoteOff { note: 9 });
+            s.run_for(0.5);
+            // Nothing moves the arm while it records.
+            let open = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&open);
+            s.settle();
+            s.press("rec-list", "row", "Track 2 · Clip 1").settle();
+            assert_eq!(s.time.also(), 1 << 1);
+            assert!(
+                s.hint().starts_with("Finish the take first"),
+                "{}",
+                s.hint()
+            );
+            s.press("rec-list", "close", "Close").settle();
+            s.button("REC");
+            s.run_for(1.0);
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            assert_eq!(notes(&s, 0).len(), 1, "the pad in Track 1");
+            assert_eq!(notes(&s, 1), vec![9], "the key in Track 2");
+            let st = s.time.state();
+            assert_eq!(st.done.len(), 1, "one take");
+            assert_eq!(st.done[0].added, 2);
+            s.button("STOP").settle();
+            // A plain tap on Track 2's row: it plays the pads, alone.
+            let open = s.control("play-transport", "rec", "").unwrap().target;
+            s.press_target(&open);
+            s.settle();
+            s.press("rec-list", "row", "Track 2 · Clip 1").settle();
+            assert_eq!(s.time.armed(), Some(1));
+            assert_eq!(s.time.also(), 0);
+            assert!(!chip(&s).contains(" + "), "{}", chip(&s));
+        });
+    }
+
     /// SHIFT + Arm: REC records the pads into a clip and a loop in one
     /// pass. The chip names both; REC readies the notes and arms the loop,
     /// PLAY starts both after the count-in, REC closes both, and a plain

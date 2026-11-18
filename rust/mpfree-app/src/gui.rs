@@ -261,8 +261,12 @@ const XY_LIST_HINT: &str =
     "Tap what the XY pad plays   ·   the chip or Close: close   ·   a view: close";
 
 /// The hint while the REC chip's target list is open.
+/// The REC chip names the armed tracks one by one up to this many
+/// characters ("Drums + Bass + Keys"), else "Drums + 2 tracks".
+const ARMED_NAMES_MAX: usize = 24;
+
 const REC_LIST_HINT: &str =
-    "Tap a row: record into it   ·   SHIFT + tap: both   ·   Rec song: the grid into the song   ·   \
+    "Tap a row: record into it   ·   SHIFT + tap: that too   ·   Rec song: the grid into the song   ·   \
      Pin: only a tap on Arm moves the arm   ·   the chip or Close: close";
 
 /// The hint while the notes are ready ([`crate::rec_arm`]): what PLAY
@@ -1317,6 +1321,12 @@ pub enum FromUi {
     /// SHIFT + a tap on an Arm pill or a row: REC records both targets, or,
     /// with both armed, lets go of the one tapped.
     ArmAdd(crate::rec_arm::Target),
+    /// A plain tap on a track's row of the target list: that track plays
+    /// the pads and its notes record, alone (as picking it does).
+    ArmTrack(usize),
+    /// SHIFT + a tap on a track's row: REC records that track's notes too
+    /// (what its MIDI input sends it), or lets go of it (`RecArm::add_track`).
+    ArmTrackAdd(usize),
     /// The target list's Pin the arm: only a tap on Arm moves it.
     RecPin(bool),
     /// The Sample tab's recorder on the pad take: it records, or it ended
@@ -4445,22 +4455,76 @@ impl Player {
                 if st.layers == 1 { "" } else { "s" }
             )
         };
-        let rows = vec![
-            ListRow {
+        // A row for each track's notes, in track order (not the Loop
+        // tracks: the loop's row records them), then the loop.
+        let main = self.time.armed;
+        let notes_pill = pill(Target::Notes);
+        let mut rows: Vec<ListRow> = self
+            .time
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, tr)| tr.loops.is_none())
+            .map(|(t, tr)| {
+                let also = self.time.also & (1u128 << t.min(127)) != 0;
+                let armed = self.rec.armed(Target::Notes) && (main == Some(t) || also);
+                if main == Some(t) {
+                    ListRow {
+                        target: Target::Notes,
+                        track: Some(t),
+                        pill: if armed {
+                            notes_pill
+                        } else {
+                            play_widgets::ArmPill::Arm
+                        },
+                        // The clip the pattern shows, as the chip names it.
+                        title: format!(
+                            "{} · {}",
+                            tr.name,
+                            notes.split_once(" · ").map_or(notes.as_str(), |(_, c)| c)
+                        ),
+                        sub: "plays the pads".to_string(),
+                        right: count_in.clone(),
+                    }
+                } else {
+                    ListRow {
+                        target: Target::Notes,
+                        track: Some(t),
+                        pill: if armed {
+                            notes_pill
+                        } else {
+                            play_widgets::ArmPill::Arm
+                        },
+                        title: format!("{} · {}", tr.name, self.time_clip_name(t)),
+                        sub: if armed {
+                            "records its MIDI input too"
+                        } else {
+                            "SHIFT + tap: record it too"
+                        }
+                        .to_string(),
+                        right: String::new(),
+                    }
+                }
+            })
+            .collect();
+        if rows.is_empty() {
+            rows.push(ListRow {
                 target: Target::Notes,
-                pill: pill(Target::Notes),
+                track: None,
+                pill: notes_pill,
                 title: format!("Notes · {notes}"),
                 sub: "the track the pads play; picking another track moves it".to_string(),
                 right: count_in,
-            },
-            ListRow {
-                target: Target::Loop,
-                pill: pill(Target::Loop),
-                title: format!("Looper · Loop {}", self.looper.selected + 1),
-                sub: looped,
-                right: String::new(),
-            },
-        ];
+            });
+        }
+        rows.push(ListRow {
+            target: Target::Loop,
+            track: None,
+            pill: pill(Target::Loop),
+            title: format!("Looper · Loop {}", self.looper.selected + 1),
+            sub: looped,
+            right: String::new(),
+        });
         let song = self.time.song_rec || self.time.song_with_take;
         let (perform, pinned, what) = (self.time.perform, self.rec.pinned, chip.what.clone());
         let fresh = self.ui.get::<RecList>(REC_LIST).is_some_and(|l| {
@@ -4479,6 +4543,36 @@ impl Player {
                 l.what = what;
             }
         }
+    }
+
+    /// Track `t`'s clip, as a take would record into it: the one playing,
+    /// else "new clip".
+    fn time_clip_name(&self, t: usize) -> String {
+        self.time
+            .launches
+            .iter()
+            .find(|l| l.track == t)
+            .and_then(|l| self.time.clip(t, l.slot))
+            .map_or_else(|| "new clip".to_string(), |c| c.name.clone())
+    }
+
+    /// A tap on a track's row of the target list: SHIFT held, REC records
+    /// it too or lets go of it; a plain tap arms it alone, as picking it
+    /// does (the pads' track armed alone already: says what REC records).
+    fn arm_track_tap(&mut self, t: usize) -> Option<FromUi> {
+        use crate::rec_arm::Target;
+        if self.status.shift {
+            return Some(FromUi::ArmTrackAdd(t));
+        }
+        if self.time.armed == Some(t)
+            && self.rec.target == Target::Notes
+            && !self.rec.both
+            && self.time.also == 0
+        {
+            self.tell_rec();
+            return None;
+        }
+        Some(FromUi::ArmTrack(t))
     }
 
     /// A tap on an Arm pill or a target list's row: arms `t`, or, armed
@@ -4602,7 +4696,24 @@ impl Player {
                 pinned: false,
             };
         }
-        let mut chip = if self.rec.both {
+        let tracks = self.armed_tracks_name();
+        let mut chip = if let Some(names) = tracks {
+            // Several tracks (SHIFT + a track's row): "Drums + Bass + Keys",
+            // "Drums + 2 tracks" when it doesn't fit; with the loop too,
+            // "+ Loop 1" after them.
+            let n = self.rec_chip_of(Target::Notes);
+            if self.rec.both {
+                let l = self.rec_chip_of(Target::Loop);
+                play_widgets::RecChip {
+                    state: n.state.max(l.state),
+                    what: format!("{names} + {}", l.what),
+                    add: if n.state >= l.state { n.add } else { l.add },
+                    pinned: false,
+                }
+            } else {
+                play_widgets::RecChip { what: names, ..n }
+            }
+        } else if self.rec.both {
             let (n, l) = (
                 self.rec_chip_of(Target::Notes),
                 self.rec_chip_of(Target::Loop),
@@ -4626,6 +4737,44 @@ impl Player {
             chip.what.push_str(" + Rec song");
         }
         chip
+    }
+
+    /// The armed tracks' names for the REC chip while more than one is
+    /// armed ("Drums + Bass + Keys"), or "Drums + 2 tracks" past
+    /// [`ARMED_NAMES_MAX`] characters. None with one track.
+    fn armed_tracks_name(&self) -> Option<String> {
+        use crate::rec_arm::Target;
+        let main = self.time.armed?;
+        if self.time.also == 0 || !self.rec.armed(Target::Notes) {
+            return None;
+        }
+        let name = |t: usize| {
+            self.time
+                .tracks
+                .get(t)
+                .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone())
+        };
+        let others: Vec<String> = (0..self.time.tracks.len().min(128))
+            .filter(|&t| t != main && self.time.also & (1u128 << t) != 0)
+            .map(name)
+            .collect();
+        if others.is_empty() {
+            return None;
+        }
+        let all = std::iter::once(name(main))
+            .chain(others.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" + ");
+        Some(if all.chars().count() <= ARMED_NAMES_MAX {
+            all
+        } else {
+            format!(
+                "{} + {} track{}",
+                name(main),
+                others.len(),
+                if others.len() == 1 { "" } else { "s" }
+            )
+        })
     }
 
     /// One target's part of the REC chip.
@@ -11009,11 +11158,14 @@ impl Player {
                 None
             }
             (crate::rec_list::REC_LIST, EventKind::Tab(i)) => {
-                let t = self
+                let (t, track) = self
                     .ui
                     .get::<crate::rec_list::RecList>(crate::rec_list::REC_LIST)
-                    .and_then(|l| l.rows.get(i).map(|r| r.target))?;
-                self.arm_tap(t)
+                    .and_then(|l| l.rows.get(i).map(|r| (r.target, r.track)))?;
+                match track {
+                    Some(track) => self.arm_track_tap(track),
+                    None => self.arm_tap(t),
+                }
             }
             (crate::rec_list::REC_LIST, EventKind::Toggle(crate::rec_list::TAP_SONG)) => {
                 Some(FromUi::Time(rec_song_switch(&self.time)))
@@ -14290,6 +14442,40 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }));
     list.toggle_rec_list();
     out.push(("play-rec-list", list));
+    // Several tracks armed (SHIFT + a track's row; the MPC 3.10.1 guide's
+    // Rec Arm Behavior): the chip names them, and the list shows each
+    // track's row in order, the armed ones red.
+    let named = |also: u128| {
+        let mut st = crate::time::TimeHost::new(44_100, 120.0)
+            .map(|h| h.state())
+            .unwrap_or_default();
+        for (t, name) in st
+            .tracks
+            .iter_mut()
+            .zip(["Drums", "Bass", "Keys", "Lead", "Pad", "Perc", "FX", "Vox"])
+        {
+            t.name = name.to_string();
+        }
+        st.armed = Some(0);
+        st.also = also;
+        st
+    };
+    let mut tracks = sample_player(fonts());
+    tracks.apply(ToUi::Time(Box::new(named(1 << 1 | 1 << 2))));
+    tracks.apply(ToUi::Rec(crate::rec_arm::RecArm {
+        ready: Some(crate::rec_arm::Take::Replace),
+        also: 1 << 1 | 1 << 2,
+        ..Default::default()
+    }));
+    out.push(("play-rec-tracks", tracks));
+    let mut tracks = sample_player(fonts());
+    tracks.apply(ToUi::Time(Box::new(named(1 << 2))));
+    tracks.apply(ToUi::Rec(crate::rec_arm::RecArm {
+        also: 1 << 2,
+        ..Default::default()
+    }));
+    tracks.toggle_rec_list();
+    out.push(("play-rec-tracks-list", tracks));
     // The XY pad's list (Jay, 18 Nov 07:34Z): opened from its chip, Wash
     // picked.
     let mut xy = sample_player(fonts());
