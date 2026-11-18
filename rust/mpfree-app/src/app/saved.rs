@@ -114,6 +114,7 @@ impl App {
         // by hand (measured with a cable). The line input itself, and so
         // what the Looper records from, is off at every start.
         out.set_i64("loop-level", s.loop_level_db.round() as i64);
+        out.set_bool("loop-tempo", s.loop_tempo);
         if s.loop_latency_set {
             out.set_i64("loop-latency", i64::from(s.loop_latency));
         }
@@ -249,6 +250,7 @@ impl App {
                     .filter(|n| (-24..=6).contains(n))
                     .map(|n| s.loop_level_db = n as f32)
                     .is_some(),
+                "loop-tempo" => app.get_bool(k).map(|b| s.loop_tempo = b).is_some(),
                 "loop-latency" => app
                     .get_i64(k)
                     .filter(|n| (0..=4096).contains(n))
@@ -272,7 +274,8 @@ impl App {
             notes.push(format!(
                 "saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
                  developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {} at {} dB, \
-                 loop level {:+.0} dB, line input latency {}, at start {}, export {} ({}, {} Hz)",
+                 loop level {:+.0} dB, tempo from the first loop {}, line input latency {}, at start {}, \
+                 export {} ({}, {} Hz)",
                 s.curve.label(),
                 s.screen_velocity,
                 if s.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" },
@@ -284,6 +287,7 @@ impl App {
                 on(s.metronome),
                 s.metronome_db,
                 s.loop_level_db,
+                on(s.loop_tempo),
                 if s.loop_latency_set {
                     format!("{} frames", s.loop_latency)
                 } else {

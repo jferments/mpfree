@@ -7,7 +7,9 @@
 //! changes, a full memory, locates, a transport loop, tempo changes, stop
 //! and count-in, at period sizes from 1 to 4096 frames; and loops that
 //! start when you play (by ear and on a pad, the song stopped, playing and
-//! counting in, a start refused).
+//! counting in, a start refused); and free first passes that set the
+//! tempo (on the bar and from a note, closed too soon, one thrown away by
+//! PLAY).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -508,4 +510,86 @@ fn starting_when_you_play_never_allocates() {
     assert!(refused && starts >= 1, "{refused} {starts}");
     assert_eq!(playing, 0b1111, "loops playing: {playing:b}");
     assert!(leads > 0, "no pickup");
+}
+
+#[test]
+fn a_free_pass_setting_the_tempo_never_allocates() {
+    const RATE: u32 = 44_100;
+    let mut t = Transport::new(RATE, 100.0).unwrap();
+    let mut l = Looper::new(RATE, 30);
+    let mut b = Block::new();
+    let mut input = vec![0.0f32; 2 * 4096];
+    let mut out = vec![0.0f32; 2 * 4096];
+    let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
+    let mut tempos = 0;
+    watch(true);
+    let _ = l.command(L::TempoFromLoop(true));
+    let _ = l.command(L::SetBars(None));
+    for i in 0..3000u64 {
+        let f = t.frame();
+        match i {
+            // Loop 0 records free from Record; Record again a moment
+            // later waits to be a bar at 160 BPM, then sets the tempo.
+            10 => {
+                let _ = l.command(L::Record);
+            }
+            40 => {
+                let _ = l.command(L::Record);
+            }
+            // Cleared and stopped: loop 0 again, from a note heard; PLAY
+            // under it throws it away; then from a pad, closed.
+            900 => {
+                let _ = t.command(f, T::Stop);
+                let _ = l.command(L::Forget);
+            }
+            950 => {
+                let _ = l.command(L::SetStarts(Starts::Play));
+                let _ = l.command(L::StartsByEar(true));
+                let _ = l.command(L::Record);
+            }
+            1300 => {
+                let _ = t.command(f, T::Play);
+            }
+            1400 => {
+                let _ = t.command(f, T::Stop);
+            }
+            1500 => {
+                let _ = l.command(L::StartsByEar(false));
+                let _ = l.command(L::Record);
+            }
+            1600 => {
+                let _ = l.command(L::Played(f));
+            }
+            1900 => {
+                let _ = l.command(L::Record);
+            }
+            _ => {}
+        }
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        let loud = matches!(i % 300, 100..=200);
+        for k in 0..n {
+            let x = if loud {
+                0.2 * ((k % 17) as f32 - 8.0) / 8.0
+            } else {
+                0.0
+            };
+            input[2 * k] = x;
+            input[2 * k + 1] = -x;
+        }
+        out[..2 * n].fill(0.0);
+        assert!(t.process(n as u32, &mut b));
+        l.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        // The host: the tempo, then PLAY, on the frame asked.
+        if let Some((_, bpm, at)) = l.take_tempo() {
+            let _ = t.command(at, T::SetTempo(bpm));
+            let _ = t.command(at, T::Play);
+            tempos += 1;
+        }
+        let _ = l.status();
+        let _ = l.stats();
+    }
+    watch(false);
+    assert_eq!(calls(), 0, "allocated while a free pass set the tempo");
+    assert_eq!(tempos, 2, "two passes set the tempo");
+    assert!(l.stats().aborted >= 1, "PLAY threw one away");
 }
