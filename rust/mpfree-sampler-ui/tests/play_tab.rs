@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use mpfree_sampler::model::{
     FilterKind, Keys, Layer, LayerSelect, Levels, Pad, PadsPlay, PressureTarget, Project, Region,
-    Source, KEYGROUP_POLYPHONY,
+    SliceSet, Source, KEYGROUP_POLYPHONY,
 };
 use mpfree_sampler_ui::keys_widgets::KeyZones;
 use mpfree_sampler_ui::play_tab::{self, describe, PlayAction, PlayState, Row, Section};
@@ -17,6 +17,7 @@ use mpfree_sampler_ui::play_widgets::{
 use mpfree_sampler_ui::sample::{self, layered_project, play_samples, PlaySample, PAD, RATE};
 use mpfree_sampler_ui::source::SourceView;
 use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SectionChips, SettingList};
+use mpfree_ui::wave::Waveform;
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
 
 /// The Play tab on the layered pad (or the plain one), drawn once so every
@@ -145,6 +146,7 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
             ("Pitch", "+0 st"),
             ("Mod", "pressure → filter cutoff"),
             ("Pad", "4 voices · group 1"),
+            ("Slices", "not sliced"),
         ]
     );
     assert_eq!(s.tab.section(), Section::Layers);
@@ -1543,4 +1545,114 @@ fn slice_picks_the_slice_a_sliced_pad_plays() {
     // The steps on one row are one turn: one undo takes them back.
     assert!(s.project.undo());
     assert_eq!(s.project.pad(PAD).unwrap().slice, 0);
+}
+
+/// The pad sliced in 8 (as Chop to one pad would), shown again.
+fn slice_in_8(s: &mut PlaySample) {
+    s.project
+        .edit_pad(PAD, None, |p| {
+            let r = &mut p.layers[0].region;
+            let (a, b) = (r.start, r.end);
+            r.slices = (1..8).map(|k| a + (b - a) * k / 8).collect();
+        })
+        .unwrap();
+    let view = s.state.sounds[0].view.clone();
+    s.state = PlayState::from_project(&s.project, PAD, |_| view.clone()).unwrap();
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+}
+
+/// R4 part 5: the Slices section shows a sliced pad's slices on its
+/// sound, picks one by a tap or the Slice row, and sets that slice's own
+/// pitch, level, reverse, filter, fade out and where it plays to, one
+/// undo step a row; on a pad that isn't sliced it is faint and says how.
+#[test]
+fn the_slices_section_sets_each_slices_own_settings() {
+    let mut s = play(false);
+    assert_eq!(row_value(&mut s, Row::SliceTune), "–");
+    let list = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    assert!(list.controls[Row::SliceTune.place()].faint);
+    assert!(list.controls[Row::SliceTune.place()].why.contains("1 pad"));
+    assert_eq!(step(&mut s, Row::SliceTune, 1), None, "nothing to set");
+    slice_in_8(&mut s);
+    let sliced = s.project.pad(PAD).unwrap().layers[0].region.clone();
+    open(&mut s, Section::Slices);
+    let chips = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+    let at = Section::ALL
+        .iter()
+        .position(|x| *x == Section::Slices)
+        .unwrap();
+    assert_eq!(chips.chips[at].sub, "8 slices");
+    // The picture: a fixed line numbered at each slice's start.
+    let w = s.ui.get::<Waveform>(play_tab::SLICES).unwrap();
+    let marks: Vec<&str> = w.markers().iter().map(|m| m.label.as_str()).collect();
+    assert_eq!(marks, ["1", "2", "3", "4", "5", "6", "7", "8"]);
+    assert!(w.markers().iter().all(|m| m.fixed));
+    // The Slice row picks slice 3; a tap on slice 6's line picks it.
+    assert_eq!(row_value(&mut s, Row::SlicePick), "1 of 8");
+    assert_eq!(step(&mut s, Row::SlicePick, 2), None, "only what it shows");
+    assert_eq!(s.tab.slice(), 2);
+    assert_eq!(row_value(&mut s, Row::SlicePick), "3 of 8");
+    let st = s.state.clone();
+    let tap = UiEvent {
+        widget: play_tab::SLICES.into(),
+        kind: EventKind::Marker { index: 5, frame: 0 },
+    };
+    assert_eq!(s.tab.action(&mut s.ui, &tap, &st), None);
+    assert_eq!(s.tab.slice(), 5);
+    // Slice 6 up 5 semitones, down 3 dB, reversed, filtered, faded, on
+    // to the sound's end.
+    step_apply(&mut s, Row::SliceTune, 5);
+    step_apply(&mut s, Row::SliceLevel, -6);
+    step_apply(&mut s, Row::SliceReverse, 1);
+    step_apply(&mut s, Row::SliceCutoff, -1);
+    step_apply(&mut s, Row::SliceFade, 6);
+    step_apply(&mut s, Row::SliceTo, 1);
+    assert_eq!(row_value(&mut s, Row::SliceTune), "+5 st");
+    assert_eq!(row_value(&mut s, Row::SliceLevel), "-3.0 dB");
+    assert_eq!(row_value(&mut s, Row::SliceReverse), "On");
+    assert_eq!(row_value(&mut s, Row::SliceFade), "20 ms");
+    assert_eq!(row_value(&mut s, Row::SliceTo), "Sound end");
+    let r = &s.project.pad(PAD).unwrap().layers[0].region;
+    let six = r.slice_set(5);
+    assert_eq!(six.tune_st, 5);
+    assert_eq!(six.level_db, -3.0);
+    assert!(six.reverse && six.to_end);
+    assert_eq!(six.fade_out_ms, Some(20.0));
+    assert!(six.cutoff_hz.is_some_and(|hz| hz < 20_000.0), "{six:?}");
+    assert_eq!(r.slice_set(4), SliceSet::DEFAULT, "slice 5 as it was");
+    // Of the region, only its slices' settings changed.
+    let mut plain = r.clone();
+    plain.slice_sets.clear();
+    assert_eq!(plain, sliced);
+    let chips = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+    assert_eq!(chips.chips[at].sub, "8 · 1 set");
+    // Up from 20 kHz is Off again.
+    step_apply(&mut s, Row::SliceCutoff, 1);
+    assert_eq!(row_value(&mut s, Row::SliceCutoff), "Off");
+    // Back on slice 1, its own settings show.
+    let st = s.state.clone();
+    let tap = UiEvent {
+        widget: play_tab::SLICES.into(),
+        kind: EventKind::Marker { index: 0, frame: 0 },
+    };
+    s.tab.action(&mut s.ui, &tap, &st);
+    assert_eq!(row_value(&mut s, Row::SliceTune), "+0 st");
+    // Q-Link 3 turns the slice's level, half a dB a detent.
+    let st = s.state.clone();
+    let a = s.tab.qlink(&mut s.ui, &st, 2, 2, false).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(row_value(&mut s, Row::SliceLevel), "+1.0 dB");
+    assert_eq!(
+        s.project.pad(PAD).unwrap().layers[0]
+            .region
+            .slice_set(0)
+            .level_db,
+        1.0
+    );
+    // Each row was its own undo step: the last one goes back alone.
+    assert!(s.project.undo());
+    let r = &s.project.pad(PAD).unwrap().layers[0].region;
+    assert_eq!(r.slice_set(0), SliceSet::DEFAULT);
+    assert_eq!(r.slice_set(5).tune_st, 5);
 }

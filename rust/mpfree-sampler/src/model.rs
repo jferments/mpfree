@@ -917,7 +917,71 @@ pub struct Region {
     /// keys). Empty: not sliced. A boundary outside the region (after a
     /// trim) is passed over ([`Region::slice_bounds`]).
     pub slices: Vec<u64>,
+    /// A sliced region's settings for each slice, by slice number (R4
+    /// part 5): a slice past the list plays with [`SliceSet::DEFAULT`].
+    /// Kept shorter than [`MAX_SLICES`] and without default entries at
+    /// its end ([`Region::set_slice_set`]).
+    pub slice_sets: Vec<SliceSet>,
 }
+
+/// One slice's own settings on a sliced region (R4 part 5), on top of
+/// its pad's: the Play page's Slices section sets them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliceSet {
+    /// Semitones from the pad's pitch, [`SLICE_TUNE`].
+    pub tune_st: i8,
+    /// Its level, dB, [`SLICE_LEVEL_DB`].
+    pub level_db: f32,
+    /// Plays backwards (from its end), or forwards on a reversed region.
+    pub reverse: bool,
+    /// A low-pass cutoff (Hz, [`SLICE_CUTOFF_HZ`]) in place of the pad's
+    /// filter's for this slice; None: the pad's filter as it is.
+    pub cutoff_hz: Option<f32>,
+    /// Its fade out, ms ([`SLICE_FADE_MS`]), at most half of what it
+    /// plays; None: the region's.
+    pub fade_out_ms: Option<f32>,
+    /// Plays on past its end to the region's end ("Plays to: Sound end").
+    pub to_end: bool,
+}
+
+impl SliceSet {
+    /// A slice as its region plays it.
+    pub const DEFAULT: SliceSet = SliceSet {
+        tune_st: 0,
+        level_db: 0.0,
+        reverse: false,
+        cutoff_hz: None,
+        fade_out_ms: None,
+        to_end: false,
+    };
+
+    /// Every number is finite and in its range.
+    pub fn ok(&self) -> bool {
+        SLICE_TUNE.contains(&self.tune_st)
+            && SLICE_LEVEL_DB.contains(&self.level_db)
+            && self
+                .cutoff_hz
+                .is_none_or(|hz| SLICE_CUTOFF_HZ.contains(&hz))
+            && self
+                .fade_out_ms
+                .is_none_or(|ms| SLICE_FADE_MS.contains(&ms))
+    }
+}
+
+impl Default for SliceSet {
+    fn default() -> Self {
+        SliceSet::DEFAULT
+    }
+}
+
+/// A slice's pitch, semitones.
+pub const SLICE_TUNE: std::ops::RangeInclusive<i8> = -24..=24;
+/// A slice's level, dB.
+pub const SLICE_LEVEL_DB: std::ops::RangeInclusive<f32> = -48.0..=12.0;
+/// A slice's own low-pass cutoff, Hz.
+pub const SLICE_CUTOFF_HZ: std::ops::RangeInclusive<f32> = 20.0..=20_000.0;
+/// A slice's own fade out, ms.
+pub const SLICE_FADE_MS: std::ops::RangeInclusive<f32> = 0.0..=2000.0;
 
 impl Region {
     /// Moves the region onto its sound converted to another rate (`r`),
@@ -984,6 +1048,7 @@ impl Region {
             grain_mode: GrainMode::Cloud,
             warp: None,
             slices: Vec::new(),
+            slice_sets: Vec::new(),
         }
     }
 
@@ -1044,6 +1109,27 @@ impl Region {
         Some((a, b))
     }
 
+    /// Slice `i`'s own settings ([`SliceSet::DEFAULT`] when it has none).
+    pub fn slice_set(&self, i: usize) -> SliceSet {
+        self.slice_sets.get(i).copied().unwrap_or_default()
+    }
+
+    /// Gives slice `i` settings `s` (from 0, below [`MAX_SLICES`]), keeping
+    /// the list without default entries at its end. A slice past the
+    /// region's last keeps them, for a re-chop that brings it back.
+    pub fn set_slice_set(&mut self, i: usize, s: SliceSet) {
+        if i >= MAX_SLICES {
+            return;
+        }
+        if self.slice_sets.len() <= i {
+            self.slice_sets.resize(i + 1, SliceSet::DEFAULT);
+        }
+        self.slice_sets[i] = s;
+        while self.slice_sets.last() == Some(&SliceSet::DEFAULT) {
+            self.slice_sets.pop();
+        }
+    }
+
     pub fn check(&self, source: &Source) -> Result<(), ModelError> {
         if self.source != source.id() {
             return Err(ModelError::UnknownSource);
@@ -1053,6 +1139,9 @@ impl Region {
             || self.slices.iter().any(|&x| x == 0 || x >= source.frames())
         {
             return Err(ModelError::BadRegion("slices"));
+        }
+        if self.slice_sets.len() > MAX_SLICES || !self.slice_sets.iter().all(SliceSet::ok) {
+            return Err(ModelError::BadRegion("slice settings"));
         }
         if self.start >= self.end || self.end > source.frames() {
             return Err(ModelError::BadRegion("start/end"));
@@ -1381,6 +1470,11 @@ fn slice_pad(name: String, mut region: Region, template: Option<&Pad>) -> Pad {
             if let Some(r) = t.layers.first().map(|l| &l.region) {
                 (region.gain_db, region.tune_cents, region.channels) =
                     (r.gain_db, r.tune_cents, r.channels);
+                // Chopped again onto itself, a sliced pad keeps its slices'
+                // settings, by number (R4 part 5).
+                if region.slice_count() > 1 && r.source == region.source {
+                    region.slice_sets = r.slice_sets.clone();
+                }
             }
             Pad {
                 name,
