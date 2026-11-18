@@ -131,8 +131,8 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Reverb** | **Room**, **Plate** and **Spring** are the smaller, classic reverbs (the room's **Gate** cuts its tail short, for the 1980s gated snare); **Hall**, **Cloud** and **Echoes** are large and lush. **Freeze** holds the tail for as long as it is on. |
 | **Granulator** | Cuts the sound into tiny grains and plays them back as a cloud: higher or lower, scattered, backwards, spread wide. **Freeze** holds what's in it, so a moment hangs in the air while you play over it. |
 | **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. It joins the sound where it lines up, so every note comes out clean, steady and on pitch, and chords hold together. Window sets how far behind the dry it plays: about 11 ms at the default 30 ms, tight enough to layer an octave under a bass. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
-| **Pitch correct** | Tunes a voice to the notes of a key. Pick the **Key** and **Scale**; **Speed** sets how quickly it pulls a note in (0 snaps straight to it, for the hard, stepped sound; 50 ms or more keeps slides and vibrato natural) and **Amount** how far. The **Note** and **Correction** readouts show the note it hears and how far it is moving it. |
-| **Harmonizer** | Sings along with you: up to two extra voices a 3rd, 4th, 5th, 6th or octave above or below each note you sing, that stay in the key (a 3rd is major or minor as the key has it), each with its own level and pan. **Glide** smooths a voice into its next note, and **Dry** is your own voice. |
+| **Pitch correct** | Tunes a voice to the notes of a key. Pick the **Key** and **Scale**; **Speed** sets how quickly it pulls a note in (0 snaps straight to it, for the hard, stepped sound; 50 ms or more keeps slides and vibrato natural) and **Amount** how far. **Flex-Tune** leaves notes you sing well away from the note alone, so slides and deliberate bends stay yours, and **Humanize** lets a long held note keep its vibrato while quick notes still snap in (both 0 by default, on the Voice page). The **Note** and **Correction** readouts show the note it hears and how far it is moving it. |
+| **Harmonizer** | Sings along with you: up to two extra voices a 3rd, 4th, 5th, 6th or octave above or below each note you sing, that stay in the key (a 3rd is major or minor as the key has it), each with its own level and pan. **Glide** smooths a voice into its next note, and **Dry** is your own voice. The voices stay clean and in tune with you, without a buzz. |
 | **Talk box** | Makes a sound say vowels, from "oo" to "ee". The vowel moves with how loud you play or in time with the music; **Formant** makes the mouth smaller or bigger. Best on rich sounds: synth chords, organs, guitars. |
 | **Perform FX** | The throws, stutters, beat repeats, tape stops and the XY pad, as an effect you can put on any strip. On the master it is what the Play page's throws play (see [Playing live](playing-live.md#throws)); on a pad, its 16 slots play stutters and repeats on that pad alone. |
 | **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
@@ -284,7 +284,12 @@ The Mix tab's **EQ** look shows every strip's EQ at once (see [Mixing](mixing-an
 
 Pitch correct and the Harmonizer listen for one voice: a singer, or a solo instrument such as a whistle or a sax, not chords. Set **Range** to fit it: **Low** for bass and baritone voices, **Mid** for most singing, **High** for high voices.
 
-They hold the sound back a little while they listen (about 40 ms on Low, 28 on Mid and 17 on High), and the mixer holds everything else back to match, so the mix stays in time. When you sing live through one, High has the shortest delay.
+They hold the sound back a little while they listen (about 40 ms on Low, 28 on Mid and 17 on High), and the mixer holds everything else back to match, so the mix stays in time. When you sing live through one, High has the shortest delay. Changing Range while it plays dips the sound for a moment, since it starts listening again.
+
+The **Natural** preset is a gentle pull for singing: notes you mean land in tune, while slides and the vibrato on long notes stay as you sang them. **Hard tune** snaps every note, for the stepped, robotic sound.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through Pitch correct and the Harmonizer: a note held in tune comes out exactly as it went in, a corrected note is smoother and steadier, and the harmony voices are cleaner. Speed now takes as long as it says, so a saved Speed pulls in a little more slowly. Flex-Tune and Humanize start at 0, so a saved Pitch correct corrects as it did.
 
 ### Lo-fi
 

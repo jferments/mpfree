@@ -230,6 +230,21 @@ const fn table() -> Table {
 /// Built at compile time, so it is the same on every machine.
 static TABLE: Table = table();
 
+/// Taps in [`taps_after`]'s reads.
+pub(crate) const READ_TAPS: usize = TAPS;
+
+/// The taps for a read `f` (0 to 1) of a frame after a sample, in time
+/// order: tap `j` weighs the sample `j - 5` frames from it. The vocal
+/// effects' grains each read at one fraction, so they take one set a grain
+/// and spend the read on twelve multiplies a frame.
+pub(crate) fn taps_after(f: f32) -> [f32; TAPS] {
+    let p = f.clamp(0.0, 1.0) * PHASES as f32;
+    let i = (p as usize).min(PHASES - 1);
+    let a = p - i as f32;
+    let (taps, step) = (&TABLE.taps[i], &TABLE.step[i]);
+    std::array::from_fn(|j| taps[TAPS - 1 - j] + a * step[TAPS - 1 - j])
+}
+
 /// A delay line read through the twelve-tap sinc. Every sample is written
 /// twice, a line's length apart, so the taps of any read sit side by side.
 #[derive(Clone, Debug, Default)]

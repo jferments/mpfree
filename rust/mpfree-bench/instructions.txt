@@ -91,7 +91,7 @@
 37002	Perform FX, the 16 pads in turn
 107805	Phaser (12 stages)
 66460	Phaser (4 stages)
-60128	Pitch correct
+74424	Pitch correct
 71972	Pitch shifter
 155797	Plate reverb
 307019	Pluck Bell, 16 voices
