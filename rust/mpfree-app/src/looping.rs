@@ -34,8 +34,8 @@ use crate::alsa;
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
-    Bounce, Command, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase, Print,
-    Stats, Status, Step, MAX_LAYERS, MAX_LOOPS,
+    Bounce, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase,
+    Print, Stats, Status, Step, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::Block;
@@ -1371,14 +1371,20 @@ impl Printer {
 }
 
 /// The print loop `s` needs at `bpm`: its length then, if that is not its
-/// own (within a frame) and it is playing; within the stretch's 10x.
+/// own (within a frame) and it is playing; within the stretch's 10x. At
+/// another speed ([`Status::rate`]) it always wants one: the print makes
+/// the octaves cleanly, and an overdub waits for it to fit to.
 fn want(s: &Status, bpm: f64, rate: u32) -> Option<usize> {
     if s.phase != Phase::Playing || s.frames == 0 || s.ticks <= 0 {
         return None;
     }
     let frames = frames_at(s.ticks, bpm, rate);
-    let r = frames as f64 / s.frames as f64;
-    (frames.abs_diff(s.frames) > 1 && (0.1..=10.0).contains(&r)).then_some(frames)
+    // The audio's length once resampled to its speed, which the stretch
+    // then takes to `frames`.
+    let sped = s.frames as f64 * 2f64.powi(-i32::from(s.rate));
+    let r = frames as f64 / sped;
+    let off = s.rate != 0 || frames.abs_diff(s.frames) > 1;
+    (off && (0.1..=10.0).contains(&r)).then_some(frames)
 }
 
 impl LoopHost {
@@ -1728,6 +1734,17 @@ impl LoopHost {
             (Command::Record, Phase::Recording) => {
                 "Record during the first pass: it ends on the next bar line".to_string()
             }
+            // Pressed again while it waits for its print or its fit.
+            (Command::Record | Command::Overdub, Phase::Playing) if s.overdub_next => {
+                "Overdub again: the overdub waiting for the fit is off".to_string()
+            }
+            (Command::Record | Command::Overdub, Phase::Playing) if s.rate != 0 && !s.printed => {
+                format!(
+                    "overdub on, once the loop's print at {} is in and the loop is fitted to it \
+                     (its print becomes its layer; Undo takes the fit back)",
+                    crate::looper_page::speed_text(s.speed)
+                )
+            }
             (Command::Record | Command::Overdub, Phase::Playing) if s.printed => {
                 "overdub on, once the loop is fitted to the tempo (its print becomes its layer; \
                  Undo takes the fit back)"
@@ -1796,6 +1813,19 @@ impl LoopHost {
                 format!("latency {l} frames ({:.1} ms)", l as f64 / 44.1)
             }
             (Command::SetLevel(v), _) => format!("loop level {:.1} dB", 20.0 * v.max(1e-6).log10()),
+            (Command::Edit(Edit::Speed(v)), Phase::Playing) if v == s.speed => {
+                format!("speed {}: already", crate::looper_page::speed_text(v))
+            }
+            (Command::Edit(Edit::Speed(v)), Phase::Playing) => format!(
+                "speed {}: {} (Undo takes it back)",
+                crate::looper_page::speed_text(v),
+                match v - s.speed {
+                    -2 => "two octaves down, four times the bars",
+                    -1 => "an octave down, twice the bars",
+                    1 => "an octave up, half the bars",
+                    _ => "two octaves up, a quarter of the bars",
+                }
+            ),
             (Command::Edit(e), Phase::Playing) => format!("edit {e:?}"),
             (Command::Edit(e), _) => format!("edit {e:?}: waits, or is refused while recording"),
             (Command::Merge, Phase::Playing) => {
@@ -3517,6 +3547,73 @@ mod tests {
         }
         let s = h.looper.status();
         assert_eq!((s.phase, s.frames), (Phase::Overdubbing, 105_840));
+    }
+
+    /// Half speed at the tempo it was recorded at: like tape at once (an
+    /// octave down), then the worker's print (the octave made cleanly);
+    /// Overdub waits for it, fits the loop to it and records.
+    #[test]
+    fn half_speed_gets_a_print_an_octave_down_and_an_overdub_fits_to_it() {
+        let mut h = LoopHost::new(44_100, 30);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let sine = |f: u64| 0.5 * (f as f64 * std::f64::consts::TAU / 100.0).sin() as f32;
+        let mut f = 0u64;
+        let mut period = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, rec: bool| {
+            assert!(t.process(PERIOD as u32, b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            if rec {
+                for i in 0..PERIOD {
+                    l[i] = sine(f + i as u64);
+                    r[i] = l[i];
+                }
+            }
+            h.take_pads(&l, &r);
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(b, &mut l, &mut r);
+            f += PERIOD as u64;
+            l
+        };
+        while h.looper.status().phase != Phase::Playing {
+            period(&mut h, &mut t, &mut b, true);
+        }
+        let line = h.command(Command::Edit(Edit::Speed(-1)));
+        assert_eq!(
+            line,
+            "looper: speed ½×: an octave down, twice the bars (Undo takes it back)"
+        );
+        let ups = |out: &[f32]| {
+            let x: Vec<usize> = (1..out.len())
+                .filter(|&i| out[i - 1] < 0.0 && out[i] >= 0.0)
+                .collect();
+            (x.len() - 1) as f64 * 44_100.0 / (x[x.len() - 1] - x[0]) as f64
+        };
+        // Overdub at once: it waits for the print.
+        for _ in 0..4 {
+            period(&mut h, &mut t, &mut b, false);
+        }
+        assert!(h
+            .command(Command::Overdub)
+            .contains("once the loop's print at ½× is in"));
+        let start = std::time::Instant::now();
+        while h.looper.status().phase != Phase::Overdubbing {
+            assert!(start.elapsed().as_secs() < 120, "no fit: {}", h.describe());
+            period(&mut h, &mut t, &mut b, false);
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        let s = h.looper.status();
+        assert_eq!((s.frames, s.speed, s.rate), (176_400, -1, 0));
+        // The fitted layer plays the octave down, sample for sample.
+        h.command(Command::Overdub);
+        let mut out = Vec::new();
+        for _ in 0..400 {
+            out.extend(period(&mut h, &mut t, &mut b, false));
+        }
+        let down = ups(&out[1_000..]);
+        assert!((down - 220.5).abs() < 2.0, "fitted {down}");
     }
 
     #[test]

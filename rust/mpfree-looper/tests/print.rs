@@ -8,7 +8,7 @@
 //! 200 BPM it is 26 460.
 
 use mpfree_looper::print::{frames_at, print};
-use mpfree_looper::{Command as L, LayerCommand as Lc, Looper, Phase, Print, Step, FADE};
+use mpfree_looper::{Command as L, Edit, LayerCommand as Lc, Looper, Phase, Print, Step, FADE};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -103,7 +103,8 @@ impl Rig {
         let b = self.l.take_bounce().expect("bounced");
         assert!(b.dry && b.complete);
         assert_eq!(b.version, s.version);
-        print(&b, RATE, frames_at(BAR_TICKS, bpm, RATE)).unwrap()
+        assert_eq!(b.rate, s.rate);
+        print(&b, RATE, frames_at(s.ticks, bpm, RATE)).unwrap()
     }
 }
 
@@ -318,4 +319,166 @@ fn a_print_can_only_be_handed_in_once_the_last_one_took_over() {
     r.run(r.frame + 128, &silence);
     assert!(r.l.print(0, Some(bad)).is_err(), "shorter than its frames");
     assert!(r.l.print(9, None).is_err());
+}
+
+/// A one-bar loop of the sine from bar 1, at 240 BPM throughout.
+fn recorded_at_tempo(r: &mut Rig) {
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    assert!(r.t.command(0, T::Play));
+    r.run(BAR as u64 + 512, &sine);
+    assert_eq!(r.l.status().phase, Phase::Playing);
+    assert_eq!(r.l.status().frames, BAR);
+}
+
+#[test]
+fn half_speed_plays_an_octave_down_over_twice_the_bars_and_undo_takes_it_back() {
+    let mut r = Rig::new(128);
+    recorded_at_tempo(&mut r);
+    r.cmd(L::Edit(Edit::Speed(-1)));
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    let s = r.l.status();
+    assert_eq!((s.speed, s.rate), (-1, -1));
+    assert_eq!(
+        (s.frames, s.ticks),
+        (BAR, 2 * BAR_TICKS),
+        "the same audio over 2 bars"
+    );
+    // Like tape until its print is in: 441 Hz an octave down.
+    let a = r.frame;
+    r.run(a + 8192, &silence);
+    let tape = r.pitch(a, a + 8192);
+    assert!((tape - 220.5).abs() < 3.0, "tape {tape}");
+    // The print at that speed is the audio resampled an octave: twice the
+    // frames, the same pitch, and it loops every two bars with no click.
+    let p = r.make_print(240.0);
+    assert_eq!(p.frames, 2 * BAR);
+    r.l.print(0, Some(p)).unwrap();
+    let from = r.frame + 2 * FADE as u64;
+    r.run(from + 4 * BAR as u64, &silence);
+    assert!(r.l.status().printed);
+    let printed = r.pitch(from, from + 2 * BAR as u64);
+    assert!((printed - 220.5).abs() < 2.0, "print {printed}");
+    for f in from..from + 2000 {
+        let (a, b) = (r.left(f), r.left(f + 2 * BAR as u64));
+        assert!((a - b).abs() < 1e-4, "{f}: {a} then {b}");
+    }
+    let step = r.max_step(from, from + 4 * BAR as u64);
+    assert!(step < 0.04, "biggest step {step}");
+    // Undo: as recorded, and the print (for 2 bars) plays no more.
+    r.cmd(L::Undo);
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    let s = r.l.status();
+    assert_eq!((s.speed, s.rate, s.ticks), (0, 0, BAR_TICKS));
+    assert!(!s.printed);
+    let a = r.frame;
+    r.run(a + 8192, &silence);
+    let back = r.pitch(a, a + 8192);
+    assert!((back - 441.0).abs() < 3.0, "back {back}");
+    assert!(matches!(
+        r.l.history().redo(),
+        [Step::Edit(Edit::Speed(-1))]
+    ));
+}
+
+#[test]
+fn double_speed_is_an_octave_up_over_half_the_bars_and_the_speeds_go_both_ways() {
+    let mut r = Rig::new(128);
+    recorded_at_tempo(&mut r);
+    r.cmd(L::Edit(Edit::Speed(1)));
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    let s = r.l.status();
+    assert_eq!((s.speed, s.rate, s.ticks), (1, 1, BAR_TICKS / 2));
+    let p = r.make_print(240.0);
+    assert_eq!(p.frames, BAR / 2);
+    r.l.print(0, Some(p)).unwrap();
+    let from = r.frame + 2 * FADE as u64;
+    r.run(from + 2 * BAR as u64, &silence);
+    let up = r.pitch(from, from + BAR as u64);
+    assert!((up - 882.0).abs() < 4.0, "print {up}");
+    // From double straight to half: two octaves, four times the ticks.
+    r.cmd(L::Edit(Edit::Speed(-1)));
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    let s = r.l.status();
+    assert_eq!((s.speed, s.rate, s.ticks), (-1, -1, 2 * BAR_TICKS));
+    // The speed it already has, or past the ends, is refused.
+    let refused = r.l.stats().refused;
+    r.cmd(L::Edit(Edit::Speed(-1)));
+    r.run(r.frame + 256, &silence);
+    assert_eq!(r.l.stats().refused, refused + 1);
+    assert_eq!(r.l.status().ticks, 2 * BAR_TICKS);
+}
+
+#[test]
+fn half_speed_at_another_tempo_keeps_the_octave() {
+    let mut r = Rig::new(128);
+    let slow = recorded(&mut r);
+    r.run(slow + 1024, &silence);
+    r.cmd(L::Edit(Edit::Speed(-1)));
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    // At 200 BPM two bars are 52 920 frames: the print is the octave down,
+    // stretched to them with its pitch kept.
+    let p = r.make_print(200.0);
+    assert_eq!(p.frames, 2 * SLOW_BAR);
+    r.l.print(0, Some(p)).unwrap();
+    let from = r.frame + 2 * FADE as u64;
+    r.run(from + 2 * SLOW_BAR as u64, &silence);
+    let kept = r.pitch(from, from + 2 * SLOW_BAR as u64);
+    assert!((kept - 220.5).abs() < 2.0, "print {kept}");
+}
+
+#[test]
+fn overdub_at_another_speed_waits_for_its_print_then_fits_and_undo_takes_it_all_back() {
+    let mut r = Rig::new(128);
+    recorded_at_tempo(&mut r);
+    r.cmd(L::Edit(Edit::Speed(-1)));
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    // Overdub before the print: it waits (a second press calls it off).
+    r.cmd(L::Overdub);
+    r.run(r.frame + 1024, &silence);
+    let s = r.l.status();
+    assert_eq!(s.phase, Phase::Playing);
+    assert!(s.overdub_next && s.fitting.is_none(), "{s:?}");
+    r.cmd(L::Overdub);
+    r.run(r.frame + 256, &silence);
+    assert!(!r.l.status().overdub_next, "called off");
+    r.cmd(L::Overdub);
+    r.run(r.frame + 256, &silence);
+    assert!(r.l.status().overdub_next);
+    // The print comes: the loop fits to it, then the overdub starts.
+    let p = r.make_print(240.0);
+    r.l.print(0, Some(p)).unwrap();
+    r.run(r.frame + 4 * FADE as u64 + 2048, &silence);
+    let s = r.l.status();
+    assert_eq!(s.phase, Phase::Overdubbing, "{s:?}");
+    assert_eq!((s.frames, s.ticks), (2 * BAR, 2 * BAR_TICKS));
+    assert_eq!(
+        (s.speed, s.rate),
+        (-1, 0),
+        "the fitted audio plays as it is"
+    );
+    r.run(r.frame + BAR as u64, &noise);
+    r.cmd(L::Overdub);
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    let h = r.l.history();
+    assert!(
+        matches!(
+            h.done(),
+            [Step::Edit(Edit::Speed(-1)), Step::Fit(_), Step::Overdub(_)]
+        ),
+        "{h:?}"
+    );
+    // Undo the overdub and the fit: half speed on the first pass again.
+    r.cmd(L::Undo);
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    r.cmd(L::Undo);
+    r.run(r.frame + 8 * FADE as u64, &silence);
+    let s = r.l.status();
+    assert_eq!((s.frames, s.speed, s.rate, s.layers), (BAR, -1, -1, 1));
+    // Back to as recorded: no print needed, so an overdub starts at once.
+    r.cmd(L::Edit(Edit::Speed(0)));
+    r.run(r.frame + 4 * FADE as u64, &silence);
+    r.cmd(L::Overdub);
+    r.run(r.frame + 256, &silence);
+    assert_eq!(r.l.status().phase, Phase::Overdubbing);
 }

@@ -66,6 +66,8 @@ pub enum Ctl {
     /// Overdubs: 0 Add, 1 Replace, 2 Once.
     Overdubs(u8),
     Reverse,
+    /// Speed: 0 half, 1 as recorded, 2 double ([`SPEED_CHOICES`]).
+    Speed(u8),
     Half,
     Double,
     Undo,
@@ -85,6 +87,13 @@ pub enum Ctl {
 /// The Overdubs choices: on top until Overdub again, in place of what was
 /// there, or one pass.
 pub const OVERDUB_CHOICES: [&str; 3] = ["Add", "Replace", "Once"];
+
+/// The Speed choices, like tape: half (an octave down, twice the bars),
+/// as recorded, double.
+pub const SPEED_CHOICES: [&str; 3] = ["½×", "1×", "2×"];
+
+/// Merge's width at the strip's right end.
+const MERGE_W: i32 = 100;
 
 /// The Length choices' bars (None: free).
 pub const BAR_CHOICES: [Option<u32>; 5] = [None, Some(1), Some(2), Some(4), Some(8)];
@@ -381,6 +390,8 @@ pub enum Strip {
         /// How overdubs record: 0 Add, 1 Replace, 2 Once.
         overdubs: u8,
         reversed: bool,
+        /// Into [`SPEED_CHOICES`]: 0 half, 1 as recorded, 2 double.
+        speed: u8,
         /// "4 bars".
         length: String,
         /// ½, × 2 and Reverse work (the loop plays, nothing renders).
@@ -800,60 +811,72 @@ impl LoopEditor {
                     "Feedback".to_string(),
                     true,
                 ));
-                let xo = x + 92;
+                let xo = x + 84;
                 for (i, l) in OVERDUB_CHOICES.iter().enumerate() {
                     out.push((
                         Ctl::Overdubs(i as u8),
-                        Rect::new(xo + 3 + i as i32 * 74, y + 3, 70, CTRL_H - 6),
+                        Rect::new(xo + 3 + i as i32 * 70, y + 3, 66, CTRL_H - 6),
                         l.to_string(),
                         true,
                     ));
                 }
-                let x2 = xo + OVERDUB_CHOICES.len() as i32 * 74 + 34;
+                let x2 = xo + OVERDUB_CHOICES.len() as i32 * 70 + 26;
                 let rev = if *reversed { "Reverse on" } else { "Reverse" };
                 out.push((
                     Ctl::Reverse,
-                    Rect::new(x2, y, 124, CTRL_H),
+                    Rect::new(x2, y, 104, CTRL_H),
                     rev.to_string(),
                     *edits,
                 ));
-                let x3 = x2 + 140;
+                let xs = x2 + 104 + 16;
+                for (i, l) in SPEED_CHOICES.iter().enumerate() {
+                    out.push((
+                        Ctl::Speed(i as u8),
+                        Rect::new(xs + 3 + i as i32 * 44, y + 3, 40, CTRL_H - 6),
+                        format!("Speed {l}"),
+                        *edits,
+                    ));
+                }
+                let x3 = xs + SPEED_CHOICES.len() as i32 * 44 + 16;
                 out.push((
                     Ctl::Half,
-                    Rect::new(x3, y, 50, CTRL_H),
+                    Rect::new(x3, y, 46, CTRL_H),
                     format!("½ ({length})"),
                     *edits,
                 ));
                 out.push((
                     Ctl::Double,
-                    Rect::new(x3 + 50 + 76, y, 50, CTRL_H),
+                    Rect::new(x3 + 46 + 60, y, 46, CTRL_H),
                     format!("× 2 ({length})"),
                     *edits,
                 ));
-                let x4 = x3 + 50 + 76 + 50 + 30;
+                let x4 = x3 + 46 + 60 + 46 + 28;
                 out.push((
                     Ctl::Undo,
-                    Rect::new(x4, y, 52, CTRL_H),
+                    Rect::new(x4, y, 48, CTRL_H),
                     "Undo".to_string(),
                     *undo,
                 ));
-                let shown = LoopEditor::chips_shown(chips.len());
+                // The chips take the room between Undo and Redo, Redo
+                // sitting clear of Merge.
+                let room = (s.right() - MERGE_W - 12 - 48 - 6) - (x4 + 54) - 6;
+                let shown = LoopEditor::chips_shown(chips.len(), room);
                 let cw = (shown as i32 * 17).max(17) + 6;
                 out.push((
                     Ctl::History,
-                    Rect::new(x4 + 58, y, cw, CTRL_H),
+                    Rect::new(x4 + 54, y, cw, CTRL_H),
                     "History".to_string(),
                     !chips.is_empty(),
                 ));
                 out.push((
                     Ctl::Redo,
-                    Rect::new(x4 + 58 + cw + 6, y, 52, CTRL_H),
+                    Rect::new(x4 + 54 + cw + 6, y, 48, CTRL_H),
                     "Redo".to_string(),
                     *redo,
                 ));
                 out.push((
                     Ctl::Merge,
-                    Rect::new(s.right() - 120, y, 120, CTRL_H),
+                    Rect::new(s.right() - MERGE_W, y, MERGE_W, CTRL_H),
                     merge.0.clone(),
                     merge.1,
                 ));
@@ -902,9 +925,10 @@ impl LoopEditor {
         out
     }
 
-    /// How many history chips fit (the newest are shown).
-    fn chips_shown(n: usize) -> usize {
-        n.min(18)
+    /// How many history chips fit in `room` pixels (the newest are
+    /// shown).
+    fn chips_shown(n: usize, room: i32) -> usize {
+        n.min((room.max(0) / 17) as usize)
     }
 
     /// The layer being dragged (play order) and where its card is now:
@@ -1596,6 +1620,7 @@ impl LoopEditor {
                 feedback,
                 overdubs,
                 reversed,
+                speed,
                 length,
                 chips,
                 merge,
@@ -1647,6 +1672,17 @@ impl LoopEditor {
                         "Reverse",
                     );
                 }
+                let sp: Vec<(Rect, &str, bool)> = ctls
+                    .iter()
+                    .filter_map(|c| match c.0 {
+                        Ctl::Speed(i) => Some((c.1, SPEED_CHOICES[i as usize], i == *speed)),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(first) = sp.first() {
+                    group_label(cx, first.0.x - 3, s.y, "SPEED");
+                }
+                segments(cx, &sp);
                 if let (Some(h), Some(d)) = (rect(Ctl::Half), rect(Ctl::Double)) {
                     group_label(cx, h.x, s.y, "LENGTH");
                     button(cx, h, "½", on(Ctl::Half), false, 17.0);
@@ -1669,7 +1705,7 @@ impl LoopEditor {
                     group_label(cx, u.x, s.y, "HISTORY");
                     button(cx, u, "Undo", on(Ctl::Undo), false, 14.0);
                     button(cx, re, "Redo", on(Ctl::Redo), false, 14.0);
-                    let shown = LoopEditor::chips_shown(chips.len());
+                    let shown = LoopEditor::chips_shown(chips.len(), hi.w - 6);
                     let first = chips.len() - shown;
                     for (i, c) in chips[first..].iter().enumerate() {
                         let b = Rect::new(hi.x + 3 + i as i32 * 17, hi.y + 8, 12, hi.h - 16);
@@ -1831,6 +1867,7 @@ impl Widget for LoopEditor {
                 Ctl::Feedback => Target::drag("feedback", 0, label, b),
                 Ctl::Overdubs(i) => Target::tap("overdubs", i as usize, label, b),
                 Ctl::Reverse => Target::tap("reverse", 0, label, b),
+                Ctl::Speed(i) => Target::tap("speed", i as usize, label, b),
                 Ctl::Half => Target::tap("half", 0, label, b),
                 Ctl::Double => Target::tap("double", 0, label, b),
                 Ctl::Undo => Target::tap("undo", 0, label, b),
@@ -1848,6 +1885,7 @@ impl Widget for LoopEditor {
                 (Strip::Records { bars, .. }, Ctl::Bars(i)) => *bars == i,
                 (Strip::Records { then, .. }, Ctl::Then(i)) => *then == i,
                 (Strip::Plays { overdubs, .. }, Ctl::Overdubs(i)) => *overdubs == i,
+                (Strip::Plays { speed, .. }, Ctl::Speed(i)) => *speed == i,
                 _ => false,
             };
             out.push(t.disabled_if(!on || chosen));
@@ -2344,6 +2382,7 @@ mod tests {
             feedback: 1.0,
             overdubs: 0,
             reversed: false,
+            speed: 1,
             length: "4 bars".into(),
             edits: true,
             chips: vec![

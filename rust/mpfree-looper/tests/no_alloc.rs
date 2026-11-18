@@ -130,6 +130,12 @@ fn commands_and_periods_never_allocate() {
         L::Merge,
         L::Undo,
         L::SetOverdubs(Overdubs::Add),
+        // Half speed, an overdub that waits for its print and is called
+        // off, and back.
+        L::Edit(E::Speed(-1)),
+        L::Overdub,
+        L::Overdub,
+        L::Edit(E::Speed(0)),
         L::Forget,
     ];
     let mut seen_playing = false;

@@ -16,6 +16,7 @@ use crate::looper_deck::{Channel, DeckHead, LoopDeck, RingState, DECK};
 use crate::looper_tab::{
     level_frac, level_text, Chip, ChipKind, Ctl, DropSpot, DropTo, EmptyLook, HistoryList,
     LayerDrag, LayerRow, LoopEditor, Strip, BAR_CHOICES, EDITOR, LOOP_COLOURS, QLINKS, SEND_SHOW,
+    SPEED_CHOICES,
 };
 use crate::looping::{LoopSource, LoopWave, LooperView};
 use mpfree_looper::{
@@ -511,7 +512,13 @@ fn edit_text(e: Edit, rate: u32) -> String {
         Edit::Nudge(n) => format!("Nudge {} →", sixteenths(n)),
         Edit::Trim { .. } => "Trim".to_string(),
         Edit::SeamFade(f) => format!("Seam fade {}", seam_text(f as usize, rate)),
+        Edit::Speed(v) => format!("Speed {}", speed_text(v)),
     }
+}
+
+/// A loop's speed as the strip names it: "½×", "1×", "2×".
+pub fn speed_text(speed: i8) -> &'static str {
+    SPEED_CHOICES[(speed.clamp(-1, 1) + 1) as usize]
 }
 
 /// A step as the undo history names it: layers by their place in the
@@ -530,8 +537,9 @@ fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
         }
         Step::Edit(e) => edit_text(e, rate),
         Step::Merge(_) => "Merge layers".to_string(),
-        // Overdub or Record over a print fits the loop to the tempo.
-        Step::Fit(_) => "Fit to the tempo".to_string(),
+        // Overdub or Record over a print fits the loop to the tempo and
+        // its speed.
+        Step::Fit(_) => "Fit to tempo and speed".to_string(),
         // Dragged here from another loop, or from here to another.
         Step::Added(id, from) => name(id).map_or_else(
             || format!("From loop {}", from + 1),
@@ -573,6 +581,9 @@ pub fn strip_command(c: Ctl, s: &Status) -> Option<Command> {
         Ctl::Reverse if editable(s) => Some(Command::Edit(Edit::Reverse)),
         Ctl::Half if editable(s) => Some(Command::Edit(Edit::Half)),
         Ctl::Double if editable(s) => Some(Command::Edit(Edit::Double)),
+        Ctl::Speed(i) if editable(s) && i as i8 - 1 != s.speed => {
+            Some(Command::Edit(Edit::Speed(i as i8 - 1)))
+        }
         Ctl::Merge if editable(s) && s.layers > 1 => Some(Command::Merge),
         Ctl::Then(i) => Some(Command::SetAfter(if i == 0 {
             After::Play
@@ -1560,6 +1571,7 @@ impl LooperPage {
                     Overdubs::Once => 2,
                 },
                 reversed,
+                speed: (s.speed.clamp(-1, 1) + 1) as u8,
                 length: bars_word(bars_of(s.ticks, v.beats_per_bar)),
                 edits: editable(s),
                 chips,
@@ -2304,6 +2316,8 @@ mod tests {
         assert_eq!(text(Step::Edit(Edit::Nudge(2))), "Nudge 2 × 1/16 →");
         assert_eq!(text(Step::Edit(Edit::SeamFade(441))), "Seam fade 10 ms");
         assert_eq!(text(Step::Edit(Edit::Half)), "½ length");
+        assert_eq!(text(Step::Edit(Edit::Speed(-1))), "Speed ½×");
+        assert_eq!(text(Step::Edit(Edit::Speed(1))), "Speed 2×");
         assert_eq!(text(Step::Merge(id(0))), "Merge layers");
         let (mut ui, mut page) = page();
         page.update(&mut ui, &v, &Settings::default());
@@ -2375,6 +2389,22 @@ mod tests {
             strip_command(Ctl::Overdubs(0), &s),
             Some(Command::SetOverdubs(Overdubs::Add))
         );
+        // Speed: half, as recorded, double; the speed it has does nothing.
+        assert_eq!(
+            strip_command(Ctl::Speed(0), &s),
+            Some(Command::Edit(Edit::Speed(-1)))
+        );
+        assert_eq!(
+            strip_command(Ctl::Speed(2), &s),
+            Some(Command::Edit(Edit::Speed(1)))
+        );
+        assert_eq!(strip_command(Ctl::Speed(1), &s), None);
+        let mut half = s;
+        half.speed = -1;
+        assert_eq!(
+            strip_command(Ctl::Speed(1), &half),
+            Some(Command::Edit(Edit::Speed(0)))
+        );
         // One layer has nothing to merge, and says so.
         s.layers = 1;
         assert_eq!(strip_command(Ctl::Merge, &s), None);
@@ -2399,6 +2429,16 @@ mod tests {
             (merge.0.as_str(), merge.1, *edits),
             ("Merging 40 %", false, false)
         );
+        // The strip shows the loop's speed, its length in bars with it.
+        let mut v = two_loops();
+        v.status.speed = -1;
+        v.status.ticks *= 2;
+        page.update(&mut ui, &v, &Settings::default());
+        let Strip::Plays { speed, length, .. } = &ui.get::<LoopEditor>(EDITOR).unwrap().strip
+        else {
+            panic!("plays");
+        };
+        assert_eq!((*speed, length.as_str()), (0, "8 bars"));
     }
 
     #[test]

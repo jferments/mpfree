@@ -677,6 +677,56 @@ mod looper {
         });
     }
 
+    /// Speed (step 3c): ½× plays the loop an octave down over twice the
+    /// bars, like tape, and UNDO and SHIFT + UNDO take it back and put it
+    /// back; OVERDUB waits for the print at that speed, fits the loop to
+    /// it and records; 1× after the fit plays the fitted audio an octave
+    /// up, the loop back to its own length.
+    #[test]
+    fn half_speed_plays_the_loop_an_octave_down_and_an_overdub_fits_to_it() {
+        on_big_stack(|| {
+            let mut s = two_layers();
+            let (ticks, frames) = (status(&s).ticks, status(&s).frames);
+            s.press("leditor", "speed", "Speed ½×").run_for(0.2);
+            let st = status(&s);
+            assert_eq!((st.speed, st.rate, st.ticks), (-1, -1, 2 * ticks));
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l
+                    == "looper: speed ½×: an octave down, twice the bars (Undo takes it back)"));
+            // The strip's ½× is the one lit (so it takes no tap).
+            let half = at(&mut s, "leditor", "speed", 0);
+            assert!(!half.enabled, "½× is the speed now");
+            s.button("UNDO").run_for(0.3);
+            assert_eq!((status(&s).speed, status(&s).ticks), (0, ticks));
+            s.button_with("SHIFT", "UNDO").run_for(0.3);
+            assert_eq!((status(&s).speed, status(&s).ticks), (-1, 2 * ticks));
+            // OVERDUB waits for the print, which the worker makes, then
+            // the loop is fitted to it and the overdub records.
+            s.button("OVERDUB");
+            let start = std::time::Instant::now();
+            while status(&s).phase != Phase::Overdubbing {
+                assert!(start.elapsed().as_secs() < 60, "no fit");
+                s.run_periods(1);
+                std::thread::sleep(std::time::Duration::from_micros(100));
+            }
+            let st = status(&s);
+            assert_eq!((st.speed, st.rate, st.frames), (-1, 0, 2 * frames));
+            s.pad(3, 120, 0.3).run_for(0.3);
+            s.button("OVERDUB");
+            until_phase(&mut s, Phase::Playing, 4.5);
+            assert_eq!(status(&s).layers, 2, "the fitted layer and the overdub");
+            s.button("UNDO").run_for(0.4);
+            assert_eq!(status(&s).layers, 1);
+            // 1× again: the fitted audio an octave up, the loop's own bars.
+            s.press("leditor", "speed", "Speed 1×").run_for(0.2);
+            let st = status(&s);
+            assert_eq!((st.speed, st.rate, st.ticks), (0, 1, ticks));
+            s.button("STOP");
+        });
+    }
+
     /// A finger on loop `n`'s ring for `seconds`, then lifted.
     fn hold_ring(s: &mut Session, n: usize, seconds: f64) {
         let ring = at(s, "ldeck", "ring", n).rect;
