@@ -274,14 +274,35 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(test(checks.Window([], session, 100.0, 120.0))[0], "none in place")
         self.assertIsNone(test(checks.Window([], session[:1], 100.0, 120.0))[0], "no status after it yet")
 
+    def test_a_check_that_looks_for_latch_off_turns_it_off_with_note_repeat(self):
+        """STOP never writes "Latch off": with the transport rolling, STOP stops it and the latched pads play on, and
+        STOP again silences them but keeps the latch (the app's
+        stop_silences_a_latched_arp_and_keeps_the_latch_until_stop_again). So a check that looks for "Latch off"
+        has SHIFT + NOTE REPEAT turn it off in its steps, and the next check's Latch starts from off."""
+        for c in checks.CHECKS:
+            if any("Latch" in what and "off" in what for what, _ in c.looks):
+                text = " ".join(s.strip() for s in c.steps)
+                self.assertTrue("NOTE REPEAT (Latch goes off)" in text or "NOTE REPEAT (Latch off)" in text
+                                or "Press NOTE REPEAT to unlatch" in text, c.name)
+
     def test_the_mix_checks_see_a_refused_effect_and_the_latch(self):
-        """The effect checks (return-wet, the Mix curve and Room checks, the Tape delay's three, Crush's,
-        Drive's and the Amp's, the busy project): any refusal from the mixer or the chain editor fails them, a
-        late mode switch among them, and the latched ones start and end on Latch."""
+        """The effect checks (the EQ's Quality, return-wet, the Mix curve and Room checks, the rebuilt Room, Plate,
+        Spring and Cloud, the rebuilt Chorus, Flanger and Phaser, the LFO's Shape, the Tape delay's three,
+        Crush's, the Compressor's and the Multiband's, the Gate's, the Transient shaper's and the De-esser's,
+        Drive's, the Amp's, the Fuzz's, Lo-fi's, the Multi filter's, Master safety's, the Limiter's and the
+        Tremolo's, the Channel strip's and the Ducker's, the busy project): any refusal from the mixer or the
+        chain editor fails them, a late mode switch among them, and the latched ones start and end on Latch."""
         latched = lines("Latch on", "Latch off")
-        for name in ("return-wet", "mix-curve", "mix-curve-click", "room-level",
-                     "tape-first-echo", "dub-echo-dies", "runaway-howls", "crush-rate", "crush-filters",
-                     "drive-modes", "amp-turns", "amp-switches", "amp-gate", "fx-busy"):
+        for name in ("eq-quality", "return-wet", "mix-curve", "mix-curve-click", "room-level", "room-rebuilt",
+                     "plate-rebuilt", "spring-rebuilt", "cloud-rebuilt", "chorus-rebuilt",
+                     "flanger-rebuilt", "lfo-shape", "phaser-rebuilt",
+                     "tape-first-echo", "dub-echo-dies", "runaway-howls", "crush-rate", "crush-filters", "comp-style",
+                     "comp-moves", "filter-switches", "multiband-squash", "gate-bass", "transient-snap",
+                     "deesser-voice", "drive-modes", "amp-turns", "amp-switches", "amp-gate", "fuzz-turns", "fuzz-switches", "lofi-broken",
+                     "lofi-follow", "filter-squelch", "filter-resmode",
+                     "filter-ladder", "limiter-hot-master", "limiter-loud-master",
+                     "tremolo-lfo", "strip-switches", "ducker-pump",
+                     "fx-busy"):
             got = dict((what, ok) for ok, what in self.judge(name, checks.Window(latched)))
             self.assertTrue(got["no refusal"], name)
             self.assertTrue(got["the app kept running"], name)
@@ -296,6 +317,49 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("crush-rate", checks.Window(lines("Latch off"))))
         self.assertFalse(got["Latch kept the pad repeating"])
         got = dict((what, ok) for ok, what in self.judge("crush-filters", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("room-rebuilt", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the snare repeating"])
+        got = dict((what, ok) for ok, what in self.judge("cloud-rebuilt", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("chorus-rebuilt", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the snare repeating"])
+        got = dict((what, ok) for ok, what in self.judge("chorus-rebuilt", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("flanger-rebuilt", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the snare repeating"])
+        got = dict((what, ok) for ok, what in self.judge("lfo-shape", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("phaser-rebuilt", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the snare repeating"])
+        got = dict((what, ok) for ok, what in self.judge("phaser-rebuilt", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("limiter-hot-master", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the chord repeating"])
+        got = dict((what, ok) for ok, what in self.judge("limiter-loud-master", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("multiband-squash", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the pad repeating"])
+        got = dict((what, ok) for ok, what in self.judge("multiband-squash", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("tremolo-lfo", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the chord repeating"])
+        got = dict((what, ok) for ok, what in self.judge("tremolo-lfo", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("comp-style", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the pad repeating"])
+        got = dict((what, ok) for ok, what in self.judge("comp-moves", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("filter-switches", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the pad repeating"])
+        got = dict((what, ok) for ok, what in self.judge("filter-switches", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("lofi-broken", checks.Window(lines("Latch off"))))
+        self.assertFalse(got["Latch kept the chord repeating"])
+        got = dict((what, ok) for ok, what in self.judge("lofi-follow", checks.Window(lines("Latch on"))))
+        self.assertFalse(got["Latch went off"])
+        got = dict((what, ok) for ok, what in self.judge("eq-quality", checks.Window(lines("Latch on"))))
+        self.assertTrue(got["Latch kept the pad repeating"])
         self.assertFalse(got["Latch went off"])
         got = dict((what, ok) for ok, what in self.judge("fx-busy", checks.Window(lines("Latch on"))))
         self.assertTrue(got["Latch kept the chord repeating"])
@@ -340,6 +404,69 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("midi-thru", checks.Window(lines(on, note_in, off))))
         self.assertFalse(got["thru sent them out of MIDI OUT"])
         self.assertTrue(got["notes came in"])
+
+    def test_sample_gear_needs_the_gear_run_the_cancel_and_sending_off(self):
+        """sample-gear passes on sending on, the gear found, a run on channel 1 from C3 to C4 put on two pads, a
+        cancelled run and sending off again (the app's own lines, as gui.rs's auto-sample test writes them)."""
+        on, off = "MIDI and CV out: on (the MIDI Out jack and the CV jacks send)", "MIDI and CV out: off (nothing is sent)"
+        run = ["sample: auto-sample can play outside gear on MIDI Out (DIN)",
+               "sample: auto-sample Gear (MIDI channel 1 on MIDI Out (DIN)) started: 2 notes (C3 to C4), 2 takes, "
+               "2 s of notes, up to 1 MB",
+               "sample: auto-sampled Gear onto kit 1 (Breaks) pads A5 to A6: 2 notes, 2 takes, 0 looped, +3.1 dB, "
+               "0.4 MB (2 s of notes recorded); the pads play notes",
+               "sample: auto-sample cancelled, keeping the notes done"]
+        self.assertTrue(all(ok for ok, _ in self.judge("sample-gear", checks.Window(lines(on, *run, off)))))
+        got = dict((what, ok) for ok, what in self.judge("sample-gear", checks.Window(lines(on, *run[:3], off))))
+        self.assertFalse(got["Cancel kept the notes done"])
+        got = dict((what, ok) for ok, what in self.judge("sample-gear", checks.Window(lines(on, *run))))
+        self.assertFalse(got["sending was turned off again"])
+
+    def test_sample_names_needs_the_pad_and_its_sound_named(self):
+        got = dict((what, ok) for ok, what in self.judge("sample-names", checks.Window(lines(
+            "sample: pad A5 named Ox", "sample: pad A5's sound named Loop", midi("button 67 pressed")))))
+        self.assertTrue(got["the pad was named"] and got["its sound was named Loop"] and got["UNDO (67) reached the app"])
+        got = dict((what, ok) for ok, what in self.judge("sample-names", checks.Window(lines(
+            "sample: pad A5's sound named Loop"))))
+        self.assertFalse(got["the pad was named"])
+
+    def test_sample_r2_cache_needs_the_new_save_its_open_and_the_analysis_read(self):
+        """sample-r2-16bit-cache passes on a save under the new name ending in r2, that project opening, and the
+        analysis read from it; the analysis line from another open, or a save over the old name, doesn't."""
+        good = lines("project: saved Project 2026-11-16 21.04 r2", "project: the save took 0.8 s (3 sounds, 9 parts)",
+                     "project: opening Project 2026-11-16 21.04 r2",
+                     "sample: the analysis of 3 sounds read from the project")
+        self.assertTrue(all(ok for ok, _ in self.judge("sample-r2-16bit-cache", checks.Window(good))))
+        got = dict((what, ok) for ok, what in self.judge("sample-r2-16bit-cache", checks.Window(lines(
+            "project: saved Project 2026-11-16 21.04", "project: opening Project 2026-11-16 21.04",
+            "sample: the analysis of 1 sound read from the project"))))
+        self.assertFalse(got["the project was saved"])
+        self.assertTrue(got["the analysis was read, not made again"])
+
+    def test_kit_per_track_needs_a_new_project_saved_and_opened(self):
+        """sample-r3-kit-per-track passes on New project, a take readied, a save under a new time-stamped name
+        and that project opening; a save over a named project of Jay's doesn't count."""
+        good = lines("project: new project", "rec: ready, PLAY records Track 2's next clip",
+                     "project: saved Project 2026-11-18 02.10", "project: opening Project 2026-11-18 02.10")
+        got = dict((what, ok) for ok, what in self.judge("sample-r3-kit-per-track", checks.Window(good)))
+        self.assertTrue(got["a new project started"] and got["it saved as a new project"] and got["it opened again"])
+        got = dict((what, ok) for ok, what in self.judge("sample-r3-kit-per-track", checks.Window(lines(
+            "project: new project", "project: saved Drums for Friday", "project: opening Drums for Friday"))))
+        self.assertFalse(got["it saved as a new project"])
+
+    def test_looper_deck_reads_the_rings_speaker_q_links_and_the_clear(self):
+        """looper-deck passes on the ring's record, overdub, mute, both Q-Links and the held ring's clear, in the
+        looper's own words; without the clear it fails."""
+        run = ["looper: Record: armed, the first pass starts on the next bar",
+               "looper: Record during the first pass: the loop is 2 bars", "looper: overdub on (layer 2)",
+               "looper: overdub off", "looper: loop 1 muted", "looper: loop 1 unmuted", "looper: loop 1 level -3.0 dB",
+               "q-link bank: the picked loop", "looper: layer 2 level -6.0 dB", "looper: overdub on (layer 3)",
+               "looper: Clear: the loop fades out (2 layers)"]
+        self.assertTrue(all(ok for ok, _ in self.judge("looper-deck", checks.Window(lines(*run)))))
+        got = dict((what, ok) for ok, what in self.judge("looper-deck", checks.Window(lines(*run[:-1]))))
+        self.assertFalse(got["the held ring cleared the loop"])
+        got = dict((what, ok) for ok, what in self.judge("looper-deck", checks.Window(lines(
+            "looper: Clear: the loop fades out (3 layers); UNDO brings it back"))))
+        self.assertTrue(got["the held ring cleared the loop"])
 
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
