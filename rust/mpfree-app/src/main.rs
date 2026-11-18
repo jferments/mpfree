@@ -3900,17 +3900,22 @@ fn learned_set(
     Some(value)
 }
 
+/// A kit pad's setting described with its value now, for MIDI Learn: track
+/// `t`'s kit's pad, the setting's `PadField` number ([`pad_describe`]).
+type PadNow<'a> = &'a dyn Fn(u8, u8, u16) -> Option<(mpfree_node::ParamInfo, f32)>;
+
 /// A parameter MIDI Learn can move, described with its value now: the
 /// mixer's and its effects' ([`modmix::describe`]), a track's synth's
 /// (`Owner::Inst`, [`synth_describe`]); a track's arp's rate, gate, swing
-/// and octaves (`Owner::Arp`, [`app::App::arp_param`]); or the
-/// transport's tempo and PLAY and STOP ([`remote::describe`], from
-/// `now`), or a track's mute or solo on the Clips grid
-/// ([`remote::describe_clips`]).
+/// and octaves (`Owner::Arp`, [`app::App::arp_param`]); a kit pad's own
+/// setting (`Owner::Pad`, from `pads`); or the transport's tempo and PLAY
+/// and STOP ([`remote::describe`], from `now`), or a track's mute or solo
+/// on the Clips grid ([`remote::describe_clips`]).
 fn learn_describe(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
     app: &app::App,
+    pads: PadNow<'_>,
     now: remote::Now,
     addr: mpfree_play::mpfree_param::ParamAddr,
 ) -> Option<(mpfree_node::ParamInfo, f32)> {
@@ -3918,6 +3923,7 @@ fn learn_describe(
     let t = match addr.owner {
         Owner::Inst(t) => t,
         Owner::Arp(t) => return app.arp_param(usize::from(t), addr.param),
+        Owner::Pad(t, pad) => return pads(t, pad, addr.param),
         Owner::Transport => return remote::describe(addr.param, now),
         Owner::Clips => return remote::describe_clips(addr.param, now),
         // A track's controller, bend or pressure out: where the engine has
@@ -3929,6 +3935,25 @@ fn learn_describe(
         _ => return modmix::describe(&mix.mixer, addr),
     };
     synth_describe(mix, synth, t, addr.param)
+}
+
+/// Track `t`'s kit's pad `pad`'s own setting `param` (a `PadField`
+/// number) with its value now, as the kit's view has it
+/// ([`sampler::pad_info`]): None for a track that plays the synth, a pad
+/// without a sound, or a number that names no setting.
+fn pad_describe(
+    player: &sampler::Player,
+    kits: &sampler::TrackKits,
+    t: u8,
+    pad: u8,
+    param: u16,
+) -> Option<(mpfree_node::ParamInfo, f32)> {
+    let field = sampler::pad_field(param)?;
+    let kit = kits.kit_of(usize::from(t))?;
+    let pad = usize::from(pad);
+    let v = player.pad_own(kit, pad, field)?;
+    let info = sampler::pad_info(field, player.pad_slices(kit, pad));
+    Some((info, info.clamp(v)))
 }
 
 /// Track `t`'s synth's parameter `param` with its value now: its own
@@ -3951,7 +3976,8 @@ fn synth_describe(
 
 /// What a learned control moves, named for the I/O view and the hint line:
 /// "Poly cutoff (Track 2)" for a synth's knob, "Arp gate (Bass)" for a
-/// track's arp, "PLAY and STOP" or "Tempo" for the transport, "Launch
+/// track's arp, "Tune (A5, Drums)" for a kit pad's setting, "PLAY and
+/// STOP" or "Tempo" for the transport, "Launch
 /// Bass · row 2" or "Mute Bass" on the Clips grid ([`clips_label`]), else
 /// as the chain editor names it ([`modpanels::label`]).
 fn learn_label(
@@ -3967,6 +3993,14 @@ fn learn_label(
             return format!(
                 "Arp {} ({})",
                 arp::name(addr.param).unwrap_or("?").to_lowercase(),
+                track_name(time.project(), t)
+            )
+        }
+        Owner::Pad(t, pad) => {
+            return format!(
+                "{} ({}, {})",
+                sampler::pad_field(addr.param).map_or("?", |f| sampler::pad_info(f, 1).name),
+                mpfree_midi::profile::pad_name(usize::from(pad)),
                 track_name(time.project(), t)
             )
         }
@@ -5626,6 +5660,9 @@ fn player_session(
     // MIDI Learn: values for parameters a control can't set yet, and the
     // I/O view's names taken at this generation of the model.
     let mut learn_misses = 0u64;
+    // Learned controls' kit pad settings this pass, for the screen
+    // (`ToUi::PadsLearned`).
+    let mut pads_learned: Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)> = Vec::new();
     // Learned controls on the transport (remote.rs): the presses they hold,
     // and whether the log said a learned tempo waits for a followed clock.
     let mut remote = remote::Remote::new();
@@ -6822,6 +6859,42 @@ fn player_session(
                         }
                     }
                 }
+                // A kit pad's own setting: the screen sets it on the kit
+                // as the Play tab's knob does (one undo step a turn), and
+                // its new view comes back to the sampler. The last value
+                // for each goes, once a pass.
+                midi_in::Learning::Set(w)
+                    if matches!(w.target.owner, mpfree_play::mpfree_param::Owner::Pad(..)) =>
+                {
+                    let mpfree_play::mpfree_param::Owner::Pad(t, pad) = w.target.owner else {
+                        continue;
+                    };
+                    let to = pad_describe(&player, &track_kits, t, pad, w.target.param)
+                        .zip(track_kits.kit_of(usize::from(t)))
+                        .zip(sampler::pad_field(w.target.param));
+                    match to {
+                        Some((((info, _), kit), field)) => {
+                            let value = info.from_unit(w.value);
+                            match pads_learned
+                                .iter_mut()
+                                .find(|(k, p, f, _)| (*k, *p, *f) == (kit, pad, field))
+                            {
+                                Some(set) => set.3 = value,
+                                None => pads_learned.push((kit, pad, field, value)),
+                            }
+                        }
+                        None => {
+                            learn_misses += 1;
+                            if learn_misses == 1 {
+                                out.midi(&format!(
+                                    "MIDI Learn: {} is no pad with a sound on that track's kit \
+                                     (counted from here)",
+                                    w.target
+                                ));
+                            }
+                        }
+                    }
+                }
                 // A synth's knob: as the Synth tab turns it, and the tab
                 // follows (a few times a second at most).
                 midi_in::Learning::Set(w)
@@ -6855,6 +6928,9 @@ fn player_session(
                 }
             }
         }
+        if !pads_learned.is_empty() {
+            out.show(gui::ToUi::PadsLearned(std::mem::take(&mut pads_learned)));
+        }
         if synth_learned && mt >= synth_learned_at {
             synth_learned = false;
             synth_learned_at = mt + 0.05;
@@ -6873,8 +6949,9 @@ fn player_session(
             muted,
             soloed,
         };
+        let pad_now = |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
         music.observe_learned(mt, |addr| {
-            learn_describe(&mix, &synth, &app, remote_now, addr)
+            learn_describe(&mix, &synth, &app, &pad_now, remote_now, addr)
         });
         // The I/O view names what each learned control moves, whenever
         // the project's learned controls change.
@@ -6892,16 +6969,16 @@ fn player_session(
                 // section's card).
                 live.learn_live = setup
                     .all_learned()
-                    .map(
-                        |(_, l)| match learn_describe(&mix, &synth, &app, remote_now, l.target) {
+                    .map(|(_, l)| {
+                        match learn_describe(&mix, &synth, &app, &pad_now, remote_now, l.target) {
                             Some((info, _)) => mpfree_midi_ui::LearnLive {
                                 now: None,
                                 lo_text: mpfree_mod::text::value_text(&info, info.from_unit(l.lo)),
                                 hi_text: mpfree_mod::text::value_text(&info, info.from_unit(l.hi)),
                             },
                             None => mpfree_midi_ui::LearnLive::default(),
-                        },
-                    )
+                        }
+                    })
                     .collect();
                 learn_now_at = 0.0;
             }
@@ -6918,7 +6995,7 @@ fn player_session(
             if mt >= learn_now_at {
                 learn_now_at = mt + 0.25;
                 for ((_, l), v) in setup.all_learned().zip(live.learn_live.iter_mut()) {
-                    v.now = learn_describe(&mix, &synth, &app, remote_now, l.target)
+                    v.now = learn_describe(&mix, &synth, &app, &pad_now, remote_now, l.target)
                         .map(|(i, x)| i.to_unit(x));
                 }
             }
@@ -10561,8 +10638,15 @@ mod tests {
                 value: unit,
             };
             assert_eq!(learned_synth(&mut synth, &mut mix, w), Some(()));
-            let (got_info, got) =
-                learn_describe(&mix, &synth, &app, remote::Now::default(), knob).unwrap();
+            let (got_info, got) = learn_describe(
+                &mix,
+                &synth,
+                &app,
+                &|_, _, _| None,
+                remote::Now::default(),
+                knob,
+            )
+            .unwrap();
             assert_eq!(got_info.id, info.id);
             let want = info.from_unit(unit);
             assert!(
@@ -10636,18 +10720,27 @@ mod tests {
             soloed,
             ..remote::Now::default()
         };
-        let (info, v) = learn_describe(&mix, &synth, &app, now, at(clips::mute(1))).unwrap();
+        let (info, v) =
+            learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(clips::mute(1))).unwrap();
         assert_eq!(
             (info.name, info.curve, v),
             ("Mute", mpfree_node::Curve::Toggle, 1.0)
         );
         assert_eq!(
-            learn_describe(&mix, &synth, &app, now, at(clips::solo(1)))
+            learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(clips::solo(1)))
                 .unwrap()
                 .1,
             0.0
         );
-        assert!(learn_describe(&mix, &synth, &app, now, at(clips::clip(1, 2))).is_none());
+        assert!(learn_describe(
+            &mix,
+            &synth,
+            &app,
+            &|_, _, _| None,
+            now,
+            at(clips::clip(1, 2))
+        )
+        .is_none());
         assert!(midi_in::key_toggles(at(clips::mute(1))));
         assert!(!midi_in::key_toggles(at(clips::clip(1, 2))));
     }
@@ -10728,10 +10821,57 @@ mod tests {
         );
         app.set_arp_param(0, arp::SWING, 66.0);
         let now = remote::Now::default();
-        let (info, v) = learn_describe(&mix, &synth, &app, now, at(0, arp::SWING)).unwrap();
+        let (info, v) =
+            learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(0, arp::SWING)).unwrap();
         assert_eq!((info.name, v), ("Swing", 66.0));
         assert_eq!(mpfree_mod::text::value_text(&info, v), "66 %");
-        assert!(learn_describe(&mix, &synth, &app, now, at(0, 7)).is_none());
+        assert!(learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(0, 7)).is_none());
+    }
+
+    /// A kit pad's own setting is named by its pad and the project's
+    /// track, and read from the kit the track plays: None for a pad
+    /// without a sound, a track on the synth, or a number past the
+    /// settings.
+    #[test]
+    fn a_kit_pads_setting_is_named_and_read_for_learn() {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr};
+        use mpfree_sampler::engine::PadField;
+        let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let synth = synth::Synth::new(44_100);
+        let app = app::App::new(44_100, false);
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let tone: Vec<i16> = (0..2_000)
+            .flat_map(|i| [((i as f32 * 0.03).sin() * 12_000.0) as i16; 2])
+            .collect();
+        let kick = kit::build(&[(mpc_one::PAD_NOTES[4], "Kick", &tone[..])]);
+        let mut ks = kit::parse_kits(&kit::build_kits(&[("House", kick)])).unwrap();
+        let player = sampler::Player::new(&mut ks, &mpc_one::PAD_NOTES, 44_100).unwrap();
+        let mut kits = sampler::TrackKits::new(1);
+        let at = |t, pad, f: PadField| ParamAddr::new(Owner::Pad(t, pad), f as u16);
+        let first = time.project().tracks[0].name.clone();
+        assert_eq!(
+            learn_label(&mix, &synth, &time, at(0, 4, PadField::Tune)),
+            format!("Tune (A5, {first})")
+        );
+        let pads = |t, pad, id| pad_describe(&player, &kits, t, pad, id);
+        let now = remote::Now::default();
+        let read = |addr| learn_describe(&mix, &synth, &app, &pads, now, addr);
+        let (info, db) = read(at(0, 4, PadField::Level)).unwrap();
+        assert_eq!((info.name, info.min, info.max), ("Level", -48.0, 12.0));
+        assert_eq!(db, player.pad_own(0, 4, PadField::Level).unwrap());
+        // No filter on the kit's pads: the cutoff reads open.
+        let (info, hz) = read(at(0, 4, PadField::Cutoff)).unwrap();
+        assert_eq!((info.name, hz), ("Cutoff", info.max));
+        let (info, slice) = read(at(0, 4, PadField::Slice)).unwrap();
+        assert_eq!((info.max, slice), (0.0, 0.0), "one slice");
+        assert!(read(at(0, 5, PadField::Level)).is_none(), "no sound");
+        assert!(read(ParamAddr::new(Owner::Pad(0, 4), 99)).is_none());
+        kits.set(0, kits.synth());
+        let pads = |t, pad, id| pad_describe(&player, &kits, t, pad, id);
+        assert!(
+            learn_describe(&mix, &synth, &app, &pads, now, at(0, 4, PadField::Level)).is_none(),
+            "the track plays the synth"
+        );
     }
 
     #[test]
@@ -10755,13 +10895,31 @@ mod tests {
             learn_label(&mix, &synth, &time, at(transport::TAP_TEMPO)),
             "TAP TEMPO"
         );
-        let (info, bpm) = learn_describe(&mix, &synth, &app, now, at(transport::TEMPO)).unwrap();
+        let (info, bpm) = learn_describe(
+            &mix,
+            &synth,
+            &app,
+            &|_, _, _| None,
+            now,
+            at(transport::TEMPO),
+        )
+        .unwrap();
         assert_eq!((info.name, bpm), ("Tempo", 98.5));
-        let (_, on) = learn_describe(&mix, &synth, &app, now, at(transport::PLAYING)).unwrap();
+        let (_, on) = learn_describe(
+            &mix,
+            &synth,
+            &app,
+            &|_, _, _| None,
+            now,
+            at(transport::PLAYING),
+        )
+        .unwrap();
         assert_eq!(on, 1.0);
-        assert!(learn_describe(&mix, &synth, &app, now, at(transport::REC)).is_none());
+        assert!(
+            learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(transport::REC)).is_none()
+        );
         let mute = ParamAddr::new(Owner::Strip(Strip::Track(0)), mpfree_fx::ids::mixer::MUTE);
-        let (info, v) = learn_describe(&mix, &synth, &app, now, mute).unwrap();
+        let (info, v) = learn_describe(&mix, &synth, &app, &|_, _, _| None, now, mute).unwrap();
         assert_eq!((info.curve, v), (mpfree_node::Curve::Toggle, 0.0));
     }
 }

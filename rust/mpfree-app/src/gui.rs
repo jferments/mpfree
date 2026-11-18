@@ -394,6 +394,15 @@ const SHIFT_SYNTH_HINT: &str =
     "SHIFT +   touch a knob: MIDI Learn   ·   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_SAMPLE_HINT: &str =
     "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held on the Sample tab's Play page, where a touch on a knob arms
+/// MIDI Learn on the pad's setting.
+const SHIFT_SAMPLE_LEARN_HINT: &str =
+    "SHIFT +   touch a knob: MIDI Learn   ·   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held on the Pads tab, where a touch on Level, Pan or Tune arms
+/// MIDI Learn on the pad's setting.
+const SHIFT_PADS_HINT: &str =
+    "SHIFT +   touch Level, Pan or Tune: MIDI Learn   ·   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   \
+     NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
     "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// The browser's hint without a library (no --data).
@@ -1034,6 +1043,11 @@ pub enum ToUi {
     },
     /// Every value of the synth, in its parameter order (after a preset).
     SynthValues(Vec<f32>),
+    /// Learned MIDI controls moved kit pads' own settings (MIDI Learn,
+    /// `Owner::Pad`): `(kit, pad, setting, value)`, each in the setting's
+    /// units, set on the kit as the Play tab's knob sets it
+    /// ([`sample_page::SamplePage::learned`]).
+    PadsLearned(Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>),
     /// The synth's meters, by parameter index.
     SynthMeters(Vec<(usize, f32)>),
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's
@@ -1559,6 +1573,9 @@ pub enum LearnValue {
     /// One of the armed track's arp settings its Q-Links turn, by its id
     /// in `mpfree_param::arp`.
     Arp(u16),
+    /// A setting of a pad of the kit the Sample and Pads tabs show (the
+    /// armed track's): the pad, and the setting's `PadField` number.
+    Pad { pad: u8, field: u16 },
 }
 
 /// A track asked of the time engine for a kit: by "+ Kit track", or by a
@@ -5128,8 +5145,21 @@ impl Player {
             SHIFT_SYNTH_HINT.to_string()
         } else if self.status.shift && self.ready && self.clips_showing() {
             SHIFT_CLIPS_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Sample
+            && self.sample.page() == sample_page::PLAY_PAGE
+        {
+            SHIFT_SAMPLE_LEARN_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Pads
+            && self.sample.page() == sample_page::PADS_PAGE
+            && self.sample.pads_learnable()
+        {
+            SHIFT_PADS_HINT.to_string()
         } else if self.status.shift && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
             SHIFT_STEPS_HINT.to_string()
         } else if self.status.shift
@@ -7214,6 +7244,11 @@ impl Player {
                         w.render();
                     }
                     self.refresh_qlinks();
+                }
+            }
+            ToUi::PadsLearned(sets) => {
+                for (kit, pad, field, value) in sets {
+                    self.sample.learned(kit, usize::from(pad), field, value);
                 }
             }
             ToUi::SynthValues(values) => {
@@ -9899,6 +9934,14 @@ impl Player {
             let r = self.ui.rect_of(skin_page::SKIN)?;
             let skin = self.ui.get::<skin_page::SkinWidget>(skin_page::SKIN)?;
             return skin.param_id_at(x, y, r).map(LearnValue::Synth);
+        }
+        // A pad's own setting: a knob of the Sample tab's Play page, or
+        // the Pads tab's Level, Pan or Tune.
+        if let Some((pad, field)) = self.sample.learn_field(w, t) {
+            return Some(LearnValue::Pad {
+                pad: u8::try_from(pad).ok()?,
+                field: field as u16,
+            });
         }
         mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
     }
@@ -17713,6 +17756,145 @@ mod tests {
     /// SHIFT + a touch on the Arp panel's sliders, or on the Q-Link
     /// column's cards while they turn the arp (NOTE REPEAT held), arms
     /// MIDI Learn on that arp setting; without SHIFT a slider moves.
+    /// SHIFT + a touch on a knob of the Sample tab's Play page, or on the
+    /// Pads tab's Level, Pan or Tune, arms MIDI Learn on the picked pad's
+    /// setting; a learned control's values set it on the kit, one undo
+    /// step a turn, and the kit's new view goes to the audio thread.
+    #[test]
+    fn shift_and_a_touch_on_a_pads_setting_arms_midi_learn() {
+        use mpfree_sampler::engine::PadField;
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        use mpfree_ui::Rect;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let value_at = |p: &Player, widget: &str, index: usize| {
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| {
+                    pt.widget == widget
+                        && pt.target.index == index
+                        && play_tab::is_value_target(&pt.target)
+                })
+                .map(|pt| centre(pt.target.rect))
+                .unwrap()
+        };
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        let learn = |field: PadField| {
+            [FromUi::LearnValue(LearnValue::Pad {
+                pad: pad as u8,
+                field: field as u16,
+            })]
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // The Play page's Tune knob.
+        open_sample(&mut p, sample_page::Editor::Play);
+        let index = play_row(&mut p, play_tab::Row::Tune);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let tune = value_at(&p, play_tab::LIST, index);
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch a knob: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        assert_eq!(press(&mut p, tune), learn(PadField::Tune));
+        p.status.shift = false;
+        // A turn of the learned control: the kit's pad follows, and its
+        // view goes out once.
+        let was = p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents;
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            700.0,
+        )]));
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            1_200.4,
+        )]));
+        assert_eq!(
+            p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents,
+            1_200
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // The same value again changes nothing, and sends nothing.
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            1_200.0,
+        )]));
+        assert!(views(p.take_actions()).0.is_empty());
+        // One undo step takes the whole turn back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(
+            p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents,
+            was
+        );
+        // The Pads tab: Level, Pan and Tune learn; Voices doesn't.
+        open_pads(&mut p);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch Level, Pan or Tune: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        let row = |r: pads_tab::Row| pads_tab::Row::ALL.iter().position(|x| *x == r).unwrap();
+        let level = value_at(&p, pads_tab::LIST, row(pads_tab::Row::Level));
+        assert_eq!(press(&mut p, level), learn(PadField::Level));
+        let voices = value_at(&p, pads_tab::LIST, row(pads_tab::Row::Polyphony));
+        assert!(!press(&mut p, voices)
+            .iter()
+            .any(|a| matches!(a, FromUi::LearnValue(_))));
+        p.status.shift = false;
+        // A MIDI out pad has no Level, Pan or Tune rows: nothing on its
+        // list learns, and SHIFT's hint doesn't offer it.
+        let midi = pads_tab::PadType::ALL
+            .iter()
+            .position(|t| *t == pads_tab::PadType::MidiOut)
+            .unwrap();
+        p.on_event(UiEvent {
+            widget: pads_tab::TYPE.into(),
+            kind: EventKind::Tab(midi),
+        });
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(!p.sample.pads_learnable());
+        assert!(!hint(&p).contains("MIDI Learn"), "{}", hint(&p));
+        let rows: Vec<Rect> =
+            p.ui.targets()
+                .into_iter()
+                .filter(|pt| pt.widget == pads_tab::LIST && play_tab::is_value_target(&pt.target))
+                .map(|pt| pt.target.rect)
+                .collect();
+        assert!(!rows.is_empty());
+        for r in rows {
+            let (x, y) = centre(r);
+            assert_eq!(p.learnable_at(x, y), None);
+        }
+        p.status.shift = false;
+    }
+
     #[test]
     fn shift_and_a_touch_on_the_arps_sliders_arms_midi_learn() {
         use mpfree_controller::mpc_one::button::NOTE_REPEAT;
