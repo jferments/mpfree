@@ -8,12 +8,13 @@
 //!   grid line (or picks its pin, if it has one). **Dragging** a pin's
 //!   handle moves it along the grid; the sound between its neighbours
 //!   stretches to fit. Dragging the wave scrolls it when zoomed in.
-//! - **Pin hits** pins every hit near a grid line onto it (quantising a
-//!   loop played loosely), **Remove pin** takes the pin picked off and
-//!   **Clear pins** all of them.
-//! - The **Warp** list holds Warp (Off, Stretch, Repitch) and Warp tempo as
-//!   on the Wave tab, the grid, how many hits are found, and the pin picked
-//!   and its beat. Under them, **Process** makes a new sound of the
+//! - The **panel** under the picture ([`crate::panel`]) holds the settings
+//!   in four sections: **Warp** (Off, Stretch, Repitch, and Warp tempo as
+//!   on the Wave tab, and the grid), **Hits** (how many are found, and
+//!   **Pin hits**, which pins every hit near a grid line onto it,
+//!   quantising a loop played loosely), **Pin** (the pin picked and its
+//!   beat, **Remove pin** for that one and **Clear pins** for all) and
+//!   **Pitch and process**. There **Process** makes a new sound of the
 //!   region: stretched (or repitched) from its warp tempo to the project's
 //!   when it is warped, with its pins made part of the audio, and moved by
 //!   **Shift** semitones (−24 to +24) keeping its length and hits. Its
@@ -23,8 +24,8 @@
 //!   ([`WaveAction::StopProcess`]).
 //! - **Q-Link 1** picks a pin, **2** nudges its beat (a 64th of a beat a
 //!   detent; with SHIFT, a 960th), **3** fine-tunes the warp tempo (a tenth
-//!   of a BPM; with SHIFT, a hundredth) and **4** scrolls. The **wheel**
-//!   zooms round the pin picked.
+//!   of a BPM; with SHIFT, a hundredth) and **4** scrolls. SHIFT + - / +
+//!   zoom round the pin picked; the picture's title line says how far.
 //!
 //! Pins move hits only when the region stretches; repitching, it plays
 //! straight through (see [`mpfree_sampler::model::Pin`]). The tab edits
@@ -37,25 +38,24 @@ use std::sync::Arc;
 use mpfree_sampler::model::{Region, SourceId, Warp, WarpMethod, WARP_BPM};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
+use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::warp_widgets::{beat_text, WarpView, PER_BAR, TICKS};
 use crate::wave_tab::{
     self, pad_color, pad_label, region_tempo, warp_tempo_ask, with_warp_tempo, WaveAction,
     WaveState, TABS, TYPED_WARP_TEMPO,
 };
-use crate::widgets::{ButtonRow, InfoCard, KnobCard, PadBar, Setting, SettingList};
+use crate::widgets::{KnobCard, PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-warp-bar";
 pub const VIEW: &str = "smp-warp-view";
 pub const LIST: &str = "smp-warp-list";
-pub const BUTTONS: &str = "smp-warp-buttons";
 pub const QLINKS: [&str; 4] = ["smp-warp-q1", "smp-warp-q2", "smp-warp-q3", "smp-warp-q4"];
-pub const WHEEL: &str = "smp-warp-wheel";
 
-/// The tab's page: the picture beside the Warp list and its buttons,
-/// between the pad bar and the Q-Link cards.
+/// The tab's page: the picture across the page with the panel of
+/// settings under it, between the pad bar and the Q-Link cards.
 pub const LAYOUT: &str = "col(header:60, row(smp-warp-bar:*, smp-send:330):60, \
-                          row(smp-warp-view:*, col(smp-warp-list:*, smp-warp-buttons:64, smp-warp-wheel:56):360, \
+                          row(col(smp-warp-view:*, smp-warp-list:242):*, \
                           col(smp-warp-q1, smp-warp-q2, smp-warp-q3, smp-warp-q4):128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
@@ -157,23 +157,32 @@ pub enum Row {
     WarpTempo,
     Grid,
     Hits,
+    PinHits,
     Pin,
     PinBeat,
+    RemovePin,
+    ClearPins,
     Shift,
     Process,
 }
 
 impl Row {
-    pub const ALL: [Row; 8] = [
+    /// The panel's order, which the wheel walks.
+    pub const ALL: [Row; 11] = [
         Row::Warp,
         Row::WarpTempo,
         Row::Grid,
         Row::Hits,
+        Row::PinHits,
         Row::Pin,
         Row::PinBeat,
+        Row::RemovePin,
+        Row::ClearPins,
         Row::Shift,
         Row::Process,
     ];
+    /// The rows that are buttons, and which of the pin buttons each is.
+    const BUTTONS: [Row; 3] = [Row::PinHits, Row::RemovePin, Row::ClearPins];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -181,8 +190,11 @@ impl Row {
             Row::WarpTempo => "Warp tempo",
             Row::Grid => "Grid",
             Row::Hits => "Hits",
+            Row::PinHits => "Pin hits",
             Row::Pin => "Pin",
             Row::PinBeat => "Pin beat",
+            Row::RemovePin => "Remove pin",
+            Row::ClearPins => "Clear pins",
             Row::Shift => "Shift",
             Row::Process => "Process",
         }
@@ -241,10 +253,6 @@ impl WarpTab {
         let mut list = SettingList::new("Warp");
         list.selected = Row::Warp.index();
         ui.add(LIST, list);
-        ui.add(
-            BUTTONS,
-            ButtonRow::new(&["Pin hits", "Remove pin", "Clear pins"]),
-        );
         let t = ui.theme.clone();
         let cards = [
             ("Q-Link 1 · Pin", t.warn),
@@ -255,7 +263,6 @@ impl WarpTab {
         for (k, (label, color)) in cards.iter().enumerate() {
             ui.add(QLINKS[k], KnobCard::new(label, *color).on(k, "Warp"));
         }
-        ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
         ui.add_page(name, LAYOUT)?;
         let mut tab = WarpTab {
             name: name.to_string(),
@@ -437,6 +444,8 @@ impl WarpTab {
                 value: self.value_text(st, *k),
             })
             .collect();
+        let controls = self.controls(st, hits.is_empty());
+        let panel = panel(r, &w);
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
             list.right = self.grid.label().to_string();
@@ -445,23 +454,16 @@ impl WarpTab {
             } else {
                 Vec::new()
             };
-            list.buttons = vec![Row::Process.index()];
+            list.buttons = Row::BUTTONS
+                .iter()
+                .chain([&Row::Process])
+                .map(|k| k.index())
+                .collect();
+            list.controls = controls;
+            list.panel = Some(panel);
         }
         let warped = r.warp.is_some();
         let has_pins = !w.pins.is_empty();
-        if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
-            b.enabled = vec![warped && !hits.is_empty(), selected.is_some(), has_pins];
-            b.why = vec![
-                if warped {
-                    "No hits found to pin"
-                } else {
-                    "Turn Warp on first"
-                }
-                .to_string(),
-                "Tap a pin first".to_string(),
-                "No pins to clear".to_string(),
-            ];
-        }
         let cards = [
             match selected {
                 Some(i) => (
@@ -511,13 +513,61 @@ impl WarpTab {
                     .to_string();
             }
         }
-        let wheel = match ui.get::<WarpView>(VIEW).map(WarpView::shown) {
-            Some((_, span)) if span < total => format!("{span:.1} of {total:.1} beats"),
-            _ => "whole region".to_string(),
-        };
-        if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
-            card.text = wheel;
+        // How far SHIFT + - / + zoomed, on the picture's title line.
+        if let Some(v) = ui.get_mut::<WarpView>(VIEW) {
+            let zoom = match v.shown() {
+                (_, span) if span < total => format!("{span:.1} of {total:.1} beats"),
+                _ => "whole region".to_string(),
+            };
+            v.zoom = zoom;
         }
+    }
+
+    /// How each row looks on the panel, in [`Row::ALL`]'s order.
+    fn controls(&self, st: &WaveState, no_hits: bool) -> Vec<Control> {
+        let r = &st.region;
+        let warped = r.warp.is_some();
+        let picked = self.selected.is_some();
+        let has_pins = r.warp.as_ref().is_some_and(|w| !w.pins.is_empty());
+        Row::ALL
+            .iter()
+            .map(|k| match k {
+                Row::Warp => Control::new(Look::Choice {
+                    options: ["Off", "Stretch", "Repitch"].map(String::from).to_vec(),
+                    on: match r.warp.as_ref().map(|w| w.method) {
+                        None => 0,
+                        Some(WarpMethod::Stretch) => 1,
+                        Some(WarpMethod::Repitch) => 2,
+                    },
+                    off: Vec::new(),
+                }),
+                Row::WarpTempo => {
+                    Control::new(Look::Stepper).faint_because(!warped, "Turn Warp on first")
+                }
+                Row::Grid | Row::Hits => Control::new(Look::Chip),
+                Row::PinHits => Control::new(Look::Button(k.label().into())).faint_because(
+                    !warped || no_hits,
+                    if warped {
+                        "No hits found to pin"
+                    } else {
+                        "Turn Warp on first"
+                    },
+                ),
+                Row::Pin => Control::new(Look::Chip)
+                    .faint_because(!has_pins, "No pins yet: tap a hit, or Pin hits"),
+                Row::PinBeat => Control::new(Look::Chip).faint_because(!picked, "Tap a pin first"),
+                Row::RemovePin => Control::new(Look::Button(k.label().into()))
+                    .faint_because(!picked, "Tap a pin first"),
+                Row::ClearPins => Control::new(Look::Button(k.label().into()))
+                    .faint_because(!has_pins, "No pins to clear"),
+                Row::Shift => Control::new(Look::Knob {
+                    pos: (self.shift + SHIFT_LIMIT) as f32 / (2 * SHIFT_LIMIT) as f32,
+                    steps: 2 * SHIFT_LIMIT as u32,
+                    bipolar: true,
+                }),
+                Row::Process => Control::new(Look::Button(self.value_text(st, *k))),
+            })
+            .collect()
     }
 
     /// A row's value as text.
@@ -552,6 +602,7 @@ impl WarpTab {
                 0 => "0 st".to_string(),
                 n => format!("{n:+} st"),
             },
+            Row::PinHits | Row::RemovePin | Row::ClearPins => row.label().to_string(),
             Row::Process => match self.processing {
                 Some(done) => format!("Stop · {:.0} %", done.clamp(0.0, 1.0) * 100.0),
                 None => PROCESS_TEXT.to_string(),
@@ -617,12 +668,20 @@ impl WarpTab {
                 self.update(ui, st);
                 None
             }
-            (BUTTONS, EventKind::Tab(b)) => self.button(ui, st, *b),
             (LIST, EventKind::Step { index, delta }) => {
                 self.step(ui, st, *Row::ALL.get(*index)?, *delta)
             }
             (LIST, EventKind::Type(index)) if Row::ALL.get(*index) == Some(&Row::WarpTempo) => {
                 warp_tempo_ask(r).map(WaveAction::Ask)
+            }
+            (LIST, EventKind::Tab(index))
+                if Row::ALL
+                    .get(*index)
+                    .is_some_and(|k| Row::BUTTONS.contains(k)) =>
+            {
+                let k = Row::ALL[*index];
+                let b = Row::BUTTONS.iter().position(|x| *x == k)?;
+                self.button(ui, st, b)
             }
             (LIST, EventKind::Tab(index)) if Row::ALL.get(*index) == Some(&Row::Process) => {
                 self.lift();
@@ -714,10 +773,15 @@ impl WarpTab {
         out
     }
 
-    /// An arrow on a Warp row.
+    /// A setting stepped `delta` steps: an arrow or - / + (one), the Shift
+    /// knob dragged (as many as it passed), or a Warp button tapped (from
+    /// the one on to that one).
     fn step(&mut self, ui: &mut Ui, st: &WaveState, row: Row, delta: i32) -> Option<WaveAction> {
         let r = &st.region;
-        let d = delta.signum();
+        let d = delta;
+        if d == 0 {
+            return None;
+        }
         let mut n = r.clone();
         match row {
             Row::Warp => {
@@ -764,8 +828,8 @@ impl WarpTab {
                 self.update(ui, st);
                 return None;
             }
-            // A button: pressed, not stepped.
-            Row::Process => return None,
+            // Buttons: pressed, not stepped.
+            Row::PinHits | Row::RemovePin | Row::ClearPins | Row::Process => return None,
         }
         let out = self.edit(st, Key::Row(row), n);
         if out.is_none() {
@@ -867,6 +931,56 @@ impl WarpTab {
             }
         }
         self.update(ui, st);
+    }
+}
+
+/// The panel: Warp, Hits, Pin, and Pitch and process across the band under
+/// the picture, at the widths of the mockup Jay approved (17 Nov).
+fn panel(r: &Region, w: &Warp) -> Panel {
+    let it = |k: Row| Item::new(k.index());
+    let pins = match w.pins.len() {
+        0 => String::new(),
+        1 => "1 pin".to_string(),
+        n => format!("{n} pins"),
+    };
+    Panel {
+        sections: vec![
+            Section::new(
+                "Warp",
+                300,
+                vec![
+                    vec![it(Row::Warp)],
+                    vec![
+                        it(Row::WarpTempo).labelled(),
+                        it(Row::Grid).labelled().wide(96),
+                    ],
+                ],
+            )
+            .note(match r.warp.as_ref().map(|w| w.method) {
+                None => "off",
+                Some(WarpMethod::Stretch) => "stretch to the tempo",
+                Some(WarpMethod::Repitch) => "repitch to the tempo",
+            }),
+            Section::new(
+                "Hits",
+                200,
+                vec![vec![it(Row::Hits).labelled()], vec![it(Row::PinHits)]],
+            ),
+            Section::new(
+                "Pin",
+                330,
+                vec![
+                    vec![it(Row::Pin).labelled(), it(Row::PinBeat).labelled()],
+                    vec![it(Row::RemovePin), it(Row::ClearPins)],
+                ],
+            )
+            .note(&pins),
+            Section::new(
+                "Pitch and process",
+                256,
+                vec![vec![it(Row::Shift).wide(80), it(Row::Process).labelled()]],
+            ),
+        ],
     }
 }
 

@@ -479,9 +479,14 @@ impl Widget for KeyZones {
                 if let Some(i) = self.picked_index() {
                     if let Some(zr) = self.zone_rect(r, i) {
                         let k = self.zones[i].keys;
-                        if zr.inset_xy(-HANDLE, -6).contains(x, y) {
-                            let rx = self.root_x(r, k);
-                            let handle = if (x - rx).abs() <= HANDLE / 2 + 2 {
+                        let rx = self.root_x(r, k);
+                        // The root's dot may sit outside its zone (a root
+                        // below the lowest key): it is still a handle.
+                        let row = zr.inset_xy(0, -6);
+                        let on_root =
+                            (x - rx).abs() <= HANDLE / 2 + 2 && y >= row.y && y < row.bottom();
+                        if on_root || zr.inset_xy(-HANDLE, -6).contains(x, y) {
+                            let handle = if on_root {
                                 Some(2)
                             } else if (x - zr.x).abs() <= HANDLE && k.lo >= self.first {
                                 Some(0)
@@ -595,5 +600,40 @@ mod tests {
             zone(3, 60, 64),
         ];
         assert_eq!(z.lanes(), (vec![0, 0, 1, 2], 3));
+    }
+
+    #[test]
+    fn a_root_below_its_zone_is_still_dragged_by_its_dot() {
+        let mut z = KeyZones::new("Keys");
+        z.first = 12;
+        z.last = 95;
+        z.zones = vec![Zone {
+            pad: 4,
+            keys: Keys {
+                lo: 36,
+                hi: 84,
+                root: 32,
+            },
+            fade: 0,
+            label: "A5".into(),
+            color: Color::rgb(0),
+        }];
+        z.picked = Some(4);
+        let r = Rect::new(12, 224, 1116, 272);
+        let t = z
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "zone-root")
+            .unwrap();
+        let zr = z.zone_rect(r, 0).unwrap();
+        assert!(t.rect.right() < zr.x, "the dot is left of the zone");
+        let (x, y) = t.centre();
+        assert_eq!(z.touch(1, Touch::Down, x, y, r), None);
+        let moved = z.touch(1, Touch::Move, x + 30, y, r);
+        assert!(
+            matches!(moved, Some(EventKind::Marker { index: 2, frame }) if frame > 32),
+            "{moved:?}"
+        );
+        assert!(z.zones[0].keys.root > 32);
     }
 }

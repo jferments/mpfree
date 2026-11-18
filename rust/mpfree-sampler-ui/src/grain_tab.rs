@@ -6,12 +6,17 @@
 //!   for each grain. A tap or drag on it moves the position.
 //! - The **touch pad** moves the position (across) and the grain size (up)
 //!   together, on a log scale from 2 ms to 2 s.
-//! - The **Grain** list holds every setting: the play mode (only Granular
-//!   plays grains), scan speed, spray, pitch spray, the window's shape,
-//!   reverse chance, stereo spread, pitch quantise, tempo sync, and
-//!   position, size, density, pitch and the cloud's level. A tap on a row
-//!   picks it and its arrows step it; the **wheel** steps the row picked
-//!   (Scan, until another is picked).
+//! - The **panel** beside the touch pad ([`crate::panel`]) has two
+//!   sections: **Cloud** (how grains scatter: scan speed, spray, size,
+//!   pitch and level spray, timing, reverse chance, stereo spread and the
+//!   cloud's level as knobs, and the spray's shape) and **Shape** (the play
+//!   mode, only Granular playing grains; the grain mode; the grains' Shape
+//!   knob; pitch quantise; tempo sync). A grain mode other than Cloud
+//!   shows only its own rows ([`Row::shown`]), and names the first section
+//!   after itself. Position, size, density and pitch are the Q-Links' (and
+//!   the touch pad's). A touch on a control or a Q-Link card picks it; the
+//!   **wheel** and - / + step the one picked (Scan, until another is), and
+//!   a finger resting on a control lets the wheel turn it.
 //! - **Tempo sync** locks the density, the size or both to the project
 //!   tempo: Density then steps in grains a beat and Size in beats, and the
 //!   engine starts each grain on the beat grid at the tempo playing now
@@ -41,10 +46,11 @@ use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
 use crate::grain_widgets::{GrainCloud, XyPad, GRAIN_COLOR};
+use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::LayerSound;
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
-use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList};
+use crate::widgets::{KnobCard, PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-grain-bar";
@@ -57,20 +63,19 @@ pub const QLINKS: [&str; 4] = [
     "smp-grain-q3",
     "smp-grain-q4",
 ];
-pub const WHEEL: &str = "smp-grain-wheel";
 
-/// The tab's page: the cloud, and beside it the touch pad over the Grain
-/// list, between the pad bar and the Q-Link cards.
+/// The tab's page: the cloud across the page, and under it the touch pad
+/// beside the panel, between the pad bar and the Q-Link cards.
 pub const LAYOUT: &str = "col(header:60, row(smp-grain-bar:*, smp-send:330):60, \
-                          row(smp-grain-cloud:*, col(smp-grain-xy:236, smp-grain-list:*, smp-grain-wheel:56):340, \
+                          row(col(smp-grain-cloud:*, row(smp-grain-xy:236, smp-grain-list:*):260):*, \
                           col(smp-grain-q1, smp-grain-q2, smp-grain-q3, smp-grain-q4):128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 4;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Hit the pad to hear the cloud · drag on the sound for the position, on the pad for position and \
-                        size · the wheel picks a row, - / + change it · SHIFT + Q-Link 1 / 4: spray, pitch spray";
+pub const HINT: &str = "Hit the pad to hear the cloud · drag the sound for the position, the touch pad for position \
+                        and size · touch a control, then turn the wheel · SHIFT + Q-Link 1 / 4: the sprays";
 
 /// Grain sizes the arrows step through, in ms.
 const SIZES_MS: [f32; 19] = [
@@ -146,7 +151,8 @@ pub const LEVEL_RANGE_DB: (f32, f32) = (-24.0, 12.0);
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x4752_4149_0000_0000;
 
-/// The Grain list's rows, in order.
+/// The Grain list's rows: the panel's, in its order (which the wheel
+/// walks), then the Q-Links'.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Mode,
@@ -171,26 +177,29 @@ pub enum Row {
 }
 
 impl Row {
+    /// Every row, in the panel's order (which the wheel walks): Cloud's,
+    /// then Shape's, then the Q-Links'. A grain mode shows some of them
+    /// ([`Row::shown`]), in this order.
     pub const ALL: [Row; 19] = [
-        Row::Mode,
-        Row::GrainMode,
         Row::Scan,
         Row::Spray,
-        Row::SprayShape,
         Row::SizeSpray,
         Row::PitchSpray,
         Row::LevelSpray,
         Row::Timing,
-        Row::Shape,
         Row::Reverse,
         Row::Spread,
+        Row::Level,
+        Row::SprayShape,
+        Row::Mode,
+        Row::GrainMode,
+        Row::Shape,
         Row::Quantise,
         Row::Sync,
         Row::Position,
         Row::Size,
         Row::Density,
         Row::Pitch,
-        Row::Level,
     ];
 
     pub fn label(self) -> &'static str {
@@ -217,9 +226,20 @@ impl Row {
         }
     }
 
-    /// The rows a grain mode shows, in order: every row for a cloud;
-    /// for a stretch, what moves it (no randomness, so its grains stay in
-    /// step); for a repeat, its tempo-locked rate and length.
+    /// Its name over its knob on the panel (and in the list's rows): the
+    /// label, shorter where a knob is too narrow for it.
+    pub fn short(self) -> &'static str {
+        match self {
+            Row::Scan => "Scan",
+            Row::Reverse => "Reverse",
+            Row::Spread => "Stereo",
+            other => other.label(),
+        }
+    }
+
+    /// The rows a grain mode shows, in the panel's order: every row for a
+    /// cloud; for a stretch, what moves it (no randomness, so its grains
+    /// stay in step); for a repeat, its tempo-locked rate and length.
     pub fn shown(mode: GrainMode) -> &'static [Row] {
         match mode {
             GrainMode::Cloud => &Row::ALL,
@@ -235,50 +255,74 @@ impl Row {
     }
 }
 
-/// A stretch's rows: how fast it moves through the sound (Scan speed),
-/// where, its grains' size, overlap and shape, its pitch and its width.
-const STRETCH_ROWS: [Row; 10] = [
+/// The order [`describe`] says the changes in: the modes first, the level
+/// last (the log's, which the panel's order doesn't change).
+const LOG_ORDER: [Row; 19] = [
     Row::Mode,
     Row::GrainMode,
     Row::Scan,
+    Row::Spray,
+    Row::SprayShape,
+    Row::SizeSpray,
+    Row::PitchSpray,
+    Row::LevelSpray,
+    Row::Timing,
+    Row::Shape,
+    Row::Reverse,
+    Row::Spread,
+    Row::Quantise,
+    Row::Sync,
     Row::Position,
     Row::Size,
     Row::Density,
     Row::Pitch,
-    Row::Shape,
+    Row::Level,
+];
+
+/// A stretch's rows: how fast it moves through the sound (Scan speed),
+/// where, its grains' size, overlap and shape, its pitch and its width.
+const STRETCH_ROWS: [Row; 10] = [
+    Row::Scan,
     Row::Spread,
     Row::Level,
+    Row::Mode,
+    Row::GrainMode,
+    Row::Shape,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
 ];
 /// A repeat's rows: where, how often (a beat division) and how long, the
 /// edges, pitch, a chance of playing backwards and a little spray.
 const REPEAT_ROWS: [Row; 10] = [
+    Row::Spray,
+    Row::Reverse,
+    Row::Level,
     Row::Mode,
     Row::GrainMode,
-    Row::Position,
-    Row::Density,
-    Row::Size,
     Row::Shape,
+    Row::Position,
+    Row::Size,
+    Row::Density,
     Row::Pitch,
-    Row::Reverse,
-    Row::Spray,
-    Row::Level,
 ];
 /// A tone's rows: its note (the density), how many cycles a grain holds
 /// (the size), where in the sound and at what pitch it reads (its
 /// colour), and what moves or widens it.
 const TONE_ROWS: [Row; 12] = [
-    Row::Mode,
-    Row::GrainMode,
-    Row::Density,
-    Row::Size,
-    Row::Position,
-    Row::Pitch,
-    Row::Shape,
     Row::Scan,
     Row::Spray,
     Row::PitchSpray,
     Row::Spread,
     Row::Level,
+    Row::Mode,
+    Row::GrainMode,
+    Row::Shape,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
 ];
 /// The Grain mode row's words, in the order it steps.
 const GRAIN_MODES: [(&str, GrainMode); 4] = [
@@ -426,7 +470,7 @@ impl GrainTab {
         let mut cloud = GrainCloud::new("Grains over the sound");
         cloud.right = "drag for the position".into();
         ui.add(CLOUD, cloud);
-        ui.add(XY, XyPad::new("Touch: position × size", "position", "size"));
+        ui.add(XY, XyPad::new("Touch", "position", "size"));
         let mut list = SettingList::new("Grain");
         list.right = "this layer".into();
         list.selected = Row::Scan.index_in(GrainMode::Cloud).unwrap_or(0);
@@ -440,7 +484,6 @@ impl GrainTab {
                     .on(k, "Grain"),
             );
         }
-        ui.add(WHEEL, InfoCard::new("The row picked"));
         ui.add_page(name, LAYOUT)?;
         let mut tab = GrainTab {
             name: name.to_string(),
@@ -454,7 +497,7 @@ impl GrainTab {
         Ok(tab)
     }
 
-    /// The row picked in the Grain list.
+    /// The row picked: a control on the panel, or a Q-Link card.
     pub fn row(&self, ui: &Ui) -> Row {
         ui.get::<SettingList>(LIST)
             .and_then(|l| Row::shown(self.mode).get(l.selected).copied())
@@ -591,12 +634,14 @@ impl GrainTab {
         let rows = Row::shown(self.mode)
             .iter()
             .map(|r| Setting {
-                name: r.label().into(),
-                value: value_text(&st.region, *r),
+                name: r.short().into(),
+                value: panel_text(&st.region, *r),
             })
             .collect();
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
+            list.controls = controls(&st.region, self.mode);
+            list.panel = Some(panel(self.mode));
         }
         self.show_cards(ui, st);
     }
@@ -622,10 +667,6 @@ impl GrainTab {
                 _ => (g.pitch + PITCH_LIMIT) / (2.0 * PITCH_LIMIT),
             }
             .clamp(0.0, 1.0);
-        }
-        let text = format!("{}: {}", row.label(), value_text(&st.region, row));
-        if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
-            card.text = text;
         }
     }
 
@@ -747,6 +788,121 @@ impl GrainTab {
         }
         let r = stepped(&st.region, row, delta, st.bpm);
         self.edit(st, Key::Row(row), r)
+    }
+}
+
+/// How each row `mode` shows looks on the panel, in [`Row::shown`]'s
+/// order (the Q-Links' rows aren't on it, and are chips).
+fn controls(r: &Region, mode: GrainMode) -> Vec<Control> {
+    let g = &r.grain;
+    let knob = |pos: f32, steps: u32, bipolar: bool| {
+        Control::new(Look::Knob {
+            pos: pos.clamp(0.0, 1.0),
+            steps,
+            bipolar,
+        })
+    };
+    let (lo, hi) = LEVEL_RANGE_DB;
+    Row::shown(mode)
+        .iter()
+        .map(|row| match row {
+            Row::Scan => knob(
+                (g.scan + SCAN_LIMIT) / (2.0 * SCAN_LIMIT),
+                SCANS.len() as u32 - 1,
+                true,
+            ),
+            Row::Spray => knob(g.spray, 20, false),
+            Row::SizeSpray => knob(g.size_spray, 20, false),
+            Row::PitchSpray => knob(g.pitch_spray / PITCH_SPRAY_LIMIT, 24, false),
+            Row::LevelSpray => knob(g.level_spray, 20, false),
+            Row::Timing => knob(g.timing, 20, false),
+            Row::Reverse => knob(g.reverse, 20, false),
+            Row::Spread => knob(g.spread, 20, false),
+            Row::Level => knob(
+                (level_db(g.gain) - lo) / (hi - lo),
+                ((hi - lo) * 2.0) as u32,
+                false,
+            ),
+            Row::Shape => knob(g.window.shape_value(), 20, false),
+            Row::Mode
+            | Row::GrainMode
+            | Row::SprayShape
+            | Row::Quantise
+            | Row::Sync
+            | Row::Position
+            | Row::Size
+            | Row::Density
+            | Row::Pitch => Control::new(Look::Chip),
+        })
+        .collect()
+}
+
+/// The panel for a grain mode: the mode's own section (Cloud: how grains
+/// scatter) and Shape beside the touch pad, as the mockup Jay approved
+/// (17 Nov), with the play mode in Shape. A mode's rows that it doesn't
+/// show are left out ([`Row::shown`]).
+fn panel(mode: GrainMode) -> Panel {
+    // (row, labelled, width: 0 shares the line).
+    let lines = |lines: &[&[(Row, bool, i32)]]| -> Vec<Vec<Item>> {
+        lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .filter_map(|&(row, labelled, width)| {
+                        let mut it = Item::new(row.index_in(mode)?);
+                        if labelled {
+                            it = it.labelled();
+                        }
+                        Some(if width > 0 { it.wide(width) } else { it })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|line| !line.is_empty())
+            .collect()
+    };
+    let (title, note) = match mode {
+        GrainMode::Cloud => ("Cloud", "how grains scatter"),
+        GrainMode::Stretch => ("Stretch", "how it moves"),
+        GrainMode::Repeat => ("Repeat", "how it varies"),
+        GrainMode::Tone => ("Tone", "how it moves"),
+    };
+    Panel {
+        sections: vec![
+            Section::new(
+                title,
+                450,
+                lines(&[
+                    &[
+                        (Row::Scan, false, 0),
+                        (Row::Spray, false, 0),
+                        (Row::SizeSpray, false, 0),
+                        (Row::PitchSpray, false, 0),
+                        (Row::LevelSpray, false, 0),
+                    ],
+                    &[
+                        (Row::Timing, false, 0),
+                        (Row::Reverse, false, 0),
+                        (Row::Spread, false, 0),
+                        (Row::Level, false, 0),
+                        (Row::SprayShape, true, 104),
+                    ],
+                ]),
+            )
+            .note(note),
+            Section::new(
+                "Shape",
+                410,
+                lines(&[
+                    &[(Row::Mode, true, 0), (Row::GrainMode, true, 0)],
+                    &[
+                        (Row::Shape, false, 76),
+                        (Row::Quantise, true, 0),
+                        (Row::Sync, true, 0),
+                    ],
+                ]),
+            )
+            .note("this layer"),
+        ],
     }
 }
 
@@ -1098,6 +1254,17 @@ fn timing_text(t: f32) -> String {
     }
 }
 
+/// A row's value under its knob on the panel: [`value_text`], but Timing
+/// in short ("30 %"), as its knob is narrow.
+fn panel_text(r: &Region, row: Row) -> String {
+    match row {
+        Row::Timing if (1..100).contains(&percent(r.grain.timing)) => {
+            format!("{} %", percent(r.grain.timing))
+        }
+        _ => value_text(r, row),
+    }
+}
+
 /// A row's value as the list shows it.
 pub fn value_text(r: &Region, row: Row) -> String {
     let g = &r.grain;
@@ -1259,7 +1426,7 @@ fn split_unit(text: &str) -> (String, String) {
 /// the log: "size 80 ms -> 120 ms, scan 0.25× -> Frozen". Empty if nothing
 /// did.
 pub fn describe(a: &Region, b: &Region) -> String {
-    Row::ALL
+    LOG_ORDER
         .iter()
         .filter_map(|&row| {
             let (x, y) = (value_text(a, row), value_text(b, row));
