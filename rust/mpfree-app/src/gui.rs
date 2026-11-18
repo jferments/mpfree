@@ -1632,6 +1632,9 @@ pub struct Player {
     kit_list: bool,
     /// The list of kits' rows: each a kit (or the synth), None for New kit.
     kit_rows: Vec<Option<usize>>,
+    /// The Lanes list is open over the Sequencer's Steps ("+ Lane").
+    /// Work in progress (redesign step 5): nothing opens it yet.
+    lane_list: bool,
     /// The "+ Kit track" ask for a track: how many tracks there were, and
     /// when. Once the new track is armed it gets an empty kit.
     kit_track: Option<(usize, Instant)>,
@@ -2043,6 +2046,7 @@ impl Player {
             perform_chip: None,
             kit_list: false,
             kit_rows: Vec::new(),
+            lane_list: false,
             kit_track: None,
             chip_why: Vec::new(),
             fingers: Vec::new(),
@@ -2190,6 +2194,12 @@ impl Player {
             self.kit_track = None;
         }
     }
+
+    /// The Lanes list again. Work in progress (redesign step 5): the
+    /// list page (`PlayPage::lane_choices`, a pick calls
+    /// `PlayPage::add_lock_lane`) is still to build; see the handoff in
+    /// mpfree-claude handoffs/2026-11-18-play-pads-sequencer-redesign.md.
+    fn refresh_lane_list(&mut self) {}
 
     /// The list of kits again: its rows, and the kit on the pads picked
     /// (and the Pads tab's Kit of row, which names the kits).
@@ -2967,7 +2977,6 @@ impl Player {
     /// pad's), each locked on the held steps when turned.
     fn held_sound_bank(&self) -> [Option<play_page::SoundKnob>; 4] {
         use mpfree_play::mpfree_param::{OnTrack, RelAddr};
-        use mpfree_sampler::engine::PadField;
         use play_page::{SoundKind, SoundKnob};
         let Some(sound) = self.play.held.as_ref().map(|h| h.0) else {
             return Default::default();
@@ -2996,10 +3005,19 @@ impl Player {
                 })
             });
         }
+        self.pad_knobs(pad)
+    }
+
+    /// A kit pad's Sound bank: its tune, decay, filter and level, with its
+    /// own values (none on the synth's kit).
+    fn pad_knobs(&self, pad: usize) -> [Option<play_page::SoundKnob>; 4] {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        use play_page::{SoundKind, SoundKnob};
         if self.kits.get(self.kit).is_some_and(|k| k.synth.is_some()) {
             return Default::default();
         }
-        let Some(own) = self.sample.pad_sound(pad) else {
+        let (Ok(sound), Some(own)) = (u8::try_from(pad), self.sample.pad_sound(pad)) else {
             return Default::default();
         };
         let knob = |name: &str, field: PadField, kind: SoundKind, own: f32| {
@@ -3016,6 +3034,85 @@ impl Player {
             knob("Filter", PadField::Cutoff, SoundKind::Cutoff, own[2]),
             knob("Level", PadField::Level, SoundKind::Level, own[3]),
         ]
+    }
+
+    /// What the Sequencer's lock lanes turn (the Play, Pads and Sequencer
+    /// redesign's step 5): the Sound bank of each sound with a lane and of
+    /// the pad hit last, then the track's volume, pan and sends, with
+    /// their own values as the mixer last showed them (or the defaults: a
+    /// send's lock starts at full, a throw).
+    fn lock_knobs(&self) -> Vec<play_page::SoundKnob> {
+        use mpfree_fx::ids::mixer as mx;
+        use mpfree_fx::StripId;
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use play_page::{SoundKind, SoundKnob};
+        if !self.play.sequencer || self.play.pitched() {
+            return Vec::new();
+        }
+        let mut pads: Vec<usize> = self
+            .play
+            .lock_lanes()
+            .iter()
+            .filter(|l| l.row != crate::time::LINE)
+            .map(|l| usize::from(l.row))
+            .collect();
+        pads.push(self.play.last_pad);
+        pads.sort_unstable();
+        pads.dedup();
+        let mut v: Vec<SoundKnob> = pads
+            .into_iter()
+            .flat_map(|p| self.pad_knobs(p))
+            .flatten()
+            .collect();
+        let state = self
+            .ui
+            .get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER)
+            .map(|m| m.state());
+        let strip = state.and_then(|s| s.strip(StripId::Track(self.play.steps.track)));
+        let info = |id: u16| {
+            mpfree_fx::strip_params()
+                .iter()
+                .find(|p| p.id == id)
+                .copied()
+        };
+        for (id, own) in [
+            (mx::VOLUME, strip.map_or(0.0, |s| s.volume_db)),
+            (mx::PAN, strip.map_or(0.0, |s| s.pan)),
+        ] {
+            if let Some(p) = info(id) {
+                v.push(SoundKnob {
+                    name: p.name.to_string(),
+                    addr: RelAddr::new(OnTrack::Strip, id),
+                    kind: SoundKind::Param(p),
+                    own,
+                });
+            }
+        }
+        for r in 0..mpfree_fx::RETURNS {
+            // Named by the return's first effect, as Play names Return
+            // A's delay.
+            let effect = state
+                .and_then(|s| s.strip(StripId::Return(r)))
+                .and_then(|s| s.inserts.first())
+                .map(|i| i.name.clone());
+            let name = match effect {
+                Some(e) => format!("{e} send"),
+                None if r == crate::mixing::DELAY_RETURN => "Delay send".to_string(),
+                None => format!("Send {}", (b'A' + r as u8) as char),
+            };
+            let own = strip
+                .and_then(|s| s.sends)
+                .map(|s| s[r].db)
+                .filter(|&db| db > crate::mixing::SEND_OFF_DB)
+                .unwrap_or(0.0);
+            v.push(SoundKnob {
+                name,
+                addr: RelAddr::new(OnTrack::Strip, mx::send(r)),
+                kind: SoundKind::Send,
+                own,
+            });
+        }
+        v
     }
 
     /// Steps held on the step pads (`first`: they just were) or let go:
@@ -3656,7 +3753,9 @@ impl Player {
             g.held.clone_from(&old.held);
             g.pitched = old.pitched;
             g.bank.clone_from(&old.bank);
+            (g.top, g.add_lane) = (old.top, old.add_lane);
         }
+        self.play.lock_knobs = self.lock_knobs();
         self.play.fill_steps(&mut g);
         let same = self
             .ui
@@ -3673,6 +3772,7 @@ impl Player {
                     && old.held == g.held
                     && old.pitched == g.pitched
                     && old.bank == g.bank
+                    && (old.top, old.add_lane) == (g.top, g.add_lane)
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -3687,7 +3787,11 @@ impl Player {
                 w.held = g.held;
                 w.pitched = g.pitched;
                 w.bank = g.bank;
+                (w.top, w.add_lane) = (g.top, g.add_lane);
             }
+        }
+        if self.lane_list {
+            self.refresh_lane_list();
         }
         let mut th = Throws::default();
         self.play.fill_throws(&mut th);
@@ -5802,8 +5906,10 @@ impl Player {
             }
             ToUi::Steps(st) => {
                 if st.track != self.play.steps.track {
-                    // Another track's pads: from their first row.
+                    // Another track's pads: from their first row (and
+                    // the Sequencer's lanes from the top).
                     self.play.rows_top = 0;
+                    self.play.steps_top = 0;
                 }
                 self.play.set_steps(*st);
                 self.play.track = self.track_look();
