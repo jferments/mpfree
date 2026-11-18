@@ -8687,8 +8687,9 @@ impl Player {
 
     /// The value under (`x`, `y`) that SHIFT + a touch hands to MIDI
     /// Learn: a mixer strip's fader, pan, send, M or S (the Faders look), a
-    /// knob, fader, slider or drawbar on the chain editor or the Synth tab,
-    /// a macro's knob on the macros panel, or Play's tempo. None anywhere
+    /// knob, fader, slider or drawbar on the chain editor or the Synth tab
+    /// (an MPC plugin's skin's controls too), a macro's knob on the macros
+    /// panel, or Play's tempo. None anywhere
     /// else (a value that
     /// learns nothing yet, or no value at all: SHIFT + a touch there keeps
     /// its own job). The smallest control there, as the outline picks.
@@ -8718,6 +8719,13 @@ impl Player {
         }
         if w == synth_view::TILES {
             return self.synth.as_ref()?.param_of(t).map(LearnValue::Synth);
+        }
+        // An MPC plugin's skin: its control's parameter, as MPFree's own
+        // page for the plugin learns it.
+        if w == skin_page::SKIN {
+            let r = self.ui.rect_of(skin_page::SKIN)?;
+            let skin = self.ui.get::<skin_page::SkinWidget>(skin_page::SKIN)?;
+            return skin.param_id_at(x, y, r).map(LearnValue::Synth);
         }
         mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
     }
@@ -18216,6 +18224,38 @@ mod tests {
                 FromUi::Synth(SynthAction::Set { id: 0, value }) if (*value - 0.7).abs() < 1e-3)),
             "{acts:?}"
         );
+        // SHIFT + a touch on a skin's control hands its parameter to MIDI
+        // Learn, as on MPFree's own page, and moves nothing; off the
+        // controls it learns nothing.
+        p.status.shift = true;
+        p.refresh_hint();
+        let acts: Vec<FromUi> = [
+            p.touch(4, Touch::Down, 500, skin.y + 200),
+            p.touch(4, Touch::Move, 500, skin.y + 120),
+            p.touch(4, Touch::Up, 500, skin.y + 120),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(p.take_actions())
+        .collect();
+        assert!(
+            acts.contains(&FromUi::LearnValue(LearnValue::Synth(1))),
+            "{acts:?}"
+        );
+        assert!(
+            !acts
+                .iter()
+                .any(|a| matches!(a, FromUi::Synth(SynthAction::Set { .. }))),
+            "{acts:?}"
+        );
+        p.touch(5, Touch::Down, 1200, skin.y + 600);
+        p.touch(5, Touch::Up, 1200, skin.y + 600);
+        assert!(!p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::LearnValue(_))));
+        p.status.shift = false;
+        p.refresh_hint();
         // Q-Link 4 turns what the skin's Q-Links give it (parameter A).
         p.apply(ToUi::SynthQLink(3, -20));
         let acts = p.take_actions();
