@@ -3898,6 +3898,16 @@ fn play_routed(
             }
             return;
         }
+        // A pedal, the mod wheel, breath or a foot controller: the track's
+        // gear, else its instrument, else the synth (a kit takes none).
+        midi_in::Key::Control { ctl, value } => {
+            if !midi.keys_control(u16::from(track), ctl, value) && !own.control(t, ctl, value, 0) {
+                if let Some(s) = synth {
+                    s.control(ctl, value, 0);
+                }
+            }
+            return;
+        }
     };
     let o = mpfree_play::Out {
         offset: 0,
@@ -6023,6 +6033,8 @@ fn player_session(
     // The track the keys' expression last went to on MIDI out: when
     // another is armed, its gear's bend and pressure go back to rest.
     let mut expr_track = 0usize;
+    // The pedals the keys put down on it (`expr_track`).
+    let mut pedals_down = midi_in::PedalsDown::default();
     let mut key_misses = 0u64;
     // Messages each port's MIDI out writer dropped with its queue full, as
     // the monitor was last told.
@@ -7228,8 +7240,16 @@ fn player_session(
         let kit_keys = keys_play(synth_on, key_notes, mix.instruments.holds(armed))
             == midi_in::KeysPlay::KitPads;
         if armed != expr_track {
+            // Its gear's pedals come up with its expression; its
+            // instrument's and the synth's here, so nothing they held
+            // hangs.
             midi_out.rest_expression(expr_track);
             cv_out.rest_expression(expr_track);
+            for ctl in pedals_down.lift() {
+                if !mix.instruments.control(expr_track, ctl, 0.0, 0) {
+                    synth.control(ctl, 0.0, 0);
+                }
+            }
             expr_track = armed;
         }
         for k in keys.drain(..) {
@@ -7294,6 +7314,21 @@ fn player_session(
                     }
                     None
                 }
+                // A pedal, the mod wheel, breath or a foot controller: the
+                // armed track's gear, else its instrument, else the synth.
+                // A pedal coming up always goes, so nothing it held hangs
+                // after the pads stopped playing notes.
+                midi_in::Key::Control { ctl, value }
+                    if key_notes || (ctl.is_pedal() && !mpfree_node::Ctl::down(value)) =>
+                {
+                    pedals_down.key(ctl, value);
+                    if !midi_out.keys_control(armed as u16, ctl, value)
+                        && !mix.instruments.control(armed, ctl, value, 0)
+                    {
+                        synth.control(ctl, value, 0);
+                    }
+                    None
+                }
                 // A kit: the key plays its kit pad through the track's arp
                 // (and records), as a pad would, but in any bank and never
                 // as STEP SEQ's, TRACK MUTE's or the loop keys' pads.
@@ -7351,8 +7386,10 @@ fn player_session(
                         pressure: value,
                     })
                 }
-                // A kit's pads take no bend.
-                midi_in::Key::Bend { .. } | midi_in::Key::Expr { .. } => None,
+                // A kit's pads take no bend, and no pedal.
+                midi_in::Key::Bend { .. }
+                | midi_in::Key::Expr { .. }
+                | midi_in::Key::Control { .. } => None,
             };
             match pad_event {
                 Some(event) => got.push(Incoming {

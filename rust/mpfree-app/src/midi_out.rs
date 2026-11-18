@@ -89,6 +89,7 @@ use mpfree_midi::profile::{PadOut, KIT_NOTES, KIT_PADS};
 use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
 use mpfree_midi_clock::{ClockOut as Pulses, Messages, PULSE_TICKS};
 use mpfree_midi_ui::{IoModel, PortSend, Shared, ToPort};
+use mpfree_node::Ctl;
 use mpfree_notefx::TrackFx;
 use mpfree_play::mpfree_param::midi::{self as ctl, Midi};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
@@ -804,6 +805,9 @@ pub struct MidiOut {
     expr: Box<[ExprOut]>,
     /// Each track's notes on MPE gear, a member channel each.
     mpe: Box<[MpeOut]>,
+    /// Each track's pedals the keys put down on its gear, a bit each in
+    /// [`Ctl::ALL`]'s order, so that they come up with its expression.
+    keys_pedals: Box<[u8]>,
     applied_gen: Option<u64>,
     shown_on: Option<bool>,
     rolling: bool,
@@ -881,6 +885,7 @@ impl MidiOut {
             chords: Chords::new(),
             expr: vec![ExprOut::new(); MAX_TRACKS].into_boxed_slice(),
             mpe: vec![MpeOut::new(); MAX_TRACKS].into_boxed_slice(),
+            keys_pedals: vec![0; MAX_TRACKS].into_boxed_slice(),
             applied_gen: None,
             shown_on: None,
             rolling: false,
@@ -1826,15 +1831,60 @@ impl MidiOut {
         true
     }
 
+    /// A keyboard's pedal, mod wheel, breath or foot controller for track
+    /// `track`'s gear, at the start of this period: its CC as it came, on
+    /// the track's channel (MPE gear's master channel). A pedal it put
+    /// down comes up when the track's expression goes back to rest
+    /// (another track armed, its route changed, a stop, a panic). True
+    /// when MIDI out takes the track, so its instrument and the synth
+    /// don't.
+    pub fn keys_control(&mut self, track: u16, ctl: Ctl, value: f32) -> bool {
+        if !self.takes(track) {
+            return false;
+        }
+        let Some(v) = Ctl::clamp(value) else {
+            return true;
+        };
+        let t = usize::from(track);
+        if let Some(i) = Ctl::ALL.iter().position(|&c| c == ctl && c.is_pedal()) {
+            if Ctl::down(v) {
+                self.keys_pedals[t] |= 1 << i;
+            } else {
+                self.keys_pedals[t] &= !(1 << i);
+            }
+        }
+        let m = Msg::Cc {
+            ch: 0,
+            cc: ctl.cc(),
+            value: (v * 127.0).round() as u8,
+        };
+        self.router.send(t as u8, m, 0, &mut self.queue);
+        true
+    }
+
     /// Track `track`'s gear's bend and pressure back to rest (another
     /// track is armed), at the start of this period.
     pub fn rest_expression(&mut self, track: usize) {
         self.release_expression(track, 0);
     }
 
-    /// Track `t`'s gear's bend and pressure back to rest, at `offset`.
+    /// Track `t`'s gear's bend and pressure back to rest, and the pedals
+    /// the keys put down up, at `offset`.
     fn release_expression(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
+        if let Some(down) = self.keys_pedals.get_mut(t) {
+            for (i, ctl) in Ctl::ALL.into_iter().enumerate() {
+                if *down & (1 << i) != 0 {
+                    let m = Msg::Cc {
+                        ch: 0,
+                        cc: ctl.cc(),
+                        value: 0,
+                    };
+                    router.send(t as u8, m, offset, queue);
+                }
+            }
+            *down = 0;
+        }
         if let Some(e) = self.expr.get_mut(t) {
             e.release(|m| router.send(t as u8, m, offset, queue));
         }
@@ -2494,6 +2544,36 @@ mod tests {
             [
                 0x92, 36, 100, 0x90, 40, 90, 0xA2, 36, 50, 0x82, 36, 64, 0x92, 36, 80, 0x82, 36,
                 64, 0x80, 40, 64, 0x92, 38, 70, 0x82, 38, 64
+            ]
+        );
+    }
+
+    /// A keyboard's pedals and mod wheel go to a track's gear as they
+    /// came, on its channel; arming another track lets the sustain pedal
+    /// up there, once. A track not on MIDI out isn't taken.
+    #[test]
+    fn the_keys_pedals_and_mod_wheel_reach_the_gear_and_come_up() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 2))]);
+        mo.sync(&m, false);
+        assert!(!mo.keys_control(0, Ctl::Sustain, 1.0), "not on MIDI out");
+        assert!(mo.keys_control(1, Ctl::Sustain, 1.0));
+        assert!(mo.keys_control(1, Ctl::ModWheel, 0.5));
+        assert!(mo.keys_control(1, Ctl::Sostenuto, 1.0));
+        assert!(mo.keys_control(1, Ctl::Sostenuto, 0.0));
+        assert!(mo.keys_control(1, Ctl::Breath, f32::NAN), "taken, not sent");
+        mo.rest_expression(1);
+        mo.rest_expression(1);
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        assert_eq!(
+            sink.bytes(),
+            [
+                // Sustain down, the wheel halfway, sostenuto down and up,
+                // on channel 3.
+                0xB2, 64, 127, 0xB2, 1, 64, 0xB2, 66, 127, 0xB2, 66, 0,
+                // Another track armed: sustain up, once; the wheel stays.
+                0xB2, 64, 0,
             ]
         );
     }
