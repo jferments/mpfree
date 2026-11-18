@@ -61,7 +61,7 @@ pub mod save;
 pub mod scenes;
 pub mod steps;
 
-pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source};
+pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source, TempoPoint};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
@@ -860,6 +860,9 @@ pub enum ModelError {
     /// of the other kind (a loop cell on a note track, a note clip on a
     /// Loop track).
     BadLoop,
+    /// A song's tempo point is before the start, out of range, too near
+    /// another (a 1/16 at least) or one too many.
+    BadTempo,
 }
 
 impl Clip {
