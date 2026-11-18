@@ -313,6 +313,7 @@ impl Rig {
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         mix.mixer.set_lane_deadline(Some(until));
         mix.instruments.set_lane_deadline(Some(until));
+        mix.pad_synths.set_lane_deadline(Some(until));
         let (p, _) = mix.period(
             &ctx,
             (synth_l, synth_r),
@@ -337,6 +338,7 @@ impl Rig {
         // After the write, in the loop.
         synth.settle(until);
         mix.instruments.settle(until);
+        mix.pad_synths.settle(until);
     }
 }
 
@@ -350,6 +352,7 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
     c.start_tracks(&mut rig.mix.instruments);
+    c.start_pads(&mut rig.mix.pad_synths);
     let lanes = matches!(
         sound_cores,
         cores::SoundCores::Two | cores::SoundCores::Three
@@ -449,6 +452,7 @@ fn own_instrument(sound_cores: cores::SoundCores) {
     let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
     c.start_tracks(&mut rig.mix.instruments);
+    c.start_pads(&mut rig.mix.pad_synths);
     // Setup, which may allocate: Poly made for track 1 (no builder here,
     // so made at once) and put in on the next period.
     let job = crate::instrument_job(&rig.synth, 0, "mpfree.poly", None);
@@ -591,6 +595,7 @@ fn track_on_midi_out_never_allocates(usb: bool, delay_tenths: u16) {
         cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
     c.start_tracks(&mut rig.mix.instruments);
+    c.start_pads(&mut rig.mix.pad_synths);
     rig.time
         .act(TimeAction::NewClip { track: 0, slot: 0 })
         .unwrap();
@@ -1121,6 +1126,7 @@ fn cv_follows_a_track_and_never_allocates() {
         cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
     c.start_tracks(&mut rig.mix.instruments);
+    c.start_pads(&mut rig.mix.pad_synths);
     rig.time
         .act(TimeAction::NewClip { track: 0, slot: 0 })
         .unwrap();
@@ -1520,9 +1526,25 @@ fn routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind() {
 /// it sounds in, the copy following the Synth tab, never allocate.
 #[test]
 fn a_synth_voice_pads_own_synth_plays_into_its_pad_channel() {
+    pad_synth_plays(cores::SoundCores::Shared);
+}
+
+/// The same on two cores: the copy plays on the pads' lane on core 2, into
+/// the same strip, with no allocation.
+#[test]
+fn a_synth_voice_pads_own_synth_plays_on_another_core() {
+    pad_synth_plays(cores::SoundCores::Two);
+}
+
+fn pad_synth_plays(sound_cores: cores::SoundCores) {
     use crate::synth::Engine;
     use mpfree_fx::StripId;
     let mut rig = Rig::new(false);
+    // Before the sound starts, as player_session does.
+    let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
+    c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
+    c.start_pads(&mut rig.mix.pad_synths);
     let mut routes = vec![None; mpfree_sampler::model::PADS];
     routes[3] = Some(sampler::PadRoute::Voice(Engine::Analog, 48));
     let mut swap = sampler::ViewSwap {
@@ -1599,4 +1621,13 @@ fn a_synth_voice_pads_own_synth_plays_into_its_pad_channel() {
         [0.0, 0.0],
         "nothing on the Synth strip"
     );
+    // On two cores the pads' lane played it.
+    let n = cores::Counts::read(&rig.player, &rig.mix, &rig.synth);
+    if sound_cores == cores::SoundCores::Two {
+        assert_eq!(rig.mix.pad_synths.lanes(), 1);
+        assert!(n.pad_periods > 0, "{n:?}");
+    } else {
+        assert_eq!(rig.mix.pad_synths.lanes(), 0);
+        assert_eq!(n.pad_periods, 0, "{n:?}");
+    }
 }
