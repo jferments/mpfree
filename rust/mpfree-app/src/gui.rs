@@ -1202,6 +1202,10 @@ pub enum ToUi {
     /// Pad `pad` (0 is pad 1) hit while the Pads tab shows the Perform set:
     /// the view picks it and lights it until [`ToUi::PadUp`].
     PerformHit(usize),
+    /// The strips a Perform pad's throw can play on, as the Mix tab names
+    /// them (`mixing::throw_strips`): with the set, and when the Perform
+    /// view shows.
+    ThrowStrips(Vec<(String, mpfree_fx::StripId)>),
 }
 
 /// Not `Clone`: [`FromUi::SampleInput`] carries the one writer of the
@@ -1890,6 +1894,9 @@ pub struct Player {
     /// The Pads tab's Perform view: the project's Perform set
     /// ([`crate::perform_tab`]).
     perform: crate::perform_tab::PerformTab,
+    /// The strips a Perform pad's throw can play on, as the Mix tab names
+    /// them ([`ToUi::ThrowStrips`]).
+    throw_strips: Vec<(String, mpfree_fx::StripId)>,
     /// Play's own view (All or Loop) while the Sequencer's Steps borrow
     /// Beats' pages: Play shows it again.
     play_own: PlayView,
@@ -2146,6 +2153,7 @@ impl Player {
             rec_list: false,
             xy_list: false,
             perform: crate::perform_tab::PerformTab::default(),
+            throw_strips: vec![("Master".to_string(), mpfree_fx::StripId::Master)],
             play_own: PlayView::All,
             undo_ready: false,
             tells: 0,
@@ -2376,6 +2384,7 @@ impl Player {
                         .collect()
                 })
                 .unwrap_or_default(),
+            strips: self.throw_strips.clone(),
         }
     }
 
@@ -7805,6 +7814,12 @@ impl Player {
                 self.perform.hit(pad);
                 self.refresh_perform();
             }
+            ToUi::ThrowStrips(strips) => {
+                if self.throw_strips != strips {
+                    self.throw_strips = strips;
+                    self.refresh_perform();
+                }
+            }
         }
         self.print_sample_lines();
     }
@@ -13013,7 +13028,9 @@ fn play_pad_types(fonts: Fonts) -> Player {
 
 /// The Pads tab's Perform view (the redesign's board 7): page B, Play's
 /// throws on pads 1 to 8 (Vinyl brake latched), two track mutes, Loop 2's
-/// key and a scene over them; Reverb wash on B2 picked.
+/// key and a scene over them, and two throws on the drums alone (Delay
+/// throw on the Drums track, Beat repeat on Sub 1); Reverb wash on B2
+/// picked.
 #[inline(never)]
 fn pads_perform(fonts: Fonts) -> Player {
     use crate::perform_pads::{Hold, PadAction, PerformSet, Throw};
@@ -13031,10 +13048,34 @@ fn pads_perform(fonts: Fonts) -> Player {
     b[9] = PadAction::Mute(1);
     b[10] = PadAction::LoopKey(1);
     b[11] = PadAction::Scene(1);
+    // Two throws on the drums alone: Delay throw on the Drums track, and
+    // Beat repeat on Sub 1.
+    let on = |index, on| {
+        PadAction::Throw(Throw {
+            on,
+            ..Throw::new(index, Hold::WhileHeld)
+        })
+    };
+    b[12] = on(0, mpfree_fx::StripId::Track(0));
+    b[13] = on(5, mpfree_fx::StripId::Bus(0));
     p.apply(ToUi::PerformSet {
         set: Box::new(set),
         opened: true,
     });
+    let mut strips: Vec<(String, mpfree_fx::StripId)> =
+        ["Master", "Drums", "Synth", "Loop", "Audio"]
+            .iter()
+            .zip([
+                mpfree_fx::StripId::Master,
+                mpfree_fx::StripId::Track(0),
+                mpfree_fx::StripId::Track(1),
+                mpfree_fx::StripId::Track(2),
+                mpfree_fx::StripId::Track(3),
+            ])
+            .map(|(n, s)| (n.to_string(), s))
+            .collect();
+    strips.extend((0..8).map(|b| (format!("Sub {}", b + 1), mpfree_fx::StripId::Bus(b))));
+    p.apply(ToUi::ThrowStrips(strips));
     p.on_event(UiEvent {
         widget: mpfree_sampler_ui::pads_tab::KITS.into(),
         kind: EventKind::Tab(1),
@@ -27526,13 +27567,43 @@ mod tests {
         assert!(events_log(&p)
             .iter()
             .any(|l| l == "perform: Perform pads B2: Reverb wash, latched"));
+        // On: the strips the app sends; one step, Drums.
+        p.apply(ToUi::ThrowStrips(vec![
+            ("Master".into(), mpfree_fx::StripId::Master),
+            ("Drums".into(), mpfree_fx::StripId::Track(0)),
+        ]));
+        ev(
+            &mut p,
+            perform_tab::LIST,
+            EventKind::Step { index: 0, delta: 1 },
+        );
+        let on_drums = PadAction::Throw(Throw {
+            on: mpfree_fx::StripId::Track(0),
+            ..Throw::new(1, Hold::Latch)
+        });
+        assert_eq!(
+            p.take_actions(),
+            [FromUi::PerformPad {
+                page: 1,
+                pad: 1,
+                action: on_drums,
+            }]
+        );
+        assert_eq!(
+            p.ui.get::<PadBar>(perform_tab::BAR).unwrap().subtitle,
+            "Throw · latched, on Drums · page B of the project's Perform set"
+        );
+        assert_eq!(
+            p.ui.get::<PadMap>(perform_tab::MAP).unwrap().cells[1].detail,
+            "latch · Drums"
+        );
         // The type chips: a scene; then the second row's chip, Scene 6.
         let scene = Kind::ALL.iter().position(|k| *k == Kind::Scene).unwrap();
         ev(&mut p, perform_tab::TYPE, EventKind::Tab(scene));
         ev(&mut p, perform_tab::PICK_B, EventKind::Tab(1));
         assert_eq!(p.perform.picked(), PadAction::Scene(5));
         let list = p.ui.get::<SettingList>(perform_tab::LIST).unwrap();
-        assert_eq!(list.rows[1].value, "Scene 6");
+        assert_eq!(list.rows[0].value, "Scene 6");
         assert!(list
             .footer
             .as_ref()
@@ -27542,9 +27613,10 @@ mod tests {
         ev(&mut p, perform_tab::MAP, EventKind::Select(8));
         ev(&mut p, perform_tab::BUTTONS, EventKind::Tab(1));
         assert_eq!(p.perform.set.page(1).action(8), PadAction::Scene(5));
-        // UNDO four times: B9 empty and B2 Reverb wash, held, again.
+        // UNDO five times: B9 empty and B2 Reverb wash, held on the
+        // master, again.
         let _ = p.take_actions();
-        for _ in 0..4 {
+        for _ in 0..5 {
             p.apply(ToUi::SampleUndo(false));
         }
         assert_eq!(p.perform.set.page(1).action(8), PadAction::None);

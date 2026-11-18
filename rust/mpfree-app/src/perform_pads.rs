@@ -18,8 +18,23 @@ use crate::looper_deck::RingState;
 use mpfree_looper::MAX_LOOPS;
 use mpfree_mod::MACROS;
 
+use mpfree_fx::StripId;
+
 /// Pads on a page.
 pub const PADS: usize = 16;
+
+/// A throw playing (held or latched): its place in
+/// [`crate::play_page::THROW_LIST`] and the strip it plays on.
+pub type Playing = (u8, StripId);
+
+/// Where a throw plays in the `perform` part: nothing for the master,
+/// else ` on=t0` (a track's strip) or ` on=bus2` (a submix).
+fn on_text(on: StripId) -> String {
+    match on {
+        StripId::Track(_) | StripId::Bus(_) => format!(" on={}", crate::project::strip_text(on)),
+        _ => String::new(),
+    }
+}
 /// The `perform` part's first line: its format and version.
 pub const FORMAT: &str = "mpfree-perform 1";
 /// Pages in the set: PAD BANK A to H.
@@ -74,15 +89,16 @@ pub enum LetGo {
 }
 
 /// A throw on a Perform pad: Play's throw at `index` in
-/// [`crate::play_page::THROW_LIST`], how it holds, when it starts and how
-/// it lets go. (Where it acts, board 7's On, waits for the mixer to take
-/// a throw on a bus or a track: it plays on the master, as Play's do.)
+/// [`crate::play_page::THROW_LIST`], how it holds, when it starts, how it
+/// lets go, and the strip it plays on (`on`, board 7's On: the master, as
+/// Play's cards, a track or a submix).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Throw {
     pub index: u8,
     pub hold: Hold,
     pub starts: Starts,
     pub let_go: LetGo,
+    pub on: StripId,
 }
 
 impl Throw {
@@ -94,7 +110,14 @@ impl Throw {
             hold,
             starts: Starts::Sixteenth,
             let_go: LetGo::RingOut,
+            on: StripId::Master,
         }
+    }
+
+    /// The throw as one playing: its place in the list and its strip
+    /// (two pads with the same throw on the same strip are one throw).
+    pub fn playing(self) -> Playing {
+        (self.index, self.on)
     }
 
     /// How the mixer plays it: the Perform FX pad's Starts, Let go and
@@ -108,6 +131,7 @@ impl Throw {
             },
             cut: self.let_go == LetGo::Cut,
             bar: self.hold == Hold::Bar,
+            on: self.on,
         }
     }
 
@@ -250,13 +274,35 @@ impl PerformSet {
         }
     }
 
+    /// The tracks and submixes the set's throws play on, each once (not
+    /// the master, which has its Perform FX from the start, and not Drop
+    /// drums, which plays no effect).
+    pub fn throw_strips(&self) -> Vec<StripId> {
+        let mut out = Vec::new();
+        for page in &self.pages {
+            for a in &page.pads {
+                let PadAction::Throw(t) = *a else {
+                    continue;
+                };
+                let effect = crate::play_page::THROW_LIST
+                    .get(usize::from(t.index))
+                    .is_some_and(|d| d.fx.is_some());
+                if effect && t.on != StripId::Master && !out.contains(&t.on) {
+                    out.push(t.on);
+                }
+            }
+        }
+        out
+    }
+
     /// The `perform` part: its format line, then each page's name and
     /// each pad with an action, a line each. Numbers are as the screen
     /// shows them, from 1 (loop 1, track 1, scene 1, macro 1); a throw
     /// goes by its slug, then its settings as `key=value`: `hold=held`,
-    /// `hold=latch` or `hold=bar`, then `start=now` or `start=beat` and
-    /// `end=cut` when they aren't the default (the next 1/16, ringing
-    /// out). Where it plays joins them when the mixer takes it.
+    /// `hold=latch` or `hold=bar`, then `start=now` or `start=beat`,
+    /// `end=cut` and where it plays (`on=t0`, a track's mixer strip, or
+    /// `on=bus2`, a submix) when they aren't the default (the next 1/16,
+    /// ringing out, on the master).
     ///
     /// ```text
     /// mpfree-perform 1
@@ -267,6 +313,7 @@ impl PerformSet {
     /// pad B2 = throw reverb-wash hold=held
     /// pad B8 = throw vinyl-brake hold=latch
     /// pad B9 = throw delay-throw hold=bar start=beat end=cut
+    /// pad B10 = throw delay-throw hold=held on=t0
     /// pad B7 = macro 3 value=100
     /// pad C1 = mute 3
     /// pad C5 = scene 2
@@ -306,6 +353,7 @@ impl PerformSet {
                         if t.let_go == LetGo::Cut {
                             line.push_str(" end=cut");
                         }
+                        line.push_str(&on_text(t.on));
                         line
                     }
                     PadAction::Mute(t) => format!("mute {}", u16::from(t) + 1),
@@ -384,8 +432,11 @@ fn parse_line(set: &mut PerformSet, line: &str) -> Option<()> {
                             ("start", "beat") => t.starts = Starts::Beat,
                             ("end", "ring") => t.let_go = LetGo::RingOut,
                             ("end", "cut") => t.let_go = LetGo::Cut,
-                            // The only place a throw plays yet.
-                            ("on", "master") => {}
+                            ("on", "master") => t.on = StripId::Master,
+                            ("on", strip) => {
+                                t.on = crate::project::parse_strip(strip)
+                                    .filter(|s| matches!(s, StripId::Track(_) | StripId::Bus(_)))?
+                            }
                             _ => return None,
                         }
                     }
@@ -439,6 +490,24 @@ pub fn pad_throw_fx(t: Throw, down: bool, drums: u16) -> Option<crate::mixing::P
             fx,
             down,
             how: Some(t.how()),
+        },
+        other => other,
+    })
+}
+
+/// A throw that plays (`p`) let go, for the mixer: when the set goes
+/// off the pads, a project opens or its pad changes. On the master as
+/// Play's card lets go; on a track or a submix, there.
+pub fn release_fx((index, on): Playing) -> Option<crate::mixing::PlayFx> {
+    use crate::mixing::{PlayFx, ThrowHow};
+    Some(match throw_fx(usize::from(index), false, 0)? {
+        PlayFx::Throw { fx, down, .. } if on != StripId::Master => PlayFx::Throw {
+            fx,
+            down,
+            how: Some(ThrowHow {
+                on,
+                ..ThrowHow::default()
+            }),
         },
         other => other,
     })
@@ -586,13 +655,13 @@ fn pad_rgb(c: [u8; 3], f: f32) -> [u8; 3] {
     c.map(|v| ((f32::from(v >> 1) * f.clamp(0.0, 1.0)).round() as u8).min(0x7F))
 }
 
-/// What the pads that aren't loop keys light by: the throws playing (a
-/// bit for each place in [`crate::play_page::THROW_LIST`]: held or
-/// latched), the tracks muted (a bit each, Track 1 the lowest) and the
-/// macros a pad holds (a bit each, Macro 1 the lowest).
+/// What the pads that aren't loop keys light by: the throws playing
+/// (held or latched, each with its strip), the tracks muted (a bit each,
+/// Track 1 the lowest) and the macros a pad holds (a bit each, Macro 1
+/// the lowest).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Lit {
-    pub throws: u8,
+pub struct Lit<'a> {
+    pub throws: &'a [Playing],
     pub muted: u128,
     pub macros: u8,
 }
@@ -646,7 +715,7 @@ pub fn colours(page: &PerformPage, loops: &[LoopLight], lit: &Lit, blink: bool) 
                     return DARK;
                 };
                 let c = [def.color.r, def.color.g, def.color.b];
-                let on = lit.throws & (1 << t.index) != 0;
+                let on = lit.throws.contains(&t.playing());
                 pad_rgb(c, if on { 1.0 } else { 0.15 })
             }
             PadAction::Mute(t) if lit.muted & (1u128 << (t & 127)) != 0 => RED,
@@ -843,9 +912,19 @@ mod tests {
             value: 100,
         };
         set.pages[2].pads[0] = PadAction::Macro { card: 7, value: 35 };
+        set.pages[2].pads[1] = PadAction::Throw(Throw {
+            on: StripId::Track(0),
+            ..Throw::new(0, Hold::WhileHeld)
+        });
+        set.pages[2].pads[2] = PadAction::Throw(Throw {
+            on: StripId::Bus(2),
+            ..Throw::new(3, Hold::Latch)
+        });
         let text = set.text();
         for line in [
             "pad B9 = throw delay-throw hold=bar start=beat end=cut",
+            "pad C2 = throw delay-throw hold=held on=t0",
+            "pad C3 = throw tape-stop hold=latch on=bus2",
             "pad B10 = throw reverb-wash hold=held start=now",
             "pad B7 = macro 3 value=100",
             "pad C1 = macro 8 value=35",
@@ -863,7 +942,10 @@ mod tests {
              pad A2 = macro 1\n\
              pad A3 = macro 9 value=10\n\
              pad A4 = macro 2 value=101\n\
-             pad A5 = throw stutter start=soon\n",
+             pad A5 = throw stutter start=soon\n\
+             pad A6 = throw stutter on=master\n\
+             pad A7 = throw stutter on=ret0\n\
+             pad A8 = throw stutter on=t\n",
         );
         assert_eq!(
             set.page(0).action(0),
@@ -876,7 +958,13 @@ mod tests {
                 value: 100
             }
         );
-        assert_eq!(skipped.len(), 3, "{skipped:?}");
+        assert_eq!(
+            set.page(0).action(5),
+            PadAction::Throw(Throw::new(2, Hold::WhileHeld)),
+            "on the master, written out"
+        );
+        // Only a track or a submix: not a return, not a half word.
+        assert_eq!(skipped.len(), 5, "{skipped:?}");
     }
 
     #[test]
@@ -892,7 +980,8 @@ mod tests {
             ThrowHow {
                 starts: 3,
                 cut: true,
-                bar: true
+                bar: true,
+                on: StripId::Master,
             }
         );
         assert_eq!(
@@ -900,7 +989,8 @@ mod tests {
             ThrowHow {
                 starts: 2,
                 cut: false,
-                bar: false
+                bar: false,
+                on: StripId::Master,
             }
         );
         assert_eq!(
@@ -924,6 +1014,20 @@ mod tests {
         assert_eq!(
             pad_throw_fx(Throw::new(6, Hold::Bar), true, 0b101),
             Some(PlayFx::Drop(0b101))
+        );
+        // Let go when the set goes off: on the master as Play's card, on
+        // a track there.
+        assert_eq!(release_fx((1, StripId::Master)), throw_fx(1, false, 0));
+        assert_eq!(
+            release_fx((1, StripId::Track(0))),
+            Some(PlayFx::Throw {
+                fx: ThrowFx::Reverb,
+                down: false,
+                how: Some(ThrowHow {
+                    on: StripId::Track(0),
+                    ..ThrowHow::default()
+                }),
+            })
         );
         assert_eq!(
             macro_fx(2, 50, true),
@@ -1007,7 +1111,7 @@ mod tests {
         page.pads[9] = PadAction::Mute(1);
         page.pads[10] = PadAction::Scene(0);
         let lit = Lit {
-            throws: 0b10,
+            throws: &[(1, StripId::Master)],
             muted: 0b10,
             macros: 0,
         };
@@ -1028,6 +1132,19 @@ mod tests {
         assert_eq!(c[10], pad_rgb(SCENE, 0.2));
         assert_eq!(c[11], DARK);
         assert!(c.iter().flatten().all(|&v| v <= 0x7F));
+        // Reverb wash playing on Drums lights a pad with it on Drums, not
+        // one with it on the master.
+        page.pads[12] = PadAction::Throw(Throw {
+            on: StripId::Track(0),
+            ..Throw::new(1, Hold::WhileHeld)
+        });
+        let drums = Lit {
+            throws: &[(1, StripId::Track(0))],
+            ..Lit::default()
+        };
+        let c = colours(&page, &[], &drums, true);
+        assert_eq!(c[12], pad_rgb(card(1), 1.0));
+        assert_eq!(c[1], pad_rgb(card(1), 0.15));
     }
 
     #[test]
