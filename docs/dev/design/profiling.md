@@ -76,8 +76,9 @@ Left, in the review's order, none started:
   priorities as they are, the cost of a decaying voice (the sampler
   flushes its own since its R2 step, see
   [sampler-architecture](sampler-architecture.md#real-time-guarantees-and-how-they-are-tested);
-  the synths haven't been checked, and the CPU's flush-to-zero bit is
-  never set), and whether the temperature and clock files exist on the MPC (if
+  the synths haven't been checked; the CPU's flush-to-zero bit is set on
+  the audio thread and its lanes since 18 Nov, see
+  [synth-architecture](synth-architecture.md#flatter-worst-periods-lever-5)), and whether the temperature and clock files exist on the MPC (if
   they do, °C and MHz go on the 30 s status line). It decides which of 5,
   7 and 8 pays most.
 - **5. Cheaper engines:** 16-bit sample storage (the MPC is 8 to 13 times
@@ -231,6 +232,13 @@ fails if any engine allocated inside a block. `--json FILE` writes the
 results (each case has `mem_bytes`); `--filter TEXT` picks cases by name or
 module.
 
+Every mode but `--count` first turns the processor's flush-to-zero on, as
+the app's audio thread and lanes do since 18 Nov (`mpfree_lanes::fpu`), so a
+denormal costs in the bench what it costs in the app. `--keep-denormals`
+leaves it off, to see what an engine's own flushing misses (the sampler's
+"ringing on silence" row below is that check). `--count` leaves it off:
+callgrind doesn't model the mode, and counts the same either way.
+
 On the desktop, the biggest holders are the looper (about 33 MB for 60 s of
 stereo, 11 MB of it the 30 s Capture keeps; the app's Prefs "Loop memory"
 default of 5 minutes is about 120 MB, and 20 minutes about 448 MB, all locked
@@ -284,6 +292,32 @@ On the desktop the numbers are the desktop's. With `--calibration FILE` (the
 file `--calibrate` prints on the MPC) it adds an MPC estimate and a verdict
 against the module budget. On the MPC (the armv7 build) the numbers are the
 device's own.
+
+### Note starts (`--starts`)
+
+```text
+cargo run --release -p mpfree-bench -- --starts [--quick] [--filter TEXT] [--calibration FILE]
+```
+
+For every factory preset of every keyboard engine, 32 times (8 with
+`--quick`): the preset is silenced (`Node::reset`, so its memory stays
+warm), plays two blocks of silence, then starts 16 notes on the first frame
+of one block (a chord over three octaves, velocity 100). It prints the
+median of that block ("start us"), of the three blocks after it ("held
+us"), their ratio, the start's own cost shared by the notes started ("us
+per start", one note on a mono preset), the worst start block against the
+synth budget, and the chord change after those (every note ends and as
+many start a fifth higher, taking voices still releasing or stealing
+them). It ends with the ten presets whose starts cost most against their
+held blocks.
+
+On the workstation (18 Nov) no start is costly: the start block is at most
+2.3 times the held block (Pluck's Muted Bass), mostly 1.0 to 1.1, and a
+note's start costs at most about 1.6 µs (the mono presets of FM and
+Wavetable). A chord change costs 1.5 to 1.7 times a held block on the
+polyphonic engines, which play the old chord's releases beside the new
+one. So nothing at a note's start needs spreading over its first control
+steps. The device run says whether that holds where memory is slower.
 
 ### Lanes (`--lanes`)
 

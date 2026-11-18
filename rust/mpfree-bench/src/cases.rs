@@ -1807,104 +1807,273 @@ fn preset_scaling(
     }
 }
 
-/// Every factory preset of every keyboard engine but Poly at 1 to 16
-/// voices (keys held, for the organ), the acid line once (it is mono).
-fn engine_scaling(rate: u32) -> Vec<Scaling> {
-    use mpfree_synth::{analog_params, fm_params, keys_params, pluck_params};
-    let mut v = Vec::new();
+/// One factory preset of a keyboard engine, ready to build: for
+/// `--afford` and `--starts`.
+pub struct Preset {
+    /// The engine and the preset, such as "Keys Phase Tines".
+    pub name: String,
+    pub make: Box<dyn Fn() -> Box<dyn Node>>,
+    pub values: Vec<(u16, f32)>,
+    /// The engine's voice count parameter; None for an organ or a string
+    /// machine (every key held sounds) and for a mono engine.
+    pub polyphony: Option<u16>,
+    /// It plays one note at a time.
+    pub mono: bool,
+}
+
+impl Preset {
+    fn new<N: Node + 'static>(
+        name: String,
+        rate: u32,
+        make: fn(u32) -> N,
+        values: &[(u16, f32)],
+        polyphony: Option<u16>,
+        mono: bool,
+    ) -> Preset {
+        Preset {
+            name,
+            make: Box::new(move || Box::new(make(rate))),
+            values: values.to_vec(),
+            polyphony,
+            mono,
+        }
+    }
+}
+
+/// Every factory preset of Poly (a mono or legato one plays one voice).
+fn poly_presets(rate: u32) -> Vec<Preset> {
+    Poly::presets()
+        .iter()
+        .map(|p| {
+            let mono = p.values.iter().any(|&(id, x)| id == VOICE_MODE && x != 0.0);
+            Preset::new(
+                format!("Poly {}", p.name),
+                rate,
+                Poly::new,
+                p.values,
+                Some(POLYPHONY),
+                mono,
+            )
+        })
+        .collect()
+}
+
+/// Every factory preset of every keyboard engine but Poly.
+fn engine_presets(rate: u32) -> Vec<Preset> {
+    use mpfree_synth::{analog_params, fm_params, keys_params, pluck_params, Fm};
     let mode = |values: &[(u16, f32)], id: u16| values.iter().any(|&(i, x)| i == id && x != 0.0);
+    let mut v = Vec::new();
     for p in Analog::presets() {
         // Unison stacks every voice on one note: still a cost per voice.
-        v.push(preset_scaling(
-            format!("Analog {}", p.name),
+        let name = format!("Analog {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(Analog::new(rate)),
+            Analog::new,
             p.values,
             Some(analog_params::POLYPHONY),
             false,
         ));
     }
     for p in Squelch::presets() {
-        v.push(preset_scaling(
+        v.push(Preset::new(
             format!("Squelch {}", p.name),
             rate,
-            || Box::new(Squelch::new(rate)),
+            Squelch::new,
             p.values,
             None,
             true,
         ));
     }
     for p in Bass::presets() {
-        v.push(preset_scaling(
+        v.push(Preset::new(
             format!("Bass {}", p.name),
             rate,
-            || Box::new(Bass::new(rate)),
+            Bass::new,
             p.values,
             None,
             true,
         ));
     }
-    for p in mpfree_synth::Fm::presets() {
-        v.push(preset_scaling(
-            format!("FM {}", p.name),
+    for p in Fm::presets() {
+        let mono = mode(&p.values, fm_params::VOICE_MODE);
+        let name = format!("FM {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(mpfree_synth::Fm::new(rate)),
+            Fm::new,
             &p.values,
             Some(fm_params::POLYPHONY),
-            mode(&p.values, fm_params::VOICE_MODE),
+            mono,
         ));
     }
     for p in Wavetable::presets() {
-        v.push(preset_scaling(
-            format!("Wavetable {}", p.name),
+        let mono = mode(p.values, wt::VOICE_MODE);
+        let name = format!("Wavetable {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(Wavetable::new(rate)),
+            Wavetable::new,
             p.values,
             Some(wt::POLYPHONY),
-            mode(p.values, wt::VOICE_MODE),
+            mono,
         ));
     }
     for p in Keys::presets() {
-        v.push(preset_scaling(
-            format!("Keys {}", p.name),
+        let name = format!("Keys {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(Keys::new(rate)),
+            Keys::new,
             p.values,
             Some(keys_params::POLYPHONY),
             false,
         ));
     }
     for p in Drawbar::presets() {
-        v.push(preset_scaling(
-            format!("Drawbar {} (keys held)", p.name),
+        v.push(Preset::new(
+            format!("Drawbar {}", p.name),
             rate,
-            || Box::new(Drawbar::new(rate)),
+            Drawbar::new,
             p.values,
             None,
             false,
         ));
     }
     for p in Strings::presets() {
-        v.push(preset_scaling(
-            format!("Strings {} (keys held)", p.name),
+        v.push(Preset::new(
+            format!("Strings {}", p.name),
             rate,
-            || Box::new(Strings::new(rate)),
+            Strings::new,
             p.values,
             None,
             false,
         ));
     }
     for p in Pluck::presets() {
-        v.push(preset_scaling(
-            format!("Pluck {}", p.name),
+        let name = format!("Pluck {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(Pluck::new(rate)),
+            Pluck::new,
             p.values,
             Some(pluck_params::POLYPHONY),
             false,
         ));
     }
     v
+}
+
+/// Every factory preset of every keyboard engine, Poly first.
+pub fn keyboard_presets(rate: u32) -> Vec<Preset> {
+    let mut v = poly_presets(rate);
+    v.extend(engine_presets(rate));
+    v
+}
+
+/// Notes started in one block by `--starts`: Poly's most voices.
+pub const START_NOTES: usize = 16;
+
+/// What starting [`START_NOTES`] notes in one block costs a preset
+/// (`--starts`), each time from silence. Times in ns.
+#[derive(Clone, Debug, Default)]
+pub struct StartCost {
+    /// The block the notes start in (the median over the rounds).
+    pub start_ns: f64,
+    /// The worst of those blocks.
+    pub worst_start_ns: f64,
+    /// The next three blocks, the notes sounding (the median of their
+    /// means): what the notes cost once started.
+    pub held_ns: f64,
+    /// The block after those, where the chord changes: every note ends and
+    /// as many start a fifth higher, so the new notes take voices still
+    /// sounding their release, or steal them (the median).
+    pub change_ns: f64,
+}
+
+/// [`StartCost`]: `rounds` times, the preset is silenced ([`Node::reset`],
+/// which keeps its memory warm), plays two blocks of silence, then starts
+/// [`START_NOTES`] notes on the first frame of a block (a chord over three
+/// octaves, velocity 100); that block, the three after it and the chord
+/// change after those are timed.
+pub fn start_cost(p: &Preset, rate: u32, frames: usize, rounds: usize) -> StartCost {
+    let mut s = (p.make)();
+    s.prepare(rate, MAX_BLOCK);
+    for &(id, v) in &p.values {
+        s.set_param(id, v);
+    }
+    if let Some(id) = p.polyphony {
+        s.set_param(id, START_NOTES as f32);
+    }
+    let chord = |root: u8| {
+        (0..START_NOTES)
+            .map(move |k| root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8)
+    };
+    let on = |note| {
+        Timed::new(
+            0,
+            NodeEvent::NoteOn {
+                note,
+                velocity: 100,
+            },
+        )
+    };
+    let notes: Vec<Timed> = chord(48).map(on).collect();
+    let change: Vec<Timed> = chord(48)
+        .map(|note| Timed::new(0, NodeEvent::NoteOff { note }))
+        .chain(chord(55).map(on))
+        .collect();
+    let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    let mut frame = 0u64;
+    let mut block = |s: &mut Box<dyn Node>, events: &[Timed]| {
+        l.fill(0.0);
+        r.fill(0.0);
+        let t = Instant::now();
+        s.process(&Ctx::new(rate, frame), events, &mut l, &mut r);
+        let ns = t.elapsed().as_nanos() as f64;
+        std::hint::black_box((&l, &r));
+        frame += frames as u64;
+        ns
+    };
+    let (mut starts, mut held, mut changes) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..rounds {
+        s.reset();
+        for _ in 0..2 {
+            block(&mut s, &[]);
+        }
+        starts.push(block(&mut s, &notes));
+        held.push((0..3).map(|_| block(&mut s, &[])).sum::<f64>() / 3.0);
+        changes.push(block(&mut s, &change));
+    }
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    };
+    StartCost {
+        worst_start_ns: starts.iter().copied().fold(0.0, f64::max),
+        start_ns: median(&mut starts),
+        held_ns: median(&mut held),
+        change_ns: median(&mut changes),
+    }
+}
+
+/// Every factory preset of every keyboard engine but Poly at 1 to 16
+/// voices (keys held, for the organ), the acid line once (it is mono).
+fn engine_scaling(rate: u32) -> Vec<Scaling> {
+    engine_presets(rate)
+        .into_iter()
+        .map(|p| {
+            let held = p.polyphony.is_none() && !p.mono;
+            preset_scaling(
+                format!("{}{}", p.name, if held { " (keys held)" } else { "" }),
+                rate,
+                &*p.make,
+                &p.values,
+                p.polyphony,
+                p.mono,
+            )
+        })
+        .collect()
 }
 
 /// Every synth preset of every keyboard engine at 1 to 16 voices (chords
