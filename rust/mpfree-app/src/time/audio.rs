@@ -18,6 +18,7 @@ use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
 use mpfree_seq::{TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
+use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
 
 use super::follow::{Follow, FollowCounts, Follower};
@@ -29,6 +30,8 @@ use super::{Click, Collect, HitInfo, LaneOut, LockOut, Pads, MAX_HITS, MAX_LOCKS
 /// Views kept here while the queue back to the control half is full,
 /// until they can go back to be freed there.
 const RETURNS: usize = 8;
+/// Why a start on a note was refused when the transport's queue is full.
+const QUEUE_FULL: &str = "the transport's queue is full";
 
 /// MIDI effect settings the mod engine can hold at once on one track.
 pub const NOTE_MODS: usize = 16;
@@ -399,29 +402,25 @@ impl TimeAudio {
     /// PLAY and REC on the one frame, a punch-in with no count-in.
     ///
     /// Refused, and counted ([`TimeAudio::starts_refused`]), while the song
-    /// plays or counts in, or while another device's clock leads (its
-    /// tempo arriving, or PLAY waiting for its Start). Returns why.
+    /// plays or counts in, while another device's clock leads (its tempo
+    /// arriving, or PLAY waiting for its Start), or when the transport's
+    /// queue hasn't room for every command: all go in or none, so a
+    /// refused start leaves no Locate or tempo behind. Returns why.
     pub fn start_at(
         &mut self,
         at: u64,
         bpm: Option<f64>,
         take: Option<bool>,
     ) -> Result<(), &'static str> {
-        let why = match self.transport.state() {
-            _ if self.follower.bpm().is_some() => Some("the song follows another device's clock"),
-            _ if self.follower.waits() => Some("PLAY waits for the leader's Start"),
-            State::CountIn => Some("the song is counting in"),
-            State::Stopped => None,
-            _ => Some("the song is playing already"),
-        };
-        if let Some(why) = why {
+        if let Some(why) = self.start_refusal(bpm, take) {
             self.starts_refused += 1;
+            if why == QUEUE_FULL {
+                self.refused += 1;
+            }
             return Err(why);
         }
         let at = at.max(self.transport.frame());
-        let pos = self.transport.position();
-        let bar = self.transport.meter().bar_ticks().max(1);
-        let start = pos - pos.rem_euclid(bar);
+        let (pos, start) = self.bar_start();
         let mut sent = true;
         if start != pos {
             sent &= self.transport.command(at, Command::Locate(start));
@@ -437,12 +436,48 @@ impl TimeAudio {
         if take.is_some() {
             sent &= self.transport.command(at, Command::Record);
         }
+        // start_refusal counted the room, so this can't happen; counted if
+        // it ever does.
         if !sent {
             self.refused += 1;
             self.starts_refused += 1;
-            return Err("the transport's queue is full");
+            return Err(QUEUE_FULL);
         }
         Ok(())
+    }
+
+    /// Why [`TimeAudio::start_at`] would refuse a start with this tempo
+    /// and take now, or None. Changes nothing and counts nothing.
+    pub fn start_refusal(&self, bpm: Option<f64>, take: Option<bool>) -> Option<&'static str> {
+        let why = match self.transport.state() {
+            _ if self.follower.bpm().is_some() => Some("the song follows another device's clock"),
+            _ if self.follower.waits() => Some("PLAY waits for the leader's Start"),
+            State::CountIn => Some("the song is counting in"),
+            State::Stopped => None,
+            _ => Some("the song is playing already"),
+        };
+        why.or_else(|| {
+            let (pos, start) = self.bar_start();
+            let commands = usize::from(start != pos)
+                + usize::from(bpm.is_some())
+                + usize::from(take.is_some_and(|add| add != self.transport.overdub()))
+                + 1
+                + usize::from(take.is_some());
+            (self.transport.queue_room() < commands).then_some(QUEUE_FULL)
+        })
+    }
+
+    /// Room left in the transport's queue (tests).
+    #[cfg(test)]
+    pub fn queue_room(&self) -> usize {
+        self.transport.queue_room()
+    }
+
+    /// The song position and the start of the bar it is in.
+    fn bar_start(&self) -> (Tick, Tick) {
+        let pos = self.transport.position();
+        let bar = self.transport.meter().bar_ticks().max(1);
+        (pos, pos - pos.rem_euclid(bar))
     }
 
     /// Starts on a note refused so far ([`TimeAudio::start_at`]).
@@ -601,11 +636,14 @@ impl TimeAudio {
     fn process(&mut self, frames: u32) -> bool {
         self.follower.period(&mut self.transport);
         let ok = self.transport.process(frames, &mut self.block);
-        // The period a tempo asked for was due in has run.
-        if self
-            .tempo_asked
-            .is_some_and(|(due, _)| due < self.transport.frame())
-        {
+        // A tempo asked for is in once the transport plays at it. A change
+        // while rolling waits for the next 1/16 line, so until then it
+        // still counts as asked; stopped, its period having run is enough
+        // (a tempo the transport kept in its range never matches).
+        if self.tempo_asked.is_some_and(|(due, bpm)| {
+            due < self.transport.frame()
+                && ((self.transport.bpm() - bpm).abs() <= 1e-9 || !self.transport.state().rolling())
+        }) {
             self.tempo_asked = None;
         }
         ok
